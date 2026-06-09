@@ -14,6 +14,7 @@ How Mora tracks and surfaces per-source data freshness under an **honest-snapsho
 | `internal/mora/mora.go` | 3791 | The wiring: `cmdSync` (`sync status` / `sync google` / `sync imessage`), `ingestGoogle`/`ingestIMessage` (load→ingest→save status), `googleStatusPath`/`imessageStatusPath`, `sourceFreshness` (Phase-12 fix), `windowForSource`/`windowForIMessage`, `backfillEnabledGoogle`/`backfillEnabledIMessage` + the `backfillGoogleFn`/`backfillIMessageFn` sync-first seams (Phase 13, `mora.go:1329-1332`), `cmdPulse`'s `--sync` flag, `installSchedule`/`schedulePlistFor`/`scheduleRunAtLoad` (launchd periodic re-pull). |
 | `internal/mora/brief.go` | 261 | The Phase-12 **`brief/` watermark store** — a SEPARATE per-instance state from `sync/` (`briefSnapshot`, `loadBriefSnapshot`/`saveBriefSnapshot`, `acquireBriefLock`). Decoupled from `SyncStatus` *on purpose* (see below). Consumed by the digest, never by freshness. Detailed in [synthesis-think-digest](./07-synthesis-think-digest.md). |
 | `internal/mora/connectors.go` | 132 | `ingestingConnectors` (enabled∩ingesting enumeration — the set the digest's three-state classifier drives from) + `sourceInstanceKey` (the watermark/grouping key seam) + `connectorDisplay`. |
+| `internal/mora/gitsync.go` | 234 | `mora sync git` — opt-in **off-device backup** of the vault to a private git remote (issue #6). `syncGit` (one-way push-only orchestration), `configureRemote` (`--github`/`--remote`/existing-origin precedence), `commitIdentityArgs` (fresh-machine identity fallback), `redactCredentials` (strips PAT userinfo from fail-loud git output), `realExec` (the injectable git/gh exec seam). |
 | `internal/mora/digest.go` | 758 | `buildDigest` embeds `sourceFreshness(cfg)` into the digest `Freshness` map and reads per-instance `SyncStatus` via `loadConnectorSyncStatus`/`syncStatusPathFor` for the three-state health labels; `renderDigest` prints the `Fresh as of:` line. |
 
 > Canonical source only: `./internal/`, `./cmd/`, repo-root config. The `SyncStatus` type and the `Ingest` loop physically live in `internal/memory`; `internal/google` re-exports thin aliases so connector call-sites read unchanged (`internal/google/status.go:7`, `internal/google/ingest.go:8-12`).
@@ -213,6 +214,41 @@ Freshness is not confined to the `sync status` command — it rides along inside
 
 - **iMessage was mis-keyed.** The old reader stripped only the `google-` prefix from the filename, so `imessage-<name>.json` became the map key `imessage-<name>` instead of `imessage` — disagreeing with `cmdSync status`, which keys off `st.Source`. Keying off `st.Source` makes both readers agree (the filename stem is now only a fallback used when `st.Source` is empty, and even then strips both known prefixes — `internal/mora/mora.go:3152-3158`).
 - **Never-synced sources were silently dropped.** The old reader effectively only surfaced sources with a real timestamp; a present-but-never-cleanly-synced status (`LastSynced==""`) vanished from the map, hiding a broken source. It is now **INCLUDED with an empty value** (`internal/mora/mora.go:3159`) so a broken source can read "unavailable" downstream rather than disappearing (the SC#3 gap).
+
+## Off-device git backup (`mora sync git`) — opt-in egress
+
+Issue #6. The vault is plaintext Markdown with no durable off-machine copy; `mora
+sync git` adds a **one-way, push-only** backup to a **private git remote the user
+controls** (`internal/mora/gitsync.go`). It is the *only* deliberate exception to
+Mora's otherwise-zero-egress posture, so the design is opt-in and loud by construction:
+
+- **Shells out to system `git` (and optional `gh`), not a vendored Go lib.** This
+  honors the user's existing credential helper / SSH config / `gh` auth for free —
+  a go-git impl would not. The single seam is `realExec(ctx, dir, name, args...)`
+  (`execFunc`), faked in tests so the whole flow runs without subprocesses.
+- **`--init` is idempotent and remote-agnostic.** Repo detection is `os.Stat(vault/.git)`
+  (NOT `git rev-parse --is-inside-work-tree`, which would walk *up* into a parent
+  repo if the vault is nested). Remote precedence in `configureRemote`: `--github
+  <name>` (creates a PRIVATE repo via `gh repo create … --private --source --remote`)
+  > `--remote <URL>` (add/set-url origin) > an already-configured origin > **fail-loud**.
+- **No `--force`, ever.** Push is plain `git push [-u] origin HEAD`. A non-fast-forward
+  rejection means the remote diverged and is surfaced loudly — never silently
+  overwritten. For a single-writer backup that should not happen; if it does, the
+  user must know. (Same spirit as "never swallow a sync error" below.)
+- **Credential redaction is a hard requirement.** `git` echoes the remote URL on a
+  push failure; if the user embedded a PAT (`https://token@host`), that secret would
+  land in the fail-loud error. `redactCredentials` strips HTTP(S) userinfo from both
+  the args and git's output before it reaches the terminal/logs/returned error.
+- **Defensive `.gitignore` + fresh-machine identity fallback.** `--init` writes a
+  `.gitignore` (`index.db`, `*.db`, `.DS_Store`, `tokens/`) so the ~87MB rebuildable
+  index and any stray secrets never leave — restore is `git clone` → `mora index
+  rebuild`. `commitIdentityArgs` injects a fallback `-c user.name/email` ONLY for the
+  field(s) the user has not configured, so the first commit succeeds on a clean
+  machine without clobbering a real identity.
+- **Scheduling reuses the launchd scaffolding.** `git-daily` → `sync git` in
+  `scheduleCommands` (`internal/mora/mora.go:4073`), a 3am `StartCalendarInterval`
+  in `launchdSchedule`. `mora doctor` discloses (a `warn` line) whenever `vault/.git`
+  exists, qualifying the zero-egress claim honestly.
 
 ## Invariants & gotchas
 

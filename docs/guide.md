@@ -286,6 +286,42 @@ Direct-binary installs self-update from the public GitHub releases — no token 
 Homebrew-managed installs are detected and deferred to `brew upgrade`; source/`go build` builds
 report `dev` and refuse self-update — rebuild with `git pull && go build`.
 
+## Back up the vault off-device (opt-in)
+
+By default the vault never leaves the machine. If you want an off-device backup with
+version history, Mora can push it to a **private git remote you control** — GitHub,
+GitLab, a self-hosted server, or a bare repo on a USB drive. The flow is **one-way,
+push-only** (your local vault is the source of truth) and **fail-loud**: any git error
+surfaces, and a push is never `--force`d — a non-fast-forward rejection means the
+remote diverged, and you should know, not have it overwritten.
+
+```bash
+# Point at any git remote you control:
+mora sync git --init --remote git@github.com:you/mora-vault.git
+
+# …or let Mora create a PRIVATE GitHub repo for you (needs the gh CLI, authenticated):
+mora sync git --init --github            # repo name defaults to "mora-vault"; --name overrides
+
+# Subsequent backups — commits + pushes only what changed:
+mora sync git
+
+# Automate a daily 3am backup (macOS launchd; prints the equivalent line elsewhere):
+mora schedule install git-daily
+```
+
+`--init` writes a defensive `.gitignore` (`index.db`, `*.db`, `.DS_Store`, `tokens/`)
+so the rebuildable index and anything secret never leave the machine, and it detects
+an existing repo via `vault/.git` — it won't adopt a parent repo if your vault lives
+inside one. Restore on a new machine: `git clone <remote> ~/vault/mora && mora index rebuild`.
+
+Know what you're opting into: the vault contains decoded iMessages and Gmail threads
+in **plaintext**, so the remote must be private and yours — Mora runs no server and
+never picks a destination for you. `mora doctor` warns whenever the vault is a git
+repo. Mora shells out to your system `git` (and `gh` for `--github`), so your existing
+SSH keys, credential helper, or `gh auth` just work. For ciphertext at rest on the
+remote, layer [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/)
+over any remote; the flow is unchanged.
+
 ## How it works
 
 Retrieval is three layers, all computed from your own data at ingest time with no model involved (the optional Ollama embedder is the one exception, covered below). Everything runs in the Go binary against a local SQLite index. For the subsystem-level spec with diagrams and `file:line` citations, see [`docs/architecture/`](architecture/00-overview.md).

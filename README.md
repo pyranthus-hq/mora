@@ -10,11 +10,11 @@
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/pure%20Go-no%20CGO-00ADD8)](go.mod)
-[![Egress](https://img.shields.io/badge/egress-zero-0a3d33)](docs/guide.md#why-not-just-use-a-cloud-connector)
+[![Egress](https://img.shields.io/badge/egress-zero%20by%20default-0a3d33)](docs/guide.md#why-not-just-use-a-cloud-connector)
 
 </div>
 
-Mora backfills your **Gmail, Google Calendar, iMessage, Apple Calendar, and local files** into a vault of plain Markdown files plus a SQLite index on your machine, and serves it over MCP to Claude Code, Codex, or any other MCP client. Agents answer from your actual history — people, commitments, decisions — with citations. There is no server, account, or telemetry; the only network connections are to the sources you sync, GitHub during `mora upgrade`, and an optional localhost Ollama embedder.
+Mora backfills your **Gmail, Google Calendar, iMessage, Apple Calendar, and local files** into a vault of plain Markdown files plus a SQLite index on your machine, and serves it over MCP to Claude Code, Codex, or any other MCP client. Agents answer from your actual history — people, commitments, decisions — with citations. There is no server, account, or telemetry; the only network connections are to the sources you sync, GitHub during `mora upgrade`, an optional localhost Ollama embedder, and — only if you opt in — a private git remote you control for vault backup (`mora sync git`).
 
 ## What it looks like
 
@@ -73,13 +73,15 @@ Cloud tools win on zero setup, a web UI, and write actions; Mora has none of tho
 - **An entity graph.** `mora graph "Sam"` shows one person across sources — threads, events, co-occurring people, each edge citing its source memory. Rule-based over message headers, calendar attendees, and address-book names (no NER model); identity merging is conservative; no-reply senders are filed as services, not people.
 - **Hybrid search.** BM25 + embedding + graph expansion, fused by reciprocal rank. The default hash embedder is weak on paraphrase; `mora config embedder ollama` switches to local semantic embeddings via [Ollama](https://ollama.com).
 - **A daily brief.** `mora brief`: new and unanswered threads, upcoming meetings, open loops, ranked by contact salience.
+- **Opt-in off-device backup.** `mora sync git` pushes the vault to a private git remote you control — GitHub, GitLab, self-hosted, or a bare repo on a USB drive. One-way and fail-loud, never `--force`; the index and tokens are gitignored. Restore: `git clone`, then `mora index rebuild`.
 - **11 MCP tools**, including write-back (`write_memory`). Search responses carry per-source `last_synced` timestamps.
 
 ## Privacy model
 
 - **Read-only.** Google scopes are `gmail.readonly` and `calendar.readonly`; the iMessage and Apple Calendar databases are opened read-only. Mora cannot send, modify, or delete anything.
 - **All data local.** Vault, index, and OAuth tokens (`~/.config/mora/tokens/`, 0600) stay on disk. No analytics endpoint; the local, content-free usage log is disabled by `mora usage off` or `DO_NOT_TRACK=1`.
-- 
+- **Zero egress by default.** Mora runs no server and never hosts your data. The one opt-in exception is `mora sync git`, which pushes the vault to a private remote you control — and `mora doctor` warns whenever the vault is a git repo. For ciphertext at the remote, layer [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) over it.
+
 ## Docs
 
 **[The guide](docs/guide.md)** — connectors, MCP wiring, daily use, how retrieval works, the cloud comparison. **[docs/architecture/](docs/architecture/00-overview.md)** — contributor spec: 13 subsystem docs with diagrams and `file:line` citations.
