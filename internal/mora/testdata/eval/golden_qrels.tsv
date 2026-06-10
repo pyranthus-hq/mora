@@ -1,0 +1,8 @@
+# T2 synthetic golden set (committed). Scores against the deterministic
+# fixture built by seedEvalFixture in eval_test.go. Columns:
+# qid\titer\tdoc_id\trel\tsource\tarchetype\tgen\tsurface
+# rel: 2=canonical 1=acceptable (absent=irrelevant). doc_id=NONE => negative control.
+q1	0	synth/oauth-exact	2	obsidian	exact	seed	fts
+q2	0	synth/venue	2	gmail	person	hand	hybrid
+q3	0	synth/runway	2	obsidian	topic	hand	hybrid
+q4	0	NONE	1	obsidian	person	hand	hybrid

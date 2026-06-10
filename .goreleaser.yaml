@@ -1,0 +1,111 @@
+# GoReleaser config (schema v2) for mora — pure-Go, CGO_ENABLED=0 single binary.
+# Tag a release (e.g. `git tag v0.2.0 && git push --tags`) → cross-platform
+# archives + checksums + cosign signature + a Homebrew cask in pyranthus-hq/homebrew-tap.
+#
+# NOTE: uses `homebrew_casks:` (NOT the deprecated `brews:`, removed v2.16).
+# Casks also carry the macOS quarantine-xattr strip for the unsigned binary.
+version: 2
+
+project_name: mora
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mora
+    main: ./cmd/mora
+    binary: mora
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
+
+archives:
+  - id: mora
+    formats: [tar.gz]
+    # This name MUST match what `mora upgrade` (go-selfupdate) expects:
+    #   mora_<version>_<os>_<arch>.tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - QUICKSTART.md
+      - install.sh
+      - examples/*
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Cosign keyless signing of the checksums file — Sigstore provenance, no key
+# management. Requires `id-token: write` + cosign installed in the workflow.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.cosign.sig"
+    certificate: "${artifact}.cosign.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+# SBOM via syft (syft must be on the runner). Low priority — fine to drop until
+# the public launch; comment out the block to skip.
+sboms:
+  - artifacts: archive
+
+homebrew_casks:
+  - name: mora
+    repository:
+      owner: pyranthus-hq
+      name: homebrew-tap # create this repo: pyranthus-hq/homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/pyranthus-hq/mora"
+    description: "Local-first, agent-agnostic memory CLI"
+    license: "Apache-2.0" # TODO: confirm SPDX id (Apache-2.0 vs MIT)
+    commit_author:
+      name: goreleaserbot
+      email: bot@pyranthus.com
+    binaries:
+      - mora
+    # Strip the Gatekeeper quarantine xattr from the unsigned binary so macOS
+    # doesn't show "mora is damaged and cannot be opened". This is why we use a
+    # cask (and why notarization is deferrable for a CLI).
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/mora"]
+          end
+
+release:
+  github:
+    owner: pyranthus-hq
+    name: mora
+  draft: false
+  prerelease: auto
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

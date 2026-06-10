@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "mora": { "command": "mora", "args": ["mcp", "serve"] }
+  }
+}

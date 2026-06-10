@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: gofmt check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test (race + cover)
+        # The race detector needs CGO. Enable it ONLY for the test run —
+        # every build/release step stays CGO_ENABLED=0 (the product's thesis).
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -covermode=atomic ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: golangci-lint
+        # The .golangci.yml is v2 format; action @v6 only installs golangci-lint
+        # v1 (can't read a v2 config, and its go1.24 build < our go1.25 target).
+        # @v8 installs v2; pin the exact build verified locally at 0 issues.
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+
+  # Pure-Go cross-arch build matrix: proves CGO_ENABLED=0 builds on every
+  # target before a tag is ever cut. This is the single-binary guarantee, gated.
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags="-s -w" -o "mora-${GOOS}-${GOARCH}" ./cmd/mora
+
+  # Binary-size tracking — comments the delta vs main. Advisory, not blocking:
+  # a single small static binary IS the product, so size regressions matter.
+  size:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the size diff can resolve the main baseline
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: build (linux/amd64)
+        env: { CGO_ENABLED: "0", GOOS: linux, GOARCH: amd64 }
+        run: go build -trimpath -ldflags="-s -w" -o mora ./cmd/mora
+      - name: size diff vs main
+        uses: jacobras/size-diff-action@v1
+        continue-on-error: true # advisory only — a size hiccup must never block merge
+        with:
+          path: mora # the action's input is `path`, not `files`
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the scan sees every commit
+      # Use the gitleaks CLI directly, not gitleaks-action@v2: the action requires
+      # a (free, but mandatory) GITLEAKS_LICENSE for ORG-owned repos, and mora now
+      # lives under the pyranthus-hq org. The OSS CLI has no such gate.
+      - name: gitleaks (CLI)
+        run: |
+          VER=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --source . --redact --no-banner --exit-code 1

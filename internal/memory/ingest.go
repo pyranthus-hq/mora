@@ -1,0 +1,94 @@
+package memory
+
+import "time"
+
+// IngestParams drives a snapshot ingestion. Write persists one memory (the mora
+// wiring supplies it). A nil-safe Status is required.
+type IngestParams struct {
+	Fetcher    Fetcher
+	Kind       ItemKind
+	Window     FetchWindow
+	Scope      string
+	BodyBudget int
+	Status     *SyncStatus
+	Write      func(MappedMemory) error
+
+	// Map optionally overrides how a fetched Item becomes a MappedMemory. When nil,
+	// the shared MapItem (start-keep truncation) is used — Gmail/Calendar behavior. A
+	// connector needing different mapping (e.g. iMessage's newest-first truncation via
+	// its own mapConversation over Item.Payload) supplies it here.
+	Map func(Item, string, int) MappedMemory
+}
+
+type IngestResult struct {
+	Status *SyncStatus
+}
+
+// Ingest pages through the Fetcher from the checkpoint cursor, maps each Item,
+// and calls Write. Per-item Write failures are counted, never fatal. The
+// checkpoint advances per page so a crash resumes instead of restarting; it is
+// cleared on clean completion. Page-fetch errors stop the run but preserve the
+// checkpoint for resume.
+func Ingest(p IngestParams) (IngestResult, error) {
+	if p.Status == nil {
+		p.Status = &SyncStatus{}
+	}
+	mapFn := p.Map
+	if mapFn == nil {
+		mapFn = MapItem
+	}
+	cursor := p.Status.Checkpoint
+	// Snapshot the prior error tally so the clean-completion reset only clears
+	// errors carried in from a PRIOR run — a run that itself accumulates per-item
+	// write errors is not a clean attempt and keeps its errors (M-3: health is the
+	// last attempt's outcome, not a "paging finished" signal).
+	errorsBefore := p.Status.ErrorCount
+	for {
+		page, err := p.Fetcher.FetchPage(p.Kind, p.Window, cursor)
+		if err != nil {
+			p.Status.ErrorCount++
+			p.Status.LastError = err.Error()
+			// Stamp the attempt but NOT success: a failed attempt records when it
+			// was tried while leaving LastSuccessAt untouched, so the digest (M-3 /
+			// D-03) can tell "never succeeded" from "succeeded but stale".
+			p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
+			// Keep checkpoint = cursor so the next run resumes this page.
+			p.Status.Checkpoint = cursor
+			return IngestResult{Status: p.Status}, err
+		}
+		for _, it := range page.Items {
+			m := mapFn(it, p.Scope, p.BodyBudget)
+			m.LastSynced = time.Now().UTC().Format(time.RFC3339)
+			if werr := p.Write(m); werr != nil {
+				p.Status.ErrorCount++
+				p.Status.LastError = werr.Error()
+				continue
+			}
+			p.Status.ItemCount++
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+		p.Status.Checkpoint = cursor // advance checkpoint per page
+	}
+	p.Status.Checkpoint = ""
+	// Clean completion: model health as a LAST-ATTEMPT outcome (M-3). One instant
+	// shared across LastSynced / LastSuccessAt / LastAttemptAt keeps them
+	// consistent; paging finished and the page-fetch succeeded, so this is a
+	// successful attempt.
+	now := time.Now().UTC().Format(time.RFC3339)
+	p.Status.LastSynced = now
+	p.Status.LastAttemptAt = now
+	p.Status.LastSuccessAt = now
+	// Reset the error tally so a source that errored on a PRIOR run and recovered
+	// stops reading "unavailable" forever (which would invert SC#3 once the digest
+	// derives "broken" from these fields). Gate on errorsBefore: if THIS run added
+	// per-item write errors, they are the current attempt's outcome and must
+	// persist — only a run that introduced no new errors counts as clean.
+	if p.Status.ErrorCount == errorsBefore {
+		p.Status.ErrorCount = 0
+		p.Status.LastError = ""
+	}
+	return IngestResult{Status: p.Status}, nil
+}

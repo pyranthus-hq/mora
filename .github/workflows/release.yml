@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub Release, upload assets
+  id-token: write # cosign keyless signing (OIDC)
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest # pure-Go cross-builds need no macOS runner (no notarization)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # REQUIRED for the changelog
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: anchore/sbom-action/download-syft@v0 # syft for SBOM
+      - uses: sigstore/cosign-installer@v3 # cosign for keyless signing
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fine-grained PAT with contents:write on pyranthus-hq/homebrew-tap.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

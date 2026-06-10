@@ -1,0 +1,31 @@
+# golangci-lint v2 config. CI runs `golangci-lint run` as a blocking gate; this
+# tunes it to flag real problems without drowning in benign noise.
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  settings:
+    errcheck:
+      # Writing the ASCII banner to stdout — error is not actionable. (The
+      # std-error-handling preset covers fmt.Fprint*/Close but not io.WriteString.)
+      exclude-functions:
+        - io.WriteString
+  exclusions:
+    presets:
+      # Excludes the well-known unactionable errcheck cases: deferred Close(),
+      # fmt.Fprint*/Write to stdout, etc. (the standard error-handling noise).
+      - std-error-handling
+    rules:
+      # ST1005: error strings shouldn't be capitalized — but several user-facing
+      # messages legitimately open with a proper noun ("Google ...", "Mora ...").
+      - linters: [staticcheck]
+        text: ST1005
+      # The OAuth loopback server's Serve/Shutdown are fire-and-forget by design.
+      - path: internal/google/oauth\.go
+        linters: [errcheck]
+        text: srv\.(Serve|Shutdown)
+      # SA1019: go/parser.ParseDir is deprecated, but it's fine for a test that
+      # just scans a single package dir; the replacement (go/packages) is overkill.
+      - path: _test\.go
+        linters: [staticcheck]
+        text: SA1019

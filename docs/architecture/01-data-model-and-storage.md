@@ -1,0 +1,236 @@
+# Data Model & Storage
+
+The on-disk Markdown memory format, the identity rules that keep re-syncs idempotent, and the rebuildable SQLite index derived from it — the vault is the source of truth; the database is a cache.
+
+## Files
+
+| File | Lines | Responsibility |
+|---|---|---|
+| `internal/mora/mora.go` | 3587 | `Memory`/`Source`/`Config` model; `renderMemory`/`parseMemory`/`writeMemory`/`writeMappedMemory`; `rebuildIndex` + SQLite DDL; `findMemory`/`allMemoryFiles`/`listMemories`; `loadConfig`/`defaultConfig`; path helpers; `atomicWrite`; `newID`; the mora-local `ContentHash` (filesystem ids only) |
+| `internal/memory/mapped.go` | 154 | `MappedMemory` hand-off struct; `MapItem` (Item→MappedMemory, byte budget, content-hash fold); `CanonicalMeta`; kind→(type,provider) registry |
+| `internal/memory/ids.go` | 25 | `StableID` (provider identity), `ContentHash` (provider change-detect, sha256/16), `SafeFilename` (`/`,`:`,` ` → `_`) |
+| `internal/memory/types.go` | 64 | `Item`, `ItemKind`, `Attachment`, `FetchWindow`, `Page`, `Fetcher` — the connector-agnostic fetch types feeding `MapItem` |
+| `internal/mora/render.go` | 122 | Human-facing TTY styling (`colorEnabled`, `styler`, `styleDigestTTY`). **Not** part of the persisted data path — gated so ANSI never reaches `--json`/MCP/files |
+
+## The `Memory` model
+
+A memory is one Markdown file: YAML-ish frontmatter then a free-text body. The in-memory shape is `Memory` (`internal/mora/mora.go:50-71`):
+
+```go
+type Memory struct {
+    ID, Scope, Type, Title string
+    Tags                   []string
+    Source, CreatedAt, Path, Text string
+    Score                  float64        // populated by search only
+    Provider, ProviderID, ContentHash, LastSynced string
+    Truncated              bool
+    DeletedAt              string
+    Meta                   map[string]any // structured identity; feeds the entity graph
+}
+```
+
+`MappedMemory` (`internal/memory/mapped.go:12-31`) is the **parallel hand-off struct** the connector layer produces. It mirrors the frontmatter field-for-field but lives in `internal/memory` so connectors never import `internal/mora` (the import-cycle hard rule from CLAUDE.md). `writeMappedMemory` (`mora.go:2515`) is the single wiring boundary that copies a `MappedMemory` into a `Memory` and persists it.
+
+### On-disk Markdown format
+
+`renderMemory` (`mora.go:1877-1907`) emits the canonical bytes:
+
+```
+---
+id: gmail_thread/199abc
+scope: global
+type: email
+title: "Re: launch plan"
+tags: [inbox, work]
+source: 199abc
+created_at: 2026-05-30T14:02:11Z
+provider: gmail
+provider_id: 199abc
+content_hash: 9f1c2a3b4d5e6f70
+last_synced: 2026-06-06T09:00:00Z
+truncated: true
+meta: {"from":"a@x.com","participants":["a@x.com","b@y.com"]}
+---
+
+<body text>
+```
+
+Render rules that the parser depends on:
+- **Conditional fields**: `provider`/`provider_id`, `content_hash`, `last_synced`, `truncated`, `deleted_at`, and `meta` are only written when non-empty (`mora.go:1882-1904`). A hand-written `mora write` memory has no provider block.
+- **`quoteYAML`** (`mora.go:3383`) wraps `title`/`source`/`provider_id` in Go-quoted form only if they contain `:#[]`, so a colon in a subject line cannot break the line parser.
+- **`meta` is one canonical JSON line.** `CanonicalMeta` (`mapped.go:48-57`) is `json.Marshal` of the map, which emits **sorted keys on a single line** — stable bytes independent of insertion order, and no raw newline to break the line-split parser.
+
+`parseMemory` (`mora.go:1909-1983`) is the inverse and is deliberately hand-rolled (no YAML lib):
+- It requires a leading `---\n` and splits on the **first** `\n---\n` (`mora.go:1915-1921`).
+- Each frontmatter line is split on the **first** colon via `strings.Cut`. For the `meta` line it decodes the **raw substring after the first colon** with `json.NewDecoder` + `UseNumber()` (`mora.go:1932-1947`) — `UseNumber` keeps a 19-digit thread id from decoding to a lossy `float64`.
+- A corrupt `meta:` line is **not** silently dropped — it logs `warn: … meta frontmatter is corrupt` to stderr and continues (`mora.go:1939-1943`), because losing a memory's structured identity silently would corrupt the entity graph.
+- A missing `id` is a hard error (`mora.go:1979-1981`).
+
+`writeMemory` (`mora.go:1869-1875`) renders then `atomicWrite`s (temp file + `os.Rename`, `mora.go:3230-3239`) so a partial write never leaves a torn frontmatter file. Directories are created `0o700`, files `0o644`.
+
+## Identity: `StableID` vs `SafeFilename` (the critical distinction)
+
+This is the single most footgun-prone area of the data model.
+
+```mermaid
+flowchart LR
+    K["ItemKind<br/>gmail_thread"] --> SID
+    P["ProviderID<br/>199abc"] --> SID
+    SID["StableID()<br/>gmail_thread/199abc"] -->|"stored verbatim as<br/>frontmatter id"| FM["memory.ID"]
+    SID -->|"SafeFilename()<br/>/ : space → _"| FN["gmail_thread_199abc.md"]
+    FN -->|"on disk"| FILE["sources/gmail/gmail_thread_199abc.md"]
+    FM -.->|"lookup by id<br/>must match BOTH forms"| FIND["findMemory()"]
+    FILE -.-> FIND
+```
+
+- **`StableID`** (`ids.go:11-13`) = `kind + "/" + providerID`. Derived from **immutable provider identity only, never content** — re-syncing an edited thread overwrites the same logical memory instead of forking a new one. It is stored verbatim as the frontmatter `id`.
+- **`SafeFilename`** (`ids.go:22-25`) replaces `/`, `:`, and space with `_`, so `gmail_thread/199abc` files as `gmail_thread_199abc.md`. Provider memories live at `sources/<provider>/<SafeFilename>.md` (`writeMappedMemory`, `mora.go:2523`).
+- **Therefore the on-disk basename is NOT the id.** `findMemory` (`mora.go:2244-2264`) must check **both** shapes: it builds `base := id + ".md"` and `safeBase := SafeFilename(id) + ".md"`, matches either (plus a `strings.Contains` fallback), then confirms by re-parsing and comparing `m.ID == id`. If you write any new id-based lookup, you must match the `SafeFilename` form too or Gmail/Calendar/iMessage ids silently won't resolve.
+
+Two other id shapes exist on disk:
+- **Manual memories** (`mora write`, MCP `write_memory`) get `newID()` (`mora.go:3359-3363`): `mem_<local-timestamp>_<8 hex>` — the timestamp is `time.Now().Format("20060102_150405")`, **local time, not UTC** (only the provider `created_at` is UTC) — filed under `memories/<scope-as-path>/<id>.md` via `memoryPath` (`mora.go:1989-1993`, which turns scope `a:b` and `/` into path separators).
+- **Filesystem source files** get `src_<ContentHash(name:relpath)>` (`mora.go:2807`) using the **mora-local** `ContentHash` (`mora.go:3365-3373`, a small FNV — distinct from the provider `ContentHash` in `ids.go`). This is the only place the FNV hash is used for an id.
+
+## Content-hash idempotency & `created_at` preservation
+
+`MapItem` (`mapped.go:93-154`) computes `ContentHash` over `(it.Title, it.Body, canonicalMeta)` — using the **original, untruncated** `it.Body` (`mapped.go:143`), not the byte-budgeted body it persists — but folds Meta in **only when non-empty** (`contentHashWithMeta`, `mapped.go:36-41`), so pre-Meta legacy files keep their exact two-part hash and aren't spuriously rewritten on the next sync. A new participant or recovered address therefore *does* change the hash and trigger a rewrite; cosmetic Meta-absence does not.
+
+`writeMappedMemory` (`mora.go:2515-2536`) is the idempotent write:
+
+```mermaid
+flowchart TD
+    A["MappedMemory in"] --> B["out = sources/&lt;provider&gt;/SafeFilename(StableID).md"]
+    B --> C{"parseMemory(out)<br/>exists?"}
+    C -->|"no"| W["renderMemory + atomicWrite"]
+    C -->|"yes"| D{"existing.ContentHash == new<br/>AND DeletedAt == ''"}
+    D -->|"unchanged"| SKIP["return nil — no write,<br/>created_at untouched"]
+    D -->|"changed or tombstone"| E["m.CreatedAt = existing.CreatedAt<br/>(preserve original)"]
+    E --> W
+```
+
+Two invariants live here: (1) an unchanged, non-deleted item is a **no-op** (the hash skip at `mora.go:2526-2528`), so re-running a backfill is free; (2) when content *did* change, the **original `created_at` is preserved** (`mora.go:2529`) — the new fetch's recomputed timestamp never overwrites the first-seen time. A tombstone (`DeletedAt != ""`) always forces the rewrite even if the body hash matches.
+
+## SQLite index (rebuilt, never authoritative)
+
+The database at `<DataDir>/index.db` (`dbPath`, `mora.go:1987`) is a derived cache. Every table is `CREATE … IF NOT EXISTS` and fully `DELETE`d + rebuilt on each `rebuildIndex` (`mora.go:2010-2102`), so deleting `index.db` loses nothing.
+
+```mermaid
+erDiagram
+    memories {
+        TEXT id PK
+        TEXT scope
+        TEXT type
+        TEXT title
+        TEXT tags "CSV"
+        TEXT source
+        TEXT created_at
+        TEXT path "vault file path"
+        TEXT text "full body"
+    }
+    memories_fts {
+        TEXT id "fts5 virtual"
+        TEXT scope
+        TEXT title
+        TEXT tags
+        TEXT source
+        TEXT text
+    }
+    mem_vectors {
+        TEXT memory_id PK
+        INT dim
+        TEXT model
+        BLOB vec "LE float32"
+    }
+    entities {
+        TEXT id PK
+        TEXT kind "person|service|topic"
+        TEXT display_name
+        TEXT aliases "JSON array"
+        INT mention_count
+        TEXT first_seen
+        TEXT last_seen
+    }
+    edges {
+        TEXT src PK
+        TEXT rel PK
+        TEXT dst PK
+        TEXT evidence_id PK
+        TEXT valid_from
+        TEXT valid_to
+        TEXT observed_at
+        TEXT invalidated_at
+    }
+    memories ||--|| memories_fts : "joined on id"
+    memories ||--|| mem_vectors : "memory_id"
+    memories ||--o{ edges : "evidence_id"
+    entities ||--o{ edges : "src / dst"
+```
+
+DDL is at `mora.go:2036-2051`:
+- **`memories`** — the row-store keyed by frontmatter `id`. `tags` stored CSV (`strings.Join(m.Tags, ",")`, `mora.go:2076`). Holds the full `text` and the vault `path` so search can return bodies and read can locate the file.
+- **`memories_fts`** — an FTS5 virtual table over `id, scope, title, tags, source, text`. Note **`type`, `created_at`, and `path` are deliberately NOT in FTS** (they're metadata, not searchable prose); search joins back to `memories` on `id` to recover them (`searchMemories`, `mora.go:2217-2218`).
+- **`mem_vectors`** — one static-hash (or Ollama) embedding per memory, written by `writeVectors` (`mora.go:2148-2161`) over `m.Title + "\n" + m.Text`; `vec` is little-endian float32 bytes (`encodeVec`, `embed.go:96-102`). `model` is stored per-row (`emb.ModelID()` at `mora.go:2156`; static floor is `static-hash-v1`, `embed.go:31`) so the embedder behind each vector is attributable. Every rebuild re-embeds all memories unconditionally (`INSERT OR REPLACE`, `mora.go:2149`); the retrieval path is what consults the stored `model`. See [retrieval](./02-retrieval-search.md).
+- **`entities` / `edges`** — the deterministically-derived person graph. `edges` PK is the composite `(src, rel, dst, evidence_id)` so duplicate edges are idempotent; empty bi-temporal timestamps persist as SQL NULL via `nullStr` (`graph.go:50-57`). Inserted `OR IGNORE`. See [entity-graph](./03-entity-graph.md).
+
+### `rebuildIndex` pipeline
+
+```mermaid
+flowchart TD
+    START["rebuildIndex(ctx, cfg)"] --> OPEN["sql.Open(index.db?_pragma=busy_timeout(5000))"]
+    OPEN --> WALK["allMemoryFiles: WalkDir<br/>memories/ + sources/<br/>collect *.md, sort"]
+    WALK --> TX["BeginTx — ONE transaction"]
+    TX --> DDL["CREATE IF NOT EXISTS (all tables)<br/>then DELETE FROM all 5"]
+    DDL --> LOOP["for each file: parseMemory"]
+    LOOP -->|"parse err"| SKIPF["skip file (continue)"]
+    LOOP --> INS["INSERT OR REPLACE memories<br/>+ INSERT memories_fts<br/>append to parsed[]"]
+    INS --> GRAPH["writeGraph(tx, parsed)<br/>buildGraph → entities + edges"]
+    GRAPH --> VEC["writeVectors(tx, chooseEmbedder, parsed)<br/>embed title+text → mem_vectors"]
+    VEC --> COMMIT["tx.Commit"]
+    COMMIT --> N["return count"]
+```
+
+The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/vector write — runs inside **one transaction** (`mora.go:2029-2100`). A mid-rebuild failure rolls back to the prior committed index rather than leaving a half-empty one; this is why a graph or embedder error returns through `writeGraph`/`writeVectors` before `Commit` (`mora.go:2089-2096`). A file that fails to parse is skipped, not fatal (`mora.go:2072-2074`). `searchMemories` lazily triggers a rebuild if `index.db` is missing (`mora.go:2200-2204`).
+
+## Config & paths
+
+`defaultConfig` (`mora.go:294-302`) seeds XDG-style defaults under `$HOME`; `loadConfig` (`mora.go:304-336`) overlays a tiny hand-parsed `config.toml` (only `vault_dir`, `data_dir`, `state_dir` keys; `~` expanded via `expandHome`). `ConfigDir` is **not** overridable — it's always where `config.toml` lives.
+
+| Var / path | Default | Purpose |
+|---|---|---|
+| `VaultDir` | `~/vault/mora` | Markdown memories: `memories/` (manual), `sources/<provider>/…`, control files (`index.md`, `priority-map.md`, `live-tasks.md`, …) |
+| `ConfigDir` | `~/.config/mora` | `config.toml`, `sources.json`, `tokens/google.json` (0600) — fixed, never repointed |
+| `DataDir` | `~/.local/share/mora` | `index.db` (the rebuildable SQLite cache) |
+| `StateDir` | `~/.local/state/mora` | `sync/google-<source>.json`, `usage/events.jsonl`, `usage/OFF` sentinel |
+| `config.toml` keys | — | `vault_dir`, `data_dir`, `state_dir` (quote-stripped, `~`-expanded) |
+
+`mora init` (`mora.go:346-382`) deliberately **loads existing config first** so a re-run never repoints a custom vault and orphans it (`mora.go:353-360`); it then creates the dir tree, writes config, scaffolds control files (skipping any that exist, `mora.go:396-398`), and rebuilds the index.
+
+## Invariants & gotchas
+
+- **The vault is the source of truth; `index.db` is a disposable cache.** Every SQLite table is rebuilt from scratch on `rebuildIndex` (`mora.go:2047-2051`). Never store state that lives *only* in SQLite — it will not survive a rebuild. WHY: a corrupt or deleted DB must be recoverable from the Markdown alone.
+- **`StableID` is provider identity, never content** (`ids.go:9-13`). Re-syncing an edited item must overwrite the same file, not duplicate it. WHY: idempotent backfills.
+- **Files are named by `SafeFilename`, not by id.** Any id→file lookup MUST match both `id+".md"` and `SafeFilename(id)+".md"` (`findMemory`, `mora.go:2249-2257`). WHY: `gmail_thread/x` files as `gmail_thread_x.md`; a naive `id+".md"` match silently misses every provider memory.
+- **Content-hash skip + `created_at` preservation are paired** (`writeMappedMemory`, `mora.go:2524-2530`). Unchanged → no write; changed → keep the original `created_at`. WHY: re-backfill must be free and must not rewrite first-seen timestamps.
+- **Meta folds into the content hash only when non-empty** (`contentHashWithMeta`, `mapped.go:36-41`). WHY: a legacy pre-Meta file must keep its exact two-part hash, or every old source file gets spuriously rewritten on the next sync.
+- **`meta:` is exactly one canonical JSON line.** `CanonicalMeta` relies on `json.Marshal` emitting sorted keys with no embedded newline (`mapped.go:48-57`); the parser splits frontmatter by lines and `meta` by the first colon. WHY: a multi-line or unsorted meta breaks the hand-rolled parser and makes the content hash non-deterministic.
+- **A corrupt `meta:` line is surfaced (stderr warn), never swallowed** (`mora.go:1939-1943`). WHY: silently dropping it erases the memory's entire entity-graph contribution.
+- **`rebuildIndex` is one all-or-nothing transaction** (`mora.go:2029-2100`). WHY: the `DELETE`s are destructive; a partial rebuild would otherwise leave a half-empty index live.
+- **Writes are atomic** (`atomicWrite` = temp + rename, `mora.go:3230-3239`). WHY: a crash mid-write must not leave torn frontmatter that fails `parseMemory`.
+- **`type`/`created_at`/`path` are not in FTS** (`mora.go:2037` vs `2036`). WHY: they are metadata; search joins back to `memories` to recover them. Adding a column to one table without the other will desync the search projection.
+- **ANSI styling never reaches the data path.** `colorEnabled` (`render.go:21-32`) returns false on `--json`, `NO_COLOR`/`MORA_NO_COLOR`, empty-or-`dumb` `TERM`, or a non-TTY writer; the TTY test `isTTYWriter` (`render.go:38-44`) uses go-isatty (not `os.ModeCharDevice`, which is true for `/dev/null`). WHY: stray escape codes corrupt MCP stdio JSON and `--json` output. `render.go` styles human display only; it is *not* part of persisted bytes.
+- **Two different `ContentHash` functions exist.** `internal/memory/ids.go:16` = sha256, first 16 hex chars, for provider change-detection. `internal/mora/mora.go:3365` = small FNV, used only to mint filesystem-source `src_…` ids (`mora.go:2807`). Don't confuse them.
+
+## Related
+
+- [overview](./00-overview.md)
+- [retrieval & search](./02-retrieval-search.md) — FTS5 + `mem_vectors` hybrid scoring
+- [entity graph](./03-entity-graph.md) — how `entities`/`edges` are derived from `Meta`
+- [Google connector](./04-connectors-google.md) — produces `MappedMemory` via `MapItem`
+- [iMessage connector](./05-connectors-imessage.md) — custom mapper, `KindIMessageChat`
+- [MCP server](./06-mcp-server.md) — `read_memory`/`write_memory`/`search_memory` over this model
+- [sync & freshness](./11-sync-and-freshness.md) — `SyncStatus`, `last_synced`, resumable ingest
+
+## Open questions / unverified
+
+- `Memory.LastSynced` is rendered/parsed and carried from `MappedMemory`, but `MapItem` (`mapped.go`) never sets `LastSynced` on the struct it returns — it appears populated downstream in the ingest write path (`ingestGoogle`/`Ingest`), which lives outside the files I own. Confirm in [Google connector](./04-connectors-google.md) where `LastSynced` is actually stamped.
+- The mora-local FNV `ContentHash` (`mora.go:3365`) is used for filesystem-source ids; whether filesystem ingest is reachable in shipped v1 (vs. the deferred `gdrive` stub) is a connector-layer question, not a storage one.

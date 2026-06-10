@@ -1,0 +1,292 @@
+// Package applecal is the macOS Apple Calendar connector: a read-only reader
+// of the local Calendar store (Calendar.sqlitedb in the calendar group
+// container), one memory per event. It mirrors the iMessage connector's
+// constraints exactly: pure Go (modernc sqlite), NO network imports, NO
+// internal/mora import (mora imports us — the connector seam), read-only +
+// immutable open so we never write or checkpoint Apple's database. The real
+// access gate is Full Disk Access (same TCC story as chat.db), surfaced by the
+// caller's error text, not a login.
+package applecal
+
+import (
+	"database/sql"
+	"fmt"
+	"net/url"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
+)
+
+// KindAppleCalEvent is the connector's ItemKind. The init below registers its
+// type/provider mapping so the shared memory.MapItem emits
+// Type "event" / Provider "applecal" without internal/memory editing.
+const KindAppleCalEvent memory.ItemKind = "applecal_event"
+
+func init() {
+	memory.RegisterKind(KindAppleCalEvent, "event", "applecal")
+}
+
+// appleEpoch is the Core Data reference date (2001-01-01T00:00:00Z). All
+// Calendar.sqlitedb timestamps are seconds since this instant.
+var appleEpoch = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// appleTime converts a Core Data timestamp to UTC time.
+func appleTime(sec float64) time.Time {
+	return appleEpoch.Add(time.Duration(sec * float64(time.Second))).UTC()
+}
+
+// DefaultDBPath returns the modern Calendar store location (the calendar group
+// container). Older macOS kept ~/Library/Calendars/Calendar.sqlitedb — the
+// caller may probe both; this returns the current default.
+func DefaultDBPath(home string) string {
+	return filepath.Join(home, "Library", "Group Containers", "group.com.apple.calendar", "Calendar.sqlitedb")
+}
+
+// LegacyDBPath is the pre-group-container location, kept as a fallback probe.
+func LegacyDBPath(home string) string {
+	return filepath.Join(home, "Library", "Calendars", "Calendar.sqlitedb")
+}
+
+// pageSize bounds one FetchPage. Events are small rows; 200 keeps the resume
+// checkpoint granular without hammering the store.
+const pageSize = 200
+
+// LiveFetcher reads Calendar.sqlitedb read-only. It implements memory.Fetcher.
+type LiveFetcher struct {
+	db *sql.DB
+}
+
+// NewLiveFetcher opens the store read-only + immutable (Calendar.app may hold
+// the write lock; immutable also guarantees we can never mutate it) and runs a
+// schema probe so an unsupported store errors clearly instead of failing
+// cryptically mid-query. A permission-denied open is the FDA-not-granted case;
+// the caller wraps it with the doctor guidance.
+func NewLiveFetcher(path string) (*LiveFetcher, error) {
+	dsn := "file:" + url.PathEscape(path) + "?mode=ro&immutable=1"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// Force a real read now so FDA denial surfaces at connect time.
+	if err := probeSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &LiveFetcher{db: db}, nil
+}
+
+// Close releases the underlying DB handle.
+func (f *LiveFetcher) Close() error {
+	if f.db == nil {
+		return nil
+	}
+	return f.db.Close()
+}
+
+// probeSchema confirms the tables/columns the event query needs exist, so an
+// OS schema change yields "unsupported Calendar.sqlitedb schema: …" rather than
+// a cryptic query error (the imessage Pitfall-9 lesson).
+func probeSchema(db *sql.DB) error {
+	required := map[string][]string{
+		"CalendarItem": {"ROWID", "summary", "description", "start_date", "end_date", "all_day", "calendar_id", "entity_type", "UUID", "hidden"},
+		"Calendar":     {"ROWID", "title"},
+		"Location":     {"ROWID", "title"},
+		"Participant":  {"owner_id", "email", "role"},
+	}
+	for table, cols := range required {
+		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			return fmt.Errorf("probe Calendar.sqlitedb schema: %w", err)
+		}
+		have := map[string]bool{}
+		for rows.Next() {
+			var (
+				cid             int
+				name            string
+				ctype, dflt     sql.NullString
+				notNull, isPKey int
+			)
+			if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &isPKey); err != nil {
+				rows.Close()
+				return fmt.Errorf("probe Calendar.sqlitedb schema: %w", err)
+			}
+			have[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("probe Calendar.sqlitedb schema: %w", err)
+		}
+		rows.Close()
+		if len(have) == 0 {
+			return fmt.Errorf("unsupported Calendar.sqlitedb schema: no `%s` table found", table)
+		}
+		var missing []string
+		for _, c := range cols {
+			if !have[c] {
+				missing = append(missing, c)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("unsupported Calendar.sqlitedb schema (missing %s columns: %s)", table, strings.Join(missing, ", "))
+		}
+	}
+	return nil
+}
+
+// FetchPage pages events ordered by CalendarItem ROWID; the cursor is the last
+// ROWID seen ("" = first page, "" returned at the end). entity_type=2 selects
+// EVENTS (tasks/reminders use other types), hidden rows (recurrence phantoms)
+// are skipped, and the window bounds start_date — Since AND Until, because an
+// unbounded Until would flood the vault with every subscribed-holiday event
+// years out.
+func (f *LiveFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, cursor string) (memory.Page, error) {
+	if kind != KindAppleCalEvent {
+		return memory.Page{}, fmt.Errorf("applecal: unsupported kind %q", kind)
+	}
+	after := int64(0)
+	if cursor != "" {
+		n, err := strconv.ParseInt(cursor, 10, 64)
+		if err != nil {
+			return memory.Page{}, fmt.Errorf("applecal: bad cursor %q: %w", cursor, err)
+		}
+		after = n
+	}
+	q := `SELECT ci.ROWID, ci.summary, COALESCE(ci.description, ''), ci.start_date,
+	             COALESCE(ci.end_date, ci.start_date), ci.all_day, COALESCE(ci.UUID, ''),
+	             COALESCE(c.title, ''), COALESCE(l.title, '')
+	      FROM CalendarItem ci
+	      JOIN Calendar c ON c.ROWID = ci.calendar_id
+	      LEFT JOIN Location l ON l.ROWID = ci.location_id
+	      WHERE ci.entity_type = 2 AND ci.hidden = 0 AND ci.summary IS NOT NULL
+	        AND ci.start_date IS NOT NULL AND ci.ROWID > ?`
+	args := []any{after}
+	if !w.Since.IsZero() {
+		q += " AND ci.start_date >= ?"
+		args = append(args, w.Since.Sub(appleEpoch).Seconds())
+	}
+	if !w.Until.IsZero() {
+		q += " AND ci.start_date <= ?"
+		args = append(args, w.Until.Sub(appleEpoch).Seconds())
+	}
+	q += " ORDER BY ci.ROWID LIMIT ?"
+	args = append(args, pageSize)
+
+	rows, err := f.db.Query(q, args...)
+	if err != nil {
+		return memory.Page{}, fmt.Errorf("applecal: query events: %w", err)
+	}
+	defer rows.Close()
+
+	type evRow struct {
+		rowid             int64
+		summary, desc     string
+		start, end        float64
+		allDay            int
+		uuid, cal, locStr string
+	}
+	var evs []evRow
+	for rows.Next() {
+		var e evRow
+		if err := rows.Scan(&e.rowid, &e.summary, &e.desc, &e.start, &e.end, &e.allDay, &e.uuid, &e.cal, &e.locStr); err != nil {
+			return memory.Page{}, fmt.Errorf("applecal: scan event: %w", err)
+		}
+		evs = append(evs, e)
+	}
+	if err := rows.Err(); err != nil {
+		return memory.Page{}, fmt.Errorf("applecal: read events: %w", err)
+	}
+
+	var items []memory.Item
+	last := after
+	for _, e := range evs {
+		last = e.rowid
+		attendees, organizer := f.participants(e.rowid)
+		items = append(items, eventItem(e.rowid, e.summary, e.desc, e.cal, e.locStr, e.uuid,
+			appleTime(e.start), appleTime(e.end), e.allDay != 0, attendees, organizer))
+	}
+	next := ""
+	if len(evs) == pageSize {
+		next = strconv.FormatInt(last, 10)
+	}
+	return memory.Page{Items: items, NextCursor: next}, nil
+}
+
+// participants returns the sorted attendee emails + the organizer email for an
+// event. Best-effort: a query error degrades to no participants rather than
+// failing the event (the entity graph loses an edge, the memory survives).
+func (f *LiveFetcher) participants(eventROWID int64) (attendees []string, organizer string) {
+	rows, err := f.db.Query(
+		`SELECT COALESCE(email, ''), COALESCE(role, 0) FROM Participant WHERE owner_id = ?`, eventROWID)
+	if err != nil {
+		return nil, ""
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var email string
+		var role int
+		if err := rows.Scan(&email, &role); err != nil {
+			return nil, ""
+		}
+		email = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(email, "mailto:")))
+		if email == "" || seen[email] {
+			continue
+		}
+		seen[email] = true
+		// EKParticipantRole: 1 == chair/organizer in the local store.
+		if role == 1 && organizer == "" {
+			organizer = email
+		}
+		attendees = append(attendees, email)
+	}
+	sort.Strings(attendees)
+	return attendees, organizer
+}
+
+// eventItem renders one event as a provider-agnostic Item. Meta mirrors the
+// Google Calendar conventions ("attendees", "organizer", "occurred_at") so the
+// entity graph's connector-capture path reads both calendars identically.
+func eventItem(rowid int64, summary, desc, calTitle, locTitle, uuid string, start, end time.Time, allDay bool, attendees []string, organizer string) memory.Item {
+	providerID := uuid
+	if providerID == "" {
+		providerID = strconv.FormatInt(rowid, 10)
+	}
+	var b strings.Builder
+	if allDay {
+		fmt.Fprintf(&b, "When: %s (all day)\n", start.Format("2006-01-02"))
+	} else {
+		fmt.Fprintf(&b, "When: %s → %s\n", start.Format(time.RFC3339), end.Format(time.RFC3339))
+	}
+	fmt.Fprintf(&b, "Calendar: %s\n", calTitle)
+	if locTitle != "" {
+		fmt.Fprintf(&b, "Location: %s\n", locTitle)
+	}
+	if len(attendees) > 0 {
+		fmt.Fprintf(&b, "Attendees: %s\n", strings.Join(attendees, ", "))
+	}
+	if desc != "" {
+		fmt.Fprintf(&b, "\n%s\n", desc)
+	}
+	meta := map[string]any{"occurred_at": start.Format(time.RFC3339), "calendar": calTitle}
+	if len(attendees) > 0 {
+		meta["attendees"] = attendees
+	}
+	if organizer != "" {
+		meta["organizer"] = organizer
+	}
+	return memory.Item{
+		Kind:       KindAppleCalEvent,
+		ProviderID: providerID,
+		Title:      summary,
+		Body:       b.String(),
+		OccurredAt: start,
+		Tags:       []string{"calendar:" + strings.ToLower(calTitle)},
+		Meta:       meta,
+	}
+}

@@ -1,0 +1,30 @@
+dist/
+bin/
+/mora
+*.db
+*.log
+.DS_Store
+
+# Local agent / tooling state — never tracked
+.claude/
+.playwright-mcp/
+cache/
+
+# NOTE: internal/google/client.json is a committed NON-SECRET placeholder so the
+# //go:embed compiles on a fresh clone (`go build` must work for source testers).
+# Real shared "Mora" app creds are swapped into that file out-of-band at
+# release-build time (do not commit the swapped copy), or supplied per-user via
+# MORA_GOOGLE_CREDENTIALS, which overrides the embed at runtime.
+
+# T2 eval: private hand-labeled gold set for the REAL vault (never commit personal labels)
+internal/mora/live_qrels.tsv
+internal/mora/live_queries.tsv
+.gstack/
+
+# One-off internal planning/analysis artifacts — never ship or publish (audit-flagged)
+docs/MORA_BASELINE_SUMMARY.json
+docs/MORA_PROJECT_BOARD_REVIEW.md
+
+# personal eval golden set (never commit real queries)
+internal/mora/live_queries.tsv
+internal/mora/live_qrels.tsv
