@@ -9,7 +9,7 @@ Claude Code / Codex over MCP — nothing leaves your machine.
 Extract the release tarball and run the installer (handles macOS Gatekeeper):
 
 ```sh
-tar -xzf mora_0.5.0_darwin_arm64.tar.gz   # _amd64 on Intel Macs
+tar -xzf mora_0.6.0_darwin_arm64.tar.gz   # _amd64 on Intel Macs
 ./install.sh
 ```
 

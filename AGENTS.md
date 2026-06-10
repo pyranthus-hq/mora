@@ -1,15 +1,16 @@
 # AGENTS.md — Mora
 
-Cross-tool guidance for AI agents (Codex, and any tool that reads `AGENTS.md`).
-The authoritative project doc is **`CLAUDE.md`** — read it first; this file adds
-the review-specific rules the Codex GitHub app enforces on PRs.
+Cross-tool guidance for AI agents and reviewers (any tool that reads `AGENTS.md`).
+The deep architecture spec lives in [`docs/architecture/`](docs/architecture/00-overview.md)
+— read the overview first; this file adds the review rules enforced on PRs.
 
 ## What Mora is
 
 Local-first, agent-agnostic memory CLI: one pure-Go binary that stores
 human-readable Markdown memories, indexes them in embedded SQLite, and serves
 them to any MCP agent. Read-only connectors (Gmail, Calendar, iMessage), zero
-egress. See `CLAUDE.md` for architecture and run instructions.
+egress. See the [README](README.md) for run instructions and
+[`docs/architecture/`](docs/architecture/00-overview.md) for the subsystem spec.
 
 ## Review guidelines
 
@@ -28,8 +29,9 @@ Hard rules — flag any violation as blocking:
    only. The race detector in CI (`CGO_ENABLED=1`) is test-only and never affects
    the release build.
 3. **Read-only + zero egress:** Google scopes stay `gmail.readonly` /
-   `calendar.readonly`. iMessage opens `chat.db` with `mode=ro` (never
-   `immutable=1`). No connector writes to its source; no telemetry/egress.
+   `calendar.readonly`. iMessage opens `chat.db` with `mode=ro` (never `immutable=1`);
+   Apple Calendar opens its store `mode=ro&immutable=1` (Calendar.app holds the
+   write lock). No connector writes to its source; no telemetry/egress.
 4. **Honest-snapshot sync:** never swallow sync errors — surface them
    (freshness is the product's value).
 5. **State vs vault:** usage logging and sync cursors live in the **state dir**,
@@ -44,5 +46,3 @@ Hard rules — flag any violation as blocking:
    placeholder. Real credentials come from `MORA_GOOGLE_CREDENTIALS` at runtime —
    never commit real creds.
 
-When in doubt about test design or coverage, defer to the Codex-authored RED
-tests; Claude owns implementation/security review (see `.github/workflows/claude.yml`).

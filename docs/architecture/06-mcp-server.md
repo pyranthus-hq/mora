@@ -135,7 +135,7 @@ The two long-standing RED rows were closed in v0.5.1 (`entities.go` `entitiesFor
 | `list_entities` | 8000 | ~112k → ~5.9k tok (real vault) | drop per-entity `memory_ids` arrays, salience-rank, cap at `limit` (default 200) + optional `kind` filter |
 | `get_entity` (found) | 12000 | ~227k → ~12.4k tok (high-degree person) | snippet bodies, cap memories ≤ 20 / edges ≤ 25 / neighbors ≤ 15; true totals stay in `count` / `degree` |
 
-(The earlier `digest` RED was already closed by the budgeted-sections work — `digest_max` now honors `max_tokens`.) Note `toCallToolResult` still mirrors object-shaped tools into `structuredContent`, doubling them on the wire (the T0 ceilings are measured on that doubled envelope, so the budgets above already account for it). See [eval-and-testing](./09-eval-and-testing.md) for the gate mechanics and [retrieval](./02-retrieval-search.md) / the T2 eval (`docs/SESSION-2026-06-06-t2-eval.md`) for the recall side.
+(The earlier `digest` RED was already closed by the budgeted-sections work — `digest_max` now honors `max_tokens`.) Note `toCallToolResult` still mirrors object-shaped tools into `structuredContent`, doubling them on the wire (the T0 ceilings are measured on that doubled envelope, so the budgets above already account for it). See [eval-and-testing](./09-eval-and-testing.md) for the gate mechanics and [retrieval](./02-retrieval-search.md) / the T2 eval (2026-06-06) for the recall side.
 
 ## Usage logging
 

@@ -29,7 +29,7 @@ type Memory struct {
 }
 ```
 
-`MappedMemory` (`internal/memory/mapped.go:12-31`) is the **parallel hand-off struct** the connector layer produces. It mirrors the frontmatter field-for-field but lives in `internal/memory` so connectors never import `internal/mora` (the import-cycle hard rule from CLAUDE.md). `writeMappedMemory` (`mora.go:2515`) is the single wiring boundary that copies a `MappedMemory` into a `Memory` and persists it.
+`MappedMemory` (`internal/memory/mapped.go:12-31`) is the **parallel hand-off struct** the connector layer produces. It mirrors the frontmatter field-for-field but lives in `internal/memory` so connectors never import `internal/mora` (the import-cycle hard rule — see AGENTS.md). `writeMappedMemory` (`mora.go:2515`) is the single wiring boundary that copies a `MappedMemory` into a `Memory` and persists it.
 
 ### On-disk Markdown format
 

@@ -107,7 +107,7 @@ flowchart LR
 
 `bucketHistogram` (`eval_test.go:270-296`) returns the hybrid-surface histogram *plus* `vecHits` (total vec-arm hits across the set) precisely so guard #5 can prove the arm is live. The whole `static-hash-v1` model id (`embed.go:31`) is the named static floor; `embedderIsSemantic` (`hybrid.go:59`) is just `ModelID() != defaultEmbedder().ModelID()`.
 
-> The CLAUDE.md "Retrieval & embeddings" verdict (hybrid beats FTS-only **only** under Ollama; static-hash hybrid *regresses* recall 0.591→0.394@5) is the output of this A/B against Adit's real golden set. The eval is the instrument that produced it.
+> The standing "Retrieval and embeddings" verdict (hybrid beats FTS-only **only** under Ollama; static-hash hybrid *regresses* recall 0.591→0.394@5) is the output of this A/B against Adit's real golden set. The eval is the instrument that produced it.
 
 ---
 
@@ -207,7 +207,7 @@ A footgun baked into the fixture comment (`mora_mcp_budget_test.go:141-150`): th
 
 ## The cross-model TDD workflow
 
-Per CLAUDE.md, Mora is built via cross-model TDD: **Codex CLI authors the RED tests, Claude implements GREEN, each task reviewed.** Both harnesses here are artifacts of that loop:
+Mora was built via cross-model TDD: **Codex CLI authors the RED tests, Claude implements GREEN, each task reviewed.** Both harnesses here are artifacts of that loop:
 
 - The T0 gate's `wantRED` rows are RED tests for bugs that are *intentionally not yet fixed* — they encode the failing state and the fix-detection so CI carries the bug forward visibly instead of forgetting it. A Codex-authored RED that Claude later fixes trips the `FIXED` fatal, forcing the win to be locked in as a green gate (`mora_mcp_budget_test.go:275-277`).
 - The T2 eval's single gated invariant is the minimal RED-able assertion (exact-phrase FTS must work); everything richer is logged for human reading because freezing it blind would be a false RED.

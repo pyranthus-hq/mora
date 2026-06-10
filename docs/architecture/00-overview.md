@@ -10,7 +10,7 @@ The overview owns no implementation; the system-wide claims below are grounded i
 |---|---|---|
 | `cmd/mora/main.go` | 28 | Entrypoint: stamps `-ldflags` version/commit/date into `mora.BuildVersion`, then delegates to `mora.Run(ctx, args, stdout, stderr, stdin)` with streams as parameters (the byte-clean test seam). |
 | `go.mod` | 84 | Module `github.com/pyranthus/mora`, `go 1.25.8`; `modernc.org/sqlite v1.29.0` is the **only** SQL engine (no cgo driver in the graph) — this is what keeps `CGO_ENABLED=0` possible. |
-| `CLAUDE.md` | 111 | Project charter: invariants, hard rules, run instructions, the standing board-reflection rule. |
+| `AGENTS.md` | — | Agent/reviewer charter: hard rules (no-cycle, pure-Go, read-only/zero-egress, honest-snapshot). |
 | `internal/mora/mora.go` | 3587 | The hub: CLI dispatch (`Run`, mora.go:176), wiring boundary (`writeMappedMemory`, mora.go:2515), index pipeline (`rebuildIndex`, mora.go:2010), MCP server (`serveMCP`, mora.go:2820). |
 
 ## What it is, end to end
@@ -92,7 +92,7 @@ flowchart TD
 | `internal/mora` | all three above + lipgloss, go-isatty, go-selfupdate | The hub (≈3.6 KLOC `mora.go` + ~30 sibling files): CLI dispatch, wiring boundary, Markdown render/parse, SQLite index + search (`hybrid.go`, `embed*.go`), derived entity graph (`graph.go`/`classify.go`/`gazetteer.go`), synthesis (`think.go`/`digest.go`), MCP server, doctor, scheduler, eval harness, self-update. |
 | `cmd/mora` | `internal/mora` | 28-line entrypoint; stamps build vars, calls `mora.Run`. |
 
-> Note: CLAUDE.md describes "two packages." That predates the `internal/memory` seam extraction (and the iMessage connector); the as-built reality is **four** packages. The hard no-cycle rule and the `writeMappedMemory` conversion boundary are unchanged.
+> The as-built reality is **five** packages: `internal/mora`, `internal/memory`, `internal/google`, `internal/imessage`, `internal/applecal`. The hard no-cycle rule and the `writeMappedMemory` conversion boundary apply to every connector.
 
 ## Cross-cutting invariants
 

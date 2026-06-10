@@ -6,7 +6,7 @@
 #      quarantine + ad-hoc-signs it (the binary is unsigned), sets up your vault,
 #      and prints next steps.
 #
-#        tar -xzf mora_0.5.0_darwin_arm64.tar.gz && ./install.sh
+#        tar -xzf mora_0.6.0_darwin_arm64.tar.gz && ./install.sh
 #
 #   2) REMOTE: if no binary sits next to this script, it downloads the matching
 #      asset for this machine from the public GitHub release — plain curl, no
@@ -16,11 +16,11 @@
 #   PREFIX=/usr/local/bin    install dir (default: first writable of
 #                            /usr/local/bin, /opt/homebrew/bin, ~/.local/bin)
 #   MORA_VAULT=~/vault/mora  vault location passed to `mora init`
-#   VERSION=0.5.0            release tag for remote mode
+#   VERSION=0.6.0            release tag for remote mode
 #   REPO=pyranthus-hq/mora   source repo for remote mode
 set -eu
 
-VERSION="${VERSION:-0.5.0}"
+VERSION="${VERSION:-0.6.0}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"

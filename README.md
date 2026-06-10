@@ -1,6 +1,20 @@
+<div align="center">
+
+<img src="docs/assets/mora-eye.svg" width="190" alt="Mora — the all-remembering eye"/>
+
 # Mora
 
-Mora is a **local-first memory CLI**. It pre-loads your Gmail (thread-level, multi-account), Google Calendar, **iMessage**, **Apple Calendar**, and local files (.md, .txt, .docx) into a searchable vault on your Mac, builds a deterministic **entity graph** + **hybrid retrieval** + cited **`mora think`** synthesis on top, and serves all of it to Claude Code, Codex, and any MCP agent — **with zero egress**. Nothing leaves your machine.
+**Local-first memory for your agents. Nothing leaves your machine.**
+
+[![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Go](https://img.shields.io/badge/pure%20Go-no%20CGO-00ADD8)](go.mod)
+[![Egress](https://img.shields.io/badge/egress-zero-0a3d33)](#why-mora-vs-the-alternatives)
+
+</div>
+
+Mora is a **local-first memory CLI**. It pre-loads your Gmail (thread-level, multi-account), Google Calendar, **iMessage**, **Apple Calendar**, and local files (.md, .txt, .docx) into a searchable vault on your Mac, builds a deterministic **entity graph** + **hybrid retrieval** + cited **`mora think`** synthesis on top, and serves all of it to Claude Code, Codex, and any MCP agent — **with zero egress**. Your agent starts every session already knowing your context.
 
 ---
 
@@ -192,6 +206,16 @@ This opens a browser for OAuth consent. On first use the OAuth app is **unverifi
 export MORA_GOOGLE_CREDENTIALS=/path/to/oauth_client.json
 ```
 
+**Multiple Google accounts** (personal + work) coexist as separate sources, with separate sync
+status, digest sections, and labels:
+
+```bash
+mora connect google --account work    # second mailbox → gmail-work / calendar-work sources
+```
+
+Each account keeps its own token. Re-authing an account that's already connected (under any label)
+is detected by the signed-in address and exits gracefully — one mailbox is never double-ingested.
+
 ---
 
 ## Connect iMessage (macOS)
@@ -211,6 +235,20 @@ sent anywhere. macOS gates that file behind **Full Disk Access**, granted *per b
 
 iMessage gives the cleanest contact graph (names come from your own address book), which is why it's
 the best surface to lead a demo with — consumer Gmail is inherently noisier.
+
+---
+
+## Connect Apple Calendar (macOS)
+
+```bash
+mora connectors enable applecalendar
+mora ingest run --source applecalendar
+```
+
+Reads the local Calendar store (the calendar group container) **read-only and immutable** — same
+Full Disk Access story as iMessage, no login. One memory per event, attendees/organizer captured
+for the entity graph, with a 180-day forward window so subscribed holiday calendars don't flood
+the vault.
 
 ---
 
@@ -286,10 +324,35 @@ Open Obsidian and add the vault directory (default: `~/vault/mora`) as a new vau
 
 ## Ongoing use
 
+**Keep data fresh automatically** (launchd on macOS; prints a cron line on Linux):
+
+```bash
+mora schedule install ingest-hourly   # hourly background sync of every enabled source
+mora schedule install pulse-daily     # 8am daily brief (sync-first, persisted, notification)
+```
+
 **Check sync freshness:**
 
 ```bash
 mora sync status
+```
+
+Every MCP answer (`search_memory`, `context_memory`) also carries a per-source `last_synced`
+map, so your agent can qualify answers with their data age.
+
+**Morning brief / per-source rundown:**
+
+```bash
+mora brief                                            # what changed / what matters
+mora pulse --digest --source imessage --since-hours 168   # "just my texts this week"
+```
+
+**Tune context density** (scales default budgets for context/digest/brief; `large` raises the
+per-call ceiling to 50k tokens and doubles digest snippet length):
+
+```bash
+mora config context large       # small | default | large
+mora config embedder ollama     # durable semantic-retrieval opt-in (loopback-only)
 ```
 
 **Re-sync Google data manually:**
@@ -352,3 +415,9 @@ mora upgrade --check             # just report whether a newer release exists
 
 - Google Drive ingestion is not yet available (deferred to a later release).
 - Tokens are stored locally in `~/.config/mora/tokens/` and are never synced or transmitted.
+
+---
+
+<div align="center">
+<sub>Named for <strong>Hermaeus Mora</strong>, keeper of knowledge and memory — every scrap of it hoarded, nothing ever given away. Fitting, for a vault that never phones home.</sub>
+</div>
