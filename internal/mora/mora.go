@@ -3523,8 +3523,16 @@ func ingestFilesystem(cfg Config, s Source) (int, error) {
 	return count, err
 }
 
+// mcpMaxRequestBytes caps one JSON-RPC request line. bufio.Scanner's 64KB
+// default is too small for real tool calls (a write_memory body or a think
+// query with pasted context), and overflowing it doesn't drop the request —
+// it kills the whole server mid-session. 4MB is far above any legitimate
+// call yet still bounds a runaway client.
+const mcpMaxRequestBytes = 4 << 20
+
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, 64*1024), mcpMaxRequestBytes)
 	for scanner.Scan() {
 		var req jsonRPCRequest
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
@@ -3534,7 +3542,13 @@ func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 		b, _ := json.Marshal(resp)
 		fmt.Fprintln(stdout, string(b))
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return fmt.Errorf("MCP request line exceeded the %d-byte cap: %w", mcpMaxRequestBytes, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // mcpInstructions is server-level usage guidance returned in the MCP initialize
