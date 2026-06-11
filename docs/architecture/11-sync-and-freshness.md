@@ -226,11 +226,17 @@ Mora's otherwise-zero-egress posture, so the design is opt-in and loud by constr
   honors the user's existing credential helper / SSH config / `gh` auth for free —
   a go-git impl would not. The single seam is `realExec(ctx, dir, name, args...)`
   (`execFunc`), faked in tests so the whole flow runs without subprocesses.
-- **`--init` is idempotent and remote-agnostic.** Repo detection is `os.Stat(vault/.git)`
-  (NOT `git rev-parse --is-inside-work-tree`, which would walk *up* into a parent
-  repo if the vault is nested). Remote precedence in `configureRemote`: `--github
-  <name>` (creates a PRIVATE repo via `gh repo create … --private --source --remote`)
-  > `--remote <URL>` (add/set-url origin) > an already-configured origin > **fail-loud**.
+- **`--init` is idempotent and remote-agnostic.** Repo detection is `vaultRepoState`:
+  `os.Lstat(vault/.git)` accepting ONLY a plain directory. A gitfile or symlink
+  (worktree/submodule-style `gitdir:` indirection) is refused loudly — following it
+  would stage the vault into a parent/unrelated repository and push to THAT repo's
+  remote (`rev-parse` is avoided for the same reason: it walks up into a parent repo
+  when the vault is nested). `--github` and `--remote` are mutually exclusive, a
+  destination flag without `--init` is rejected (never silently ignored while pushing
+  to whatever origin exists), and positional args are errors. In `configureRemote`:
+  `--github` creates a PRIVATE repo via `gh repo create … --private --source --remote`
+  but is skipped when origin already exists (re-init never orphans a duplicate repo);
+  `--remote <URL>` adds/sets origin; an already-configured origin passes; else **fail-loud**.
 - **No `--force`, ever.** Push is plain `git push [-u] origin HEAD`. A non-fast-forward
   rejection means the remote diverged and is surfaced loudly — never silently
   overwritten. For a single-writer backup that should not happen; if it does, the
@@ -239,6 +245,13 @@ Mora's otherwise-zero-egress posture, so the design is opt-in and loud by constr
   push failure; if the user embedded a PAT (`https://token@host`), that secret would
   land in the fail-loud error. `redactCredentials` strips HTTP(S) userinfo from both
   the args and git's output before it reaches the terminal/logs/returned error.
+- **Tracked-sensitive hard stop + detached-HEAD refusal.** `.gitignore` shields only
+  *untracked* files, so after `git add -A` a `git ls-files` guard hard-stops the sync
+  if `index.db` / `*.db` / `tokens/` / `*.token` are TRACKED (a pre-existing vault
+  repo, a user-edited ignore list) — remediation is printed (`git rm --cached`),
+  nothing is pushed. A detached HEAD is refused *before any staging*: `git push
+  origin HEAD` cannot update a branch from one, and the commit made first would be
+  left dangling.
 - **Defensive `.gitignore` + fresh-machine identity fallback.** `--init` writes a
   `.gitignore` (`index.db`, `*.db`, `.DS_Store`, `tokens/`) so the ~87MB rebuildable
   index and any stray secrets never leave — restore is `git clone` → `mora index

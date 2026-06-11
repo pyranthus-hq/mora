@@ -312,7 +312,10 @@ mora schedule install git-daily
 `--init` writes a defensive `.gitignore` (`index.db`, `*.db`, `.DS_Store`, `tokens/`)
 so the rebuildable index and anything secret never leave the machine, and it detects
 an existing repo via `vault/.git` — it won't adopt a parent repo if your vault lives
-inside one. Restore on a new machine: `git clone <remote> ~/vault/mora && mora index rebuild`.
+inside one, and it refuses a `.git` gitfile or symlink that points elsewhere. If
+index or token files are already git-*tracked* (ignore rules don't apply to tracked
+files), the sync hard-stops with remediation instead of pushing them. Restore on a
+new machine: `git clone <remote> ~/vault/mora && mora index rebuild`.
 
 Know what you're opting into: the vault contains decoded iMessages and Gmail threads
 in **plaintext**, so the remote must be private and yours — Mora runs no server and

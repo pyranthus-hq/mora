@@ -338,3 +338,139 @@ func TestGitDailyScheduleWired(t *testing.T) {
 		t.Error("git-daily must have a launchd schedule")
 	}
 }
+
+func TestSyncGit_RefusesGitfileAndSymlinkIndirection(t *testing.T) {
+	// A `.git` FILE (worktree/submodule-style `gitdir:` indirection) or symlink
+	// must be refused outright: following it would make every git command operate
+	// on a PARENT or unrelated repository — staging the vault into that repo and
+	// pushing it to that repo's remote.
+	t.Run("gitfile", func(t *testing.T) {
+		cfg := gitSyncTestConfig(t)
+		if err := os.WriteFile(filepath.Join(cfg.VaultDir, ".git"), []byte("gitdir: ../.git\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f := dirtyFake()
+		f.hasOrigin = true
+		var out strings.Builder
+		err := syncGit(context.Background(), cfg, nil, &out, f.run)
+		if err == nil || !strings.Contains(err.Error(), "not a plain directory") {
+			t.Fatalf("gitfile .git must be refused, got: %v", err)
+		}
+		if f.sawSubcommand("git", "add") {
+			t.Errorf("must not stage anything behind an indirected .git, calls=%v", f.calls)
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		cfg := gitSyncTestConfig(t)
+		if err := os.Symlink(t.TempDir(), filepath.Join(cfg.VaultDir, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		f := dirtyFake()
+		f.hasOrigin = true
+		var out strings.Builder
+		err := syncGit(context.Background(), cfg, nil, &out, f.run)
+		if err == nil || !strings.Contains(err.Error(), "not a plain directory") {
+			t.Fatalf("symlinked .git must be refused, got: %v", err)
+		}
+	})
+}
+
+func TestSyncGit_DestinationFlagsRequireInit(t *testing.T) {
+	cfg := gitSyncTestConfig(t)
+	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Without --init, a destination flag must be rejected — NOT silently ignored
+	// while the vault pushes to whatever origin happens to be configured.
+	for _, args := range [][]string{
+		{"--remote", "git@example.test:elsewhere/x.git"},
+		{"--github"},
+		{"--name", "other"},
+	} {
+		f := dirtyFake()
+		f.hasOrigin = true
+		var out strings.Builder
+		err := syncGit(context.Background(), cfg, args, &out, f.run)
+		if err == nil || !strings.Contains(err.Error(), "--init") {
+			t.Errorf("args %v without --init must fail mentioning --init, got: %v", args, err)
+		}
+		if f.sawSubcommand("git", "push") || f.sawSubcommand("gh", "repo") {
+			t.Errorf("args %v must not reach push/create, calls=%v", args, f.calls)
+		}
+	}
+}
+
+func TestSyncGit_RejectsPositionalAndConflictingFlags(t *testing.T) {
+	cfg := gitSyncTestConfig(t)
+	for _, args := range [][]string{
+		{"--init", "--github", "mora-backup"},                        // positional repo name: would silently create default "mora-vault"
+		{"--init", "--github", "--remote", "git@example.test:x.git"}, // two destinations: refuse, don't resolve by precedence
+		{"--init", "--name", "x"},                                    // --name without --github
+	} {
+		f := dirtyFake()
+		var out strings.Builder
+		if err := syncGit(context.Background(), cfg, args, &out, f.run); err == nil {
+			t.Errorf("args %v must be rejected", args)
+		}
+		if f.sawSubcommand("gh", "repo", "create") {
+			t.Errorf("args %v must not create any repo, calls=%v", args, f.calls)
+		}
+	}
+}
+
+func TestSyncGitInit_GithubIdempotentWhenOriginExists(t *testing.T) {
+	cfg := gitSyncTestConfig(t)
+	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := dirtyFake()
+	f.hasOrigin = true // an earlier `--init --github` already wired origin
+	var out strings.Builder
+	if err := syncGit(context.Background(), cfg, []string{"--init", "--github"}, &out, f.run); err != nil {
+		t.Fatalf("re-running --init --github with an existing origin must succeed: %v", err)
+	}
+	if f.sawSubcommand("gh", "repo", "create") {
+		t.Errorf("must not re-create the GitHub repo when origin exists, calls=%v", f.calls)
+	}
+	if !f.sawSubcommand("git", "push", "-u", "origin", "HEAD") {
+		t.Errorf("re-init should still push, calls=%v", f.calls)
+	}
+}
+
+func TestSyncGit_RefusesDetachedHead(t *testing.T) {
+	cfg := gitSyncTestConfig(t)
+	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := dirtyFake()
+	f.hasOrigin = true
+	f.errOn = map[string]error{"git symbolic-ref": os.ErrNotExist} // -q exits non-zero when detached
+	var out strings.Builder
+	err := syncGit(context.Background(), cfg, nil, &out, f.run)
+	if err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("detached HEAD must be refused, got: %v", err)
+	}
+	if f.sawSubcommand("git", "add") || f.sawSubcommand("git", "commit") {
+		t.Errorf("must not stage or commit on detached HEAD, calls=%v", f.calls)
+	}
+}
+
+func TestSyncGit_BlocksTrackedSensitiveFiles(t *testing.T) {
+	cfg := gitSyncTestConfig(t)
+	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := dirtyFake()
+	f.hasOrigin = true
+	// Tracked despite .gitignore (pre-existing repo / user-edited ignore list):
+	// the guard must hard-stop, because ignore rules don't apply to tracked files.
+	f.out["git ls-files"] = "tokens/google.json\nindex.db\n"
+	var out strings.Builder
+	err := syncGit(context.Background(), cfg, nil, &out, f.run)
+	if err == nil || !strings.Contains(err.Error(), "tokens/google.json") {
+		t.Fatalf("tracked sensitive files must hard-stop the sync, got: %v", err)
+	}
+	if f.sawSubcommand("git", "commit") || f.sawSubcommand("git", "push") {
+		t.Errorf("must not commit/push tracked sensitive files, calls=%v", f.calls)
+	}
+}
