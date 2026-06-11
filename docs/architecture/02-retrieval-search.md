@@ -11,7 +11,7 @@ How Mora turns a query string into a ranked list of memories: an FTS5/BM25 exact
 | `internal/mora/embed_ollama.go` | 117 | The opt-in `ollamaEmbedder` (localhost-only), `chooseEmbedder` selection logic, `isLoopbackURL` egress guard, daemon `reachable` probe |
 | `internal/mora/mora.go` (search slice) | n/a | `searchMemories` (FTS-only path), `ftsQuery`/`ftsToken`/`ftsIsStopword`/`ftsStopwords` (query construction + stopword filtering), `snippetMemories`, the `mcpSearchDefaultLimit` / `searchSnippetLen` consts, the FTS5/`mem_vectors` schema, `writeVectors` index-time embedding |
 
-Cross-arm helpers `loadMemoriesByID` (`graph_read.go:152`), `gazetteerScan`/`normalizeGazName`/`tokenizeWords` (`gazetteer.go`), and `snippet` (`think.go:211`) are owned by sibling docs but called here; they are described only at the boundary.
+Cross-arm helpers `loadMemoriesByID` (`graph_read.go:152`), `gazetteerScan`/`normalizeGazName`/`tokenizeWords` (`gazetteer.go`), and `snippet`/`matchSnippet` (`think.go`) are owned by sibling docs but called here; they are described only at the boundary.
 
 ---
 
@@ -209,7 +209,7 @@ One subtlety: when `vecOK`, the embedder is resolved **once** (`emb = chooseEmbe
 
 The MCP `search_memory` surface is token-budgeted; three constants are coupled (`mora.go:2163-2173`):
 - `mcpSearchDefaultLimit = 8` — bumped from 5 because the T2 live eval showed gold docs landing at FTS ranks **#5–#7**, just outside the old top-5 window.
-- That bump is **safe only because** the MCP path now snippets bodies: `snippetMemories` (`mora.go:2180`) flattens each body to one line, clips to `searchSnippetLen = 240` runes (`snippet`, `think.go:211`), sets `Truncated`, and **drops the `Meta` map** (unbounded entity-graph frontmatter — agents fetch it via `get_entity`/`read_memory`, not a search preview). 8 *full* bodies would blow the T0 MCP token ceiling (`mora.go:2164-2172, 2193`).
+- That bump is **safe only because** the MCP path now snippets bodies: `snippetMemories(mems, query)` (`mora.go:2180`) flattens each body to one line, clips to a `searchSnippetLen = 240`-rune window **centered on the earliest query-term match** (`matchSnippet`, `think.go` — a deep hit used to be found yet invisible in the head-clipped preview), sets `Truncated`, and **drops the `Meta` map** (unbounded entity-graph frontmatter — agents fetch it via `get_entity`/`read_memory`, not a search preview). 8 *full* bodies would blow the T0 MCP token ceiling (`mora.go:2164-2172, 2193`).
 - **Only the MCP surface snippets.** The CLI (`mora search` → `emit`, `mora.go:501`) keeps full bodies + meta. `snippetMemories` is applied after `defaultSearch` only in the MCP handler (`mora.go:2984`).
 
 `searchSnippetLen` deliberately matches `think`'s `thinkSnippetLen` (`mora.go:2171`) so the two budgeted surfaces clip identically.
