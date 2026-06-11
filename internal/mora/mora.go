@@ -2546,6 +2546,69 @@ func memoriesRoot(cfg Config) string { return filepath.Join(cfg.VaultDir, "memor
 func sourcesRoot(cfg Config) string  { return filepath.Join(cfg.VaultDir, "sources") }
 func dbPath(cfg Config) string       { return filepath.Join(cfg.DataDir, "index.db") }
 
+// indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
+// binary writes. Bump it whenever rebuildIndex's shape changes meaning (a new
+// table or column, vector layout, salience semantics). Read paths refuse a
+// mismatched index with an actionable error instead of degrading silently —
+// a binary swapped across a schema change otherwise serves missing columns or
+// zeroed salience (the live Phase-14 failure). 1 = the first stamped schema;
+// every pre-stamp index reads as 0 and asks for one rebuild.
+const indexSchemaVersion = 1
+
+// indexAutoHeal reports whether a version-stale index may be rebuilt inline at
+// read time. True on the static-hash floor, where a rebuild is seconds — the
+// same self-healing as rebuild-on-missing, and what saves every distributed
+// user's FIRST upgrade across the stamp's introduction (their old binary's
+// `upgrade` predates the post-upgrade rebuild hook, and Homebrew swaps bypass
+// it entirely). False under a semantic embedder: a full re-embed takes minutes
+// and must not stall an innocent MCP tool call — those users get the
+// actionable error instead. Package var so tests can pin both branches.
+var indexAutoHeal = func(cfg Config) bool { return !embedderIsSemantic(chooseEmbedderFor(cfg)) }
+
+// openIndexRO opens the index read-only, refusing to serve a schema this
+// binary doesn't understand (a swapped binary otherwise reads missing columns
+// or zeroed salience silently). A stale index self-heals inline when
+// indexAutoHeal allows; otherwise the error names the exact fix, and
+// `mora upgrade` runs the rebuild at the moment the user consented to a slow
+// step.
+func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	verr := checkIndexSchema(db)
+	if verr == nil {
+		return db, nil
+	}
+	_ = db.Close()
+	if !indexAutoHeal(cfg) {
+		return nil, verr
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		return nil, fmt.Errorf("rebuilding a stale index (%v) failed: %w", verr, err)
+	}
+	db, err = sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	if err := checkIndexSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func checkIndexSchema(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	if v != indexSchemaVersion {
+		return fmt.Errorf("the search index was built by a different mora version (index schema v%d, this binary expects v%d) — run `mora index rebuild`", v, indexSchemaVersion)
+	}
+	return nil
+}
+
 func memoryPath(cfg Config, m Memory) string {
 	scopePath := strings.ReplaceAll(m.Scope, ":", string(os.PathSeparator))
 	scopePath = strings.ReplaceAll(scopePath, "/", string(os.PathSeparator))
@@ -2612,6 +2675,10 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 		`DELETE FROM entities`,
 		`DELETE FROM edges`,
 		`DELETE FROM mem_vectors`,
+		// Stamp the schema this binary writes (read paths refuse a mismatch).
+		// Inside the same tx as everything else: a rolled-back rebuild must not
+		// leave a fresh stamp on a stale index.
+		fmt.Sprintf(`PRAGMA user_version = %d`, indexSchemaVersion),
 	}
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
@@ -2750,8 +2817,10 @@ const (
 // single line and clipped to searchSnippetLen (Truncated flags the clip), and
 // drops the Meta map so a row's total size is bounded (Meta is entity-graph
 // frontmatter — agents get it via get_entity/read_memory, not a search preview).
+// The clip window is centered on the earliest query-term match (matchSnippet),
+// so a preview shows the evidence for the hit, not the memory's opening lines.
 // Only the token-budgeted MCP surface calls this; the CLI keeps full bodies+meta.
-func snippetMemories(mems []Memory) []Memory {
+func snippetMemories(mems []Memory, query string) []Memory {
 	if mems == nil {
 		return nil
 	}
@@ -2759,7 +2828,7 @@ func snippetMemories(mems []Memory) []Memory {
 	for i, m := range mems {
 		full := strings.Join(strings.Fields(m.Text), " ")
 		if utf8.RuneCountInString(full) > searchSnippetLen {
-			m.Text = snippet(m.Text, searchSnippetLen)
+			m.Text = matchSnippet(m.Text, query, searchSnippetLen)
 			m.Truncated = true
 		} else {
 			m.Text = full
@@ -2776,7 +2845,7 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	db, err := openIndexRO(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -3523,8 +3592,16 @@ func ingestFilesystem(cfg Config, s Source) (int, error) {
 	return count, err
 }
 
+// mcpMaxRequestBytes caps one JSON-RPC request line. bufio.Scanner's 64KB
+// default is too small for real tool calls (a write_memory body or a think
+// query with pasted context), and overflowing it doesn't drop the request —
+// it kills the whole server mid-session. 4MB is far above any legitimate
+// call yet still bounds a runaway client.
+const mcpMaxRequestBytes = 4 << 20
+
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, 64*1024), mcpMaxRequestBytes)
 	for scanner.Scan() {
 		var req jsonRPCRequest
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
@@ -3534,7 +3611,13 @@ func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 		b, _ := json.Marshal(resp)
 		fmt.Fprintln(stdout, string(b))
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return fmt.Errorf("MCP request line exceeded the %d-byte cap: %w", mcpMaxRequestBytes, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // mcpInstructions is server-level usage guidance returned in the MCP initialize
@@ -3764,8 +3847,9 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		return findMemory(cfg, strArg(args, "id", ""))
 	case "search_memory":
 		start := time.Now()
-		res, err := defaultSearch(ctx, cfg, strArg(args, "query", ""), strArg(args, "scope", ""), intArg(args, "limit", mcpSearchDefaultLimit))
-		logUsage(cfg, usageEvent{Tool: "search_memory", Query: strArg(args, "query", ""), Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
+		query := strArg(args, "query", "")
+		res, err := defaultSearch(ctx, cfg, query, strArg(args, "scope", ""), intArg(args, "limit", mcpSearchDefaultLimit))
+		logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
 		if err != nil {
 			return nil, err
 		}
@@ -3773,7 +3857,7 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// answer carries the per-source last_synced map (same shape as
 		// context_memory's), so the agent can qualify answers with data age
 		// instead of presenting a stale vault as live.
-		return map[string]any{"results": snippetMemories(res), "freshness": sourceFreshness(cfg)}, nil
+		return map[string]any{"results": snippetMemories(res, query), "freshness": sourceFreshness(cfg)}, nil
 	case "list_memory":
 		start := time.Now()
 		res, err := listMemories(cfg, strArg(args, "scope", ""), intArg(args, "limit", 10))

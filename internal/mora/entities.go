@@ -267,7 +267,9 @@ func entityMemoriesForMCP(ctx context.Context, cfg Config, name string) (map[str
 			mems = mems[:mcpEntityMemoriesCap]
 			res["memories_truncated"] = true
 		}
-		res["memories"] = snippetMemories(mems)
+		// Center each preview on the entity name itself — the mention is the
+		// evidence a get_entity caller is after.
+		res["memories"] = snippetMemories(mems, name)
 	}
 	// A high-degree person otherwise dumps every incoming edge + co-occurring
 	// neighbor; cap both (true totals stay in "degree"/"count").
