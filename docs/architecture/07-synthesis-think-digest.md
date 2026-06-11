@@ -32,7 +32,7 @@ So `think`'s real product is the **deterministic floor**: cited evidence plus an
 ```mermaid
 flowchart TD
   Q["query, scope, limit, now"] --> HS["hybridSearch(ctx, cfg, query, scope, limit)"]
-  HS --> EV["Evidence[]: StableID, Title, Scope,<br/>CreatedAt, Score, snippet(text, 240)"]
+  HS --> EV["Evidence[]: StableID, Title, Scope,<br/>CreatedAt, Score, matchSnippet(text, query, 240)"]
   HS --> GAPS
 
   subgraph GAPS["computeGaps (deterministic, no model)"]
@@ -52,7 +52,7 @@ flowchart TD
 
 ### Evidence
 
-For each `Memory` returned by `hybridSearch`, `buildThink` appends a `ThinkEvidence` carrying provenance for citation: `StableID` (the `[stable_id]` the prompt tells the model to cite), `Title`, `Scope`, `CreatedAt`, `Score`, and `Snippet` = `snippet(m.Text, thinkSnippetLen)` where `thinkSnippetLen = 240` (`think.go:24`, `think.go:66-75`).
+For each `Memory` returned by `hybridSearch`, `buildThink` appends a `ThinkEvidence` carrying provenance for citation: `StableID` (the `[stable_id]` the prompt tells the model to cite), `Title`, `Scope`, `CreatedAt`, `Score`, and `Snippet` = `matchSnippet(m.Text, query, thinkSnippetLen)` where `thinkSnippetLen = 240` — the window centers on the earliest query-term match so the cited line shows *why* the evidence matched (head-clip fallback when the hit is in the title/tags).
 
 `think` calls `hybridSearch` **directly** (`think.go:62`), not the gated `defaultSearch`. This is deliberate and consistent with the project rule that `context_memory`/`think` always run hybrid: under the static-hash embedder the vector arm is empty and harmless, while `mora search`/`search_memory` route through `defaultSearch` which gates hybrid on a genuinely semantic embedder (see [retrieval](./02-retrieval-search.md) and `hybrid.go:59-75`). The CLI default `--limit` is 8 (`mora.go:573`); the MCP default is also 8 (`mora.go:3010`).
 

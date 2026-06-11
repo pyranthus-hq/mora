@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -95,8 +96,27 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("update failed (binary left unchanged): %w", err)
 	}
 	fmt.Fprintf(stdout, "✓ updated mora to %s\n", latest.Version())
+	// Re-index with the NEW binary so a schema change never serves a stale
+	// index (the new code refuses one with an error; this is the consented
+	// slow moment to pay the rebuild). Warn-don't-fail: the swap already
+	// succeeded, and the index error message names the same fix.
+	if err := postUpgradeRebuild(ctx, exe, stdout); err != nil {
+		fmt.Fprintf(stdout, "warning: index rebuild failed: %v\n", err)
+		fmt.Fprintln(stdout, "  finish the upgrade with: mora index rebuild")
+	}
 	fmt.Fprintln(stdout, "  run `mora version` to confirm")
 	return nil
+}
+
+// postUpgradeRebuild rebuilds the search index by exec-ing the freshly
+// swapped-in binary — the running process is still the OLD code, and schema
+// knowledge (indexSchemaVersion, table shapes) lives in the new executable.
+func postUpgradeRebuild(ctx context.Context, exe string, stdout io.Writer) error {
+	fmt.Fprintln(stdout, "rebuilding the search index for the new version …")
+	cmd := exec.CommandContext(ctx, exe, "index", "rebuild")
+	cmd.Stdout = stdout
+	cmd.Stderr = stdout
+	return cmd.Run()
 }
 
 // isHomebrewManaged reports whether the resolved binary path lives inside a
