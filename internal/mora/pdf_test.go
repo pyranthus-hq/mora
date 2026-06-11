@@ -115,3 +115,43 @@ func TestExtractPDFTextEmptyIsNotError(t *testing.T) {
 		t.Fatalf("expected empty text, got %q", got)
 	}
 }
+
+func TestIngestFilesystemPDF(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	dir := t.TempDir()
+	writeMinimalPDF(t, filepath.Join(dir, "contract.pdf"), "signed widget contract clause")
+	if err := os.WriteFile(filepath.Join(dir, "junk.pdf"), []byte("not a pdf at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := fsSource("fsdocs", dir, "personal")
+	n, err := ingestFilesystem(cfg, s)
+	if err != nil {
+		t.Fatalf("ingestFilesystem: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly the valid pdf ingested (junk skipped), got %d", n)
+	}
+
+	root := filepath.Join(sourcesRoot(cfg), s.Type, s.Name)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("reading ingested memories: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		m, perr := parseMemory(filepath.Join(root, e.Name()))
+		if perr != nil {
+			t.Fatalf("parseMemory(%s): %v", e.Name(), perr)
+		}
+		if strings.Contains(m.Text, "signed widget contract clause") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("extracted pdf text not found in ingested memories")
+	}
+}
