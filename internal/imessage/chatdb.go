@@ -3,6 +3,8 @@ package imessage
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -418,7 +420,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 			}
 		}
 		if attFile.Valid && attFile.String != "" {
-			att := Attachment{Filename: baseName(attFile.String)}
+			att := Attachment{Filename: baseName(attFile.String), Path: expandHome(attFile.String)}
 			if attMime.Valid {
 				att.MimeType = attMime.String
 			}
@@ -460,11 +462,26 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 	return msgs, allAtt, latest, nil
 }
 
-// baseName strips any directory portion from an attachment filename (we surface the
-// name only, never the on-disk path or bytes — D-11/IMSG-07).
+// baseName strips any directory portion from an attachment filename: it keeps the
+// display name path-free for rendered output (D-11/IMSG-07's user-facing guarantee).
+// The on-disk location now travels separately in Attachment.Path per the IMSG-07
+// amendment, for the wiring boundary only — never for rendering.
 func baseName(p string) string {
 	if i := strings.LastIndexByte(p, '/'); i >= 0 {
 		return p[i+1:]
+	}
+	return p
+}
+
+// expandHome resolves the leading "~" chat.db stores in attachment paths to the
+// real home directory, yielding an absolute path the wiring boundary can read.
+// The connector itself never opens the file (no-bytes invariant intact); a path
+// that doesn't start with "~/" is returned as-is.
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
 	}
 	return p
 }

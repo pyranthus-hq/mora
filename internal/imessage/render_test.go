@@ -123,7 +123,8 @@ func TestAttachmentRender(t *testing.T) {
 	r := resolver1to1()
 	msgs := []renderMessage{
 		{date: localDate(2026, 6, 1, 10, 0), fromMe: false, sender: "+14155551234", text: "here's the deck",
-			attachments: []Attachment{{Filename: "deck.pdf", MimeType: "application/pdf", Size: 999999}}},
+			attachments: []Attachment{{Filename: "deck.pdf", MimeType: "application/pdf", Size: 999999,
+				Path: "/Users/x/Library/Messages/Attachments/ab/cd/deck.pdf"}}},
 		{date: localDate(2026, 6, 1, 10, 1), fromMe: true, text: "🔥"},
 		{date: localDate(2026, 6, 1, 10, 2), fromMe: false, sender: "+14155551234",
 			attachments: []Attachment{{Filename: "IMG_2031.HEIC", MimeType: "image/heic"}}},
@@ -133,6 +134,9 @@ func TestAttachmentRender(t *testing.T) {
 
 	if strings.Contains(body, "999999") {
 		t.Fatalf("rendered body leaked attachment byte size:\n%s", body)
+	}
+	if strings.Contains(body, "Library/Messages") {
+		t.Fatalf("rendered body leaked attachment file path (IMSG-07 amendment: rendered output stays path-free):\n%s", body)
 	}
 	want := "Neil Patel: here's the deck\nNeil Patel: [attachment: deck.pdf · application/pdf]"
 	if !strings.Contains(body, want) {

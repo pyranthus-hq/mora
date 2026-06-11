@@ -9,7 +9,8 @@ The on-disk Markdown memory format, the identity rules that keep re-syncs idempo
 | `internal/mora/mora.go` | 3587 | `Memory`/`Source`/`Config` model; `renderMemory`/`parseMemory`/`writeMemory`/`writeMappedMemory`; `rebuildIndex` + SQLite DDL; `findMemory`/`allMemoryFiles`/`listMemories`; `loadConfig`/`defaultConfig`; path helpers; `atomicWrite`; `newID`; the mora-local `ContentHash` (filesystem ids only) |
 | `internal/memory/mapped.go` | 154 | `MappedMemory` hand-off struct; `MapItem` (Item→MappedMemory, byte budget, content-hash fold); `CanonicalMeta`; kind→(type,provider) registry |
 | `internal/memory/ids.go` | 25 | `StableID` (provider identity), `ContentHash` (provider change-detect, sha256/16), `SafeFilename` (`/`,`:`,` ` → `_`) |
-| `internal/memory/types.go` | 64 | `Item`, `ItemKind`, `Attachment`, `FetchWindow`, `Page`, `Fetcher` — the connector-agnostic fetch types feeding `MapItem` |
+| `internal/memory/types.go` | 70 | `Item`, `ItemKind`, `Attachment` (metadata + in-transit `Path`), `FetchWindow`, `Page`, `Fetcher` — the connector-agnostic fetch types feeding `MapItem` |
+| `internal/mora/pdf.go` | 129 | `extractPDFText` (pinned `ledongthuc/pdf`, recover-wrapped, capped); `writeAttachmentMemories` — one derived `att_…` memory per readable iMessage PDF attachment |
 | `internal/mora/render.go` | 122 | Human-facing TTY styling (`colorEnabled`, `styler`, `styleDigestTTY`). **Not** part of the persisted data path — gated so ANSI never reaches `--json`/MCP/files |
 
 ## The `Memory` model
@@ -109,6 +110,35 @@ flowchart TD
 ```
 
 Two invariants live here: (1) an unchanged, non-deleted item is a **no-op** (the hash skip at `mora.go:2526-2528`), so re-running a backfill is free; (2) when content *did* change, the **original `created_at` is preserved** (`mora.go:2529`) — the new fetch's recomputed timestamp never overwrites the first-seen time. A tombstone (`DeletedAt != ""`) always forces the rewrite even if the body hash matches.
+
+## Document extraction & attachment-derived memories (`.docx` / `.pdf`)
+
+### Filesystem sources: extract-don't-read formats
+
+`curatedExtractExt` (`mora.go:4553-4566`) names the non-plain-text formats a filesystem source ingests by **extracting** text rather than indexing raw bytes — today `.docx` and `.pdf`. `ingestFilesystem` branches on it (`mora.go:3561-3578`): `.pdf` goes through `extractPDFText`, everything else in the set through `extractDocxText`; an extraction error or empty result skips the file — unreadable/empty/oversized is never indexed as garbage. The extracted text then flows through the normal filesystem path: ids stay `src_<FNV>` (`mora.go:3590`), nothing else about filesystem identity changes.
+
+`extractPDFText` (`pdf.go:32-77`) uses the pinned, audited `ledongthuc/pdf` (pure Go — the no-CGO constraint holds). The library panics on malformed input by design, so the entire parse is **recover-wrapped**: any panic becomes an error and the caller skips the file — a bad PDF must never crash a sync (`pdf.go:33-37`). Caps (`pdf.go:20-23`, package vars so tests can lower them):
+
+| Cap | Value | Where enforced |
+|---|---|---|
+| File size | 20 MiB (`pdfMaxFileSize`) | rejected pre-parse, `pdf.go:42-44` |
+| Pages | 500 (`pdfMaxPages`) | extraction truncates, `pdf.go:52-55` |
+| Extracted text | 512 KiB | the existing index bound at every call site — over ⇒ the whole file is skipped (`pdf.go:72-74`, `pdf.go:102`) |
+
+A scanned/image-only PDF extracts to `""` with a nil error and is skipped — there is no OCR (it would break the single-binary/no-CGO constraint), and Mora never fabricates text it can't read. A single garbled page is skipped without losing the rest of the document (`pdf.go:66-69`).
+
+### `Attachment.Path` and the derived-memory shape
+
+`Attachment` (`types.go:16-27`) is **metadata-plus-location**: `Filename`/`MimeType`/`Size`, plus — when the body already exists on local disk (iMessage) — the absolute `Path` to it. Connectors never open the file; bytes are never carried on the struct; neither `Path` nor bytes ever appear in rendered vault output (the IMSG-07 amendment — see [iMessage connector](./05-connectors-imessage.md)). For Gmail, attachments remain metadata-only and `Path` stays empty — the field is the future seam, not a fetch.
+
+`writeAttachmentMemories` (`pdf.go:88-129`) consumes `Path` at the wiring boundary, immediately after the parent's `writeMappedMemory` in the iMessage write closure (`mora.go:3371-3380`). For each attachment that has a `Path` and is a PDF by MIME **or** extension (`isPDFAttachment`, `pdf.go:79-86` — chat.db rows sometimes carry one without the other), it derives one `MappedMemory` (`pdf.go:109-122`):
+
+- **`StableID`** = `"att_" + ContentHash(parent.StableID + ":" + a.Path)` (`pdf.go:110`) — the **provider** sha256 `ContentHash` (`ids.go:16`), not the mora-local FNV. Hashing parent id + path keeps the id stable across re-syncs, so an unchanged PDF is a no-op via the `writeMappedMemory` hash skip.
+- **`Type`** = `"source"`; **`Tags`** = the parent's tags plus `"attachment"`; **`Source`** = the attachment's on-disk path; **`Title`** = the attachment filename (basename fallback).
+- **Parent provenance**: `Provider`/`ProviderID`/`Account`/`Scope` and the parent's **`CreatedAt`** are copied verbatim — the derived memory files under the same `sources/<provider>/` and inherits the conversation's timestamp.
+- **`ContentHash`** = `ContentHash(title, text)`, so an edited-in-place PDF rewrites and an untouched one skips.
+
+Every extraction failure — missing file, malformed, encrypted, empty/scanned, past the caps — skips that attachment and keeps the metadata marker on the parent transcript; a body Mora can't read is not a sync error. Only a vault **write** failure propagates (`pdf.go:88-104, 123-125`).
 
 ## SQLite index (rebuilt, never authoritative)
 
@@ -219,6 +249,7 @@ The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/
 - **Writes are atomic** (`atomicWrite` = temp + rename, `mora.go:3230-3239`). WHY: a crash mid-write must not leave torn frontmatter that fails `parseMemory`.
 - **`type`/`created_at`/`path` are not in FTS** (`mora.go:2037` vs `2036`). WHY: they are metadata; search joins back to `memories` to recover them. Adding a column to one table without the other will desync the search projection.
 - **ANSI styling never reaches the data path.** `colorEnabled` (`render.go:21-32`) returns false on `--json`, `NO_COLOR`/`MORA_NO_COLOR`, empty-or-`dumb` `TERM`, or a non-TTY writer; the TTY test `isTTYWriter` (`render.go:38-44`) uses go-isatty (not `os.ModeCharDevice`, which is true for `/dev/null`). WHY: stray escape codes corrupt MCP stdio JSON and `--json` output. `render.go` styles human display only; it is *not* part of persisted bytes.
+- **Document extraction never indexes garbage** (`pdf.go:88-104`, `mora.go:3565-3578`). An unreadable, empty (scanned, no OCR), or over-cap extraction skips the file or attachment entirely. WHY: a scanned PDF extracting to `""` must not create an empty searchable memory, and a hostile PDF must not crash a sync (the parse is recover-wrapped, size/page/text-capped).
 - **Two different `ContentHash` functions exist.** `internal/memory/ids.go:16` = sha256, first 16 hex chars, for provider change-detection. `internal/mora/mora.go:3365` = small FNV, used only to mint filesystem-source `src_…` ids (`mora.go:2807`). Don't confuse them.
 
 ## Related

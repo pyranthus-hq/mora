@@ -70,6 +70,7 @@ Cloud tools win on zero setup, a web UI, and write actions; Mora has none of tho
 ## What you get
 
 - **A Markdown vault.** One file per email thread, conversation, or event — grep it, open it in Obsidian, back it up. SQLite is a rebuildable index, not the store.
+- **Documents, searchable.** Local-file sources index Markdown, text, and config files, and extract text from `.docx` and `.pdf`; a PDF someone texts you over iMessage becomes a searchable memory of its own. Mora only indexes text it can actually read — a scanned, image-only PDF yields nothing rather than garbage (OCR is out of scope for a zero-dependency single binary; OCR it yourself to text or Markdown and drop the result into a files source).
 - **An entity graph.** `mora graph "Sam"` shows one person across sources — threads, events, co-occurring people, each edge citing its source memory. Rule-based over message headers, calendar attendees, and address-book names (no NER model); identity merging is conservative; no-reply senders are filed as services, not people.
 - **Hybrid search.** BM25 + embedding + graph expansion, fused by reciprocal rank. The default hash embedder is weak on paraphrase; `mora config embedder ollama` switches to local semantic embeddings via [Ollama](https://ollama.com).
 - **A daily brief.** `mora brief`: new and unanswered threads, upcoming meetings, open loops, ranked by contact salience.

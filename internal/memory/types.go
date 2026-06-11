@@ -13,11 +13,17 @@ import "time"
 // per-connector switch.
 type ItemKind string
 
-// Attachment is metadata-only (v1 never ingests attachment bodies).
+// Attachment is metadata-plus-location: filename/MIME/size, and — when the body
+// already exists on local disk (iMessage) — the absolute Path to it. Connectors
+// never open the file; Path is consumed at the wiring boundary (internal/mora)
+// to extract text from supported formats (PDF). Bytes are never carried here,
+// and neither Path nor bytes ever appear in rendered vault output (IMSG-07's
+// user-facing guarantee is unchanged).
 type Attachment struct {
 	Filename string `json:"filename"`
 	MimeType string `json:"mime_type"`
 	Size     int64  `json:"size"`
+	Path     string `json:"path,omitempty"`
 }
 
 // Item is a provider-agnostic fetched object. Connector adapters produce Items;

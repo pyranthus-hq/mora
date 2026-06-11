@@ -3372,6 +3372,9 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 		if err := writeMappedMemory(cfg, mm); err != nil {
 			return err
 		}
+		if _, err := writeAttachmentMemories(cfg, mm); err != nil {
+			return err
+		}
 		prog.tick()
 		return nil
 	}
@@ -3560,8 +3563,15 @@ func ingestFilesystem(cfg Config, s Source) (int, error) {
 		}
 		var text string
 		if curatedExtractExt(ext) {
-			// Non-plain-text (.docx): extract the words rather than index raw bytes.
-			t, derr := extractDocxText(path)
+			// Non-plain-text (.docx/.pdf): extract the words rather than index raw bytes.
+			var t string
+			var derr error
+			switch strings.ToLower(ext) {
+			case ".pdf":
+				t, derr = extractPDFText(path)
+			default:
+				t, derr = extractDocxText(path)
+			}
 			if derr != nil || t == "" {
 				return nil // unreadable/empty/oversized — skip, never index garbage.
 			}
@@ -4541,12 +4551,18 @@ func curatedAllowedExt(ext string) bool {
 }
 
 // curatedExtractExt reports whether ext is a non-plain-text format Mora ingests by
-// EXTRACTING its text (vs reading raw bytes). Today: .docx only — a ZIP of XML whose
-// words live in word/document.xml. PDF is deliberately excluded: pure-Go PDF text
-// extraction needs a new dependency and is lossy, and scanned PDFs need OCR (which
-// would break the no-CGO/single-binary constraint).
+// EXTRACTING its text (vs reading raw bytes). Today: .docx (stdlib zip+xml) and
+// .pdf (pinned ledongthuc/pdf — pure Go, recover-wrapped, capped; see pdf.go).
+// PDF extraction is lossy on exotic font encodings and yields nothing on scanned
+// documents (no OCR — that would break the no-CGO/single-binary constraint); such
+// files are skipped, never indexed as garbage.
 func curatedExtractExt(ext string) bool {
-	return strings.ToLower(ext) == ".docx"
+	switch strings.ToLower(ext) {
+	case ".docx", ".pdf":
+		return true
+	default:
+		return false
+	}
 }
 
 // docxMaxDecompressed caps the decompressed bytes read from word/document.xml. A
