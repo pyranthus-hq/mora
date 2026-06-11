@@ -406,7 +406,10 @@ func TestAttachmentPathThreadedThrough(t *testing.T) {
 	if att.Filename != "doc.pdf" {
 		t.Fatalf("Filename must stay the base name (rendered output is path-free): %q", att.Filename)
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
 	want := filepath.Join(home, "Library/Messages/Attachments/ab/cd/doc.pdf")
 	if att.Path != want {
 		t.Fatalf("Path must carry the expanded on-disk location: got %q want %q", att.Path, want)

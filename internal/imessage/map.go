@@ -17,7 +17,7 @@ type convInput struct {
 	guid        string          // chat GUID → provider identity (StableID/ProviderID)
 	chat        conversation    // title-relevant shape (display name, participants, isGroup)
 	messages    []renderMessage // every rendered message (renderer sorts chronologically)
-	attachments []Attachment    // metadata-only attachment markers across the conversation (IMSG-07)
+	attachments []Attachment    // attachment metadata + on-disk Path across the conversation (IMSG-07 amended: rendered output stays path-free)
 }
 
 // imessageProvider / imessageType are the frontmatter provider/type for an iMessage

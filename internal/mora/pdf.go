@@ -3,9 +3,11 @@ package mora
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ledongthuc/pdf"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // PDF extraction caps. Package vars (not consts) so tests can lower them.
@@ -72,4 +74,56 @@ func extractPDFText(path string) (text string, err error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+// isPDFAttachment gates extraction on MIME or extension — chat.db rows sometimes
+// carry one without the other.
+func isPDFAttachment(a memory.Attachment) bool {
+	if strings.EqualFold(a.MimeType, "application/pdf") {
+		return true
+	}
+	return strings.EqualFold(filepath.Ext(a.Filename), ".pdf")
+}
+
+// writeAttachmentMemories writes one derived memory per extractable PDF attachment
+// of parent (design: docs/superpowers/specs/2026-06-11-pdf-ingestion-design.md).
+// Every extraction failure — missing file, malformed, encrypted, empty/scanned,
+// past the caps — skips that attachment and keeps the metadata on the parent; a
+// body we can't read is not a sync error. Only a vault write failure propagates.
+// The stable ID hashes parent StableID + path, so re-syncs hit the content-hash
+// skip in writeMappedMemory and an unchanged PDF is a no-op.
+func writeAttachmentMemories(cfg Config, parent memory.MappedMemory) (int, error) {
+	count := 0
+	for _, a := range parent.Attachments {
+		if a.Path == "" || !isPDFAttachment(a) {
+			continue
+		}
+		text, err := extractPDFText(a.Path)
+		if err != nil || text == "" || len(text) > 512*1024 {
+			continue
+		}
+		title := a.Filename
+		if title == "" {
+			title = filepath.Base(a.Path)
+		}
+		mm := memory.MappedMemory{
+			StableID:    "att_" + memory.ContentHash(parent.StableID+":"+a.Path),
+			Type:        "source",
+			Title:       title,
+			Body:        text,
+			Tags:        append(append([]string{}, parent.Tags...), "attachment"),
+			Source:      a.Path,
+			Provider:    parent.Provider,
+			ProviderID:  parent.ProviderID,
+			Account:     parent.Account,
+			Scope:       parent.Scope,
+			CreatedAt:   parent.CreatedAt,
+			ContentHash: memory.ContentHash(title, text),
+		}
+		if err := writeMappedMemory(cfg, mm); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
 }

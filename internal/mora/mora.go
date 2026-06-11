@@ -3372,6 +3372,9 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 		if err := writeMappedMemory(cfg, mm); err != nil {
 			return err
 		}
+		if _, err := writeAttachmentMemories(cfg, mm); err != nil {
+			return err
+		}
 		prog.tick()
 		return nil
 	}

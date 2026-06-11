@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // writeMinimalPDF hand-builds a tiny valid PDF (uncompressed content streams,
@@ -113,6 +115,67 @@ func TestExtractPDFTextEmptyIsNotError(t *testing.T) {
 	}
 	if strings.TrimSpace(got) != "" {
 		t.Fatalf("expected empty text, got %q", got)
+	}
+}
+
+func TestWriteAttachmentMemories(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "lease.pdf")
+	writeMinimalPDF(t, pdfPath, "annual rent escalation clause")
+
+	parent := memory.MappedMemory{
+		StableID: "imessage_chat_ABC", Provider: "imessage", ProviderID: "ABC",
+		Scope: "personal", Tags: []string{"imessage"},
+		CreatedAt: "2026-06-01T00:00:00Z",
+		Attachments: []memory.Attachment{
+			{Filename: "lease.pdf", MimeType: "application/pdf", Path: pdfPath},
+			{Filename: "photo.heic", MimeType: "image/heic", Path: filepath.Join(dir, "photo.heic")},     // non-PDF: ignored
+			{Filename: "gone.pdf", MimeType: "application/pdf", Path: filepath.Join(dir, "missing.pdf")}, // missing file: skipped
+		},
+	}
+	n, err := writeAttachmentMemories(cfg, parent)
+	if err != nil {
+		t.Fatalf("writeAttachmentMemories: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 derived memory, got %d", n)
+	}
+
+	id := "att_" + memory.ContentHash(parent.StableID+":"+pdfPath)
+	out := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(id)+".md")
+	m, err := parseMemory(out)
+	if err != nil {
+		t.Fatalf("derived memory not written at %s: %v", out, err)
+	}
+	if m.Title != "lease.pdf" || !strings.Contains(m.Text, "annual rent escalation clause") {
+		t.Fatalf("derived memory wrong shape: title=%q", m.Title)
+	}
+	if m.CreatedAt != parent.CreatedAt {
+		t.Fatalf("created_at must inherit the parent's: %q", m.CreatedAt)
+	}
+	// must carry the attachment tag
+	hasTag := false
+	for _, tag := range m.Tags {
+		if tag == "attachment" {
+			hasTag = true
+		}
+	}
+	if !hasTag {
+		t.Fatalf("derived memory must carry the attachment tag: %v", m.Tags)
+	}
+
+	// Idempotent: re-running with an unchanged file rewrites nothing.
+	before, _ := os.Stat(out)
+	if _, err := writeAttachmentMemories(cfg, parent); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(out)
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("unchanged pdf must content-hash-skip the rewrite")
 	}
 }
 
