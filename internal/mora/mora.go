@@ -374,9 +374,16 @@ USAGE:
 
 func defaultConfig() Config {
 	home, _ := os.UserHomeDir()
+	// MORA_CONFIG_DIR points an entire invocation at an isolated config
+	// (scripts, launchd jobs, demos, tests) WITHOUT touching ~/.config/mora —
+	// the structural fix for scratch `init`s clobbering the one global config.
+	configDir := os.Getenv("MORA_CONFIG_DIR")
+	if configDir == "" {
+		configDir = filepath.Join(home, ".config", "mora")
+	}
 	return Config{
 		VaultDir:  filepath.Join(home, "vault", "mora"),
-		ConfigDir: filepath.Join(home, ".config", "mora"),
+		ConfigDir: configDir,
 		DataDir:   filepath.Join(home, ".local", "share", "mora"),
 		StateDir:  filepath.Join(home, ".local", "state", "mora"),
 	}
@@ -484,20 +491,75 @@ func cmdConfig(args []string, stdout io.Writer) error {
 	return nil
 }
 
+// writeConfig persists the five keys this binary owns by READ-MODIFY-WRITE:
+// every line it does not own (comments, blank lines, keys written by hand or
+// by a newer mora) is preserved byte-for-byte. The old regenerate-from-struct
+// behavior silently ate those lines on every rewrite — loadConfig skips
+// unknowns, so they survived the load only to vanish on the next save. An
+// empty Embedder/ContextProfile DROPS its line (reset-to-default semantics,
+// keeping config.toml minimal).
 func writeConfig(cfg Config) error {
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("vault_dir = %q\ndata_dir = %q\nstate_dir = %q\n", cfg.VaultDir, cfg.DataDir, cfg.StateDir)
-	if cfg.Embedder != "" {
-		// Persist the durable embedder opt-in so a re-`init` (which round-trips
-		// loadConfig→writeConfig) never silently drops it back to the static floor.
-		body += fmt.Sprintf("embedder = %q\n", cfg.Embedder)
+	path := filepath.Join(cfg.ConfigDir, "config.toml")
+	owned := []struct{ key, val string }{
+		{"vault_dir", cfg.VaultDir},
+		{"data_dir", cfg.DataDir},
+		{"state_dir", cfg.StateDir},
+		{"embedder", cfg.Embedder},
+		{"context", cfg.ContextProfile},
 	}
-	if cfg.ContextProfile != "" {
-		body += fmt.Sprintf("context = %q\n", cfg.ContextProfile)
+	ownedVal := func(key string) (string, bool) {
+		for _, kv := range owned {
+			if kv.key == key {
+				return kv.val, true
+			}
+		}
+		return "", false
 	}
-	return atomicWrite(filepath.Join(cfg.ConfigDir, "config.toml"), []byte(body), 0o600)
+
+	var existing []string
+	if b, err := os.ReadFile(path); err == nil {
+		existing = strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+		if len(existing) == 1 && existing[0] == "" {
+			existing = nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	written := map[string]bool{}
+	var out []string
+	for _, line := range existing {
+		trimmed := strings.TrimSpace(line)
+		key := ""
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			if parts := strings.SplitN(trimmed, "=", 2); len(parts) == 2 {
+				key = strings.TrimSpace(parts[0])
+			}
+		}
+		val, owns := ownedVal(key)
+		if !owns {
+			out = append(out, line) // not ours: preserve verbatim
+			continue
+		}
+		if written[key] {
+			continue // collapse duplicate owned keys onto the first occurrence
+		}
+		written[key] = true
+		if val == "" {
+			continue // reset-to-default: drop the line
+		}
+		out = append(out, fmt.Sprintf("%s = %q", key, val))
+	}
+	for _, kv := range owned {
+		if kv.val == "" || written[kv.key] {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s = %q", kv.key, kv.val))
+	}
+	return atomicWrite(path, []byte(strings.Join(out, "\n")+"\n"), 0o600)
 }
 
 func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -516,7 +578,16 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		return err
 	}
 	if *vault != "" {
-		cfg.VaultDir = expandHome(*vault)
+		want := expandHome(*vault)
+		// Repointing an EXISTING install's vault orphans the current one from
+		// Mora's view — it must never happen as a side effect of a scripted
+		// init (two live incidents). Same-dir re-init stays idempotent.
+		if cfg.VaultDir != want && configFileExists(cfg) {
+			if err := confirmVaultRepoint(stdin, stdout, cfg.VaultDir, want); err != nil {
+				return err
+			}
+		}
+		cfg.VaultDir = want
 	}
 	for _, dir := range []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir, memoriesRoot(cfg), sourcesRoot(cfg), filepath.Join(cfg.ConfigDir, "tokens")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -536,6 +607,40 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
 	return runSetupMenu(ctx, cfg, stdin, stdout)
+}
+
+// configFileExists reports whether a config.toml is already on disk —
+// loadConfig alone can't distinguish "defaults because no file" from a real
+// install, and the repoint guard must only fire for the latter.
+func configFileExists(cfg Config) bool {
+	_, err := os.Stat(filepath.Join(cfg.ConfigDir, "config.toml"))
+	return err == nil
+}
+
+// confirmVaultRepoint gates `init --vault <new>` when config.toml already
+// points elsewhere. Non-interactive callers are refused with the exact manual
+// alternative (a script must never silently repoint a live install); a TTY
+// gets an explicit default-NO confirm, mirroring runSetupMenu's gate.
+func confirmVaultRepoint(stdin io.Reader, stdout io.Writer, from, to string) error {
+	f, ok := stdin.(*os.File)
+	if !ok || !isatty.IsTerminal(f.Fd()) {
+		return fmt.Errorf("refusing to repoint the vault non-interactively: config.toml already points at %s (requested: %s) — re-run `mora init --vault` in a terminal to confirm, or edit config.toml yourself", from, to)
+	}
+	var yes bool
+	confirm := huh.NewConfirm().
+		Title(fmt.Sprintf("Repoint vault from %s to %s?", from, to)).
+		Description("The current vault stays on disk, but Mora stops reading it.").
+		Affirmative("Repoint").
+		Negative("Keep current vault").
+		Value(&yes)
+	if err := confirm.Run(); err != nil {
+		return err
+	}
+	if !yes {
+		fmt.Fprintln(stdout, "init cancelled — vault unchanged.")
+		return errors.New("init cancelled — vault unchanged")
+	}
+	return nil
 }
 
 func scaffoldControlFiles(cfg Config) error {
