@@ -6,7 +6,13 @@ Claude Code / Codex over MCP — nothing leaves your machine.
 
 ## 1. Install
 
-Extract the release tarball and run the installer (handles macOS Gatekeeper):
+One line — fetches the right release binary and handles macOS Gatekeeper:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
+```
+
+Or, from a downloaded release tarball:
 
 ```sh
 tar -xzf mora_0.6.0_darwin_arm64.tar.gz   # _amd64 on Intel Macs
