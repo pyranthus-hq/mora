@@ -318,10 +318,10 @@ func TestSyncGit_PreservesConfiguredIdentity(t *testing.T) {
 	if err := syncGit(context.Background(), cfg, nil, &out, f.run); err != nil {
 		t.Fatalf("syncGit: %v", err)
 	}
+	if !f.sawSubcommand("git", "commit") {
+		t.Errorf("expected a commit on a dirty tree, calls=%v", f.calls)
+	}
 	for _, c := range f.calls {
-		if strings.Join(c, " ") == "git commit -m "+c[len(c)-1] {
-			// commit present without -c overrides — correct.
-		}
 		for _, a := range c {
 			if strings.HasPrefix(a, "user.name=") || strings.HasPrefix(a, "user.email=") {
 				t.Errorf("must not override a configured identity, calls=%v", f.calls)
