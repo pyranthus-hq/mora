@@ -1166,6 +1166,12 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	if st == "over" {
 		fmt.Fprintf(stdout, "     over the %s ceiling — consider pruning old sources or narrowing backfill windows (--since-days).\n", formatBytes(storageCeilingBytes))
 	}
+	// Git-sync disclosure (issue #6): if the vault is a git repo, it can leave the
+	// device on push — qualify the zero-egress posture loudly and honestly.
+	if _, err := os.Stat(filepath.Join(cfg.VaultDir, ".git")); err == nil {
+		fmt.Fprintf(stdout, "%s vault git-sync is configured — the vault LEAVES THIS DEVICE on `mora sync git`\n", sty.warn("warn"))
+		fmt.Fprintln(stdout, "     it contains decoded iMessages + Gmail in plaintext; ensure the remote is PRIVATE + user-controlled.")
+	}
 	// iMessage readiness prints in a dedicated ORDERED block (the checks map above is
 	// unordered) so the Full Disk Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(stdout, false)
@@ -1313,7 +1319,7 @@ func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 		return listSchedules(stdout, cfg)
 	case "install":
 		if len(args) != 2 {
-			return errors.New("usage: mora schedule install <pulse-daily|index-hourly|backup-daily|lint-weekly|ingest-hourly>")
+			return errors.New("usage: mora schedule install <pulse-daily|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
 		}
 		return installSchedule(stdout, cfg, args[1])
 	default:
@@ -2113,16 +2119,23 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 
 func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) >= 1 && isHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora sync [status|google|imessage]")
+		fmt.Fprintln(stdout, "usage: mora sync [status|google|imessage|git]")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
 		fmt.Fprintln(stdout, "  imessage  re-run the iMessage backfill")
+		fmt.Fprintln(stdout, "  git       back up the vault to a private git remote (off-device)")
+		fmt.Fprintln(stdout, "            --init [--remote URL | --github [--name repo]] [-m msg]")
 		fmt.Fprintln(stdout, "  (no arg)  re-run the Google backfill")
 		return nil
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	// `mora sync git` — one-way, push-only, fail-loud off-device backup to a
+	// private git remote (opt-in; the vault otherwise never leaves the device).
+	if len(args) >= 1 && args[0] == "git" {
+		return syncGit(ctx, cfg, args[1:], stdout, realExec)
 	}
 	if len(args) >= 1 && args[0] == "status" {
 		dir := filepath.Join(cfg.StateDir, "sync")
@@ -4057,6 +4070,7 @@ var scheduleCommands = map[string]string{
 	"backup-daily":  "backup",
 	"lint-weekly":   "lint",
 	"ingest-hourly": "ingest run --all",
+	"git-daily":     "sync git",
 }
 
 // scheduleRunAtLoad reports whether a job's plist should set RunAtLoad. It is
@@ -4662,6 +4676,8 @@ func launchdSchedule(job string) string {
 		return "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>"
 	case "backup-daily":
 		return "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>"
+	case "git-daily":
+		return "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>"
 	case "lint-weekly":
 		return "<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>"
 	default:
