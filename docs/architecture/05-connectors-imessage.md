@@ -164,7 +164,7 @@ flowchart TD
 ## Invariants & gotchas
 
 - **`internal/imessage` imports neither `internal/mora` nor `internal/google`, and makes ZERO network calls** (`types.go:7-9`). It reads only the local `chat.db` read-only. WHY: avoid the import cycle (mora imports the connector) and uphold the zero-egress guarantee — the connector returns plain structs and mora converts at the wiring boundary.
-- **`mode=ro`, NEVER `immutable=1`** (`fda.go:11-14`). WHY: `immutable=1` skips the WAL, giving stale/torn reads that silently drop the newest messages — the opposite of freshness, the product's value.
+- **`mode=ro`, NEVER `immutable=1`** (`fda.go:11-14`). WHY: `immutable=1` skips the WAL, giving stale/torn reads that silently drop the newest messages, violating the freshness guarantee.
 - **Always `Ping()`/read a row after open** (`fda.go:19-53`). WHY: `sql.Open` is lazy and FDA denial lets `os.Stat` pass while the real open fails; a deferred error would surface as a cryptic mid-ingest failure instead of a clear FDA prompt.
 - **`decodeAttributedBody` must skip the class preamble to the 0x2b content marker before reading any length** (`typedstream.go:54-70`). WHY: anchoring on the wrong byte returns `""` for every modern `attributedBody`-only message — i.e. silently dropping essentially all recent texts (the Phase 2.1 drop bug). Synthetic test blobs MUST include the real preamble or they don't exercise this path.
 - **0x81 advances the cursor by 3, not 2** (`typedstream.go:77-82`). WHY: advancing by 2 drops the final payload byte for lengths 128–255 (#1455).
