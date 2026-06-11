@@ -329,7 +329,7 @@ The relationship to the `think` envelope is direct: both emit a cited `Synthesis
 
 ## Session-start `brief` — the read-or-generate front door (Phase 16)
 
-Phase 16 puts a **session-start front door** on the digest: `mora brief` and the MCP `brief` tool resolve the FRESHEST brief — read today's-or-yesterday's persisted `briefs/<date>-brief.md` VERBATIM if it exists (the READ side of `artifact.go`'s WRITE side), else GENERATE one on demand. It is the surface that makes the brief the *default* a fresh install gets at the start of every agent session (the [SESSIONSTART onboarding doc](../SESSIONSTART.md) wires it into the Claude Code hook / Codex / MCP). Like everything in this subsystem it is **LOCAL-ONLY, model-free, and watermark-safe**: it never syncs, never advances the Phase-12 delta, and makes no network or model call — it closes the digest-habit loop without weakening any of its invariants.
+Phase 16 puts a **session-start front door** on the digest: `mora brief` and the MCP `brief` tool resolve the FRESHEST brief — read today's-or-yesterday's persisted `briefs/<date>-brief.md` VERBATIM if it exists (the READ side of `artifact.go`'s WRITE side), else GENERATE one on demand. It is the surface that makes the brief the *default* a fresh install gets at the start of every agent session (the [guide's session-start section](../guide.md#make-the-brief-your-session-start-default) wires it into the Claude Code hook / Codex / MCP). Like everything in this subsystem it is **LOCAL-ONLY, model-free, and watermark-safe**: it never syncs, never advances the Phase-12 delta, and makes no network or model call — it closes the digest-habit loop without weakening any of its invariants.
 
 ### The read-or-generate kernel (`resolveBrief`, `brief.go:375`)
 
@@ -364,7 +364,7 @@ The MCP `brief` tool (`tools/list` entry `mora.go:3174`, `callMCPTool` case `mor
 
 ### It closes the Tier-1 digest-habit loop
 
-The brief surface is the last piece of a five-phase habit (see the [SESSIONSTART doc](../SESSIONSTART.md) for the end-to-end onboarding):
+The brief surface is the last piece of a five-phase habit (see the [guide's session-start section](../guide.md#make-the-brief-your-session-start-default) for the end-to-end onboarding):
 
 | Phase | Piece | Contribution |
 |---|---|---|
@@ -450,7 +450,7 @@ Both the MCP and CLI paths return the assembled `context` string plus `freshness
 - [entity graph](./03-entity-graph.md) — the gazetteer, `entities` table, `mention_count`, alias trust that `computeGaps` reads
 - [MCP server](./06-mcp-server.md) — how the `think`/`digest`/`context_memory` tools are exposed, `toCallToolResult`, schemas
 - [CLI & UX](./08-cli-and-ux.md) — `mora think` / `mora context` / `mora pulse --digest` / `mora brief`, `styleDigestTTY`, byte-clean invariant
-- [SESSIONSTART onboarding](../SESSIONSTART.md) — wiring `mora brief` / the MCP `brief` tool into the session-start hook (Claude Code / Codex / MCP), the Phase 12→16 habit loop
+- [the guide — session-start brief](../guide.md#make-the-brief-your-session-start-default) — wiring `mora brief` / the MCP `brief` tool into the session-start hook (Claude Code / Codex / MCP)
 - [sync & freshness](./11-sync-and-freshness.md) — the `brief/` watermark store (why it's decoupled from `SyncStatus`), the M-3 last-attempt health model `classifyState` reads, `sourceFreshness`, the `<StateDir>/sync/*.json` files surfaced in digest/context
 - [connectors-google](./04-connectors-google.md) / [connectors-imessage](./05-connectors-imessage.md) — the `Provider` field that `sourceInstanceKey` keys off, the tombstones (`DeletedAt`) the digest filters (M-4)
 - [overview](./00-overview.md)

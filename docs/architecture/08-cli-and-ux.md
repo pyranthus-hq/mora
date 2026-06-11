@@ -47,7 +47,7 @@ flowchart TD
 | `delete <id> --yes` | Remove a memory file + reindex; refuses without `--yes`. | `cmdDelete` `:504` |
 | `context [--scope] [--query] [--budget] [--json]` | Build a budgeted context blob (FTS+vector via `hybridSearch`). | `cmdContext` `:535` |
 | `think "<q>" [--scope] [--limit] [--json]` | Cited-evidence synthesis envelope + gap analysis. | `cmdThink` `:570`, see [synthesis](./07-synthesis-think-digest.md) |
-| `brief [--json] [--envelope]` | **Session-start default (Phase 16):** print the latest *what-changed/what-matters* brief — read the freshest persisted `briefs/<date>-brief.md` verbatim, else generate on demand. Local-only, zero network, never advances the watermark. `--json` → `{generated, body}`; `--envelope` → append a model-free synthesis prompt. | `cmdBrief` `:682`, see [synthesis](./07-synthesis-think-digest.md) + [SESSIONSTART](../SESSIONSTART.md) |
+| `brief [--json] [--envelope]` | **Session-start default (Phase 16):** print the latest *what-changed/what-matters* brief — read the freshest persisted `briefs/<date>-brief.md` verbatim, else generate on demand. Local-only, zero network, never advances the watermark. `--json` → `{generated, body}`; `--envelope` → append a model-free synthesis prompt. | `cmdBrief` `:682`, see [synthesis](./07-synthesis-think-digest.md) + [the guide](../guide.md#make-the-brief-your-session-start-default) |
 | `index rebuild` | Re-parse vault → SQLite + graph + vectors. | `cmdIndex` `:637` |
 | `tasks sync [--write]` / `pulse [--write] [--digest]` | Task hygiene + daily digest. | `cmdTasks` `:656`, `cmdPulse` `:678` |
 | `lint` / `backup` | Verify control files exist / tar.gz the vault to state dir. | `cmdLint` `:719`, `cmdBackup` `:746` |
@@ -196,7 +196,7 @@ The check-map iteration is unordered Go map iteration; the surrounding blocks (s
 - [imessage connector](./05-connectors-imessage.md) — `connect imessage`, Full Disk Access probe
 - [mcp server](./06-mcp-server.md) — `mcp serve`, the byte-clean machine transport
 - [synthesis: think & digest](./07-synthesis-think-digest.md) — `think` / `pulse --digest` / `brief` data path, the `resolveBrief` read-or-generate kernel
-- [SESSIONSTART onboarding](../SESSIONSTART.md) — wiring `mora brief` into the session-start hook (Claude Code / Codex / MCP)
+- [the guide — session-start brief](../guide.md#make-the-brief-your-session-start-default) — wiring `mora brief` into the session-start hook (Claude Code / Codex / MCP)
 - [sync & freshness](./11-sync-and-freshness.md) — `sync status`, gated backfill, staleness
 
 ## Open questions / unverified

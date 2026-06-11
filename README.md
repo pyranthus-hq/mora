@@ -10,7 +10,7 @@
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/pure%20Go-no%20CGO-00ADD8)](go.mod)
-[![Egress](https://img.shields.io/badge/egress-zero-0a3d33)](docs/why-mora.md)
+[![Egress](https://img.shields.io/badge/egress-zero-0a3d33)](docs/guide.md#why-not-just-use-a-cloud-connector)
 
 </div>
 
@@ -47,7 +47,7 @@ Cloud assistants fetch your mail per-query, reason over it on their servers — 
 | Agent lock-in | **None** — any MCP client | One vendor | None |
 | Cost | **$0**, no account | Subscription | Free |
 
-**iMessage is the moat.** Your most candid threads have no cloud API — Mora reads the local database read-only and folds those conversations into the same people-graph as your email and calendar. Full comparison, caveats, and sources: [Why Mora vs. the alternatives](docs/why-mora.md).
+**iMessage is the moat.** Your most candid threads have no cloud API — Mora reads the local database read-only and folds those conversations into the same people-graph as your email and calendar. Full comparison, caveats, and sources: [the guide](docs/guide.md#why-not-just-use-a-cloud-connector).
 
 ## Quick start
 
@@ -65,7 +65,7 @@ codex  mcp add mora -- mora mcp serve            # …or Codex
 
 Then ask your agent, cold: *"search my memory — what did I last discuss with Sam?"*
 
-Prefer building from source? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (pure Go, no CGO). macOS gets the full experience — iMessage and Apple Calendar are local-only stores no cloud can reach; on Linux the Gmail, Google Calendar, and filesystem sources work identically. Walkthrough: [QUICKSTART](QUICKSTART.md) · every connector and option: [Setup & operations](docs/setup.md).
+Prefer building from source? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (pure Go, no CGO). macOS gets the full experience — iMessage and Apple Calendar are local-only stores no cloud can reach; on Linux the Gmail, Google Calendar, and filesystem sources work identically. Every connector, option, and upgrade path: [the guide](docs/guide.md).
 
 ## What you get
 
@@ -76,7 +76,7 @@ Prefer building from source? `go install github.com/pyranthus-hq/mora/cmd/mora@l
 - **A morning brief.** `mora brief` (or the scheduled 8am pulse) tells you what changed and what matters: unanswered threads, upcoming meetings, open loops — ranked by who actually matters to you.
 - **11 MCP tools.** Search, context, think, entities, digest, brief, and write-back — one server, any MCP agent, with per-source data freshness attached to search and context answers.
 
-How the three layers work: [How it works](docs/how-it-works.md) · subsystem-level spec with diagrams: [Architecture](docs/architecture/00-overview.md).
+How the three layers work: [the guide, under the hood](docs/guide.md#under-the-hood).
 
 ## Privacy model
 
@@ -87,13 +87,7 @@ How the three layers work: [How it works](docs/how-it-works.md) · subsystem-lev
 
 ## Docs
 
-| | |
-|---|---|
-| [QUICKSTART](QUICKSTART.md) | The 2-minute happy path |
-| [Setup & operations](docs/setup.md) | Every connector, multi-account Google, scheduling, config, upgrading |
-| [Why Mora](docs/why-mora.md) | Full comparison vs. cloud connectors and memory apps, with sources |
-| [How it works](docs/how-it-works.md) | The entity graph, hybrid retrieval, and the `think` envelope |
-| [Architecture](docs/architecture/00-overview.md) | 13 subsystem docs — diagrams + `file:line` citations |
+Two places: **[the guide](docs/guide.md)** — install, every connector, agent wiring, daily use, how it works under the hood, and the full comparison vs. the cloud alternatives — and **[the architecture spec](docs/architecture/00-overview.md)** for contributors: 13 subsystem docs with diagrams and `file:line` citations.
 
 ---
 

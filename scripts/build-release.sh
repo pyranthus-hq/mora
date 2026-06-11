@@ -30,12 +30,13 @@ for pair in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
   echo "building $name ..."
   CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
     go build -trimpath -ldflags "$LDFLAGS" -o "$stage/mora" ./cmd/mora
-  cp LICENSE README.md QUICKSTART.md install.sh "$stage/"
+  cp LICENSE README.md install.sh "$stage/"
   chmod +x "$stage/install.sh"
-  mkdir -p "$stage/examples"
+  mkdir -p "$stage/examples" "$stage/docs"
   cp examples/claude-code-mcp.json examples/codex-mcp.json "$stage/examples/"
+  cp docs/guide.md "$stage/docs/"
   # binary at archive root (GoReleaser default; go-selfupdate-friendly)
-  tar -C "$stage" -czf "$OUT/${name}.tar.gz" mora LICENSE README.md QUICKSTART.md install.sh examples
+  tar -C "$stage" -czf "$OUT/${name}.tar.gz" mora LICENSE README.md install.sh examples docs
   rm -rf "$stage"
 done
 

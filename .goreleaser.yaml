@@ -39,7 +39,7 @@ archives:
     files:
       - LICENSE
       - README.md
-      - QUICKSTART.md
+      - docs/guide.md
       - install.sh
       - examples/*
 

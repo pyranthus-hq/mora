@@ -9,7 +9,7 @@ The deep architecture spec lives in [`docs/architecture/`](docs/architecture/00-
 Local-first, agent-agnostic memory CLI: one pure-Go binary that stores
 human-readable Markdown memories, indexes them in embedded SQLite, and serves
 them to any MCP agent. Read-only connectors (Gmail, Calendar, iMessage), zero
-egress. See the [README](README.md) for orientation, [`docs/setup.md`](docs/setup.md)
+egress. See the [README](README.md) for orientation, [`docs/guide.md`](docs/guide.md)
 for every command and connector, and [`docs/architecture/`](docs/architecture/00-overview.md)
 for the subsystem spec.
 

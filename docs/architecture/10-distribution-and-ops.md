@@ -56,7 +56,7 @@ flowchart TD
 
     gr --> hooks["before hook:<br/>go mod tidy"]
     hooks --> build["build: CGO_ENABLED=0<br/>darwin/linux × amd64/arm64<br/>-trimpath, -s -w, ldflags version"]
-    build --> arch["archives (tar.gz)<br/>mora_{ver}_{os}_{arch}.tar.gz<br/>+ LICENSE README QUICKSTART install.sh examples"]
+    build --> arch["archives (tar.gz)<br/>mora_{ver}_{os}_{arch}.tar.gz<br/>+ LICENSE README docs/guide.md install.sh examples"]
     arch --> sum["checksum: checksums.txt (sha256)"]
     sum --> sign["cosign sign-blob<br/>→ checksums.txt.cosign.sig<br/>+ .cosign.pem (keyless / OIDC)"]
     arch --> sbom["syft SBOM per archive"]
@@ -73,7 +73,7 @@ flowchart TD
 ### Stage details
 
 1. **Build** (`.goreleaser.yaml:15-30`). Single build id `mora` from `./cmd/mora`, `CGO_ENABLED=0`, the four-way matrix, reproducible flags.
-2. **Archives** (`.goreleaser.yaml:32-44`). `tar.gz` only; the binary sits at the archive root (no nested dir) so both go-selfupdate and the cask resolve it directly. Bundles `LICENSE`, `README.md`, `QUICKSTART.md`, `install.sh`, `examples/*`. **The `name_template` is load-bearing** (see Invariants): `mora_{{.Version}}_{{.Os}}_{{.Arch}}` (`.goreleaser.yaml:37-38`).
+2. **Archives** (`.goreleaser.yaml:32-44`). `tar.gz` only; the binary sits at the archive root (no nested dir) so both go-selfupdate and the cask resolve it directly. Bundles `LICENSE`, `README.md`, `docs/guide.md`, `install.sh`, `examples/*`. **The `name_template` is load-bearing** (see Invariants): `mora_{{.Version}}_{{.Os}}_{{.Arch}}` (`.goreleaser.yaml:37-38`).
 3. **Checksums** (`.goreleaser.yaml:46-48`). One `checksums.txt`, sha256. This file is the trust anchor for self-update.
 4. **Cosign signing** (`.goreleaser.yaml:52-63`). Keyless `sign-blob` of `checksums.txt` only (`artifacts: checksum`), producing `checksums.txt.cosign.sig` + `.cosign.pem`. Keyless = Sigstore OIDC, no key management — which is why `release.yml:9` grants `id-token: write` and `release.yml:24` installs `sigstore/cosign-installer@v3`.
 5. **SBOM** (`.goreleaser.yaml:67-68`). Syft SBOM per archive (`release.yml:23` downloads syft). The config comment marks it low-priority/droppable for launch.
