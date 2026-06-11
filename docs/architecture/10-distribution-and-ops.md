@@ -137,7 +137,7 @@ Then it:
 - **Strips quarantine + ad-hoc-signs on macOS** (`install.sh:69-78`): `xattr -dr com.apple.quarantine` then `codesign --force --sign -`, done *before* first run so a binary that arrived via download/AirDrop/zip never hits the Gatekeeper "cannot be opened because Apple cannot check it" wall. No-op on Linux.
 - **Runs `mora init` idempotently** (`install.sh:81`) against `MORA_VAULT` (default `~/vault/mora`), prints the resolved version, and prints the agent-wiring one-liners (`claude mcp add … / codex mcp add …`) plus next steps (`install.sh:96-109`).
 
-> Both the cask post-install hook and `install.sh` exist for the **same reason**: the binary is unsigned/un-notarized, so something must clear Gatekeeper. That is the conscious trade for skipping Apple notarization.
+> Both the cask post-install hook and `install.sh` exist for the **same reason**: the binary is unsigned/un-notarized, so something must clear Gatekeeper. That is the trade-off of skipping Apple notarization.
 
 > **Ad-hoc signing breaks TCC grants across upgrades.** macOS keys Full Disk Access (needed for the iMessage `chat.db` read under launchd — a terminal's FDA does NOT transfer to the launchd-spawned process) to the binary's code-signing identity. An ad-hoc signature (`--sign -`) has no stable identity — its designated requirement is the cdhash, which changes every rebuild — so any binary swap (rebuild, `mora upgrade`) silently invalidates the user's FDA grant: the System Settings toggle still shows enabled, but the iMessage leg of scheduled syncs starts failing (`mora doctor` / `sync status` surface it). Adit's dev machine fixes this with a local self-signed **`mora-dev`** signing cert (trusted for codeSign in the login keychain; sign with `codesign --force --sign mora-dev`) so the identity survives rebuilds — note the grant must be re-toggled ONCE when the identity changes. For *distributed* binaries the equivalent stable identity requires a real Apple Developer ID cert + notarization (self-signed certs don't transfer to other machines); until then, document "re-toggle FDA after upgrade" for users who schedule iMessage sync.
 
@@ -182,7 +182,7 @@ The repository ships under **Apache-2.0** (`LICENSE:1-2`), copyright **AdiSam Co
 
 ## Security posture as a product invariant
 
-Mora's distribution and ops posture is **zero-telemetry, zero-egress, read-only**, and this is enforced in code, not just promised:
+Mora's distribution and ops posture is **zero-telemetry, zero-egress, read-only**, and this is enforced in code:
 
 - **Read-only Google scopes, least-privilege.** `internal/google/oauth.go:31-32` hardcodes `Scopes = {gmail.GmailReadonlyScope, calendar.CalendarReadonlyScope}` — there is no write scope anywhere, and Drive is deferred. (`oauth_test.go` exercises `ResolveOAuthConfig`'s scope round-trip — `oauth_test.go:29-30` checks the *passed* scopes survive resolution — but does not itself assert the read-only `Scopes` global; the global at `oauth.go:32` is the ground truth.)
 - **No telemetry / opt-out usage logging.** Usage logging is local-only JSONL in the state dir (never the vault). `usageEnabled` (`mora.go:3251-3259`) honors `DO_NOT_TRACK=1` (`mora.go:3252`) **and** a `<StateDir>/usage/OFF` sentinel (`mora.go:3255`, written by `mora usage off` at `mora.go:1771`). The query field is documented "raw tier only; never sent" (`mora.go:3245`).
@@ -215,7 +215,7 @@ In short: the only network egress the binary performs is to Google's read-only A
 
 10. **Read-only Google scopes are a hard product invariant.** `Scopes` is `{gmail.readonly, calendar.readonly}` (`oauth.go:32`), pinned by test. WHY: Mora's trust model is "it can read, it can never write or delete your data." Adding a write scope is a posture change, not a feature.
 
-11. **Zero-egress: memory bytes never leave the machine except to read-only Google APIs (and opt-in loopback Ollama).** The non-loopback Ollama refusal (`embed_ollama.go:100-106`) and the `DO_NOT_TRACK`/`OFF` usage gate (`mora.go:3251-3259`) enforce it. WHY: local-first privacy is the entire pitch; any new outbound call is a thesis violation and must be gated the same way.
+11. **Zero-egress: memory bytes never leave the machine except to read-only Google APIs (and opt-in loopback Ollama).** The non-loopback Ollama refusal (`embed_ollama.go:100-106`) and the `DO_NOT_TRACK`/`OFF` usage gate (`mora.go:3251-3259`) enforce it. WHY: local-only operation is a core invariant; any new outbound call must be gated the same way.
 
 12. **The size job is advisory; the secrets and lint jobs are blocking.** `size` is `continue-on-error: true` (`ci.yml:103`); gitleaks is `--exit-code 1` (`ci.yml:121`). WHY: a size regression should inform, not block; a leaked secret or lint regression must block.
 
