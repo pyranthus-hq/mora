@@ -55,14 +55,16 @@ func sortEntitiesLegacy(es []Entity) {
 // ensureIndexDB opens the index read-only, building it first if the graph isn't
 // present yet. It rebuilds both when the db is missing AND when the db predates
 // S1 (legacy memories+fts but no entities/edges) — otherwise an upgraded user's
-// first graph read would fail with "no such table: entities". Caller must Close.
+// first graph read would fail with "no such table: entities". A version-stale
+// index (openIndexRO) is NOT auto-rebuilt — see openIndexRO for why. Caller
+// must Close.
 func ensureIndexDB(ctx context.Context, cfg Config) (*sql.DB, error) {
 	if !graphReady(cfg) {
 		if _, err := rebuildIndex(ctx, cfg); err != nil {
 			return nil, err
 		}
 	}
-	return sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	return openIndexRO(cfg)
 }
 
 // graphReady reports whether the index exists and already carries the S1 graph

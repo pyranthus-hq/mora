@@ -2546,6 +2546,44 @@ func memoriesRoot(cfg Config) string { return filepath.Join(cfg.VaultDir, "memor
 func sourcesRoot(cfg Config) string  { return filepath.Join(cfg.VaultDir, "sources") }
 func dbPath(cfg Config) string       { return filepath.Join(cfg.DataDir, "index.db") }
 
+// indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
+// binary writes. Bump it whenever rebuildIndex's shape changes meaning (a new
+// table or column, vector layout, salience semantics). Read paths refuse a
+// mismatched index with an actionable error instead of degrading silently —
+// a binary swapped across a schema change otherwise serves missing columns or
+// zeroed salience (the live Phase-14 failure). 1 = the first stamped schema;
+// every pre-stamp index reads as 0 and asks for one rebuild.
+const indexSchemaVersion = 1
+
+// openIndexRO opens the index read-only, refusing a schema this binary doesn't
+// understand. Rebuild-on-missing stays at the call sites; rebuild-on-stale is
+// deliberately NOT automatic here — under a semantic embedder a full re-embed
+// takes minutes, which would stall an innocent MCP tool call. `mora upgrade`
+// runs the rebuild at the moment the user consented to a slow step; everyone
+// else gets told the exact command.
+func openIndexRO(cfg Config) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	if err := checkIndexSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func checkIndexSchema(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	if v != indexSchemaVersion {
+		return fmt.Errorf("the search index was built by a different mora version (index schema v%d, this binary expects v%d) — run `mora index rebuild`", v, indexSchemaVersion)
+	}
+	return nil
+}
+
 func memoryPath(cfg Config, m Memory) string {
 	scopePath := strings.ReplaceAll(m.Scope, ":", string(os.PathSeparator))
 	scopePath = strings.ReplaceAll(scopePath, "/", string(os.PathSeparator))
@@ -2612,6 +2650,10 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 		`DELETE FROM entities`,
 		`DELETE FROM edges`,
 		`DELETE FROM mem_vectors`,
+		// Stamp the schema this binary writes (read paths refuse a mismatch).
+		// Inside the same tx as everything else: a rolled-back rebuild must not
+		// leave a fresh stamp on a stale index.
+		fmt.Sprintf(`PRAGMA user_version = %d`, indexSchemaVersion),
 	}
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
@@ -2778,7 +2820,7 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	db, err := openIndexRO(cfg)
 	if err != nil {
 		return nil, err
 	}
