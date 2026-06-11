@@ -53,6 +53,17 @@ codex  mcp add mora -- mora mcp serve            # Codex
 
 Per-connector setup, options, and upgrades: [the guide](docs/guide.md).
 
+### Agent skills (optional)
+
+A small plugin of agent-side recipes that pair with the MCP server — they teach an agent to resolve people, shared history, and calendar context from the vault *before* reaching for the web:
+
+```
+/plugin marketplace add pyranthus-hq/mora
+/plugin install mora@mora
+```
+
+First skill: `/mora:dining-concierge` — outing recommendations grounded in who's coming and where you've actually been. Skills are plain Markdown ([plugins/mora](plugins/mora)); other agents can copy them into their own skills directory.
+
 ## Why a local corpus
 
 Claude and ChatGPT connectors fetch from Google's APIs per query and process results server-side — good for "what's on my calendar tomorrow," not for "what did I commit to, and to whom" across months. Mora keeps a persistent corpus instead, and indexes iMessage, which has no cloud API.
