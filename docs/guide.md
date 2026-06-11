@@ -279,6 +279,9 @@ mora upgrade                     # in-place self-update to the latest release (v
 mora upgrade --check             # just report whether a newer release exists
 ```
 
+After a successful swap, `mora upgrade` automatically rebuilds the search index with the new
+version (a schema change otherwise strands a stale index — Mora refuses one with a clear
+"run `mora index rebuild`" error rather than degrading silently).
 Direct-binary installs self-update from the public GitHub releases — no token or auth needed.
 Homebrew-managed installs are detected and deferred to `brew upgrade`; source/`go build` builds
 report `dev` and refuse self-update — rebuild with `git pull && go build`.

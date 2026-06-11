@@ -10,7 +10,7 @@ How Mora is built, signed, released, self-updated, and installed — and the pur
 | `.github/workflows/ci.yml` | 122 | PR/push gate: gofmt, `go vet`, `go test -race`, golangci-lint, cross-arch build matrix, binary-size diff (advisory), gitleaks secret scan. |
 | `.github/workflows/release.yml` | 34 | Tag-triggered (`v*`) GoReleaser run; provisions syft + cosign; wires `GITHUB_TOKEN` + `HOMEBREW_TAP_TOKEN`. |
 | `.github/workflows/claude.yml` | 63 | On-demand Claude reviewer (`@claude` mention or `claude-review` label); read-only on contents, advisory only. |
-| `internal/mora/upgrade.go` | 120 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds. |
+| `internal/mora/upgrade.go` | ~150 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds; after a successful swap it execs the NEW binary's `index rebuild` (`postUpgradeRebuild`, warn-don't-fail) so a schema change never strands a stale index. |
 | `cmd/mora/main.go` | 28 | Entry point; receives `-ldflags -X main.{version,commit,date}` and forwards into `mora.Build*`. |
 | `install.sh` | 109 | POSIX installer: local-tarball or authenticated remote-download mode; Gatekeeper quarantine strip + ad-hoc sign; idempotent `mora init`. |
 | `scripts/build-release.sh` | 49 | Local GoReleaser-mirror cross-build of all four targets + `checksums.txt`. |
@@ -108,13 +108,15 @@ flowchart TD
     dl --> validate["ChecksumValidator<br/>verify vs checksums.txt"]
     validate --> swap["UpdateTo: atomic same-path swap"]
     swap --> done["'✓ updated mora to Y'"]
+    done --> reindex["postUpgradeRebuild:<br/>exec NEW binary `index rebuild`<br/>(warn-don't-fail)"]
 ```
 
 Key behaviors, each grounded:
 
 - **Source builds are refused** (`upgrade.go:32-35`). If `BuildVersion` is `"dev"` or empty, upgrade errors out and tells the user to `git pull && go build`. This is why the ldflags version-stamp (above) is a hard dependency of self-update.
 - **Homebrew installs defer to brew** (`upgrade.go:45-49`). After resolving symlinks (`upgrade.go:41-43`), `isHomebrewManaged` (`upgrade.go:107-110`) checks whether the *resolved* path contains `/Cellar/` or `/Caskroom/`. The symlink-resolve-first step matters: a binary that merely *sits in* `/opt/homebrew/bin` via `install.sh` is a real file there, not a Homebrew symlink, so it is **not** flagged (`upgrade.go:102-106`) and self-update proceeds normally.
-- **Private-repo token discovery** (`upgrade.go:52`). The repo is currently private, so go-selfupdate needs a token to read releases. It takes the first non-empty of `MORA_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` (`firstNonEmpty`, `upgrade.go:112-119`). When detection fails with no token, the error hints `export GITHUB_TOKEN=$(gh auth token)` (`upgrade.go:71-75`).
+- **Token discovery** (`upgrade.go:52`). The repo is public, so no token is required; when one of `MORA_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` is set it is used (rate limits, forks of the private lineage). On detection failure with no token the error still hints `export GITHUB_TOKEN=$(gh auth token)`.
+- **Post-upgrade reindex** (`postUpgradeRebuild`). After `UpdateTo` succeeds, upgrade execs the swapped-in binary as `<exe> index rebuild` — the running process is still the old code; `indexSchemaVersion` knowledge lives in the new executable. Failure warns and prints the manual command; it never fails the upgrade (the swap already happened).
 - **Checksum validation before swap** (`upgrade.go:60-63`). The updater is built with `&selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"}` — the downloaded archive is verified against the release's published `checksums.txt` (the same file GoReleaser/`build-release.sh` emit) before the binary is swapped. The comment is explicit: "don't trust TLS + the GitHub API alone."
 - **Atomic, failure-safe swap** (`upgrade.go:94-96`). `UpdateTo` replaces the running binary in place; on error the message guarantees "binary left unchanged."
 - **`--check` is read-only** (`upgrade.go:88-91`): reports availability and stops.

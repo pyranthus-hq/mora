@@ -189,7 +189,7 @@ flowchart TD
     COMMIT --> N["return count"]
 ```
 
-The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/vector write — runs inside **one transaction** (`mora.go:2029-2100`). A mid-rebuild failure rolls back to the prior committed index rather than leaving a half-empty one; this is why a graph or embedder error returns through `writeGraph`/`writeVectors` before `Commit` (`mora.go:2089-2096`). A file that fails to parse is skipped, not fatal (`mora.go:2072-2074`). `searchMemories` lazily triggers a rebuild if `index.db` is missing (`mora.go:2200-2204`).
+The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/vector write — runs inside **one transaction** (`mora.go:2029-2100`). A mid-rebuild failure rolls back to the prior committed index rather than leaving a half-empty one; this is why a graph or embedder error returns through `writeGraph`/`writeVectors` before `Commit` (`mora.go:2089-2096`). A file that fails to parse is skipped, not fatal (`mora.go:2072-2074`). `searchMemories` lazily triggers a rebuild if `index.db` is missing (`mora.go:2200-2204`). The same transaction stamps `PRAGMA user_version = indexSchemaVersion`; every read-open goes through `openIndexRO`, which **refuses a mismatched index** with an actionable "run `mora index rebuild`" error rather than serving a stale schema silently (the pre-stamp failure: a swapped binary read zeroed salience off a pre-column index). Read paths deliberately do NOT auto-rebuild on mismatch — a semantic-embedder re-embed takes minutes and would stall an MCP call; `mora upgrade` runs the rebuild instead.
 
 ## Config & paths
 
@@ -207,6 +207,7 @@ The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/
 
 ## Invariants & gotchas
 
+- **`index.db` carries a schema stamp (`PRAGMA user_version`).** Bump `indexSchemaVersion` whenever the rebuilt shape changes meaning; readers refuse a mismatch (actionable error), and `mora upgrade` re-stamps by rebuilding with the new binary.
 - **The vault is the source of truth; `index.db` is a disposable cache.** Every SQLite table is rebuilt from scratch on `rebuildIndex` (`mora.go:2047-2051`). Never store state that lives *only* in SQLite — it will not survive a rebuild. WHY: a corrupt or deleted DB must be recoverable from the Markdown alone.
 - **`StableID` is provider identity, never content** (`ids.go:9-13`). Re-syncing an edited item must overwrite the same file, not duplicate it. WHY: idempotent backfills.
 - **Files are named by `SafeFilename`, not by id.** Any id→file lookup MUST match both `id+".md"` and `SafeFilename(id)+".md"` (`findMemory`, `mora.go:2249-2257`). WHY: `gmail_thread/x` files as `gmail_thread_x.md`; a naive `id+".md"` match silently misses every provider memory.
