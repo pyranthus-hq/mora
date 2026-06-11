@@ -79,23 +79,7 @@ Cloud tools win on zero setup, a web UI, and write actions; Mora has none of tho
 
 - **Read-only.** Google scopes are `gmail.readonly` and `calendar.readonly`; the iMessage and Apple Calendar databases are opened read-only. Mora cannot send, modify, or delete anything.
 - **All data local.** Vault, index, and OAuth tokens (`~/.config/mora/tokens/`, 0600) stay on disk. No analytics endpoint; the local, content-free usage log is disabled by `mora usage off` or `DO_NOT_TRACK=1`.
-
-## Current limitations
-
-- iMessage and Apple Calendar are macOS-only and require Full Disk Access.
-- The bundled Google OAuth app is unverified — consent shows Google's warning (Advanced → continue), or bring your own client via `MORA_GOOGLE_CREDENTIALS`.
-- No Google Drive or GitHub ingestion. The filesystem source skips PDFs; `.docx` works.
-- Sync re-fetches a recent window each run rather than tailing changes; `mora sync status` shows per-source freshness.
-- Default search is lexical; paraphrase recall needs the Ollama embedder.
-- Binaries are not Apple-notarized, and the installer does not verify checksums.
-- CLI and MCP only; no web or desktop UI.
-
-## Non-goals
-
-- Write actions against your accounts (sending mail, creating events).
-- Hosted sync, multi-device replication, or any cloud component.
-- Replacing your mail client, calendar app, or CRM.
-
+- 
 ## Docs
 
 **[The guide](docs/guide.md)** — connectors, MCP wiring, daily use, how retrieval works, the cloud comparison. **[docs/architecture/](docs/architecture/00-overview.md)** — contributor spec: 13 subsystem docs with diagrams and `file:line` citations.
