@@ -68,7 +68,7 @@ func extractPDFText(path string) (text string, err error) {
 		b.WriteString(s)
 		b.WriteString("\n")
 		if b.Len() > 512*1024 {
-			break // already past the index bound — the caller will skip the file
+			break // truncate here; the caller's 512 KiB cap skips files whose extracted text exceeds the index bound.
 		}
 	}
 	return strings.TrimSpace(b.String()), nil

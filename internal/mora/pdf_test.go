@@ -126,14 +126,15 @@ func TestIngestFilesystemPDF(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "junk.pdf"), []byte("not a pdf at all"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeMinimalPDF(t, filepath.Join(dir, "MEMO.PDF"), "uppercase extension memo body")
 
 	s := fsSource("fsdocs", dir, "personal")
 	n, err := ingestFilesystem(cfg, s)
 	if err != nil {
 		t.Fatalf("ingestFilesystem: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected exactly the valid pdf ingested (junk skipped), got %d", n)
+	if n != 2 {
+		t.Fatalf("expected both valid pdfs ingested (junk skipped), got %d", n)
 	}
 
 	root := filepath.Join(sourcesRoot(cfg), s.Type, s.Name)
@@ -141,17 +142,24 @@ func TestIngestFilesystemPDF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading ingested memories: %v", err)
 	}
-	found := false
+	foundLower := false
+	foundUpper := false
 	for _, e := range entries {
 		m, perr := parseMemory(filepath.Join(root, e.Name()))
 		if perr != nil {
 			t.Fatalf("parseMemory(%s): %v", e.Name(), perr)
 		}
 		if strings.Contains(m.Text, "signed widget contract clause") {
-			found = true
+			foundLower = true
+		}
+		if strings.Contains(m.Text, "uppercase extension memo body") {
+			foundUpper = true
 		}
 	}
-	if !found {
+	if !foundLower {
 		t.Fatal("extracted pdf text not found in ingested memories")
+	}
+	if !foundUpper {
+		t.Fatal("uppercase-extension pdf text not found in ingested memories")
 	}
 }
