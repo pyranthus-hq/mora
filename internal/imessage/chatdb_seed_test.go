@@ -2,6 +2,7 @@ package imessage
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -370,6 +371,45 @@ func TestSeededTextColumnPlaceholderStripped(t *testing.T) {
 	}
 	if !strings.Contains(body, "[image: IMG_2.jpg]") || !strings.Contains(body, "[image: IMG_3.jpg]") {
 		t.Fatalf("attachment markers missing:\n%s", body)
+	}
+}
+
+// TestAttachmentPathThreadedThrough proves the IMSG-07 amendment: the attachment's
+// on-disk location (tilde-expanded) travels in Attachment.Path for the wiring
+// boundary, while Filename stays the path-free base name used in rendered output.
+func TestAttachmentPathThreadedThrough(t *testing.T) {
+	chats := []seedChat{{rowid: 1, guid: "iMessage;-;+14155551234", identifier: "+14155551234", participants: []string{"+14155551234"}}}
+	msgs := []seedMsg{
+		{chatID: 1, date: localDate(2026, 5, 20, 9, 0), handle: "+14155551234", text: "here's the doc",
+			attFile: "~/Library/Messages/Attachments/ab/cd/doc.pdf", attMime: "application/pdf"},
+	}
+	path := seedChatDB(t, chats, msgs)
+
+	f, err := NewLiveFetcher(path, DenyList{})
+	if err != nil {
+		t.Fatalf("NewLiveFetcher: %v", err)
+	}
+	defer f.Close()
+
+	items := fetchAll(t, f, FetchWindow{})
+	if len(items) != 1 {
+		t.Fatalf("want 1 conversation, got %d", len(items))
+	}
+	c, ok := items[0].Payload.(convInput)
+	if !ok {
+		t.Fatalf("item has no convInput payload")
+	}
+	if len(c.attachments) != 1 {
+		t.Fatalf("want 1 attachment, got %d", len(c.attachments))
+	}
+	att := c.attachments[0]
+	if att.Filename != "doc.pdf" {
+		t.Fatalf("Filename must stay the base name (rendered output is path-free): %q", att.Filename)
+	}
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, "Library/Messages/Attachments/ab/cd/doc.pdf")
+	if att.Path != want {
+		t.Fatalf("Path must carry the expanded on-disk location: got %q want %q", att.Path, want)
 	}
 }
 

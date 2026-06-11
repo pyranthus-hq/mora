@@ -42,8 +42,9 @@ func mapConversation(c convInput, r *Resolver, budget int) memory.MappedMemory {
 	title := renderTitle(c.chat, r)
 	body, res := renderBody(c.messages, r, budget)
 
-	// Defensive copy of attachment metadata (filename/MIME/size only — never the
-	// bytes or on-disk path, IMSG-07).
+	// Defensive copy of attachment metadata: filename/MIME/size plus the on-disk
+	// Path for the wiring boundary — bytes never; rendered output stays path-free
+	// (IMSG-07 amendment).
 	var attachments []Attachment
 	if len(c.attachments) > 0 {
 		attachments = make([]Attachment, len(c.attachments))
