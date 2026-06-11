@@ -4,6 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/pyranthus-hq/mora/internal/applecal"
+	"github.com/pyranthus-hq/mora/internal/google"
+	"github.com/pyranthus-hq/mora/internal/imessage"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // ---------------------------------------------------------------------------
@@ -263,5 +269,116 @@ func TestConnectorDisplayUnknownDeterministic(t *testing.T) {
 	_, lEmpty := connectorDisplay("")
 	if lEmpty == "" {
 		t.Fatalf("connectorDisplay(\"\") produced empty label; want a clean fallback")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Provider ↔ catalog-type reconciliation (the shipped applecal bug)
+// ---------------------------------------------------------------------------
+
+// TestConnectorProviderKeysReconcile round-trips every Ingesting catalog entry:
+// the Provider its connector's mapper actually mints on memories must produce
+// the SAME instance key that the entry's Source row produces. If the two sides
+// disagree, that connector's memories never reconcile against the enumerated
+// connector set (sourceInstanceKey vs instanceKeyForSource) — they silently
+// vanish from the delta brief, fall to the unknown rank in digests, and cannot
+// be --source filtered. Apple Calendar shipped exactly this: mapper provider
+// "applecal" vs catalog type "applecalendar".
+//
+// Every future ingesting connector MUST add its mint here; the t.Fatalf below
+// is the trap that forces it.
+func TestConnectorProviderKeysReconcile(t *testing.T) {
+	// Mint a Provider through each connector's REAL mapping path (the kind
+	// registry for gmail/calendar/applecal; iMessage's custom mapper stamps its
+	// provider directly and bypasses the registry).
+	mint := map[string]func() string{
+		"gmail": func() string {
+			return memory.MapItem(memory.Item{Kind: google.KindGmailThread}, "global", 0).Provider
+		},
+		"calendar": func() string {
+			return memory.MapItem(memory.Item{Kind: google.KindCalEvent}, "global", 0).Provider
+		},
+		"imessage": func() string {
+			return imessage.MapConversationFn(nil)(memory.Item{Kind: imessage.KindIMessageChat}, "global", 0).Provider
+		},
+		"applecalendar": func() string {
+			return memory.MapItem(memory.Item{Kind: applecal.KindAppleCalEvent}, "global", 0).Provider
+		},
+		// filesystem mints NO Provider on purpose: sourceInstanceKey rejects the
+		// empty provider and the brief skips filesystem by design (brief.go).
+	}
+	for _, ci := range connectorCatalog {
+		if !ci.Ingesting || ci.Type == "filesystem" {
+			continue
+		}
+		mintFn, ok := mint[ci.Type]
+		if !ok {
+			t.Fatalf("catalog entry %q has no provider mint in this test — add one; this table is the reconciliation contract every ingesting connector must pass", ci.Type)
+		}
+		provider := mintFn()
+		key, ok := sourceInstanceKey(Memory{Provider: provider})
+		if !ok {
+			t.Fatalf("%s: sourceInstanceKey rejected minted provider %q", ci.Type, provider)
+		}
+		want := instanceKeyForSource(Source{Type: ci.Type})
+		if key != want {
+			t.Errorf("%s: memory-side key %q != source-side key %q — this connector's memories never reconcile with its enumerated instance", ci.Type, key, want)
+		}
+	}
+}
+
+// TestSourceInstanceKeyNormalizesAliasedProvider pins the multi-account
+// composite for an aliased provider: an applecal memory with an Account must
+// key as "applecalendar:<account>", agreeing with the Source-side composite.
+func TestSourceInstanceKeyNormalizesAliasedProvider(t *testing.T) {
+	key, ok := sourceInstanceKey(Memory{Provider: "applecal", Account: "family"})
+	if !ok || key != "applecalendar:family" {
+		t.Fatalf("sourceInstanceKey(applecal, family) = %q, %v; want \"applecalendar:family\", true", key, ok)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Upcoming capability (replaces the HasPrefix(key, "calendar") heuristic)
+// ---------------------------------------------------------------------------
+
+// TestConnectorUpcomingCapability pins the forward-window capability as catalog
+// DATA. The old string-prefix heuristic silently missed Apple Calendar
+// ("applecalendar" does not start with "calendar"), so its cold-start brief
+// looked 7 days BACK at a connector whose items are future-dated events.
+func TestConnectorUpcomingCapability(t *testing.T) {
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		{"calendar", true},
+		{"applecalendar", true},
+		{"calendar:work", true}, // composite account key inherits the capability
+		{"gmail", false},
+		{"imessage", false},
+		{"filesystem", false},
+		{"notion", false}, // unknown connectors default to the past window
+	}
+	for _, c := range cases {
+		if got := connectorUpcoming(c.key); got != c.want {
+			t.Errorf("connectorUpcoming(%q) = %v, want %v", c.key, got, c.want)
+		}
+	}
+}
+
+// TestColdStartWindowAppleCalendarLooksForward is the end-to-end half of the
+// Upcoming fix: on a cold start, the applecalendar section must surface the
+// UPCOMING week only — same as Google Calendar — not the trailing one. The
+// discriminating case is a recent PAST event: the old HasPrefix heuristic
+// classified applecalendar as a non-calendar source, whose backward window
+// (unbounded above) admits it.
+func TestColdStartWindowAppleCalendarLooksForward(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	mems := []Memory{
+		{ID: "future", Title: "Dentist", CreatedAt: now.Add(48 * time.Hour).Format(time.RFC3339), Provider: "applecal"},
+		{ID: "past", Title: "Two days ago", CreatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339), Provider: "applecal"},
+	}
+	items, _, _ := deltaSectionItems(Config{}, briefDelta{ColdStart: true}, mems, now, "applecalendar", 8, nil)
+	if len(items) != 1 || items[0].ID != "future" {
+		t.Fatalf("cold-start applecalendar section = %+v; want exactly the upcoming event \"future\" (past events belong to the calendar's history, not its cold-start brief)", items)
 	}
 }

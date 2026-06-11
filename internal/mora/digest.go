@@ -382,7 +382,7 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 	shownIDs = map[string]bool{}
 	if delta.ColdStart {
 		var tis []tsItem
-		isCalendar := strings.HasPrefix(key, "calendar")
+		isCalendar := connectorUpcoming(key)
 		for _, m := range mems {
 			ts, err := time.Parse(time.RFC3339, m.CreatedAt)
 			if err != nil {

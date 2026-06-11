@@ -1,0 +1,11 @@
+{
+  "name": "mora",
+  "owner": { "name": "pyranthus-hq" },
+  "plugins": [
+    {
+      "name": "mora",
+      "source": "./plugins/mora",
+      "description": "Agent skills that pair with the Mora MCP server — recipes that ground live tasks in your local vault"
+    }
+  ]
+}
