@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // I3 `think` is the synthesis envelope: a DETERMINISTIC floor (retrieve + gap
@@ -70,7 +71,7 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 			Scope:     m.Scope,
 			CreatedAt: m.CreatedAt,
 			Score:     m.Score,
-			Snippet:   snippet(m.Text, thinkSnippetLen),
+			Snippet:   matchSnippet(m.Text, query, thinkSnippetLen),
 		})
 	}
 	gaps, err := computeGaps(ctx, cfg, query, mems, now)
@@ -215,4 +216,110 @@ func snippet(text string, n int) string {
 		return text
 	}
 	return strings.TrimSpace(string(r[:n])) + "…"
+}
+
+// snippetTermCap bounds how many query terms a snippet scan considers — a
+// think query with pasted context must not turn every preview into a long scan.
+const snippetTermCap = 12
+
+// snippetTerms extracts the discriminative query terms used to center a
+// snippet: ftsToken-normalized (case, edge punctuation, contraction tails),
+// stopwords and single-rune tokens dropped, de-duplicated, query order kept.
+func snippetTerms(query string) [][]rune {
+	var out [][]rune
+	seen := map[string]bool{}
+	for _, f := range strings.Fields(query) {
+		_, key := ftsToken(f)
+		if key == "" || seen[key] || ftsStopwords[key] {
+			continue
+		}
+		kr := []rune(key)
+		if len(kr) < 2 {
+			continue
+		}
+		seen[key] = true
+		out = append(out, kr)
+		if len(out) == snippetTermCap {
+			break
+		}
+	}
+	return out
+}
+
+// earliestQueryMatch returns the rune index of the first word-boundary,
+// case-insensitive occurrence of any snippetTerms(query) term in r, or -1.
+// Lowercasing is per-rune so indexes stay aligned with r (a string-level
+// ToLower can change rune counts for a handful of code points).
+func earliestQueryMatch(r []rune, query string) int {
+	terms := snippetTerms(query)
+	if len(terms) == 0 {
+		return -1
+	}
+	lower := make([]rune, len(r))
+	for i, c := range r {
+		lower[i] = unicode.ToLower(c)
+	}
+	isWord := func(c rune) bool { return unicode.IsLetter(c) || unicode.IsDigit(c) }
+	for i := range lower {
+		if i > 0 && isWord(lower[i-1]) {
+			continue // mid-word — not a token start
+		}
+		for _, t := range terms {
+			if i+len(t) > len(lower) {
+				continue
+			}
+			hit := true
+			for j, tc := range t {
+				if lower[i+j] != tc {
+					hit = false
+					break
+				}
+			}
+			if !hit {
+				continue
+			}
+			if i+len(t) < len(lower) && isWord(lower[i+len(t)]) {
+				continue // prefix of a longer word ("dan" in "abundant")
+			}
+			return i
+		}
+	}
+	return -1
+}
+
+// matchSnippet returns a single-line, rune-safe window of text centered on the
+// earliest query-term match, so a preview shows WHY a memory matched rather
+// than its opening boilerplate — a hit deep in a long thread was previously
+// found by FTS yet invisible in the head-clipped preview, making grounded
+// answers look unsupported. Deterministic; with no usable term or no body
+// match (a title/tag hit), it falls back to the head clip, byte-identical to
+// snippet().
+func matchSnippet(text, query string, n int) string {
+	flat := strings.Join(strings.Fields(text), " ")
+	r := []rune(flat)
+	if len(r) <= n {
+		return flat
+	}
+	pos := earliestQueryMatch(r, query)
+	leadIn := n / 3 // context ahead of the match so the term doesn't open the window cold
+	if pos < 0 || pos <= leadIn {
+		// No body match, or the match already sits inside the head window.
+		return strings.TrimSpace(string(r[:n])) + "…"
+	}
+	start := pos - leadIn
+	if start+n > len(r) {
+		start = len(r) - n
+	}
+	for start > 0 && start < pos && r[start-1] != ' ' {
+		start++ // never open mid-word
+	}
+	end := start + n
+	if end > len(r) {
+		end = len(r)
+	}
+	out := "…" + strings.TrimSpace(string(r[start:end]))
+	if end < len(r) {
+		out += "…"
+	}
+	return out
 }

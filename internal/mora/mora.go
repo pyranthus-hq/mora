@@ -2750,8 +2750,10 @@ const (
 // single line and clipped to searchSnippetLen (Truncated flags the clip), and
 // drops the Meta map so a row's total size is bounded (Meta is entity-graph
 // frontmatter — agents get it via get_entity/read_memory, not a search preview).
+// The clip window is centered on the earliest query-term match (matchSnippet),
+// so a preview shows the evidence for the hit, not the memory's opening lines.
 // Only the token-budgeted MCP surface calls this; the CLI keeps full bodies+meta.
-func snippetMemories(mems []Memory) []Memory {
+func snippetMemories(mems []Memory, query string) []Memory {
 	if mems == nil {
 		return nil
 	}
@@ -2759,7 +2761,7 @@ func snippetMemories(mems []Memory) []Memory {
 	for i, m := range mems {
 		full := strings.Join(strings.Fields(m.Text), " ")
 		if utf8.RuneCountInString(full) > searchSnippetLen {
-			m.Text = snippet(m.Text, searchSnippetLen)
+			m.Text = matchSnippet(m.Text, query, searchSnippetLen)
 			m.Truncated = true
 		} else {
 			m.Text = full
@@ -3778,8 +3780,9 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		return findMemory(cfg, strArg(args, "id", ""))
 	case "search_memory":
 		start := time.Now()
-		res, err := defaultSearch(ctx, cfg, strArg(args, "query", ""), strArg(args, "scope", ""), intArg(args, "limit", mcpSearchDefaultLimit))
-		logUsage(cfg, usageEvent{Tool: "search_memory", Query: strArg(args, "query", ""), Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
+		query := strArg(args, "query", "")
+		res, err := defaultSearch(ctx, cfg, query, strArg(args, "scope", ""), intArg(args, "limit", mcpSearchDefaultLimit))
+		logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
 		if err != nil {
 			return nil, err
 		}
@@ -3787,7 +3790,7 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// answer carries the per-source last_synced map (same shape as
 		// context_memory's), so the agent can qualify answers with data age
 		// instead of presenting a stale vault as live.
-		return map[string]any{"results": snippetMemories(res), "freshness": sourceFreshness(cfg)}, nil
+		return map[string]any{"results": snippetMemories(res, query), "freshness": sourceFreshness(cfg)}, nil
 	case "list_memory":
 		start := time.Now()
 		res, err := listMemories(cfg, strArg(args, "scope", ""), intArg(args, "limit", 10))
