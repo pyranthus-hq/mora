@@ -93,7 +93,7 @@ Cloud tools win on zero setup, a web UI, and write actions; Mora has none of tho
 ## Non-goals
 
 - Write actions against your accounts (sending mail, creating events).
-- Hosted sync, multi-device replication, or any cloud component.
+- Hosting your data. There is no Mora server; the vault is plain files, so if you want it on two machines, sync it with whatever you already trust (iCloud Drive, Syncthing, git).
 - Replacing your mail client, calendar app, or CRM.
 
 ## Docs
