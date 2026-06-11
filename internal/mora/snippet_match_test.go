@@ -89,6 +89,26 @@ func TestMatchSnippetWordBoundaryAndCase(t *testing.T) {
 	}
 }
 
+// Case-aware stopword survival (the FTS rule): a capitalized "Will" is a
+// name, not the function word — it must center the window.
+func TestMatchSnippetCapitalizedNameSurvivesStoplist(t *testing.T) {
+	text := strings.Repeat("project status chatter and threads ", 30) + "Will confirmed the venue booking. " + strings.Repeat("more chatter ", 30)
+	got := matchSnippet(text, "Will venue", 120)
+	if !strings.Contains(got, "Will confirmed") {
+		t.Fatalf("capitalized Will should survive the stoplist and center the window: %q", got)
+	}
+}
+
+// Term priority: the longest (most discriminative) matching term wins, so a
+// surviving capitalized "What" never out-centers the real subject.
+func TestMatchSnippetPrefersMostDiscriminativeTerm(t *testing.T) {
+	text := "What a week of chatter this was. " + strings.Repeat("filler discussion notes ", 30) + "Dan said wear polos on Saturday. " + strings.Repeat("tail ", 30)
+	got := matchSnippet(text, "What did Dan say about polos", 120)
+	if !strings.Contains(got, "polos") {
+		t.Fatalf("longest matching term (polos) should win over an early 'what': %q", got)
+	}
+}
+
 // Rune safety: multibyte text around the match must not be split into invalid
 // UTF-8 (the byte-clean invariant extends to machine surfaces).
 func TestMatchSnippetRuneSafe(t *testing.T) {

@@ -56,7 +56,7 @@ func sortEntitiesLegacy(es []Entity) {
 // present yet. It rebuilds both when the db is missing AND when the db predates
 // S1 (legacy memories+fts but no entities/edges) — otherwise an upgraded user's
 // first graph read would fail with "no such table: entities". A version-stale
-// index (openIndexRO) is NOT auto-rebuilt — see openIndexRO for why. Caller
+// index self-heals or errors per openIndexRO's indexAutoHeal policy. Caller
 // must Close.
 func ensureIndexDB(ctx context.Context, cfg Config) (*sql.DB, error) {
 	if !graphReady(cfg) {
@@ -64,7 +64,7 @@ func ensureIndexDB(ctx context.Context, cfg Config) (*sql.DB, error) {
 			return nil, err
 		}
 	}
-	return openIndexRO(cfg)
+	return openIndexRO(ctx, cfg)
 }
 
 // graphReady reports whether the index exists and already carries the S1 graph

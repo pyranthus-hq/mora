@@ -37,11 +37,10 @@ func TestRebuildIndexStampsSchemaVersion(t *testing.T) {
 	}
 }
 
-// An index whose schema doesn't match the binary must fail LOUDLY with the
-// exact fix — not degrade silently (the live Phase-14 failure mode: a swapped
-// binary served zeroed salience off a pre-column index). Pre-stamp indexes
-// read as user_version 0, so forcing 0 simulates every legacy vault.
-func TestStaleIndexSchemaErrorsActionably(t *testing.T) {
+// makeStaleIndex builds a real index then forces user_version=0 — exactly what
+// every pre-stamp vault reads as.
+func makeStaleIndex(t *testing.T) Config {
+	t.Helper()
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
@@ -60,8 +59,47 @@ func TestStaleIndexSchemaErrorsActionably(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
+	return cfg
+}
 
-	if _, err := openIndexRO(cfg); err == nil || !strings.Contains(err.Error(), "mora index rebuild") {
+// On the static-hash floor a stale index SELF-HEALS at read time (a rebuild is
+// seconds — same philosophy as rebuild-on-missing). This is what saves every
+// distributed user's first upgrade across the stamp's introduction: their old
+// binary's `upgrade` predates the post-upgrade rebuild hook.
+func TestStaleIndexSelfHealsOnStaticFloor(t *testing.T) {
+	cfg := makeStaleIndex(t)
+	res, err := searchMemories(context.Background(), cfg, "hello", "", 5)
+	if err != nil {
+		t.Fatalf("static-floor read of a stale index should self-heal, got: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatal("self-healed index returned no results")
+	}
+	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v != indexSchemaVersion {
+		t.Fatalf("self-heal did not re-stamp: user_version=%d, want %d", v, indexSchemaVersion)
+	}
+}
+
+// Under a semantic embedder a re-embed takes minutes and must not stall an
+// innocent read (an MCP tool call) — the read fails LOUDLY with the exact fix
+// instead of degrading silently (the live Phase-14 failure mode: a swapped
+// binary served zeroed salience off a pre-column index).
+func TestStaleIndexErrorsActionablyWithoutAutoHeal(t *testing.T) {
+	cfg := makeStaleIndex(t)
+	prev := indexAutoHeal
+	indexAutoHeal = func(Config) bool { return false } // semantic-embedder policy
+	t.Cleanup(func() { indexAutoHeal = prev })
+
+	if _, err := openIndexRO(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "mora index rebuild") {
 		t.Fatalf("openIndexRO on a stale index: want an actionable error naming `mora index rebuild`, got: %v", err)
 	}
 	if _, err := searchMemories(context.Background(), cfg, "hello", "", 5); err == nil || !strings.Contains(err.Error(), "mora index rebuild") {

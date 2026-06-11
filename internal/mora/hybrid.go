@@ -131,7 +131,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 			return nil, tr, err
 		}
 	}
-	db, err := openIndexRO(cfg)
+	db, err := openIndexRO(ctx, cfg)
 	if err != nil {
 		return nil, tr, err
 	}

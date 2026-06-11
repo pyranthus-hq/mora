@@ -224,13 +224,17 @@ const snippetTermCap = 12
 
 // snippetTerms extracts the discriminative query terms used to center a
 // snippet: ftsToken-normalized (case, edge punctuation, contraction tails),
-// stopwords and single-rune tokens dropped, de-duplicated, query order kept.
+// stopwords dropped with the SAME case-aware rule the FTS query uses (a
+// capitalized "Will"/"WHO" is a name/acronym and survives), single-rune tokens
+// dropped, de-duplicated. Longer terms sort first (stable on query order) so
+// the window centers on the most discriminative match — "What did Dan say
+// about polos" centers on polos, not an early "what".
 func snippetTerms(query string) [][]rune {
 	var out [][]rune
 	seen := map[string]bool{}
 	for _, f := range strings.Fields(query) {
-		_, key := ftsToken(f)
-		if key == "" || seen[key] || ftsStopwords[key] {
+		term, key := ftsToken(f)
+		if key == "" || seen[key] || ftsIsStopword(term, key) {
 			continue
 		}
 		kr := []rune(key)
@@ -243,13 +247,17 @@ func snippetTerms(query string) [][]rune {
 			break
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
 }
 
-// earliestQueryMatch returns the rune index of the first word-boundary,
-// case-insensitive occurrence of any snippetTerms(query) term in r, or -1.
-// Lowercasing is per-rune so indexes stay aligned with r (a string-level
-// ToLower can change rune counts for a handful of code points).
+// earliestQueryMatch returns the rune index of the highest-priority query-term
+// match in r, or -1. Terms are tried in snippetTerms order (longest first);
+// the first term that occurs anywhere wins with its EARLIEST occurrence —
+// so a discriminative "polos" beats an early surviving "What". Matching is
+// word-boundary and case-insensitive; lowercasing is per-rune so indexes stay
+// aligned with r (a string-level ToLower can change rune counts for a handful
+// of code points).
 func earliestQueryMatch(r []rune, query string) int {
 	terms := snippetTerms(query)
 	if len(terms) == 0 {
@@ -260,13 +268,10 @@ func earliestQueryMatch(r []rune, query string) int {
 		lower[i] = unicode.ToLower(c)
 	}
 	isWord := func(c rune) bool { return unicode.IsLetter(c) || unicode.IsDigit(c) }
-	for i := range lower {
-		if i > 0 && isWord(lower[i-1]) {
-			continue // mid-word — not a token start
-		}
-		for _, t := range terms {
-			if i+len(t) > len(lower) {
-				continue
+	for _, t := range terms {
+		for i := 0; i+len(t) <= len(lower); i++ {
+			if i > 0 && isWord(lower[i-1]) {
+				continue // mid-word — not a token start
 			}
 			hit := true
 			for j, tc := range t {

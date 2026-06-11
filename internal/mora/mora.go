@@ -2555,14 +2555,39 @@ func dbPath(cfg Config) string       { return filepath.Join(cfg.DataDir, "index.
 // every pre-stamp index reads as 0 and asks for one rebuild.
 const indexSchemaVersion = 1
 
-// openIndexRO opens the index read-only, refusing a schema this binary doesn't
-// understand. Rebuild-on-missing stays at the call sites; rebuild-on-stale is
-// deliberately NOT automatic here — under a semantic embedder a full re-embed
-// takes minutes, which would stall an innocent MCP tool call. `mora upgrade`
-// runs the rebuild at the moment the user consented to a slow step; everyone
-// else gets told the exact command.
-func openIndexRO(cfg Config) (*sql.DB, error) {
+// indexAutoHeal reports whether a version-stale index may be rebuilt inline at
+// read time. True on the static-hash floor, where a rebuild is seconds — the
+// same self-healing as rebuild-on-missing, and what saves every distributed
+// user's FIRST upgrade across the stamp's introduction (their old binary's
+// `upgrade` predates the post-upgrade rebuild hook, and Homebrew swaps bypass
+// it entirely). False under a semantic embedder: a full re-embed takes minutes
+// and must not stall an innocent MCP tool call — those users get the
+// actionable error instead. Package var so tests can pin both branches.
+var indexAutoHeal = func(cfg Config) bool { return !embedderIsSemantic(chooseEmbedderFor(cfg)) }
+
+// openIndexRO opens the index read-only, refusing to serve a schema this
+// binary doesn't understand (a swapped binary otherwise reads missing columns
+// or zeroed salience silently). A stale index self-heals inline when
+// indexAutoHeal allows; otherwise the error names the exact fix, and
+// `mora upgrade` runs the rebuild at the moment the user consented to a slow
+// step.
+func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	verr := checkIndexSchema(db)
+	if verr == nil {
+		return db, nil
+	}
+	_ = db.Close()
+	if !indexAutoHeal(cfg) {
+		return nil, verr
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		return nil, fmt.Errorf("rebuilding a stale index (%v) failed: %w", verr, err)
+	}
+	db, err = sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
@@ -2820,7 +2845,7 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 			return nil, err
 		}
 	}
-	db, err := openIndexRO(cfg)
+	db, err := openIndexRO(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
