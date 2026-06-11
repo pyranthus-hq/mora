@@ -1,11 +1,21 @@
 name: Release
 
+# Tag push → build → DRAFT release → verify artifacts → publish.
+#
+# The publish step is explicit and runs only after verification: `mora
+# upgrade` (go-selfupdate) only sees PUBLISHED releases, so a build that
+# fails verification never reaches an install. Required repo secret:
+#   MORA_GOOGLE_CREDENTIALS_JSON — the full installed-app OAuth client JSON
+#   (same file scripts/package.sh takes via MORA_GOOGLE_CREDENTIALS). Without
+#   it the workflow fails fast rather than shipping binaries that embed the
+#   DEV_PLACEHOLDER client, with which `mora connect google` cannot work.
+
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write # create the GitHub Release, upload assets
+  contents: write # create the GitHub Release, upload assets, publish the draft
   id-token: write # cosign keyless signing (OIDC)
 
 jobs:
@@ -22,12 +32,59 @@ jobs:
           cache-dependency-path: go.sum
       - uses: anchore/sbom-action/download-syft@v0 # syft for SBOM
       - uses: sigstore/cosign-installer@v3 # cosign for keyless signing
+
+      # Mirror scripts/package.sh's embed step: overwrite the committed
+      # DEV_PLACEHOLDER internal/google/client.json with the real installed-app
+      # client so the //go:embed ships working OAuth. The runner workspace is
+      # ephemeral — no restore needed (package.sh's trap exists for local trees).
+      - name: Embed Google OAuth client
+        env:
+          MORA_GOOGLE_CREDENTIALS_JSON: ${{ secrets.MORA_GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          if [ -z "$MORA_GOOGLE_CREDENTIALS_JSON" ]; then
+            echo "::error::MORA_GOOGLE_CREDENTIALS_JSON secret is not set — refusing to build a placeholder-OAuth release. Add the secret (the installed-app client JSON) and re-tag."
+            exit 1
+          fi
+          printf '%s' "$MORA_GOOGLE_CREDENTIALS_JSON" > internal/google/client.json
+          REAL_ID=$(grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' internal/google/client.json | head -1)
+          if [ -z "$REAL_ID" ]; then
+            echo "::error::MORA_GOOGLE_CREDENTIALS_JSON does not contain a Google OAuth client id"
+            exit 1
+          fi
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: "v2.16.0" # exact pin: a floating major silently changes release behavior
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Fine-grained PAT with contents:write on pyranthus-hq/homebrew-tap.
+          # Cask publishing is skip_upload: true in .goreleaser.yaml until the
+          # token exists and the tap is public.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # Verify what was actually built before anything becomes visible:
+      #  1. the upgrade contract asset exists (checksums.txt — upgrade.go
+      #     refuses a release without it; v0.6.0 shipped without one), and
+      #  2. a built binary embeds the REAL OAuth client id, not the
+      #     DEV_PLACEHOLDER (grep for placeholder absence can't work — the
+      #     placeholder string is a detection constant compiled into every
+      #     binary, so assert the real id's PRESENCE, like package.sh does).
+      - name: Verify release artifacts
+        run: |
+          test -f dist/checksums.txt || { echo "::error::dist/checksums.txt missing — mora upgrade would reject this release"; exit 1; }
+          REAL_ID=$(grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' internal/google/client.json | head -1)
+          ARCHIVE=$(find dist -maxdepth 1 -name 'mora_*_linux_amd64.tar.gz' | head -1)
+          tar -xzf "$ARCHIVE" -C dist/
+          BIN=$(find dist -type f -name mora | head -1)
+          if ! strings "$BIN" | grep -qF "$REAL_ID"; then
+            echo "::error::built binary does not embed the real OAuth client id — would ship broken \`connect google\`"
+            exit 1
+          fi
+          echo "verified: checksums.txt present, real OAuth client embedded"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

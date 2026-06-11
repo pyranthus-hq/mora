@@ -10,7 +10,9 @@ project_name: mora
 
 before:
   hooks:
-    - go mod tidy
+    # verify, never tidy: a release build must not MUTATE go.mod/go.sum — if
+    # they are stale, fail the release and fix them in a commit.
+    - go mod verify
 
 builds:
   - id: mora
@@ -69,6 +71,10 @@ sboms:
 
 homebrew_casks:
   - name: mora
+    # FLIP THIS once the HOMEBREW_TAP_TOKEN secret exists in this repo AND
+    # pyranthus-hq/homebrew-tap is public. Today neither holds, so publishing
+    # the cask would fail the whole release after assets were already built.
+    skip_upload: true
     repository:
       owner: pyranthus-hq
       name: homebrew-tap # create this repo: pyranthus-hq/homebrew-tap
@@ -98,7 +104,11 @@ release:
   github:
     owner: pyranthus-hq
     name: mora
-  draft: false
+  # Draft on purpose: the workflow verifies the built artifacts (real OAuth
+  # client embedded, checksums.txt present) and then publishes EXPLICITLY.
+  # `mora upgrade` only sees published releases, so a draft that fails
+  # verification never breaks an install.
+  draft: true
   prerelease: auto
 
 changelog:
