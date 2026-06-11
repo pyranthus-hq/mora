@@ -1,6 +1,9 @@
 package memory
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // IngestParams drives a snapshot ingestion. Write persists one memory (the mora
 // wiring supplies it). A nil-safe Status is required.
@@ -25,10 +28,13 @@ type IngestResult struct {
 }
 
 // Ingest pages through the Fetcher from the checkpoint cursor, maps each Item,
-// and calls Write. Per-item Write failures are counted, never fatal. The
-// checkpoint advances per page so a crash resumes instead of restarting; it is
-// cleared on clean completion. Page-fetch errors stop the run but preserve the
-// checkpoint for resume.
+// and calls Write. Per-item Write failures are counted and never abort the
+// loop (the remaining items still land), but a completed run that dropped
+// items returns a non-nil error — returning nil told callers the run was
+// healthy while memories were silently missing. The checkpoint advances per
+// page so a crash resumes instead of restarting; it is cleared on completed
+// paging (so a re-run re-attempts dropped items from the start). Page-fetch
+// errors stop the run but preserve the checkpoint for resume.
 func Ingest(p IngestParams) (IngestResult, error) {
 	if p.Status == nil {
 		p.Status = &SyncStatus{}
@@ -89,6 +95,13 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	if p.Status.ErrorCount == errorsBefore {
 		p.Status.ErrorCount = 0
 		p.Status.LastError = ""
+	}
+	// Partial-failure honesty: paging completed (timestamps above record that),
+	// but a run that dropped items is not a success to report as nil — the
+	// caller decides how loudly to surface it. The cleared checkpoint means a
+	// re-run re-fetches from the start and re-attempts the dropped items.
+	if dropped := p.Status.ErrorCount - errorsBefore; dropped > 0 {
+		return IngestResult{Status: p.Status}, fmt.Errorf("%d item(s) failed to write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
 	}
 	return IngestResult{Status: p.Status}, nil
 }

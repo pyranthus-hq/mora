@@ -2647,13 +2647,25 @@ func memoryPath(cfg Config, m Memory) string {
 func allMemoryFiles(cfg Config) ([]string, error) {
 	var paths []string
 	for _, root := range []string{memoriesRoot(cfg), sourcesRoot(cfg)} {
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			// Surface walk errors (an unreadable directory must not silently
+			// shrink the index to the readable subset); a missing root is the
+			// one benign case — a fresh vault simply has no sources/ tree yet.
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() || filepath.Ext(path) != ".md" {
 				return nil
 			}
 			paths = append(paths, path)
 			return nil
 		})
+		if err != nil {
+			return nil, fmt.Errorf("walking %s: %w", root, err)
+		}
 	}
 	sort.Strings(paths)
 	return paths, nil
@@ -3171,7 +3183,7 @@ func saveSources(cfg Config, sources []Source) error {
 func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
 	switch s.Type {
 	case "filesystem":
-		return ingestFilesystem(cfg, s)
+		return ingestFilesystem(cfg, s, out)
 	case "gmail":
 		return ingestGoogle(cfg, s, google.KindGmailThread, out)
 	case "calendar":
@@ -3268,11 +3280,26 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 		Status: st, Write: write,
 	})
 	prog.done()
-	_ = memory.SaveStatus(statusPath, res.Status)
-	if ingErr != nil {
-		return res.Status.ItemCount, ingErr
+	return res.Status.ItemCount, persistSyncStatus(out, statusPath, res.Status, ingErr)
+}
+
+// persistSyncStatus writes a sync path's final SyncStatus to disk — the single
+// boundary all four sync paths (google, imessage, applecal, filesystem) route
+// through. A failed save is warned AND folded into the returned error instead
+// of swallowed: the status file drives the digest's three-state health, so
+// losing it silently turns a real outcome into permanent "unavailable"/stale
+// readings. ingErr (the sync's own error) stays primary; the save error is
+// returned only when the sync itself succeeded.
+func persistSyncStatus(out io.Writer, statusPath string, st *memory.SyncStatus, ingErr error) error {
+	if serr := memory.SaveStatus(statusPath, st); serr != nil {
+		if out != nil {
+			warnf(out, "could not persist sync status (%s): %v", statusPath, serr)
+		}
+		if ingErr == nil {
+			return fmt.Errorf("persisting sync status: %w", serr)
+		}
 	}
-	return res.Status.ItemCount, nil
+	return ingErr
 }
 
 func windowForSource(s Source, kind google.ItemKind) google.FetchWindow {
@@ -3401,10 +3428,10 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 		Map: imessage.MapConversationFn(resolver),
 	})
 	prog.done()
-	_ = memory.SaveStatus(statusPath, res.Status)
+	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
 	if ingErr != nil {
 		if out != nil {
-			warnf(out, "imessage sync incomplete (resumable): %v", ingErr)
+			warnf(out, "imessage sync incomplete: %v", ingErr)
 		}
 		return res.Status.ItemCount, ingErr
 	}
@@ -3484,10 +3511,10 @@ func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
 		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, Write: write,
 	})
 	prog.done()
-	_ = memory.SaveStatus(statusPath, res.Status)
+	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
 	if ingErr != nil {
 		if out != nil {
-			warnf(out, "applecalendar sync incomplete (resumable): %v", ingErr)
+			warnf(out, "applecalendar sync incomplete: %v", ingErr)
 		}
 		return res.Status.ItemCount, ingErr
 	}
@@ -3559,7 +3586,7 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 	return total, nil
 }
 
-func ingestFilesystem(cfg Config, s Source) (int, error) {
+func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
@@ -3605,9 +3632,9 @@ func ingestFilesystem(cfg Config, s Source) (int, error) {
 		rel, _ := filepath.Rel(s.Path, path)
 		id := "src_" + ContentHash(s.Name+":"+rel)
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
-		out := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
+		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
 		body, _ := renderMemory(m)
-		if err := atomicWrite(out, body, 0o644); err != nil {
+		if err := atomicWrite(dest, body, 0o644); err != nil {
 			return err
 		}
 		count++
@@ -3626,7 +3653,7 @@ func ingestFilesystem(cfg Config, s Source) (int, error) {
 			st.ErrorCount = 1
 			st.LastError = err.Error()
 		}
-		_ = memory.SaveStatus(p, st)
+		err = persistSyncStatus(out, p, st, err)
 	}
 	return count, err
 }
@@ -3880,7 +3907,12 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		if err := writeMemory(cfg, m); err != nil {
 			return nil, err
 		}
-		_, _ = rebuildIndex(ctx, cfg)
+		// The vault write succeeded (vault is truth; the index is a derived
+		// cache), but a failed rebuild must SURFACE: silently returning success
+		// here served searches from an index missing the new memory.
+		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+			return nil, fmt.Errorf("memory %s saved, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, rerr)
+		}
 		return m, nil
 	case "read_memory":
 		return findMemory(cfg, strArg(args, "id", ""))
@@ -4006,7 +4038,11 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		if err := os.Remove(m.Path); err != nil {
 			return nil, err
 		}
-		_, _ = rebuildIndex(ctx, cfg)
+		// A failed rebuild after a delete is worse than after a write: search
+		// keeps SERVING the deleted content as if it still existed.
+		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+			return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
+		}
 		return map[string]any{"deleted": id}, nil
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
