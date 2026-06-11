@@ -73,7 +73,7 @@ func graphReady(cfg Config) bool {
 	if _, err := os.Stat(dbPath(cfg)); err != nil {
 		return false
 	}
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
 		return false
 	}

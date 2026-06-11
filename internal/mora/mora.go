@@ -2575,6 +2575,21 @@ func memoriesRoot(cfg Config) string { return filepath.Join(cfg.VaultDir, "memor
 func sourcesRoot(cfg Config) string  { return filepath.Join(cfg.VaultDir, "sources") }
 func dbPath(cfg Config) string       { return filepath.Join(cfg.DataDir, "index.db") }
 
+// roIndexDSN is the DSN every read-only index open uses. busy_timeout matters
+// for READERS too: the hourly rebuild (or an MCP write) briefly holds the
+// writer lock, and a zero-timeout reader surfaces a raw "database is locked"
+// — worse, openIndexRO misreads that SQLITE_BUSY as a stale schema and
+// launches a spurious full rebuild via the auto-heal path
+// (TestReadOnlyIndexWaitsOnWriteLock pins this). Mirrors the writer DSN's
+// busy_timeout(5000) in rebuildIndex.
+//
+// Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out
+// but NOT enforced (connections open read-write); it is kept as
+// documentation-of-intent until the read paths adopt a stricter pragma.
+func roIndexDSN(cfg Config) string {
+	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(5000)"
+}
+
 // indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
 // binary writes. Bump it whenever rebuildIndex's shape changes meaning (a new
 // table or column, vector layout, salience semantics). Read paths refuse a
@@ -2601,7 +2616,7 @@ var indexAutoHeal = func(cfg Config) bool { return !embedderIsSemantic(chooseEmb
 // `mora upgrade` runs the rebuild at the moment the user consented to a slow
 // step.
 func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -2616,7 +2631,7 @@ func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return nil, fmt.Errorf("rebuilding a stale index (%v) failed: %w", verr, err)
 	}
-	db, err = sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	db, err = sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
 		return nil, err
 	}
