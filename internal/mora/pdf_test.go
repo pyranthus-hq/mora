@@ -192,7 +192,7 @@ func TestIngestFilesystemPDF(t *testing.T) {
 	writeMinimalPDF(t, filepath.Join(dir, "MEMO.PDF"), "uppercase extension memo body")
 
 	s := fsSource("fsdocs", dir, "personal")
-	n, err := ingestFilesystem(cfg, s)
+	n, err := ingestFilesystem(cfg, s, nil)
 	if err != nil {
 		t.Fatalf("ingestFilesystem: %v", err)
 	}

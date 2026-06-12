@@ -81,8 +81,8 @@ func TestIngestWriteErrorIsCounted(t *testing.T) {
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("per-item write errors must not abort: %v", err)
+	if err == nil {
+		t.Fatal("a run that dropped an item must return a non-nil error (the loop still must not abort — TestIngestWriteErrorContinues)")
 	}
 	status := requireStatus(t, res)
 	if status.ErrorCount != 1 {
@@ -104,8 +104,8 @@ func TestIngestWriteErrorContinues(t *testing.T) {
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("per-item write errors must not abort: %v", err)
+	if err == nil {
+		t.Fatal("a run that dropped an item must return a non-nil error; the assertions below pin that it still did NOT abort")
 	}
 	status := requireStatus(t, res)
 	if status.ItemCount != 2 {
@@ -275,5 +275,71 @@ func TestIngestMapsWithScopeAndBodyBudget(t *testing.T) {
 	}
 	if written[0].OriginalSize != 6 || written[0].IngestedSize != 3 {
 		t.Fatalf("expected mapped body sizes 6/3, got %d/%d", written[0].OriginalSize, written[0].IngestedSize)
+	}
+}
+
+// TestIngestWriteErrorsSurfaceInReturnedError pins the partial-failure
+// contract: a run that dropped items must NOT return nil — nil told callers
+// (and `mora sync`'s exit status) the run was healthy while memories were
+// silently missing. Per-item failures still never abort the loop (the other
+// items land — TestIngestWriteErrorContinues), but a completed run that
+// dropped anything reports it.
+func TestIngestWriteErrorsSurfaceInReturnedError(t *testing.T) {
+	f := twoPageFetcher()
+	res, err := Ingest(IngestParams{
+		Fetcher: f, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		Status: &SyncStatus{Source: "gmail"},
+		Write: func(m MappedMemory) error {
+			if m.ProviderID == "t2" {
+				return errWrite
+			}
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("Ingest returned nil despite a dropped item; partial failure must surface to the caller")
+	}
+	status := requireStatus(t, res)
+	if status.ItemCount != 2 || status.ErrorCount != 1 {
+		t.Fatalf("expected 2 written / 1 dropped, got items=%d errors=%d", status.ItemCount, status.ErrorCount)
+	}
+	// Paging completed: the checkpoint clears so the NEXT run re-fetches from
+	// the start and re-attempts the dropped item (instead of resuming past it).
+	if status.Checkpoint != "" {
+		t.Fatalf("checkpoint should be cleared on completed paging, got %q", status.Checkpoint)
+	}
+}
+
+// TestIngestPartialFailurePreservesSuccessTimestamps pins the freshness-honesty
+// half of the partial-failure contract: a run that dropped items is NOT a clean
+// success, so it must NOT advance LastSynced/LastSuccessAt (which would make
+// search report incomplete data as fresh and make skip-if-fresh suppress the
+// retry for an hour). It stamps LastAttemptAt only; the prior success timestamps
+// survive untouched. (Codex phase-0 review P1.)
+func TestIngestPartialFailurePreservesSuccessTimestamps(t *testing.T) {
+	const priorSuccess = "2020-01-02T03:04:05Z"
+	f := twoPageFetcher()
+	res, err := Ingest(IngestParams{
+		Fetcher: f, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		Status: &SyncStatus{Source: "gmail", LastSynced: priorSuccess, LastSuccessAt: priorSuccess},
+		Write: func(m MappedMemory) error {
+			if m.ProviderID == "t2" {
+				return errWrite
+			}
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("partial failure must return a non-nil error")
+	}
+	status := requireStatus(t, res)
+	if status.LastSuccessAt != priorSuccess {
+		t.Errorf("partial failure must preserve prior LastSuccessAt %q, got %q", priorSuccess, status.LastSuccessAt)
+	}
+	if status.LastSynced != priorSuccess {
+		t.Errorf("partial failure must preserve prior LastSynced %q (not report stale data as fresh), got %q", priorSuccess, status.LastSynced)
+	}
+	if status.LastAttemptAt == "" || status.LastAttemptAt == priorSuccess {
+		t.Errorf("partial failure must still stamp a fresh LastAttemptAt, got %q", status.LastAttemptAt)
 	}
 }

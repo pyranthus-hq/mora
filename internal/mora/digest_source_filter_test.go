@@ -59,3 +59,21 @@ func TestWindowDigestHonorsSourceFilter(t *testing.T) {
 		t.Fatalf("want only the imessage section, got %+v", d.Sections)
 	}
 }
+
+// TestDigestSourceFilterAcceptsProviderAlias: "applecal" is the string a user
+// actually sees on disk (frontmatter `provider: applecal`, the sources/applecal/
+// directory) and it matched in window mode before the keying fix. The filter
+// must normalize through the same provider→type alias as the keying seam, so
+// `--source applecal` selects the applecalendar section instead of silently
+// returning an empty digest.
+func TestDigestSourceFilterAcceptsProviderAlias(t *testing.T) {
+	if !digestSourceMatches("applecalendar", "applecal") {
+		t.Fatal("--source applecal (the on-disk provider string) must match the applecalendar section")
+	}
+	if !digestSourceMatches("applecalendar", "applecalendar") {
+		t.Fatal("the documented type string must keep matching")
+	}
+	if digestSourceMatches("calendar", "applecal") {
+		t.Fatal("the alias must not bleed into other sections")
+	}
+}

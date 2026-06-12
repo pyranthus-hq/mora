@@ -178,6 +178,11 @@ func digestSourceMatches(key, source string) bool {
 	if source == "" {
 		return true
 	}
+	// Normalize the user/agent-supplied filter through the same provider→type
+	// alias as the keying seam: "applecal" is what the user SEES on disk
+	// (frontmatter provider, sources/applecal/ directory) and silently
+	// matching nothing would return an empty digest with no error.
+	source = providerToType(source)
 	return key == source || strings.HasPrefix(key, source+":")
 }
 
@@ -248,28 +253,43 @@ func memoryIsServiceOnly(m Memory) bool {
 // last sinceHours, no delta, no watermark, no State sentinels. It mirrors the
 // legacy behavior but groups by instance key so the human labels fire.
 func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, sourceFilter string) (Digest, error) {
-	cutoff := now.Add(-time.Duration(sinceHours) * time.Hour)
+	window := time.Duration(sinceHours) * time.Hour
+	cutoff := now.Add(-window)
+	forward := now.Add(window)
 	var sections []DigestSection
 	for _, key := range sortedInstanceKeys(byInstance) {
 		if !digestSourceMatches(key, sourceFilter) {
 			continue
 		}
+		upcoming := connectorUpcoming(key)
 		var tis []tsItem
 		for _, m := range byInstance[key] {
 			ts, err := time.Parse(time.RFC3339, m.CreatedAt)
-			if err != nil || ts.Before(cutoff) {
+			if err != nil {
+				continue
+			}
+			// Forward-bounded window (Bug: an N-hour brief used to surface
+			// months-out calendar events). Upcoming sources look FORWARD into the
+			// next window [now, now+N]; past-oriented sources look BACK [now-N, now]
+			// and reject future-dated outliers (clock-skew / scheduled-send).
+			if upcoming {
+				if ts.Before(now) || ts.After(forward) {
+					continue
+				}
+			} else if ts.Before(cutoff) || ts.After(now) {
 				continue
 			}
 			it := digestItemFor(cfg, m, key, "")
 			it.LowSignal = memoryIsServiceOnly(m)
-			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID]})
+			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
 		}
 		if len(tis) == 0 {
 			continue
 		}
-		items, _ := capRecency(tis, perSourceCap)
+		tis = collapseRecurringSeries(tis, now)
+		items, more := capRecency(tis, perSourceCap, upcoming)
 		items, collapsed := collapseLowSignal(items)
-		sections = append(sections, DigestSection{Source: key, Items: items, MoreCount: collapsed})
+		sections = append(sections, DigestSection{Source: key, Items: items, MoreCount: more + collapsed, Truncated: more > 0})
 	}
 	sortSections(sections)
 	stale, _ := staleTasks(cfg, 3)
@@ -382,7 +402,7 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 	shownIDs = map[string]bool{}
 	if delta.ColdStart {
 		var tis []tsItem
-		isCalendar := strings.HasPrefix(key, "calendar")
+		isCalendar := connectorUpcoming(key)
 		for _, m := range mems {
 			ts, err := time.Parse(time.RFC3339, m.CreatedAt)
 			if err != nil {
@@ -393,9 +413,10 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 			}
 			it := digestItemFor(cfg, m, key, "new") // cold start: everything shown is "new" to the reader.
 			it.LowSignal = memoryIsServiceOnly(m)
-			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID]})
+			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
 		}
-		shown, more := capRecency(tis, cap)
+		tis = collapseRecurringSeries(tis, now)
+		shown, more := capRecency(tis, cap, isCalendar)
 		// On cold start the WHOLE baseline is committed by nextSnapshot, so we do
 		// not need shownIDs to drive the commit; leave it empty (cold-start path
 		// ignores it). The cap-`more` stays unsurfaced (undisplayed archive is the
@@ -423,13 +444,27 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 		}
 		it := digestItemFor(cfg, m, key, di.Change)
 		it.LowSignal = memoryIsServiceOnly(m)
-		tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID]})
+		tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
 	}
-	shown, more := capRecency(tis, cap)
-	// Mark the FULL capped set acknowledged (watermark unchanged), THEN collapse the
-	// zero-salience tail for display — collapsed items are counted, never re-surfaced.
+	tis = collapseRecurringSeries(tis, now)
+	// Map each surfaced line to the memory ids it represents (a collapsed series
+	// stands for all its instances) so the watermark advances over the WHOLE set.
+	memberOf := make(map[string][]string, len(tis))
+	for _, ti := range tis {
+		if len(ti.members) > 0 {
+			memberOf[ti.item.ID] = ti.members
+		} else {
+			memberOf[ti.item.ID] = []string{ti.item.ID}
+		}
+	}
+	shown, more := capRecency(tis, cap, connectorUpcoming(key))
+	// Mark the FULL capped set (and every folded series instance) acknowledged
+	// (watermark unchanged), THEN collapse the zero-salience tail for display —
+	// collapsed items are counted, never re-surfaced.
 	for _, it := range shown {
-		shownIDs[it.ID] = true
+		for _, id := range memberOf[it.ID] {
+			shownIDs[id] = true
+		}
 	}
 	displayed, collapsed := collapseLowSignal(shown)
 	return displayed, shownIDs, more + collapsed
@@ -513,6 +548,110 @@ type tsItem struct {
 	item DigestItem
 	ts   time.Time
 	sal  int64
+	// series is the recurring_event_id (calendar) this item belongs to, "" if not
+	// recurring. members are the memory IDs folded into this item by
+	// collapseRecurringSeries (its own id plus every sibling instance it now
+	// represents) — the watermark must advance over ALL of them so a collapsed
+	// series is never re-surfaced instance-by-instance on the next run.
+	series  string
+	members []string
+}
+
+// recurringSeriesID returns a memory's recurring-series id (Google Calendar's
+// meta.recurring_event_id), or "" when the memory is not a recurring instance.
+func recurringSeriesID(m Memory) string {
+	if m.Meta == nil {
+		return ""
+	}
+	id, _ := m.Meta["recurring_event_id"].(string)
+	return id
+}
+
+// collapseRecurringSeries folds tsItems that share a recurring-series id into ONE
+// representative line so a single daily/weekly series can't fill a calendar
+// section (and, via the byte budget, starve other sources). For each series the
+// representative is the NEAREST-future instance (the soonest occurrence at/after
+// now; the latest past instance if all are past), and its title is annotated with
+// "(×N through <last date>)" so the agent still sees the cadence and span. The
+// representative carries members = every folded instance's memory id, so the delta
+// watermark advances over the whole series (no per-instance re-flood next run).
+// Non-recurring items pass through untouched. Output order is the representative's
+// best position; capRecency re-sorts afterward, so order here only needs to be
+// deterministic.
+func collapseRecurringSeries(tis []tsItem, now time.Time) []tsItem {
+	// Bucket COLLAPSIBLE indices by series; preserve first-seen order for
+	// determinism. An "updated" instance is NEVER folded: a single rescheduled
+	// occurrence is a real, instance-specific change the reader must see (and, in
+	// delta mode, folding it would mark its update acknowledged without ever
+	// surfacing it). Only new/window instances — the actual flood — collapse.
+	collapsible := func(ti tsItem) bool { return ti.series != "" && ti.item.Change != "updated" }
+	groups := map[string][]int{}
+	var order []string
+	for i, ti := range tis {
+		if !collapsible(ti) {
+			continue
+		}
+		if _, seen := groups[ti.series]; !seen {
+			order = append(order, ti.series)
+		}
+		groups[ti.series] = append(groups[ti.series], i)
+	}
+	if len(groups) == 0 {
+		return tis // nothing collapsible — fast path, byte-identical.
+	}
+
+	out := make([]tsItem, 0, len(tis))
+	// Pass-through every item that is NOT part of a multi-instance collapsible
+	// group: non-recurring items, individually-changed (updated) instances, and a
+	// lone instance whose series has just one member this run.
+	for _, ti := range tis {
+		if !collapsible(ti) || len(groups[ti.series]) == 1 {
+			out = append(out, ti)
+		}
+	}
+	// One representative per multi-instance series.
+	for _, sid := range order {
+		idxs := groups[sid]
+		if len(idxs) < 2 {
+			continue
+		}
+		rep := idxs[0]
+		var last time.Time
+		var bestSal int64
+		members := make([]string, 0, len(idxs))
+		for _, k := range idxs {
+			members = append(members, tis[k].item.ID)
+			if tis[k].ts.After(last) {
+				last = tis[k].ts
+			}
+			if tis[k].sal > bestSal {
+				bestSal = tis[k].sal
+			}
+			if betterSeriesRep(tis[k].ts, tis[rep].ts, now) {
+				rep = k
+			}
+		}
+		rti := tis[rep]
+		rti.sal = bestSal // a series leads on its most-salient instance.
+		rti.members = members
+		rti.item.Title = fmt.Sprintf("%s (×%d through %s)", rti.item.Title, len(idxs), last.UTC().Format("Jan 2"))
+		out = append(out, rti)
+	}
+	return out
+}
+
+// betterSeriesRep reports whether instant a is a better series representative than
+// b relative to now: the nearest future occurrence wins; if both are future the
+// EARLIER wins; if neither is future the LATER (most recent past) wins.
+func betterSeriesRep(a, b, now time.Time) bool {
+	aFut, bFut := !a.Before(now), !b.Before(now)
+	if aFut != bFut {
+		return aFut // a future instance beats a past one.
+	}
+	if aFut { // both future: soonest.
+		return a.Before(b)
+	}
+	return a.After(b) // both past: most recent.
 }
 
 // capRecency orders items SALIENCE-FIRST then most-recent (the existing instant +
@@ -525,12 +664,21 @@ type tsItem struct {
 // the existing recency-then-id order is preserved, so humans lead and services
 // sink to the bottom. The comparator is total and deterministic (salience int64 →
 // instant → id), so two passes over the same input are byte-identical.
-func capRecency(tis []tsItem, cap int) (items []DigestItem, more int) {
+//
+// upcoming flips the recency tie-break for future-dated sources (calendar): there
+// the NEAREST event should lead and survive the cap, so equal-salience items sort
+// EARLIEST-instant-first instead of most-recent-first. Past-oriented sources keep
+// most-recent-first. (Bug: a 48h brief used to rank the farthest-future event of a
+// calendar section first.)
+func capRecency(tis []tsItem, cap int, upcoming bool) (items []DigestItem, more int) {
 	sort.SliceStable(tis, func(i, j int) bool {
 		if tis[i].sal != tis[j].sal {
 			return tis[i].sal > tis[j].sal // salience DESC is the primary key (SC#3).
 		}
 		if !tis[i].ts.Equal(tis[j].ts) {
+			if upcoming {
+				return tis[i].ts.Before(tis[j].ts) // nearest-future-first for events.
+			}
 			return tis[i].ts.After(tis[j].ts) // then most-recent-first.
 		}
 		return tis[i].item.ID < tis[j].item.ID // deterministic tie-break on exact-instant ties.
@@ -780,7 +928,7 @@ func changePrefix(change string) string {
 type sourceState struct {
 	Instance   string `json:"instance"`    // the sourceInstanceKey ("gmail", …)
 	State      string `json:"state"`       // new | no_change | stale | unavailable
-	Count      int    `json:"count"`       // surfaced items this section
+	Count      int    `json:"count"`       // in-window/in-delta total (shown items + more_count)
 	LastSynced string `json:"last_synced"` // "" when never synced
 	Errored    bool   `json:"errored"`     // a recorded sync error (LastError/ErrorCount)
 }
@@ -808,10 +956,17 @@ func mcpStateLabel(state string) string {
 func buildSourceStates(cfg Config, d Digest) []sourceState {
 	out := make([]sourceState, 0, len(d.Sections))
 	for _, s := range d.Sections {
+		// Count is the section's OWN item total — shown items PLUS more_count
+		// (truncated + low-signal-collapsed) — so the compact source_states never
+		// diverges from what the section structurally reports (the bug was count:16
+		// beside a section holding 16 shown + 34 more — card …liO8). It counts a
+		// collapsed recurring series as the ONE line it renders (the ×N span rides in
+		// that line's title, not in more_count), so count stays equal to the visible
+		// line total an agent reads back, not the raw pre-collapse instance count.
 		ss := sourceState{
 			Instance: s.Source,
 			State:    mcpStateLabel(s.State),
-			Count:    len(s.Items),
+			Count:    len(s.Items) + s.MoreCount,
 		}
 		if st := loadConnectorSyncStatus(cfg, s.Source); st != nil {
 			ss.LastSynced = st.LastSynced

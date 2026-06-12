@@ -58,6 +58,13 @@ cp examples/claude-code-mcp.json examples/codex-mcp.json "$WORK/examples/"
 
 cd "$DIST"
 tar -czf "mora_${VERSION}_${GOOS}_${GOARCH}.tar.gz" "mora_${VERSION}_${GOOS}_${GOARCH}"
+# checksums.txt is the UPGRADE CONTRACT: `mora upgrade` (upgrade.go's
+# ChecksumValidator) refuses any release whose checksum asset is not named
+# exactly "checksums.txt" — v0.6.0 shipped only SHA256SUMS and broke every
+# install's self-update. Emit both: checksums.txt for the validator (matches
+# goreleaser's checksum.name_template), SHA256SUMS for humans/scripts already
+# pointing at it.
 shasum -a 256 *.tar.gz > SHA256SUMS
+cp SHA256SUMS checksums.txt
 
 echo "$DIST/mora_${VERSION}_${GOOS}_${GOARCH}.tar.gz"

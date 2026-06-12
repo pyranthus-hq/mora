@@ -165,7 +165,7 @@ func TestCapRecencySalienceLeadsSection(t *testing.T) {
 		salItem("recent_noise", 100, newer),
 		salItem("salient_old", 900_000, older),
 	}
-	items, more := capRecency(tis, 8)
+	items, more := capRecency(tis, 8, false)
 	if more != 0 {
 		t.Fatalf("more=%d, want 0", more)
 	}
@@ -189,7 +189,7 @@ func TestCapRecencySalienceSurvivesCap(t *testing.T) {
 		salItem("recent_b", 20, base.Add(24*time.Hour)),
 		salItem("salient_old", 900_000, base),
 	}
-	items, more := capRecency(tis, 2)
+	items, more := capRecency(tis, 2, false)
 	if more != 1 {
 		t.Fatalf("more=%d, want 1 (one item past the cap)", more)
 	}
@@ -219,7 +219,7 @@ func TestCapRecencyZeroSalienceSinksToBottom(t *testing.T) {
 		salItem("zero_new", 0, base.Add(24*time.Hour)),
 		salItem("human", 500_000, base.Add(-72*time.Hour)), // oldest, but salient
 	}
-	items, _ := capRecency(tis, 8)
+	items, _ := capRecency(tis, 8, false)
 	if items[0].ID != "human" {
 		t.Fatalf("leader=%q, want human (salient leads the zeros)", items[0].ID)
 	}
@@ -239,7 +239,7 @@ func TestCapRecencyEqualSalienceRecencyTieBreak(t *testing.T) {
 		salItem("a_same_instant", 500, t0), // same salience + instant → id< decides
 		salItem("recent", 500, t1),         // same salience, more recent → leads
 	}
-	items, _ := capRecency(tis, 8)
+	items, _ := capRecency(tis, 8, false)
 	want := []string{"recent", "a_same_instant", "b_same_instant"}
 	for i, w := range want {
 		if items[i].ID != w {
@@ -259,8 +259,8 @@ func TestCapRecencyDeterministic(t *testing.T) {
 			salItem("d", 0, base.Add(2*time.Hour)),
 		}
 	}
-	first, _ := capRecency(build(), 8)
-	second, _ := capRecency(build(), 8)
+	first, _ := capRecency(build(), 8, false)
+	second, _ := capRecency(build(), 8, false)
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("capRecency not deterministic:\n first=%v\n second=%v", first, second)
 	}

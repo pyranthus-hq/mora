@@ -35,13 +35,33 @@ func sourceInstanceKey(m Memory) (string, bool) {
 	if m.Provider == "" {
 		return "", false
 	}
+	// Normalize the memory-side Provider onto its catalog Type (applecal →
+	// applecalendar) so this key reconciles with instanceKeyForSource by
+	// construction. Alias at the lookup boundary ONLY — frontmatter on disk
+	// keeps the provider the connector minted.
+	provider := providerToType(m.Provider)
 	// Multi-account (the seam this comment block promised): a labeled account
 	// composes "provider:account" so each mailbox gets its own watermark bucket,
 	// digest section, and three-state — never collapsed into the default's.
 	if m.Account != "" {
-		return m.Provider + ":" + m.Account, true
+		return provider + ":" + m.Account, true
 	}
-	return m.Provider, true
+	return provider, true
+}
+
+// providerToType maps a memory-side Provider string onto its catalog connector
+// Type. For most connectors the two are identical; a catalog entry with an
+// explicit Provider (applecalendar mints "applecal") aliases here. Unknown
+// providers pass through unchanged, so a future connector that keeps
+// Provider == Type needs no entry. TestConnectorProviderKeysReconcile holds
+// every ingesting connector to this round-trip.
+func providerToType(provider string) string {
+	for _, c := range connectorCatalog {
+		if c.Provider != "" && c.Provider == provider {
+			return c.Type
+		}
+	}
+	return provider
 }
 
 // instanceKeyForSource is sourceInstanceKey's source-side twin: the instance
@@ -137,6 +157,25 @@ func connectorDisplay(instanceKey string) (rank int, label string) {
 	}
 	// 3. unknown: shared stable rank + clean derived label.
 	return connectorUnknownRank, cleanLabel(instanceKey)
+}
+
+// connectorUpcoming reports whether an instance key belongs to a connector
+// whose items are future-dated events, so cold-start windows look FORWARD
+// (inColdStartWindow). It reads the catalog's Upcoming capability — never a
+// provider-string heuristic (the old HasPrefix(key, "calendar") silently
+// missed applecalendar). Resolution mirrors connectorDisplay: exact key, then
+// the provider prefix of a composite "provider:account" key; unknown
+// connectors default to the past window.
+func connectorUpcoming(instanceKey string) bool {
+	if ci, ok := lookupCatalog(instanceKey); ok {
+		return ci.Upcoming
+	}
+	if i := strings.IndexByte(instanceKey, ':'); i > 0 {
+		if ci, ok := lookupCatalog(instanceKey[:i]); ok {
+			return ci.Upcoming
+		}
+	}
+	return false
 }
 
 // cleanLabel derives a human label from an unknown connector key: upper-case the

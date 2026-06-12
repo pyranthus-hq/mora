@@ -79,14 +79,25 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 # --- initialize vault (idempotent) and report ----------------------------------
-"$DEST/mora" init --vault "$VAULT" >/dev/null 2>&1 || true
+# stdin from /dev/null on purpose: an existing install whose config points at a
+# DIFFERENT vault makes init refuse the repoint (data safety) — forcing non-TTY
+# guarantees the deterministic refusal instead of an invisible confirm prompt
+# behind the output capture. The refusal is surfaced (it names the real
+# configured vault) and the banner then reports the vault actually in use.
+if INIT_OUT="$("$DEST/mora" init --vault "$VAULT" </dev/null 2>&1)"; then
+	:
+else
+	printf 'note: mora init did not run: %s\n' "$INIT_OUT" >&2
+fi
+ACTIVE_VAULT="$("$DEST/mora" config 2>/dev/null | sed -n 's/^vault_dir = //p' | head -1)"
+[ -n "$ACTIVE_VAULT" ] || ACTIVE_VAULT="$VAULT"
 VER="$("$DEST/mora" version 2>/dev/null | head -1 || echo mora)"
 
 cat <<EOF
 
 ✓ Installed $VER
   binary:  $DEST/mora
-  vault:   $VAULT
+  vault:   $ACTIVE_VAULT
 EOF
 
 case ":$PATH:" in

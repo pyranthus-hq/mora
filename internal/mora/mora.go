@@ -154,6 +154,19 @@ type connectorInfo struct {
 	Ingesting   bool
 	Rank        int
 	Label       string
+	// Provider is the memory-side Provider this connector's mapper mints in
+	// frontmatter when it differs from Type (applecalendar mints "applecal").
+	// Empty means Provider == Type. The alias is applied at LOOKUP boundaries
+	// only (providerToType / sourceInstanceKey in connectors.go) — on-disk
+	// frontmatter is never rewritten to "fix" a mismatch.
+	// TestConnectorProviderKeysReconcile enforces the round-trip for every
+	// ingesting entry.
+	Provider string
+	// Upcoming marks connectors whose items are future-dated events: cold-start
+	// courtesy windows look FORWARD (next 7d) instead of back. Capability DATA
+	// here, never a provider-string heuristic in digest code (the old
+	// HasPrefix(key, "calendar") silently missed applecalendar).
+	Upcoming bool
 }
 
 // connectorCatalog is the static, exhaustive catalog of user-enableable connector
@@ -168,15 +181,18 @@ type connectorInfo struct {
 // ("Files") rather than the old default-rank-3 / title-cased fallback.
 var connectorCatalog = []connectorInfo{
 	{Type: "gmail", DisplayName: "Gmail", NeedsAuth: true, Ingesting: true, Rank: 2, Label: "Emails"},
-	{Type: "calendar", DisplayName: "Google Calendar", NeedsAuth: true, Ingesting: true, Rank: 0, Label: "Calendar"},
+	{Type: "calendar", DisplayName: "Google Calendar", NeedsAuth: true, Ingesting: true, Rank: 0, Label: "Calendar", Upcoming: true},
 	{Type: "filesystem", DisplayName: "Filesystem", NeedsAuth: false, Ingesting: true, Rank: 3, Label: "Files"},
 	// iMessage: default-disabled, no OAuth — the real gate is macOS Full Disk
 	// Access (surfaced by `mora doctor`), not a login (D-11, Surface 1).
 	{Type: "imessage", DisplayName: "iMessage", NeedsAuth: false, Ingesting: true, Rank: 1, Label: "Texts"},
 	// Apple Calendar: same gate story as iMessage (local store + Full Disk
 	// Access, no login). Rank ties with Google Calendar break on the key, so
-	// both calendar sections lead the digest together.
-	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)"},
+	// both calendar sections lead the digest together. Its mapper mints
+	// Provider "applecal" (internal/applecal), so the entry carries the alias —
+	// without it, applecal memories never reconcile with this instance and
+	// silently vanish from the delta brief.
+	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)", Provider: "applecal", Upcoming: true},
 }
 
 // isInteractive reports whether r is a real terminal (character device). It uses
@@ -357,6 +373,22 @@ USAGE:
 }
 
 func defaultConfig() Config {
+	// MORA_CONFIG_DIR points an entire invocation at an ISOLATED install
+	// (scripts, launchd jobs, demos, tests): config, vault, derived index, and
+	// watermark state ALL default under the override. Re-rooting only the
+	// config dir was not enough — a scratch `init` then rebuilt (wiped) the
+	// LIVE ~/.local/share index.db and shared the live watermark state, the
+	// exact incident class this env var exists to prevent. A config.toml
+	// inside the override still wins for any dir it names (loadConfig
+	// overlays).
+	if dir := os.Getenv("MORA_CONFIG_DIR"); dir != "" {
+		return Config{
+			VaultDir:  filepath.Join(dir, "vault"),
+			ConfigDir: dir,
+			DataDir:   filepath.Join(dir, "data"),
+			StateDir:  filepath.Join(dir, "state"),
+		}
+	}
 	home, _ := os.UserHomeDir()
 	return Config{
 		VaultDir:  filepath.Join(home, "vault", "mora"),
@@ -364,6 +396,36 @@ func defaultConfig() Config {
 		DataDir:   filepath.Join(home, ".local", "share", "mora"),
 		StateDir:  filepath.Join(home, ".local", "state", "mora"),
 	}
+}
+
+// parseConfigValue extracts a config value from the raw right-hand side of a
+// `key = value` line. A quoted value parses via strconv.Unquote (escapes
+// honored) and anything after the closing quote — an inline comment — is
+// ignored; the old strip-outer-quotes approach loaded `"/x" # note` as the
+// garbage path `/x" # note`, which the read-modify-write writeConfig then
+// persisted back, orphaning the real vault. Hand-editing config.toml is a
+// path our own refusal messages recommend, so it must parse exactly. An
+// unquoted value cuts at the first '#'.
+func parseConfigValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, `"`) {
+		for i := 1; i < len(raw); i++ {
+			switch raw[i] {
+			case '\\':
+				i++ // skip the escaped byte
+			case '"':
+				if v, err := strconv.Unquote(raw[:i+1]); err == nil {
+					return v
+				}
+				return strings.Trim(raw[:i+1], `"`)
+			}
+		}
+		return strings.Trim(raw, `"`) // unterminated quote: legacy lenient read
+	}
+	if i := strings.IndexByte(raw, '#'); i >= 0 {
+		raw = raw[:i]
+	}
+	return strings.TrimSpace(raw)
 }
 
 func loadConfig() (Config, error) {
@@ -386,8 +448,7 @@ func loadConfig() (Config, error) {
 			continue
 		}
 		key := strings.TrimSpace(parts[0])
-		val := strings.Trim(strings.TrimSpace(parts[1]), `"`)
-		val = expandHome(val)
+		val := expandHome(parseConfigValue(parts[1]))
 		switch key {
 		case "vault_dir":
 			cfg.VaultDir = val
@@ -468,20 +529,81 @@ func cmdConfig(args []string, stdout io.Writer) error {
 	return nil
 }
 
+// writeConfig persists the five keys this binary owns by READ-MODIFY-WRITE:
+// every line it does not own (comments, blank lines, keys written by hand or
+// by a newer mora) is preserved byte-for-byte. The old regenerate-from-struct
+// behavior silently ate those lines on every rewrite — loadConfig skips
+// unknowns, so they survived the load only to vanish on the next save. An
+// empty Embedder/ContextProfile DROPS its line (reset-to-default semantics,
+// keeping config.toml minimal); an empty DIR value is broken either way but
+// is preserved verbatim — dropping it would silently repoint the install to
+// the defaults via an unrelated rewrite.
 func writeConfig(cfg Config) error {
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("vault_dir = %q\ndata_dir = %q\nstate_dir = %q\n", cfg.VaultDir, cfg.DataDir, cfg.StateDir)
-	if cfg.Embedder != "" {
-		// Persist the durable embedder opt-in so a re-`init` (which round-trips
-		// loadConfig→writeConfig) never silently drops it back to the static floor.
-		body += fmt.Sprintf("embedder = %q\n", cfg.Embedder)
+	path := filepath.Join(cfg.ConfigDir, "config.toml")
+	owned := []struct{ key, val string }{
+		{"vault_dir", cfg.VaultDir},
+		{"data_dir", cfg.DataDir},
+		{"state_dir", cfg.StateDir},
+		{"embedder", cfg.Embedder},
+		{"context", cfg.ContextProfile},
 	}
-	if cfg.ContextProfile != "" {
-		body += fmt.Sprintf("context = %q\n", cfg.ContextProfile)
+	ownedVal := func(key string) (string, bool) {
+		for _, kv := range owned {
+			if kv.key == key {
+				return kv.val, true
+			}
+		}
+		return "", false
 	}
-	return atomicWrite(filepath.Join(cfg.ConfigDir, "config.toml"), []byte(body), 0o600)
+
+	var existing []string
+	if b, err := os.ReadFile(path); err == nil {
+		existing = strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+		if len(existing) == 1 && existing[0] == "" {
+			existing = nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	written := map[string]bool{}
+	var out []string
+	for _, line := range existing {
+		trimmed := strings.TrimSpace(line)
+		key := ""
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			if parts := strings.SplitN(trimmed, "=", 2); len(parts) == 2 {
+				key = strings.TrimSpace(parts[0])
+			}
+		}
+		val, owns := ownedVal(key)
+		if !owns {
+			out = append(out, line) // not ours: preserve verbatim
+			continue
+		}
+		if written[key] {
+			continue // collapse duplicate owned keys onto the first occurrence
+		}
+		written[key] = true
+		if val == "" {
+			if key == "embedder" || key == "context" {
+				continue // reset-to-default: drop the line
+			}
+			out = append(out, line) // empty dir value: preserve, never silently repoint
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s = %q", key, val))
+	}
+	for _, kv := range owned {
+		if kv.val == "" || written[kv.key] {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s = %q", kv.key, kv.val))
+	}
+	return atomicWrite(path, []byte(strings.Join(out, "\n")+"\n"), 0o600)
 }
 
 func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -500,7 +622,18 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		return err
 	}
 	if *vault != "" {
-		cfg.VaultDir = expandHome(*vault)
+		want := expandHome(*vault)
+		// Repointing an EXISTING install's vault orphans the current one from
+		// Mora's view — it must never happen as a side effect of a scripted
+		// init (two live incidents). Same-dir re-init stays idempotent, and
+		// the comparison cleans both sides so a trailing slash (shell tab
+		// completion, install.sh's MORA_VAULT) is not misread as a repoint.
+		if filepath.Clean(cfg.VaultDir) != filepath.Clean(want) && configFileExists(cfg) {
+			if err := confirmVaultRepoint(stdin, stdout, cfg.VaultDir, want); err != nil {
+				return err
+			}
+		}
+		cfg.VaultDir = want
 	}
 	for _, dir := range []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir, memoriesRoot(cfg), sourcesRoot(cfg), filepath.Join(cfg.ConfigDir, "tokens")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -520,6 +653,40 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
 	return runSetupMenu(ctx, cfg, stdin, stdout)
+}
+
+// configFileExists reports whether a config.toml is already on disk —
+// loadConfig alone can't distinguish "defaults because no file" from a real
+// install, and the repoint guard must only fire for the latter.
+func configFileExists(cfg Config) bool {
+	_, err := os.Stat(filepath.Join(cfg.ConfigDir, "config.toml"))
+	return err == nil
+}
+
+// confirmVaultRepoint gates `init --vault <new>` when config.toml already
+// points elsewhere. Non-interactive callers are refused with the exact manual
+// alternative (a script must never silently repoint a live install); a TTY
+// gets an explicit default-NO confirm, mirroring runSetupMenu's gate.
+func confirmVaultRepoint(stdin io.Reader, stdout io.Writer, from, to string) error {
+	f, ok := stdin.(*os.File)
+	if !ok || !isatty.IsTerminal(f.Fd()) {
+		return fmt.Errorf("refusing to repoint the vault non-interactively: config.toml already points at %s (requested: %s) — re-run `mora init --vault` in a terminal to confirm, or edit config.toml yourself", from, to)
+	}
+	var yes bool
+	confirm := huh.NewConfirm().
+		Title(fmt.Sprintf("Repoint vault from %s to %s?", from, to)).
+		Description("The current vault stays on disk, but Mora stops reading it.").
+		Affirmative("Repoint").
+		Negative("Keep current vault").
+		Value(&yes)
+	if err := confirm.Run(); err != nil {
+		return err
+	}
+	if !yes {
+		fmt.Fprintln(stdout, "init cancelled — vault unchanged.")
+		return errors.New("init cancelled — vault unchanged")
+	}
+	return nil
 }
 
 func scaffoldControlFiles(cfg Config) error {
@@ -1812,16 +1979,23 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 		return err
 	}
 
-	// Enable + (if confirmed) google backfill via the shared consent seam.
-	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stdin); err != nil {
-		return err
-	}
-	// Persist the deny-list onto the now-created imessage source (D-07) — BEFORE any
-	// imessage backfill so the first sync already honors it.
+	// Persist the deny-list BEFORE the consent seam (D-07): setIMessageDenyList
+	// creates the imessage source row if needed and setSourceEnabled preserves
+	// the deny fields, so the order is safe — and it makes the user's privacy
+	// exclusions durable even if the google backfill inside
+	// applySetupSelection fails (its error used to abort this function AFTER
+	// "Deny-list saved:" was printed but BEFORE anything was persisted; the
+	// next `mora sync imessage` then ingested exactly what they excluded).
 	if imessageSelected {
 		if err := setIMessageDenyList(cfg, denyContacts, denyConvos); err != nil {
 			return err
 		}
+	}
+	// Enable + (if confirmed) google backfill via the shared consent seam.
+	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stdin); err != nil {
+		return err
+	}
+	if imessageSelected {
 		if doBackfill {
 			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtime.GOOS == "darwin" {
 				total, err := backfillEnabledIMessage(ctx, cfg, stdout)
@@ -1951,6 +2125,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	count := 0
 	failures := 0
+	var namedErr error
 	for _, s := range sources {
 		// Enabled gate (D-07): a named disabled source ERRORS before the skip so
 		// the user is never silently no-op'd; `--all` silently skips disabled.
@@ -1968,9 +2143,14 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
 		n, err := ingestSourceFn(cfg, s, stdout)
 		count += n
 		if err != nil {
-			// Named-source path: the failure IS the result — abort with it.
+			// Named-source path: the failure IS the result — but a PARTIAL run
+			// (Ingest's dropped-item contract) has already written memories to
+			// the vault, so the final rebuild below must still run before the
+			// error surfaces; returning here left them unsearchable with no
+			// auto-heal (the schema check only heals version mismatches).
 			if !*all {
-				return err
+				namedErr = err
+				break
 			}
 			// --all (the scheduled ingest-hourly job): one broken connector must
 			// not starve the rest or skip the final rebuild — warn, keep going,
@@ -1981,7 +2161,13 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		if namedErr != nil {
+			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, err)
+		}
 		return err
+	}
+	if namedErr != nil {
+		return namedErr
 	}
 	fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
 	if failures > 0 {
@@ -2559,6 +2745,21 @@ func memoriesRoot(cfg Config) string { return filepath.Join(cfg.VaultDir, "memor
 func sourcesRoot(cfg Config) string  { return filepath.Join(cfg.VaultDir, "sources") }
 func dbPath(cfg Config) string       { return filepath.Join(cfg.DataDir, "index.db") }
 
+// roIndexDSN is the DSN every read-only index open uses. busy_timeout matters
+// for READERS too: the hourly rebuild (or an MCP write) briefly holds the
+// writer lock, and a zero-timeout reader surfaces a raw "database is locked"
+// — worse, openIndexRO misreads that SQLITE_BUSY as a stale schema and
+// launches a spurious full rebuild via the auto-heal path
+// (TestReadOnlyIndexWaitsOnWriteLock pins this). Mirrors the writer DSN's
+// busy_timeout(5000) in rebuildIndex.
+//
+// Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out
+// but NOT enforced (connections open read-write); it is kept as
+// documentation-of-intent until the read paths adopt a stricter pragma.
+func roIndexDSN(cfg Config) string {
+	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(5000)"
+}
+
 // indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
 // binary writes. Bump it whenever rebuildIndex's shape changes meaning (a new
 // table or column, vector layout, salience semantics). Read paths refuse a
@@ -2585,7 +2786,7 @@ var indexAutoHeal = func(cfg Config) bool { return !embedderIsSemantic(chooseEmb
 // `mora upgrade` runs the rebuild at the moment the user consented to a slow
 // step.
 func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -2600,7 +2801,7 @@ func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return nil, fmt.Errorf("rebuilding a stale index (%v) failed: %w", verr, err)
 	}
-	db, err = sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	db, err = sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -2631,13 +2832,25 @@ func memoryPath(cfg Config, m Memory) string {
 func allMemoryFiles(cfg Config) ([]string, error) {
 	var paths []string
 	for _, root := range []string{memoriesRoot(cfg), sourcesRoot(cfg)} {
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			// Surface walk errors (an unreadable directory must not silently
+			// shrink the index to the readable subset); a missing root is the
+			// one benign case — a fresh vault simply has no sources/ tree yet.
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() || filepath.Ext(path) != ".md" {
 				return nil
 			}
 			paths = append(paths, path)
 			return nil
 		})
+		if err != nil {
+			return nil, fmt.Errorf("walking %s: %w", root, err)
+		}
 	}
 	sort.Strings(paths)
 	return paths, nil
@@ -3155,7 +3368,7 @@ func saveSources(cfg Config, sources []Source) error {
 func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
 	switch s.Type {
 	case "filesystem":
-		return ingestFilesystem(cfg, s)
+		return ingestFilesystem(cfg, s, out)
 	case "gmail":
 		return ingestGoogle(cfg, s, google.KindGmailThread, out)
 	case "calendar":
@@ -3252,11 +3465,26 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 		Status: st, Write: write,
 	})
 	prog.done()
-	_ = memory.SaveStatus(statusPath, res.Status)
-	if ingErr != nil {
-		return res.Status.ItemCount, ingErr
+	return res.Status.ItemCount, persistSyncStatus(out, statusPath, res.Status, ingErr)
+}
+
+// persistSyncStatus writes a sync path's final SyncStatus to disk — the single
+// boundary all four sync paths (google, imessage, applecal, filesystem) route
+// through. A failed save is warned AND folded into the returned error instead
+// of swallowed: the status file drives the digest's three-state health, so
+// losing it silently turns a real outcome into permanent "unavailable"/stale
+// readings. ingErr (the sync's own error) stays primary; the save error is
+// returned only when the sync itself succeeded.
+func persistSyncStatus(out io.Writer, statusPath string, st *memory.SyncStatus, ingErr error) error {
+	if serr := memory.SaveStatus(statusPath, st); serr != nil {
+		if out != nil {
+			warnf(out, "could not persist sync status (%s): %v", statusPath, serr)
+		}
+		if ingErr == nil {
+			return fmt.Errorf("persisting sync status: %w", serr)
+		}
 	}
-	return res.Status.ItemCount, nil
+	return ingErr
 }
 
 func windowForSource(s Source, kind google.ItemKind) google.FetchWindow {
@@ -3385,10 +3613,10 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 		Map: imessage.MapConversationFn(resolver),
 	})
 	prog.done()
-	_ = memory.SaveStatus(statusPath, res.Status)
+	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
 	if ingErr != nil {
 		if out != nil {
-			warnf(out, "imessage sync incomplete (resumable): %v", ingErr)
+			warnf(out, "imessage sync incomplete: %v", ingErr)
 		}
 		return res.Status.ItemCount, ingErr
 	}
@@ -3468,10 +3696,10 @@ func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
 		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, Write: write,
 	})
 	prog.done()
-	_ = memory.SaveStatus(statusPath, res.Status)
+	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
 	if ingErr != nil {
 		if out != nil {
-			warnf(out, "applecalendar sync incomplete (resumable): %v", ingErr)
+			warnf(out, "applecalendar sync incomplete: %v", ingErr)
 		}
 		return res.Status.ItemCount, ingErr
 	}
@@ -3543,7 +3771,7 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 	return total, nil
 }
 
-func ingestFilesystem(cfg Config, s Source) (int, error) {
+func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
@@ -3589,9 +3817,9 @@ func ingestFilesystem(cfg Config, s Source) (int, error) {
 		rel, _ := filepath.Rel(s.Path, path)
 		id := "src_" + ContentHash(s.Name+":"+rel)
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
-		out := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
+		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
 		body, _ := renderMemory(m)
-		if err := atomicWrite(out, body, 0o644); err != nil {
+		if err := atomicWrite(dest, body, 0o644); err != nil {
 			return err
 		}
 		count++
@@ -3610,7 +3838,7 @@ func ingestFilesystem(cfg Config, s Source) (int, error) {
 			st.ErrorCount = 1
 			st.LastError = err.Error()
 		}
-		_ = memory.SaveStatus(p, st)
+		err = persistSyncStatus(out, p, st, err)
 	}
 	return count, err
 }
@@ -3864,7 +4092,21 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		if err := writeMemory(cfg, m); err != nil {
 			return nil, err
 		}
-		_, _ = rebuildIndex(ctx, cfg)
+		// The vault write succeeded (vault is truth; the index is a derived
+		// cache), but a failed rebuild must SURFACE — as a degraded SUCCESS,
+		// never an isError result: signaling failure for a write that stuck
+		// invites the client to retry, and each retry mints a fresh server-side
+		// ID (N retries = N duplicate memories). The structured result keeps
+		// the saved memory + its ID so the client has nothing to re-send.
+		// (delete_memory below is the deliberate asymmetry: its retry is
+		// harmless, and serving deleted content warrants the loud error.)
+		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+			return map[string]any{
+				"memory":      m,
+				"index_stale": true,
+				"warning":     fmt.Sprintf("memory %s saved, but the search index could not be updated: %v — run `mora index rebuild` (do NOT retry the write; it is saved)", m.ID, rerr),
+			}, nil
+		}
 		return m, nil
 	case "read_memory":
 		return findMemory(cfg, strArg(args, "id", ""))
@@ -3990,7 +4232,11 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		if err := os.Remove(m.Path); err != nil {
 			return nil, err
 		}
-		_, _ = rebuildIndex(ctx, cfg)
+		// A failed rebuild after a delete is worse than after a write: search
+		// keeps SERVING the deleted content as if it still existed.
+		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+			return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
+		}
 		return map[string]any{"deleted": id}, nil
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
@@ -4105,14 +4351,24 @@ func schedulePlistFor(cfg Config, job string) (string, bool) {
 	if scheduleRunAtLoad(job) {
 		runAtLoad = "<key>RunAtLoad</key><true/>\n"
 	}
-	// launchd jobs do NOT inherit the user's shell environment, so a BYO-creds
-	// setup (MORA_GOOGLE_CREDENTIALS exported in the profile) would silently hit
-	// the embedded DEV_PLACEHOLDER client on every scheduled Google sync while
-	// terminal syncs keep working — the vault goes stale with no visible error.
-	// Snapshot the var (a path, not a secret) into the plist at install time.
-	envBlock := ""
+	// launchd jobs do NOT inherit the user's shell environment, so any exported
+	// var the job depends on must be snapshotted into the plist at install time
+	// (these are PATHS, not secrets):
+	//   - MORA_GOOGLE_CREDENTIALS: without it a BYO-creds setup silently hits the
+	//     embedded DEV_PLACEHOLDER client on every scheduled Google sync while
+	//     terminal syncs keep working — the vault goes stale with no visible error.
+	//   - MORA_CONFIG_DIR: without it a re-rooted (scratch/isolated) install's job
+	//     runs against the DEFAULT vault — syncing/advancing the wrong installation.
+	var envVars []string
 	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
-		envBlock = "<key>EnvironmentVariables</key><dict><key>MORA_GOOGLE_CREDENTIALS</key><string>" + creds + "</string></dict>\n"
+		envVars = append(envVars, "<key>MORA_GOOGLE_CREDENTIALS</key><string>"+creds+"</string>")
+	}
+	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
+		envVars = append(envVars, "<key>MORA_CONFIG_DIR</key><string>"+cfgDir+"</string>")
+	}
+	envBlock := ""
+	if len(envVars) > 0 {
+		envBlock = "<key>EnvironmentVariables</key><dict>" + strings.Join(envVars, "") + "</dict>\n"
 	}
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -4143,12 +4399,19 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 		okf(stdout, "installed launchd job %s", label)
 		return nil
 	}
-	// Linux / WSL2: launchd unavailable.
+	// Linux / WSL2: launchd unavailable. cron also won't inherit the shell env,
+	// so a re-rooted install must carry MORA_CONFIG_DIR on the cron line or the
+	// job runs against the default vault (mirrors the launchd EnvironmentVariables
+	// snapshot above).
+	cronEnv := ""
+	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
+		cronEnv = "MORA_CONFIG_DIR=" + cfgDir + " "
+	}
 	if google.IsWSL() {
-		fmt.Fprintf(stdout, "WSL detected: no launchd. Add to crontab or run manually:\n  */60 * * * * %s %s\nOr just run `mora sync google` when you want fresh data.\n", exe, cmdArgs)
+		fmt.Fprintf(stdout, "WSL detected: no launchd. Add to crontab or run manually:\n  */60 * * * * %s%s %s\nOr just run `mora sync google` when you want fresh data.\n", cronEnv, exe, cmdArgs)
 		return nil
 	}
-	fmt.Fprintf(stdout, "Linux: launchd unavailable. cron line:\n  */60 * * * * %s %s\nOr a systemd user timer. Or run `mora sync google` manually.\n", exe, cmdArgs)
+	fmt.Fprintf(stdout, "Linux: launchd unavailable. cron line:\n  */60 * * * * %s%s %s\nOr a systemd user timer. Or run `mora sync google` manually.\n", cronEnv, exe, cmdArgs)
 	return nil
 }
 

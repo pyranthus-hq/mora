@@ -10,7 +10,17 @@ project_name: mora
 
 before:
   hooks:
-    - go mod tidy
+    # verify, never tidy: a release build must not MUTATE go.mod/go.sum — if
+    # they are stale, fail the release and fix them in a commit.
+    - go mod verify
+    # Embed the real OAuth client HERE, not in a workflow step: client.json is
+    # git-tracked (the //go:embed needs a committed placeholder), and
+    # goreleaser's git pipe runs its dirty-tree check BEFORE the before-hooks
+    # pipe (v2.16.0 pipeline order: git → … → before → build). Writing the
+    # file before invoking goreleaser fails EVERY release with "git is in a
+    # dirty state". Guarded on the env var so a local `goreleaser check` or
+    # snapshot build without credentials never clobbers the placeholder.
+    - sh -c '[ -z "$MORA_GOOGLE_CREDENTIALS_JSON" ] || printf %s "$MORA_GOOGLE_CREDENTIALS_JSON" > internal/google/client.json'
 
 builds:
   - id: mora
@@ -69,6 +79,14 @@ sboms:
 
 homebrew_casks:
   - name: mora
+    # Flipping this requires THREE things, not two: (1) the HOMEBREW_TAP_TOKEN
+    # secret exists in this repo, (2) pyranthus-hq/homebrew-tap is public, and
+    # (3) cask publication MOVES AFTER the workflow's verify+publish gate —
+    # goreleaser's cask pipe has NO draft check (v2.16.0 cask.go honors only
+    # skip_upload), so flipping it here pushes a cask pointing at a still-DRAFT
+    # release whose download URLs 404 for anonymous users if verification
+    # fails. Publish the cask from a separate post-publish step/job instead.
+    skip_upload: true
     repository:
       owner: pyranthus-hq
       name: homebrew-tap # create this repo: pyranthus-hq/homebrew-tap
@@ -98,7 +116,11 @@ release:
   github:
     owner: pyranthus-hq
     name: mora
-  draft: false
+  # Draft on purpose: the workflow verifies the built artifacts (real OAuth
+  # client embedded, checksums.txt present) and then publishes EXPLICITLY.
+  # `mora upgrade` only sees published releases, so a draft that fails
+  # verification never breaks an install.
+  draft: true
   prerelease: auto
 
 changelog:

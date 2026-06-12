@@ -56,8 +56,13 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("setting up the release source: %w", err)
 	}
 	// Verify the downloaded archive against the release's published checksums.txt
-	// (GoReleaser/build-release.sh emit it) before swapping the binary in — don't
-	// trust TLS + the GitHub API alone.
+	// before swapping the binary in — don't trust TLS + the GitHub API alone.
+	//
+	// CONTRACT: every release MUST carry a checksum asset named exactly
+	// "checksums.txt" (goreleaser's checksum.name_template AND scripts/
+	// package.sh both emit it). v0.6.0 shipped only SHA256SUMS and silently
+	// broke `mora upgrade` for every install; if you rename one side, rename
+	// all three.
 	updater, err := selfupdate.NewUpdater(selfupdate.Config{
 		Source:    source,
 		Validator: &selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"},
