@@ -5,7 +5,7 @@ description: Use when recommending a restaurant, bar, cafe, happy hour, or any f
 
 # Dining Concierge
 
-Requires the Mora MCP server (`claude mcp add mora -s user -- mora mcp serve`).
+Requires the Mora MCP server (`claude mcp add mora -s user -- mora mcp serve`). If the `mora` tools are not available, say so up front and proceed web-only — the result lacks personal grounding; never fabricate it.
 
 ## Overview
 
