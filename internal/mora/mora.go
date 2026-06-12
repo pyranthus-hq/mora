@@ -4351,14 +4351,24 @@ func schedulePlistFor(cfg Config, job string) (string, bool) {
 	if scheduleRunAtLoad(job) {
 		runAtLoad = "<key>RunAtLoad</key><true/>\n"
 	}
-	// launchd jobs do NOT inherit the user's shell environment, so a BYO-creds
-	// setup (MORA_GOOGLE_CREDENTIALS exported in the profile) would silently hit
-	// the embedded DEV_PLACEHOLDER client on every scheduled Google sync while
-	// terminal syncs keep working — the vault goes stale with no visible error.
-	// Snapshot the var (a path, not a secret) into the plist at install time.
-	envBlock := ""
+	// launchd jobs do NOT inherit the user's shell environment, so any exported
+	// var the job depends on must be snapshotted into the plist at install time
+	// (these are PATHS, not secrets):
+	//   - MORA_GOOGLE_CREDENTIALS: without it a BYO-creds setup silently hits the
+	//     embedded DEV_PLACEHOLDER client on every scheduled Google sync while
+	//     terminal syncs keep working — the vault goes stale with no visible error.
+	//   - MORA_CONFIG_DIR: without it a re-rooted (scratch/isolated) install's job
+	//     runs against the DEFAULT vault — syncing/advancing the wrong installation.
+	var envVars []string
 	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
-		envBlock = "<key>EnvironmentVariables</key><dict><key>MORA_GOOGLE_CREDENTIALS</key><string>" + creds + "</string></dict>\n"
+		envVars = append(envVars, "<key>MORA_GOOGLE_CREDENTIALS</key><string>"+creds+"</string>")
+	}
+	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
+		envVars = append(envVars, "<key>MORA_CONFIG_DIR</key><string>"+cfgDir+"</string>")
+	}
+	envBlock := ""
+	if len(envVars) > 0 {
+		envBlock = "<key>EnvironmentVariables</key><dict>" + strings.Join(envVars, "") + "</dict>\n"
 	}
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -4389,12 +4399,19 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 		okf(stdout, "installed launchd job %s", label)
 		return nil
 	}
-	// Linux / WSL2: launchd unavailable.
+	// Linux / WSL2: launchd unavailable. cron also won't inherit the shell env,
+	// so a re-rooted install must carry MORA_CONFIG_DIR on the cron line or the
+	// job runs against the default vault (mirrors the launchd EnvironmentVariables
+	// snapshot above).
+	cronEnv := ""
+	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
+		cronEnv = "MORA_CONFIG_DIR=" + cfgDir + " "
+	}
 	if google.IsWSL() {
-		fmt.Fprintf(stdout, "WSL detected: no launchd. Add to crontab or run manually:\n  */60 * * * * %s %s\nOr just run `mora sync google` when you want fresh data.\n", exe, cmdArgs)
+		fmt.Fprintf(stdout, "WSL detected: no launchd. Add to crontab or run manually:\n  */60 * * * * %s%s %s\nOr just run `mora sync google` when you want fresh data.\n", cronEnv, exe, cmdArgs)
 		return nil
 	}
-	fmt.Fprintf(stdout, "Linux: launchd unavailable. cron line:\n  */60 * * * * %s %s\nOr a systemd user timer. Or run `mora sync google` manually.\n", exe, cmdArgs)
+	fmt.Fprintf(stdout, "Linux: launchd unavailable. cron line:\n  */60 * * * * %s%s %s\nOr a systemd user timer. Or run `mora sync google` manually.\n", cronEnv, exe, cmdArgs)
 	return nil
 }
 

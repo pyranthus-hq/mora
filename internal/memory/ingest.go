@@ -79,29 +79,32 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		p.Status.Checkpoint = cursor // advance checkpoint per page
 	}
 	p.Status.Checkpoint = ""
-	// Clean completion: model health as a LAST-ATTEMPT outcome (M-3). One instant
-	// shared across LastSynced / LastSuccessAt / LastAttemptAt keeps them
-	// consistent; paging finished and the page-fetch succeeded, so this is a
-	// successful attempt.
+	// Paging finished. Every completed attempt — clean OR partial — stamps
+	// LastAttemptAt (when it was tried). The SUCCESS timestamps are stamped only
+	// below, and only on a genuinely clean run, so a partial-failure run never
+	// looks fresh/healthy.
 	now := time.Now().UTC().Format(time.RFC3339)
-	p.Status.LastSynced = now
 	p.Status.LastAttemptAt = now
-	p.Status.LastSuccessAt = now
-	// Reset the error tally so a source that errored on a PRIOR run and recovered
-	// stops reading "unavailable" forever (which would invert SC#3 once the digest
-	// derives "broken" from these fields). Gate on errorsBefore: if THIS run added
-	// per-item write errors, they are the current attempt's outcome and must
-	// persist — only a run that introduced no new errors counts as clean.
-	if p.Status.ErrorCount == errorsBefore {
-		p.Status.ErrorCount = 0
-		p.Status.LastError = ""
-	}
-	// Partial-failure honesty: paging completed (timestamps above record that),
-	// but a run that dropped items is not a success to report as nil — the
-	// caller decides how loudly to surface it. The cleared checkpoint means a
-	// re-run re-fetches from the start and re-attempts the dropped items.
+
+	// Partial-failure honesty (M-3): a run that dropped items is NOT a success.
+	// Leave LastSynced/LastSuccessAt at their prior values (so search doesn't
+	// report incomplete data as fresh and skip-if-fresh still retries) and keep
+	// this run's error tally. The cleared checkpoint means a re-run re-fetches
+	// from the start and re-attempts the dropped items. The caller decides how
+	// loudly to surface the returned error.
 	if dropped := p.Status.ErrorCount - errorsBefore; dropped > 0 {
 		return IngestResult{Status: p.Status}, fmt.Errorf("%d item(s) failed to write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
 	}
+
+	// Clean completion: model health as a LAST-ATTEMPT outcome (M-3). One instant
+	// shared across LastSynced / LastSuccessAt / LastAttemptAt keeps them
+	// consistent. Reset the error tally so a source that errored on a PRIOR run
+	// and recovered stops reading "unavailable" forever (which would invert SC#3
+	// once the digest derives "broken" from these fields) — safe here because a
+	// nonzero `dropped` already returned above, so this path is genuinely clean.
+	p.Status.LastSynced = now
+	p.Status.LastSuccessAt = now
+	p.Status.ErrorCount = 0
+	p.Status.LastError = ""
 	return IngestResult{Status: p.Status}, nil
 }

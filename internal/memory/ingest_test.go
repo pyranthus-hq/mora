@@ -309,3 +309,37 @@ func TestIngestWriteErrorsSurfaceInReturnedError(t *testing.T) {
 		t.Fatalf("checkpoint should be cleared on completed paging, got %q", status.Checkpoint)
 	}
 }
+
+// TestIngestPartialFailurePreservesSuccessTimestamps pins the freshness-honesty
+// half of the partial-failure contract: a run that dropped items is NOT a clean
+// success, so it must NOT advance LastSynced/LastSuccessAt (which would make
+// search report incomplete data as fresh and make skip-if-fresh suppress the
+// retry for an hour). It stamps LastAttemptAt only; the prior success timestamps
+// survive untouched. (Codex phase-0 review P1.)
+func TestIngestPartialFailurePreservesSuccessTimestamps(t *testing.T) {
+	const priorSuccess = "2020-01-02T03:04:05Z"
+	f := twoPageFetcher()
+	res, err := Ingest(IngestParams{
+		Fetcher: f, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		Status: &SyncStatus{Source: "gmail", LastSynced: priorSuccess, LastSuccessAt: priorSuccess},
+		Write: func(m MappedMemory) error {
+			if m.ProviderID == "t2" {
+				return errWrite
+			}
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("partial failure must return a non-nil error")
+	}
+	status := requireStatus(t, res)
+	if status.LastSuccessAt != priorSuccess {
+		t.Errorf("partial failure must preserve prior LastSuccessAt %q, got %q", priorSuccess, status.LastSuccessAt)
+	}
+	if status.LastSynced != priorSuccess {
+		t.Errorf("partial failure must preserve prior LastSynced %q (not report stale data as fresh), got %q", priorSuccess, status.LastSynced)
+	}
+	if status.LastAttemptAt == "" || status.LastAttemptAt == priorSuccess {
+		t.Errorf("partial failure must still stamp a fresh LastAttemptAt, got %q", status.LastAttemptAt)
+	}
+}
