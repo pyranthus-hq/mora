@@ -1933,16 +1933,23 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 		return err
 	}
 
-	// Enable + (if confirmed) google backfill via the shared consent seam.
-	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stdin); err != nil {
-		return err
-	}
-	// Persist the deny-list onto the now-created imessage source (D-07) — BEFORE any
-	// imessage backfill so the first sync already honors it.
+	// Persist the deny-list BEFORE the consent seam (D-07): setIMessageDenyList
+	// creates the imessage source row if needed and setSourceEnabled preserves
+	// the deny fields, so the order is safe — and it makes the user's privacy
+	// exclusions durable even if the google backfill inside
+	// applySetupSelection fails (its error used to abort this function AFTER
+	// "Deny-list saved:" was printed but BEFORE anything was persisted; the
+	// next `mora sync imessage` then ingested exactly what they excluded).
 	if imessageSelected {
 		if err := setIMessageDenyList(cfg, denyContacts, denyConvos); err != nil {
 			return err
 		}
+	}
+	// Enable + (if confirmed) google backfill via the shared consent seam.
+	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stdin); err != nil {
+		return err
+	}
+	if imessageSelected {
 		if doBackfill {
 			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtime.GOOS == "darwin" {
 				total, err := backfillEnabledIMessage(ctx, cfg, stdout)
@@ -2072,6 +2079,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	count := 0
 	failures := 0
+	var namedErr error
 	for _, s := range sources {
 		// Enabled gate (D-07): a named disabled source ERRORS before the skip so
 		// the user is never silently no-op'd; `--all` silently skips disabled.
@@ -2089,9 +2097,14 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
 		n, err := ingestSourceFn(cfg, s, stdout)
 		count += n
 		if err != nil {
-			// Named-source path: the failure IS the result — abort with it.
+			// Named-source path: the failure IS the result — but a PARTIAL run
+			// (Ingest's dropped-item contract) has already written memories to
+			// the vault, so the final rebuild below must still run before the
+			// error surfaces; returning here left them unsearchable with no
+			// auto-heal (the schema check only heals version mismatches).
 			if !*all {
-				return err
+				namedErr = err
+				break
 			}
 			// --all (the scheduled ingest-hourly job): one broken connector must
 			// not starve the rest or skip the final rebuild — warn, keep going,
@@ -2102,7 +2115,13 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		if namedErr != nil {
+			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, err)
+		}
 		return err
+	}
+	if namedErr != nil {
+		return namedErr
 	}
 	fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
 	if failures > 0 {

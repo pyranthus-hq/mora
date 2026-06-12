@@ -18,6 +18,7 @@ import (
 func TestInitPreservesExistingConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -71,6 +72,7 @@ func TestInitPreservesExistingConfig(t *testing.T) {
 func TestInitVaultFlagStillOverrides(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 	want := filepath.Join(home, "elsewhere")
 
 	var out bytes.Buffer

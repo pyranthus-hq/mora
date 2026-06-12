@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,5 +182,53 @@ func TestAllMemoryFilesMissingRootsAreFine(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Fatalf("expected no files, got %d", len(files))
+	}
+}
+
+// TestNamedSourceIngestRebuildsDespitePartialFailure: with the partial-failure
+// contract (Ingest returns non-nil after dropping items), the named-source
+// path (`mora ingest run --source X`) must still rebuild the index before
+// surfacing the error — the successfully written items are already in the
+// vault, and skipping the rebuild leaves them unsearchable with no auto-heal
+// (review finding: the early return predated the contract change).
+func TestNamedSourceIngestRebuildsDespitePartialFailure(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	// A memory in the vault that is NOT yet in the index (writeMemory does not
+	// rebuild): the named ingest's final rebuild is what makes it searchable.
+	if err := writeMemory(cfg, Memory{ID: "fresh1", Scope: "global", Type: "insight", Title: "Fresh", Text: "alphapartialtoken"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSources(cfg, []Source{{Name: "docs", Type: "filesystem", Path: t.TempDir(), Scope: "global", Enabled: ptr(true), CreatedAt: "2026-06-11T00:00:00Z"}}); err != nil {
+		t.Fatal(err)
+	}
+	prev := ingestSourceFn
+	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (int, error) {
+		return 3, errors.New("2 item(s) failed to write and were dropped")
+	}
+	t.Cleanup(func() { ingestSourceFn = prev })
+
+	var out bytes.Buffer
+	err := Run(context.Background(), []string{"ingest", "run", "--source", "docs"}, &out, &out, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("named-source partial failure must surface as an error")
+	}
+
+	// The rebuild must still have run: fresh1 is in index.db. Query the index
+	// directly — searchMemories would mask the gap by rebuilding on a missing
+	// db, and the schema auto-heal only fires on version mismatch, not rows.
+	db, derr := sql.Open("sqlite", roIndexDSN(cfg))
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	defer db.Close()
+	var n int
+	if qerr := db.QueryRow(`SELECT count(*) FROM memories WHERE id = 'fresh1'`).Scan(&n); qerr != nil {
+		t.Fatal(qerr)
+	}
+	if n != 1 {
+		t.Fatalf("index was not rebuilt after the partial named-source run: fresh1 rows = %d, want 1 (written memories left unsearchable)", n)
 	}
 }
