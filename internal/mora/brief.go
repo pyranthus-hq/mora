@@ -27,8 +27,16 @@ import (
 // briefHashSchemaVersion stamps the snapshot's hashing scheme. A bump is handled
 // as COLD-START-EQUIVALENT for that instance (re-baseline to all current hashes,
 // suppress the flood) so an empty post-upgrade brief is not misread as broken.
-// Increment this whenever the upstream ContentHash algorithm changes.
-const briefHashSchemaVersion = 1
+// Increment this whenever the upstream ContentHash algorithm changes — or when
+// the INSTANCE-KEYING scheme changes, which re-buckets memories under keys
+// whose existing snapshots no longer describe them.
+//
+// v2: the applecal→applecalendar keying fix. Broken-era installs committed
+// stamped-EMPTY snapshots under "applecalendar" (the memories were keyed
+// "applecal" and never reconciled); post-fix those snapshots would read as
+// steady state and flood the whole backlog as [new]
+// (TestBrokenKeyingEraSnapshotResetsNotFloods).
+const briefHashSchemaVersion = 2
 
 // briefSnapshot is the per-instance watermark record persisted at
 // <StateDir>/brief/<sourceInstanceKey>.json. It is NEW state — deliberately NOT

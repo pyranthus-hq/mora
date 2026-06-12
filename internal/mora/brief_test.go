@@ -448,3 +448,36 @@ func mapsEqual(a, b map[string]string) bool {
 	}
 	return true
 }
+
+// TestBrokenKeyingEraSnapshotResetsNotFloods pins the v1→v2 schema bump that
+// accompanies the applecal instance-keying fix. During the broken-keying era,
+// scheduled --advance runs committed a STAMPED-EMPTY snapshot under the
+// enumerated key "applecalendar" (its memories were grouped under "applecal"
+// and never reconciled). After the keying fix the whole backlog reconciles
+// under this key; against a stamped-empty v1 snapshot the committed-empty-is-
+// steady-state rule would surface the ENTIRE backlog as [new] deltas across
+// consecutive briefs (with a notification each) — the exact D-04 flood the
+// watermark exists to suppress. The schema bump makes the broken-era snapshot
+// read as SchemaReset: one clean re-baseline, nothing surfaced.
+func TestBrokenKeyingEraSnapshotResetsNotFloods(t *testing.T) {
+	brokenEra := briefSnapshot{
+		Key:               "applecalendar",
+		LastBriefAt:       "2026-06-01T00:00:00Z",
+		HashSchemaVersion: 1, // the version every broken-era install has on disk
+		Items:             map[string]string{},
+	}
+	mems := []Memory{
+		{ID: "e1", Provider: "applecal", ContentHash: "h1"},
+		{ID: "e2", Provider: "applecal", ContentHash: "h2"},
+	}
+	d := classify(brokenEra, mems, time.Now())
+	if len(d.Items) != 0 {
+		t.Fatalf("broken-era snapshot flooded %d backlog item(s) as deltas; want a clean re-baseline", len(d.Items))
+	}
+	if !d.ColdStart || !d.SchemaReset {
+		t.Fatalf("ColdStart=%v SchemaReset=%v; want true/true (cold-start-equivalent reset)", d.ColdStart, d.SchemaReset)
+	}
+	if len(d.Baseline) != 2 {
+		t.Fatalf("baseline must still record all current hashes, got %d", len(d.Baseline))
+	}
+}

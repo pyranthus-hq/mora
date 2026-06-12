@@ -33,11 +33,13 @@ jobs:
       - uses: anchore/sbom-action/download-syft@v0 # syft for SBOM
       - uses: sigstore/cosign-installer@v3 # cosign for keyless signing
 
-      # Mirror scripts/package.sh's embed step: overwrite the committed
-      # DEV_PLACEHOLDER internal/google/client.json with the real installed-app
-      # client so the //go:embed ships working OAuth. The runner workspace is
-      # ephemeral — no restore needed (package.sh's trap exists for local trees).
-      - name: Embed Google OAuth client
+      # Validate ONLY — the actual embed happens inside goreleaser's before
+      # hook (.goreleaser.yaml). Writing the tracked client.json here, before
+      # goreleaser runs, fails its git dirty-tree check and aborts every
+      # release; the before hook runs AFTER that check (v2.16.0 pipeline
+      # order). The runner workspace is ephemeral — no restore needed
+      # (package.sh's trap exists for local trees).
+      - name: Validate OAuth client secret
         env:
           MORA_GOOGLE_CREDENTIALS_JSON: ${{ secrets.MORA_GOOGLE_CREDENTIALS_JSON }}
         run: |
@@ -45,8 +47,7 @@ jobs:
             echo "::error::MORA_GOOGLE_CREDENTIALS_JSON secret is not set — refusing to build a placeholder-OAuth release. Add the secret (the installed-app client JSON) and re-tag."
             exit 1
           fi
-          printf '%s' "$MORA_GOOGLE_CREDENTIALS_JSON" > internal/google/client.json
-          REAL_ID=$(grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' internal/google/client.json | head -1)
+          REAL_ID=$(printf '%s' "$MORA_GOOGLE_CREDENTIALS_JSON" | grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' | head -1)
           if [ -z "$REAL_ID" ]; then
             echo "::error::MORA_GOOGLE_CREDENTIALS_JSON does not contain a Google OAuth client id"
             exit 1
@@ -59,6 +60,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Consumed by the before hook that embeds the OAuth client.
+          MORA_GOOGLE_CREDENTIALS_JSON: ${{ secrets.MORA_GOOGLE_CREDENTIALS_JSON }}
           # Fine-grained PAT with contents:write on pyranthus-hq/homebrew-tap.
           # Cask publishing is skip_upload: true in .goreleaser.yaml until the
           # token exists and the tap is public.
@@ -75,6 +78,13 @@ jobs:
         run: |
           test -f dist/checksums.txt || { echo "::error::dist/checksums.txt missing — mora upgrade would reject this release"; exit 1; }
           REAL_ID=$(grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' internal/google/client.json | head -1)
+          # Guard against a vacuous pass: `| head -1` masks grep's exit status
+          # (no pipefail on the default shell) and `grep -qF ""` below would
+          # match ANY strings output — same guard package.sh carries.
+          if [ -z "$REAL_ID" ]; then
+            echo "::error::internal/google/client.json carries no real OAuth client id — the embed hook did not run?"
+            exit 1
+          fi
           ARCHIVE=$(find dist -maxdepth 1 -name 'mora_*_linux_amd64.tar.gz' | head -1)
           tar -xzf "$ARCHIVE" -C dist/
           BIN=$(find dist -type f -name mora | head -1)

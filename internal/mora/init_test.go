@@ -95,8 +95,20 @@ func TestInitVaultFlagStillOverrides(t *testing.T) {
 func TestDefaultConfigHonorsMoraConfigDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MORA_CONFIG_DIR", dir)
-	if got := defaultConfig().ConfigDir; got != dir {
-		t.Fatalf("defaultConfig().ConfigDir = %q, want MORA_CONFIG_DIR %q", got, dir)
+	cfg := defaultConfig()
+	if cfg.ConfigDir != dir {
+		t.Fatalf("defaultConfig().ConfigDir = %q, want MORA_CONFIG_DIR %q", cfg.ConfigDir, dir)
+	}
+	// The override must isolate the ENTIRE install, not just the config: with
+	// global defaults for DataDir/StateDir/VaultDir, a scratch `init` rebuilt
+	// (wiped) the LIVE index.db and shared the live watermark state — the
+	// exact incident class the env var was added to prevent.
+	for name, got := range map[string]string{
+		"VaultDir": cfg.VaultDir, "DataDir": cfg.DataDir, "StateDir": cfg.StateDir,
+	} {
+		if !strings.HasPrefix(got, dir+string(os.PathSeparator)) {
+			t.Errorf("%s = %q escapes MORA_CONFIG_DIR %q — scratch runs would touch the live install", name, got, dir)
+		}
 	}
 	t.Setenv("MORA_CONFIG_DIR", "")
 	if got := defaultConfig().ConfigDir; !strings.HasSuffix(got, filepath.Join(".config", "mora")) {
@@ -219,5 +231,110 @@ func TestWriteConfigPreservesUnknownKeysAndComments(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "future_knob = \"keep-me\"") {
 		t.Fatalf("unknown key lost on second rewrite:\n%s", got)
+	}
+}
+
+// TestLoadConfigParsesInlineCommentsAndQuotedValues: loadConfig used to take
+// everything after '=' and strip outer quotes, so a hand-written
+// `vault_dir = "/x" # note` loaded as the garbage path `/x" # note` — and the
+// read-modify-write writeConfig then persisted the corruption back via %q,
+// orphaning the real vault. Hand-editing is a path our own refusal messages
+// recommend, so quoted values must parse exactly and inline comments must be
+// ignored.
+func TestLoadConfigParsesInlineCommentsAndQuotedValues(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MORA_CONFIG_DIR", "")
+
+	cfgDir := filepath.Join(home, ".config", "mora")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	vault := filepath.Join(home, "my vault") // space: quoted-value parsing must survive it
+	body := fmt.Sprintf("vault_dir = %q # weekly backup is on the NAS\n", vault) +
+		fmt.Sprintf("data_dir = %q\n", filepath.Join(home, "d")) +
+		fmt.Sprintf("state_dir = %q\n", filepath.Join(home, "s")) +
+		"embedder = \"ollama\"   # trailing comment\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VaultDir != vault {
+		t.Fatalf("inline comment corrupted vault_dir: got %q, want %q", cfg.VaultDir, vault)
+	}
+	if cfg.Embedder != "ollama" {
+		t.Fatalf("inline comment corrupted embedder: got %q", cfg.Embedder)
+	}
+
+	// The load→rewrite round-trip must not amplify anything: after a rewrite,
+	// a second load still yields the exact same values.
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.VaultDir != vault || cfg2.Embedder != "ollama" {
+		t.Fatalf("round-trip corrupted values: %+v", cfg2)
+	}
+}
+
+// TestInitVaultTrailingSlashIsNotARepoint: `--vault /same/path/` (shell tab
+// completion, install.sh's MORA_VAULT knob) must stay idempotent — the guard
+// compares cleaned paths, not raw strings.
+func TestInitVaultTrailingSlashIsNotARepoint(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MORA_CONFIG_DIR", "")
+
+	custom := filepath.Join(home, "custom-vault")
+	var out bytes.Buffer
+	if err := Run(context.Background(), []string{"init", "--vault", custom}, &out, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("first init --vault: %v", err)
+	}
+	if err := Run(context.Background(), []string{"init", "--vault", custom + string(os.PathSeparator)}, &out, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("trailing-slash re-init of the same vault must be idempotent, got: %v", err)
+	}
+}
+
+// TestWriteConfigPreservesEmptyDirValues: drop-on-empty is reset-to-default
+// semantics for embedder/context ONLY. An empty dir value (`vault_dir = ""`,
+// hand-written) is broken either way, but silently DROPPING it on an
+// unrelated rewrite repoints the vault to the default — the exact side-effect
+// class the repoint guard exists to prevent. The line must survive verbatim.
+func TestWriteConfigPreservesEmptyDirValues(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MORA_CONFIG_DIR", "")
+
+	cfgDir := filepath.Join(home, ".config", "mora")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "vault_dir = \"\"\n" +
+		fmt.Sprintf("data_dir = %q\n", filepath.Join(home, "d")) +
+		fmt.Sprintf("state_dir = %q\n", filepath.Join(home, "s"))
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ContextProfile = "small"
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(cfgDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `vault_dir = ""`) {
+		t.Fatalf("empty vault_dir was dropped by an unrelated rewrite (silent repoint to the default):\n%s", got)
 	}
 }

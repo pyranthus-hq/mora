@@ -373,20 +373,59 @@ USAGE:
 }
 
 func defaultConfig() Config {
-	home, _ := os.UserHomeDir()
-	// MORA_CONFIG_DIR points an entire invocation at an isolated config
-	// (scripts, launchd jobs, demos, tests) WITHOUT touching ~/.config/mora —
-	// the structural fix for scratch `init`s clobbering the one global config.
-	configDir := os.Getenv("MORA_CONFIG_DIR")
-	if configDir == "" {
-		configDir = filepath.Join(home, ".config", "mora")
+	// MORA_CONFIG_DIR points an entire invocation at an ISOLATED install
+	// (scripts, launchd jobs, demos, tests): config, vault, derived index, and
+	// watermark state ALL default under the override. Re-rooting only the
+	// config dir was not enough — a scratch `init` then rebuilt (wiped) the
+	// LIVE ~/.local/share index.db and shared the live watermark state, the
+	// exact incident class this env var exists to prevent. A config.toml
+	// inside the override still wins for any dir it names (loadConfig
+	// overlays).
+	if dir := os.Getenv("MORA_CONFIG_DIR"); dir != "" {
+		return Config{
+			VaultDir:  filepath.Join(dir, "vault"),
+			ConfigDir: dir,
+			DataDir:   filepath.Join(dir, "data"),
+			StateDir:  filepath.Join(dir, "state"),
+		}
 	}
+	home, _ := os.UserHomeDir()
 	return Config{
 		VaultDir:  filepath.Join(home, "vault", "mora"),
-		ConfigDir: configDir,
+		ConfigDir: filepath.Join(home, ".config", "mora"),
 		DataDir:   filepath.Join(home, ".local", "share", "mora"),
 		StateDir:  filepath.Join(home, ".local", "state", "mora"),
 	}
+}
+
+// parseConfigValue extracts a config value from the raw right-hand side of a
+// `key = value` line. A quoted value parses via strconv.Unquote (escapes
+// honored) and anything after the closing quote — an inline comment — is
+// ignored; the old strip-outer-quotes approach loaded `"/x" # note` as the
+// garbage path `/x" # note`, which the read-modify-write writeConfig then
+// persisted back, orphaning the real vault. Hand-editing config.toml is a
+// path our own refusal messages recommend, so it must parse exactly. An
+// unquoted value cuts at the first '#'.
+func parseConfigValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, `"`) {
+		for i := 1; i < len(raw); i++ {
+			switch raw[i] {
+			case '\\':
+				i++ // skip the escaped byte
+			case '"':
+				if v, err := strconv.Unquote(raw[:i+1]); err == nil {
+					return v
+				}
+				return strings.Trim(raw[:i+1], `"`)
+			}
+		}
+		return strings.Trim(raw, `"`) // unterminated quote: legacy lenient read
+	}
+	if i := strings.IndexByte(raw, '#'); i >= 0 {
+		raw = raw[:i]
+	}
+	return strings.TrimSpace(raw)
 }
 
 func loadConfig() (Config, error) {
@@ -409,8 +448,7 @@ func loadConfig() (Config, error) {
 			continue
 		}
 		key := strings.TrimSpace(parts[0])
-		val := strings.Trim(strings.TrimSpace(parts[1]), `"`)
-		val = expandHome(val)
+		val := expandHome(parseConfigValue(parts[1]))
 		switch key {
 		case "vault_dir":
 			cfg.VaultDir = val
@@ -497,7 +535,9 @@ func cmdConfig(args []string, stdout io.Writer) error {
 // behavior silently ate those lines on every rewrite — loadConfig skips
 // unknowns, so they survived the load only to vanish on the next save. An
 // empty Embedder/ContextProfile DROPS its line (reset-to-default semantics,
-// keeping config.toml minimal).
+// keeping config.toml minimal); an empty DIR value is broken either way but
+// is preserved verbatim — dropping it would silently repoint the install to
+// the defaults via an unrelated rewrite.
 func writeConfig(cfg Config) error {
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 		return err
@@ -549,7 +589,11 @@ func writeConfig(cfg Config) error {
 		}
 		written[key] = true
 		if val == "" {
-			continue // reset-to-default: drop the line
+			if key == "embedder" || key == "context" {
+				continue // reset-to-default: drop the line
+			}
+			out = append(out, line) // empty dir value: preserve, never silently repoint
+			continue
 		}
 		out = append(out, fmt.Sprintf("%s = %q", key, val))
 	}
@@ -581,8 +625,10 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		want := expandHome(*vault)
 		// Repointing an EXISTING install's vault orphans the current one from
 		// Mora's view — it must never happen as a side effect of a scripted
-		// init (two live incidents). Same-dir re-init stays idempotent.
-		if cfg.VaultDir != want && configFileExists(cfg) {
+		// init (two live incidents). Same-dir re-init stays idempotent, and
+		// the comparison cleans both sides so a trailing slash (shell tab
+		// completion, install.sh's MORA_VAULT) is not misread as a repoint.
+		if filepath.Clean(cfg.VaultDir) != filepath.Clean(want) && configFileExists(cfg) {
 			if err := confirmVaultRepoint(stdin, stdout, cfg.VaultDir, want); err != nil {
 				return err
 			}
@@ -4047,10 +4093,19 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 			return nil, err
 		}
 		// The vault write succeeded (vault is truth; the index is a derived
-		// cache), but a failed rebuild must SURFACE: silently returning success
-		// here served searches from an index missing the new memory.
+		// cache), but a failed rebuild must SURFACE — as a degraded SUCCESS,
+		// never an isError result: signaling failure for a write that stuck
+		// invites the client to retry, and each retry mints a fresh server-side
+		// ID (N retries = N duplicate memories). The structured result keeps
+		// the saved memory + its ID so the client has nothing to re-send.
+		// (delete_memory below is the deliberate asymmetry: its retry is
+		// harmless, and serving deleted content warrants the loud error.)
 		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
-			return nil, fmt.Errorf("memory %s saved, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, rerr)
+			return map[string]any{
+				"memory":      m,
+				"index_stale": true,
+				"warning":     fmt.Sprintf("memory %s saved, but the search index could not be updated: %v — run `mora index rebuild` (do NOT retry the write; it is saved)", m.ID, rerr),
+			}, nil
 		}
 		return m, nil
 	case "read_memory":

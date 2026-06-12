@@ -36,26 +36,41 @@ func poisonInserts(t *testing.T, cfg Config) {
 	}
 }
 
-// TestMCPWriteMemorySurfacesRebuildFailure: write_memory persists the memory
-// (vault is truth) but must SURFACE a failed index rebuild instead of
-// returning success while search serves an index without the new memory.
-func TestMCPWriteMemorySurfacesRebuildFailure(t *testing.T) {
+// TestMCPWriteMemoryDegradesOnRebuildFailure: write_memory persists the memory
+// (vault is truth) and must SURFACE a failed index rebuild — but as a
+// degraded SUCCESS, not an error. An isError result for a write that
+// succeeded invites the MCP client to retry, and every retry mints a new
+// server-side ID: N retries = N duplicate memories in the vault. The result
+// carries the saved memory, an index_stale flag, and a warning naming the
+// recovery step.
+func TestMCPWriteMemoryDegradesOnRebuildFailure(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
 	poisonInserts(t, cfg)
 
-	_, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+	res, err := callMCPTool(context.Background(), "write_memory", map[string]any{
 		"title": "Poisoned", "text": "the index rebuild after this write fails",
 	})
-	if err == nil {
-		t.Fatal("write_memory returned success despite a failed index rebuild")
+	if err != nil {
+		t.Fatalf("write_memory must not signal failure for a write that SUCCEEDED (an isError result invites a duplicate-minting retry): %v", err)
 	}
-	if !strings.Contains(err.Error(), "mora index rebuild") {
-		t.Fatalf("error must tell the agent/user the recovery step (`mora index rebuild`), got: %v", err)
+	degraded, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("degraded write should return a structured result, got %T", res)
 	}
-	// The memory itself must still be on disk — the vault write succeeded and
-	// the index is a disposable derived cache.
+	if stale, _ := degraded["index_stale"].(bool); !stale {
+		t.Fatalf("degraded result must carry index_stale=true, got %+v", degraded)
+	}
+	warning, _ := degraded["warning"].(string)
+	if !strings.Contains(warning, "mora index rebuild") {
+		t.Fatalf("warning must name the recovery step (`mora index rebuild`), got %q", warning)
+	}
+	if _, ok := degraded["memory"].(Memory); !ok {
+		t.Fatalf("degraded result must carry the saved memory (with its ID) so the client never re-writes, got %+v", degraded)
+	}
+	// The memory itself must be on disk — the vault write succeeded and the
+	// index is a disposable derived cache.
 	files, ferr := allMemoryFiles(cfg)
 	if ferr != nil {
 		t.Fatal(ferr)

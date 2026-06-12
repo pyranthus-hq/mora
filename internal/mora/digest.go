@@ -178,6 +178,11 @@ func digestSourceMatches(key, source string) bool {
 	if source == "" {
 		return true
 	}
+	// Normalize the user/agent-supplied filter through the same provider→type
+	// alias as the keying seam: "applecal" is what the user SEES on disk
+	// (frontmatter provider, sources/applecal/ directory) and silently
+	// matching nothing would return an empty digest with no error.
+	source = providerToType(source)
 	return key == source || strings.HasPrefix(key, source+":")
 }
 
