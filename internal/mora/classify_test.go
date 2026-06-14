@@ -6,6 +6,36 @@ import (
 	"testing"
 )
 
+// TestClassifyMeetingNotesArtifact pins that Google's automated meeting-artifact
+// senders (Gemini meeting notes, Google Meet) are classified "service" so a
+// recurring meeting's auto-generated notes emails stop crowding the daily brief —
+// while real humans at the same domain, and human local parts that merely contain
+// "notes" as a substring, stay "person" (token-exact, precision-first).
+func TestClassifyMeetingNotesArtifact(t *testing.T) {
+	cases := []struct {
+		identity, display, want string
+	}{
+		// the bug: Gemini meeting-notes emails surfaced as full brief items
+		{"gemini-notes@google.com", "Gemini", "service"},
+		// a notes sender at another host is service too (domain-agnostic, like "digest")
+		{"meeting-notes@zoom.us", "", "service"},
+		// regression guard: Google Meet notices already gated via the noreply family
+		{"meetings-noreply@google.com", "Google Meet", "service"},
+		// --- precision guards: must stay person ---
+		{"riya@google.com", "Riya", "person"},  // real human at google.com
+		{"keynotes@speaker.com", "", "person"}, // token "keynotes" != "notes" (no substring match)
+		{"denotes@dict.com", "Sam", "person"},  // token "denotes" != "notes"
+		// singular "note" is deliberately NOT a service token (more plausible as a
+		// human handle/surname, no recall benefit) — guard against a future regression.
+		{"john.note@personal.example", "John Note", "person"},
+	}
+	for _, c := range cases {
+		if got := classifyIdentity(c.identity, c.display); got != c.want {
+			t.Errorf("classifyIdentity(%q, %q) = %q, want %q", c.identity, c.display, got, c.want)
+		}
+	}
+}
+
 // TestClassifyIdentity is the A1 contract: automated/transactional senders are
 // classified "service", real humans (and all phone handles) "person". The table
 // is drawn from the real-data audit (2026-06-04) plus boundary cases.

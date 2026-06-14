@@ -43,7 +43,7 @@ var serviceLocalTokens = map[string]bool{
 	"notification": true, "notifications": true, "notify": true,
 	"alert": true, "alerts": true,
 	"receipt": true, "receipts": true,
-	"news": true, "newsletter": true,
+	"news": true, "newsletter": true, "notes": true,
 	"update": true, "updates": true,
 	"mailer": true, "mailer-daemon": true,
 	"bounce": true, "bounces": true,
