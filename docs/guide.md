@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh |
 tar -xzf mora_0.6.0_darwin_arm64.tar.gz && ./install.sh
 ```
 
-**From source** (Go 1.22+; pure Go, no CGO):
+**From source** (Go 1.25+; pure Go, no CGO):
 
 ```bash
 go install github.com/pyranthus-hq/mora/cmd/mora@latest
@@ -128,7 +128,7 @@ mora sources add filesystem --name myproject --path ~/code/myproject --scope pro
 mora ingest run --source myproject
 ```
 
-Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files — plus **`.docx`** (Word documents, text extracted with pure-Go stdlib). `.pdf` and other binaries/build artifacts are skipped (PDF text extraction would need a non-pure-Go dependency and OCR for scans).
+Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files — plus **`.docx`** (Word documents) and **`.pdf`**, both text-extracted with pure-Go libraries (no CGO). Mora only indexes text it can actually read: a scanned, image-only PDF yields nothing rather than garbage (there is no OCR). Other binaries and build artifacts are skipped.
 
 ## Wire Mora into your agent (MCP)
 

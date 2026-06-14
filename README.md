@@ -38,7 +38,7 @@ Gaps: none detected.
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
-The script installs the release binary for your platform, clears macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized), and runs `mora init` (vault at `~/vault/mora`). It does **not** verify checksums — they're on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to check manually, or unpack a tarball yourself. From source: `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.22+, no CGO; source builds report `dev` and cannot self-update).
+The script installs the release binary for your platform, clears macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized), and runs `mora init` (vault at `~/vault/mora`). It does **not** verify checksums — they're on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to check manually, or unpack a tarball yourself. From source: `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.25+, no CGO; source builds report `dev` and cannot self-update).
 
 Then connect sources and wire in an agent:
 
