@@ -360,6 +360,7 @@ USAGE:
   mora connect google --since-days 365   # widen the gmail backfill window
   mora connect imessage            # macOS: enable iMessage, check Full Disk Access, then backfill
   mora connect imessage --since-days 365   # widen the iMessage backlog window (negative = all-time)
+  mora connect filesystem ~/Documents      # add + enable + index a folder in one step (one-shot of: sources add + ingest run)
   mora sync status
   mora sync google
   mora sync imessage               # macOS: read local Messages (read-only) into memories
@@ -2186,8 +2187,11 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) >= 1 && args[0] == "imessage" {
 		return connectIMessage(ctx, args[1:], stdout)
 	}
+	if len(args) >= 1 && args[0] == "filesystem" {
+		return connectFilesystem(ctx, args[1:], stdout)
+	}
 	if len(args) < 1 || args[0] != "google" {
-		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect imessage [--since-days N]")
+		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
 	}
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -3711,6 +3715,123 @@ func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
 // the database is actually readable — backfill conversations now. When FDA is not yet
 // granted it stops at the honest guidance (no false backfill), so the user can grant
 // access and re-run. macOS-only.
+// connectFilesystem is the one-shot convenience for a filesystem source: it
+// registers (or refreshes) the directory as an ENABLED filesystem source, indexes
+// it, and rebuilds the search index — the same add+enable+ingest flow `connect
+// google`/`connect imessage` run, so a folder is as turnkey as the other
+// connectors (D-06: connect is the deliberate enable+backfill path). Unlike
+// `sources add` (which lands DISABLED behind the consent gate, D-11), naming a
+// folder here IS the consent. The default source name is the folder's base name
+// so two folders coexist without an explicit --name; re-connecting the same name
+// refreshes in place rather than stacking duplicates (mirrors addSource).
+func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) error {
+	// Pull a leading positional <path> out before flag parsing: Go's flag package
+	// stops at the first non-flag arg, so `connect filesystem ~/dir --name x` would
+	// otherwise silently drop --name. A leading flag form (`--name x ~/dir`) still
+	// works via fs.Arg(0) below.
+	var positional string
+	rest := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positional, rest = args[0], args[1:]
+	}
+	fs := flag.NewFlagSet("connect filesystem", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	name := fs.String("name", "", "source name (default: the folder's base name)")
+	scope := fs.String("scope", "personal", "scope")
+	pathFlag := fs.String("path", "", "directory to index (alternative to the positional <path>)")
+	if err := fs.Parse(rest); err != nil {
+		return err
+	}
+	path := *pathFlag
+	if path == "" {
+		path = positional
+	}
+	if path == "" {
+		path = fs.Arg(0)
+	}
+	if path == "" {
+		return errors.New("usage: mora connect filesystem <path> [--name <name>] [--scope <scope>]")
+	}
+	path = expandHome(path)
+	// Canonicalize to absolute: the scheduled `ingest --all` job runs from
+	// launchd's cwd, not the user's shell, so a persisted relative path would
+	// target the wrong (or no) folder.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("cannot resolve %q: %w", path, err)
+	}
+	path = abs
+	// Fail loudly on a typo'd path: the filesystem walk swallows a missing-root
+	// error to stay resumable, so without this check a bad path would register an
+	// enabled source that silently indexes nothing.
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("cannot read %q: %w", path, err)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	srcName := *name
+	if srcName == "" {
+		srcName = defaultFilesystemSourceName(path)
+	}
+	s := Source{Name: srcName, Type: "filesystem", Scope: *scope, Path: path, Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
+	// Refuse to overwrite an unreadable sources.json: with the error swallowed, a
+	// corrupt file would be replaced by ONLY the new source, destroying every other
+	// registered connector. Bail and leave the file for the user to repair.
+	sources, err := loadSources(cfg)
+	if err != nil {
+		return fmt.Errorf("cannot read existing sources (fix or remove %s): %w", filepath.Join(cfg.ConfigDir, "sources.json"), err)
+	}
+	var next []Source
+	for _, existing := range sources {
+		if existing.Name == s.Name {
+			// Same name + same folder => a deliberate re-connect: refresh in place
+			// and preserve the original add time. Same name + a DIFFERENT folder
+			// (e.g. two dirs whose base name collides) would silently clobber the
+			// first — refuse and point at --name instead.
+			if existing.Type == "filesystem" && existing.Path == s.Path {
+				s.CreatedAt = existing.CreatedAt
+				continue
+			}
+			return fmt.Errorf("a source named %q already exists (path %q); pick another name with --name", existing.Name, existing.Path)
+		}
+		next = append(next, existing)
+	}
+	next = append(next, s)
+	if err := saveSources(cfg, next); err != nil {
+		return err
+	}
+	// Ingest now (the named, consented convenience path — same as connect google).
+	// Surface a partial-ingest warning BEFORE the rebuild so a resumable ingest
+	// error is never masked by a later index-rebuild failure.
+	n, ingestErr := ingestSource(cfg, s, stdout)
+	if ingestErr != nil {
+		warnf(stdout, "%s indexed %d file(s) before stopping (resumable): %v", s.Name, n, ingestErr)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		return err
+	}
+	if ingestErr != nil {
+		return ingestErr
+	}
+	okf(stdout, "Enabled filesystem and indexed %d file(s) from %s.", n, path)
+	renderSetupState(cfg, stdout)
+	return nil
+}
+
+// defaultFilesystemSourceName derives a stable, filesystem-safe source name from a
+// directory path (its base name), so `connect filesystem ~/notes` and `connect
+// filesystem ~/docs` coexist without an explicit --name. Falls back to
+// "filesystem" for degenerate paths (root, ".", empty base).
+func defaultFilesystemSourceName(path string) string {
+	base := filepath.Base(filepath.Clean(path))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return "filesystem"
+	}
+	return base
+}
+
 func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
