@@ -128,7 +128,7 @@ mora sources add filesystem --name myproject --path ~/code/myproject --scope pro
 mora ingest run --source myproject
 ```
 
-Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files — plus **`.docx`** (Word documents) and **`.pdf`**, both text-extracted with pure-Go libraries (no CGO). Mora only indexes text it can actually read: a scanned, image-only PDF yields nothing rather than garbage (there is no OCR). Other binaries and build artifacts are skipped.
+Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files, plus **`.docx`** (Word documents) and **`.pdf`**, both text-extracted with pure-Go libraries (no CGO). Mora only indexes text it can actually read: a scanned, image-only PDF yields nothing rather than garbage (there is no OCR). Other binaries and build artifacts are skipped.
 
 ## Wire Mora into your agent (MCP)
 
@@ -142,7 +142,7 @@ codex  mcp add mora -- mora mcp serve             # Codex
 Or use the example configs — `examples/claude-code-mcp.json` (copy to your project's
 `.claude/mcp.json`) and `examples/codex-mcp.json`.
 
-`mora mcp serve` exposes 11 tools over JSON-RPC: `write_memory`, `read_memory`, `search_memory`, `list_memory`, `delete_memory`, `context_memory`, `think`, `list_entities`, `get_entity`, `digest`, and `brief` — the last is the session-start what-changed/what-matters briefing. Every `search_memory` / `context_memory` answer also carries a per-source `last_synced` map, so your agent can qualify answers with their data age.
+`mora mcp serve` exposes 12 tools over JSON-RPC: `write_memory`, `read_memory`, `search_memory`, `list_memory`, `delete_memory`, `context_memory`, `think`, `list_entities`, `get_entity`, `digest`, `brief`, and `meeting_prep` — `brief` is the session-start what-changed/what-matters briefing, and `meeting_prep` assembles a cited prep pack for your next (or in-progress) calendar event. `digest` and `brief` also accept `entity`/`scope`/`since_days` to narrow to one person, namespace, or window. Every `search_memory` / `context_memory` answer also carries a per-source `last_synced` map, so your agent can qualify answers with their data age.
 
 ## Make the brief your session-start default
 
@@ -219,7 +219,10 @@ mora sync status
 
 ```bash
 mora brief                                                 # what changed / what matters
+mora brief --entity "Riya" --since-days 7                  # just one person, last week (preview-only)
 mora pulse --digest --source imessage --since-hours 168    # "just my texts this week"
+mora prep                                                  # cited prep pack for your next meeting
+mora prep "Riya"                                           # prep the next meeting WITH Riya
 ```
 
 **Tune context density** (scales default budgets for context/digest/brief; `large` raises the
@@ -236,7 +239,7 @@ mora config embedder ollama     # durable semantic-retrieval opt-in (loopback-on
 mora sync google
 ```
 
-**View local usage analytics (content-free):**
+**View local usage analytics (stays on your disk; includes your raw query text):**
 
 ```bash
 mora usage report
