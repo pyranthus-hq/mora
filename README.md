@@ -14,9 +14,9 @@
 
 </div>
 
-Mora indexes your Gmail (one or several accounts), Google Calendar, iMessage, Apple Calendar, and local files into a vault of Markdown files and a SQLite database on your machine, then serves it over MCP to Claude Code, Codex, or any other MCP client. Point several agents at the same vault and they all answer from your real history, with citations.
+Mora indexes your Gmail (one or several accounts), Google Calendar, iMessage, Apple Calendar, and local files into a **vault** of Markdown files and a SQLite index on your machine, then serves it over MCP (the Model Context Protocol) to Claude Code, Codex, or any other MCP client. Point several agents at the same vault and they all answer from your history, with citations.
 
-It runs locally: no server, no Mora account, no telemetry. The only network connections are to the sources you sync, a local Ollama embedder (optional), GitHub for `mora upgrade`, and a private git remote for backup if you turn it on.
+It runs entirely on your machine: no server, no signup, no telemetry. iMessage and Apple Calendar need macOS; Gmail, Calendar, and files also run on Linux.
 
 ## What it looks like
 
@@ -32,7 +32,7 @@ Evidence (3):
 Gaps: none detected.
 ```
 
-`think` returns cited evidence and a list of gaps (stale results, thin coverage, a name the vault has never seen), computed before any model runs. Mora has no LLM and no API key. The calling agent writes the answer; over MCP it calls `search_memory`, `think`, and `brief` itself.
+`think` returns cited evidence plus the gaps it found: stale results, thin coverage, a name the vault has never seen. There's no API key and no model to host; your agent does the reasoning and calls `search_memory`, `think`, and `brief` over MCP.
 
 ## Install
 
@@ -40,7 +40,7 @@ Gaps: none detected.
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
-The script installs the release binary for your platform, clears the macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized), and runs `mora init` (vault at `~/vault/mora`). It does not verify checksums; they are on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to check by hand. From source: `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.22+, no CGO; source builds report `dev` and cannot self-update).
+The script installs the release binary, clears the macOS Gatekeeper quarantine, and runs `mora init` (your vault lives at `~/vault/mora`). Update in place later with `mora upgrade`. Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.22+, pure Go, no CGO).
 
 Then connect sources and wire in your agents:
 
@@ -51,14 +51,14 @@ mora connect imessage                  # macOS; walks you through Full Disk Acce
 mora schedule install ingest-hourly    # background sync (launchd; prints a cron line on Linux)
 
 claude mcp add mora -s user -- mora mcp serve    # Claude Code
-codex  mcp add mora -- mora mcp serve            # Codex; same vault, same memory
+codex  mcp add mora -- mora mcp serve            # Codex
 ```
 
-Per-connector setup, options, and upgrades are in [the guide](docs/guide.md).
+Per-connector setup and options are in [the guide](docs/guide.md).
 
 ## Why a local corpus
 
-Claude and ChatGPT connectors fetch from Google's APIs per query and process the results server-side. That works for "what's on my calendar tomorrow," but not for "what did I commit to, and to whom" across months, and the context you build in one assistant does not carry to the next. Mora keeps a persistent local corpus instead. It indexes iMessage (which has no cloud API), handles several mail accounts at once, and serves all of it to whatever agent you use.
+Mora keeps a persistent local corpus, so you can ask "what did I commit to, and to whom" across months and have the same context whichever assistant you use. It indexes iMessage (which has no cloud API) and handles several mail accounts at once, then serves all of it to whatever agent you use. Cloud connectors fetch from Google's APIs per query and keep nothing between calls.
 
 | | Mora | Cloud connectors | MCP Gmail servers |
 |---|---|---|---|
@@ -70,23 +70,21 @@ Claude and ChatGPT connectors fetch from Google's APIs per query and process the
 | Works offline / greppable | Yes | No | No |
 | Cost | $0, no Mora account | Subscription | Free |
 
-Cloud tools win on zero setup, a web UI, and write actions. Mora has none of those. Sources and caveats are in [the guide](docs/guide.md#why-not-just-use-a-cloud-connector).
-
 ## What you get
 
-- **Plain files you own.** Every email thread, text conversation, and calendar event is one Markdown file. Open them in [Obsidian](docs/guide.md#browse-the-vault-in-obsidian), `grep` them, or back them up like any folder. The SQLite index is disposable: delete it and `mora index rebuild` recreates it from the files.
-- **Documents and PDFs.** Point Mora at a folder and it indexes your notes, text files, Word documents, and PDFs, including a PDF someone sends you over iMessage. It only extracts text it can read; a scanned, image-only PDF yields nothing rather than garbage, so OCR it yourself first. [Add a files source](docs/guide.md#add-a-filesystem-source).
-- **One view of each person.** `mora graph "Sam"` pulls a person together across email, texts, and calendar, including mail from different accounts, with shared threads, meetings, and the people they appear with. Every line cites its source. Identity merging uses [conservative rules, not a model](docs/guide.md#1-the-entity-graph--derived-from-message-metadata): it merges only on a shared trusted name plus a corroborating address, and leans toward keeping people separate. Most no-reply senders are filed as services, not people.
-- **Keyword and semantic search.** Keyword search (BM25) works out of the box. Run `mora config embedder ollama` to add semantic search through [Ollama](https://ollama.com), which also runs locally. [How retrieval works](docs/guide.md#2-hybrid-retrieval--bm25--embeddings--graph-expansion-fused-by-rrf).
-- **A daily brief.** `mora brief` shows new and updated threads, upcoming events, and stale open tasks, ranked by a per-person salience score rather than recency. Filter it to one person with `mora brief --entity "Riya"`, or build a cited prep pack for your next meeting with `mora prep`.
-- **Opt-in backup.** `mora sync git` pushes the vault to a private git remote you choose: GitHub, GitLab, self-hosted, or a bare repo on a USB drive. It only pushes, never includes the index or your tokens, and fails loudly rather than guessing. Restore is `git clone` plus `mora index rebuild`. [Details](docs/guide.md#back-up-the-vault-off-device-opt-in).
-- **One memory, many agents.** 12 MCP tools let any MCP client search memory, read the brief, prep for a meeting (`meeting_prep`), and write facts back (`write_memory`). `mora mcp serve` is a local stdio process, not a network service, so several agents can share the same vault. Every search result reports how fresh each source is. [Wiring guide](docs/guide.md#wire-mora-into-your-agent-mcp).
+- **Plain files you own.** Every email thread, text conversation, and calendar event is one Markdown file. Open them in [Obsidian](docs/guide.md#browse-the-vault-in-obsidian), `grep` them, or back them up like any folder. The SQLite index is disposable: delete it and `mora index rebuild` rebuilds it from the files.
+- **Documents and PDFs.** Point Mora at a folder and it indexes your notes, text files, Word documents, and text-based PDFs, including a PDF someone texts you. [Add a files source](docs/guide.md#add-a-filesystem-source).
+- **One view of each person.** `mora graph "Sam"` pulls someone together across email, texts, and calendar (including mail from different accounts) into shared threads, meetings, and the people they appear with, every line cited. Identity matching is deterministic: it merges the same mailbox written different ways (Gmail dot and +tag variants) and links different addresses only by a shared trusted name with a corroborating address. [How the graph works](docs/guide.md#1-the-entity-graph--derived-from-message-metadata).
+- **Keyword and semantic search.** Keyword search (BM25) is built in. Run `mora config embedder ollama` to add local semantic search through [Ollama](https://ollama.com). [How retrieval works](docs/guide.md#2-hybrid-retrieval--bm25--embeddings--graph-expansion-fused-by-rrf).
+- **A daily brief.** `mora brief` shows new and updated threads, upcoming events, and stale open tasks, ranked by a per-person salience score. Filter it to one person with `mora brief --entity "Riya"`, or build a cited prep pack for your next meeting with `mora prep`.
+- **Off-device backup.** `mora sync git` pushes the vault to any private git remote you control: GitHub, GitLab, self-hosted, or a bare repo on a USB stick. It pushes vault files only; your tokens and the index stay on your machine. Restore with `git clone` and `mora index rebuild`. [Details](docs/guide.md#back-up-the-vault-off-device-opt-in).
+- **Shared across agents.** 12 MCP tools let any MCP client search memory, read the brief, prep for a meeting (`meeting_prep`), and write facts back (`write_memory`). `mora mcp serve` runs as a local stdio process, so several agents share the same vault. Every search result reports how fresh each source is. [Wiring guide](docs/guide.md#wire-mora-into-your-agent-mcp).
 
-## Privacy model
+## Privacy
 
-- **Read-only at the source.** Google scopes are `gmail.readonly` and `calendar.readonly`. The iMessage and Apple Calendar databases are opened read-only. Mora never sends, changes, or deletes anything in your accounts. Its MCP `write_memory` and `delete_memory` tools only touch memories in the local vault.
-- **Everything stays on disk.** The vault, index, and OAuth tokens (`~/.config/mora/tokens/`, mode 0600) live on your machine. There is no analytics endpoint. The only usage log is a local `events.jsonl` that records tool name, timing, result counts, and your raw query text; turn it off with `mora usage off` or `DO_NOT_TRACK=1`.
-- **Zero egress by default.** Mora runs no server and never hosts your data. It reaches the network only to sync your sources, talk to a local Ollama embedder, fetch updates during `mora upgrade`, and push to your git remote if you opt in. `mora doctor` warns when the vault is a git repo. `mora sync git` pushes plaintext Markdown; for an encrypted remote, layer [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) on top.
+- **Read-only at the source.** Google scopes are `gmail.readonly` and `calendar.readonly`; iMessage and Apple Calendar are opened read-only. Mora never sends, changes, or deletes anything in your accounts. Its `write_memory` and `delete_memory` tools only touch the local vault.
+- **Everything on your disk.** The vault, index, and OAuth tokens (`~/.config/mora/tokens/`, mode 0600) live on your machine. There is no analytics endpoint. The only log is a local usage log (tool name, timing, result counts, scope, and your query text) that you can turn off with `mora usage off` or `DO_NOT_TRACK=1`.
+- **Zero egress by default.** No server, no hosting. Mora reaches the network only to sync your sources, fetch updates during `mora upgrade`, and push your opt-in git backup; the optional Ollama embedder is loopback-only. `mora doctor` warns if the vault is a git repo, and [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) gives you an encrypted remote.
 
 ## Docs
 
