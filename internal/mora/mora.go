@@ -3761,11 +3761,23 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 		return fmt.Errorf("cannot resolve %q: %w", path, err)
 	}
 	path = abs
-	// Fail loudly on a typo'd path: the filesystem walk swallows a missing-root
-	// error to stay resumable, so without this check a bad path would register an
-	// enabled source that silently indexes nothing.
-	if _, err := os.Stat(path); err != nil {
+	// Fail loudly on a typo'd path, and require a directory: the filesystem walk
+	// swallows a missing-root error to stay resumable, so without these checks a bad
+	// or non-directory path would register an enabled source that indexes nothing.
+	fi, err := os.Stat(path)
+	if err != nil {
 		return fmt.Errorf("cannot read %q: %w", path, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%q is not a directory; connect filesystem takes a folder", path)
+	}
+	// Resolve symlinks so the persisted path is the real folder ingest will walk:
+	// filepath.WalkDir does NOT descend a symlinked root, so a symlinked folder
+	// (common with iCloud "Desktop & Documents", Google Drive for Desktop, or
+	// Dropbox) passes the os.Stat check above yet would index zero files. Resolving
+	// here keeps validation and ingest pointed at the same directory.
+	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
+		path = resolved
 	}
 	cfg, err := loadConfig()
 	if err != nil {

@@ -44,8 +44,9 @@ func TestConnectFilesystemOneShot(t *testing.T) {
 	if !fsSrc.IsEnabled() {
 		t.Fatalf("connect filesystem should ENABLE the source (one-shot convenience), got disabled")
 	}
-	if fsSrc.Path != dir {
-		t.Fatalf("expected source path %q, got %q", dir, fsSrc.Path)
+	wantPath, _ := filepath.EvalSymlinks(dir)
+	if fsSrc.Path != wantPath {
+		t.Fatalf("expected source path %q, got %q", wantPath, fsSrc.Path)
 	}
 
 	// The directory's contents were ingested and are searchable.
@@ -210,8 +211,9 @@ func TestConnectFilesystemStoresAbsolutePath(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected a filesystem source, got %+v", sources)
 	}
-	if !filepath.IsAbs(got.Path) {
-		t.Fatalf("connect should persist an absolute path (relative paths break scheduled ingest), got %q", got.Path)
+	want, _ := filepath.EvalSymlinks(filepath.Join(parent, "rel-notes"))
+	if got.Path != want {
+		t.Fatalf("connect should persist the resolved absolute path (relative paths break scheduled ingest), expected %q, got %q", want, got.Path)
 	}
 }
 
@@ -256,8 +258,9 @@ func TestConnectFilesystemNameCollisionErrors(t *testing.T) {
 	if shared == nil {
 		t.Fatalf("first 'shared' source should be preserved, got %+v", sources)
 	}
-	if shared.Path != dirA {
-		t.Fatalf("collision must not overwrite the first folder; expected path %q, got %q", dirA, shared.Path)
+	wantA, _ := filepath.EvalSymlinks(dirA)
+	if shared.Path != wantA {
+		t.Fatalf("collision must not overwrite the first folder; expected path %q, got %q", wantA, shared.Path)
 	}
 }
 
@@ -332,8 +335,13 @@ func TestConnectFilesystemReconnectRefreshes(t *testing.T) {
 	}
 	// Plant the source with a distinctive old created_at; its base name "myfolder"
 	// is exactly the default name connect will derive, so the reconnect targets it.
+	// Plant the symlink-resolved path so it matches what connect canonicalizes to.
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 	const planted = "2020-01-01T00:00:00Z"
-	if err := saveSources(cfg, []Source{{Name: "myfolder", Type: "filesystem", Scope: "personal", Path: dir, Enabled: ptr(true), CreatedAt: planted}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "myfolder", Type: "filesystem", Scope: "personal", Path: realDir, Enabled: ptr(true), CreatedAt: planted}}); err != nil {
 		t.Fatalf("saveSources: %v", err)
 	}
 
@@ -353,5 +361,198 @@ func TestConnectFilesystemReconnectRefreshes(t *testing.T) {
 	}
 	if got.CreatedAt != planted {
 		t.Fatalf("reconnect should preserve created_at %q, got %q", planted, got.CreatedAt)
+	}
+}
+
+// TestConnectFilesystemFollowsSymlinkedDir — a symlinked directory (common on macOS
+// with iCloud "Desktop & Documents", Google Drive for Desktop, or Dropbox) must
+// index its contents. filepath.WalkDir does NOT descend a symlinked root, so connect
+// resolves the link before persisting; without that the source is enabled but indexes
+// zero files (the exact silent no-op the existence guard claims to prevent).
+func TestConnectFilesystemFollowsSymlinkedDir(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "note.md"), []byte("ziggurat protocol"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+
+	out, err := runErr(t, "connect", "filesystem", link)
+	if err != nil {
+		t.Fatalf("connect filesystem on a symlinked dir should succeed: %v\n%s", err, out)
+	}
+
+	// The file inside the symlinked dir must actually be searchable.
+	res := run(t, "search", "ziggurat", "--json")
+	var got []Memory
+	if err := json.Unmarshal([]byte(res), &got); err != nil {
+		t.Fatalf("search json: %v\n%s", err, res)
+	}
+	if len(got) == 0 {
+		t.Fatalf("connect must follow a symlinked root and index its contents, got 0 results")
+	}
+}
+
+// TestConnectFilesystemRejectsFile — connect filesystem takes a folder; a file path
+// must error rather than register a "filesystem" source pointing at a single file.
+func TestConnectFilesystemRejectsFile(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	file := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runErr(t, "connect", "filesystem", file)
+	if err == nil {
+		t.Fatalf("connect filesystem on a file path should error (it takes a folder):\n%s", out)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	sources, _ := loadSources(cfg)
+	for _, s := range sources {
+		if s.Type == "filesystem" {
+			t.Fatalf("a rejected file path must not register a source, got %+v", s)
+		}
+	}
+}
+
+// TestConnectFilesystemScopeFlag — --scope is honored and written through to the
+// source, so a project folder lands in the project namespace rather than silently
+// defaulting to personal.
+func TestConnectFilesystemScopeFlag(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	dir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "n.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, "connect", "filesystem", dir, "--scope", "project:foo")
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	sources, _ := loadSources(cfg)
+	var got *Source
+	for i := range sources {
+		if sources[i].Type == "filesystem" {
+			got = &sources[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected a filesystem source, got %+v", sources)
+	}
+	if got.Scope != "project:foo" {
+		t.Fatalf("--scope should be honored, expected %q, got %q", "project:foo", got.Scope)
+	}
+}
+
+// TestConnectFilesystemNameFlagBeforePath — the leading-flag form
+// `connect filesystem --name x <path>` must resolve the path via fs.Arg(0) and honor
+// the name (the code claims this works; lock it down against a flag-parsing refactor).
+func TestConnectFilesystemNameFlagBeforePath(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	dir := filepath.Join(t.TempDir(), "rawname")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "n.md"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, "connect", "filesystem", "--name", "custom", dir)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	sources, _ := loadSources(cfg)
+	var got *Source
+	for i := range sources {
+		if sources[i].Type == "filesystem" {
+			got = &sources[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected a filesystem source, got %+v", sources)
+	}
+	if got.Name != "custom" {
+		t.Fatalf("--name before the path should be honored, expected %q, got %q", "custom", got.Name)
+	}
+	if filepath.Base(got.Path) != "rawname" {
+		t.Fatalf("leading-flag form must still resolve the positional path, got %q", got.Path)
+	}
+}
+
+// TestConnectFilesystemPathFlag — the path may be supplied via --path instead of
+// positionally.
+func TestConnectFilesystemPathFlag(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	dir := filepath.Join(t.TempDir(), "viaflag")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "n.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, "connect", "filesystem", "--path", dir)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	sources, _ := loadSources(cfg)
+	var got *Source
+	for i := range sources {
+		if sources[i].Type == "filesystem" {
+			got = &sources[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected a filesystem source from --path, got %+v", sources)
+	}
+	if filepath.Base(got.Path) != "viaflag" {
+		t.Fatalf("--path should set the source path, got %q", got.Path)
+	}
+}
+
+// TestDefaultFilesystemSourceName — the default name is the folder's base name, with
+// a "filesystem" fallback for degenerate paths.
+func TestDefaultFilesystemSourceName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/Users/x/notes", "notes"},
+		{"/Users/x/notes/", "notes"},
+		{".", "filesystem"},
+		{string(filepath.Separator), "filesystem"},
+		{"", "filesystem"},
+	}
+	for _, c := range cases {
+		if got := defaultFilesystemSourceName(c.in); got != c.want {
+			t.Errorf("defaultFilesystemSourceName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
