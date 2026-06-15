@@ -40,7 +40,7 @@ Gaps: none detected.
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
-The script installs the release binary, clears the macOS Gatekeeper quarantine, and runs `mora init` (your vault lives at `~/vault/mora`). Update in place later with `mora upgrade`. Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.22+, pure Go, no CGO).
+The script installs the release binary for your platform, clears the macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized), and runs `mora init` (your vault lives at `~/vault/mora`). It does not verify checksums; they are on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to check by hand. Update in place later with `mora upgrade` (source builds report `dev` and cannot self-update). Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.25+, pure Go, no CGO).
 
 Then connect your sources:
 
@@ -58,14 +58,18 @@ claude mcp add mora -s user -- mora mcp serve    # Claude Code
 codex  mcp add mora -- mora mcp serve            # Codex
 ```
 
-Optional: add the agent skills (a dining concierge that grounds its picks in your vault). Run these inside Claude Code:
+Per-connector setup and options are in [the guide](docs/guide.md).
 
-```text
+### Agent skills (optional)
+
+A small plugin of agent-side recipes that pair with the MCP server; they teach an agent to resolve people, shared history, and calendar context from the vault *before* reaching for the web:
+
+```
 /plugin marketplace add pyranthus-hq/mora
 /plugin install mora@mora
 ```
 
-Per-connector setup and options are in [the guide](docs/guide.md).
+First skill: `/mora:dining-concierge`, for outing recommendations grounded in who's coming and where you've actually been. Skills are plain Markdown ([plugins/mora](plugins/mora)); other agents can copy them into their own skills directory.
 
 ## Why a local corpus
 
