@@ -2780,18 +2780,21 @@ func sourcesRoot(cfg Config) string  { return filepath.Join(cfg.VaultDir, "sourc
 func dbPath(cfg Config) string       { return filepath.Join(cfg.DataDir, "index.db") }
 
 // roIndexDSN is the DSN every read-only index open uses. busy_timeout matters
-// for READERS too: the hourly rebuild (or an MCP write) briefly holds the
-// writer lock, and a zero-timeout reader surfaces a raw "database is locked"
-// — worse, openIndexRO misreads that SQLITE_BUSY as a stale schema and
-// launches a spurious full rebuild via the auto-heal path
-// (TestReadOnlyIndexWaitsOnWriteLock pins this). Mirrors the writer DSN's
-// busy_timeout(5000) in rebuildIndex.
+// for READERS too: the hourly rebuild does a whole-index DELETE-then-reinsert
+// inside ONE transaction, and its commit flush of a large rollback journal can
+// hold the writer lock for longer than a few seconds. A short reader timeout
+// surfaces a raw "database is locked" mid-rebuild (and openIndexRO can misread
+// that SQLITE_BUSY as a stale schema and launch a spurious rebuild). 15s lets an
+// interactive read (brief --entity, prep, think, get_entity) and an MCP tool call
+// ride out the rebuild's commit window instead of erroring; humanizeIndexBusy
+// gives an actionable message if a read still outlasts it.
+// (TestReadOnlyIndexWaitsOnWriteLock pins the wait behavior.)
 //
 // Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out
 // but NOT enforced (connections open read-write); it is kept as
 // documentation-of-intent until the read paths adopt a stricter pragma.
 func roIndexDSN(cfg Config) string {
-	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(5000)"
+	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(15000)"
 }
 
 // indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
@@ -4312,7 +4315,7 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		}
 		mp, err := buildMeetingPrep(ctx, cfg, prepClock(), name, filter, intArg(args, "limit", mcpSearchDefaultLimit))
 		if err != nil {
-			return nil, err
+			return nil, humanizeIndexBusy(err)
 		}
 		budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
 		logUsage(cfg, usageEvent{Tool: "meeting_prep", Results: len(mp.Evidence), Millis: time.Since(start).Milliseconds()})

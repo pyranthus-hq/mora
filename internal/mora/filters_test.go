@@ -2,12 +2,28 @@ package mora
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestHumanizeIndexBusy: a raw SQLITE_BUSY becomes an actionable retry message;
+// other errors pass through unchanged; nil stays nil.
+func TestHumanizeIndexBusy(t *testing.T) {
+	if humanizeIndexBusy(nil) != nil {
+		t.Error("nil must stay nil")
+	}
+	got := humanizeIndexBusy(errors.New("database is locked (5) (SQLITE_BUSY)"))
+	if got == nil || !strings.Contains(got.Error(), "retry in a few seconds") {
+		t.Errorf("busy error not humanized: %v", got)
+	}
+	if got := humanizeIndexBusy(errors.New("no such table: entities")); got.Error() != "no such table: entities" {
+		t.Errorf("non-busy error must pass through unchanged: %v", got)
+	}
+}
 
 // TestWindowDigestSurfacesInProgressCalendarEvent (P1-F mirror): the brief's
 // calendar section must not drop an event that started within the grace window —

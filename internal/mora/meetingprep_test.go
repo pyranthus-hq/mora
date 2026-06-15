@@ -116,6 +116,55 @@ func TestBuildMeetingPrepBasic(t *testing.T) {
 	}
 }
 
+func eventSeriesMem(id, title string, occurred time.Time, seriesID string, attendees ...string) Memory {
+	m := eventMem(id, title, occurred.Format(time.RFC3339), attendees...)
+	m.Meta["recurring_event_id"] = seriesID
+	return m
+}
+
+// TestBuildMeetingPrepEvidenceExcludesFutureAndSameSeries (evidence quality): the
+// per-attendee evidence is real *recent* context — it drops future-dated calendar
+// entries and the selected meeting's own recurring siblings, so genuine past
+// correspondence isn't crowded out.
+func TestBuildMeetingPrepEvidenceExcludesFutureAndSameSeries(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	// Real past correspondence with riya.
+	if err := writeMemory(cfg, personMemNamed("past-email", "gmail", "riya@a.com", "Riya", now.Add(-48*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	// The selected recurring event (next instance) + a FUTURE sibling of the same series.
+	if err := writeMemory(cfg, eventSeriesMem("evt-now", "Standup", now.Add(2*time.Hour), "series-123", "riya@a.com")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, eventSeriesMem("evt-future", "Standup", now.Add(7*24*time.Hour), "series-123", "riya@a.com")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	mp, err := buildMeetingPrep(ctx, cfg, now, "", nil, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mp.Event == nil || mp.Event.StableID != "evt-now" {
+		t.Fatalf("selected %+v, want evt-now", mp.Event)
+	}
+	ids := map[string]bool{}
+	for _, e := range mp.Evidence {
+		ids[e.StableID] = true
+	}
+	if !ids["past-email"] {
+		t.Errorf("real past correspondence (past-email) missing from evidence: %v", ids)
+	}
+	if ids["evt-future"] {
+		t.Errorf("future same-series instance leaked into evidence as 'recent context': %v", ids)
+	}
+}
+
 // TestBuildMeetingPrepSelfExcluded: the user's own Google address is dropped from
 // the attendee list.
 func TestBuildMeetingPrepSelfExcluded(t *testing.T) {

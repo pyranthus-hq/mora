@@ -9,13 +9,29 @@ import (
 	"time"
 )
 
+// humanizeIndexBusy turns a raw SQLITE_BUSY ("database is locked") into an
+// actionable message. The hourly ingest rebuilds the whole index inside one
+// transaction; a read that outlasts the busy_timeout (e.g. during a large commit
+// flush) should tell the user to retry, not surface a driver code. Non-busy errors
+// pass through unchanged.
+func humanizeIndexBusy(err error) error {
+	if err == nil {
+		return nil
+	}
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "sqlite_busy") || strings.Contains(s, "database is locked") {
+		return fmt.Errorf("the index is busy (the hourly ingest is rebuilding it) — retry in a few seconds: %w", err)
+	}
+	return err
+}
+
 // resolveEntityFilter resolves a --entity/name value to its alias-id set, returning
 // a user-facing error on no-match or ambiguity so every surface (brief/pulse/prep,
 // CLI + MCP) reports the same guidance instead of a silently-empty result.
 func resolveEntityFilter(ctx context.Context, cfg Config, name string) (map[string]bool, error) {
 	_, idSet, ok, ambiguous, err := resolveEntityID(ctx, cfg, name)
 	if err != nil {
-		return nil, err
+		return nil, humanizeIndexBusy(err)
 	}
 	if len(ambiguous) > 0 {
 		return nil, fmt.Errorf("%q is ambiguous — matches: %s. Re-run with the email/handle (e.g. --entity name@example.com)", name, strings.Join(ambiguous, ", "))

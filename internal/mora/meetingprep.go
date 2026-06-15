@@ -83,7 +83,7 @@ func cmdPrep(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	mp, err := buildMeetingPrep(ctx, cfg, now, name, filter, *limit)
 	if err != nil {
-		return err
+		return humanizeIndexBusy(err)
 	}
 	logUsage(cfg, usageEvent{Tool: "prep", Results: len(mp.Evidence)})
 	if *jsonOut {
@@ -320,6 +320,18 @@ func buildMeetingPrep(ctx context.Context, cfg Config, now time.Time, attendeeNa
 		CreatedAt: ev.OccurredAt, Snippet: snippet(eventMemory.Text, thinkSnippetLen),
 	})
 
+	// Evidence quality: the selected meeting's own recurring siblings are not
+	// "context" for it, and future calendar entries aren't "recent". seriesByID is
+	// built from the full-Meta mems (the index doesn't store Meta, so edge-loaded
+	// evidence memories can't report their own recurring_event_id).
+	selectedSeries := recurringSeriesID(eventMemory)
+	seriesByID := map[string]string{}
+	for _, m := range mems {
+		if sid := recurringSeriesID(m); sid != "" {
+			seriesByID[m.ID] = sid
+		}
+	}
+
 	parts, _, _, _ := personRefs(eventMemory)
 	for _, p := range parts {
 		if self[p.identity] {
@@ -366,6 +378,12 @@ func buildMeetingPrep(ctx context.Context, cfg Config, now time.Time, attendeeNa
 			}
 			if seen[m.ID] {
 				continue
+			}
+			if ts, perr := time.Parse(time.RFC3339, m.CreatedAt); perr == nil && ts.After(now) {
+				continue // future-dated calendar entries aren't "recent context"
+			}
+			if selectedSeries != "" && seriesByID[m.ID] == selectedSeries {
+				continue // the selected meeting's own recurring series — not context for itself
 			}
 			seen[m.ID] = true
 			res.Evidence = append(res.Evidence, ThinkEvidence{
