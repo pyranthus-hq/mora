@@ -128,7 +128,7 @@ mora sources add filesystem --name myproject --path ~/code/myproject --scope pro
 mora ingest run --source myproject
 ```
 
-Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files — plus **`.docx`** (Word documents, text extracted with pure-Go stdlib). `.pdf` and other binaries/build artifacts are skipped (PDF text extraction would need a non-pure-Go dependency and OCR for scans).
+Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files — plus **`.docx`** (Word documents) and **`.pdf`** (text extracted with pure-Go libraries; an image-only or scanned PDF yields no text rather than garbage, so OCR it yourself first). Other binaries and build artifacts are skipped.
 
 ## Wire Mora into your agent (MCP)
 
@@ -239,7 +239,7 @@ mora config embedder ollama     # durable semantic-retrieval opt-in (loopback-on
 mora sync google
 ```
 
-**View local usage analytics (content-free):**
+**View local usage analytics (stays on your disk; includes your raw query text):**
 
 ```bash
 mora usage report
