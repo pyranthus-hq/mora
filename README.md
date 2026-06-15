@@ -42,16 +42,27 @@ curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh |
 
 The script installs the release binary, clears the macOS Gatekeeper quarantine, and runs `mora init` (your vault lives at `~/vault/mora`). Update in place later with `mora upgrade`. Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.22+, pure Go, no CGO).
 
-Then connect sources and wire in your agents:
+Then connect your sources:
 
 ```bash
 mora connect google                    # OAuth login, then backfill Gmail + Calendar (read-only; ~90 days, --since-days to widen)
 mora connect google --account work     # add a second mailbox (gmail-work / calendar-work sources)
 mora connect imessage                  # macOS; walks you through Full Disk Access
 mora schedule install ingest-hourly    # background sync (launchd; prints a cron line on Linux)
+```
 
+Wire Mora into your agents (registers the local MCP server):
+
+```bash
 claude mcp add mora -s user -- mora mcp serve    # Claude Code
 codex  mcp add mora -- mora mcp serve            # Codex
+```
+
+Optional: add the agent skills (a dining concierge that grounds its picks in your vault). Run these inside Claude Code:
+
+```text
+/plugin marketplace add pyranthus-hq/mora
+/plugin install mora@mora
 ```
 
 Per-connector setup and options are in [the guide](docs/guide.md).
