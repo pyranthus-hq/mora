@@ -3622,6 +3622,11 @@ func loadSources(cfg Config) ([]Source, error) {
 	return sources, nil
 }
 
+// saveSources persists the source registry. atomicWrite stages through a unique
+// temp per writer, so this is safe against the temp-collision race (two writers
+// clobbering a shared `.tmp`). It does NOT serialize the higher-level
+// read-modify-write on sources.json: two callers each doing load → mutate → save
+// can still lose an update. That needs caller-level serialization, out of scope here.
 func saveSources(cfg Config, sources []Source) error {
 	b, err := json.MarshalIndent(sources, "", "  ")
 	if err != nil {
@@ -4968,11 +4973,28 @@ func emit(w io.Writer, v any, jsonOut bool) error {
 }
 
 func atomicWrite(path string, body []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, mode); err != nil {
+	// Stage through a unique temp in the same directory so concurrent writers
+	// never share a temp filename (which would let one truncate/rename another's
+	// in-flight staging file). Same dir keeps os.Rename atomic on one filesystem.
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once renamed; cleans up the orphan on any failure
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp opens at 0600; apply the caller's requested mode before publishing.
+	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
