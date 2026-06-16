@@ -8,88 +8,127 @@ import (
 	"testing"
 )
 
-// TestAtomicWriteConcurrentSamePathNotTorn pins the fix for #16: concurrent
-// writers to the same target must never produce a torn (interleaved) file.
-//
-// Each writer writes a homogeneous body — every byte equals its writer id — so
-// a complete, atomic write always leaves the file as a single repeated byte.
-// With a fixed `<path>.tmp` staging name every writer truncates and writes the
-// *same* temp file, so their bytes interleave at the shared inode and the
-// renamed result contains a mix of writer ids. The assertion below catches that.
-func TestAtomicWriteConcurrentSamePathNotTorn(t *testing.T) {
+// TestAtomicWriteConcurrentSamePath verifies that concurrent writers to the
+// SAME target never leave a torn/mixed file. With a fixed `path+".tmp"` staging
+// name, two writers share one temp file: interleaved truncating writes corrupt
+// the staged bytes before the rename, so the surviving file is a byte-wise mix
+// of two bodies. A unique temp per writer makes each rename atomic, so the
+// final file must always equal exactly one writer's body.
+func TestAtomicWriteConcurrentSamePath(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "sources.json")
+	path := filepath.Join(dir, "sources.json")
 
-	const writers = 6
-	const bodyLen = 128 * 1024 // large enough that interleaved writes tear
-	const rounds = 60
+	const writers = 16
+	const bodyLen = 1 << 16 // large enough that writes can interleave at the byte level
 
-	for r := 0; r < rounds; r++ {
+	bodies := make([][]byte, writers)
+	for i := range bodies {
+		bodies[i] = bytes.Repeat([]byte{byte('A' + i)}, bodyLen)
+	}
+
+	matchesACandidate := func(got []byte) bool {
+		for _, b := range bodies {
+			if bytes.Equal(got, b) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for iter := 0; iter < 200; iter++ {
 		var wg sync.WaitGroup
-		for w := 0; w < writers; w++ {
+		errs := make([]error, writers)
+		for i := 0; i < writers; i++ {
 			wg.Add(1)
-			go func(id byte) {
+			go func(i int) {
 				defer wg.Done()
-				body := bytes.Repeat([]byte{id}, bodyLen)
-				if err := atomicWrite(target, body, 0o600); err != nil {
-					t.Errorf("atomicWrite: %v", err)
-				}
-			}(byte('A' + w))
+				errs[i] = atomicWrite(path, bodies[i], 0o600)
+			}(i)
 		}
 		wg.Wait()
 
-		got, err := os.ReadFile(target)
-		if err != nil {
-			t.Fatalf("read target: %v", err)
-		}
-		if len(got) != bodyLen {
-			t.Fatalf("round %d: torn write — length %d, want %d", r, len(got), bodyLen)
-		}
-		first := got[0]
-		for i, b := range got {
-			if b != first {
-				t.Fatalf("round %d: torn write — byte %d = %q, file starts with %q (interleaved writers)",
-					r, i, b, first)
+		// A unique temp per writer means every concurrent write succeeds and the
+		// rename is atomic. A shared temp lets one writer rename the staged file
+		// out from under another, so the loser's rename fails — surface that.
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("iter %d: writer %d failed (shared-temp collision): %v", iter, i, err)
 			}
+		}
+
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("iter %d: read target: %v", iter, err)
+		}
+		if !matchesACandidate(got) {
+			t.Fatalf("iter %d: target is corrupted: got %d bytes that match no single writer body", iter, len(got))
 		}
 	}
 }
 
-// TestAtomicWritePreservesMode guards that the fix still honors the requested
-// permission bits. os.CreateTemp starts a temp file at 0600, so the fix must
-// Chmod up to the caller's mode before rename.
-func TestAtomicWritePreservesMode(t *testing.T) {
+// TestAtomicWriteConcurrentDifferentPaths is the regression guard the issue
+// asks for: concurrent writers to distinct paths in the same directory must
+// each produce their own correct file (run under -race).
+func TestAtomicWriteConcurrentDifferentPaths(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "f")
-	if err := atomicWrite(path, []byte("x"), 0o644); err != nil {
+
+	const writers = 16
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			path := filepath.Join(dir, "file"+string(rune('a'+i))+".json")
+			body := bytes.Repeat([]byte{byte('a' + i)}, 4096)
+			if err := atomicWrite(path, body, 0o600); err != nil {
+				t.Errorf("writer %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < writers; i++ {
+		path := filepath.Join(dir, "file"+string(rune('a'+i))+".json")
+		want := bytes.Repeat([]byte{byte('a' + i)}, 4096)
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("writer %d: read back: %v", i, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("writer %d: content mismatch", i)
+		}
+	}
+}
+
+// TestAtomicWriteHonorsModeAndLeavesNoOrphan verifies the written file has the
+// requested permissions and that no staging temp file is left behind on success.
+func TestAtomicWriteHonorsModeAndLeavesNoOrphan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "perm.json")
+
+	// CreateTemp starts at 0600, so 0644 proves atomicWrite applies the caller's
+	// requested mode before publishing the file.
+	if err := atomicWrite(path, []byte("body\n"), 0o644); err != nil {
 		t.Fatalf("atomicWrite: %v", err)
 	}
-	fi, err := os.Stat(path)
+
+	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if got := fi.Mode().Perm(); got != 0o644 {
+	if got := info.Mode().Perm(); got != 0o644 {
 		t.Fatalf("mode = %o, want 0644", got)
 	}
-}
 
-// TestAtomicWriteNoOrphanTemp verifies a successful write leaves no stray temp
-// files in the target directory (only the final file remains).
-func TestAtomicWriteNoOrphanTemp(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "f")
-	if err := atomicWrite(path, []byte("x"), 0o600); err != nil {
-		t.Fatalf("atomicWrite: %v", err)
-	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "f" {
+	if len(entries) != 1 || entries[0].Name() != "perm.json" {
 		var names []string
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Fatalf("expected only the final file, got %v", names)
+		t.Fatalf("expected only perm.json, found %v (orphan temp left behind)", names)
 	}
 }

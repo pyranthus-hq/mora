@@ -3622,6 +3622,11 @@ func loadSources(cfg Config) ([]Source, error) {
 	return sources, nil
 }
 
+// saveSources persists the source registry. atomicWrite stages through a unique
+// temp per writer, so this is safe against the temp-collision race (two writers
+// clobbering a shared `.tmp`). It does NOT serialize the higher-level
+// read-modify-write on sources.json: two callers each doing load → mutate → save
+// can still lose an update. That needs caller-level serialization, out of scope here.
 func saveSources(cfg Config, sources []Source) error {
 	b, err := json.MarshalIndent(sources, "", "  ")
 	if err != nil {
@@ -4974,7 +4979,7 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	}
 	// Stage through a unique temp file (not a fixed `<path>.tmp`) so two
 	// processes writing the same target never share, truncate, or rename each
-	// other's in-flight temp — the #16 temp-collision race. The temp stays in
+	// other's in-flight temp. The temp stays in
 	// the target dir so the final os.Rename remains atomic on the same
 	// filesystem. NOTE: this does not fix the higher-level read-modify-write
 	// lost-update on sources.json (two writers each load → mutate → save);
