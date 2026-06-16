@@ -266,11 +266,11 @@ func TestHookUninstallRemovesOnlyMoraHooks(t *testing.T) {
 	body := `{
   "hooks": {
     "SessionStart": [
-      {"hooks":[{"type":"command","command":"/tmp/mora hook session-start","timeout":15}]}
+      {"hooks":[{"type":"command","command":"/tmp/mora hook session-start #mora-managed:session-start","timeout":15}]}
     ],
     "UserPromptSubmit": [
       {"hooks":[{"type":"command","command":"other-tool recall","timeout":3}]},
-      {"hooks":[{"type":"command","command":"mora hook recall","timeout":10}]}
+      {"hooks":[{"type":"command","command":"/tmp/mora hook recall #mora-managed:recall","timeout":10}]}
     ]
   }
 }
@@ -309,6 +309,36 @@ func TestHookInstallMalformedHooksDoesNotOverwrite(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatalf("malformed hooks file was overwritten\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestHookInstallUninstallBinaryNameIndependent(t *testing.T) {
+	// The install/uninstall marker must not depend on the binary being named
+	// "mora": users run renamed binaries (mora-dev/mora-new). Simulate one and
+	// assert both hooks install with the abs exe path + sentinel and uninstall
+	// removes them completely. (Fails before the #mora-managed sentinel fix.)
+	tmp := withTempHookHome(t)
+	hookExecutable = func() (string, error) { return "/opt/tools/mora-dev", nil }
+
+	run(t, "hook", "install")
+	hooks := hookGroupsForTest(t, readClaudeSettingsForTest(t, tmp))
+	for _, ev := range []string{"SessionStart", "UserPromptSubmit"} {
+		if !containsHookCommand(hooks[ev], "/opt/tools/mora-dev hook") {
+			t.Fatalf("%s command should use the absolute exe path, got %#v", ev, hooks[ev])
+		}
+		if !containsHookCommand(hooks[ev], hookMarker+":") {
+			t.Fatalf("%s command should carry the %s sentinel, got %#v", ev, hookMarker, hooks[ev])
+		}
+	}
+
+	run(t, "hook", "uninstall")
+	hooks = hookGroupsForTest(t, readClaudeSettingsForTest(t, tmp))
+	if containsHookCommand(hooks["SessionStart"], hookMarker+":") || containsHookCommand(hooks["UserPromptSubmit"], hookMarker+":") {
+		t.Fatalf("renamed-binary mora hooks not fully removed on uninstall: %#v", hooks)
+	}
+	out := run(t, "hook", "status")
+	if !strings.Contains(out, "SessionStart: not installed") || !strings.Contains(out, "UserPromptSubmit: not installed") {
+		t.Fatalf("status after uninstall = %q", out)
 	}
 }
 

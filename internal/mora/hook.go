@@ -20,6 +20,12 @@ const (
 	hookRecallLimit            = 3
 	hookRecallByteLimit        = 800
 	hookRecallTimeout          = 700 * time.Millisecond
+	// hookMarker is appended to every installed command as a trailing shell
+	// comment (Claude Code runs hook commands via the shell, so it is ignored
+	// at execution). It lets install/uninstall/status identify Mora's own hooks
+	// independently of the binary's name or path — matching on the command name
+	// alone is fragile when the binary is renamed (e.g. mora-dev/mora-new).
+	hookMarker = "#mora-managed"
 )
 
 var (
@@ -368,13 +374,14 @@ func hookInstall(args []string, stdout io.Writer) error {
 	}
 	upsertClaudeHook(hooks, "SessionStart", "session-start", claudeCommandHook{
 		Type:    "command",
-		Command: exe + " hook session-start",
+		Command: exe + " hook session-start " + hookMarker + ":session-start",
 		Timeout: 15,
 	})
-	recallCommand := "mora hook recall"
+	recallCommand := exe + " hook recall"
 	if *threshold != hookRecallDefaultThreshold {
 		recallCommand += " --threshold " + strconv.FormatFloat(*threshold, 'g', -1, 64)
 	}
+	recallCommand += " " + hookMarker + ":recall"
 	upsertClaudeHook(hooks, "UserPromptSubmit", "recall", claudeCommandHook{
 		Type:    "command",
 		Command: recallCommand,
@@ -402,7 +409,7 @@ func hookUninstall(stdout io.Writer) error {
 		for _, group := range groups {
 			var groupHooks []claudeCommandHook
 			for _, h := range group.Hooks {
-				if !strings.Contains(h.Command, "mora hook") {
+				if !strings.Contains(h.Command, hookMarker+":") {
 					groupHooks = append(groupHooks, h)
 				}
 			}
@@ -500,7 +507,7 @@ func upsertClaudeHook(hooks map[string][]claudeHookGroup, event, sub string, def
 }
 
 func findClaudeHook(groups []claudeHookGroup, sub string) int {
-	marker := "mora hook " + sub
+	marker := hookMarker + ":" + sub
 	for groupIdx, group := range groups {
 		for hookIdx, h := range group.Hooks {
 			if strings.Contains(h.Command, marker) {
