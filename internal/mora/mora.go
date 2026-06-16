@@ -4968,11 +4968,33 @@ func emit(w io.Writer, v any, jsonOut bool) error {
 }
 
 func atomicWrite(path string, body []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, mode); err != nil {
+	// Stage through a unique temp file (not a fixed `<path>.tmp`) so two
+	// processes writing the same target never share, truncate, or rename each
+	// other's in-flight temp — the #16 temp-collision race. The temp stays in
+	// the target dir so the final os.Rename remains atomic on the same
+	// filesystem. NOTE: this does not fix the higher-level read-modify-write
+	// lost-update on sources.json (two writers each load → mutate → save);
+	// that needs caller-level serialization and is out of scope here.
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	// Remove the temp on any failure path; a no-op once the rename succeeds.
+	defer os.Remove(tmp)
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp opens at 0600; raise to the caller's requested mode.
+	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
