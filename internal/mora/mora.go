@@ -352,6 +352,7 @@ USAGE:
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
   mora index rebuild
   mora tasks sync --write
+  mora tasks done "Set up Mora"    # mark a live task complete so it stops resurfacing as stale
   mora pulse --write --digest
   mora sources add filesystem --name docs --path ~/Documents --scope personal
   mora ingest run --source docs
@@ -1097,25 +1098,54 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer) error {
 }
 
 func cmdTasks(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) == 0 || args[0] != "sync" {
-		return errors.New("usage: mora tasks sync [--write]")
+	if len(args) == 0 {
+		return errors.New("usage: mora tasks <sync [--write] | done <name>>")
 	}
-	fs := flag.NewFlagSet("tasks sync", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	write := fs.Bool("write", false, "write")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
+	switch args[0] {
+	case "sync":
+		fs := flag.NewFlagSet("tasks sync", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		write := fs.Bool("write", false, "write")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		added, err := syncTasks(cfg, *write)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "tasks added: %d\n", added)
+		return nil
+	case "done":
+		name := strings.TrimSpace(strings.Join(args[1:], " "))
+		if name == "" {
+			return errors.New("usage: mora tasks done <name>")
+		}
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		updated, err := markTaskDone(cfg, name)
+		if err != nil {
+			return err
+		}
+		if updated == 0 {
+			return fmt.Errorf("no live task matched %q (it must already be a row in live-tasks.md — run `mora tasks sync --write` to seed P0 items first)", name)
+		}
+		// Task name is the row identity (no task IDs; syncTasks dedups by name).
+		// Surface the count so closing multiple same-named rows is never silent.
+		if updated > 1 {
+			fmt.Fprintf(stdout, "task done: %s (%d rows)\n", name, updated)
+		} else {
+			fmt.Fprintf(stdout, "task done: %s\n", name)
+		}
+		return nil
+	default:
+		return errors.New("usage: mora tasks <sync [--write] | done <name>>")
 	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	added, err := syncTasks(cfg, *write)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "tasks added: %d\n", added)
-	return nil
 }
 
 func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
@@ -3312,6 +3342,21 @@ func parseP0(path string) ([]string, error) {
 	return out, nil
 }
 
+// terminalTaskStatuses are the Status (col 4) values that close a task. A row in
+// any of these states is finished work and must never resurface as "stale"
+// (issue #19), regardless of its Last-touched date.
+var terminalTaskStatuses = map[string]bool{
+	"done":      true,
+	"completed": true,
+	"cancelled": true,
+	"canceled":  true,
+	"wontfix":   true,
+}
+
+func isTerminalStatus(status string) bool {
+	return terminalTaskStatuses[strings.ToLower(strings.TrimSpace(status))]
+}
+
 func staleTasks(cfg Config, days int) ([]string, error) {
 	b, err := os.ReadFile(filepath.Join(cfg.VaultDir, "live-tasks.md"))
 	if err != nil {
@@ -3327,12 +3372,54 @@ func staleTasks(cfg Config, days int) ([]string, error) {
 		if len(cols) < 8 {
 			continue
 		}
+		// Status-aware (issue #19): a terminal-state row is closed work, not stale.
+		if isTerminalStatus(cols[4]) {
+			continue
+		}
 		t, err := time.Parse("2006-01-02", cols[7])
 		if err == nil && t.Before(cutoff) {
 			stale = append(stale, cols[0])
 		}
 	}
 	return stale, nil
+}
+
+// markTaskDone flips the live-tasks.md row whose Task (col 0) equals name to a
+// terminal Status and stamps today as the completion date (Last touched, col 7).
+// The row is KEPT — it is the closed-record that makes completion resurrection-
+// safe: syncTasks sees the still-present row and refuses to re-add the P0 item
+// (issue #19), without needing a separate closed-task ledger. Returns the number
+// of rows updated (0 => not found).
+func markTaskDone(cfg Config, name string) (int, error) {
+	livePath := filepath.Join(cfg.VaultDir, "live-tasks.md")
+	b, err := os.ReadFile(livePath)
+	if err != nil {
+		return 0, err
+	}
+	name = strings.TrimSpace(name)
+	today := time.Now().Format("2006-01-02")
+	lines := strings.Split(string(b), "\n")
+	updated := 0
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "| ") || strings.Contains(line, "Last touched") || strings.Contains(line, "---") {
+			continue
+		}
+		cols := tableCols(line)
+		if len(cols) < 8 || cols[0] != name {
+			continue
+		}
+		cols[4] = "done"
+		cols[7] = today
+		lines[i] = "| " + strings.Join(cols, " | ") + " |"
+		updated++
+	}
+	if updated == 0 {
+		return 0, nil
+	}
+	if err := atomicWrite(livePath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		return 0, err
+	}
+	return updated, nil
 }
 
 func addSource(cfg Config, args []string, stdout io.Writer) error {
