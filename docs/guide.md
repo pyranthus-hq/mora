@@ -121,10 +121,21 @@ the vault.
 
 ## Add a filesystem source
 
-Point Mora at a project directory to ingest docs and metadata:
+Point Mora at a folder to ingest docs and metadata. The one-step way, mirroring
+`connect google` / `connect imessage` — add, enable, and index in a single command:
+
+```bash
+mora connect filesystem ~/code/myproject          # add + enable + index now
+mora connect filesystem ~/Documents --name docs   # name it (default: the folder's base name)
+```
+
+Re-run it on the same folder anytime to re-index after changes; connecting two
+different folders just works (each gets its own source). The longer, explicit form
+is still available if you want to stage a source disabled first and ingest later:
 
 ```bash
 mora sources add filesystem --name myproject --path ~/code/myproject --scope project:myproject
+mora connectors enable filesystem
 mora ingest run --source myproject
 ```
 
