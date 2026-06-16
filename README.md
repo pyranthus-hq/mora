@@ -4,7 +4,7 @@
 
 # Mora
 
-**Local-first memory for MCP agents.**
+**Local-first memory for your AI agents.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -17,6 +17,10 @@
 Mora indexes your Gmail (one or several accounts), Google Calendar, iMessage, Apple Calendar, and local files into a **vault** of Markdown files and a SQLite index on your machine, then serves it over MCP (the Model Context Protocol) to Claude Code, Codex, or any other MCP client. Point several agents at the same vault and they all answer from your history, with citations.
 
 It runs entirely on your machine: no server, no signup, no telemetry. iMessage and Apple Calendar need macOS; Gmail, Calendar, and files also run on Linux.
+
+<p align="center">
+  <img src="docs/assets/architecture.svg" width="760" alt="Mora architecture: your sources flow into one local vault of Markdown plus a SQLite index, served over MCP to every agent (Claude Code, Codex, Gemini CLI), with an opt-in git sync to another machine."/>
+</p>
 
 ## What it looks like
 
@@ -58,7 +62,40 @@ claude mcp add mora -s user -- mora mcp serve    # Claude Code
 codex  mcp add mora -- mora mcp serve            # Codex
 ```
 
-Per-connector setup and options are in [the guide](docs/guide.md).
+Any other MCP client (Gemini CLI, Cursor, custom hosts) takes the same stdio server as JSON:
+
+```json
+{
+  "mcpServers": {
+    "mora": { "command": "mora", "args": ["mcp", "serve"] }
+  }
+}
+```
+
+Drop that into the client's MCP config (`examples/mcp.json` has a copy). Per-connector setup and options are in [the guide](docs/guide.md).
+
+### No MCP? Use the shell
+
+Every MCP tool is also a CLI command, so any agent that already has shell access can use Mora without registering the server. Paste this into the agent's instructions file (`AGENTS.md`, `CLAUDE.md`, Cursor rules):
+
+```markdown
+## Memory: mora (local, read-only)
+
+You have `mora`, a local memory CLI over my Gmail, calendars, iMessage, and files.
+Before answering anything about people, past decisions, projects, or commitments,
+query it first and answer from what it returns:
+
+  mora think "<question>" --json    # cited evidence + an explicit gap check
+  mora search "<query>" --json      # hybrid search over the vault
+  mora graph "<person>"             # one person across email, texts, and calendar
+  mora brief                        # what changed and what matters lately
+
+Cite every claim with its [stable_id]. If the evidence is insufficient, say so
+plainly rather than guessing, and surface any gaps mora reports. Never invent a
+memory it did not return.
+```
+
+The CLI siblings of every tool (`mora search`, `mora write`, `mora think`, ...) are in [the guide](docs/guide.md#use-mora-from-the-shell).
 
 ### Agent skills (optional)
 
