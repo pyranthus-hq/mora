@@ -352,6 +352,8 @@ USAGE:
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
   mora index rebuild
   mora tasks sync --write
+  mora tasks add "Reply to Sam about the launch" --pri P0   # capture an open loop (name first, then flags)
+  mora tasks list --json                                    # the current live tasks
   mora tasks done "Set up Mora"    # mark a live task complete so it stops resurfacing as stale
   mora pulse --write --digest
   mora sources add filesystem --name docs --path ~/Documents --scope personal
@@ -1099,7 +1101,7 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer) error {
 
 func cmdTasks(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: mora tasks <sync [--write] | done <name>>")
+		return errors.New("usage: mora tasks <sync [--write] | add <name> [flags] | done <name> | list [--json]>")
 	}
 	switch args[0] {
 	case "sync":
@@ -1118,6 +1120,75 @@ func cmdTasks(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(stdout, "tasks added: %d\n", added)
+		return nil
+	case "add":
+		// Contract: the (quoted) task name is the first positional; flags follow it
+		// (`tasks add "<name>" [--pri ...]`). Parsing flags from args[2:] avoids
+		// Go's flag pkg stopping at the first non-flag arg, which would otherwise
+		// fold a trailing `--pri P0` into the name.
+		usage := errors.New("usage: mora tasks add <name> [--pri P1] [--domain ...] [--owner ...] [--horizon ...] [--blocker ...]")
+		if len(args) < 2 {
+			return usage
+		}
+		name := strings.TrimSpace(args[1])
+		fs := flag.NewFlagSet("tasks add", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		domain := fs.String("domain", "memory", "domain")
+		owner := fs.String("owner", "you", "owner")
+		pri := fs.String("pri", "P1", "priority (P0|P1|P2)")
+		horizon := fs.String("horizon", "this week", "horizon")
+		blocker := fs.String("blocker", "None", "blocker")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if name == "" {
+			return usage
+		}
+		// The task name is the row identity and a "|" would break the table, so
+		// reject it rather than silently corrupt live-tasks.md.
+		if strings.Contains(name, "|") {
+			return errors.New("task name must not contain '|'")
+		}
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		added, err := addTask(cfg, LiveTask{Task: name, Domain: *domain, Owner: *owner, Pri: *pri, Horizon: *horizon, Blocker: *blocker})
+		if err != nil {
+			return err
+		}
+		if !added {
+			fmt.Fprintf(stdout, "task exists: %s\n", name)
+			return nil
+		}
+		fmt.Fprintf(stdout, "task added: %s\n", name)
+		return nil
+	case "list":
+		fs := flag.NewFlagSet("tasks list", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		asJSON := fs.Bool("json", false, "json")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		tasks, err := listTasks(cfg)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			b, err := json.Marshal(tasks)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(stdout, string(b))
+			return nil
+		}
+		for _, lt := range tasks {
+			fmt.Fprintf(stdout, "%-8s %-10s %s\n", lt.Pri, lt.Status, lt.Task)
+		}
 		return nil
 	case "done":
 		name := strings.TrimSpace(strings.Join(args[1:], " "))
@@ -1144,7 +1215,7 @@ func cmdTasks(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		return nil
 	default:
-		return errors.New("usage: mora tasks <sync [--write] | done <name>>")
+		return errors.New("usage: mora tasks <sync [--write] | add <name> [flags] | done <name> | list [--json]>")
 	}
 }
 
@@ -3420,6 +3491,72 @@ func markTaskDone(cfg Config, name string) (int, error) {
 		return 0, err
 	}
 	return updated, nil
+}
+
+// LiveTask is one row of live-tasks.md (the 8-column task table).
+type LiveTask struct {
+	Task        string `json:"task"`
+	Domain      string `json:"domain"`
+	Owner       string `json:"owner"`
+	Pri         string `json:"pri"`
+	Status      string `json:"status"`
+	Blocker     string `json:"blocker"`
+	Horizon     string `json:"horizon"`
+	LastTouched string `json:"last_touched"`
+}
+
+// listTasks parses live-tasks.md into rows (header/separator lines skipped).
+func listTasks(cfg Config) ([]LiveTask, error) {
+	b, err := os.ReadFile(filepath.Join(cfg.VaultDir, "live-tasks.md"))
+	if err != nil {
+		return nil, err
+	}
+	out := []LiveTask{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.Contains(line, "Last touched") || strings.Contains(line, "---") {
+			continue
+		}
+		cols := tableCols(line)
+		if len(cols) < 8 {
+			continue
+		}
+		out = append(out, LiveTask{
+			Task: cols[0], Domain: cols[1], Owner: cols[2], Pri: cols[3],
+			Status: cols[4], Blocker: cols[5], Horizon: cols[6], LastTouched: cols[7],
+		})
+	}
+	return out, nil
+}
+
+// addTask appends a queued live-task row. It is idempotent by Task name (the row
+// identity, matching syncTasks's dedup): if a row with that name already exists
+// it is a no-op and reports added=false, so a daily automation re-running the
+// brief write-back never mints duplicates. Last touched is stamped today.
+func addTask(cfg Config, lt LiveTask) (bool, error) {
+	livePath := filepath.Join(cfg.VaultDir, "live-tasks.md")
+	bodyBytes, err := os.ReadFile(livePath)
+	if err != nil {
+		return false, err
+	}
+	body := string(bodyBytes)
+	// Idempotency by EXACT Task-name (col 0), not a substring scan of the whole
+	// table — so a name that happens to appear in another row's Blocker/Horizon
+	// cell, or that is a prefix of another task, does not falsely suppress the add.
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.Contains(line, "Last touched") || strings.Contains(line, "---") {
+			continue
+		}
+		if cols := tableCols(line); len(cols) >= 1 && cols[0] == lt.Task {
+			return false, nil
+		}
+	}
+	row := fmt.Sprintf("| %s | %s | %s | %s | queued | %s | %s | %s |",
+		lt.Task, lt.Domain, lt.Owner, lt.Pri, lt.Blocker, lt.Horizon, time.Now().Format("2006-01-02"))
+	body = strings.TrimRight(body, "\n") + "\n" + row + "\n"
+	if err := atomicWrite(livePath, []byte(body), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func addSource(cfg Config, args []string, stdout io.Writer) error {
