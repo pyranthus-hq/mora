@@ -47,13 +47,102 @@ type recallHookInput struct {
 }
 
 type claudeCommandHook struct {
-	Type    string `json:"type"`
-	Command string `json:"command"`
-	Timeout int    `json:"timeout,omitempty"`
+	Type    string                     `json:"type,omitempty"`
+	Command string                     `json:"command,omitempty"`
+	Timeout int                        `json:"timeout,omitempty"`
+	Extra   map[string]json.RawMessage `json:"-"`
 }
 
 type claudeHookGroup struct {
-	Hooks []claudeCommandHook `json:"hooks"`
+	Matcher string                     `json:"matcher,omitempty"`
+	Hooks   []claudeCommandHook        `json:"hooks"`
+	Extra   map[string]json.RawMessage `json:"-"`
+}
+
+func (h *claudeCommandHook) UnmarshalJSON(body []byte) error {
+	type known claudeCommandHook
+	var k known
+	if err := json.Unmarshal(body, &k); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return err
+	}
+	delete(raw, "type")
+	delete(raw, "command")
+	delete(raw, "timeout")
+	*h = claudeCommandHook(k)
+	h.Extra = raw
+	return nil
+}
+
+func (h claudeCommandHook) MarshalJSON() ([]byte, error) {
+	raw := cloneRawMessages(h.Extra)
+	if h.Type != "" {
+		b, err := json.Marshal(h.Type)
+		if err != nil {
+			return nil, err
+		}
+		raw["type"] = b
+	}
+	if h.Command != "" {
+		b, err := json.Marshal(h.Command)
+		if err != nil {
+			return nil, err
+		}
+		raw["command"] = b
+	}
+	if h.Timeout != 0 {
+		b, err := json.Marshal(h.Timeout)
+		if err != nil {
+			return nil, err
+		}
+		raw["timeout"] = b
+	}
+	return json.Marshal(raw)
+}
+
+func (g *claudeHookGroup) UnmarshalJSON(body []byte) error {
+	type known claudeHookGroup
+	var k known
+	if err := json.Unmarshal(body, &k); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return err
+	}
+	delete(raw, "matcher")
+	delete(raw, "hooks")
+	*g = claudeHookGroup(k)
+	g.Extra = raw
+	return nil
+}
+
+func (g claudeHookGroup) MarshalJSON() ([]byte, error) {
+	raw := cloneRawMessages(g.Extra)
+	if g.Matcher != "" {
+		b, err := json.Marshal(g.Matcher)
+		if err != nil {
+			return nil, err
+		}
+		raw["matcher"] = b
+	}
+	b, err := json.Marshal(g.Hooks)
+	if err != nil {
+		return nil, err
+	}
+	raw["hooks"] = b
+	return json.Marshal(raw)
+}
+
+func cloneRawMessages(in map[string]json.RawMessage) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(in)+3)
+	for k, v := range in {
+		out[k] = append(json.RawMessage(nil), v...)
+	}
+	return out
 }
 
 func cmdHook(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -159,6 +248,8 @@ func formatRecallContext(mems []Memory, threshold float64, now time.Time) string
 		if count >= hookRecallLimit {
 			break
 		}
+		// FTS5 bm25() is a lower-is-better cost and matching rows are commonly negative;
+		// threshold is therefore a max-cost cutoff, keeping only scores <= threshold.
 		if m.Score > threshold {
 			continue
 		}
@@ -271,7 +362,10 @@ func hookInstall(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	settings, hooks := loadClaudeSettings(path)
+	settings, hooks, err := loadClaudeSettings(path)
+	if err != nil {
+		return err
+	}
 	upsertClaudeHook(hooks, "SessionStart", "session-start", claudeCommandHook{
 		Type:    "command",
 		Command: exe + " hook session-start",
@@ -299,7 +393,10 @@ func hookUninstall(stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	settings, hooks := loadClaudeSettings(path)
+	settings, hooks, err := loadClaudeSettings(path)
+	if err != nil {
+		return err
+	}
 	for event, groups := range hooks {
 		var kept []claudeHookGroup
 		for _, group := range groups {
@@ -337,7 +434,10 @@ func hookStatus(stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, hooks := loadClaudeSettings(path)
+	_, hooks, err := loadClaudeSettings(path)
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "SessionStart: %s\n", installedStatus(hooks, "SessionStart", "session-start"))
 	fmt.Fprintf(stdout, "UserPromptSubmit: %s\n", installedStatus(hooks, "UserPromptSubmit", "recall"))
 	return nil
@@ -358,7 +458,7 @@ func claudeSettingsPath() (string, error) {
 	return filepath.Join(home, ".claude", "settings.json"), nil
 }
 
-func loadClaudeSettings(path string) (map[string]any, map[string][]claudeHookGroup) {
+func loadClaudeSettings(path string) (map[string]any, map[string][]claudeHookGroup, error) {
 	settings := map[string]any{}
 	body, err := os.ReadFile(path)
 	if err == nil {
@@ -369,10 +469,14 @@ func loadClaudeSettings(path string) (map[string]any, map[string][]claudeHookGro
 	hooks := map[string][]claudeHookGroup{}
 	if raw, ok := settings["hooks"]; ok {
 		if b, err := json.Marshal(raw); err == nil {
-			_ = json.Unmarshal(b, &hooks)
+			if err := json.Unmarshal(b, &hooks); err != nil {
+				return nil, nil, fmt.Errorf("malformed Claude settings hooks: %w", err)
+			}
+		} else {
+			return nil, nil, fmt.Errorf("malformed Claude settings hooks: %w", err)
 		}
 	}
-	return settings, hooks
+	return settings, hooks, nil
 }
 
 func writeClaudeSettings(path string, settings map[string]any) error {

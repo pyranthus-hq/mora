@@ -135,6 +135,24 @@ func TestHookRecallThresholdRespected(t *testing.T) {
 	}
 }
 
+func TestHookRecallGateDirection(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	mems := []Memory{
+		{ID: "above", Title: "Above", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: "above threshold", Score: 0.2},
+		{ID: "equal", Title: "Equal", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: "equal threshold", Score: 0.1},
+		{ID: "below", Title: "Below", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: "below threshold", Score: -0.5},
+	}
+	got := formatRecallContext(mems, 0.1, now)
+	if strings.Contains(got, "id: above") {
+		t.Fatalf("score above threshold must be excluded, got:\n%s", got)
+	}
+	for _, id := range []string{"equal", "below"} {
+		if !strings.Contains(got, "id: "+id) {
+			t.Fatalf("score at/below threshold should be included for %s, got:\n%s", id, got)
+		}
+	}
+}
+
 func TestHookInstallFreshSettings(t *testing.T) {
 	tmp := withTempHookHome(t)
 	out := run(t, "hook", "install")
@@ -210,6 +228,35 @@ func TestHookInstallMergesAndIsIdempotent(t *testing.T) {
 	assertHookInstalled(t, settings, "UserPromptSubmit", "mora hook recall --threshold -0.25")
 }
 
+func TestHookInstallPreservesUnrelatedUnknownHookFields(t *testing.T) {
+	tmp := withTempHookHome(t)
+	path := writeClaudeSettingsFixture(t, tmp, matcherUnknownHookSettings())
+
+	run(t, "hook", "install")
+	afterInstall := readClaudeSettingsForTest(t, tmp)
+	assertUnrelatedMatcherHookIntact(t, afterInstall)
+	installedBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(t, "hook", "install")
+	reinstalledBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(installedBytes, reinstalledBytes) {
+		t.Fatalf("install twice should be byte-identical with matcher-bearing hooks\nonce:\n%s\ntwice:\n%s", installedBytes, reinstalledBytes)
+	}
+
+	run(t, "hook", "uninstall")
+	afterUninstall := readClaudeSettingsForTest(t, tmp)
+	assertUnrelatedMatcherHookIntact(t, afterUninstall)
+	hooks := hookGroupsForTest(t, afterUninstall)
+	if containsHookCommand(hooks["SessionStart"], "mora hook") || containsHookCommand(hooks["UserPromptSubmit"], "mora hook") {
+		t.Fatalf("mora hooks still present after uninstall: %#v", hooks)
+	}
+}
+
 func TestHookUninstallRemovesOnlyMoraHooks(t *testing.T) {
 	tmp := withTempHookHome(t)
 	path := filepath.Join(tmp, ".claude", "settings.json")
@@ -243,6 +290,25 @@ func TestHookUninstallRemovesOnlyMoraHooks(t *testing.T) {
 	}
 	if _, ok := hooks["SessionStart"]; ok {
 		t.Fatalf("empty SessionStart group should be pruned: %#v", hooks["SessionStart"])
+	}
+}
+
+func TestHookInstallMalformedHooksDoesNotOverwrite(t *testing.T) {
+	tmp := withTempHookHome(t)
+	path := writeClaudeSettingsFixture(t, tmp, `{"hooks":"not an object","theme":"dark"}`+"\n")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runErr(t, "hook", "install"); err == nil {
+		t.Fatal("install should fail on malformed hooks")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("malformed hooks file was overwritten\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -286,6 +352,44 @@ func withTempHookHome(t *testing.T) string {
 	hookExecutable = func() (string, error) { return filepath.Join(tmp, "bin", "mora"), nil }
 	t.Cleanup(func() { hookExecutable = prev })
 	return tmp
+}
+
+func writeClaudeSettingsFixture(t *testing.T, home, body string) string {
+	t.Helper()
+	path := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func matcherUnknownHookSettings() string {
+	return `{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "other-tool pre",
+            "timeout": 3,
+            "async": true,
+            "once": true,
+            "if": "success",
+            "args": ["--flag"],
+            "foo": 1
+          }
+        ]
+      }
+    ]
+  },
+  "theme": "dark"
+}
+`
 }
 
 func decodeHookOutput(t *testing.T, body string) hookEnvelope {
@@ -349,4 +453,25 @@ func containsHookCommand(groups []claudeHookGroup, substr string) bool {
 		}
 	}
 	return false
+}
+
+func assertUnrelatedMatcherHookIntact(t *testing.T, settings map[string]any) {
+	t.Helper()
+	hooks := settings["hooks"].(map[string]any)
+	groups := hooks["PreToolUse"].([]any)
+	group := groups[0].(map[string]any)
+	if group["matcher"] != "Bash" {
+		t.Fatalf("matcher not preserved: %#v", group)
+	}
+	cmd := group["hooks"].([]any)[0].(map[string]any)
+	if cmd["command"] != "other-tool pre" || cmd["type"] != "command" {
+		t.Fatalf("command hook changed: %#v", cmd)
+	}
+	if cmd["async"] != true || cmd["once"] != true || cmd["if"] != "success" || cmd["foo"].(float64) != 1 {
+		t.Fatalf("unknown command fields not preserved: %#v", cmd)
+	}
+	args := cmd["args"].([]any)
+	if len(args) != 1 || args[0] != "--flag" {
+		t.Fatalf("args not preserved: %#v", cmd)
+	}
 }
