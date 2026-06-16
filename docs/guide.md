@@ -11,7 +11,9 @@ live in [`docs/architecture/`](architecture/00-overview.md).
 - [Connect iMessage (macOS)](#connect-imessage-macos)
 - [Connect Apple Calendar (macOS)](#connect-apple-calendar-macos)
 - [Add a filesystem source](#add-a-filesystem-source)
+- [Manage connectors](#manage-connectors)
 - [Wire Mora into your agent (MCP)](#wire-mora-into-your-agent-mcp)
+- [Use Mora from the shell](#use-mora-from-the-shell)
 - [Make the brief your session-start default](#make-the-brief-your-session-start-default)
 - [Explore the entity graph](#explore-the-entity-graph)
 - [Browse the vault in Obsidian](#browse-the-vault-in-obsidian)
@@ -33,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh |
 **From a release tarball:** unpack and run the bundled installer (same script, local mode):
 
 ```bash
-tar -xzf mora_0.6.0_darwin_arm64.tar.gz && ./install.sh
+tar -xzf mora_<version>_<os>_<arch>.tar.gz && ./install.sh   # the tarball you downloaded for your platform
 ```
 
 **From source** (Go 1.25+; pure Go, no CGO):
@@ -89,6 +91,8 @@ mora connect google --account work    # second mailbox → gmail-work / calendar
 Each account keeps its own token. Re-authing an account that's already connected (under any label)
 is detected by the signed-in address and exits gracefully — one mailbox is never double-ingested.
 
+Gmail backfills the **last 90 days** by default. Widen it with `mora connect google --since-days 365`; the window is saved on the source, so later `mora sync google` runs reuse it. Calendar always pulls a fixed window of about six months back and three months forward.
+
 ## Connect iMessage (macOS)
 
 ```bash
@@ -141,6 +145,30 @@ mora ingest run --source myproject
 
 Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files, plus **`.docx`** (Word documents) and **`.pdf`**, both text-extracted with pure-Go libraries (no CGO). Mora only indexes text it can actually read: a scanned, image-only PDF yields nothing rather than garbage (there is no OCR). Other binaries and build artifacts are skipped.
 
+## Manage connectors
+
+See what is connected, what is enabled, and what still needs a login:
+
+```bash
+mora connectors list            # every connector, its enabled state, and whether it needs auth
+mora connectors list --json     # the same, machine-readable
+mora connectors setup           # interactive menu to pick and enable connectors
+```
+
+The catalog is `gmail`, `calendar`, `filesystem`, `imessage`, and `applecalendar`. Enabling is explicit and consent-gated: `enable` runs the OAuth or access check but pulls **no data**, and `disable` stops future syncs without deleting anything already indexed.
+
+```bash
+mora connectors enable calendar     # consent only; backfill with a sync or ingest
+mora connectors disable imessage    # stop syncing a source
+```
+
+Backfill one source or everything that is enabled:
+
+```bash
+mora ingest run --source docs       # one named source
+mora ingest run --all               # every enabled source (what the hourly schedule runs; disabled sources are skipped)
+```
+
 ## Wire Mora into your agent (MCP)
 
 The one-liners:
@@ -154,6 +182,22 @@ Or use the example configs — `examples/claude-code-mcp.json` (copy to your pro
 `.claude/mcp.json`) and `examples/codex-mcp.json`.
 
 `mora mcp serve` exposes 12 tools over JSON-RPC: `write_memory`, `read_memory`, `search_memory`, `list_memory`, `delete_memory`, `context_memory`, `think`, `list_entities`, `get_entity`, `digest`, `brief`, and `meeting_prep` — `brief` is the session-start what-changed/what-matters briefing, and `meeting_prep` assembles a cited prep pack for your next (or in-progress) calendar event. `digest` and `brief` also accept `entity`/`scope`/`since_days` to narrow to one person, namespace, or window. Every `search_memory` / `context_memory` answer also carries a per-source `last_synced` map, so your agent can qualify answers with their data age.
+
+## Use Mora from the shell
+
+Every MCP tool has a CLI sibling, so you can read and write the vault from a terminal with the same retrieval the agent uses:
+
+```bash
+mora search "OAuth status" --scope project:acme --json   # hybrid search (the search_memory tool)
+mora write --scope project:acme --type decision --title "Chose OAuth" --text "..."   # save a fact
+mora read <id> --json                                    # one memory by id
+mora list --scope project:acme --json                    # browse memories in a scope
+mora delete <id> --yes                                   # remove one memory
+mora context --query "auth" --scope project:acme --budget 2000 --json   # one budget-bounded context block
+mora think "what did Sam decide about pricing?" --json   # cited evidence + gap analysis
+```
+
+`mora context` assembles a single character-budgeted block for a query (default 2000 characters; omit `--query` for a recency briefing). `mora write` is the only command here that changes anything, and it only writes to the local vault, never to your connected accounts.
 
 ## Make the brief your session-start default
 
@@ -218,13 +262,32 @@ Open Obsidian and add the vault directory (default: `~/vault/mora`) as a new vau
 ```bash
 mora schedule install ingest-hourly   # hourly background sync of every enabled source
 mora schedule install pulse-daily     # 8am daily brief (sync-first, persisted, notification)
+mora schedule list                    # show which jobs are installed
 ```
+
+The full set of jobs is `ingest-hourly`, `index-hourly`, `pulse-daily`, `backup-daily`, `git-daily`, and `lint-weekly`.
 
 **Check sync freshness:**
 
 ```bash
 mora sync status
 ```
+
+**Check your install:**
+
+```bash
+mora doctor
+```
+
+`mora doctor` reports the health of the install: the vault and index, that your tokens live outside the vault, the storage footprint, whether the vault is a git repo, and (on macOS) Full Disk Access for iMessage and Apple Calendar.
+
+**Record open tasks so the brief can surface them:**
+
+```bash
+mora tasks sync --write
+```
+
+This scans your memories for open tasks and records them; stale ones then show up in the brief.
 
 **Morning brief / per-source rundown:**
 
@@ -378,7 +441,7 @@ Keyword search misses paraphrase ("launch" vs "shipping"); pure vector search dr
 2. **Static-embedding cosine** — recall for paraphrase, over per-memory vectors in `mem_vectors`. Zero-similarity rows are dropped so the vector arm never drags in unrelated memories.
 3. **1-hop graph expansion** — if the query *names a person* (gazetteer + exact alias match), pull that person's evidence memories into the candidate pool. GraphRAG-lite, no LLM.
 
-The three ranked lists are merged with **Reciprocal Rank Fusion**, `score = Σ 1/(k + rank)`. RRF is *rank*-based, so it fuses BM25's unbounded scores with cosine's `[0,1]` without any normalization, and dampens the head so no single arm dominates.
+The three ranked lists are merged with **weighted Reciprocal Rank Fusion**: each arm contributes `weight / (k + rank)` with `k = 10`, and the weights are tuned so the exact-match anchor leads (`fts 1.5`, `vec 1`, `graph 1`). RRF is *rank*-based, so it fuses BM25's unbounded scores with cosine's `[0,1]` without any normalization, and the weights keep the keyword arm slightly ahead so a proper-noun match is never buried under a fuzzy vector hit.
 
 **Embedder limitations.** The default is a pure-Go, deterministic **feature-hashing static embedder** (`staticEmbedder` in `embed.go`): it hashes word tokens and character trigrams into a fixed 256-dim space (signed hashing trick, TF-weighted, L2-normalized). Cosine then tracks shared lexical + subword features — so "launching" and "launch" share signal. This is not a semantic model — it tracks shared tokens and subwords, not meaning, so paraphrase recall is limited. It sits behind an `Embedder` interface, so an **Ollama** model (`nomic-embed-text`) drops in unchanged. Ollama is strictly opt-in (`mora config embedder ollama`, or `MORA_EMBEDDER=ollama`), and `chooseEmbedder` **refuses any non-loopback `MORA_OLLAMA_URL`** — memory text never leaves the machine, and an unreachable daemon degrades to the static embedder with a warning, never an error.
 
