@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,118 @@ func writeLiveTasks(t *testing.T, cfg Config, rows ...string) {
 		strings.Join(rows, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(cfg.VaultDir, "live-tasks.md"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write live-tasks.md: %v", err)
+	}
+}
+
+// `mora tasks add <name>` creates a queued live-task row (the capture primitive
+// for the daily-brief write-back: open-loops surfaced in triage are persisted).
+func TestTasksAddCreatesQueuedRow(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+
+	run(t, "tasks", "add", "Reply to Amaey about the game")
+
+	row := liveTasksRow(t, cfg, "Reply to Amaey about the game")
+	if row == "" {
+		t.Fatalf("expected `tasks add` to create a live-tasks row")
+	}
+	cols := tableCols(row)
+	if cols[4] != "queued" {
+		t.Fatalf("expected new task Status=queued, got %q", cols[4])
+	}
+}
+
+// `tasks add` is idempotent by name so a daily automation re-running does not
+// mint duplicates; the second call is a no-op success.
+func TestTasksAddIsIdempotent(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+
+	run(t, "tasks", "add", "Decide Boston visit")
+	out := run(t, "tasks", "add", "Decide Boston visit")
+
+	b, err := os.ReadFile(filepath.Join(cfg.VaultDir, "live-tasks.md"))
+	if err != nil {
+		t.Fatalf("read live-tasks.md: %v", err)
+	}
+	if n := strings.Count(string(b), "| Decide Boston visit |"); n != 1 {
+		t.Fatalf("expected exactly one row after re-add, got %d:\n%s", n, b)
+	}
+	if !strings.Contains(strings.ToLower(out), "exists") {
+		t.Fatalf("expected idempotent re-add to report it already exists, got %q", out)
+	}
+}
+
+// Flags follow the (quoted) name: `tasks add "<name>" --pri P0`. The flag must
+// be applied, not folded into the task name.
+func TestTasksAddFlagsAfterName(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+
+	run(t, "tasks", "add", "Urgent reply", "--pri", "P0")
+
+	row := liveTasksRow(t, cfg, "Urgent reply")
+	if row == "" {
+		t.Fatalf("expected row named exactly 'Urgent reply' (flags must not be folded into the name)")
+	}
+	if cols := tableCols(row); cols[3] != "P0" {
+		t.Fatalf("expected --pri P0 applied, got Pri=%q", cols[3])
+	}
+}
+
+// addTask idempotency keys on the exact Task name (col 0), so a new task whose
+// name equals a non-Task cell value (e.g. "None") is still added.
+func TestTasksAddNotFooledByOtherColumns(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	// Seed a row; its Blocker column is the literal "None".
+	run(t, "tasks", "add", "Some task")
+
+	out := run(t, "tasks", "add", "None") // must NOT be suppressed by the Blocker cell
+
+	if strings.Contains(strings.ToLower(out), "exists") {
+		t.Fatalf("a new task named 'None' was wrongly treated as existing (matched a non-Task cell): %q", out)
+	}
+	if liveTasksRow(t, cfg, "None") == "" {
+		t.Fatalf("expected task 'None' to be added")
+	}
+}
+
+// `tasks list --json` returns the live tasks as structured rows.
+func TestTasksListJSON(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	run(t, "tasks", "add", "Task A")
+	run(t, "tasks", "add", "Task B")
+	out := run(t, "tasks", "list", "--json")
+
+	var got []LiveTask
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("tasks list --json: %v\n%s", err, out)
+	}
+	names := map[string]bool{}
+	for _, lt := range got {
+		names[lt.Task] = true
+	}
+	if !names["Task A"] || !names["Task B"] {
+		t.Fatalf("expected both added tasks in list, got %+v", got)
 	}
 }
 
