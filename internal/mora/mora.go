@@ -4028,6 +4028,15 @@ func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 			continue
 		}
+		// JSON-RPC notifications carry no "id" and MUST NOT be answered. The
+		// post-initialize `notifications/initialized` is the common one; replying
+		// to it (with a stray -32601 frame) makes strict MCP clients — notably
+		// Antigravity's official go-sdk — abort the session and drop every tool
+		// ("tools/list: invalid request"). Lenient clients (Claude Code, Codex)
+		// tolerate the stray frame, which is why this hid. Ignore notifications.
+		if req.ID == nil {
+			continue
+		}
 		resp := handleMCP(ctx, req)
 		b, _ := json.Marshal(resp)
 		fmt.Fprintln(stdout, string(b))
