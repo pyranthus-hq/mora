@@ -381,29 +381,49 @@ func briefIsFresh(dated, now time.Time) bool {
 // watermark. The result is renderDigest at the same budget the WRITE side
 // persists, so a generated brief is byte-shaped like a read one.
 func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, error) {
-	if path, dated, ok := latestBriefPath(cfg, now); ok && briefIsFresh(dated, now) {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return "", false, err
+	// Only the GLOBAL (unfiltered) brief uses the persisted cache — the disk file is
+	// the unfiltered brief, so a filtered request must bypass it and generate fresh
+	// (§3), or it would masquerade as "nothing's up".
+	if !opts.filtered() {
+		if path, dated, ok := latestBriefPath(cfg, now); ok && briefIsFresh(dated, now) {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return "", false, err
+			}
+			return string(body), false, nil
 		}
-		return string(body), false, nil
 	}
 
-	// DELTA preview (advance forced false regardless of opts — the resolver is
-	// strictly read-only and must never mutate the Phase-12 watermark).
-	d, err := buildDigest(cfg, now, briefOpts{advance: false, perSourceCap: opts.perSourceCap})
+	d, err := filteredBriefDigest(cfg, now, opts)
 	if err != nil {
 		return "", false, err
 	}
+	return renderDigest(d, cfg.contextDefaultTokens()*charsPerToken), true, nil
+}
+
+// filteredBriefDigest factors resolveBrief's generate path: a DELTA preview with a
+// fixed 24h WINDOW fallback when the delta is empty, forwarding the full filter set
+// and forcing advance:false on both builds. Shared by resolveBrief (human + --json),
+// the `mora brief --envelope` cited-items prompt, and the MCP `brief` tool, so all
+// three cite the SAME items. Read-only; never mutates the Phase-12 watermark.
+func filteredBriefDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
+	d, err := buildDigest(cfg, now, briefOpts{
+		advance: false, perSourceCap: opts.perSourceCap,
+		source: opts.source, entityIDSet: opts.entityIDSet, scope: opts.scope, sinceDays: opts.sinceDays,
+	})
+	if err != nil {
+		return Digest{}, err
+	}
 	if briefSurfacedItemCount(d) == 0 {
-		// Empty delta: fall back to a fixed 24h WINDOW so the brief always carries
-		// context. Still advance:false — watermark-independent, no mutation.
-		d, err = buildDigest(cfg, now, briefOpts{advance: false, sinceHours: briefFallbackWindowHours, perSourceCap: opts.perSourceCap})
+		d, err = buildDigest(cfg, now, briefOpts{
+			advance: false, sinceHours: briefFallbackWindowHours, perSourceCap: opts.perSourceCap,
+			source: opts.source, entityIDSet: opts.entityIDSet, scope: opts.scope, sinceDays: opts.sinceDays,
+		})
 		if err != nil {
-			return "", false, err
+			return Digest{}, err
 		}
 	}
-	return renderDigest(d, cfg.contextDefaultTokens()*charsPerToken), true, nil
+	return d, nil
 }
 
 // briefSurfacedItemCount sums len(section.Items) across a digest — the

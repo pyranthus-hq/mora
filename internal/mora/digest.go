@@ -100,6 +100,24 @@ type briefOpts struct {
 	// scheduled --advance job never sets it (a filtered advance would mark
 	// unseen sources' items as read).
 	source string
+	// entityIDSet, scope, sinceDays are the three preview-only filters applied
+	// per-memory inside filterByInstance. entityIDSet is the resolved alias-id SET
+	// for one person (canonical id ∪ every address/handle alias id — P1-A); empty =
+	// no entity filter. scope matches Memory.Scope exactly; empty = all. sinceDays
+	// is an additional created-at lower bound in days; <=0 = none (a negative is
+	// inert, never a future cutoff — P1-D). None of these may combine with advance.
+	entityIDSet map[string]bool
+	scope       string
+	sinceDays   int
+}
+
+// filtered reports whether any preview-only filter is active. The persisted
+// (unfiltered) brief cache is used ONLY when this is false, and a filtered digest
+// can never --advance the watermark. Note: sinceHours is NOT included — it is a
+// pulse-only window, never a brief input (P1-E); and a negative sinceDays does not
+// count (it is clamped/inert — P1-D).
+func (o briefOpts) filtered() bool {
+	return o.source != "" || len(o.entityIDSet) > 0 || o.scope != "" || o.sinceDays > 0
 }
 
 // sourceDigestRank / digestSourceLabel are now thin shims over connectorDisplay
@@ -160,6 +178,11 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	// scoring), then threaded down into both paths. buildDigest stays file-based —
 	// this reuses the already-parsed memories and opens no index DB.
 	memSal := digestMemorySalience(flattenInstances(byInstance))
+
+	// Apply the preview-only entity/scope/since-days filters AFTER memSal (P1-C): the
+	// salience map must stay whole-vault (it is capRecency's primary sort key), but
+	// the surfaced set narrows to matching memories. Identity when no filter is set.
+	byInstance = filterByInstance(byInstance, opts, now)
 
 	if opts.sinceHours > 0 {
 		return buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source)
@@ -273,7 +296,10 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 			// next window [now, now+N]; past-oriented sources look BACK [now-N, now]
 			// and reject future-dated outliers (clock-skew / scheduled-send).
 			if upcoming {
-				if ts.Before(now) || ts.After(forward) {
+				// Grace window (P1-F): an event that started within meetingPrepGrace is
+				// still "current" — the meeting you just walked into — so it isn't dropped
+				// from the calendar section.
+				if ts.Before(now.Add(-meetingPrepGrace)) || ts.After(forward) {
 					continue
 				}
 			} else if ts.Before(cutoff) || ts.After(now) {
@@ -305,6 +331,15 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 // buildDeltaDigest is the delta + three-state path (SC#1, SC#3, SC#4). It is the
 // behavioral heart of Phase 12.
 func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64) (Digest, error) {
+	// Preview-only guard, HOISTED above the lock and the per-filter handling (§5): a
+	// filtered advance (source/entity/scope/since-days) would commit the watermark over
+	// items the reader never saw (they were filtered out). Catching it here — before
+	// acquireBriefLock — means an entity/scope/since-days advance can't slip past the
+	// old source-only nested check.
+	if opts.advance && opts.filtered() {
+		return Digest{}, fmt.Errorf("a filtered digest (--source/--entity/--scope/--since-days) is preview-only and cannot --advance the watermark")
+	}
+
 	// The enumeration set for the three-state labels is the ENABLED+INGESTING
 	// connectors (M-2) — not providers-found-in-memories (which would hide a
 	// broken/all-deleted source) and not the sync/ dir. A connector enumerated
@@ -335,11 +370,8 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 	keys := append([]string(nil), enumerated...)
 	sort.Strings(keys)
 	if opts.source != "" {
-		// A filtered ADVANCE would commit the watermark for sections the reader
-		// never saw — preview-only by construction.
-		if opts.advance {
-			return Digest{}, fmt.Errorf("source filter is preview-only; it cannot be combined with advance")
-		}
+		// advance+filter already rejected by the hoisted guard above; here we only
+		// narrow the section keys to the source filter.
 		filtered := keys[:0]
 		for _, k := range keys {
 			if digestSourceMatches(k, opts.source) {

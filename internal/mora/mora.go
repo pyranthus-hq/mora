@@ -304,6 +304,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdThink(ctx, args[1:], stdout)
 	case "brief":
 		return cmdBrief(ctx, args[1:], stdout)
+	case "prep":
+		return cmdPrep(ctx, args[1:], stdout)
 	case "usage":
 		return cmdUsage(ctx, args[1:], stdout)
 	case "disconnect":
@@ -989,43 +991,62 @@ var briefClock = time.Now
 // the test harness see raw Markdown either way; the skin only appears on a real
 // terminal for a freshly-generated brief.
 func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
-	_ = ctx // local-only; no fetch context is threaded into the read path.
-	jsonOut := false
-	envelope := false
-	for _, a := range args {
-		switch a {
-		case "--json":
-			jsonOut = true
-		case "--envelope":
-			envelope = true
-		}
+	fs := flag.NewFlagSet("brief", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit a byte-clean JSON result")
+	envelope := fs.Bool("envelope", false, "append a model-free synthesis prompt")
+	entity := fs.String("entity", "", "filter to memories referencing one person (name or email/handle); preview-only")
+	scope := fs.String("scope", "", "filter to one memory scope/namespace (e.g. project:acme); preview-only")
+	sinceDays := fs.Int("since-days", 0, "only memories created in the last N days; preview-only (negative = no filter)")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	now := briefClock()
-	body, generated, err := resolveBrief(cfg, now, briefOpts{})
+
+	// A filtered brief is preview-only and BYPASSES the persisted cache (§3); the
+	// entity is resolved eagerly here so buildDigest stays DB-free, with a hard
+	// error on no-match/ambiguity rather than a silently-empty brief.
+	opts := briefOpts{scope: *scope, sinceDays: clampSinceDays(*sinceDays)}
+	if *entity != "" {
+		idSet, rerr := resolveEntityFilter(ctx, cfg, *entity)
+		if rerr != nil {
+			return rerr
+		}
+		opts.entityIDSet = idSet
+	}
+
+	body, generated, err := resolveBrief(cfg, now, opts)
 	if err != nil {
 		return err
 	}
 	logUsage(cfg, usageEvent{Tool: "brief"})
-	if jsonOut {
+	if *jsonOut {
 		// Byte-clean structured result; --envelope has no effect on --json (the
 		// envelope is a human-stdout addition, like pulse --digest --envelope).
-		return emit(stdout, briefResult{Generated: generated, Body: body}, jsonOut)
+		return emit(stdout, briefResult{Generated: generated, Body: body}, *jsonOut)
 	}
 	if generated {
 		// Freshly generated: apply the TTY skin (off-TTY this is a no-op, byte-clean).
 		body = styleDigestTTY(body, newStyler(stdout, false))
 	}
 	fmt.Fprintln(stdout, body)
-	if envelope {
-		// Build the brief digest the SAME way resolveBrief's generate path does, so
-		// the synthesis_prompt cites the SAME items. Model-free + read-only: only
-		// digestSynthesisPrompt (a pure string builder) runs — no model/network call,
-		// no watermark mutation (briefDigest forces advance:false).
-		d, derr := briefDigest(cfg, now, 0)
+	if *envelope {
+		// Build the brief digest the SAME way the body was generated so the
+		// synthesis_prompt cites the SAME items. A filtered brief uses the
+		// filter-aware factory; the unfiltered envelope is byte-unchanged.
+		// Model-free + read-only: only digestSynthesisPrompt runs (no model/network,
+		// no watermark mutation — both builders force advance:false).
+		var d Digest
+		var derr error
+		if opts.filtered() {
+			d, derr = filteredBriefDigest(cfg, now, opts)
+		} else {
+			d, derr = briefDigest(cfg, now, 0)
+		}
 		if derr != nil {
 			return derr
 		}
@@ -1136,6 +1157,12 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 	// Family or instance key (imessage | gmail | gmail:work | …). Never combined
 	// with --advance (a filtered advance would mark unseen sources read).
 	srcFilter := fs.String("source", "", "filter the digest to one connector (imessage|gmail|calendar|applecalendar or gmail:<account>); preview-only")
+	// --entity/--scope/--since-days: the three preview-only content filters (same as
+	// `mora brief`), orthogonal to --source. Never combined with --advance (the
+	// hoisted buildDeltaDigest guard rejects a filtered advance).
+	entityFilter := fs.String("entity", "", "filter the digest to memories referencing one person (name or email/handle); preview-only")
+	scopeFilter := fs.String("scope", "", "filter the digest to one memory scope/namespace (e.g. project:acme); preview-only")
+	sinceDays := fs.Int("since-days", 0, "additional look-back: only memories created in the last N days; preview-only (negative = no filter)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1168,7 +1195,14 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 		//     independent), so we force advance=false there.
 		//   - otherwise DELTA mode (the scheduled default); advance is opt-in via
 		//     --advance, the ONLY surface that commits the watermark.
-		opts := briefOpts{sinceHours: *sinceHours, source: *srcFilter}
+		opts := briefOpts{sinceHours: *sinceHours, source: *srcFilter, scope: *scopeFilter, sinceDays: clampSinceDays(*sinceDays)}
+		if *entityFilter != "" {
+			idSet, rerr := resolveEntityFilter(ctx, cfg, *entityFilter)
+			if rerr != nil {
+				return rerr
+			}
+			opts.entityIDSet = idSet
+		}
 		if *sinceHours <= 0 {
 			opts.advance = *advance
 			// Sync-first (D13-4): in DELTA mode only, when --sync is set, refresh the
@@ -2750,18 +2784,21 @@ func sourcesRoot(cfg Config) string  { return filepath.Join(cfg.VaultDir, "sourc
 func dbPath(cfg Config) string       { return filepath.Join(cfg.DataDir, "index.db") }
 
 // roIndexDSN is the DSN every read-only index open uses. busy_timeout matters
-// for READERS too: the hourly rebuild (or an MCP write) briefly holds the
-// writer lock, and a zero-timeout reader surfaces a raw "database is locked"
-// — worse, openIndexRO misreads that SQLITE_BUSY as a stale schema and
-// launches a spurious full rebuild via the auto-heal path
-// (TestReadOnlyIndexWaitsOnWriteLock pins this). Mirrors the writer DSN's
-// busy_timeout(5000) in rebuildIndex.
+// for READERS too: the hourly rebuild does a whole-index DELETE-then-reinsert
+// inside ONE transaction, and its commit flush of a large rollback journal can
+// hold the writer lock for longer than a few seconds. A short reader timeout
+// surfaces a raw "database is locked" mid-rebuild (and openIndexRO can misread
+// that SQLITE_BUSY as a stale schema and launch a spurious rebuild). 15s lets an
+// interactive read (brief --entity, prep, think, get_entity) and an MCP tool call
+// ride out the rebuild's commit window instead of erroring; humanizeIndexBusy
+// gives an actionable message if a read still outlasts it.
+// (TestReadOnlyIndexWaitsOnWriteLock pins the wait behavior.)
 //
 // Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out
 // but NOT enforced (connections open read-write); it is kept as
 // documentation-of-intent until the read paths adopt a stricter pragma.
 func roIndexDSN(cfg Config) string {
-	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(5000)"
+	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(15000)"
 }
 
 // indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
@@ -4161,10 +4198,21 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 				mcpParam{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Use with since_hours for asks like "my texts from the past week" — without it, earlier-ranked sources can consume the byte budget`, false},
 				mcpParam{"max_tokens", "integer", "Approximate token budget for the digest (default ~6000, max ~20000)", false},
 				mcpParam{"envelope", "boolean", "Opt-in: also return a synthesis_prompt instructing the agent to write a grounded, cited brief over the digest items (default false; Mora makes no model call)", false},
+				mcpParam{"entity", "string", `Filter to memories referencing one person (display name or email/handle, e.g. "Riya" or "riya@example.com"). A no-match or ambiguous name returns an error rather than an empty digest. Preview-only.`, false},
+				mcpParam{"scope", "string", `Filter to one memory scope/namespace, e.g. "project:acme". Preview-only.`, false},
+				mcpParam{"since_days", "integer", "Additional look-back: only memories created in the last N days (negative is treated as no filter). Preview-only.", false},
 			),
 			mcpTool("brief", "Return the latest what-changed/what-matters brief for session start — the same budgeted, cited, source-grouped daily brief as `digest`, resolved to the freshest available; call this FIRST at the start of a session. Opt into `envelope` for a synthesis_prompt to compose a grounded, cited brief.",
 				mcpParam{"max_tokens", "integer", "Approximate token budget for the brief (default ~6000, max ~20000)", false},
 				mcpParam{"envelope", "boolean", "Opt-in: also return a synthesis_prompt for composing a grounded, cited brief over the items (default false; Mora makes no model call)", false},
+				mcpParam{"entity", "string", `Filter the brief to memories referencing one person (display name or email/handle). A no-match or ambiguous name returns an error. Preview-only.`, false},
+				mcpParam{"scope", "string", `Filter the brief to one memory scope/namespace, e.g. "project:acme". Preview-only.`, false},
+				mcpParam{"since_days", "integer", "Additional look-back: only memories created in the last N days (negative = no filter). Preview-only.", false},
+			),
+			mcpTool("meeting_prep", "Assemble a CITED prep pack for the user's next (or in-progress) calendar event, optionally with one attendee by name: the event, recent emails/texts/events with each attendee, a deterministic 'what the vault does NOT know' gap analysis, and a model-free synthesis_prompt to compose the prep. Local + read-only; never advances the watermark; Mora makes NO model call and never invents decisions or open questions.",
+				mcpParam{"name", "string", `Optional attendee name/email/handle: prep the next meeting WITH this person (falls back to the next meeting if they have none). Omit for the next meeting on the calendar.`, false},
+				mcpParam{"limit", "integer", "Max evidence memories per attendee (default 8)", false},
+				mcpParam{"max_tokens", "integer", "Approximate token budget for the pack (default ~6000, max ~20000)", false},
 			),
 		}}
 	case "tools/call":
@@ -4305,15 +4353,25 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// 20k request can surface more items than the 6k default. The MCP path is
 		// always preview (advance=false), so raising the cap has no watermark effect
 		// (no snapshot is written, no items are marked-read).
-		// Read the clock through the briefClock seam (defaults to time.Now in
-		// production) so the digest tool is clock-pinnable in tests, like the brief
-		// tool. This keeps the SC#4 byte-identical gate deterministic instead of
-		// straddling a one-second boundary between two generations.
-		d, derr := buildDigest(cfg, briefClock(), briefOpts{
+		opts := briefOpts{
 			sinceHours:   intArg(args, "since_hours", 0),
 			perSourceCap: mcpDigestMaxItems,
 			source:       strArg(args, "source", ""),
-		})
+			scope:        strArg(args, "scope", ""),
+			sinceDays:    clampSinceDays(intArg(args, "since_days", 0)),
+		}
+		if name := strArg(args, "entity", ""); name != "" {
+			idSet, rerr := resolveEntityFilter(ctx, cfg, name)
+			if rerr != nil {
+				return nil, rerr
+			}
+			opts.entityIDSet = idSet
+		}
+		// Read the clock through the briefClock seam (defaults to time.Now in
+		// production) so the digest tool is clock-pinnable in tests, like the brief
+		// tool — keeps the SC#4 byte-identical gate deterministic instead of
+		// straddling a one-second boundary between two generations.
+		d, derr := buildDigest(cfg, briefClock(), opts)
 		if derr != nil {
 			return nil, derr
 		}
@@ -4346,7 +4404,28 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// path is the human CLI's; the agent reads the STRUCTURED, budgeted projection
 		// (like the digest tool), not a render string.
 		start := time.Now()
-		d, derr := briefDigest(cfg, briefClock(), mcpDigestMaxItems)
+		// A filtered brief uses the filter-aware factory (same delta→24h-window
+		// fallback as the human resolveBrief); the unfiltered default stays briefDigest
+		// so the payload is byte-identical (T0 gate + plain-brief tests unregressed).
+		bopts := briefOpts{
+			perSourceCap: mcpDigestMaxItems,
+			scope:        strArg(args, "scope", ""),
+			sinceDays:    clampSinceDays(intArg(args, "since_days", 0)),
+		}
+		if name := strArg(args, "entity", ""); name != "" {
+			idSet, rerr := resolveEntityFilter(ctx, cfg, name)
+			if rerr != nil {
+				return nil, rerr
+			}
+			bopts.entityIDSet = idSet
+		}
+		var d Digest
+		var derr error
+		if bopts.filtered() {
+			d, derr = filteredBriefDigest(cfg, briefClock(), bopts)
+		} else {
+			d, derr = briefDigest(cfg, briefClock(), mcpDigestMaxItems)
+		}
 		if derr != nil {
 			return nil, derr
 		}
@@ -4360,6 +4439,24 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 			return budgetEnvelopePayload(cfg, d, budgetChars), nil
 		}
 		return digestMCPPayload(cfg, d, budgetChars), nil
+	case "meeting_prep":
+		start := time.Now()
+		name := strArg(args, "name", "")
+		var filter map[string]bool
+		if name != "" {
+			idSet, rerr := resolveEntityFilter(ctx, cfg, name)
+			if rerr != nil {
+				return nil, rerr
+			}
+			filter = idSet
+		}
+		mp, err := buildMeetingPrep(ctx, cfg, prepClock(), name, filter, intArg(args, "limit", mcpSearchDefaultLimit))
+		if err != nil {
+			return nil, humanizeIndexBusy(err)
+		}
+		budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
+		logUsage(cfg, usageEvent{Tool: "meeting_prep", Results: len(mp.Evidence), Millis: time.Since(start).Milliseconds()})
+		return meetingPrepMCPPayload(mp, budgetChars), nil
 	case "delete_memory":
 		id := strArg(args, "id", "")
 		m, err := findMemory(cfg, id)
