@@ -4977,15 +4977,20 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	// Stage through a unique temp in the same directory so concurrent writers
-	// never share a temp filename (which would let one truncate/rename another's
-	// in-flight staging file). Same dir keeps os.Rename atomic on one filesystem.
+	// Stage through a unique temp file (not a fixed `<path>.tmp`) so two
+	// processes writing the same target never share, truncate, or rename each
+	// other's in-flight temp. The temp stays in
+	// the target dir so the final os.Rename remains atomic on the same
+	// filesystem. NOTE: this does not fix the higher-level read-modify-write
+	// lost-update on sources.json (two writers each load → mutate → save);
+	// that needs caller-level serialization and is out of scope here.
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp) // no-op once renamed; cleans up the orphan on any failure
+	// Remove the temp on any failure path; a no-op once the rename succeeds.
+	defer os.Remove(tmp)
 	if _, err := f.Write(body); err != nil {
 		f.Close()
 		return err
@@ -4993,7 +4998,7 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	// CreateTemp opens at 0600; apply the caller's requested mode before publishing.
+	// CreateTemp opens at 0600; raise to the caller's requested mode.
 	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}

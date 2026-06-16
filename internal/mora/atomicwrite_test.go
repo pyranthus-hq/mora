@@ -106,7 +106,9 @@ func TestAtomicWriteHonorsModeAndLeavesNoOrphan(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "perm.json")
 
-	if err := atomicWrite(path, []byte("body\n"), 0o600); err != nil {
+	// CreateTemp starts at 0600, so 0644 proves atomicWrite applies the caller's
+	// requested mode before publishing the file.
+	if err := atomicWrite(path, []byte("body\n"), 0o644); err != nil {
 		t.Fatalf("atomicWrite: %v", err)
 	}
 
@@ -114,8 +116,8 @@ func TestAtomicWriteHonorsModeAndLeavesNoOrphan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("mode = %o, want 0600", got)
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("mode = %o, want 0644", got)
 	}
 
 	entries, err := os.ReadDir(dir)
