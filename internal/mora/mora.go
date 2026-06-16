@@ -312,6 +312,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdDisconnect(ctx, args[1:], stdout)
 	case "mcp":
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
+	case "hook":
+		return cmdHook(ctx, args[1:], stdout, stdin)
 	case "upgrade":
 		return cmdUpgrade(ctx, args[1:], stdout)
 	case "version", "--version", "-v":
@@ -374,6 +376,7 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
+  mora hook install|uninstall|status
   mora upgrade                     # self-update to the latest release (brew installs: brew upgrade)
   mora version`)
 }
