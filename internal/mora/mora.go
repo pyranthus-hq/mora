@@ -4305,7 +4305,11 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// 20k request can surface more items than the 6k default. The MCP path is
 		// always preview (advance=false), so raising the cap has no watermark effect
 		// (no snapshot is written, no items are marked-read).
-		d, derr := buildDigest(cfg, time.Now(), briefOpts{
+		// Read the clock through the briefClock seam (defaults to time.Now in
+		// production) so the digest tool is clock-pinnable in tests, like the brief
+		// tool. This keeps the SC#4 byte-identical gate deterministic instead of
+		// straddling a one-second boundary between two generations.
+		d, derr := buildDigest(cfg, briefClock(), briefOpts{
 			sinceHours:   intArg(args, "since_hours", 0),
 			perSourceCap: mcpDigestMaxItems,
 			source:       strArg(args, "source", ""),

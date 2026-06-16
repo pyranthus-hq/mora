@@ -95,6 +95,7 @@ func TestCmdBriefPrintsFreshFileVerbatim(t *testing.T) {
 // TestCmdBriefGeneratesWhenNoFreshFile: with no persisted brief, the CLI
 // GENERATES a non-empty brief from the local vault and prints it.
 func TestCmdBriefGeneratesWhenNoFreshFile(t *testing.T) {
+	pinBriefClock(t)
 	seedBriefCLIVault(t)
 	out := runBrief(t)
 	if strings.TrimSpace(out) == "" {
@@ -108,6 +109,7 @@ func TestCmdBriefGeneratesWhenNoFreshFile(t *testing.T) {
 // TestCmdBriefJSON: `--json` emits a typed {generated, body} object with NO ANSI
 // escape bytes (byte-clean invariant: ANSI never reaches --json).
 func TestCmdBriefJSON(t *testing.T) {
+	pinBriefClock(t)
 	seedBriefCLIVault(t)
 	out := runBrief(t, "--json")
 	if strings.ContainsRune(out, '\x1b') {
@@ -173,6 +175,7 @@ func TestCmdBriefEnvelopeAppendsSynthesisPrompt(t *testing.T) {
 // fetcher, so a network attempt would either error or block; a clean local
 // completion proves the local-only contract behaviorally.
 func TestCmdBriefNoNetwork(t *testing.T) {
+	pinBriefClock(t)
 	seedBriefCLIVault(t)
 	// A bare `mora brief` must return promptly with local content — no sync flag
 	// exists on the command, and resolveBrief/briefDigest never call a backfill.

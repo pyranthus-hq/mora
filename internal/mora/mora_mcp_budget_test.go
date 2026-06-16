@@ -431,6 +431,15 @@ func TestMCPDigestNoDoublingInEnvelope(t *testing.T) {
 // prompt, AND the on path must keep it). Measured on the SAME seedBudgetFixture
 // the rest of the gate runs over, so the contract is anchored to the budget gate.
 func TestMCPGateDigestEnvelopeOffByteIdentical(t *testing.T) {
+	// Freeze the clock to one instant so the two digest generations below stamp an
+	// identical header timestamp; a second ticking between them would otherwise break
+	// the byte-identical comparison (a pre-existing wall-clock flake). Frozen at
+	// real-now so the now-12h budget fixture stays inside the digest window.
+	frozen := time.Now()
+	oldClock := briefClock
+	briefClock = func() time.Time { return frozen }
+	t.Cleanup(func() { briefClock = oldClock })
+
 	seedBudgetFixture(t)
 
 	empty := digestMCPStructured(t, `{}`)
