@@ -20,7 +20,7 @@
 #   REPO=pyranthus-hq/mora   source repo for remote mode
 set -eu
 
-VERSION="${VERSION:-0.6.0}"
+VERSION="${VERSION:-0.7.0}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -51,8 +51,9 @@ else
 			|| die "download failed — check your network, or grab the tarball from https://github.com/$REPO/releases"
 	fi
 	tar -xzf "$TMP/$ASSET" -C "$TMP"
-	BIN="$TMP/mora"
-	[ -x "$BIN" ] || die "extracted archive has no mora binary"
+	# Locate the binary regardless of tarball layout (top-level OR nested in a versioned dir).
+	BIN="$(find "$TMP" -type f -name mora 2>/dev/null | head -n 1)"
+	[ -n "$BIN" ] && [ -x "$BIN" ] || die "extracted archive has no mora binary (looked under $TMP)"
 fi
 
 # --- pick an install dir on PATH ------------------------------------------------
@@ -74,7 +75,7 @@ mkdir -p "$DEST"
 cp "$BIN" "$DEST/mora"
 chmod +x "$DEST/mora"
 if [ "$(uname -s)" = "Darwin" ]; then
-	xattr -dr com.apple.quarantine "$DEST/mora" 2>/dev/null || true
+	xattr -d com.apple.quarantine "$DEST/mora" 2>/dev/null || true
 	codesign --force --sign - "$DEST/mora" 2>/dev/null || true
 fi
 

@@ -46,6 +46,14 @@ curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh |
 
 The script installs the release binary for your platform, clears the macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized), and runs `mora init` (your vault lives at `~/vault/mora`). It does not verify checksums; they are on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to check by hand. Update in place later with `mora upgrade` (source builds report `dev` and cannot self-update). Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.25+, pure Go, no CGO).
 
+### Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.sh | sh
+```
+
+Removes the `mora` binary and de-registers the MCP server from Claude Code / Codex. Your vault is **preserved by default** — re-run with `--purge` (or `MORA_PURGE=1`) to also delete `~/vault/mora`.
+
 Then connect your sources:
 
 ```bash
