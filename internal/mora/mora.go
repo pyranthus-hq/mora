@@ -1475,10 +1475,79 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "%s vault git-sync is configured — the vault LEAVES THIS DEVICE on `mora sync git`\n", sty.warn("warn"))
 		fmt.Fprintln(stdout, "     it contains decoded iMessages + Gmail in plaintext; ensure the remote is PRIVATE + user-controlled.")
 	}
+	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
+	// surface "last authed / how long ago" per connected account so the user can
+	// tell at a glance when they last signed in.
+	printGoogleAuthRecency(cfg, stdout, time.Now())
 	// iMessage readiness prints in a dedicated ORDERED block (the checks map above is
 	// unordered) so the Full Disk Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(stdout, false)
 	return nil
+}
+
+// printGoogleAuthRecency reports, per connected Google account, when the user
+// last completed an auth/reauth (recorded by google.SaveToken). Connected
+// accounts are the token files in the tokens dir — one per account, the same
+// derivation google.LastAuth uses (filename minus ".json", with "google" being
+// the default/legacy account). Additive and non-fatal: any error is swallowed.
+func printGoogleAuthRecency(cfg Config, stdout io.Writer, now time.Time) {
+	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
+	entries, err := os.ReadDir(tokenDir)
+	if err != nil {
+		return // no tokens dir yet => nothing connected
+	}
+	var accounts []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		accounts = append(accounts, strings.TrimSuffix(name, ".json"))
+	}
+	sort.Strings(accounts) // deterministic order
+	sty := newStyler(stdout, false)
+	for _, account := range accounts {
+		at, ok, err := google.LastAuth(tokenDir, account)
+		if err != nil {
+			continue
+		}
+		if !ok {
+			fmt.Fprintf(stdout, "%s google auth (%s): no recorded auth yet (run `mora connect google`)\n",
+				sty.warn("warn"), account)
+			continue
+		}
+		fmt.Fprintf(stdout, "%s google auth (%s): last authed %s (%s)\n",
+			sty.ok("ok  "), account, at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
+	}
+}
+
+// humanizeAgo renders a duration as a coarse "N <unit> ago" string for the
+// doctor auth line. Sub-day durations collapse to hours/minutes so a fresh
+// reauth doesn't read as "0 days ago".
+func humanizeAgo(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d / time.Minute)
+		return fmt.Sprintf("%d %s ago", m, plural(m, "minute"))
+	case d < 24*time.Hour:
+		h := int(d / time.Hour)
+		return fmt.Sprintf("%d %s ago", h, plural(h, "hour"))
+	default:
+		days := int(d / (24 * time.Hour))
+		return fmt.Sprintf("%d %s ago", days, plural(days, "day"))
+	}
+}
+
+func plural(n int, unit string) string {
+	if n == 1 {
+		return unit
+	}
+	return unit + "s"
 }
 
 // Storage budget thresholds from Neil's pilot ask: a 2-3 GB target and a 10-15 GB
