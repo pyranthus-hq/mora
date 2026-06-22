@@ -66,6 +66,18 @@ type Config struct {
 	// TestEvalWeightSweep grid). nil ⇒ defaultFusion. Unexported and NOT loaded from
 	// TOML — it is a code/eval seam, not a user knob.
 	fusionOv *fusionParams
+	// MMR opts the hybrid path into a greedy Maximal Marginal Relevance rerank of the
+	// fused candidates (a diversity-aware reorder) before the top-k truncate. Durable,
+	// from config.toml `mmr = true`; default false ⇒ fused order unchanged (the
+	// production default path stays byte-identical). Only takes effect when the vector
+	// arm is live (a semantic embedder), since MMR reranks on cosine. Mirrors Embedder;
+	// there is deliberately no MORA_MMR env var (the eval forces via mmrOv, not env).
+	MMR bool
+	// mmrOv overrides the MMR params (the W2 regression gate + the unit tests). nil ⇒
+	// derive from Config.MMR with defaultLambda. Unexported and NOT loaded from TOML —
+	// a code/eval seam exactly like fusionOv, and the ONLY path that can set
+	// mmrParams.force (so the user MMR bool can never run MMR under static-hash).
+	mmrOv *mmrParams
 }
 
 // fusion returns the active RRF fusion params: the per-Config override when set,
@@ -75,6 +87,20 @@ func (c Config) fusion() fusionParams {
 		return *c.fusionOv
 	}
 	return defaultFusion
+}
+
+// mmr returns the active MMR params, or nil when MMR is off. The eval/test override
+// (mmrOv) wins; else the durable user opt-in (MMR) yields default params; else nil.
+// Single source of truth, mirroring fusion(). The returned params carry force only
+// when set via mmrOv — the MMR bool path always has force=false.
+func (c Config) mmr() *mmrParams {
+	if c.mmrOv != nil {
+		return c.mmrOv
+	}
+	if c.MMR {
+		return &mmrParams{lambda: defaultLambda}
+	}
+	return nil
 }
 
 type Memory struct {
@@ -466,6 +492,10 @@ func loadConfig() (Config, error) {
 			cfg.Embedder = val
 		case "context":
 			cfg.ContextProfile = val
+		case "mmr":
+			// Bool opt-in (`mmr = true`); only "true"/"1" enable. A bool can't be
+			// mistyped into a silent wrong-mode the way a free-form string can.
+			cfg.MMR = val == "true" || val == "1"
 		}
 	}
 	return cfg, nil

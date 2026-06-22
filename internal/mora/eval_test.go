@@ -425,14 +425,12 @@ func copyTree(t *testing.T, src, dst string) {
 //     sender→gazetteer graph arm, so the FTS-only vs hybrid gap is visible.
 //   - topic/paraphrase (q3) — query shares no token with the doc (hybrid recovery).
 //   - near-dup cluster (q5) — two heavily-overlapping RELEVANT docs (migration-1/2)
-//     that provide deterministic near-dup MATERIAL for the future MMR gate (W2);
-//     TestEvalFixtureNearDupPrecondition locks the high-cosine property. NOTE: this
-//     is material, NOT a self-contained detector — under the committed static-hash
-//     eval q5's fused pool is only ~3 docs vs k=8/10, so an MMR demotion stays in-k
-//     and cannot move Recall@k/MRR (and if W2 follows the useVec precedent in
-//     hybrid.go and skips reranking under static-hash, MMR never runs here at all).
-//     The MMR before/after regression gate is W2's, and belongs in the semantic
-//     (Ollama) AB path or needs a larger q5 distractor pool — see the q5 doc below.
+//     plus a mig-distract-* pool, powering the W2 MMR regression gate
+//     (TestEvalMMRNoRegression): the near-dup pair gives a greedy MMR a real redundancy
+//     to act on (cosine≈0.82, locked by TestEvalFixtureNearDupPrecondition) and the
+//     distractors enlarge the fused pool past the cutoff so a demotion can cross k.
+//     The gate forces MMR under static-hash via the mmrOv seam (TestEvalMMRPoolPrecondition
+//     locks the crowding); the standalone pair alone stays in-k and could not move Recall.
 //   - decoys                — lexically disjoint noise so recall isn't trivially 1.0.
 func evalFixtureMemories() []Memory {
 	return []Memory{
@@ -459,15 +457,15 @@ func evalFixtureMemories() []Memory {
 		{ID: "synth/runway", Scope: "global", Type: "note", Title: "Q1 budget review",
 			CreatedAt: "2026-01-03T00:00:00Z", Source: "obsidian",
 			Text: "We extended the cash runway by trimming the marketing spend this quarter."},
-		// q5 — near-duplicate RELEVANT pair: deterministic MATERIAL for the future MMR
-		// gate (W2), not a self-contained detector. The two bodies share almost every
-		// token, so their static-hash vectors are highly similar (cosine≈0.82, locked by
-		// TestEvalFixtureNearDupPrecondition), giving a greedy MMR a real redundancy to
-		// act on. CAVEAT for W2: under the committed synthetic eval (MORA_EMBEDDER="",
-		// useVec=false) q5's fused pool is just these two docs (+1), well inside k=8/10,
-		// so an MMR demotion here cannot move Recall@k/MRR. The MMR before/after gate
-		// therefore belongs in the semantic (Ollama) AB path, or needs a larger q5
-		// distractor pool sharing this vocab so a demotion can cross k.
+		// q5 — near-duplicate RELEVANT pair powering the W2 MMR gate. The two bodies share
+		// almost every token, so their static-hash vectors are highly similar (cosine≈0.82,
+		// locked by TestEvalFixtureNearDupPrecondition), giving a greedy MMR a real
+		// redundancy to act on. The mig-distract-* docs below enlarge q5's fused pool past
+		// the cutoff so a demotion can CROSS k (the standalone pair alone is well inside
+		// k=8/10 and could not move Recall@k); TestEvalMMRNoRegression forces MMR under
+		// static-hash via the mmrOv seam and asserts no Recall@k/MRR regression across a λ
+		// band, with a λ=0 control proving the demotion is observable. Real semantic
+		// benefit is measured separately in TestEvalMMRAB (Ollama, report-only).
 		{ID: "synth/migration-1", Scope: "global", Type: "note", Title: "Database migration weekend",
 			CreatedAt: "2026-01-04T00:00:00Z", Source: "obsidian",
 			Text: "We migrated the Postgres database to the new cluster over the weekend."},
@@ -503,6 +501,41 @@ func evalFixtureMemories() []Memory {
 			CreatedAt: "2026-01-11T00:00:00Z", Source: "obsidian", Text: "monday yoga wednesday spin friday rest day"},
 		{ID: "synth/decoy-e", Scope: "global", Type: "note", Title: "Recipe idea",
 			CreatedAt: "2026-01-12T00:00:00Z", Source: "obsidian", Text: "roast the vegetables with olive oil and rosemary"},
+		// q5 distractor pool (W2/B1a): migration-vocab NON-relevant docs that crowd q5's
+		// fused pool past k=kFTS so an over-aggressive MMR demotion of a relevant near-dup
+		// can CROSS the cutoff and register as a Recall/MRR drop — the sensitivity the
+		// committed static-hash gate (TestEvalMMRNoRegression) needs. Each shares enough
+		// vocab to be RETRIEVED into q5's pool but is a DISTINCT sub-topic (not a near-dup
+		// of the gold pair or of each other), and is deliberately NOT in q5's qrels. The
+		// crowding is locked by TestEvalMMRPoolPrecondition; if a future edit erodes it the
+		// gate's own λ=0 control fails loud rather than passing blind.
+		{ID: "synth/mig-distract-a", Scope: "global", Type: "note", Title: "Postgres backup window",
+			CreatedAt: "2026-01-13T00:00:00Z", Source: "obsidian",
+			Text: "The Postgres database backup ran before the cluster maintenance window."},
+		{ID: "synth/mig-distract-b", Scope: "global", Type: "note", Title: "Replica lag alert",
+			CreatedAt: "2026-01-14T00:00:00Z", Source: "obsidian",
+			Text: "Cluster monitoring alerted on the database replica lag after the migration."},
+		{ID: "synth/mig-distract-c", Scope: "global", Type: "note", Title: "Connection string rotation",
+			CreatedAt: "2026-01-15T00:00:00Z", Source: "obsidian",
+			Text: "The migration runbook lists every Postgres cluster connection string to rotate."},
+		{ID: "synth/mig-distract-d", Scope: "global", Type: "note", Title: "Failover drill",
+			CreatedAt: "2026-01-16T00:00:00Z", Source: "obsidian",
+			Text: "We scheduled the database cluster failover drill for the next weekend."},
+		{ID: "synth/mig-distract-e", Scope: "global", Type: "note", Title: "Vacuum tuning",
+			CreatedAt: "2026-01-17T00:00:00Z", Source: "obsidian",
+			Text: "Postgres vacuum settings were tuned after the new cluster came online."},
+		{ID: "synth/mig-distract-f", Scope: "global", Type: "note", Title: "Index rebuild",
+			CreatedAt: "2026-01-18T00:00:00Z", Source: "obsidian",
+			Text: "We rebuilt the Postgres indexes on the cluster after the data load."},
+		{ID: "synth/mig-distract-g", Scope: "global", Type: "note", Title: "Schema diff review",
+			CreatedAt: "2026-01-19T00:00:00Z", Source: "obsidian",
+			Text: "The team reviewed the Postgres schema diff before the cluster cutover."},
+		{ID: "synth/mig-distract-h", Scope: "global", Type: "note", Title: "Storage volume resize",
+			CreatedAt: "2026-01-20T00:00:00Z", Source: "obsidian",
+			Text: "We resized the storage volume on the new database cluster for the migration."},
+		{ID: "synth/mig-distract-i", Scope: "global", Type: "note", Title: "Pooler config",
+			CreatedAt: "2026-01-21T00:00:00Z", Source: "obsidian",
+			Text: "The Postgres connection pooler config changed when the cluster moved."},
 	}
 }
 
