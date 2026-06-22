@@ -1,0 +1,1443 @@
+{
+ "memories": [
+  {
+   "source": "gmail",
+   "from": "Marcus Vance",
+   "participants": [
+    "Marcus Vance <marcus.vance@northwind.com>",
+    "Sam Rivera <sam@halcyon.dev>"
+   ],
+   "date": "2026-05-04",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Halcyon pilot for Northwind \u2014 let's get started",
+   "body": "From: Marcus Vance <marcus.vance@northwind.com>\nTo: Sam Rivera <sam@halcyon.dev>\nSubject: Re: Halcyon pilot for Northwind \u2014 let's get started\n\nHi Sam,\n\nGreat talking Friday. We're a go on the 6-week paid pilot. I've looped in our platform team. A few things from our side before we sign:\n\n1. We'll need a trial workspace provisioned for ~8 of our engineers.\n2. Procurement will want a security questionnaire and a SOC2 / security addendum to attach to the MSA \u2014 our InfoSec lead (Dana) is strict about this.\n3. Can we do a kickoff next week? I'm fairly open Wed.\n\nExcited to dig in.\n\nMarcus\nDirector of Platform Engineering, Northwind Logistics"
+  },
+  {
+   "source": "imessage",
+   "from": "Priya Nair",
+   "participants": [
+    "Priya Nair <+1-415-555-0142>",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-04",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage: Priya \u2014 Northwind is a go",
+   "body": "Priya: northwind said yes?? \nSam: yep marcus just emailed. 6 week paid pilot, 8 seats\nPriya: lets gooo. ok i'll own the trial workspace provisioning\nSam: perfect. they want a kickoff wed, i'll set it up\nPriya: their infosec person sounds intense lol. heads up they'll want security docs"
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera <sam@halcyon.dev>",
+    "Priya Nair <priya@halcyon.dev>",
+    "Marcus Vance <marcus.vance@northwind.com>"
+   ],
+   "date": "2026-05-06",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Northwind Pilot \u2014 Kickoff (calendar)",
+   "body": "Calendar: Halcyon\nEvent: Northwind Pilot \u2014 Kickoff\nDate: 2026-05-06 10:00\u201311:00 PT\nAttendees: Sam Rivera (organizer), Priya Nair, Marcus Vance (marcus.vance@northwind.com)\nNotes: Walk through pilot scope (6 weeks), seat provisioning for 8 engineers, success criteria. Marcus to bring InfoSec requirements. Agree on a mid-pilot check-in date."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-06",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Note: Northwind kickoff takeaways",
+   "body": "Northwind kickoff done (May 6). Good energy.\nScope locked: 6-week paid pilot, 8 engineer seats.\nSuccess criteria they care about: cut CI flake rate, faster local repro.\nAction items I captured:\n- Priya: provision trial workspace + invite their 8 eng (by ~May 13)\n- Me: send pricing/quote for post-pilot annual\n- Marcus: get internal stakeholder sign-off from his VP + InfoSec\nMid-pilot check-in set for early June. Marcus flagged InfoSec (Dana) will be a gate. Need to handle their security paperwork."
+  },
+  {
+   "source": "imessage",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair <+1-415-555-0142>"
+   ],
+   "date": "2026-05-13",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage: Priya \u2014 workspace provisioned",
+   "body": "Priya: northwind workspace is up. invited all 8, 6 already logged in\nSam: amazing, ahead of schedule\nPriya: marked that one done. whats left on your side?\nSam: pricing quote + their security stuff. on it"
+  },
+  {
+   "source": "gmail",
+   "from": "Marcus Vance",
+   "participants": [
+    "Marcus Vance <mvance@northwind.com>",
+    "Sam Rivera <sam@halcyon.dev>"
+   ],
+   "date": "2026-05-15",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Halcyon pilot for Northwind \u2014 workspace + next steps",
+   "body": "From: Marcus Vance <mvance@northwind.com>\nTo: Sam Rivera <sam@halcyon.dev>\nSubject: Re: Halcyon pilot for Northwind \u2014 workspace + next steps\n\n(Note: replying from my mvance@ alias \u2014 our IT migrated some of us, both addresses reach me.)\n\nSam \u2014 team's in the workspace, first impressions are strong. Two of my engineers already filed it under \"would pay for this.\"\n\nTo keep procurement moving I need two things from you:\n- The pricing quote for the annual (you mentioned ~$ per seat at kickoff).\n- The security addendum / SOC2 details for Dana (InfoSec). She can't start her review without it and she's the long pole.\n\nNo rush on anything else \u2014 these two unblock the paperwork.\n\nMarcus"
+  },
+  {
+   "source": "imessage",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair <+1-415-555-0142>"
+   ],
+   "date": "2026-05-18",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage: Priya \u2014 I promised Marcus the SOC2 addendum by Friday",
+   "body": "Sam: just got off a call w marcus. told him i'd send the soc2 security addendum by friday so dana can start her review\nPriya: do we even have a soc2 report lol\nSam: type 1 in progress. i'll send the addendum doc that explains our controls + the bridge letter\nPriya: ok dont let that slip, he said its the long pole\nSam: yeah yeah i'll get it out friday"
+  },
+  {
+   "source": "gmail",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera <sam@halcyon.dev>",
+    "Marcus Vance <marcus.vance@northwind.com>"
+   ],
+   "date": "2026-05-20",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Northwind pilot \u2014 pricing quote attached",
+   "body": "From: Sam Rivera <sam@halcyon.dev>\nTo: Marcus Vance <marcus.vance@northwind.com>\nSubject: Northwind pilot \u2014 pricing quote attached\n\nHi Marcus,\n\nAttached is the annual pricing quote: $1,200/seat/year, with a 20% pilot-conversion discount in year one if we sign within 30 days of pilot end. That covers all 8 seats with room to grow.\n\nGlad the team's finding value. Let me know what procurement needs next on the commercial side.\n\nBest,\nSam"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-20",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Note: Northwind pricing decision",
+   "body": "Decided Northwind pricing: $1,200/seat/yr, 20% year-one discount if they sign within 30 days of pilot end. Sent the quote to Marcus today.\nStatus check:\n- Workspace: DONE (Priya, 8 seats)\n- Pricing quote: DONE (sent today)\n- Stakeholder sign-off: Marcus working it internally\nStill feels like there's a loose security thread but the commercial side is moving. Pilot going well \u2014 usage strong."
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Roberto Rivera <+1-510-555-0177>",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-24",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "iMessage: Dad \u2014 Sunday dinner",
+   "body": "Dad: you coming sunday? mom's making the lasagna\nSam: wouldn't miss it. crazy week, big customer pilot going on\nDad: proud of you mijo. don't burn out\nSam: ha i'll try. see you sunday"
+  },
+  {
+   "source": "imessage",
+   "from": "Priya Nair",
+   "participants": [
+    "Priya Nair <+1-415-555-0142>",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-03",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage: Priya \u2014 SOC2 addendum still not in the Northwind thread",
+   "body": "Priya: hey did the soc2 addendum ever go out to marcus? i don't see it anywhere in the northwind email thread\nSam: ...ugh. no. it slipped\nPriya: sam that was like 2 weeks ago. dana can't start review without it, you said it's the long pole\nSam: i know i know. i'll send it before the check-in\nPriya: please. that's the thing that's actually blocking the deal rn, not pricing"
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera <sam@halcyon.dev>",
+    "Priya Nair <priya@halcyon.dev>",
+    "Marcus Vance <mvance@northwind.com>"
+   ],
+   "date": "2026-06-05",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Northwind Pilot \u2014 Mid-pilot Check-in (calendar)",
+   "body": "Calendar: Halcyon\nEvent: Northwind Pilot \u2014 Mid-pilot Check-in\nDate: 2026-06-05 14:00\u201314:45 PT\nAttendees: Sam Rivera (organizer), Priya Nair, Marcus Vance (mvance@northwind.com)\nNotes: Review pilot usage metrics at week 4 of 6. Discuss conversion path + procurement status. Marcus to update on stakeholder sign-off and InfoSec (Dana) review timeline."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-05",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Note: Northwind check-in takeaways",
+   "body": "Mid-pilot check-in (June 5). Usage is great \u2014 flake rate down ~40% on their main repo, that's the headline number for conversion.\nMarcus says his VP is verbally in. Procurement is the gate now.\nHe mentioned Dana (InfoSec) is 'waiting on the security doc from us' \u2014 I nodded but honestly need to check what's outstanding. Pricing he's fine with.\nNext: pilot ends ~June 17. Need a clean close + signed order.\nTODO: confirm exactly what InfoSec is waiting on."
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Jordan Kim <+1-415-555-0188>",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-08",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "iMessage: Jordan \u2014 climbing saturday",
+   "body": "Jordan: gym saturday? new boulders went up\nSam: maybe, swamped with a work deal\nJordan: you always say that lol\nSam: this one's real money. rain check, next week for sure"
+  },
+  {
+   "source": "gmail",
+   "from": "Lena Brooks",
+   "participants": [
+    "Lena Brooks <lena.brooks.dev@gmail.com>",
+    "Sam Rivera <sam@halcyon.dev>"
+   ],
+   "date": "2026-06-10",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Halcyon \u2014 engineering role follow-up",
+   "body": "From: Lena Brooks <lena.brooks.dev@gmail.com>\nTo: Sam Rivera <sam@halcyon.dev>\nSubject: Re: Halcyon \u2014 engineering role follow-up\n\nHi Sam,\n\nThanks for the chat. I'm excited about Halcyon. Happy to do the technical loop whenever works. Also \u2014 if it helps, I've actually built SOC2 evidence packages at my last shop, so I can pitch in on that kind of thing if you ever need it.\n\nLet me know next steps.\n\nLena"
+  },
+  {
+   "source": "gmail",
+   "from": "Marcus Vance",
+   "participants": [
+    "Marcus Vance <marcus.vance@northwind.com>",
+    "Sam Rivera <sam@halcyon.dev>"
+   ],
+   "date": "2026-06-16",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Northwind pilot \u2014 wrapping up, where are we on procurement?",
+   "body": "From: Marcus Vance <marcus.vance@northwind.com>\nTo: Sam Rivera <sam@halcyon.dev>\nSubject: Re: Northwind pilot \u2014 wrapping up, where are we on procurement?\n\nSam,\n\nPilot's been a success on our end \u2014 the team wants to keep it. Pricing's approved internally and my VP signed off.\n\nThe one thing still holding up the order: Dana in InfoSec is still waiting on the security materials to run her review. She flagged it again this morning. Can you get those over so we can close before end of quarter?\n\nWe're ready to sign the moment InfoSec clears.\n\nMarcus"
+  },
+  {
+   "source": "imessage",
+   "from": "Priya Nair",
+   "participants": [
+    "Priya Nair <+1-415-555-0142>",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-18",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage: Priya \u2014 the only blocker is the security doc you never sent",
+   "body": "Priya: marcus emailed again. everything's approved except infosec\nSam: yeah\nPriya: it's literally the soc2 addendum from a MONTH ago. that's the whole blocker. pricing done, vp done, usage great\nSam: i'll send it today for real\nPriya: i'm holding you to it. lena said she can help package it if you want\nSam: ok looping lena in. sending the addendum today"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-22",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Note: Northwind pilot status as of June 22",
+   "body": "Northwind pilot ended June 17. Where things stand:\n- Usage / value: proven. Flake rate down ~40%. Team wants it.\n- Pricing: approved (VP signed off).\n- Stakeholder sign-off: done (Marcus + VP).\n- Workspace: done (Priya).\n- OUTSTANDING: InfoSec review not started \u2014 Marcus says Dana is still waiting on security materials. Deal can't close until that clears. Need to figure out what exactly is owed here and get it out. Maybe Lena helps package.\nClose target: end of quarter."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair (priya@halcyon.dev)",
+    "Lena Brooks (lena.brooks.dev@gmail.com)"
+   ],
+   "date": "2026-05-11",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Onsite: Lena Brooks \u2014 Founding Engineer interview (Halcyon)",
+   "body": "Calendar: Halcyon\nTitle: Onsite \u2014 Lena Brooks (Founding Engineer)\nWhen: Mon May 11, 2026, 10:00am\u20131:30pm PT\nWhere: Halcyon office, SF + Google Meet for remote portion\nAttendees: Sam Rivera (organizer), Priya Nair <priya@halcyon.dev>, Lena Brooks <lena.brooks.dev@gmail.com>\nAgenda: 10:00 systems-design w/ Sam \u00b7 11:15 code pairing w/ Priya \u00b7 12:30 founder lunch + Q&A. Lena flying in from Austin (we cover travel). Note: she asked twice whether the role could be remote-friendly \u2014 flag for debrief."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-11",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Note: Lena onsite debrief \u2014 strong yes, relocation question",
+   "body": "Debrief w/ Priya after Lena's onsite (May 11).\n- Systems design: excellent, best candidate we've seen. Priya loved the pairing \u2014 clean, fast, asks the right questions.\n- Verdict: strong YES from both of us. Make the offer.\n- Open flag: Lena asked (again) about remote / being SF-based. We're SF in-person right now. Didn't promise anything. Need to decide our remote policy before this becomes a sticking point.\n- Comp ballpark agreed w/ Priya: $185k + 0.9% equity, standard 4yr/1yr cliff."
+  },
+  {
+   "source": "gmail",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera (sam@halcyon.dev)",
+    "Lena Brooks (lena.brooks.dev@gmail.com)"
+   ],
+   "date": "2026-05-14",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Offer \u2014 Founding Engineer at Halcyon",
+   "body": "Subject: Offer \u2014 Founding Engineer at Halcyon\nFrom: Sam Rivera <sam@halcyon.dev>\nTo: Lena Brooks <lena.brooks.dev@gmail.com>\n\nHi Lena,\n\nIt was unanimous after the onsite \u2014 Priya and I would love for you to be Halcyon's founding engineer. Formal offer attached:\n\n- Base: $185,000\n- Equity: 0.9% (4-year vest, 1-year cliff)\n- Start date: target Monday, June 1\n- Location: San Francisco (we're in-person for now)\n\nThe signature link from our HR tool is in the PDF. Take the time you need, but if you can get it back to us by May 22 it helps us plan headcount. So excited about this.\n\nSam"
+  },
+  {
+   "source": "imessage",
+   "from": "Lena Brooks",
+   "participants": [
+    "Lena Brooks (+1-628-555-0199)",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-15",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage \u2014 Lena: thank you + 'can we talk, it's complicated'",
+   "body": "Lena: hey sam, got the offer email. honestly kind of emotional, thank you\nLena: the onsite was the best interview experience i've had\nLena: but i want to be straight with you before i sign anything\nLena: it's a little complicated on my end right now\nSam: of course \u2014 talk to me. anything i can do\nLena: can we hop on a call this weekend? easier than typing\nSam: yes. sat morning?\nLena: perfect"
+  },
+  {
+   "source": "imessage",
+   "from": "Lena Brooks",
+   "participants": [
+    "Lena Brooks (+1-628-555-0199)",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-17",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage \u2014 Lena reveals competing offer + relocation worry",
+   "body": "(after the sat call, follow-up over text)\nLena: ok so just to put it in writing what i said on the call\nLena: i have another offer. veridian, the dev-infra startup in seattle. it's fully remote and they're moving fast on me\nLena: their number is close to yours, slightly lower base but they're remote\nLena: the real thing is austin. my partner's job is here and uprooting to sf in 2 weeks for june 1 is just not realistic\nLena: i WANT halcyon. you and priya are why. but i can't sign an in-person sf offer as written\nSam: i really appreciate you being honest. let me think about remote / relocation timeline and come back to you\nLena: that's all i'm asking. no rush to answer right this second"
+  },
+  {
+   "source": "imessage",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Lena Brooks (+1-628-555-0199)"
+   ],
+   "date": "2026-05-18",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage \u2014 Sam commits to bring remote question to Priya by Thu",
+   "body": "Sam: talked it over in my head, here's where i'm at\nSam: i think there's a real path to a remote or remote-first-90-days version of this. but i can't promise unilaterally, it's a cofounder call\nSam: i'm going to bring the remote + relocation-timeline question to priya and get you a concrete answer by thursday the 25th\nLena: thursday works. that actually helps a lot\nLena: i'll hold veridian off until then, i told them i need a week\nSam: thank you. you're worth restructuring the offer for. give me till thurs\nLena: \ud83d\ude4f"
+  },
+  {
+   "source": "gmail",
+   "from": "Lena Brooks",
+   "participants": [
+    "Lena Brooks (lena.brooks.dev@gmail.com)",
+    "Sam Rivera (sam@halcyon.dev)"
+   ],
+   "date": "2026-05-20",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Offer \u2014 Founding Engineer at Halcyon",
+   "body": "Subject: Re: Offer \u2014 Founding Engineer at Halcyon\nFrom: Lena Brooks <lena.brooks.dev@gmail.com>\nTo: Sam Rivera <sam@halcyon.dev>\n\nHi Sam,\n\nThank you again \u2014 I'm genuinely thrilled about Halcyon. I'd like a little more time before I sign so I can sort out a couple of logistics on my side. Would a start date later in June be workable rather than June 1?\n\nReally looking forward to making this work.\n\nLena\n\n[Note: this email stays deliberately vague \u2014 the competing-offer and relocation specifics were only discussed by phone/text, not put in writing here.]"
+  },
+  {
+   "source": "gmail",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera (sam@halcyon.dev)",
+    "Lena Brooks (lena.brooks.dev@gmail.com)"
+   ],
+   "date": "2026-05-21",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Offer \u2014 Founding Engineer at Halcyon (revised start date)",
+   "body": "Subject: Re: Offer \u2014 Founding Engineer at Halcyon\nFrom: Sam Rivera <sam@halcyon.dev>\nTo: Lena Brooks <lena.brooks.dev@gmail.com>\n\nHi Lena,\n\nTotally understand \u2014 take the time. Let's move the target start date to Monday, June 29 instead of June 1. I'll have HR reissue the PDF with the new date so the rest of the terms stay identical.\n\nWe'll get the logistics sorted. Talk soon.\n\nSam"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-21",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Note: Lena offer \u2014 status as of May 21",
+   "body": "Lena Brooks (founding eng) \u2014 status:\n- Offer sent May 14. Revised start date to June 29 (she asked for more time).\n- Email-wise it reads like we're just waiting on signature.\n- REAL situation (from our call + texts, NOT in email): she has a competing REMOTE offer from Veridian (Seattle) and can't relocate to SF on our timeline. Partner's job is in Austin.\n- I committed to her: bring remote / relocation to Priya and give her a concrete answer by THURS JUN 25. She's holding Veridian off until then.\n- Action on ME: talk to Priya about remote policy. This is the actual blocker, not the start date."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair (priya@halcyon.dev)"
+   ],
+   "date": "2026-05-22",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Founders sync \u2014 remote policy + Lena offer (Halcyon)",
+   "body": "Calendar: Halcyon\nTitle: Founders sync \u2014 remote policy decision\nWhen: Fri May 22, 2026, 4:00pm\u20134:45pm PT\nAttendees: Sam Rivera, Priya Nair <priya@halcyon.dev>\nNotes: Decide whether Halcyon allows remote / remote-first for founding eng hire (Lena). Tied to Lena's competing offer + relocation. Need an answer to give Lena by Jun 25."
+  },
+  {
+   "source": "gmail",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera (sam@halcyon.dev)",
+    "Priya Nair (priya@halcyon.dev)"
+   ],
+   "date": "2026-05-26",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Lena offer \u2014 where we landed on remote",
+   "body": "Subject: Lena offer \u2014 where we landed on remote\nFrom: Sam Rivera <sam@halcyon.dev>\nTo: Priya Nair <priya@halcyon.dev>\n\nPriya,\n\nRecap of our Friday sync so we have it written down: we're open to remote-first for the first 90 days for Lena, then revisit in-person cadence once she's settled. You wanted to keep an in-person anchor (one week/quarter in SF on us) \u2014 I think that's fair and Lena will go for it.\n\nI still owe Lena a concrete answer by Thursday June 25. Want to give me a thumbs-up on the 90-day-remote + quarterly-onsite framing before I take it back to her?\n\nSam"
+  },
+  {
+   "source": "gmail",
+   "from": "Priya Nair",
+   "participants": [
+    "Priya Nair (priya@halcyon.dev)",
+    "Sam Rivera (sam@halcyon.dev)"
+   ],
+   "date": "2026-05-27",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Lena offer \u2014 where we landed on remote",
+   "body": "Subject: Re: Lena offer \u2014 where we landed on remote\nFrom: Priya Nair <priya@halcyon.dev>\nTo: Sam Rivera <sam@halcyon.dev>\n\nThumbs up. 90-day remote-first, quarterly onsite week in SF (we cover travel), revisit after. She's the best engineer we've talked to \u2014 let's not lose her over geography.\n\nOne ask: get it in writing in the revised offer so it's not just a handshake. Go close her.\n\nPriya"
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Roberto Rivera (+1-510-555-0177)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-07",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "iMessage \u2014 Dad checking in on the hire",
+   "body": "Dad: how's the company going mijo. did you find your engineer?\nSam: almost. the one we want has a competing offer, working through it\nDad: you'll get her. you always close. proud of you\nSam: thanks dad \u2764\ufe0f\nDad: come by sunday, mom's making mole"
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Jordan Kim (+1-415-555-0188)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-12",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "iMessage \u2014 Jordan: climbing this weekend?",
+   "body": "Jordan: bro are we climbing sat or what\nJordan: dogpatch boulders, i'll grab a pad\nSam: maybe. swamped with a hire closing this week\nJordan: you always say that lol. come climb\nSam: if i get the offer signed i'm there"
+  },
+  {
+   "source": "imessage",
+   "from": "Lena Brooks",
+   "participants": [
+    "Lena Brooks (+1-628-555-0199)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-19",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "iMessage \u2014 Lena nudges: still waiting on the remote answer",
+   "body": "Lena: hey! no pressure but veridian is pushing me for a decision early next week\nLena: are we still on track for you to get me the remote/relocation answer by thurs the 25th?\nSam: yes \u2014 priya and i aligned, i have a real answer for you. revised offer w/ it in writing coming before thurs\nLena: omg ok that's a relief. that's the whole ballgame for me\nSam: i know. sending the updated PDF this week\nLena: thank you sam \ud83d\ude4f this is the one i actually want"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-21",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Note: Lena close \u2014 TODO before Jun 25 deadline",
+   "body": "Lena Brooks \u2014 to close before THURS JUN 25 (my committed deadline to her, made over text):\n[ ] Have HR reissue the offer PDF: start date June 29, AND add in writing the 90-day remote-first + quarterly SF onsite (travel covered) that Priya and I agreed.\n[ ] Send revised PDF to lena.brooks.dev@gmail.com.\n[ ] Text Lena (+1-628-555-0199) when it's out so she can decline Veridian.\nReminder: the email thread looks like 'awaiting signature' but the actual blocker was always remote/relocation + the Veridian competing offer. The ball is on ME to deliver the written remote terms. She's holding Veridian until Thurs."
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Roberto Rivera (+1-510-555-0177)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-08",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Dad floats coming to visit SF",
+   "body": "Dad: hey kiddo. been thinking i should come out and see the city, see how the company is going\nDad: maybe end of the month? before it gets too busy\nSam: yes please. would love that\nSam: end of june works, im slammed but i'll make it work\nDad: good. i'll look at flights this week\nSam: lmk the dates as soon as you book"
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Roberto Rivera (+1-510-555-0177)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-14",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Dad booked the flight \u2014 Sat the 27th",
+   "body": "Dad: booked it. coming in saturday june 27\nDad: united, lands late afternoon\nSam: amazing. what time should i plan around\nDad: 4:35 in the afternoon i think. forwarding you the confirmation\nSam: perfect i'll be there\nDad: you don't have to pick me up, i can grab a cab\nSam: no way dad. i'm picking you up at the airport, end of discussion\nDad: ha okay okay. SFO then\nSam: yep i'll be at arrivals"
+  },
+  {
+   "source": "gmail",
+   "from": "United Airlines",
+   "participants": [
+    "United Airlines (confirmation@united.com)",
+    "Roberto Rivera",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-14",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "Your United flight confirmation \u2014 UA 1492 to San Francisco (SFO) \u2014 Sat Jun 27",
+   "body": "Subject: Your United flight confirmation \u2014 UA 1492 to San Francisco (SFO) \u2014 Sat Jun 27\n\nForwarded by Roberto Rivera. Confirmation code: KPX4ZQ\n\nPassenger: ROBERTO RIVERA\nFlight: United UA 1492\nDate: Saturday, June 27, 2026\nDepart: Portland (PDX) 2:55 PM PDT\nArrive: San Francisco (SFO) 4:35 PM PDT\nTerminal: SFO Terminal 3, baggage claim carousel 5\nSeat: 14C  |  1 checked bag\n\nThis itinerary was forwarded to you. Contact on reservation: Roberto Rivera (+1-510-555-0177).\n\n\u2014 United Airlines"
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-27",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Dad arrives \u2014 airport pickup (SFO)",
+   "body": "Calendar: Personal\nEvent: Dad arrives \u2014 airport pickup (SFO)\nWhen: Sat Jun 27, 2026, 4:00 PM \u2013 5:30 PM PDT\nLocation: SFO Terminal 3 arrivals, carousel 5\nNotes: Roberto lands UA 1492 at 4:35pm. Leave by 3:30 to beat traffic on the 101. He has one checked bag so build in wait time. I promised I'd be at arrivals \u2014 do NOT make him cab it."
+  },
+  {
+   "source": "calendar",
+   "from": "Omar Haddad",
+   "participants": [
+    "Omar Haddad (omar@ridgeline.vc)",
+    "Sam Rivera",
+    "Priya Nair"
+   ],
+   "date": "2026-06-27",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Ridgeline partner call \u2014 Halcyon",
+   "body": "Calendar: Halcyon\nEvent: Ridgeline partner call \u2014 Halcyon\nWhen: Sat Jun 27, 2026, 4:00 PM \u2013 5:00 PM PDT\nWhere: Google Meet\nOrganizer: Omar Haddad (omar@ridgeline.vc)\nAttendees: Sam Rivera, Priya Nair, Omar Haddad\nDescription: Full partnership review with the Ridgeline GPs ahead of the term sheet decision. Omar wants both founders live. Bring the updated metrics deck."
+  },
+  {
+   "source": "gmail",
+   "from": "Omar Haddad",
+   "participants": [
+    "Omar Haddad (omar@ridgeline.vc)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-18",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Ridgeline partner review \u2014 locking Saturday 4pm",
+   "body": "Subject: Re: Ridgeline partner review \u2014 locking Saturday 4pm\n\nSam \u2014\n\nGreat momentum after the last call. I want to get you in front of the full partnership before we move on a term sheet. The only slot that works across all our GPs this week is Saturday June 27 at 4:00pm PT \u2014 I've sent the invite to you and Priya.\n\nThis is the one that matters, so please keep it sacred. I need both founders on camera and the updated metrics deck shared by Friday EOD.\n\nBest,\nOmar\nRidgeline Capital"
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Roberto Rivera (+1-510-555-0177)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-20",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Dad confirms pickup logistics",
+   "body": "Dad: still good to grab me saturday? don't want to mess up your work stuff\nSam: 100%. lands 4:35, i'll be at terminal 3 arrivals\nDad: great. i'll text when i'm off the plane\nDad: text me your car so i know what to look for\nSam: silver civic. i'll be in the cell lot then swing around\nDad: perfect see you saturday"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-21",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Weekend of the 27th \u2014 things to sort",
+   "body": "saturday is going to be a lot:\n- dad lands 4:35 SFO, i'm picking him up (promised, no cab)\n- make up the guest bed, get coffee he likes\n- ridgeline thing is also saturday?? need to double check the time\n- groceries fri night\nfeels tight. sort the saturday timing before friday."
+  },
+  {
+   "source": "imessage",
+   "from": "Priya Nair",
+   "participants": [
+    "Priya Nair (+1-415-555-0142)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-19",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Priya on the Ridgeline deck",
+   "body": "priya: omar wants the metrics deck by friday\npriya: can you own the retention slide, i'll do ARR + pipeline\nsam: yeah i'll take retention + the northwind pilot logo\npriya: perfect. saturday 4pm call is THE one, omar said both of us on cam\nsam: yep on my cal\npriya: don't be late lol, this is the term sheet conversation"
+  },
+  {
+   "source": "gmail",
+   "from": "Priya Nair",
+   "participants": [
+    "Priya Nair (priya@halcyon.dev)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-20",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Ridgeline deck \u2014 draft v3 + Saturday prep",
+   "body": "Subject: Ridgeline deck \u2014 draft v3 + Saturday prep\n\nSam,\n\nDraft v3 attached. I filled ARR, pipeline, and burn. Still need your retention slide + the Northwind pilot reference before we share with Omar Friday EOD.\n\nFor Saturday's 4pm partner call: let's hop on 15 min early (3:45) to dry-run. Omar was clear he wants both of us on camera for the whole hour.\n\n\u2014 Priya"
+  },
+  {
+   "source": "gmail",
+   "from": "Marcus Vance",
+   "participants": [
+    "Marcus Vance (marcus.vance@northwind.com)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-16",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Northwind pilot \u2014 rollout numbers for your investors",
+   "body": "Subject: Re: Northwind pilot \u2014 rollout numbers for your investors\n\nHi Sam,\n\nGood news \u2014 Halcyon is now live across both our logistics teams. Latency is down and the on-call engineers actually like it, which never happens.\n\nYou're welcome to cite Northwind as a reference pilot with your investors. If they want a quick verbal reference, I can take a call (weekdays only \u2014 I'm offline weekends). Use mvance@northwind.com if marcus.vance bounces, our IT is migrating domains.\n\nBest,\nMarcus Vance\nNorthwind Logistics"
+  },
+  {
+   "source": "calendar",
+   "from": "Marcus Vance",
+   "participants": [
+    "Marcus Vance (mvance@northwind.com)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-24",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Northwind pilot check-in",
+   "body": "Calendar: Halcyon\nEvent: Northwind pilot check-in\nWhen: Wed Jun 24, 2026, 11:00 AM \u2013 11:30 AM PDT\nWhere: Phone\nOrganizer: Marcus Vance (mvance@northwind.com)\nAttendees: Sam Rivera, Marcus Vance\nDescription: Confirm metrics Sam can quote to Ridgeline. Marcus offline on weekends so this is the last touchpoint before Saturday."
+  },
+  {
+   "source": "gmail",
+   "from": "Lena Brooks",
+   "participants": [
+    "Lena Brooks (lena.brooks.dev@gmail.com)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-15",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Re: Halcyon \u2014 next steps + availability",
+   "body": "Subject: Re: Halcyon \u2014 next steps + availability\n\nHi Sam,\n\nReally enjoyed the technical chat. I'm excited about Halcyon. I'm wrapping up at my current role and could start early July.\n\nFor the final conversation, I'm free most of next week but NOT this coming weekend (Jun 27\u201328) \u2014 visiting family. Any weekday works better for me.\n\nThanks,\nLena"
+  },
+  {
+   "source": "imessage",
+   "from": "Lena Brooks",
+   "participants": [
+    "Lena Brooks (+1-628-555-0199)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-19",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Lena texts about offer timing",
+   "body": "lena: hey sam, any update on timing for the final round?\nsam: yes! sorry, fundraise crunch this week. can we do early next week?\nlena: works for me. i meant it about not this weekend though, out of town\nsam: totally, weekday it is. i'll send a couple slots monday"
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Jordan Kim (+1-415-555-0188)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-21",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Jordan wants to grab dinner Saturday",
+   "body": "jordan: yo you around saturday night? new ramen spot opened\nsam: maybe? my dad's flying in saturday afternoon, picking him up\nsam: and i have a huge investor call same day, kind of a mess\njordan: lmao founder life. text me if you escape\nsam: will do. probably late if at all"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-22",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Fundraise status \u2014 Ridgeline",
+   "body": "ridgeline term sheet is close. omar wants the full partner call sat 4pm, both founders on cam, decision-stage.\n- deck v3 from priya, i owe retention slide + northwind logo by fri EOD\n- marcus confirmed we can cite northwind pilot (weekday call wed to lock numbers)\n- this is the most important hour of the raise. cannot fumble it."
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Sam Rivera",
+    "Jordan Kim (+1-415-555-0188)"
+   ],
+   "date": "2026-05-06",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "climbing gym friday?",
+   "body": "jordan: yo you free friday for the climbing gym\nsam: maybe, what time\njordan: like 7? dogpatch boulders\nsam: ok pencil me in, might be late\njordan: classic. bring chalk this time lol"
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Sam Rivera",
+    "Jordan Kim (+1-415-555-0188)"
+   ],
+   "date": "2026-05-19",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "new taco place",
+   "body": "jordan: there's a new taco spot on valencia\njordan: al pastor supposedly insane\nsam: say less\njordan: sat 1pm?\nsam: yes\njordan: \ud83c\udf2e\ud83c\udf2e"
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Sam Rivera",
+    "Jordan Kim (+1-415-555-0188)"
+   ],
+   "date": "2026-06-11",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "warriors game",
+   "body": "jordan: my buddy bailed, got an extra ticket thurs\nsam: which game\njordan: vs the kings\nsam: ugh i have a thing till 8\njordan: starts 730, just come late\nsam: lemme see"
+  },
+  {
+   "source": "gmail",
+   "from": "TLDR Newsletter <dan@tldrnewsletter.com>",
+   "participants": [
+    "TLDR Newsletter",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-07",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "TLDR: AI agents, a new Rust web framework, and the death of the password",
+   "body": "Quoted: \"Good morning. In today's email: a benchmark showing small models closing the gap, a Rust framework that compiles routes at build time, and passkeys finally hitting 50% adoption on major sites...\"\n\nUnsubscribe link at bottom. Forwarded to nobody. Just skimmed the Rust section."
+  },
+  {
+   "source": "gmail",
+   "from": "Amazon.com <auto-confirm@amazon.com>",
+   "participants": [
+    "Amazon.com",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-12",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "Your Amazon.com order #112-4456789-2231004 has shipped",
+   "body": "Hello Sam,\n\nYour package with a USB-C hub (7-in-1) and a pack of mechanical keyboard switches is on the way.\n\nArriving: Thursday, May 14\nShip to: Sam Rivera, San Francisco, CA\nOrder total: $63.47\n\nTrack your package in Your Orders."
+  },
+  {
+   "source": "gmail",
+   "from": "Stripe <receipts@stripe.com>",
+   "participants": [
+    "Stripe",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-15",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Your receipt from Linear (Halcyon) \u2014 $96.00",
+   "body": "Receipt for Linear\n\nAmount paid: $96.00\nDate: May 15, 2026\nPlan: Standard, 6 seats\n\nThis is an automated receipt for the Halcyon workspace subscription. No action needed."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair (priya@halcyon.dev)"
+   ],
+   "date": "2026-05-11",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Halcyon weekly standup",
+   "body": "Title: Halcyon weekly standup\nWhen: Mon May 11, 2026, 9:30-9:45am PT\nAttendees: Sam Rivera, Priya Nair\nNotes: recurring Monday sync. Agenda: last week shipped, this week plan, blockers. Nothing major this week."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair (priya@halcyon.dev)"
+   ],
+   "date": "2026-05-18",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Halcyon weekly standup",
+   "body": "Title: Halcyon weekly standup\nWhen: Mon May 18, 2026, 9:30-9:45am PT\nAttendees: Sam Rivera, Priya Nair\nNotes: recurring. discussed refactor of the CLI auth flow, agreed to push docs to next sprint."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-09",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "grocery + errands",
+   "body": "- oat milk, coffee beans (the ethiopian one)\n- pick up dry cleaning before sat\n- replace the HDMI cable, the one in the office is flaky\n- renew car registration online\n- water the plants, the monstera is drooping"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-22",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "random product ideas to maybe revisit",
+   "body": "brain dump, none urgent:\n- a `halcyon doctor` command that checks env health\n- dark mode for the dashboard (people keep asking)\n- maybe a VS Code extension someday\n- better error messages on the rate-limit path\nnot doing any of these now. parking lot only."
+  },
+  {
+   "source": "gmail",
+   "from": "GitHub <noreply@github.com>",
+   "participants": [
+    "GitHub",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-20",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "[halcyon/core] Dependabot: bump axios from 1.6.2 to 1.7.4",
+   "body": "A new pull request was opened by dependabot[bot].\n\n#214 Bump axios from 1.6.2 to 1.7.4\n\nBumps axios to address a CVE in the follow-redirects transitive dep. CI passed. Auto-merge eligible.\n\nView it on GitHub."
+  },
+  {
+   "source": "imessage",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair (+1-415-555-0142)"
+   ],
+   "date": "2026-05-26",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "office wifi",
+   "body": "sam: wifi in the office is dying again\npriya: ugh same. router reboot?\nsam: tried it. think it's comcast\npriya: i'll call them, i have the account login\nsam: bless you"
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-28",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Dentist cleaning",
+   "body": "Title: Dentist cleaning \u2014 Dr. Okafor\nWhen: Thu May 28, 2026, 8:00-8:45am PT\nLocation: 450 Sutter St, SF\nNotes: 6-month cleaning. bring insurance card. don't eat right before."
+  },
+  {
+   "source": "gmail",
+   "from": "Ridgeline Capital <newsletter@ridgeline.vc>",
+   "participants": [
+    "Ridgeline Capital",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-29",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Ridgeline Portfolio Pulse \u2014 May 2026 (monthly newsletter)",
+   "body": "Quoted: \"This month at Ridgeline: two new seed investments in the dev-infra space, a piece on go-to-market for technical founders, and our annual founder summit dates...\"\n\nMass newsletter to the whole portfolio list. Not personal. Skimmed the GTM essay, closed it."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-02",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "books to read",
+   "body": "- finally finish 'The Pragmatic Programmer' reread\n- that systems thinking book jordan mentioned\n- something fiction for once. maybe the new murakami\nlibrary holds are at 3, queue is long"
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Sam Rivera",
+    "Jordan Kim (+1-415-555-0188)"
+   ],
+   "date": "2026-06-04",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "jordan moving apartments",
+   "body": "jordan: i'm moving in july, found a place in the mission\nsam: nice! need help?\njordan: maybe a saturday for boxes, i'll bribe with pizza\nsam: deal, just not the 4th\njordan: noted"
+  },
+  {
+   "source": "gmail",
+   "from": "Sentry <notifications@sentry.io>",
+   "participants": [
+    "Sentry",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-05",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "[halcyon] Weekly error digest: 3 new issues, 1 regression",
+   "body": "Quoted: \"Here's what happened in halcyon-prod this week. New issue: TypeError in /api/export (12 events). Regression: TimeoutError reappeared after 6 days quiet...\"\n\nAutomated weekly digest. The export TypeError is low volume, filed a ticket, nothing on fire."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair (priya@halcyon.dev)"
+   ],
+   "date": "2026-06-08",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Halcyon weekly standup",
+   "body": "Title: Halcyon weekly standup\nWhen: Mon Jun 8, 2026, 9:30-9:45am PT\nAttendees: Sam Rivera, Priya Nair\nNotes: recurring. talked about the export bug from Sentry and the dashboard dark-mode requests piling up."
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Roberto Rivera (+1-510-555-0177)"
+   ],
+   "date": "2026-05-17",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "dad random link",
+   "body": "dad: saw this article on solar panels, thought of the garage idea\ndad: [link]\nsam: ha thanks, will read\ndad: no rush. how's the company\nsam: busy but good\ndad: proud of you kiddo"
+  },
+  {
+   "source": "gmail",
+   "from": "Costco Wholesale <member@costco.com>",
+   "participants": [
+    "Costco Wholesale",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-09",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "Your membership renews soon + June savings",
+   "body": "Quoted: \"Sam, your Gold Star membership renews on July 1. This month's savings include $4 off coffee, tire deals, and a rotisserie chicken that is still somehow $4.99...\"\n\nPromotional. Membership auto-renews. Closed it."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-12",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "standup parking lot \u2014 infra",
+   "body": "things to bring up eventually, not blocking:\n- migrate CI from the old runner to the new ones\n- the staging db is 80% full, prune old snapshots\n- rotate the API signing key, it's a year old\n- consider a status page (statuspage vs roll our own)\njust a list. revisit end of quarter."
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Sam Rivera",
+    "Jordan Kim (+1-415-555-0188)"
+   ],
+   "date": "2026-06-15",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "jordan birthday plans",
+   "body": "jordan: bday is the 27th, doing a low key dinner\nsam: in! where\njordan: thinking that ramen place, 8 of us\nsam: i'm there\njordan: cool will send a calendar thing"
+  },
+  {
+   "source": "gmail",
+   "from": "Vercel <no-reply@vercel.com>",
+   "participants": [
+    "Vercel",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-16",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Deployment ready: halcyon-marketing (Production)",
+   "body": "Quoted: \"Your deployment to halcyon-marketing is ready. Commit: 'fix nav spacing on mobile' by sam. Build time 42s. Visit your deployment...\"\n\nAutomated. Just a marketing site CSS tweak. Looks fine on my phone."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-18",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Haircut",
+   "body": "Title: Haircut \u2014 Fade Lab\nWhen: Thu Jun 18, 2026, 5:30pm PT\nLocation: 24th St\nNotes: ask for the same as last time. don't be late, they give the slot away."
+  },
+  {
+   "source": "gmail",
+   "from": "The Browser Company <hello@thebrowser.company>",
+   "participants": [
+    "The Browser Company",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-19",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "What's new in your browser this month",
+   "body": "Quoted: \"New this month: faster startup, a redesigned command bar, and split-view improvements you asked for...\"\n\nProduct update newsletter. Skimmed. The command bar thing is nice."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-21",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "weekend todo",
+   "body": "- laundry (actually do it this time)\n- fix the squeaky cabinet hinge\n- meal prep for the week, the chili recipe\n- call the bank about the duplicate charge\n- finally back up the laptop, it's been months"
+  },
+  {
+   "source": "gmail",
+   "from": "Stripe <receipts@stripe.com>",
+   "participants": [
+    "Stripe",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-06",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Your Stripe invoice for May 2026 ($29.00)",
+   "body": "Receipt from Stripe\n\nAmount paid: $29.00\nDate paid: May 6, 2026\nDescription: Halcyon \u2014 monthly subscription (Pro plan)\n\nYou can view this invoice in your dashboard. No action is required. Thanks for using Stripe."
+  },
+  {
+   "source": "gmail",
+   "from": "Vercel <notifications@vercel.com>",
+   "participants": [
+    "Vercel",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-08",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Deployment to halcyon-marketing succeeded",
+   "body": "Hi Sam,\n\nYour deployment to halcyon-marketing.vercel.app completed successfully.\n\nCommit: chore: bump copy on pricing page\nDuration: 47s\nEnvironment: Production\n\nView the deployment in your Vercel dashboard."
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Jordan Kim (+1-415-555-0188)",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-09",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "climbing saturday?",
+   "body": "jordan: yo you free saturday morning\njordan: dogpatch boulders, theres a new set\nsam: maybe. what time\njordan: like 10\nsam: ok pencil me in, might be slammed tho\njordan: lol you always say that"
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-10",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "grocery list",
+   "body": "- oat milk\n- coffee beans (the ethiopian one)\n- eggs\n- spinach\n- olive oil\n- dish soap\n- toothpaste\nmaybe stop by the farmers market if it's not raining"
+  },
+  {
+   "source": "gmail",
+   "from": "The Pragmatic Engineer <newsletter@pragmaticengineer.com>",
+   "participants": [
+    "The Pragmatic Engineer",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-11",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "The Pragmatic Engineer: Scaling small eng teams",
+   "body": "This week:\n- How a 4-person team ships like a 20-person team\n- The hidden cost of meetings\n- Reader Q&A on on-call rotations\n\nRead the full issue on the web. Forwarded to you because you subscribed."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair"
+   ],
+   "date": "2026-05-12",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Halcyon weekly standup",
+   "body": "Title: Halcyon weekly standup\nTime: 2026-05-12 09:30\u201309:50 PT\nAttendees: Sam Rivera, Priya Nair\nRecurring: weekly on Tuesdays\nAgenda: quick status round, blockers, what's shipping this week. No customer items today."
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Roberto Rivera (+1-510-555-0177)",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-13",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "the giants game",
+   "body": "dad: did you see the giants last night\nsam: no what happened\ndad: walk off in the 9th!! unbelievable\nsam: niceee\ndad: your mother fell asleep before the 7th lol"
+  },
+  {
+   "source": "gmail",
+   "from": "Amazon.com <auto-confirm@amazon.com>",
+   "participants": [
+    "Amazon",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-14",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "Your Amazon.com order has shipped (USB-C cables, 2-pack)",
+   "body": "Hello Sam,\n\nYour package is on the way.\n\nOrder #112-4458891-2237: Anker USB-C to USB-C cable, 6ft, 2-pack \u2014 $15.99\nArriving: Friday, May 15\n\nTrack your package in Your Orders."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-15",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "book ideas / reading list",
+   "body": "to read:\n- the staff engineer's path (someone recommended on a podcast)\n- a short history of nearly everything (reread)\n- finish that sci-fi trilogy book 2\nlibrary holds expire end of month, don't forget"
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-16",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "Dentist cleaning",
+   "body": "Title: Dentist cleaning\nTime: 2026-05-16 11:00\u201311:45 PT\nLocation: Bayview Dental, 2nd Ave\nAttendees: Sam Rivera\nNote: bring insurance card, ask about the night guard"
+  },
+  {
+   "source": "gmail",
+   "from": "GitHub <noreply@github.com>",
+   "participants": [
+    "GitHub",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-18",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "[halcyon/core] Dependabot: bump golang.org/x/net to 0.34.0",
+   "body": "Dependabot opened a pull request in halcyon/core:\n\nBumps golang.org/x/net from 0.33.0 to 0.34.0.\n\nThis is a routine security/patch update. CI is running. Review and merge when ready."
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Jordan Kim (+1-415-555-0188)",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-19",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "that taco place",
+   "body": "jordan: did you ever try la taqueria like i told you\nsam: not yet\njordan: SAM\nsam: i know i know\njordan: this weekend then. no excuses\nsam: deal"
+  },
+  {
+   "source": "gmail",
+   "from": "1Password <noreply@1password.com>",
+   "participants": [
+    "1Password",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-20",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "New sign-in to your 1Password account",
+   "body": "We noticed a new sign-in:\n\nDevice: MacBook Pro (Sam's Laptop)\nLocation: San Francisco, CA\nTime: May 20, 2026, 8:14 AM PT\n\nIf this was you, no action is needed. If not, secure your account immediately."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair"
+   ],
+   "date": "2026-05-21",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Design sync: onboarding flow",
+   "body": "Title: Design sync: onboarding flow\nTime: 2026-05-21 14:00\u201314:45 PT\nAttendees: Sam Rivera, Priya Nair\nAgenda: review the new empty-state screens, decide on the welcome modal copy. Unrelated to any customer or hiring work."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-22",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "random product idea \u2014 keyboard shortcuts",
+   "body": "idea: add a command palette to the dashboard (cmd-k). everyone expects it now. low effort, high delight. backlog it, not urgent. maybe a weekend project once things calm down."
+  },
+  {
+   "source": "gmail",
+   "from": "Notion <team@makenotion.com>",
+   "participants": [
+    "Notion",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-24",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "What's new in Notion this month",
+   "body": "Hi Sam,\n\nThis month we shipped:\n- Faster databases\n- New calendar view improvements\n- AI autofill for properties\n\nSee everything new in our changelog. You're receiving this because you have a Notion workspace."
+  },
+  {
+   "source": "imessage",
+   "from": "Roberto Rivera",
+   "participants": [
+    "Roberto Rivera (+1-510-555-0177)",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-26",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "car stuff",
+   "body": "dad: hey the corolla is making a noise again\nsam: the same rattle?\ndad: yeah front passenger side\nsam: take it to luis, he fixed it last time\ndad: good idea. how's work\nsam: busy but good"
+  },
+  {
+   "source": "gmail",
+   "from": "DoorDash <no-reply@doordash.com>",
+   "participants": [
+    "DoorDash",
+    "Sam Rivera"
+   ],
+   "date": "2026-05-27",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "Your DoorDash order receipt \u2014 $32.47",
+   "body": "Thanks for your order!\n\nFrom: Saigon Kitchen\n- Pho (large) x1\n- Spring rolls x1\n- Iced coffee x1\n\nSubtotal: $26.50\nFees & tax: $5.97\nTotal: $32.47\n\nRate your Dasher in the app."
+  },
+  {
+   "source": "calendar",
+   "from": "SF Tech Founders Meetup",
+   "participants": [
+    "Sam Rivera",
+    "SF Tech Founders Meetup"
+   ],
+   "date": "2026-05-28",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Indie Founders Happy Hour",
+   "body": "Title: Indie Founders Happy Hour\nTime: 2026-05-28 18:00\u201320:00 PT\nLocation: The Riptide, Taraval St\nOrganizer: SF Tech Founders Meetup\nNote: casual networking, no agenda. RSVP'd maybe."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-05-30",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "workout split",
+   "body": "trying the new split:\nmon - push\nwed - pull\nfri - legs\nsat - climbing w jordan\nstop skipping leg day. seriously."
+  },
+  {
+   "source": "gmail",
+   "from": "Linear <notifications@linear.app>",
+   "participants": [
+    "Linear",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-01",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Your weekly Linear digest",
+   "body": "Hi Sam,\n\nLast week in Halcyon workspace:\n- 7 issues completed\n- 4 issues created\n- 2 issues in progress\n\nTop label: bug. Keep it up! Manage your notification settings in Linear."
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Jordan Kim (+1-415-555-0188)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-03",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "concert tickets",
+   "body": "jordan: khruangbin is playing the greek in august\njordan: should we go\nsam: yeah i'm down\njordan: cool buying 2 now before they sell out\nsam: venmo me my half\njordan: obviously"
+  },
+  {
+   "source": "gmail",
+   "from": "PG&E <no-reply@pge.com>",
+   "participants": [
+    "PG&E",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-05",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "Your PG&E bill is ready \u2014 $84.13",
+   "body": "Your June statement is available.\n\nAmount due: $84.13\nDue date: June 25, 2026\n\nAutopay is enabled, so no action is needed. View your usage details by logging in."
+  },
+  {
+   "source": "calendar",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera",
+    "Priya Nair"
+   ],
+   "date": "2026-06-09",
+   "mailbox": "",
+   "scope": "project:halcyon",
+   "title": "Halcyon weekly standup",
+   "body": "Title: Halcyon weekly standup\nTime: 2026-06-09 09:30\u201309:50 PT\nAttendees: Sam Rivera, Priya Nair\nRecurring: weekly on Tuesdays\nAgenda: status round + decide whether to bump the Go version in CI. Internal only."
+  },
+  {
+   "source": "note",
+   "from": "Sam Rivera",
+   "participants": [
+    "Sam Rivera"
+   ],
+   "date": "2026-06-12",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "weekend trip maybe?",
+   "body": "thinking about driving up to point reyes some weekend in july. oysters, the lighthouse, that hike. ask jordan if free. book the cabin early, they go fast. not happening this month, too much going on."
+  },
+  {
+   "source": "gmail",
+   "from": "Figma <updates@figma.com>",
+   "participants": [
+    "Figma",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-15",
+   "mailbox": "sam@halcyon.dev",
+   "scope": "project:halcyon",
+   "title": "Someone commented on your Figma file",
+   "body": "Hi Sam,\n\nA collaborator left a comment on 'Halcyon \u2014 Dashboard v3':\n\n'love this direction, can we try the darker accent?'\n\nOpen the file to reply. You're receiving this because you're a member of the Halcyon team."
+  },
+  {
+   "source": "imessage",
+   "from": "Jordan Kim",
+   "participants": [
+    "Jordan Kim (+1-415-555-0188)",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-18",
+   "mailbox": "",
+   "scope": "personal",
+   "title": "random",
+   "body": "jordan: do you still have my drill\njordan: the dewalt one\nsam: oh yeah it's in my closet sorry\njordan: lol figured. no rush\nsam: i'll bring it climbing\njordan: legend"
+  },
+  {
+   "source": "gmail",
+   "from": "Apple <no_reply@email.apple.com>",
+   "participants": [
+    "Apple",
+    "Sam Rivera"
+   ],
+   "date": "2026-06-20",
+   "mailbox": "sam.rivera.personal@gmail.com",
+   "scope": "personal",
+   "title": "Your receipt from Apple \u2014 iCloud+ 200GB",
+   "body": "Receipt\n\nBilled to: Sam Rivera\nApple Account: sam.rivera.personal@gmail.com\n\niCloud+ 200GB (Monthly) \u2014 $2.99\nDate: June 20, 2026\n\nThis is a recurring subscription. Manage it in Settings."
+  }
+ ],
+ "questions": [
+  {
+   "id": "q1",
+   "question": "Reconstruct the Northwind Logistics pilot timeline from first 'go' to today, and list every open commitment: who owns it, and its latest status. Which single item is currently blocking the deal from closing?",
+   "reference_answer": "Timeline: (1) 2026-05-04 Marcus Vance (marcus.vance@northwind.com) confirms the 6-week paid pilot and flags procurement will need a SOC2/security addendum ['Re: Halcyon pilot for Northwind \u2014 let's get started']; Priya agrees over iMessage to own workspace provisioning ['iMessage: Priya \u2014 Northwind is a go']. (2) 2026-05-06 Kickoff meeting on the Halcyon calendar; scope = 6 weeks, 8 seats ['Northwind Pilot \u2014 Kickoff (calendar)', 'Note: Northwind kickoff takeaways']. (3) 2026-05-13 Priya provisions the workspace and invites all 8 engineers \u2014 DONE ['iMessage: Priya \u2014 workspace provisioned']. (4) 2026-05-15 Marcus (now writing from his mvance@northwind.com alias \u2014 same person) says the team loves it and asks for the pricing quote and the SOC2/security addendum for InfoSec lead Dana ['Re: Halcyon pilot for Northwind \u2014 workspace + next steps']. (5) 2026-05-18 Sam tells Priya over iMessage he promised Marcus the SOC2 security addendum by Friday ['iMessage: Priya \u2014 I promised Marcus the SOC2 addendum by Friday']. (6) 2026-05-20 Sam sends the pricing quote ($1,200/seat/yr, 20% year-one discount) \u2014 DONE ['Northwind pilot \u2014 pricing quote attached', 'Note: Northwind pricing decision']. (7) 2026-06-03 Priya pings Sam over iMessage that the SOC2 addendum still never went out \u2014 it slipped ['iMessage: Priya \u2014 SOC2 addendum still not in the Northwind thread']. (8) 2026-06-05 Mid-pilot check-in; usage strong (flake rate down ~40%), VP verbally in, procurement the gate ['Northwind Pilot \u2014 Mid-pilot Check-in (calendar)', 'Note: Northwind check-in takeaways']. (9) 2026-06-16 Marcus (back on marcus.vance@northwind.com) says pricing + VP approved, only InfoSec/Dana still waiting on the security materials ['Re: Northwind pilot \u2014 wrapping up, where are we on procurement?']. (10) 2026-06-18 Priya confirms over iMessage the SOC2 addendum from a month ago is the whole blocker ['iMessage: Priya \u2014 the only blocker is the security doc you never sent']. (11) 2026-06-22 pilot ended 06-17, everything approved except InfoSec ['Note: Northwind pilot status as of June 22']. Open commitments: SOC2/security addendum to Marcus/Dana \u2014 OWNER: Sam \u2014 STATUS: OPEN, promised 2026-05-18, never sent, now ~5 weeks overdue; this is the ONLY item blocking the deal from closing. (Closed: workspace provisioning \u2014 Priya, done 05-13; pricing quote \u2014 Sam, sent 05-20; stakeholder/VP sign-off \u2014 Marcus, done by 06-16.) The blocking item \u2014 the dropped SOC2 security addendum \u2014 appears ONLY in the iMessage thread with Priya; email and notes never name it, they only refer vaguely to 'security materials Dana is waiting on,' so an email+notes-only reader cannot identify what is owed or that it is a Sam-owned dropped commitment.",
+   "gold_evidence_titles": [
+    "Re: Halcyon pilot for Northwind \u2014 let's get started",
+    "iMessage: Priya \u2014 Northwind is a go",
+    "Northwind Pilot \u2014 Kickoff (calendar)",
+    "Note: Northwind kickoff takeaways",
+    "iMessage: Priya \u2014 workspace provisioned",
+    "Re: Halcyon pilot for Northwind \u2014 workspace + next steps",
+    "iMessage: Priya \u2014 I promised Marcus the SOC2 addendum by Friday",
+    "Northwind pilot \u2014 pricing quote attached",
+    "Note: Northwind pricing decision",
+    "iMessage: Priya \u2014 SOC2 addendum still not in the Northwind thread",
+    "Northwind Pilot \u2014 Mid-pilot Check-in (calendar)",
+    "Note: Northwind check-in takeaways",
+    "Re: Northwind pilot \u2014 wrapping up, where are we on procurement?",
+    "iMessage: Priya \u2014 the only blocker is the security doc you never sent",
+    "Note: Northwind pilot status as of June 22"
+   ],
+   "hops": 15,
+   "why_hard": "Requires stitching a timeline across all four sources (gmail, imessage, calendar, note), resolving Marcus Vance across two email handles (marcus.vance@ and mvance@), and \u2014 critically \u2014 identifying that the deal-blocking open commitment (the SOC2 security addendum Sam promised but never sent) is named ONLY in iMessage. Email and notes refer to it only obliquely as 'security materials Dana is waiting on,' so any reader who skips the iMessage thread will report the deal as essentially closed and miss both the specific owed artifact and that Sam owns and dropped it.",
+   "storyline": "The Northwind Logistics pilot deal. Sam Rivera, technical solo founder of Halcyon (a dev-tools startup), with cofounder Priya Nair, runs a paid pilot of Halcyon's product with Northwind Logistics. The customer contact is Marcus Vance, who emails from BOTH marcus.vance@northwind.com (his primary) and mvance@northwind.com (an alias that shows up partway through the thread) \u2014 the same person across handles. The pilot timeline is deliberately fragmented across sources: the Gmail thread carries kickoff logistics, pricing/procurement, and Marcus's stakeholder feedback; the two Halcyon-calendar meetings (kickoff 2026-05-06, mid-pilot check-in 2026-06-05) carry the meeting anchors and attendee lists; Sam's notes carry his own action summaries and a pricing decision; and iMessage with Priya carries the operational reminders. The DROPPED COMMITMENT \u2014 Sam promised Marcus a SOC2 security addendum doc \u2014 exists ONLY in iMessage: Sam tells Priya on 2026-05-18 he committed to send it by Friday, Priya pings him again on 2026-06-03 (\"still not in the Northwind thread\"), and it is never closed. No email or note ever mentions the SOC2 addendum, so an email+notes-only reader misses that Northwind's procurement is blocked on it. Other commitments (Priya owns trial workspace setup \u2014 closed; Marcus owns internal stakeholder sign-off \u2014 in progress; Sam owns the pricing quote \u2014 sent) resolve in email/notes, making the SOC2 gap the one open thread that only surfaces by reading iMessage AND cross-referencing the email thread where it's conspicuously absent. Personal-scope noise (dad Roberto, friend Jordan, candidate Lena) is interleaved to force source discrimination."
+  },
+  {
+   "id": "q2",
+   "question": "Across the Northwind emails, did Sam ever actually deliver everything Marcus asked for to unblock procurement? Be specific about what was asked, what was sent, and what (if anything) is still owed \u2014 and note anything about Marcus's contact details that could trip up a search.",
+   "reference_answer": "Marcus Vance asked for two things to unblock procurement: (a) the pricing quote and (b) the SOC2/security addendum for InfoSec lead Dana \u2014 first raised 2026-05-04 ['Re: Halcyon pilot for Northwind \u2014 let's get started'] and restated 2026-05-15 ['Re: Halcyon pilot for Northwind \u2014 workspace + next steps']. Sam delivered (a): the pricing quote went out 2026-05-20 ($1,200/seat/yr, 20% year-one discount) ['Northwind pilot \u2014 pricing quote attached']. Sam did NOT deliver (b): the SOC2/security addendum was promised (per iMessage 2026-05-18 ['iMessage: Priya \u2014 I promised Marcus the SOC2 addendum by Friday']) but never sent \u2014 still open as of 2026-06-22 and the sole remaining blocker, with Marcus's 2026-06-16 email confirming InfoSec/Dana is still waiting ['Re: Northwind pilot \u2014 wrapping up, where are we on procurement?'] and Priya confirming in iMessage 2026-06-18 it is THE blocker ['iMessage: Priya \u2014 the only blocker is the security doc you never sent']. Search gotcha: Marcus uses TWO email addresses for the same person \u2014 marcus.vance@northwind.com (kickoff, pricing thread, final wrap-up) and mvance@northwind.com (the 2026-05-15 'workspace + next steps' email and the 06-05 check-in invite); a search keyed on only one address would miss half the thread, including the email where he explicitly asks for the SOC2 addendum.",
+   "gold_evidence_titles": [
+    "Re: Halcyon pilot for Northwind \u2014 let's get started",
+    "Re: Halcyon pilot for Northwind \u2014 workspace + next steps",
+    "Northwind pilot \u2014 pricing quote attached",
+    "iMessage: Priya \u2014 I promised Marcus the SOC2 addendum by Friday",
+    "Re: Northwind pilot \u2014 wrapping up, where are we on procurement?",
+    "iMessage: Priya \u2014 the only blocker is the security doc you never sent"
+   ],
+   "hops": 6,
+   "why_hard": "Forces resolving Marcus Vance across two email handles (marcus.vance@ vs mvance@) \u2014 the email that explicitly requests the SOC2 addendum comes from the alias, so a one-address search misses the ask itself. It then requires cross-referencing what was requested (email) against what was actually delivered (pricing email present; SOC2 addendum absent) and confirming the gap via iMessage, where the dropped commitment is named. A reader who treats the two addresses as two people, or who only reads email, will wrongly conclude everything was delivered.",
+   "storyline": "The Northwind Logistics pilot deal. Sam Rivera, technical solo founder of Halcyon (a dev-tools startup), with cofounder Priya Nair, runs a paid pilot of Halcyon's product with Northwind Logistics. The customer contact is Marcus Vance, who emails from BOTH marcus.vance@northwind.com (his primary) and mvance@northwind.com (an alias that shows up partway through the thread) \u2014 the same person across handles. The pilot timeline is deliberately fragmented across sources: the Gmail thread carries kickoff logistics, pricing/procurement, and Marcus's stakeholder feedback; the two Halcyon-calendar meetings (kickoff 2026-05-06, mid-pilot check-in 2026-06-05) carry the meeting anchors and attendee lists; Sam's notes carry his own action summaries and a pricing decision; and iMessage with Priya carries the operational reminders. The DROPPED COMMITMENT \u2014 Sam promised Marcus a SOC2 security addendum doc \u2014 exists ONLY in iMessage: Sam tells Priya on 2026-05-18 he committed to send it by Friday, Priya pings him again on 2026-06-03 (\"still not in the Northwind thread\"), and it is never closed. No email or note ever mentions the SOC2 addendum, so an email+notes-only reader misses that Northwind's procurement is blocked on it. Other commitments (Priya owns trial workspace setup \u2014 closed; Marcus owns internal stakeholder sign-off \u2014 in progress; Sam owns the pricing quote \u2014 sent) resolve in email/notes, making the SOC2 gap the one open thread that only surfaces by reading iMessage AND cross-referencing the email thread where it's conspicuously absent. Personal-scope noise (dad Roberto, friend Jordan, candidate Lena) is interleaved to force source discrimination."
+  },
+  {
+   "id": "q3",
+   "question": "Where does the Lena Brooks offer stand right now \u2014 what is the real open blocker, and who needs to act next before what deadline?",
+   "reference_answer": "On the surface (email) the offer looks like it's just 'awaiting signature': Sam sent the Founding Engineer offer on May 14 ($185k base, 0.9% equity), and after Lena asked for more time he revised the start date from June 1 to June 29 ('Re: Offer \u2014 Founding Engineer at Halcyon (revised start date)'). But the real open blocker never appears in email \u2014 it's only in the iMessage thread with Lena (+1-628-555-0199, same person as lena.brooks.dev@gmail.com): she has a competing REMOTE offer from Veridian in Seattle and can't relocate from Austin to SF on Halcyon's timeline ('iMessage \u2014 Lena reveals competing offer + relocation worry'). So the blocker is location/remote policy, not the start date. The next action is on SAM: he committed over text ('iMessage \u2014 Sam commits to bring remote question to Priya by Thu') to give Lena a concrete remote/relocation answer by Thursday June 25. He and Priya have since aligned on 90-day remote-first plus a quarterly SF onsite ('Lena offer \u2014 where we landed on remote' + Priya's reply), and Priya explicitly asked him to put it in the written offer. Per Sam's own note ('Note: Lena close \u2014 TODO before Jun 25 deadline') the remaining step is to have HR reissue the PDF with the June 29 start date AND the written remote terms, send it to lena.brooks.dev@gmail.com, and text Lena so she can decline Veridian \u2014 all before the June 25 deadline she's holding Veridian against ('iMessage \u2014 Lena nudges: still waiting on the remote answer').",
+   "gold_evidence_titles": [
+    "Offer \u2014 Founding Engineer at Halcyon",
+    "Re: Offer \u2014 Founding Engineer at Halcyon (revised start date)",
+    "iMessage \u2014 Lena reveals competing offer + relocation worry",
+    "iMessage \u2014 Sam commits to bring remote question to Priya by Thu",
+    "Re: Lena offer \u2014 where we landed on remote",
+    "iMessage \u2014 Lena nudges: still waiting on the remote answer",
+    "Note: Lena close \u2014 TODO before Jun 25 deadline"
+   ],
+   "hops": 7,
+   "why_hard": "Requires reconciling email-optimism ('awaiting signature', start-date back-and-forth) against iMessage ground-truth (competing Veridian offer + relocation block), resolving Lena across her gmail address and phone handle, and surfacing a commitment + deadline (Jun 25) that exists ONLY in iMessage and Sam's note \u2014 never in any email. A notes/email-only reader gets the wrong answer.",
+   "storyline": "Recruiting engineer Lena Brooks to Halcyon. Across gmail (offer logistics + start-date back-and-forth), iMessage with Lena (her private hesitation: a competing offer from a Seattle company + relocation worry about moving from Austin to SF), and a Halcyon-calendar onsite interview event. The recorded tension: Sam's email thread with Lena and an internal note to cofounder Priya both read as \"offer sent, awaiting signature, just paperwork\" \u2014 optimistic and on-track. But the iMessage thread reveals the REAL blocker: Lena has a competing offer (remote, Seattle-based \"Veridian\") and is anxious about relocating to SF; the thing that would actually unblock her is a remote/relocation answer that Sam committed (ONLY over iMessage) to bring to Priya and get back to her by Thu Jun 25. Answering correctly requires reconciling the email surface-state against the iMessage ground-truth and resolving Lena across her gmail + phone handles."
+  },
+  {
+   "id": "q4",
+   "question": "What exactly did Sam and Priya decide about Lena's working arrangement, and has that decision been delivered to Lena yet?",
+   "reference_answer": "Sam and Priya decided on a 90-day remote-first arrangement for Lena followed by a revisit, plus an in-person anchor of one onsite week per quarter in SF with travel covered. This was worked out at the May 22 'Founders sync \u2014 remote policy decision' calendar event, written up by Sam in 'Lena offer \u2014 where we landed on remote', and explicitly approved by Priya in her reply ('Thumbs up. 90-day remote-first, quarterly onsite week in SF...'), with the condition that it be put in writing in the revised offer rather than left as a handshake. As of the latest evidence it had NOT yet been formally delivered to Lena: in the June 19 iMessage ('iMessage \u2014 Lena nudges: still waiting on the remote answer') Lena is still waiting on the answer and Sam says the revised offer with the remote terms 'in writing' is still coming, and Sam's June 21 note ('Note: Lena close \u2014 TODO before Jun 25 deadline') lists reissuing/sending the PDF and texting Lena as still-open TODOs ahead of the June 25 deadline. So the decision is made and cofounder-approved, but the written offer reflecting it still needs to be sent to lena.brooks.dev@gmail.com.",
+   "gold_evidence_titles": [
+    "Founders sync \u2014 remote policy + Lena offer (Halcyon)",
+    "Lena offer \u2014 where we landed on remote",
+    "Re: Lena offer \u2014 where we landed on remote",
+    "iMessage \u2014 Lena nudges: still waiting on the remote answer",
+    "Note: Lena close \u2014 TODO before Jun 25 deadline"
+   ],
+   "hops": 5,
+   "why_hard": "The decision content (90-day remote-first + quarterly onsite) lives in an internal Sam\u2194Priya email plus a calendar event, but whether it's been DELIVERED requires cross-checking the later iMessage nudge and Sam's TODO note \u2014 combining calendar + gmail + iMessage + note and noticing the gap between 'decided' and 'sent'.",
+   "storyline": "Recruiting engineer Lena Brooks to Halcyon. Across gmail (offer logistics + start-date back-and-forth), iMessage with Lena (her private hesitation: a competing offer from a Seattle company + relocation worry about moving from Austin to SF), and a Halcyon-calendar onsite interview event. The recorded tension: Sam's email thread with Lena and an internal note to cofounder Priya both read as \"offer sent, awaiting signature, just paperwork\" \u2014 optimistic and on-track. But the iMessage thread reveals the REAL blocker: Lena has a competing offer (remote, Seattle-based \"Veridian\") and is anxious about relocating to SF; the thing that would actually unblock her is a remote/relocation answer that Sam committed (ONLY over iMessage) to bring to Priya and get back to her by Thu Jun 25. Answering correctly requires reconciling the email surface-state against the iMessage ground-truth and resolving Lena across her gmail + phone handles."
+  },
+  {
+   "id": "q5",
+   "question": "Is there a scheduling conflict around my dad's visit, and what do I need to resolve?",
+   "reference_answer": "Yes \u2014 there is a direct conflict on Saturday, June 27, 2026. Sam committed (in iMessage with Roberto, his dad, on +1-510-555-0177) to personally pick him up at SFO arrivals \u2014 Sam explicitly refused to let him cab it ('I'm picking you up at the airport, end of discussion' on Jun 14, reconfirmed Jun 20). Per the forwarded United itinerary email (UA 1492, confirmation KPX4ZQ) in sam.rivera.personal@gmail.com, Roberto lands at SFO at 4:35 PM PDT in Terminal 3, carousel 5. Sam blocked this on the Personal calendar as 'Dad arrives \u2014 airport pickup (SFO)' for 4:00\u20135:30 PM PDT (planning to leave by 3:30). This OVERLAPS the Halcyon-calendar event 'Ridgeline partner call \u2014 Halcyon' organized by investor Omar Haddad (omar@ridgeline.vc) for 4:00\u20135:00 PM PDT that same Saturday \u2014 the term-sheet-stage call where Omar requires BOTH founders (Sam and Priya) live on camera for the full hour. The conflict is hidden because the two events sit on different calendars (Personal vs Halcyon) and the binding pickup promise is only in the texts, not the airline email. To resolve: Sam cannot be at SFO arrivals at 4:35 and on camera for Omar's 4:00\u20135:00 call simultaneously. Options include moving the Ridgeline call (Omar called it 'sacred'/the term-sheet conversation, so this is costly), arranging alternate airport transport for Roberto despite the no-cab promise, having Priya solo-cover the start of the call, or asking Omar for a slightly later/earlier slot. Sam's own Jun 21 note already flags the uncertainty ('ridgeline thing is also saturday?? need to double check the time').",
+   "gold_evidence_titles": [
+    "Dad booked the flight \u2014 Sat the 27th",
+    "Your United flight confirmation \u2014 UA 1492 to San Francisco (SFO) \u2014 Sat Jun 27",
+    "Dad arrives \u2014 airport pickup (SFO)",
+    "Ridgeline partner call \u2014 Halcyon",
+    "Re: Ridgeline partner review \u2014 locking Saturday 4pm"
+   ],
+   "hops": 5,
+   "why_hard": "Requires combining four different sources (iMessage, Gmail itinerary, Personal calendar, Halcyon calendar) and resolving Roberto across his text handle and the airline email's passenger/contact. The overlap is only visible by reconciling two events on SEPARATE calendars, and the hard pickup commitment exists ONLY in iMessage \u2014 a notes/email-only reader would miss that Sam promised no-cab. The arrival time (4:35) must be matched against both the 4:00\u20135:30 pickup block and the 4:00\u20135:00 investor call to see they collide.",
+   "storyline": "Sam Rivera's dad Roberto is planning a visit to San Francisco, and the logistics collide with Halcyon's fundraising. Across iMessage, Sam and Roberto nail down the arrival date and the fact that SAM (not a car service) will personally pick Roberto up at SFO \u2014 a commitment stated ONLY in the texts. A United flight-confirmation email lands in Sam's personal Gmail giving the exact flight, arrival time (Sat Jun 27, 4:35pm SFO), and terminal. Sam blocks the pickup on the Personal calendar. Meanwhile, on the Halcyon work calendar, investor Omar Haddad (Ridgeline Capital) has locked a 'Ridgeline partner call' for the SAME Saturday afternoon (4:00\u20135:00pm) \u2014 an overlap Sam hasn't noticed because the two events live on different calendars and the binding pickup promise is buried in texts, not the itinerary. Supporting noise threads through: Priya coordinating the Ridgeline deck, Marcus Vance's Northwind pilot, Lena Brooks recruiting, and Jordan Kim social chatter \u2014 so answering 'is there a conflict?' requires resolving Roberto across his text handle + the airline email's passenger/contact, reconciling the flight arrival time against BOTH calendars, and recognizing that the pickup is a hard personal commitment that the work calendar event blindly overlaps."
+  },
+  {
+   "id": "q6",
+   "question": "What do I need to deliver for the Ridgeline partner call, who is it from, and which contacts feed into it?",
+   "reference_answer": "The Ridgeline partner call is the Saturday Jun 27 4:00 PM term-sheet-stage review run by investor Omar Haddad (omar@ridgeline.vc) of Ridgeline Capital, who requires both founders \u2014 Sam and Priya Nair \u2014 live on camera for the full hour and the updated metrics deck shared by Friday EOD (his Jun 18 email + the Halcyon calendar invite). For the deck, Priya (priya@halcyon.dev / +1-415-555-0142) owns ARR, pipeline, and burn in draft v3; Sam owes the retention slide plus the Northwind pilot reference logo before Friday EOD (Priya's Jun 19 text and Jun 20 email; Sam's Jun 22 fundraise note). The Northwind reference comes from Marcus Vance at Northwind Logistics \u2014 reachable at marcus.vance@northwind.com or mvance@northwind.com (domain migration) \u2014 who confirmed (Jun 16 email) Halcyon is live across both logistics teams and Sam may cite Northwind as a reference pilot, but only via a weekday call since he's offline weekends; the 'Northwind pilot check-in' is set for Wed Jun 24 to lock the numbers before Saturday. So: deliverable = retention slide + Northwind logo into Priya's v3 deck by Friday; source person for the pilot numbers = Marcus Vance (one person, two email handles); call owner = Omar Haddad.",
+   "gold_evidence_titles": [
+    "Re: Ridgeline partner review \u2014 locking Saturday 4pm",
+    "Ridgeline deck \u2014 draft v3 + Saturday prep",
+    "Re: Northwind pilot \u2014 rollout numbers for your investors",
+    "Northwind pilot check-in",
+    "Fundraise status \u2014 Ridgeline"
+   ],
+   "hops": 5,
+   "why_hard": "Requires resolving Marcus Vance across two email handles (marcus.vance@ and mvance@) and chaining the deliverable (retention slide + Northwind logo) from Priya's deck email to the source of the Northwind numbers (Marcus's pilot email) to the weekday check-in calendar event that must precede the weekend call. The owner (Omar) and the both-founders-on-camera requirement come from a separate investor email, so it spans email, calendar, iMessage, and notes across the Halcyon project scope.",
+   "storyline": "Sam Rivera's dad Roberto is planning a visit to San Francisco, and the logistics collide with Halcyon's fundraising. Across iMessage, Sam and Roberto nail down the arrival date and the fact that SAM (not a car service) will personally pick Roberto up at SFO \u2014 a commitment stated ONLY in the texts. A United flight-confirmation email lands in Sam's personal Gmail giving the exact flight, arrival time (Sat Jun 27, 4:35pm SFO), and terminal. Sam blocks the pickup on the Personal calendar. Meanwhile, on the Halcyon work calendar, investor Omar Haddad (Ridgeline Capital) has locked a 'Ridgeline partner call' for the SAME Saturday afternoon (4:00\u20135:00pm) \u2014 an overlap Sam hasn't noticed because the two events live on different calendars and the binding pickup promise is buried in texts, not the itinerary. Supporting noise threads through: Priya coordinating the Ridgeline deck, Marcus Vance's Northwind pilot, Lena Brooks recruiting, and Jordan Kim social chatter \u2014 so answering 'is there a conflict?' requires resolving Roberto across his text handle + the airline email's passenger/contact, reconciling the flight arrival time against BOTH calendars, and recognizing that the pickup is a hard personal commitment that the work calendar event blindly overlaps."
+  }
+ ]
+}
