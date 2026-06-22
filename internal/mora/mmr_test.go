@@ -564,28 +564,62 @@ func TestEvalMMRAB(t *testing.T) {
 		}
 		return out
 	}()
-	measure := func(c Config) (recall, mrr float64) {
-		recall = meanBy(scored, func(qid string) float64 {
-			mems, err := hybridSearch(ctx, c, queries[qid], "", kHybrid)
-			if err != nil {
-				t.Fatalf("hybridSearch(%s): %v", qid, err)
+	rdb := openRO(t, cfg)
+	defer rdb.Close()
+	// intraListRedundancy = mean pairwise clampPos(cosine) among a result list — the
+	// quantity MMR actually minimizes. Recall@k/MRR are relevance metrics blind to
+	// diversity, so on a set where the gold docs stay in-k they can't show MMR's effect;
+	// this can. Lower ⇒ less repetitive top-k.
+	intraListRedundancy := func(ids []string) float64 {
+		vecs, err := loadVectorsByID(ctx, rdb, model, ids)
+		if err != nil {
+			t.Fatalf("loadVectorsByID: %v", err)
+		}
+		var sum float64
+		var n int
+		for i := 0; i < len(ids); i++ {
+			for j := i + 1; j < len(ids); j++ {
+				vi, oi := vecs[ids[i]]
+				vj, oj := vecs[ids[j]]
+				if oi && oj {
+					sum += clampPos(cosine(vi, vj))
+					n++
+				}
 			}
-			return recallAtK(idList(mems), rel[qid], kHybrid)
-		})
-		mrr = meanBy(scored, func(qid string) float64 {
-			mems, _ := hybridSearch(ctx, c, queries[qid], "", kHybrid)
-			return reciprocalRank(idList(mems), rel[qid])
-		})
-		return
+		}
+		if n == 0 {
+			return 0
+		}
+		return sum / float64(n)
 	}
-	rOff, mOff := measure(cfg)
-	t.Logf("=== MMR A/B under %s (synthetic golden set, %d vectors) ===", model, nVec)
-	t.Logf("MMR off            Recall@%d=%.4f MRR=%.4f", kHybrid, rOff, mOff)
+	order := func(c Config, qid string) []string {
+		mems, err := hybridSearch(ctx, c, queries[qid], "", kHybrid)
+		if err != nil {
+			t.Fatalf("hybridSearch(%s): %v", qid, err)
+		}
+		return idList(mems)
+	}
+	measure := func(c Config) (recall, mrr, redundancy, reorderFrac float64) {
+		var reordered int
+		recall = meanBy(scored, func(qid string) float64 { return recallAtK(order(c, qid), rel[qid], kHybrid) })
+		mrr = meanBy(scored, func(qid string) float64 { return reciprocalRank(order(c, qid), rel[qid]) })
+		redundancy = meanBy(scored, func(qid string) float64 { return intraListRedundancy(order(c, qid)) })
+		for _, qid := range scored {
+			if !reflect.DeepEqual(order(c, qid), order(cfg, qid)) {
+				reordered++
+			}
+		}
+		return recall, mrr, redundancy, float64(reordered) / float64(len(scored))
+	}
+	rOff, mOff, dOff, _ := measure(cfg)
+	t.Logf("=== MMR A/B under %s (synthetic golden set, %d vectors, %d scored queries) ===", model, nVec, len(scored))
+	t.Logf("MMR off            Recall@%d=%.4f MRR=%.4f intra-list-redundancy=%.4f", kHybrid, rOff, mOff, dOff)
 	for _, lambda := range []float64{0.5, 0.7, 0.9} {
 		c := cfg
 		c.mmrOv = &mmrParams{lambda: lambda} // force=false: real useVec under Ollama
-		r, m := measure(c)
-		t.Logf("MMR on  (λ=%.1f)    Recall@%d=%.4f MRR=%.4f", lambda, kHybrid, r, m)
+		r, m, d, rf := measure(c)
+		t.Logf("MMR on  (λ=%.1f)    Recall@%d=%.4f MRR=%.4f intra-list-redundancy=%.4f (reordered %.0f%% of queries vs off)",
+			lambda, kHybrid, r, m, d, rf*100)
 	}
 }
 
