@@ -3073,10 +3073,22 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	}
 	defer ftsStmt.Close()
 	count := 0
-	var parsed []Memory
+	var parsed []Memory // ALL memories (incl. tombstones) — feeds the graph
+	var live []Memory   // non-tombstoned only — the searchable corpus + vectors
 	for _, path := range files {
 		m, err := parseMemory(path)
 		if err != nil {
+			continue
+		}
+		parsed = append(parsed, m)
+		// Tombstones (connector-produced deleted_at, e.g. a cancelled calendar
+		// event — `mora delete` hard-removes the file instead) must NOT be
+		// retrievable. Keep them out of memories / memories_fts (and mem_vectors
+		// below), the single chokepoint every search arm JOINs through, so they
+		// can't leak into search_memory, think, or the recall hook. Mirrors the
+		// DeletedAt skip in graph/digest/salience. The graph still receives them
+		// via `parsed` so it can emit their (invalidated) edges.
+		if m.DeletedAt != "" {
 			continue
 		}
 		if _, err := memStmt.ExecContext(ctx,
@@ -3087,7 +3099,7 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 			m.ID, m.Scope, m.Title, strings.Join(m.Tags, ","), m.Source, m.Text); err != nil {
 			return count, err
 		}
-		parsed = append(parsed, m)
+		live = append(live, m)
 		count++
 	}
 
@@ -3100,7 +3112,7 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	// Materialize per-memory embedding vectors (I2 hybrid retrieval), same tx. Use
 	// the cfg-aware resolver so a config.toml `embedder = "ollama"` opt-in indexes
 	// semantic vectors that the query path (also cfg-aware) will match.
-	if err := writeVectors(ctx, tx, chooseEmbedderFor(cfg), parsed); err != nil {
+	if err := writeVectors(ctx, tx, chooseEmbedderFor(cfg), live); err != nil {
 		return count, err
 	}
 
@@ -3283,6 +3295,14 @@ func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
 	for _, path := range files {
 		m, err := parseMemory(path)
 		if err != nil {
+			continue
+		}
+		// Skip tombstones (connector deleted_at): listMemories backs the browse /
+		// session-start surfaces (`mora list`, list_memory, the no-query
+		// context_memory fallback), so a deleted item must not resurface there as a
+		// "recent memory". Mirrors the search-index + graph/digest/salience skip.
+		// findMemory (explicit by-id read) intentionally still resolves tombstones.
+		if m.DeletedAt != "" {
 			continue
 		}
 		if scope == "" || m.Scope == scope {
