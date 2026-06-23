@@ -6,3 +6,8 @@ q1	0	synth/oauth-exact	2	obsidian	exact	seed	fts
 q2	0	synth/venue	2	gmail	person	hand	hybrid
 q3	0	synth/runway	2	obsidian	topic	hand	hybrid
 q4	0	NONE	1	obsidian	person	hand	hybrid
+q5	0	synth/migration-1	2	obsidian	neardup	hand	hybrid
+q5	0	synth/migration-2	2	obsidian	neardup	hand	hybrid
+q6	0	synth/standup	2	obsidian	exact	seed	fts
+q7	0	synth/newhire	2	gmail	person	hand	hybrid
+q9	0	NONE	1	obsidian	topic	hand	hybrid

@@ -413,16 +413,29 @@ func copyTree(t *testing.T, src, dst string) {
 	}
 }
 
-// seedEvalFixture writes the deterministic synthetic vault the committed golden
-// set scores against. All dates fixed, no time.Now / no randomness, so buildGraph
-// + the static embedder produce byte-identical output every run. The fixture is
-// designed so q1 (exact) HITs the FTS surface, while q2 (person) and q3
-// (paraphrase) MISS FTS but are recovered by the hybrid arms — so the FTS-only
-// vs hybrid recall gap is visible. (A true static-hash RETRIEVAL miss needs the
-// larger live vault; see the q3 note below.)
-func seedEvalFixture(t *testing.T, cfg Config) {
-	t.Helper()
-	mems := []Memory{
+// evalFixtureMemories is the deterministic synthetic vault the committed golden
+// set scores against — the SINGLE source of truth for the fixture (seedEvalFixture
+// writes it; the MMR-sensitivity precondition test embeds docs from it by id). All
+// dates are fixed, no time.Now / no randomness, so buildGraph + the static embedder
+// produce byte-identical output every run.
+//
+// Stratification (so the aggregate is sensitive, not coarse):
+//   - exact/fts (q1, q6)    — verbatim phrase; FTS must HIT (the gated invariants).
+//   - person/graph (q2, q7) — body shares no query word; reached ONLY via the
+//     sender→gazetteer graph arm, so the FTS-only vs hybrid gap is visible.
+//   - topic/paraphrase (q3) — query shares no token with the doc (hybrid recovery).
+//   - near-dup cluster (q5) — two heavily-overlapping RELEVANT docs (migration-1/2)
+//     that provide deterministic near-dup MATERIAL for the future MMR gate (W2);
+//     TestEvalFixtureNearDupPrecondition locks the high-cosine property. NOTE: this
+//     is material, NOT a self-contained detector — under the committed static-hash
+//     eval q5's fused pool is only ~3 docs vs k=8/10, so an MMR demotion stays in-k
+//     and cannot move Recall@k/MRR (and if W2 follows the useVec precedent in
+//     hybrid.go and skips reranking under static-hash, MMR never runs here at all).
+//     The MMR before/after regression gate is W2's, and belongs in the semantic
+//     (Ollama) AB path or needs a larger q5 distractor pool — see the q5 doc below.
+//   - decoys                — lexically disjoint noise so recall isn't trivially 1.0.
+func evalFixtureMemories() []Memory {
+	return []Memory{
 		// q1 — exact phrase verbatim in the body; FTS must return it (the gated invariant).
 		{ID: "synth/oauth-exact", Scope: "global", Type: "decision", Title: "OAuth design decision",
 			CreatedAt: "2026-01-01T00:00:00Z", Source: "obsidian",
@@ -446,19 +459,74 @@ func seedEvalFixture(t *testing.T, cfg Config) {
 		{ID: "synth/runway", Scope: "global", Type: "note", Title: "Q1 budget review",
 			CreatedAt: "2026-01-03T00:00:00Z", Source: "obsidian",
 			Text: "We extended the cash runway by trimming the marketing spend this quarter."},
+		// q5 — near-duplicate RELEVANT pair: deterministic MATERIAL for the future MMR
+		// gate (W2), not a self-contained detector. The two bodies share almost every
+		// token, so their static-hash vectors are highly similar (cosine≈0.82, locked by
+		// TestEvalFixtureNearDupPrecondition), giving a greedy MMR a real redundancy to
+		// act on. CAVEAT for W2: under the committed synthetic eval (MORA_EMBEDDER="",
+		// useVec=false) q5's fused pool is just these two docs (+1), well inside k=8/10,
+		// so an MMR demotion here cannot move Recall@k/MRR. The MMR before/after gate
+		// therefore belongs in the semantic (Ollama) AB path, or needs a larger q5
+		// distractor pool sharing this vocab so a demotion can cross k.
+		{ID: "synth/migration-1", Scope: "global", Type: "note", Title: "Database migration weekend",
+			CreatedAt: "2026-01-04T00:00:00Z", Source: "obsidian",
+			Text: "We migrated the Postgres database to the new cluster over the weekend."},
+		{ID: "synth/migration-2", Scope: "global", Type: "note", Title: "Postgres cluster cutover",
+			CreatedAt: "2026-01-05T00:00:00Z", Source: "obsidian",
+			Text: "The Postgres database migration to the new cluster finished over the weekend."},
+		// q6 — second exact-phrase query; distinct verbatim tokens (standup, 9:30) so it
+		// HITs FTS at rank 0. Broadens the gated exact/fts/seed family to two queries.
+		{ID: "synth/standup", Scope: "global", Type: "note", Title: "Standup time change",
+			CreatedAt: "2026-01-06T00:00:00Z", Source: "obsidian",
+			Text: "The daily standup moved to 9:30 AM starting Monday."},
+		// q7 — second person query; like q2 the body shares no query token, so it is
+		// reached ONLY via the sender→gazetteer graph arm ("Maya Chen"). The id is
+		// kept opaque (no "onboarding" token) because rebuildIndex also indexes the
+		// memory id into FTS — a query keyword inside the id would forge an FTS hit
+		// and defeat the graph-only stratification (real connector ids are opaque).
+		{ID: "synth/newhire", Scope: "global", Type: "email", Title: "New hire logistics",
+			CreatedAt: "2026-01-07T00:00:00Z", Source: "gmail",
+			Text: "Reviewing the new hire schedule and the first-week checklist.",
+			Meta: map[string]any{
+				"from":  []string{"maya@example.com"},
+				"to":    []string{"adit@x.com"},
+				"names": map[string]string{"maya@example.com": "Maya Chen"},
+			}},
 		// decoys — lexically disjoint noise so recall isn't trivially 1.0.
 		{ID: "synth/decoy-a", Scope: "global", Type: "note", Title: "Grocery list",
-			CreatedAt: "2026-01-04T00:00:00Z", Source: "obsidian", Text: "milk eggs bread butter coffee"},
+			CreatedAt: "2026-01-08T00:00:00Z", Source: "obsidian", Text: "milk eggs bread butter coffee"},
 		{ID: "synth/decoy-b", Scope: "global", Type: "note", Title: "Weekend plans",
-			CreatedAt: "2026-01-05T00:00:00Z", Source: "obsidian", Text: "hiking trail and a picnic by the lake"},
+			CreatedAt: "2026-01-09T00:00:00Z", Source: "obsidian", Text: "hiking trail and a picnic by the lake"},
 		{ID: "synth/decoy-c", Scope: "global", Type: "note", Title: "Reading notes",
-			CreatedAt: "2026-01-06T00:00:00Z", Source: "obsidian", Text: "chapter three covers distributed consensus and quorum"},
+			CreatedAt: "2026-01-10T00:00:00Z", Source: "obsidian", Text: "chapter three covers distributed consensus and quorum"},
+		{ID: "synth/decoy-d", Scope: "global", Type: "note", Title: "Gym schedule",
+			CreatedAt: "2026-01-11T00:00:00Z", Source: "obsidian", Text: "monday yoga wednesday spin friday rest day"},
+		{ID: "synth/decoy-e", Scope: "global", Type: "note", Title: "Recipe idea",
+			CreatedAt: "2026-01-12T00:00:00Z", Source: "obsidian", Text: "roast the vegetables with olive oil and rosemary"},
 	}
-	for _, m := range mems {
+}
+
+// seedEvalFixture writes the deterministic synthetic vault to cfg's vault.
+func seedEvalFixture(t *testing.T, cfg Config) {
+	t.Helper()
+	for _, m := range evalFixtureMemories() {
 		if err := writeMemory(cfg, m); err != nil {
 			t.Fatalf("seed %s: %v", m.ID, err)
 		}
 	}
+}
+
+// evalFixtureByID returns the fixture memory with the given id (fatal if absent),
+// so a test can embed the exact title+text writeVectors indexes.
+func evalFixtureByID(t *testing.T, id string) Memory {
+	t.Helper()
+	for _, m := range evalFixtureMemories() {
+		if m.ID == id {
+			return m
+		}
+	}
+	t.Fatalf("eval fixture has no memory %q", id)
+	return Memory{}
 }
 
 // ---- tests ----
@@ -600,6 +668,62 @@ func TestEvalSynthetic(t *testing.T) {
 	}
 	if gated == 0 {
 		t.Fatal("golden set has no gen=seed,archetype=exact,surface=fts query — the one gated invariant is missing")
+	}
+}
+
+// TestEvalFixtureNearDupPrecondition locks the NECESSARY (not sufficient) precondition
+// for the future MMR gate (W2): the q5 pair must be a genuine near-dup under the
+// static-hash embedder (high cosine) AND lexically far from a decoy (low cosine), and
+// both must be retrieved pre-rerank so MMR has both as candidates. This guarantees MMR
+// will have a real redundancy to act on; it does NOT by itself make a regression
+// observable — under the committed static-hash eval q5's fused pool is smaller than k,
+// so a demotion stays in-k (see the q5 fixture comment; that observability is W2's
+// job). If a future fixture edit erodes the near-dup overlap, this fails first. Pure
+// static-hash (no Ollama) so it is deterministic in CI.
+func TestEvalFixtureNearDupPrecondition(t *testing.T) {
+	t.Setenv("MORA_EMBEDDER", "")
+	emb := defaultEmbedder()
+	embedDoc := func(id string) []float32 {
+		m := evalFixtureByID(t, id)
+		return emb.Embed(m.Title + "\n" + m.Text) // exactly what writeVectors embeds
+	}
+	dup := cosine(embedDoc("synth/migration-1"), embedDoc("synth/migration-2"))
+	far := cosine(embedDoc("synth/migration-1"), embedDoc("synth/decoy-a"))
+	if dup < 0.5 {
+		t.Errorf("near-dup precondition broken: cosine(migration-1,migration-2)=%.3f, want >=0.5 — MMR would have nothing redundant to demote", dup)
+	}
+	if far > 0.25 {
+		t.Errorf("decoy too similar: cosine(migration-1,decoy-a)=%.3f, want <=0.25 — the near-dup signal must be specific", far)
+	}
+	if dup <= far {
+		t.Errorf("near-dup (%.3f) must exceed decoy similarity (%.3f)", dup, far)
+	}
+
+	// Both near-dup gold docs must be retrieved pre-rerank so MMR has both as
+	// candidates (the necessary precondition). NOTE: in the committed static-hash eval
+	// the fused pool is smaller than k, so this alone does NOT make a demotion
+	// observable as a Recall@k drop — that is W2's job (semantic AB path or a larger
+	// q5 pool). See the q5 fixture comment.
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	seedEvalFixture(t, cfg)
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
+	mems, err := hybridSearch(ctx, cfg, "Postgres database migration to the new cluster", "", kHybrid)
+	if err != nil {
+		t.Fatalf("hybridSearch(q5): %v", err)
+	}
+	got := map[string]bool{}
+	for _, m := range mems {
+		got[m.ID] = true
+	}
+	for _, id := range []string{"synth/migration-1", "synth/migration-2"} {
+		if !got[id] {
+			t.Errorf("near-dup gold %s missing from hybrid top-%d (got %v) — MMR-off baseline is not 1.0", id, kHybrid, idList(mems))
+		}
 	}
 }
 
