@@ -66,6 +66,18 @@ type Config struct {
 	// TestEvalWeightSweep grid). nil ⇒ defaultFusion. Unexported and NOT loaded from
 	// TOML — it is a code/eval seam, not a user knob.
 	fusionOv *fusionParams
+	// MMR opts the hybrid path into a greedy Maximal Marginal Relevance rerank of the
+	// fused candidates (a diversity-aware reorder) before the top-k truncate. Durable,
+	// from config.toml `mmr = true`; default false ⇒ fused order unchanged (the
+	// production default path stays byte-identical). Only takes effect when the vector
+	// arm is live (a semantic embedder), since MMR reranks on cosine. Mirrors Embedder;
+	// there is deliberately no MORA_MMR env var (the eval forces via mmrOv, not env).
+	MMR bool
+	// mmrOv overrides the MMR params (the W2 regression gate + the unit tests). nil ⇒
+	// derive from Config.MMR with defaultLambda. Unexported and NOT loaded from TOML —
+	// a code/eval seam exactly like fusionOv, and the ONLY path that can set
+	// mmrParams.force (so the user MMR bool can never run MMR under static-hash).
+	mmrOv *mmrParams
 }
 
 // fusion returns the active RRF fusion params: the per-Config override when set,
@@ -75,6 +87,20 @@ func (c Config) fusion() fusionParams {
 		return *c.fusionOv
 	}
 	return defaultFusion
+}
+
+// mmr returns the active MMR params, or nil when MMR is off. The eval/test override
+// (mmrOv) wins; else the durable user opt-in (MMR) yields default params; else nil.
+// Single source of truth, mirroring fusion(). The returned params carry force only
+// when set via mmrOv — the MMR bool path always has force=false.
+func (c Config) mmr() *mmrParams {
+	if c.mmrOv != nil {
+		return c.mmrOv
+	}
+	if c.MMR {
+		return &mmrParams{lambda: defaultLambda}
+	}
+	return nil
 }
 
 type Memory struct {
@@ -360,6 +386,7 @@ USAGE:
   mora ingest run --source docs
   mora schedule install pulse-daily
   mora config context large        # context profile: small | default | large (budget + snippet density)
+  mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
   mora connectors list|enable <type>|disable <type>
   mora connect google              # sign in with Google in your browser, then backfill Gmail + Calendar (last 90 days)
   mora connect google --since-days 365   # widen the gmail backfill window
@@ -466,6 +493,10 @@ func loadConfig() (Config, error) {
 			cfg.Embedder = val
 		case "context":
 			cfg.ContextProfile = val
+		case "mmr":
+			// Bool opt-in (`mmr = true`); only "true"/"1" enable. A bool can't be
+			// mistyped into a silent wrong-mode the way a free-form string can.
+			cfg.MMR = val == "true" || val == "1"
 		}
 	}
 	return cfg, nil
@@ -492,13 +523,17 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		if embedder == "" {
 			embedder = "static"
 		}
-		fmt.Fprintf(stdout, "vault_dir = %s\ndata_dir  = %s\nstate_dir = %s\nembedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\n",
+		mmr := "off"
+		if cfg.MMR {
+			mmr = "on"
+		}
+		fmt.Fprintf(stdout, "vault_dir = %s\ndata_dir  = %s\nstate_dir = %s\nembedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
 			cfg.VaultDir, cfg.DataDir, cfg.StateDir, embedder, profile,
-			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens())
+			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr)
 		return nil
 	}
 	if len(args) != 2 {
-		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static>]")
+		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off>]")
 	}
 	key, val := args[0], strings.ToLower(strings.TrimSpace(args[1]))
 	switch key {
@@ -520,14 +555,32 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		default:
 			return fmt.Errorf("unknown embedder %q (want ollama or static)", val)
 		}
+	case "mmr":
+		switch val {
+		case "on", "true", "1":
+			cfg.MMR = true
+		case "off", "false", "0", "default":
+			cfg.MMR = false
+		default:
+			return fmt.Errorf("unknown mmr setting %q (want on or off)", val)
+		}
 	default:
-		return fmt.Errorf("unknown config key %q (want context or embedder)", key)
+		return fmt.Errorf("unknown config key %q (want context, embedder, or mmr)", key)
 	}
 	if err := writeConfig(cfg); err != nil {
 		return err
 	}
 	shown := val
+	if key == "mmr" {
+		shown = "off"
+		if cfg.MMR {
+			shown = "on"
+		}
+	}
 	fmt.Fprintf(stdout, "%s = %s\n", key, shown)
+	if key == "mmr" && cfg.MMR && cfg.Embedder != "ollama" {
+		fmt.Fprintln(stdout, "note: MMR reranks on vector similarity, so it only takes effect under a semantic embedder — run `mora config embedder ollama`.")
+	}
 	if key == "context" {
 		fmt.Fprintf(stdout, "(default budget %d tokens, digest snippets %d chars; per-call max_tokens still wins, ceiling %d)\n",
 			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens())
@@ -549,12 +602,17 @@ func writeConfig(cfg Config) error {
 		return err
 	}
 	path := filepath.Join(cfg.ConfigDir, "config.toml")
+	mmrVal := ""
+	if cfg.MMR {
+		mmrVal = "true"
+	}
 	owned := []struct{ key, val string }{
 		{"vault_dir", cfg.VaultDir},
 		{"data_dir", cfg.DataDir},
 		{"state_dir", cfg.StateDir},
 		{"embedder", cfg.Embedder},
 		{"context", cfg.ContextProfile},
+		{"mmr", mmrVal}, // "" ⇒ off ⇒ line dropped (reset-to-default), like embedder/context
 	}
 	ownedVal := func(key string) (string, bool) {
 		for _, kv := range owned {
@@ -595,7 +653,7 @@ func writeConfig(cfg Config) error {
 		}
 		written[key] = true
 		if val == "" {
-			if key == "embedder" || key == "context" {
+			if key == "embedder" || key == "context" || key == "mmr" {
 				continue // reset-to-default: drop the line
 			}
 			out = append(out, line) // empty dir value: preserve, never silently repoint

@@ -220,7 +220,25 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		}
 		return ids[i] < ids[j]
 	})
-	tr.Fused = append([]string(nil), ids...) // full fused ranking (pre-limit) for §6 attribution
+	tr.Fused = append([]string(nil), ids...) // PURE fused ranking (pre-limit) for §6 attribution — MMR never touches it
+
+	// W2/B1a: optional greedy MMR rerank of the fused pool before the top-k truncate.
+	// Default-OFF (cfg.mmr()==nil ⇒ skipped ⇒ byte-identical to the pre-W2 fused order).
+	// Runs only when a semantic embedder is live (useVec) or the eval seam forces it;
+	// emb is the same model the arms used (set in the vecOK block), avoiding a second
+	// chooseEmbedderFor that could mismatch the index model. A pure permutation, so it
+	// reorders which docs survive the truncate without changing the candidate set.
+	// vecOK gates it: with no stored vectors (a pre-I2 index) there is nothing to
+	// rerank on AND emb is unset, so MMR must no-op rather than deref a nil Embedder
+	// (the force seam bypasses the useVec/semantic gate, never the vectors-exist gate).
+	if mp := cfg.mmr(); mp != nil && vecOK && mmrActive(useVec, mp) && len(ids) > 1 {
+		vecByID, err := loadVectorsByID(ctx, db, emb.ModelID(), ids)
+		if err != nil {
+			return nil, tr, err
+		}
+		ids = mmrRerank(ids, fused, vecByID, *mp)
+	}
+
 	if len(ids) > limit {
 		ids = ids[:limit]
 	}

@@ -2,6 +2,8 @@ package mora
 
 import (
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -78,5 +80,54 @@ func TestCmdConfigContextRoundTrip(t *testing.T) {
 
 	if err := cmdConfig([]string{"context", "huge"}, io.Discard); err == nil {
 		t.Fatalf("invalid profile must error")
+	}
+}
+
+// TestCmdConfigMMRRoundTrip verifies `mora config mmr on|off` persists to
+// config.toml, survives loadConfig, shows in `mora config`, drops the line on
+// off (reset-to-default), coexists with other owned keys, and rejects garbage.
+func TestCmdConfigMMRRoundTrip(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg0 := mustConfig(t)
+	tomlPath := filepath.Join(cfg0.ConfigDir, "config.toml")
+
+	// Set an unrelated owned key first, so the round-trip also proves coexistence.
+	run(t, "config", "embedder", "ollama")
+
+	out := run(t, "config", "mmr", "on")
+	if !strings.Contains(out, "on") {
+		t.Fatalf("set should confirm on, got: %s", out)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.MMR {
+		t.Fatalf("MMR = false after `mmr on`, want true")
+	}
+	if cfg.Embedder != "ollama" {
+		t.Fatalf("setting mmr clobbered embedder: %q", cfg.Embedder)
+	}
+
+	show := run(t, "config")
+	if !strings.Contains(show, "mmr") || !strings.Contains(show, "on") {
+		t.Fatalf("`mora config` should show mmr = on, got: %s", show)
+	}
+
+	// off drops the line entirely (reset-to-default), like embedder/context.
+	run(t, "config", "mmr", "off")
+	cfg, _ = loadConfig()
+	if cfg.MMR {
+		t.Fatalf("MMR = true after `mmr off`, want false")
+	}
+	if b, err := os.ReadFile(tomlPath); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(b), "mmr") {
+		t.Fatalf("mmr off must drop the line, config.toml still has it:\n%s", b)
+	}
+
+	if err := cmdConfig([]string{"mmr", "maybe"}, io.Discard); err == nil {
+		t.Fatalf("invalid mmr setting must error")
 	}
 }
