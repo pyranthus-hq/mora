@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -76,6 +77,47 @@ func TestTokenStoreRoundtrip(t *testing.T) {
 	}
 	if got.RefreshToken != "r" {
 		t.Fatalf("refresh token not preserved: %+v", got)
+	}
+}
+
+// TestSaveTokenAtRecordsAuthEvent asserts that saveTokenAt, with an injected
+// clock, records an AuthEvent in the token file's directory with the account
+// derived from the token filename and the injected timestamp.
+func TestSaveTokenAtRecordsAuthEvent(t *testing.T) {
+	dir := t.TempDir()
+	tokenDir := filepath.Join(dir, "tokens")
+	cases := []struct {
+		name        string
+		file        string // token filename
+		wantAccount string
+	}{
+		{"default account", "google.json", "google"},
+		{"labeled account", "google-work.json", "google-work"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(tokenDir, tc.file)
+			now := time.Date(2026, 6, 15, 8, 30, 0, 0, time.UTC)
+			tok := &oauth2.Token{AccessToken: "a", RefreshToken: "r"}
+			if err := saveTokenAt(path, tok, now); err != nil {
+				t.Fatalf("saveTokenAt: %v", err)
+			}
+			// The token itself must still be written (unchanged behavior).
+			if _, err := LoadToken(path); err != nil {
+				t.Fatalf("token not written: %v", err)
+			}
+			// The auth event lands in the token file's DIRECTORY.
+			at, ok, err := LastAuth(tokenDir, tc.wantAccount)
+			if err != nil {
+				t.Fatalf("LastAuth: %v", err)
+			}
+			if !ok {
+				t.Fatalf("saveTokenAt did not record an auth event for %q", tc.wantAccount)
+			}
+			if !at.Equal(now) {
+				t.Fatalf("recorded auth time = %v, want injected %v", at, now)
+			}
+		})
 	}
 }
 

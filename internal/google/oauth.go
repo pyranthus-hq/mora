@@ -98,6 +98,15 @@ The filesystem and iMessage connectors need no setup and work without this`)
 }
 
 func SaveToken(path string, tok *oauth2.Token) error {
+	return saveTokenAt(path, tok, time.Now())
+}
+
+// saveTokenAt is SaveToken with an injected clock so the auth-event timestamp is
+// testable. On a successful write it records the auth in the token dir's
+// append-only auth-history.jsonl (so `mora doctor` can show "last authed").
+// Recording is best-effort: the token write is what matters, so a RecordAuth
+// failure does NOT fail the save.
+func saveTokenAt(path string, tok *oauth2.Token, now time.Time) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -109,7 +118,14 @@ func SaveToken(path string, tok *oauth2.Token) error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	// Best-effort: the account is the token filename minus ".json"
+	// (tokens/google.json -> "google", tokens/google-work.json -> "google-work").
+	account := strings.TrimSuffix(filepath.Base(path), ".json")
+	_ = RecordAuth(filepath.Dir(path), account, now)
+	return nil
 }
 
 func LoadToken(path string) (*oauth2.Token, error) {
