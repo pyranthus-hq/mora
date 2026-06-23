@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Mora end-to-end agent A/B/C benchmark (codegraph-inspired), on a HERMETIC
 # synthetic vault. Holds model + question fixed; varies ONLY the retrieval arm:
-#   baseline  : no Mora; READ-ONLY Read/Grep/Glob over the synthetic vault notes.
-#   mora-mcp  : Mora via MCP server (no filesystem tools).
-#   mora-cli  : Mora via the `mora` shell CLI (Bash; no filesystem grep of the vault).
-# All three point at the SAME isolated vault via MORA_CONFIG_DIR ($SYNTH) so the
-# real ~/vault/mora and ~/.config/mora are never touched.
+#   baseline      : no Mora; READ-ONLY Read/Grep/Glob over the synthetic vault notes.
+#   mora-mcp      : Mora via MCP server (no filesystem tools).
+#   mora-mcp-mmr  : identical to mora-mcp but with the diversity-aware MMR rerank ON
+#                   (`mora config mmr on`) — the controlled with-vs-without-MMR arm.
+#   mora-cli      : Mora via the `mora` shell CLI (Bash; no filesystem grep of the vault).
+# All arms point at the SAME isolated vault via MORA_CONFIG_DIR ($SYNTH) so the real
+# ~/vault/mora and ~/.config/mora are never touched. The MMR arm flips ONLY the rerank
+# flag in that one sandbox (same index, same embedder), so any delta is purely MMR.
+# For the MMR study run:  ARMS="mora-mcp mora-mcp-mmr"  (the sandbox MUST be on Ollama —
+# MMR only reranks under a semantic embedder).
 #
 # Cost/usage come from Claude Code's own `result` event (authoritative).
 # Env: SYNTH (isolated MORA_CONFIG_DIR, default /tmp/bench-mora), MODEL (sonnet),
@@ -29,6 +34,13 @@ CLI_HINT="You have a 'mora' command-line tool exposing the user's memory across 
 
 cell () { # file arm question
   local f="$1" arm="$2" q="$3" d; d="$(mktemp -d)"
+  # Set the MMR rerank flag EXPLICITLY per cell so each cell is hermetic regardless of
+  # arm order (the on-arm and off-arms share one $SYNTH config.toml). Only the Mora
+  # arms touch it; baseline never reads Mora config. Needs a `mora` with the W2 setter.
+  case "$arm" in
+    mora-mcp-mmr) MORA_CONFIG_DIR="$SYNTH" mora config mmr on  >/dev/null 2>&1 ;;
+    mora-mcp|mora-cli) MORA_CONFIG_DIR="$SYNTH" mora config mmr off >/dev/null 2>&1 ;;
+  esac
   case "$arm" in
     baseline)
       ( cd "$d" && claude -p "$q" --model "$MODEL" --output-format stream-json --verbose \
@@ -36,7 +48,7 @@ cell () { # file arm question
           --add-dir "$VAULT" --disallowedTools Bash Edit Write WebFetch WebSearch \
           --append-system-prompt "$VAULT_HINT" --dangerously-skip-permissions
       ) </dev/null >"$f" 2>"${f%.jsonl}.err" ;;
-    mora-mcp)
+    mora-mcp|mora-mcp-mmr)
       printf '{"mcpServers":{"mora":{"command":"mora","args":["mcp","serve"],"env":{"MORA_CONFIG_DIR":"%s"}}}}' "$SYNTH" >"$d/mcp.json"
       ( cd "$d" && claude -p "$q" --model "$MODEL" --output-format stream-json --verbose \
           --strict-mcp-config --mcp-config "$d/mcp.json" \

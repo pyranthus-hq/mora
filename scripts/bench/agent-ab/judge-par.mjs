@@ -41,7 +41,7 @@ function grade(question, gold, candidate) {
 }
 
 const todo = readdirSync(outDir)
-  .filter(f => /\.(baseline|mora-mcp|mora-cli)\.\d+\.jsonl$/.test(f))
+  .filter(f => /\.(baseline|mora-mcp-mmr|mora-mcp|mora-cli)\.\d+\.jsonl$/.test(f))
   .filter(f => !existsSync(join(outDir, f.replace('.jsonl', '.judge.json'))));
 process.stderr.write(`parallel judge: ${todo.length} cells, CONC=${CONC}\n`);
 

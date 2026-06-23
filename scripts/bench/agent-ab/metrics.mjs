@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [outDir, qfile] = process.argv.slice(2);
-const ARMS = ['baseline', 'mora-mcp', 'mora-cli'];
+const ARMS = ['baseline', 'mora-mcp', 'mora-mcp-mmr', 'mora-cli'];
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS']);
 
 function parseCell(path) {
@@ -38,7 +38,7 @@ const usd = (n) => '$' + n.toFixed(3);
 // cells[qid][arm] = [{cell, judge}]
 const cells = {};
 for (const f of readdirSync(outDir)) {
-  const m = f.match(/^(.+)\.(baseline|mora-mcp|mora-cli)\.(\d+)\.jsonl$/);
+  const m = f.match(/^(.+)\.(baseline|mora-mcp-mmr|mora-mcp|mora-cli)\.(\d+)\.jsonl$/);
   if (!m) continue;
   const [, qid, arm] = m;
   (cells[qid] ??= {})[arm] ??= [];
@@ -72,10 +72,27 @@ for (const arm of ARMS) {
 }
 const b = agg.baseline;
 console.log('\n=== DELTAS vs baseline ===');
-for (const arm of ['mora-mcp', 'mora-cli']) {
+for (const arm of ['mora-mcp', 'mora-mcp-mmr', 'mora-cli']) {
   const a = agg[arm]; if (!a.n || !b.n) continue;
   const cR = med(b.cost) ? (med(a.cost) / med(b.cost)) : 0;
   const accD = (a.acc.length && b.acc.length) ? (mean(a.acc) - mean(b.acc)).toFixed(0) : '?';
   console.log(`${arm}: cost ${usd(med(a.cost))} (${cR ? cR.toFixed(2) + '×' : '–'} of baseline)  accuracy ${a.acc.length ? mean(a.acc).toFixed(0) : '?'} vs ${b.acc.length ? mean(b.acc).toFixed(0) : '?'} (Δ${accD})`);
+}
+
+// The controlled MMR comparison: same vault, same index, same embedder, MMR the only
+// difference. This is the signal that gates a default-on flip — end-task accuracy and
+// critical-fact recall, not just retrieval diversity.
+const on = agg['mora-mcp-mmr'], off = agg['mora-mcp'];
+if (on?.n && off?.n) {
+  console.log('\n=== MMR on/off (mora-mcp-mmr vs mora-mcp — same vault/index/embedder) ===');
+  const accOn = on.acc.length ? mean(on.acc) : NaN, accOff = off.acc.length ? mean(off.acc) : NaN;
+  const keyOn = on.key.length ? mean(on.key) * 100 : NaN, keyOff = off.key.length ? mean(off.key) * 100 : NaN;
+  const dAcc = (!Number.isNaN(accOn) && !Number.isNaN(accOff)) ? (accOn - accOff).toFixed(0) : '?';
+  const dKey = (!Number.isNaN(keyOn) && !Number.isNaN(keyOff)) ? (keyOn - keyOff).toFixed(0) : '?';
+  const cR = med(off.cost) ? (med(on.cost) / med(off.cost)) : 0;
+  console.log(`accuracy   on=${Number.isNaN(accOn) ? '?' : accOn.toFixed(0)}  off=${Number.isNaN(accOff) ? '?' : accOff.toFixed(0)}  (Δ${dAcc})`);
+  console.log(`foundKey   on=${Number.isNaN(keyOn) ? '?' : keyOn.toFixed(0) + '%'}  off=${Number.isNaN(keyOff) ? '?' : keyOff.toFixed(0) + '%'}  (Δ${dKey} pts)`);
+  console.log(`cost       on=${usd(med(on.cost))}  off=${usd(med(off.cost))}  (${cR ? cR.toFixed(2) + '×' : '–'})`);
+  console.log('VERDICT GUIDE: flip MMR default-on only if Δaccuracy/ΔfoundKey is a clear positive at no material cost. A flat or negative Δ ⇒ keep default-off (the retrieval-diversity win did not convert to end-task quality).');
 }
 console.log('\nNOTE: acc = LLM-judged accuracy 0-100 vs synthetic gold; foundKey = % of reps that surfaced the critical fact (e.g. the iMessage-only dropped commitment). billTok = input+cache-creation (paid input). Hermetic synthetic vault; cost from Claude\'s own result event.\n');

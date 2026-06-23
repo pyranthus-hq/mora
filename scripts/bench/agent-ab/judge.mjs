@@ -39,7 +39,7 @@ function grade(question, gold, candidate) {
   catch { return { accuracy: 0, found_key_facts: false, fabricated: false, notes: 'unparseable judge output' }; }
 }
 
-const cells = readdirSync(outDir).filter(f => /\.(baseline|mora-mcp|mora-cli)\.\d+\.jsonl$/.test(f));
+const cells = readdirSync(outDir).filter(f => /\.(baseline|mora-mcp-mmr|mora-mcp|mora-cli)\.\d+\.jsonl$/.test(f));
 for (const f of cells) {
   const jpath = join(outDir, f.replace('.jsonl', '.judge.json'));
   if (existsSync(jpath)) continue;

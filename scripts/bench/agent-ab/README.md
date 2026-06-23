@@ -11,6 +11,7 @@ Three arms:
 | --- | --- |
 | `baseline` | `Read`/`Grep`/`Glob` over the vault's markdown notes (brute-force RAG) |
 | `mora-mcp` | Mora memory tools via MCP (`search_memory`, `think`, `graph`) — no filesystem |
+| `mora-mcp-mmr` | identical to `mora-mcp` but with the diversity-aware **MMR rerank ON** — the controlled with-vs-without-MMR arm |
 | `mora-cli` | the `mora` CLI via Bash (`mora think`, `mora search`) — no filesystem |
 
 Everything runs against a **hermetic synthetic vault**: `MORA_CONFIG_DIR`
@@ -62,6 +63,32 @@ node metrics.mjs out-large /tmp/bench-mora-large/questions.json
 `REPS`, `QFILTER` (id/substring), `ARMS` (restrict, e.g. `"mora-mcp mora-cli"`),
 `OUT` (output dir), `KEEP_OUT=1` (don't wipe `OUT`), `JUDGE=1` (serial judge at
 end), `CONC` (parallel-judge concurrency).
+
+### MMR on/off study
+
+The `mora-mcp-mmr` arm answers the one question the in-process eval cannot: does
+the diversity-aware MMR rerank improve an agent's *end-task* answers, or only its
+retrieval diversity? It is identical to `mora-mcp` but flips `mora config mmr on`
+in the **same** sandbox — same vault, same index, same Ollama embedder — so any
+delta is purely MMR. (MMR only reranks under a semantic embedder, so the sandbox
+**must** be on `ollama`; needs a `mora` binary with the `config mmr` setter.)
+
+```bash
+# build + index under Ollama (MMR is a no-op on the static-hash embedder)
+python3 build_vault.py world.json /tmp/bench-mora       # or world-large.json for the scaling test
+MORA_CONFIG_DIR=/tmp/bench-mora mora config embedder ollama
+MORA_CONFIG_DIR=/tmp/bench-mora mora index rebuild
+
+# run ONLY the two MMR-comparison arms, judge, report
+SYNTH=/tmp/bench-mora OUT=$PWD/out-mmr REPS=3 MODEL=sonnet ARMS="mora-mcp mora-mcp-mmr" ./bench.sh
+node judge-par.mjs out-mmr /tmp/bench-mora/questions.json
+node metrics.mjs   out-mmr /tmp/bench-mora/questions.json   # prints an "MMR on/off" section
+```
+
+MMR's benefit is expected to surface on the **large** vault (1900 distractors),
+where near-duplicate noise crowds the top-k — that is exactly what MMR demotes.
+The `metrics.mjs` "MMR on/off" block reports Δaccuracy / ΔfoundKey / cost; flip
+the default on only if that delta is a clear positive at no material cost.
 
 > Each cell and each judge call is a real billed `claude -p`. A full
 > 6-question × 3-arm × 3-rep run is on the order of $20–30.
