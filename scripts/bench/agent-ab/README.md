@@ -73,22 +73,38 @@ in the **same** sandbox — same vault, same index, same Ollama embedder — so 
 delta is purely MMR. (MMR only reranks under a semantic embedder, so the sandbox
 **must** be on `ollama`; needs a `mora` binary with the `config mmr` setter.)
 
+**The `mora` on PATH must support `config mmr`** — that setter is newer than some
+installed binaries, and an old one would leave BOTH arms MMR-off and silently null
+the A/B. Build from source: `go build -o /tmp/mora-src ./cmd/mora && export
+PATH=/tmp/mora-src:$PATH`. `bench.sh` now preflights this and aborts before billing.
+
 ```bash
 # build + index under Ollama (MMR is a no-op on the static-hash embedder)
-python3 build_vault.py world.json /tmp/bench-mora       # or world-large.json for the scaling test
+python3 build_vault.py world.json /tmp/bench-mora       # or a large vault for the scaling test
 MORA_CONFIG_DIR=/tmp/bench-mora mora config embedder ollama
 MORA_CONFIG_DIR=/tmp/bench-mora mora index rebuild
 
-# run ONLY the two MMR-comparison arms, judge, report
-SYNTH=/tmp/bench-mora OUT=$PWD/out-mmr REPS=3 MODEL=sonnet ARMS="mora-mcp mora-mcp-mmr" ./bench.sh
+# STEP 0 — MANDATORY free pre-spend gate (costs $0): does MMR even change retrieval?
+python3 mmr_recall_gate.py /tmp/bench-mora        # exits 2 / prints FAIL if not
+
+# only if the gate PASSES: run the two MMR-comparison arms, judge, report
+SYNTH=/tmp/bench-mora OUT=$PWD/out-mmr REPS=5 MODEL=sonnet ARMS="mora-mcp mora-mcp-mmr" ./bench.sh
 node judge-par.mjs out-mmr /tmp/bench-mora/questions.json
 node metrics.mjs   out-mmr /tmp/bench-mora/questions.json   # prints an "MMR on/off" section
 ```
 
-MMR's benefit is expected to surface on the **large** vault (1900 distractors),
-where near-duplicate noise crowds the top-k — that is exactly what MMR demotes.
-The `metrics.mjs` "MMR on/off" block reports Δaccuracy / ΔfoundKey / cost; flip
-the default on only if that delta is a clear positive at no material cost.
+> **Why the gate is mandatory (2026-06): the stock corpus FAILS it.** MMR rescues a
+> *distinct fact crowded out by near-duplicates of itself*. The `gen_distractors.py`
+> distractors only *dilute* (push gold down by raw volume — a recall/embedding
+> problem), and every gold critical fact here is a single unique memory, so MMR has
+> nothing redundant to demote. Measured: distinct-gold recall@8 MMR-off→on is
+> mixed-sign noise (2/6 questions move, net +0.05), and **multi-query union recall is
+> Δ=0 on all six**. End-task accuracy sits downstream of a zero retrieval change, so a
+> billed run would measure pure noise. To make this A/B meaningful, first redesign the
+> corpus so a *needed* gold doc is crowded below rank-8 by near-duplicates **of that
+> doc**, add per-question `must_have` facts for a grounded `foundKey`, and use paired
+> per-question stats with a bootstrap CI (REPS≥5, judge temp=0) — see the validation
+> notes. Until the gate PASSES, do not fund the agent A/B.
 
 > Each cell and each judge call is a real billed `claude -p`. A full
 > 6-question × 3-arm × 3-rep run is on the order of $20–30.
