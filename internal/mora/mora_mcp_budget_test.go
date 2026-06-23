@@ -245,6 +245,66 @@ func TestMCPSearchDefaultLimitIsEight(t *testing.T) {
 	}
 }
 
+// TestSearchMemoryAggregateBudgetIsEnforced is the B2 regression guard: the MCP
+// search_memory results array is capped by an AGGREGATE byte budget independent
+// of the caller's `limit`, cut on whole-Memory boundaries, so a large limit can
+// never blow the search envelope. snippetMemories bounds each row; this bounds
+// the total. The cut is reported honestly via results_truncated.
+func TestSearchMemoryAggregateBudgetIsEnforced(t *testing.T) {
+	seedBudgetFixture(t) // 200 "lorem" threads, ~1KB bodies each
+	ctx := context.Background()
+
+	// A large limit asks for 50 matches; the byte budget must trim them.
+	res, err := callMCPTool(ctx, "search_memory", map[string]any{"query": "lorem", "limit": float64(50)})
+	if err != nil {
+		t.Fatalf("search_memory: %v", err)
+	}
+	obj := res.(map[string]any)
+	mems, ok := obj["results"].([]Memory)
+	if !ok {
+		t.Fatalf("results = %T, want []Memory", obj["results"])
+	}
+	if len(mems) == 0 {
+		t.Fatal("budget trimmed everything; want a non-empty whole-Memory prefix")
+	}
+	if len(mems) >= 50 {
+		t.Fatalf("aggregate budget did not trim a 50-limit query: got %d results", len(mems))
+	}
+	// Every returned result is a COMPLETE record (cut on Memory boundary).
+	for _, m := range mems {
+		if m.ID == "" || m.Title == "" {
+			t.Fatalf("budget cut produced a half-record: %+v", m)
+		}
+	}
+	// The trim is reported honestly.
+	dropped, ok := obj["results_truncated"].(int)
+	if !ok || dropped <= 0 {
+		t.Fatalf("results_truncated = %v (%T), want a positive dropped count", obj["results_truncated"], obj["results_truncated"])
+	}
+	if len(mems)+dropped != 50 {
+		t.Fatalf("kept %d + dropped %d != 50 requested", len(mems), dropped)
+	}
+	// The whole point: the envelope now lands under the 8000-token search ceiling.
+	envB := measureEnvelope(t, budgetCall("search_memory", `{"query":"lorem","limit":50}`))
+	if tok := (envB + charsPerToken - 1) / charsPerToken; tok > 8000 {
+		t.Fatalf("search_memory limit=50 envelope = %d tok > 8000 ceiling — budget too loose", tok)
+	}
+	// Deterministic: same fixture, same trimmed count.
+	res2, _ := callMCPTool(ctx, "search_memory", map[string]any{"query": "lorem", "limit": float64(50)})
+	if got := len(res2.(map[string]any)["results"].([]Memory)); got != len(mems) {
+		t.Fatalf("nondeterministic budget cut: %d then %d", len(mems), got)
+	}
+	// Small queries fit the budget untouched (no false trim, no truncated flag).
+	small, _ := callMCPTool(ctx, "search_memory", map[string]any{"query": "lorem", "limit": float64(5)})
+	sobj := small.(map[string]any)
+	if got := len(sobj["results"].([]Memory)); got != 5 {
+		t.Fatalf("limit=5 should not be budget-trimmed, got %d", got)
+	}
+	if _, has := sobj["results_truncated"]; has {
+		t.Fatal("limit=5 fits the budget; results_truncated must be absent")
+	}
+}
+
 // budgetCases is the contract table. Ceilings are in tokens, anchored to the
 // 20000-token redline and tiered by role: mutation/read-one tools are tiny
 // point ops; synthesis/briefing tools (think/digest/context) sit well under
@@ -263,6 +323,11 @@ func budgetCases() []budgetCase {
 		// The bumped default (limit=8, no arg) must also stay budget-safe over long
 		// bodies — proves snippeting, not the old limit=5, is what holds the line.
 		{tool: "search_default_limit", line: budgetCall("search_memory", `{"query":"bulktext"}`), ceil: 8000},
+		// B2: a LARGE limit over 200 matching threads must still land under the
+		// search ceiling — the aggregate byte budget (budgetSearchResults) trims the
+		// array on whole-Memory boundaries so `limit` can't blow the window.
+		{tool: "search_budget_cap", line: budgetCall("search_memory", `{"query":"lorem","limit":50}`), ceil: 8000,
+			note: "B2: aggregate byte budget trims a large limit on Memory boundaries to hold the search ceiling"},
 		// list_memory's bug (full bodies, no snippet cap) is body-SIZE driven, not
 		// count driven: on the live vault it is 27.7KB@limit=10 / 313KB@limit=50,
 		// but over this ~1KB-body fixture it stays ~3k tok. Forcing it would mean

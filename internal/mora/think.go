@@ -37,21 +37,23 @@ type ThinkEvidence struct {
 
 // ThinkGaps is the deterministic "what's missing" analysis (no model).
 type ThinkGaps struct {
-	Stale         []string `json:"stale,omitempty"`          // freshest evidence is old
-	ThinCoverage  []string `json:"thin_coverage,omitempty"`  // named entity has little evidence
-	CoverageHoles []string `json:"coverage_holes,omitempty"` // named entity has no page at all
+	Stale            []string `json:"stale,omitempty"`             // freshest evidence is old
+	ThinCoverage     []string `json:"thin_coverage,omitempty"`     // named entity has little evidence
+	CoverageHoles    []string `json:"coverage_holes,omitempty"`    // named entity has no page at all
+	RetrievalCaveats []string `json:"retrieval_caveats,omitempty"` // B3: evidence supported ONLY by people-graph association, not a direct lexical/semantic hit
 }
 
 func (g ThinkGaps) empty() bool {
-	return len(g.Stale) == 0 && len(g.ThinCoverage) == 0 && len(g.CoverageHoles) == 0
+	return len(g.Stale) == 0 && len(g.ThinCoverage) == 0 && len(g.CoverageHoles) == 0 && len(g.RetrievalCaveats) == 0
 }
 
 // ThinkResult is the synthesis envelope returned by `think`.
 type ThinkResult struct {
-	Query           string          `json:"query"`
-	Evidence        []ThinkEvidence `json:"evidence"`
-	Gaps            ThinkGaps       `json:"gaps"`
-	SynthesisPrompt string          `json:"synthesis_prompt"`
+	Query           string            `json:"query"`
+	Evidence        []ThinkEvidence   `json:"evidence"`
+	Gaps            ThinkGaps         `json:"gaps"`
+	OpenLoops       []PersonOpenLoops `json:"open_loops,omitempty"` // C1: unfinished tasks tied to people named in the query
+	SynthesisPrompt string            `json:"synthesis_prompt"`
 }
 
 var capitalizedNameRe = regexp.MustCompile(`\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b`)
@@ -60,7 +62,11 @@ var capitalizedNameRe = regexp.MustCompile(`\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b`)
 // in tests; callers pass time.Now().
 func buildThink(ctx context.Context, cfg Config, query, scope string, limit int, now time.Time) (ThinkResult, error) {
 	res := ThinkResult{Query: query}
-	mems, err := hybridSearch(ctx, cfg, query, scope, limit)
+	// Use the trace (tracePool=0 ⇒ production arms, zero extra work) so the gap
+	// analysis can tell which evidence was a direct lexical/semantic hit vs only a
+	// people-graph association (B3). The fused result is byte-identical to
+	// hybridSearch — the trace is the per-arm lists it otherwise discards.
+	mems, tr, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
 	if err != nil {
 		return res, err
 	}
@@ -74,18 +80,25 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 			Snippet:   matchSnippet(m.Text, query, thinkSnippetLen),
 		})
 	}
-	gaps, err := computeGaps(ctx, cfg, query, mems, now)
+	gaps, err := computeGaps(ctx, cfg, query, mems, tr, now)
 	if err != nil {
 		return res, err
 	}
 	res.Gaps = gaps
-	res.SynthesisPrompt = thinkPrompt(query, res.Evidence, gaps)
+	// C1: additively surface unfinished tasks tied to the people named in the
+	// query ("what's still open with Sam"). Never partitions the evidence.
+	loops, err := openLoopsForQuery(ctx, cfg, query)
+	if err != nil {
+		return res, err
+	}
+	res.OpenLoops = loops
+	res.SynthesisPrompt = thinkPrompt(query, res.Evidence, gaps, loops)
 	return res, nil
 }
 
 // computeGaps derives staleness, thin-coverage, and coverage-hole signals — all
 // deterministic and free, before any model is consulted.
-func computeGaps(ctx context.Context, cfg Config, query string, mems []Memory, now time.Time) (ThinkGaps, error) {
+func computeGaps(ctx context.Context, cfg Config, query string, mems []Memory, tr retrievalTrace, now time.Time) (ThinkGaps, error) {
 	var g ThinkGaps
 
 	if len(mems) == 0 {
@@ -153,7 +166,50 @@ func computeGaps(ctx context.Context, cfg Config, query string, mems []Memory, n
 		seenHole[name] = true
 		g.CoverageHoles = append(g.CoverageHoles, fmt.Sprintf("The vault has no entity for %q.", name))
 	}
+
+	// B3 retrieval caveat: when the query named a person (the graph arm fired) and
+	// EVERY returned memory came ONLY from people-graph association — present in the
+	// graph arm but in neither the FTS (lexical) nor vector (semantic) arm — the
+	// evidence proves "these memories are connected to <person>", NOT "they answer
+	// the question". Flag it; do NOT drop — graph-only person expansion is the
+	// showcased GraphRAG-lite recall feature (TestHybridGraphExpansion). Lowest
+	// false-positive trigger: directly-supported count == 0 across ALL returned
+	// evidence (codex). tr.FTS/tr.Vec are the SAME call's production arms.
+	if len(mems) > 0 && len(tr.Graph) > 0 {
+		direct := make(map[string]bool, len(tr.FTS)+len(tr.Vec))
+		for _, id := range tr.FTS {
+			direct[id] = true
+		}
+		for _, id := range tr.Vec {
+			direct[id] = true
+		}
+		associationOnly := true
+		for _, m := range mems {
+			if direct[m.ID] {
+				associationOnly = false
+				break
+			}
+		}
+		if associationOnly {
+			who := "a person named in the question"
+			if names := personDisplays(ctx, db, pids); names != "" {
+				who = names
+			}
+			g.RetrievalCaveats = append(g.RetrievalCaveats, fmt.Sprintf(
+				"The matches for %s come from people-graph association, not a direct lexical or semantic hit on the question — treat them as context and verify before relying.", who))
+		}
+	}
 	return g, nil
+}
+
+// personDisplays joins the display names of the given canonical person ids, in
+// their (sorted) input order, for an honest retrieval caveat message.
+func personDisplays(ctx context.Context, db *sql.DB, pids []string) string {
+	names := make([]string, 0, len(pids))
+	for _, pid := range pids {
+		names = append(names, entityDisplayName(ctx, db, pid))
+	}
+	return strings.Join(names, ", ")
 }
 
 // entityExists reports whether any entity matches name by display name or alias.
@@ -182,7 +238,7 @@ func entityExists(ctx context.Context, db *sql.DB, name string) bool {
 
 // thinkPrompt builds the instruction the calling agent's model runs to produce a
 // cited answer plus an explicit "what's missing" section grounded in the gaps.
-func thinkPrompt(query string, ev []ThinkEvidence, gaps ThinkGaps) string {
+func thinkPrompt(query string, ev []ThinkEvidence, gaps ThinkGaps, loops []PersonOpenLoops) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. ")
 	b.WriteString("If the evidence is insufficient, say so plainly rather than guessing.\n\n")
@@ -204,7 +260,11 @@ func thinkPrompt(query string, ev []ThinkEvidence, gaps ThinkGaps) string {
 		for _, s := range gaps.CoverageHoles {
 			fmt.Fprintf(&b, "- %s\n", s)
 		}
+		for _, s := range gaps.RetrievalCaveats {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
 	}
+	renderOpenLoops(&b, loops)
 	return b.String()
 }
 

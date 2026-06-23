@@ -40,7 +40,7 @@ func meetingPrepMCPPayload(mp MeetingPrepResult, budgetChars int) MeetingPrepRes
 		kept = append(kept, e)
 	}
 	mp.Evidence = kept
-	mp.SynthesisPrompt = meetingPrepPrompt(*mp.Event, mp.Attendees, mp.Evidence, mp.Gaps)
+	mp.SynthesisPrompt = meetingPrepPrompt(*mp.Event, mp.Attendees, mp.Evidence, mp.Gaps, mp.OpenLoops)
 	return mp
 }
 
@@ -172,12 +172,13 @@ func (g MeetingGaps) empty() bool {
 // recency-ranked evidence, an honest gap analysis, and a model-free synthesis
 // prompt. Event is nil when there is no upcoming meeting.
 type MeetingPrepResult struct {
-	Event           *MeetingEvent   `json:"event"`
-	Attendees       []PrepAttendee  `json:"attendees"`
-	Evidence        []ThinkEvidence `json:"evidence"`
-	Gaps            MeetingGaps     `json:"gaps"`
-	FallbackNote    string          `json:"note,omitempty"` // UX FORK 2 forgiving fallback
-	SynthesisPrompt string          `json:"synthesis_prompt"`
+	Event           *MeetingEvent     `json:"event"`
+	Attendees       []PrepAttendee    `json:"attendees"`
+	Evidence        []ThinkEvidence   `json:"evidence"`
+	Gaps            MeetingGaps       `json:"gaps"`
+	OpenLoops       []PersonOpenLoops `json:"open_loops,omitempty"` // C1: unfinished tasks tied to an attendee
+	FallbackNote    string            `json:"note,omitempty"`       // UX FORK 2 forgiving fallback
+	SynthesisPrompt string            `json:"synthesis_prompt"`
 }
 
 // selfEmails returns lowercased Source.Email over enabled gmail/calendar sources —
@@ -404,13 +405,31 @@ func buildMeetingPrep(ctx context.Context, cfg Config, now time.Time, attendeeNa
 		res.Gaps.NoAttendees = true
 	}
 
-	res.SynthesisPrompt = meetingPrepPrompt(*ev, res.Attendees, res.Evidence, res.Gaps)
+	// C1: additively surface unfinished tasks tied to each attendee ("what's still
+	// open with them"). Joined on the attendee's CANONICAL entity id (resolved via
+	// aliasIdx) so a pre-merge personRefs alias still matches; labels only.
+	byPerson, err := openLoopsByPerson(ctx, cfg, db)
+	if err != nil {
+		return res, err
+	}
+	for _, att := range res.Attendees {
+		canonical := att.PersonID
+		if info, ok := aliasIdx[att.PersonID]; ok {
+			canonical = info.canonical
+		}
+		if pl := byPerson[canonical]; len(pl) > 0 {
+			capped, more := capPersonLoops(pl)
+			res.OpenLoops = append(res.OpenLoops, PersonOpenLoops{Person: att.Display, Loops: capped, More: more})
+		}
+	}
+
+	res.SynthesisPrompt = meetingPrepPrompt(*ev, res.Attendees, res.Evidence, res.Gaps, res.OpenLoops)
 	return res, nil
 }
 
 // meetingPrepPrompt mirrors thinkPrompt's envelope with a meeting frame and an
 // anti-fabrication clause. Pure string builder — no model call, no network.
-func meetingPrepPrompt(ev MeetingEvent, attendees []PrepAttendee, evidence []ThinkEvidence, gaps MeetingGaps) string {
+func meetingPrepPrompt(ev MeetingEvent, attendees []PrepAttendee, evidence []ThinkEvidence, gaps MeetingGaps, loops []PersonOpenLoops) string {
 	var b strings.Builder
 	b.WriteString("You are preparing the user for an upcoming meeting. Using ONLY the evidence below, write a short prep brief: who the attendees are, the most recent relevant context with each, and anything time-sensitive. Cite every claim with its [stable_id]. Do NOT invent decisions, action items, or open questions that are not in the evidence — if the vault is thin, say so plainly using the KNOWN GAPS below.\n\n")
 	fmt.Fprintf(&b, "MEETING: %s — %s (%s)\n", ev.Title, ev.OccurredAt, ev.Source)
@@ -440,6 +459,7 @@ func meetingPrepPrompt(ev MeetingEvent, attendees []PrepAttendee, evidence []Thi
 			b.WriteString("- Self identity is unknown (no Google account connected), so the attendee list may include you.\n")
 		}
 	}
+	renderOpenLoops(&b, loops)
 	return b.String()
 }
 

@@ -3191,6 +3191,16 @@ const (
 	// MCP surface (full bodies blew the T0 ceiling). Agents fetch full text via
 	// read_memory by id. Matches think's thinkSnippetLen.
 	searchSnippetLen = 240
+	// searchMemoryResultsBudgetBytes caps the AGGREGATE byte size of the
+	// search_memory results array. snippetMemories already bounds each row
+	// (searchSnippetLen), but nothing bounded the TOTAL — a large `limit` arg
+	// could still blow the MCP window. Derived to hold search_memory's 8000-token
+	// envelope ceiling (mora_mcp_budget_test.go): toCallToolResult ships the
+	// payload ~2.4× (indented text block + structuredContent mirror), so the
+	// pre-envelope results must stay near a third of the ceiling —
+	// 8000·charsPerToken/2.4 ≈ 13K, floored to 11K for headroom over the freshness
+	// map + JSON frame. budgetSearchResults cuts on whole-Memory boundaries.
+	searchMemoryResultsBudgetBytes = 11000
 )
 
 // snippetMemories returns copies of the results with each body flattened to a
@@ -3217,6 +3227,34 @@ func snippetMemories(mems []Memory, query string) []Memory {
 		out[i] = m
 	}
 	return out
+}
+
+// budgetSearchResults caps the aggregate JSON size of a (snippeted) search result
+// slice, keeping a whole-Memory prefix — never a half-record. It mirrors
+// budgetSections' greedy item-by-item fill with the SAME conservative jsonSep
+// over-count, but for a flat slice: snippetMemories bounds each row, this bounds
+// the total so a large `limit` arg can't blow the MCP search envelope. A
+// budgetBytes ≤ 0 disables it. The first result is always kept so a matched query
+// never returns empty purely for budget; this is sound because snippetMemories has
+// already capped the body (searchSnippetLen) and dropped Meta, so a single row is
+// O(1KB) — far under searchMemoryResultsBudgetBytes (11K), and the forced row can
+// never itself breach the ceiling. Returns the kept prefix and the number dropped.
+func budgetSearchResults(mems []Memory, budgetBytes int) (kept []Memory, dropped int) {
+	if budgetBytes <= 0 || len(mems) == 0 {
+		return mems, 0
+	}
+	const jsonSep = 2 // per-element comma/bracket glue (conservative over-count), matching budgetSections.
+	kept = make([]Memory, 0, len(mems))
+	used := 0
+	for _, m := range mems {
+		cost := jsonLen(m) + jsonSep
+		if used+cost > budgetBytes && len(kept) > 0 {
+			break
+		}
+		kept = append(kept, m)
+		used += cost
+	}
+	return kept, len(mems) - len(kept)
 }
 
 func searchMemories(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
@@ -4561,7 +4599,18 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// answer carries the per-source last_synced map (same shape as
 		// context_memory's), so the agent can qualify answers with data age
 		// instead of presenting a stale vault as live.
-		return map[string]any{"results": snippetMemories(res, query), "freshness": sourceFreshness(cfg)}, nil
+		//
+		// Aggregate byte budget (B2): snippetMemories caps each row, but a large
+		// `limit` could still ship an array that dominates the MCP window — so
+		// trim the total to searchMemoryResultsBudgetBytes on whole-Memory
+		// boundaries, and report the cut honestly (results_truncated) rather than
+		// silently dropping matches.
+		budgeted, dropped := budgetSearchResults(snippetMemories(res, query), searchMemoryResultsBudgetBytes)
+		out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg)}
+		if dropped > 0 {
+			out["results_truncated"] = dropped
+		}
+		return out, nil
 	case "list_memory":
 		start := time.Now()
 		res, err := listMemories(cfg, strArg(args, "scope", ""), intArg(args, "limit", 10))
