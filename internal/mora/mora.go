@@ -386,6 +386,7 @@ USAGE:
   mora ingest run --source docs
   mora schedule install pulse-daily
   mora config context large        # context profile: small | default | large (budget + snippet density)
+  mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
   mora connectors list|enable <type>|disable <type>
   mora connect google              # sign in with Google in your browser, then backfill Gmail + Calendar (last 90 days)
   mora connect google --since-days 365   # widen the gmail backfill window
@@ -522,13 +523,17 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		if embedder == "" {
 			embedder = "static"
 		}
-		fmt.Fprintf(stdout, "vault_dir = %s\ndata_dir  = %s\nstate_dir = %s\nembedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\n",
+		mmr := "off"
+		if cfg.MMR {
+			mmr = "on"
+		}
+		fmt.Fprintf(stdout, "vault_dir = %s\ndata_dir  = %s\nstate_dir = %s\nembedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
 			cfg.VaultDir, cfg.DataDir, cfg.StateDir, embedder, profile,
-			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens())
+			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr)
 		return nil
 	}
 	if len(args) != 2 {
-		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static>]")
+		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off>]")
 	}
 	key, val := args[0], strings.ToLower(strings.TrimSpace(args[1]))
 	switch key {
@@ -550,14 +555,32 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		default:
 			return fmt.Errorf("unknown embedder %q (want ollama or static)", val)
 		}
+	case "mmr":
+		switch val {
+		case "on", "true", "1":
+			cfg.MMR = true
+		case "off", "false", "0", "default":
+			cfg.MMR = false
+		default:
+			return fmt.Errorf("unknown mmr setting %q (want on or off)", val)
+		}
 	default:
-		return fmt.Errorf("unknown config key %q (want context or embedder)", key)
+		return fmt.Errorf("unknown config key %q (want context, embedder, or mmr)", key)
 	}
 	if err := writeConfig(cfg); err != nil {
 		return err
 	}
 	shown := val
+	if key == "mmr" {
+		shown = "off"
+		if cfg.MMR {
+			shown = "on"
+		}
+	}
 	fmt.Fprintf(stdout, "%s = %s\n", key, shown)
+	if key == "mmr" && cfg.MMR && cfg.Embedder != "ollama" {
+		fmt.Fprintln(stdout, "note: MMR reranks on vector similarity, so it only takes effect under a semantic embedder — run `mora config embedder ollama`.")
+	}
 	if key == "context" {
 		fmt.Fprintf(stdout, "(default budget %d tokens, digest snippets %d chars; per-call max_tokens still wins, ceiling %d)\n",
 			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens())
@@ -579,12 +602,17 @@ func writeConfig(cfg Config) error {
 		return err
 	}
 	path := filepath.Join(cfg.ConfigDir, "config.toml")
+	mmrVal := ""
+	if cfg.MMR {
+		mmrVal = "true"
+	}
 	owned := []struct{ key, val string }{
 		{"vault_dir", cfg.VaultDir},
 		{"data_dir", cfg.DataDir},
 		{"state_dir", cfg.StateDir},
 		{"embedder", cfg.Embedder},
 		{"context", cfg.ContextProfile},
+		{"mmr", mmrVal}, // "" ⇒ off ⇒ line dropped (reset-to-default), like embedder/context
 	}
 	ownedVal := func(key string) (string, bool) {
 		for _, kv := range owned {
@@ -625,7 +653,7 @@ func writeConfig(cfg Config) error {
 		}
 		written[key] = true
 		if val == "" {
-			if key == "embedder" || key == "context" {
+			if key == "embedder" || key == "context" || key == "mmr" {
 				continue // reset-to-default: drop the line
 			}
 			out = append(out, line) // empty dir value: preserve, never silently repoint
