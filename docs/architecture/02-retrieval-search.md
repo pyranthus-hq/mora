@@ -28,7 +28,7 @@ func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit i
 }
 ```
 
-`embedderIsSemantic` (`hybrid.go:59`) is a one-liner: `e.ModelID() != defaultEmbedder().ModelID()`. The static-hash embedder reports `"static-hash-v1"` (`embed.go:31`); anything else (Ollama reports `"ollama:nomic-embed-text"`, `embed_ollama.go:31`) is "semantic."
+`embedderIsSemantic` (`hybrid.go:59`) is a one-liner: `e.ModelID() != defaultEmbedder().ModelID()`. The static-hash embedder reports `"static-hash-v1"` (`embed.go:31`); anything else (Ollama reports `"ollama:<model>@<digest>"`, `embed_ollama.go`) is "semantic."
 
 **Why gate at all — the empirical regression.** The T2 recall eval (2026-06-06) measured, on Adit's real-query golden set, that hybrid retrieval beats FTS-only **only when a real semantic embedder is active**. Under the static-hash floor, hybrid *regresses* recall: **0.591 → 0.394 @5** (cited in the `embedderIsSemantic` doc comment, `hybrid.go:55-58`). The static-hash vector arm is lexical-feature cosine, not prose semantics, so it injects ranking noise that drags the BM25 anchor down. So the router sends static-hash searches to **FTS-only** and reserves hybrid for the case where it was proven to help.
 
@@ -100,7 +100,7 @@ classDiagram
     }
     class ollamaEmbedder {
         +dim = 768
-        +ModelID() = "ollama:<model>"
+        +ModelID() = "ollama:<model>@<digest>"
         POST localhost /api/embeddings
     }
     Embedder <|.. staticEmbedder
@@ -108,6 +108,8 @@ classDiagram
 ```
 
 The `Embedder` interface (`embed.go:12`) is `Embed/Dim/ModelID`. `ModelID()` is **stored per vector** so a model change triggers re-embed and a query in a different model never reads the wrong vectors (`embed.go:15`, enforced in the vector arm — see below).
+
+The Ollama model id carries the resolved **content digest** — `"ollama:<model>@<digest>"` — not just the bare name. Ollama tags are *mutable*: `ollama pull nomic-embed-text` can re-resolve the same name to new weights (a new digest). Keying only on the name would let those new-digest **query** vectors silently match already-stored **old-digest** vectors (same name, same 768-dim → `cosine` returns a garbage-but-nonzero score, no error) — two different embedding spaces compared as if one. Stamping the digest makes a re-pull change `ModelID()`, so the stored vectors no longer match the query model and the vector arm **cleanly empties** (FTS + graph still answer) until a re-index. The digest comes from the `/api/tags` probe that already runs at embedder construction (no extra request, no new egress); if the daemon lists no digest the id degrades to the bare `"ollama:<model>"` form, keeping older indexes compatible. **Migration:** after upgrading to a digest-stamping binary, an existing Ollama vault's vectors (stored under the bare id) won't match the new digest-stamped query id, so semantic retrieval stays off (FTS + graph only) until a one-time `mora index rebuild` re-embeds them — expected, not corruption.
 
 ### Static-hash (the default, deterministic, zero-dep floor)
 
@@ -126,7 +128,7 @@ It is weaker than a transformer but **$0, pure-Go, single-binary, no model downl
 
 **Zero-egress is a hard security invariant.** This is the *only* path in Mora that touches a network socket (`embed_ollama.go:18`). `chooseEmbedder` (`embed_ollama.go:92`) refuses any non-loopback `MORA_OLLAMA_URL` and falls back to static, printing a warning — `isLoopbackURL` (`embed_ollama.go:56`) accepts only `localhost` or a loopback IP. Memory text must never leave the machine (Codex I2 review, `embed_ollama.go:101-105`).
 
-`embedderForPref("ollama")` returns Ollama only when the daemon is `reachable()` (a 2s `GET /api/tags` probe, `embed_ollama.go`); otherwise it degrades to the static embedder with a warning, never an error. **Production callers use `chooseEmbedderFor(cfg)`**, which resolves the preference in precedence order: the `MORA_EMBEDDER` env var when SET (incl. `""` → static, the CI-determinism knob), else the durable `embedder = "ollama"` key in `config.toml`, else the static floor. This is what makes a one-time `config.toml` opt-in turn on semantic retrieval for BOTH the CLI and the MCP server (no per-host env wiring). **Index-time and query-time both call it with the same cfg** so the model id stored per vector matches the query model; a mismatch just makes the vector arm empty — FTS + graph still answer. (`chooseEmbedder()` is the env-only shim retained for call sites/tests without a Config.)
+`embedderForPref("ollama")` returns Ollama only when the daemon answers a 2s `GET /api/tags` `probe()` (`embed_ollama.go`); that single probe doubles as reachability and digest resolution (it parses the model's content digest out of the tags list — see `ModelID()` above). Otherwise it degrades to the static embedder with a warning, never an error. **Production callers use `chooseEmbedderFor(cfg)`**, which resolves the preference in precedence order: the `MORA_EMBEDDER` env var when SET (incl. `""` → static, the CI-determinism knob), else the durable `embedder = "ollama"` key in `config.toml`, else the static floor. This is what makes a one-time `config.toml` opt-in turn on semantic retrieval for BOTH the CLI and the MCP server (no per-host env wiring). **Index-time and query-time both call it with the same cfg** so the model id stored per vector matches the query model; a mismatch just makes the vector arm empty — FTS + graph still answer. (`chooseEmbedder()` is the env-only shim retained for call sites/tests without a Config.)
 
 ---
 
@@ -223,7 +225,7 @@ The MCP `search_memory` surface is token-budgeted; three constants are coupled (
 - **Stopword dropping is case-aware.** Only **all-lowercase** function words drop (single-char ones always drop); `Will`/`WHO`/`IT` survive (`mora.go:3447`). **Why:** capitalization signals a discriminative proper-noun/acronym; dropping it would silently lose names from the query.
 - **Search routes via `defaultSearch`, gated on the *actually active* embedder.** FTS-only under static-hash (including Ollama-opted-but-down); hybrid only when `chooseEmbedder()` returns a semantic embedder (`hybrid.go:70`). **Why:** hybrid regresses recall 0.591→0.394 under static-hash, and a vector-empty hybrid ≠ FTS-only because the graph arm still perturbs RRF.
 - **Zero-egress: the Ollama path is localhost-only.** `chooseEmbedder` refuses non-loopback URLs and falls back to static (`embed_ollama.go:103`); it is the only network socket in Mora. **Why:** the whole product thesis is that no memory text leaves the machine.
-- **`ModelID()` is stored per vector and filtered at query time** (`hybrid.go:232`); `cosine` returns 0 on dim mismatch (`embed.go:84`). **Why:** switching embedders without a re-index must yield an empty (clean) vector arm, never a corrupted cross-model ranking.
+- **`ModelID()` is stored per vector and filtered at query time** (`hybrid.go:232`); `cosine` returns 0 on dim mismatch (`embed.go:84`). **Why:** switching embedders without a re-index must yield an empty (clean) vector arm, never a corrupted cross-model ranking. The Ollama id embeds the model **digest** (`"ollama:<model>@<digest>"`) so a same-name re-pull (`ollama pull`) — which keeps the dim at 768, evading the `cosine` dim-mismatch guard — is still caught: the digest changes the id, the query no longer matches the stored vectors, and the arm empties instead of silently mixing two embedding spaces.
 - **The production fused result is independent of `tracePool`.** Deep-trace arms are recorded but never fused (`hybrid.go:106-110, 136-152`). **Why:** the eval must observe production behavior, not alter it.
 - **The `mcpSearchDefaultLimit=8` ↔ `searchSnippetLen=240` ↔ `Meta=nil` triad is coupled** (`mora.go:2164-2193`). **Why:** raising the limit or un-snippeting bodies on the MCP surface re-breaks the T0 token-budget ceiling. Change one and re-run the T0 budget gate.
 - **The graph arm's per-person results are deduped but the union is fused uncapped** (`hybrid.go:106-110`). **Why:** capping the multi-person union would change the fused ranking and break byte-identity.

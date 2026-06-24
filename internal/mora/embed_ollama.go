@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,12 +24,53 @@ import (
 type ollamaEmbedder struct {
 	baseURL string
 	model   string
+	digest  string // resolved model digest from /api/tags; "" when the daemon doesn't list it
 	dim     int
 	client  *http.Client
 }
 
-func (e ollamaEmbedder) Dim() int        { return e.dim }
-func (e ollamaEmbedder) ModelID() string { return "ollama:" + e.model }
+func (e ollamaEmbedder) Dim() int { return e.dim }
+
+// ModelID is stamped on every stored vector and used as the query-time match key.
+// It carries the resolved model digest when known: an `ollama pull` that re-resolves
+// the same model NAME to new weights produces a new digest → a new ModelID → the
+// already-stored vectors no longer match the query model, so the vector arm cleanly
+// empties (FTS + graph still answer) instead of silently comparing vectors from two
+// different embedding spaces. With no digest it degrades to the bare "ollama:<model>"
+// form, which keeps indexes built by older binaries (or daemons that don't list a
+// digest) compatible.
+func (e ollamaEmbedder) ModelID() string {
+	if e.digest == "" {
+		return "ollama:" + e.model
+	}
+	return "ollama:" + e.model + "@" + e.digest
+}
+
+// digestForModel extracts the content digest of `model` from an Ollama /api/tags
+// response body. Ollama resolves a bare name (e.g. "nomic-embed-text") to its
+// ":latest" tag, so a bare name matches both an exact entry and the ":latest"-tagged
+// one. Returns "" if the model is absent or the body is unparseable — the caller then
+// falls back to the bare model id.
+func digestForModel(tagsBody []byte, model string) string {
+	var out struct {
+		Models []struct {
+			Name   string `json:"name"`
+			Model  string `json:"model"`
+			Digest string `json:"digest"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(tagsBody, &out); err != nil {
+		return ""
+	}
+	for _, m := range out.Models {
+		for _, name := range []string{m.Name, m.Model} {
+			if name == model || name == model+":latest" {
+				return m.Digest
+			}
+		}
+	}
+	return ""
+}
 
 func (e ollamaEmbedder) Embed(text string) []float32 {
 	reqBody, _ := json.Marshal(map[string]string{"model": e.model, "prompt": text})
@@ -68,21 +110,33 @@ func isLoopbackURL(raw string) bool {
 	return false
 }
 
-// reachable reports whether the daemon answers a cheap request quickly.
-func (e ollamaEmbedder) reachable() bool {
+// probe does one GET /api/tags: it reports whether the daemon answers quickly and,
+// on success, the resolved digest of e.model ("" if the daemon doesn't list it).
+// Reachability and digest resolution share the single request — no extra round-trip.
+func (e ollamaEmbedder) probe() (digest string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.baseURL+"/api/tags", nil)
 	if err != nil {
-		return false
+		return "", false
 	}
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return false
+		return "", false
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", true // reachable but digest unreadable → fall back to the bare model id
+	}
+	return digestForModel(body, e.model), true
 }
+
+// reachable reports whether the daemon answers a cheap request quickly.
+func (e ollamaEmbedder) reachable() bool { _, ok := e.probe(); return ok }
 
 // chooseEmbedderFor resolves the active embedder for a config, honoring (in order):
 //  1. the MORA_EMBEDDER env var when SET — incl. "" → static. This is the
@@ -129,9 +183,11 @@ func embedderForPref(pref string) Embedder {
 		model = "nomic-embed-text"
 	}
 	e := ollamaEmbedder{baseURL: base, model: model, dim: 768, client: &http.Client{Timeout: 30 * time.Second}}
-	if !e.reachable() {
+	digest, ok := e.probe()
+	if !ok {
 		fmt.Fprintln(os.Stderr, "warn: MORA_EMBEDDER=ollama but the Ollama daemon is unreachable; using the built-in static embedder")
 		return defaultEmbedder()
 	}
+	e.digest = digest // stamp the resolved digest into ModelID() (see ollamaEmbedder.ModelID)
 	return e
 }
