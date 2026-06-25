@@ -25,7 +25,7 @@ live in [`docs/architecture/`](architecture/00-overview.md).
 
 ## Install
 
-**Installer script** (macOS / Linux — downloads the right release binary, clears
+**Installer script** (macOS / Linux: downloads the right release binary, clears
 macOS Gatekeeper quarantine, signs it, puts it on your PATH, and initializes the vault):
 
 ```bash
@@ -46,7 +46,7 @@ go install github.com/pyranthus-hq/mora/cmd/mora@latest
 go build -o mora ./cmd/mora && mv mora /usr/local/bin/mora
 ```
 
-Source builds report version `dev` and refuse self-update — rebuild to upgrade.
+Source builds report version `dev` and refuse self-update. Rebuild to upgrade. They also use a placeholder Google OAuth client, so `mora connect google` needs your own credentials (BYO credentials, below); the release binary ships with a working client.
 
 **macOS Gatekeeper note:** if you skipped the installer, the first run of a downloaded
 binary may be blocked. Right-click `mora` in Finder and choose **Open**, or clear the
@@ -71,9 +71,9 @@ script runs this for you.
 mora connect google
 ```
 
-This opens a browser for OAuth consent. On first use the OAuth app is **unverified** — click through the Google warning via **Advanced → Go to Mora (unsafe)**. Mora requests read-only Gmail and Calendar scopes; it never modifies your data.
+This opens a browser for OAuth consent. On first use the OAuth app is **unverified**, so click through the Google warning via **Advanced → Go to Mora (unsafe)**. Mora requests read-only Gmail and Calendar scopes; it never modifies your data.
 
-**WSL users:** `mora connect google` prints a URL (it won't auto-open a browser). Paste it into your Windows browser and approve. The consent redirect goes to `127.0.0.1`, which WSL2 forwards to Mora automatically — no paste-back needed. Leave the command running until it prints "Connected."
+**WSL users:** `mora connect google` prints a URL (it won't auto-open a browser). Paste it into your Windows browser and approve. The consent redirect goes to `127.0.0.1`, which WSL2 forwards to Mora automatically, so there is no paste-back. Leave the command running until it prints "Connected."
 
 **BYO credentials:** To use your own Google Cloud OAuth client, set:
 
@@ -89,7 +89,7 @@ mora connect google --account work    # second mailbox → gmail-work / calendar
 ```
 
 Each account keeps its own token. Re-authing an account that's already connected (under any label)
-is detected by the signed-in address and exits gracefully — one mailbox is never double-ingested.
+is detected by the signed-in address and exits gracefully, so one mailbox is never double-ingested.
 
 Gmail backfills the **last 90 days** by default. Widen it with `mora connect google --since-days 365`; the window is saved on the source, so later `mora sync google` runs reuse it. Calendar always pulls a fixed window of about six months back and three months forward.
 
@@ -100,7 +100,7 @@ mora connect imessage                    # enable iMessage, check Full Disk Acce
 mora connect imessage --since-days 365   # widen the backlog window (negative = all-time)
 ```
 
-Mora reads the local Messages database (`~/Library/Messages/chat.db`) **read-only** — nothing is
+Mora reads the local Messages database (`~/Library/Messages/chat.db`) **read-only**; nothing is
 sent anywhere. macOS gates that file behind **Full Disk Access**, granted *per binary*:
 
 1. Run `mora connect imessage`. If access is missing it prints exactly what to do.
@@ -118,15 +118,15 @@ mora connectors enable applecalendar
 mora ingest run --source applecalendar
 ```
 
-Reads the local Calendar store (the calendar group container) **read-only and immutable** — same
+Reads the local Calendar store (the calendar group container) **read-only and immutable**, the same
 Full Disk Access story as iMessage, no login. One memory per event, attendees/organizer captured
 for the entity graph, with a 180-day forward window so subscribed holiday calendars don't flood
 the vault.
 
 ## Add a filesystem source
 
-Point Mora at a folder to ingest docs and metadata. The one-step way, mirroring
-`connect google` / `connect imessage` — add, enable, and index in a single command:
+Point Mora at a folder to ingest docs and metadata. The one-step way mirrors
+`connect google` / `connect imessage`, adding, enabling, and indexing in a single command:
 
 ```bash
 mora connect filesystem ~/code/myproject          # add + enable + index now
@@ -178,17 +178,17 @@ claude mcp add mora -s user -- mora mcp serve     # Claude Code
 codex  mcp add mora -- mora mcp serve             # Codex
 ```
 
-Or use the example configs — `examples/claude-code-mcp.json` (copy to your project's
+Or use the example configs: `examples/claude-code-mcp.json` (copy to your project's
 `.claude/mcp.json`) and `examples/codex-mcp.json`.
 
-`mora mcp serve` exposes 12 tools over JSON-RPC: `write_memory`, `read_memory`, `search_memory`, `list_memory`, `delete_memory`, `context_memory`, `think`, `list_entities`, `get_entity`, `digest`, `brief`, and `meeting_prep` — `brief` is the session-start what-changed/what-matters briefing, and `meeting_prep` assembles a cited prep pack for your next (or in-progress) calendar event. `digest` and `brief` also accept `entity`/`scope`/`since_days` to narrow to one person, namespace, or window. Every `search_memory` / `context_memory` answer also carries a per-source `last_synced` map, so your agent can qualify answers with their data age.
+`mora mcp serve` exposes 12 tools over JSON-RPC: `write_memory`, `read_memory`, `search_memory`, `list_memory`, `delete_memory`, `context_memory`, `think`, `list_entities`, `get_entity`, `digest`, `brief`, and `meeting_prep`. `brief` is the session-start what-changed/what-matters briefing, and `meeting_prep` assembles a cited prep pack for your next (or in-progress) calendar event. `digest` and `brief` also accept `entity`/`scope`/`since_days` to narrow to one person, namespace, or window. Every `search_memory` / `context_memory` answer also carries a per-source `last_synced` map, so your agent can qualify answers with their data age.
 
 ## Use Mora from the shell
 
 Every MCP tool has a CLI sibling, so you can read and write the vault from a terminal with the same retrieval the agent uses:
 
 ```bash
-mora search "OAuth status" --scope project:acme --json   # hybrid search (the search_memory tool)
+mora search "OAuth status" --scope project:acme --json   # search the vault (the search_memory tool)
 mora write --scope project:acme --type decision --title "Chose OAuth" --text "..."   # save a fact
 mora read <id> --json                                    # one memory by id
 mora list --scope project:acme --json                    # browse memories in a scope
@@ -201,13 +201,14 @@ mora think "what did Sam decide about pricing?" --json   # cited evidence + gap 
 
 ## Make the brief your session-start default
 
-The brief is a daily *what-changed / what-matters* digest — new-or-updated threads since you last looked,
+The brief is a daily *what-changed / what-matters* digest: new-or-updated threads since you last looked,
 ordered by who actually matters to you, every item citable by id. It has a scheduled
 **write side** and a session-start **read side**:
 
 ```bash
 mora schedule install pulse-daily   # write side: syncs, then persists ~/vault/mora/briefs/<date>-brief.md each morning
 mora brief                          # read side: print today's brief (generates one locally if none exists yet)
+mora brief --fresh                  # regenerate today's brief even if one already exists
 ```
 
 **Claude Code** runs `SessionStart` hooks and injects their stdout as context. Add to
@@ -224,11 +225,11 @@ mora brief                          # read side: print today's brief (generates 
 ```
 
 **Codex / any MCP agent:** register `mora mcp serve` and have the agent call the
-`brief` tool first — the server's instructions already nudge this. The tool takes
+`brief` tool first. The server's instructions already nudge this. The tool takes
 optional `max_tokens` (default ~6000) and `envelope: true` (adds a grounded,
 cite-by-id synthesis prompt; Mora itself runs no model and holds no API key).
 
-This wiring is **docs-only**: Mora never edits your agent config — you paste the
+This wiring is **docs-only**: Mora never edits your agent config. You paste the
 snippet, and removing it is the whole opt-out. `mora brief` and the `brief` tool make
 **no network call**; they read or generate from memories already on disk. The only
 thing that touches the network is the scheduled sync, over your already-enabled,
@@ -236,7 +237,7 @@ read-only sources.
 
 ## Explore the entity graph
 
-Mora derives a read-only entity graph from your data — **people** from your mail/messages/calendar,
+Mora derives a read-only entity graph from your data: **people** from your mail/messages/calendar,
 plus the structure in your vault (scopes, tags, `[[wikilinks]]`, `- [categories]`):
 
 ```bash
@@ -247,7 +248,7 @@ mora graph "Sam"              # expand one entity: connections, relationship bre
 ```
 
 The per-entity view shows co-occurring people, the edge breakdown (`EMAILED` / `PARTICIPATED_IN` /
-`ATTENDED` / `MENTIONS`), and the evidence memories — every connection cited by StableID. Agents
+`ATTENDED` / `MENTIONS`), and the evidence memories, every connection cited by StableID. Agents
 get the same view via the `list_entities` and `get_entity` MCP tools. How people are classified,
 trusted, and merged across addresses is covered in [How it works](#how-it-works).
 
@@ -279,15 +280,18 @@ mora sync status
 mora doctor
 ```
 
-`mora doctor` reports the health of the install: the vault and index, that your tokens live outside the vault, the storage footprint, whether the vault is a git repo, and (on macOS) Full Disk Access for iMessage and Apple Calendar.
+`mora doctor` reports the health of the install: the vault and index, that your tokens live outside the vault, when you last signed in to each Google account, the storage footprint, whether the vault is a git repo, and (on macOS) Full Disk Access for iMessage and Apple Calendar.
 
 **Record open tasks so the brief can surface them:**
 
 ```bash
-mora tasks sync --write
+mora tasks add "Reply to Sam about the launch" --pri P0   # capture an open loop (name first, then flags)
+mora tasks list                                           # current live tasks (--json for machine-readable)
+mora tasks done "Reply to Sam about the launch"           # mark one done so it stops resurfacing as stale
+mora tasks sync --write                                   # scan memories for open tasks and record them
 ```
 
-This scans your memories for open tasks and records them; stale ones then show up in the brief.
+Live tasks surface in the brief, and stale ones keep resurfacing until you mark them done.
 
 **Morning brief / per-source rundown:**
 
@@ -305,7 +309,10 @@ per-call ceiling to 50k tokens and doubles digest snippet length):
 ```bash
 mora config context large       # small | default | large
 mora config embedder ollama     # durable semantic-retrieval opt-in (loopback-only)
+mora config mmr on              # diversity-aware rerank of hybrid results (off by default; needs embedder ollama)
 ```
+
+MMR trims near-duplicate hits from a result set; it is off by default and only applies when the Ollama embedder is on.
 
 **Re-sync Google data manually:**
 
@@ -346,7 +353,7 @@ mora sync imessage               # re-read the local Messages DB (macOS)
 mora reingest --full             # re-fetch + rewrite memories with the latest metadata AND rebuild the entity graph
 ```
 
-Run `mora reingest` after upgrading to a build that improves extraction (e.g. better identity capture) — it rewrites existing memories with the new logic and rebuilds the graph in one atomic pass.
+Run `mora reingest` after upgrading to a build that improves extraction (e.g. better identity capture). It rewrites existing memories with the new logic and rebuilds the graph in one atomic pass.
 
 **Update the app itself:**
 
@@ -357,19 +364,19 @@ mora upgrade --check             # just report whether a newer release exists
 
 After a successful swap, `mora upgrade` automatically rebuilds the search index with the new
 version. (A schema change never strands a stale index: with the default embedder Mora
-rebuilds one automatically at first read; with the Ollama embedder — where a re-index takes
-minutes — it asks with a clear "run `mora index rebuild`" instead of degrading silently.)
-Direct-binary installs self-update from the public GitHub releases — no token or auth needed.
+rebuilds one automatically at first read; with the Ollama embedder, where a re-index takes
+minutes, it asks with a clear "run `mora index rebuild`" instead of degrading silently.)
+Direct-binary installs self-update from the public GitHub releases, with no token or auth needed.
 Homebrew-managed installs are detected and deferred to `brew upgrade`; source/`go build` builds
-report `dev` and refuse self-update — rebuild with `git pull && go build`.
+report `dev` and refuse self-update. Rebuild with `git pull && go build`.
 
 ## Back up the vault off-device (opt-in)
 
 By default the vault never leaves the machine. If you want an off-device backup with
-version history, Mora can push it to a **private git remote you control** — GitHub,
+version history, Mora can push it to a **private git remote you control**: GitHub,
 GitLab, a self-hosted server, or a bare repo on a USB drive. The flow is **one-way,
 push-only** (your local vault is the source of truth) and **fail-loud**: any git error
-surfaces, and a push is never `--force`d — a non-fast-forward rejection means the
+surfaces, and a push is never `--force`d. A non-fast-forward rejection means the
 remote diverged, and you should know, not have it overwritten.
 
 ```bash
@@ -388,14 +395,14 @@ mora schedule install git-daily
 
 `--init` writes a defensive `.gitignore` (`index.db`, `*.db`, `.DS_Store`, `tokens/`)
 so the rebuildable index and anything secret never leave the machine, and it detects
-an existing repo via `vault/.git` — it won't adopt a parent repo if your vault lives
+an existing repo via `vault/.git`. It won't adopt a parent repo if your vault lives
 inside one, and it refuses a `.git` gitfile or symlink that points elsewhere. If
 index or token files are already git-*tracked* (ignore rules don't apply to tracked
 files), the sync hard-stops with remediation instead of pushing them. Restore on a
 new machine: `git clone <remote> ~/vault/mora && mora index rebuild`.
 
 Know what you're opting into: the vault contains decoded iMessages and Gmail threads
-in **plaintext**, so the remote must be private and yours — Mora runs no server and
+in **plaintext**, so the remote must be private and yours. Mora runs no server and
 never picks a destination for you. `mora doctor` warns whenever the vault is a git
 repo. Mora shells out to your system `git` (and `gh` for `--github`), so your existing
 SSH keys, credential helper, or `gh auth` just work. For ciphertext at rest on the
@@ -408,25 +415,25 @@ Retrieval is three layers, all computed from your own data at ingest time with n
 
 ### 1. The entity graph — derived from message metadata
 
-An **entity** is a thing your vault refers to repeatedly: a **person**, a **scope** (project/namespace), a **tag**, a `[[wikilink]]`, or a `- [Category]` line. Mora materializes these — and the edges between them — into `entities` / `edges` tables **in the same transaction as the index rebuild** (`buildGraph` in `internal/mora/graph.go`), so the graph is always atomically consistent with the search index and byte-identical across rebuilds.
+An **entity** is a thing your vault refers to repeatedly: a **person**, a **scope** (project/namespace), a **tag**, a `[[wikilink]]`, or a `- [Category]` line. Mora materializes these (and the edges between them) into `entities` / `edges` tables **in the same transaction as the index rebuild** (`buildGraph` in `internal/mora/graph.go`), so the graph is always atomically consistent with the search index and byte-identical across rebuilds.
 
-People are the interesting part, and they come straight from connector identity capture — no name-entity-recognition model is involved. When Gmail, Calendar, and iMessage ingest, they already carry structured identity in each memory's metadata: `from` / `to` / `cc` for mail, `organizer` / `attendees` for calendar, and iMessage handle↔name `participants` pairs. `personRefs` resolves those into canonical `person:<lowercased-identity>` nodes (so `neil@x.com` referenced in 40 threads collapses to one node), and emits edges with bi-temporal stamps and provenance back to the source memory:
+People are the interesting part, and they come straight from connector identity capture. No name-entity-recognition model is involved. When Gmail, Calendar, and iMessage ingest, they already carry structured identity in each memory's metadata: `from` / `to` / `cc` for mail, `organizer` / `attendees` for calendar, and iMessage handle↔name `participants` pairs. `personRefs` resolves those into canonical `person:<lowercased-identity>` nodes (so `neil@x.com` referenced in 40 threads collapses to one node), and emits edges with bi-temporal stamps and provenance back to the source memory:
 
-- **`PARTICIPATED_IN`** — a person was on a thread or chat
-- **`ATTENDED`** — a person was on a calendar event
-- **`EMAILED`** — sender → each recipient, mail only
-- **`MENTIONS`** — a person *known from metadata* who also appears by name in another message's body, matched by a gazetteer built **from the graph's own person aliases** (`gazetteer.go`) — word-boundary, multi-token names, stoplisted, deterministic tie-break. Still no model.
+- **`PARTICIPATED_IN`**: a person was on a thread or chat
+- **`ATTENDED`**: a person was on a calendar event
+- **`EMAILED`**: sender → each recipient, mail only
+- **`MENTIONS`**: a person *known from metadata* who also appears by name in another message's body, matched by a gazetteer built **from the graph's own person aliases** (`gazetteer.go`); it is word-boundary, multi-token names, stoplisted, deterministic tie-break. Still no model.
 
 A blast email with 500 recipients won't explode the graph: person fan-out is capped (`maxParticipantFanout = 64`, and it warns rather than silently dropping), and co-occurrence ("who else was on Sam's threads") is a **query-time self-join**, never materialized, so an N-person thread costs O(N) edge rows, not O(N²).
 
-**Concrete example.** You and Sam traded 40 emails and a few iMessages. `mora entities` shows `Sam Rivera  43` under **People**. `mora entities "Sam Rivera"` lists those 43 memories; via MCP, `get_entity` additionally returns his aliases (every address/handle/name variant seen), his `degree`, the incoming edges with their `evidence_id`, and his 1-hop `neighbors` — the people he shares threads or events with.
+**Concrete example.** You and Sam traded 40 emails and a few iMessages. `mora entities` shows `Sam Rivera  43` under **People**. `mora entities "Sam Rivera"` lists those 43 memories; via MCP, `get_entity` additionally returns his aliases (every address/handle/name variant seen), his `degree`, the incoming edges with their `evidence_id`, and his 1-hop `neighbors`, the people he shares threads or events with.
 
 The person graph is also cleaned so it reflects *people*, not raw addresses:
 
 - **Automated senders are demoted.** no-reply / receipts / notifications / "LinkedIn Job Alerts"
   bots are classified `service` and kept out of the People view (still searchable via `get_entity`).
 - **Aliases are trusted by provenance.** A name only becomes a match key if its owner *presented it
-  themselves* (as an email sender, or an iMessage contact) — so spam mail-merge labels and other
+  themselves* (as an email sender, or an iMessage contact), so spam mail-merge labels and other
   people's mislabels never pollute who you are.
 - **The same human across addresses collapses into one person.** Gmail dot/`+tag` variants and
   cross-domain matches (with a full-name anchor) merge, so `get_entity` returns a *complete* picture
@@ -437,34 +444,36 @@ The person graph is also cleaned so it reflects *people*, not raw addresses:
 
 Keyword search misses paraphrase ("launch" vs "shipping"); pure vector search drifts off exact terms and proper nouns. `hybridSearch` (`internal/mora/hybrid.go`) runs three retrievers and fuses them:
 
-1. **FTS5 / BM25** — the exact-match correctness anchor. Proper nouns, IDs, and literal phrases always rank.
-2. **Static-embedding cosine** — recall for paraphrase, over per-memory vectors in `mem_vectors`. Zero-similarity rows are dropped so the vector arm never drags in unrelated memories.
-3. **1-hop graph expansion** — if the query *names a person* (gazetteer + exact alias match), pull that person's evidence memories into the candidate pool. GraphRAG-lite, no LLM.
+1. **FTS5 / BM25**: the exact-match correctness anchor. Proper nouns, IDs, and literal phrases always rank.
+2. **Static-embedding cosine**: recall for paraphrase, over per-memory vectors in `mem_vectors`. Zero-similarity rows are dropped so the vector arm never drags in unrelated memories.
+3. **1-hop graph expansion**: if the query *names a person* (gazetteer + exact alias match), pull that person's evidence memories into the candidate pool. GraphRAG-lite, no LLM.
+
+`mora search` and `search_memory` take this hybrid path only when a semantic embedder is active (Ollama opted in and reachable). With the default static-hash embedder they stay FTS-only, because hybrid measured worse than plain FTS under static-hash (recall@5 fell from 0.591 to 0.394). Turn on Ollama (`mora config embedder ollama`) to light up the cosine and graph arms.
 
 The three ranked lists are merged with **weighted Reciprocal Rank Fusion**: each arm contributes `weight / (k + rank)` with `k = 10`, and the weights are tuned so the exact-match anchor leads (`fts 1.5`, `vec 1`, `graph 1`). RRF is *rank*-based, so it fuses BM25's unbounded scores with cosine's `[0,1]` without any normalization, and the weights keep the keyword arm slightly ahead so a proper-noun match is never buried under a fuzzy vector hit.
 
-**Embedder limitations.** The default is a pure-Go, deterministic **feature-hashing static embedder** (`staticEmbedder` in `embed.go`): it hashes word tokens and character trigrams into a fixed 256-dim space (signed hashing trick, TF-weighted, L2-normalized). Cosine then tracks shared lexical + subword features — so "launching" and "launch" share signal. This is not a semantic model — it tracks shared tokens and subwords, not meaning, so paraphrase recall is limited. It sits behind an `Embedder` interface, so an **Ollama** model (`nomic-embed-text`) drops in unchanged. Ollama is strictly opt-in (`mora config embedder ollama`, or `MORA_EMBEDDER=ollama`), and `chooseEmbedder` **refuses any non-loopback `MORA_OLLAMA_URL`** — memory text never leaves the machine, and an unreachable daemon degrades to the static embedder with a warning, never an error.
+**Embedder limitations.** The default is a pure-Go, deterministic **feature-hashing static embedder** (`staticEmbedder` in `embed.go`): it hashes word tokens and character trigrams into a fixed 256-dim space (signed hashing trick, TF-weighted, L2-normalized). Cosine then tracks shared lexical + subword features, so "launching" and "launch" share signal. This is not a semantic model: it tracks shared tokens and subwords, not meaning, so paraphrase recall is limited. It sits behind an `Embedder` interface, so an **Ollama** model (`nomic-embed-text`) drops in unchanged. Ollama is strictly opt-in (`mora config embedder ollama`, or `MORA_EMBEDDER=ollama`), and `chooseEmbedder` **refuses any non-loopback `MORA_OLLAMA_URL`**. Memory text never leaves the machine, and an unreachable daemon degrades to the static embedder with a warning, never an error.
 
-**Graceful degradation.** On an index with no `mem_vectors` table, `hybridSearch` is simply FTS-only — search still works. As soon as vectors exist, the cosine and graph arms light up automatically. The model id is stored per vector, so changing embedders triggers a clean re-embed rather than silently mixing incompatible vectors.
+**Graceful degradation.** On an index with no `mem_vectors` table, `hybridSearch` is FTS-only, and search still works. As soon as vectors exist, the cosine and graph arms light up automatically. The model id is stored per vector, so changing embedders triggers a clean re-embed rather than silently mixing incompatible vectors.
 
 ### 3. `mora think` — a synthesis envelope your own agent fills in
 
-`mora think` (`think.go`) does **not** contain an LLM and holds no API key. It returns a *synthesis envelope* — everything an agent needs to write a cited answer — and rents the actual prose generation from the agent that called it (via MCP). The envelope has three parts:
+`mora think` (`think.go`) does **not** contain an LLM and holds no API key. It returns a *synthesis envelope* (everything an agent needs to write a cited answer) and rents the actual prose generation from the agent that called it (via MCP). The envelope has three parts:
 
-- **Cited evidence** — the top hybrid-retrieval hits, each with `stable_id`, scope, timestamp, fused score, and a snippet, so every downstream claim is attributable.
-- **Gap analysis — "what the vault does NOT know"** — computed deterministically *before any model runs*, so coverage limits are reported rather than papered over. Three signals: **stale** (freshest matching memory older than 30 days), **thin coverage** (a distinctively-named person in the query has fewer than 2 memories), and **coverage holes** (a real-name-shaped phrase in the query that resolves to no entity at all).
-- **A synthesis prompt** — a ready-to-run instruction: *answer using only this evidence, cite every claim with its `[stable_id]`, and surface the known gaps in a "What the vault does not know" section.*
+- **Cited evidence**: the top hybrid-retrieval hits, each with `stable_id`, scope, timestamp, fused score, and a snippet, so every downstream claim is attributable.
+- **Gap analysis ("what the vault does NOT know")**: computed deterministically *before any model runs*, so coverage limits are reported rather than papered over. Three signals: **stale** (freshest matching memory older than 30 days), **thin coverage** (a distinctively-named person in the query has fewer than 2 memories), and **coverage holes** (a real-name-shaped phrase in the query that resolves to no entity at all).
+- **A synthesis prompt**: a ready-to-run instruction: *answer using only this evidence, cite every claim with its `[stable_id]`, and surface the known gaps in a "What the vault does not know" section.*
 
 So `mora think "what did we decide with Sam about pricing?"` retrieves the relevant threads as cited evidence; if the freshest is two months old it adds a `stale` gap, and if Sam has only one memory it flags thin coverage. Your agent reads the envelope and composes the answer, citing the evidence ids and surfacing the gaps.
 
 ## Why not just use a cloud connector?
 
-Most "AI + your email/calendar" tools work the same way: when you ask a question, the assistant makes a **live API call to a cloud service**, pulls down whatever it needs for that one query, and reasons over it on a remote server. That's fine for "what's on my calendar tomorrow." It's the wrong shape for a *memory* — a durable, cross-source picture of who you talk to, what you've committed to, and what's been said over months. Mora maintains a **persistent local corpus** instead, and nothing is fetched per-query from a cloud. The landscape, as of mid-2026:
+Most "AI + your email/calendar" tools work the same way: when you ask a question, the assistant makes a **live API call to a cloud service**, pulls down whatever it needs for that one query, and reasons over it on a remote server. That's fine for "what's on my calendar tomorrow." It's the wrong shape for a *memory*: a durable, cross-source picture of who you talk to, what you've committed to, and what's been said over months. Mora maintains a **persistent local corpus** instead, and nothing is fetched per-query from a cloud. The landscape, as of mid-2026:
 
-- **Claude Desktop / Claude.ai Google connectors** — Connect Gmail, Calendar, and Drive; Claude calls the relevant tool live when a question needs it. Data retrieved during a session is **stored on Anthropic's servers** alongside the chat (deleted when you delete the chat). Anthropic states it doesn't train on connector data, and access mirrors your existing Google permissions. There is **no iMessage**, no persistent local index, and no cross-source graph you own — each chat starts from API fetches.
-- **ChatGPT / Codex connectors + Memory** — Connecting a Google app, per OpenAI's own docs, **"may create an indexed copy and sync the content"** to ChatGPT's servers; with Memory enabled, information accessed from connected apps can be **saved into your ChatGPT Memory**. Convenient, but the index and the memory both live in OpenAI's cloud and are opaque — you can't grep them, diff them, or hold them offline. No iMessage.
-- **Generic MCP Gmail servers** (GongRzhe, navbuildz, Google's own `gmailmcp.googleapis.com`, etc.) — These translate a request into **real-time Gmail API calls** and explicitly do **not** keep a local corpus. Great for live read/write actions; useless as a memory. No calendar+email+messages fusion, no entity graph, no offline searchable history.
-- **Personal-memory apps (Rewind / Limitless)** — Rewind began local-first, but Limitless pivoted to a **"Confidential Cloud"** (data encrypted but processed off-device), and **Meta acquired Limitless in December 2025**, disabling Rewind's Mac capture on Dec 19, 2025.
+- **Claude Desktop / Claude.ai Google connectors**: Connect Gmail, Calendar, and Drive; Claude calls the relevant tool live when a question needs it. Data retrieved during a session is **stored on Anthropic's servers** alongside the chat (deleted when you delete the chat). Anthropic states it doesn't train on connector data, and access mirrors your existing Google permissions. There is **no iMessage**, no persistent local index, and no cross-source graph you own. Each chat starts from API fetches.
+- **ChatGPT / Codex connectors + Memory**: Connecting a Google app, per OpenAI's own docs, **"may create an indexed copy and sync the content"** to ChatGPT's servers; with Memory enabled, information accessed from connected apps can be **saved into your ChatGPT Memory**. Convenient, but the index and the memory both live in OpenAI's cloud and are opaque. You can't grep them, diff them, or hold them offline. No iMessage.
+- **Generic MCP Gmail servers** (GongRzhe, navbuildz, Google's own `gmailmcp.googleapis.com`, etc.): These translate a request into **real-time Gmail API calls** and explicitly do **not** keep a local corpus. Great for live read/write actions; useless as a memory. No calendar+email+messages fusion, no entity graph, no offline searchable history.
+- **Personal-memory apps (Rewind / Limitless)**: Rewind began local-first, but Limitless pivoted to a **"Confidential Cloud"** (data encrypted but processed off-device), and **Meta acquired Limitless in December 2025**, disabling Rewind's Mac capture on Dec 19, 2025.
 
 | Capability | **Mora** | Claude Desktop connectors | Codex + ChatGPT | Generic MCP Gmail |
 |---|---|---|---|---|
@@ -480,7 +489,7 @@ Most "AI + your email/calendar" tools work the same way: when you ask a question
 | Cost / account | **$0, single binary, no account** | Subscription + Google auth | Subscription + Google auth | Free, but Google auth |
 | Zero-setup web UI | No (CLI) | **Yes** | **Yes** | No |
 
-*(To be fair: the cloud tools win on zero-setup and a polished web UI, and they can take write actions — send mail, create events — which Mora deliberately does not. Mora is read-only by design.)*
+*(To be fair: the cloud tools win on zero-setup and a polished web UI, and they can take write actions like sending mail or creating events, which Mora deliberately does not. Mora is read-only by design.)*
 
 Sources: [Claude Google Workspace connectors](https://support.claude.com/en/articles/10166901-use-google-workspace-connectors), [ChatGPT Google data controls FAQ](https://help.openai.com/en/articles/10408842-google-app-for-chatgpt-data-controls-faq), [Apps/connectors in ChatGPT](https://help.openai.com/en/articles/11487775-connectors-in-chatgpt), [GongRzhe Gmail-MCP-Server](https://github.com/GongRzhe/Gmail-MCP-Server), [Google Gmail MCP reference](https://developers.google.com/workspace/gmail/api/reference/mcp), [Meta acquires Limitless / Rewind sunset](https://winbuzzer.com/2025/12/05/meta-acquires-ai-wearables-startup-limitless-kills-pendant-sales-and-sunsets-rewind-app-xcxwbn/), [Limitless privacy / Confidential Cloud](https://www.limitless.ai/privacy)
 
