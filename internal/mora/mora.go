@@ -340,6 +340,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stdin)
+	case "loop":
+		return cmdLoop(ctx, args[1:], stdout)
 	case "upgrade":
 		return cmdUpgrade(ctx, args[1:], stdout)
 	case "version", "--version", "-v":
