@@ -1,6 +1,6 @@
 # Mora — Architecture Spec
 
-Mora is a local-first, agent-agnostic memory CLI: a single pure-Go binary that ingests Gmail / Google Calendar / iMessage into human-readable Markdown, indexes that Markdown in an embedded `modernc.org/sqlite` database (FTS5 + per-row vectors + a derived person graph), and serves it to any MCP-capable agent over a stdio JSON-RPC server. This document is the AS-BUILT front door to the spec — it describes what the code does **today** (commit `a069e68`, branch `feat/distribution`), and links out to eleven subsystem docs for the detail. Nothing here is roadmap; aspiration lives in the LLM wiki, not the repo.
+Mora is a local-first, agent-agnostic memory CLI: a single pure-Go binary that ingests Gmail / Google Calendar / iMessage into human-readable Markdown, indexes that Markdown in an embedded `modernc.org/sqlite` database (FTS5 + per-row vectors + a derived person graph), and serves it to any MCP-capable agent over a stdio JSON-RPC server. This document is the AS-BUILT front door to the spec — it describes what the code does **today** (as of v0.8.0), and links out to twelve subsystem docs for the detail. Nothing here is roadmap; aspiration lives in the LLM wiki, not the repo.
 
 ## Files
 

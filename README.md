@@ -52,7 +52,7 @@ The script installs the release binary for your platform, clears the macOS Gatek
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.sh | sh
 ```
 
-Removes the `mora` binary and de-registers the MCP server from Claude Code / Codex. Your vault is **preserved by default** — re-run with `--purge` (or `MORA_PURGE=1`) to also delete `~/vault/mora`.
+Removes the `mora` binary and de-registers the MCP server from Claude Code / Codex. Your vault is **preserved by default**; re-run with `--purge` (or `MORA_PURGE=1`) to also delete `~/vault/mora`.
 
 Then connect your sources:
 
@@ -94,7 +94,7 @@ Before answering anything about people, past decisions, projects, or commitments
 query it first and answer from what it returns:
 
   mora think "<question>" --json    # cited evidence + an explicit gap check
-  mora search "<query>" --json      # hybrid search over the vault
+  mora search "<query>" --json      # search the vault
   mora graph "<person>"             # one person across email, texts, and calendar
   mora brief                        # what changed and what matters lately
 

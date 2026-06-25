@@ -21,7 +21,7 @@ flowchart LR
   A["agent (Claude Code / Codex)"] -- "JSON-RPC line on stdin" --> B["serveMCP<br/>bufio.Scanner loop"]
   B --> C["handleMCP<br/>method switch"]
   C -->|initialize| D["serverInfo + instructions"]
-  C -->|tools/list| E["mcpTool x10 catalog"]
+  C -->|tools/list| E["mcpTool x12 catalog"]
   C -->|tools/call| F["callMCPTool"]
   F --> G["toCallToolResult<br/>envelope wrap"]
   D --> H["json.Marshal -> stdout line"]
@@ -42,12 +42,12 @@ flowchart LR
 `handleMCP` (`mora.go:2867`) is the method switch. Three methods are real; everything else is `-32601`:
 
 - **`initialize`** (`2870`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. The instructions (`mcpInstructions`, `mora.go:2839`) are load-bearing product surface, not boilerplate: clients inject them into the model's context, so this is how a cold agent learns Mora exists and that "I don't have that context" is usually a bug — it should `search_memory` first. Treat edits to that string as a behavior change.
-- **`tools/list`** (`2872`) returns the ten-tool catalog built by `mcpTool`.
+- **`tools/list`** (`2872`) returns the twelve-tool catalog built by `mcpTool`.
 - **`tools/call`** (`2915`) decodes `{name, arguments}` and returns `toCallToolResult(callMCPTool(...))`.
 
 ## The tool catalog
 
-`tools/list` publishes eleven tools. Schemas are built by `mcpTool(name, desc, params...)` (`mora.go:3083`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*; tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mora.go:3072`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
+`tools/list` publishes twelve tools. Schemas are built by `mcpTool(name, desc, params...)` (`mora.go:3083`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*; tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mora.go:3072`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
 
 | Tool | Purpose | Key args | Default limit / budget |
 |---|---|---|---|
@@ -62,6 +62,7 @@ flowchart LR
 | `get_entity` | Memories + graph provenance for a named entity | `name`* | bodies snippeted; memories ≤ **20**, edges ≤ **25**, neighbors ≤ **15** (true totals in `count`/`degree`) |
 | `digest` | Daily cross-source digest, grouped + cited + budget-bounded | `since_hours`, `source`, `max_tokens` | `since_hours` = **24**, `max_tokens` ≈ 6000/20000; `source` filters to one connector/family (preview-only — see [sync & freshness](./11-sync-and-freshness.md)) |
 | `brief` | Session-start what-changed/what-matters briefing — same budgeted, cited, source-grouped engine as `digest`, resolved to the freshest available; opt into `envelope` for a synthesis_prompt | `max_tokens`, `envelope` | call FIRST at session start; local-only |
+| `meeting_prep` | Cited prep pack for the next (or in-progress) calendar event, optionally scoped to one attendee by name | `name`, `limit`, `max_tokens` | `limit` evidence = **8**, `max_tokens` ≈ 6000/20000; gap analysis + synthesis_prompt |
 
 (`*` = required.) The catalog is defined inline in `handleMCP:2873–2914`; the dispatch handlers are the `switch` cases in `callMCPTool:2964–3052`.
 
