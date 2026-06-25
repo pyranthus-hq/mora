@@ -92,7 +92,12 @@ type Digest struct {
 // it, wired in Plan 05). sinceHours>0 selects the plain-window path (SC#2) which
 // never advances. perSourceCap caps each section (0 => default).
 type briefOpts struct {
-	advance      bool
+	advance bool
+	// forceRegen bypasses the persisted dated-brief cache in resolveBrief so the
+	// brief is regenerated from the live vault on demand (the `mora brief --fresh`
+	// path). Read-only like the rest of the read side — it never advances the
+	// watermark; it only skips the verbatim-file shortcut.
+	forceRegen   bool
 	sinceHours   int
 	perSourceCap int
 	// source filters the digest to one connector instance or provider family

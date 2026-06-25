@@ -384,7 +384,7 @@ func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, erro
 	// Only the GLOBAL (unfiltered) brief uses the persisted cache — the disk file is
 	// the unfiltered brief, so a filtered request must bypass it and generate fresh
 	// (§3), or it would masquerade as "nothing's up".
-	if !opts.filtered() {
+	if !opts.filtered() && !opts.forceRegen {
 		if path, dated, ok := latestBriefPath(cfg, now); ok && briefIsFresh(dated, now) {
 			body, err := os.ReadFile(path)
 			if err != nil {
