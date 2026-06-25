@@ -255,6 +255,51 @@ func TestResolveBriefStaleFileGenerates(t *testing.T) {
 	}
 }
 
+// TestResolveBriefForceRegenBypassesFreshFile: with forceRegen=true (the
+// `mora brief --fresh` path), resolveBrief regenerates from the live vault
+// (generated=true) even when a FRESH persisted brief exists for today — so an
+// ad-hoc brief reflects current data instead of replaying the morning snapshot.
+// The default (forceRegen=false) path still reads that fresh file verbatim.
+func TestResolveBriefForceRegenBypassesFreshFile(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := resolveFixedNow
+
+	// A FRESH (today UTC) persisted brief the default path WOULD return verbatim.
+	const cached = "CACHED MORNING BRIEF — must NOT be returned with --fresh"
+	seedBriefFile(t, cfg, "2026-06-08", cached) // today's UTC day
+
+	// A real cold-start delta in the live vault for the regen path to surface.
+	enableSources(t, cfg, "gmail")
+	seedSyncStatus(t, cfg, "gmail", now.Add(-1*time.Hour))
+	digestSeed(t, cfg, "gmail", "Fresh regen thread", 2*time.Hour, now)
+
+	// Control: without forceRegen, the fresh file is returned verbatim.
+	body, generated, err := resolveBrief(cfg, now, briefOpts{})
+	if err != nil {
+		t.Fatalf("resolveBrief control: %v", err)
+	}
+	if generated || body != cached {
+		t.Fatalf("control: want verbatim cached read (generated=false), got generated=%v body=%q", generated, body)
+	}
+
+	// --fresh: bypass the cache and regenerate against the live vault.
+	body, generated, err = resolveBrief(cfg, now, briefOpts{forceRegen: true})
+	if err != nil {
+		t.Fatalf("resolveBrief forceRegen: %v", err)
+	}
+	if !generated {
+		t.Fatalf("resolveBrief generated=false with forceRegen, want true (cache bypassed)")
+	}
+	if strings.Contains(body, cached) {
+		t.Fatalf("forceRegen returned the cached file instead of regenerating:\n%s", body)
+	}
+	if !strings.Contains(body, "Fresh regen thread") {
+		t.Fatalf("forceRegen brief should surface the live delta; got:\n%s", body)
+	}
+}
+
 // TestResolveBriefGeneratesNoFreshFile: with no persisted brief at all,
 // resolveBrief generates a non-empty DELTA brief (generated=true).
 func TestResolveBriefGeneratesNoFreshFile(t *testing.T) {

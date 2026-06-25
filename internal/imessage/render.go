@@ -240,6 +240,13 @@ func attachmentMarkers(atts []Attachment) []string {
 func attachmentMarker(a Attachment) string {
 	name := strings.TrimSpace(a.Filename)
 	mime := strings.TrimSpace(a.MimeType)
+	// Plugin-payload attachments (rich-link previews, app cards, Tapbacks) carry a
+	// bare UUID filename like "<uuid>.pluginPayloadAttachment" with no user-visible
+	// signal. Drop the noisy filename so a brief snippet never shows a raw UUID;
+	// fall back to MIME (if any) or a generic marker.
+	if isPluginPayloadName(name) {
+		name = ""
+	}
 	if isImageAttachment(name, mime) {
 		if name != "" {
 			return "[image: " + name + "]"
@@ -256,6 +263,13 @@ func attachmentMarker(a Attachment) string {
 	default:
 		return "[attachment]"
 	}
+}
+
+// isPluginPayloadName reports whether a filename is an iMessage plugin-payload
+// attachment ("<uuid>.pluginPayloadAttachment") — a rich-message envelope whose
+// filename is a content-free UUID that carries no user-visible signal.
+func isPluginPayloadName(name string) bool {
+	return strings.Contains(strings.ToLower(name), "pluginpayloadattachment")
 }
 
 // isImageAttachment is true when the MIME type is an image type, or (absent a MIME

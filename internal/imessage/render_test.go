@@ -105,6 +105,8 @@ func TestAttachmentMarker(t *testing.T) {
 		{"filename only", Attachment{Filename: "notes.txt"}, "[attachment: notes.txt]"},
 		{"mime only, no filename", Attachment{MimeType: "image/heic"}, "[image: image/heic]"},
 		{"neither", Attachment{}, "[attachment]"},
+		{"plugin payload — UUID noise stripped to generic marker", Attachment{Filename: "6FABD249-D8E1-48FA-9725-5716D93741F7.pluginPayloadAttachment"}, "[attachment]"},
+		{"plugin payload with mime keeps mime, drops UUID", Attachment{Filename: "D6AAFB0A-A04C-47A4-9D28-66C6253BCF95.pluginPayloadAttachment", MimeType: "text/x-url"}, "[attachment: text/x-url]"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

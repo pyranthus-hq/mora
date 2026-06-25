@@ -1062,6 +1062,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 	entity := fs.String("entity", "", "filter to memories referencing one person (name or email/handle); preview-only")
 	scope := fs.String("scope", "", "filter to one memory scope/namespace (e.g. project:acme); preview-only")
 	sinceDays := fs.Int("since-days", 0, "only memories created in the last N days; preview-only (negative = no filter)")
+	fresh := fs.Bool("fresh", false, "regenerate from the live vault now, bypassing today's cached brief (read-only; never advances the watermark)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1074,7 +1075,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 	// A filtered brief is preview-only and BYPASSES the persisted cache (§3); the
 	// entity is resolved eagerly here so buildDigest stays DB-free, with a hard
 	// error on no-match/ambiguity rather than a silently-empty brief.
-	opts := briefOpts{scope: *scope, sinceDays: clampSinceDays(*sinceDays)}
+	opts := briefOpts{scope: *scope, sinceDays: clampSinceDays(*sinceDays), forceRegen: *fresh}
 	if *entity != "" {
 		idSet, rerr := resolveEntityFilter(ctx, cfg, *entity)
 		if rerr != nil {
