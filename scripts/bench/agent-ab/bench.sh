@@ -28,19 +28,44 @@ QFILTER="${QFILTER:-}"
 QFILE="$SYNTH/questions.json"
 [[ -f "$QFILE" ]] || { echo "FATAL: no $QFILE — run build_vault.py first" >&2; exit 1; }
 
+# Preflight: if the MMR arm is requested, PROVE the toggle works on this binary BEFORE
+# spending a cent. A `mora` predating the `config mmr` setter (e.g. an un-redeployed
+# install) would otherwise leave both arms MMR-off and silently null the whole A/B —
+# and you must FIRST gate on the free retrieval probe (mmr_recall_gate.py) anyway.
+case " $ARMS " in
+  *" mora-mcp-mmr "*)
+    set_mmr on || { echo "FATAL: 'mora config mmr' unsupported by the mora on PATH ($(command -v mora)). The MMR arm needs a from-source build: go build -o /tmp/mora-src ./cmd/mora && export PATH=/tmp/mora-src:\$PATH. Aborting before billing." >&2; exit 1; }
+    set_mmr off || true
+    echo ">> preflight OK: 'mora config mmr' toggles in $SYNTH" >&2 ;;
+esac
+
 VAULT_HINT="The user's personal memory is stored as markdown files under ${VAULT}. Search that directory with Read/Grep/Glob and answer from what you find. Do not write anything."
 MORA_HINT="You have a 'mora' MCP server exposing the user's memory across email, calendars, iMessage, and notes. Use its tools (e.g. search_memory, think, graph) to answer. Cite the evidence."
 CLI_HINT="You have a 'mora' command-line tool exposing the user's memory across email, calendars, iMessage, and notes. Use it via Bash, e.g.  mora think \"<q>\" --json , mora search \"<q>\" --json , mora graph \"<person>\". Answer from its output and cite the evidence. Do not try to read files directly."
+
+set_mmr () { # want(on|off): set the flag in $SYNTH and CONFIRM it by reading it back.
+  local want="$1"
+  MORA_CONFIG_DIR="$SYNTH" mora config mmr "$want" >/dev/null 2>&1 || return 1
+  local got; got="$(MORA_CONFIG_DIR="$SYNTH" mora config 2>/dev/null | awk '/^[[:space:]]*mmr/{print $3; exit}')"
+  [ "$got" = "$want" ]
+}
 
 cell () { # file arm question
   local f="$1" arm="$2" q="$3" d; d="$(mktemp -d)"
   # Set the MMR rerank flag EXPLICITLY per cell so each cell is hermetic regardless of
   # arm order (the on-arm and off-arms share one $SYNTH config.toml). Only the Mora
-  # arms touch it; baseline never reads Mora config. Needs a `mora` with the W2 setter.
+  # arms touch it; baseline never reads Mora config. FAIL LOUD if the toggle does not
+  # take effect — a `mora` predating the `config mmr` setter would otherwise leave BOTH
+  # arms MMR-off and the whole paid A/B would be a silent null (the exact failure mode
+  # the pre-spend gate guards against). Verified by reading the flag back, not just exit.
+  local want=
   case "$arm" in
-    mora-mcp-mmr) MORA_CONFIG_DIR="$SYNTH" mora config mmr on  >/dev/null 2>&1 ;;
-    mora-mcp|mora-cli) MORA_CONFIG_DIR="$SYNTH" mora config mmr off >/dev/null 2>&1 ;;
+    mora-mcp-mmr) want=on ;;
+    mora-mcp|mora-cli) want=off ;;
   esac
+  if [ -n "$want" ]; then
+    set_mmr "$want" || { echo "FATAL: could not set mmr=$want in $SYNTH (rebuild mora from source: go build ./cmd/mora). Aborting before billing." >&2; exit 1; }
+  fi
   case "$arm" in
     baseline)
       ( cd "$d" && claude -p "$q" --model "$MODEL" --output-format stream-json --verbose \
