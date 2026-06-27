@@ -9,8 +9,9 @@
 #        tar -xzf mora_0.9.0_darwin_arm64.tar.gz && ./install.sh
 #
 #   2) REMOTE: if no binary sits next to this script, it downloads the matching
-#      asset for this machine from the public GitHub release — plain curl, no
-#      auth needed (gh is used when present, but optional).
+#      asset for this machine from the public GitHub release (plain curl, no auth;
+#      gh is used when present, but optional) and verifies it against the release
+#      checksums.txt before extracting.
 #
 # Env knobs:
 #   PREFIX=/usr/local/bin    install dir (default: first writable of
@@ -28,6 +29,14 @@ HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# sha256_of <file> — print the file's SHA-256, portable across GNU coreutils
+# (sha256sum) and BSD/macOS (shasum). Returns non-zero if neither tool exists.
+sha256_of() {
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+	else return 1; fi
+}
+
 # --- locate or fetch the binary -------------------------------------------------
 BIN=""
 if [ -x "$HERE/mora" ]; then
@@ -41,15 +50,47 @@ else
 	TMP="$(mktemp -d)"
 	trap 'rm -rf "$TMP"' EXIT
 	say "Fetching $ASSET from $REPO@v$VERSION ..."
-	if command -v gh >/dev/null 2>&1; then
-		# gh is optional for a public repo; used when present for nicer errors.
-		gh release download "v$VERSION" --repo "$REPO" --pattern "$ASSET" --dir "$TMP" \
-			|| die "download failed — check your network, or download the release tarball from https://github.com/$REPO/releases"
+	# Prefer gh when it is present AND authenticated; otherwise fall back to plain
+	# curl. The repo is public, so curl needs no auth — a present-but-unauthenticated
+	# gh must not block the install. USE_GH remembers the verdict so an unusable gh
+	# isn't retried for checksums.txt below.
+	USE_GH=0
+	if command -v gh >/dev/null 2>&1 && \
+		gh release download "v$VERSION" --repo "$REPO" --pattern "$ASSET" --dir "$TMP" >/dev/null 2>&1; then
+		USE_GH=1
 	else
 		curl -fsSL -o "$TMP/$ASSET" \
 			"https://github.com/$REPO/releases/download/v$VERSION/$ASSET" \
 			|| die "download failed — check your network, or grab the tarball from https://github.com/$REPO/releases"
 	fi
+
+	# Verify the download against the release checksums BEFORE extracting or running
+	# it. checksums.txt is published with every release (and cosign-signed); this
+	# catches a corrupt, truncated, or swapped asset. It is not notarization and not
+	# a check of this script itself — for the strongest chain, verify the cosign
+	# signature by hand (see the release page) or `go install ...@latest` from source.
+	if [ "$USE_GH" = 1 ]; then
+		gh release download "v$VERSION" --repo "$REPO" --pattern checksums.txt --dir "$TMP" >/dev/null 2>&1 || true
+	fi
+	[ -f "$TMP/checksums.txt" ] || curl -fsSL -o "$TMP/checksums.txt" \
+		"https://github.com/$REPO/releases/download/v$VERSION/checksums.txt" >/dev/null 2>&1 || true
+	if [ -f "$TMP/checksums.txt" ]; then
+		# tr -d '\r' guards against a CRLF checksums.txt (awk would otherwise see the
+		# filename as "name\r" and never match).
+		WANT="$(tr -d '\r' < "$TMP/checksums.txt" | awk -v f="$ASSET" '$2 == f {print $1}')"
+		[ -n "$WANT" ] || die "checksums.txt has no entry for $ASSET — refusing to install an unverifiable download"
+		if GOT="$(sha256_of "$TMP/$ASSET")"; then
+			[ "$GOT" = "$WANT" ] || die "CHECKSUM MISMATCH for $ASSET (expected $WANT, got $GOT) — refusing to install a tampered or corrupt download"
+			say "✓ verified $ASSET against the release checksums"
+		else
+			say "note: no sha256 tool (sha256sum/shasum) found — could not verify the download;"
+			say "      verify by hand against https://github.com/$REPO/releases/download/v$VERSION/checksums.txt"
+		fi
+	else
+		say "note: could not fetch checksums.txt — skipping verification;"
+		say "      verify by hand at https://github.com/$REPO/releases (checksums.txt is cosign-signed)"
+	fi
+
 	tar -xzf "$TMP/$ASSET" -C "$TMP"
 	# Locate the binary regardless of tarball layout (top-level OR nested in a versioned dir).
 	BIN="$(find "$TMP" -type f -name mora 2>/dev/null | head -n 1)"
@@ -69,12 +110,21 @@ fi
 mkdir -p "$DEST"
 
 # --- install + clear Gatekeeper quarantine + ad-hoc sign ------------------------
-# Clear quarantine and ad-hoc re-sign BEFORE running the binary, so a Mora that
-# arrived via download/AirDrop/zip never trips the "cannot be opened because Apple
-# cannot check it for malicious software" wall. Safe no-op on Linux.
 cp "$BIN" "$DEST/mora"
 chmod +x "$DEST/mora"
 if [ "$(uname -s)" = "Darwin" ]; then
+	# Be explicit about what we do to Gatekeeper — this is the part security-minded
+	# users want to see, not have done silently. The binary is ad-hoc signed, NOT
+	# Apple-notarized, so without this it trips the "cannot be opened because Apple
+	# cannot check it for malicious software" wall. If you'd rather vet it first, the
+	# binary is already at "$DEST/mora": verify the checksum above, or build from
+	# source with `go install github.com/pyranthus-hq/mora/cmd/mora@latest`.
+	say ""
+	say "macOS: the mora binary is ad-hoc signed, not Apple-notarized. Letting it run"
+	say "       without the Gatekeeper warning by removing the quarantine flag and"
+	say "       ad-hoc re-signing it:"
+	say "         xattr -d com.apple.quarantine $DEST/mora"
+	say "         codesign --force --sign - $DEST/mora"
 	xattr -d com.apple.quarantine "$DEST/mora" 2>/dev/null || true
 	codesign --force --sign - "$DEST/mora" 2>/dev/null || true
 fi
