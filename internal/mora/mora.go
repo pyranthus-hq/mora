@@ -2090,6 +2090,14 @@ func printGoogleAuthPreamble(w io.Writer) {
 	fmt.Fprintln(w, "Mora will open your browser to sign in with Google. It asks for READ-ONLY")
 	fmt.Fprintln(w, "access to your mail and calendar — it can never send, delete, or change")
 	fmt.Fprintln(w, "anything, and nothing leaves this machine.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, `Heads-up: Google shows a "Google hasn't verified this app" screen first.`)
+	fmt.Fprintln(w, "That's expected. Mora is a small open-source app still going through Google's")
+	fmt.Fprintln(w, `review, not a malicious one. Click "Advanced", then "Go to Mora" (Google labels`)
+	fmt.Fprintln(w, `it "unsafe") to continue. The access stays read-only and on-device either way.`)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Prefer your own Google keys? Point Mora at them once and it skips the shared app:")
+	fmt.Fprintln(w, "  MORA_GOOGLE_CREDENTIALS=/path/to/client.json mora connect google")
 }
 
 // isGoogleAuthError reports whether a sync/ingest error looks like an expired or
