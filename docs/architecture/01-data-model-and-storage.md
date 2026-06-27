@@ -235,6 +235,12 @@ The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/
 
 `mora init` (`mora.go:346-382`) deliberately **loads existing config first** so a re-run never repoints a custom vault and orphans it (`mora.go:353-360`); it then creates the dir tree, writes config, scaffolds control files (skipping any that exist, `mora.go:396-398`), and rebuilds the index.
 
+### Vault identity and the rebuild guard
+
+`vault_dir` is the only precious directory: it holds the Markdown source files every other directory is derived from. The SQLite index, sync watermarks, and config are all rebuildable or re-creatable; the vault is not (without a `mora sync git` backup).
+
+On `mora init`, Mora writes a `.mora-vault.json` marker inside `vault_dir`. This marker lets Mora recognize the vault on subsequent runs. Before rebuilding the index, Mora checks the vault against the marker: if the vault looks empty or the marker is missing or foreign (a common sign that `vault_dir` has moved or been remounted), the rebuild refuses with an actionable error rather than silently stamping an empty or mismatched index. Run `mora doctor` to diagnose, or pass `--force` to `mora index rebuild` to override the guard.
+
 ## Invariants & gotchas
 
 - **`index.db` carries a schema stamp (`PRAGMA user_version`).** Bump `indexSchemaVersion` whenever the rebuilt shape changes meaning; readers refuse a mismatch (actionable error), and `mora upgrade` re-stamps by rebuilding with the new binary.
