@@ -3125,7 +3125,7 @@ func roIndexDSN(cfg Config) string {
 // a binary swapped across a schema change otherwise serves missing columns or
 // zeroed salience (the live Phase-14 failure). 1 = the first stamped schema;
 // every pre-stamp index reads as 0 and asks for one rebuild.
-const indexSchemaVersion = 1
+const indexSchemaVersion = 2
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
 // read time. True on the static-hash floor, where a rebuild is seconds — the
@@ -3218,6 +3218,10 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return 0, err
 	}
+	effID, err := resolveVaultID(cfg)
+	if err != nil {
+		return 0, err
+	}
 	db, err := sql.Open("sqlite", dbPath(cfg)+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return 0, err
@@ -3254,6 +3258,10 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 		`CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind)`,
 		// Hybrid retrieval (I2): one static-embedding vector per memory, rebuildable.
 		`CREATE TABLE IF NOT EXISTS mem_vectors (memory_id TEXT PRIMARY KEY, dim INT, model TEXT, vec BLOB)`,
+		// index_meta: vault-binding key/value store. Rows are rewritten by upsert on
+		// each rebuild; deliberately NOT in the DELETE list so vault_id persists
+		// across rebuilds and the guard can compare it.
+		`CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT)`,
 		`DELETE FROM memories`,
 		`DELETE FROM memories_fts`,
 		`DELETE FROM entities`,
@@ -3330,6 +3338,22 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	// semantic vectors that the query path (also cfg-aware) will match.
 	if err := writeVectors(ctx, tx, chooseEmbedderFor(cfg), live); err != nil {
 		return count, err
+	}
+
+	// Bind index metadata: memory_count + vault_dir are always written; vault_id
+	// only when a marker is present (so legacy vaults without a marker get no row).
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta(key,value) VALUES('memory_count',?),('vault_dir',?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		fmt.Sprintf("%d", count), cfg.VaultDir); err != nil {
+		return count, err
+	}
+	if effID != "" {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO index_meta(key,value) VALUES('vault_id',?)
+			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, effID); err != nil {
+			return count, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

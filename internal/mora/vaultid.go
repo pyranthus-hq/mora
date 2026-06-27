@@ -1,11 +1,14 @@
 package mora
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -98,4 +101,38 @@ func assessRebuild(oldCount, newCount int, markerID string, markerPresent bool, 
 		return decProceed // same vault, ordinary rebuild after edits
 	}
 	return decBlockIdentity // marker missing or from a different vault
+}
+
+// resolveVaultID returns the vault marker's id if a marker is present and
+// readable, otherwise "". Used by rebuildIndex to decide whether to bind
+// a vault_id row into index_meta.
+func resolveVaultID(cfg Config) (string, error) {
+	m, present, err := readVaultMarker(cfg)
+	if err != nil || !present {
+		return "", err
+	}
+	return m.VaultID, nil
+}
+
+// readIndexVaultID opens the index read-only and returns the vault_id stored in
+// index_meta, or "" if the table or row is absent (pre-feature index).
+func readIndexVaultID(ctx context.Context, cfg Config) (string, error) {
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	var v string
+	err = db.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key='vault_id'`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		// Missing table (older index) reads as "no id".
+		if strings.Contains(err.Error(), "no such table") {
+			return "", nil
+		}
+		return "", err
+	}
+	return v, nil
 }

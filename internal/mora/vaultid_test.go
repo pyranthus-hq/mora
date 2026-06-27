@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -58,6 +59,27 @@ func TestVaultMarkerAbsent(t *testing.T) {
 	}
 	if present {
 		t.Fatal("expected no marker in a fresh sandbox")
+	}
+}
+
+func TestIndexMetaRoundTrip(t *testing.T) {
+	cfg := sandboxCfg(t)
+	// Seed one memory so the rebuild has content and binds an id.
+	if err := writeMemory(cfg, Memory{ID: newID(), Scope: "global", Type: "insight", Title: "x", Source: "manual", CreatedAt: nowRFC3339(), Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_seed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	id, err := readIndexVaultID(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "v_seed" {
+		t.Fatalf("index vault_id = %q, want v_seed", id)
 	}
 }
 
