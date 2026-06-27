@@ -692,6 +692,7 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	if err != nil {
 		return err
 	}
+	repointed := false
 	if *vault != "" {
 		want := expandHome(*vault)
 		// Repointing an EXISTING install's vault orphans the current one from
@@ -703,6 +704,7 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 			if err := confirmVaultRepoint(stdin, stdout, cfg.VaultDir, want); err != nil {
 				return err
 			}
+			repointed = true
 		}
 		cfg.VaultDir = want
 	}
@@ -719,6 +721,19 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	}
 	if err := scaffoldControlFiles(cfg); err != nil {
 		return err
+	}
+	// On a CONFIRMED repoint, config + marker now point at the NEW vault but
+	// data_dir still holds the OLD vault's index (oldCount>0, bound to the old
+	// id). A hard-wired Enforce rebuild would self-block (empty NEW → decBlockEmpty;
+	// populated NEW → decBlockIdentity) and leave config=NEW / index=OLD. Discard
+	// the stale index so the rebuild is a clean first-build for the new vault
+	// (oldCount=0 → decProceed → adopt the new marker's id).
+	if repointed {
+		for _, p := range []string{dbPath(cfg), dbPath(cfg) + "-wal", dbPath(cfg) + "-shm"} {
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return err
@@ -822,10 +837,20 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := writeMemory(cfg, m); err != nil {
 		return err
 	}
+	m.Path = memoryPath(cfg, m)
+	// The vault write already succeeded (vault is truth; the index is a derived
+	// cache). A BLOCKED rebuild — vault looks empty or unfamiliar — must NOT fail
+	// the write: failing here would lose nothing on disk but would report the save
+	// as failed, inviting a retry that mints a duplicate memory. Mirror the MCP
+	// write_memory degraded-success path: warn loudly, still emit the saved
+	// memory, and exit 0. Any OTHER rebuild error is a genuine failure → surface it.
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		if errors.Is(err, errRebuildBlocked) {
+			fmt.Fprintf(stdout, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
+			return emit(stdout, m, *jsonOut)
+		}
 		return err
 	}
-	m.Path = memoryPath(cfg, m)
 	return emit(stdout, m, *jsonOut)
 }
 
@@ -3266,7 +3291,12 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return 0, err
 	}
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?_pragma=busy_timeout(5000)")
+	// _txlock=immediate acquires the write lock at BeginTx instead of lazily
+	// upgrading a deferred read lock mid-transaction — two concurrent rebuilds
+	// would otherwise both start, then one hits SQLITE_BUSY on the first write and
+	// cannot retry inside an open tx. The 15s busy_timeout matches the RO DSN so a
+	// rebuild waits out a contending writer rather than failing fast.
+	db, err := sql.Open("sqlite", dbPath(cfg)+"?_txlock=immediate&_pragma=busy_timeout(15000)")
 	if err != nil {
 		return 0, err
 	}
@@ -3421,6 +3451,14 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		}
 		effID, err = createVaultMarkerIfAbsent(cfg, seed)
 		if err != nil {
+			return count, err
+		}
+	} else if !markerPresent {
+		// The marker was LOST but the index still knows its id (effID==indexID).
+		// Without recreating it, the next Enforce rebuild sees markerPresent=false
+		// and blocks forever (decBlockIdentity), making --force non-idempotent.
+		// Re-stamp the marker bound to the index's own id so identity self-heals.
+		if _, err = createVaultMarkerIfAbsent(cfg, effID); err != nil {
 			return count, err
 		}
 	}
@@ -5088,8 +5126,13 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 			return nil, err
 		}
 		// A failed rebuild after a delete is worse than after a write: search
-		// keeps SERVING the deleted content as if it still existed.
-		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+		// keeps SERVING the deleted content as if it still existed. Delete is the
+		// privacy path, so it rebuilds in Allow mode (mirrors cmdDelete): a
+		// last-memory delete (newCount==0) must still drop the deleted row from the
+		// index — the Enforce decBlockEmpty guard would roll it back and keep
+		// serving it. Allow is safe here because no write is being committed over a
+		// populated vault; the destructive intent is the user's own delete.
+		if _, rerr := rebuildIndexWithPolicy(ctx, cfg, policyAllow); rerr != nil {
 			return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
 		}
 		return map[string]any{"deleted": id}, nil
