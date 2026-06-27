@@ -120,6 +120,13 @@ if [ -n "$INSTALL_VER" ] && [ "$INSTALL_VER" != "$EXPECTED_VER" ]; then
     "$INSTALL_VER" "$EXPECTED_VER"
 fi
 
+# Supply-chain guard: the remote installer MUST verify the download against the
+# release checksums and abort on mismatch — don't let that silently regress.
+grep -q 'checksums.txt' "$MORA_REPO/install.sh" \
+  && grep -q 'CHECKSUM MISMATCH' "$MORA_REPO/install.sh" \
+  || die "install.sh no longer verifies the download against checksums.txt (supply-chain regression)"
+pass "install.sh verifies remote downloads against checksums.txt"
+
 # =============================================================================
 section "Tier 1b — seed a synthetic vault + smoke every command"
 run "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \

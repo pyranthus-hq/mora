@@ -2867,8 +2867,23 @@ func cmdUsage(ctx context.Context, args []string, stdout io.Writer) error {
 		return os.Remove(filepath.Join(cfg.StateDir, "usage", "OFF"))
 	case len(args) >= 1 && args[0] == "report":
 		return usageReport(cfg, stdout)
+	case len(args) >= 1 && args[0] == "queries":
+		// Opt in/out of retaining the raw query string in the local usage log
+		// (default OFF). Mirrors the OFF-marker pattern; never affects egress.
+		marker := filepath.Join(cfg.StateDir, "usage", "QUERIES")
+		switch {
+		case len(args) >= 2 && args[1] == "on":
+			return atomicWrite(marker, []byte("on\n"), 0o600)
+		case len(args) >= 2 && args[1] == "off":
+			if err := os.Remove(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			return nil
+		default:
+			return errors.New("usage: mora usage queries <on|off>")
+		}
 	default:
-		return errors.New("usage: mora usage report|off|on")
+		return errors.New("usage: mora usage report|off|on|queries <on|off>")
 	}
 }
 
@@ -5450,7 +5465,7 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 type usageEvent struct {
 	TS      string `json:"ts"`
 	Tool    string `json:"tool"`
-	Query   string `json:"query,omitempty"` // raw tier only; never sent
+	Query   string `json:"query,omitempty"` // stripped by default; retained only when query logging is opted in; never sent off-machine
 	Scope   string `json:"scope,omitempty"`
 	Results int    `json:"results"`
 	Millis  int64  `json:"millis"`
@@ -5466,9 +5481,28 @@ func usageEnabled(cfg Config) bool {
 	return true
 }
 
+// queryLoggingEnabled reports whether the raw query string may be retained in the
+// local usage log. OFF by default — the log keeps tool, scope, result counts and
+// timing, but NOT what you searched for, unless you opt in with `mora usage queries
+// on` (or MORA_LOG_QUERIES=1). This governs on-disk retention only; Mora never
+// transmits the usage log anywhere.
+func queryLoggingEnabled(cfg Config) bool {
+	if os.Getenv("MORA_LOG_QUERIES") == "1" {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(cfg.StateDir, "usage", "QUERIES"))
+	return err == nil
+}
+
 func logUsage(cfg Config, e usageEvent) {
 	if !usageEnabled(cfg) {
 		return
+	}
+	if !queryLoggingEnabled(cfg) {
+		// Privacy default: drop the raw query text (search strings, and a person's
+		// name on graph/get_entity) so "no telemetry" isn't undercut by a local log
+		// of what you searched. Counts/timing/scope still recorded for `usage report`.
+		e.Query = ""
 	}
 	e.TS = time.Now().UTC().Format(time.RFC3339)
 	b, err := json.Marshal(e)
