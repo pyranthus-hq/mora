@@ -1668,8 +1668,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	if rec, present, _ := readBlockRecord(cfg); present {
-		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — run `mora index rebuild` after fixing vault_dir, or `--force` to override\n",
-			sty.warn("warn"), rec.Reason, rec.VaultDir, rec.OldCount)
+		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — fix vault_dir in config.toml then `mora index rebuild`; `--force` only if the current vault is correct (it discards the %d indexed memories)\n",
+			sty.warn("warn"), rec.Reason, rec.VaultDir, rec.OldCount, rec.OldCount)
 	}
 	prefix := sty.ok("ok  ")
 	if st != "ok" {

@@ -97,6 +97,15 @@ func TestCorruptMarkerFailsLoud(t *testing.T) {
 	if !strings.Contains(err.Error(), "corrupt") {
 		t.Fatalf("error should mention 'corrupt'; got: %v", err)
 	}
+	// The guidance must NOT tell the user to delete the marker: a regenerated
+	// marker gets a fresh id that no longer matches the index, blocking every
+	// future rebuild. It must point at restoring the backup instead.
+	if strings.Contains(err.Error(), "delete it and re-run") {
+		t.Fatalf("corrupt-marker message must not advise deleting the marker; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "restore") {
+		t.Fatalf("corrupt-marker message should point at restoring from backup; got: %v", err)
+	}
 	// A rebuild must surface the corrupt-marker error rather than swallow it.
 	if err := writeMemory(cfg, Memory{ID: newID(), Scope: "global", Type: "insight", Title: "x", Source: "manual", CreatedAt: nowRFC3339(), Text: "y"}); err != nil {
 		t.Fatal(err)
