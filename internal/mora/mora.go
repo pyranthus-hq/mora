@@ -1491,37 +1491,119 @@ func looksSynced(p string) bool {
 	return false
 }
 
+// doctorCheck is one named health probe. Critical checks gate `--strict` (and
+// the JSON report's `healthy`); non-critical ones are advisory only — notably
+// the iMessage/macOS surfaces, which "warn" off-darwin without meaning Mora is
+// broken, so a Linux regression run still reports healthy.
+type doctorCheck struct {
+	Name     string `json:"name"`
+	OK       bool   `json:"ok"`
+	Critical bool   `json:"critical"`
+}
+
+// doctorReport is the machine-readable shape emitted by `mora doctor --json`,
+// designed so a release regression harness can gate on `.healthy` (and inspect
+// individual checks) instead of scraping human text.
+type doctorReport struct {
+	Healthy           bool          `json:"healthy"`
+	Checks            []doctorCheck `json:"checks"`
+	StorageBytes      int64         `json:"storage_bytes"`
+	StorageStatus     string        `json:"storage_status"`
+	GitSyncConfigured bool          `json:"git_sync_configured"`
+	Version           string        `json:"version"`
+	Platform          string        `json:"platform"`
+}
+
+// doctorFailSummary lists the failing critical checks for the --strict error.
+func doctorFailSummary(checks []doctorCheck) string {
+	var failed []string
+	for _, c := range checks {
+		if c.Critical && !c.OK {
+			failed = append(failed, c.Name)
+		}
+	}
+	return fmt.Sprintf("%d critical check(s) failed: %s", len(failed), strings.Join(failed, ", "))
+}
+
 func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report")
+	strict := fs.Bool("strict", false, "exit non-zero if a critical health check fails")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	checks := map[string]bool{}
-	_, err = os.Stat(cfg.VaultDir)
-	checks["vault"] = err == nil
-	_, err = os.Stat(dbPath(cfg))
-	checks["index_db"] = err == nil
-	_, err = os.Stat(filepath.Join(cfg.ConfigDir, "tokens"))
-	checks["token_dir"] = err == nil && !strings.HasPrefix(filepath.Join(cfg.ConfigDir, "tokens"), cfg.VaultDir)
-	sources, _ := loadSources(cfg)
-	checks["sources_config"] = len(sources) > 0
+
 	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
-	checks["tokens_disjoint_from_vault"] = disjointRealPaths(cfg.VaultDir, tokenDir)
+	_, vErr := os.Stat(cfg.VaultDir)
+	_, iErr := os.Stat(dbPath(cfg))
+	_, tErr := os.Stat(tokenDir)
+	sources, _ := loadSources(cfg)
+
+	// Ordered so both the JSON report and the text output are deterministic.
+	// Critical = "Mora is actually broken if false": the vault is gone, the
+	// index is missing, or tokens are colocated with the vault (a data-egress
+	// hazard). token_dir/sources_config are advisory (a freshly seeded vault has
+	// neither tokens nor configured connectors yet, and that is fine).
+	checks := []doctorCheck{
+		{Name: "vault", OK: vErr == nil, Critical: true},
+		{Name: "index_db", OK: iErr == nil, Critical: true},
+		{Name: "token_dir", OK: tErr == nil && !strings.HasPrefix(tokenDir, cfg.VaultDir), Critical: false},
+		{Name: "sources_config", OK: len(sources) > 0, Critical: false},
+		{Name: "tokens_disjoint_from_vault", OK: disjointRealPaths(cfg.VaultDir, tokenDir), Critical: true},
+	}
+	healthy := true
+	for _, c := range checks {
+		if c.Critical && !c.OK {
+			healthy = false
+		}
+	}
+
+	// Storage footprint vs target/ceiling — visibility only; Mora never caps.
+	used := vaultStorageBytes(cfg)
+	st := storageStatus(used)
+	gitSync := false
+	if _, err := os.Stat(filepath.Join(cfg.VaultDir, ".git")); err == nil {
+		gitSync = true
+	}
+
+	if *jsonOut {
+		rep := doctorReport{
+			Healthy:           healthy,
+			Checks:            checks,
+			StorageBytes:      used,
+			StorageStatus:     st,
+			GitSyncConfigured: gitSync,
+			Version:           BuildVersion,
+			Platform:          runtime.GOOS,
+		}
+		b, err := json.MarshalIndent(rep, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(b))
+		if *strict && !healthy {
+			return fmt.Errorf("doctor: %s", doctorFailSummary(checks))
+		}
+		return nil
+	}
+
 	sty := newStyler(stdout, false)
 	if looksSynced(tokenDir) {
 		fmt.Fprintf(stdout, "%s token dir looks like a synced location: %s\n", sty.warn("warn"), tokenDir)
 	}
-	for k, ok := range checks {
-		if ok {
-			fmt.Fprintf(stdout, "%s %s\n", sty.ok("ok  "), k)
+	for _, c := range checks {
+		if c.OK {
+			fmt.Fprintf(stdout, "%s %s\n", sty.ok("ok  "), c.Name)
 		} else {
-			fmt.Fprintf(stdout, "%s %s\n", sty.warn("warn"), k)
+			fmt.Fprintf(stdout, "%s %s\n", sty.warn("warn"), c.Name)
 		}
 	}
-	// Storage footprint vs Neil's target/ceiling — the visibility he asked for.
-	// We report only; Mora never deletes or caps automatically.
-	used := vaultStorageBytes(cfg)
-	st := storageStatus(used)
 	prefix := sty.ok("ok  ")
 	if st != "ok" {
 		prefix = sty.warn("warn")
@@ -1533,7 +1615,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	// Git-sync disclosure (issue #6): if the vault is a git repo, it can leave the
 	// device on push — qualify the zero-egress posture loudly and honestly.
-	if _, err := os.Stat(filepath.Join(cfg.VaultDir, ".git")); err == nil {
+	if gitSync {
 		fmt.Fprintf(stdout, "%s vault git-sync is configured — the vault LEAVES THIS DEVICE on `mora sync git`\n", sty.warn("warn"))
 		fmt.Fprintln(stdout, "     it contains decoded iMessages + Gmail in plaintext; ensure the remote is PRIVATE + user-controlled.")
 	}
@@ -1541,9 +1623,12 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// surface "last authed / how long ago" per connected account so the user can
 	// tell at a glance when they last signed in.
 	printGoogleAuthRecency(cfg, stdout, time.Now())
-	// iMessage readiness prints in a dedicated ORDERED block (the checks map above is
-	// unordered) so the Full Disk Access guidance reads top-to-bottom (Surface 3).
+	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
+	// Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(stdout, false)
+	if *strict && !healthy {
+		return fmt.Errorf("doctor: %s", doctorFailSummary(checks))
+	}
 	return nil
 }
 
