@@ -34,15 +34,22 @@ func readVaultMarker(cfg Config) (vaultMarker, bool, error) {
 	}
 	var m vaultMarker
 	if err := json.Unmarshal(b, &m); err != nil {
-		// A corrupt marker must not crash a rebuild; treat as "present but unusable".
-		return vaultMarker{}, true, nil
+		// The marker is identity-critical: silently treating a corrupt one as
+		// "absent" would disable the rebuild guard exactly when the vault's
+		// identity is in question. Fail LOUD with an actionable message so the
+		// rebuild surfaces it instead of clobbering the index.
+		return vaultMarker{}, true, fmt.Errorf("vault marker %s is corrupt (delete it and re-run): %w", markerPath(cfg), err)
 	}
 	return m, true, nil
 }
 
-// createVaultMarkerIfAbsent writes the marker exactly once (O_EXCL). If one
-// already exists, it is left untouched and its id is returned — the marker must
-// never become the next thing that gets clobbered.
+// createVaultMarkerIfAbsent writes the marker exactly once. If one already
+// exists, it is left untouched and its id is returned — the marker must never
+// become the next thing that gets clobbered. The write is atomic: the JSON is
+// staged to a temp file in the vault dir, fsync'd, then rename(2)'d into place,
+// so a crash mid-write can never leave a TORN marker (a half-written final file
+// would silently disable the identity guard). The existence pre-check preserves
+// write-once; the temp+fsync+rename gives atomicity.
 func createVaultMarkerIfAbsent(cfg Config, id string) (string, error) {
 	if m, present, err := readVaultMarker(cfg); err != nil {
 		return "", err
@@ -57,18 +64,24 @@ func createVaultMarkerIfAbsent(cfg Config, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	f, err := os.OpenFile(markerPath(cfg), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	f, err := os.CreateTemp(cfg.VaultDir, ".mora-vault-*.json.tmp")
 	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			// Lost a race; read back the winner's id.
-			if m2, present, rerr := readVaultMarker(cfg); rerr == nil && present {
-				return m2.VaultID, nil
-			}
-		}
 		return "", err
 	}
-	defer f.Close()
+	tmp := f.Name()
+	defer os.Remove(tmp) // clean up on any error path (no-op once renamed away)
 	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, markerPath(cfg)); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -158,7 +171,10 @@ func readBlockRecord(cfg Config) (rebuildBlock, bool, error) {
 	}
 	var rec rebuildBlock
 	if err := json.Unmarshal(b, &rec); err != nil {
-		return rebuildBlock{}, true, nil
+		// The block record is an ADVISORY diagnostic, not identity-critical.
+		// Degrade quietly on a garbage advisory (treat as absent) so a corrupt
+		// last-rebuild-block.json never fails `mora doctor`.
+		return rebuildBlock{}, false, nil
 	}
 	return rec, true, nil
 }
@@ -187,6 +203,11 @@ func readIndexVaultID(ctx context.Context, cfg Config) (string, error) {
 	if err != nil {
 		// Missing table (older index) reads as "no id".
 		if strings.Contains(err.Error(), "no such table") {
+			return "", nil
+		}
+		// No index file at all (never built, or data_dir wiped) is also "no id" —
+		// a missing db must not propagate as a hard error to identity callers.
+		if errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), "unable to open database file") {
 			return "", nil
 		}
 		return "", err
