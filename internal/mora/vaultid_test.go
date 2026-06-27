@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -247,6 +248,24 @@ func TestIndexRebuildForceOverridesBlock(t *testing.T) {
 	}
 	if indexCount(t, cfg) != 0 {
 		t.Fatalf("force rebuild did not empty the index")
+	}
+}
+
+func TestInitCreatesMarkerAndPrintsSummary(t *testing.T) {
+	cfg := sandboxCfg(t)
+	var out bytes.Buffer
+	// non-TTY stdin (bytes.Reader) -> setup menu is skipped, summary still prints.
+	if err := cmdInit(context.Background(), nil, &out, bytes.NewReader(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(markerPath(cfg)); err != nil {
+		t.Fatalf("init did not create the vault marker: %v", err)
+	}
+	s := out.String()
+	for _, want := range []string{cfg.VaultDir, "Next", "mora connectors"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("init summary missing %q; got:\n%s", want, s)
+		}
 	}
 }
 

@@ -710,13 +710,26 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	if err := writeConfig(cfg); err != nil {
 		return err
 	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_"+newID()); err != nil {
+		return err
+	}
 	if err := scaffoldControlFiles(cfg); err != nil {
 		return err
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "initialized Mora vault at %s\n", cfg.VaultDir)
+	files, _ := allMemoryFiles(cfg)
+	status := "empty — nothing indexed yet"
+	if len(files) > 0 {
+		status = fmt.Sprintf("%d memories indexed", len(files))
+	}
+	fmt.Fprintf(stdout, "\n✓ Mora initialized.\n")
+	fmt.Fprintf(stdout, "  Vault:  %s   (your memories live here — back this up)\n", cfg.VaultDir)
+	fmt.Fprintf(stdout, "  Status: %s\n", status)
+	fmt.Fprintf(stdout, "  Next:   mora connectors setup     # connect Gmail / iMessage / files\n")
+	fmt.Fprintf(stdout, "  or:     mora write --title \"...\" --text \"...\"\n")
+	fmt.Fprintf(stdout, "  Layout: mora config\n\n")
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
 	return runSetupMenu(ctx, cfg, stdin, stdout)
