@@ -299,7 +299,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "context":
 		return cmdContext(ctx, args[1:], stdout)
 	case "index":
-		return cmdIndex(ctx, args[1:], stdout)
+		return cmdIndex(ctx, args[1:], stdout, stdin)
 	case "tasks":
 		return cmdTasks(ctx, args[1:], stdout)
 	case "pulse":
@@ -530,8 +530,12 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		if cfg.MMR {
 			mmr = "on"
 		}
-		fmt.Fprintf(stdout, "vault_dir = %s\ndata_dir  = %s\nstate_dir = %s\nembedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
-			cfg.VaultDir, cfg.DataDir, cfg.StateDir, embedder, profile,
+		fmt.Fprintf(stdout, "vault_dir = %s   ← your memories (back this up)\n", cfg.VaultDir)
+		fmt.Fprintf(stdout, "data_dir  = %s   ← search index (rebuildable)\n", cfg.DataDir)
+		fmt.Fprintf(stdout, "state_dir = %s   ← sync watermarks (rebuildable)\n", cfg.StateDir)
+		fmt.Fprintf(stdout, "config    = %s   ← settings + tokens\n", cfg.ConfigDir)
+		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
+			embedder, profile,
 			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr)
 		return nil
 	}
@@ -688,6 +692,7 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	if err != nil {
 		return err
 	}
+	repointed := false
 	if *vault != "" {
 		want := expandHome(*vault)
 		// Repointing an EXISTING install's vault orphans the current one from
@@ -696,9 +701,10 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		// the comparison cleans both sides so a trailing slash (shell tab
 		// completion, install.sh's MORA_VAULT) is not misread as a repoint.
 		if filepath.Clean(cfg.VaultDir) != filepath.Clean(want) && configFileExists(cfg) {
-			if err := confirmVaultRepoint(stdin, stdout, cfg.VaultDir, want); err != nil {
+			if err := confirmVaultRepointFn(stdin, stdout, cfg.VaultDir, want); err != nil {
 				return err
 			}
+			repointed = true
 		}
 		cfg.VaultDir = want
 	}
@@ -710,13 +716,39 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	if err := writeConfig(cfg); err != nil {
 		return err
 	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_"+newID()); err != nil {
+		return err
+	}
 	if err := scaffoldControlFiles(cfg); err != nil {
 		return err
+	}
+	// On a CONFIRMED repoint, config + marker now point at the NEW vault but
+	// data_dir still holds the OLD vault's index (oldCount>0, bound to the old
+	// id). A hard-wired Enforce rebuild would self-block (empty NEW → decBlockEmpty;
+	// populated NEW → decBlockIdentity) and leave config=NEW / index=OLD. Discard
+	// the stale index so the rebuild is a clean first-build for the new vault
+	// (oldCount=0 → decProceed → adopt the new marker's id).
+	if repointed {
+		for _, p := range []string{dbPath(cfg), dbPath(cfg) + "-wal", dbPath(cfg) + "-shm"} {
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "initialized Mora vault at %s\n", cfg.VaultDir)
+	files, _ := allMemoryFiles(cfg)
+	status := "empty — nothing indexed yet"
+	if len(files) > 0 {
+		status = fmt.Sprintf("%d memories indexed", len(files))
+	}
+	fmt.Fprintf(stdout, "\n✓ Mora initialized.\n")
+	fmt.Fprintf(stdout, "  Vault:  %s   (your memories live here — back this up)\n", cfg.VaultDir)
+	fmt.Fprintf(stdout, "  Status: %s\n", status)
+	fmt.Fprintf(stdout, "  Next:   mora connectors setup     # connect Gmail / iMessage / files\n")
+	fmt.Fprintf(stdout, "  or:     mora write --title \"...\" --text \"...\"\n")
+	fmt.Fprintf(stdout, "  Layout: mora config\n\n")
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
 	return runSetupMenu(ctx, cfg, stdin, stdout)
@@ -729,6 +761,13 @@ func configFileExists(cfg Config) bool {
 	_, err := os.Stat(filepath.Join(cfg.ConfigDir, "config.toml"))
 	return err == nil
 }
+
+// confirmVaultRepointFn is the repoint-confirmation gate cmdInit calls. It is a
+// package var (defaulting to confirmVaultRepoint) only so tests can drive the
+// confirmed and declined branches end-to-end — confirmVaultRepoint refuses
+// non-interactively by design, so the real user-facing repoint flow is otherwise
+// untestable without a TTY. Production never reassigns it.
+var confirmVaultRepointFn = confirmVaultRepoint
 
 // confirmVaultRepoint gates `init --vault <new>` when config.toml already
 // points elsewhere. Non-interactive callers are refused with the exact manual
@@ -805,10 +844,20 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := writeMemory(cfg, m); err != nil {
 		return err
 	}
+	m.Path = memoryPath(cfg, m)
+	// The vault write already succeeded (vault is truth; the index is a derived
+	// cache). A BLOCKED rebuild — vault looks empty or unfamiliar — must NOT fail
+	// the write: failing here would lose nothing on disk but would report the save
+	// as failed, inviting a retry that mints a duplicate memory. Mirror the MCP
+	// write_memory degraded-success path: warn loudly, still emit the saved
+	// memory, and exit 0. Any OTHER rebuild error is a genuine failure → surface it.
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		if errors.Is(err, errRebuildBlocked) {
+			fmt.Fprintf(stdout, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
+			return emit(stdout, m, *jsonOut)
+		}
 		return err
 	}
-	m.Path = memoryPath(cfg, m)
 	return emit(stdout, m, *jsonOut)
 }
 
@@ -916,7 +965,7 @@ func cmdDelete(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := os.Remove(m.Path); err != nil {
 		return err
 	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
+	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "deleted %s\n", m.ID)
@@ -1142,15 +1191,25 @@ func printThink(w io.Writer, res ThinkResult) {
 	fmt.Fprintln(w, "\n(Pass this evidence + gaps to your agent, or run `mora think … --json` for the synthesis prompt.)")
 }
 
-func cmdIndex(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) != 1 || args[0] != "rebuild" {
-		return errors.New("usage: mora index rebuild")
+func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+	fs := flag.NewFlagSet("index", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")
+	if err := fs.Parse(flagsFirst(args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" {
+		return errors.New("usage: mora index rebuild [--force]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	count, err := rebuildIndex(ctx, cfg)
+	policy := policyEnforce
+	if *force {
+		policy = policyAllow
+	}
+	count, err := rebuildIndexWithPolicy(ctx, cfg, policy)
 	if err != nil {
 		return err
 	}
@@ -1512,6 +1571,7 @@ type doctorReport struct {
 	GitSyncConfigured bool          `json:"git_sync_configured"`
 	Version           string        `json:"version"`
 	Platform          string        `json:"platform"`
+	RebuildBlock      *rebuildBlock `json:"rebuild_block,omitempty"`
 }
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
@@ -1582,6 +1642,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			Version:           BuildVersion,
 			Platform:          runtime.GOOS,
 		}
+		if rec, present, _ := readBlockRecord(cfg); present {
+			rep.RebuildBlock = &rec
+		}
 		b, err := json.MarshalIndent(rep, "", "  ")
 		if err != nil {
 			return err
@@ -1603,6 +1666,10 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		} else {
 			fmt.Fprintf(stdout, "%s %s\n", sty.warn("warn"), c.Name)
 		}
+	}
+	if rec, present, _ := readBlockRecord(cfg); present {
+		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — run `mora index rebuild` after fixing vault_dir, or `--force` to override\n",
+			sty.warn("warn"), rec.Reason, rec.VaultDir, rec.OldCount)
 	}
 	prefix := sty.ok("ok  ")
 	if st != "ok" {
@@ -3133,7 +3200,7 @@ func roIndexDSN(cfg Config) string {
 // a binary swapped across a schema change otherwise serves missing columns or
 // zeroed salience (the live Phase-14 failure). 1 = the first stamped schema;
 // every pre-stamp index reads as 0 and asks for one rebuild.
-const indexSchemaVersion = 1
+const indexSchemaVersion = 2
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
 // read time. True on the static-hash floor, where a rebuild is seconds — the
@@ -3222,11 +3289,29 @@ func allMemoryFiles(cfg Config) ([]string, error) {
 	return paths, nil
 }
 
+type rebuildPolicy int
+
+const (
+	policyEnforce rebuildPolicy = iota // default: block dangerous rebuilds
+	policyAllow                        // --force: commit even if guard would block
+)
+
+var errRebuildBlocked = errors.New("rebuild blocked")
+
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
+	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
+}
+
+func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolicy) (int, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return 0, err
 	}
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?_pragma=busy_timeout(5000)")
+	// _txlock=immediate acquires the write lock at BeginTx instead of lazily
+	// upgrading a deferred read lock mid-transaction — two concurrent rebuilds
+	// would otherwise both start, then one hits SQLITE_BUSY on the first write and
+	// cannot retry inside an open tx. The 15s busy_timeout matches the RO DSN so a
+	// rebuild waits out a contending writer rather than failing fast.
+	db, err := sql.Open("sqlite", dbPath(cfg)+"?_txlock=immediate&_pragma=busy_timeout(15000)")
 	if err != nil {
 		return 0, err
 	}
@@ -3247,6 +3332,13 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds; the safety net on any early return
 
+	// Capture old state BEFORE the destructive DELETEs run — on a fresh db the
+	// tables do not exist yet, so ignore errors and keep the zero values.
+	oldCount := 0
+	_ = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&oldCount)
+	indexID := ""
+	_ = tx.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key='vault_id'`).Scan(&indexID)
+
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text)`,
@@ -3262,6 +3354,10 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 		`CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind)`,
 		// Hybrid retrieval (I2): one static-embedding vector per memory, rebuildable.
 		`CREATE TABLE IF NOT EXISTS mem_vectors (memory_id TEXT PRIMARY KEY, dim INT, model TEXT, vec BLOB)`,
+		// index_meta: vault-binding key/value store. Rows are rewritten by upsert on
+		// each rebuild; deliberately NOT in the DELETE list so vault_id persists
+		// across rebuilds and the guard can compare it.
+		`CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT)`,
 		`DELETE FROM memories`,
 		`DELETE FROM memories_fts`,
 		`DELETE FROM entities`,
@@ -3340,9 +3436,56 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 		return count, err
 	}
 
+	// Bind index metadata: memory_count + vault_dir are always written; vault_id
+	// only when a marker is present (so legacy vaults without a marker get no row).
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta(key,value) VALUES('memory_count',?),('vault_dir',?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		fmt.Sprintf("%d", count), cfg.VaultDir); err != nil {
+		return count, err
+	}
+	// Validate-before-commit guard: read the marker, assess the rebuild, and
+	// either block (rolling back via the deferred tx.Rollback) or bind the id.
+	marker, markerPresent, err := readVaultMarker(cfg)
+	if err != nil {
+		return count, err
+	}
+	decision := assessRebuild(oldCount, count, marker.VaultID, markerPresent, indexID)
+	if policy == policyEnforce && (decision == decBlockEmpty || decision == decBlockIdentity) {
+		if werr := writeBlockRecord(cfg, decision, cfg.VaultDir, oldCount, count); werr != nil {
+			_ = werr // best-effort; do not mask the block error
+		}
+		return count, fmt.Errorf("%w: %s", errRebuildBlocked, rebuildBlockMessage(decision, cfg.VaultDir, oldCount))
+	}
+	// Bind the vault id (adopt a fresh one if neither marker nor index had it).
+	effID := indexID
+	if effID == "" {
+		seed := marker.VaultID
+		if seed == "" {
+			seed = "v_" + newID()
+		}
+		effID, err = createVaultMarkerIfAbsent(cfg, seed)
+		if err != nil {
+			return count, err
+		}
+	} else if !markerPresent {
+		// The marker was LOST but the index still knows its id (effID==indexID).
+		// Without recreating it, the next Enforce rebuild sees markerPresent=false
+		// and blocks forever (decBlockIdentity), making --force non-idempotent.
+		// Re-stamp the marker bound to the index's own id so identity self-heals.
+		if _, err = createVaultMarkerIfAbsent(cfg, effID); err != nil {
+			return count, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta(key,value) VALUES('vault_id',?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, effID); err != nil {
+		return count, err
+	}
 	if err := tx.Commit(); err != nil {
 		return count, err
 	}
+	_ = clearBlockRecord(cfg) // best-effort: a stale block record must not fail a good rebuild
 	return count, nil
 }
 
@@ -4998,8 +5141,13 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 			return nil, err
 		}
 		// A failed rebuild after a delete is worse than after a write: search
-		// keeps SERVING the deleted content as if it still existed.
-		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+		// keeps SERVING the deleted content as if it still existed. Delete is the
+		// privacy path, so it rebuilds in Allow mode (mirrors cmdDelete): a
+		// last-memory delete (newCount==0) must still drop the deleted row from the
+		// index — the Enforce decBlockEmpty guard would roll it back and keep
+		// serving it. Allow is safe here because no write is being committed over a
+		// populated vault; the destructive intent is the user's own delete.
+		if _, rerr := rebuildIndexWithPolicy(ctx, cfg, policyAllow); rerr != nil {
 			return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
 		}
 		return map[string]any{"deleted": id}, nil

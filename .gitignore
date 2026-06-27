@@ -24,7 +24,11 @@ internal/mora/live_queries.tsv
 # One-off internal planning/analysis artifacts — never ship or publish (audit-flagged)
 docs/MORA_BASELINE_SUMMARY.json
 docs/MORA_PROJECT_BOARD_REVIEW.md
+docs/MORA_ARCHITECTURE_REVIEW_*.md
+docs/superpowers/
+.planning/
 
 # personal eval golden set (never commit real queries)
 internal/mora/live_queries.tsv
 internal/mora/live_qrels.tsv
+.superpowers/

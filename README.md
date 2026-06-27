@@ -54,6 +54,19 @@ curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.sh
 
 Removes the `mora` binary and de-registers the MCP server from Claude Code / Codex. Your vault is **preserved by default**; re-run with `--purge` (or `MORA_PURGE=1`) to also delete `~/vault/mora`.
 
+### How Mora is laid out
+
+Mora keeps your data in four places. Only the first is precious:
+
+| Path | Holds | If lost |
+| --- | --- | --- |
+| `vault_dir` (`~/vault/mora`) | your memories, as Markdown | **back this up** (`mora sync git` mirrors it to a private repo) |
+| `data_dir` (`~/.local/share/mora`) | the search index | rebuilt with `mora index rebuild` |
+| `state_dir` (`~/.local/state/mora`) | connector sync watermarks | rebuilt on the next sync |
+| `config_dir` (`~/.config/mora`) | settings + OAuth tokens | re-create with `mora init` / re-auth |
+
+Run `mora config` to see the resolved paths. Mora will refuse to rebuild the index from a vault that suddenly looks empty or unfamiliar (it could mean your `vault_dir` moved). It tells you how to fix it, or pass `--force` to override.
+
 Then connect your sources:
 
 ```bash
