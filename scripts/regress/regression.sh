@@ -101,7 +101,12 @@ echo "$VER_LINE" | grep -q "$EXPECTED_VER" || die "version mismatch: '$VER_LINE'
 echo "$VER_LINE" | grep -qiw dev && die "binary reports 'dev' — release ldflags not stamped"
 pass "mora version stamped: $VER_LINE"
 
-ACTIVE_VAULT="$(mora config 2>/dev/null | sed -n 's/^vault_dir = //p' | head -1)"
+# `mora config` annotates the vault line for humans ("vault_dir = <path>   ← your
+# memories (back this up)"); strip the arrow + everything after it so the comparison
+# sees only the path. Anchoring on the arrow (not a bare run of spaces) avoids
+# truncating a vault path that itself contains consecutive spaces; if the annotation
+# is dropped entirely this still yields the bare path.
+ACTIVE_VAULT="$(mora config 2>/dev/null | sed -n 's/^vault_dir = //p' | head -1 | sed -E 's/[[:space:]]+←.*$//')"
 [ "$ACTIVE_VAULT" = "$MORA_VAULT" ] || die "active vault '$ACTIVE_VAULT' != expected '$MORA_VAULT'"
 pass "init repointed vault to the sandbox"
 
@@ -256,6 +261,37 @@ DOC_JSON="$(mora doctor --json)"
 json_true "$DOC_JSON" 'd["healthy"] is True' || die "doctor reports unhealthy on a seeded vault: $DOC_JSON"
 mora doctor --json --strict >/dev/null 2>&1 || die "doctor --strict exited non-zero on a healthy vault"
 pass "doctor --json --strict: healthy"
+
+# =============================================================================
+section "Tier 1g — vault-identity guard (refuse empty/foreign rebuild, no network)"
+# The vault-flip P0 (#43): rebuilding the index against a vault that suddenly looks
+# EMPTY must REFUSE and leave the populated index intact, not silently wipe it. The
+# real-upgrade test below exercises the legacy->v2 ADOPT path but is skipped without
+# network; this synthetic check proves the empty-vault guard fires on the real HEAD
+# binary EVERY run. It uses its own config dir so it can't disturb the main sandbox.
+VIDCFG="$WORK/vid"; VIDVAULT="$VIDCFG/vault"
+# build_vault.py wipes+inits its own sandbox (creating the v2 identity marker) and
+# rebuilds the index, so the vault starts populated with a built, marked index.
+run "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
+  "$MORA_REPO/scripts/bench/agent-ab/world.json" "$VIDCFG"
+VID_N="$(json_get "$(MORA_CONFIG_DIR="$VIDCFG" mora list --json)" 'len(d)')"
+[ "$VID_N" -gt 0 ] || die "vid: seeded vault has 0 memories"
+json_true "$(MORA_CONFIG_DIR="$VIDCFG" mora search Northwind --json)" 'len(d) > 0' \
+  || die "vid: search found nothing on the seeded index (bad fixture)"
+# Empty the vault (simulate vault_dir moving / being lost); the dotfile marker stays.
+rm -rf "${VIDVAULT:?}"/* 2>/dev/null || true
+# A plain rebuild must now be REFUSED (non-zero) — the guard's whole job.
+if MORA_CONFIG_DIR="$VIDCFG" mora index rebuild >/dev/null 2>&1; then
+  die "vid: rebuild from an EMPTIED vault was NOT refused (vault-flip guard regressed)"
+fi
+# ...and the populated index must survive: search still answers from the old index.
+json_true "$(MORA_CONFIG_DIR="$VIDCFG" mora search Northwind --json)" 'len(d) > 0' \
+  || die "vid: blocked rebuild wiped the index (expected it preserved untouched)"
+pass "empty-vault rebuild refused; populated index preserved ($VID_N memories)"
+# --force is the documented override: it must rebuild from the (now empty) vault.
+MORA_CONFIG_DIR="$VIDCFG" mora index rebuild --force >/dev/null 2>&1 \
+  || die "vid: --force did not override the guard"
+pass "--force overrides the guard"
 
 # =============================================================================
 if [ "${SKIP_UPGRADE:-0}" != "1" ]; then
