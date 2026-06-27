@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -217,6 +218,35 @@ func TestRebuildBlocksForeignVault(t *testing.T) {
 	// Old corpus must be preserved.
 	if got := indexCount(t, cfg); got != 1 {
 		t.Fatalf("index count after blocked foreign-vault rebuild = %d, want 1 (preserved)", got)
+	}
+}
+
+func TestIndexRebuildForceOverridesBlock(t *testing.T) {
+	cfg := sandboxCfg(t)
+	if err := writeMemory(cfg, Memory{ID: newID(), Scope: "global", Type: "insight", Title: "k", Source: "manual", CreatedAt: nowRFC3339(), Text: "v"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(memoriesRoot(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	// Without --force: blocked.
+	var out bytes.Buffer
+	if err := cmdIndex(context.Background(), []string{"rebuild"}, &out, bytes.NewReader(nil)); !errors.Is(err, errRebuildBlocked) {
+		t.Fatalf("want blocked without --force, got %v", err)
+	}
+	// With --force: succeeds, index empties.
+	out.Reset()
+	if err := cmdIndex(context.Background(), []string{"rebuild", "--force"}, &out, bytes.NewReader(nil)); err != nil {
+		t.Fatalf("force rebuild failed: %v", err)
+	}
+	if indexCount(t, cfg) != 0 {
+		t.Fatalf("force rebuild did not empty the index")
 	}
 }
 

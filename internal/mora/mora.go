@@ -299,7 +299,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "context":
 		return cmdContext(ctx, args[1:], stdout)
 	case "index":
-		return cmdIndex(ctx, args[1:], stdout)
+		return cmdIndex(ctx, args[1:], stdout, stdin)
 	case "tasks":
 		return cmdTasks(ctx, args[1:], stdout)
 	case "pulse":
@@ -916,7 +916,7 @@ func cmdDelete(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := os.Remove(m.Path); err != nil {
 		return err
 	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
+	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "deleted %s\n", m.ID)
@@ -1142,15 +1142,25 @@ func printThink(w io.Writer, res ThinkResult) {
 	fmt.Fprintln(w, "\n(Pass this evidence + gaps to your agent, or run `mora think … --json` for the synthesis prompt.)")
 }
 
-func cmdIndex(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) != 1 || args[0] != "rebuild" {
-		return errors.New("usage: mora index rebuild")
+func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+	fs := flag.NewFlagSet("index", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")
+	if err := fs.Parse(flagsFirst(args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" {
+		return errors.New("usage: mora index rebuild [--force]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	count, err := rebuildIndex(ctx, cfg)
+	policy := policyEnforce
+	if *force {
+		policy = policyAllow
+	}
+	count, err := rebuildIndexWithPolicy(ctx, cfg, policy)
 	if err != nil {
 		return err
 	}
