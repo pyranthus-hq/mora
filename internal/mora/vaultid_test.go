@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -150,6 +151,72 @@ func TestRebuildAllowCommitsEmpty(t *testing.T) {
 	}
 	if n != 0 || indexCount(t, cfg) != 0 {
 		t.Fatalf("allow rebuild count = %d, index = %d, want 0/0", n, indexCount(t, cfg))
+	}
+}
+
+func TestBlockRecordWrittenAndCleared(t *testing.T) {
+	cfg := sandboxCfg(t)
+	id := newID()
+	if err := writeMemory(cfg, Memory{ID: id, Scope: "global", Type: "insight", Title: "k", Source: "manual", CreatedAt: nowRFC3339(), Text: "v"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(memoriesRoot(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); !errors.Is(err, errRebuildBlocked) {
+		t.Fatalf("want blocked, got %v", err)
+	}
+	if _, present, _ := readBlockRecord(cfg); !present {
+		t.Fatal("block record should exist after a blocked rebuild")
+	}
+	// Restore the vault; a good rebuild must clear the record.
+	if err := writeMemory(cfg, Memory{ID: id, Scope: "global", Type: "insight", Title: "k", Source: "manual", CreatedAt: nowRFC3339(), Text: "v"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, present, _ := readBlockRecord(cfg); present {
+		t.Fatal("block record should be cleared after a successful rebuild")
+	}
+}
+
+func TestRebuildBlocksForeignVault(t *testing.T) {
+	cfg := sandboxCfg(t)
+	id := newID()
+	if err := writeMemory(cfg, Memory{ID: id, Scope: "global", Type: "insight", Title: "k", Source: "manual", CreatedAt: nowRFC3339(), Text: "v"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := indexCount(t, cfg); got != 1 {
+		t.Fatalf("seed index count = %d, want 1", got)
+	}
+	// Overwrite the vault marker with a different id to simulate a foreign vault.
+	m := vaultMarker{Schema: vaultMarkerSchema, VaultID: "v_b", CreatedAt: nowRFC3339(), CreatedBy: "test"}
+	body, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markerPath(cfg), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); !errors.Is(err, errRebuildBlocked) {
+		t.Fatalf("want errRebuildBlocked for foreign vault, got %v", err)
+	}
+	// Old corpus must be preserved.
+	if got := indexCount(t, cfg); got != 1 {
+		t.Fatalf("index count after blocked foreign-vault rebuild = %d, want 1 (preserved)", got)
 	}
 }
 

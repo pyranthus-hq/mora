@@ -1512,6 +1512,7 @@ type doctorReport struct {
 	GitSyncConfigured bool          `json:"git_sync_configured"`
 	Version           string        `json:"version"`
 	Platform          string        `json:"platform"`
+	RebuildBlock      *rebuildBlock `json:"rebuild_block,omitempty"`
 }
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
@@ -1582,6 +1583,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			Version:           BuildVersion,
 			Platform:          runtime.GOOS,
 		}
+		if rec, present, _ := readBlockRecord(cfg); present {
+			rep.RebuildBlock = &rec
+		}
 		b, err := json.MarshalIndent(rep, "", "  ")
 		if err != nil {
 			return err
@@ -1603,6 +1607,10 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		} else {
 			fmt.Fprintf(stdout, "%s %s\n", sty.warn("warn"), c.Name)
 		}
+	}
+	if rec, present, _ := readBlockRecord(cfg); present {
+		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — run `mora index rebuild` after fixing vault_dir, or `--force` to override\n",
+			sty.warn("warn"), rec.Reason, rec.VaultDir, rec.OldCount)
 	}
 	prefix := sty.ok("ok  ")
 	if st != "ok" {
@@ -3394,13 +3402,10 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, effID); err != nil {
 		return count, err
 	}
-	if err := clearBlockRecord(cfg); err != nil {
-		return count, err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return count, err
 	}
+	_ = clearBlockRecord(cfg) // best-effort: a stale block record must not fail a good rebuild
 	return count, nil
 }
 

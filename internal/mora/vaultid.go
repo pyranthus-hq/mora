@@ -115,13 +115,53 @@ func resolveVaultID(cfg Config) (string, error) {
 	return m.VaultID, nil
 }
 
-// writeBlockRecord persists a block event for later inspection (stub; fleshed out in Task 5).
-func writeBlockRecord(cfg Config, d rebuildDecision, vaultDir string, oldCount, newCount int) error {
-	return nil
+type rebuildBlock struct {
+	At       string `json:"at"`
+	Reason   string `json:"reason"`
+	VaultDir string `json:"vault_dir"`
+	OldCount int    `json:"old_count"`
+	NewCount int    `json:"new_count"`
 }
 
-// clearBlockRecord removes any previously written block record (stub; fleshed out in Task 5).
-func clearBlockRecord(cfg Config) error { return nil }
+func blockRecordPath(cfg Config) string {
+	return filepath.Join(cfg.DataDir, "last-rebuild-block.json")
+}
+
+func writeBlockRecord(cfg Config, d rebuildDecision, vaultDir string, oldCount, newCount int) error {
+	reason := "vault looked empty"
+	if d == decBlockIdentity {
+		reason = "vault identity did not match the index"
+	}
+	rec := rebuildBlock{At: nowRFC3339(), Reason: reason, VaultDir: vaultDir, OldCount: oldCount, NewCount: newCount}
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(blockRecordPath(cfg), b, 0o644)
+}
+
+func clearBlockRecord(cfg Config) error {
+	err := os.Remove(blockRecordPath(cfg))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func readBlockRecord(cfg Config) (rebuildBlock, bool, error) {
+	b, err := os.ReadFile(blockRecordPath(cfg))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return rebuildBlock{}, false, nil
+		}
+		return rebuildBlock{}, false, err
+	}
+	var rec rebuildBlock
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return rebuildBlock{}, true, nil
+	}
+	return rec, true, nil
+}
 
 // rebuildBlockMessage returns a human-readable explanation of why a rebuild was blocked.
 func rebuildBlockMessage(d rebuildDecision, vaultDir string, oldCount int) string {
