@@ -63,6 +63,8 @@ mora connect imessage                  # macOS; walks you through Full Disk Acce
 mora schedule install ingest-hourly    # background sync (launchd; prints a cron line on Linux)
 ```
 
+> **First Google sign-in:** Mora's shared Google app is still going through Google's review, so you'll see a "Google hasn't verified this app" screen. Click **Advanced → Go to Mora** to continue; the access stays read-only and on-device. Prefer your own keys? Set `MORA_GOOGLE_CREDENTIALS=/path/to/client.json` to use your own Google OAuth client instead (optional). See [Connect Google](docs/guide.md#connect-google-gmail--calendar).
+
 Wire Mora into your agents (registers the local MCP server):
 
 ```bash
