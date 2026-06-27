@@ -65,6 +65,25 @@ json_get() {
   printf '%s' "$1" | "$PY" -c "import sys,json; d=json.load(sys.stdin); print($2)"
 }
 
+# hash_file — portable file hash (shasum ships with Perl; minimal Linux containers
+# only have coreutils' sha256sum). Used by the config tripwire.
+hash_file() { if command -v shasum >/dev/null 2>&1; then shasum "$1"; else sha256sum "$1"; fi; }
+
+# cfg_fingerprint — a deterministic fingerprint of the developer's REAL
+# ~/.config/mora dir (every file hashed, path-sorted), or the literal ABSENT when
+# the dir does not exist. Snapshotting the whole tree (not just config.toml) and
+# distinguishing ABSENT vs present lets the tripwire catch BOTH mutation of an
+# existing config AND creation of a new one where none existed (the CI/fresh-box
+# case the release gate actually runs in). Always exits 0 (never aborts under set -e).
+cfg_fingerprint() {
+  local d="$HOME/.config/mora"
+  [ -e "$d" ] || { printf 'ABSENT\n'; return 0; }
+  find "$d" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+    hash_file "$f" 2>/dev/null || true
+  done
+  return 0
+}
+
 # =============================================================================
 section "Tier 1a — install.sh (LOCAL mode) on a clean box"
 # Stage a dir that mimics a release tarball so install.sh hits its local path.
@@ -244,15 +263,52 @@ section "Tier 1b/upgrade — install $PREV_VER, populate, swap to HEAD in place"
 if curl -fsI https://github.com >/dev/null 2>&1; then
   UPWORK="$WORK/upgrade"; mkdir -p "$UPWORK/bin"
   UP_CONFIG="$UPWORK/sandbox"
-  ( export MORA_CONFIG_DIR="$UP_CONFIG" MORA_VAULT="$UP_CONFIG/vault"
-    # 1) install the PREVIOUS released version. Run install.sh from an ISOLATED
-    #    dir (only the script, no sibling binary) to force REMOTE mode — otherwise
-    #    a stray ./mora in the repo root would make it LOCAL-install HEAD.
-    INSTALLER="$UPWORK/installer"; mkdir -p "$INSTALLER"
-    cp "$MORA_REPO/install.sh" "$INSTALLER/install.sh"
-    VERSION="$PREV_VER" PREFIX="$UPWORK/bin" MORA_VAULT="$UP_CONFIG/vault" \
-      sh "$INSTALLER/install.sh" >/dev/null 2>&1 \
-      || die "install of previous version $PREV_VER failed (network?)"
+  # SAFETY GUARD: the PREVIOUS release may predate MORA_CONFIG_DIR and fall back
+  # to the developer's REAL ~/.config/mora — silently repointing their live
+  # vault_dir at a (doomed) sandbox path. The HOME/XDG redirect below is the fix;
+  # this fingerprint of the WHOLE real ~/.config/mora (or ABSENT) is the tripwire,
+  # asserted UNCONDITIONALLY after the test (catches both mutation of an existing
+  # config AND creation of one where none existed — the CI/fresh-box case).
+  CFG_BEFORE="$(cfg_fingerprint)"
+  # 1) Fetch the PREVIOUS release tarball using the REAL $HOME (so gh/curl auth
+  #    works), THEN local-install it under a redirected HOME below — only the
+  #    config-writing `mora init` is sandboxed; the network step keeps real auth.
+  OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  AR="$(uname -m)"; case "$AR" in arm64|aarch64) AR=arm64 ;; x86_64|amd64) AR=amd64 ;; *) die "unsupported arch: $AR" ;; esac
+  ASSET="mora_${PREV_VER}_${OS}_${AR}.tar.gz"
+  OLDSTAGE="$UPWORK/oldstage"; mkdir -p "$OLDSTAGE"
+  if command -v gh >/dev/null 2>&1; then
+    gh release download "v$PREV_VER" --repo pyranthus-hq/mora --pattern "$ASSET" --dir "$UPWORK" >/dev/null 2>&1 || true
+  fi
+  # Validate any gh-downloaded archive: an interrupted gh leaves a truncated file
+  # that would satisfy `[ -f ]` and skip the curl fallback, failing later at tar.
+  [ -f "$UPWORK/$ASSET" ] && { tar -tzf "$UPWORK/$ASSET" >/dev/null 2>&1 || rm -f "$UPWORK/$ASSET"; }
+  [ -f "$UPWORK/$ASSET" ] || curl -fsSL -o "$UPWORK/$ASSET" \
+    "https://github.com/pyranthus-hq/mora/releases/download/v$PREV_VER/$ASSET" \
+    || die "could not fetch the $PREV_VER tarball ($ASSET)"
+  tar -xzf "$UPWORK/$ASSET" -C "$OLDSTAGE" || die "could not extract $ASSET"
+  OLDBIN="$(find "$OLDSTAGE" -type f -name mora 2>/dev/null | head -1)"
+  [ -x "$OLDBIN" ] || die "no mora binary in the $PREV_VER tarball"
+  # the tarball may extract `mora` to the top level (== $OLDSTAGE/mora) or a
+  # nested versioned dir; only copy when it isn't already the staging path
+  # (cp onto itself errors under set -e).
+  [ "$OLDBIN" = "$OLDSTAGE/mora" ] || cp "$OLDBIN" "$OLDSTAGE/mora"
+  cp "$MORA_REPO/install.sh" "$OLDSTAGE/install.sh"
+  upgrade_rc=0
+  ( # Redirect HOME + XDG into the sandbox so the OLD binary's `mora init` — which
+    # may predate MORA_CONFIG_DIR — writes to a throwaway HOME, never the real
+    # ~/.config/mora (the vault-flip data hazard).
+    export HOME="$UPWORK/home" \
+           XDG_CONFIG_HOME="$UPWORK/home/.config" \
+           XDG_DATA_HOME="$UPWORK/home/.local/share" \
+           XDG_STATE_HOME="$UPWORK/home/.local/state" \
+           XDG_CACHE_HOME="$UPWORK/home/.cache" \
+           MORA_CONFIG_DIR="$UP_CONFIG" MORA_VAULT="$UP_CONFIG/vault"
+    mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/state" "$HOME/.cache"
+    # LOCAL-install the previous release (its mora binary sits next to install.sh,
+    # so install.sh takes its local path — no network, no gh auth needed here).
+    PREFIX="$UPWORK/bin" MORA_VAULT="$UP_CONFIG/vault" sh "$OLDSTAGE/install.sh" >/dev/null 2>&1 \
+      || die "local install of previous version $PREV_VER failed"
     OLDMORA="$UPWORK/bin/mora"
     "$OLDMORA" version | head -1 | grep -q "$PREV_VER" || die "previous install is not $PREV_VER"
     # populate on the OLD binary
@@ -274,7 +330,15 @@ if curl -fsI https://github.com >/dev/null 2>&1; then
     MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" brief --json >/dev/null 2>&1 || die "brief crashed after upgrade (schema bump not handled)"
     MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" doctor --json --strict >/dev/null 2>&1 || die "doctor --strict failed after upgrade"
     pass "upgrade $PREV_VER -> $EXPECTED_VER: $OLD_COUNT memories survived, index auto-healed, brief+doctor OK"
-  )
+  ) || upgrade_rc=$?
+  # Tripwire — runs UNCONDITIONALLY (capturing the subshell's rc above instead of
+  # letting set -e abort here): the upgrade test must NEVER mutate or create the
+  # real ~/.config/mora, on success OR failure paths.
+  CFG_AFTER="$(cfg_fingerprint)"
+  [ "$CFG_BEFORE" = "$CFG_AFTER" ] \
+    || die "the upgrade test touched your real ~/.config/mora (vault-flip hazard) — a previous-release binary escaped the sandbox redirect"
+  pass "real ~/.config/mora untouched by the upgrade test"
+  [ "$upgrade_rc" -eq 0 ] || die "upgrade test failed (rc=$upgrade_rc)"
 else
   printf '  \033[33mnote\033[0m no GitHub access — skipping upgrade test (set SKIP_UPGRADE=1 to silence)\n'
 fi
