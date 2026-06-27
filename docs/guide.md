@@ -477,7 +477,7 @@ Most "AI + your email/calendar" tools work the same way: when you ask a question
 
 | Capability | **Mora** | Claude Desktop connectors | Codex + ChatGPT | Generic MCP Gmail |
 |---|---|---|---|---|
-| Where your data lives | Local Markdown + SQLite on your Mac | Anthropic cloud (per-chat) | OpenAI cloud (indexed copy + Memory) | Nowhere — live API fetch only |
+| Where your data lives | Local Markdown + SQLite on your machine | Anthropic cloud (per-chat) | OpenAI cloud (indexed copy + Memory) | Nowhere — live API fetch only |
 | Egress / telemetry | **Zero egress, zero telemetry** | Data sent to + stored on Anthropic | Data synced to + indexed by OpenAI | Each query hits Google's API |
 | Persistent corpus you can grep | **Yes** (human-readable files) | No | Opaque, cloud-only | No |
 | Gmail / Calendar (read-only) | **Yes** (thread-level Gmail) | Yes | Yes | Gmail, often Calendar |
