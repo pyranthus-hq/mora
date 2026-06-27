@@ -530,8 +530,12 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		if cfg.MMR {
 			mmr = "on"
 		}
-		fmt.Fprintf(stdout, "vault_dir = %s\ndata_dir  = %s\nstate_dir = %s\nembedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
-			cfg.VaultDir, cfg.DataDir, cfg.StateDir, embedder, profile,
+		fmt.Fprintf(stdout, "vault_dir = %s   ← your memories (back this up)\n", cfg.VaultDir)
+		fmt.Fprintf(stdout, "data_dir  = %s   ← search index (rebuildable)\n", cfg.DataDir)
+		fmt.Fprintf(stdout, "state_dir = %s   ← sync watermarks (rebuildable)\n", cfg.StateDir)
+		fmt.Fprintf(stdout, "config    = %s   ← settings + tokens\n", cfg.ConfigDir)
+		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
+			embedder, profile,
 			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr)
 		return nil
 	}

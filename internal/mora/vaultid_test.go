@@ -297,3 +297,18 @@ func TestAssessRebuild(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigShowsPathAnnotations(t *testing.T) {
+	cfg := sandboxCfg(t)
+	_ = cfg
+	var out bytes.Buffer
+	if err := cmdConfig(nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	for _, want := range []string{"back this up", "rebuildable", "settings"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("config output missing annotation %q; got:\n%s", want, s)
+		}
+	}
+}
