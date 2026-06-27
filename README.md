@@ -44,7 +44,7 @@ Gaps: none detected.
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
-The script installs the release binary for your platform, clears the macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized), and runs `mora init` (your vault lives at `~/vault/mora`). It does not verify checksums; they are on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to check by hand. Update in place later with `mora upgrade` (source builds report `dev` and cannot self-update). Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.25+, pure Go, no CGO).
+The script downloads the release binary for your platform, **verifies it against the release `checksums.txt`** before extracting, clears the macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized — it prints exactly what it does to Gatekeeper and why), and runs `mora init` (your vault lives at `~/vault/mora`). The checksums file is cosign-signed on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to verify the stronger chain by hand. Update in place later with `mora upgrade` (source builds report `dev` and cannot self-update). Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.25+, pure Go, no CGO).
 
 ### Uninstall
 
@@ -158,7 +158,9 @@ Mora keeps a persistent local corpus, so you can ask "what did I commit to, and 
 ## Privacy
 
 - **Read-only at the source.** Google scopes are `gmail.readonly` and `calendar.readonly`; iMessage and Apple Calendar are opened read-only. Mora never sends, changes, or deletes anything in your accounts. Its `write_memory` and `delete_memory` tools only touch the local vault.
-- **Everything on your disk.** The vault, index, and OAuth tokens (`~/.config/mora/tokens/`, mode 0600) live on your machine. There is no analytics endpoint. The only log is a local usage log (tool name, timing, result counts, scope, and your query text) that you can turn off with `mora usage off` or `DO_NOT_TRACK=1`.
+- **Everything on your disk.** The vault, index, and OAuth tokens (`~/.config/mora/tokens/`, mode 0600) live on your machine. There is no analytics endpoint. The only log is a local usage log of tool name, timing, result counts, and scope. It does **not** record your query text by default (opt in with `mora usage queries on`); turn the log off entirely with `mora usage off` or `DO_NOT_TRACK=1`.
+- **Plaintext at rest.** Your vault is unencrypted Markdown on disk. That is what makes it greppable and portable, but it also means anything that can read your home directory can read your memories. Protect it with full-disk encryption (FileVault on macOS), and use [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) for an encrypted off-device backup. Tokens are mode 0600; vault files inherit your filesystem permissions.
+- **Bring your own Google keys (optional).** Mora's shared Google app is still in Google's verification queue, so you hit an "unverified app" screen and a ~100-user cap. Point Mora at your own OAuth client with `MORA_GOOGLE_CREDENTIALS=/path/to/client.json` to sidestep both. [Connect Google](docs/guide.md#connect-google-gmail--calendar).
 - **Zero egress by default.** No server, no hosting. Mora reaches the network only to sync your sources, fetch updates during `mora upgrade`, and push your opt-in git backup; the optional Ollama embedder is loopback-only. `mora doctor` warns if the vault is a git repo, and [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) gives you an encrypted remote.
 
 ## Docs

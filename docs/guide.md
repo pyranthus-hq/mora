@@ -320,13 +320,22 @@ MMR trims near-duplicate hits from a result set; it is off by default and only a
 mora sync google
 ```
 
-**View local usage analytics (stays on your disk; includes your raw query text):**
+**View local usage analytics (stays on your disk; query text is not recorded by default):**
 
 ```bash
 mora usage report
 ```
 
-**Disable usage tracking:**
+The usage log keeps tool name, timing, result counts, and scope, but **not** your
+query text. If you want the raw query strings retained locally (e.g. to grow an eval
+set), opt in; turn it back off at any time:
+
+```bash
+mora usage queries on    # retain raw query text in the local log (off by default)
+mora usage queries off   # stop retaining it
+```
+
+**Disable usage tracking entirely:**
 
 ```bash
 mora usage off
