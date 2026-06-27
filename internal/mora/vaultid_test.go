@@ -60,3 +60,32 @@ func TestVaultMarkerAbsent(t *testing.T) {
 		t.Fatal("expected no marker in a fresh sandbox")
 	}
 }
+
+func TestAssessRebuild(t *testing.T) {
+	cases := []struct {
+		name               string
+		oldCount, newCount int
+		markerID           string
+		markerPresent      bool
+		indexID            string
+		want               rebuildDecision
+	}{
+		{"first build empty index", 0, 0, "", false, "", decProceed},
+		{"first build populating", 0, 5, "", false, "", decProceed},
+		{"the incident: populated->empty, no marker", 2823, 0, "", false, "", decBlockEmpty},
+		{"populated->empty, marker matches index", 2823, 0, "v_a", true, "v_a", decBlockEmpty},
+		{"adopt: legacy vault, no ids anywhere", 2823, 2820, "", false, "", decAdopt},
+		{"adopt: marker present, index has no id yet", 10, 10, "v_a", true, "", decAdopt},
+		{"block: index knows its id, marker vanished", 10, 10, "", false, "v_a", decBlockIdentity},
+		{"block: different vault", 10, 9, "v_b", true, "v_a", decBlockIdentity},
+		{"normal rebuild, ids match", 10, 11, "v_a", true, "v_a", decProceed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := assessRebuild(c.oldCount, c.newCount, c.markerID, c.markerPresent, c.indexID)
+			if got != c.want {
+				t.Fatalf("assessRebuild = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

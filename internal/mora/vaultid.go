@@ -71,3 +71,31 @@ func createVaultMarkerIfAbsent(cfg Config, id string) (string, error) {
 }
 
 func nowRFC3339() string { return time.Now().Format(time.RFC3339) }
+
+type rebuildDecision int
+
+const (
+	decProceed       rebuildDecision = iota // commit the new index
+	decAdopt                                // commit + bind a (new or marker) vault id
+	decBlockEmpty                           // populated index would become empty
+	decBlockIdentity                        // new index is from a different/unknown vault
+)
+
+// assessRebuild decides what to do with a freshly built index given the prior
+// state. Pure: no I/O. indexID=="" means the existing index never recorded a
+// vault id (a genuinely pre-feature index).
+func assessRebuild(oldCount, newCount int, markerID string, markerPresent bool, indexID string) rebuildDecision {
+	if oldCount == 0 {
+		return decProceed // first build / already-empty index: nothing to protect
+	}
+	if newCount == 0 {
+		return decBlockEmpty // populated index would be wiped by an empty vault
+	}
+	if indexID == "" {
+		return decAdopt // legacy index with no bound id -> adopt the vault's identity
+	}
+	if markerPresent && markerID == indexID {
+		return decProceed // same vault, ordinary rebuild after edits
+	}
+	return decBlockIdentity // marker missing or from a different vault
+}
