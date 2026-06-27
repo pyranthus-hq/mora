@@ -37,8 +37,11 @@ func readVaultMarker(cfg Config) (vaultMarker, bool, error) {
 		// The marker is identity-critical: silently treating a corrupt one as
 		// "absent" would disable the rebuild guard exactly when the vault's
 		// identity is in question. Fail LOUD with an actionable message so the
-		// rebuild surfaces it instead of clobbering the index.
-		return vaultMarker{}, true, fmt.Errorf("vault marker %s is corrupt (delete it and re-run): %w", markerPath(cfg), err)
+		// rebuild surfaces it instead of clobbering the index. Do NOT advise
+		// deleting it — a regenerated marker gets a fresh id that no longer
+		// matches the index, blocking every future rebuild; restoring the
+		// backed-up marker preserves the vault's real identity.
+		return vaultMarker{}, true, fmt.Errorf("vault identity marker %s is unreadable (corrupt JSON) — restore it from your vault backup (e.g. `mora sync git`) rather than deleting it: %w", markerPath(cfg), err)
 	}
 	return m, true, nil
 }
@@ -171,9 +174,9 @@ func readBlockRecord(cfg Config) (rebuildBlock, bool, error) {
 // rebuildBlockMessage returns a human-readable explanation of why a rebuild was blocked.
 func rebuildBlockMessage(d rebuildDecision, vaultDir string, oldCount int) string {
 	if d == decBlockEmpty {
-		return fmt.Sprintf("configured vault (%s) has no memory files, but the index holds %d — your vault may have moved. The existing index was left untouched. Fix vault_dir in config.toml then `mora index rebuild`, or override with `mora index rebuild --force`.", vaultDir, oldCount)
+		return fmt.Sprintf("configured vault (%s) has no memory files, but the index holds %d — your vault may have moved. The existing index was left untouched. Fix vault_dir in config.toml then `mora index rebuild`; only use `mora index rebuild --force` if the empty vault is correct (it discards the %d indexed memories).", vaultDir, oldCount, oldCount)
 	}
-	return fmt.Sprintf("configured vault (%s) is a different vault than the index was built from. The existing index was left untouched. Re-point vault_dir, or override with `mora index rebuild --force`.", vaultDir)
+	return fmt.Sprintf("configured vault (%s) is a different vault than the index was built from. The existing index was left untouched. Re-point vault_dir to the original vault and `mora index rebuild`; only `mora index rebuild --force` if this new vault is correct (it discards the existing index).", vaultDir)
 }
 
 // readIndexVaultID opens the index read-only and returns the vault_id stored in
