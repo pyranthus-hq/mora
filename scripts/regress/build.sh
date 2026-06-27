@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Driver for the Mora Tier-1 regression harness.
+# Driver for the Mora regression harness.
 #
 #   ./build.sh native   # build a stamped binary on this host, run regression.sh natively
-#   ./build.sh docker    # build a clean Linux image and run regression.sh inside it
+#   ./build.sh docker   # build a clean Linux image and run regression.sh inside it
+#   ./build.sh macos    # run the macOS-native tier (regression-macos.sh) on this Mac
 #
-# `native` is for fast dev validation (works on macOS; macOS-only data paths are
-# out of scope — see regression-macos.sh). `docker` is the real release shape:
-# a from-scratch Debian box that has never seen Go or a prior mora install.
+# `native` is for fast dev validation of the cross-platform Tier 1 (works on macOS,
+# but the macOS-only data paths are covered by `macos`). `docker` is the real
+# release shape: a from-scratch Debian box that has never seen Go or a prior mora
+# install. `macos` exercises the surfaces a container can't: codesign/Gatekeeper,
+# launchd, iMessage/Calendar decode, and the cp-over-running SIGKILL-137 hazard.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "$0")" && pwd)"
@@ -51,6 +54,11 @@ case "$MODE" in
     # and silently flip install.sh into remote mode).
     docker run --rm --tmpfs /work:exec mora-regress
     ;;
+  macos)
+    [ "$(uname -s)" = "Darwin" ] || { echo "FATAL: macos mode requires macOS"; exit 2; }
+    echo ">> Tier 2 (macOS-native) @ $VER ($SHA)"
+    MORA_REPO="$MORA_REPO" EXPECTED_VER="$VER" bash "$HERE/regression-macos.sh"
+    ;;
   *)
-    echo "usage: $0 [native|docker]"; exit 2;;
+    echo "usage: $0 [native|docker|macos]"; exit 2;;
 esac
