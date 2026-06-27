@@ -701,7 +701,7 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		// the comparison cleans both sides so a trailing slash (shell tab
 		// completion, install.sh's MORA_VAULT) is not misread as a repoint.
 		if filepath.Clean(cfg.VaultDir) != filepath.Clean(want) && configFileExists(cfg) {
-			if err := confirmVaultRepoint(stdin, stdout, cfg.VaultDir, want); err != nil {
+			if err := confirmVaultRepointFn(stdin, stdout, cfg.VaultDir, want); err != nil {
 				return err
 			}
 			repointed = true
@@ -761,6 +761,13 @@ func configFileExists(cfg Config) bool {
 	_, err := os.Stat(filepath.Join(cfg.ConfigDir, "config.toml"))
 	return err == nil
 }
+
+// confirmVaultRepointFn is the repoint-confirmation gate cmdInit calls. It is a
+// package var (defaulting to confirmVaultRepoint) only so tests can drive the
+// confirmed and declined branches end-to-end — confirmVaultRepoint refuses
+// non-interactively by design, so the real user-facing repoint flow is otherwise
+// untestable without a TTY. Production never reassigns it.
+var confirmVaultRepointFn = confirmVaultRepoint
 
 // confirmVaultRepoint gates `init --vault <new>` when config.toml already
 // points elsewhere. Non-interactive callers are refused with the exact manual

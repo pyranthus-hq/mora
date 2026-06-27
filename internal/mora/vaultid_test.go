@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -511,6 +513,171 @@ func TestInitRepointDiscardsStaleIndex(t *testing.T) {
 	}
 	if id != "v_b" {
 		t.Fatalf("repointed index adopted vault_id %q, want v_b", id)
+	}
+}
+
+// TestConcurrentRebuildsDoNotCorrupt covers B4: a scheduled rebuild (cron) and a
+// write-triggered rebuild (MCP) can fire at the same time against one index. With
+// the _txlock=immediate DSN each rebuild takes the write lock at BeginTx and a
+// contender waits out the busy_timeout instead of deadlocking mid-transaction, so
+// every concurrent rebuild commits the full corpus and none returns SQLITE_BUSY.
+// (Under the old deferred-lock DSN this races: both begin, one is locked out after
+// it already holds a read lock, and cannot retry inside the open tx.)
+func TestConcurrentRebuildsDoNotCorrupt(t *testing.T) {
+	cfg := sandboxCfg(t)
+	const memCount = 25
+	for i := 0; i < memCount; i++ {
+		if err := writeMemory(cfg, Memory{ID: newID(), Scope: "global", Type: "insight", Title: "m", Source: "manual", CreatedAt: nowRFC3339(), Text: "concurrent corpus"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_live"); err != nil {
+		t.Fatal(err)
+	}
+	// Prime the index once so every concurrent rebuild is a same-vault re-index
+	// (oldCount>0, ids match -> decProceed) — the contended path the cron/MCP race hits.
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 8
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	errs := make([]error, goroutines)
+	for g := 0; g < goroutines; g++ {
+		done.Add(1)
+		go func(idx int) {
+			defer done.Done()
+			start.Wait() // release all goroutines together to maximize contention
+			_, errs[idx] = rebuildIndex(context.Background(), cfg)
+		}(g)
+	}
+	start.Done()
+	done.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent rebuild %d returned an error (want none): %v", i, err)
+		}
+	}
+	// The index must hold the full corpus — not a half-written or empty result.
+	if got := indexCount(t, cfg); got != memCount {
+		t.Fatalf("index count after %d concurrent rebuilds = %d, want %d", goroutines, got, memCount)
+	}
+	// The vault-id binding must survive the race intact.
+	id, err := readIndexVaultID(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "v_live" {
+		t.Fatalf("vault_id after concurrent rebuilds = %q, want v_live", id)
+	}
+}
+
+// TestInitRepointConfirmedEndToEnd drives the FULL `mora init --vault <new>` repoint
+// through the confirmation gate (overridden so no TTY is needed), the path a real
+// user hits when relocating their vault. It proves config.toml is rewritten to the
+// new vault, the stale old-vault index is discarded, and the rebuild is a clean
+// first-build that adopts the NEW vault's identity — never self-blocking on the old
+// index's count, and never leaving config=NEW / index=OLD.
+func TestInitRepointConfirmedEndToEnd(t *testing.T) {
+	cfg := sandboxCfg(t)
+	// Establish vault A as a real install: init writes config.toml + marker, then
+	// seed two memories and bind the index to A.
+	var initOut bytes.Buffer
+	if err := cmdInit(context.Background(), nil, &initOut, bytes.NewReader(nil)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := writeMemory(cfg, Memory{ID: newID(), Scope: "global", Type: "insight", Title: "a", Source: "manual", CreatedAt: nowRFC3339(), Text: "from vault A"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := indexCount(t, cfg); got != 2 {
+		t.Fatalf("vault A index count = %d, want 2", got)
+	}
+	aVaultID, err := readIndexVaultID(context.Background(), cfg)
+	if err != nil || aVaultID == "" {
+		t.Fatalf("vault A id: %q err=%v", aVaultID, err)
+	}
+
+	// Simulate the user choosing "Repoint" at the TTY confirm.
+	orig := confirmVaultRepointFn
+	confirmVaultRepointFn = func(io.Reader, io.Writer, string, string) error { return nil }
+	t.Cleanup(func() { confirmVaultRepointFn = orig })
+
+	bDir := t.TempDir() // brand-new empty vault location
+	var out bytes.Buffer
+	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, bytes.NewReader(nil)); err != nil {
+		t.Fatalf("confirmed repoint must succeed end-to-end, got %v", err)
+	}
+
+	// config.toml now points at B (the repoint persisted).
+	reloaded, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(reloaded.VaultDir) != filepath.Clean(bDir) {
+		t.Fatalf("config vault_dir = %q, want %q (repoint not persisted)", reloaded.VaultDir, bDir)
+	}
+	// Fresh first-build for empty B: index emptied, not self-blocked at A's count.
+	if got := indexCount(t, reloaded); got != 0 {
+		t.Fatalf("repointed index count = %d, want 0 (clean first-build for B)", got)
+	}
+	// The index adopted B's NEW identity, not A's.
+	bMarker, present, err := readVaultMarker(reloaded)
+	if err != nil || !present {
+		t.Fatalf("B marker: present=%v err=%v", present, err)
+	}
+	bIndexID, err := readIndexVaultID(context.Background(), reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bIndexID != bMarker.VaultID {
+		t.Fatalf("repointed index vault_id = %q, want B's marker id %q", bIndexID, bMarker.VaultID)
+	}
+	if bIndexID == aVaultID {
+		t.Fatalf("repointed index still bound to vault A id %q — identity did not move", aVaultID)
+	}
+	// Vault A's memory files must remain on disk — a repoint never deletes the old vault.
+	aFiles, _ := allMemoryFiles(cfg)
+	if len(aFiles) != 2 {
+		t.Fatalf("vault A files after repoint = %d, want 2 (old vault must be preserved)", len(aFiles))
+	}
+}
+
+// TestInitRepointDeclinedKeepsVault verifies the abort path: declining the repoint
+// confirmation returns an error and leaves config.toml pointing at the original
+// vault, mutating nothing (the confirm gate runs before any write).
+func TestInitRepointDeclinedKeepsVault(t *testing.T) {
+	cfg := sandboxCfg(t)
+	var initOut bytes.Buffer
+	if err := cmdInit(context.Background(), nil, &initOut, bytes.NewReader(nil)); err != nil {
+		t.Fatal(err)
+	}
+	aVault := cfg.VaultDir
+
+	orig := confirmVaultRepointFn
+	confirmVaultRepointFn = func(io.Reader, io.Writer, string, string) error {
+		return errors.New("init cancelled — vault unchanged")
+	}
+	t.Cleanup(func() { confirmVaultRepointFn = orig })
+
+	bDir := t.TempDir()
+	var out bytes.Buffer
+	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, bytes.NewReader(nil)); err == nil {
+		t.Fatal("declined repoint must return an error")
+	}
+	reloaded, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(reloaded.VaultDir) != filepath.Clean(aVault) {
+		t.Fatalf("config vault_dir = %q, want unchanged %q after a declined repoint", reloaded.VaultDir, aVault)
 	}
 }
 
