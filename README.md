@@ -99,14 +99,15 @@ Drop that into the client's MCP config (`examples/mcp.json` has a copy). Per-con
 
 ### No MCP? Use the shell
 
-Every MCP tool is also a CLI command, so any agent that already has shell access can use Mora without registering the server. Paste this into the agent's instructions file (`AGENTS.md`, `CLAUDE.md`, Cursor rules):
+Every MCP tool is also a CLI command, so any agent with shell access can use Mora without registering the server. Paste this into the agent's instructions file (`AGENTS.md`, `CLAUDE.md`, Cursor rules) to teach it to both **recall from** and **capture to** your vault:
 
 ```markdown
-## Memory: mora (local, read-only)
+## Memory: mora (local)
 
-You have `mora`, a local memory CLI over my Gmail, calendars, iMessage, and files.
-Before answering anything about people, past decisions, projects, or commitments,
-query it first and answer from what it returns:
+You have `mora`, a local memory over my Gmail, calendars, iMessage, and files.
+
+RECALL — before answering anything about people, past decisions, projects, or
+commitments, query mora first and answer from what it returns:
 
   mora think "<question>" --json    # cited evidence + an explicit gap check
   mora search "<query>" --json      # search the vault
@@ -116,6 +117,14 @@ query it first and answer from what it returns:
 Cite every claim with its [stable_id]. If the evidence is insufficient, say so
 plainly rather than guessing, and surface any gaps mora reports. Never invent a
 memory it did not return.
+
+CAPTURE — when I tell you a durable fact, decision, preference, or commitment
+worth recalling later, save it back without being asked:
+
+  mora write --type <fact|decision|insight|task> --title "<title>" --text "<body>"
+
+Capture the signal, not chit-chat: things a future session would want surfaced.
+Do not store secrets I mention in passing unless I ask you to.
 ```
 
 The CLI siblings of every tool (`mora search`, `mora write`, `mora think`, ...) are in [the guide](docs/guide.md#use-mora-from-the-shell).
