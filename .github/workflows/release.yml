@@ -94,6 +94,35 @@ jobs:
           fi
           echo "verified: checksums.txt present, real OAuth client embedded"
 
+      # Pre-publish regression gate (scripts/regress): run the Tier-1 harness
+      # against the REAL goreleaser linux artifact — install.sh, every command,
+      # the MCP wire protocol, the filesystem/PDF/DOCX + git-sync connectors, the
+      # doctor health gate, and an UPGRADE from the previous published release.
+      # RELEASE=1 also hard-fails if install.sh's hardcoded VERSION wasn't bumped
+      # to this tag. A failure here means the draft never publishes.
+      - name: Pre-publish regression (Tier 1)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MORA_REPO: ${{ github.workspace }}
+          RELEASE: "1"
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          ARCHIVE=$(find dist -maxdepth 1 -name 'mora_*_linux_amd64.tar.gz' | head -1)
+          TMP=$(mktemp -d); tar -xzf "$ARCHIVE" -C "$TMP"
+          BIN=$(find "$TMP" -type f -name mora | head -1)
+          # The previous PUBLISHED (non-draft) release drives the upgrade sub-test;
+          # this tag's release is still a draft at this point, so it is excluded.
+          PREV_VER=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName,isDraft \
+            --jq '[.[] | select(.isDraft == false)][0].tagName' 2>/dev/null | sed 's/^v//')
+          if [ -z "$PREV_VER" ] || [ "$PREV_VER" = "$VER" ]; then
+            echo "no prior published release — skipping the upgrade sub-test"
+            export SKIP_UPGRADE=1
+          else
+            echo "upgrade sub-test: $PREV_VER -> $VER"
+            export PREV_VER
+          fi
+          MORA_BIN="$BIN" EXPECTED_VER="$VER" bash scripts/regress/regression.sh
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

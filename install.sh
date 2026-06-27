@@ -112,10 +112,11 @@ Wire Mora into your agents ONCE (then every session has it):
   claude mcp add mora -s user -- mora mcp serve
   codex  mcp add mora -- mora mcp serve
 
-Next steps:
-  mora doctor                     # check readiness (incl. iMessage Full Disk Access)
-  mora connectors enable imessage # macOS: read your local Messages (read-only)
-  mora sync imessage              # ingest conversations into the vault
+Next steps (macOS + Linux unless noted):
+  mora doctor                     # check readiness
+  mora connect google             # Gmail + Calendar, read-only (OAuth)
+  mora connect filesystem ~/notes # index a folder of docs/PDFs
+  mora connect imessage           # macOS only: your local Messages (read-only)
   mora search "your text here"    # full-text search the vault
 
 Then ask your agent, cold: "Search my memory — what did I last discuss with Neil?"
