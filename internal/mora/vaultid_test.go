@@ -2,6 +2,8 @@ package mora
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"testing"
 )
@@ -80,6 +82,74 @@ func TestIndexMetaRoundTrip(t *testing.T) {
 	}
 	if id != "v_seed" {
 		t.Fatalf("index vault_id = %q, want v_seed", id)
+	}
+}
+
+func indexCount(t *testing.T, cfg Config) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestRebuildEnforceBlocksEmptyVault(t *testing.T) {
+	cfg := sandboxCfg(t)
+	id := newID()
+	if err := writeMemory(cfg, Memory{ID: id, Scope: "global", Type: "insight", Title: "keep", Source: "manual", CreatedAt: nowRFC3339(), Text: "precious"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := indexCount(t, cfg); got != 1 {
+		t.Fatalf("seed index count = %d, want 1", got)
+	}
+
+	// Simulate the incident: the vault's memory files vanish (dir emptied).
+	if err := os.RemoveAll(memoriesRoot(cfg)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := rebuildIndex(context.Background(), cfg)
+	if !errors.Is(err, errRebuildBlocked) {
+		t.Fatalf("expected errRebuildBlocked, got %v", err)
+	}
+	// CRITICAL: the old index must be intact (rolled back, not wiped).
+	if got := indexCount(t, cfg); got != 1 {
+		t.Fatalf("index count after blocked rebuild = %d, want 1 (preserved)", got)
+	}
+}
+
+func TestRebuildAllowCommitsEmpty(t *testing.T) {
+	cfg := sandboxCfg(t)
+	if err := writeMemory(cfg, Memory{ID: newID(), Scope: "global", Type: "insight", Title: "x", Source: "manual", CreatedAt: nowRFC3339(), Text: "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(memoriesRoot(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	n, err := rebuildIndexWithPolicy(context.Background(), cfg, policyAllow)
+	if err != nil {
+		t.Fatalf("allow policy should commit, got %v", err)
+	}
+	if n != 0 || indexCount(t, cfg) != 0 {
+		t.Fatalf("allow rebuild count = %d, index = %d, want 0/0", n, indexCount(t, cfg))
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -112,6 +113,22 @@ func resolveVaultID(cfg Config) (string, error) {
 		return "", err
 	}
 	return m.VaultID, nil
+}
+
+// writeBlockRecord persists a block event for later inspection (stub; fleshed out in Task 5).
+func writeBlockRecord(cfg Config, d rebuildDecision, vaultDir string, oldCount, newCount int) error {
+	return nil
+}
+
+// clearBlockRecord removes any previously written block record (stub; fleshed out in Task 5).
+func clearBlockRecord(cfg Config) error { return nil }
+
+// rebuildBlockMessage returns a human-readable explanation of why a rebuild was blocked.
+func rebuildBlockMessage(d rebuildDecision, vaultDir string, oldCount int) string {
+	if d == decBlockEmpty {
+		return fmt.Sprintf("configured vault (%s) has no memory files, but the index holds %d — your vault may have moved. The existing index was left untouched. Fix vault_dir in config.toml then `mora index rebuild`, or override with `mora index rebuild --force`.", vaultDir, oldCount)
+	}
+	return fmt.Sprintf("configured vault (%s) is a different vault than the index was built from. The existing index was left untouched. Re-point vault_dir, or override with `mora index rebuild --force`.", vaultDir)
 }
 
 // readIndexVaultID opens the index read-only and returns the vault_id stored in

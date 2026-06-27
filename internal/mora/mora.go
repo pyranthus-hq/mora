@@ -3214,12 +3214,21 @@ func allMemoryFiles(cfg Config) ([]string, error) {
 	return paths, nil
 }
 
+type rebuildPolicy int
+
+const (
+	policyEnforce rebuildPolicy = iota // default: block dangerous rebuilds
+	policyAllow                        // --force: commit even if guard would block
+)
+
+var errRebuildBlocked = errors.New("rebuild blocked")
+
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
+	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
+}
+
+func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolicy) (int, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
-		return 0, err
-	}
-	effID, err := resolveVaultID(cfg)
-	if err != nil {
 		return 0, err
 	}
 	db, err := sql.Open("sqlite", dbPath(cfg)+"?_pragma=busy_timeout(5000)")
@@ -3242,6 +3251,13 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds; the safety net on any early return
+
+	// Capture old state BEFORE the destructive DELETEs run — on a fresh db the
+	// tables do not exist yet, so ignore errors and keep the zero values.
+	oldCount := 0
+	_ = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&oldCount)
+	indexID := ""
+	_ = tx.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key='vault_id'`).Scan(&indexID)
 
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT)`,
@@ -3348,12 +3364,38 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 		fmt.Sprintf("%d", count), cfg.VaultDir); err != nil {
 		return count, err
 	}
-	if effID != "" {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO index_meta(key,value) VALUES('vault_id',?)
-			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, effID); err != nil {
+	// Validate-before-commit guard: read the marker, assess the rebuild, and
+	// either block (rolling back via the deferred tx.Rollback) or bind the id.
+	marker, markerPresent, err := readVaultMarker(cfg)
+	if err != nil {
+		return count, err
+	}
+	decision := assessRebuild(oldCount, count, marker.VaultID, markerPresent, indexID)
+	if policy == policyEnforce && (decision == decBlockEmpty || decision == decBlockIdentity) {
+		if werr := writeBlockRecord(cfg, decision, cfg.VaultDir, oldCount, count); werr != nil {
+			_ = werr // best-effort; do not mask the block error
+		}
+		return count, fmt.Errorf("%w: %s", errRebuildBlocked, rebuildBlockMessage(decision, cfg.VaultDir, oldCount))
+	}
+	// Bind the vault id (adopt a fresh one if neither marker nor index had it).
+	effID := indexID
+	if effID == "" {
+		seed := marker.VaultID
+		if seed == "" {
+			seed = "v_" + newID()
+		}
+		effID, err = createVaultMarkerIfAbsent(cfg, seed)
+		if err != nil {
 			return count, err
 		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta(key,value) VALUES('vault_id',?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, effID); err != nil {
+		return count, err
+	}
+	if err := clearBlockRecord(cfg); err != nil {
+		return count, err
 	}
 
 	if err := tx.Commit(); err != nil {
