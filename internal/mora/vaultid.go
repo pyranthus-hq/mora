@@ -117,17 +117,6 @@ func assessRebuild(oldCount, newCount int, markerID string, markerPresent bool, 
 	return decBlockIdentity // marker missing or from a different vault
 }
 
-// resolveVaultID returns the vault marker's id if a marker is present and
-// readable, otherwise "". Used by rebuildIndex to decide whether to bind
-// a vault_id row into index_meta.
-func resolveVaultID(cfg Config) (string, error) {
-	m, present, err := readVaultMarker(cfg)
-	if err != nil || !present {
-		return "", err
-	}
-	return m.VaultID, nil
-}
-
 type rebuildBlock struct {
 	At       string `json:"at"`
 	Reason   string `json:"reason"`
