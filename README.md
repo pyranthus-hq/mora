@@ -14,7 +14,7 @@
 
 </div>
 
-Mora indexes your Gmail (one or several accounts), Google Calendar, iMessage, Apple Calendar, and local files into a **vault** of Markdown files and a SQLite index on your machine, then serves it over MCP (the Model Context Protocol) to Claude Code, Codex, or any other MCP client. Point several agents at the same vault and they all answer from your history, with citations.
+Mora indexes your Gmail (one or several accounts), Google Calendar, iMessage, Apple Calendar, and local files into a **vault** of Markdown files and a SQLite index on your machine, then serves it over MCP to Claude Code, Codex, or any other MCP client. Point several agents at the same vault and they all answer from your history, with citations.
 
 It runs entirely on your machine: no server, no signup, no telemetry. iMessage and Apple Calendar need macOS; Gmail, Calendar, and files also run on Linux.
 
