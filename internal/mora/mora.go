@@ -5461,11 +5461,34 @@ func windowsTaskName(job string) string {
 	return `Mora\` + job
 }
 
+// windowsTaskCommand builds the schtasks /TR action string. Scheduled tasks do
+// NOT inherit the user's shell environment, so any exported var the job depends
+// on must be snapshotted into the action at install time — mirroring the launchd
+// EnvironmentVariables block in schedulePlistFor:
+//   - MORA_GOOGLE_CREDENTIALS: without it a BYO-creds setup silently hits the
+//     embedded DEV_PLACEHOLDER client on every scheduled Google sync while
+//     terminal syncs keep working — the vault goes stale with no visible error.
+//   - MORA_CONFIG_DIR: without it a re-rooted install's job runs against the
+//     DEFAULT vault.
+//
+// When any var is carried, the action is wrapped in `cmd /c "..."`. cmd.exe
+// strips only the FIRST and LAST quote of that string (there are >2 quotes plus
+// the special `&` char), so the inner exe path is protected with PLAIN double
+// quotes: cmd.exe does NOT treat backslash as a quote escape (`\"` would break
+// launch every run), and there is no space before `&&` or cmd.exe folds it into
+// the env value.
 func windowsTaskCommand(exe, cmdArgs string) string {
-	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
-		return `cmd /c "set MORA_CONFIG_DIR=` + cfgDir + ` && \"` + exe + `\" ` + cmdArgs + `"`
+	var sets []string
+	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
+		sets = append(sets, "set MORA_GOOGLE_CREDENTIALS="+creds)
 	}
-	return `"` + exe + `" ` + cmdArgs
+	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
+		sets = append(sets, "set MORA_CONFIG_DIR="+cfgDir)
+	}
+	if len(sets) == 0 {
+		return `"` + exe + `" ` + cmdArgs
+	}
+	return `cmd /c "` + strings.Join(sets, "&& ") + `&& "` + exe + `" ` + cmdArgs + `"`
 }
 
 func windowsScheduleCreateArgs(job, exe, cmdArgs string) []string {

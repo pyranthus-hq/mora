@@ -99,6 +99,9 @@ func hasArgPair(args []string, flag, value string) bool {
 func TestWindowsScheduleInstallUsesSchtasksAndConfigDir(t *testing.T) {
 	withTempHome(t)
 	withRuntimeGOOS(t, "windows")
+	// Isolate the MORA_CONFIG_DIR-only case: clear any ambient BYO creds so the
+	// /TR prefix assertion is deterministic regardless of the host environment.
+	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 	t.Setenv("MORA_CONFIG_DIR", `C:\Users\Adit\AppData\Local\Mora`)
 	calls := withScheduleRunner(t, nil)
 
@@ -126,14 +129,53 @@ func TestWindowsScheduleInstallUsesSchtasksAndConfigDir(t *testing.T) {
 	if !ok {
 		t.Fatalf("schtasks args missing /TR: %#v", call.args)
 	}
-	if !strings.HasPrefix(tr, `cmd /c "set MORA_CONFIG_DIR=C:\Users\Adit\AppData\Local\Mora && \"`) {
+	if !strings.HasPrefix(tr, `cmd /c "set MORA_CONFIG_DIR=C:\Users\Adit\AppData\Local\Mora&& "`) {
 		t.Fatalf("/TR did not carry MORA_CONFIG_DIR with cmd wrapper: %q", tr)
 	}
-	if !strings.Contains(tr, `\" ingest run --all"`) {
+	if !strings.Contains(tr, `" ingest run --all"`) {
 		t.Fatalf("/TR missing scheduled mora args: %q", tr)
+	}
+	// cmd.exe does NOT unescape backslash-quote; a `\"` here fails to launch the
+	// binary on every scheduled run (cmd's first/last-quote rule leaves a spurious
+	// backslash on the exe path). The exe must be wrapped in PLAIN double quotes.
+	if strings.Contains(tr, `\"`) {
+		t.Fatalf("/TR must use PLAIN double quotes, not backslash-escaped: %q", tr)
 	}
 	if strings.Contains(out.String(), "cron line") {
 		t.Fatalf("windows install must never print a Linux cron line; got:\n%s", out.String())
+	}
+}
+
+// TestWindowsScheduleCarriesGoogleCredsEnv locks the schtasks-env contract for
+// MORA_GOOGLE_CREDENTIALS — the Windows sibling of TestSchedulePlistCarriesGoogleCredsEnv.
+// Scheduled tasks do not inherit the shell environment, so a BYO-creds setup
+// whose var is only in the current session (not the persistent user env) would
+// otherwise have every scheduled Google sync silently fall back to the embedded
+// DEV_PLACEHOLDER client while terminal syncs keep working — a stale vault with
+// no visible error. The /TR action must `set MORA_GOOGLE_CREDENTIALS` before the
+// exe, exactly as the launchd plist snapshots it.
+func TestWindowsScheduleCarriesGoogleCredsEnv(t *testing.T) {
+	withTempHome(t)
+	withRuntimeGOOS(t, "windows")
+	t.Setenv("MORA_GOOGLE_CREDENTIALS", `C:\Users\Adit\creds\google-client.json`)
+	calls := withScheduleRunner(t, nil)
+
+	var out bytes.Buffer
+	if err := installSchedule(&out, Config{}, "ingest-hourly"); err != nil {
+		t.Fatalf("installSchedule windows: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("schedule runner calls = %d, want 1", len(*calls))
+	}
+	tr, ok := argAfter((*calls)[0].args, "/TR")
+	if !ok {
+		t.Fatalf("schtasks args missing /TR: %#v", (*calls)[0].args)
+	}
+	if !strings.Contains(tr, `set MORA_GOOGLE_CREDENTIALS=C:\Users\Adit\creds\google-client.json`) {
+		t.Fatalf("windows scheduled task dropped MORA_GOOGLE_CREDENTIALS — BYO-creds scheduled Google sync would silently go stale: %q", tr)
+	}
+	if strings.Contains(tr, `\"`) {
+		t.Fatalf("/TR must use PLAIN double quotes, not backslash-escaped: %q", tr)
 	}
 }
 
