@@ -499,6 +499,9 @@ func TestCoreB_TaskSyncTasksMissingPriorityMap(t *testing.T) {
 // branches. The permission is restored before t.TempDir cleanup runs.
 func coreBTaskseal(t *testing.T, cfg Config) {
 	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root — the 0500 write bit is bypassed, so the write error can't be provoked")
+	}
 	if err := os.Chmod(cfg.VaultDir, 0o500); err != nil {
 		t.Fatalf("chmod vault ro: %v", err)
 	}

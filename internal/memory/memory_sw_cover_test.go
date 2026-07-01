@@ -75,6 +75,9 @@ func TestSw_SaveStatusMkdirErrorWhenParentIsFile(t *testing.T) {
 }
 
 func TestSw_SaveStatusWriteErrorWhenDirectoryNotWritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root — the 0500 write bit is bypassed, so the write error can't be provoked")
+	}
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)

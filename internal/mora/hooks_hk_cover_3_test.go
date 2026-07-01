@@ -239,6 +239,9 @@ func TestHk_SyncGitGitignoreWriteError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory write-permission semantics differ on Windows")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root — the 0500 write bit is bypassed, so the write error can't be provoked")
+	}
 	cfg := gitSyncTestConfig(t)
 	if err := os.Chmod(cfg.VaultDir, 0o500); err != nil {
 		t.Fatal(err)
@@ -314,6 +317,9 @@ func TestHk_CreateVaultMarkerReadErrorPropagates(t *testing.T) {
 func TestHk_CreateVaultMarkerTempError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory write-permission semantics differ on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root — the 0500 write bit is bypassed, so the write error can't be provoked")
 	}
 	cfg := sandboxCfg(t)
 	if err := os.Chmod(cfg.VaultDir, 0o500); err != nil {
