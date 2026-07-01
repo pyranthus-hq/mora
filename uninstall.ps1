@@ -74,35 +74,61 @@ function Remove-UserPath {
 }
 
 function Remove-MoraScheduledTasks {
-    $rows = @()
+    # Prefer the ScheduledTasks module: Get-ScheduledTask returns typed objects
+    # with stable TaskPath/TaskName, so it is locale-independent and StrictMode
+    # safe. Parsing `schtasks /FO CSV` instead throws under Set-StrictMode when
+    # the CSV headers are localized (non-English Windows), which would abort the
+    # whole uninstall before the binary and PATH are removed.
+    if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+        $tasks = @()
+        try {
+            $tasks = @(Get-ScheduledTask -TaskPath "\Mora\*" -ErrorAction SilentlyContinue)
+        } catch {
+            Write-Warning "could not query Task Scheduler: $($_.Exception.Message)"
+            $tasks = @()
+        }
+        if ($tasks.Count -eq 0) {
+            Write-Step "No Mora scheduled tasks found."
+            return
+        }
+        foreach ($t in $tasks) {
+            $full = ($t.TaskPath.TrimEnd("\") + "\" + $t.TaskName).TrimStart("\")
+            try {
+                Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction Stop
+                Write-Step "Removed scheduled task: $full"
+            } catch {
+                Write-Warning "could not remove scheduled task: $full"
+            }
+        }
+        return
+    }
+
+    # Fallback (older hosts without the cmdlet): parse header-free CSV so there is
+    # no localized-header row and no property access under StrictMode.
+    $names = @()
     try {
-        $raw = & schtasks.exe /Query /FO CSV 2>$null
+        $raw = & schtasks.exe /Query /FO CSV /NH 2>$null
         if ($LASTEXITCODE -eq 0 -and $raw) {
-            $rows = $raw | ConvertFrom-Csv
+            foreach ($line in $raw) {
+                if (-not $line) { continue }
+                $name = (($line -split '","')[0]).Trim('"').Trim()
+                if ($name -like "\Mora\*" -or $name -like "Mora\*") {
+                    $names += $name
+                }
+            }
         }
     } catch {
         Write-Warning "could not query Task Scheduler: $($_.Exception.Message)"
         return
     }
 
-    $tasks = @()
-    foreach ($row in $rows) {
-        if ($null -eq $row.TaskName) {
-            continue
-        }
-        $name = [string]$row.TaskName
-        if ($name -like "\Mora\*" -or $name -like "Mora\*") {
-            $tasks += $name
-        }
-    }
-
-    if ($tasks.Count -eq 0) {
+    if ($names.Count -eq 0) {
         Write-Step "No Mora scheduled tasks found."
         return
     }
 
-    foreach ($task in ($tasks | Sort-Object -Unique)) {
-        $tn = $task.TrimStart("\")
+    foreach ($name in ($names | Sort-Object -Unique)) {
+        $tn = $name.TrimStart("\")
         & schtasks.exe /Delete /TN $tn /F | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Step "Removed scheduled task: $tn"
