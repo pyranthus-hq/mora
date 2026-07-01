@@ -535,7 +535,7 @@ func TestCoreB_IdxWriteGraphDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeGraph(context.Background(), tx, []Memory{structural, nullTs, blast}); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		t.Fatalf("writeGraph: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -620,7 +620,7 @@ func TestCoreB_IdxWriteVectorsEmbedderEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeVectors(context.Background(), tx, emb, mems); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		t.Fatalf("writeVectors: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -327,7 +327,7 @@ func TestGr_GraphRenderHelpers(t *testing.T) {
 		{Name: "Same", Kind: "person", Count: 1, Salience: 10, MemoryIDs: []string{"a"}},
 	}, 5)
 	got = buf.String()
-	if strings.Index(got, "Same") < 0 || strings.Count(got, "Same") != 2 {
+	if !strings.Contains(got, "Same") || strings.Count(got, "Same") != 2 {
 		t.Fatalf("person tie render missing rows:\n%s", got)
 	}
 }

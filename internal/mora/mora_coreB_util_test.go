@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -587,23 +588,32 @@ func TestCoreB_UtilSchedulePlistFor(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// installSchedule + listSchedules (darwin path on this host).
+// installSchedule + listSchedules (launchd assertions are darwin-only).
 // ---------------------------------------------------------------------------
 
 func TestCoreB_UtilInstallAndListSchedule(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("installSchedule shells out to schtasks on windows (#56)")
+	}
 	withTempHome(t)
 	cfg := testCfg(t)
 
-	// Unknown job → error.
+	// Unknown job → error (any OS).
 	var errBuf bytes.Buffer
 	if err := installSchedule(&errBuf, cfg, "bogus"); err == nil || !strings.Contains(err.Error(), `unknown job "bogus"`) {
 		t.Fatalf("installSchedule(bogus) err = %v, want unknown job", err)
 	}
 
-	// Known job writes the plist and prints the confirmation.
+	// Known job: darwin writes the plist; linux prints cron/systemd guidance.
 	var out bytes.Buffer
 	if err := installSchedule(&out, cfg, "index-hourly"); err != nil {
 		t.Fatalf("installSchedule: %v", err)
+	}
+	if runtime.GOOS != "darwin" {
+		if !strings.Contains(out.String(), "launchd unavailable") && !strings.Contains(out.String(), "no launchd") {
+			t.Fatalf("missing cron guidance on %s, got %q", runtime.GOOS, out.String())
+		}
+		return
 	}
 	if !strings.Contains(out.String(), "installed launchd job com.mora.index-hourly") {
 		t.Fatalf("missing confirmation message, got %q", out.String())
@@ -626,6 +636,9 @@ func TestCoreB_UtilInstallAndListSchedule(t *testing.T) {
 // installSchedule surfaces the atomicWrite error when the LaunchAgents dir
 // cannot be created (HOME points at a regular file → MkdirAll fails).
 func TestCoreB_UtilInstallScheduleWriteError(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("exercises the darwin launchd atomicWrite error path; other OSes never touch LaunchAgents")
+	}
 	homeFile := filepath.Join(t.TempDir(), "home-as-file")
 	if err := os.WriteFile(homeFile, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)

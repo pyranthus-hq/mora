@@ -653,8 +653,12 @@ func TestCoreA_PrintGoogleAuthRecency(t *testing.T) {
 		}
 	}
 	// A subdir and a non-json file must be skipped by the enumerator.
-	os.MkdirAll(filepath.Join(tokenDir, "subdir"), 0o700)
-	os.WriteFile(filepath.Join(tokenDir, "notes.txt"), []byte("x"), 0o600)
+	if err := os.MkdirAll(filepath.Join(tokenDir, "subdir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tokenDir, "notes.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// Record an auth for "google" only.
 	if err := google.RecordAuth(tokenDir, "google", time.Now().Add(-3*time.Hour)); err != nil {
 		t.Fatal(err)

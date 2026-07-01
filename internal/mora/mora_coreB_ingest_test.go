@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -366,19 +367,36 @@ func TestCoreB_IngestSourceConnectorRoutes(t *testing.T) {
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "") // force placeholder creds for google routes
 	var out bytes.Buffer
 
-	cases := []struct {
+	type routeCase struct {
 		typ  string
 		want string
-	}{
+	}
+	cases := []routeCase{
 		{"gmail", "Google sign-in needs a one-time setup"},
 		{"calendar", "Google sign-in needs a one-time setup"},
-		{"imessage", "cannot read your Messages database"},
-		{"applecalendar", "cannot read your Calendar database"},
+	}
+	// Only darwin reaches the chat.db / Calendar readiness errors; elsewhere
+	// these connectors skip with a note and no error (asserted below).
+	if runtime.GOOS == "darwin" {
+		cases = append(cases,
+			routeCase{"imessage", "cannot read your Messages database"},
+			routeCase{"applecalendar", "cannot read your Calendar database"})
 	}
 	for _, c := range cases {
 		_, err := ingestSource(cfg, Source{Type: c.typ, Name: c.typ}, &out)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("ingestSource %q err = %v, want %q", c.typ, err, c.want)
+		}
+	}
+	if runtime.GOOS != "darwin" {
+		for _, typ := range []string{"imessage", "applecalendar"} {
+			out.Reset()
+			if n, err := ingestSource(cfg, Source{Type: typ, Name: typ}, &out); err != nil || n != 0 {
+				t.Fatalf("ingestSource %q on %s = (%d, %v), want the (0, nil) skip", typ, runtime.GOOS, n, err)
+			}
+			if !strings.Contains(out.String(), "only runs on macOS") {
+				t.Fatalf("ingestSource %q skip note missing:\n%s", typ, out.String())
+			}
 		}
 	}
 }
@@ -705,9 +723,12 @@ func TestCoreB_IngestBackfillEnabledIMessageEmpty(t *testing.T) {
 }
 
 func TestCoreB_IngestBackfillEnabledIMessageFailure(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("failure surfacing needs the darwin chat.db readiness path; non-darwin skips imessage ingest entirely")
+	}
 	cfg := coreBIngestInitCfg(t)
-	// Enable an imessage source; on this darwin host the temp-HOME chat.db is
-	// missing, so its ingest fails and the failure is surfaced (never swallowed).
+	// Enable an imessage source; the temp-HOME chat.db is missing, so its
+	// ingest fails and the failure is surfaced (never swallowed).
 	if err := setSourceEnabled(cfg, "imessage", true); err != nil {
 		t.Fatalf("setSourceEnabled: %v", err)
 	}
@@ -759,7 +780,8 @@ func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
 	run(t, "init")
 	var out bytes.Buffer
 	// Temp HOME has no ~/Library/Messages/chat.db, so readiness fails and connect
-	// stops at the honest guidance (returns nil, no false backfill).
+	// stops at the honest guidance (returns nil, no false backfill). On non-darwin
+	// the readiness check stops earlier with the macOS-only note instead.
 	if err := connectIMessage(context.Background(), nil, &out); err != nil {
 		t.Fatalf("connectIMessage err = %v", err)
 	}
@@ -767,7 +789,11 @@ func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
 	if !strings.Contains(s, "enabled imessage") {
 		t.Fatalf("connectIMessage output missing enable line:\n%s", s)
 	}
-	if !strings.Contains(s, "No Messages database found") {
+	guidance := "No Messages database found"
+	if runtime.GOOS != "darwin" {
+		guidance = "only runs on macOS"
+	}
+	if !strings.Contains(s, guidance) {
 		t.Fatalf("connectIMessage output missing readiness guidance:\n%s", s)
 	}
 	// The imessage source row was created + enabled.
@@ -788,9 +814,14 @@ func TestCoreB_IngestIMessageFDADenied(t *testing.T) {
 	cfg := coreBIngestInitCfg(t)
 	var out bytes.Buffer
 	// Temp HOME => chat.db missing/unreadable => NewLiveFetcher fails => the FDA
-	// guidance error (on non-darwin this returns (0,nil); that branch is excluded
-	// on this darwin host).
+	// guidance error. On non-darwin the connector skips with (0, nil) + a note.
 	_, err := ingestIMessage(cfg, Source{Type: "imessage", Name: "im"}, &out)
+	if runtime.GOOS != "darwin" {
+		if err != nil || !strings.Contains(out.String(), "only runs on macOS") {
+			t.Fatalf("ingestIMessage on %s = %v, want nil + macOS-only note:\n%s", runtime.GOOS, err, out.String())
+		}
+		return
+	}
 	if err == nil || !strings.Contains(err.Error(), "cannot read your Messages database") {
 		t.Fatalf("ingestIMessage err = %v, want FDA guidance", err)
 	}
@@ -800,6 +831,12 @@ func TestCoreB_IngestAppleCalFDADenied(t *testing.T) {
 	cfg := coreBIngestInitCfg(t)
 	var out bytes.Buffer
 	_, err := ingestAppleCal(cfg, Source{Type: "applecalendar", Name: "cal"}, &out)
+	if runtime.GOOS != "darwin" {
+		if err != nil || !strings.Contains(out.String(), "only runs on macOS") {
+			t.Fatalf("ingestAppleCal on %s = %v, want nil + macOS-only note:\n%s", runtime.GOOS, err, out.String())
+		}
+		return
+	}
 	if err == nil || !strings.Contains(err.Error(), "cannot read your Calendar database") {
 		t.Fatalf("ingestAppleCal err = %v, want FDA guidance", err)
 	}
