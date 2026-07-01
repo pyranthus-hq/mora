@@ -6,6 +6,7 @@ version of all of this is the [README](../README.md); contributor-facing interna
 live in [`docs/architecture/`](architecture/00-overview.md).
 
 - [Install](#install)
+- [Windows](#windows)
 - [Initialize](#initialize)
 - [Connect Google (Gmail + Calendar)](#connect-google-gmail--calendar)
 - [Connect iMessage (macOS)](#connect-imessage-macos)
@@ -55,6 +56,47 @@ quarantine flag:
 ```bash
 xattr -d com.apple.quarantine ./mora
 ```
+
+## Windows
+
+Run this from PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.ps1 -OutFile $env:TEMP\install-mora.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\install-mora.ps1
+```
+
+The Windows installer downloads `mora_<version>_windows_amd64.zip` from GitHub releases, downloads `checksums.txt`, verifies the zip with `Get-FileHash -Algorithm SHA256`, extracts `mora.exe` to `%LOCALAPPDATA%\Mora\bin\mora.exe`, and adds that directory to your User PATH. Open a new PowerShell window after install so `mora` resolves on PATH.
+
+Install a pinned version with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File $env:TEMP\install-mora.ps1 -Version 0.9.1
+```
+
+**SmartScreen note:** the v1 Windows binary is unsigned. If Windows shows **Windows protected your PC**, verify that the installer printed a checksum success, then choose **More info > Run anyway** or run:
+
+```powershell
+Unblock-File "$env:LOCALAPPDATA\Mora\bin\mora.exe"
+```
+
+Windows supports Gmail, Google Calendar, filesystem folders, notes, and local Ollama embeddings. iMessage, Apple Calendar, and Address Book are macOS-only and should refuse cleanly on Windows.
+
+Windows schedules jobs with Task Scheduler:
+
+```powershell
+mora schedule install ingest-hourly
+mora schedule list
+```
+
+Task names use the `Mora\<job>` form, for example `Mora\ingest-hourly`. The same job names are available across platforms: `ingest-hourly`, `index-hourly`, `pulse-daily`, `backup-daily`, `git-daily`, and `lint-weekly`.
+
+Uninstall with:
+
+```powershell
+iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.ps1 -OutFile $env:TEMP\uninstall-mora.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\uninstall-mora.ps1
+```
+
+The uninstaller removes `%LOCALAPPDATA%\Mora`, removes the User PATH entry, and deletes scheduled tasks under `\Mora\`. It preserves your vault and config unless you pass `-Purge`, which removes Mora data paths after confirmation.
 
 ## Initialize
 
@@ -258,7 +300,7 @@ Open Obsidian and add the vault directory (default: `~/vault/mora`) as a new vau
 
 ## Day to day
 
-**Keep data fresh automatically** (launchd on macOS; prints a cron line on Linux):
+**Keep data fresh automatically** (launchd on macOS, Task Scheduler on Windows, a printed cron line on Linux):
 
 ```bash
 mora schedule install ingest-hourly   # hourly background sync of every enabled source

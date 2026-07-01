@@ -16,7 +16,7 @@
 
 Mora indexes your Gmail (one or several accounts), Google Calendar, iMessage, Apple Calendar, and local files into a **vault** of Markdown files and a SQLite index on your machine, then serves it over MCP to Claude Code, Codex, or any other MCP client. Point several agents at the same vault and they all answer from your history, with citations.
 
-It runs entirely on your machine: no server, no signup, no telemetry. iMessage and Apple Calendar need macOS; Gmail, Calendar, and files also run on Linux.
+It runs entirely on your machine: no server, no signup, no telemetry. iMessage and Apple Calendar need macOS; Gmail, Calendar, files, notes, and local Ollama embeddings also run on Linux and Windows.
 
 <p align="center">
   <img src="docs/assets/architecture.svg" width="760" alt="Mora architecture: your sources flow into one local vault of Markdown plus a SQLite index, served over MCP to every agent (Claude Code, Codex, Gemini CLI), with an opt-in git sync to another machine."/>
@@ -40,19 +40,41 @@ Gaps: none detected.
 
 ## Install
 
+### macOS / Linux
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
 The script downloads the release binary for your platform, **verifies it against the release `checksums.txt`** before extracting, clears the macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized — it prints exactly what it does to Gatekeeper and why), and runs `mora init` (your vault lives at `~/vault/mora`). The checksums file is cosign-signed on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to verify the stronger chain by hand. Update in place later with `mora upgrade` (source builds report `dev` and cannot self-update). Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.25+, pure Go, no CGO).
 
+### Windows
+
+Run this from PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.ps1 -OutFile $env:TEMP\install-mora.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\install-mora.ps1
+```
+
+The Windows installer downloads `mora_<version>_windows_amd64.zip`, verifies it against the release `checksums.txt`, installs `mora.exe` to `%LOCALAPPDATA%\Mora\bin\mora.exe`, and adds that directory to your User PATH. The v1 Windows binary is unsigned, so SmartScreen may show **Windows protected your PC**. After the checksum passes, choose **More info > Run anyway** or run `Unblock-File "$env:LOCALAPPDATA\Mora\bin\mora.exe"`.
+
+Windows supports Gmail, Google Calendar, filesystem folders, notes, and local Ollama embeddings. iMessage, Apple Calendar, and Address Book are macOS-only. `mora schedule install <job>` uses Windows Task Scheduler and creates tasks named `Mora\<job>`; see [the Windows guide](docs/windows.md).
+
 ### Uninstall
+
+macOS / Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.sh | sh
 ```
 
-Removes the `mora` binary and de-registers the MCP server from Claude Code / Codex. Your vault is **preserved by default**; re-run with `--purge` (or `MORA_PURGE=1`) to also delete `~/vault/mora`.
+Windows:
+
+```powershell
+iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.ps1 -OutFile $env:TEMP\uninstall-mora.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\uninstall-mora.ps1
+```
+
+Removes the `mora` binary and de-registers the MCP server from Claude Code / Codex on macOS/Linux. On Windows it removes `%LOCALAPPDATA%\Mora`, the User PATH entry, and scheduled tasks under `\Mora\`. Your vault is **preserved by default**; re-run with `--purge` / `MORA_PURGE=1` on macOS/Linux or `-Purge` on Windows to also delete Mora data paths.
 
 ### How Mora is laid out
 
@@ -73,7 +95,7 @@ Then connect your sources:
 mora connect google                    # OAuth login, then backfill Gmail + Calendar (read-only; ~90 days, --since-days to widen)
 mora connect google --account work     # add a second mailbox (gmail-work / calendar-work sources)
 mora connect imessage                  # macOS; walks you through Full Disk Access
-mora schedule install ingest-hourly    # background sync (launchd; prints a cron line on Linux)
+mora schedule install ingest-hourly    # background sync (launchd, Task Scheduler, or a Linux cron line)
 ```
 
 > **First Google sign-in:** Mora's shared Google app is still going through Google's review, so you'll see a "Google hasn't verified this app" screen. Click **Advanced → Go to Mora** to continue; the access stays read-only and on-device. Prefer your own keys? Set `MORA_GOOGLE_CREDENTIALS=/path/to/client.json` to use your own Google OAuth client instead (optional). See [Connect Google](docs/guide.md#connect-google-gmail--calendar).
@@ -174,7 +196,7 @@ Mora keeps a persistent local corpus, so you can ask "what did I commit to, and 
 
 ## Docs
 
-**[The guide](docs/guide.md)** covers connectors, MCP wiring, daily use, retrieval, and the cloud comparison. **[docs/architecture/](docs/architecture/00-overview.md)** is the contributor spec: 13 subsystem docs with diagrams and `file:line` citations.
+**[The guide](docs/guide.md)** covers connectors, MCP wiring, daily use, retrieval, and the cloud comparison. **[Windows setup](docs/windows.md)** covers PowerShell install, SmartScreen, Windows connectors, and Task Scheduler. **[docs/architecture/](docs/architecture/00-overview.md)** is the contributor spec: 13 subsystem docs with diagrams and `file:line` citations.
 
 ---
 

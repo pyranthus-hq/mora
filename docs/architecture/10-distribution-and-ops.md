@@ -13,6 +13,8 @@ How Mora is built, signed, released, self-updated, and installed — and the pur
 | `internal/mora/upgrade.go` | ~150 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds; after a successful swap it execs the NEW binary's `index rebuild` (`postUpgradeRebuild`, warn-don't-fail) so a schema change never strands a stale index. |
 | `cmd/mora/main.go` | 28 | Entry point; receives `-ldflags -X main.{version,commit,date}` and forwards into `mora.Build*`. |
 | `install.sh` | 109 | POSIX installer: local-tarball or authenticated remote-download mode; Gatekeeper quarantine strip + ad-hoc sign; idempotent `mora init`. |
+| `install.ps1` | new | Windows installer: downloads `mora_<version>_windows_amd64.zip`, verifies sha256 against `checksums.txt`, installs `%LOCALAPPDATA%\Mora\bin\mora.exe`, and updates the User PATH. |
+| `uninstall.ps1` | new | Windows uninstaller: removes `%LOCALAPPDATA%\Mora`, removes the User PATH entry, deletes `\Mora\` scheduled tasks, and preserves the vault/config unless explicitly purged. |
 | `scripts/build-release.sh` | 49 | Local GoReleaser-mirror cross-build of all four targets + `checksums.txt`. |
 | `scripts/package.sh` | 55 | Single-target packaging with build-time real-OAuth-client embedding (swap-and-restore guard). |
 | `scripts/bootstrap-release-project.sh` | 140 | One-shot GitHub Projects v2 board scaffold (roadmap/PR pipeline). Not part of the build. |
@@ -34,9 +36,17 @@ Every line of the build pipeline serves one constraint: **Mora is a single stati
 
 ### Cross-compile targets
 
-The release ships **darwin + linux × amd64 + arm64** (four binaries). GoReleaser declares `goos: [darwin, linux]` and `goarch: [amd64, arm64]` (`.goreleaser.yaml:28-29`); `build-release.sh:24` iterates the same `darwin/arm64 darwin/amd64 linux/amd64 linux/arm64`. Because the build is pure Go, **no macOS runner is needed** — `release.yml:13` runs the whole thing on `ubuntu-latest` and the comment notes there is no notarization step to require a Mac.
+The baseline release ships **darwin + linux × amd64 + arm64** (four binaries). Windows support adds a **windows/amd64** zip archive with `mora.exe`; windows/arm64 remains deferred. Because the build is pure Go, **no macOS runner is needed**; `release.yml:13` runs the whole thing on `ubuntu-latest` and the comment notes there is no notarization step to require a Mac.
 
 The CI **build matrix** (`ci.yml:60-82`) compiles all four targets with `CGO_ENABLED=0` on every PR. The comment (`ci.yml:58-59`) frames this precisely: it "proves CGO_ENABLED=0 builds on every target before a tag is ever cut. This is the single-binary guarantee, gated."
+
+### Windows support seam
+
+Windows support keeps the same pure-Go single-binary model. Platform behavior is selected at runtime with `runtime.GOOS`; the codebase does not split behavior into OS-specific build-tag files. The Windows release archive contract is `mora_<version>_windows_amd64.zip` containing `mora.exe` at archive root, plus the same release `checksums.txt` sha256 manifest consumed by self-update and installers.
+
+The Windows hand-install path is `install.ps1`: it installs to `%LOCALAPPDATA%\Mora\bin\mora.exe` and writes only the User PATH. The v1 binary is unsigned, so the installer and docs must tell users about the SmartScreen **Windows protected your PC** prompt and `Unblock-File`. MSI/MSIX, winget/Scoop, Authenticode signing, Windows toast notifications, and windows/arm64 archives are deferred.
+
+Windows scheduling is a CLI/runtime seam, not a daemon. `mora schedule install <job>` uses `schtasks` and names tasks `Mora\<job>`; `uninstall.ps1` deletes all tasks under `\Mora\`.
 
 ### Reproducibility & version stamping
 
@@ -199,7 +209,7 @@ In short: the only network egress the binary performs is to Google's read-only A
 
 2. **`modernc.org/sqlite` is the only SQL engine — never add a cgo SQLite driver.** WHY: a cgo driver (e.g. `mattn/go-sqlite3`) would silently re-introduce cgo and defeat invariant #1. Verify after any dep change that `go.mod` still has no cgo SQL driver.
 
-3. **The archive `name_template` (`mora_{Version}_{Os}_{Arch}.tar.gz`) is a contract shared by three consumers.** GoReleaser produces it (`.goreleaser.yaml:37-38`), `install.sh` reconstructs it (`install.sh:40`), and `go-selfupdate` matches it (`upgrade.go`). WHY: change the template in one place and self-update silently stops finding assets and `install.sh` 404s. This was an explicit Codex review finding (`bootstrap-release-project.sh:131-133`). Treat the template as frozen.
+3. **The archive `name_template` is a contract shared by installers and self-update.** POSIX assets use `mora_{Version}_{Os}_{Arch}.tar.gz`; Windows uses `mora_{Version}_windows_amd64.zip`. GoReleaser produces the archives, `install.sh` / `install.ps1` reconstruct the names, and `go-selfupdate` matches them. WHY: change the template in one place and self-update or install scripts silently stop finding assets. Treat the templates as frozen.
 
 4. **The binary must live at the archive root (no nested directory).** Both `build-release.sh:38` and GoReleaser's default do this. WHY: go-selfupdate and the Homebrew cask resolve `mora` at the archive root; a nested path breaks both.
 
