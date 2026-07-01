@@ -17,6 +17,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1918,7 +1919,7 @@ func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
 
 func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: mora schedule install|list")
+		return errors.New("usage: mora schedule install|list|uninstall")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -1932,8 +1933,13 @@ func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 			return errors.New("usage: mora schedule install <pulse-daily|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
 		}
 		return installSchedule(stdout, cfg, args[1])
+	case "uninstall":
+		if len(args) != 2 {
+			return errors.New("usage: mora schedule uninstall <pulse-daily|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
+		}
+		return uninstallSchedule(stdout, cfg, args[1])
 	default:
-		return errors.New("usage: mora schedule install|list")
+		return errors.New("usage: mora schedule install|list|uninstall")
 	}
 }
 
@@ -5299,6 +5305,12 @@ var scheduleCommands = map[string]string{
 // they keep RunAtLoad to catch up after a login.
 func scheduleRunAtLoad(job string) bool { return job != "pulse-daily" }
 
+type scheduleCommandRunner func(name string, args ...string) ([]byte, error)
+
+var runScheduleCommand scheduleCommandRunner = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
 // schedulePlistFor renders a job's launchd plist deterministically (no disk I/O)
 // so installSchedule and the tests share one builder. The bool is false for an
 // unknown job (mirrors the command-map guard).
@@ -5351,6 +5363,14 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 		return fmt.Errorf("unknown job %q", job)
 	}
 	exe, _ := os.Executable()
+	if runtimeGOOS() == "windows" {
+		args := windowsScheduleCreateArgs(job, exe, cmdArgs)
+		if out, err := runScheduleCommand("schtasks", args...); err != nil {
+			return fmt.Errorf("schtasks create %s: %w: %s", windowsTaskName(job), err, strings.TrimSpace(string(out)))
+		}
+		okf(stdout, "installed Windows scheduled task %s", windowsTaskName(job))
+		return nil
+	}
 	if runtimeGOOS() == "darwin" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -5382,6 +5402,19 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 }
 
 func listSchedules(stdout io.Writer, cfg Config) error {
+	if runtimeGOOS() == "windows" {
+		jobs := make([]string, 0, len(scheduleCommands))
+		for job := range scheduleCommands {
+			jobs = append(jobs, job)
+		}
+		sort.Strings(jobs)
+		for _, job := range jobs {
+			if _, err := runScheduleCommand("schtasks", "/Query", "/TN", windowsTaskName(job)); err == nil {
+				fmt.Fprintln(stdout, windowsTaskName(job))
+			}
+		}
+		return nil
+	}
 	if runtimeGOOS() == "darwin" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -5395,6 +5428,68 @@ func listSchedules(stdout io.Writer, cfg Config) error {
 	}
 	fmt.Fprintln(stdout, "cron listing not implemented")
 	return nil
+}
+
+func uninstallSchedule(stdout io.Writer, cfg Config, job string) error {
+	if _, ok := scheduleCommands[job]; !ok {
+		return fmt.Errorf("unknown job %q", job)
+	}
+	if runtimeGOOS() == "windows" {
+		if out, err := runScheduleCommand("schtasks", "/Delete", "/TN", windowsTaskName(job), "/F"); err != nil {
+			return fmt.Errorf("schtasks delete %s: %w: %s", windowsTaskName(job), err, strings.TrimSpace(string(out)))
+		}
+		okf(stdout, "uninstalled Windows scheduled task %s", windowsTaskName(job))
+		return nil
+	}
+	if runtimeGOOS() == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		label := "com.mora." + job
+		if err := os.Remove(filepath.Join(home, "Library", "LaunchAgents", label+".plist")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		okf(stdout, "uninstalled launchd job %s", label)
+		return nil
+	}
+	fmt.Fprintln(stdout, "Linux: remove the cron line or systemd user timer you installed for this job.")
+	return nil
+}
+
+func windowsTaskName(job string) string {
+	return `Mora\` + job
+}
+
+func windowsTaskCommand(exe, cmdArgs string) string {
+	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
+		return `cmd /c "set MORA_CONFIG_DIR=` + cfgDir + ` && \"` + exe + `\" ` + cmdArgs + `"`
+	}
+	return `"` + exe + `" ` + cmdArgs
+}
+
+func windowsScheduleCreateArgs(job, exe, cmdArgs string) []string {
+	args := []string{"/Create", "/TN", windowsTaskName(job), "/TR", windowsTaskCommand(exe, cmdArgs)}
+	args = append(args, windowsScheduleCadenceArgs(job)...)
+	args = append(args, "/F")
+	return args
+}
+
+func windowsScheduleCadenceArgs(job string) []string {
+	switch job {
+	case "index-hourly", "ingest-hourly":
+		return []string{"/SC", "HOURLY", "/MO", "1"}
+	case "lint-weekly":
+		return []string{"/SC", "WEEKLY", "/D", "SUN", "/ST", "09:00"}
+	case "pulse-daily":
+		return []string{"/SC", "DAILY", "/ST", "08:00"}
+	case "backup-daily":
+		return []string{"/SC", "DAILY", "/ST", "02:00"}
+	case "git-daily":
+		return []string{"/SC", "DAILY", "/ST", "03:00"}
+	default:
+		return []string{"/SC", "HOURLY", "/MO", "1"}
+	}
 }
 
 func tarGz(out, root string) error {
