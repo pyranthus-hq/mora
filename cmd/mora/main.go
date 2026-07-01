@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 
@@ -26,12 +25,13 @@ func main() {
 		// Honor a structured exit code (e.g. `mora loop begin` returns exit 10 on
 		// an already-succeeded period; its payload is already on stdout). A blank
 		// message means the command already emitted its output — don't double-print.
-		var coded interface{ ExitCode() int }
-		if errors.As(err, &coded) {
+		// ExitCodeFor matches ONLY mora's own sentinel, so a wrapped *exec.ExitError
+		// from a failed git/schtasks subprocess can't hijack the exit status.
+		if code, ok := mora.ExitCodeFor(err); ok {
 			if msg := err.Error(); msg != "" {
 				fmt.Fprintln(os.Stderr, msg)
 			}
-			os.Exit(coded.ExitCode())
+			os.Exit(code)
 		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

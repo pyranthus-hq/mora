@@ -104,6 +104,19 @@ type exitCodeError struct {
 func (e exitCodeError) Error() string { return e.msg }
 func (e exitCodeError) ExitCode() int { return e.code }
 
+// ExitCodeFor reports the structured process exit code a command wants main() to
+// use, if the error chain carries one. It matches ONLY mora's own exitCodeError
+// (the loop skip sentinel) — deliberately not any error that merely implements
+// ExitCode() int, so a %w-wrapped *exec.ExitError from a failed subprocess (git,
+// schtasks, ...) can never hijack mora's exit status.
+func ExitCodeFor(err error) (int, bool) {
+	var e exitCodeError
+	if errors.As(err, &e) {
+		return e.code, true
+	}
+	return 0, false
+}
+
 // ---------------------------------------------------------------------------
 // records
 // ---------------------------------------------------------------------------

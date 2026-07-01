@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -374,6 +375,41 @@ func TestLoopBegin_DoubleBeginSameDaySucceededSkips(t *testing.T) {
 	}
 	if _, err := os.Stat(loopLockPath(cfg, "daily-brief")); !os.IsNotExist(err) {
 		t.Fatalf("skip must not create a lock; stat err=%v", err)
+	}
+}
+
+// TestExitCodeFor_MatchesOnlyMoraSentinel guards the main() exit-code path: the
+// loop skip sentinel must be honored, but a %w-wrapped *exec.ExitError from a
+// failed subprocess (git, schtasks, ...) must NOT hijack mora's exit status just
+// because it also implements ExitCode() int. Re-execs itself as a child that
+// exits 3 to obtain a genuine *exec.ExitError, portably on any OS.
+func TestExitCodeFor_MatchesOnlyMoraSentinel(t *testing.T) {
+	if os.Getenv("MORA_EXITCODE_HELPER") == "1" {
+		os.Exit(3) // child arm: give the parent a real non-zero *exec.ExitError
+	}
+
+	if code, ok := ExitCodeFor(exitCodeError{code: loopSkipExitCode}); !ok || code != loopSkipExitCode {
+		t.Fatalf("ExitCodeFor(sentinel) = (%d, %v), want (%d, true)", code, ok, loopSkipExitCode)
+	}
+	if code, ok := ExitCodeFor(fmt.Errorf("wrapped: %w", exitCodeError{code: 7, msg: "boom"})); !ok || code != 7 {
+		t.Fatalf("ExitCodeFor(wrapped sentinel) = (%d, %v), want (7, true)", code, ok)
+	}
+
+	// A real *exec.ExitError (child exits 3) implements ExitCode() int but is NOT
+	// our sentinel — must report no structured code so main() falls through to the
+	// generic exit 1 instead of exiting 3.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExitCodeFor_MatchesOnlyMoraSentinel$")
+	cmd.Env = append(os.Environ(), "MORA_EXITCODE_HELPER=1")
+	exitErr := cmd.Run()
+	var ee *exec.ExitError
+	if !errors.As(exitErr, &ee) {
+		t.Fatalf("setup: want a *exec.ExitError from the child, got %T (%v)", exitErr, exitErr)
+	}
+	if code, ok := ExitCodeFor(fmt.Errorf("subprocess failed: %w", exitErr)); ok {
+		t.Fatalf("ExitCodeFor(wrapped *exec.ExitError) = (%d, true); a subprocess error must not hijack the exit code", code)
+	}
+	if code, ok := ExitCodeFor(errors.New("plain")); ok {
+		t.Fatalf("ExitCodeFor(plain) = (%d, true), want (_, false)", code)
 	}
 }
 
