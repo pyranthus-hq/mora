@@ -4,6 +4,7 @@
 #   ./build.sh native   # build a stamped binary on this host, run regression.sh natively
 #   ./build.sh docker   # build a clean Linux image and run regression.sh inside it
 #   ./build.sh macos    # run the macOS-native tier (regression-macos.sh) on this Mac
+#   ./build.sh windows  # cross-build the stamped windows/amd64 binary
 #
 # `native` is for fast dev validation of the cross-platform Tier 1 (works on macOS,
 # but the macOS-only data paths are covered by `macos`). `docker` is the real
@@ -59,6 +60,13 @@ case "$MODE" in
     echo ">> Tier 2 (macOS-native) @ $VER ($SHA)"
     MORA_REPO="$MORA_REPO" EXPECTED_VER="$VER" bash "$HERE/regression-macos.sh"
     ;;
+  windows)
+    echo ">> windows/amd64 cross-build @ $VER ($SHA)"
+    WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+    ( cd "$MORA_REPO" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o "$WORK/mora.exe" ./cmd/mora )
+    test -s "$WORK/mora.exe"
+    echo ">> built $WORK/mora.exe"
+    ;;
   *)
-    echo "usage: $0 [native|docker|macos]"; exit 2;;
+    echo "usage: $0 [native|docker|macos|windows]"; exit 2;;
 esac

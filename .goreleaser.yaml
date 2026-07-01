@@ -35,15 +35,21 @@ builds:
       - -X main.version={{.Version}}
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
-    goos: [darwin, linux]
+    goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
     mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
 
 archives:
   - id: mora
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     # This name MUST match what `mora upgrade` (go-selfupdate) expects:
-    #   mora_<version>_<os>_<arch>.tar.gz
+    #   mora_<version>_<os>_<arch>.tar.gz (zip on Windows)
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:
