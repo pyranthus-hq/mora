@@ -34,6 +34,13 @@ func runErr(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
+func withRuntimeGOOS(t *testing.T, goos string) {
+	t.Helper()
+	orig := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = orig })
+	runtimeGOOS = func() string { return goos }
+}
+
 // ---------------------------------------------------------------------------
 // Model-layer tests — GREEN after Plan 01-01 Task 2.
 // ---------------------------------------------------------------------------
@@ -179,6 +186,100 @@ func TestConnectorsList(t *testing.T) {
 	}
 	if !sawGmail || !sawCalendar {
 		t.Fatalf("connectors list should include gmail and calendar rows, got %+v", rows)
+	}
+}
+
+func TestConnectorsListWindowsHidesMacOSOnlyConnectors(t *testing.T) {
+	withTempHome(t)
+	withRuntimeGOOS(t, "windows")
+	run(t, "init")
+
+	out, err := runErr(t, "connectors", "list", "--json")
+	if err != nil {
+		t.Fatalf("connectors list --json on windows: %v\n%s", err, out)
+	}
+	var rows []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("connectors list --json invalid JSON: %v\n%s", err, out)
+	}
+	types := map[string]bool{}
+	for _, r := range rows {
+		types[r.Type] = true
+	}
+	for _, want := range []string{"gmail", "calendar", "filesystem"} {
+		if !types[want] {
+			t.Fatalf("windows connectors list missing cross-platform connector %q: %+v", want, rows)
+		}
+	}
+	for _, forbidden := range []string{"imessage", "applecalendar", "addressbook"} {
+		if types[forbidden] {
+			t.Fatalf("windows connectors list presented macOS-only connector %q: %+v", forbidden, rows)
+		}
+	}
+}
+
+func TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources(t *testing.T) {
+	for _, ctype := range []string{"imessage", "applecalendar"} {
+		t.Run(ctype, func(t *testing.T) {
+			withTempHome(t)
+			withRuntimeGOOS(t, "windows")
+			run(t, "init")
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+
+			out, err := runErr(t, "connectors", "enable", ctype)
+			if err == nil {
+				t.Fatalf("connectors enable %s on windows returned nil; output:\n%s", ctype, out)
+			}
+			if !strings.Contains(out, "macOS-only") {
+				t.Fatalf("enable %s should print a macOS-only refusal; got:\n%s", ctype, out)
+			}
+			sources, err := loadSources(cfg)
+			if err != nil {
+				t.Fatalf("loadSources: %v", err)
+			}
+			for _, s := range sources {
+				if s.Type == ctype && s.IsEnabled() {
+					t.Fatalf("%s source was enabled on windows: %+v", ctype, s)
+				}
+			}
+		})
+	}
+}
+
+func TestWindowsKeepsCrossPlatformConnectorEnableFunctional(t *testing.T) {
+	for _, ctype := range []string{"gmail", "calendar", "filesystem"} {
+		t.Run(ctype, func(t *testing.T) {
+			withTempHome(t)
+			withRuntimeGOOS(t, "windows")
+			run(t, "init")
+
+			out, err := runErr(t, "connectors", "enable", ctype)
+			if err != nil {
+				t.Fatalf("connectors enable %s on windows should succeed: %v\n%s", ctype, err, out)
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			sources, err := loadSources(cfg)
+			if err != nil {
+				t.Fatalf("loadSources: %v", err)
+			}
+			var enabled bool
+			for _, s := range sources {
+				if s.Type == ctype {
+					enabled = enabled || s.IsEnabled()
+				}
+			}
+			if !enabled {
+				t.Fatalf("%s was not enabled on windows; sources=%+v", ctype, sources)
+			}
+		})
 	}
 }
 

@@ -250,6 +250,28 @@ func lookupCatalog(ctype string) (connectorInfo, bool) {
 	return connectorInfo{}, false
 }
 
+func macOSOnlyConnector(ctype string) bool {
+	switch ctype {
+	case "imessage", "applecalendar", "addressbook":
+		return true
+	default:
+		return false
+	}
+}
+
+func connectorCatalogForGOOS(goos string) []connectorInfo {
+	if goos != "windows" {
+		return connectorCatalog
+	}
+	out := make([]connectorInfo, 0, len(connectorCatalog))
+	for _, c := range connectorCatalog {
+		if !macOSOnlyConnector(c.Type) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // catalogRow is the per-type view emitted by `connectors list`. Enabled joins the
 // static catalog against the user's sources.json consent state.
 type catalogRow struct {
@@ -1969,8 +1991,9 @@ func cmdConnectors(ctx context.Context, args []string, stdout io.Writer, stdin i
 				enabledByType[s.Type] = true
 			}
 		}
-		rows := make([]catalogRow, 0, len(connectorCatalog))
-		for _, c := range connectorCatalog {
+		catalog := connectorCatalogForGOOS(runtimeGOOS())
+		rows := make([]catalogRow, 0, len(catalog))
+		for _, c := range catalog {
 			rows = append(rows, catalogRow{
 				Type:      c.Type,
 				Name:      c.DisplayName,
@@ -2090,6 +2113,10 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 	if !ok {
 		return fmt.Errorf("unknown connector %q; run `mora connectors list`", ctype)
 	}
+	if runtimeGOOS() == "windows" && macOSOnlyConnector(ctype) {
+		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on Windows.\n", info.DisplayName)
+		return fmt.Errorf("%s is macOS-only", ctype)
+	}
 	if info.NeedsAuth {
 		// Run interactive consent only when we lack a saved token AND stdin is a
 		// real terminal. The loopback flow opens a browser and BLOCKS up to 5
@@ -2132,8 +2159,8 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access, then pull data with `mora sync imessage`.")
 		fmt.Fprintln(stdout, "Check readiness anytime with `mora doctor`.")
-		if runtime.GOOS != "darwin" {
-			fmt.Fprintf(stdout, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtime.GOOS)
+		if runtimeGOOS() != "darwin" {
+			fmt.Fprintf(stdout, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -2141,8 +2168,8 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		// No-auth path, same gate as iMessage: local store + Full Disk Access.
 		okf(stdout, "enabled applecalendar. Apple Calendar reads your local Calendar database — no login needed.")
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access (the same toggle iMessage uses), then pull data with `mora ingest run --source applecalendar`.")
-		if runtime.GOOS != "darwin" {
-			fmt.Fprintf(stdout, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtime.GOOS)
+		if runtimeGOOS() != "darwin" {
+			fmt.Fprintf(stdout, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -2316,8 +2343,9 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 	// The Apocrypha eye — shown once at the top of interactive setup (TTY only).
 	printBanner(stdout)
 
-	options := make([]huh.Option[string], 0, len(connectorCatalog))
-	for _, c := range connectorCatalog {
+	catalog := connectorCatalogForGOOS(runtimeGOOS())
+	options := make([]huh.Option[string], 0, len(catalog))
+	for _, c := range catalog {
 		options = append(options, huh.NewOption(c.DisplayName, c.Type))
 	}
 
@@ -2426,7 +2454,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 	}
 	if imessageSelected {
 		if doBackfill {
-			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtime.GOOS == "darwin" {
+			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtimeGOOS() == "darwin" {
 				total, err := backfillEnabledIMessage(ctx, cfg, stdout)
 				if err != nil {
 					return err
@@ -4558,6 +4586,10 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 90; negative = all-time)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if runtimeGOOS() == "windows" {
+		fmt.Fprintln(stdout, "iMessage is macOS-only and cannot be enabled on Windows.")
+		return errors.New("imessage is macOS-only")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
