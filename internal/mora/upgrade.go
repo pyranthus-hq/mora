@@ -64,8 +64,9 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	// broke `mora upgrade` for every install; if you rename one side, rename
 	// all three.
 	updater, err := selfupdate.NewUpdater(selfupdate.Config{
-		Source:    source,
-		Validator: &selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"},
+		Source:      source,
+		Validator:   &selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"},
+		OldSavePath: upgradeOldSavePath(exe),
 	})
 	if err != nil {
 		return fmt.Errorf("setting up the updater: %w", err)
@@ -132,6 +133,17 @@ func postUpgradeRebuild(ctx context.Context, exe string, stdout io.Writer) error
 func isHomebrewManaged(resolvedExe string) bool {
 	return strings.Contains(resolvedExe, "/Cellar/") ||
 		strings.Contains(resolvedExe, "/Caskroom/")
+}
+
+func upgradeOldSavePath(exe string) string {
+	if runtimeGOOS() != "windows" {
+		return ""
+	}
+	// go-selfupdate already performs the Windows-safe swap by renaming the
+	// running executable before moving the new file into place. Set OldSavePath
+	// so the contract-visible backup is mora.exe.old instead of the library's
+	// default hidden .mora.exe.old path.
+	return filepath.Join(filepath.Dir(exe), filepath.Base(exe)+".old")
 }
 
 func firstNonEmpty(vals ...string) string {

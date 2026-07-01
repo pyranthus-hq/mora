@@ -98,8 +98,8 @@ func notifyBrief(briefPath string, run notifyRunner, goos string) error {
 }
 
 // runtimeGOOS is the production OS value; the seam exists so the real binary reads
-// runtime.GOOS while tests inject an arbitrary goos into notifyBrief/shouldNotify.
-func runtimeGOOS() string { return runtime.GOOS }
+// runtime.GOOS while tests inject an arbitrary goos into OS-gated branches.
+var runtimeGOOS = func() string { return runtime.GOOS }
 
 // notifyBriefDefault is the production entry point the integration caller (13-03)
 // invokes after persisting a brief: it wires the real seams (osascriptRunner +

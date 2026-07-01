@@ -37,6 +37,31 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race -count=1 -covermode=atomic ./...
 
+  # Phase 1 (Windows Build) gate: proves the single binary BUILDS and VETS clean
+  # on a real windows-latest runner. The full `go test ./...` on Windows is
+  # deliberately NOT wired here yet — the suite carries pre-existing POSIX
+  # assumptions (0600/0644 file modes, illegal-filename chars in memory ids,
+  # os.Rename replace semantics, chmod/Geteuid guards, LF golden files) that are
+  # genuine Phase 2 "runtime portability" work, not build failures. Re-enabling
+  # `go test ./...` here is the explicit exit criterion for Phase 2.
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: go build
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+      - name: go vet
+        env:
+          CGO_ENABLED: "0"
+        run: go vet ./...
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -67,6 +92,7 @@ jobs:
           - { goos: darwin, goarch: amd64 }
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

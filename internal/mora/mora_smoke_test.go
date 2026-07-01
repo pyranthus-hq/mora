@@ -71,3 +71,31 @@ func TestSmokeMCPSearchRoundtrip(t *testing.T) {
 		t.Fatalf("expected MCP search to return written memory, got %+v", hits[0])
 	}
 }
+
+func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	origGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
+	runtimeGOOS = func() string { return "windows" }
+
+	var js bytes.Buffer
+	if err := cmdDoctor(context.Background(), []string{"--json"}, &js); err != nil {
+		t.Fatal(err)
+	}
+	var rep doctorReport
+	if err := json.Unmarshal(js.Bytes(), &rep); err != nil {
+		t.Fatalf("doctor --json is not valid JSON: %v\n%s", err, js.String())
+	}
+	if rep.Platform != "windows" {
+		t.Fatalf("doctor platform = %q, want windows", rep.Platform)
+	}
+
+	var text bytes.Buffer
+	if err := cmdDoctor(context.Background(), nil, &text); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "skipping chat.db checks on windows") {
+		t.Fatalf("doctor should report iMessage as macOS-only on windows; got:\n%s", text.String())
+	}
+}

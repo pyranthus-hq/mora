@@ -246,12 +246,20 @@ func StartLoopbackAuth(ctx context.Context, cfg *oauth2.Config, out io.Writer) (
 }
 
 func openBrowser(url string) error {
-	switch runtime.GOOS {
+	switch browserGOOS() {
 	case "darwin":
-		return exec.Command("open", url).Start()
+		return startBrowserCommand("open", url)
 	case "linux":
-		return exec.Command("xdg-open", url).Start()
+		return startBrowserCommand("xdg-open", url)
+	case "windows":
+		return startBrowserCommand("rundll32", "url.dll,FileProtocolHandler", url)
 	default:
 		return fmt.Errorf("unsupported platform for auto-open")
 	}
+}
+
+var browserGOOS = func() string { return runtime.GOOS }
+
+var startBrowserCommand = func(name string, args ...string) error {
+	return exec.Command(name, args...).Start()
 }

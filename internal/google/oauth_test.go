@@ -58,6 +58,54 @@ func TestResolveCredentialsMissingEnvFileErrors(t *testing.T) {
 	}
 }
 
+func TestOpenBrowserUsesPlatformCommand(t *testing.T) {
+	origGOOS := browserGOOS
+	origStart := startBrowserCommand
+	t.Cleanup(func() {
+		browserGOOS = origGOOS
+		startBrowserCommand = origStart
+	})
+
+	tests := []struct {
+		goos     string
+		wantName string
+		wantArgs []string
+	}{
+		{goos: "darwin", wantName: "open", wantArgs: []string{"https://example.test/auth"}},
+		{goos: "linux", wantName: "xdg-open", wantArgs: []string{"https://example.test/auth"}},
+		{goos: "windows", wantName: "rundll32", wantArgs: []string{"url.dll,FileProtocolHandler", "https://example.test/auth"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			browserGOOS = func() string { return tt.goos }
+			var gotName string
+			var gotArgs []string
+			startBrowserCommand = func(name string, args ...string) error {
+				gotName = name
+				gotArgs = append([]string(nil), args...)
+				return nil
+			}
+
+			if err := openBrowser("https://example.test/auth"); err != nil {
+				t.Fatalf("openBrowser(%s): %v", tt.goos, err)
+			}
+			if gotName != tt.wantName || !reflect.DeepEqual(gotArgs, tt.wantArgs) {
+				t.Fatalf("command = %s %#v, want %s %#v", gotName, gotArgs, tt.wantName, tt.wantArgs)
+			}
+		})
+	}
+}
+
+func TestOpenBrowserUnsupportedPlatform(t *testing.T) {
+	origGOOS := browserGOOS
+	t.Cleanup(func() { browserGOOS = origGOOS })
+
+	browserGOOS = func() string { return "plan9" }
+	if err := openBrowser("https://example.test/auth"); err == nil {
+		t.Fatal("openBrowser on unsupported platform returned nil")
+	}
+}
+
 func TestTokenStoreRoundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens", "google.json")
 	tok := &oauth2.Token{AccessToken: "a", RefreshToken: "r"}

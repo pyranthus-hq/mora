@@ -17,6 +17,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -248,6 +249,28 @@ func lookupCatalog(ctype string) (connectorInfo, bool) {
 		}
 	}
 	return connectorInfo{}, false
+}
+
+func macOSOnlyConnector(ctype string) bool {
+	switch ctype {
+	case "imessage", "applecalendar", "addressbook":
+		return true
+	default:
+		return false
+	}
+}
+
+func connectorCatalogForGOOS(goos string) []connectorInfo {
+	if goos != "windows" {
+		return connectorCatalog
+	}
+	out := make([]connectorInfo, 0, len(connectorCatalog))
+	for _, c := range connectorCatalog {
+		if !macOSOnlyConnector(c.Type) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // catalogRow is the per-type view emitted by `connectors list`. Enabled joins the
@@ -1642,7 +1665,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			StorageStatus:     st,
 			GitSyncConfigured: gitSync,
 			Version:           BuildVersion,
-			Platform:          runtime.GOOS,
+			Platform:          runtimeGOOS(),
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -1840,9 +1863,9 @@ func formatBytes(n int64) string {
 // the recovery loop's final step all the way to data (`mora sync imessage`) when shown
 // inline during `connectors setup`. Returns true only when all three checks pass.
 func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
-	if runtime.GOOS != "darwin" {
+	if runtimeGOOS() != "darwin" {
 		fmt.Fprintln(stdout, "warn imessage_macos")
-		fmt.Fprintf(stdout, "iMessage ingest only runs on macOS — skipping chat.db checks on %s.\n", runtime.GOOS)
+		fmt.Fprintf(stdout, "iMessage ingest only runs on macOS — skipping chat.db checks on %s.\n", runtimeGOOS())
 		return false
 	}
 	fmt.Fprintln(stdout, "ok   imessage_macos")
@@ -1896,7 +1919,7 @@ func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
 
 func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: mora schedule install|list")
+		return errors.New("usage: mora schedule install|list|uninstall")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -1910,8 +1933,13 @@ func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 			return errors.New("usage: mora schedule install <pulse-daily|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
 		}
 		return installSchedule(stdout, cfg, args[1])
+	case "uninstall":
+		if len(args) != 2 {
+			return errors.New("usage: mora schedule uninstall <pulse-daily|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
+		}
+		return uninstallSchedule(stdout, cfg, args[1])
 	default:
-		return errors.New("usage: mora schedule install|list")
+		return errors.New("usage: mora schedule install|list|uninstall")
 	}
 }
 
@@ -1969,8 +1997,9 @@ func cmdConnectors(ctx context.Context, args []string, stdout io.Writer, stdin i
 				enabledByType[s.Type] = true
 			}
 		}
-		rows := make([]catalogRow, 0, len(connectorCatalog))
-		for _, c := range connectorCatalog {
+		catalog := connectorCatalogForGOOS(runtimeGOOS())
+		rows := make([]catalogRow, 0, len(catalog))
+		for _, c := range catalog {
 			rows = append(rows, catalogRow{
 				Type:      c.Type,
 				Name:      c.DisplayName,
@@ -2090,6 +2119,10 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 	if !ok {
 		return fmt.Errorf("unknown connector %q; run `mora connectors list`", ctype)
 	}
+	if runtimeGOOS() == "windows" && macOSOnlyConnector(ctype) {
+		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on Windows.\n", info.DisplayName)
+		return fmt.Errorf("%s is macOS-only", ctype)
+	}
 	if info.NeedsAuth {
 		// Run interactive consent only when we lack a saved token AND stdin is a
 		// real terminal. The loopback flow opens a browser and BLOCKS up to 5
@@ -2132,8 +2165,8 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access, then pull data with `mora sync imessage`.")
 		fmt.Fprintln(stdout, "Check readiness anytime with `mora doctor`.")
-		if runtime.GOOS != "darwin" {
-			fmt.Fprintf(stdout, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtime.GOOS)
+		if runtimeGOOS() != "darwin" {
+			fmt.Fprintf(stdout, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -2141,8 +2174,8 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		// No-auth path, same gate as iMessage: local store + Full Disk Access.
 		okf(stdout, "enabled applecalendar. Apple Calendar reads your local Calendar database — no login needed.")
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access (the same toggle iMessage uses), then pull data with `mora ingest run --source applecalendar`.")
-		if runtime.GOOS != "darwin" {
-			fmt.Fprintf(stdout, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtime.GOOS)
+		if runtimeGOOS() != "darwin" {
+			fmt.Fprintf(stdout, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -2316,8 +2349,9 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 	// The Apocrypha eye — shown once at the top of interactive setup (TTY only).
 	printBanner(stdout)
 
-	options := make([]huh.Option[string], 0, len(connectorCatalog))
-	for _, c := range connectorCatalog {
+	catalog := connectorCatalogForGOOS(runtimeGOOS())
+	options := make([]huh.Option[string], 0, len(catalog))
+	for _, c := range catalog {
 		options = append(options, huh.NewOption(c.DisplayName, c.Type))
 	}
 
@@ -2426,7 +2460,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 	}
 	if imessageSelected {
 		if doBackfill {
-			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtime.GOOS == "darwin" {
+			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtimeGOOS() == "darwin" {
 				total, err := backfillEnabledIMessage(ctx, cfg, stdout)
 				if err != nil {
 					return err
@@ -4559,6 +4593,10 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if runtimeGOOS() == "windows" {
+		fmt.Fprintln(stdout, "iMessage is macOS-only and cannot be enabled on Windows.")
+		return errors.New("imessage is macOS-only")
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -5267,6 +5305,12 @@ var scheduleCommands = map[string]string{
 // they keep RunAtLoad to catch up after a login.
 func scheduleRunAtLoad(job string) bool { return job != "pulse-daily" }
 
+type scheduleCommandRunner func(name string, args ...string) ([]byte, error)
+
+var runScheduleCommand scheduleCommandRunner = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
 // schedulePlistFor renders a job's launchd plist deterministically (no disk I/O)
 // so installSchedule and the tests share one builder. The bool is false for an
 // unknown job (mirrors the command-map guard).
@@ -5319,8 +5363,20 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 		return fmt.Errorf("unknown job %q", job)
 	}
 	exe, _ := os.Executable()
-	if runtime.GOOS == "darwin" {
-		dir := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
+	if runtimeGOOS() == "windows" {
+		args := windowsScheduleCreateArgs(job, exe, cmdArgs)
+		if out, err := runScheduleCommand("schtasks", args...); err != nil {
+			return fmt.Errorf("schtasks create %s: %w: %s", windowsTaskName(job), err, strings.TrimSpace(string(out)))
+		}
+		okf(stdout, "installed Windows scheduled task %s", windowsTaskName(job))
+		return nil
+	}
+	if runtimeGOOS() == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		dir := filepath.Join(home, "Library", "LaunchAgents")
 		label := "com.mora." + job
 		plist, _ := schedulePlistFor(cfg, job)
 		if err := atomicWrite(filepath.Join(dir, label+".plist"), []byte(plist), 0o644); err != nil {
@@ -5346,8 +5402,25 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 }
 
 func listSchedules(stdout io.Writer, cfg Config) error {
-	if runtime.GOOS == "darwin" {
-		matches, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", "com.mora.*.plist"))
+	if runtimeGOOS() == "windows" {
+		jobs := make([]string, 0, len(scheduleCommands))
+		for job := range scheduleCommands {
+			jobs = append(jobs, job)
+		}
+		sort.Strings(jobs)
+		for _, job := range jobs {
+			if _, err := runScheduleCommand("schtasks", "/Query", "/TN", windowsTaskName(job)); err == nil {
+				fmt.Fprintln(stdout, windowsTaskName(job))
+			}
+		}
+		return nil
+	}
+	if runtimeGOOS() == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		matches, _ := filepath.Glob(filepath.Join(home, "Library", "LaunchAgents", "com.mora.*.plist"))
 		for _, m := range matches {
 			fmt.Fprintln(stdout, filepath.Base(m))
 		}
@@ -5355,6 +5428,91 @@ func listSchedules(stdout io.Writer, cfg Config) error {
 	}
 	fmt.Fprintln(stdout, "cron listing not implemented")
 	return nil
+}
+
+func uninstallSchedule(stdout io.Writer, cfg Config, job string) error {
+	if _, ok := scheduleCommands[job]; !ok {
+		return fmt.Errorf("unknown job %q", job)
+	}
+	if runtimeGOOS() == "windows" {
+		if out, err := runScheduleCommand("schtasks", "/Delete", "/TN", windowsTaskName(job), "/F"); err != nil {
+			return fmt.Errorf("schtasks delete %s: %w: %s", windowsTaskName(job), err, strings.TrimSpace(string(out)))
+		}
+		okf(stdout, "uninstalled Windows scheduled task %s", windowsTaskName(job))
+		return nil
+	}
+	if runtimeGOOS() == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		label := "com.mora." + job
+		if err := os.Remove(filepath.Join(home, "Library", "LaunchAgents", label+".plist")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		okf(stdout, "uninstalled launchd job %s", label)
+		return nil
+	}
+	fmt.Fprintln(stdout, "Linux: remove the cron line or systemd user timer you installed for this job.")
+	return nil
+}
+
+func windowsTaskName(job string) string {
+	return `Mora\` + job
+}
+
+// windowsTaskCommand builds the schtasks /TR action string. Scheduled tasks do
+// NOT inherit the user's shell environment, so any exported var the job depends
+// on must be snapshotted into the action at install time — mirroring the launchd
+// EnvironmentVariables block in schedulePlistFor:
+//   - MORA_GOOGLE_CREDENTIALS: without it a BYO-creds setup silently hits the
+//     embedded DEV_PLACEHOLDER client on every scheduled Google sync while
+//     terminal syncs keep working — the vault goes stale with no visible error.
+//   - MORA_CONFIG_DIR: without it a re-rooted install's job runs against the
+//     DEFAULT vault.
+//
+// When any var is carried, the action is wrapped in `cmd /c "..."`. cmd.exe
+// strips only the FIRST and LAST quote of that string (there are >2 quotes plus
+// the special `&` char), so the inner exe path is protected with PLAIN double
+// quotes: cmd.exe does NOT treat backslash as a quote escape (`\"` would break
+// launch every run), and there is no space before `&&` or cmd.exe folds it into
+// the env value.
+func windowsTaskCommand(exe, cmdArgs string) string {
+	var sets []string
+	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
+		sets = append(sets, "set MORA_GOOGLE_CREDENTIALS="+creds)
+	}
+	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
+		sets = append(sets, "set MORA_CONFIG_DIR="+cfgDir)
+	}
+	if len(sets) == 0 {
+		return `"` + exe + `" ` + cmdArgs
+	}
+	return `cmd /c "` + strings.Join(sets, "&& ") + `&& "` + exe + `" ` + cmdArgs + `"`
+}
+
+func windowsScheduleCreateArgs(job, exe, cmdArgs string) []string {
+	args := []string{"/Create", "/TN", windowsTaskName(job), "/TR", windowsTaskCommand(exe, cmdArgs)}
+	args = append(args, windowsScheduleCadenceArgs(job)...)
+	args = append(args, "/F")
+	return args
+}
+
+func windowsScheduleCadenceArgs(job string) []string {
+	switch job {
+	case "index-hourly", "ingest-hourly":
+		return []string{"/SC", "HOURLY", "/MO", "1"}
+	case "lint-weekly":
+		return []string{"/SC", "WEEKLY", "/D", "SUN", "/ST", "09:00"}
+	case "pulse-daily":
+		return []string{"/SC", "DAILY", "/ST", "08:00"}
+	case "backup-daily":
+		return []string{"/SC", "DAILY", "/ST", "02:00"}
+	case "git-daily":
+		return []string{"/SC", "DAILY", "/ST", "03:00"}
+	default:
+		return []string{"/SC", "HOURLY", "/MO", "1"}
+	}
 }
 
 func tarGz(out, root string) error {
