@@ -1642,7 +1642,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			StorageStatus:     st,
 			GitSyncConfigured: gitSync,
 			Version:           BuildVersion,
-			Platform:          runtime.GOOS,
+			Platform:          runtimeGOOS(),
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -1840,9 +1840,9 @@ func formatBytes(n int64) string {
 // the recovery loop's final step all the way to data (`mora sync imessage`) when shown
 // inline during `connectors setup`. Returns true only when all three checks pass.
 func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
-	if runtime.GOOS != "darwin" {
+	if runtimeGOOS() != "darwin" {
 		fmt.Fprintln(stdout, "warn imessage_macos")
-		fmt.Fprintf(stdout, "iMessage ingest only runs on macOS — skipping chat.db checks on %s.\n", runtime.GOOS)
+		fmt.Fprintf(stdout, "iMessage ingest only runs on macOS — skipping chat.db checks on %s.\n", runtimeGOOS())
 		return false
 	}
 	fmt.Fprintln(stdout, "ok   imessage_macos")
@@ -5319,8 +5319,12 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 		return fmt.Errorf("unknown job %q", job)
 	}
 	exe, _ := os.Executable()
-	if runtime.GOOS == "darwin" {
-		dir := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
+	if runtimeGOOS() == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		dir := filepath.Join(home, "Library", "LaunchAgents")
 		label := "com.mora." + job
 		plist, _ := schedulePlistFor(cfg, job)
 		if err := atomicWrite(filepath.Join(dir, label+".plist"), []byte(plist), 0o644); err != nil {
@@ -5346,8 +5350,12 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 }
 
 func listSchedules(stdout io.Writer, cfg Config) error {
-	if runtime.GOOS == "darwin" {
-		matches, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", "com.mora.*.plist"))
+	if runtimeGOOS() == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		matches, _ := filepath.Glob(filepath.Join(home, "Library", "LaunchAgents", "com.mora.*.plist"))
 		for _, m := range matches {
 			fmt.Fprintln(stdout, filepath.Base(m))
 		}
