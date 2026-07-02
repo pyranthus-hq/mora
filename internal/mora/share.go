@@ -1120,6 +1120,155 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	return nil
 }
 
+// ---------- query-time union ----------
+
+// Fusion of the local ranked list with each subscription's BM25 list, by
+// rank-based RRF (score scales are incomparable across corpora). The local arm
+// anchors at the weight hybrid fusion gives its strongest arm (fts 1.5), and
+// ALL subscriptions together share one arm's worth of vote — so multiple
+// shares can never collectively out-vote the user's own vault (codex review).
+// k matches defaultFusion. Untuned by eval; revisit with the T2 harness.
+const (
+	shareFusionLocalWeight  = 1.5
+	shareFusionSharedWeight = 1.0
+	shareFusionK            = 10.0
+)
+
+// ownedTitle renders a result title with its share attribution, if any.
+func ownedTitle(m Memory) string {
+	if m.Owner == "" {
+		return m.Title
+	}
+	return "[" + m.Owner + "] " + m.Title
+}
+
+// searchShareIndex is searchMemories against one subscription's index, with
+// every row attributed to the subscription.
+func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope string, limit int) ([]Memory, error) {
+	match := ftsQuery(query)
+	if strings.TrimSpace(match) == "" {
+		return nil, nil
+	}
+	q := `SELECT m.id, m.scope, m.type, m.title, m.tags, m.source, m.created_at, m.path, m.text, bm25(memories_fts) AS score
+		FROM memories_fts JOIN memories m ON m.id = memories_fts.id WHERE memories_fts MATCH ?`
+	args := []any{match}
+	if scope != "" {
+		q += ` AND m.scope = ?`
+		args = append(args, scope)
+	}
+	q += ` ORDER BY score, m.id LIMIT ?`
+	args = append(args, limit)
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Memory
+	for rows.Next() {
+		var m Memory
+		var tags string
+		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text, &m.Score); err != nil {
+			return nil, err
+		}
+		m.Tags = splitCSV(tags)
+		m.Owner = owner
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// searchSharedCorpora queries every subscription's index and returns one
+// ranked list per corpus. A never-pulled subscription (no index yet) is
+// silently skipped — that's a normal state, visible in `mora share list`. An
+// index that EXISTS but cannot be opened or has the wrong schema fails the
+// whole search loudly: honest-failure over silent partial results.
+func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, limit int) ([][]Memory, error) {
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(sf.Subscriptions) == 0 {
+		return nil, nil
+	}
+	var out [][]Memory
+	for _, sub := range sf.Subscriptions {
+		path := shareIndexPath(cfg, sub.Name)
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		db, err := openShareIndexRO(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("share %q: %w", sub.Name, err)
+		}
+		res, qerr := searchShareIndex(ctx, db, sub.Name, query, scope, limit)
+		_ = db.Close()
+		if qerr != nil {
+			return nil, fmt.Errorf("share %q: %w", sub.Name, qerr)
+		}
+		if len(res) > 0 {
+			out = append(out, res)
+		}
+	}
+	return out, nil
+}
+
+// unionSharedResults fuses the local ranked list with every subscription's
+// list. With no subscriptions (or no shared hits) the local slice is returned
+// UNCHANGED — the zero-share path stays byte-identical for the MCP budget
+// gate and every existing caller. Fusion keys are NUL-separated so a shared id
+// can never collide with a local id in the score map.
+func unionSharedResults(ctx context.Context, cfg Config, local []Memory, query, scope string, limit int) ([]Memory, error) {
+	shared, err := searchSharedCorpora(ctx, cfg, query, scope, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(shared) == 0 {
+		return local, nil
+	}
+	byKey := make(map[string]Memory, len(local))
+	lists := make([][]string, 0, 1+len(shared))
+	weights := make([]float64, 0, 1+len(shared))
+	localIDs := make([]string, len(local))
+	for i, m := range local {
+		localIDs[i] = m.ID
+		byKey[m.ID] = m
+	}
+	lists = append(lists, localIDs)
+	weights = append(weights, shareFusionLocalWeight)
+	per := shareFusionSharedWeight / float64(len(shared))
+	for _, corpus := range shared {
+		ids := make([]string, len(corpus))
+		for i, m := range corpus {
+			key := "share\x00" + m.Owner + "\x00" + m.ID
+			ids[i] = key
+			byKey[key] = m
+		}
+		lists = append(lists, ids)
+		weights = append(weights, per)
+	}
+	fused := rrfWeighted(lists, weights, shareFusionK)
+	keys := make([]string, 0, len(fused))
+	for k := range fused {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if fused[keys[i]] != fused[keys[j]] {
+			return fused[keys[i]] > fused[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	out := make([]Memory, 0, len(keys))
+	for _, k := range keys {
+		m := byKey[k]
+		m.Score = fused[k]
+		out = append(out, m)
+	}
+	return out, nil
+}
+
 const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {

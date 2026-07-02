@@ -122,6 +122,11 @@ type Memory struct {
 	LastSynced  string   `json:"last_synced,omitempty"`
 	Truncated   bool     `json:"truncated,omitempty"`
 	DeletedAt   string   `json:"deleted_at,omitempty"`
+	// Owner attributes a result from a SHARED corpus (`mora share subscribe`)
+	// with the subscriber-chosen subscription name. Never persisted to disk and
+	// always empty for the user's own memories — omitempty keeps local-only
+	// payloads byte-identical (the MCP budget gate depends on that).
+	Owner string `json:"owner,omitempty"`
 	// Meta is structured identity/frontmatter (participants, from/to, occurred_at),
 	// persisted as one canonical JSON line (`meta: {...}`). Powers the entity graph;
 	// the graph compiler reads it deterministically (no NER).
@@ -5562,10 +5567,10 @@ func emit(w io.Writer, v any, jsonOut bool) error {
 	sty := newStyler(w, jsonOut)
 	switch x := v.(type) {
 	case Memory:
-		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), x.Title)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), ownedTitle(x))
 	case []Memory:
 		for _, m := range x {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), m.Title)
+			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), ownedTitle(m))
 		}
 	case []catalogRow:
 		for _, r := range x {

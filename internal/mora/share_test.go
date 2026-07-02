@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 )
@@ -1011,5 +1012,153 @@ func TestSharePullFFOnlyAndReimports(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(shareCorpusDir(cfg, "neil"), "mem_20260601_000000_aaaaaaaa.md")); err != nil {
 		t.Fatalf("pull did not import: %v", err)
+	}
+}
+
+// setupSubscription installs a ready-to-search subscription: fixture repo,
+// decrypted corpus, share index, and registry entry.
+func setupSubscription(t *testing.T, cfg Config, name string, mems []Memory) {
+	t.Helper()
+	id := writeTestIdentity(t, cfg)
+	buildShareRepoFixture(t, shareRepoDir(cfg, name), id.Recipient(), mems, true)
+	sub := shareSubscription{Name: name, Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
+	if _, err := shareImport(context.Background(), cfg, sub); err != nil {
+		t.Fatal(err)
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf.Subscriptions = append(sf.Subscriptions, sub)
+	if err := saveShares(cfg, sf); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSearchUnionsSharedCorpusWithAttribution(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
+	})
+
+	out := run(t, "search", "sqlite")
+	if !strings.Contains(out, "Local sqlite note") {
+		t.Fatalf("local result missing:\n%s", out)
+	}
+	if !strings.Contains(out, "[neil] Neil sqlite decision") {
+		t.Fatalf("shared result missing owner-prefixed attribution:\n%s", out)
+	}
+	jout := run(t, "search", "sqlite", "--json")
+	if !strings.Contains(jout, `"owner": "neil"`) {
+		t.Fatalf("json result missing owner field:\n%s", jout)
+	}
+}
+
+func TestSearchScopeFilterAppliesToSharedCorpus(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
+	})
+	out := run(t, "search", "sqlite", "--scope", "personal")
+	if strings.Contains(out, "neil") {
+		t.Fatalf("scope filter leaked shared scope project:acme:\n%s", out)
+	}
+}
+
+func TestSearchSkipsNeverPulledSubscription(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	sf, err := loadShares(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf.Subscriptions = append(sf.Subscriptions, shareSubscription{Name: "ghost", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"})
+	if err := saveShares(cfg, sf); err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, "search", "sqlite")
+	if !strings.Contains(out, "Local sqlite note") || strings.Contains(out, "ghost") {
+		t.Fatalf("never-pulled subscription broke or polluted search:\n%s", out)
+	}
+}
+
+func TestSearchCorruptShareIndexFailsLoud(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	sf, err := loadShares(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf.Subscriptions = append(sf.Subscriptions, shareSubscription{Name: "bad", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"})
+	if err := saveShares(cfg, sf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(shareSubRoot(cfg, "bad"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shareIndexPath(cfg, "bad"), []byte("not a database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err = Run(context.Background(), []string{"search", "sqlite"}, &buf, &buf, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("corrupt share index silently ignored; honest-failure rule requires a loud error")
+	}
+}
+
+func TestMCPSearchMemoryCarriesOwner(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
+	})
+	got, err := callMCPTool(context.Background(), "search_memory", map[string]any{"query": "sqlite"})
+	if err != nil {
+		t.Fatalf("search_memory: %v", err)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"owner":"neil"`) {
+		t.Fatalf("MCP search_memory result missing owner attribution:\n%s", b)
+	}
+}
+
+func TestThinkAttributesSharedEvidenceAndKeepsGapsLocal(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
+	})
+	res, err := buildThink(context.Background(), cfg, "sqlite decision", "", 8, time.Now())
+	if err != nil {
+		t.Fatalf("buildThink: %v", err)
+	}
+	var shared int
+	for _, e := range res.Evidence {
+		if e.Owner == "neil" {
+			shared++
+		}
+	}
+	if shared == 0 {
+		t.Fatalf("think evidence missing shared attribution: %+v", res.Evidence)
+	}
+	if !strings.Contains(res.SynthesisPrompt, "shared:neil") {
+		t.Fatalf("synthesis prompt does not label shared evidence:\n%s", res.SynthesisPrompt)
 	}
 }
