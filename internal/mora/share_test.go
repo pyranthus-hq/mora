@@ -1782,3 +1782,62 @@ func TestDoctorChecksShareDisjointFromVault(t *testing.T) {
 		t.Fatal("share_disjoint_from_vault stayed ok with the vault engulfing the share paths")
 	}
 }
+
+// Import must also refuse case-fold id collisions: on a case-insensitive
+// subscriber filesystem the corpus files would silently overwrite each other
+// (review finding; publisher-side refusal already exists, this is the
+// hostile-publisher backstop).
+func TestShareImportRefusesCaseFoldCollision(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(), nil, true)
+	for _, memID := range []string{"mem_20260601_000000_aaaaaaAA", "mem_20260601_000000_AAAAAAaa"} {
+		m := fixtureMemory(memID, "T", "content")
+		body, err := renderMemory(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ct, err := encryptShareBytes([]age.Recipient{id.Recipient()}, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A case-insensitive dev filesystem would collapse these two repo file
+		// names too — skip if the fixture itself cannot represent them.
+		p := filepath.Join(shareRepoDir(cfg, "neil"), "memories", memID+".md.age")
+		if err := os.WriteFile(p, ct, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(shareRepoDir(cfg, "neil"), "memories"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) < 2 {
+		t.Skip("filesystem collapsed the fixture names; collision unrepresentable here")
+	}
+	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
+	if _, err := shareImport(context.Background(), cfg, sub); err == nil || !strings.Contains(err.Error(), "case") {
+		t.Fatalf("case-fold collision import = %v; want refusal naming the collision", err)
+	}
+}
+
+// The vault-disjointness guard must compare case-insensitively on filesystems
+// that do (macOS/Windows): /Users/x/VAULT and /Users/x/vault are the same tree
+// there, and a case-variant vault_dir must not slip past the prefix check
+// (review finding).
+func TestSharePathsOverlapCaseFold(t *testing.T) {
+	if !sharePathsOverlap("/users/adit/vault/mora/data/share", "/Users/Adit/VAULT/mora", true) {
+		t.Fatal("case-folded overlap not detected")
+	}
+	if sharePathsOverlap("/users/adit/vault/mora/data/share", "/Users/Adit/VAULT/mora", false) {
+		t.Fatal("case-sensitive comparison must not fold")
+	}
+	if sharePathsOverlap("/a/b-data/share", "/a/b", true) {
+		t.Fatal("sibling with shared name prefix wrongly flagged")
+	}
+	if !sharePathsOverlap("/a/b", "/a/b/vault", true) {
+		t.Fatal("containment must be detected in both directions")
+	}
+}

@@ -890,6 +890,7 @@ func shareImport(ctx context.Context, cfg Config, sub shareSubscription) (shareI
 		return stats, err
 	}
 	seen := map[string]bool{}
+	foldSeen := map[string]string{}
 	var mems []Memory
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
@@ -902,6 +903,13 @@ func shareImport(ctx context.Context, cfg Config, sub shareSubscription) (shareI
 		if !shareExportIDRE.MatchString(stem) {
 			return stats, fmt.Errorf("share repo file memories/%s has an unsafe name — refusing to import", e.Name())
 		}
+		// Backstop to the publisher-side check: ids differing only by letter
+		// case would silently overwrite each other in this corpus on a case-
+		// insensitive filesystem — refuse rather than serve a half-share.
+		if prior, dup := foldSeen[strings.ToLower(stem)]; dup {
+			return stats, fmt.Errorf("share repo files %s and %s differ only by letter case and cannot coexist in the corpus — ask the publisher to rename one", prior, stem)
+		}
+		foldSeen[strings.ToLower(stem)] = stem
 		// Bound the CIPHERTEXT before reading it into memory — the plaintext
 		// LimitReader below cannot protect against a huge input file (codex
 		// review). age overhead is small, so the plaintext cap + 1 MiB is ample.
@@ -1638,15 +1646,27 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 // corpus (or the identity secret) inside the tree that `mora backup` tars and
 // vault git-sync pushes — exactly the leak this feature exists to prevent.
 func shareGuardPaths(cfg Config) error {
+	// Fold case on the platforms whose default filesystems do: a case-variant
+	// vault_dir must not slip past the containment check (review finding).
+	fold := runtimeGOOS() == "darwin" || runtimeGOOS() == "windows"
 	vault := resolveRealDeep(cfg.VaultDir)
 	for _, p := range []string{filepath.Join(cfg.DataDir, "share"), filepath.Dir(shareIdentityPath(cfg))} {
-		rp := resolveRealDeep(p)
-		if rp == vault || strings.HasPrefix(rp+string(os.PathSeparator), vault+string(os.PathSeparator)) ||
-			strings.HasPrefix(vault+string(os.PathSeparator), rp+string(os.PathSeparator)) {
+		if sharePathsOverlap(resolveRealDeep(p), vault, fold) {
 			return fmt.Errorf("share root %s is inside the vault %s — sharing needs data_dir/config outside the vault so decrypted shares never enter vault backups or git-sync", p, cfg.VaultDir)
 		}
 	}
 	return nil
+}
+
+// sharePathsOverlap reports whether one cleaned path contains the other (or
+// they are equal), optionally case-folded for case-insensitive filesystems.
+func sharePathsOverlap(a, b string, foldCase bool) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if foldCase {
+		a, b = strings.ToLower(a), strings.ToLower(b)
+	}
+	sep := string(os.PathSeparator)
+	return a == b || strings.HasPrefix(a+sep, b+sep) || strings.HasPrefix(b+sep, a+sep)
 }
 
 // resolveRealDeep resolves symlinks through the deepest EXISTING ancestor and
