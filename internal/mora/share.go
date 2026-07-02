@@ -116,7 +116,9 @@ func loadShares(cfg Config) (shareFile, error) {
 		return sf, err
 	}
 	if err := json.Unmarshal(b, &sf); err != nil {
-		return sf, err
+		// This error surfaces from every search/think once subscriptions exist,
+		// so it must name the file and the fix, not just the parse failure.
+		return sf, fmt.Errorf("%s is corrupt (%v) — fix or delete the file; it holds share/subscription registrations", sharesPath(cfg), err)
 	}
 	return sf, nil
 }
@@ -1093,6 +1095,7 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 	if repoErr != nil {
 		return repoErr
 	}
+	freshClone := false
 	if !isRepo {
 		if _, err := run(ctx, "", "git", "--version"); err != nil {
 			return fmt.Errorf("git is required for sharing but was not found: %w", err)
@@ -1103,6 +1106,7 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 		if _, err := run(ctx, "", "git", "clone", *remote, repo); err != nil {
 			return fmt.Errorf("git clone: %w", err)
 		}
+		freshClone = true
 	} else {
 		// A leftover clone under this name must actually point at the remote
 		// being subscribed to — importing a stale repo from somewhere else
@@ -1115,11 +1119,23 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 		if strings.TrimSpace(origin) != *remote {
 			return fmt.Errorf("existing clone at %s has origin %s, not the requested remote %s — delete it (or pick another subscription name) and re-subscribe", repo, redactCredentials(strings.TrimSpace(origin)), redactCredentials(*remote))
 		}
+		// Freshen before importing: an old clone must never be imported as if
+		// it were the remote's current state (review finding).
+		if _, err := run(ctx, repo, "git", "pull", "--ff-only", "origin"); err != nil {
+			return fmt.Errorf("git pull --ff-only: %w", err)
+		}
 	}
 	sub := shareSubscription{Name: name, Remote: *remote, CreatedAt: time.Now().Format(time.RFC3339)}
 	stats, err := shareImport(ctx, cfg, sub)
 	if err != nil {
-		return err
+		// A fresh clone whose FIRST import failed (publisher hasn't pushed yet,
+		// key not among recipients, …) must not survive: the subscription was
+		// never registered, so no CLI verb could ever clean or retry it
+		// (review finding). Remove it so re-subscribing starts clean.
+		if freshClone {
+			_ = os.RemoveAll(shareSubRoot(cfg, name))
+		}
+		return fmt.Errorf("%w — nothing was registered; fix the cause (has the publisher pushed? is your key among the recipients?) and re-run `mora share subscribe`", err)
 	}
 	sf.Subscriptions = append(sf.Subscriptions, sub)
 	if err := saveShares(cfg, sf); err != nil {
@@ -1194,6 +1210,62 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 		fmt.Fprintf(stdout, "share %q: %d new/updated, %d removed, %d total.\n", sub.Name, stats.Imported, stats.Removed, stats.Total)
 	}
 	return nil
+}
+
+// healShareIndex rebuilds one subscription's index from its decrypted corpus —
+// the local source of truth. Used when the index file is corrupt or stamped
+// with a different schema version (e.g. after a mora upgrade).
+func healShareIndex(ctx context.Context, cfg Config, name string) error {
+	indexPath := shareIndexPath(cfg, name)
+	for _, p := range []string{indexPath, indexPath + "-wal", indexPath + "-shm"} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(shareCorpusDir(cfg, name))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	var mems []Memory
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		m, perr := parseMemory(filepath.Join(shareCorpusDir(cfg, name), e.Name()))
+		if perr != nil {
+			return fmt.Errorf("corpus file %s does not parse: %v — run `mora share pull %s` to re-import", e.Name(), perr, name)
+		}
+		mems = append(mems, m)
+	}
+	return rebuildShareIndex(ctx, indexPath, mems)
+}
+
+// findSharedMemory resolves an id against every subscription's corpus (files
+// are named <id>.md, so this is a direct lookup, no index needed). It backs the
+// READ-ONLY surfaces (`mora read`, MCP read_memory) so truncated shared search
+// snippets can be expanded to full text; delete paths never call it.
+func findSharedMemory(cfg Config, id string) (Memory, bool) {
+	if !shareExportIDRE.MatchString(id) {
+		return Memory{}, false
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return Memory{}, false
+	}
+	for _, sub := range sf.Subscriptions {
+		path := filepath.Join(shareCorpusDir(cfg, sub.Name), id+".md")
+		fi, statErr := os.Lstat(path)
+		if statErr != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		m, perr := parseMemory(path)
+		if perr != nil || m.ID != id {
+			continue
+		}
+		m.Owner = sub.Name
+		return m, true
+	}
+	return Memory{}, false
 }
 
 // ---------- query-time union ----------
@@ -1274,7 +1346,17 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 		}
 		db, err := openShareIndexRO(ctx, path)
 		if err != nil {
-			return nil, fmt.Errorf("share %q: %w", sub.Name, err)
+			// The share index is a derived cache of the local corpus, exactly
+			// like the personal index is of the vault — so it self-heals: a
+			// corrupt or schema-stale file (e.g. after an indexSchemaVersion
+			// bump in an upgrade) is rebuilt from the decrypted corpus instead
+			// of bricking every search until a manual pull (review finding).
+			if healErr := healShareIndex(ctx, cfg, sub.Name); healErr != nil {
+				return nil, fmt.Errorf("share %q: index unusable (%v) and rebuild from corpus failed: %w", sub.Name, err, healErr)
+			}
+			if db, err = openShareIndexRO(ctx, path); err != nil {
+				return nil, fmt.Errorf("share %q: %w", sub.Name, err)
+			}
 		}
 		res, qerr := searchShareIndex(ctx, db, sub.Name, query, scope, limit)
 		_ = db.Close()
@@ -1514,7 +1596,7 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	if len(args) == 0 {
 		return errors.New(shareUsage)
 	}
-	if isHelpFlag(args[0]) {
+	if isHelpFlag(args[0]) || (len(args) > 1 && isHelpFlag(args[1])) {
 		_, err := io.WriteString(stdout, shareUsage+"\n")
 		return err
 	}
@@ -1527,6 +1609,9 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	}
 	switch args[0] {
 	case "keygen":
+		if len(args) > 1 {
+			return errors.New(shareUsage)
+		}
 		return shareKeygen(cfg, stdout)
 	case "init":
 		return shareInit(ctx, cfg, args[1:], stdout, realExec)

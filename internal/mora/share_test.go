@@ -1502,3 +1502,187 @@ func TestCollectShareMemoriesRejectsCaseFoldDuplicateIDs(t *testing.T) {
 		t.Fatalf("case-fold duplicate ids = %v; want refusal naming the collision", err)
 	}
 }
+
+// A failed FIRST import (e.g. subscribing before the publisher's first push)
+// must clean up the fresh clone so retrying works — otherwise the name is
+// permanently wedged with no CLI recovery (review finding, live-repro).
+func TestShareSubscribeCleansUpFreshCloneOnImportFailure(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeTestIdentity(t, cfg)
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	var buf bytes.Buffer
+	err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run)
+	if err == nil {
+		t.Fatal("empty clone import unexpectedly succeeded")
+	}
+	if _, statErr := os.Stat(shareSubRoot(cfg, "neil")); !os.IsNotExist(statErr) {
+		t.Fatal("failed fresh subscribe left an orphan clone that blocks retries")
+	}
+	// Retry attempts a fresh clone rather than reusing a stale dir.
+	fx2 := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	_ = shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx2.run)
+	if !fx2.sawSubcommand("git", "clone") {
+		t.Fatal("retry did not re-clone")
+	}
+}
+
+// Re-subscribing over an existing clone must freshen it (pull --ff-only), not
+// import whatever stale state the clone holds (review finding).
+func TestShareSubscribeFreshensExistingClone(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
+		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run); err != nil {
+		t.Fatalf("shareSubscribe: %v", err)
+	}
+	if !fx.sawSubcommand("git", "pull", "--ff-only", "origin") {
+		t.Fatalf("existing clone not freshened before import; calls: %v", fx.calls)
+	}
+}
+
+// The share index is a derived cache of the local corpus — like the personal
+// index, it self-heals: a corrupt or schema-stale index file is rebuilt from
+// the decrypted corpus instead of bricking every search until a manual pull
+// (review finding: an indexSchemaVersion bump would break all subscribers).
+func TestShareIndexSelfHealsFromCorpus(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
+	})
+	// Corrupt the share index outright.
+	if err := os.WriteFile(shareIndexPath(cfg, "neil"), []byte("not a database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, "search", "sqlite")
+	if !strings.Contains(out, "[neil] Neil sqlite decision") {
+		t.Fatalf("search did not self-heal the corrupt share index from the corpus:\n%s", out)
+	}
+}
+
+// Shared ids that search returns must be resolvable to full text via `mora
+// read` and MCP read_memory — snippets are truncated at 240 runes and there was
+// no expansion path (review finding). delete stays vault-only.
+func TestReadResolvesSharedMemoryButDeleteDoesNot(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	longText := "neil standardized on sqlite too " + strings.Repeat("padding words here ", 30)
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", longText),
+	})
+	out := run(t, "read", "mem_20260601_000000_aaaaaaaa", "--json")
+	if !strings.Contains(out, `"owner": "neil"`) || !strings.Contains(out, "padding words here") {
+		t.Fatalf("read did not resolve the shared memory with full text + owner:\n%s", out)
+	}
+	got, err := callMCPTool(context.Background(), "read_memory", map[string]any{"id": "mem_20260601_000000_aaaaaaaa"})
+	if err != nil {
+		t.Fatalf("MCP read_memory on shared id: %v", err)
+	}
+	b, _ := json.Marshal(got)
+	if !strings.Contains(string(b), `"owner":"neil"`) {
+		t.Fatalf("MCP read_memory missing owner:\n%s", b)
+	}
+	var buf bytes.Buffer
+	err = Run(context.Background(), []string{"delete", "mem_20260601_000000_aaaaaaaa", "--yes"}, &buf, &buf, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("delete reached a shared memory; shares are read-only")
+	}
+}
+
+// A corrupt shares.json must fail search with an ACTIONABLE error (naming the
+// file) and flip a critical doctor check — not a bare JSON parse message with
+// doctor reporting healthy (review finding, live-repro).
+func TestCorruptSharesRegistryIsActionable(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local note", "content")
+	if err := os.WriteFile(sharesPath(cfg), []byte("{ bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err := Run(context.Background(), []string{"search", "content"}, &buf, &buf, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "shares.json") {
+		t.Fatalf("corrupt registry error not actionable: %v", err)
+	}
+	var rep struct {
+		Healthy bool `json:"healthy"`
+		Checks  []struct {
+			Name string `json:"name"`
+			OK   bool   `json:"ok"`
+		} `json:"checks"`
+	}
+	out := run(t, "doctor", "--json")
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range rep.Checks {
+		if c.Name == "shares_registry_readable" {
+			found = true
+			if c.OK {
+				t.Fatal("shares_registry_readable ok despite corrupt file")
+			}
+		}
+	}
+	if !found || rep.Healthy {
+		t.Fatalf("doctor healthy=%v, check found=%v; want unhealthy + check present", rep.Healthy, found)
+	}
+}
+
+// When only shared corpora match, the local-only gap analysis must say so
+// instead of asserting "No memory matched this query" beside shared evidence
+// (review finding).
+func TestThinkGapWordingWithOnlySharedEvidence(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Acme widgets", "acme ships widgets in q3"),
+	})
+	res, err := buildThink(context.Background(), cfg, "acme widgets", "", 8, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Evidence) == 0 {
+		t.Fatal("expected shared evidence")
+	}
+	joined := strings.Join(res.Gaps.CoverageHoles, " | ")
+	if strings.Contains(joined, "No memory matched this query.") {
+		t.Fatalf("gap contradicts shared evidence: %q", joined)
+	}
+	if !strings.Contains(joined, "your own vault") {
+		t.Fatalf("gap does not clarify the vault-vs-shared distinction: %q", joined)
+	}
+}
+
+// `mora share keygen --help` must print usage, not mint an identity (review
+// finding, live-repro: it wrote identity.txt and exited 0).
+func TestShareKeygenHelpHasNoSideEffects(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	out := run(t, "share", "keygen", "--help")
+	if !strings.Contains(strings.ToLower(out), "usage: mora share") {
+		t.Fatalf("keygen --help did not print usage:\n%s", out)
+	}
+	if _, err := os.Stat(shareIdentityPath(cfg)); !os.IsNotExist(err) {
+		t.Fatal("keygen --help minted an identity")
+	}
+	var buf bytes.Buffer
+	if err := Run(context.Background(), []string{"share", "keygen", "stray"}, &buf, &buf, strings.NewReader("")); err == nil {
+		t.Fatal("keygen with stray args accepted")
+	}
+}

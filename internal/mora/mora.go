@@ -928,6 +928,11 @@ func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	m, err := findMemory(cfg, fs.Arg(0))
 	if err != nil {
+		// Read-only fallback: ids from subscribed share corpora are searchable,
+		// so they must be readable too. Delete paths never take this fallback.
+		if sm, ok := findSharedMemory(cfg, fs.Arg(0)); ok {
+			return emit(stdout, sm, *jsonOut)
+		}
 		return err
 	}
 	return emit(stdout, m, *jsonOut)
@@ -1649,7 +1654,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// index is missing, or tokens are colocated with the vault (a data-egress
 	// hazard). token_dir/sources_config are advisory (a freshly seeded vault has
 	// neither tokens nor configured connectors yet, and that is fine).
-	shares, _ := loadShares(cfg) // advisory: an unreadable registry reads as no shares
+	shares, sharesErr := loadShares(cfg)
 
 	checks := []doctorCheck{
 		{Name: "vault", OK: vErr == nil, Critical: true},
@@ -1661,6 +1666,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		// there means something is wrong with the export path or the user
 		// hand-placed files where `git add -A` will publish them.
 		{Name: "share_staging_clean", OK: shareStagingClean(cfg, shares.Publishes), Critical: false},
+		// Critical because a corrupt registry fails EVERY search/think once it
+		// exists — doctor must not report healthy while recall is down.
+		{Name: "shares_registry_readable", OK: sharesErr == nil, Critical: true},
 	}
 	healthy := true
 	for _, c := range checks {
@@ -5037,7 +5045,17 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		}
 		return m, nil
 	case "read_memory":
-		return findMemory(cfg, strArg(args, "id", ""))
+		m, err := findMemory(cfg, strArg(args, "id", ""))
+		if err != nil {
+			// Same read-only shared-corpus fallback as `mora read`: search
+			// returns shared ids with 240-rune snippets, so read_memory is the
+			// documented expansion path for them too.
+			if sm, ok := findSharedMemory(cfg, strArg(args, "id", "")); ok {
+				return sm, nil
+			}
+			return nil, err
+		}
+		return m, nil
 	case "search_memory":
 		start := time.Now()
 		query := strArg(args, "query", "")

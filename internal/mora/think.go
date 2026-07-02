@@ -97,6 +97,16 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	if err != nil {
 		return res, err
 	}
+	// The gap analysis ran on LOCAL results only; when shared corpora supplied
+	// evidence the vault did not, the bare coverage-hole wording would
+	// contradict the evidence right above it. Say precisely what is missing.
+	if len(local) == 0 && len(mems) > 0 {
+		for i, hole := range gaps.CoverageHoles {
+			if hole == "No memory matched this query." {
+				gaps.CoverageHoles[i] = "No memory in your own vault matched this query — the evidence comes entirely from shared corpora."
+			}
+		}
+	}
 	res.Gaps = gaps
 	// C1: additively surface unfinished tasks tied to the people named in the
 	// query ("what's still open with Sam"). Never partitions the evidence.
