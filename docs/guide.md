@@ -20,6 +20,8 @@ live in [`docs/architecture/`](architecture/00-overview.md).
 - [Browse the vault in Obsidian](#browse-the-vault-in-obsidian)
 - [Day to day](#day-to-day)
 - [Keep Mora up to date](#keep-mora-up-to-date)
+- [Back up the vault off-device (opt-in)](#back-up-the-vault-off-device-opt-in)
+- [Share memories with someone (opt-in, encrypted)](#share-memories-with-someone-opt-in-encrypted)
 - [How it works](#how-it-works)
 - [Why not just use a cloud connector?](#why-not-just-use-a-cloud-connector)
 - [Notes](#notes)
@@ -459,6 +461,64 @@ repo. Mora shells out to your system `git` (and `gh` for `--github`), so your ex
 SSH keys, credential helper, or `gh auth` just work. For ciphertext at rest on the
 remote, layer [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/)
 over any remote; the flow is unchanged.
+
+## Share memories with someone (opt-in, encrypted)
+
+`mora share` publishes **one scope of memories you wrote** (`mora write` / MCP
+`write_memory`) to a **private git remote you control**, encrypted to each
+recipient with [age](https://age-encryption.org). The person you invite
+subscribes and gets your notes as a **read-only, separately-indexed corpus**:
+their `mora search` and `mora think` include your memories, clearly attributed,
+but nothing is ever merged into their own vault or people graph. Connector
+evidence (Gmail threads, iMessages, calendar events) is never shared — capture
+the decision as an authored note and share that.
+
+Receiving side first — generate a key and send the **public** half to the
+publisher over any channel you trust (only the public key travels; there is no
+key server):
+
+```bash
+mora share keygen        # prints your age public key; the secret stays in ~/.config/mora/share/
+```
+
+Publishing side:
+
+```bash
+# One-time: create the share — a dedicated PRIVATE repo, separate from any vault backup
+mora share init acme --scope project:acme \
+  --recipient age1... \
+  --remote git@github.com:you/acme-share.git   # or --github to create a private repo via gh
+
+mora share preview acme   # the exact files and content that would leave, in full
+mora share push acme      # preview + confirm, encrypt, commit, push (never --force)
+```
+
+Receiving side:
+
+```bash
+mora share subscribe neil --remote git@github.com:them/acme-share.git
+mora share pull                # fetch what they've published since (--ff-only)
+mora search "launch"           # shared hits appear as "[neil] …"; --json/MCP results carry "owner"
+mora share remove neil --yes   # unsubscribe: deletes the local corpus; your vault was never touched
+```
+
+What the design guarantees, and what it honestly cannot:
+
+- **Encryption is mandatory.** `push` refuses to run without at least one
+  recipient key, and only `*.md.age` ciphertext ever enters the repo. `mora
+  doctor` checks that staging stays plaintext-free and discloses every
+  configured share. Keep the remote private anyway — it's your data.
+- **A preview before every push.** Nothing leaves without being listed first;
+  `mora share preview` shows the full content.
+- **Reading someone never rewrites you.** A subscription lives beside the vault
+  (under Mora's data dir) with its own index. It is invisible to your backups,
+  your vault git-sync, your entity graph, and `delete_memory`. `think`'s gap
+  analysis still reports what *your* vault does not know.
+- **Revocation is honest, not magic.** `mora share remove` stops future pushes,
+  but git history is durable and subscribers keep what they already pulled. To
+  cut future access, rotate to a new repo and new recipient keys.
+- Mora shells out to your system `git`, so existing SSH keys, credential
+  helpers, or `gh auth` just work — same as the vault backup.
 
 ## How it works
 
