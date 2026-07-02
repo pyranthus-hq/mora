@@ -23,6 +23,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -770,6 +771,355 @@ func sharePreview(cfg Config, args []string, stdout io.Writer) error {
 	return nil
 }
 
+// ---------- subscriber side ----------
+
+// shareMaxMemoryBytes caps one decrypted memory. Authored notes are small;
+// anything larger in a share repo is malformed or hostile (decompression-bomb
+// class), and the whole import stops loudly rather than filling the disk.
+const shareMaxMemoryBytes = 4 << 20
+
+type shareImportStats struct {
+	Imported int    // files newly written or changed this import
+	Removed  int    // corpus files pruned because the repo no longer has them
+	Total    int    // corpus size after import
+	Owner    string // informational label from the manifest
+	Scope    string
+}
+
+func readShareManifest(repoDir string) (shareManifest, error) {
+	var man shareManifest
+	b, err := os.ReadFile(filepath.Join(repoDir, "share.json"))
+	if err != nil {
+		return man, fmt.Errorf("share repo has no readable share.json manifest: %w", err)
+	}
+	if err := json.Unmarshal(b, &man); err != nil {
+		return man, fmt.Errorf("share.json: %w", err)
+	}
+	if man.Schema != shareManifestSchema {
+		return man, fmt.Errorf("share.json declares schema %d; this mora supports %d — upgrade mora", man.Schema, shareManifestSchema)
+	}
+	if !validShareScope(man.Scope) {
+		return man, fmt.Errorf("share.json declares invalid scope %q", man.Scope)
+	}
+	return man, nil
+}
+
+// shareImport decrypts the cloned share repo into the subscription's corpus
+// and rebuilds its dedicated index. Everything it writes stays under the share
+// root; the subscriber's vault, personal index, and graph are never touched.
+// Repo content is treated as untrusted input even though the publisher is a
+// chosen counterparty: names, ids, scopes, and sizes are all validated, and a
+// violation aborts the import loudly.
+func shareImport(ctx context.Context, cfg Config, sub shareSubscription) (shareImportStats, error) {
+	var stats shareImportStats
+	identities, err := loadShareIdentities(cfg)
+	if err != nil {
+		return stats, err
+	}
+	repo := shareRepoDir(cfg, sub.Name)
+	man, err := readShareManifest(repo)
+	if err != nil {
+		return stats, err
+	}
+	stats.Owner, stats.Scope = man.Owner, man.Scope
+
+	corpus := shareCorpusDir(cfg, sub.Name)
+	if err := os.MkdirAll(corpus, 0o700); err != nil {
+		return stats, err
+	}
+	entries, err := os.ReadDir(filepath.Join(repo, "memories"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return stats, err
+	}
+	seen := map[string]bool{}
+	var mems []Memory
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			return stats, fmt.Errorf("share repo entry memories/%s is not a regular file — refusing to import", e.Name())
+		}
+		if !strings.HasSuffix(e.Name(), ".md.age") {
+			continue
+		}
+		stem := strings.TrimSuffix(e.Name(), ".md.age")
+		if !shareExportIDRE.MatchString(stem) {
+			return stats, fmt.Errorf("share repo file memories/%s has an unsafe name — refusing to import", e.Name())
+		}
+		ct, err := os.ReadFile(filepath.Join(repo, "memories", e.Name()))
+		if err != nil {
+			return stats, err
+		}
+		r, err := age.Decrypt(bytes.NewReader(ct), identities...)
+		if err != nil {
+			return stats, fmt.Errorf("decrypting %s: %w (is your public key among this share's recipients?)", e.Name(), err)
+		}
+		plain, err := io.ReadAll(io.LimitReader(r, shareMaxMemoryBytes+1))
+		if err != nil {
+			return stats, err
+		}
+		if len(plain) > shareMaxMemoryBytes {
+			return stats, fmt.Errorf("memories/%s exceeds the %d-byte per-memory cap — refusing to import", e.Name(), shareMaxMemoryBytes)
+		}
+		dst := filepath.Join(corpus, stem+".md")
+		prev, prevErr := os.ReadFile(dst)
+		changed := prevErr != nil || !bytes.Equal(prev, plain)
+		if changed {
+			if err := atomicWrite(dst, plain, 0o644); err != nil {
+				return stats, err
+			}
+		}
+		m, perr := parseMemory(dst)
+		if perr != nil {
+			_ = os.Remove(dst)
+			return stats, fmt.Errorf("memories/%s does not parse as a memory: %v", e.Name(), perr)
+		}
+		if m.ID != stem {
+			_ = os.Remove(dst)
+			return stats, fmt.Errorf("memories/%s: frontmatter id %q does not match the file name — refusing spoofed ids", e.Name(), m.ID)
+		}
+		if m.Scope != man.Scope {
+			_ = os.Remove(dst)
+			return stats, fmt.Errorf("memories/%s: scope %q differs from the manifest scope %q", e.Name(), m.Scope, man.Scope)
+		}
+		if m.DeletedAt != "" {
+			_ = os.Remove(dst)
+			continue
+		}
+		seen[stem] = true
+		if changed {
+			stats.Imported++
+		}
+		mems = append(mems, m)
+	}
+	// Removal propagates: corpus files whose ciphertext left the repo are pruned.
+	corpusEntries, err := os.ReadDir(corpus)
+	if err != nil {
+		return stats, err
+	}
+	for _, e := range corpusEntries {
+		stem := strings.TrimSuffix(e.Name(), ".md")
+		if stem == e.Name() {
+			continue
+		}
+		if !seen[stem] {
+			if err := os.Remove(filepath.Join(corpus, e.Name())); err != nil {
+				return stats, err
+			}
+			stats.Removed++
+		}
+	}
+	stats.Total = len(mems)
+	if err := rebuildShareIndex(ctx, shareIndexPath(cfg, sub.Name), mems); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+// rebuildShareIndex materializes one subscription's searchable index: the same
+// memories/memories_fts shape (and user_version stamp) as the personal index so
+// the query layer works unchanged, but nothing else — no vectors, no graph, no
+// entities. FTS-only is the v1 contract for shared corpora.
+func rebuildShareIndex(ctx context.Context, indexPath string, mems []Memory) error {
+	db, err := sql.Open("sqlite", indexPath+"?_txlock=immediate&_pragma=busy_timeout(15000)")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text)`,
+		`DELETE FROM memories`,
+		`DELETE FROM memories_fts`,
+		fmt.Sprintf(`PRAGMA user_version = %d`, indexSchemaVersion),
+	} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	for _, m := range mems {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Scope, m.Type, m.Title, strings.Join(m.Tags, ","), m.Source, m.CreatedAt, m.Path, m.Text); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memories_fts VALUES (?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Scope, m.Title, strings.Join(m.Tags, ","), m.Source, m.Text); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// openShareIndexRO opens one subscription's index for querying — never through
+// openIndexRO, whose auto-heal would rebuild it from the WRONG (personal)
+// vault. query_only is enforced via pragma because modernc's mode=ro is not
+// binding on non-file: DSNs; the schema stamp is checked explicitly and the
+// actionable fix is a share pull, not a personal index rebuild.
+func openShareIndexRO(ctx context.Context, path string) (*sql.DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", path+"?mode=ro&_pragma=busy_timeout(15000)&_pragma=query_only(1)")
+	if err != nil {
+		return nil, err
+	}
+	var v int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if v != indexSchemaVersion {
+		_ = db.Close()
+		return nil, fmt.Errorf("share index %s has schema %d (this mora expects %d) — run `mora share pull` to rebuild it", path, v, indexSchemaVersion)
+	}
+	return db, nil
+}
+
+const shareSubscribeUsage = "usage: mora share subscribe <name> --remote <URL>"
+
+// shareSubscribe clones a share repo into the share root, decrypts it, and
+// registers the subscription. The name chosen here is the attribution label on
+// every unioned search/think result. Read-only by construction: subscribing
+// never writes inside the vault.
+func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Writer, run execFunc) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return errors.New(shareSubscribeUsage)
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("share subscribe", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	remote := fs.String("remote", "", "git remote URL of the share to subscribe to")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return errors.New(shareSubscribeUsage)
+	}
+	if !validShareName(name) {
+		return fmt.Errorf("invalid subscription name %q (lowercase letters, digits, . _ -; max 64 chars)", name)
+	}
+	if *remote == "" {
+		return errors.New(shareSubscribeUsage)
+	}
+	// Fail fast, before any network: without a decryption identity the clone
+	// would only produce unreadable ciphertext.
+	if _, err := loadShareIdentities(cfg); err != nil {
+		return err
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return err
+	}
+	for _, s := range sf.Subscriptions {
+		if s.Name == name {
+			return fmt.Errorf("subscription %q already exists — `mora share pull %s` updates it", name, name)
+		}
+	}
+	for _, p := range sf.Publishes {
+		if p.Name == name {
+			return fmt.Errorf("%q already names a share you publish — share and subscription names share one namespace", name)
+		}
+	}
+
+	repo := shareRepoDir(cfg, name)
+	isRepo, repoErr := vaultRepoState(filepath.Join(repo, ".git"))
+	if repoErr != nil {
+		return repoErr
+	}
+	if !isRepo {
+		if _, err := run(ctx, "", "git", "--version"); err != nil {
+			return fmt.Errorf("git is required for sharing but was not found: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(repo), 0o700); err != nil {
+			return err
+		}
+		if _, err := run(ctx, "", "git", "clone", *remote, repo); err != nil {
+			return fmt.Errorf("git clone: %w", err)
+		}
+	}
+	sub := shareSubscription{Name: name, Remote: *remote, CreatedAt: time.Now().Format(time.RFC3339)}
+	stats, err := shareImport(ctx, cfg, sub)
+	if err != nil {
+		return err
+	}
+	sf.Subscriptions = append(sf.Subscriptions, sub)
+	if err := saveShares(cfg, sf); err != nil {
+		return err
+	}
+	owner := stats.Owner
+	if owner == "" {
+		owner = "(unnamed publisher)"
+	}
+	fmt.Fprintf(stdout, "subscribed to share %q — %d memories from %s (scope %s), read-only beside your vault.\n", name, stats.Total, owner, stats.Scope)
+	fmt.Fprintf(stdout, "shared results appear in search/think attributed as [%s]; your own vault and graph are never modified.\n", name)
+	return nil
+}
+
+// sharePull fetches and re-imports one or all subscriptions. --ff-only is the
+// contract: a publisher history rewrite (share rotation) fails loudly with a
+// re-subscribe pointer instead of silently merging.
+func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer, run execFunc) error {
+	name := ""
+	if len(args) > 0 {
+		if strings.HasPrefix(args[0], "-") || len(args) > 1 {
+			return errors.New("usage: mora share pull [<name>]")
+		}
+		name = args[0]
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return err
+	}
+	var subs []shareSubscription
+	if name != "" {
+		for _, s := range sf.Subscriptions {
+			if s.Name == name {
+				subs = append(subs, s)
+			}
+		}
+		if len(subs) == 0 {
+			return fmt.Errorf("no subscription named %q — see `mora share list`", name)
+		}
+	} else {
+		subs = sf.Subscriptions
+		if len(subs) == 0 {
+			return errors.New("no subscriptions — run `mora share subscribe <name> --remote <URL>` first")
+		}
+	}
+	if _, err := run(ctx, "", "git", "--version"); err != nil {
+		return fmt.Errorf("git is required for sharing but was not found: %w", err)
+	}
+	for _, sub := range subs {
+		repo := shareRepoDir(cfg, sub.Name)
+		isRepo, repoErr := vaultRepoState(filepath.Join(repo, ".git"))
+		if repoErr != nil {
+			return repoErr
+		}
+		if !isRepo {
+			return fmt.Errorf("subscription %q has no local clone — remove and re-subscribe", sub.Name)
+		}
+		origin, err := run(ctx, repo, "git", "remote", "get-url", "origin")
+		if err != nil {
+			return fmt.Errorf("subscription %q has no usable origin remote: %w", sub.Name, err)
+		}
+		if sub.Remote != "" && strings.TrimSpace(origin) != sub.Remote {
+			return fmt.Errorf("subscription %q: clone origin (%s) does not match the registered remote (%s) — refusing to pull", sub.Name, redactCredentials(strings.TrimSpace(origin)), redactCredentials(sub.Remote))
+		}
+		if _, err := run(ctx, repo, "git", "pull", "--ff-only", "origin"); err != nil {
+			return fmt.Errorf("git pull --ff-only failed for share %q — if the publisher rotated the share (history rewrite), remove and re-subscribe: %w", sub.Name, err)
+		}
+		stats, err := shareImport(ctx, cfg, sub)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "share %q: %d new/updated, %d removed, %d total.\n", sub.Name, stats.Imported, stats.Removed, stats.Total)
+	}
+	return nil
+}
+
 const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -796,6 +1146,10 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 		return sharePreview(cfg, args[1:], stdout)
 	case "push":
 		return sharePush(ctx, cfg, args[1:], stdout, stdin, realExec)
+	case "subscribe":
+		return shareSubscribe(ctx, cfg, args[1:], stdout, realExec)
+	case "pull":
+		return sharePull(ctx, cfg, args[1:], stdout, realExec)
 	default:
 		return errors.New(shareUsage)
 	}

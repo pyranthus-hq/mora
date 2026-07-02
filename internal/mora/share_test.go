@@ -3,7 +3,12 @@ package mora
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -722,5 +727,289 @@ func TestSharePreviewShowsExactContentWithoutGit(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, want) || !strings.Contains(out, "the exact body that will leave") {
 		t.Fatalf("preview missing id or full content:\n%s", out)
+	}
+}
+
+// writeTestIdentity installs a subscriber age identity without going through
+// keygen's stdout parsing.
+func writeTestIdentity(t *testing.T, cfg Config) *age.X25519Identity {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(shareIdentityPath(cfg)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shareIdentityPath(cfg), []byte(id.String()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// buildShareRepoFixture materializes what a publisher's push produces: the
+// manifest plus age-encrypted memories, at the given repo dir. withGit adds a
+// plain .git dir so subscribe/pull treat it as an existing clone.
+func buildShareRepoFixture(t *testing.T, dir string, rec age.Recipient, mems []Memory, withGit bool) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "memories"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if withGit {
+		if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	man := shareManifest{Schema: shareManifestSchema, Name: "acme", Scope: "project:acme",
+		Owner: "Adit", CreatedAt: "2026-07-01T00:00:00Z", Client: "mora test"}
+	mb, err := json.MarshalIndent(man, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "share.json"), append(mb, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range mems {
+		body, err := renderMemory(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ct, err := encryptShareBytes([]age.Recipient{rec}, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "memories", m.ID+".md.age"), ct, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func fixtureMemory(id, title, text string) Memory {
+	return Memory{ID: id, Scope: "project:acme", Type: "insight", Title: title,
+		Source: "manual", CreatedAt: "2026-06-30T10:00:00Z", Text: text}
+}
+
+// treeDigest hashes every file under root (path + content), for before/after
+// no-mutation assertions.
+func treeDigest(t *testing.T, root string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(path string, d iofs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(b)
+		fmt.Fprintf(h, "%s:%x\n", path, sum)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func TestShareImportDecryptsIndexesAndNeverTouchesVault(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "My own note", "local content")
+	id := writeTestIdentity(t, cfg)
+
+	sub := shareSubscription{Name: "neil", Remote: "git@example.test:me/vault.git", CreatedAt: "2026-07-01T00:00:00Z"}
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
+		[]Memory{
+			fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared decision", "we standardized on age"),
+			fixtureMemory("mem_20260601_000001_bbbbbbbb", "Shared deadline", "beta ships in july"),
+		}, true)
+
+	vaultBefore := treeDigest(t, cfg.VaultDir)
+	indexBefore := treeDigest(t, cfg.DataDir+"/index.db")
+
+	stats, err := shareImport(context.Background(), cfg, sub)
+	if err != nil {
+		t.Fatalf("shareImport: %v", err)
+	}
+	if stats.Imported != 2 || stats.Total != 2 || stats.Owner != "Adit" {
+		t.Fatalf("stats = %+v; want 2 imported, owner Adit", stats)
+	}
+
+	// Corpus decrypted next to the clone, indexed in the share's own index.
+	if _, err := os.Stat(filepath.Join(shareCorpusDir(cfg, "neil"), "mem_20260601_000000_aaaaaaaa.md")); err != nil {
+		t.Fatalf("corpus file missing: %v", err)
+	}
+	db, err := openShareIndexRO(context.Background(), shareIndexPath(cfg, "neil"))
+	if err != nil {
+		t.Fatalf("openShareIndexRO: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM memories`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("share index rows = %d, %v; want 2", n, err)
+	}
+
+	// The subscriber's own vault and personal index are byte-identical (AC5).
+	if got := treeDigest(t, cfg.VaultDir); got != vaultBefore {
+		t.Fatal("import mutated the subscriber's vault")
+	}
+	if got := treeDigest(t, cfg.DataDir+"/index.db"); got != indexBefore {
+		t.Fatal("import mutated the subscriber's personal index")
+	}
+}
+
+func TestShareImportRefusesIDSpoof(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
+
+	spoof := fixtureMemory("mem_20260601_000000_cccccccc", "Spoof", "content")
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(), nil, true)
+	body, err := renderMemory(spoof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, err := encryptShareBytes([]age.Recipient{id.Recipient()}, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Filename claims one id; the decrypted frontmatter claims another.
+	if err := os.WriteFile(filepath.Join(shareRepoDir(cfg, "neil"), "memories", "mem_20260601_000000_dddddddd.md.age"), ct, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shareImport(context.Background(), cfg, sub); err == nil || !strings.Contains(err.Error(), "id") {
+		t.Fatalf("id-spoofed import = %v; want refusal", err)
+	}
+}
+
+func TestShareImportPrunesRemovedMemories(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
+
+	m1 := fixtureMemory("mem_20260601_000000_aaaaaaaa", "Keep", "kept")
+	m2 := fixtureMemory("mem_20260601_000001_bbbbbbbb", "Drop", "dropped")
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(), []Memory{m1, m2}, true)
+	if _, err := shareImport(context.Background(), cfg, sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(shareRepoDir(cfg, "neil"), "memories", m2.ID+".md.age")); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := shareImport(context.Background(), cfg, sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Removed != 1 || stats.Total != 1 {
+		t.Fatalf("stats after removal = %+v; want 1 removed, 1 total", stats)
+	}
+	if _, err := os.Stat(filepath.Join(shareCorpusDir(cfg, "neil"), m2.ID+".md")); !os.IsNotExist(err) {
+		t.Fatal("removed memory still in corpus — removal must propagate")
+	}
+	db, err := openShareIndexRO(context.Background(), shareIndexPath(cfg, "neil"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM memories`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("share index rows = %d, %v; want 1", n, err)
+	}
+}
+
+func TestShareSubscribeRequiresIdentity(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	var buf bytes.Buffer
+	err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run)
+	if err == nil || !strings.Contains(err.Error(), "keygen") {
+		t.Fatalf("subscribe without identity = %v; want keygen pointer", err)
+	}
+	if fx.sawSubcommand("git", "clone") {
+		t.Fatal("clone ran without a decryption identity")
+	}
+}
+
+func TestShareSubscribeImportsExistingCloneAndSaves(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
+		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	var buf bytes.Buffer
+	if err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run); err != nil {
+		t.Fatalf("shareSubscribe: %v\n%s", err, buf.String())
+	}
+	if fx.sawSubcommand("git", "clone") {
+		t.Fatal("re-cloned over an existing repo")
+	}
+	sf, err := loadShares(cfg)
+	if err != nil || len(sf.Subscriptions) != 1 || sf.Subscriptions[0].Name != "neil" {
+		t.Fatalf("subscription not saved: %+v %v", sf, err)
+	}
+	if !strings.Contains(buf.String(), "Adit") || !strings.Contains(buf.String(), "1") {
+		t.Fatalf("subscribe output missing owner/count:\n%s", buf.String())
+	}
+}
+
+func TestShareSubscribeClonesWhenMissing(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeTestIdentity(t, cfg)
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	var buf bytes.Buffer
+	err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run)
+	// The fake clone materializes nothing, so import fails on the manifest —
+	// but the clone itself must have been attempted with the right args.
+	if err == nil {
+		t.Fatal("subscribe succeeded despite empty clone; want manifest error")
+	}
+	if !fx.sawSubcommand("git", "clone", "git@example.test:me/vault.git", shareRepoDir(cfg, "neil")) {
+		t.Fatalf("clone not attempted with remote+dir; calls: %v", fx.calls)
+	}
+}
+
+func TestSharePullFFOnlyAndReimports(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
+		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
+	sf, err := loadShares(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf.Subscriptions = append(sf.Subscriptions, shareSubscription{Name: "neil", Remote: "git@example.test:me/vault.git", CreatedAt: "2026-07-01T00:00:00Z"})
+	if err := saveShares(cfg, sf); err != nil {
+		t.Fatal(err)
+	}
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := sharePull(context.Background(), cfg, nil, &buf, fx.run); err != nil {
+		t.Fatalf("sharePull: %v\n%s", err, buf.String())
+	}
+	if !fx.sawSubcommand("git", "pull", "--ff-only", "origin") {
+		t.Fatalf("pull not --ff-only; calls: %v", fx.calls)
+	}
+	if _, err := os.Stat(filepath.Join(shareCorpusDir(cfg, "neil"), "mem_20260601_000000_aaaaaaaa.md")); err != nil {
+		t.Fatalf("pull did not import: %v", err)
 	}
 }
