@@ -317,3 +317,91 @@ func TestShareRefusesWhenShareRootInsideVault(t *testing.T) {
 		t.Fatalf("share with data_dir inside vault = %v; want refusal naming the vault", err)
 	}
 }
+
+func testRecipient(t *testing.T) string {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Recipient().String()
+}
+
+func TestShareInitCreatesStagingManifestAndRegistry(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	var buf bytes.Buffer
+
+	rec := testRecipient(t)
+	err := shareInit(context.Background(), cfg,
+		[]string{"acme", "--scope", "project:acme", "--recipient", rec, "--remote", "git@example.test:me/vault.git"},
+		&buf, fx.run)
+	if err != nil {
+		t.Fatalf("shareInit: %v", err)
+	}
+
+	staging := shareStagingDir(cfg, "acme")
+	if !fx.sawSubcommand("git", "init") {
+		t.Fatal("git init not run in staging dir")
+	}
+	if !fx.sawSubcommand("git", "remote", "add", "origin", "git@example.test:me/vault.git") {
+		t.Fatalf("remote not wired; calls: %v", fx.calls)
+	}
+	gi, err := os.ReadFile(filepath.Join(staging, ".gitignore"))
+	if err != nil || !strings.Contains(string(gi), "*.md") || !strings.Contains(string(gi), "identity") {
+		t.Fatalf("staging .gitignore missing plaintext/identity defense: %v\n%s", err, gi)
+	}
+	mb, err := os.ReadFile(filepath.Join(staging, "share.json"))
+	if err != nil || !strings.Contains(string(mb), `"project:acme"`) {
+		t.Fatalf("manifest missing/wrong: %v\n%s", err, mb)
+	}
+	sf, err := loadShares(cfg)
+	if err != nil || len(sf.Publishes) != 1 || sf.Publishes[0].Name != "acme" ||
+		len(sf.Publishes[0].Recipients) != 1 || sf.Publishes[0].Recipients[0] != rec {
+		t.Fatalf("registry entry wrong: %+v err=%v", sf, err)
+	}
+	low := strings.ToLower(buf.String())
+	if !strings.Contains(low, "private") || !strings.Contains(low, "cannot recall") {
+		t.Fatalf("init output missing PRIVATE-remote + honest-revocation disclosure:\n%s", buf.String())
+	}
+}
+
+func TestShareInitValidation(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	rec := testRecipient(t)
+	cases := [][]string{
+		{"Acme", "--scope", "project:acme", "--recipient", rec, "--remote", "u"},             // bad name
+		{"acme", "--scope", "project:../x", "--recipient", rec, "--remote", "u"},             // bad scope
+		{"acme", "--scope", "project:acme", "--remote", "u"},                                 // no recipient
+		{"acme", "--scope", "project:acme", "--recipient", "junk", "--remote", "u"},          // bad recipient
+		{"acme", "--scope", "project:acme", "--recipient", rec, "--remote", "u", "--github"}, // both destinations
+		{"acme", "--scope", "project:acme", "--recipient", rec},                              // no destination
+	}
+	for _, args := range cases {
+		fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+		var buf bytes.Buffer
+		if err := shareInit(context.Background(), cfg, args, &buf, fx.run); err == nil {
+			t.Errorf("shareInit(%v) accepted; want error", args)
+		}
+	}
+}
+
+func TestShareInitRefusesDuplicateName(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	rec := testRecipient(t)
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	var buf bytes.Buffer
+	args := []string{"acme", "--scope", "project:acme", "--recipient", rec, "--remote", "git@example.test:me/vault.git"}
+	if err := shareInit(context.Background(), cfg, args, &buf, fx.run); err != nil {
+		t.Fatal(err)
+	}
+	if err := shareInit(context.Background(), cfg, args, &buf, fx.run); err == nil || !strings.Contains(err.Error(), "already") {
+		t.Fatalf("duplicate init = %v; want already-exists refusal", err)
+	}
+}

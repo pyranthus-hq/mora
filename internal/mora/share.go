@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -232,6 +233,166 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 	return out, nil
 }
 
+// shareManifest is the small plaintext descriptor at the root of every share
+// repo. It carries no memory content — only enough for a subscriber to see
+// what they cloned. The subscriber's OWN subscription name, not this file, is
+// the attribution label (publisher-controlled metadata is never a trust label).
+type shareManifest struct {
+	Schema    int    `json:"schema"`
+	Name      string `json:"name"`
+	Scope     string `json:"scope"`
+	Owner     string `json:"owner,omitempty"`
+	CreatedAt string `json:"created_at"`
+	Client    string `json:"client"`
+}
+
+const shareManifestSchema = 1
+
+// shareGitignoreBody inverts the vault list: in a share repo the SENSITIVE
+// thing is plaintext markdown — only *.md.age ciphertext and the manifest
+// belong here. Identity/keys and index files are excluded defensively too.
+const shareGitignoreBody = `# Mora share staging (managed by ` + "`mora share`" + `)
+# Only age-encrypted memories (*.md.age) and share.json belong in this repo.
+*.md
+index.db
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+tokens/
+*.token
+identity*
+`
+
+// shareInitDisclosure prints once per init. Honesty requirements from #51:
+// remote must be private, and revocation cannot recall already-pulled content.
+const shareInitDisclosure = `
+  ⚠ This share publishes age-ENCRYPTED memories to a git remote on every push.
+    Only the recipients' keys can decrypt them, but the remote must still be a
+    PRIVATE repository you control — Mora runs no server.
+    Revocation is honest, not magic: git history is durable, so removing a share
+    stops future pushes but cannot recall what a subscriber already pulled.
+    Every push shows a preview of exactly what leaves this machine.`
+
+// multiFlag collects a repeatable string flag (e.g. --recipient given N times).
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
+
+const shareInitUsage = "usage: mora share init <name> --scope <scope> --recipient <age1...> [--recipient ...] (--remote <URL> | --github [--repo <name>]) [--owner <label>]"
+
+// shareInit creates the named publish grant: a dedicated staging git repo
+// (separate from the personal vault-backup repo), its manifest and defensive
+// .gitignore, the origin remote, and the registry entry in shares.json.
+func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer, run execFunc) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return errors.New(shareInitUsage)
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("share init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	scope := fs.String("scope", "", "scope to share")
+	var recipients multiFlag
+	fs.Var(&recipients, "recipient", "age X25519 public key (repeatable)")
+	remote := fs.String("remote", "", "private git remote URL for this share")
+	github := fs.Bool("github", false, "create a PRIVATE GitHub repo via gh and wire it as origin")
+	repoName := fs.String("repo", "", "repo name to create with --github (default mora-share-<name>)")
+	owner := fs.String("owner", "", "informational publisher label written to the manifest")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	// Same flag discipline as sync git: this command configures a plaintext-
+	// adjacent egress destination, so unusable combinations fail loudly.
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q — %s", fs.Arg(0), shareInitUsage)
+	}
+	if !validShareName(name) {
+		return fmt.Errorf("invalid share name %q (lowercase letters, digits, . _ -; max 64 chars)", name)
+	}
+	if !validShareScope(*scope) {
+		return fmt.Errorf("invalid share scope %q — share accepts personal, global, or project:<name>", *scope)
+	}
+	if _, err := parseShareRecipients(recipients); err != nil {
+		return err
+	}
+	if *github && *remote != "" {
+		return errors.New("--github and --remote are mutually exclusive — pick one destination")
+	}
+	if !*github && *remote == "" {
+		return errors.New("no destination: pass --remote <URL> for a git-generic remote, or --github to create a private GitHub repo")
+	}
+	if *repoName != "" && !*github {
+		return errors.New("--repo only applies with --github")
+	}
+	if *repoName == "" {
+		*repoName = "mora-share-" + name
+	}
+
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return err
+	}
+	for _, p := range sf.Publishes {
+		if p.Name == name {
+			return fmt.Errorf("share %q already exists — remove it first with `mora share remove %s --yes`", name, name)
+		}
+	}
+	for _, s := range sf.Subscriptions {
+		if s.Name == name {
+			return fmt.Errorf("%q already names a subscription — share and subscription names share one namespace", name)
+		}
+	}
+
+	if _, err := run(ctx, "", "git", "--version"); err != nil {
+		return fmt.Errorf("git is required for sharing but was not found: %w", err)
+	}
+	staging := shareStagingDir(cfg, name)
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		return err
+	}
+	isRepo, repoErr := vaultRepoState(filepath.Join(staging, ".git"))
+	if repoErr != nil {
+		return repoErr
+	}
+	if !isRepo {
+		if _, err := run(ctx, staging, "git", "init"); err != nil {
+			return fmt.Errorf("git init: %w", err)
+		}
+	}
+	giPath := filepath.Join(staging, ".gitignore")
+	if _, err := os.Stat(giPath); os.IsNotExist(err) {
+		if werr := atomicWrite(giPath, []byte(shareGitignoreBody), 0o644); werr != nil {
+			return fmt.Errorf("writing .gitignore: %w", werr)
+		}
+	}
+	man := shareManifest{
+		Schema: shareManifestSchema, Name: name, Scope: *scope, Owner: *owner,
+		CreatedAt: time.Now().Format(time.RFC3339), Client: "mora " + BuildVersion,
+	}
+	mb, err := json.MarshalIndent(man, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(staging, "share.json"), append(mb, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := configureRemote(ctx, staging, *github, *repoName, *remote, run); err != nil {
+		return err
+	}
+
+	sf.Publishes = append(sf.Publishes, sharePublish{
+		Name: name, Scope: *scope, Recipients: recipients, Remote: *remote,
+		Owner: *owner, CreatedAt: man.CreatedAt,
+	})
+	if err := saveShares(cfg, sf); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "share %q initialized — scope %s, %d recipient key(s). Publish with `mora share push %s`.\n", name, *scope, len(recipients), name)
+	fmt.Fprintln(stdout, shareInitDisclosure)
+	return nil
+}
+
 const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -252,6 +413,8 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	switch args[0] {
 	case "keygen":
 		return shareKeygen(cfg, stdout)
+	case "init":
+		return shareInit(ctx, cfg, args[1:], stdout, realExec)
 	default:
 		return errors.New(shareUsage)
 	}
