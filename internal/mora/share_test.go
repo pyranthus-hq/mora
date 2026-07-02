@@ -950,7 +950,9 @@ func TestShareSubscribeImportsExistingCloneAndSaves(t *testing.T) {
 	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
 		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
 
-	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	// hasOrigin: the existing clone's origin resolves to the same remote being
+	// subscribed to (the fake returns git@example.test:me/vault.git).
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
 	var buf bytes.Buffer
 	if err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run); err != nil {
 		t.Fatalf("shareSubscribe: %v\n%s", err, buf.String())
@@ -1300,5 +1302,75 @@ func TestUsageMentionsShare(t *testing.T) {
 	out := run(t)
 	if !strings.Contains(out, "mora share") {
 		t.Fatalf("printUsage does not mention share:\n%s", out)
+	}
+}
+
+// --github wires origin via gh, so the registry must record the RESOLVED origin
+// URL — otherwise the push-time origin-vs-registry check has nothing to compare
+// against and a swapped origin goes unnoticed (codex review P1).
+func TestShareInitGithubRecordsResolvedRemote(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
+	var buf bytes.Buffer
+	err := shareInit(context.Background(), cfg,
+		[]string{"acme", "--scope", "project:acme", "--recipient", testRecipient(t), "--github"},
+		&buf, fx.run)
+	if err != nil {
+		t.Fatalf("shareInit --github: %v", err)
+	}
+	sf, err := loadShares(cfg)
+	if err != nil || len(sf.Publishes) != 1 {
+		t.Fatal(err)
+	}
+	if sf.Publishes[0].Remote == "" {
+		t.Fatal("--github publish saved with empty Remote — push-time origin verification is disabled")
+	}
+}
+
+// A pre-existing clone dir for the subscription name must have its origin
+// verified against --remote, or a stale/wrong clone gets imported under a
+// trusted attribution label (codex review P1).
+func TestShareSubscribeVerifiesExistingCloneOrigin(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
+		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true} // origin = git@example.test:me/vault.git
+	var buf bytes.Buffer
+	err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@evil.test:someone/else.git"}, &buf, fx.run)
+	if err == nil || !strings.Contains(err.Error(), "origin") {
+		t.Fatalf("subscribe over mismatched existing clone = %v; want origin refusal", err)
+	}
+	if sf, _ := loadShares(cfg); len(sf.Subscriptions) != 0 {
+		t.Fatal("mismatched subscription was saved")
+	}
+}
+
+// Ciphertext size is bounded BEFORE the file is read into memory — a hostile
+// repo must not be able to exhaust RAM via one huge .age file (codex review P1).
+func TestShareImportRefusesOversizedCiphertext(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(), nil, true)
+	big := filepath.Join(shareRepoDir(cfg, "neil"), "memories", "mem_20260601_000000_ffffffff.md.age")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(shareMaxMemoryBytes + (2 << 20)); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
+	_, err = shareImport(context.Background(), cfg, sub)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized ciphertext = %v; want size refusal", err)
 	}
 }

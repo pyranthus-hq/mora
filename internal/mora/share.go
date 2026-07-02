@@ -393,9 +393,21 @@ func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	if err := configureRemote(ctx, staging, *github, *repoName, *remote, run); err != nil {
 		return err
 	}
+	// Record the RESOLVED origin URL, not just the flag: with --github the URL
+	// is minted by gh, and the push-time origin-vs-registry check needs a
+	// reference or a later origin swap would publish to an unapproved
+	// destination (codex review).
+	registryRemote := *remote
+	if registryRemote == "" {
+		origin, err := run(ctx, staging, "git", "remote", "get-url", "origin")
+		if err != nil {
+			return fmt.Errorf("reading the origin gh configured: %w", err)
+		}
+		registryRemote = strings.TrimSpace(origin)
+	}
 
 	sf.Publishes = append(sf.Publishes, sharePublish{
-		Name: name, Scope: *scope, Recipients: recipients, Remote: *remote,
+		Name: name, Scope: *scope, Recipients: recipients, Remote: registryRemote,
 		Owner: *owner, CreatedAt: man.CreatedAt,
 	})
 	if err := saveShares(cfg, sf); err != nil {
@@ -844,6 +856,14 @@ func shareImport(ctx context.Context, cfg Config, sub shareSubscription) (shareI
 		if !shareExportIDRE.MatchString(stem) {
 			return stats, fmt.Errorf("share repo file memories/%s has an unsafe name — refusing to import", e.Name())
 		}
+		// Bound the CIPHERTEXT before reading it into memory — the plaintext
+		// LimitReader below cannot protect against a huge input file (codex
+		// review). age overhead is small, so the plaintext cap + 1 MiB is ample.
+		if fi, err := e.Info(); err != nil {
+			return stats, err
+		} else if fi.Size() > shareMaxMemoryBytes+(1<<20) {
+			return stats, fmt.Errorf("memories/%s exceeds the %d-byte per-memory cap — refusing to import", e.Name(), shareMaxMemoryBytes)
+		}
 		ct, err := os.ReadFile(filepath.Join(repo, "memories", e.Name()))
 		if err != nil {
 			return stats, err
@@ -1038,6 +1058,18 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 		}
 		if _, err := run(ctx, "", "git", "clone", *remote, repo); err != nil {
 			return fmt.Errorf("git clone: %w", err)
+		}
+	} else {
+		// A leftover clone under this name must actually point at the remote
+		// being subscribed to — importing a stale repo from somewhere else
+		// would poison search/think under a trusted attribution label
+		// (codex review).
+		origin, err := run(ctx, repo, "git", "remote", "get-url", "origin")
+		if err != nil {
+			return fmt.Errorf("existing clone at %s has no usable origin (%v) — delete it and re-subscribe", repo, err)
+		}
+		if strings.TrimSpace(origin) != *remote {
+			return fmt.Errorf("existing clone at %s has origin %s, not the requested remote %s — delete it (or pick another subscription name) and re-subscribe", repo, redactCredentials(strings.TrimSpace(origin)), redactCredentials(*remote))
 		}
 	}
 	sub := shareSubscription{Name: name, Remote: *remote, CreatedAt: time.Now().Format(time.RFC3339)}
