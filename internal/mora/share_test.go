@@ -196,3 +196,101 @@ func TestParseShareRecipients(t *testing.T) {
 		t.Fatalf("valid X25519 recipient rejected: %v", err)
 	}
 }
+
+// seedAuthored writes an authored memory via the real CLI path and returns its id.
+func seedAuthored(t *testing.T, scope, title, text string) string {
+	t.Helper()
+	out := run(t, "write", "--scope", scope, "--title", title, "--text", text)
+	for _, f := range strings.Fields(out) {
+		if strings.HasPrefix(f, "mem_") {
+			return f
+		}
+	}
+	t.Fatalf("no mem_ id in write output:\n%s", out)
+	return ""
+}
+
+func TestCollectShareMemoriesSelectsAuthoredScopeOnly(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	want1 := seedAuthored(t, "project:acme", "Acme decision", "we chose sqlite")
+	want2 := seedAuthored(t, "project:acme", "Acme deadline", "ship friday")
+	seedAuthored(t, "personal", "Private note", "not for export")
+	seedAuthored(t, "project:other", "Other project", "not for export either")
+
+	// A tombstoned authored memory in scope must be excluded.
+	tomb := Memory{ID: "mem_20260101_000000_deadbeef", Scope: "project:acme", Type: "insight",
+		Title: "Withdrawn", CreatedAt: "2026-01-01T00:00:00Z", DeletedAt: "2026-06-01T00:00:00Z", Text: "gone"}
+	if err := writeMemory(cfg, tomb); err != nil {
+		t.Fatal(err)
+	}
+
+	// A connector memory under sources/ with the same scope must be structurally
+	// invisible (v1 shares authored notes only).
+	conn := Memory{ID: "gmail_thread/abc", Scope: "project:acme", Type: "email", Title: "Thread",
+		Provider: "gmail", ProviderID: "abc", CreatedAt: "2026-01-01T00:00:00Z", Text: "connector evidence"}
+	connPath := filepath.Join(cfg.VaultDir, "sources", "gmail", "gmail_thread_abc.md")
+	if err := os.MkdirAll(filepath.Dir(connPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	connBody, err := renderMemory(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(connPath, connBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := collectShareMemories(cfg, "project:acme")
+	if err != nil {
+		t.Fatalf("collectShareMemories: %v", err)
+	}
+	ids := make([]string, len(got))
+	for i, m := range got {
+		ids[i] = m.ID
+	}
+	if len(got) != 2 || !(ids[0] == want1 || ids[1] == want1) || !(ids[0] == want2 || ids[1] == want2) {
+		t.Fatalf("collected %v; want exactly {%s, %s}", ids, want1, want2)
+	}
+	for i := 1; i < len(ids); i++ {
+		if ids[i-1] >= ids[i] {
+			t.Fatalf("ids not sorted deterministically: %v", ids)
+		}
+	}
+}
+
+func TestCollectShareMemoriesRefusesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not exercised on windows")
+	}
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "project:acme", "Real", "real content")
+
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("id: mem_x\nscope: project:acme\n---\n\nsmuggled\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(cfg.VaultDir, "memories", "project", "acme", "link.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := collectShareMemories(cfg, "project:acme")
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("collect with symlink = %v; want loud symlink refusal", err)
+	}
+}
+
+func TestCollectShareMemoriesRejectsInvalidScope(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	for _, s := range []string{"project:../x", "..", "project:a/b", ""} {
+		if _, err := collectShareMemories(cfg, s); err == nil {
+			t.Fatalf("scope %q accepted; want rejection before any walk", s)
+		}
+	}
+}

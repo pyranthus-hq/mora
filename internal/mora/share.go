@@ -26,9 +26,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -179,6 +181,54 @@ func parseShareRecipients(keys []string) ([]age.Recipient, error) {
 		}
 		out = append(out, r)
 	}
+	return out, nil
+}
+
+// collectShareMemories selects exactly what a share may export: AUTHORED
+// memories (files under memories/ only — connector evidence under sources/ is
+// structurally out of reach), frontmatter scope exact-match, tombstones and
+// anything provider-stamped skipped. Path safety is a P0 here: the scope is
+// validated before any filesystem access, symlinks anywhere in the tree abort
+// the export loudly, and every selected file is re-verified to resolve inside
+// the memories root.
+func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
+	if !validShareScope(scope) {
+		return nil, fmt.Errorf("invalid share scope %q — share accepts personal, global, or project:<name>", scope)
+	}
+	root := memoriesRoot(cfg)
+	realRoot := resolveReal(root)
+	var out []Memory
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) && path == root {
+				return nil // empty vault: nothing to export, not an error
+			}
+			return err
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to export: %s is a symlink — share export never follows links", path)
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		m, perr := parseMemory(path)
+		if perr != nil {
+			return nil // unparseable files have no attributable scope; nothing leaves
+		}
+		if m.Scope != scope || m.DeletedAt != "" || m.Provider != "" {
+			return nil
+		}
+		if rp := resolveReal(path); !strings.HasPrefix(rp, realRoot+string(os.PathSeparator)) {
+			return fmt.Errorf("refusing to export: %s resolves outside the memories root", path)
+		}
+		m.Path = path
+		out = append(out, m)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
