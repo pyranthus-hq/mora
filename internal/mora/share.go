@@ -232,6 +232,13 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 		if !shareExportIDRE.MatchString(m.ID) {
 			return fmt.Errorf("memory %s has an id (%q) unsafe for export — rename it to letters/digits/._- before sharing", path, m.ID)
 		}
+		// Mirror the import-side cap at export, where the PUBLISHER can fix it:
+		// one oversized memory would otherwise wedge every subscriber's pull.
+		if fi, ierr := d.Info(); ierr != nil {
+			return ierr
+		} else if fi.Size() > shareMaxMemoryBytes {
+			return fmt.Errorf("memory %s exceeds the %d-byte per-memory share cap — split or trim it before sharing", path, shareMaxMemoryBytes)
+		}
 		if rp := resolveReal(path); !strings.HasPrefix(rp, realRoot+string(os.PathSeparator)) {
 			return fmt.Errorf("refusing to export: %s resolves outside the memories root", path)
 		}
@@ -241,6 +248,18 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Ids become filenames in subscriber corpora, which may sit on case-
+	// insensitive filesystems (macOS/Windows): ids differing only by letter
+	// case would silently collide there, so they are refused here where the
+	// publisher can rename (review finding).
+	folded := make(map[string]string, len(out))
+	for _, m := range out {
+		lower := strings.ToLower(m.ID)
+		if prior, dup := folded[lower]; dup {
+			return nil, fmt.Errorf("memories %s and %s differ only by letter case — subscribers on case-insensitive filesystems cannot store both; rename one before sharing", prior, m.ID)
+		}
+		folded[lower] = m.ID
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -490,6 +509,7 @@ func computeShareChanges(cfg Config, pub sharePublish, mems []Memory) (shareChan
 		return ch, err
 	}
 	ch.Reencrypt = !slices.Equal(sortedStrings(pub.Recipients), sortedStrings(st.Recipients))
+	memDir := filepath.Join(shareStagingDir(cfg, pub.Name), "memories")
 	for _, m := range mems {
 		b, err := os.ReadFile(m.Path)
 		if err != nil {
@@ -505,6 +525,16 @@ func computeShareChanges(cfg Config, pub sharePublish, mems []Memory) (shareChan
 		case ch.Reencrypt || prev != h:
 			ch.Update = append(ch.Update, m)
 			ch.Plain[m.ID] = b
+		default:
+			// State says published, but the change detector must trust the
+			// STAGING TREE for existence: a staged ciphertext lost to a crash,
+			// `git clean`, or a partial restore would otherwise ride the next
+			// `git add -A` as an unpreviewed DELETION and then be recorded as
+			// current forever (review finding). Missing on disk ⇒ re-publish.
+			if _, statErr := os.Stat(filepath.Join(memDir, m.ID+".md.age")); statErr != nil {
+				ch.Add = append(ch.Add, m)
+				ch.Plain[m.ID] = b
+			}
 		}
 	}
 	// Removals are filesystem-driven (not state-driven) so a stray staged file
@@ -702,16 +732,30 @@ func sharePush(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	if _, err := run(ctx, staging, "git", "add", "-A"); err != nil {
 		return fmt.Errorf("git add: %w", err)
 	}
-	// Hard stop, mirroring sync git: .gitignore shields only untracked files.
-	// In a share repo the sensitive class is PLAINTEXT (*.md) plus any stray
-	// index/token/identity material.
-	tracked, lsErr := run(ctx, staging, "git", "ls-files", "--",
-		"*.md", "*.db", "*.db-shm", "*.db-wal", "*.token", "tokens", "identity*")
+	// Hard stop, stronger than sync git's denylist: `git add -A` stages the
+	// whole staging tree, so the tracked set is checked against an ALLOWLIST —
+	// only the manifest, the .gitignore, and safe-named ciphertext may ever be
+	// tracked. Anything else (stray plaintext, secrets, files another tool
+	// dropped here) would leave without appearing in the preview.
+	tracked, lsErr := run(ctx, staging, "git", "ls-files")
 	if lsErr != nil {
 		return fmt.Errorf("git ls-files: %w", lsErr)
 	}
-	if t := strings.TrimSpace(tracked); t != "" {
-		return fmt.Errorf("refusing to publish: plaintext or sensitive files are git-TRACKED in the share repo:\n%s\nuntrack them first (the working copy is kept): git -C %s rm -r --cached <path>", t, staging)
+	var offenders []string
+	for _, line := range strings.Split(tracked, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == ".gitignore" || line == "share.json" {
+			continue
+		}
+		if stem, ok := strings.CutPrefix(line, "memories/"); ok {
+			if stem, ok := strings.CutSuffix(stem, ".md.age"); ok && shareExportIDRE.MatchString(stem) {
+				continue
+			}
+		}
+		offenders = append(offenders, line)
+	}
+	if len(offenders) > 0 {
+		return fmt.Errorf("refusing to publish: the share repo tracks files that are not manifest/.gitignore/encrypted memories:\n%s\nuntrack them first (the working copy is kept): git -C %s rm -r --cached <path>", strings.Join(offenders, "\n"), staging)
 	}
 	status, err := run(ctx, staging, "git", "status", "--porcelain")
 	if err != nil {

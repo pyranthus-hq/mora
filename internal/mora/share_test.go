@@ -1374,3 +1374,131 @@ func TestShareImportRefusesOversizedCiphertext(t *testing.T) {
 		t.Fatalf("oversized ciphertext = %v; want size refusal", err)
 	}
 }
+
+// The tracked-file check must be an ALLOWLIST: `git add -A` stages anything in
+// the staging tree, and a denylist lets a stray secrets.env ride a push without
+// ever appearing in the preview (review finding).
+func TestSharePushRefusesTrackedFileOutsideAllowlist(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "project:acme", "Note", "content")
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+
+	fx := &fakeExec{out: map[string]string{
+		"git ls-files": ".gitignore\nshare.json\nmemories/mem_20260601_000000_aaaaaaaa.md.age\nsecrets.env\n",
+	}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run)
+	if err == nil || !strings.Contains(err.Error(), "secrets.env") {
+		t.Fatalf("stray tracked file = %v; want allowlist refusal naming it", err)
+	}
+	if fx.sawSubcommand("git", "commit") || fx.sawSubcommand("git", "push") {
+		t.Fatal("commit/push ran past the allowlist stop")
+	}
+}
+
+// Companion: allowlisted-only tracked files pass — proves the check is an
+// allowlist, not "refuse when ls-files prints anything".
+func TestSharePushAcceptsAllowlistedTrackedFiles(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "project:acme", "Note", "content")
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+
+	fx := &fakeExec{out: map[string]string{
+		"git ls-files": ".gitignore\nshare.json\nmemories/mem_20260601_000000_aaaaaaaa.md.age\n",
+		"git status":   " M x",
+	}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run); err != nil {
+		t.Fatalf("allowlisted tracked files refused: %v", err)
+	}
+	if !fx.sawSubcommand("git", "push", "origin", "HEAD") {
+		t.Fatal("push skipped")
+	}
+}
+
+// A staged ciphertext that vanished (crash, git clean, partial restore) while
+// the push state still lists it must be RE-PUBLISHED, not silently pushed as an
+// unpreviewed deletion (review finding, live-repro confirmed).
+func TestSharePushReaddsMissingStagedCiphertext(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	memID := seedAuthored(t, "project:acme", "Keep", "kept content")
+	setupPublish(t, cfg, "acme", "project:acme", id.Recipient().String())
+
+	fx := &fakeExec{out: map[string]string{"git status": " M x"}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(shareStagingDir(cfg, "acme"), "memories", memID+".md.age")
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
+	var buf2 bytes.Buffer
+	fx2 := &fakeExec{out: map[string]string{"git status": " M x"}, errOn: map[string]error{}, hasOrigin: true}
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf2, strings.NewReader(""), fx2.run); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf2.String(), "no changes") {
+		t.Fatalf("push claimed no changes while a staged file was missing:\n%s", buf2.String())
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatal("missing staged ciphertext was not re-encrypted")
+	}
+}
+
+// Publish side enforces the same per-memory size cap the import side does — one
+// oversized memory must fail at push (publisher can fix it), not wedge every
+// subscriber's pull (review finding).
+func TestCollectShareMemoriesRejectsOversizedMemory(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	big := Memory{ID: "mem_20260101_000000_bbbbbbbb", Scope: "project:acme", Type: "insight",
+		Title: "Huge", CreatedAt: "2026-01-01T00:00:00Z", Text: strings.Repeat("x", shareMaxMemoryBytes+1)}
+	if err := writeMemory(cfg, big); err != nil {
+		t.Fatal(err)
+	}
+	_, err := collectShareMemories(cfg, "project:acme")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized memory = %v; want size refusal at export", err)
+	}
+}
+
+// Ids differing only by letter case collide on case-insensitive filesystems
+// (macOS/Windows subscriber corpora) — refuse at export so the publisher can
+// rename, instead of wedging subscribers (review finding).
+func TestCollectShareMemoriesRejectsCaseFoldDuplicateIDs(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	// The two files live in DIFFERENT directories (scope matching is
+	// frontmatter-authoritative) so this test itself survives a case-
+	// insensitive dev filesystem.
+	files := map[string]string{
+		"mem_20260101_000000_aaaaaaAA": filepath.Join(cfg.VaultDir, "memories", "project", "acme"),
+		"mem_20260101_000000_AAAAAAaa": filepath.Join(cfg.VaultDir, "memories", "global"),
+	}
+	for id, dir := range files {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nid: " + id + "\nscope: project:acme\ntype: insight\ntitle: T\ntags: []\nsource: manual\ncreated_at: 2026-01-01T00:00:00Z\n---\n\nx\n"
+		if err := os.WriteFile(filepath.Join(dir, id+".md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := collectShareMemories(cfg, "project:acme")
+	if err == nil || !strings.Contains(err.Error(), "case") {
+		t.Fatalf("case-fold duplicate ids = %v; want refusal naming the collision", err)
+	}
+}
