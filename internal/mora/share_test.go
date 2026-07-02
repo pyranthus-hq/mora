@@ -258,7 +258,7 @@ func TestCollectShareMemoriesSelectsAuthoredScopeOnly(t *testing.T) {
 	for i, m := range got {
 		ids[i] = m.ID
 	}
-	if len(got) != 2 || !(ids[0] == want1 || ids[1] == want1) || !(ids[0] == want2 || ids[1] == want2) {
+	if len(got) != 2 || (ids[0] != want1 && ids[1] != want1) || (ids[0] != want2 && ids[1] != want2) {
 		t.Fatalf("collected %v; want exactly {%s, %s}", ids, want1, want2)
 	}
 	for i := 1; i < len(ids); i++ {
