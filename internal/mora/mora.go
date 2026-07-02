@@ -411,6 +411,9 @@ USAGE:
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
   mora index rebuild
+  mora share init acme --scope project:acme --recipient age1... --remote <PRIVATE git URL>   # publish a scope, always encrypted
+  mora share push acme             # preview exactly what leaves, then publish
+  mora share subscribe neil --remote <URL>   # read someone's share beside your vault (never merged into it)
   mora tasks sync --write
   mora tasks add "Reply to Sam about the launch" --pri P0   # capture an open loop (name first, then flags)
   mora tasks list --json                                    # the current live tasks
@@ -1601,9 +1604,13 @@ type doctorReport struct {
 	StorageBytes      int64         `json:"storage_bytes"`
 	StorageStatus     string        `json:"storage_status"`
 	GitSyncConfigured bool          `json:"git_sync_configured"`
-	Version           string        `json:"version"`
-	Platform          string        `json:"platform"`
-	RebuildBlock      *rebuildBlock `json:"rebuild_block,omitempty"`
+	// Share egress surface (`mora share`): how many scopes this machine
+	// publishes and how many foreign corpora it subscribes to.
+	SharePublishes     int           `json:"share_publishes"`
+	ShareSubscriptions int           `json:"share_subscriptions"`
+	Version            string        `json:"version"`
+	Platform           string        `json:"platform"`
+	RebuildBlock       *rebuildBlock `json:"rebuild_block,omitempty"`
 }
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
@@ -1642,12 +1649,18 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// index is missing, or tokens are colocated with the vault (a data-egress
 	// hazard). token_dir/sources_config are advisory (a freshly seeded vault has
 	// neither tokens nor configured connectors yet, and that is fine).
+	shares, _ := loadShares(cfg) // advisory: an unreadable registry reads as no shares
+
 	checks := []doctorCheck{
 		{Name: "vault", OK: vErr == nil, Critical: true},
 		{Name: "index_db", OK: iErr == nil, Critical: true},
 		{Name: "token_dir", OK: tErr == nil && !strings.HasPrefix(tokenDir, cfg.VaultDir), Critical: false},
 		{Name: "sources_config", OK: len(sources) > 0, Critical: false},
 		{Name: "tokens_disjoint_from_vault", OK: disjointRealPaths(cfg.VaultDir, tokenDir), Critical: true},
+		// Only ciphertext belongs in a share staging repo; plaintext markdown
+		// there means something is wrong with the export path or the user
+		// hand-placed files where `git add -A` will publish them.
+		{Name: "share_staging_clean", OK: shareStagingClean(cfg, shares.Publishes), Critical: false},
 	}
 	healthy := true
 	for _, c := range checks {
@@ -1666,13 +1679,15 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 
 	if *jsonOut {
 		rep := doctorReport{
-			Healthy:           healthy,
-			Checks:            checks,
-			StorageBytes:      used,
-			StorageStatus:     st,
-			GitSyncConfigured: gitSync,
-			Version:           BuildVersion,
-			Platform:          runtimeGOOS(),
+			Healthy:            healthy,
+			Checks:             checks,
+			StorageBytes:       used,
+			StorageStatus:      st,
+			GitSyncConfigured:  gitSync,
+			SharePublishes:     len(shares.Publishes),
+			ShareSubscriptions: len(shares.Subscriptions),
+			Version:            BuildVersion,
+			Platform:           runtimeGOOS(),
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -1717,6 +1732,13 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	if gitSync {
 		fmt.Fprintf(stdout, "%s vault git-sync is configured — the vault LEAVES THIS DEVICE on `mora sync git`\n", sty.warn("warn"))
 		fmt.Fprintln(stdout, "     it contains decoded iMessages + Gmail in plaintext; ensure the remote is PRIVATE + user-controlled.")
+	}
+	// Share egress disclosure: qualify the zero-egress posture for every
+	// configured publish, mirroring the git-sync disclosure above.
+	for _, p := range shares.Publishes {
+		fmt.Fprintf(stdout, "%s share %q publishes scope %s (age-encrypted to %d recipient key(s)) on `mora share push`\n",
+			sty.warn("warn"), p.Name, p.Scope, len(p.Recipients))
+		fmt.Fprintln(stdout, "     ciphertext only, but keep the remote PRIVATE + user-controlled.")
 	}
 	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
 	// surface "last authed / how long ago" per connected account so the user can

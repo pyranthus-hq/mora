@@ -1162,3 +1162,143 @@ func TestThinkAttributesSharedEvidenceAndKeepsGapsLocal(t *testing.T) {
 		t.Fatalf("synthesis prompt does not label shared evidence:\n%s", res.SynthesisPrompt)
 	}
 }
+
+func TestShareListShowsPublishesAndSubscriptions(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content"),
+	})
+
+	out := run(t, "share", "list")
+	for _, want := range []string{"acme", "project:acme", "neil"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("share list missing %q:\n%s", want, out)
+		}
+	}
+	var rep struct {
+		Publishes []struct {
+			Name       string `json:"name"`
+			Scope      string `json:"scope"`
+			Recipients int    `json:"recipients"`
+		} `json:"publishes"`
+		Subscriptions []struct {
+			Name     string `json:"name"`
+			Memories int    `json:"memories"`
+		} `json:"subscriptions"`
+	}
+	jout := run(t, "share", "list", "--json")
+	if err := json.Unmarshal([]byte(jout), &rep); err != nil {
+		t.Fatalf("share list --json: %v\n%s", err, jout)
+	}
+	if len(rep.Publishes) != 1 || rep.Publishes[0].Recipients != 1 ||
+		len(rep.Subscriptions) != 1 || rep.Subscriptions[0].Memories != 1 {
+		t.Fatalf("share list --json wrong: %+v", rep)
+	}
+}
+
+func TestShareRemoveRequiresYes(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+	var buf bytes.Buffer
+	err := Run(context.Background(), []string{"share", "remove", "acme"}, &buf, &buf, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("remove without --yes = %v; want confirm requirement", err)
+	}
+	if sf, _ := loadShares(cfg); len(sf.Publishes) != 1 {
+		t.Fatal("publish removed without confirmation")
+	}
+}
+
+func TestShareRemovePublishIsHonestAboutRevocation(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+	out := run(t, "share", "remove", "acme", "--yes")
+	if !strings.Contains(out, "already pulled") {
+		t.Fatalf("remove output not honest about durable git history:\n%s", out)
+	}
+	if sf, _ := loadShares(cfg); len(sf.Publishes) != 0 {
+		t.Fatal("publish still registered after remove")
+	}
+	if _, err := os.Stat(shareStagingDir(cfg, "acme")); !os.IsNotExist(err) {
+		t.Fatal("staging repo not deleted")
+	}
+}
+
+func TestShareRemoveSubscriptionDeletesShareRoot(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content"),
+	})
+	run(t, "share", "remove", "neil", "--yes")
+	if sf, _ := loadShares(cfg); len(sf.Subscriptions) != 0 {
+		t.Fatal("subscription still registered after remove")
+	}
+	if _, err := os.Stat(shareSubRoot(cfg, "neil")); !os.IsNotExist(err) {
+		t.Fatal("share root (corpus+index) not deleted")
+	}
+}
+
+func TestDoctorReportsShareState(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+
+	var rep struct {
+		SharePublishes     int `json:"share_publishes"`
+		ShareSubscriptions int `json:"share_subscriptions"`
+		Checks             []struct {
+			Name string `json:"name"`
+			OK   bool   `json:"ok"`
+		} `json:"checks"`
+	}
+	stagingCheck := func() (found, ok bool) {
+		out := run(t, "doctor", "--json")
+		if err := json.Unmarshal([]byte(out), &rep); err != nil {
+			t.Fatalf("doctor --json: %v\n%s", err, out)
+		}
+		for _, c := range rep.Checks {
+			if c.Name == "share_staging_clean" {
+				return true, c.OK
+			}
+		}
+		return false, false
+	}
+	found, ok := stagingCheck()
+	if !found || !ok || rep.SharePublishes != 1 {
+		t.Fatalf("doctor missing healthy share state (found=%v ok=%v pubs=%d)", found, ok, rep.SharePublishes)
+	}
+	// Plant plaintext markdown in the staging repo — the check must flip.
+	leak := filepath.Join(shareStagingDir(cfg, "acme"), "memories", "leak.md")
+	if err := os.MkdirAll(filepath.Dir(leak), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(leak, []byte("plaintext"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stagingCheck(); ok {
+		t.Fatal("share_staging_clean stayed ok with plaintext .md in staging")
+	}
+	// Human output discloses the share egress surface.
+	out := run(t, "doctor")
+	if !strings.Contains(out, "share") || !strings.Contains(strings.ToUpper(out), "PRIVATE") {
+		t.Fatalf("doctor text missing share disclosure:\n%s", out)
+	}
+}
+
+func TestUsageMentionsShare(t *testing.T) {
+	withTempHome(t)
+	out := run(t)
+	if !strings.Contains(out, "mora share") {
+		t.Fatalf("printUsage does not mention share:\n%s", out)
+	}
+}

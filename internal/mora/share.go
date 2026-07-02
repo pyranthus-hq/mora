@@ -1269,6 +1269,169 @@ func unionSharedResults(ctx context.Context, cfg Config, local []Memory, query, 
 	return out, nil
 }
 
+// ---------- list / remove / doctor support ----------
+
+// shareStagingClean reports whether every publish staging repo is ciphertext-
+// only. Plaintext markdown there would be published by the next `git add -A`;
+// *.md.age deliberately does not count. Advisory (doctor): unreadable paths
+// read as clean rather than failing doctor.
+func shareStagingClean(cfg Config, pubs []sharePublish) bool {
+	clean := true
+	for _, p := range pubs {
+		_ = filepath.WalkDir(shareStagingDir(cfg, p.Name), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				if d.Name() == ".git" {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(path, ".md") {
+				clean = false
+			}
+			return nil
+		})
+	}
+	return clean
+}
+
+func shareList(cfg Config, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("share list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return errors.New("usage: mora share list [--json]")
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return err
+	}
+	type pubRow struct {
+		Name       string `json:"name"`
+		Scope      string `json:"scope"`
+		Recipients int    `json:"recipients"`
+		Remote     string `json:"remote,omitempty"`
+	}
+	type subRow struct {
+		Name     string `json:"name"`
+		Remote   string `json:"remote"`
+		Memories int    `json:"memories"`
+		Pulled   bool   `json:"pulled"`
+	}
+	pubs := make([]pubRow, 0, len(sf.Publishes))
+	for _, p := range sf.Publishes {
+		pubs = append(pubs, pubRow{Name: p.Name, Scope: p.Scope, Recipients: len(p.Recipients), Remote: redactCredentials(p.Remote)})
+	}
+	subs := make([]subRow, 0, len(sf.Subscriptions))
+	for _, s := range sf.Subscriptions {
+		n := 0
+		if entries, err := os.ReadDir(shareCorpusDir(cfg, s.Name)); err == nil {
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".md") {
+					n++
+				}
+			}
+		}
+		_, statErr := os.Stat(shareIndexPath(cfg, s.Name))
+		subs = append(subs, subRow{Name: s.Name, Remote: redactCredentials(s.Remote), Memories: n, Pulled: statErr == nil})
+	}
+	if *jsonOut {
+		b, err := json.MarshalIndent(map[string]any{"publishes": pubs, "subscriptions": subs}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(b))
+		return nil
+	}
+	if len(pubs)+len(subs) == 0 {
+		fmt.Fprintln(stdout, "no shares — `mora share init` to publish a scope, `mora share subscribe` to receive one.")
+		return nil
+	}
+	sty := newStyler(stdout, false)
+	if len(pubs) > 0 {
+		fmt.Fprintln(stdout, "publishes:")
+		for _, p := range pubs {
+			fmt.Fprintf(stdout, "  %s\t%s\t%d recipient key(s)\t%s\n", p.Name, sty.dim(p.Scope), p.Recipients, sty.dim(p.Remote))
+		}
+	}
+	if len(subs) > 0 {
+		fmt.Fprintln(stdout, "subscriptions:")
+		for _, s := range subs {
+			state := fmt.Sprintf("%d memories", s.Memories)
+			if !s.Pulled {
+				state = "never pulled"
+			}
+			fmt.Fprintf(stdout, "  %s\t%s\t%s\n", s.Name, state, sty.dim(s.Remote))
+		}
+	}
+	return nil
+}
+
+// shareRemove deletes local share state: the grant + staging repo for a
+// publish, or the clone + corpus + index for a subscription. The revocation
+// message is deliberately honest — git history is durable, so removing a
+// publish cannot recall what subscribers already pulled.
+func shareRemove(cfg Config, args []string, stdout io.Writer) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return errors.New("usage: mora share remove <name> --yes")
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("share remove", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	yes := fs.Bool("yes", false, "confirm removal")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return errors.New("usage: mora share remove <name> --yes")
+	}
+	if !*yes {
+		return fmt.Errorf("share remove deletes the local share state for %q — re-run with --yes to confirm", name)
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return err
+	}
+	for i, p := range sf.Publishes {
+		if p.Name != name {
+			continue
+		}
+		if err := os.RemoveAll(shareStagingDir(cfg, name)); err != nil {
+			return err
+		}
+		if err := os.Remove(sharePushStatePath(cfg, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		sf.Publishes = append(sf.Publishes[:i], sf.Publishes[i+1:]...)
+		if err := saveShares(cfg, sf); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "share %q removed — future pushes stop now.\n", name)
+		fmt.Fprintln(stdout, "honest revocation: git history is durable and subscribers keep what they already pulled; to cut future access, rotate to a new repo and new recipient keys.")
+		return nil
+	}
+	for i, s := range sf.Subscriptions {
+		if s.Name != name {
+			continue
+		}
+		if err := os.RemoveAll(shareSubRoot(cfg, name)); err != nil {
+			return err
+		}
+		sf.Subscriptions = append(sf.Subscriptions[:i], sf.Subscriptions[i+1:]...)
+		if err := saveShares(cfg, sf); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "subscription %q removed — its corpus and index are deleted. Your own vault was never touched.\n", name)
+		return nil
+	}
+	return fmt.Errorf("no share or subscription named %q — see `mora share list`", name)
+}
+
 const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -1299,6 +1462,10 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 		return shareSubscribe(ctx, cfg, args[1:], stdout, realExec)
 	case "pull":
 		return sharePull(ctx, cfg, args[1:], stdout, realExec)
+	case "list":
+		return shareList(cfg, args[1:], stdout)
+	case "remove":
+		return shareRemove(cfg, args[1:], stdout)
 	default:
 		return errors.New(shareUsage)
 	}
