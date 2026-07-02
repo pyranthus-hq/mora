@@ -246,10 +246,50 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	if err != nil {
 		return err
 	}
+	if err := shareGuardPaths(cfg); err != nil {
+		return err
+	}
 	switch args[0] {
 	case "keygen":
 		return shareKeygen(cfg, stdout)
 	default:
 		return errors.New(shareUsage)
+	}
+}
+
+// shareGuardPaths refuses to run any share verb when the share root or the age
+// identity would sit inside the vault. data_dir/config locations are
+// user-configurable, and a co-located layout would put a subscriber's DECRYPTED
+// corpus (or the identity secret) inside the tree that `mora backup` tars and
+// vault git-sync pushes — exactly the leak this feature exists to prevent.
+func shareGuardPaths(cfg Config) error {
+	vault := resolveRealDeep(cfg.VaultDir)
+	for _, p := range []string{filepath.Join(cfg.DataDir, "share"), filepath.Dir(shareIdentityPath(cfg))} {
+		rp := resolveRealDeep(p)
+		if rp == vault || strings.HasPrefix(rp+string(os.PathSeparator), vault+string(os.PathSeparator)) ||
+			strings.HasPrefix(vault+string(os.PathSeparator), rp+string(os.PathSeparator)) {
+			return fmt.Errorf("share root %s is inside the vault %s — sharing needs data_dir/config outside the vault so decrypted shares never enter vault backups or git-sync", p, cfg.VaultDir)
+		}
+	}
+	return nil
+}
+
+// resolveRealDeep resolves symlinks through the deepest EXISTING ancestor and
+// re-appends the rest, so a not-yet-created path still compares against real
+// paths (plain resolveReal falls back to Clean, which on macOS leaves /var vs
+// /private/var mismatches and defeats prefix checks).
+func resolveRealDeep(p string) string {
+	cur := filepath.Clean(p)
+	rest := ""
+	for {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(r, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Clean(p)
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
 	}
 }

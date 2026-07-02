@@ -294,3 +294,26 @@ func TestCollectShareMemoriesRejectsInvalidScope(t *testing.T) {
 		}
 	}
 }
+
+// If the user re-points data_dir INSIDE the vault, a decrypted subscription
+// corpus would land under the vault and leak into `mora backup` / vault
+// git-sync. Every share verb must refuse loudly instead (codex review P0).
+func TestShareRefusesWhenShareRootInsideVault(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	f, err := os.OpenFile(filepath.Join(cfg.ConfigDir, "config.toml"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("data_dir = \"" + filepath.Join(cfg.VaultDir, "data") + "\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	var buf bytes.Buffer
+	err = Run(context.Background(), []string{"share", "keygen"}, &buf, &buf, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "inside the vault") {
+		t.Fatalf("share with data_dir inside vault = %v; want refusal naming the vault", err)
+	}
+}
