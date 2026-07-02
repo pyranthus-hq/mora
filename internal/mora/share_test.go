@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -403,5 +404,323 @@ func TestShareInitRefusesDuplicateName(t *testing.T) {
 	}
 	if err := shareInit(context.Background(), cfg, args, &buf, fx.run); err == nil || !strings.Contains(err.Error(), "already") {
 		t.Fatalf("duplicate init = %v; want already-exists refusal", err)
+	}
+}
+
+func TestCollectShareMemoriesRejectsUnsafeID(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	evil := filepath.Join(cfg.VaultDir, "memories", "project", "acme", "evil.md")
+	if err := os.MkdirAll(filepath.Dir(evil), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evil, []byte("---\nid: ../evil\nscope: project:acme\n---\n\nx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := collectShareMemories(cfg, "project:acme")
+	if err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("collect with traversal id = %v; want unsafe-id refusal", err)
+	}
+}
+
+// setupPublish registers a publish grant directly and simulates `git init`'s
+// side effect (fakeExec runs no real git, so .git must exist for the plain-dir
+// repo check).
+func setupPublish(t *testing.T, cfg Config, name, scope string, recipients ...string) {
+	t.Helper()
+	sf, err := loadShares(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf.Publishes = append(sf.Publishes, sharePublish{
+		Name: name, Scope: scope, Recipients: recipients,
+		Remote: "git@example.test:me/vault.git", CreatedAt: "2026-07-01T00:00:00Z",
+	})
+	if err := saveShares(cfg, sf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(shareStagingDir(cfg, name), ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func decryptShare(t *testing.T, id *age.X25519Identity, path string) []byte {
+	t.Helper()
+	ct, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := age.Decrypt(bytes.NewReader(ct), id)
+	if err != nil {
+		t.Fatalf("decrypt %s: %v", path, err)
+	}
+	pt, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pt
+}
+
+func TestSharePushEncryptsScopeExactlyAndPushes(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want1 := seedAuthored(t, "project:acme", "Acme decision", "we chose sqlite for the index")
+	want2 := seedAuthored(t, "project:acme", "Acme deadline", "ship friday")
+	seedAuthored(t, "personal", "Private", "never leaves")
+	setupPublish(t, cfg, "acme", "project:acme", id.Recipient().String())
+
+	fx := &fakeExec{out: map[string]string{"git status": " M memories/x"}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run); err != nil {
+		t.Fatalf("sharePush: %v\n%s", err, buf.String())
+	}
+
+	memDir := filepath.Join(shareStagingDir(cfg, "acme"), "memories")
+	ents, err := os.ReadDir(memDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 2 {
+		t.Fatalf("staging holds %d files; want exactly 2 (scope only)", len(ents))
+	}
+	for _, wantID := range []string{want1, want2} {
+		pt := decryptShare(t, id, filepath.Join(memDir, wantID+".md.age"))
+		orig, err := os.ReadFile(filepath.Join(cfg.VaultDir, "memories", "project", "acme", wantID+".md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(pt, orig) {
+			t.Fatalf("decrypted %s differs from vault original", wantID)
+		}
+	}
+	if !fx.sawSubcommand("git", "add", "-A") || !fx.sawSubcommand("git", "push", "origin", "HEAD") {
+		t.Fatalf("expected add+push; calls: %v", fx.calls)
+	}
+	for _, c := range fx.calls {
+		for _, a := range c {
+			if a == "--force" || a == "-f" || a == "--force-with-lease" {
+				t.Fatalf("forced push detected: %v", c)
+			}
+		}
+	}
+	// Preview lists the exact files that left.
+	if !strings.Contains(buf.String(), want1) || !strings.Contains(buf.String(), want2) {
+		t.Fatalf("push output does not list published memory ids:\n%s", buf.String())
+	}
+	if _, err := os.Stat(sharePushStatePath(cfg, "acme")); err != nil {
+		t.Fatalf("push state not recorded: %v", err)
+	}
+}
+
+func TestSharePushRefusesNonInteractiveWithoutYes(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "project:acme", "Acme decision", "content")
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	err := sharePush(context.Background(), cfg, []string{"acme"}, &buf, strings.NewReader(""), fx.run)
+	if err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("non-interactive push without --yes = %v; want refusal pointing at --yes", err)
+	}
+	if fx.sawSubcommand("git", "push") {
+		t.Fatal("push ran despite refused confirmation")
+	}
+	if _, err := os.Stat(filepath.Join(shareStagingDir(cfg, "acme"), "memories")); !os.IsNotExist(err) {
+		t.Fatal("staging mutated before confirmation")
+	}
+}
+
+func TestSharePushRefusesWithoutRecipients(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "project:acme", "Acme decision", "content")
+	setupPublish(t, cfg, "acme", "project:acme") // hand-edited registry: no keys
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run)
+	if err == nil || !strings.Contains(err.Error(), "encrypt") {
+		t.Fatalf("push without recipients = %v; want encryption refusal", err)
+	}
+	if fx.sawSubcommand("git", "push") {
+		t.Fatal("push ran without encryption keys")
+	}
+}
+
+func TestSharePushHardStopsOnTrackedPlaintext(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "project:acme", "Acme decision", "content")
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+
+	fx := &fakeExec{out: map[string]string{"git ls-files": "leak.md\n"}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run)
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("tracked plaintext = %v; want hard stop", err)
+	}
+	if fx.sawSubcommand("git", "commit") || fx.sawSubcommand("git", "push") {
+		t.Fatalf("commit/push ran past the hard stop; calls: %v", fx.calls)
+	}
+}
+
+func TestSharePushVerifiesOriginMatchesRegistry(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "project:acme", "Acme decision", "content")
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+	// Registry says one remote; the staging repo's origin says another.
+	sf, _ := loadShares(cfg)
+	sf.Publishes[0].Remote = "git@example.test:someone-else/other.git"
+	if err := saveShares(cfg, sf); err != nil {
+		t.Fatal(err)
+	}
+
+	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run)
+	if err == nil || !strings.Contains(err.Error(), "origin") {
+		t.Fatalf("origin mismatch = %v; want refusal naming origin", err)
+	}
+	if fx.sawSubcommand("git", "push") {
+		t.Fatal("pushed to a mismatched origin")
+	}
+}
+
+func TestSharePushRemovesStaleStagedFiles(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthored(t, "project:acme", "Keep", "kept content")
+	setupPublish(t, cfg, "acme", "project:acme", id.Recipient().String())
+	stale := filepath.Join(shareStagingDir(cfg, "acme"), "memories", "mem_20250101_000000_00000000.md.age")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("old ciphertext"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fx := &fakeExec{out: map[string]string{"git status": " D memories/x"}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run); err != nil {
+		t.Fatalf("sharePush: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("stale staged file not removed — unshared memories must leave the repo")
+	}
+	if !strings.Contains(buf.String(), "mem_20250101_000000_00000000") {
+		t.Fatalf("removal not shown in preview:\n%s", buf.String())
+	}
+}
+
+func TestSharePushSecondRunNoChangesButStillPushes(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthored(t, "project:acme", "Keep", "kept content")
+	setupPublish(t, cfg, "acme", "project:acme", id.Recipient().String())
+
+	fx := &fakeExec{out: map[string]string{"git status": " M x"}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run); err != nil {
+		t.Fatal(err)
+	}
+	memDir := filepath.Join(shareStagingDir(cfg, "acme"), "memories")
+	ents, _ := os.ReadDir(memDir)
+	before, err := os.ReadFile(filepath.Join(memDir, ents[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fx2 := &fakeExec{out: map[string]string{"git status": ""}, errOn: map[string]error{}, hasOrigin: true}
+	var buf2 bytes.Buffer
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf2, strings.NewReader(""), fx2.run); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(memDir, ents[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("unchanged memory was re-encrypted on second push (age churn)")
+	}
+	if !strings.Contains(buf2.String(), "no changes") {
+		t.Fatalf("second push did not report no changes:\n%s", buf2.String())
+	}
+	if !fx2.sawSubcommand("git", "push", "origin", "HEAD") {
+		t.Fatal("second push skipped the git push — remote could stay behind")
+	}
+}
+
+func TestSharePushRecipientChangeReencryptsAll(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id1, _ := age.GenerateX25519Identity()
+	id2, _ := age.GenerateX25519Identity()
+	seedAuthored(t, "project:acme", "Keep", "kept content")
+	setupPublish(t, cfg, "acme", "project:acme", id1.Recipient().String())
+
+	fx := &fakeExec{out: map[string]string{"git status": " M x"}, errOn: map[string]error{}, hasOrigin: true}
+	var buf bytes.Buffer
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf, strings.NewReader(""), fx.run); err != nil {
+		t.Fatal(err)
+	}
+	memDir := filepath.Join(shareStagingDir(cfg, "acme"), "memories")
+	ents, _ := os.ReadDir(memDir)
+	stagedPath := filepath.Join(memDir, ents[0].Name())
+
+	sf, _ := loadShares(cfg)
+	sf.Publishes[0].Recipients = append(sf.Publishes[0].Recipients, id2.Recipient().String())
+	if err := saveShares(cfg, sf); err != nil {
+		t.Fatal(err)
+	}
+	var buf2 bytes.Buffer
+	fx2 := &fakeExec{out: map[string]string{"git status": " M x"}, errOn: map[string]error{}, hasOrigin: true}
+	if err := sharePush(context.Background(), cfg, []string{"acme", "--yes"}, &buf2, strings.NewReader(""), fx2.run); err != nil {
+		t.Fatal(err)
+	}
+	// The new recipient must be able to decrypt the re-encrypted file.
+	pt := decryptShare(t, id2, stagedPath)
+	if !strings.Contains(string(pt), "kept content") {
+		t.Fatal("new recipient cannot decrypt after recipient change")
+	}
+}
+
+func TestSharePreviewShowsExactContentWithoutGit(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	want := seedAuthored(t, "project:acme", "Acme decision", "the exact body that will leave")
+	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
+
+	var buf bytes.Buffer
+	if err := sharePreview(cfg, []string{"acme"}, &buf); err != nil {
+		t.Fatalf("sharePreview: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, want) || !strings.Contains(out, "the exact body that will leave") {
+		t.Fatalf("preview missing id or full content:\n%s", out)
 	}
 }

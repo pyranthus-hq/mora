@@ -21,6 +21,7 @@ package mora
 // structurally invisible to all three, and vice versa.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,11 +32,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"filippo.io/age"
+	"github.com/charmbracelet/huh"
+	"github.com/mattn/go-isatty"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // shareFile is the on-disk registry at <ConfigDir>/shares.json — the durable
@@ -219,6 +224,13 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 		if m.Scope != scope || m.DeletedAt != "" || m.Provider != "" {
 			return nil
 		}
+		// The id becomes a filename in the share repo and in every subscriber's
+		// corpus — a hand-edited id with separators or dot-tricks must never
+		// travel (codex review P1). Loud, not skipped: the file IS in the shared
+		// scope, so silently dropping it would falsify the preview.
+		if !shareExportIDRE.MatchString(m.ID) {
+			return fmt.Errorf("memory %s has an id (%q) unsafe for export — rename it to letters/digits/._- before sharing", path, m.ID)
+		}
 		if rp := resolveReal(path); !strings.HasPrefix(rp, realRoot+string(os.PathSeparator)) {
 			return fmt.Errorf("refusing to export: %s resolves outside the memories root", path)
 		}
@@ -393,6 +405,371 @@ func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	return nil
 }
 
+// shareExportIDRE is the hard gate on ids that become filenames in the share
+// repo and in subscriber corpora: safe charset, no separators, no leading dot.
+var shareExportIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// sharePushState is the LOCAL change-detection record for one publish, at
+// <StateDir>/share/publish/<name>.json. Plaintext content hashes stay on this
+// machine by design — putting them in the repo would let anyone holding the
+// ciphertext confirm guessed plaintext. Losing the file is safe: everything is
+// re-encrypted on the next push. It is written only AFTER a successful git
+// push, so a failed push re-publishes rather than silently leaving the remote
+// stale.
+type sharePushState struct {
+	Schema     int               `json:"schema"`
+	Recipients []string          `json:"recipients"`
+	Files      map[string]string `json:"files"`
+}
+
+func sharePushStatePath(cfg Config, name string) string {
+	return filepath.Join(cfg.StateDir, "share", "publish", name+".json")
+}
+
+func loadSharePushState(cfg Config, name string) (sharePushState, error) {
+	st := sharePushState{Schema: shareFileSchema, Files: map[string]string{}}
+	b, err := os.ReadFile(sharePushStatePath(cfg, name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return st, nil
+		}
+		return st, err
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return st, err
+	}
+	if st.Files == nil {
+		st.Files = map[string]string{}
+	}
+	return st, nil
+}
+
+func saveSharePushState(cfg Config, name string, st sharePushState) error {
+	st.Schema = shareFileSchema
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(sharePushStatePath(cfg, name), append(b, '\n'), 0o600)
+}
+
+// shareChanges is one push's delta: what gets (re)encrypted, what gets removed
+// from the staging repo, and the full current id→hash map for the post-push
+// state record.
+type shareChanges struct {
+	Add, Update []Memory
+	RemoveFiles []string          // staged base names to delete (stems shown in preview)
+	Plain       map[string][]byte // id → exact plaintext bytes queued for encryption
+	Current     map[string]string // id → content hash of every exported memory
+	Reencrypt   bool              // recipient set changed: every file re-encrypts
+}
+
+func sortedStrings(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
+}
+
+func computeShareChanges(cfg Config, pub sharePublish, mems []Memory) (shareChanges, error) {
+	ch := shareChanges{Plain: map[string][]byte{}, Current: map[string]string{}}
+	st, err := loadSharePushState(cfg, pub.Name)
+	if err != nil {
+		return ch, err
+	}
+	ch.Reencrypt = !slices.Equal(sortedStrings(pub.Recipients), sortedStrings(st.Recipients))
+	for _, m := range mems {
+		b, err := os.ReadFile(m.Path)
+		if err != nil {
+			return ch, err
+		}
+		h := memory.ContentHash(string(b))
+		ch.Current[m.ID] = h
+		prev, known := st.Files[m.ID]
+		switch {
+		case !known:
+			ch.Add = append(ch.Add, m)
+			ch.Plain[m.ID] = b
+		case ch.Reencrypt || prev != h:
+			ch.Update = append(ch.Update, m)
+			ch.Plain[m.ID] = b
+		}
+	}
+	// Removals are filesystem-driven (not state-driven) so a stray staged file
+	// from a crashed run is cleaned up too: anything under memories/ whose stem
+	// is not currently exported leaves the repo on this push.
+	entries, err := os.ReadDir(filepath.Join(shareStagingDir(cfg, pub.Name), "memories"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ch, err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		stem := strings.TrimSuffix(e.Name(), ".md.age")
+		if _, ok := ch.Current[stem]; !ok || stem == e.Name() {
+			ch.RemoveFiles = append(ch.RemoveFiles, e.Name())
+		}
+	}
+	sort.Strings(ch.RemoveFiles)
+	return ch, nil
+}
+
+func encryptShareBytes(recipients []age.Recipient, plaintext []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := age.Encrypt(&buf, recipients...)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(plaintext); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// resolvePublish picks the named publish, or the only one when unnamed.
+func resolvePublish(sf shareFile, name string) (sharePublish, error) {
+	if name != "" {
+		for _, p := range sf.Publishes {
+			if p.Name == name {
+				return p, nil
+			}
+		}
+		return sharePublish{}, fmt.Errorf("no share named %q — see `mora share list`", name)
+	}
+	switch len(sf.Publishes) {
+	case 0:
+		return sharePublish{}, errors.New("no shares configured — run `mora share init <name> …` first")
+	case 1:
+		return sf.Publishes[0], nil
+	default:
+		return sharePublish{}, errors.New("multiple shares configured — name one: `mora share push <name>`")
+	}
+}
+
+// printPushPreview is the mandatory pre-push preview (#51 P0): the exact files
+// about to leave this machine, every time, before anything is encrypted.
+func printPushPreview(w io.Writer, pub sharePublish, ch shareChanges, nRecipients int) {
+	fmt.Fprintf(w, "share %q — scope %s, encrypted to %d recipient key(s), remote %s\n",
+		pub.Name, pub.Scope, nRecipients, redactCredentials(pub.Remote))
+	if len(ch.Add)+len(ch.Update)+len(ch.RemoveFiles) == 0 {
+		fmt.Fprintf(w, "no changes to publish (%d memories already current)\n", len(ch.Current))
+		return
+	}
+	fmt.Fprintf(w, "will publish %d new, %d updated; remove %d:\n", len(ch.Add), len(ch.Update), len(ch.RemoveFiles))
+	for _, m := range ch.Add {
+		fmt.Fprintf(w, "  + %s\t%s\t(%d bytes)\n", m.ID, m.Title, len(ch.Plain[m.ID]))
+	}
+	for _, m := range ch.Update {
+		fmt.Fprintf(w, "  ~ %s\t%s\t(%d bytes)\n", m.ID, m.Title, len(ch.Plain[m.ID]))
+	}
+	for _, f := range ch.RemoveFiles {
+		fmt.Fprintf(w, "  - %s\t(removed from share)\n", strings.TrimSuffix(f, ".md.age"))
+	}
+	fmt.Fprintf(w, "full content: `mora share preview %s`\n", pub.Name)
+}
+
+// confirmSharePushFn is a test seam like confirmVaultRepointFn: the real gate
+// refuses non-interactive pushes without --yes by design.
+var confirmSharePushFn = confirmSharePush
+
+func confirmSharePush(stdin io.Reader, stdout io.Writer, name string) error {
+	f, ok := stdin.(*os.File)
+	if !ok || !isatty.IsTerminal(f.Fd()) {
+		return fmt.Errorf("refusing to publish non-interactively without --yes — review with `mora share preview %s`, then re-run `mora share push %s --yes`", name, name)
+	}
+	var yes bool
+	confirm := huh.NewConfirm().
+		Title(fmt.Sprintf("Publish share %q to its git remote?", name)).
+		Description("The files listed above leave this machine, age-encrypted.").
+		Affirmative("Publish").
+		Negative("Cancel").
+		Value(&yes)
+	if err := confirm.Run(); err != nil {
+		return err
+	}
+	if !yes {
+		return errors.New("push cancelled — nothing left this machine")
+	}
+	return nil
+}
+
+const sharePushUsage = "usage: mora share push [<name>] [--yes]"
+
+// sharePush publishes one share: preview → confirm → encrypt → commit → push →
+// record state. Ordering is load-bearing: nothing (not even the local staging
+// repo) mutates before the preview is shown and confirmed, the tracked-
+// plaintext hard-stop runs after `git add` and before commit, and the push
+// state is written only after the remote accepted the push.
+func sharePush(ctx context.Context, cfg Config, args []string, stdout io.Writer, stdin io.Reader, run execFunc) error {
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	fs := flag.NewFlagSet("share push", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	yes := fs.Bool("yes", false, "publish without interactive confirmation")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return errors.New(sharePushUsage)
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return err
+	}
+	pub, err := resolvePublish(sf, name)
+	if err != nil {
+		return err
+	}
+	// Mandatory encryption (#51 P0): no recipients — even via a hand-edited
+	// registry — means no push, full stop.
+	recipients, err := parseShareRecipients(pub.Recipients)
+	if err != nil {
+		return fmt.Errorf("share %q cannot encrypt: %w", pub.Name, err)
+	}
+	mems, err := collectShareMemories(cfg, pub.Scope)
+	if err != nil {
+		return err
+	}
+	ch, err := computeShareChanges(cfg, pub, mems)
+	if err != nil {
+		return err
+	}
+	printPushPreview(stdout, pub, ch, len(recipients))
+	if !*yes {
+		if err := confirmSharePushFn(stdin, stdout, pub.Name); err != nil {
+			return err
+		}
+	}
+
+	if _, err := run(ctx, "", "git", "--version"); err != nil {
+		return fmt.Errorf("git is required for sharing but was not found: %w", err)
+	}
+	staging := shareStagingDir(cfg, pub.Name)
+	isRepo, repoErr := vaultRepoState(filepath.Join(staging, ".git"))
+	if repoErr != nil {
+		return repoErr
+	}
+	if !isRepo {
+		return fmt.Errorf("share %q has no staging repo — run `mora share init %s …` first", pub.Name, pub.Name)
+	}
+	origin, err := run(ctx, staging, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return fmt.Errorf("share %q has no usable origin remote (%v) — re-run `mora share init`", pub.Name, err)
+	}
+	// The staging repo's origin must be the remote the grant was created for —
+	// a swapped origin would publish to somewhere the user never approved.
+	if pub.Remote != "" && strings.TrimSpace(origin) != pub.Remote {
+		return fmt.Errorf("staging repo origin (%s) does not match the share's configured remote (%s) — refusing to publish to an unapproved destination", redactCredentials(strings.TrimSpace(origin)), redactCredentials(pub.Remote))
+	}
+	if _, err := run(ctx, staging, "git", "symbolic-ref", "-q", "HEAD"); err != nil {
+		return fmt.Errorf("share staging repo is in detached HEAD — check out a branch before publishing: %w", err)
+	}
+
+	memDir := filepath.Join(staging, "memories")
+	for id, plain := range ch.Plain {
+		ct, err := encryptShareBytes(recipients, plain)
+		if err != nil {
+			return fmt.Errorf("encrypting %s: %w", id, err)
+		}
+		if err := atomicWrite(filepath.Join(memDir, id+".md.age"), ct, 0o644); err != nil {
+			return err
+		}
+	}
+	for _, f := range ch.RemoveFiles {
+		if err := os.Remove(filepath.Join(memDir, f)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	if _, err := run(ctx, staging, "git", "add", "-A"); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+	// Hard stop, mirroring sync git: .gitignore shields only untracked files.
+	// In a share repo the sensitive class is PLAINTEXT (*.md) plus any stray
+	// index/token/identity material.
+	tracked, lsErr := run(ctx, staging, "git", "ls-files", "--",
+		"*.md", "*.db", "*.db-shm", "*.db-wal", "*.token", "tokens", "identity*")
+	if lsErr != nil {
+		return fmt.Errorf("git ls-files: %w", lsErr)
+	}
+	if t := strings.TrimSpace(tracked); t != "" {
+		return fmt.Errorf("refusing to publish: plaintext or sensitive files are git-TRACKED in the share repo:\n%s\nuntrack them first (the working copy is kept): git -C %s rm -r --cached <path>", t, staging)
+	}
+	status, err := run(ctx, staging, "git", "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		commitArgs := append(commitIdentityArgs(ctx, staging, run), "commit", "-m",
+			fmt.Sprintf("mora share push %s %s", pub.Name, time.Now().Format(time.RFC3339)))
+		if _, err := run(ctx, staging, "git", commitArgs...); err != nil {
+			return fmt.Errorf("git commit: %w", err)
+		}
+	}
+	// Always push, even with no content changes — the remote may be behind
+	// after an earlier failed push. Never --force.
+	if _, err := run(ctx, staging, "git", "push", "origin", "HEAD"); err != nil {
+		return fmt.Errorf("git push failed (the share was NOT published): %w", err)
+	}
+	if err := saveSharePushState(cfg, pub.Name, sharePushState{
+		Recipients: sortedStrings(pub.Recipients), Files: ch.Current,
+	}); err != nil {
+		return err
+	}
+	if len(ch.Plain)+len(ch.RemoveFiles) == 0 {
+		fmt.Fprintf(stdout, "share %q pushed — no changes.\n", pub.Name)
+	} else {
+		fmt.Fprintf(stdout, "share %q published: %d memories encrypted, %d removed.\n", pub.Name, len(ch.Plain), len(ch.RemoveFiles))
+	}
+	return nil
+}
+
+// sharePreview prints the EXACT content a push would publish — full raw file
+// bytes, not summaries — plus pending removals. Read-only: no git, no writes.
+func sharePreview(cfg Config, args []string, stdout io.Writer) error {
+	name := ""
+	if len(args) > 0 {
+		if strings.HasPrefix(args[0], "-") || len(args) > 1 {
+			return errors.New("usage: mora share preview [<name>]")
+		}
+		name = args[0]
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		return err
+	}
+	pub, err := resolvePublish(sf, name)
+	if err != nil {
+		return err
+	}
+	mems, err := collectShareMemories(cfg, pub.Scope)
+	if err != nil {
+		return err
+	}
+	ch, err := computeShareChanges(cfg, pub, mems)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "share %q — scope %s: %d memories would be published, encrypted to %d recipient key(s)\n",
+		pub.Name, pub.Scope, len(mems), len(pub.Recipients))
+	for _, m := range mems {
+		b, err := os.ReadFile(m.Path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "\n── %s — %s\n%s", m.ID, m.Title, b)
+	}
+	for _, f := range ch.RemoveFiles {
+		fmt.Fprintf(stdout, "\n── %s — would be REMOVED from the share on next push\n", strings.TrimSuffix(f, ".md.age"))
+	}
+	return nil
+}
+
 const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -415,6 +792,10 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 		return shareKeygen(cfg, stdout)
 	case "init":
 		return shareInit(ctx, cfg, args[1:], stdout, realExec)
+	case "preview":
+		return sharePreview(cfg, args[1:], stdout)
+	case "push":
+		return sharePush(ctx, cfg, args[1:], stdout, stdin, realExec)
 	default:
 		return errors.New(shareUsage)
 	}
