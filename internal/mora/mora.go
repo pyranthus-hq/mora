@@ -1669,6 +1669,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		// Critical because a corrupt registry fails EVERY search/think once it
 		// exists — doctor must not report healthy while recall is down.
 		{Name: "shares_registry_readable", OK: sharesErr == nil, Critical: true},
+		// Mirrors tokens_disjoint_from_vault: the age identity and decrypted
+		// share corpora inside the vault would ride `mora backup`/git-sync.
+		{Name: "share_disjoint_from_vault", OK: shareGuardPaths(cfg) == nil, Critical: true},
 	}
 	healthy := true
 	for _, c := range checks {

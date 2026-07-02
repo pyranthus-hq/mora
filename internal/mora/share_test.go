@@ -1092,7 +1092,7 @@ func TestSearchSkipsNeverPulledSubscription(t *testing.T) {
 	}
 }
 
-func TestSearchCorruptShareIndexFailsLoud(t *testing.T) {
+func TestSearchCorruptShareIndexSelfHealsOrFailsLoud(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
@@ -1111,10 +1111,27 @@ func TestSearchCorruptShareIndexFailsLoud(t *testing.T) {
 	if err := os.WriteFile(shareIndexPath(cfg, "bad"), []byte("not a database"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The index is a derived cache: a garbage index with an empty corpus heals
+	// to an empty share, and local search keeps working.
+	out := run(t, "search", "sqlite")
+	if !strings.Contains(out, "Local sqlite note") || strings.Contains(out, "bad") {
+		t.Fatalf("self-heal of a corpus-less share broke or polluted search:\n%s", out)
+	}
+	// But a heal that CANNOT trust the corpus (unparseable file) fails loud —
+	// silently serving a partial share would violate the honest-failure rule.
+	if err := os.WriteFile(shareIndexPath(cfg, "bad"), []byte("not a database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(shareCorpusDir(cfg, "bad"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shareCorpusDir(cfg, "bad"), "junk.md"), []byte("no frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var buf bytes.Buffer
 	err = Run(context.Background(), []string{"search", "sqlite"}, &buf, &buf, strings.NewReader(""))
-	if err == nil {
-		t.Fatal("corrupt share index silently ignored; honest-failure rule requires a loud error")
+	if err == nil || !strings.Contains(err.Error(), "share pull") {
+		t.Fatalf("broken corpus during heal = %v; want loud error pointing at share pull", err)
 	}
 }
 
@@ -1684,5 +1701,84 @@ func TestShareKeygenHelpHasNoSideEffects(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Run(context.Background(), []string{"share", "keygen", "stray"}, &buf, &buf, strings.NewReader("")); err == nil {
 		t.Fatal("keygen with stray args accepted")
+	}
+}
+
+// The vault egress paths must know about the NEW secret class this feature
+// introduces: the age identity (the only key that decrypts shares sent to this
+// user) and share dirs holding decrypted foreign corpora. If config drift ever
+// co-locates them with the vault, git-sync must shield/refuse them (review
+// finding: vault_dir flips have happened three times in production).
+func TestVaultGitSyncShieldsShareSecrets(t *testing.T) {
+	if !strings.Contains(gitignoreBody, "identity*") || !strings.Contains(gitignoreBody, "share/") {
+		t.Fatalf("vault .gitignore does not shield share identity/dirs:\n%s", gitignoreBody)
+	}
+	cfg := gitSyncTestConfig(t)
+	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := dirtyFake()
+	f.hasOrigin = true
+	f.out["git ls-files"] = "share/identity.txt\n"
+	var out strings.Builder
+	err := syncGit(context.Background(), cfg, nil, &out, f.run)
+	if err == nil || !strings.Contains(err.Error(), "share/identity.txt") {
+		t.Fatalf("tracked share identity must hard-stop the vault sync, got: %v", err)
+	}
+	sawIdentityGlob := false
+	for _, c := range f.calls {
+		if len(c) > 2 && c[1] == "ls-files" {
+			for _, a := range c {
+				if a == "identity*" {
+					sawIdentityGlob = true
+				}
+			}
+		}
+	}
+	if !sawIdentityGlob {
+		t.Fatalf("vault sync ls-files hard-stop does not probe identity*; calls: %v", f.calls)
+	}
+}
+
+// Doctor mirrors tokens_disjoint_from_vault for the share paths: a vault that
+// engulfs the share root or identity dir is a critical data-egress hazard.
+func TestDoctorChecksShareDisjointFromVault(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	var rep struct {
+		Checks []struct {
+			Name string `json:"name"`
+			OK   bool   `json:"ok"`
+		} `json:"checks"`
+	}
+	check := func() (found, ok bool) {
+		out := run(t, "doctor", "--json")
+		if err := json.Unmarshal([]byte(out), &rep); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range rep.Checks {
+			if c.Name == "share_disjoint_from_vault" {
+				return true, c.OK
+			}
+		}
+		return false, false
+	}
+	if found, ok := check(); !found || !ok {
+		t.Fatalf("healthy layout: found=%v ok=%v; want present and ok", found, ok)
+	}
+	// Re-point the vault OVER the whole install root: share dirs + identity
+	// would now live inside the vault.
+	f, err := os.OpenFile(filepath.Join(cfg.ConfigDir, "config.toml"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("vault_dir = \"" + filepath.Dir(cfg.DataDir) + "\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if _, ok := check(); ok {
+		t.Fatal("share_disjoint_from_vault stayed ok with the vault engulfing the share paths")
 	}
 }
