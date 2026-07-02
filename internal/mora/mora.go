@@ -347,6 +347,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdConnect(ctx, args[1:], stdout)
 	case "sync":
 		return cmdSync(ctx, args[1:], stdout)
+	case "share":
+		return cmdShare(ctx, args[1:], stdout, stdin)
 	case "reingest":
 		return cmdReingest(ctx, args[1:], stdout)
 	case "think":
