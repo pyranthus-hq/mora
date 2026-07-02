@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"filippo.io/age"
 )
 
 // `mora share --help` (and the bare family verb) must print usage and cause zero
@@ -132,5 +134,65 @@ func TestSharePathsOutsideVault(t *testing.T) {
 		if err == nil && !strings.HasPrefix(rel, "..") {
 			t.Fatalf("share path %q is inside the vault %q", p, cfg.VaultDir)
 		}
+	}
+}
+
+func TestShareKeygenCreatesIdentityAndRefusesOverwrite(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	out := run(t, "share", "keygen")
+	if !strings.Contains(out, "age1") {
+		t.Fatalf("keygen did not print a public key:\n%s", out)
+	}
+	ids, err := loadShareIdentities(cfg)
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("loadShareIdentities = %v, %v; want one identity", ids, err)
+	}
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(shareIdentityPath(cfg))
+		if err != nil {
+			t.Fatalf("stat identity: %v", err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("identity mode = %v; want 0600", fi.Mode().Perm())
+		}
+	}
+
+	var buf bytes.Buffer
+	err = Run(context.Background(), []string{"share", "keygen"}, &buf, &buf, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("second keygen = %v; want refuse-to-overwrite error", err)
+	}
+}
+
+func TestLoadShareIdentitiesMissingIsActionable(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	_, err := loadShareIdentities(cfg)
+	if err == nil || !strings.Contains(err.Error(), "mora share keygen") {
+		t.Fatalf("missing identity error = %v; want pointer to `mora share keygen`", err)
+	}
+}
+
+func TestParseShareRecipients(t *testing.T) {
+	if _, err := parseShareRecipients(nil); err == nil {
+		t.Fatal("empty recipient list accepted; sharing must refuse without encryption keys")
+	}
+	if _, err := parseShareRecipients([]string{"garbage"}); err == nil {
+		t.Fatal("garbage recipient accepted")
+	}
+	if _, err := parseShareRecipients([]string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPuh4bTTh2mkV2kbwCuvsWG6SGuvbUf4DvOJzKZ9d9d9"}); err == nil {
+		t.Fatal("ssh recipient accepted; v1 is X25519-only")
+	}
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseShareRecipients([]string{" " + id.Recipient().String() + " "})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("valid X25519 recipient rejected: %v", err)
 	}
 }

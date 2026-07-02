@@ -24,10 +24,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"time"
+
+	"filippo.io/age"
 )
 
 // shareFile is the on-disk registry at <ConfigDir>/shares.json — the durable
@@ -82,9 +87,15 @@ func shareStagingDir(cfg Config, name string) string {
 func shareSubRoot(cfg Config, name string) string {
 	return filepath.Join(cfg.DataDir, "share", "subs", name)
 }
-func shareRepoDir(cfg Config, name string) string   { return filepath.Join(shareSubRoot(cfg, name), "repo") }
-func shareCorpusDir(cfg Config, name string) string { return filepath.Join(shareSubRoot(cfg, name), "corpus") }
-func shareIndexPath(cfg Config, name string) string { return filepath.Join(shareSubRoot(cfg, name), "index.db") }
+func shareRepoDir(cfg Config, name string) string {
+	return filepath.Join(shareSubRoot(cfg, name), "repo")
+}
+func shareCorpusDir(cfg Config, name string) string {
+	return filepath.Join(shareSubRoot(cfg, name), "corpus")
+}
+func shareIndexPath(cfg Config, name string) string {
+	return filepath.Join(shareSubRoot(cfg, name), "index.db")
+}
 
 func loadShares(cfg Config) (shareFile, error) {
 	var sf shareFile
@@ -112,6 +123,65 @@ func saveShares(cfg Config, sf shareFile) error {
 	return atomicWrite(sharesPath(cfg), append(b, '\n'), 0o600)
 }
 
+// The subscriber's age identity. Lives beside the OAuth tokens in ConfigDir —
+// a secret, 0600, never inside the vault and never inside any share repo.
+func shareIdentityPath(cfg Config) string {
+	return filepath.Join(cfg.ConfigDir, "share", "identity.txt")
+}
+
+// shareKeygen mints the machine's one age X25519 identity and prints the public
+// key for out-of-band exchange with publishers. It never overwrites: the
+// identity is the only key that can decrypt shares already sent to it.
+func shareKeygen(cfg Config, stdout io.Writer) error {
+	path := shareIdentityPath(cfg)
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("share identity already exists at %s — refusing to overwrite (it is the only key that can decrypt shares sent to you)", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf("# created: %s\n# public key: %s\n%s\n",
+		time.Now().Format(time.RFC3339), id.Recipient(), id)
+	if err := atomicWrite(path, []byte(body), 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "share identity written to %s — never share or commit this file\n", path)
+	fmt.Fprintf(stdout, "your public key (give this to people who want to share memories with you):\n%s\n", id.Recipient())
+	return nil
+}
+
+func loadShareIdentities(cfg Config) ([]age.Identity, error) {
+	f, err := os.Open(shareIdentityPath(cfg))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("no share identity at %s — run `mora share keygen` first", shareIdentityPath(cfg))
+		}
+		return nil, err
+	}
+	defer f.Close()
+	return age.ParseIdentities(f)
+}
+
+// parseShareRecipients accepts age X25519 public keys only (v1). An empty list
+// is an error by design: sharing without encryption does not exist.
+func parseShareRecipients(keys []string) ([]age.Recipient, error) {
+	if len(keys) == 0 {
+		return nil, errors.New("at least one --recipient age public key is required — shares are always encrypted")
+	}
+	out := make([]age.Recipient, 0, len(keys))
+	for _, k := range keys {
+		r, err := age.ParseX25519Recipient(strings.TrimSpace(k))
+		if err != nil {
+			return nil, fmt.Errorf("invalid recipient %q (v1 accepts age X25519 public keys only; the other party runs `mora share keygen` to get one): %w", k, err)
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -122,7 +192,13 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 		_, err := io.WriteString(stdout, shareUsage+"\n")
 		return err
 	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
 	switch args[0] {
+	case "keygen":
+		return shareKeygen(cfg, stdout)
 	default:
 		return errors.New(shareUsage)
 	}
