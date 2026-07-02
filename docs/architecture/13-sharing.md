@@ -6,37 +6,37 @@
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `internal/mora/share.go` | ~1500 | The whole subsystem: registry, keygen, export filter, staging/push, subscribe/pull/import, share index, query-time union, list/remove, path guard. |
-| `internal/mora/share_test.go` | ~1300 | End-to-end coverage with real age crypto + the `fakeExec` git seam (no network, no git binary needed). |
+| `internal/mora/share.go` | ~1700 | The whole subsystem: registry, keygen, export filter, staging/push, subscribe/pull/import, share index, query-time union, list/remove, path guard. |
+| `internal/mora/share_test.go` | ~1800 | End-to-end coverage with real age crypto + the `fakeExec` git seam (no network, no git binary needed). |
 | `internal/mora/gitsync.go` | 299 | Reused trust primitives: `execFunc`/`realExec` + `redactCredentials` (`gitsync.go:20-48`), `vaultRepoState` plain-`.git` guard (`gitsync.go:228`), `configureRemote` (`gitsync.go:265`), `commitIdentityArgs` (`gitsync.go:245`). |
 
 ## The two sides
 
-**Publish** (`shareInit` `share.go:301`, `sharePush` `share.go:607`):
+**Publish** (`shareInit` `share.go:322`, `sharePush` `share.go:651`):
 
 ```mermaid
 flowchart LR
-    V[vault memories/ scope match] -->|collectShareMemories :201| X[export set]
+    V[vault memories/ scope match] -->|collectShareMemories :203| X[export set]
     X -->|preview + confirm| E[age encrypt per recipient]
     E --> S[staging repo DataDir/share/publish/name]
     S -->|git add -A → ls-files hard-stop → commit → push origin HEAD| R[(private remote)]
 ```
 
-**Subscribe** (`shareSubscribe` `share.go:987`, `sharePull` `share.go:1064`, `shareImport` `share.go:813`):
+**Subscribe** (`shareSubscribe` `share.go:1061`, `sharePull` `share.go:1164`, `shareImport` `share.go:871`):
 
 ```mermaid
 flowchart LR
     R[(private remote)] -->|clone / pull --ff-only| C[repo DataDir/share/subs/name/repo]
     C -->|decrypt + validate| P[corpus/*.md plaintext]
-    P -->|rebuildShareIndex :921| I[(index.db per share)]
-    I -->|unionSharedResults :1220| Q[search / think, owner-attributed]
+    P -->|rebuildShareIndex :995| I[(index.db per share)]
+    I -->|unionSharedResults :1386| Q[search / think, owner-attributed]
 ```
 
-State lives in three places: the grant registry `<ConfigDir>/shares.json` (`loadShares`/`saveShares`, 0600), the subscriber's age identity `<ConfigDir>/share/identity.txt` (`shareKeygen` `share.go:144`, 0600, never overwritten), and the publisher's local change-detection record `<StateDir>/share/publish/<name>.json` (`sharePushStatePath` `share.go:426`) — plaintext content hashes that deliberately never enter the repo (they would let a ciphertext holder confirm guessed plaintext).
+State lives in three places: the grant registry `<ConfigDir>/shares.json` (`loadShares`/`saveShares`, 0600), the subscriber's age identity `<ConfigDir>/share/identity.txt` (`shareKeygen` `share.go:146`, 0600, never overwritten), and the publisher's local change-detection record `<StateDir>/share/publish/<name>.json` (`sharePushStatePath` `share.go:459`) — plaintext content hashes that deliberately never enter the repo (they would let a ciphertext holder confirm guessed plaintext).
 
 ## What may be exported
 
-`collectShareMemories` (`share.go:201`) is the entire answer to "what can leave":
+`collectShareMemories` (`share.go:203`) is the entire answer to "what can leave":
 
 - Walks `VaultDir/memories` **only** — connector evidence under `sources/` is structurally out of reach (provider-derived IDs collide across vaults, `meta` carries participant PII, `att_` paths are machine-local).
 - Frontmatter `scope` exact-match; the scope itself must match `^(personal|global|project:[A-Za-z0-9][A-Za-z0-9._-]*)$` **before** any filesystem access.
@@ -44,15 +44,15 @@ State lives in three places: the grant registry `<ConfigDir>/shares.json` (`load
 
 ## Query-time union
 
-`unionSharedResults` (`share.go:1220`) is called from exactly two seams: `defaultSearch` (`hybrid.go`) — covering `mora search` CLI and MCP `search_memory` — and `buildThink` (`think.go`). With zero subscriptions it returns the local slice **unchanged**, so the no-share path is byte-identical (the T0 MCP budget gate depends on this). With subscriptions it rank-fuses (RRF, `rrfWeighted`) the local list against each share's BM25 list: local arm weight 1.5 (the hybrid fusion's strongest-arm anchor), all shares together share 1.0 (`share.go` fusion constants) so multiple subscriptions cannot collectively out-vote the user's own vault. Results carry `Memory.Owner` (= subscription name, `omitempty`); `ThinkEvidence.Owner` and a `(shared:<owner>, …)` prompt line label think evidence.
+`unionSharedResults` (`share.go:1386`) is called from exactly two seams: `defaultSearch` (`hybrid.go`) — covering `mora search` CLI and MCP `search_memory` — and `buildThink` (`think.go`). With zero subscriptions it returns the local slice **unchanged**, so the no-share path is byte-identical (the T0 MCP budget gate depends on this). With subscriptions it rank-fuses (RRF, `rrfWeighted`) the local list against each share's BM25 list: local arm weight 1.5 (the hybrid fusion's strongest-arm anchor), all shares together share 1.0 (`share.go` fusion constants) so multiple subscriptions cannot collectively out-vote the user's own vault. Results carry `Memory.Owner` (= subscription name, `omitempty`); `ThinkEvidence.Owner` and a `(shared:<owner>, …)` prompt line label think evidence.
 
-Each share index is a schema-compatible subset (`memories` + `memories_fts`, `user_version` stamped) built by `rebuildShareIndex` (`share.go:921`) — FTS-only, no vectors/graph/entities — and opened only via `openShareIndexRO` (`share.go:961`): direct DSN with `query_only(1)` pragma, never `openIndexRO`, whose auto-heal would rebuild the file from the wrong (personal) vault.
+Each share index is a schema-compatible subset (`memories` + `memories_fts`, `user_version` stamped) built by `rebuildShareIndex` (`share.go:995`) — FTS-only, no vectors/graph/entities — and opened only via `openShareIndexRO` (`share.go:1035`): direct DSN with `query_only(1)` pragma, never `openIndexRO`, whose auto-heal would rebuild the file from the wrong (personal) vault. Like the personal index, it self-heals from its own source of truth: a corrupt or schema-stale file is rebuilt from the decrypted corpus (`healShareIndex` `share.go:1226`), so an `indexSchemaVersion` bump in an upgrade never bricks a subscriber. Shared ids returned by search resolve to full text on the read-only surfaces (`mora read`, MCP `read_memory`) via a direct corpus lookup (`findSharedMemory` `share.go:1255`); delete paths never take that fallback.
 
 ## Invariants & gotchas
 
 - **The subscriber's vault and identity graph are never mutated by a share.** Everything share-related lives under `<DataDir>/share/`; the personal index walk covers only `memories/`+`sources/`, `mora backup` tars only the vault, vault git-sync stages only the vault, and `delete_memory` can only reach the two vault roots. *Why:* #51's core guarantee — reading someone must never rewrite you.
-- **`shareGuardPaths` (`share.go:1479`) refuses every share verb when the share root or identity dir resolves inside the vault.** `data_dir` is user-configurable and may be co-located with the vault; without the guard a subscriber's DECRYPTED corpus would ride the vault backup/git-sync. Resolution walks symlinks through the deepest existing ancestor (`resolveRealDeep`). *Why:* placement is the security boundary, so it is enforced at runtime, not assumed.
-- **Encryption is mandatory and structural.** `push` refuses without a parseable recipient key (even a hand-edited registry), only `*.md.age` is ever written into staging, the staging `.gitignore` excludes `*.md`, and the post-`git add` `ls-files` hard-stop (mirroring `sync git`) refuses to commit tracked plaintext/db/token/identity files. `doctor` runs `share_staging_clean` and discloses every publish. *Why:* "unencrypted share" must be unrepresentable, not discouraged.
+- **`shareGuardPaths` (`share.go:1648`) refuses every share verb when the share root or identity dir resolves inside the vault.** `data_dir` is user-configurable and may be co-located with the vault; without the guard a subscriber's DECRYPTED corpus would ride the vault backup/git-sync. Resolution walks symlinks through the deepest existing ancestor (`resolveRealDeep`). *Why:* placement is the security boundary, so it is enforced at runtime, not assumed.
+- **Encryption is mandatory and structural.** `push` refuses without a parseable recipient key (even a hand-edited registry), only `*.md.age` is ever written into staging, the staging `.gitignore` excludes `*.md`, and the post-`git add` `ls-files` hard-stop is an ALLOWLIST (stronger than `sync git`'s denylist): any tracked path other than `.gitignore`, `share.json`, and safe-named `memories/*.md.age` refuses the push, so a stray file can never leave unpreviewed. `doctor` runs `share_staging_clean` and discloses every publish. *Why:* "unencrypted share" must be unrepresentable, not discouraged.
 - **Preview before anything mutates.** `sharePush` prints the exact add/update/remove list (and `share preview` the full content) *before* the confirm gate; non-TTY without `--yes` is refused (`confirmSharePushFn` seam, mirroring `confirmVaultRepointFn`). *Why:* #51 P0 — the user sees exactly what leaves, every time.
 - **Push state is recorded only after a successful `git push`.** A failed push re-publishes next run instead of silently leaving the remote stale; `push` always pushes even with no content changes for the same reason. Never `--force`; origin must match the registry remote (`sharePush` origin check) so a swapped origin cannot exfiltrate to an unapproved destination. *Why:* honest-snapshot rule applied to egress.
 - **Imported repo content is untrusted input.** Non-regular files, unsafe names, id-spoofs (frontmatter id ≠ filename stem), scope mismatches vs the manifest, and >4 MiB memories all abort the import; the attribution label is the **subscriber-chosen** subscription name, never publisher-controlled manifest metadata. `pull` is `--ff-only`: a publisher history rewrite fails loudly with a re-subscribe pointer. *Why:* a chosen counterparty is still not a trusted code path.

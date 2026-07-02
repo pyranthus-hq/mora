@@ -499,6 +499,7 @@ Receiving side:
 mora share subscribe neil --remote git@github.com:them/acme-share.git
 mora share pull                # fetch what they've published since (--ff-only)
 mora search "launch"           # shared hits appear as "[neil] …"; --json/MCP results carry "owner"
+mora read <id>                 # expands a shared search hit to its full text
 mora share remove neil --yes   # unsubscribe: deletes the local corpus; your vault was never touched
 ```
 
