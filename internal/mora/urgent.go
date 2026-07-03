@@ -3,7 +3,7 @@ package mora
 import (
 	"strings"
 	"time"
-	"unicode/utf8"
+	"unicode"
 )
 
 // urgent.go — issue #62 defect 2/4: the item-level "Urgent" lane. Ranking (salience.go)
@@ -139,31 +139,69 @@ func withinUrgentRecency(t, now time.Time) bool {
 	return !t.IsZero() && t.After(now.Add(-urgentRecencyWindow))
 }
 
-// matchDeadlinePhrase returns the first urgentDeadlinePhrases entry found in the
-// normalized (lower-cased, whitespace-collapsed) subject+body, or "".
+// matchDeadlinePhrase returns the first urgentDeadlinePhrases entry that occurs in the
+// normalized subject+body as a whole word-run that is NOT immediately negated, or "".
+// Word boundaries stop "urgent" from firing inside "insurgents"; the negation guard
+// stops "not urgent" / "no signature required" from landing a reassuring email on the
+// shelf.
 func matchDeadlinePhrase(title, body string) string {
-	norm := strings.ToLower(strings.Join(strings.Fields(title+" "+body), " "))
+	// Space-pad so a phrase at the very start/end still has a boundary on both sides.
+	norm := " " + strings.ToLower(strings.Join(strings.Fields(title+" "+body), " ")) + " "
 	for _, p := range urgentDeadlinePhrases {
-		if strings.Contains(norm, p) {
+		if deadlinePhraseHit(norm, p) {
 			return p
 		}
 	}
 	return ""
 }
 
+// deadlinePhraseHit reports whether phrase occurs in the space-padded, lower-cased norm
+// flanked by non-word bytes and not immediately preceded by a negator.
+func deadlinePhraseHit(norm, phrase string) bool {
+	for from := 0; ; {
+		i := strings.Index(norm[from:], phrase)
+		if i < 0 {
+			return false
+		}
+		i += from
+		if !isWordByte(norm[i-1]) && !isWordByte(norm[i+len(phrase)]) && !immediatelyNegated(norm[:i]) {
+			return true
+		}
+		from = i + 1
+	}
+}
+
+func isWordByte(b byte) bool { return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' }
+
+// deadlineNegators are the tokens that, immediately before a deadline phrase, flip its
+// meaning ("not urgent", "no rush", "no signature required").
+var deadlineNegators = map[string]bool{
+	"not": true, "no": true, "never": true, "without": true, "non": true,
+	"isn't": true, "aren't": true, "wasn't": true, "won't": true, "don't": true, "doesn't": true,
+}
+
+// immediatelyNegated reports whether the token right before the phrase is a negator.
+func immediatelyNegated(prefix string) bool {
+	prefix = strings.TrimRight(prefix, " ")
+	last := prefix
+	if j := strings.LastIndexByte(prefix, ' '); j >= 0 {
+		last = prefix[j+1:]
+	}
+	return deadlineNegators[last]
+}
+
 // urgentSnippet builds the shelf snippet (defect 4): a window centered on the deadline
 // phrase (where the actual ask lives) rather than snippetTail's blind end-clip (which
-// systematically showed sign-offs / P.S. lines). With no phrase it leads with the
-// HEAD of the body. The leading "From: <addr>" envelope line is stripped.
+// systematically showed sign-offs / P.S. lines). With no phrase it leads with the HEAD
+// of the body. The leading "From: <header>" envelope line is stripped in full.
 func urgentSnippet(text string, n int, phrase string) string {
 	if n <= 0 {
 		n = digestSnippetLen
 	}
-	clean := stripFromPrefix(strings.Join(strings.Fields(text), " "))
+	clean := strings.Join(strings.Fields(stripFromLine(text)), " ")
 	runes := []rune(clean)
 	if phrase != "" {
-		if bi := strings.Index(strings.ToLower(clean), strings.ToLower(phrase)); bi >= 0 {
-			ri := len([]rune(clean[:snapRuneBoundary(clean, bi)]))
+		if ri := runeIndexFold(runes, phrase); ri >= 0 {
 			start := ri - urgentSnippetLead
 			if start < 0 {
 				start = 0
@@ -188,28 +226,39 @@ func urgentSnippet(text string, n int, phrase string) string {
 	return strings.TrimSpace(string(runes[:n])) + "…"
 }
 
-// stripFromPrefix drops a leading "From: <addr> " envelope line (gmail bodies are
-// stored as "From: <from>\n\n<body>"), so a head snippet leads with the body's ask.
-func stripFromPrefix(s string) string {
-	const p = "From: "
-	if !strings.HasPrefix(s, p) {
-		return s
+// stripFromLine drops a leading "From: <header>" envelope line from a RAW connector body
+// (gmail stores "From: <raw From header>\n\n<body>"), using the LINE boundary so a
+// multi-word display name ("Jane Smith <jane@…>") is dropped in full. No such line =>
+// returned unchanged.
+func stripFromLine(text string) string {
+	if !strings.HasPrefix(text, "From: ") {
+		return text
 	}
-	rest := s[len(p):]
-	if i := strings.IndexByte(rest, ' '); i >= 0 {
-		return strings.TrimSpace(rest[i+1:])
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		return strings.TrimSpace(text[i+1:])
 	}
-	return ""
+	return "" // a single-line "From: ..." with no body has nothing to show.
 }
 
-// snapRuneBoundary clamps a byte index to the nearest rune-start at or below it, so a
-// byte offset from a case-folded search never splits a multibyte rune.
-func snapRuneBoundary(s string, i int) int {
-	if i >= len(s) {
-		return len(s)
+// runeIndexFold returns the RUNE index of the first case-insensitive occurrence of
+// phrase in runes, or -1. It folds per-rune, so it never suffers the byte-length drift
+// a ToLower-then-byte-index would introduce for non-ASCII text before the phrase.
+func runeIndexFold(runes []rune, phrase string) int {
+	p := []rune(strings.ToLower(phrase))
+	if len(p) == 0 {
+		return 0
 	}
-	for i > 0 && !utf8.RuneStart(s[i]) {
-		i--
+	for i := 0; i+len(p) <= len(runes); i++ {
+		ok := true
+		for j := range p {
+			if unicode.ToLower(runes[i+j]) != p[j] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return i
+		}
 	}
-	return i
+	return -1
 }

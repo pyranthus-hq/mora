@@ -14,7 +14,7 @@ func TestMapItemExcludesLabelsFromContentHash(t *testing.T) {
 		}
 		return Item{Kind: "gmail_thread", ProviderID: "t1", Title: "Sub", Body: "Body", Meta: meta}
 	}
-	h0 := MapItem(mk(nil), "global", 0).ContentHash                            // pre-labels ingest
+	h0 := MapItem(mk(nil), "global", 0).ContentHash                             // pre-labels ingest
 	h1 := MapItem(mk([]string{"UNREAD", "IMPORTANT"}), "global", 0).ContentHash // re-ingest with labels
 	h2 := MapItem(mk([]string{"IMPORTANT"}), "global", 0).ContentHash           // read: UNREAD dropped
 	if h0 != h1 || h1 != h2 {

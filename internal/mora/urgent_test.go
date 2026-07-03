@@ -98,6 +98,41 @@ func TestUrgentSnippetStripsFromPrefix(t *testing.T) {
 	}
 }
 
+// Review finding: stripFromPrefix under-stripped a "Display Name <addr>" From header,
+// leaving name+address cruft in the flagship urgent snippet.
+func TestUrgentSnippetStripsDisplayNameFrom(t *testing.T) {
+	body := "From: Jane Smith <jane@client.com>\n\nThe deadline is tomorrow, please review."
+	s := urgentSnippet(body, 200, "")
+	if strings.Contains(s, "jane@client.com") || strings.Contains(s, "Jane Smith") {
+		t.Fatalf("snippet must strip the WHOLE From line (display name + address); got %q", s)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(s), "The deadline") {
+		t.Fatalf("snippet must lead with the body; got %q", s)
+	}
+}
+
+// Review finding: matchDeadlinePhrase substring-matched negations.
+func TestMatchDeadlinePhraseIgnoresNegation(t *testing.T) {
+	if got := matchDeadlinePhrase("Heads up", "this is not urgent, no rush at all"); got != "" {
+		t.Fatalf("negated urgency must not match; got %q", got)
+	}
+	if got := matchDeadlinePhrase("Re", "please sign by end of day today"); got == "" {
+		t.Fatalf("a genuine deadline phrase must still match")
+	}
+	// Word boundary: "urgent" inside "insurgents" must not match.
+	if got := matchDeadlinePhrase("News", "the insurgents advanced overnight"); got != "" {
+		t.Fatalf("a phrase embedded in a larger word must not match; got %q", got)
+	}
+}
+
+func TestIsUrgentNegatedPhraseNotUrgent(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("frank@acme.com", "Re: proposal", "No rush on this, it's not urgent — whenever you get to it.", now.Add(-1*time.Hour))
+	if ok, _ := isUrgent(m, now); ok {
+		t.Fatalf("a reassuring 'not urgent' email must not reach the shelf")
+	}
+}
+
 // Issue #62 defect 2 (enrichment): Gmail actionability labels enrich the gate. A
 // user-STARRED recent human email reaches the shelf even without a deadline phrase
 // (an explicit user signal), but UNREAD+IMPORTANT alone must not (too noisy as a gate).

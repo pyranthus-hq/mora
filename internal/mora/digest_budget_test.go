@@ -66,6 +66,54 @@ func TestBudgetMarkdownDropsTailItemAndReportsSurvivors(t *testing.T) {
 	}
 }
 
+// TestBudgetMarkdownShelfBoundedBySmallBudget (review finding, codex #3): the Urgent
+// shelf is highest-priority but still budget-bounded — a budget too small for the whole
+// shelf keeps only the fitting items as SURVIVORS and folds the rest into UrgentMore, so
+// the "survived ⟹ rendered" invariant holds even when the shelf overflows the budget.
+func TestBudgetMarkdownShelfBoundedBySmallBudget(t *testing.T) {
+	d := Digest{
+		Generated: "2026-07-02T00:00:00Z",
+		Urgent: []DigestItem{
+			{ID: "u1", Title: "Urgent one", Snippet: "sign by eod", Source: "gmail", Change: "new"},
+			{ID: "u2", Title: "Urgent two", Snippet: "sign by eod", Source: "gmail", Change: "new"},
+			{ID: "u3", Title: "Urgent three", Snippet: "sign by eod", Source: "gmail", Change: "new"},
+		},
+	}
+	// Budget fits the header + shelf chrome + a single urgent item line.
+	budget := len(renderDigestHeader(d)) + 64 + len(renderDigestItemLine(d.Urgent[0]))
+
+	bd, survived := budgetDigestForMarkdown(d, budget)
+
+	kept := 0
+	for _, it := range d.Urgent {
+		if survived[it.ID] {
+			kept++
+		}
+	}
+	if kept == 0 || kept == len(d.Urgent) {
+		t.Fatalf("small budget must PARTIALLY bound the shelf; kept=%d of %d", kept, len(d.Urgent))
+	}
+	// The invariant: EVERY survived id renders in the budgeted output (no clipped survivor).
+	out := renderDigest(bd, budget)
+	for id := range survived {
+		if !strings.Contains(out, "(id: "+id+")") {
+			t.Fatalf("survived id %q missing from the rendered brief (survived⟹rendered violated):\n%s", id, out)
+		}
+	}
+	if bd.UrgentMore != len(d.Urgent)-kept {
+		t.Fatalf("overflow urgent items must fold into UrgentMore; got %d want %d", bd.UrgentMore, len(d.Urgent)-kept)
+	}
+}
+
+// TestBriefSurfacedCountIncludesUrgent (review finding, codex #2): an urgent-only delta
+// must not be treated as empty (which would drop the shelf via the 24h window fallback).
+func TestBriefSurfacedCountIncludesUrgent(t *testing.T) {
+	d := Digest{Urgent: []DigestItem{{ID: "g1", Title: "Deadline"}}}
+	if briefSurfacedItemCount(d) == 0 {
+		t.Fatalf("a digest whose only surfaced item is on the urgent shelf must not count as empty")
+	}
+}
+
 // TestBudgetMarkdownAllFitAllSurvive: a generous budget keeps everything and
 // reports every item id as a survivor (the common, non-truncating case).
 func TestBudgetMarkdownAllFitAllSurvive(t *testing.T) {

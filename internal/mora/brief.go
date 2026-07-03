@@ -431,7 +431,10 @@ func filteredBriefDigest(cfg Config, now time.Time, opts briefOpts) (Digest, err
 // to the 24h window. A digest with zero surfaced items everywhere is the
 // post-advance common case the fallback exists to rescue (T-16-04).
 func briefSurfacedItemCount(d Digest) int {
-	n := 0
+	// The Urgent shelf counts too (issue #62): its items are lifted OUT of the sections,
+	// so ignoring them would treat an urgent-only delta as empty and fall back to the
+	// 24h window — dropping the very shelf the delta produced.
+	n := len(d.Urgent)
 	for _, s := range d.Sections {
 		n += len(s.Items)
 	}

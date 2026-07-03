@@ -80,7 +80,7 @@ type DigestSection struct {
 // for deterministic tests; it (and the cold-start cutoff) is canonicalized to UTC
 // for byte-stability without disturbing the DST-safe window math.
 type Digest struct {
-	Generated string `json:"generated"`
+	Generated  string `json:"generated"`
 	SinceHours int    `json:"since_hours"`
 	// Urgent is the item-level shelf (issue #62 defect 2): deadline-bearing items from
 	// known humans, lifted ABOVE the sections and budget-protected so they always
@@ -322,6 +322,7 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 	cutoff := now.Add(-window)
 	forward := now.Add(window)
 	var sections []DigestSection
+	var urgentAll []urgentEntry
 	for _, key := range sortedInstanceKeys(byInstance) {
 		if !digestSourceMatches(key, sourceFilter) {
 			continue
@@ -347,6 +348,17 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 			} else if ts.Before(cutoff) || ts.After(now) {
 				continue
 			}
+			// Urgent items lead the brief on the cross-source shelf here too (issue #62),
+			// so the empty-delta window fallback never buries a recent deadline email.
+			if ok, phrase := isUrgent(m, now); ok {
+				urgentAll = append(urgentAll, urgentEntry{
+					item:       urgentItemFor(cfg, m, key, "", phrase),
+					occurredAt: itemOccurredAt(m),
+					sal:        memSal[m.ID],
+					score:      urgencyScore(m, phrase),
+				})
+				continue
+			}
 			it := digestItemFor(cfg, m, key, "")
 			it.LowSignal = isLowSignalItem(m, "", now)
 			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
@@ -360,10 +372,13 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 		sections = append(sections, DigestSection{Source: key, Items: items, MoreCount: more + collapsed, Truncated: more > 0})
 	}
 	sortSections(sections)
+	shelf, shelfMore := assembleUrgentShelf(urgentAll)
 	stale, _ := staleTasks(cfg, 3)
 	return Digest{
 		Generated:  now.UTC().Format(time.RFC3339),
 		SinceHours: sinceHours,
+		Urgent:     shelf,
+		UrgentMore: shelfMore,
 		Sections:   sections,
 		Freshness:  sourceFreshness(cfg),
 		StaleTasks: stale,
@@ -1178,7 +1193,7 @@ func renderDigestUrgentShelf(d Digest) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n## ⚠ Urgent (%d)\n", len(d.Urgent))
+	b.WriteString(renderDigestUrgentHeading(len(d.Urgent)))
 	for _, it := range d.Urgent {
 		b.WriteString(renderDigestItemLine(it))
 	}
@@ -1186,6 +1201,12 @@ func renderDigestUrgentShelf(d Digest) string {
 		fmt.Fprintf(&b, "- +%d more urgent\n", d.UrgentMore)
 	}
 	return b.String()
+}
+
+// renderDigestUrgentHeading renders the shelf heading; factored so the budgeter can
+// cost it exactly when fitting shelf items to the budget.
+func renderDigestUrgentHeading(n int) string {
+	return fmt.Sprintf("\n## ⚠ Urgent (%d)\n", n)
 }
 
 // renderDigestBody renders a digest to Markdown with NO budget clip — the digest is
@@ -1242,24 +1263,48 @@ func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
 	if budget <= 0 {
 		budget = defaultContextTokens * charsPerToken
 	}
-	// Reserve the always-included CHROME so the budget only ever trades off item
-	// BODIES, and a survivor's line is never clipped by heading/more-line overshoot:
-	// the header, freshness, the protected Urgent shelf (issue #62 defect 2), the
-	// open-tasks block, and — per section — its heading plus a possible "+N more" line
-	// (charged at the full count, so the reservation is never an under-estimate). The
-	// shelf's ids are recorded as survivors so the watermark commit reflects that the
-	// protected shelf rendered.
-	reserve := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) +
-		len(renderDigestUrgentShelf(d)) + len(renderDigestStaleTasks(d))
+	out := d
+
+	// The Urgent shelf leads and is highest-priority, but still budget-bounded so the
+	// "survived ⟹ rendered" invariant holds even when the shelf ALONE overflows the
+	// budget: fit as many shelf items as the header/freshness/open-tasks frame leaves
+	// room for, mark ONLY those as survivors, and fold the rest into UrgentMore
+	// (unrendered => NOT committed => re-surfaces next run). At the normal budget the
+	// whole shelf (≤ urgentShelfCap items) fits and nothing is trimmed.
+	frame := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) + len(renderDigestStaleTasks(d))
+	if len(d.Urgent) > 0 {
+		// Reserve the shelf heading (costed exactly at the full count, an over-estimate
+		// of the possibly-fewer fitted count). No "+N more urgent" reserve: if trimming
+		// makes that line render, the only possible overshoot lands in the tail
+		// section-shells (no survived ids), never the front-rendered shelf.
+		used := frame + len(renderDigestUrgentHeading(len(d.Urgent)))
+		fit := 0
+		for _, it := range d.Urgent {
+			c := len(renderDigestItemLine(it))
+			if used+c > budget {
+				break
+			}
+			used += c
+			survived[it.ID] = true
+			fit++
+		}
+		if fit < len(d.Urgent) {
+			out.Urgent = append([]DigestItem(nil), d.Urgent[:fit]...)
+			out.UrgentMore = d.UrgentMore + (len(d.Urgent) - fit)
+		}
+	}
+
+	// Sections budget against what remains after the frame + the (now bounded) shelf +
+	// each section's CHROME (heading + a possible "+N more" line, charged at the full
+	// count so the reservation is never an under-estimate). This keeps the budget a
+	// trade-off of item BODIES only, so a survivor's line is never clipped by overshoot.
+	reserve := frame + len(renderDigestUrgentShelf(out))
 	for _, s := range d.Sections {
 		reserve += len(renderDigestSectionHeading(s)) + len(renderDigestMoreLine(len(s.Items)+s.MoreCount))
 	}
 	remaining := budget - reserve
 	if remaining < 0 {
 		remaining = 0
-	}
-	for _, it := range d.Urgent {
-		survived[it.ID] = true
 	}
 
 	n := len(d.Sections)
@@ -1296,7 +1341,6 @@ func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
 		}
 	}
 
-	out := d
 	out.Sections = make([]DigestSection, 0, n)
 	for i, s := range d.Sections {
 		switch {
