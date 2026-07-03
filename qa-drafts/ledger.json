@@ -1,0 +1,7 @@
+[
+  "concurrency-index-loss",
+  "scope-path-traversal",
+  "tasks-list-returns-done",
+  "no-write-dedup",
+  "dx-help-and-validation"
+]
