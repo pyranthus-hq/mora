@@ -50,7 +50,7 @@ func fixedStates() []sourceState {
 }
 
 func TestDigestSynthesisPromptCitesEveryItem(t *testing.T) {
-	out := digestSynthesisPrompt(fixedSections(), fixedStates())
+	out := digestSynthesisPrompt(nil, fixedSections(), fixedStates())
 
 	// Every item id is cited as a [id] token, and every title appears.
 	for _, want := range []string{
@@ -64,7 +64,7 @@ func TestDigestSynthesisPromptCitesEveryItem(t *testing.T) {
 }
 
 func TestDigestSynthesisPromptGroundingInstruction(t *testing.T) {
-	out := digestSynthesisPrompt(fixedSections(), fixedStates())
+	out := digestSynthesisPrompt(nil, fixedSections(), fixedStates())
 
 	// The four grounding substrings that make the contract unambiguous (D15-5).
 	for _, want := range []string{
@@ -80,7 +80,7 @@ func TestDigestSynthesisPromptGroundingInstruction(t *testing.T) {
 }
 
 func TestDigestSynthesisPromptItemOrderPreserved(t *testing.T) {
-	out := digestSynthesisPrompt(fixedSections(), fixedStates())
+	out := digestSynthesisPrompt(nil, fixedSections(), fixedStates())
 	// Items must appear in the GIVEN order (caller pre-sorted) — the builder does
 	// not re-sort, so the prompt order matches the emitted items.
 	i01 := strings.Index(out, "[gmail_thread/t01]")
@@ -107,7 +107,7 @@ func TestDigestSynthesisPromptNoDanglingCitation(t *testing.T) {
 			},
 		},
 	}
-	out := digestSynthesisPrompt(truncated, nil)
+	out := digestSynthesisPrompt(nil, truncated, nil)
 
 	for _, want := range []string{"[gmail_thread/keep1]", "[gmail_thread/keep2]"} {
 		if !strings.Contains(out, want) {
@@ -122,7 +122,7 @@ func TestDigestSynthesisPromptNoDanglingCitation(t *testing.T) {
 }
 
 func TestDigestSynthesisPromptNotCoveredLinePresent(t *testing.T) {
-	out := digestSynthesisPrompt(fixedSections(), fixedStates())
+	out := digestSynthesisPrompt(nil, fixedSections(), fixedStates())
 
 	// The bounded NOT-COVERED line names the stale + unavailable instances.
 	low := strings.ToLower(out)
@@ -148,7 +148,7 @@ func TestDigestSynthesisPromptNotCoveredLineAbsentWhenHealthy(t *testing.T) {
 		{Instance: "gmail", State: "new", Count: 2},
 		{Instance: "calendar", State: "no_change", Count: 0},
 	}
-	out := digestSynthesisPrompt(fixedSections(), healthy)
+	out := digestSynthesisPrompt(nil, fixedSections(), healthy)
 	if strings.Contains(strings.ToLower(out), "does not cover") {
 		t.Errorf("no stale/unavailable source — NOT-COVERED line must be absent:\n%s", out)
 	}
@@ -161,7 +161,7 @@ func TestDigestSynthesisPromptNotCoveredInstancesSorted(t *testing.T) {
 		{Instance: "alpha", State: "unavailable"},
 		{Instance: "mango", State: "stale"},
 	}
-	out := digestSynthesisPrompt(fixedSections(), states)
+	out := digestSynthesisPrompt(nil, fixedSections(), states)
 	ia := strings.Index(out, "alpha")
 	im := strings.Index(out, "mango")
 	iz := strings.Index(out, "zebra")
@@ -171,7 +171,7 @@ func TestDigestSynthesisPromptNotCoveredInstancesSorted(t *testing.T) {
 }
 
 func TestDigestSynthesisPromptEmptyInput(t *testing.T) {
-	out := digestSynthesisPrompt(nil, nil)
+	out := digestSynthesisPrompt(nil, nil, nil)
 	if out == "" {
 		t.Fatal("empty input must still produce a defined prompt")
 	}
@@ -189,8 +189,8 @@ func TestDigestSynthesisPromptEmptyInput(t *testing.T) {
 }
 
 func TestDigestSynthesisPromptDeterministic(t *testing.T) {
-	a := digestSynthesisPrompt(fixedSections(), fixedStates())
-	b := digestSynthesisPrompt(fixedSections(), fixedStates())
+	a := digestSynthesisPrompt(nil, fixedSections(), fixedStates())
+	b := digestSynthesisPrompt(nil, fixedSections(), fixedStates())
 	if a != b {
 		t.Errorf("prompt not byte-identical across two calls:\n--- a ---\n%s\n--- b ---\n%s", a, b)
 	}
@@ -199,8 +199,8 @@ func TestDigestSynthesisPromptDeterministic(t *testing.T) {
 func TestDigestSynthesisPromptGrowsWithItemCount(t *testing.T) {
 	// Boundedness sanity: the prompt is a fixed template + one bounded line per
 	// item, so more items → a longer prompt (lets 15-02 reserve space predictably).
-	small := digestSynthesisPrompt(fixedSections()[:1], nil)
-	big := digestSynthesisPrompt(fixedSections(), nil)
+	small := digestSynthesisPrompt(nil, fixedSections()[:1], nil)
+	big := digestSynthesisPrompt(nil, fixedSections(), nil)
 	if len(big) <= len(small) {
 		t.Errorf("prompt should grow with item count: small=%d big=%d", len(small), len(big))
 	}

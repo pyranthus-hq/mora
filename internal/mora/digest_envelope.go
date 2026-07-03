@@ -26,6 +26,8 @@ import (
 type DigestEnvelope struct {
 	Generated       string            `json:"generated"`
 	SinceHours      int               `json:"since_hours"`
+	Urgent          []DigestItem      `json:"urgent,omitempty"`
+	UrgentMore      int               `json:"urgent_more,omitempty"`
 	Sections        []DigestSection   `json:"sections"`
 	SourceStates    []sourceState     `json:"source_states"`
 	Freshness       map[string]string `json:"freshness,omitempty"`
@@ -52,7 +54,7 @@ type DigestEnvelope struct {
 // body — it is NOT re-snippeted here) + at most one bounded NOT-COVERED line. So
 // the total length is predictable from the item count; 15-02 can reserve the
 // prompt's space from the byte budget before budgeting items.
-func digestSynthesisPrompt(sections []DigestSection, states []sourceState) string {
+func digestSynthesisPrompt(urgent []DigestItem, sections []DigestSection, states []sourceState) string {
 	var b strings.Builder
 
 	// (1) Fixed grounding header — the unambiguous contract (D15-5). The trust
@@ -64,9 +66,15 @@ func digestSynthesisPrompt(sections []DigestSection, states []sourceState) strin
 
 	// (2) The cited items — one bounded line per item, in caller-given order. The
 	// citation is the existing DigestItem.ID; the body is the already-budgeted
-	// Snippet (do NOT re-snippet — the caller owns the budget).
+	// Snippet (do NOT re-snippet — the caller owns the budget). Urgent-shelf items
+	// (issue #62 defect 2) lead and are flagged so the synthesized brief opens with
+	// the deadline-bearing item, not a routine thread.
 	b.WriteString("\nCITED ITEMS:\n")
 	total := 0
+	for _, it := range urgent {
+		fmt.Fprintf(&b, "- [%s] (⚠ urgent · %s) %s — %s\n", it.ID, it.Source, it.Title, it.Snippet)
+		total++
+	}
 	for _, s := range sections {
 		for _, it := range s.Items {
 			fmt.Fprintf(&b, "- [%s] (%s) %s — %s\n", it.ID, it.Source, it.Title, it.Snippet)
@@ -168,13 +176,17 @@ func budgetEnvelopePayload(cfg Config, d Digest, budgetChars int) DigestEnvelope
 
 	// Read the budgeted sections + source_states back out — these are EXACTLY what
 	// the caller emits, so the prompt built from them is no-dangling by construction.
+	// The urgent shelf is protected (never budgeted away), so it is cited in full.
 	sections, _ := payload["sections"].([]DigestSection)
 	states, _ := payload["source_states"].([]sourceState)
-	prompt := digestSynthesisPrompt(sections, states)
+	urgent, _ := payload["urgent"].([]DigestItem)
+	prompt := digestSynthesisPrompt(urgent, sections, states)
 
 	return DigestEnvelope{
 		Generated:       asString(payload["generated"]),
 		SinceHours:      asInt(payload["since_hours"]),
+		Urgent:          urgent,
+		UrgentMore:      asInt(payload["urgent_more"]),
 		Sections:        sections,
 		SourceStates:    states,
 		Freshness:       asStringMap(payload["freshness"]),

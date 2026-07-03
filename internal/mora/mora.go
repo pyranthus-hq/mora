@@ -1221,7 +1221,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 		if derr != nil {
 			return derr
 		}
-		fmt.Fprintln(stdout, digestSynthesisPrompt(d.Sections, buildSourceStates(cfg, d)))
+		fmt.Fprintln(stdout, digestSynthesisPrompt(d.Urgent, d.Sections, buildSourceStates(cfg, d)))
 	}
 	return nil
 }
@@ -1537,7 +1537,7 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 		// the SAME rendered items (d.Sections). Model-free: digestSynthesisPrompt is a
 		// pure string builder — Mora makes no model/network call (SC#2).
 		if *envelope {
-			fmt.Fprintln(stdout, digestSynthesisPrompt(d.Sections, buildSourceStates(cfg, d)))
+			fmt.Fprintln(stdout, digestSynthesisPrompt(d.Urgent, d.Sections, buildSourceStates(cfg, d)))
 		}
 		// Persist the PREVIEW path's artifact here (the --advance path already persisted
 		// under the lock). A write error is non-fatal for a preview — the brief already

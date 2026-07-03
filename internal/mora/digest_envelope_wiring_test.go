@@ -175,6 +175,8 @@ func TestBudgetEnvelopePayloadBaseFieldsMatchPlainPayload(t *testing.T) {
 	envBase := map[string]any{
 		"generated":     env.Generated,
 		"since_hours":   env.SinceHours,
+		"urgent":        env.Urgent,
+		"urgent_more":   env.UrgentMore,
 		"sections":      env.Sections,
 		"source_states": env.SourceStates,
 		"freshness":     env.Freshness,

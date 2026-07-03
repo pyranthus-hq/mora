@@ -80,8 +80,14 @@ type DigestSection struct {
 // for deterministic tests; it (and the cold-start cutoff) is canonicalized to UTC
 // for byte-stability without disturbing the DST-safe window math.
 type Digest struct {
-	Generated  string            `json:"generated"`
-	SinceHours int               `json:"since_hours"`
+	Generated string `json:"generated"`
+	SinceHours int    `json:"since_hours"`
+	// Urgent is the item-level shelf (issue #62 defect 2): deadline-bearing items from
+	// known humans, lifted ABOVE the sections and budget-protected so they always
+	// render. UrgentMore counts any that overflow the shelf cap (they re-surface next
+	// run rather than being marked seen).
+	Urgent     []DigestItem      `json:"urgent,omitempty"`
+	UrgentMore int               `json:"urgent_more,omitempty"`
 	Sections   []DigestSection   `json:"sections"`
 	Freshness  map[string]string `json:"freshness,omitempty"`
 	StaleTasks []string          `json:"stale_tasks,omitempty"`
@@ -391,14 +397,18 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 
 	var sections []DigestSection
 	var plans []briefCommitPlan
+	var urgentAll []urgentEntry
 	for _, key := range keys {
 		mems := byInstance[key] // may be nil for a zero-memory enumerated connector
 		snap := loadBriefSnapshot(cfg, key)
 		delta := classify(snap, mems, now)
 
-		items, lineMembers, countOnly, moreCount := deltaSectionItems(cfg, delta, mems, now, key, perSourceCap, memSal)
+		items, urgent, lineMembers, countOnly, moreCount := deltaSectionItems(cfg, delta, mems, now, key, perSourceCap, memSal)
+		urgentAll = append(urgentAll, urgent...)
 
-		state := classifyState(cfg, key, now, delta, len(items) > 0)
+		// hasDelta counts the shelf too: an instance whose only new item was promoted to
+		// the Urgent shelf still had a delta (state must not read "no changes").
+		state := classifyState(cfg, key, now, delta, len(items) > 0 || len(urgent) > 0)
 		sec := DigestSection{Source: key, State: state, Items: items}
 		if moreCount > 0 {
 			sec.MoreCount = moreCount
@@ -408,6 +418,7 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 		plans = append(plans, briefCommitPlan{key: key, snap: snap, delta: delta, lineMembers: lineMembers, countOnlyIDs: countOnly})
 	}
 	sortSections(sections)
+	shelf, shelfMore := assembleUrgentShelf(urgentAll)
 
 	// StaleTasks come from vault/live-tasks.md and are sync-independent — they are
 	// NOT gated by the watermark (D-03 note).
@@ -415,10 +426,37 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 	return Digest{
 		Generated:  now.UTC().Format(time.RFC3339),
 		SinceHours: 0,
+		Urgent:     shelf,
+		UrgentMore: shelfMore,
 		Sections:   sections,
 		Freshness:  sourceFreshness(cfg),
 		StaleTasks: stale,
 	}, plans, nil
+}
+
+// assembleUrgentShelf orders the cross-source urgent entries (most-recent arrival
+// first, salience only as a tie-break — issue #62 keeps salience a tie-breaker, never
+// the urgency key) and caps the shelf at urgentShelfCap. Overflow entries are NOT
+// rendered and NOT committed, so they re-surface next run rather than being marked
+// seen — the same safe pattern as a budget-clipped item.
+func assembleUrgentShelf(entries []urgentEntry) (items []DigestItem, more int) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].occurredAt.Equal(entries[j].occurredAt) {
+			return entries[i].occurredAt.After(entries[j].occurredAt)
+		}
+		if entries[i].sal != entries[j].sal {
+			return entries[i].sal > entries[j].sal
+		}
+		return entries[i].item.ID < entries[j].item.ID
+	})
+	for i, e := range entries {
+		if i >= urgentShelfCap {
+			more = len(entries) - urgentShelfCap
+			break
+		}
+		items = append(items, e.item)
+	}
+	return items, more
 }
 
 // advanceBrief runs the scheduled --advance transaction (issue #62 defect 1). Under
@@ -514,65 +552,101 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 //     lives in classify; here we only choose what to DISPLAY.
 //   - steady state: surface delta.Items (new/updated), recency-ordered, capped.
 //
-// It returns the items to render, a map from each displayed line's id to the stable
+// It returns the items to render, the URGENT entries lifted onto the cross-source
+// shelf (issue #62 defect 2 — rescued from the per-source cap so a low-volume deadline
+// email is never buried), a map from each displayed/shelf line's id to the stable
 // memory ids it represents (lineMembers — a collapsed series line stands for all its
 // instances), the stable ids of the low-signal tail folded into "+N more"
 // (countOnlyIDs — acknowledged but not rendered), and the count truncated past the
 // cap. advanceBrief advances the watermark over a line's members iff that line
-// survives the Markdown budget (issue #62 defect 1).
-func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Time, key string, cap int, memSal map[string]int64) (items []DigestItem, lineMembers map[string][]string, countOnlyIDs []string, moreCount int) {
+// survives the Markdown budget (issue #62 defect 1); a shelf line is budget-protected
+// and therefore always survives.
+func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Time, key string, cap int, memSal map[string]int64) (items []DigestItem, urgent []urgentEntry, lineMembers map[string][]string, countOnlyIDs []string, moreCount int) {
+	isCalendar := connectorUpcoming(key)
+
+	// candidateMem yields (memory, change, include) for each item this instance would
+	// surface — the cold-start courtesy window or the steady-state delta set.
+	type cand struct {
+		m      Memory
+		change string
+	}
+	var cands []cand
 	if delta.ColdStart {
-		var tis []tsItem
-		isCalendar := connectorUpcoming(key)
 		for _, m := range mems {
 			ts, err := time.Parse(time.RFC3339, m.CreatedAt)
-			if err != nil {
-				continue
-			}
-			if !inColdStartWindow(ts, now, isCalendar) {
+			if err != nil || !inColdStartWindow(ts, now, isCalendar) {
 				continue // out-of-window archive: baselined by commitSnapshot (flood suppression).
 			}
-			it := digestItemFor(cfg, m, key, "new") // cold start: everything shown is "new" to the reader.
-			it.LowSignal = memoryIsServiceOnly(m)
-			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
+			cands = append(cands, cand{m: m, change: "new"}) // cold start: everything is "new".
 		}
-		tis = collapseRecurringSeries(tis, now)
-		memberOf := lineMemberMap(tis)
-		shown, more := capRecency(tis, cap, isCalendar)
-		// Collapse the zero-salience tail so the very first brief leads with signal
-		// instead of a wall of receipts. Only the DISPLAYED in-window items are the
-		// "intended display" the commit gates on rendering; the cap-`more` overflow
-		// stays part of the baselined archive (starting line, not a truncated delta).
-		displayed, lm, countOnly := splitDisplayLowSignal(shown, memberOf)
-		return displayed, lm, countOnly, more + (len(shown) - len(displayed))
+	} else {
+		byID := map[string]Memory{}
+		for _, m := range mems {
+			byID[m.ID] = m
+		}
+		for _, di := range delta.Items {
+			if m, ok := byID[di.ID]; ok {
+				cands = append(cands, cand{m: m, change: di.Change})
+			}
+		}
 	}
 
-	// Steady state: surface the new/updated deltas, recency-ordered.
-	byID := map[string]Memory{}
-	for _, m := range mems {
-		byID[m.ID] = m
-	}
+	// Partition urgent items OUT of the normal section flow (they bypass the cap and
+	// lead the brief on the shelf); the rest go through series-collapse + cap +
+	// low-signal collapse as before.
 	var tis []tsItem
-	for _, di := range delta.Items {
-		m, ok := byID[di.ID]
-		if !ok {
-			continue // surfaced id no longer on disk (deleted between classify and here) — skip.
+	for _, c := range cands {
+		if ok, phrase := isUrgent(c.m, now); ok {
+			urgent = append(urgent, urgentEntry{
+				item:       urgentItemFor(cfg, c.m, key, c.change, phrase),
+				occurredAt: itemOccurredAt(c.m),
+				sal:        memSal[c.m.ID],
+			})
+			continue
 		}
-		ts, err := time.Parse(time.RFC3339, m.CreatedAt)
+		ts, err := time.Parse(time.RFC3339, c.m.CreatedAt)
 		if err != nil {
 			ts = time.Time{} // unparsable created_at sorts last; still shown.
 		}
-		it := digestItemFor(cfg, m, key, di.Change)
-		it.LowSignal = memoryIsServiceOnly(m)
-		tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
+		it := digestItemFor(cfg, c.m, key, c.change)
+		it.LowSignal = memoryIsServiceOnly(c.m)
+		tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[c.m.ID], series: recurringSeriesID(c.m)})
 	}
+
 	tis = collapseRecurringSeries(tis, now)
 	memberOf := lineMemberMap(tis)
-	shown, more := capRecency(tis, cap, connectorUpcoming(key))
-	// Collapse the zero-salience tail for display; the folded ids are count-only
-	// acknowledged (never re-surfaced) while the surviving lines drive the commit.
+	shown, more := capRecency(tis, cap, isCalendar)
+	// Collapse the zero-salience tail so the brief leads with signal; the folded ids
+	// are count-only acknowledged (never re-surfaced) while the surviving lines drive
+	// the commit. On cold start the cap-`more` overflow stays part of the baselined
+	// archive (starting line, not a truncated delta).
 	displayed, lm, countOnly := splitDisplayLowSignal(shown, memberOf)
-	return displayed, lm, countOnly, more + (len(shown) - len(displayed))
+	for _, u := range urgent {
+		lm[u.item.ID] = []string{u.item.ID} // a shelf line commits its own id when it renders.
+	}
+	return displayed, urgent, lm, countOnly, more + (len(shown) - len(displayed))
+}
+
+// urgentEntry is one shelf candidate carried up from a section for cross-source
+// ordering: the rendered item plus its arrival instant and salience tie-break.
+type urgentEntry struct {
+	item       DigestItem
+	occurredAt time.Time
+	sal        int64
+}
+
+// urgentItemFor builds a shelf DigestItem: like digestItemFor but with a
+// deadline-anchored snippet (defect 4) instead of the blind tail clip, so the visible
+// snippet carries the ask, not a sign-off.
+func urgentItemFor(cfg Config, m Memory, key, change, phrase string) DigestItem {
+	return DigestItem{
+		ID:        m.ID,
+		Title:     m.Title,
+		Source:    key,
+		CreatedAt: m.CreatedAt,
+		Snippet:   urgentSnippet(m.Text, cfg.digestSnippetChars(), phrase),
+		Change:    change,
+	}
 }
 
 // lineMemberMap maps each tsItem line's id to the stable memory ids it represents (a
@@ -1063,13 +1137,34 @@ func renderDigestStaleTasks(d Digest) string {
 	return b.String()
 }
 
+// renderDigestUrgentShelf renders the "⚠ Urgent" shelf ABOVE the sections, or "" when
+// empty. The shelf is budget-protected (reserved by budgetDigestForMarkdown), so its
+// deadline items always render regardless of how tight the byte budget is (issue #62
+// defect 2).
+func renderDigestUrgentShelf(d Digest) string {
+	if len(d.Urgent) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n## ⚠ Urgent (%d)\n", len(d.Urgent))
+	for _, it := range d.Urgent {
+		b.WriteString(renderDigestItemLine(it))
+	}
+	if d.UrgentMore > 0 {
+		fmt.Fprintf(&b, "- +%d more urgent\n", d.UrgentMore)
+	}
+	return b.String()
+}
+
 // renderDigestBody renders a digest to Markdown with NO budget clip — the digest is
 // assumed already budgeted (budgetDigestForMarkdown). It composes the fragment
-// helpers so the output is byte-identical to the legacy inline renderer.
+// helpers so the output is byte-identical to the legacy inline renderer (plus the
+// Urgent shelf when present).
 func renderDigestBody(d Digest) string {
 	var b strings.Builder
 	b.WriteString(renderDigestHeader(d))
 	b.WriteString(renderDigestFreshness(d))
+	b.WriteString(renderDigestUrgentShelf(d))
 	for _, s := range d.Sections {
 		b.WriteString(renderDigestSectionHeading(s))
 		for _, it := range s.Items {
@@ -1115,12 +1210,18 @@ func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
 	if budget <= 0 {
 		budget = defaultContextTokens * charsPerToken
 	}
-	// The frame is bounded and high-value (freshness + capped open-loops), so it is
-	// always reserved; sections budget against what remains.
-	reserve := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) + len(renderDigestStaleTasks(d))
+	// The frame is bounded and high-value (freshness + the Urgent shelf + capped
+	// open-loops), so it is always reserved; sections budget against what remains. The
+	// shelf's items are therefore never clipped (issue #62 defect 2), and their ids are
+	// recorded as survivors so the watermark commit reflects that they rendered.
+	reserve := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) +
+		len(renderDigestUrgentShelf(d)) + len(renderDigestStaleTasks(d))
 	remaining := budget - reserve
 	if remaining < 0 {
 		remaining = 0
+	}
+	for _, it := range d.Urgent {
+		survived[it.ID] = true
 	}
 
 	out := d
@@ -1282,6 +1383,8 @@ func digestMCPPayload(cfg Config, d Digest, budgetChars int) map[string]any {
 	base := map[string]any{
 		"generated":     d.Generated,
 		"since_hours":   d.SinceHours,
+		"urgent":        d.Urgent,     // issue #62 defect 2: the protected cross-source shelf.
+		"urgent_more":   d.UrgentMore, // count of urgent items beyond the shelf cap.
 		"source_states": states,
 		"freshness":     d.Freshness,
 		"stale_tasks":   d.StaleTasks,
