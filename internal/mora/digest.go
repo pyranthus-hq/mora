@@ -288,6 +288,32 @@ func memoryIsServiceOnly(m Memory) bool {
 	return true
 }
 
+// isLowSignalItem reports whether a surfaced item should be collapsed into the
+// "+N more" tail rather than shown as a full line — the noise-collapse signal
+// (issue #62 defect 3, extending the service-only collapse):
+//
+//   - memoryIsServiceOnly — every sender is a service identity. This ALREADY catches a
+//     subscription/feed calendar whose organizer is a bulk-send address (noreply@,
+//     sports/holiday feeds), so those flood-sources collapse with no new rule.
+//   - a PAST calendar event resurfacing ONLY as [updated] — a re-sync bumped a
+//     months-old event's hash; the meeting already happened, so it is stale noise (a
+//     FUTURE [updated] event is a genuine reschedule and stays full-signal).
+//
+// A "no organizer at all → low-signal" heuristic was deliberately NOT added: a real
+// personal Apple Calendar event can legitimately carry no organizer, so collapsing on
+// its absence would hide genuine events. Preventing calendar noise from STARVING the
+// Emails section is instead handled structurally by the fair per-source budget floor
+// (budgetSourceFloor), which needs no fragile subscription classifier.
+func isLowSignalItem(m Memory, change string, now time.Time) bool {
+	if memoryIsServiceOnly(m) {
+		return true
+	}
+	if m.Type == "event" && change == "updated" && itemOccurredAt(m).Before(now) {
+		return true // stale past event bumped by a re-sync.
+	}
+	return false
+}
+
 // buildWindowDigest is the plain ad-hoc window path (SC#2): created_at within the
 // last sinceHours, no delta, no watermark, no State sentinels. It mirrors the
 // legacy behavior but groups by instance key so the human labels fire.
@@ -322,7 +348,7 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 				continue
 			}
 			it := digestItemFor(cfg, m, key, "")
-			it.LowSignal = memoryIsServiceOnly(m)
+			it.LowSignal = isLowSignalItem(m, "", now)
 			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
 		}
 		if len(tis) == 0 {
@@ -613,7 +639,7 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 			ts = time.Time{} // unparsable created_at sorts last; still shown.
 		}
 		it := digestItemFor(cfg, c.m, key, c.change)
-		it.LowSignal = memoryIsServiceOnly(c.m)
+		it.LowSignal = isLowSignalItem(c.m, c.change, now)
 		tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[c.m.ID], series: recurringSeriesID(c.m)})
 	}
 
@@ -1216,12 +1242,18 @@ func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
 	if budget <= 0 {
 		budget = defaultContextTokens * charsPerToken
 	}
-	// The frame is bounded and high-value (freshness + the Urgent shelf + capped
-	// open-loops), so it is always reserved; sections budget against what remains. The
-	// shelf's items are therefore never clipped (issue #62 defect 2), and their ids are
-	// recorded as survivors so the watermark commit reflects that they rendered.
+	// Reserve the always-included CHROME so the budget only ever trades off item
+	// BODIES, and a survivor's line is never clipped by heading/more-line overshoot:
+	// the header, freshness, the protected Urgent shelf (issue #62 defect 2), the
+	// open-tasks block, and — per section — its heading plus a possible "+N more" line
+	// (charged at the full count, so the reservation is never an under-estimate). The
+	// shelf's ids are recorded as survivors so the watermark commit reflects that the
+	// protected shelf rendered.
 	reserve := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) +
 		len(renderDigestUrgentShelf(d)) + len(renderDigestStaleTasks(d))
+	for _, s := range d.Sections {
+		reserve += len(renderDigestSectionHeading(s)) + len(renderDigestMoreLine(len(s.Items)+s.MoreCount))
+	}
 	remaining := budget - reserve
 	if remaining < 0 {
 		remaining = 0
@@ -1230,48 +1262,65 @@ func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
 		survived[it.ID] = true
 	}
 
-	out := d
-	out.Sections = make([]DigestSection, 0, len(d.Sections))
+	n := len(d.Sections)
+	kept := make([]int, n) // items kept per section — always a pure prefix.
 	used := 0
-	exhausted := false
-	for _, s := range d.Sections {
-		if exhausted {
-			out.Sections = append(out.Sections, truncatedShell(s))
-			continue
+	add := func(i, j int) bool {
+		it := d.Sections[i].Items[j]
+		cost := len(renderDigestItemLine(it))
+		if used+cost > remaining {
+			return false
 		}
-		headCost := len(renderDigestSectionHeading(s))
-		if used+headCost > remaining {
-			// No room for even this section's heading — suppress it (and the rest).
-			out.Sections = append(out.Sections, truncatedShell(s))
-			exhausted = true
-			continue
-		}
-		kept := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated}
-		used += headCost
-		dropped := 0
-		for idx, it := range s.Items {
-			lineCost := len(renderDigestItemLine(it))
-			if used+lineCost > remaining {
-				dropped = len(s.Items) - idx
+		used += cost
+		kept[i]++
+		survived[it.ID] = true
+		return true
+	}
+
+	// Pass 1 (fair floor, issue #62 defect 3): give each section up to budgetSourceFloor
+	// items in rank order, so a noisy high-rank source (calendar subscriptions) can't
+	// starve a lower-rank one (Emails) below its floor.
+	for i := range d.Sections {
+		for j := 0; j < len(d.Sections[i].Items) && j < budgetSourceFloor; j++ {
+			if !add(i, j) {
 				break
 			}
-			kept.Items = append(kept.Items, it)
-			survived[it.ID] = true
-			used += lineCost
 		}
-		if dropped > 0 {
-			kept.MoreCount += dropped
-			kept.Truncated = true
-			exhausted = true // later sections won't fit either; suppress them as shells.
+	}
+	// Pass 2 (greedy): fill the remaining items highest-rank-first until spent.
+	for i := range d.Sections {
+		for j := kept[i]; j < len(d.Sections[i].Items); j++ {
+			if !add(i, j) {
+				break
+			}
 		}
-		if kept.MoreCount > 0 {
-			// A "+N more" line will render for this section — account for its bytes.
-			used += len(renderDigestMoreLine(kept.MoreCount))
+	}
+
+	out := d
+	out.Sections = make([]DigestSection, 0, n)
+	for i, s := range d.Sections {
+		switch {
+		case len(s.Items) == 0:
+			out.Sections = append(out.Sections, s) // empty section: state only.
+		case kept[i] == 0:
+			out.Sections = append(out.Sections, truncatedShell(s)) // suppressed for budget.
+		default:
+			ns := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated}
+			ns.Items = append([]DigestItem(nil), s.Items[:kept[i]]...)
+			if dropped := len(s.Items) - kept[i]; dropped > 0 {
+				ns.MoreCount += dropped
+				ns.Truncated = true
+			}
+			out.Sections = append(out.Sections, ns)
 		}
-		out.Sections = append(out.Sections, kept)
 	}
 	return out, survived
 }
+
+// budgetSourceFloor is how many items each source is guaranteed in the Markdown budget
+// before any source is filled past it — the fair-budget floor that stops a noisy
+// high-rank section from starving a lower-rank one (issue #62 defect 3).
+const budgetSourceFloor = 2
 
 // sectionHeading renders the per-section heading: the human label plus, in DELTA
 // mode, the three-state sentinel (no-changes / stale / unavailable) or the item

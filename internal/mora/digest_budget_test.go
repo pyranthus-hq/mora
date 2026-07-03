@@ -13,6 +13,18 @@ import (
 // the exact set of stable IDs that survived into rendered lines — the only ids the
 // commit may advance over.
 
+// mdReserveBytes mirrors budgetDigestForMarkdown's chrome reservation (frame + shelf +
+// open-tasks + per-section heading & "+N more" line), so a test can compute the exact
+// item budget that remains.
+func mdReserveBytes(d Digest) int {
+	r := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) +
+		len(renderDigestUrgentShelf(d)) + len(renderDigestStaleTasks(d))
+	for _, s := range d.Sections {
+		r += len(renderDigestSectionHeading(s)) + len(renderDigestMoreLine(len(s.Items)+s.MoreCount))
+	}
+	return r
+}
+
 func mdBudgetDigest() Digest {
 	return Digest{
 		Generated: "2026-07-02T00:00:00Z",
@@ -33,9 +45,9 @@ func mdBudgetDigest() Digest {
 // item survives.
 func TestBudgetMarkdownDropsTailItemAndReportsSurvivors(t *testing.T) {
 	d := mdBudgetDigest()
-	full := renderDigest(d, 1<<20) // unbudgeted reference render.
-	gmailLine := renderDigestItemLine(d.Sections[1].Items[0])
-	budget := len(full) - len(gmailLine) // one line short of everything.
+	// A budget that reserves the chrome + exactly the calendar item, leaving no room
+	// for the gmail (tail) item.
+	budget := mdReserveBytes(d) + len(renderDigestItemLine(d.Sections[0].Items[0]))
 
 	bd, survived := budgetDigestForMarkdown(d, budget)
 
