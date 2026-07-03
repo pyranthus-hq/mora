@@ -148,24 +148,40 @@ func digestSourceLabel(src string) string { _, l := connectorDisplay(src); retur
 //
 // now is injected for deterministic windowing.
 func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
-	perSourceCap := opts.perSourceCap
-	if perSourceCap <= 0 {
-		perSourceCap = digestDefaultCap
-	}
-
-	files, err := allMemoryFiles(cfg)
+	perSourceCap, byInstance, memSal, err := digestInputs(cfg, now, opts)
 	if err != nil {
 		return Digest{}, err
 	}
+	if opts.sinceHours > 0 {
+		return buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source)
+	}
+	// buildDigest NEVER commits the watermark — it is the pure build (used by every
+	// preview/read surface). The scheduled --advance transaction lives in advanceBrief,
+	// which reruns the delta build to capture the per-instance commit plans and
+	// commits ONLY over what survives the Markdown budget (issue #62 defect 1).
+	d, _, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
+	return d, err
+}
 
-	// Parse once, group by INSTANCE key (M-1) — NOT m.Source (per-item ProviderID).
-	// Skip tombstones up front (M-4) so a cancelled calendar event (new
-	// content_hash) is never live [updated] nor in the cold-start 7d window; it is
-	// also excluded from the baseline and dropped from the snapshot on commit.
-	byInstance := map[string][]Memory{}
+// digestInputs factors the shared preprocessing behind both the window and delta
+// paths: parse every non-tombstoned memory, group by INSTANCE key (M-1, never the
+// per-item ProviderID), compute the whole-vault person-salience map ONCE (SC#3), then
+// apply the preview-only entity/scope/since-days filters. It opens no index DB.
+func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, err error) {
+	perSourceCap = opts.perSourceCap
+	if perSourceCap <= 0 {
+		perSourceCap = digestDefaultCap
+	}
+	files, err := allMemoryFiles(cfg)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	// Skip tombstones up front (M-4) so a cancelled calendar event (new content_hash)
+	// is never live [updated] nor in the cold-start 7d window.
+	byInstance = map[string][]Memory{}
 	for _, path := range files {
-		m, err := parseMemory(path)
-		if err != nil {
+		m, perr := parseMemory(path)
+		if perr != nil {
 			continue
 		}
 		if m.DeletedAt != "" {
@@ -177,22 +193,11 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 		}
 		byInstance[key] = append(byInstance[key], m)
 	}
-
-	// Per-item salience map (SC#3): computed ONCE over the FULL parsed set so a
-	// person's volume spans the whole vault (matching buildGraph's whole-vault
-	// scoring), then threaded down into both paths. buildDigest stays file-based —
-	// this reuses the already-parsed memories and opens no index DB.
-	memSal := digestMemorySalience(flattenInstances(byInstance))
-
-	// Apply the preview-only entity/scope/since-days filters AFTER memSal (P1-C): the
-	// salience map must stay whole-vault (it is capRecency's primary sort key), but
-	// the surfaced set narrows to matching memories. Identity when no filter is set.
+	// Whole-vault salience so a person's volume spans the whole vault (matching
+	// buildGraph), computed BEFORE the preview-only narrowing (P1-C).
+	memSal = digestMemorySalience(flattenInstances(byInstance))
 	byInstance = filterByInstance(byInstance, opts, now)
-
-	if opts.sinceHours > 0 {
-		return buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source)
-	}
-	return buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
+	return perSourceCap, byInstance, memSal, nil
 }
 
 // digestSourceMatches reports whether an instance key passes the digest's
@@ -333,18 +338,29 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 	}, nil
 }
 
-// buildDeltaDigest is the delta + three-state path (SC#1, SC#3, SC#4). It is the
-// behavioral heart of Phase 12.
-func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64) (Digest, error) {
-	// Preview-only guard, HOISTED above the lock and the per-filter handling (§5): a
-	// filtered advance (source/entity/scope/since-days) would commit the watermark over
-	// items the reader never saw (they were filtered out). Catching it here — before
-	// acquireBriefLock — means an entity/scope/since-days advance can't slip past the
-	// old source-only nested check.
-	if opts.advance && opts.filtered() {
-		return Digest{}, fmt.Errorf("a filtered digest (--source/--entity/--scope/--since-days) is preview-only and cannot --advance the watermark")
-	}
+// briefCommitPlan carries everything needed to commit ONE instance's watermark AFTER
+// the Markdown budget has decided what actually rendered (issue #62 defect 1). It is
+// produced by the PURE delta build and consumed by advanceBrief once the budgeted
+// survivor set is known — the build itself never writes the watermark.
+type briefCommitPlan struct {
+	key   string
+	snap  briefSnapshot
+	delta briefDelta
+	// lineMembers maps each displayed line's DigestItem.ID to the stable memory IDs it
+	// represents (a collapsed recurring series line stands for all its instances). The
+	// watermark advances over a line's members iff that line survived the budget.
+	lineMembers map[string][]string
+	// countOnlyIDs are stable IDs acknowledged WITHOUT a rendered line (the low-signal
+	// receipt/newsletter tail folded into "+N more"). They commit iff the section
+	// rendered ≥1 line — preserving the pre-#62 count-only acknowledgement.
+	countOnlyIDs []string
+}
 
+// buildDeltaDigest is the delta + three-state path (SC#1, SC#3, SC#4). It is the
+// behavioral heart of Phase 12. It is PURE: it builds the Digest and returns a
+// per-instance commit plan for each enumerated connector, but NEVER locks, persists,
+// or advances the watermark (that is advanceBrief's job — issue #62 defect 1).
+func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64) (Digest, []briefCommitPlan, error) {
 	// The enumeration set for the three-state labels is the ENABLED+INGESTING
 	// connectors (M-2) — not providers-found-in-memories (which would hide a
 	// broken/all-deleted source) and not the sync/ dir. A connector enumerated
@@ -353,30 +369,17 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 	// (the SC#3 gap).
 	enumerated, err := ingestingConnectors(cfg)
 	if err != nil {
-		return Digest{}, err
-	}
-
-	// Commit (opts.advance): hold the brief/ lock across the whole load→classify→
-	// write so a hand-run --advance racing the cron no-ops/blocks rather than
-	// interleaving (T-12-07). Preview never reaches here.
-	if opts.advance {
-		release, lerr := acquireBriefLock(cfg)
-		if lerr != nil {
-			return Digest{}, fmt.Errorf("brief commit in progress (another --advance run holds the lock): %w", lerr)
-		}
-		defer release()
+		return Digest{}, nil, err
 	}
 
 	// The set of instance keys to BUILD sections for IS exactly the enumerated
-	// (enabled+ingesting) connectors (M-2): a connector enumerated but absent from
-	// memories still emits a section (zero-memory → "unavailable"), while a provider
-	// found in memories but NOT enabled+ingesting is NOT forced in. `enumerated` is
-	// already sorted; copy so the iteration order is deterministic.
+	// (enabled+ingesting) connectors (M-2). `enumerated` is already sorted; copy so
+	// the iteration order is deterministic.
 	keys := append([]string(nil), enumerated...)
 	sort.Strings(keys)
 	if opts.source != "" {
-		// advance+filter already rejected by the hoisted guard above; here we only
-		// narrow the section keys to the source filter.
+		// A filtered advance is rejected up front by advanceBrief; here we only narrow
+		// the section keys to the (preview-only) source filter.
 		filtered := keys[:0]
 		for _, k := range keys {
 			if digestSourceMatches(k, opts.source) {
@@ -387,14 +390,13 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 	}
 
 	var sections []DigestSection
+	var plans []briefCommitPlan
 	for _, key := range keys {
 		mems := byInstance[key] // may be nil for a zero-memory enumerated connector
 		snap := loadBriefSnapshot(cfg, key)
 		delta := classify(snap, mems, now)
 
-		// Build the surfaced section items + the set of ids actually RENDERED (the
-		// silent-data-loss guard advances the watermark only over these).
-		items, shownIDs, moreCount := deltaSectionItems(cfg, delta, mems, now, key, perSourceCap, memSal)
+		items, lineMembers, countOnly, moreCount := deltaSectionItems(cfg, delta, mems, now, key, perSourceCap, memSal)
 
 		state := classifyState(cfg, key, now, delta, len(items) > 0)
 		sec := DigestSection{Source: key, State: state, Items: items}
@@ -403,14 +405,7 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 			sec.Truncated = true
 		}
 		sections = append(sections, sec)
-
-		// Commit: persist the advanced snapshot for THIS instance (under the lock).
-		if opts.advance {
-			next := nextSnapshot(snap, delta, shownIDs, key)
-			if serr := saveBriefSnapshot(cfg, next, now); serr != nil {
-				return Digest{}, fmt.Errorf("commit watermark for %q: %w", key, serr)
-			}
-		}
+		plans = append(plans, briefCommitPlan{key: key, snap: snap, delta: delta, lineMembers: lineMembers, countOnlyIDs: countOnly})
 	}
 	sortSections(sections)
 
@@ -423,7 +418,93 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 		Sections:   sections,
 		Freshness:  sourceFreshness(cfg),
 		StaleTasks: stale,
-	}, nil
+	}, plans, nil
+}
+
+// advanceBrief runs the scheduled --advance transaction (issue #62 defect 1). Under
+// the brief lock it: (1) builds the delta digest + per-instance commit plans, (2)
+// STRUCTURALLY budgets the brief to budgetChars of rendered Markdown, (3) persists
+// the dated artifact when briefFile is set, and (4) commits each instance's watermark
+// over ONLY the items that survived into the budgeted brief. A budget-clipped item is
+// never marked seen, so it re-surfaces next run instead of being silently lost; and
+// when persisting, a write failure ABORTS the commit (safer than the pre-#62
+// non-fatal persist) so the watermark never advances past a brief the user never got.
+//
+// It returns the BUDGETED digest (so the caller renders/persists the same bytes the
+// commit reflects) and the artifact path ("" when briefFile is false). A filtered or
+// windowed request is preview-only and rejected — it can never advance the watermark.
+func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, briefFile bool) (Digest, string, error) {
+	if opts.filtered() {
+		return Digest{}, "", fmt.Errorf("a filtered digest (--source/--entity/--scope/--since-days) is preview-only and cannot --advance the watermark")
+	}
+	if opts.sinceHours > 0 {
+		return Digest{}, "", fmt.Errorf("an explicit --since-hours window is watermark-independent and cannot --advance")
+	}
+	if budgetChars <= 0 {
+		budgetChars = cfg.contextDefaultTokens() * charsPerToken
+	}
+
+	// Hold the brief lock across the WHOLE transaction (build → budget → persist →
+	// commit) so a hand-run --advance racing the cron never interleaves and never
+	// commits around a half-written artifact (T-12-07 + issue #62 defect 1).
+	release, lerr := acquireBriefLock(cfg)
+	if lerr != nil {
+		return Digest{}, "", fmt.Errorf("brief commit in progress (another --advance run holds the lock): %w", lerr)
+	}
+	defer release()
+
+	perSourceCap, byInstance, memSal, err := digestInputs(cfg, now, opts)
+	if err != nil {
+		return Digest{}, "", err
+	}
+	d, plans, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
+	if err != nil {
+		return Digest{}, "", err
+	}
+
+	budgeted, survived := budgetDigestForMarkdown(d, budgetChars)
+
+	// Persist FIRST when requested; abort the commit on failure.
+	path := ""
+	if briefFile {
+		p, werr := writeBriefArtifactAt(cfg, budgeted, now, budgetChars)
+		if werr != nil {
+			return Digest{}, "", fmt.Errorf("persist brief artifact: %w", werr)
+		}
+		path = p
+	}
+
+	for _, plan := range plans {
+		committed, intended := map[string]bool{}, map[string]bool{}
+		sectionRendered := false
+		for lineID, members := range plan.lineMembers {
+			for _, m := range members {
+				intended[m] = true
+			}
+			if survived[lineID] {
+				sectionRendered = true
+				for _, m := range members {
+					committed[m] = true
+				}
+			}
+		}
+		for _, id := range plan.countOnlyIDs {
+			intended[id] = true
+		}
+		if sectionRendered {
+			// Preserve the pre-#62 count-only acknowledgement: a section that rendered
+			// still acknowledges its folded low-signal tail (receipts stay collapsed,
+			// they do not re-surface every day).
+			for _, id := range plan.countOnlyIDs {
+				committed[id] = true
+			}
+		}
+		next := commitSnapshot(plan.snap, plan.delta, committed, intended, plan.key)
+		if serr := saveBriefSnapshot(cfg, next, now); serr != nil {
+			return Digest{}, "", fmt.Errorf("commit watermark for %q: %w", plan.key, serr)
+		}
+	}
+	return budgeted, path, nil
 }
 
 // deltaSectionItems turns a classify result into the section's rendered items.
@@ -433,10 +514,13 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 //     lives in classify; here we only choose what to DISPLAY.
 //   - steady state: surface delta.Items (new/updated), recency-ordered, capped.
 //
-// It returns the items to render, the set of stableIDs actually rendered (the
-// guard advances only over these), and the count truncated past the cap.
-func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Time, key string, cap int, memSal map[string]int64) (items []DigestItem, shownIDs map[string]bool, moreCount int) {
-	shownIDs = map[string]bool{}
+// It returns the items to render, a map from each displayed line's id to the stable
+// memory ids it represents (lineMembers — a collapsed series line stands for all its
+// instances), the stable ids of the low-signal tail folded into "+N more"
+// (countOnlyIDs — acknowledged but not rendered), and the count truncated past the
+// cap. advanceBrief advances the watermark over a line's members iff that line
+// survives the Markdown budget (issue #62 defect 1).
+func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Time, key string, cap int, memSal map[string]int64) (items []DigestItem, lineMembers map[string][]string, countOnlyIDs []string, moreCount int) {
 	if delta.ColdStart {
 		var tis []tsItem
 		isCalendar := connectorUpcoming(key)
@@ -446,22 +530,21 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 				continue
 			}
 			if !inColdStartWindow(ts, now, isCalendar) {
-				continue
+				continue // out-of-window archive: baselined by commitSnapshot (flood suppression).
 			}
 			it := digestItemFor(cfg, m, key, "new") // cold start: everything shown is "new" to the reader.
 			it.LowSignal = memoryIsServiceOnly(m)
 			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
 		}
 		tis = collapseRecurringSeries(tis, now)
+		memberOf := lineMemberMap(tis)
 		shown, more := capRecency(tis, cap, isCalendar)
-		// On cold start the WHOLE baseline is committed by nextSnapshot, so we do
-		// not need shownIDs to drive the commit; leave it empty (cold-start path
-		// ignores it). The cap-`more` stays unsurfaced (undisplayed archive is the
-		// starting line, not a truncated delta), but we DO collapse the zero-salience
-		// tail so the very first brief leads with signal instead of a wall of receipts.
-		_ = more
-		displayed, collapsed := collapseLowSignal(shown)
-		return displayed, shownIDs, collapsed
+		// Collapse the zero-salience tail so the very first brief leads with signal
+		// instead of a wall of receipts. Only the DISPLAYED in-window items are the
+		// "intended display" the commit gates on rendering; the cap-`more` overflow
+		// stays part of the baselined archive (starting line, not a truncated delta).
+		displayed, lm, countOnly := splitDisplayLowSignal(shown, memberOf)
+		return displayed, lm, countOnly, more + (len(shown) - len(displayed))
 	}
 
 	// Steady state: surface the new/updated deltas, recency-ordered.
@@ -484,27 +567,53 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 		tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
 	}
 	tis = collapseRecurringSeries(tis, now)
-	// Map each surfaced line to the memory ids it represents (a collapsed series
-	// stands for all its instances) so the watermark advances over the WHOLE set.
-	memberOf := make(map[string][]string, len(tis))
+	memberOf := lineMemberMap(tis)
+	shown, more := capRecency(tis, cap, connectorUpcoming(key))
+	// Collapse the zero-salience tail for display; the folded ids are count-only
+	// acknowledged (never re-surfaced) while the surviving lines drive the commit.
+	displayed, lm, countOnly := splitDisplayLowSignal(shown, memberOf)
+	return displayed, lm, countOnly, more + (len(shown) - len(displayed))
+}
+
+// lineMemberMap maps each tsItem line's id to the stable memory ids it represents (a
+// collapsed recurring series stands for every folded instance; a plain line stands
+// for itself), so the watermark can advance over the WHOLE set a rendered line covers.
+func lineMemberMap(tis []tsItem) map[string][]string {
+	out := make(map[string][]string, len(tis))
 	for _, ti := range tis {
 		if len(ti.members) > 0 {
-			memberOf[ti.item.ID] = ti.members
+			out[ti.item.ID] = ti.members
 		} else {
-			memberOf[ti.item.ID] = []string{ti.item.ID}
+			out[ti.item.ID] = []string{ti.item.ID}
 		}
 	}
-	shown, more := capRecency(tis, cap, connectorUpcoming(key))
-	// Mark the FULL capped set (and every folded series instance) acknowledged
-	// (watermark unchanged), THEN collapse the zero-salience tail for display —
-	// collapsed items are counted, never re-surfaced.
+	return out
+}
+
+// splitDisplayLowSignal partitions a capped, capRecency-ordered line set into the
+// rendered lines (every salient line plus at most digestLowSignalFloor low-signal
+// lines) with their line→members map, and the stable ids of the low-signal tail
+// folded into "+N more" (count-only acknowledged). Input MUST be capRecency order so
+// the low-signal items are already a recency-sorted tail.
+func splitDisplayLowSignal(shown []DigestItem, memberOf map[string][]string) (displayed []DigestItem, lineMembers map[string][]string, countOnly []string) {
+	lineMembers = map[string][]string{}
+	kept := 0
 	for _, it := range shown {
-		for _, id := range memberOf[it.ID] {
-			shownIDs[id] = true
+		members := memberOf[it.ID]
+		if len(members) == 0 {
+			members = []string{it.ID}
 		}
+		if it.LowSignal {
+			if kept >= digestLowSignalFloor {
+				countOnly = append(countOnly, members...)
+				continue
+			}
+			kept++
+		}
+		displayed = append(displayed, it)
+		lineMembers[it.ID] = members
 	}
-	displayed, collapsed := collapseLowSignal(shown)
-	return displayed, shownIDs, more + collapsed
+	return displayed, lineMembers, countOnly
 }
 
 // classifyState derives the three-state label for an enumerated instance (D-03).
@@ -540,22 +649,35 @@ func classifyState(cfg Config, key string, now time.Time, delta briefDelta, hasD
 	return stateNoChanges
 }
 
-// nextSnapshot computes the watermark to persist for one instance on commit.
+// commitSnapshot computes the watermark to persist for one instance AFTER the
+// Markdown budget has decided what actually rendered (issue #62 defect 1). committed
+// is the set of stable ids that survived into rendered lines (plus the count-only
+// acknowledged low-signal ids of a section that rendered). intendedDisplay is every
+// stable id the section CHOSE to show this run (rendered OR budget-dropped) — used
+// only on cold start to carve the display window out of the blanket baseline.
 //
-//   - cold start: baseline ALL current hashes (delta.Baseline) — archived backfill
-//     becomes the starting line, not a lost delta (D-04). Undisplayed items are
-//     intentionally baselined.
+//   - cold start: baseline the ARCHIVE/starting-line (every current hash NOT chosen
+//     for display) so a large backfill doesn't flood later runs (D-04), then advance
+//     over exactly the display items that actually rendered. A chosen-but-clipped
+//     display item is intentionally OMITTED, so it re-surfaces next run as a normal
+//     "new" delta instead of being silently swallowed on the first run (defect 1b).
 //   - steady state: keep the PREVIOUS snapshot value EXACTLY for every unshown id
-//     that is still present (so an unshown updated item keeps its OLD hash and
-//     re-surfaces next run — never silently marked-read), UNION the current hashes
-//     of items actually SHOWN (the guard), MINUS any ids no longer present (their
-//     memory was deleted/tombstoned — M-4 drop, so a later same-id recreation
-//     re-surfaces as new).
-func nextSnapshot(prev briefSnapshot, delta briefDelta, shownIDs map[string]bool, key string) briefSnapshot {
+//     still present (so an unshown updated item keeps its OLD hash and re-surfaces —
+//     never silently marked-read), UNION the current hashes of items actually
+//     committed (rendered), MINUS any ids no longer present (deleted/tombstoned —
+//     M-4 drop, so a later same-id recreation re-surfaces as new).
+func commitSnapshot(prev briefSnapshot, delta briefDelta, committed, intendedDisplay map[string]bool, key string) briefSnapshot {
 	items := map[string]string{}
 	if delta.ColdStart {
 		for id, h := range delta.Baseline {
-			items[id] = h
+			if !intendedDisplay[id] {
+				items[id] = h // archive / starting line (flood suppression, D-04).
+			}
+		}
+		for id := range committed {
+			if h, ok := delta.Baseline[id]; ok {
+				items[id] = h // a display item that actually rendered.
+			}
 		}
 		return briefSnapshot{Key: key, Items: items}
 	}
@@ -567,8 +689,8 @@ func nextSnapshot(prev briefSnapshot, delta briefDelta, shownIDs map[string]bool
 			items[id] = prevHash // unshown id: keep OLD hash so an update re-surfaces.
 		}
 	}
-	// Advance the hash ONLY for items actually shown this run (the guard).
-	for id := range shownIDs {
+	// Advance the hash ONLY for items actually committed (rendered) this run.
+	for id := range committed {
 		if h, ok := delta.Baseline[id]; ok {
 			items[id] = h
 		}
@@ -880,48 +1002,168 @@ func sortSections(sections []DigestSection) {
 	})
 }
 
-// renderDigest renders the brief as Markdown, clipped to budgetChars (the
-// time-sensitive sections lead, so truncation drops the least-important tail).
-// It reads the typed Delta seam: the per-section State sentinel, the [new]/
-// [updated] item Change, and the "+N more since last brief" guard line (M-5).
+// --- Markdown render fragments (issue #62 defect 1) ----------------------------
+//
+// renderDigest and the structural budgeter (budgetDigestForMarkdown) share these
+// fragment helpers so their byte accounting can never drift: the budgeter costs the
+// EXACT bytes the renderer will emit for each item/section, guaranteeing that an
+// item the budgeter reports as a survivor is fully present in the rendered brief.
+
+// renderDigestHeader renders the brief's first line.
+func renderDigestHeader(d Digest) string {
+	if d.SinceHours > 0 {
+		return fmt.Sprintf("# Mora digest — %s (last %dh)\n", d.Generated, d.SinceHours)
+	}
+	return fmt.Sprintf("# Mora digest — %s (since last brief)\n", d.Generated)
+}
+
+// renderDigestFreshness renders the "Fresh as of:" line, or "" when absent.
+func renderDigestFreshness(d Digest) string {
+	if len(d.Freshness) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(d.Freshness))
+	for k := range d.Freshness {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+" "+d.Freshness[k])
+	}
+	return fmt.Sprintf("Fresh as of: %s\n", strings.Join(parts, " · "))
+}
+
+// renderDigestSectionHeading renders the "\n## <heading>\n" fragment.
+func renderDigestSectionHeading(s DigestSection) string {
+	return "\n## " + sectionHeading(s) + "\n"
+}
+
+// renderDigestItemLine renders one item's Markdown line. The budgeter costs items in
+// these exact bytes.
+func renderDigestItemLine(it DigestItem) string {
+	return fmt.Sprintf("- %s%s — %s (id: %s)\n", changePrefix(it.Change), it.Title, it.Snippet, it.ID)
+}
+
+// renderDigestMoreLine renders the "+N more since last brief" guard line.
+func renderDigestMoreLine(n int) string {
+	return fmt.Sprintf("- +%d more since last brief\n", n)
+}
+
+// renderDigestStaleTasks renders the open-tasks block, or "" when there are none.
+func renderDigestStaleTasks(d Digest) string {
+	if len(d.StaleTasks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n## Open tasks (%d stale)\n", len(d.StaleTasks))
+	for _, task := range d.StaleTasks {
+		fmt.Fprintf(&b, "- %s\n", task)
+	}
+	return b.String()
+}
+
+// renderDigestBody renders a digest to Markdown with NO budget clip — the digest is
+// assumed already budgeted (budgetDigestForMarkdown). It composes the fragment
+// helpers so the output is byte-identical to the legacy inline renderer.
+func renderDigestBody(d Digest) string {
+	var b strings.Builder
+	b.WriteString(renderDigestHeader(d))
+	b.WriteString(renderDigestFreshness(d))
+	for _, s := range d.Sections {
+		b.WriteString(renderDigestSectionHeading(s))
+		for _, it := range s.Items {
+			b.WriteString(renderDigestItemLine(it))
+		}
+		if s.MoreCount > 0 {
+			b.WriteString(renderDigestMoreLine(s.MoreCount))
+		}
+	}
+	b.WriteString(renderDigestStaleTasks(d))
+	return b.String()
+}
+
+// renderDigest renders the brief as Markdown, STRUCTURALLY budgeted to budgetChars:
+// the time-sensitive sections lead, and truncation drops whole tail ITEMS/SECTIONS
+// (never a mid-line rune clip) so the persisted brief and the Phase-12 watermark
+// commit agree on exactly which items were shown (issue #62 defect 1). The final
+// truncateRunes is a safety net for frame/shell overshoot only; by construction it
+// never bites a kept item line.
 func renderDigest(d Digest, budgetChars int) string {
 	if budgetChars <= 0 {
 		budgetChars = defaultContextTokens * charsPerToken
 	}
-	var b strings.Builder
-	if d.SinceHours > 0 {
-		fmt.Fprintf(&b, "# Mora digest — %s (last %dh)\n", d.Generated, d.SinceHours)
-	} else {
-		fmt.Fprintf(&b, "# Mora digest — %s (since last brief)\n", d.Generated)
+	bd, _ := budgetDigestForMarkdown(d, budgetChars)
+	return truncateRunes(renderDigestBody(bd), budgetChars)
+}
+
+// budgetDigestForMarkdown structurally budgets a digest to budgetChars of RENDERED
+// Markdown, cutting at item/section boundaries, and returns the budgeted digest plus
+// the set of DigestItem IDs that survived as rendered lines — the ONLY ids the
+// Phase-12 watermark may advance over on the scheduled --advance path (issue #62
+// defect 1: the commit follows what actually rendered, not the pre-truncation cap).
+//
+// The reserved frame (header + freshness + the bounded open-tasks block) is always
+// kept; sections then fill the remaining budget highest-rank-first, item by item.
+// A section that partially fits keeps its fitting items and folds the rest into
+// MoreCount/Truncated; once the budget is spent, every remaining section becomes a
+// truncated shell (State + MoreCount, no bodies) so the reader still sees the source
+// was suppressed, not absent. Deterministic + byte-stable: section order is
+// preserved and each cut is a pure prefix of a section's items.
+func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
+	survived := map[string]bool{}
+	if budget <= 0 {
+		budget = defaultContextTokens * charsPerToken
 	}
-	if len(d.Freshness) > 0 {
-		keys := make([]string, 0, len(d.Freshness))
-		for k := range d.Freshness {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		parts := make([]string, 0, len(keys))
-		for _, k := range keys {
-			parts = append(parts, k+" "+d.Freshness[k])
-		}
-		fmt.Fprintf(&b, "Fresh as of: %s\n", strings.Join(parts, " · "))
+	// The frame is bounded and high-value (freshness + capped open-loops), so it is
+	// always reserved; sections budget against what remains.
+	reserve := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) + len(renderDigestStaleTasks(d))
+	remaining := budget - reserve
+	if remaining < 0 {
+		remaining = 0
 	}
+
+	out := d
+	out.Sections = make([]DigestSection, 0, len(d.Sections))
+	used := 0
+	exhausted := false
 	for _, s := range d.Sections {
-		fmt.Fprintf(&b, "\n## %s\n", sectionHeading(s))
-		for _, it := range s.Items {
-			fmt.Fprintf(&b, "- %s%s — %s (id: %s)\n", changePrefix(it.Change), it.Title, it.Snippet, it.ID)
+		if exhausted {
+			out.Sections = append(out.Sections, truncatedShell(s))
+			continue
 		}
-		if s.MoreCount > 0 {
-			fmt.Fprintf(&b, "- +%d more since last brief\n", s.MoreCount)
+		headCost := len(renderDigestSectionHeading(s))
+		if used+headCost > remaining {
+			// No room for even this section's heading — suppress it (and the rest).
+			out.Sections = append(out.Sections, truncatedShell(s))
+			exhausted = true
+			continue
 		}
+		kept := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated}
+		used += headCost
+		dropped := 0
+		for idx, it := range s.Items {
+			lineCost := len(renderDigestItemLine(it))
+			if used+lineCost > remaining {
+				dropped = len(s.Items) - idx
+				break
+			}
+			kept.Items = append(kept.Items, it)
+			survived[it.ID] = true
+			used += lineCost
+		}
+		if dropped > 0 {
+			kept.MoreCount += dropped
+			kept.Truncated = true
+			exhausted = true // later sections won't fit either; suppress them as shells.
+		}
+		if kept.MoreCount > 0 {
+			// A "+N more" line will render for this section — account for its bytes.
+			used += len(renderDigestMoreLine(kept.MoreCount))
+		}
+		out.Sections = append(out.Sections, kept)
 	}
-	if len(d.StaleTasks) > 0 {
-		fmt.Fprintf(&b, "\n## Open tasks (%d stale)\n", len(d.StaleTasks))
-		for _, task := range d.StaleTasks {
-			fmt.Fprintf(&b, "- %s\n", task)
-		}
-	}
-	return truncateRunes(b.String(), budgetChars)
+	return out, survived
 }
 
 // sectionHeading renders the per-section heading: the human label plus, in DELTA

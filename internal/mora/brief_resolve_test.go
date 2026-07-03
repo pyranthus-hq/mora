@@ -341,7 +341,7 @@ func TestResolveBriefEmptyDeltaFallsBackToWindow(t *testing.T) {
 
 	// Consume the delta: advance the watermark so a subsequent DELTA preview
 	// surfaces ZERO items (everything baselined) — exactly the scheduled-job case.
-	if _, err := buildDigest(cfg, now, briefOpts{advance: true}); err != nil {
+	if _, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, false); err != nil {
 		t.Fatalf("seed-advance buildDigest: %v", err)
 	}
 
@@ -380,7 +380,7 @@ func TestResolveBriefDoesNotAdvanceWatermark(t *testing.T) {
 	digestSeed(t, cfg, "gmail", "Watermark guard thread", 2*time.Hour, now)
 
 	// Baseline the watermark on disk first so there is a snapshot file to compare.
-	if _, err := buildDigest(cfg, now, briefOpts{advance: true}); err != nil {
+	if _, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, false); err != nil {
 		t.Fatalf("baseline advance: %v", err)
 	}
 	snapPath := briefPath(cfg, "gmail")

@@ -191,7 +191,7 @@ func TestCmdBriefNoNetwork(t *testing.T) {
 func TestCmdBriefDoesNotAdvanceWatermark(t *testing.T) {
 	cfg, now := seedBriefCLIVault(t)
 	// Baseline the watermark on disk so there's a snapshot to compare.
-	if _, err := buildDigest(cfg, now, briefOpts{advance: true}); err != nil {
+	if _, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, false); err != nil {
 		t.Fatalf("baseline advance: %v", err)
 	}
 	snapPath := briefPath(cfg, "gmail")
@@ -227,7 +227,7 @@ func TestBriefDigestDeltaThenWindowFallback(t *testing.T) {
 	digestSeed(t, cfg, "gmail", "Window only thread", 2*time.Hour, now)
 
 	// Consume the delta so a plain DELTA preview surfaces nothing.
-	if _, err := buildDigest(cfg, now, briefOpts{advance: true}); err != nil {
+	if _, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, false); err != nil {
 		t.Fatalf("seed-advance: %v", err)
 	}
 
@@ -419,7 +419,7 @@ func TestMCPBriefReadOnly(t *testing.T) {
 	cfg := seedDigestVault(t)
 	now := time.Now()
 	// Baseline the watermark so there is a snapshot file to compare.
-	if _, err := buildDigest(cfg, now, briefOpts{advance: true}); err != nil {
+	if _, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, false); err != nil {
 		t.Fatalf("baseline advance: %v", err)
 	}
 	snapPath := briefPath(cfg, "gmail")

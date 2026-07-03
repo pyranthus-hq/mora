@@ -108,9 +108,12 @@ func deltaPreview(t *testing.T, cfg Config, now time.Time) Digest {
 // the watermark under the lock.
 func deltaCommit(t *testing.T, cfg Config, now time.Time) Digest {
 	t.Helper()
-	d, err := buildDigest(cfg, now, briefOpts{advance: true})
+	// The committing surface is advanceBrief (issue #62 defect 1); buildDigest is now
+	// the pure preview build. A huge budget + no artifact commits over everything,
+	// matching the pre-#62 cap-only commit for the small fixtures these helpers seed.
+	d, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, false)
 	if err != nil {
-		t.Fatalf("buildDigest(advance): %v", err)
+		t.Fatalf("advanceBrief(advance): %v", err)
 	}
 	return d
 }
@@ -548,7 +551,7 @@ func TestSilentDataLossGuardResurfaces(t *testing.T) {
 		title := "Email" + string(rune('a'+i))
 		digestSeedHash(t, cfg, "gmail", title, time.Duration(i)*time.Minute, now, "h-"+title)
 	}
-	d, err := buildDigest(cfg, now.Add(1*time.Hour), briefOpts{advance: true, perSourceCap: 8})
+	d, _, err := advanceBrief(cfg, now.Add(1*time.Hour), briefOpts{advance: true, perSourceCap: 8}, 1<<20, false)
 	if err != nil {
 		t.Fatalf("buildDigest: %v", err)
 	}
@@ -596,7 +599,7 @@ func TestSilentDataLossUnshownUpdatedKeepsOldHash(t *testing.T) {
 		title := "New" + string(rune('a'+i))
 		digestSeedHash(t, cfg, "gmail", title, time.Duration(i)*time.Minute, now, "h-"+title)
 	}
-	d, err := buildDigest(cfg, now.Add(1*time.Hour), briefOpts{advance: true, perSourceCap: 8})
+	d, _, err := advanceBrief(cfg, now.Add(1*time.Hour), briefOpts{advance: true, perSourceCap: 8}, 1<<20, false)
 	if err != nil {
 		t.Fatalf("buildDigest: %v", err)
 	}

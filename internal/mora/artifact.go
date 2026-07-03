@@ -40,8 +40,17 @@ func briefArtifactPath(cfg Config, now time.Time) string {
 // persisting the artifact does NOT advance the delta. The watermark stays gated on
 // --advance (D13-3 / SC#4).
 func writeBriefArtifact(cfg Config, d Digest, now time.Time) (string, error) {
+	return writeBriefArtifactAt(cfg, d, now, cfg.contextDefaultTokens()*charsPerToken)
+}
+
+// writeBriefArtifactAt persists a Digest at an EXPLICIT budget. The scheduled
+// --advance transaction (advanceBrief, issue #62 defect 1) passes the SAME budget it
+// used to compute the survivor set, and a digest already budgeted to that budget, so
+// renderDigest here is idempotent — the persisted artifact contains exactly the items
+// the watermark commit reflects, never more, never fewer.
+func writeBriefArtifactAt(cfg Config, d Digest, now time.Time, budgetChars int) (string, error) {
 	path := briefArtifactPath(cfg, now)
-	body := renderDigest(d, cfg.contextDefaultTokens()*charsPerToken)
+	body := renderDigest(d, budgetChars)
 	if err := atomicWrite(path, []byte(body), 0o644); err != nil {
 		return "", err
 	}

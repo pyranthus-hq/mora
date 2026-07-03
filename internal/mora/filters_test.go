@@ -135,12 +135,12 @@ func TestFilteredDeltaIsPreviewOnly(t *testing.T) {
 		{advance: true, sinceDays: 7},
 		{advance: true, source: "gmail"},
 	} {
-		if _, err := buildDigest(cfg, now, opts); err == nil || !strings.Contains(err.Error(), "preview-only") {
+		if _, _, err := advanceBrief(cfg, now, opts, 1<<20, false); err == nil || !strings.Contains(err.Error(), "preview-only") {
 			t.Errorf("%+v: err=%v, want a preview-only error", opts, err)
 		}
 	}
 	// Unfiltered advance must NOT be rejected as preview-only.
-	if _, err := buildDigest(cfg, now, briefOpts{advance: true}); err != nil && strings.Contains(err.Error(), "preview-only") {
+	if _, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, false); err != nil && strings.Contains(err.Error(), "preview-only") {
 		t.Errorf("unfiltered advance wrongly rejected: %v", err)
 	}
 }
