@@ -75,7 +75,7 @@ func TestNotifyBrief_Darwin_PostsToastNamingBrief(t *testing.T) {
 	t.Setenv("MORA_NO_NOTIFY", "")
 	rr := &recordingRunner{}
 	path := "briefs/2026-06-08-brief.md"
-	if err := notifyBrief(path, rr.run, "darwin"); err != nil {
+	if err := notifyBrief(path, nil, rr.run, "darwin"); err != nil {
 		t.Fatalf("notifyBrief returned error: %v", err)
 	}
 	if len(rr.calls) != 1 {
@@ -97,13 +97,53 @@ func TestNotifyBrief_Darwin_PostsToastNamingBrief(t *testing.T) {
 	}
 }
 
+// TestNotifyBrief_UrgentEnrichesToast (issue #62 follow-on): when a top Urgent item is
+// passed, the toast leads with its subject + deadline-anchored ask instead of the
+// content-free "Daily brief ready".
+func TestNotifyBrief_UrgentEnrichesToast(t *testing.T) {
+	t.Setenv("MORA_NO_NOTIFY", "")
+	rr := &recordingRunner{}
+	top := &urgentNote{subtitle: "MSA sign-off", body: "sign the MSA by end of day today"}
+	if err := notifyBrief("briefs/x-brief.md", top, rr.run, "darwin"); err != nil {
+		t.Fatalf("notifyBrief returned error: %v", err)
+	}
+	if len(rr.calls) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(rr.calls))
+	}
+	script := rr.calls[0][1]
+	if !strings.Contains(script, "Urgent") {
+		t.Errorf("enriched toast must flag Urgent: %q", script)
+	}
+	if !strings.Contains(script, "MSA sign-off") || !strings.Contains(script, "by end of day") {
+		t.Errorf("enriched toast must carry the subject + ask: %q", script)
+	}
+	if strings.Contains(script, "Daily brief ready") {
+		t.Errorf("enriched toast must not fall back to the content-free body: %q", script)
+	}
+}
+
+// TestNotifyBrief_UrgentTextIsEscaped: the urgent item text is user-derived, so it must
+// be escaped (a subject with a double-quote cannot break out of the AppleScript string).
+func TestNotifyBrief_UrgentTextIsEscaped(t *testing.T) {
+	t.Setenv("MORA_NO_NOTIFY", "")
+	rr := &recordingRunner{}
+	top := &urgentNote{subtitle: `Re: "urgent" thing`, body: `reply by 5pm "today"`}
+	if err := notifyBrief("briefs/x-brief.md", top, rr.run, "darwin"); err != nil {
+		t.Fatalf("notifyBrief returned error: %v", err)
+	}
+	script := rr.calls[0][1]
+	if strings.Contains(script, `"urgent"`) || strings.Contains(script, `"today"`) {
+		t.Errorf("embedded quotes in the urgent text must be escaped: %q", script)
+	}
+}
+
 func TestNotifyBrief_EscapesEmbeddedQuote(t *testing.T) {
 	t.Setenv("MORA_NO_NOTIFY", "")
 	rr := &recordingRunner{}
 	// A path with an embedded double-quote MUST be escaped so it cannot break out
 	// of the AppleScript subtitle string (script injection, T-13-05).
 	path := `briefs/we"ird-brief.md`
-	if err := notifyBrief(path, rr.run, "darwin"); err != nil {
+	if err := notifyBrief(path, nil, rr.run, "darwin"); err != nil {
 		t.Fatalf("notifyBrief returned error: %v", err)
 	}
 	if len(rr.calls) != 1 {
@@ -125,7 +165,7 @@ func TestNotifyBrief_StripsControlChars(t *testing.T) {
 	rr := &recordingRunner{}
 	// Newlines / control chars must be stripped so they cannot inject AppleScript.
 	path := "briefs/a\nb\t-brief.md"
-	if err := notifyBrief(path, rr.run, "darwin"); err != nil {
+	if err := notifyBrief(path, nil, rr.run, "darwin"); err != nil {
 		t.Fatalf("notifyBrief returned error: %v", err)
 	}
 	script := rr.calls[0][1]
@@ -137,7 +177,7 @@ func TestNotifyBrief_StripsControlChars(t *testing.T) {
 func TestNotifyBrief_NonDarwin_NoRunnerCall(t *testing.T) {
 	t.Setenv("MORA_NO_NOTIFY", "")
 	rr := &recordingRunner{}
-	if err := notifyBrief("briefs/x-brief.md", rr.run, "linux"); err != nil {
+	if err := notifyBrief("briefs/x-brief.md", nil, rr.run, "linux"); err != nil {
 		t.Fatalf("notifyBrief(linux) returned error: %v, want nil", err)
 	}
 	if len(rr.calls) != 0 {
@@ -148,7 +188,7 @@ func TestNotifyBrief_NonDarwin_NoRunnerCall(t *testing.T) {
 func TestNotifyBrief_OptOutEnv_NoRunnerCall(t *testing.T) {
 	t.Setenv("MORA_NO_NOTIFY", "1")
 	rr := &recordingRunner{}
-	if err := notifyBrief("briefs/x-brief.md", rr.run, "darwin"); err != nil {
+	if err := notifyBrief("briefs/x-brief.md", nil, rr.run, "darwin"); err != nil {
 		t.Fatalf("notifyBrief with opt-out returned error: %v, want nil", err)
 	}
 	if len(rr.calls) != 0 {
@@ -160,7 +200,7 @@ func TestNotifyBrief_RunnerError_Swallowed(t *testing.T) {
 	t.Setenv("MORA_NO_NOTIFY", "")
 	rr := &recordingRunner{err: errors.New("osascript: command not found")}
 	// Best-effort (D13-1, T-13-06): a failing/absent osascript must NEVER fail the brief.
-	if err := notifyBrief("briefs/x-brief.md", rr.run, "darwin"); err != nil {
+	if err := notifyBrief("briefs/x-brief.md", nil, rr.run, "darwin"); err != nil {
 		t.Fatalf("notifyBrief swallowed-error path returned %v, want nil", err)
 	}
 }
@@ -172,7 +212,7 @@ func TestNotifyBriefDefault_OptOut_SilentNoOp(t *testing.T) {
 	// ever spawning osascript or firing a toast, and asserts the best-effort
 	// contract (returns nil, never an error).
 	t.Setenv("MORA_NO_NOTIFY", "1")
-	if err := notifyBriefDefault("briefs/2026-06-08-brief.md"); err != nil {
+	if err := notifyBriefDefault("briefs/2026-06-08-brief.md", nil); err != nil {
 		t.Fatalf("notifyBriefDefault (opted out) = %v, want nil", err)
 	}
 }
@@ -188,7 +228,7 @@ func TestNotifyBrief_WritesZeroBytes(t *testing.T) {
 	// notifyBrief takes no Writer; if a future change added one, this would catch a leak.
 	// Here we simply assert the function compiles to a no-Writer signature and that
 	// the recording runner — not any buffer — is the sole sink.
-	if err := notifyBrief("briefs/x-brief.md", rr.run, "darwin"); err != nil {
+	if err := notifyBrief("briefs/x-brief.md", nil, rr.run, "darwin"); err != nil {
 		t.Fatalf("notifyBrief returned error: %v", err)
 	}
 	if buf.Len() != 0 {

@@ -1552,9 +1552,14 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		// Notify is the LAST step and best-effort: only fires when a brief was actually
 		// persisted (we have a path to point at); notifyBriefFn is GOOS/env-gated and
-		// swallows its own error.
+		// swallows its own error. When the brief has an Urgent shelf, enrich the toast
+		// with its top item so the deadline is visible without opening the brief (#62).
 		if *briefFile && *notify && artifactPath != "" {
-			_ = notifyBriefFn(artifactPath)
+			var top *urgentNote
+			if len(d.Urgent) > 0 {
+				top = &urgentNote{subtitle: d.Urgent[0].Title, body: d.Urgent[0].Snippet}
+			}
+			_ = notifyBriefFn(artifactPath, top)
 		}
 	}
 	return nil
