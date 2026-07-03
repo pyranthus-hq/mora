@@ -246,8 +246,9 @@ mora think "what did Sam decide about pricing?" --json   # cited evidence + gap 
 ## Make the brief your session-start default
 
 The brief is a daily *what-changed / what-matters* digest: new-or-updated threads since you last looked,
-ordered by who actually matters to you, every item citable by id. It has a scheduled
-**write side** and a session-start **read side**:
+ordered by who actually matters to you, every item citable by id. A deadline-bearing email from a real
+person leads the brief on an **Urgent** shelf above the sections (and never gets silently dropped by the
+byte budget). It has a scheduled **write side** and a session-start **read side**:
 
 ```bash
 mora schedule install pulse-daily   # write side: syncs, then persists ~/vault/mora/briefs/<date>-brief.md each morning

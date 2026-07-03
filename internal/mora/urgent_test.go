@@ -98,7 +98,7 @@ func TestUrgentSnippetStripsFromPrefix(t *testing.T) {
 	}
 }
 
-// Review finding: stripFromPrefix under-stripped a "Display Name <addr>" From header,
+// Review finding: the From-line strip under-stripped a "Display Name <addr>" header,
 // leaving name+address cruft in the flagship urgent snippet.
 func TestUrgentSnippetStripsDisplayNameFrom(t *testing.T) {
 	body := "From: Jane Smith <jane@client.com>\n\nThe deadline is tomorrow, please review."
