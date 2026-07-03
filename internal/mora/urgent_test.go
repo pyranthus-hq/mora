@@ -98,6 +98,41 @@ func TestUrgentSnippetStripsFromPrefix(t *testing.T) {
 	}
 }
 
+// Issue #62 defect 2 (enrichment): Gmail actionability labels enrich the gate. A
+// user-STARRED recent human email reaches the shelf even without a deadline phrase
+// (an explicit user signal), but UNREAD+IMPORTANT alone must not (too noisy as a gate).
+func TestIsUrgentStarredWithoutDeadlinePhrase(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("dave@acme.com", "Quick question", "Can you take a look when you get a sec?", now.Add(-1*time.Hour))
+	m.Meta["labels"] = []string{"STARRED"}
+	if ok, _ := isUrgent(m, now); !ok {
+		t.Fatalf("a recent user-STARRED human email should reach the shelf without a deadline phrase")
+	}
+}
+
+func TestIsUrgentUnreadImportantAloneNotUrgent(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("erin@acme.com", "FYI", "Just sharing this for your awareness.", now.Add(-1*time.Hour))
+	m.Meta["labels"] = []string{"UNREAD", "IMPORTANT"}
+	if ok, _ := isUrgent(m, now); ok {
+		t.Fatalf("UNREAD+IMPORTANT alone (no deadline phrase, not starred) must not be urgent")
+	}
+}
+
+// TestAssembleUrgentShelfHigherScoreLeads: within the shelf, a higher urgency score
+// (starred/important/unread boost) leads even at equal arrival time.
+func TestAssembleUrgentShelfHigherScoreLeads(t *testing.T) {
+	tm := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	entries := []urgentEntry{
+		{item: DigestItem{ID: "plain"}, occurredAt: tm, score: 2},
+		{item: DigestItem{ID: "starred"}, occurredAt: tm, score: 5},
+	}
+	items, _ := assembleUrgentShelf(entries)
+	if len(items) != 2 || items[0].ID != "starred" {
+		t.Fatalf("higher urgency score must lead the shelf; got %+v", items)
+	}
+}
+
 // urgentGmailSeed writes a gmail-thread memory with a human sender + a deadline body
 // (the shape gmailThreadToItem produces), so the delta brief can detect urgency.
 func urgentGmailSeed(t *testing.T, cfg Config, title, from, body string, occurred time.Time) {

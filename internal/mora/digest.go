@@ -441,6 +441,9 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 // seen — the same safe pattern as a budget-clipped item.
 func assembleUrgentShelf(entries []urgentEntry) (items []DigestItem, more int) {
 	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].score != entries[j].score {
+			return entries[i].score > entries[j].score // starred/important/unread + deadline boost.
+		}
 		if !entries[i].occurredAt.Equal(entries[j].occurredAt) {
 			return entries[i].occurredAt.After(entries[j].occurredAt)
 		}
@@ -601,6 +604,7 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 				item:       urgentItemFor(cfg, c.m, key, c.change, phrase),
 				occurredAt: itemOccurredAt(c.m),
 				sal:        memSal[c.m.ID],
+				score:      urgencyScore(c.m, phrase),
 			})
 			continue
 		}
@@ -628,11 +632,13 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 }
 
 // urgentEntry is one shelf candidate carried up from a section for cross-source
-// ordering: the rendered item plus its arrival instant and salience tie-break.
+// ordering: the rendered item, its label/deadline urgency score (primary sort), and
+// its arrival instant + salience (tie-breaks).
 type urgentEntry struct {
 	item       DigestItem
 	occurredAt time.Time
 	sal        int64
+	score      int
 }
 
 // urgentItemFor builds a shelf DigestItem: like digestItemFor but with a

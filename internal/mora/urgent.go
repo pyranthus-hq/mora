@@ -47,10 +47,14 @@ var urgentDeadlinePhrases = []string{
 }
 
 // isUrgent reports whether a surfaced memory belongs on the Urgent shelf and, if so,
-// the matched deadline phrase (for the deadline-anchored snippet). Gate order:
+// the matched deadline phrase (for the deadline-anchored snippet; "" when the item
+// qualified via a STARRED label instead). Gate order:
 //  1. a known-HUMAN sender (a service/no-reply From is never urgent — the spam guard);
 //  2. a recent wall-clock arrival (occurred_at within urgentRecencyWindow of now);
-//  3. a deadline / time-pressure phrase in the subject or body.
+//  3. a deadline / time-pressure phrase in the subject or body, OR a user-applied
+//     STARRED Gmail label (an explicit "I flagged this" signal — issue #62 defect 2
+//     enrichment). UNREAD/IMPORTANT alone do NOT qualify (too noisy as a gate); they
+//     only BOOST ordering within the shelf via urgencyScore.
 func isUrgent(m Memory, now time.Time) (bool, string) {
 	if !hasHumanSender(m) {
 		return false, ""
@@ -59,10 +63,53 @@ func isUrgent(m Memory, now time.Time) (bool, string) {
 		return false, ""
 	}
 	phrase := matchDeadlinePhrase(m.Title, m.Text)
-	if phrase == "" {
+	_, _, starred := gmailLabels(m)
+	if phrase == "" && !starred {
 		return false, ""
 	}
 	return true, phrase
+}
+
+// gmailLabels reads the captured actionability labels (issue #62 defect 2 enrichment)
+// off a memory's Meta. Absent on pre-#62 ingests / non-Gmail memories, so every
+// caller degrades to the deadline-phrase behavior.
+func gmailLabels(m Memory) (unread, important, starred bool) {
+	if m.Meta == nil {
+		return false, false, false
+	}
+	for _, l := range metaStrings(m.Meta["labels"]) {
+		switch l {
+		case "UNREAD":
+			unread = true
+		case "IMPORTANT":
+			important = true
+		case "STARRED":
+			starred = true
+		}
+	}
+	return unread, important, starred
+}
+
+// urgencyScore ranks items WITHIN the shelf (never the gate). A user-explicit STARRED
+// outweighs Gmail's auto IMPORTANT, which outweighs UNREAD; a matched deadline phrase
+// adds on top. Salience and arrival time are the downstream tie-breaks
+// (assembleUrgentShelf), keeping salience only a tie-breaker (issue #62).
+func urgencyScore(m Memory, phrase string) int {
+	unread, important, starred := gmailLabels(m)
+	score := 0
+	if starred {
+		score += 3
+	}
+	if important {
+		score += 2
+	}
+	if unread {
+		score++
+	}
+	if phrase != "" {
+		score += 2
+	}
+	return score
 }
 
 // hasHumanSender reports whether a memory has at least one From/organizer that
