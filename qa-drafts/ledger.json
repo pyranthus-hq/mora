@@ -1,0 +1,15 @@
+[
+  "concurrency-index-loss",
+  "mcp-server-leak",
+  "sqlite-busy-no-timeout",
+  "scope-path-traversal",
+  "cli-exit-codes",
+  "brief-budget-noise",
+  "list-recent-ordering",
+  "search-relevance-floor",
+  "no-write-dedup",
+  "tasks-list-returns-done",
+  "meeting-prep-self-identity",
+  "dx-help-and-validation",
+  "tasks-add-help-writes-literal-task"
+]
