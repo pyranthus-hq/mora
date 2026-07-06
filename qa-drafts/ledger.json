@@ -1,0 +1,7 @@
+[
+  "concurrency-index-loss",
+  "scope-path-traversal",
+  "dx-help-and-validation",
+  "tasks-list-returns-done",
+  "tasks-add-flag-as-literal-name"
+]
