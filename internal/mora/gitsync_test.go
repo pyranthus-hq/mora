@@ -361,6 +361,7 @@ func TestSyncGit_RefusesGitfileAndSymlinkIndirection(t *testing.T) {
 		}
 	})
 	t.Run("symlink", func(t *testing.T) {
+		skipOnWindows(t, "os.Symlink needs SeCreateSymbolicLinkPrivilege on Windows; the symlinked-.git indirection cannot be created without elevation (the gitfile subtest still covers the refusal)")
 		cfg := gitSyncTestConfig(t)
 		if err := os.Symlink(t.TempDir(), filepath.Join(cfg.VaultDir, ".git")); err != nil {
 			t.Fatal(err)

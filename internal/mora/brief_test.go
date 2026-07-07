@@ -259,9 +259,7 @@ func TestSaveBriefSnapshotPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("snapshot perm = %v, want 0600", fi.Mode().Perm())
-	}
+	assertPermUnix(t, fi.Mode(), 0o600)
 }
 
 // TestSaveBriefSnapshotByteStable is the determinism invariant (T-12-08): two

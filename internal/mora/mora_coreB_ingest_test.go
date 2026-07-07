@@ -746,6 +746,7 @@ func TestCoreB_IngestBackfillEnabledIMessageFailure(t *testing.T) {
 }
 
 func TestCoreB_IngestConnectIMessageSinceDays(t *testing.T) {
+	asDarwinOnWindows(t)
 	withTempHome(t)
 	run(t, "init")
 	var out bytes.Buffer
@@ -776,6 +777,7 @@ func TestCoreB_IngestConnectIMessageBadFlag(t *testing.T) {
 }
 
 func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
+	asDarwinOnWindows(t)
 	withTempHome(t)
 	run(t, "init")
 	var out bytes.Buffer
@@ -790,7 +792,10 @@ func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
 		t.Fatalf("connectIMessage output missing enable line:\n%s", s)
 	}
 	guidance := "No Messages database found"
-	if runtime.GOOS != "darwin" {
+	// Read the SAME injectable seam the source uses (runtimeGOOS), so the
+	// expectation stays in sync when asDarwinOnWindows injects darwin on Windows.
+	// On native Linux/macOS no injection is active, so runtimeGOOS()==runtime.GOOS.
+	if runtimeGOOS() != "darwin" {
 		guidance = "only runs on macOS"
 	}
 	if !strings.Contains(s, guidance) {

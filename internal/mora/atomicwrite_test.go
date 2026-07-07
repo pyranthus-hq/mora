@@ -116,9 +116,7 @@ func TestAtomicWriteHonorsModeAndLeavesNoOrphan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o644 {
-		t.Fatalf("mode = %o, want 0644", got)
-	}
+	assertPermUnix(t, info.Mode(), 0o644)
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {

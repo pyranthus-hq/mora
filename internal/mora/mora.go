@@ -5651,7 +5651,22 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	// Publish atomically. On POSIX this is a single rename(2). On Windows,
+	// os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_EXISTING): replacing an
+	// existing target requires deleting it, so concurrent writers racing to
+	// rename onto the same target can transiently fail with ERROR_ACCESS_DENIED
+	// / ERROR_SHARING_VIOLATION. Retry those with bounded backoff; a genuinely
+	// permanent error (or any non-Windows error) still surfaces immediately.
+	var rerr error
+	for attempt := 0; ; attempt++ {
+		if rerr = os.Rename(tmp, path); rerr == nil {
+			return nil
+		}
+		if attempt >= 9 || !renameReplaceRetryable(rerr) {
+			return rerr
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+	}
 }
 
 // usageEvent records a single MCP tool invocation for local analytics.

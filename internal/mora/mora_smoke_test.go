@@ -4,9 +4,37 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// skipOnWindows skips a test whose failure-injection mechanism is POSIX-only and
+// cannot be reproduced portably on Windows (chmod-based permission denial, which
+// only toggles the read-only attribute; os.Symlink, which needs
+// SeCreateSymbolicLinkPrivilege; execing an extensionless #!/bin/sh stub). The
+// behavior under test is correct on Windows — only the test's way of provoking
+// the error is Unix-specific — so gating on GOOS keeps the assertion fully live
+// on Linux AND macOS (both take the non-windows path).
+func skipOnWindows(t *testing.T, reason string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("windows: " + reason)
+	}
+}
+
+// assertPermUnix asserts an exact Unix permission bit set, but only off Windows.
+// Windows has no Unix mode bits: os.FileInfo.Mode().Perm() is synthesized from
+// ACLs and reports 0666 for any writable file (0444 for read-only), so it can
+// never equal 0600/0640/0644. The production code still writes the correct mode
+// (security-relevant on Unix); this only relaxes the *assertion* on Windows.
+func assertPermUnix(t *testing.T, got, want os.FileMode) {
+	t.Helper()
+	if runtime.GOOS != "windows" && got.Perm() != want.Perm() {
+		t.Fatalf("mode = %v, want %v", got.Perm(), want.Perm())
+	}
+}
 
 // setTestHome points the OS home directory at dir for the duration of the test.
 // It sets BOTH HOME and USERPROFILE because os.UserHomeDir — which defaultConfig
