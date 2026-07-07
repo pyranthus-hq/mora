@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -250,6 +251,39 @@ func TestBucketPublishEgressAuditRefusesStrayPlaintext(t *testing.T) {
 	err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips())
 	if err == nil || !strings.Contains(err.Error(), "non-ciphertext") {
 		t.Fatalf("expected egress audit to refuse stray plaintext, got %v", err)
+	}
+}
+
+// TestBucketFetchRejectsDeclaredSizeMismatch covers the Phase-3-review fix binding
+// the manifest's declared Size to the actual blob length — a malicious-but-signed
+// publisher can't declare a bogus size (the hash check alone wouldn't catch it).
+func TestBucketFetchRejectsDeclaredSizeMismatch(t *testing.T) {
+	f := newBucketFixture(t)
+	plain := []byte("---\nid: mem_20260101_000000_cccccccc\nscope: project:acme\ntype: note\ntitle: x\ncreated_at: 2026-01-01T00:00:00Z\n---\nbody\n")
+	ct, err := encryptShareBytes(f.recips(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := f.bc.objectPrefix()
+	if err := f.store.putObject(f.ctx, prefix+blobObjectName(ct), ct); err != nil {
+		t.Fatal(err)
+	}
+	man := shareManifestV2{
+		Schema: shareManifestV2Schema, Name: "acme", Scope: "project:acme", Client: "t", Version: 1,
+		Entries: []manifestEntry{{ID: "mem_20260101_000000_cccccccc", Blob: blobKey(ct), Size: 999999}},
+	}
+	mj, _ := json.Marshal(man)
+	env, err := sealManifest(f.priv, f.bc.locator(), mj, 1, f.recips(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eb, _ := json.Marshal(env)
+	if err := f.store.putObject(f.ctx, prefix+shareManifestObject, eb); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = bucketFetch(f.ctx, f.store, f.bc, f.sub(), []age.Identity{f.id}, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "declared") {
+		t.Fatalf("expected declared-size mismatch rejection, got %v", err)
 	}
 }
 

@@ -73,6 +73,11 @@ func (c bucketConfig) locator() string {
 
 const shareManifestObject = "manifest"
 
+// shareMaxShareEntries caps how many memories one share may name, bounding a
+// trusted-but-compromised (validly-signed) publisher's ability to make a
+// subscriber download an unbounded set on a single pull.
+const shareMaxShareEntries = 50000
+
 // objectStore is the minimal S3 surface BucketTransport needs. Implementations:
 // s3Store (real) and a test fake. getObject returns errObjectNotFound for an
 // absent key so callers can distinguish "not there yet" from a real failure.
@@ -254,6 +259,9 @@ func bucketFetch(ctx context.Context, store objectStore, cfg bucketConfig, sub s
 		return nil, 0, fmt.Errorf("subscription %q: manifest declares invalid scope %q", sub.Name, man.Scope)
 	}
 
+	if len(man.Entries) > shareMaxShareEntries {
+		return nil, 0, fmt.Errorf("subscription %q: manifest names %d entries, over the %d cap — refusing", sub.Name, len(man.Entries), shareMaxShareEntries)
+	}
 	memDir := filepath.Join(destDir, "memories")
 	if err := os.MkdirAll(memDir, 0o700); err != nil {
 		return nil, 0, err
@@ -279,6 +287,9 @@ func bucketFetch(ctx context.Context, store objectStore, cfg bucketConfig, sub s
 				return nil, 0, fmt.Errorf("subscription %q: the blob for %s is missing — the share may be mid-update; retry `mora share pull %s`", sub.Name, e.ID, sub.Name)
 			}
 			return nil, 0, err
+		}
+		if int64(len(ct)) != e.Size {
+			return nil, 0, fmt.Errorf("subscription %q: the blob for %s is %d bytes but the manifest declared %d — refusing", sub.Name, e.ID, len(ct), e.Size)
 		}
 		if blobKey(ct) != e.Blob {
 			return nil, 0, fmt.Errorf("subscription %q: the blob for %s failed its content-hash check — refusing", sub.Name, e.ID)

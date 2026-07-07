@@ -108,8 +108,10 @@ func shareInitBucket(cfg Config, name, scope string, recipients []string, owner 
 		return err
 	}
 	fmt.Fprintf(stdout, "share %q initialized — scope %s, %d recipient key(s), bucket %s. Publish with `mora share push %s`.\n",
-		name, scope, len(recipients), bucketOf(tref).display(), name)
+		name, scope, len(recipients), redactCredentials(bucketOf(tref).display()), name)
 	fmt.Fprintln(stdout, shareInitDisclosure)
+	fmt.Fprintln(stdout, "    Publish from ONE machine at a time — concurrent pushes to the same bucket can")
+	fmt.Fprintln(stdout, "    corrupt the share (single-writer).")
 	return nil
 }
 
@@ -149,6 +151,7 @@ func sharePushBucket(ctx context.Context, cfg Config, pub sharePublish, mems []M
 // requires the out-of-band --confirm-pin to match the publisher's fingerprint
 // (a pasted bucket URL is a MITM-able first-contact channel), then imports.
 func shareSubscribeBucket(ctx context.Context, cfg Config, name string, bc bucketConfig, confirmPin string, stdout io.Writer) error {
+	confirmPin = strings.TrimSpace(confirmPin)
 	ids, err := loadShareIdentities(cfg)
 	if err != nil {
 		return err

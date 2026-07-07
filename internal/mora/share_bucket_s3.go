@@ -22,8 +22,11 @@ import (
 )
 
 // s3ReadCeiling bounds any single object read defensively (blob or manifest); the
-// transport re-validates real sizes downstream.
-const s3ReadCeiling = shareMaxManifestBytes + shareMaxMemoryBytes
+// transport re-validates real sizes downstream. A max-size manifest
+// (shareMaxManifestBytes) age-encrypted and base64-wrapped in the envelope JSON
+// grows ~1.4x, so the ceiling keeps generous headroom over both that and a max
+// blob — set too low, a legit max manifest would silently truncate to a parse error.
+const s3ReadCeiling = shareMaxManifestBytes*2 + shareMaxMemoryBytes
 
 type s3Store struct {
 	client *s3.Client
@@ -150,6 +153,11 @@ func isNotFoundErr(err error) bool {
 		case "NoSuchKey", "NotFound":
 			return true
 		}
+	}
+	// S3-compatible providers that only set an HTTP 404 (no typed / coded error).
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() == 404 {
+		return true
 	}
 	return false
 }
