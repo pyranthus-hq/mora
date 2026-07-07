@@ -73,9 +73,10 @@ no manifest references.
 downloads and `sha256`-checks each blob and **materializes a v1-layout directory**
 (`memories/<id>.md.age` + a schema-1 `share.json`) into a throwaway dir. The
 existing `shareImport` validates and indexes that dir unchanged — so id-spoof,
-scope-mismatch, size, and case-fold checks are shared across every backend, not
-reimplemented. A mid-fetch failure discards the throwaway dir; the real corpus is
-never partially written.
+scope-mismatch, size, and case-fold checks run for **every** backend via that
+shared backstop. (`bucketFetch` additionally pre-checks the signed manifest's
+entries before download, as defense in depth on a distinct artifact.) A mid-fetch
+failure discards the throwaway dir; the real corpus is never partially written.
 
 ## Ledger
 
@@ -87,7 +88,7 @@ env-var prefix (`MORA_SHARE_*`, falling back to `AWS_*`).
 
 ## CLI
 
-git stays the default; `--via r2|s3|bucket` opts into a bucket. `push`/`pull`/`list`
+git stays the default; `--via r2|s3|b2|bucket` opts into a bucket. `push`/`pull`/`list`
 are identical regardless of transport; only bootstrap differs:
 
 ```
