@@ -11,6 +11,8 @@ import (
 	"filippo.io/age"
 )
 
+const testLocator = "git@example.test:me/vault.git"
+
 func TestShareSigningKeyStableAndCreated(t *testing.T) {
 	cfg := Config{ConfigDir: t.TempDir()}
 	k1, err := shareSigningKey(cfg)
@@ -37,18 +39,18 @@ func TestShareSigningKeyStableAndCreated(t *testing.T) {
 func TestSealVerifyRoundtrip(t *testing.T) {
 	priv, _ := shareSigningKey(Config{ConfigDir: t.TempDir()})
 	pub := priv.Public().(ed25519.PublicKey)
-	env, err := sealManifest(priv, []byte(`{"schema":2,"version":5}`), 5, nil, false)
+	env, err := sealManifest(priv, testLocator, []byte(`{"schema":2,"version":5}`), 5, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if env.Encrypted {
 		t.Fatal("git-style envelope should be plaintext")
 	}
-	if err := verifyEnvelope(env, pub, 0); err != nil {
+	if err := verifyEnvelope(env, testLocator, pub, 0); err != nil {
 		t.Fatalf("verify with matching pin: %v", err)
 	}
 	// First contact (no pin yet) must also pass — the pin is recorded FROM this.
-	if err := verifyEnvelope(env, nil, 0); err != nil {
+	if err := verifyEnvelope(env, testLocator, nil, 0); err != nil {
 		t.Fatalf("first-contact verify: %v", err)
 	}
 }
@@ -56,18 +58,18 @@ func TestSealVerifyRoundtrip(t *testing.T) {
 func TestVerifyRejectsTamperAndVersionForgery(t *testing.T) {
 	priv, _ := shareSigningKey(Config{ConfigDir: t.TempDir()})
 	pub := priv.Public().(ed25519.PublicKey)
-	env, _ := sealManifest(priv, []byte("hello"), 3, nil, false)
+	env, _ := sealManifest(priv, testLocator, []byte("hello"), 3, nil, false)
 
 	tampered := env
 	tampered.Payload = []byte("hellp")
-	if err := verifyEnvelope(tampered, pub, 0); err == nil {
+	if err := verifyEnvelope(tampered, testLocator, pub, 0); err == nil {
 		t.Fatal("payload tamper accepted")
 	}
 	// The version lives outside the ciphertext but is bound into the signature —
 	// bumping it (a replay dressed as fresh) must break verification.
 	forged := env
 	forged.Version = 99
-	if err := verifyEnvelope(forged, pub, 0); err == nil {
+	if err := verifyEnvelope(forged, testLocator, pub, 0); err == nil {
 		t.Fatal("version forgery accepted")
 	}
 }
@@ -75,21 +77,38 @@ func TestVerifyRejectsTamperAndVersionForgery(t *testing.T) {
 func TestVerifyRejectsRollback(t *testing.T) {
 	priv, _ := shareSigningKey(Config{ConfigDir: t.TempDir()})
 	pub := priv.Public().(ed25519.PublicKey)
-	env, _ := sealManifest(priv, []byte("x"), 2, nil, false)
-	if err := verifyEnvelope(env, pub, 5); err == nil {
+	env, _ := sealManifest(priv, testLocator, []byte("x"), 2, nil, false)
+	if err := verifyEnvelope(env, testLocator, pub, 5); err == nil {
 		t.Fatal("rollback (v2 served when v5 already seen) accepted")
 	}
-	if err := verifyEnvelope(env, pub, 2); err != nil {
+	if err := verifyEnvelope(env, testLocator, pub, 2); err != nil {
 		t.Fatalf("equal version should be accepted (idempotent re-pull): %v", err)
 	}
 }
 
 func TestVerifyRejectsKeyRotation(t *testing.T) {
 	priv, _ := shareSigningKey(Config{ConfigDir: t.TempDir()})
-	env, _ := sealManifest(priv, []byte("x"), 1, nil, false)
+	env, _ := sealManifest(priv, testLocator, []byte("x"), 1, nil, false)
 	otherPub, _, _ := ed25519.GenerateKey(rand.Reader)
-	if err := verifyEnvelope(env, otherPub, 0); !errors.Is(err, errShareKeyRotated) {
+	if err := verifyEnvelope(env, testLocator, otherPub, 0); !errors.Is(err, errShareKeyRotated) {
 		t.Fatalf("expected errShareKeyRotated, got %v", err)
+	}
+}
+
+// TestVerifyRejectsCrossShareReplay is the regression for the P2 the locator
+// binding fixes: one machine signs every share with the same key, so a genuine,
+// validly-signed envelope from share A — replayed at share B's locator by an
+// attacker who can write B's (ACL-less) destination — must still be refused.
+func TestVerifyRejectsCrossShareReplay(t *testing.T) {
+	priv, _ := shareSigningKey(Config{ConfigDir: t.TempDir()})
+	pub := priv.Public().(ed25519.PublicKey)
+	env, _ := sealManifest(priv, "s3://bucket/acme", []byte("A's content"), 4, nil, false)
+
+	if err := verifyEnvelope(env, "s3://bucket/acme", pub, 0); err != nil {
+		t.Fatalf("own-locator verify should pass: %v", err)
+	}
+	if err := verifyEnvelope(env, "s3://bucket/beta", pub, 0); err == nil {
+		t.Fatal("A's manifest served at B's locator was accepted — cross-share replay")
 	}
 }
 
@@ -101,7 +120,7 @@ func TestSealManifestEncryptsForPublicLocator(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := []byte(`{"schema":2,"scope":"project:acme","version":7}`)
-	env, err := sealManifest(priv, manifest, 7, []age.Recipient{id.Recipient()}, true)
+	env, err := sealManifest(priv, "s3://bucket/acme", manifest, 7, []age.Recipient{id.Recipient()}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +130,7 @@ func TestSealManifestEncryptsForPublicLocator(t *testing.T) {
 	if bytes.Contains(env.Payload, []byte("project:acme")) {
 		t.Fatal("scope leaked in the encrypted payload — a URL holder would see it")
 	}
-	if err := verifyEnvelope(env, pub, 0); err != nil {
+	if err := verifyEnvelope(env, "s3://bucket/acme", pub, 0); err != nil {
 		t.Fatalf("verify (before decrypt): %v", err)
 	}
 	got, err := openManifestPayload(env, []age.Identity{id})
