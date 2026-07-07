@@ -635,7 +635,7 @@ func reg(cadence string) loopRegistration {
 
 // TestLoopStatus_NeverRun: no run record -> "never-run", scheduler annotated.
 func TestLoopStatus_NeverRun(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	h := classifyLoopHealth(reg("daily"), loopRunRecord{}, false, loopNow)
 	if h.State != "never-run" {
 		t.Fatalf("state = %q, want never-run", h.State)
@@ -647,7 +647,7 @@ func TestLoopStatus_NeverRun(t *testing.T) {
 
 // TestLoopStatus_RunningFresh: a running record with a recent heartbeat -> "running".
 func TestLoopStatus_RunningFresh(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	rec := loopRunRecord{
 		LoopID: "daily-brief", RunID: "run_x", Period: "2026-06-24", Status: loopRunRunning,
 		Attempt: 1, StartedAt: loopNow.Format(time.RFC3339), HeartbeatAt: loopNow.Format(time.RFC3339),
@@ -660,7 +660,7 @@ func TestLoopStatus_RunningFresh(t *testing.T) {
 // TestLoopStatus_RunningAbandonedIsStale: a running record whose heartbeat is far
 // in the past is an abandoned/leaked run -> "stale" (stale beats a dead 'running').
 func TestLoopStatus_RunningAbandonedIsStale(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	rec := loopRunRecord{
 		LoopID: "daily-brief", RunID: "run_x", Period: "2026-06-24", Status: loopRunRunning,
 		Attempt: 1, StartedAt: loopNow.Add(-72 * time.Hour).Format(time.RFC3339),
@@ -673,7 +673,7 @@ func TestLoopStatus_RunningAbandonedIsStale(t *testing.T) {
 
 // TestLoopStatus_Failed: a failed terminal -> "failed", surfacing the error.
 func TestLoopStatus_Failed(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	rec := loopRunRecord{
 		LoopID: "daily-brief", RunID: "run_x", Period: "2026-06-24", Status: loopRunFailed,
 		Attempt: 1, FinishedAt: loopNow.Format(time.RFC3339), LastError: "sync: token expired",
@@ -689,7 +689,7 @@ func TestLoopStatus_Failed(t *testing.T) {
 
 // TestLoopStatus_Ok: a recent success -> "ok".
 func TestLoopStatus_Ok(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	rec := loopRunRecord{
 		LoopID: "daily-brief", RunID: "run_x", Period: "2026-06-24", Status: loopRunSucceeded,
 		Attempt: 1, FinishedAt: loopNow.Format(time.RFC3339),
@@ -702,7 +702,7 @@ func TestLoopStatus_Ok(t *testing.T) {
 // TestLoopStatus_SucceededTooOldIsStale: a success older than the cadence allows
 // -> "stale" (success is liveness, not freshness).
 func TestLoopStatus_SucceededTooOldIsStale(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	rec := loopRunRecord{
 		LoopID: "daily-brief", RunID: "run_x", Period: "2026-06-21", Status: loopRunSucceeded,
 		Attempt: 1, FinishedAt: loopNow.Add(-72 * time.Hour).Format(time.RFC3339), // > 48h daily lag
@@ -738,7 +738,7 @@ func TestLoopScheduledAnnotation(t *testing.T) {
 		t.Skip("launchd plist detection is darwin-only (TTL-only floor elsewhere)")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	rec := loopRunRecord{
 		LoopID: "daily-brief", RunID: "run_x", Period: "2026-06-24", Status: loopRunSucceeded,
 		Attempt: 1, FinishedAt: loopNow.Format(time.RFC3339),
@@ -762,7 +762,7 @@ func TestLoopScheduledAnnotation(t *testing.T) {
 // TestLoopStatus_Integration: the loopStatus command emits the classified state
 // as JSON over the real file store.
 func TestLoopStatus_Integration(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	cfg := loopTestCfg(t)
 	var out bytes.Buffer
 	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
