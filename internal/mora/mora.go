@@ -3310,7 +3310,32 @@ func checkIndexSchema(db *sql.DB) error {
 func memoryPath(cfg Config, m Memory) string {
 	scopePath := strings.ReplaceAll(m.Scope, ":", string(os.PathSeparator))
 	scopePath = strings.ReplaceAll(scopePath, "/", string(os.PathSeparator))
-	return filepath.Join(memoriesRoot(cfg), scopePath, m.ID+".md")
+	return filepath.Join(memoriesRoot(cfg), scopePath, osSafeBase(m.ID)+".md")
+}
+
+// osSafeBase converts a memory ID (or an already-SafeFilename'd stable key) into
+// a base filename legal on the host OS. On macOS/Linux the input is returned
+// unchanged, so existing vaults stay byte-identical and need no migration — the
+// deliberate cross-OS trade-off recorded in #56. On Windows
+// memory.SanitizeWindowsBase maps the reserved set (IDs derived from user or
+// connector content can contain ? : * " < > | which os.CreateTemp rejects with
+// "The filename, directory name, or volume label syntax is incorrect"); when
+// that actually alters the string, a short deterministic hash of the ORIGINAL is
+// appended so two distinct IDs that sanitize alike (e.g. "a?" and "a*") never
+// collide onto one file and silently overwrite each other.
+//
+// The mapping is deterministic, so a later write or findMemory lookup
+// reproduces the same name. The memory's real id lives in frontmatter (read by
+// parseMemory), so the filename need only be stable, not reversible.
+func osSafeBase(id string) string {
+	if runtime.GOOS != "windows" {
+		return id
+	}
+	safe := memory.SanitizeWindowsBase(id)
+	if safe != id {
+		safe += "_" + memory.ContentHash(id)[:8]
+	}
+	return safe
 }
 
 func allMemoryFiles(cfg Config) ([]string, error) {
@@ -3726,12 +3751,17 @@ func findMemory(cfg Config, id string) (Memory, error) {
 		return Memory{}, err
 	}
 	// Google memories store an ID like "gmail_thread/abc" but are filed under the
-	// SafeFilename form "gmail_thread_abc.md", so match both shapes.
+	// SafeFilename form "gmail_thread_abc.md", so match both shapes. On Windows
+	// the on-disk name is the osSafeBase form (reserved chars mapped + a hash
+	// suffix), which matches neither, so add those shapes too; on macOS/Linux
+	// osSafeBase is the identity, so osBase/osSafe collapse onto base/safeBase.
 	base := id + ".md"
 	safeBase := memory.SafeFilename(id) + ".md"
+	osBase := osSafeBase(id) + ".md"
+	osSafe := osSafeBase(memory.SafeFilename(id)) + ".md"
 	for _, path := range files {
 		b := filepath.Base(path)
-		if b != base && b != safeBase && !strings.Contains(b, id) {
+		if b != base && b != safeBase && b != osBase && b != osSafe && !strings.Contains(b, id) {
 			continue
 		}
 		m, err := parseMemory(path)
@@ -4138,7 +4168,10 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 		LastSynced: mm.LastSynced, Truncated: mm.Truncated, DeletedAt: mm.DeletedAt,
 		Meta: mm.Meta,
 	}
-	out := filepath.Join(sourcesRoot(cfg), mm.Provider, memory.SafeFilename(mm.StableID)+".md")
+	// SafeFilename maps / : and space, but a StableID can still carry Windows
+	// reserved characters (? * " < > |); osSafeBase finishes the job on Windows
+	// and is a no-op elsewhere, so this stays byte-identical on macOS/Linux.
+	out := filepath.Join(sourcesRoot(cfg), mm.Provider, osSafeBase(memory.SafeFilename(mm.StableID))+".md")
 	// Skip rewrite if content unchanged (preserve created_at).
 	if existing, err := parseMemory(out); err == nil {
 		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" {
