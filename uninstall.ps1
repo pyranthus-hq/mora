@@ -43,13 +43,35 @@ function Get-NormalizedPathEntry {
     return $Path.Trim().TrimEnd("\")
 }
 
+function Send-EnvironmentChanged {
+    # A raw registry write does not notify running processes; broadcast
+    # WM_SETTINGCHANGE('Environment') so Explorer/new shells refresh. Best-effort.
+    try {
+        if (-not ('Mora.NativeEnv' -as [type])) {
+            Add-Type -Namespace Mora -Name NativeEnv -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+        }
+        $result = [System.UIntPtr]::Zero
+        [void][Mora.NativeEnv]::SendMessageTimeout([System.IntPtr]0xffff, 0x1A, [System.IntPtr]::Zero, 'Environment', 0x2, 5000, [ref]$result)
+    } catch { }
+}
+
 function Remove-UserPath {
     param([string]$PathToRemove)
 
-    $current = [Environment]::GetEnvironmentVariable("Path", "User")
+    # Raw HKCU:\Environment read/write, preserving REG_EXPAND_SZ — see the matching
+    # note in install.ps1's Add-UserPath. GetEnvironmentVariable/SetEnvironmentVariable
+    # would flatten every %VAR% entry to REG_SZ on the way out.
+    $key = 'HKCU:\Environment'
+    $item = Get-Item -LiteralPath $key
+    $current = $item.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
     if (-not $current) {
         return $false
     }
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    try { if ($null -ne $item.GetValue('Path')) { $kind = $item.GetValueKind('Path') } } catch { }
 
     $want = Get-NormalizedPathEntry $PathToRemove
     $parts = $current -split ";" | Where-Object { $_ -and $_.Trim() }
@@ -65,7 +87,8 @@ function Remove-UserPath {
     }
 
     if ($removed) {
-        [Environment]::SetEnvironmentVariable("Path", ($kept -join ";"), "User")
+        Set-ItemProperty -LiteralPath $key -Name 'Path' -Value ($kept -join ";") -Type $kind
+        Send-EnvironmentChanged
         $env:Path = (($env:Path -split ";") | Where-Object {
             $_ -and -not (Get-NormalizedPathEntry $_).Equals($want, [StringComparison]::OrdinalIgnoreCase)
         }) -join ";"
@@ -155,27 +178,26 @@ function Get-MoraDataPaths {
         return $paths
     }
 
+    # Consume the machine-readable `mora config --json`, not the human output. The
+    # old scrape (`-split "\s{2,}"`) truncated any path containing a double space —
+    # so `-Purge` could Remove-Item the WRONG directory — and mojibake'd non-ASCII
+    # paths under PowerShell 5.1's OEM-codepage native decoding, silently missing
+    # the vault. Force UTF-8 decoding of the binary's stdout, then parse JSON.
+    $prevEnc = [Console]::OutputEncoding
     try {
-        $out = & $Exe config 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not $out) {
-            return $paths
-        }
-        foreach ($line in $out) {
-            if ($line -match "^(vault_dir|data_dir|state_dir|config)\s*=\s*(.+)$") {
-                $key = switch ($Matches[1]) {
-                    "vault_dir" { "vault" }
-                    "data_dir" { "data" }
-                    "state_dir" { "state" }
-                    "config" { "config" }
-                }
-                $value = (($Matches[2] -split "\s{2,}")[0]).Trim()
-                if ($value) {
-                    $paths[$key] = $value
-                }
-            }
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $raw = & $Exe config --json 2>$null
+        if ($LASTEXITCODE -eq 0 -and $raw) {
+            $j = ($raw -join "`n") | ConvertFrom-Json
+            if ($j.vault_dir)  { $paths.vault  = $j.vault_dir }
+            if ($j.data_dir)   { $paths.data   = $j.data_dir }
+            if ($j.state_dir)  { $paths.state  = $j.state_dir }
+            if ($j.config_dir) { $paths.config = $j.config_dir }
         }
     } catch {
         Write-Warning "could not read mora config paths before uninstall: $($_.Exception.Message)"
+    } finally {
+        [Console]::OutputEncoding = $prevEnc
     }
 
     return $paths
