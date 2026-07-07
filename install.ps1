@@ -9,7 +9,7 @@ that directory to the current user's PATH. The v1 Windows binary is unsigned,
 so Windows SmartScreen may show "Windows protected your PC" on first run.
 
 .PARAMETER Version
-Release version to install, such as 0.9.1 or v0.9.1. Defaults to latest.
+Release version to install, such as 0.10.0 or v0.10.0. Defaults to latest.
 
 .PARAMETER Repo
 GitHub repository in owner/name form. Defaults to pyranthus-hq/mora.
@@ -21,7 +21,7 @@ Vault path passed to mora init. Defaults to %USERPROFILE%\vault\mora.
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 .EXAMPLE
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.9.1
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.10.0
 #>
 [CmdletBinding()]
 param(

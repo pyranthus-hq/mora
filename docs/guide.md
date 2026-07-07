@@ -72,7 +72,7 @@ The Windows installer downloads `mora_<version>_windows_amd64.zip` from GitHub r
 Install a pinned version with:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File $env:TEMP\install-mora.ps1 -Version 0.9.1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\install-mora.ps1 -Version 0.10.0
 ```
 
 **SmartScreen note:** the v1 Windows binary is unsigned. If Windows shows **Windows protected your PC**, verify that the installer printed a checksum success, then choose **More info > Run anyway** or run:
@@ -465,7 +465,8 @@ over any remote; the flow is unchanged.
 ## Share memories with someone (opt-in, encrypted)
 
 `mora share` publishes **one scope of memories you wrote** (`mora write` / MCP
-`write_memory`) to a **private git remote you control**, encrypted to each
+`write_memory`) to a **private git remote you control** (or a **user-owned
+S3/R2 bucket**), encrypted to each
 recipient with [age](https://age-encryption.org). The person you invite
 subscribes and gets your notes as a **read-only, separately-indexed corpus**:
 their `mora search` and `mora think` include your memories, clearly attributed,

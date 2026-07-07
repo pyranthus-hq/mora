@@ -13,7 +13,7 @@ iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.ps1 -OutFil
 
 The installer:
 
-- resolves the latest release, or uses `-Version 0.9.1` when pinned
+- resolves the latest release, or uses `-Version 0.10.0` when pinned
 - downloads `mora_<version>_windows_amd64.zip`
 - downloads `checksums.txt`
 - verifies the zip with `Get-FileHash -Algorithm SHA256`

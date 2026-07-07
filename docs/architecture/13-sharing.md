@@ -1,6 +1,6 @@
 # 13 — Sharing (`mora share`)
 
-`mora share` is the outbound face of memory governance (#51): publish **one scope of authored memories**, age-encrypted per recipient, to a **dedicated private git remote**; a subscriber decrypts it into a **read-only, separately-indexed corpus** that unions into `search`/`think` with owner attribution. This document describes what is built. Nothing here is roadmap; the deferred items are listed at the end.
+`mora share` is the outbound face of memory governance (#51): publish **one scope of authored memories**, age-encrypted per recipient, to a **dedicated private git remote** (or a **user-owned S3/R2 bucket** — see [14 — Share transports](14-share-transports.md)); a subscriber decrypts it into a **read-only, separately-indexed corpus** that unions into `search`/`think` with owner attribution. This document describes what is built. Nothing here is roadmap; the deferred items are listed at the end.
 
 ## Files
 

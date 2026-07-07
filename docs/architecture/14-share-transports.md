@@ -95,12 +95,12 @@ are identical regardless of transport; only bootstrap differs:
 mora share init  acme --scope project:acme --recipient age1… --via r2 --bucket b --endpoint <url> --prefix shares/acme
 mora share push  acme                                  # previews the full set, then publishes
 mora share subscribe neil --via r2 --bucket b --endpoint <url> --prefix shares/neil --confirm-pin <fingerprint>
-mora share pull  [neil | --all]
+mora share pull  [neil]                                # no name → pulls every subscription
 ```
 
 `--remote`/`--github` still select git. Because a pasted bucket URL is a MITM-able
 first-contact channel, a first bucket `subscribe` **requires** `--confirm-pin` to
-match the publisher's fingerprint (printed by the publisher); TOFU alone would pin
+match the publisher's fingerprint (surfaced by the subscriber's first `subscribe` attempt, then confirmed out of band with the publisher); TOFU alone would pin
 whatever key first contact served.
 
 ## Invariants (implementation seam)

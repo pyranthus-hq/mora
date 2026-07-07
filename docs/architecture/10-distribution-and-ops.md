@@ -6,9 +6,9 @@ How Mora is built, signed, released, self-updated, and installed — and the pur
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `.goreleaser.yaml` | 112 | Release pipeline config (v2 schema): cross-compile matrix, archives, sha256 checksums, cosign keyless signing, syft SBOM, Homebrew cask publish to `pyranthus-hq/homebrew-tap`, GitHub Release. |
-| `.github/workflows/ci.yml` | 122 | PR/push gate: gofmt, `go vet`, `go test -race`, golangci-lint, cross-arch build matrix, binary-size diff (advisory), gitleaks secret scan. |
-| `.github/workflows/release.yml` | 34 | Tag-triggered (`v*`) GoReleaser run; provisions syft + cosign; wires `GITHUB_TOKEN` + `HOMEBREW_TAP_TOKEN`. |
+| `.goreleaser.yaml` | 139 | Release pipeline config (v2 schema): cross-compile matrix (darwin/linux/windows), `tar.gz` archives + a windows/amd64 `zip`, sha256 checksums, cosign keyless signing, syft SBOM, Homebrew cask publish to `pyranthus-hq/homebrew-tap`, **draft** GitHub Release. |
+| `.github/workflows/ci.yml` | 151 | PR/push gate: gofmt, `go vet`, `go test -race`, a **windows-latest full `go test ./...` portability job (`build-windows`)**, golangci-lint, cross-arch build matrix, binary-size diff (advisory), gitleaks secret scan. |
+| `.github/workflows/release.yml` | 136 | Tag-triggered (`v*`): validates the OAuth secret, runs GoReleaser to build a **draft** release, verifies artifacts (checksums present, real OAuth id embedded, windows/amd64 zip holds `mora.exe` + is checksummed), runs the Tier-1 regression gate, then **explicitly publishes** via `gh release edit --draft=false`. Provisions syft + cosign; wires `GITHUB_TOKEN`, `MORA_GOOGLE_CREDENTIALS_JSON`, `HOMEBREW_TAP_TOKEN`. |
 | `.github/workflows/claude.yml` | 63 | On-demand Claude reviewer (`@claude` mention or `claude-review` label); read-only on contents, advisory only. |
 | `internal/mora/upgrade.go` | ~150 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds; after a successful swap it execs the NEW binary's `index rebuild` (`postUpgradeRebuild`, warn-don't-fail) so a schema change never strands a stale index. |
 | `cmd/mora/main.go` | 28 | Entry point; receives `-ldflags -X main.{version,commit,date}` and forwards into `mora.Build*`. |
@@ -38,7 +38,7 @@ Every line of the build pipeline serves one constraint: **Mora is a single stati
 
 The baseline release ships **darwin + linux × amd64 + arm64** (four binaries). Windows support adds a **windows/amd64** zip archive with `mora.exe`; windows/arm64 remains deferred. Because the build is pure Go, **no macOS runner is needed**; `release.yml:13` runs the whole thing on `ubuntu-latest` and the comment notes there is no notarization step to require a Mac.
 
-The CI **build matrix** (`ci.yml:60-82`) compiles all four targets with `CGO_ENABLED=0` on every PR. The comment (`ci.yml:58-59`) frames this precisely: it "proves CGO_ENABLED=0 builds on every target before a tag is ever cut. This is the single-binary guarantee, gated."
+The CI **build matrix** (`ci.yml:85-108`) compiles all five targets (darwin/linux × amd64/arm64 plus windows/amd64) with `CGO_ENABLED=0` on every PR. The comment (`ci.yml:58-59`) frames this precisely: it "proves CGO_ENABLED=0 builds on every target before a tag is ever cut. This is the single-binary guarantee, gated."
 
 ### Windows support seam
 
@@ -82,13 +82,13 @@ flowchart TD
 
 ### Stage details
 
-1. **Build** (`.goreleaser.yaml:15-30`). Single build id `mora` from `./cmd/mora`, `CGO_ENABLED=0`, the four-way matrix, reproducible flags.
-2. **Archives** (`.goreleaser.yaml:32-44`). `tar.gz` only; the binary sits at the archive root (no nested dir) so both go-selfupdate and the cask resolve it directly. Bundles `LICENSE`, `README.md`, `docs/guide.md`, `install.sh`, `examples/*`. **The `name_template` is load-bearing** (see Invariants): `mora_{{.Version}}_{{.Os}}_{{.Arch}}` (`.goreleaser.yaml:37-38`).
+1. **Build** (`.goreleaser.yaml:25-43`). Single build id `mora` from `./cmd/mora`, `CGO_ENABLED=0`, a five-target matrix (darwin/linux/windows × amd64/arm64, minus windows/arm64), reproducible flags.
+2. **Archives** (`.goreleaser.yaml:45-60`). `tar.gz` for darwin/linux with a `zip` `format_override` for windows; the binary sits at the archive root (no nested dir) so both go-selfupdate and the cask resolve it directly. Bundles `LICENSE`, `README.md`, `docs/guide.md`, `install.sh`, `examples/*`. **The `name_template` is load-bearing** (see Invariants): `mora_{{.Version}}_{{.Os}}_{{.Arch}}` (`.goreleaser.yaml:37-38`).
 3. **Checksums** (`.goreleaser.yaml:46-48`). One `checksums.txt`, sha256. This file is the trust anchor for self-update.
 4. **Cosign signing** (`.goreleaser.yaml:52-63`). Keyless `sign-blob` of `checksums.txt` only (`artifacts: checksum`), producing `checksums.txt.cosign.sig` + `.cosign.pem`. Keyless = Sigstore OIDC, no key management — which is why `release.yml:9` grants `id-token: write` and `release.yml:24` installs `sigstore/cosign-installer@v3`.
 5. **SBOM** (`.goreleaser.yaml:67-68`). Syft SBOM per archive (`release.yml:23` downloads syft). The config comment marks it low-priority/droppable for launch.
 6. **Homebrew cask** (`.goreleaser.yaml:70-95`). Publishes a **cask** (`homebrew_casks:`, *not* the deprecated `brews:` removed in GoReleaser v2.16 — `.goreleaser.yaml:5`) to `pyranthus-hq/homebrew-tap` under `Casks/`, authed by `HOMEBREW_TAP_TOKEN` (`release.yml:33`). The cask is chosen specifically so its **post-install hook can strip the macOS quarantine xattr** (`.goreleaser.yaml:89-94`) — the binary is unsigned/un-notarized, and without the strip macOS shows "mora is damaged and cannot be opened." This is the deliberate reason notarization is deferrable for a CLI.
-7. **GitHub Release** (`.goreleaser.yaml:97-102`). Published (not draft) to `pyranthus-hq/mora`, `prerelease: auto` (pre-release iff the tag is a pre-release). Changelog from GitHub commits, excluding `docs:`/`test:`/`chore:` (`.goreleaser.yaml:104-111`).
+7. **GitHub Release** (`.goreleaser.yaml:121-130`). Created as a **draft** (`draft: true`) on `pyranthus-hq/mora`, `prerelease: auto` (pre-release iff the tag is a pre-release); the `release.yml` Publish step flips it public only after the verify + regression gates pass. Changelog from GitHub commits, excluding `docs:`/`test:`/`chore:` (`.goreleaser.yaml:104-111`).
 
 > **One known label inconsistency, not yet reconciled:** the cask's `license:` is hardcoded `"Apache-2.0"` with a `TODO: confirm SPDX id` (`.goreleaser.yaml:80`). The repo `LICENSE` *is* Apache-2.0 (`LICENSE:1-2,189`), so the value is correct today — but note that earlier project memory and the bootstrap board (`bootstrap-release-project.sh:120-122`) still framed the license as an *open decision* (Apache vs MIT, or FSL). **As built, the license is Apache-2.0.**
 
@@ -159,7 +159,7 @@ Then it:
 
 ## CI gates (`.github/workflows/ci.yml`)
 
-CI runs on every PR and every push to `main` (`ci.yml:3-6`), with `contents: read` only (`ci.yml:8-9`) and per-ref concurrency cancellation (`ci.yml:11-13`). Five jobs:
+CI runs on every PR and every push to `main` (`ci.yml:3-6`), with `contents: read` only (`ci.yml:8-9`) and per-ref concurrency cancellation (`ci.yml:11-13`). Six jobs (the mermaid and table below predate the `build-windows` job — it runs the full suite on windows-latest):
 
 ```mermaid
 flowchart LR
@@ -174,7 +174,7 @@ flowchart LR
 |---|---|---|
 | `test` (`ci.yml:16-38`) | **yes** | `gofmt -l .` must be empty; `go vet ./...`; `go test -race -count=1 -covermode=atomic ./...` with `CGO_ENABLED=1` (the only cgo-on step). |
 | `lint` (`ci.yml:40-56`) | **yes** | `golangci-lint` pinned to **`v2.12.2`** via `golangci-lint-action@v8`. The version pin is deliberate (`ci.yml:50-52`): the action `@v6` only installs golangci-lint v1, which cannot read the v2 `.golangci.yml` and builds against go1.24 < the go1.25 target; `@v8` installs v2. |
-| `build` (`ci.yml:60-82`) | **yes** | Cross-builds all four targets with `CGO_ENABLED=0`; `fail-fast: false` so all targets report. |
+| `build` (`ci.yml:85-108`) | **yes** | Cross-builds all five targets (incl. windows/amd64) with `CGO_ENABLED=0`; `fail-fast: false` so all targets report. |
 | `size` (`ci.yml:86-105`) | **no (advisory)** | PR-only binary-size diff vs `main` (`size-diff-action@v1`, `continue-on-error: true`). The comment is explicit: "a size hiccup must never block merge" — but size matters because "a single small static binary IS the product." |
 | `secrets` (`ci.yml:107-122`) | **yes** | gitleaks scans full history (`fetch-depth: 0`) with `--exit-code 1`. Uses the **OSS gitleaks CLI directly, not gitleaks-action@v2** (`ci.yml:114-116`), because the action requires a mandatory `GITLEAKS_LICENSE` for org-owned repos and Mora now lives under `pyranthus-hq`. |
 
