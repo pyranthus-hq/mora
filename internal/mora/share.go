@@ -318,7 +318,7 @@ type multiFlag []string
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
 
-const shareInitUsage = "usage: mora share init <name> --scope <scope> --recipient <age1...> [--recipient ...] (--remote <URL> | --github [--repo <name>]) [--owner <label>]"
+const shareInitUsage = "usage: mora share init <name> --scope <scope> --recipient <age1...> [--recipient ...] (--remote <URL> | --github [--repo <name>] | --via r2 --bucket <name> [--endpoint <url>] [--prefix <p>]) [--owner <label>]"
 
 // shareInit creates the named publish grant: a dedicated staging git repo
 // (separate from the personal vault-backup repo), its manifest and defensive
@@ -337,6 +337,7 @@ func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	github := fs.Bool("github", false, "create a PRIVATE GitHub repo via gh and wire it as origin")
 	repoName := fs.String("repo", "", "repo name to create with --github (default mora-share-<name>)")
 	owner := fs.String("owner", "", "informational publisher label written to the manifest")
+	tflags := registerTransportFlags(fs)
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -353,6 +354,16 @@ func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	}
 	if _, err := parseShareRecipients(recipients); err != nil {
 		return err
+	}
+	tref, terr := tflags.resolve()
+	if terr != nil {
+		return terr
+	}
+	if bucketOf(tref) != nil {
+		if *github || *remote != "" {
+			return errors.New("--via r2|s3|bucket is exclusive with --github/--remote — pick one destination")
+		}
+		return shareInitBucket(cfg, name, *scope, []string(recipients), *owner, tref, stdout)
 	}
 	if *github && *remote != "" {
 		return errors.New("--github and --remote are mutually exclusive — pick one destination")
@@ -684,6 +695,11 @@ func sharePush(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	if err != nil {
 		return err
 	}
+	// Bucket shares publish content-addressed blobs + a signed manifest; git keeps
+	// the staging-repo delta path below.
+	if bc := bucketOf(pub.Transport); bc != nil {
+		return sharePushBucket(ctx, cfg, pub, mems, recipients, *bc, stdout, stdin, *yes)
+	}
 	ch, err := computeShareChanges(cfg, pub, mems)
 	if err != nil {
 		return err
@@ -987,7 +1003,7 @@ func openShareIndexRO(ctx context.Context, path string) (*sql.DB, error) {
 	return db, nil
 }
 
-const shareSubscribeUsage = "usage: mora share subscribe <name> --remote <URL>"
+const shareSubscribeUsage = "usage: mora share subscribe <name> (--remote <URL> | --via r2 --bucket <name> [--endpoint <url>] [--prefix <p>] --confirm-pin <fingerprint>)"
 
 // shareSubscribe clones a share repo into the share root, decrypts it, and
 // registers the subscription. The name chosen here is the attribution label on
@@ -1001,6 +1017,8 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 	fs := flag.NewFlagSet("share subscribe", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	remote := fs.String("remote", "", "git remote URL of the share to subscribe to")
+	tflags := registerTransportFlags(fs)
+	confirmPin := fs.String("confirm-pin", "", "publisher fingerprint to confirm on a first bucket subscribe")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -1009,6 +1027,13 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 	}
 	if !validShareName(name) {
 		return fmt.Errorf("invalid subscription name %q (lowercase letters, digits, . _ -; max 64 chars)", name)
+	}
+	tref, terr := tflags.resolve()
+	if terr != nil {
+		return terr
+	}
+	if bc := bucketOf(tref); bc != nil {
+		return shareSubscribeBucket(ctx, cfg, name, *bc, *confirmPin, stdout)
 	}
 	if *remote == "" {
 		return errors.New(shareSubscribeUsage)
@@ -1124,10 +1149,16 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 			return errors.New("no subscriptions — run `mora share subscribe <name> --remote <URL>` first")
 		}
 	}
-	if _, err := run(ctx, "", "git", "--version"); err != nil {
-		return fmt.Errorf("git is required for sharing but was not found: %w", err)
-	}
 	for _, sub := range subs {
+		if bc := bucketOf(sub.Transport); bc != nil {
+			if err := sharePullBucket(ctx, cfg, sub, *bc, stdout); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := run(ctx, "", "git", "--version"); err != nil {
+			return fmt.Errorf("git is required for sharing but was not found: %w", err)
+		}
 		repo := shareRepoDir(cfg, sub.Name)
 		isRepo, repoErr := vaultRepoState(filepath.Join(repo, ".git"))
 		if repoErr != nil {

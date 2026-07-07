@@ -253,6 +253,57 @@ func TestBucketPublishEgressAuditRefusesStrayPlaintext(t *testing.T) {
 	}
 }
 
+func TestShareInitBucketRecordsGrant(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, "share", "init", "acme", "--scope", "project:acme",
+		"--recipient", id.Recipient().String(),
+		"--via", "r2", "--bucket", "mybucket", "--endpoint", "https://acct.r2.cloudflarestorage.com", "--prefix", "shares/acme")
+	if !strings.Contains(out, "bucket") {
+		t.Fatalf("expected a bucket confirmation, got: %q", out)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf, err := loadShares(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sf.Publishes) != 1 {
+		t.Fatalf("want 1 publish grant, got %d", len(sf.Publishes))
+	}
+	bc := bucketOf(sf.Publishes[0].Transport)
+	if bc == nil {
+		t.Fatal("recorded grant is not a bucket transport")
+	}
+	if bc.Bucket != "mybucket" || bc.Prefix != "shares/acme" {
+		t.Fatalf("bucket config not persisted correctly: %+v", bc)
+	}
+	if sf.Publishes[0].Scope != "project:acme" {
+		t.Fatalf("scope not recorded: %q", sf.Publishes[0].Scope)
+	}
+}
+
+func TestShareInitBucketRequiresBucketName(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err = Run(context.Background(), []string{"share", "init", "acme", "--scope", "project:acme",
+		"--recipient", id.Recipient().String(), "--via", "r2"}, &out, &out, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "bucket") {
+		t.Fatalf("expected a --bucket-required error, got: %v", err)
+	}
+}
+
 func TestBucketRepublishIncrementsAndCleansOrphans(t *testing.T) {
 	f := newBucketFixture(t)
 	if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
