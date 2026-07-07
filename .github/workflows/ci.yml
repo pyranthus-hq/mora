@@ -37,13 +37,13 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race -count=1 -covermode=atomic ./...
 
-  # Phase 1 (Windows Build) gate: proves the single binary BUILDS and VETS clean
-  # on a real windows-latest runner. The full `go test ./...` on Windows is
-  # deliberately NOT wired here yet — the suite carries pre-existing POSIX
-  # assumptions (0600/0644 file modes, illegal-filename chars in memory ids,
-  # os.Rename replace semantics, chmod/Geteuid guards, LF golden files) that are
-  # genuine Phase 2 "runtime portability" work, not build failures. Re-enabling
-  # `go test ./...` here is the explicit exit criterion for Phase 2.
+  # Windows portability gate (#56 Phase 2 exit criterion): the FULL `go test ./...`
+  # now runs on a real windows-latest runner, not just build+vet. The Phase 2
+  # runtime-portability work landed (#67 filename sanitization, #71 test HOME
+  # isolation, #73 file-mode/chmod/symlink/GOOS gates + LF golden files, #74
+  # Windows-safe atomic rename), so the suite passes here. CGO_ENABLED=0 keeps it
+  # matching the shipped static binary; the race detector pass is the Linux `test`
+  # job (race needs CGO — not the point of this portability gate).
   build-windows:
     runs-on: windows-latest
     steps:
@@ -61,6 +61,10 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go vet ./...
+      - name: go test
+        env:
+          CGO_ENABLED: "0"
+        run: go test -count=1 ./...
 
   lint:
     runs-on: ubuntu-latest
