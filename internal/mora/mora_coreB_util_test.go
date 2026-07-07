@@ -199,9 +199,7 @@ func TestCoreB_UtilAtomicWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("mode = %o, want 0640", info.Mode().Perm())
-	}
+	assertPermUnix(t, info.Mode(), 0o640)
 
 	// MkdirAll-fail: make the parent a regular FILE, then write to file/child.
 	fileAsDir := filepath.Join(dir, "iamafile")

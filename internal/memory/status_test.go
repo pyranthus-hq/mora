@@ -59,9 +59,7 @@ func TestSaveStatusCreatesParentsAndUsesPrivateFileMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("status file mode = %v, want 0600", info.Mode().Perm())
-	}
+	assertPermUnix(t, info.Mode(), 0o600)
 }
 
 func TestSaveStatusUsesExpectedJSONFieldNames(t *testing.T) {

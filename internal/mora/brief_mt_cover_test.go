@@ -115,6 +115,7 @@ func TestMt_LatestBriefPathSkipsSubdir(t *testing.T) {
 // selected by latestBriefPath (a non-dir entry with a parseable date) but fails the
 // verbatim os.ReadFile, and resolveBrief surfaces that error.
 func TestMt_ResolveBriefReadError(t *testing.T) {
+	skipOnWindows(t, "os.Symlink needs SeCreateSymbolicLinkPrivilege (Developer Mode/elevation) on Windows; the dangling-symlink read-error injection is POSIX-only")
 	cfg := resolveCfg(t)
 	dir := filepath.Join(cfg.VaultDir, "briefs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

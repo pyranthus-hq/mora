@@ -190,7 +190,5 @@ func TestWriteBriefArtifactMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if fi.Mode().Perm() != 0o644 {
-		t.Fatalf("artifact perm = %v, want 0644", fi.Mode().Perm())
-	}
+	assertPermUnix(t, fi.Mode(), 0o644)
 }

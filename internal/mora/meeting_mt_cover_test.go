@@ -92,6 +92,7 @@ func mtRunPrepErr(t *testing.T, args ...string) error {
 // the temp dir can be removed.
 func mtMakeMemoriesUnreadable(t *testing.T, cfg Config) {
 	t.Helper()
+	skipOnWindows(t, "chmod 0000 does not block WalkDir on Windows; the unreadable-memories walk error can't be provoked")
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root — 0000 perms are bypassed, so the walk error can't be provoked")
 	}
