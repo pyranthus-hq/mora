@@ -59,6 +59,40 @@ func TestContentHashReturnsNonEmptyHex(t *testing.T) {
 	}
 }
 
+func TestSanitizeWindowsBase(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "safe id untouched", in: "mem_20260101_120000_deadbeef", want: "mem_20260101_120000_deadbeef"},
+		{name: "space is legal mid-name", in: "Dinner Friday?", want: "Dinner Friday_"},
+		{name: "all reserved chars mapped", in: `a<b>c:d"e/f\g|h?i*j`, want: "a_b_c_d_e_f_g_h_i_j"},
+		{name: "control chars mapped", in: "a\x01b\x1fc", want: "a_b_c"},
+		{name: "trailing dot and space trimmed", in: "report.  ", want: "report"},
+		{name: "only dots and spaces falls back", in: " . . ", want: "_"},
+		{name: "empty falls back", in: "", want: "_"},
+		{name: "reserved device name prefixed", in: "CON", want: "_CON"},
+		{name: "reserved device name case-insensitive", in: "nul", want: "_nul"},
+		{name: "reserved device name with extension", in: "COM1.md", want: "_COM1.md"},
+		{name: "com0 is not reserved", in: "COM0", want: "COM0"},
+		{name: "prnfoo is not reserved", in: "PRNfoo", want: "PRNfoo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeWindowsBase(tc.in); got != tc.want {
+				t.Fatalf("SanitizeWindowsBase(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeWindowsBaseIsDeterministic(t *testing.T) {
+	in := `weird:name?*"<>|`
+	if a, b := SanitizeWindowsBase(in), SanitizeWindowsBase(in); a != b {
+		t.Fatalf("not deterministic: %q vs %q", a, b)
+	}
+}
+
 func TestSafeFilename(t *testing.T) {
 	for _, tc := range []struct {
 		stableID string
