@@ -55,21 +55,25 @@ type shareFile struct {
 // sharePublish is one outbound grant: this scope, to these recipients, at this
 // remote. Recipients are age X25519 public keys exchanged out of band.
 type sharePublish struct {
-	Name       string   `json:"name"`
-	Scope      string   `json:"scope"`
-	Recipients []string `json:"recipients"`
-	Remote     string   `json:"remote,omitempty"`
-	Owner      string   `json:"owner,omitempty"`
-	CreatedAt  string   `json:"created_at"`
+	Name       string        `json:"name"`
+	Scope      string        `json:"scope"`
+	Recipients []string      `json:"recipients"`
+	Remote     string        `json:"remote,omitempty"`
+	Transport  *transportRef `json:"transport,omitempty"` // nil ⇒ git (v1 remote)
+	Owner      string        `json:"owner,omitempty"`
+	CreatedAt  string        `json:"created_at"`
 }
 
 // shareSubscription is one inbound corpus. Name is chosen by the SUBSCRIBER and
 // is the attribution label on unioned results — publisher-controlled metadata
 // is never used as the trust label.
 type shareSubscription struct {
-	Name      string `json:"name"`
-	Remote    string `json:"remote"`
-	CreatedAt string `json:"created_at"`
+	Name         string        `json:"name"`
+	Remote       string        `json:"remote"`
+	Transport    *transportRef `json:"transport,omitempty"`     // nil ⇒ git (v1 remote)
+	PinnedPubkey []byte        `json:"pinned_pubkey,omitempty"` // TOFU-pinned publisher ed25519 key (non-git)
+	LastVersion  int           `json:"last_version,omitempty"`  // highest manifest version accepted (anti-rollback)
+	CreatedAt    string        `json:"created_at"`
 }
 
 const shareFileSchema = 1
@@ -793,19 +797,19 @@ func readShareManifest(repoDir string) (shareManifest, error) {
 	return man, nil
 }
 
-// shareImport decrypts the cloned share repo into the subscription's corpus
-// and rebuilds its dedicated index. Everything it writes stays under the share
-// root; the subscriber's vault, personal index, and graph are never touched.
-// Repo content is treated as untrusted input even though the publisher is a
-// chosen counterparty: names, ids, scopes, and sizes are all validated, and a
-// violation aborts the import loudly.
-func shareImport(ctx context.Context, cfg Config, sub shareSubscription) (shareImportStats, error) {
+// shareImport decrypts + validates + indexes the shared corpus from a materialized
+// v1-layout directory (memories/<id>.md.age + share.json) into the subscription's
+// corpus, and rebuilds its dedicated index. Everything it writes stays under the
+// share root; the subscriber's vault, personal index, and graph are never touched.
+// The git transport passes its clone dir; the bucket transport passes a throwaway
+// dir it fetched into — so the same untrusted-input validation (names, ids,
+// scopes, sizes) runs for every backend, aborting loudly on any violation.
+func shareImport(ctx context.Context, cfg Config, sub shareSubscription, repo string) (shareImportStats, error) {
 	var stats shareImportStats
 	identities, err := loadShareIdentities(cfg)
 	if err != nil {
 		return stats, err
 	}
-	repo := shareRepoDir(cfg, sub.Name)
 	man, err := readShareManifest(repo)
 	if err != nil {
 		return stats, err
@@ -1065,7 +1069,7 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 		}
 	}
 	sub := shareSubscription{Name: name, Remote: *remote, CreatedAt: time.Now().Format(time.RFC3339)}
-	stats, err := shareImport(ctx, cfg, sub)
+	stats, err := shareImport(ctx, cfg, sub, shareRepoDir(cfg, sub.Name))
 	if err != nil {
 		// A fresh clone whose FIRST import failed (publisher hasn't pushed yet,
 		// key not among recipients, …) must not survive: the subscription was
@@ -1142,7 +1146,7 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 		if _, err := run(ctx, repo, "git", "pull", "--ff-only", "origin"); err != nil {
 			return fmt.Errorf("git pull --ff-only failed for share %q — if the publisher rotated the share (history rewrite), remove and re-subscribe: %w", sub.Name, err)
 		}
-		stats, err := shareImport(ctx, cfg, sub)
+		stats, err := shareImport(ctx, cfg, sub, shareRepoDir(cfg, sub.Name))
 		if err != nil {
 			return err
 		}

@@ -833,7 +833,7 @@ func TestShareImportDecryptsIndexesAndNeverTouchesVault(t *testing.T) {
 	vaultBefore := treeDigest(t, cfg.VaultDir)
 	indexBefore := treeDigest(t, cfg.DataDir+"/index.db")
 
-	stats, err := shareImport(context.Background(), cfg, sub)
+	stats, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
 	if err != nil {
 		t.Fatalf("shareImport: %v", err)
 	}
@@ -885,7 +885,7 @@ func TestShareImportRefusesIDSpoof(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(shareRepoDir(cfg, "neil"), "memories", "mem_20260601_000000_dddddddd.md.age"), ct, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := shareImport(context.Background(), cfg, sub); err == nil || !strings.Contains(err.Error(), "id") {
+	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err == nil || !strings.Contains(err.Error(), "id") {
 		t.Fatalf("id-spoofed import = %v; want refusal", err)
 	}
 }
@@ -900,13 +900,13 @@ func TestShareImportPrunesRemovedMemories(t *testing.T) {
 	m1 := fixtureMemory("mem_20260601_000000_aaaaaaaa", "Keep", "kept")
 	m2 := fixtureMemory("mem_20260601_000001_bbbbbbbb", "Drop", "dropped")
 	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(), []Memory{m1, m2}, true)
-	if _, err := shareImport(context.Background(), cfg, sub); err != nil {
+	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(shareRepoDir(cfg, "neil"), "memories", m2.ID+".md.age")); err != nil {
 		t.Fatal(err)
 	}
-	stats, err := shareImport(context.Background(), cfg, sub)
+	stats, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1024,7 +1024,7 @@ func setupSubscription(t *testing.T, cfg Config, name string, mems []Memory) {
 	id := writeTestIdentity(t, cfg)
 	buildShareRepoFixture(t, shareRepoDir(cfg, name), id.Recipient(), mems, true)
 	sub := shareSubscription{Name: name, Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
-	if _, err := shareImport(context.Background(), cfg, sub); err != nil {
+	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err != nil {
 		t.Fatal(err)
 	}
 	sf, err := loadShares(cfg)
@@ -1386,7 +1386,7 @@ func TestShareImportRefusesOversizedCiphertext(t *testing.T) {
 	}
 	f.Close()
 	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
-	_, err = shareImport(context.Background(), cfg, sub)
+	_, err = shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized ciphertext = %v; want size refusal", err)
 	}
@@ -1818,7 +1818,7 @@ func TestShareImportRefusesCaseFoldCollision(t *testing.T) {
 		t.Skip("filesystem collapsed the fixture names; collision unrepresentable here")
 	}
 	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
-	if _, err := shareImport(context.Background(), cfg, sub); err == nil || !strings.Contains(err.Error(), "case") {
+	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err == nil || !strings.Contains(err.Error(), "case") {
 		t.Fatalf("case-fold collision import = %v; want refusal naming the collision", err)
 	}
 }
