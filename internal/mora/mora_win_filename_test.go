@@ -63,8 +63,11 @@ func TestWriteFindMemoryWithReservedCharsID(t *testing.T) {
 
 func TestOSSafeBaseDeterministicAndOSGated(t *testing.T) {
 	id := `x?y*z`
-	if osSafeBase(id) != osSafeBase(id) {
-		t.Fatal("osSafeBase must be deterministic")
+	// Compare two separate calls via vars: repeated calls on the same id must
+	// agree (on Windows the sanitized name carries a deterministic hash suffix).
+	// Assigning to vars also keeps staticcheck from flagging f(x) != f(x) (SA4000).
+	if first, second := osSafeBase(id), osSafeBase(id); first != second {
+		t.Fatalf("osSafeBase must be deterministic: %q vs %q", first, second)
 	}
 	if runtime.GOOS != "windows" && osSafeBase(id) != id {
 		t.Fatalf("osSafeBase must be the identity off Windows, got %q", osSafeBase(id))
