@@ -69,7 +69,7 @@ These are enforced on PRs and flagged as blocking. Full text in
 
 1. **No import cycle.** Connector packages (`internal/google`, etc.) must not import `internal/mora`. They return plain `MappedMemory` structs; `mora` wires them at the boundary. New connectors live in `internal/<provider>` and import only `internal/memory`.
 2. **Pure Go, no CGO.** The product builds with `CGO_ENABLED=0`. No C extensions, no `mattn/go-sqlite3` — `modernc.org/sqlite` only. The race detector's `CGO_ENABLED=1` is test-only.
-3. **Read-only and zero egress.** Google scopes stay `gmail.readonly` / `calendar.readonly`. Connectors never write to their source, and there's no telemetry. The only intentional network egress is syncing your sources, `mora upgrade`, and the opt-in git backup.
+3. **Read-only and zero egress.** Google scopes stay `gmail.readonly` / `calendar.readonly`. Connectors never write to their source, and there's no telemetry. The only intentional network egress is syncing your sources, `mora upgrade`, the opt-in git backup, and the opt-in, age-encrypted `mora share` push/pull.
 4. **Honest-snapshot sync.** Never swallow a sync error — surface it. Freshness is the product's value.
 5. **State vs vault.** Usage logging and sync cursors live in the state dir, never in the vault. Honor `DO_NOT_TRACK` / `mora usage off`.
 6. **Identity vs filename.** `StableID` is provider identity only, never content; files are named with `SafeFilename`. Any ID lookup must match the SafeFilename form.

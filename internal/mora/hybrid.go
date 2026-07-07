@@ -107,10 +107,20 @@ func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder
 // the second probe is a fast localhost check (threading the instance through
 // hybridSearchTrace would ripple into the eval signatures — deferred).
 func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
+	var local []Memory
+	var err error
 	if embedderIsSemantic(chooseEmbedderFor(cfg)) {
-		return hybridSearch(ctx, cfg, query, scope, limit)
+		local, err = hybridSearch(ctx, cfg, query, scope, limit)
+	} else {
+		local, err = searchMemories(ctx, cfg, query, scope, limit)
 	}
-	return searchMemories(ctx, cfg, query, scope, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Query-time union with subscribed share corpora (`mora share`): owner-
+	// attributed, rank-fused, and a no-op returning `local` unchanged when no
+	// subscriptions exist.
+	return unionSharedResults(ctx, cfg, local, query, scope, limit)
 }
 
 // hybridSearchTrace is hybridSearch with the per-arm ranked lists exposed for

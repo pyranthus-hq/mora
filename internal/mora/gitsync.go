@@ -60,6 +60,8 @@ index.db
 .DS_Store
 tokens/
 *.token
+identity*
+share/
 `
 
 // gitSyncDisclosure is the loud, opt-in privacy notice. Pushing the vault breaks
@@ -171,7 +173,7 @@ func syncGit(ctx context.Context, cfg Config, args []string, stdout io.Writer, r
 	// ignore list), `git add -A` keeps shipping it — so this is a hard stop, not
 	// a warning: the contract is that the index and secrets never leave.
 	tracked, lsErr := run(ctx, vault, "git", "ls-files", "--",
-		"index.db", "*.db", "*.db-shm", "*.db-wal", "*.token", "tokens")
+		"index.db", "*.db", "*.db-shm", "*.db-wal", "*.token", "tokens", "identity*", "share")
 	if lsErr != nil {
 		return fmt.Errorf("git ls-files: %w", lsErr)
 	}

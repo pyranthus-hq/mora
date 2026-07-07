@@ -33,6 +33,10 @@ type ThinkEvidence struct {
 	CreatedAt string  `json:"created_at"`
 	Score     float64 `json:"score"`
 	Snippet   string  `json:"snippet"`
+	// Owner marks evidence from a subscribed share corpus (subscription name).
+	// Empty for the user's own memories — omitempty keeps local-only envelopes
+	// byte-identical (MCP budget gate).
+	Owner string `json:"owner,omitempty"`
 }
 
 // ThinkGaps is the deterministic "what's missing" analysis (no model).
@@ -66,7 +70,15 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	// analysis can tell which evidence was a direct lexical/semantic hit vs only a
 	// people-graph association (B3). The fused result is byte-identical to
 	// hybridSearch — the trace is the per-arm lists it otherwise discards.
-	mems, tr, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
+	local, tr, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
+	if err != nil {
+		return res, err
+	}
+	// Union subscribed share corpora in, owner-attributed (no-op without
+	// subscriptions). The gap analysis below stays LOCAL-only: gaps report what
+	// the user's own vault does not know, and shared ids must never be compared
+	// against the personal index's retrieval trace or entity graph.
+	mems, err := unionSharedResults(ctx, cfg, local, query, scope, limit)
 	if err != nil {
 		return res, err
 	}
@@ -78,11 +90,22 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 			CreatedAt: m.CreatedAt,
 			Score:     m.Score,
 			Snippet:   matchSnippet(m.Text, query, thinkSnippetLen),
+			Owner:     m.Owner,
 		})
 	}
-	gaps, err := computeGaps(ctx, cfg, query, mems, tr, now)
+	gaps, err := computeGaps(ctx, cfg, query, local, tr, now)
 	if err != nil {
 		return res, err
+	}
+	// The gap analysis ran on LOCAL results only; when shared corpora supplied
+	// evidence the vault did not, the bare coverage-hole wording would
+	// contradict the evidence right above it. Say precisely what is missing.
+	if len(local) == 0 && len(mems) > 0 {
+		for i, hole := range gaps.CoverageHoles {
+			if hole == "No memory matched this query." {
+				gaps.CoverageHoles[i] = "No memory in your own vault matched this query — the evidence comes entirely from shared corpora."
+			}
+		}
 	}
 	res.Gaps = gaps
 	// C1: additively surface unfinished tasks tied to the people named in the
@@ -247,6 +270,12 @@ func thinkPrompt(query string, ev []ThinkEvidence, gaps ThinkGaps, loops []Perso
 		b.WriteString("(none found)\n")
 	}
 	for _, e := range ev {
+		if e.Owner != "" {
+			// Shared evidence is labeled so the synthesis attributes claims to
+			// the sharing party, never to the user's own vault.
+			fmt.Fprintf(&b, "- [%s] (shared:%s, %s, %s) %s — %s\n", e.StableID, e.Owner, e.Scope, e.CreatedAt, e.Title, e.Snippet)
+			continue
+		}
 		fmt.Fprintf(&b, "- [%s] (%s, %s) %s — %s\n", e.StableID, e.Scope, e.CreatedAt, e.Title, e.Snippet)
 	}
 	if !gaps.empty() {

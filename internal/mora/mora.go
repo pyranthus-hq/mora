@@ -123,6 +123,11 @@ type Memory struct {
 	LastSynced  string   `json:"last_synced,omitempty"`
 	Truncated   bool     `json:"truncated,omitempty"`
 	DeletedAt   string   `json:"deleted_at,omitempty"`
+	// Owner attributes a result from a SHARED corpus (`mora share subscribe`)
+	// with the subscriber-chosen subscription name. Never persisted to disk and
+	// always empty for the user's own memories — omitempty keeps local-only
+	// payloads byte-identical (the MCP budget gate depends on that).
+	Owner string `json:"owner,omitempty"`
 	// Meta is structured identity/frontmatter (participants, from/to, occurred_at),
 	// persisted as one canonical JSON line (`meta: {...}`). Powers the entity graph;
 	// the graph compiler reads it deterministically (no NER).
@@ -348,6 +353,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdConnect(ctx, args[1:], stdout)
 	case "sync":
 		return cmdSync(ctx, args[1:], stdout)
+	case "share":
+		return cmdShare(ctx, args[1:], stdout, stdin)
 	case "reingest":
 		return cmdReingest(ctx, args[1:], stdout)
 	case "think":
@@ -405,6 +412,9 @@ USAGE:
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
   mora index rebuild
+  mora share init acme --scope project:acme --recipient age1... --remote <PRIVATE git URL>   # publish a scope, always encrypted
+  mora share push acme             # preview exactly what leaves, then publish
+  mora share subscribe neil --remote <URL>   # read someone's share beside your vault (never merged into it)
   mora tasks sync --write
   mora tasks add "Reply to Sam about the launch" --pri P0   # capture an open loop (name first, then flags)
   mora tasks list --json                                    # the current live tasks
@@ -935,6 +945,11 @@ func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	m, err := findMemory(cfg, fs.Arg(0))
 	if err != nil {
+		// Read-only fallback: ids from subscribed share corpora are searchable,
+		// so they must be readable too. Delete paths never take this fallback.
+		if sm, ok := findSharedMemory(cfg, fs.Arg(0)); ok {
+			return emit(stdout, sm, *jsonOut)
+		}
 		return err
 	}
 	return emit(stdout, m, *jsonOut)
@@ -1558,6 +1573,14 @@ func cmdBackup(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// A drifted config that nests data_dir/config inside the vault would tar the
+	// age share identity and DECRYPTED share corpora (plus the index's decrypted
+	// text) straight into the backup archive. Refuse rather than leak — the same
+	// containment the share verbs and doctor's share_disjoint_from_vault check
+	// enforce. Fix the layout (data_dir/config outside the vault), then re-run.
+	if err := shareGuardPaths(cfg); err != nil {
+		return fmt.Errorf("refusing to back up: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "backups"), 0o700); err != nil {
 		return err
 	}
@@ -1611,9 +1634,13 @@ type doctorReport struct {
 	StorageBytes      int64         `json:"storage_bytes"`
 	StorageStatus     string        `json:"storage_status"`
 	GitSyncConfigured bool          `json:"git_sync_configured"`
-	Version           string        `json:"version"`
-	Platform          string        `json:"platform"`
-	RebuildBlock      *rebuildBlock `json:"rebuild_block,omitempty"`
+	// Share egress surface (`mora share`): how many scopes this machine
+	// publishes and how many foreign corpora it subscribes to.
+	SharePublishes     int           `json:"share_publishes"`
+	ShareSubscriptions int           `json:"share_subscriptions"`
+	Version            string        `json:"version"`
+	Platform           string        `json:"platform"`
+	RebuildBlock       *rebuildBlock `json:"rebuild_block,omitempty"`
 }
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
@@ -1652,12 +1679,24 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// index is missing, or tokens are colocated with the vault (a data-egress
 	// hazard). token_dir/sources_config are advisory (a freshly seeded vault has
 	// neither tokens nor configured connectors yet, and that is fine).
+	shares, sharesErr := loadShares(cfg)
+
 	checks := []doctorCheck{
 		{Name: "vault", OK: vErr == nil, Critical: true},
 		{Name: "index_db", OK: iErr == nil, Critical: true},
 		{Name: "token_dir", OK: tErr == nil && !strings.HasPrefix(tokenDir, cfg.VaultDir), Critical: false},
 		{Name: "sources_config", OK: len(sources) > 0, Critical: false},
 		{Name: "tokens_disjoint_from_vault", OK: disjointRealPaths(cfg.VaultDir, tokenDir), Critical: true},
+		// Only ciphertext belongs in a share staging repo; plaintext markdown
+		// there means something is wrong with the export path or the user
+		// hand-placed files where `git add -A` will publish them.
+		{Name: "share_staging_clean", OK: shareStagingClean(cfg, shares.Publishes), Critical: false},
+		// Critical because a corrupt registry fails EVERY search/think once it
+		// exists — doctor must not report healthy while recall is down.
+		{Name: "shares_registry_readable", OK: sharesErr == nil, Critical: true},
+		// Mirrors tokens_disjoint_from_vault: the age identity and decrypted
+		// share corpora inside the vault would ride `mora backup`/git-sync.
+		{Name: "share_disjoint_from_vault", OK: shareGuardPaths(cfg) == nil, Critical: true},
 	}
 	healthy := true
 	for _, c := range checks {
@@ -1676,13 +1715,15 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 
 	if *jsonOut {
 		rep := doctorReport{
-			Healthy:           healthy,
-			Checks:            checks,
-			StorageBytes:      used,
-			StorageStatus:     st,
-			GitSyncConfigured: gitSync,
-			Version:           BuildVersion,
-			Platform:          runtimeGOOS(),
+			Healthy:            healthy,
+			Checks:             checks,
+			StorageBytes:       used,
+			StorageStatus:      st,
+			GitSyncConfigured:  gitSync,
+			SharePublishes:     len(shares.Publishes),
+			ShareSubscriptions: len(shares.Subscriptions),
+			Version:            BuildVersion,
+			Platform:           runtimeGOOS(),
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -1727,6 +1768,13 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	if gitSync {
 		fmt.Fprintf(stdout, "%s vault git-sync is configured — the vault LEAVES THIS DEVICE on `mora sync git`\n", sty.warn("warn"))
 		fmt.Fprintln(stdout, "     it contains decoded iMessages + Gmail in plaintext; ensure the remote is PRIVATE + user-controlled.")
+	}
+	// Share egress disclosure: qualify the zero-egress posture for every
+	// configured publish, mirroring the git-sync disclosure above.
+	for _, p := range shares.Publishes {
+		fmt.Fprintf(stdout, "%s share %q publishes scope %s (age-encrypted to %d recipient key(s)) on `mora share push`\n",
+			sty.warn("warn"), p.Name, p.Scope, len(p.Recipients))
+		fmt.Fprintln(stdout, "     ciphertext only, but keep the remote PRIVATE + user-controlled.")
 	}
 	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
 	// surface "last authed / how long ago" per connected account so the user can
@@ -5058,7 +5106,17 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		}
 		return m, nil
 	case "read_memory":
-		return findMemory(cfg, strArg(args, "id", ""))
+		m, err := findMemory(cfg, strArg(args, "id", ""))
+		if err != nil {
+			// Same read-only shared-corpus fallback as `mora read`: search
+			// returns shared ids with 240-rune snippets, so read_memory is the
+			// documented expansion path for them too.
+			if sm, ok := findSharedMemory(cfg, strArg(args, "id", "")); ok {
+				return sm, nil
+			}
+			return nil, err
+		}
+		return m, nil
 	case "search_memory":
 		start := time.Now()
 		query := strArg(args, "query", "")
@@ -5619,10 +5677,10 @@ func emit(w io.Writer, v any, jsonOut bool) error {
 	sty := newStyler(w, jsonOut)
 	switch x := v.(type) {
 	case Memory:
-		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), x.Title)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), ownedTitle(x))
 	case []Memory:
 		for _, m := range x {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), m.Title)
+			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), ownedTitle(m))
 		}
 	case []catalogRow:
 		for _, r := range x {
