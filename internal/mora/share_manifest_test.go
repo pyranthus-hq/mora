@@ -171,7 +171,9 @@ func TestBlobKeyAndAllowlist(t *testing.T) {
 func TestSignPubFingerprintStableAndDistinct(t *testing.T) {
 	p1, _, _ := ed25519.GenerateKey(rand.Reader)
 	p2, _, _ := ed25519.GenerateKey(rand.Reader)
-	if signPubFingerprint(p1) != signPubFingerprint(p1) {
+	// Two calls compared via vars (not f(x) != f(x)) so the stability check isn't
+	// flagged as an identical-expression comparison (staticcheck SA4000).
+	if a, b := signPubFingerprint(p1), signPubFingerprint(p1); a != b {
 		t.Fatal("fingerprint not stable")
 	}
 	if signPubFingerprint(p1) == signPubFingerprint(p2) {
