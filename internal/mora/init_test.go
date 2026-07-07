@@ -17,8 +17,7 @@ import (
 // vault_dir back to the default — orphaning the real vault ("init clears vault").
 func TestInitPreservesExistingConfig(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -71,8 +70,7 @@ func TestInitPreservesExistingConfig(t *testing.T) {
 // the fix preserves *existing* config but must not break deliberate override.
 func TestInitVaultFlagStillOverrides(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 	want := filepath.Join(home, "elsewhere")
 
 	var out bytes.Buffer
@@ -122,8 +120,7 @@ func TestDefaultConfigHonorsMoraConfigDir(t *testing.T) {
 // config must be untouched.
 func TestInitVaultRefusesRepointNonTTY(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -157,8 +154,7 @@ func TestInitVaultRefusesRepointNonTTY(t *testing.T) {
 // vault is idempotent, not a repoint — no refusal, no prompt.
 func TestInitVaultSameDirIsNotARepoint(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 
 	custom := filepath.Join(home, "custom-vault")
 	var out bytes.Buffer
@@ -176,8 +172,7 @@ func TestInitVaultSameDirIsNotARepoint(t *testing.T) {
 // (which skips unknowns) only to be silently dropped on the next rewrite.
 func TestWriteConfigPreservesUnknownKeysAndComments(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -243,8 +238,7 @@ func TestWriteConfigPreservesUnknownKeysAndComments(t *testing.T) {
 // ignored.
 func TestLoadConfigParsesInlineCommentsAndQuotedValues(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -289,8 +283,7 @@ func TestLoadConfigParsesInlineCommentsAndQuotedValues(t *testing.T) {
 // compares cleaned paths, not raw strings.
 func TestInitVaultTrailingSlashIsNotARepoint(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 
 	custom := filepath.Join(home, "custom-vault")
 	var out bytes.Buffer
@@ -309,8 +302,7 @@ func TestInitVaultTrailingSlashIsNotARepoint(t *testing.T) {
 // class the repoint guard exists to prevent. The line must survive verbatim.
 func TestWriteConfigPreservesEmptyDirValues(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, home)
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {

@@ -643,8 +643,7 @@ func TestCoreB_UtilInstallScheduleWriteError(t *testing.T) {
 	if err := os.WriteFile(homeFile, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", homeFile)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, homeFile)
 	cfg := testCfg(t)
 	var out bytes.Buffer
 	if err := installSchedule(&out, cfg, "index-hourly"); err == nil {

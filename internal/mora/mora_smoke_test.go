@@ -8,18 +8,23 @@ import (
 	"testing"
 )
 
-// withTempHome points all XDG-derived dirs at a temp dir. It sets HOME (Unix)
-// AND USERPROFILE — on Windows os.UserHomeDir() reads %USERPROFILE% and ignores
-// $HOME, so without this the suite resolves the developer's REAL vault and tests
-// cross-contaminate (and scribble into live data). Setting both isolates on
-// every platform (issue #56).
+// withTempHome points all XDG-derived dirs at a fresh temp dir (via setTestHome).
 func withTempHome(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
+	setTestHome(t, t.TempDir())
+}
+
+// setTestHome isolates a test at a caller-chosen home dir. It sets HOME (Unix)
+// AND USERPROFILE — on Windows os.UserHomeDir() reads %USERPROFILE% and ignores
+// $HOME, so setting only HOME leaves the suite resolving the developer's REAL
+// vault and scribbling into live data. Clearing MORA_CONFIG_DIR keeps an
+// exported dev config from leaking in. Use this (never a bare
+// t.Setenv("HOME", …)) anywhere a test plants a home path it then references
+// (issue #56).
+func setTestHome(t *testing.T, dir string) {
+	t.Helper()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
-	// Hermeticity: a developer's exported MORA_CONFIG_DIR must not leak a real
-	// config into tests that assume the temp HOME's default location.
 	t.Setenv("MORA_CONFIG_DIR", "")
 }
 

@@ -340,6 +340,7 @@ func TestHk_HookInstallExecutableError(t *testing.T) {
 func TestHk_HookInstallSettingsPathError(t *testing.T) {
 	hkSetExecutable(t, func() (string, error) { return "/opt/mora/mora", nil })
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // Windows: os.UserHomeDir reads USERPROFILE — clear it too so it fails
 	if err := hookInstall(nil, io.Discard); err == nil {
 		t.Fatal("install with no HOME must surface a settings-path error")
 	}
@@ -349,8 +350,7 @@ func TestHk_HookInstallSettingsPathError(t *testing.T) {
 // (the .claude parent is a regular file, so the atomic write cannot stage).
 func TestHk_HookInstallWriteError(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, tmp)
 	hkSetExecutable(t, func() (string, error) { return filepath.Join(tmp, "bin", "mora"), nil })
 	if err := os.WriteFile(filepath.Join(tmp, ".claude"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -364,6 +364,7 @@ func TestHk_HookInstallWriteError(t *testing.T) {
 // resolution failure.
 func TestHk_HookUninstallSettingsPathError(t *testing.T) {
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // Windows: os.UserHomeDir reads USERPROFILE — clear it too so it fails
 	if err := hookUninstall(io.Discard); err == nil {
 		t.Fatal("uninstall with no HOME must surface a settings-path error")
 	}
@@ -383,8 +384,7 @@ func TestHk_HookUninstallMalformedHooks(t *testing.T) {
 // failure (the .claude parent is a regular file).
 func TestHk_HookUninstallWriteError(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("MORA_CONFIG_DIR", "")
+	setTestHome(t, tmp)
 	if err := os.WriteFile(filepath.Join(tmp, ".claude"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -396,6 +396,7 @@ func TestHk_HookUninstallWriteError(t *testing.T) {
 // TestHk_HookStatusSettingsPathError asserts status surfaces a home-dir failure.
 func TestHk_HookStatusSettingsPathError(t *testing.T) {
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // Windows: os.UserHomeDir reads USERPROFILE — clear it too so it fails
 	if err := hookStatus(io.Discard); err == nil {
 		t.Fatal("status with no HOME must surface a settings-path error")
 	}
