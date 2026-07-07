@@ -376,7 +376,7 @@ func seedRecallMemories(t *testing.T, n int) Config {
 func withTempHookHome(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	setTestHome(t, tmp)
 	t.Setenv("MORA_CONFIG_DIR", "")
 	prev := hookExecutable
 	hookExecutable = func() (string, error) { return filepath.Join(tmp, "bin", "mora"), nil }

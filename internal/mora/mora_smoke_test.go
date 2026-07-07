@@ -8,10 +8,24 @@ import (
 	"testing"
 )
 
-// withTempHome points all XDG-derived dirs at a temp dir by setting HOME.
+// setTestHome points the OS home directory at dir for the duration of the test.
+// It sets BOTH HOME and USERPROFILE because os.UserHomeDir — which defaultConfig
+// uses to locate the vault/config/data dirs — reads USERPROFILE on Windows and
+// HOME elsewhere. Setting only HOME (the original behavior) left every Windows
+// test resolving the caller's REAL vault under %USERPROFILE%\vault\mora: tests
+// ran against thousands of live files (slow, hit the 10m package timeout) and,
+// worse, mutated the user's real vault. Setting both keeps tests hermetic on
+// every OS; on Linux the extra USERPROFILE is simply ignored.
+func setTestHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
+// withTempHome points all home-derived dirs at a fresh temp dir on every OS.
 func withTempHome(t *testing.T) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	// Hermeticity: a developer's exported MORA_CONFIG_DIR must not leak a real
 	// config into tests that assume the temp HOME's default location.
 	t.Setenv("MORA_CONFIG_DIR", "")
