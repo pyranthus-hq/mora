@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	mrand "math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -5651,21 +5652,31 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
-	// Publish atomically. On POSIX this is a single rename(2). On Windows,
-	// os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_EXISTING): replacing an
-	// existing target requires deleting it, so concurrent writers racing to
-	// rename onto the same target can transiently fail with ERROR_ACCESS_DENIED
-	// / ERROR_SHARING_VIOLATION. Retry those with bounded backoff; a genuinely
-	// permanent error (or any non-Windows error) still surfaces immediately.
-	var rerr error
+	// Publish atomically. On POSIX this is a single rename(2) and the loop runs
+	// exactly once. On Windows, os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_
+	// EXISTING): replacing an existing target requires deleting it, so concurrent
+	// writers racing to rename onto the SAME target transiently fail with
+	// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION. Retry those with JITTERED,
+	// capped backoff — deterministic backoff makes racing writers retry in
+	// lockstep and keep colliding, so the jitter is what lets them de-correlate —
+	// up to a deadline. Only the error path pays this; a permanent error (or any
+	// non-Windows error) surfaces on the first attempt.
+	var deadline time.Time
 	for attempt := 0; ; attempt++ {
-		if rerr = os.Rename(tmp, path); rerr == nil {
+		rerr := os.Rename(tmp, path)
+		if rerr == nil {
 			return nil
 		}
-		if attempt >= 9 || !renameReplaceRetryable(rerr) {
+		if !renameReplaceRetryable(rerr) {
 			return rerr
 		}
-		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+		if deadline.IsZero() {
+			deadline = time.Now().Add(5 * time.Second)
+		} else if !time.Now().Before(deadline) {
+			return rerr
+		}
+		capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
+		time.Sleep(time.Duration(1+mrand.IntN(capMs)) * time.Millisecond)
 	}
 }
 
