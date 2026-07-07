@@ -17,6 +17,7 @@ func TestDoctorFlagsTokenDirInsideVault(t *testing.T) {
 }
 
 func TestDoctorFlagsSymlinkedTokenDirInsideVault(t *testing.T) {
+	skipOnWindows(t, "os.Symlink needs SeCreateSymbolicLinkPrivilege on Windows; the symlink-resolution path is POSIX-only here (the string-based sibling test covers disjointRealPaths)")
 	root := t.TempDir()
 	vault := filepath.Join(root, "vault")
 	tokens := filepath.Join(vault, "tokens")

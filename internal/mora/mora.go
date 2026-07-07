@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	mrand "math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -572,6 +573,22 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
 			embedder, profile,
 			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr)
+		return nil
+	}
+	// Machine-readable path dump for tooling (uninstall.ps1 -Purge consumes this
+	// instead of scraping the human output, which truncated paths with double
+	// spaces and mojibake'd non-ASCII paths under PowerShell 5.1's OEM decoding).
+	if len(args) == 1 && args[0] == "--json" {
+		b, err := json.MarshalIndent(map[string]string{
+			"vault_dir":  cfg.VaultDir,
+			"data_dir":   cfg.DataDir,
+			"state_dir":  cfg.StateDir,
+			"config_dir": cfg.ConfigDir,
+		}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(b))
 		return nil
 	}
 	if len(args) != 2 {
@@ -3358,7 +3375,32 @@ func checkIndexSchema(db *sql.DB) error {
 func memoryPath(cfg Config, m Memory) string {
 	scopePath := strings.ReplaceAll(m.Scope, ":", string(os.PathSeparator))
 	scopePath = strings.ReplaceAll(scopePath, "/", string(os.PathSeparator))
-	return filepath.Join(memoriesRoot(cfg), scopePath, m.ID+".md")
+	return filepath.Join(memoriesRoot(cfg), scopePath, osSafeBase(m.ID)+".md")
+}
+
+// osSafeBase converts a memory ID (or an already-SafeFilename'd stable key) into
+// a base filename legal on the host OS. On macOS/Linux the input is returned
+// unchanged, so existing vaults stay byte-identical and need no migration — the
+// deliberate cross-OS trade-off recorded in #56. On Windows
+// memory.SanitizeWindowsBase maps the reserved set (IDs derived from user or
+// connector content can contain ? : * " < > | which os.CreateTemp rejects with
+// "The filename, directory name, or volume label syntax is incorrect"); when
+// that actually alters the string, a short deterministic hash of the ORIGINAL is
+// appended so two distinct IDs that sanitize alike (e.g. "a?" and "a*") never
+// collide onto one file and silently overwrite each other.
+//
+// The mapping is deterministic, so a later write or findMemory lookup
+// reproduces the same name. The memory's real id lives in frontmatter (read by
+// parseMemory), so the filename need only be stable, not reversible.
+func osSafeBase(id string) string {
+	if runtime.GOOS != "windows" {
+		return id
+	}
+	safe := memory.SanitizeWindowsBase(id)
+	if safe != id {
+		safe += "_" + memory.ContentHash(id)[:8]
+	}
+	return safe
 }
 
 func allMemoryFiles(cfg Config) ([]string, error) {
@@ -3774,12 +3816,17 @@ func findMemory(cfg Config, id string) (Memory, error) {
 		return Memory{}, err
 	}
 	// Google memories store an ID like "gmail_thread/abc" but are filed under the
-	// SafeFilename form "gmail_thread_abc.md", so match both shapes.
+	// SafeFilename form "gmail_thread_abc.md", so match both shapes. On Windows
+	// the on-disk name is the osSafeBase form (reserved chars mapped + a hash
+	// suffix), which matches neither, so add those shapes too; on macOS/Linux
+	// osSafeBase is the identity, so osBase/osSafe collapse onto base/safeBase.
 	base := id + ".md"
 	safeBase := memory.SafeFilename(id) + ".md"
+	osBase := osSafeBase(id) + ".md"
+	osSafe := osSafeBase(memory.SafeFilename(id)) + ".md"
 	for _, path := range files {
 		b := filepath.Base(path)
-		if b != base && b != safeBase && !strings.Contains(b, id) {
+		if b != base && b != safeBase && b != osBase && b != osSafe && !strings.Contains(b, id) {
 			continue
 		}
 		m, err := parseMemory(path)
@@ -4186,7 +4233,10 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 		LastSynced: mm.LastSynced, Truncated: mm.Truncated, DeletedAt: mm.DeletedAt,
 		Meta: mm.Meta,
 	}
-	out := filepath.Join(sourcesRoot(cfg), mm.Provider, memory.SafeFilename(mm.StableID)+".md")
+	// SafeFilename maps / : and space, but a StableID can still carry Windows
+	// reserved characters (? * " < > |); osSafeBase finishes the job on Windows
+	// and is a no-op elsewhere, so this stays byte-identical on macOS/Linux.
+	out := filepath.Join(sourcesRoot(cfg), mm.Provider, osSafeBase(memory.SafeFilename(mm.StableID))+".md")
 	// Skip rewrite if content unchanged (preserve created_at).
 	if existing, err := parseMemory(out); err == nil {
 		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" {
@@ -5535,13 +5585,22 @@ func windowsTaskName(job string) string {
 // quotes: cmd.exe does NOT treat backslash as a quote escape (`\"` would break
 // launch every run), and there is no space before `&&` or cmd.exe folds it into
 // the env value.
+//
+// The env VALUES use the `set "VAR=value"` quoted idiom so metacharacters in a
+// path — `&` (legal in folder names, e.g. C:\R&D\creds.json), spaces, `<`, `>`,
+// `|` — are taken literally instead of being parsed by cmd.exe as command
+// separators, which would silently truncate the `set` (and, for creds, fall the
+// job back to the embedded placeholder). The inner quotes stay balanced, so cmd
+// /c's first/last-quote strip leaves them intact. Residual (rare): a literal `%`
+// is still expanded by cmd.exe (paths rarely contain one), and schtasks truncates
+// /TR at ~261 chars — a very long MORA_CONFIG_DIR would need a wrapper script.
 func windowsTaskCommand(exe, cmdArgs string) string {
 	var sets []string
 	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
-		sets = append(sets, "set MORA_GOOGLE_CREDENTIALS="+creds)
+		sets = append(sets, `set "MORA_GOOGLE_CREDENTIALS=`+creds+`"`)
 	}
 	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
-		sets = append(sets, "set MORA_CONFIG_DIR="+cfgDir)
+		sets = append(sets, `set "MORA_CONFIG_DIR=`+cfgDir+`"`)
 	}
 	if len(sets) == 0 {
 		return `"` + exe + `" ` + cmdArgs
@@ -5676,7 +5735,32 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	// Publish atomically. On POSIX this is a single rename(2) and the loop runs
+	// exactly once. On Windows, os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_
+	// EXISTING): replacing an existing target requires deleting it, so concurrent
+	// writers racing to rename onto the SAME target transiently fail with
+	// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION. Retry those with JITTERED,
+	// capped backoff — deterministic backoff makes racing writers retry in
+	// lockstep and keep colliding, so the jitter is what lets them de-correlate —
+	// up to a deadline. Only the error path pays this; a permanent error (or any
+	// non-Windows error) surfaces on the first attempt.
+	var deadline time.Time
+	for attempt := 0; ; attempt++ {
+		rerr := os.Rename(tmp, path)
+		if rerr == nil {
+			return nil
+		}
+		if !renameReplaceRetryable(rerr) {
+			return rerr
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(5 * time.Second)
+		} else if !time.Now().Before(deadline) {
+			return rerr
+		}
+		capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
+		time.Sleep(time.Duration(1+mrand.IntN(capMs)) * time.Millisecond)
+	}
 }
 
 // usageEvent records a single MCP tool invocation for local analytics.

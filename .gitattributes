@@ -1,0 +1,5 @@
+# Golden test fixtures are compared byte-for-byte against renderer output, which
+# always emits LF. Force LF at checkout on every OS so a Windows clone with
+# core.autocrlf=true does not rewrite them to CRLF and break the comparison.
+# (These are the only *.golden files in the repo today.)
+*.golden text eol=lf

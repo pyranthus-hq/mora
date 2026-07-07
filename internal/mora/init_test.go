@@ -18,6 +18,7 @@ import (
 func TestInitPreservesExistingConfig(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -71,6 +72,7 @@ func TestInitPreservesExistingConfig(t *testing.T) {
 func TestInitVaultFlagStillOverrides(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 	want := filepath.Join(home, "elsewhere")
 
 	var out bytes.Buffer
@@ -121,6 +123,7 @@ func TestDefaultConfigHonorsMoraConfigDir(t *testing.T) {
 func TestInitVaultRefusesRepointNonTTY(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -155,6 +158,7 @@ func TestInitVaultRefusesRepointNonTTY(t *testing.T) {
 func TestInitVaultSameDirIsNotARepoint(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	custom := filepath.Join(home, "custom-vault")
 	var out bytes.Buffer
@@ -173,6 +177,7 @@ func TestInitVaultSameDirIsNotARepoint(t *testing.T) {
 func TestWriteConfigPreservesUnknownKeysAndComments(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -239,6 +244,7 @@ func TestWriteConfigPreservesUnknownKeysAndComments(t *testing.T) {
 func TestLoadConfigParsesInlineCommentsAndQuotedValues(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -284,6 +290,7 @@ func TestLoadConfigParsesInlineCommentsAndQuotedValues(t *testing.T) {
 func TestInitVaultTrailingSlashIsNotARepoint(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	custom := filepath.Join(home, "custom-vault")
 	var out bytes.Buffer
@@ -303,6 +310,7 @@ func TestInitVaultTrailingSlashIsNotARepoint(t *testing.T) {
 func TestWriteConfigPreservesEmptyDirValues(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
+	t.Setenv("MORA_CONFIG_DIR", "")
 
 	cfgDir := filepath.Join(home, ".config", "mora")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {

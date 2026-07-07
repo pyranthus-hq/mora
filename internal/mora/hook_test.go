@@ -318,12 +318,20 @@ func TestHookInstallUninstallBinaryNameIndependent(t *testing.T) {
 	// assert both hooks install with the abs exe path + sentinel and uninstall
 	// removes them completely. (Fails before the #mora-managed sentinel fix.)
 	tmp := withTempHookHome(t)
-	hookExecutable = func() (string, error) { return "/opt/tools/mora-dev", nil }
+	fakeExe := "/opt/tools/mora-dev"
+	hookExecutable = func() (string, error) { return fakeExe, nil }
 
 	run(t, "hook", "install")
+	// cmdHookInstall stores filepath.Abs(exe); derive the expectation the same
+	// way so it matches on every OS (on Windows filepath.Abs prepends the drive
+	// and flips separators -> C:\opt\tools\mora-dev; on Unix it is unchanged).
+	wantExe, err := filepath.Abs(fakeExe)
+	if err != nil {
+		t.Fatal(err)
+	}
 	hooks := hookGroupsForTest(t, readClaudeSettingsForTest(t, tmp))
 	for _, ev := range []string{"SessionStart", "UserPromptSubmit"} {
-		if !containsHookCommand(hooks[ev], "/opt/tools/mora-dev hook") {
+		if !containsHookCommand(hooks[ev], wantExe+" hook") {
 			t.Fatalf("%s command should use the absolute exe path, got %#v", ev, hooks[ev])
 		}
 		if !containsHookCommand(hooks[ev], hookMarker+":") {
@@ -377,6 +385,7 @@ func withTempHookHome(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
 	setTestHome(t, tmp)
+	t.Setenv("MORA_CONFIG_DIR", "")
 	prev := hookExecutable
 	hookExecutable = func() (string, error) { return filepath.Join(tmp, "bin", "mora"), nil }
 	t.Cleanup(func() { hookExecutable = prev })

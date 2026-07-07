@@ -161,6 +161,7 @@ func TestPersistSyncStatusReportsFailure(t *testing.T) {
 // vault must fail the walk, not silently shrink the index to the readable
 // subset (a rebuild would then "succeed" with memories missing).
 func TestAllMemoryFilesSurfacesWalkErrors(t *testing.T) {
+	skipOnWindows(t, "chmod 0000 does not block WalkDir on Windows; the walk error can't be provoked")
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; chmod 000 does not block reads")
 	}

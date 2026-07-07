@@ -4,27 +4,58 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-// withTempHome points all XDG-derived dirs at a fresh temp dir (via setTestHome).
-func withTempHome(t *testing.T) {
+// skipOnWindows skips a test whose failure-injection mechanism is POSIX-only and
+// cannot be reproduced portably on Windows (chmod-based permission denial, which
+// only toggles the read-only attribute; os.Symlink, which needs
+// SeCreateSymbolicLinkPrivilege; execing an extensionless #!/bin/sh stub). The
+// behavior under test is correct on Windows — only the test's way of provoking
+// the error is Unix-specific — so gating on GOOS keeps the assertion fully live
+// on Linux AND macOS (both take the non-windows path).
+func skipOnWindows(t *testing.T, reason string) {
 	t.Helper()
-	setTestHome(t, t.TempDir())
+	if runtime.GOOS == "windows" {
+		t.Skip("windows: " + reason)
+	}
 }
 
-// setTestHome isolates a test at a caller-chosen home dir. It sets HOME (Unix)
-// AND USERPROFILE — on Windows os.UserHomeDir() reads %USERPROFILE% and ignores
-// $HOME, so setting only HOME leaves the suite resolving the developer's REAL
-// vault and scribbling into live data. Clearing MORA_CONFIG_DIR keeps an
-// exported dev config from leaking in. Use this (never a bare
-// t.Setenv("HOME", …)) anywhere a test plants a home path it then references
-// (issue #56).
+// assertPermUnix asserts an exact Unix permission bit set, but only off Windows.
+// Windows has no Unix mode bits: os.FileInfo.Mode().Perm() is synthesized from
+// ACLs and reports 0666 for any writable file (0444 for read-only), so it can
+// never equal 0600/0640/0644. The production code still writes the correct mode
+// (security-relevant on Unix); this only relaxes the *assertion* on Windows.
+func assertPermUnix(t *testing.T, got, want os.FileMode) {
+	t.Helper()
+	if runtime.GOOS != "windows" && got.Perm() != want.Perm() {
+		t.Fatalf("mode = %v, want %v", got.Perm(), want.Perm())
+	}
+}
+
+// setTestHome points the OS home directory at dir for the duration of the test.
+// It sets BOTH HOME and USERPROFILE because os.UserHomeDir — which defaultConfig
+// uses to locate the vault/config/data dirs — reads USERPROFILE on Windows and
+// HOME elsewhere. Setting only HOME (the original behavior) left every Windows
+// test resolving the caller's REAL vault under %USERPROFILE%\vault\mora: tests
+// ran against thousands of live files (slow, hit the 10m package timeout) and,
+// worse, mutated the user's real vault. Setting both keeps tests hermetic on
+// every OS; on Linux the extra USERPROFILE is simply ignored.
 func setTestHome(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
+}
+
+// withTempHome points all home-derived dirs at a fresh temp dir on every OS.
+func withTempHome(t *testing.T) {
+	t.Helper()
+	setTestHome(t, t.TempDir())
+	// Hermeticity: a developer's exported MORA_CONFIG_DIR must not leak a real
+	// config into tests that assume the temp HOME's default location.
 	t.Setenv("MORA_CONFIG_DIR", "")
 }
 

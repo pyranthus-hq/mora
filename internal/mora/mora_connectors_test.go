@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,21 @@ func withRuntimeGOOS(t *testing.T, goos string) {
 	orig := runtimeGOOS
 	t.Cleanup(func() { runtimeGOOS = orig })
 	runtimeGOOS = func() string { return goos }
+}
+
+// asDarwinOnWindows lets the iMessage/Apple Calendar connect+enable FLOW tests
+// run under the Windows binary by presenting the host as darwin. Windows's
+// product refusal ("<x> is macOS-only …") is deliberately covered by dedicated
+// tests (TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources,
+// TestConnectorsListWindowsHidesMacOSOnlyConnectors); these tests exercise the
+// FLOW (routing, since-days persistence, readiness), so on Windows we inject
+// darwin. The guard fires ONLY on windows, so Linux is never touched and macOS
+// (already darwin) is byte-identical — no injection, no cleanup registered.
+func asDarwinOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		withRuntimeGOOS(t, "darwin")
+	}
 }
 
 // ---------------------------------------------------------------------------

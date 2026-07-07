@@ -4,10 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+// digestGeneratedRE matches the RFC3339 "Generated" timestamp in a rendered
+// digest header. cmdPulse stamps time.Now() per invocation, so two separate
+// `pulse` Run calls can straddle a wall-clock second (exposed by slower Windows
+// I/O) and produce headers that differ by 1s — the ONLY non-deterministic token
+// on the output. Masking it makes the append-never-alters prefix check robust on
+// every OS without touching the product.
+var digestGeneratedRE = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})`)
 
 // digest_envelope_wiring_test.go — Plan 15-02: the opt-in envelope wiring onto the
 // MCP `digest` tool and `pulse --digest`, plus the budgetEnvelopePayload assembler
@@ -306,7 +315,12 @@ func TestPulseDigestEnvelopeOnAppendsPrompt(t *testing.T) {
 	plain := plainBuf.String()
 	enriched := envBuf.String()
 
-	if !strings.HasPrefix(enriched, plain) {
+	// Mask the volatile RFC3339 header timestamp in BOTH outputs before the
+	// prefix check, so a same-second straddle between the two Run calls (seen on
+	// slower Windows I/O) doesn't flip the assertion. The append-never-alters
+	// invariant still holds around the masked timestamp.
+	norm := func(s string) string { return digestGeneratedRE.ReplaceAllString(s, "<ts>") }
+	if !strings.HasPrefix(norm(enriched), norm(plain)) {
 		t.Fatalf("--envelope output must START WITH the exact plain brief (it appends, never alters)\nplain:\n%s\nenriched:\n%s", plain, enriched)
 	}
 	if !strings.Contains(enriched, "grounded ONLY in the cited items") {

@@ -262,6 +262,7 @@ func TestHk_SyncGitGitignoreWriteError(t *testing.T) {
 // component that is a file, yielding ENOTDIR) is surfaced, not misread as
 // "no repo".
 func TestHk_VaultRepoStateLstatError(t *testing.T) {
+	skipOnWindows(t, "a file path component yields ERROR_PATH_NOT_FOUND on Windows, which os.IsNotExist treats as not-exist, so vaultRepoState correctly returns (false,nil) instead of a POSIX ENOTDIR error")
 	root := t.TempDir()
 	afile := filepath.Join(root, "afile")
 	if err := os.WriteFile(afile, []byte("x"), 0o600); err != nil {

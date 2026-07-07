@@ -129,7 +129,7 @@ func TestWindowsScheduleInstallUsesSchtasksAndConfigDir(t *testing.T) {
 	if !ok {
 		t.Fatalf("schtasks args missing /TR: %#v", call.args)
 	}
-	if !strings.HasPrefix(tr, `cmd /c "set MORA_CONFIG_DIR=C:\Users\Adit\AppData\Local\Mora&& "`) {
+	if !strings.HasPrefix(tr, `cmd /c "set "MORA_CONFIG_DIR=C:\Users\Adit\AppData\Local\Mora"&& "`) {
 		t.Fatalf("/TR did not carry MORA_CONFIG_DIR with cmd wrapper: %q", tr)
 	}
 	if !strings.Contains(tr, `" ingest run --all"`) {
@@ -171,11 +171,35 @@ func TestWindowsScheduleCarriesGoogleCredsEnv(t *testing.T) {
 	if !ok {
 		t.Fatalf("schtasks args missing /TR: %#v", (*calls)[0].args)
 	}
-	if !strings.Contains(tr, `set MORA_GOOGLE_CREDENTIALS=C:\Users\Adit\creds\google-client.json`) {
+	if !strings.Contains(tr, `set "MORA_GOOGLE_CREDENTIALS=C:\Users\Adit\creds\google-client.json"`) {
 		t.Fatalf("windows scheduled task dropped MORA_GOOGLE_CREDENTIALS — BYO-creds scheduled Google sync would silently go stale: %q", tr)
 	}
 	if strings.Contains(tr, `\"`) {
 		t.Fatalf("/TR must use PLAIN double quotes, not backslash-escaped: %q", tr)
+	}
+}
+
+// TestWindowsScheduleQuotesEnvValueWithAmpersand guards #60 bug 1: a creds/config
+// path containing a cmd.exe metacharacter (& is legal in Windows folder names)
+// must be carried literally via the `set "VAR=value"` quoted idiom. Without the
+// quotes cmd.exe parses the `&` as a command separator, truncating the `set` so
+// the scheduled Google sync silently falls back to the embedded placeholder.
+func TestWindowsScheduleQuotesEnvValueWithAmpersand(t *testing.T) {
+	withTempHome(t)
+	withRuntimeGOOS(t, "windows")
+	t.Setenv("MORA_GOOGLE_CREDENTIALS", `C:\R&D\google-client.json`)
+	calls := withScheduleRunner(t, nil)
+
+	var out bytes.Buffer
+	if err := installSchedule(&out, Config{}, "ingest-hourly"); err != nil {
+		t.Fatalf("installSchedule windows: %v", err)
+	}
+	tr, ok := argAfter((*calls)[0].args, "/TR")
+	if !ok {
+		t.Fatalf("schtasks args missing /TR: %#v", (*calls)[0].args)
+	}
+	if !strings.Contains(tr, `set "MORA_GOOGLE_CREDENTIALS=C:\R&D\google-client.json"`) {
+		t.Fatalf("env value containing `&` was not carried intact inside a quoted set — cmd.exe would split it: %q", tr)
 	}
 }
 

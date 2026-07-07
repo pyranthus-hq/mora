@@ -92,7 +92,14 @@ jobs:
             echo "::error::built binary does not embed the real OAuth client id — would ship broken \`connect google\`"
             exit 1
           fi
-          echo "verified: checksums.txt present, real OAuth client embedded"
+          # The Windows zip is what install.ps1 downloads; assert it exists, holds
+          # mora.exe, and is checksummed — the linux checks above never touch it,
+          # so a broken inaugural windows archive would otherwise publish silently.
+          WZIP=$(find dist -maxdepth 1 -name 'mora_*_windows_amd64.zip' | head -1)
+          test -n "$WZIP" || { echo "::error::windows/amd64 zip missing from dist/"; exit 1; }
+          unzip -l "$WZIP" | grep -q 'mora.exe' || { echo "::error::windows zip contains no mora.exe"; exit 1; }
+          grep -qF "$(basename "$WZIP")" dist/checksums.txt || { echo "::error::windows zip absent from checksums.txt"; exit 1; }
+          echo "verified: checksums.txt present, real OAuth client embedded, windows zip has mora.exe + checksum"
 
       # Pre-publish regression gate (scripts/regress): run the Tier-1 harness
       # against the REAL goreleaser linux artifact — install.sh, every command,
