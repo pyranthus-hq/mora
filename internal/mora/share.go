@@ -691,89 +691,20 @@ func sharePush(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 		}
 	}
 
-	if _, err := run(ctx, "", "git", "--version"); err != nil {
-		return fmt.Errorf("git is required for sharing but was not found: %w", err)
-	}
-	staging := shareStagingDir(cfg, pub.Name)
-	isRepo, repoErr := vaultRepoState(filepath.Join(staging, ".git"))
-	if repoErr != nil {
-		return repoErr
-	}
-	if !isRepo {
-		return fmt.Errorf("share %q has no staging repo — run `mora share init %s …` first", pub.Name, pub.Name)
-	}
-	origin, err := run(ctx, staging, "git", "remote", "get-url", "origin")
-	if err != nil {
-		return fmt.Errorf("share %q has no usable origin remote (%v) — re-run `mora share init`", pub.Name, err)
-	}
-	// The staging repo's origin must be the remote the grant was created for —
-	// a swapped origin would publish to somewhere the user never approved.
-	if pub.Remote != "" && strings.TrimSpace(origin) != pub.Remote {
-		return fmt.Errorf("staging repo origin (%s) does not match the share's configured remote (%s) — refusing to publish to an unapproved destination", redactCredentials(strings.TrimSpace(origin)), redactCredentials(pub.Remote))
-	}
-	if _, err := run(ctx, staging, "git", "symbolic-ref", "-q", "HEAD"); err != nil {
-		return fmt.Errorf("share staging repo is in detached HEAD — check out a branch before publishing: %w", err)
-	}
-
-	memDir := filepath.Join(staging, "memories")
+	// Encrypt the pending set in memory, then hand it to the transport. Encryption
+	// is backend-neutral (same ciphertext for any destination); only the durable
+	// write/commit/push is transport-specific and lives behind the seam.
+	set := shareSet{put: make(map[string][]byte, len(ch.Plain)), remove: ch.RemoveFiles}
 	for id, plain := range ch.Plain {
 		ct, err := encryptShareBytes(recipients, plain)
 		if err != nil {
 			return fmt.Errorf("encrypting %s: %w", id, err)
 		}
-		if err := atomicWrite(filepath.Join(memDir, id+".md.age"), ct, 0o644); err != nil {
-			return err
-		}
+		set.put[id+".md.age"] = ct
 	}
-	for _, f := range ch.RemoveFiles {
-		if err := os.Remove(filepath.Join(memDir, f)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-
-	if _, err := run(ctx, staging, "git", "add", "-A"); err != nil {
-		return fmt.Errorf("git add: %w", err)
-	}
-	// Hard stop, stronger than sync git's denylist: `git add -A` stages the
-	// whole staging tree, so the tracked set is checked against an ALLOWLIST —
-	// only the manifest, the .gitignore, and safe-named ciphertext may ever be
-	// tracked. Anything else (stray plaintext, secrets, files another tool
-	// dropped here) would leave without appearing in the preview.
-	tracked, lsErr := run(ctx, staging, "git", "ls-files")
-	if lsErr != nil {
-		return fmt.Errorf("git ls-files: %w", lsErr)
-	}
-	var offenders []string
-	for _, line := range strings.Split(tracked, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line == ".gitignore" || line == "share.json" {
-			continue
-		}
-		if stem, ok := strings.CutPrefix(line, "memories/"); ok {
-			if stem, ok := strings.CutSuffix(stem, ".md.age"); ok && shareExportIDRE.MatchString(stem) {
-				continue
-			}
-		}
-		offenders = append(offenders, line)
-	}
-	if len(offenders) > 0 {
-		return fmt.Errorf("refusing to publish: the share repo tracks files that are not manifest/.gitignore/encrypted memories:\n%s\nuntrack them first (the working copy is kept): git -C %s rm -r --cached <path>", strings.Join(offenders, "\n"), staging)
-	}
-	status, err := run(ctx, staging, "git", "status", "--porcelain")
-	if err != nil {
-		return fmt.Errorf("git status: %w", err)
-	}
-	if strings.TrimSpace(status) != "" {
-		commitArgs := append(commitIdentityArgs(ctx, staging, run), "commit", "-m",
-			fmt.Sprintf("mora share push %s %s", pub.Name, time.Now().Format(time.RFC3339)))
-		if _, err := run(ctx, staging, "git", commitArgs...); err != nil {
-			return fmt.Errorf("git commit: %w", err)
-		}
-	}
-	// Always push, even with no content changes — the remote may be behind
-	// after an earlier failed push. Never --force.
-	if _, err := run(ctx, staging, "git", "push", "origin", "HEAD"); err != nil {
-		return fmt.Errorf("git push failed (the share was NOT published): %w", err)
+	var t shareTransport = newGitPublisher(run, cfg, pub)
+	if err := t.publish(ctx, set); err != nil {
+		return err
 	}
 	if err := saveSharePushState(cfg, pub.Name, sharePushState{
 		Recipients: sortedStrings(pub.Recipients), Files: ch.Current,
