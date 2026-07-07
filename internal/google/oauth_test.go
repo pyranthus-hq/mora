@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -116,7 +117,10 @@ func TestTokenStoreRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no Unix mode bits (Perm() is ACL-derived, reports 0666 for a
+	// writable file), so the owner-only 0600 assertion only holds off Windows.
+	// SaveToken still writes 0o600, which is security-relevant on Unix.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("token file must be 0600, got %v", info.Mode().Perm())
 	}
 	got, err := LoadToken(path)

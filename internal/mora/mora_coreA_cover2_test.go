@@ -179,6 +179,7 @@ func TestCoreA_GoogleSetupStep(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCoreA_EnableConnectorVariants(t *testing.T) {
+	asDarwinOnWindows(t) // exercise the imessage/applecalendar enable FLOW; the Windows refusal is covered elsewhere
 	// Unknown type is rejected.
 	cfg := coreADirsCfg(t)
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
@@ -272,6 +273,7 @@ func TestCoreA_DisableConnector(t *testing.T) {
 }
 
 func TestCoreA_ApplySetupSelection(t *testing.T) {
+	asDarwinOnWindows(t)
 	cfg := coreADirsCfg(t)
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -550,6 +552,7 @@ func TestCoreA_CmdReingest(t *testing.T) {
 }
 
 func TestCoreA_CmdConnectRouting(t *testing.T) {
+	asDarwinOnWindows(t)
 	withTempHome(t)
 	run(t, "init")
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "") // force the placeholder path (never opens a browser)

@@ -7,6 +7,7 @@ import "testing"
 // flag-customizable — not pinned to the 90-day default. The flag is persisted before
 // the FDA-readiness gate, so this holds even where chat.db is absent (temp HOME).
 func TestConnectIMessageSinceDaysPersists(t *testing.T) {
+	asDarwinOnWindows(t)
 	withTempHome(t)
 	run(t, "init")
 	run(t, "connect", "imessage", "--since-days", "365")
@@ -35,6 +36,7 @@ func TestConnectIMessageSinceDaysPersists(t *testing.T) {
 
 // A negative window selects all-time (windowForIMessage treats <0 as no lower bound).
 func TestConnectIMessageSinceDaysAllTime(t *testing.T) {
+	asDarwinOnWindows(t)
 	withTempHome(t)
 	run(t, "init")
 	run(t, "connect", "imessage", "--since-days", "-1")

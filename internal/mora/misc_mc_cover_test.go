@@ -132,6 +132,7 @@ func TestMc_PrintBannerNonTTY(t *testing.T) {
 // to a harmless stub. The success path returns nil; with the stub absent from
 // PATH, LookPath/Start fails and the error surfaces.
 func TestMc_OsascriptRunner(t *testing.T) {
+	skipOnWindows(t, "the exec seam is exercised via a #!/bin/sh stub named 'osascript'; Windows can't exec an extensionless shell script (no PATHEXT match)")
 	dir := t.TempDir()
 	stub := filepath.Join(dir, "osascript")
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {

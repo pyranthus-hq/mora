@@ -401,6 +401,7 @@ func TestCoreB_MemFindMemory(t *testing.T) {
 }
 
 func TestCoreB_MemAllMemoryFilesWalkErrorSurfaces(t *testing.T) {
+	skipOnWindows(t, "chmod 0000 does not block WalkDir on Windows (read-only attribute, not an ACL deny), so the walk error can't be provoked")
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions; walk error unreachable")
 	}

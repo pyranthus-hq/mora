@@ -3,6 +3,7 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,7 @@ func TestSw_SaveStatusMkdirErrorWhenParentIsFile(t *testing.T) {
 }
 
 func TestSw_SaveStatusWriteErrorWhenDirectoryNotWritable(t *testing.T) {
+	skipOnWindows(t, "chmod 0500 does not make a directory unwritable to the owner on Windows (read-only attribute, not an ACL deny), so the temp-file write still succeeds")
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root — the 0500 write bit is bypassed, so the write error can't be provoked")
 	}
@@ -102,7 +104,14 @@ func TestSw_SaveStatusRenameErrorWhenTargetIsDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected renaming temp status file over a directory to fail")
 	}
-	if !strings.Contains(err.Error(), "is a directory") && !strings.Contains(err.Error(), "not a directory") && !strings.Contains(err.Error(), "file exists") {
+	if runtime.GOOS == "windows" {
+		// MoveFileEx onto an existing directory returns ERROR_ACCESS_DENIED
+		// ("Access is denied."), not a POSIX EISDIR/ENOTDIR — the rename still
+		// fails (asserted above), only the error string differs.
+		if !strings.Contains(err.Error(), "Access is denied") {
+			t.Fatalf("expected directory rename error, got %v", err)
+		}
+	} else if !strings.Contains(err.Error(), "is a directory") && !strings.Contains(err.Error(), "not a directory") && !strings.Contains(err.Error(), "file exists") {
 		t.Fatalf("expected directory rename error, got %v", err)
 	}
 }

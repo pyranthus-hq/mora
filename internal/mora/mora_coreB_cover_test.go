@@ -87,6 +87,7 @@ func TestCoreB_GapAppleCalDBPathPrefersModern(t *testing.T) {
 // `--since-days` override branch: a non-zero window is persisted on the imessage
 // source so future syncs reuse it (mirrors `connect google --since-days`).
 func TestCoreB_GapConnectIMessagePersistsSinceDays(t *testing.T) {
+	asDarwinOnWindows(t)
 	cfg := coreBGapInitCfg(t)
 	var out bytes.Buffer
 	// On this darwin host the local Messages DB is absent under the temp HOME, so

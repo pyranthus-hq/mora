@@ -119,6 +119,7 @@ func TestStaleIndexErrorsActionablyWithoutAutoHeal(t *testing.T) {
 // executable. A failing child surfaces an error (warn-don't-fail is the
 // caller's policy, the swap itself already succeeded).
 func TestPostUpgradeRebuildExecsNewBinary(t *testing.T) {
+	skipOnWindows(t, "the fake upgrade target is a #!/bin/sh stub with no extension; Windows CreateProcess can't exec a shebang/extensionless file (the real target is mora.exe, a native PE)")
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-mora")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho fake rebuild: \"$@\"\n"), 0o755); err != nil {
