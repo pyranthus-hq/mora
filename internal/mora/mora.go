@@ -1556,6 +1556,14 @@ func cmdBackup(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// A drifted config that nests data_dir/config inside the vault would tar the
+	// age share identity and DECRYPTED share corpora (plus the index's decrypted
+	// text) straight into the backup archive. Refuse rather than leak — the same
+	// containment the share verbs and doctor's share_disjoint_from_vault check
+	// enforce. Fix the layout (data_dir/config outside the vault), then re-run.
+	if err := shareGuardPaths(cfg); err != nil {
+		return fmt.Errorf("refusing to back up: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "backups"), 0o700); err != nil {
 		return err
 	}
