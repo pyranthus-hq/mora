@@ -565,6 +565,22 @@ func cmdConfig(args []string, stdout io.Writer) error {
 			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr)
 		return nil
 	}
+	// Machine-readable path dump for tooling (uninstall.ps1 -Purge consumes this
+	// instead of scraping the human output, which truncated paths with double
+	// spaces and mojibake'd non-ASCII paths under PowerShell 5.1's OEM decoding).
+	if len(args) == 1 && args[0] == "--json" {
+		b, err := json.MarshalIndent(map[string]string{
+			"vault_dir":  cfg.VaultDir,
+			"data_dir":   cfg.DataDir,
+			"state_dir":  cfg.StateDir,
+			"config_dir": cfg.ConfigDir,
+		}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(b))
+		return nil
+	}
 	if len(args) != 2 {
 		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off>]")
 	}
@@ -5511,13 +5527,22 @@ func windowsTaskName(job string) string {
 // quotes: cmd.exe does NOT treat backslash as a quote escape (`\"` would break
 // launch every run), and there is no space before `&&` or cmd.exe folds it into
 // the env value.
+//
+// The env VALUES use the `set "VAR=value"` quoted idiom so metacharacters in a
+// path — `&` (legal in folder names, e.g. C:\R&D\creds.json), spaces, `<`, `>`,
+// `|` — are taken literally instead of being parsed by cmd.exe as command
+// separators, which would silently truncate the `set` (and, for creds, fall the
+// job back to the embedded placeholder). The inner quotes stay balanced, so cmd
+// /c's first/last-quote strip leaves them intact. Residual (rare): a literal `%`
+// is still expanded by cmd.exe (paths rarely contain one), and schtasks truncates
+// /TR at ~261 chars — a very long MORA_CONFIG_DIR would need a wrapper script.
 func windowsTaskCommand(exe, cmdArgs string) string {
 	var sets []string
 	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
-		sets = append(sets, "set MORA_GOOGLE_CREDENTIALS="+creds)
+		sets = append(sets, `set "MORA_GOOGLE_CREDENTIALS=`+creds+`"`)
 	}
 	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
-		sets = append(sets, "set MORA_CONFIG_DIR="+cfgDir)
+		sets = append(sets, `set "MORA_CONFIG_DIR=`+cfgDir+`"`)
 	}
 	if len(sets) == 0 {
 		return `"` + exe + `" ` + cmdArgs

@@ -55,10 +55,38 @@ function Get-NormalizedPathEntry {
     return $Path.Trim().TrimEnd("\")
 }
 
+function Send-EnvironmentChanged {
+    # A raw registry write (unlike [Environment]::SetEnvironmentVariable) does not
+    # notify running processes, so broadcast WM_SETTINGCHANGE('Environment') to
+    # refresh Explorer and new shells. Best-effort: a brand-new shell reads the
+    # registry fresh regardless, so never fail the install on a broadcast hiccup.
+    try {
+        if (-not ('Mora.NativeEnv' -as [type])) {
+            Add-Type -Namespace Mora -Name NativeEnv -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+        }
+        $result = [System.UIntPtr]::Zero
+        [void][Mora.NativeEnv]::SendMessageTimeout([System.IntPtr]0xffff, 0x1A, [System.IntPtr]::Zero, 'Environment', 0x2, 5000, [ref]$result)
+    } catch { }
+}
+
 function Add-UserPath {
     param([string]$PathToAdd)
 
-    $current = [Environment]::GetEnvironmentVariable("Path", "User")
+    # Read/write the RAW User PATH under HKCU:\Environment, preserving its value
+    # kind. [Environment]::GetEnvironmentVariable expands %VAR% tokens on read and
+    # SetEnvironmentVariable always rewrites REG_SZ — together they bake every
+    # %VAR% entry (e.g. the default %USERPROFILE%\...\WindowsApps) to its literal
+    # expansion and flip REG_EXPAND_SZ -> REG_SZ so surviving tokens stop
+    # expanding. That is silent PATH corruption on every install (#60).
+    $key = 'HKCU:\Environment'
+    $item = Get-Item -LiteralPath $key
+    $current = $item.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    try { if ($null -ne $item.GetValue('Path')) { $kind = $item.GetValueKind('Path') } } catch { }
+
     $parts = @()
     if ($current) {
         $parts = $current -split ";" | Where-Object { $_ -and $_.Trim() }
@@ -72,7 +100,8 @@ function Add-UserPath {
     }
 
     $next = @($parts + $PathToAdd) -join ";"
-    [Environment]::SetEnvironmentVariable("Path", $next, "User")
+    Set-ItemProperty -LiteralPath $key -Name 'Path' -Value $next -Type $kind
+    Send-EnvironmentChanged
     if ($env:Path) {
         $env:Path = @($env:Path, $PathToAdd) -join ";"
     } else {
