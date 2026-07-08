@@ -6,7 +6,8 @@ The on-disk Markdown memory format, the identity rules that keep re-syncs idempo
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `internal/mora/mora.go` | 3587 | `Memory`/`Source`/`Config` model; `renderMemory`/`parseMemory`/`writeMemory`/`createMemory`/`writeMappedMemory`; `rebuildIndex` + SQLite DDL; `findMemory`/`allMemoryFiles`/`listMemories`; `loadConfig`/`defaultConfig`; path helpers; `atomicWrite`/`atomicCreate`; `newID`; the mora-local `ContentHash` (filesystem ids only) |
+| `internal/mora/mora.go` | 4775 | `Memory`/`Source`/`Config` model; `createMemory`/`writeMappedMemory`; `rebuildIndex` + SQLite DDL; `loadConfig`/`defaultConfig`; `atomicWrite`/`atomicCreate` |
+| `internal/mora/memfile.go` | — | Memory-file render/parse/path: `renderMemory`/`parseMemory`/`writeMemory`; `findMemory`/`allMemoryFiles`/`listMemories`; the `memoriesRoot`/`sourcesRoot`/`memoryPath`/`osSafeBase` path helpers; `newID`; the mora-local `ContentHash` (filesystem ids only) |
 | `internal/memory/mapped.go` | 154 | `MappedMemory` hand-off struct; `MapItem` (Item→MappedMemory, byte budget, content-hash fold); `CanonicalMeta`; kind→(type,provider) registry |
 | `internal/memory/ids.go` | 25 | `StableID` (provider identity), `ContentHash` (provider change-detect, sha256/16), `SafeFilename` (`/`,`:`,` ` → `_`) |
 | `internal/memory/types.go` | 70 | `Item`, `ItemKind`, `Attachment` (metadata + in-transit `Path`), `FetchWindow`, `Page`, `Fetcher` — the connector-agnostic fetch types feeding `MapItem` |
@@ -34,7 +35,7 @@ type Memory struct {
 
 ### On-disk Markdown format
 
-`renderMemory` (`mora.go:1877-1907`) emits the canonical bytes:
+`renderMemory` (`memfile.go`) emits the canonical bytes:
 
 ```
 ---
@@ -57,17 +58,17 @@ meta: {"from":"a@x.com","participants":["a@x.com","b@y.com"]}
 ```
 
 Render rules that the parser depends on:
-- **Conditional fields**: `provider`/`provider_id`, `content_hash`, `last_synced`, `truncated`, `deleted_at`, and `meta` are only written when non-empty (`mora.go:1882-1904`). A hand-written `mora write` memory has no provider block.
-- **`quoteYAML`** (`mora.go:3383`) wraps `title`/`source`/`provider_id` in Go-quoted form only if they contain `:#[]`, so a colon in a subject line cannot break the line parser.
+- **Conditional fields**: `provider`/`provider_id`, `content_hash`, `last_synced`, `truncated`, `deleted_at`, and `meta` are only written when non-empty (`memfile.go`). A hand-written `mora write` memory has no provider block.
+- **`quoteYAML`** (`memfile.go`) wraps `title`/`source`/`provider_id` in Go-quoted form only if they contain `:#[]`, so a colon in a subject line cannot break the line parser.
 - **`meta` is one canonical JSON line.** `CanonicalMeta` (`mapped.go:48-57`) is `json.Marshal` of the map, which emits **sorted keys on a single line** — stable bytes independent of insertion order, and no raw newline to break the line-split parser.
 
-`parseMemory` (`mora.go:1909-1983`) is the inverse and is deliberately hand-rolled (no YAML lib):
-- It requires a leading `---\n` and splits on the **first** `\n---\n` (`mora.go:1915-1921`).
-- Each frontmatter line is split on the **first** colon via `strings.Cut`. For the `meta` line it decodes the **raw substring after the first colon** with `json.NewDecoder` + `UseNumber()` (`mora.go:1932-1947`) — `UseNumber` keeps a 19-digit thread id from decoding to a lossy `float64`.
-- A corrupt `meta:` line is **not** silently dropped — it logs `warn: … meta frontmatter is corrupt` to stderr and continues (`mora.go:1939-1943`), because losing a memory's structured identity silently would corrupt the entity graph.
-- A missing `id` is a hard error (`mora.go:1979-1981`).
+`parseMemory` (`memfile.go`) is the inverse and is deliberately hand-rolled (no YAML lib):
+- It requires a leading `---\n` and splits on the **first** `\n---\n` (`memfile.go`).
+- Each frontmatter line is split on the **first** colon via `strings.Cut`. For the `meta` line it decodes the **raw substring after the first colon** with `json.NewDecoder` + `UseNumber()` (`memfile.go`) — `UseNumber` keeps a 19-digit thread id from decoding to a lossy `float64`.
+- A corrupt `meta:` line is **not** silently dropped — it logs `warn: … meta frontmatter is corrupt` to stderr and continues (`memfile.go`), because losing a memory's structured identity silently would corrupt the entity graph.
+- A missing `id` is a hard error (`memfile.go`).
 
-`writeMemory` (`mora.go`, function `writeMemory`) renders then `atomicWrite`s (temp file + `os.Rename`, function `atomicWrite`) so a partial write never leaves a torn frontmatter file. Directories are created `0o700`, files `0o644`.
+`writeMemory` (`memfile.go`, function `writeMemory`) renders then `atomicWrite`s (temp file + `os.Rename`, function `atomicWrite`) so a partial write never leaves a torn frontmatter file. Directories are created `0o700`, files `0o644`.
 
 **Brand-new user memories publish create-exclusively.** `mora write` and MCP `write_memory` go through `createMemory` (function `createMemory`), not `writeMemory`: it mints an id, renders, and `atomicCreate`s (function `atomicCreate`) — a temp file published with `os.Link`, which fails `EEXIST` instead of replacing an existing file. `atomicWrite`'s final `os.Rename` REPLACES the target (last-writer-wins), so two concurrent writers that mint the *same* `newID()` (same-second timestamp + identical random bytes) would silently clobber each other; `atomicCreate` makes that impossible — exactly one writer wins the link and the loser gets `os.ErrExist`, on which `createMemory` re-mints a fresh id and retries (bounded by `maxCreateAttempts`). This mirrors the loop lock's proven `publishLockFile` (`loop.go`); on Windows `os.Link` is `CreateHardLinkW`, which likewise fails on a present target. **Connector re-writes go through `writeMappedMemory` → `atomicWrite`** — re-rendering an existing provider memory onto its own stable path is an idempotent overwrite, not a collision, so the replacing `os.Rename` is correct there. (`writeMemory` itself — the plain render-then-`atomicWrite` helper — is no longer on the new-user-memory path; it writes a memory at a known caller-supplied id, e.g. test seeding.)
 
@@ -90,11 +91,11 @@ flowchart LR
 
 - **`StableID`** (`ids.go:11-13`) = `kind + "/" + providerID`. Derived from **immutable provider identity only, never content** — re-syncing an edited thread overwrites the same logical memory instead of forking a new one. It is stored verbatim as the frontmatter `id`.
 - **`SafeFilename`** (`ids.go:22-25`) replaces `/`, `:`, and space with `_`, so `gmail_thread/199abc` files as `gmail_thread_199abc.md`. Provider memories live at `sources/<provider>/<SafeFilename>.md` (`writeMappedMemory`, `mora.go:2523`).
-- **Therefore the on-disk basename is NOT the id.** `findMemory` (`mora.go:2244-2264`) must check **both** shapes: it builds `base := id + ".md"` and `safeBase := SafeFilename(id) + ".md"`, matches either (plus a `strings.Contains` fallback), then confirms by re-parsing and comparing `m.ID == id`. If you write any new id-based lookup, you must match the `SafeFilename` form too or Gmail/Calendar/iMessage ids silently won't resolve.
+- **Therefore the on-disk basename is NOT the id.** `findMemory` (`memfile.go`) must check **both** shapes: it builds `base := id + ".md"` and `safeBase := SafeFilename(id) + ".md"`, matches either (plus a `strings.Contains` fallback), then confirms by re-parsing and comparing `m.ID == id`. If you write any new id-based lookup, you must match the `SafeFilename` form too or Gmail/Calendar/iMessage ids silently won't resolve.
 
 Two other id shapes exist on disk:
-- **Manual memories** (`mora write`, MCP `write_memory`) get `newID()` (`mora.go`, function `newID`): `mem_<local-timestamp>_<8 hex>` — the timestamp is `time.Now().Format("20060102_150405")`, **local time, not UTC** (only the provider `created_at` is UTC) — filed under `memories/<scope-as-path>/<id>.md` via `memoryPath` (function `memoryPath`, which turns scope `a:b` and `/` into path separators). The 8 hex are 4 `crypto/rand` bytes; because the timestamp is only second-granular, an id collision between two concurrent writers is possible, which is why manual memories publish create-exclusively (see `createMemory` above) instead of trusting the id to be unique. `newID` also handles a `crypto/rand` failure explicitly — it falls back to `math/rand/v2` entropy (emitting one non-fatal `warn:` line to stderr, never failing the write) rather than an all-zero suffix (which would collide every time within a second and stall the re-mint retry); the id is a uniqueness token, not a secret.
-- **Filesystem source files** get `src_<ContentHash(name:relpath)>` (`mora.go:2807`) using the **mora-local** `ContentHash` (`mora.go:3365-3373`, a small FNV — distinct from the provider `ContentHash` in `ids.go`). This is the only place the FNV hash is used for an id.
+- **Manual memories** (`mora write`, MCP `write_memory`) get `newID()` (`memfile.go`, function `newID`): `mem_<local-timestamp>_<8 hex>` — the timestamp is `time.Now().Format("20060102_150405")`, **local time, not UTC** (only the provider `created_at` is UTC) — filed under `memories/<scope-as-path>/<id>.md` via `memoryPath` (function `memoryPath`, which turns scope `a:b` and `/` into path separators). The 8 hex are 4 `crypto/rand` bytes; because the timestamp is only second-granular, an id collision between two concurrent writers is possible, which is why manual memories publish create-exclusively (see `createMemory` above) instead of trusting the id to be unique. `newID` also handles a `crypto/rand` failure explicitly — it falls back to `math/rand/v2` entropy (emitting one non-fatal `warn:` line to stderr, never failing the write) rather than an all-zero suffix (which would collide every time within a second and stall the re-mint retry); the id is a uniqueness token, not a secret.
+- **Filesystem source files** get `src_<ContentHash(name:relpath)>` (`mora.go:2807`) using the **mora-local** `ContentHash` (`memfile.go`, a small FNV — distinct from the provider `ContentHash` in `ids.go`). This is the only place the FNV hash is used for an id.
 
 ## Content-hash idempotency & `created_at` preservation
 
@@ -265,11 +266,11 @@ On `mora init`, Mora writes a `.mora-vault.json` marker inside `vault_dir`. This
 - **`index.db` carries a schema stamp (`PRAGMA user_version`).** Bump `indexSchemaVersion` whenever the rebuilt shape changes meaning; readers refuse a mismatch (actionable error), and `mora upgrade` re-stamps by rebuilding with the new binary.
 - **The vault is the source of truth; `index.db` is a disposable cache.** Every SQLite table is rebuilt from scratch on `rebuildIndex` (`mora.go:2047-2051`). Never store state that lives *only* in SQLite — it will not survive a rebuild. WHY: a corrupt or deleted DB must be recoverable from the Markdown alone.
 - **`StableID` is provider identity, never content** (`ids.go:9-13`). Re-syncing an edited item must overwrite the same file, not duplicate it. WHY: idempotent backfills.
-- **Files are named by `SafeFilename`, not by id.** Any id→file lookup MUST match both `id+".md"` and `SafeFilename(id)+".md"` (`findMemory`, `mora.go:2249-2257`). WHY: `gmail_thread/x` files as `gmail_thread_x.md`; a naive `id+".md"` match silently misses every provider memory.
+- **Files are named by `SafeFilename`, not by id.** Any id→file lookup MUST match both `id+".md"` and `SafeFilename(id)+".md"` (`findMemory`, `memfile.go`). WHY: `gmail_thread/x` files as `gmail_thread_x.md`; a naive `id+".md"` match silently misses every provider memory.
 - **Content-hash skip + `created_at` preservation are paired** (`writeMappedMemory`, `mora.go:2524-2530`). Unchanged → no write; changed → keep the original `created_at`. WHY: re-backfill must be free and must not rewrite first-seen timestamps.
 - **Meta folds into the content hash only when non-empty** (`contentHashWithMeta`, `mapped.go:36-41`). WHY: a legacy pre-Meta file must keep its exact two-part hash, or every old source file gets spuriously rewritten on the next sync.
 - **`meta:` is exactly one canonical JSON line.** `CanonicalMeta` relies on `json.Marshal` emitting sorted keys with no embedded newline (`mapped.go:48-57`); the parser splits frontmatter by lines and `meta` by the first colon. WHY: a multi-line or unsorted meta breaks the hand-rolled parser and makes the content hash non-deterministic.
-- **A corrupt `meta:` line is surfaced (stderr warn), never swallowed** (`mora.go:1939-1943`). WHY: silently dropping it erases the memory's entire entity-graph contribution.
+- **A corrupt `meta:` line is surfaced (stderr warn), never swallowed** (`memfile.go`). WHY: silently dropping it erases the memory's entire entity-graph contribution.
 - **`rebuildIndex` is one all-or-nothing transaction** (`mora.go:2029-2100`). WHY: the `DELETE`s are destructive; a partial rebuild would otherwise leave a half-empty index live.
 - **Authored writes upsert incrementally, not by full rebuild** (`indexUpsert`, `internal/mora/index_upsert.go`). `mora write` / MCP `write_memory` reflect only the one written memory into `memories` + `memories_fts` — a large constant-factor win (~59× at 1k memories), **not** asymptotically `O(1)` (the per-write FTS delete-scan and `COUNT(*)` still grow linearly with vault size). The entity graph and `mem_vectors` are **not** updated on write and reconcile on the next full rebuild (hourly job, `mora index rebuild`, sync, delete), so the graph/hybrid-recall lag is bounded by the rebuild cadence. WHY: a full rebuild per write serialized `O(N × vault)` work across concurrent agent writers and overran `busy_timeout`. FTS search is fresh immediately; `list_entities`/`get_entity` and semantic-embedder vector recall lag until the next rebuild. The same `assessRebuild` identity guard applies — a blocked vault returns `errRebuildBlocked` and leaves the index untouched (degraded-success, not a failed write).
 - **Writes are atomic** (`atomicWrite` = temp + rename, function `atomicWrite`). WHY: a crash mid-write must not leave torn frontmatter that fails `parseMemory`.
@@ -277,7 +278,7 @@ On `mora init`, Mora writes a `.mora-vault.json` marker inside `vault_dir`. This
 - **`type`/`created_at`/`path` are not in FTS** (`mora.go:2037` vs `2036`). WHY: they are metadata; search joins back to `memories` to recover them. Adding a column to one table without the other will desync the search projection.
 - **ANSI styling never reaches the data path.** `colorEnabled` (`render.go:21-32`) returns false on `--json`, `NO_COLOR`/`MORA_NO_COLOR`, empty-or-`dumb` `TERM`, or a non-TTY writer; the TTY test `isTTYWriter` (`render.go:38-44`) uses go-isatty (not `os.ModeCharDevice`, which is true for `/dev/null`). WHY: stray escape codes corrupt MCP stdio JSON and `--json` output. `render.go` styles human display only; it is *not* part of persisted bytes.
 - **Document extraction never indexes garbage** (`pdf.go:88-104`, `mora.go:3565-3578`). An unreadable, empty (scanned, no OCR), or over-cap extraction skips the file or attachment entirely. WHY: a scanned PDF extracting to `""` must not create an empty searchable memory, and a hostile PDF must not crash a sync (the parse is recover-wrapped, size/page/text-capped).
-- **Two different `ContentHash` functions exist.** `internal/memory/ids.go:16` = sha256, first 16 hex chars, for provider change-detection. `internal/mora/mora.go:3365` = small FNV, used only to mint filesystem-source `src_…` ids (`mora.go:2807`). Don't confuse them.
+- **Two different `ContentHash` functions exist.** `internal/memory/ids.go:16` = sha256, first 16 hex chars, for provider change-detection. `internal/mora/memfile.go` = small FNV, used only to mint filesystem-source `src_…` ids (`mora.go:2807`). Don't confuse them.
 
 ## Related
 
@@ -292,4 +293,4 @@ On `mora init`, Mora writes a `.mora-vault.json` marker inside `vault_dir`. This
 ## Open questions / unverified
 
 - `Memory.LastSynced` is rendered/parsed and carried from `MappedMemory`, but `MapItem` (`mapped.go`) never sets `LastSynced` on the struct it returns — it appears populated downstream in the ingest write path (`ingestGoogle`/`Ingest`), which lives outside the files I own. Confirm in [Google connector](./04-connectors-google.md) where `LastSynced` is actually stamped.
-- The mora-local FNV `ContentHash` (`mora.go:3365`) is used for filesystem-source ids; whether filesystem ingest is reachable in shipped v1 (vs. the deferred `gdrive` stub) is a connector-layer question, not a storage one.
+- The mora-local FNV `ContentHash` (`memfile.go`) is used for filesystem-source ids; whether filesystem ingest is reachable in shipped v1 (vs. the deferred `gdrive` stub) is a connector-layer question, not a storage one.
