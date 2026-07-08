@@ -182,7 +182,7 @@ From `budgetCases` (`mora_mcp_budget_test.go:218-269`), the rows with `wantRED:t
 - **`get_entity_found`** ("Neil Patel") — ceiling 12000, baseline **189602**. Dumps every evidence body in full, no snippet/limit, then doubled by `structuredContent` (`graph_read.go graphGetEntity`, `mora_mcp_budget_test.go:243-244`).
 - **`digest_default`** and **`digest_max`** — ceiling 10000, baseline 17007 each. Renders a budget-clipped digest string but ships full `d.Sections` beside it, then doubles via the envelope (`mora.go` digest case, `mora_mcp_budget_test.go:257-260`). That the two are **identical size** proves `max_tokens` is a dead knob on the sidecar (`:260`).
 
-`get_entity_notfound` is green at 12000 (the 404 path), proving the blowup is the evidence dump, not the lookup. `search_big`/`search_default_limit` are green with notes recording that the body-bloat bug was **fixed** — `snippetMemories` caps each row at `searchSnippetLen=240` (`mora.go:2172`, `:2180`, `mora_mcp_budget_test.go:225-230`).
+`get_entity_notfound` is green at 12000 (the 404 path), proving the blowup is the evidence dump, not the lookup. `search_big`/`search_default_limit` are green with notes recording that the body-bloat bug was **fixed** — `snippetMemories` (`search.go`) caps each row at `searchSnippetLen=240` (the const stays in `mora.go`; `mora_mcp_budget_test.go:225-230`).
 
 ### The fixture is deterministic by construction
 

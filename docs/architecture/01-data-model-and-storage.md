@@ -202,7 +202,7 @@ erDiagram
 
 DDL is at `mora.go:2036-2051`:
 - **`memories`** — the row-store keyed by frontmatter `id`. `tags` stored CSV (`strings.Join(m.Tags, ",")`, `mora.go:2076`). Holds the full `text` and the vault `path` so search can return bodies and read can locate the file.
-- **`memories_fts`** — an FTS5 virtual table over `id, scope, title, tags, source, text`. Note **`type`, `created_at`, and `path` are deliberately NOT in FTS** (they're metadata, not searchable prose); search joins back to `memories` on `id` to recover them (`searchMemories`, `mora.go:2217-2218`).
+- **`memories_fts`** — an FTS5 virtual table over `id, scope, title, tags, source, text`. Note **`type`, `created_at`, and `path` are deliberately NOT in FTS** (they're metadata, not searchable prose); search joins back to `memories` on `id` to recover them (`searchMemories`, `search.go`).
 - **`mem_vectors`** — one static-hash (or Ollama) embedding per memory, written by `writeVectors` (`mora.go:2148-2161`) over `m.Title + "\n" + m.Text`; `vec` is little-endian float32 bytes (`encodeVec`, `embed.go:96-102`). `model` is stored per-row (`emb.ModelID()` at `mora.go:2156`; static floor is `static-hash-v1`, `embed.go:31`) so the embedder behind each vector is attributable. Every rebuild re-embeds all memories unconditionally (`INSERT OR REPLACE`, `mora.go:2149`); the retrieval path is what consults the stored `model`. See [retrieval](./02-retrieval-search.md).
 - **`entities` / `edges`** — the deterministically-derived person graph. `edges` PK is the composite `(src, rel, dst, evidence_id)` so duplicate edges are idempotent; empty bi-temporal timestamps persist as SQL NULL via `nullStr` (`graph.go:50-57`). Inserted `OR IGNORE`. See [entity-graph](./03-entity-graph.md).
 

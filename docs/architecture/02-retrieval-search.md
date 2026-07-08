@@ -9,7 +9,7 @@ How Mora turns a query string into a ranked list of memories: an FTS5/BM25 exact
 | `internal/mora/hybrid.go` | 382 | The three-arm hybrid engine: `hybridSearch`/`hybridSearchTrace`, the `defaultSearch` router + `embedderIsSemantic` gate, the three arms (`ftsSearchIDs`, `vectorSearchIDs`, `graphExpandIDs`), `rrf` fusion, `vectorsAvailable`, the query-time gazetteer loader, the `retrievalTrace` attribution seam, pool sizing |
 | `internal/mora/embed.go` | 113 | The `Embedder` interface, the static-hash feature-hashing embedder (`staticEmbedder`), `defaultEmbedder`, `normalize`, `cosine`, `encodeVec`/`decodeVec` BLOB codec |
 | `internal/mora/embed_ollama.go` | 117 | The opt-in `ollamaEmbedder` (localhost-only), `chooseEmbedder` selection logic, `isLoopbackURL` egress guard, daemon `reachable` probe |
-| `internal/mora/mora.go` (search slice) | n/a | `searchMemories` (FTS-only path), `ftsQuery`/`ftsToken`/`ftsIsStopword`/`ftsStopwords` (query construction + stopword filtering), `snippetMemories`, the `mcpSearchDefaultLimit` / `searchSnippetLen` consts, the FTS5/`mem_vectors` schema, `writeVectors` index-time embedding |
+| `internal/mora/search.go` | n/a | The CLI/MCP search plumbing: `searchMemories` (FTS-only path), `ftsQuery`/`ftsToken`/`ftsIsStopword` (query construction + stopword filtering), `snippetMemories`, `budgetSearchResults`, `buildContext`, `parseSearchArgs`. (The `ftsStopwords` var, the `mcpSearchDefaultLimit`/`searchSnippetLen` consts, the FTS5/`mem_vectors` schema, and `writeVectors` index-time embedding remain in `mora.go`.) |
 
 Cross-arm helpers `loadMemoriesByID` (`graph_read.go:152`), `gazetteerScan`/`normalizeGazName`/`tokenizeWords` (`gazetteer.go`), and `snippet`/`matchSnippet` (`think.go`) are owned by sibling docs but called here; they are described only at the boundary.
 
@@ -41,7 +41,7 @@ func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit i
 ```mermaid
 flowchart TD
     Q["query string"] --> R{"defaultSearch:<br/>embedderIsSemantic(chooseEmbedder())?"}
-    R -->|"static-hash<br/>(default, or Ollama daemon down)"| F["searchMemories<br/>FTS5 / BM25 only<br/>(mora.go:2199)"]
+    R -->|"static-hash<br/>(default, or Ollama daemon down)"| F["searchMemories<br/>FTS5 / BM25 only<br/>(search.go)"]
     R -->|"Ollama opted-in AND reachable<br/>(semantic)"| H["hybridSearch<br/>3 arms → RRF<br/>(hybrid.go:49)"]
     F --> OUT["ranked []Memory"]
     H --> OUT
@@ -52,11 +52,11 @@ flowchart TD
 
 ## Arm 1 — FTS5 / BM25 (the correctness anchor)
 
-The index is an FTS5 virtual table `memories_fts(id, scope, title, tags, source, text)` (`mora.go:2037`) over the projected `memories` table. Both the FTS-only path (`searchMemories`, `mora.go:2199`) and the hybrid FTS arm (`ftsSearchIDs`, `hybrid.go:209`) `MATCH` against it and order by the BM25 score then `m.id` — `searchMemories` writes it as `ORDER BY score, m.id` where `score` aliases `bm25(memories_fts)` (`mora.go:2217,2224`), and `ftsSearchIDs` writes `ORDER BY bm25(memories_fts), m.id` (`hybrid.go:222`). The secondary `m.id` sort is **load-bearing for determinism**: BM25 alone leaves equal-score rows in undefined order, which would jitter the pool boundary run-to-run (`hybrid.go:220-222`).
+The index is an FTS5 virtual table `memories_fts(id, scope, title, tags, source, text)` (`mora.go:2037`) over the projected `memories` table. Both the FTS-only path (`searchMemories`, `search.go`) and the hybrid FTS arm (`ftsSearchIDs`, `hybrid.go:209`) `MATCH` against it and order by the BM25 score then `m.id` — `searchMemories` writes it as `ORDER BY score, m.id` where `score` aliases `bm25(memories_fts)` (`search.go`), and `ftsSearchIDs` writes `ORDER BY bm25(memories_fts), m.id` (`hybrid.go:222`). The secondary `m.id` sort is **load-bearing for determinism**: BM25 alone leaves equal-score rows in undefined order, which would jitter the pool boundary run-to-run (`hybrid.go:220-222`).
 
 ### `ftsQuery` — query construction and OR-dilution history
 
-`ftsQuery` (`mora.go:3450`) turns a natural-language query into an FTS5 MATCH string. The evolution baked into its comments matters:
+`ftsQuery` (`search.go`) turns a natural-language query into an FTS5 MATCH string. The evolution baked into its comments matters:
 
 1. **Original bug — implicit AND.** Space-joining tokens made FTS5 treat the query as an implicit AND of *every* token, so "what did neil say about the offsite" required every word (stopwords included) and matched nothing (`mora.go:3451-3455`).
 2. **First fix — OR-join.** OR-joining lets any term match while BM25 ranks the best matches first.
@@ -70,16 +70,16 @@ Construction, in order (`mora.go:3467-3490`):
 - Double-quote each term, escaping `"`→`""`, so operators/specials (`AND OR NOT * : -`) inside a term can't raise a syntax error (`mora.go:3488`).
 - Join with `" OR "`.
 
-`ftsToken` (`mora.go:3421`) normalizes a raw field into `(term, key)`: it trims surrounding punctuation `"':;,.!?()[]{}<>-`, lowercases for the `key`, and **takes the part before any apostrophe** (straight `'` or curly `’`) so contractions collapse to their head: `what's`→`what`, `it's`→`it`, `what’s`→`what` (`mora.go:3417-3430`). The `IndexAny(..., "'’") > 0` guard (strictly `> 0`) means a *leading* apostrophe doesn't truncate to empty.
+`ftsToken` (`search.go`) normalizes a raw field into `(term, key)`: it trims surrounding punctuation `"':;,.!?()[]{}<>-`, lowercases for the `key`, and **takes the part before any apostrophe** (straight `'` or curly `’`) so contractions collapse to their head: `what's`→`what`, `it's`→`it`, `what’s`→`what` (`search.go`). The `IndexAny(..., "'’") > 0` guard (strictly `> 0`) means a *leading* apostrophe doesn't truncate to empty.
 
-`ftsIsStopword` (`mora.go:3440`) is **deliberately case-aware** — this is the subtle part:
+`ftsIsStopword` (`search.go`) is **deliberately case-aware** — this is the subtle part:
 - Not in `ftsStopwords`? Never a stopword (`mora.go:3441`).
 - **Single-character** function word (`"a"`, `"i"`)? Always dropped regardless of case — pure noise (`mora.go:3444-3446`).
 - Otherwise, drop **only if written in all-lowercase** (`term == strings.ToLower(term)`, `mora.go:3447`). An explicit capital or all-caps form (`Will`, `WHO`, `IT`, `CAN`, `AM`) signals a proper noun or acronym that's discriminative in a real query, so it survives. This generalizes past a hand-picked collision list to protect every name/acronym (Mora, Neil, GEO, MFA, IP, SF, …) (`mora.go:3433-3439`).
 
 `ftsStopwords` (`mora.go:3403`) is deliberately conservative: only true English function words, **no** question-content or borderline-topical words (`actually`/`most`/`now`/`latest`/`plan`/…) which can be discriminative in a real query (`mora.go:3400-3402`).
 
-When `ftsQuery` returns `""` (empty or all-punctuation query), both `searchMemories` (`mora.go:2211`) and `ftsSearchIDs` (`hybrid.go:211`) short-circuit to zero results rather than crashing on an empty MATCH.
+When `ftsQuery` returns `""` (empty or all-punctuation query), both `searchMemories` (`search.go`) and `ftsSearchIDs` (`hybrid.go:211`) short-circuit to zero results rather than crashing on an empty MATCH.
 
 ---
 
@@ -211,7 +211,7 @@ One subtlety: when `vecOK`, the embedder is resolved **once** (`emb = chooseEmbe
 
 The MCP `search_memory` surface is token-budgeted; three constants are coupled (`mora.go:2163-2173`):
 - `mcpSearchDefaultLimit = 8` — bumped from 5 because the T2 live eval showed gold docs landing at FTS ranks **#5–#7**, just outside the old top-5 window.
-- That bump is **safe only because** the MCP path now snippets bodies: `snippetMemories(mems, query)` (`mora.go:2180`) flattens each body to one line, clips to a `searchSnippetLen = 240`-rune window **centered on the earliest query-term match** (`matchSnippet`, `think.go` — a deep hit used to be found yet invisible in the head-clipped preview), sets `Truncated`, and **drops the `Meta` map** (unbounded entity-graph frontmatter — agents fetch it via `get_entity`/`read_memory`, not a search preview). 8 *full* bodies would blow the T0 MCP token ceiling (`mora.go:2164-2172, 2193`).
+- That bump is **safe only because** the MCP path now snippets bodies: `snippetMemories(mems, query)` (`search.go`) flattens each body to one line, clips to a `searchSnippetLen = 240`-rune window **centered on the earliest query-term match** (`matchSnippet`, `think.go` — a deep hit used to be found yet invisible in the head-clipped preview), sets `Truncated`, and **drops the `Meta` map** (unbounded entity-graph frontmatter — agents fetch it via `get_entity`/`read_memory`, not a search preview). 8 *full* bodies would blow the T0 MCP token ceiling (`search.go`).
 - **Only the MCP surface snippets.** The CLI (`mora search` → `emit`, `mora.go:501`) keeps full bodies + meta. `snippetMemories` is applied after `defaultSearch` only in the MCP handler (`mora.go:2984`).
 
 `searchSnippetLen` deliberately matches `think`'s `thinkSnippetLen` (`mora.go:2171`) so the two budgeted surfaces clip identically.
