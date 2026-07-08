@@ -86,9 +86,9 @@ sequenceDiagram
 
 `SaveToken` (`internal/google/oauth.go:100`) writes `~/.config/mora/tokens/google.json` via a `.tmp`+rename atomic write at **0600** (dir 0700); the 0600 mode is asserted by `TestTokenStoreRoundtrip` (`internal/google/oauth_test.go:60`). At fetch time, `NewLiveFetcher` wraps the stored token in `cfg.TokenSource(ctx, tok)` (`internal/google/client.go:23`), so the `oauth2` library auto-refreshes access tokens from the refresh token — there is no manual refresh code.
 
-**Production-vs-Testing durability gotcha:** the refresh token survives indefinitely only if the OAuth app is in **Production** mode. Google's **Testing** mode expires refresh tokens after ~7 days, after which every sync fails with an auth error. `isGoogleAuthError` (`internal/mora/mora.go:1185`) pattern-matches `oauth`/`token`/`invalid_grant`/`unauthorized`/`401`/`expired`/`refresh` (`internal/mora/mora.go:1190`) and the sync path then prints the specific recovery: re-run `connect google`, and if it recurs every ~7 days, switch the app to Production (`internal/mora/mora.go:1251`).
+**Production-vs-Testing durability gotcha:** the refresh token survives indefinitely only if the OAuth app is in **Production** mode. Google's **Testing** mode expires refresh tokens after ~7 days, after which every sync fails with an auth error. `isGoogleAuthError` (`internal/mora/setup.go`) pattern-matches `oauth`/`token`/`invalid_grant`/`unauthorized`/`401`/`expired`/`refresh` (`internal/mora/setup.go`) and the sync path then prints the specific recovery: re-run `connect google`, and if it recurs every ~7 days, switch the app to Production (`internal/mora/mora.go:1251`).
 
-`RevokeToken` (`internal/google/oauth.go:128`) best-effort POSTs the refresh token to Google's revocation endpoint; `cmdDisconnect` (`internal/mora/mora.go:1827`) calls it then removes the token file.
+`RevokeToken` (`internal/google/oauth.go:128`) best-effort POSTs the refresh token to Google's revocation endpoint; `cmdDisconnect` (`internal/mora/setup.go`) calls it then removes the token file.
 
 ## Fetcher (test seam) vs LiveFetcher
 

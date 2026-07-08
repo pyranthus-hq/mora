@@ -11,7 +11,7 @@ The overview owns no implementation; the system-wide claims below are grounded i
 | `cmd/mora/main.go` | 28 | Entrypoint: stamps `-ldflags` version/commit/date into `mora.BuildVersion`, then delegates to `mora.Run(ctx, args, stdout, stderr, stdin)` with streams as parameters (the byte-clean test seam). |
 | `go.mod` | 84 | Module `github.com/pyranthus/mora`, `go 1.25.8`; `modernc.org/sqlite v1.29.0` is the **only** SQL engine (no cgo driver in the graph) — this is what keeps `CGO_ENABLED=0` possible. |
 | `AGENTS.md` | — | Agent/reviewer charter: hard rules (no-cycle, pure-Go, read-only/zero-egress, honest-snapshot). |
-| `internal/mora/mora.go` | 3555 | The hub: CLI dispatch (`Run`), wiring boundary (`writeMappedMemory`), index pipeline (`rebuildIndex`, `index.go`), MCP server (`serveMCP`). Cohesive subsystems are progressively split into same-package sibling files (e.g. `doctor.go`, `schedule.go`, `usage.go`, `tasks.go`, `search.go`, `memfile.go`, `config.go`, `index.go`, `sources.go`). |
+| `internal/mora/mora.go` | 3131 | The hub: CLI dispatch (`Run`), wiring boundary (`writeMappedMemory`), index pipeline (`rebuildIndex`, `index.go`), MCP server (`serveMCP`). Cohesive subsystems are progressively split into same-package sibling files (e.g. `doctor.go`, `schedule.go`, `usage.go`, `tasks.go`, `search.go`, `memfile.go`, `config.go`, `index.go`, `sources.go`, `setup.go`). |
 
 ## What it is, end to end
 
@@ -89,7 +89,7 @@ flowchart TD
 | `internal/memory` | (leaf — no internal deps, no `net/*`) | Shared connector seam: `Item`, `Fetcher`, `Ingest`, `MapItem`, `MappedMemory`, `SyncStatus`, `StableID`/`ContentHash`/`SafeFilename`. The contract both connectors implement. |
 | `internal/google` | `internal/memory`, `gmail/v1`, `calendar/v3`, `golang.org/x/oauth2` | Gmail + Calendar connector: installed-app loopback OAuth (read-only scopes), `LiveFetcher`, thread/event → `Item` → `MappedMemory`, identity capture. **Never imports `internal/mora`.** |
 | `internal/imessage` | `internal/memory`, `modernc.org/sqlite` (read-only DSN) | macOS iMessage connector: read-only `chat.db` + AddressBook, `attributedBody` typedstream decode, one-memory-per-conversation, inverted truncation. **Imports neither `internal/mora` nor any network package.** |
-| `internal/mora` | all three above + lipgloss, go-isatty, go-selfupdate | The hub (≈3.6 KLOC `mora.go` + ~40 sibling files): CLI dispatch, wiring boundary, Markdown render/parse (`memfile.go`), SQLite index + search (`search.go`, `hybrid.go`, `embed*.go`), derived entity graph (`graph.go`/`classify.go`/`gazetteer.go`), synthesis (`think.go`/`digest.go`), MCP server, doctor (`doctor.go`), scheduler (`schedule.go`), eval harness, self-update. |
+| `internal/mora` | all three above + lipgloss, go-isatty, go-selfupdate | The hub (≈3.1 KLOC `mora.go` + ~40 sibling files): CLI dispatch, wiring boundary, Markdown render/parse (`memfile.go`), SQLite index + search (`search.go`, `hybrid.go`, `embed*.go`), derived entity graph (`graph.go`/`classify.go`/`gazetteer.go`), synthesis (`think.go`/`digest.go`), MCP server, doctor (`doctor.go`), scheduler (`schedule.go`), eval harness, self-update. |
 | `cmd/mora` | `internal/mora` | 28-line entrypoint; stamps build vars, calls `mora.Run`. |
 
 > The as-built reality is **five** packages: `internal/mora`, `internal/memory`, `internal/google`, `internal/imessage`, `internal/applecal`. The hard no-cycle rule and the `writeMappedMemory` conversion boundary apply to every connector.
