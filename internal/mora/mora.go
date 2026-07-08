@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -374,55 +373,6 @@ USAGE:
 // untestable without a TTY. Production never reassigns it.
 var confirmVaultRepointFn = confirmVaultRepoint
 
-func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("write", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	scope := fs.String("scope", "global", "scope")
-	mtype := fs.String("type", "insight", "memory type")
-	title := fs.String("title", "", "title")
-	text := fs.String("text", "", "text")
-	tags := fs.String("tags", "", "comma-separated tags")
-	source := fs.String("source", "manual", "source")
-	jsonOut := fs.Bool("json", false, "json")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *text == "" && fs.NArg() > 0 {
-		*text = strings.Join(fs.Args(), " ")
-	}
-	if *title == "" || *text == "" {
-		return errors.New("--title and --text are required")
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
-	// Create-exclusive publish: a colliding newID can never clobber an existing
-	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
-	// never silently loses its write. createMemory sets m.ID and m.Path.
-	m, err = createMemory(cfg, m)
-	if err != nil {
-		return err
-	}
-	// The vault write already succeeded (vault is truth; the index is a derived
-	// cache). Reflect just this one memory into the index (O(1)) instead of a full
-	// vault rebuild, so concurrent agent writers don't serialize whole-vault
-	// rebuilds. A BLOCKED index update — vault looks empty or unfamiliar — must NOT
-	// fail the write: failing here would lose nothing on disk but would report the
-	// save as failed, inviting a retry that mints a duplicate memory. Mirror the MCP
-	// write_memory degraded-success path: warn loudly, still emit the saved
-	// memory, and exit 0. Any OTHER index error is a genuine failure → surface it.
-	if err := indexUpsert(ctx, cfg, m); err != nil {
-		if errors.Is(err, errRebuildBlocked) {
-			fmt.Fprintf(stdout, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
-			return emit(stdout, m, *jsonOut)
-		}
-		return err
-	}
-	return emit(stdout, m, *jsonOut)
-}
-
 // flagsFirst reorders args so flag tokens precede positionals, so `mora read <id>
 // --json` works like `mora read --json <id>` (Go's flag package otherwise stops
 // parsing at the first positional). Safe ONLY for commands whose flags are all
@@ -437,186 +387,6 @@ func flagsFirst(args []string) []string {
 		}
 	}
 	return append(flags, pos...)
-}
-
-func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("read", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	jsonOut := fs.Bool("json", false, "json")
-	if err := fs.Parse(flagsFirst(args)); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errors.New("read requires memory id")
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	m, err := findMemory(cfg, fs.Arg(0))
-	if err != nil {
-		// Read-only fallback: ids from subscribed share corpora are searchable,
-		// so they must be readable too. Delete paths never take this fallback.
-		if sm, ok := findSharedMemory(cfg, fs.Arg(0)); ok {
-			return emit(stdout, sm, *jsonOut)
-		}
-		return err
-	}
-	return emit(stdout, m, *jsonOut)
-}
-
-func cmdList(ctx context.Context, args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	scope := fs.String("scope", "", "scope")
-	limit := fs.Int("limit", 20, "limit")
-	jsonOut := fs.Bool("json", false, "json")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	items, err := listMemories(cfg, *scope, *limit)
-	if err != nil {
-		return err
-	}
-	return emit(stdout, items, *jsonOut)
-}
-
-func cmdSearch(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) >= 1 && isHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--limit N] [--json]")
-		return nil
-	}
-	scope, limit, jsonOut, queryArgs, err := parseSearchArgs(args)
-	if err != nil {
-		return err
-	}
-	if len(queryArgs) < 1 {
-		return errors.New("search requires query")
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	items, err := defaultSearch(ctx, cfg, strings.Join(queryArgs, " "), scope, limit)
-	if err != nil {
-		return err
-	}
-	return emit(stdout, items, jsonOut)
-}
-
-func cmdDelete(ctx context.Context, args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	yes := fs.Bool("yes", false, "yes")
-	if err := fs.Parse(flagsFirst(args)); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errors.New("delete requires memory id")
-	}
-	if !*yes {
-		return errors.New("refusing to delete without --yes")
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	m, err := findMemory(cfg, fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(m.Path); err != nil {
-		return err
-	}
-	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "deleted %s\n", m.ID)
-	return nil
-}
-
-func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("context", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	scope := fs.String("scope", "", "scope")
-	query := fs.String("query", "", "query")
-	budget := fs.Int("budget", 2000, "character budget")
-	jsonOut := fs.Bool("json", false, "json")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	var items []Memory
-	if *query != "" {
-		items, err = hybridSearch(ctx, cfg, *query, *scope, 10)
-	} else {
-		items, err = listMemories(cfg, *scope, 10)
-	}
-	if err != nil {
-		return err
-	}
-	text := buildContext(cfg, items, *budget, *query != "")
-	if *jsonOut {
-		return emit(stdout, map[string]any{"context": text, "items": items}, true)
-	}
-	fmt.Fprint(stdout, text)
-	return nil
-}
-
-// cmdThink implements `mora think "<query>" [--scope s] [--limit n] [--json]`:
-// the I3 synthesis envelope (hybrid evidence + deterministic gap analysis + a
-// synthesis prompt the calling agent's model runs). The deterministic floor is
-// fully useful with no model attached.
-func cmdThink(ctx context.Context, args []string, stdout io.Writer) error {
-	jsonOut := false
-	scope := ""
-	limit := 8
-	var positional []string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonOut = true
-		case "--scope":
-			if i+1 < len(args) {
-				i++
-				scope = args[i]
-			}
-		case "--limit":
-			if i+1 < len(args) {
-				i++
-				if n, perr := strconv.Atoi(args[i]); perr == nil && n > 0 {
-					limit = n
-				}
-			}
-		default:
-			positional = append(positional, args[i])
-		}
-	}
-	query := strings.TrimSpace(strings.Join(positional, " "))
-	if query == "" {
-		return errors.New(`usage: mora think "<question>" [--scope s] [--limit n] [--json]`)
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	res, err := buildThink(ctx, cfg, query, scope, limit, time.Now())
-	if err != nil {
-		return err
-	}
-	logUsage(cfg, usageEvent{Tool: "think", Query: query, Scope: scope, Results: len(res.Evidence)})
-	if jsonOut {
-		return emit(stdout, res, true)
-	}
-	printThink(stdout, res)
-	return nil
 }
 
 // briefResult is the small typed object `mora brief --json` emits — byte-clean
@@ -734,28 +504,6 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 		fmt.Fprintln(stdout, digestSynthesisPrompt(d.Urgent, d.Sections, buildSourceStates(cfg, d)))
 	}
 	return nil
-}
-
-func printThink(w io.Writer, res ThinkResult) {
-	fmt.Fprintf(w, "Q: %s\n\nEvidence (%d):\n", res.Query, len(res.Evidence))
-	for _, e := range res.Evidence {
-		fmt.Fprintf(w, "  [%s] %s — %s\n", e.StableID, e.Title, e.Snippet)
-	}
-	if res.Gaps.empty() {
-		fmt.Fprintln(w, "\nGaps: none detected.")
-	} else {
-		fmt.Fprintln(w, "\nWhat the vault does NOT know:")
-		for _, s := range res.Gaps.Stale {
-			fmt.Fprintf(w, "  · %s\n", s)
-		}
-		for _, s := range res.Gaps.ThinCoverage {
-			fmt.Fprintf(w, "  · %s\n", s)
-		}
-		for _, s := range res.Gaps.CoverageHoles {
-			fmt.Fprintf(w, "  · %s\n", s)
-		}
-	}
-	fmt.Fprintln(w, "\n(Pass this evidence + gaps to your agent, or run `mora think … --json` for the synthesis prompt.)")
 }
 
 func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
