@@ -48,7 +48,7 @@ flowchart TD
 | `context [--scope] [--query] [--budget] [--json]` | Build a budgeted context blob (FTS+vector via `hybridSearch`). | `cmdContext` `:535` |
 | `think "<q>" [--scope] [--limit] [--json]` | Cited-evidence synthesis envelope + gap analysis. | `cmdThink` `:570`, see [synthesis](./07-synthesis-think-digest.md) |
 | `brief [--json] [--envelope]` | **Session-start default (Phase 16):** print the latest *what-changed/what-matters* brief — read the freshest persisted `briefs/<date>-brief.md` verbatim, else generate on demand. Local-only, zero network, never advances the watermark. `--json` → `{generated, body}`; `--envelope` → append a model-free synthesis prompt. | `cmdBrief` `:682`, see [synthesis](./07-synthesis-think-digest.md) + [the guide](../guide.md#make-the-brief-your-session-start-default) |
-| `index rebuild` | Re-parse vault → SQLite + graph + vectors. | `cmdIndex` `:637` |
+| `index rebuild` | Re-parse vault → SQLite + graph + vectors. | `cmdIndex` `index.go` |
 | `tasks sync [--write]` / `tasks add <name> [flags]` / `tasks list [--json]` / `tasks done <name>` / `pulse [--write] [--digest]` | Task hygiene + lifecycle: `add` captures an open loop (idempotent by name), `list` shows live tasks, `done` closes one so it stops resurfacing as stale + daily digest. | `cmdTasks` `tasks.go`, `cmdPulse` `:678` |
 | `lint` / `backup` | Verify control files exist / tar.gz the vault to state dir. | `cmdLint` `vaultops.go`, `cmdBackup` `vaultops.go` |
 | `doctor` | Environment + storage + iMessage-readiness checks. | `cmdDoctor` `doctor.go` |
