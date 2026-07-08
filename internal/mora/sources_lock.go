@@ -3,6 +3,7 @@ package mora
 import (
 	"encoding/json"
 	"fmt"
+	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
@@ -32,17 +33,24 @@ const (
 	// atomicWrite) and it is NEVER held across ingest/rebuild, so 30s is far
 	// longer than any legitimate hold — it only ever reaps an abandoned lease.
 	sourcesLockTTL = 30 * time.Second
-	// sourcesLockBackoff is the fixed pause between acquire attempts. Fixed (not
-	// jittered) mirrors acquireLoopLock: correctness never depends on the timing
-	// (os.Link is the atomic arbiter), only the number of wasted spins does.
-	sourcesLockBackoff = 20 * time.Millisecond
-	// maxSourcesAcquireAttempts * sourcesLockBackoff ~= 2s of contention budget.
-	// Unlike the loop lease (which no-ops when a live run holds the lock), a
-	// sources RMW must WAIT for the current holder — which releases within
-	// microseconds — so the budget is generous, deterministic, and wall-clock-
-	// independent.
+	// maxSourcesAcquireAttempts bounds the contention spin. Unlike the loop lease
+	// (which no-ops when a live run holds the lock), a sources RMW must WAIT for
+	// the current holder — which releases within microseconds — so the budget is
+	// generous. Each retry backs off with sourcesAcquireBackoff (jittered, capped),
+	// so ~100 attempts is well under a second of live-holder contention yet leaves
+	// ample margin for Windows sharing-violation retries.
 	maxSourcesAcquireAttempts = 100
 )
+
+// sourcesAcquireBackoff returns the pause before acquire retry `attempt`. It is
+// JITTERED and capped, mirroring atomicWrite's #74 Windows fix: a FIXED backoff
+// makes rival writers retry in lockstep and keep colliding on the same `.lock`
+// (repeated ERROR_SHARING_VIOLATION), whereas jitter de-correlates them so one
+// wins each round. The cap keeps the total spin inside the acquire budget.
+func sourcesAcquireBackoff(attempt int) time.Duration {
+	capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
+	return time.Duration(1+mrand.IntN(capMs)) * time.Millisecond
+}
 
 // sourcesLockPath is the lease file, co-located with sources.json so the
 // os.Rename inside breakLock stays atomic (same filesystem) and the lock lives
@@ -67,21 +75,32 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
 	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
-		if perr != nil {
-			return nil, perr // real fs error: fail, never interleave a partial write
-		}
-		if published {
+		switch {
+		case perr == nil && published:
 			return loopLockReleaser(lockPath), nil
+		case perr != nil && !sharingViolationRetryable(perr):
+			// A real, non-contention fs error: fail, never interleave a partial write.
+			return nil, perr
+		case perr == nil:
+			// The lock exists; try to reap it if the holder abandoned it (over TTL).
+			reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
+			if rerr != nil && !sharingViolationRetryable(rerr) {
+				return nil, rerr // a real, non-contention read/rename error
+			}
+			if rerr == nil && reaped {
+				continue // cleared an abandoned lease; retry publish immediately
+			}
+			// else: a live holder, OR Windows sharing contention on the read/reap —
+			// fall through to the backoff and retry within budget.
 		}
-		reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
-		if rerr != nil {
-			return nil, rerr // transient read error: surface it, do not reap blindly
-		}
-		if reaped {
-			continue // cleared an abandoned lease; retry publish (may lose a racer — fine)
-		}
+		// A live holder, or transient Windows sharing contention on publish/reap
+		// (ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED — a rival writer racing an
+		// os.Remove/os.Link on the same `.lock`). Both are "contended, retry", NOT
+		// fatal: back off and try again within the budget. On non-Windows,
+		// sharingViolationRetryable is always false, so only the live-holder path
+		// reaches here — behavior is unchanged off Windows.
 		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesLockBackoff)
+			time.Sleep(sourcesAcquireBackoff(attempt))
 		}
 	}
 	return nil, fmt.Errorf("sources.json is locked by another mora process (%s); retry in a moment", lockPath)
