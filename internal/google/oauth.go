@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,14 +246,24 @@ func StartLoopbackAuth(ctx context.Context, cfg *oauth2.Config, out io.Writer) (
 	}
 }
 
-func openBrowser(url string) error {
+func openBrowser(urlStr string) error {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL for browser: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported browser URL scheme: %s", u.Scheme)
+	}
+
+	safeURL := u.String()
+
 	switch browserGOOS() {
 	case "darwin":
-		return startBrowserCommand("open", url)
+		return startBrowserCommand("open", safeURL)
 	case "linux":
-		return startBrowserCommand("xdg-open", url)
+		return startBrowserCommand("xdg-open", safeURL)
 	case "windows":
-		return startBrowserCommand("rundll32", "url.dll,FileProtocolHandler", url)
+		return startBrowserCommand("rundll32", "url.dll,FileProtocolHandler", safeURL)
 	default:
 		return fmt.Errorf("unsupported platform for auto-open")
 	}
