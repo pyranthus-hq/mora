@@ -206,10 +206,10 @@ DDL is at `mora.go:2036-2051`:
 
 ```mermaid
 flowchart TD
-    START["rebuildIndex(ctx, cfg)"] --> OPEN["sql.Open(index.db?_pragma=busy_timeout(5000))"]
-    OPEN --> WALK["allMemoryFiles: WalkDir<br/>memories/ + sources/<br/>collect *.md, sort"]
-    WALK --> TX["BeginTx — ONE transaction"]
-    TX --> DDL["CREATE IF NOT EXISTS (all tables)<br/>then DELETE FROM all 5"]
+    START["rebuildIndex(ctx, cfg)"] --> OPEN["sql.Open(index.db?_txlock=immediate<br/>&_pragma=busy_timeout(15000))"]
+    OPEN --> TX["BeginTx — BEGIN IMMEDIATE<br/>ONE transaction, takes the write lock"]
+    TX --> WALK["allMemoryFiles: WalkDir<br/>memories/ + sources/<br/>collect *.md, sort<br/>(inside the write lock)"]
+    WALK --> DDL["CREATE IF NOT EXISTS (all tables)<br/>then DELETE FROM all 5"]
     DDL --> LOOP["for each file: parseMemory"]
     LOOP -->|"parse err"| SKIPF["skip file (continue)"]
     LOOP --> INS["INSERT OR REPLACE memories<br/>+ INSERT memories_fts<br/>append to parsed[]"]
@@ -219,7 +219,7 @@ flowchart TD
     COMMIT --> N["return count"]
 ```
 
-The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/vector write — runs inside **one transaction** (`mora.go:2029-2100`). A mid-rebuild failure rolls back to the prior committed index rather than leaving a half-empty one; this is why a graph or embedder error returns through `writeGraph`/`writeVectors` before `Commit` (`mora.go:2089-2096`). A file that fails to parse is skipped, not fatal (`mora.go:2072-2074`). `searchMemories` lazily triggers a rebuild if `index.db` is missing (`mora.go:2200-2204`). The same transaction stamps `PRAGMA user_version = indexSchemaVersion`; every read-open goes through `openIndexRO`, which **refuses a mismatched index** with an actionable "run `mora index rebuild`" error rather than serving a stale schema silently (the pre-stamp failure: a swapped binary read zeroed salience off a pre-column index). On the static-hash floor a stale index **self-heals inline** (`indexAutoHeal` — a rebuild is seconds, same philosophy as rebuild-on-missing, and it covers every user's first upgrade across the stamp's introduction); under a semantic embedder the read errors instead — a re-embed takes minutes and must not stall an MCP call; `mora upgrade` runs that rebuild at the consented moment.
+The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/vector write — runs inside **one transaction** (`rebuildIndexWithPolicy`). A mid-rebuild failure rolls back to the prior committed index rather than leaving a half-empty one; this is why a graph or embedder error returns through `writeGraph`/`writeVectors` before `Commit`. The DSN sets `_txlock=immediate`, so `BeginTx` issues `BEGIN IMMEDIATE` and takes the SQLite writer lock up front (the `busy_timeout` lets a contending rebuild wait rather than fail fast). The vault directory listing (`allMemoryFiles`) therefore runs **after** `BeginTx`, inside the write lock — never before it. Snapshotting the directory before the lock allowed two concurrent rebuilds to interleave: rebuild A lists, rebuild B (fired by a newer write) lists + commits, then A commits *last* carrying its *older* list, silently omitting the just-written memory until a later rebuild. Because the immediate lock serializes rebuilds, whichever commits later necessarily listed later, so a committed index can no longer be clobbered by an older rebuild's stale snapshot (a memory written *after* the surviving rebuild's listing is ordinary until-next-rebuild staleness, not this race). The vault-identity guard (`assessRebuild`) still runs after the listing, so its block-on-empty/foreign semantics are unchanged. `allMemoryFiles` is a pure filesystem walk (it takes no DB lock), so holding the write lock across it cannot deadlock. A file that fails to `parseMemory` is skipped, not fatal. `searchMemories` lazily triggers a rebuild if `index.db` is missing. The same transaction stamps `PRAGMA user_version = indexSchemaVersion`; every read-open goes through `openIndexRO`, which **refuses a mismatched index** with an actionable "run `mora index rebuild`" error rather than serving a stale schema silently (the pre-stamp failure: a swapped binary read zeroed salience off a pre-column index). On the static-hash floor a stale index **self-heals inline** (`indexAutoHeal` — a rebuild is seconds, same philosophy as rebuild-on-missing, and it covers every user's first upgrade across the stamp's introduction); under a semantic embedder the read errors instead — a re-embed takes minutes and must not stall an MCP call; `mora upgrade` runs that rebuild at the consented moment.
 
 ## Config & paths
 
