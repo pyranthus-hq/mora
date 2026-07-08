@@ -9,7 +9,7 @@ How Mora turns a query string into a ranked list of memories: an FTS5/BM25 exact
 | `internal/mora/hybrid.go` | 382 | The three-arm hybrid engine: `hybridSearch`/`hybridSearchTrace`, the `defaultSearch` router + `embedderIsSemantic` gate, the three arms (`ftsSearchIDs`, `vectorSearchIDs`, `graphExpandIDs`), `rrf` fusion, `vectorsAvailable`, the query-time gazetteer loader, the `retrievalTrace` attribution seam, pool sizing |
 | `internal/mora/embed.go` | 113 | The `Embedder` interface, the static-hash feature-hashing embedder (`staticEmbedder`), `defaultEmbedder`, `normalize`, `cosine`, `encodeVec`/`decodeVec` BLOB codec |
 | `internal/mora/embed_ollama.go` | 117 | The opt-in `ollamaEmbedder` (localhost-only), `chooseEmbedder` selection logic, `isLoopbackURL` egress guard, daemon `reachable` probe |
-| `internal/mora/search.go` | n/a | The CLI/MCP search plumbing: `searchMemories` (FTS-only path), `ftsQuery`/`ftsToken`/`ftsIsStopword` (query construction + stopword filtering), `snippetMemories`, `budgetSearchResults`, `buildContext`, `parseSearchArgs`. (The `ftsStopwords` var, the `mcpSearchDefaultLimit`/`searchSnippetLen` consts, the FTS5/`mem_vectors` schema, and `writeVectors` index-time embedding remain in `mora.go`.) |
+| `internal/mora/search.go` | n/a | The CLI/MCP search plumbing: `searchMemories` (FTS-only path), `ftsQuery`/`ftsToken`/`ftsIsStopword` (query construction + stopword filtering), `snippetMemories`, `budgetSearchResults`, `buildContext`, `parseSearchArgs`. (The `ftsStopwords` var and the `mcpSearchDefaultLimit`/`searchSnippetLen` consts remain in `mora.go`; the FTS5/`mem_vectors` schema DDL and `writeVectors` index-time embedding live in `index.go`, part of the `rebuildIndex` pipeline.) |
 
 Cross-arm helpers `loadMemoriesByID` (`graph_read.go:152`), `gazetteerScan`/`normalizeGazName`/`tokenizeWords` (`gazetteer.go`), and `snippet`/`matchSnippet` (`think.go`) are owned by sibling docs but called here; they are described only at the boundary.
 
@@ -134,7 +134,7 @@ It is weaker than a transformer but **$0, pure-Go, single-binary, no model downl
 
 ## Arm 2 — vector cosine search
 
-Vectors live in `mem_vectors(memory_id PK, dim, model, vec BLOB)` (`mora.go:2046`). `writeVectors` (`mora.go:2148`) embeds `title + "\n" + body` per memory at index time, storing `Dim()`, `ModelID()`, and the little-endian float32 BLOB (`encodeVec`, `embed.go:96`). Because the static embedder is deterministic, the same vault produces **byte-identical vectors across rebuilds** (`mora.go:2144-2146`).
+Vectors live in `mem_vectors(memory_id PK, dim, model, vec BLOB)` (`mora.go:2046`). `writeVectors` (`index.go`) embeds `title + "\n" + body` per memory at index time, storing `Dim()`, `ModelID()`, and the little-endian float32 BLOB (`encodeVec`, `embed.go:96`). Because the static embedder is deterministic, the same vault produces **byte-identical vectors across rebuilds** (`mora.go:2144-2146`).
 
 `vectorSearchIDs` (`hybrid.go:230`):
 - Embeds the query with the chosen embedder.
