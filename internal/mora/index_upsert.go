@@ -40,8 +40,9 @@ import (
 //     per write is the O(vault) cost this change removes.
 //   - Vectors feed only the HYBRID retrieval path, which defaultSearch enables ONLY
 //     when a semantic embedder (Ollama) is configured; under the default static-hash
-//     embedder search is FTS-only, so a missing vector has no effect there (invariant
-//     I9). Under a semantic embedder the new memory is a real but BOUNDED, self-
+//     embedder search is FTS-only, so a missing vector has no effect there (the
+//     embedder-gated routing rule: defaultSearch enables hybrid only under a semantic
+//     embedder — hybrid.go). Under a semantic embedder the new memory is a real but BOUNDED, self-
 //     healing recall gap on the hybrid arm: fully searchable via FTS immediately, and
 //     it gains its vector at the next full rebuild.
 //

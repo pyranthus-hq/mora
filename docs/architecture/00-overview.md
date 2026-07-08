@@ -1,6 +1,6 @@
 # Mora — Architecture Spec
 
-Mora is a local-first, agent-agnostic memory CLI: a single pure-Go binary that ingests Gmail / Google Calendar / iMessage into human-readable Markdown, indexes that Markdown in an embedded `modernc.org/sqlite` database (FTS5 + per-row vectors + a derived person graph), and serves it to any MCP-capable agent over a stdio JSON-RPC server. This document is the AS-BUILT front door to the spec — it describes what the code does **today** (as of v0.10.0), and links out to fourteen subsystem docs for the detail. Nothing here is roadmap; aspiration lives in the LLM wiki, not the repo.
+Mora is a local-first, agent-agnostic memory CLI: a single pure-Go binary that ingests Gmail / Google Calendar / iMessage into human-readable Markdown, indexes that Markdown in an embedded `modernc.org/sqlite` database (FTS5 + per-row vectors + a derived person graph), and serves it to any MCP-capable agent over a stdio JSON-RPC server. This document is the AS-BUILT front door to the spec — it describes what the code does **today** (as of v0.10.0), and links out to fifteen subsystem docs for the detail. Nothing here is roadmap; aspiration lives in the LLM wiki, not the repo.
 
 ## Files
 
@@ -125,6 +125,7 @@ These span subsystems. Each subsystem doc enforces its own; these are the rules 
 | [12 — Apple Calendar Connector](./12-connectors-applecal.md) | Read-only `Calendar.sqlitedb` (group container, immutable open); one-memory-per-event; Core Data epoch; the 180-day forward flood guard; FDA. |
 | [13 — Sharing](./13-sharing.md) | `mora share`: scoped, age-encrypted, read-only sharing of authored memories over a dedicated private git remote; subscriptions as separately-indexed, owner-attributed corpora unioned into search/think. |
 | [14 — Share transports](./14-share-transports.md) | The transport seam behind `mora share`: a signed content-addressed manifest lets a share travel over a user-owned S3/R2 bucket (`--via r2`) with the same authenticity/freshness/egress guarantees git got from its ACL + `--ff-only` + `ls-files`. |
+| [15 — Concurrency contract](./15-concurrency-contract.md) | What stays correct when writers (`cmdWrite`/`write_memory`), readers, a full `rebuildIndex`, and a sync collide on one host: per-memory atomic files, create-exclusive ids, tiny upsert txns, serialized rebuilds, the `sources.json` lease, `busy_timeout`, and the index's bounded eventual-consistency window. |
 
 ## Glossary
 
