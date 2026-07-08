@@ -44,6 +44,11 @@ func hkSeedEntities(t *testing.T) {
 		"--title", "Kickoff with [[Priya]]", "--text", "Talked to [[Priya]] about scope.\n- [Decision] adopt MCP")
 	run(t, "write", "--scope", "project:atlas", "--type", "note",
 		"--title", "Follow-up", "--text", "[[Priya]] confirmed the plan.")
+	// `mora write` now reflects only the memory + FTS row into the index (O(1)
+	// indexUpsert), not the whole-corpus entity graph — that reconciles on the next
+	// FULL rebuild. Materialize the graph explicitly so these entity-behavior tests
+	// exercise the graph rather than the write path's freshness.
+	run(t, "index", "rebuild")
 }
 
 // ---------------------------------------------------------------------------

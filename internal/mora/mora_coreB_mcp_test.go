@@ -480,6 +480,9 @@ func TestCoreB_McpCallSearchMemoryTruncates(t *testing.T) {
 func TestCoreB_McpCallGetEntity(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--scope", "global", "--title", "Linkholder", "--text", "notes about [[Nebula Project]]")
+	// write now upserts only the memory + FTS row (O(1)); the entity graph is
+	// materialized by a full rebuild, so build it before querying entities.
+	run(t, "index", "rebuild")
 	got, err := callMCPTool(context.Background(), "get_entity", map[string]any{"name": "Nebula Project"})
 	if err != nil {
 		t.Fatalf("get_entity: %v", err)
@@ -582,6 +585,8 @@ func TestCoreB_McpCallThink(t *testing.T) {
 func TestCoreB_McpCallListEntities(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--scope", "project:zeta", "--title", "Scoped", "--text", "scoped body about [[Zeta Widget]]")
+	// write upserts only memory + FTS (O(1)); rebuild materializes the entity graph.
+	run(t, "index", "rebuild")
 	got, err := callMCPTool(context.Background(), "list_entities", map[string]any{})
 	if err != nil {
 		t.Fatalf("list_entities: %v", err)
@@ -612,6 +617,8 @@ func TestCoreB_McpCallListEntities(t *testing.T) {
 func TestCoreB_McpCallListEntitiesKindFilter(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--scope", "project:zeta", "--title", "Scoped", "--text", "body with [[Zeta Widget]]")
+	// write upserts only memory + FTS (O(1)); rebuild materializes the entity graph.
+	run(t, "index", "rebuild")
 	got, err := callMCPTool(context.Background(), "list_entities", map[string]any{"kind": "link"})
 	if err != nil {
 		t.Fatalf("list_entities(kind=link): %v", err)
