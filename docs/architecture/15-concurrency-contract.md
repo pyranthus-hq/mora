@@ -100,17 +100,24 @@ Two correctness details reinforce it:
   `atomicWrite`, because re-rendering an existing memory onto its own **stable**
   path is a correct idempotent overwrite, not a collision.
 
-Pinned by `createexclusive_test.go` (single-path single-winner, bounded retry,
-CSPRNG fallback) and end-to-end by the G1 assertion in the contract stress test.
+The re-mint-on-collision mechanism itself is pinned by `createexclusive_test.go`,
+which forces a `newIDFn` collision deterministically (single-path single-winner,
+bounded retry, CSPRNG fallback). The contract stress test's G1 assertion covers the
+integration-level property — every reported-saved memory on disk exactly once under
+real contention — but its writers mint natural 4-byte-random ids that effectively
+never collide, so it does not itself provoke the create-exclusive re-mint path;
+`createexclusive_test.go` is the authority for that mechanism.
 
 ## 3. Tiny upsert transactions (the write hot path)
 
 Every authored write reflects itself into the index synchronously, but does NOT
-rebuild the whole index. `indexUpsert` (`internal/mora/index_upsert.go`) touches
-**only** the `memories` table and its `memories_fts` row — the single chokepoint
-every search arm JOINs through — inside one small `_txlock=immediate`
-transaction, using insert shapes byte-identical to `rebuildIndex`. So the new
-memory is immediately findable via FTS.
+rebuild the whole index. `indexUpsert` (`internal/mora/index_upsert.go`) writes
+just three things inside one small `_txlock=immediate` transaction: the memory's
+`memories` row, its `memories_fts` row — the single chokepoint every search arm
+JOINs through — and the `index_meta` bookkeeping (`memory_count` + `vault_id`,
+kept consistent for the identity guard). It uses insert shapes byte-identical to
+`rebuildIndex` and deliberately does NOT touch the entity graph or vectors, so the
+new memory is immediately findable via FTS while the rest reconciles later (§6).
 
 Why this matters for concurrency: the write path used to call the full
 `rebuildIndex` (DELETE-all + reinsert every vault file). N concurrent agent
@@ -215,7 +222,9 @@ correctness allows and bounds the rest:
   - The graph gap is bounded by the full-rebuild cadence (the `index-hourly`
     job, `mora index rebuild`, connector sync, delete) — it is never indefinite.
   - The vector gap has **no effect under the default static-hash embedder**,
-    where `defaultSearch` is FTS-only (invariant I9); under a semantic (Ollama)
+    where `defaultSearch` is FTS-only (embedder-gated routing: `defaultSearch`
+    enables hybrid only under a semantic embedder, because hybrid regresses recall
+    under static-hash — see [retrieval & search](./02-retrieval-search.md)); under a semantic (Ollama)
     embedder it is a real but bounded, self-healing recall gap on the hybrid arm
     only — the memory is fully searchable via FTS immediately and gains its
     vector at the next full rebuild.

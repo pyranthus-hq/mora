@@ -149,6 +149,13 @@ func mcpWrite(ctx context.Context, scope, title, text string) (string, error) {
 func runConcurrencyContract(t *testing.T, p concParams) {
 	t.Helper()
 	withTempHome(t)
+	// Pin the static-hash embedder so defaultSearch stays FTS-only regardless of the
+	// developer's environment (withTempHome does not clear MORA_EMBEDDER, and a set
+	// MORA_EMBEDDER=ollama would flip search to the hybrid arm). "" resolves to the
+	// static floor via chooseEmbedderFor — the same CI-determinism knob the eval uses
+	// — which is what makes the missing-vector / FTS-only searchability assertions
+	// below environment-independent.
+	t.Setenv("MORA_EMBEDDER", "")
 	// init scaffolds the vault AND builds an identity-bound index, so the very
 	// first storm write takes the warm incremental-upsert fast path (P2), not the
 	// cold-start full-rebuild herd.
