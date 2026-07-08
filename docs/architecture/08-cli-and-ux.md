@@ -54,13 +54,13 @@ flowchart TD
 | `doctor` | Environment + storage + iMessage-readiness checks. | `cmdDoctor` `doctor.go` |
 | `schedule install/list` | Install a scheduled job through launchd on macOS, Task Scheduler on Windows, or a printed cron line on Linux. | `cmdSchedule` `schedule.go` |
 | `sources add … / ingest run` | Register / run a filesystem source. | `cmdSources` `sources.go`, `cmdIngest` `:1520` |
-| `connectors list\|enable\|disable\|setup` | Catalog + per-type consent state. | `cmdConnectors` `:1006` |
+| `connectors list\|enable\|disable\|setup` | Catalog + per-type consent state. | `cmdConnectors` `setup.go` |
 | `connect google\|imessage [--since-days N]` | OAuth/FDA consent **then** backfill. | `cmdConnect` `:1567` |
 | `sync status\|google\|imessage` | Per-source freshness (no fetch) / re-backfill. | `cmdSync` `:1649` |
 | `share keygen\|init\|preview\|push\|subscribe\|pull\|list\|remove` | Scoped, age-encrypted, read-only sharing of authored memories over a dedicated private git remote; subscriptions union into search/think, owner-attributed. | `cmdShare` `share.go:1437`, see [sharing](./13-sharing.md) |
 | `reingest [--full]` | Re-fetch + rewrite memories with latest metadata, rebuild graph. | `cmdReingest` `:1709` |
 | `usage report\|off\|on` | Local-only content-free analytics. | `cmdUsage` `usage.go` |
-| `disconnect google` | Drop the Google token. | `cmdDisconnect` `:1827` |
+| `disconnect google` | Drop the Google token. | `cmdDisconnect` `setup.go` |
 | `mcp serve` | stdio JSON-RPC MCP server. | `cmdMCP` `:1862`, see [mcp-server](./06-mcp-server.md) |
 | `upgrade [--check]` | GitHub-release self-update; refuses dev builds. | `cmdUpgrade` `upgrade.go:24` |
 | `version` / `--version` / `-v` | Version + commit + build date + Go runtime. | `cmdVersion` `:247` |
@@ -154,7 +154,7 @@ sequenceDiagram
 
 ### The banner
 
-`printBanner(w)` (`banner.go:80`) renders the "Apocrypha eye" + `M O R A` wordmark **once**, at the top of `runSetupMenu` (`mora.go:1308`). It is pure decoration with three independent suppressors: non-`*os.File` or non-TTY writer → prints nothing (`banner.go:82`); `MORA_NO_BANNER` set → prints nothing (`banner.go:85`); color further gated by `bannerColor` (its own NO_COLOR/dumb/isatty check, `banner.go:69`). The raw art reads as an eye in monochrome, so NO_COLOR terminals still get the art; only pipes/CI/`--json` get nothing. The trailing whitespace on each art line is **intentional and load-bearing** (37-column rows for centering) and the lines are backtick literals precisely so gofmt cannot strip it (`banner.go:18`).
+`printBanner(w)` (`banner.go:80`) renders the "Apocrypha eye" + `M O R A` wordmark **once**, at the top of `runSetupMenu` (`setup.go`). It is pure decoration with three independent suppressors: non-`*os.File` or non-TTY writer → prints nothing (`banner.go:82`); `MORA_NO_BANNER` set → prints nothing (`banner.go:85`); color further gated by `bannerColor` (its own NO_COLOR/dumb/isatty check, `banner.go:69`). The raw art reads as an eye in monochrome, so NO_COLOR terminals still get the art; only pipes/CI/`--json` get nothing. The trailing whitespace on each art line is **intentional and load-bearing** (37-column rows for centering) and the lines are backtick literals precisely so gofmt cannot strip it (`banner.go:18`).
 
 ## `doctor` — environment checks
 
@@ -169,7 +169,7 @@ The check-map iteration is unordered Go map iteration; the surrounding blocks (s
 
 ## `init` config-preservation
 
-`cmdInit` (`config.go`) **never resets an existing install's config.** It calls `loadConfig()` (`config.go`) first, which returns defaults only when no `config.toml` exists; an existing file is parsed and its `vault_dir`/`data_dir`/`state_dir` preserved. A re-run of `init` therefore cannot repoint Mora away from a custom vault and orphan it (the failure that `bba2c6c fix(init)` corrected). `--vault` is the only override, applied on top of the loaded config (`config.go`). It then `MkdirAll`s all dirs (0700), writes config (atomic, 0600), scaffolds control files (`scaffoldControlFiles` skips files that already exist, `config.go`), rebuilds the index, and finally launches `runSetupMenu` — which itself is TTY-guarded (`mora.go:1299`): on a non-TTY stdin it prints a hint and returns immediately, never blocking CI/scripts.
+`cmdInit` (`config.go`) **never resets an existing install's config.** It calls `loadConfig()` (`config.go`) first, which returns defaults only when no `config.toml` exists; an existing file is parsed and its `vault_dir`/`data_dir`/`state_dir` preserved. A re-run of `init` therefore cannot repoint Mora away from a custom vault and orphan it (the failure that `bba2c6c fix(init)` corrected). `--vault` is the only override, applied on top of the loaded config (`config.go`). It then `MkdirAll`s all dirs (0700), writes config (atomic, 0600), scaffolds control files (`scaffoldControlFiles` skips files that already exist, `config.go`), rebuilds the index, and finally launches `runSetupMenu` — which itself is TTY-guarded (`setup.go`): on a non-TTY stdin it prints a hint and returns immediately, never blocking CI/scripts.
 
 ## `connect` — consent then backfill
 
