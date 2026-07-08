@@ -3439,6 +3439,14 @@ const (
 
 var errRebuildBlocked = errors.New("rebuild blocked")
 
+// listRebuildFiles resolves the vault's memory files for an index rebuild. It is
+// a package var (defaulting to allMemoryFiles) purely as a test seam: rebuild
+// must LIST the vault after it holds the write lock, and a test swaps this to
+// assert the immediate transaction is already open when the listing runs (see
+// TestRebuildListsVaultInsideWriteLock). Only rebuildIndexWithPolicy routes
+// through it; every other allMemoryFiles caller stays direct.
+var listRebuildFiles = allMemoryFiles
+
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
 }
@@ -3458,11 +3466,6 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 	defer db.Close()
 
-	files, err := allMemoryFiles(cfg)
-	if err != nil {
-		return 0, err
-	}
-
 	// Rebuild the whole index inside ONE transaction so a mid-rebuild failure
 	// rolls back to the prior committed index instead of leaving a half-empty
 	// one (the DELETE-then-reinsert is destructive). Every write — schema,
@@ -3472,6 +3475,22 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds; the safety net on any early return
+
+	// List the vault only AFTER BeginTx has taken the immediate write lock, so the
+	// snapshot is serialized against every other rebuild. Listing BEFORE the lock
+	// let two concurrent rebuilds interleave: rebuild A lists, rebuild B (fired by
+	// a newer write) lists+commits, then A commits LAST carrying its OLDER list,
+	// silently dropping the just-written memory until a later rebuild. Because the
+	// lock serializes rebuilds, whichever commits later necessarily listed later,
+	// so a committed index can no longer be clobbered by an older rebuild's stale
+	// snapshot (a memory written AFTER the surviving rebuild's listing is ordinary
+	// until-next-rebuild staleness, not this race). Routed through listRebuildFiles
+	// so a test can assert the lock is held at listing time (allMemoryFiles is a
+	// pure filesystem walk — it takes no DB lock, so it cannot deadlock this tx).
+	files, err := listRebuildFiles(cfg)
+	if err != nil {
+		return 0, err
+	}
 
 	// Capture old state BEFORE the destructive DELETEs run — on a fresh db the
 	// tables do not exist yet, so ignore errors and keep the zero values.
