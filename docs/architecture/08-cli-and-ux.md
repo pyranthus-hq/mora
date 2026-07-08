@@ -39,7 +39,7 @@ flowchart TD
 | Command | What it does | Handler |
 |---|---|---|
 | `init [--vault DIR]` | Create dirs, **preserve** existing `config.toml`, scaffold control files, rebuild index, then launch the interactive setup menu (TTY only). | `cmdInit` `:346` |
-| `write --title --text [--scope/--type/--tags/--source] [--json]` | Write a manual Markdown memory, rebuild index, echo it. | `cmdWrite` `:406` |
+| `write --title --text [--scope/--type/--tags/--source] [--json]` | Write a manual Markdown memory, incremental index upsert (`indexUpsert`), echo it. | `cmdWrite` `:406` |
 | `read <id> [--json]` | Print one memory (body or JSON). | `cmdRead` `:440` |
 | `list [--scope] [--json]` | Recent memories (id / scope / title rows). | `cmdList` `:461` |
 | `search <query> [--scope] [--limit] [--json]` | Embedder-gated routed search (see [retrieval](./02-retrieval-search.md)). | `cmdSearch` `:481` |

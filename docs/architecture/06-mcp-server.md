@@ -51,7 +51,7 @@ flowchart LR
 
 | Tool | Purpose | Key args | Default limit / budget |
 |---|---|---|---|
-| `write_memory` | Persist a durable memory; reindexes | `title`*, `text`*, `scope`, `type`, `source` | scope `global`, type `insight`, source `mcp` |
+| `write_memory` | Persist a durable memory; incremental index upsert | `title`*, `text`*, `scope`, `type`, `source` | scope `global`, type `insight`, source `mcp` |
 | `read_memory` | Fetch one memory by id (full body) | `id`* | — |
 | `search_memory` | Most-relevant memories; hybrid only when a semantic embedder is active, else FTS-only | `query`*, `scope`, `limit` | `limit` = `mcpSearchDefaultLimit` = **8**; bodies snippeted to 240 runes; payload is `{results, freshness}` (per-source `last_synced`) |
 | `list_memory` | Recent memories, newest first | `scope`, `limit` | `limit` = **10** |
@@ -68,7 +68,7 @@ flowchart LR
 
 ### What each handler actually does (and where the work lives)
 
-- **`write_memory`** (`2965`): builds a `Memory` with a fresh `newID()`, requires non-empty `title`+`text`, calls `writeMemory`, then `rebuildIndex` synchronously. Returns the written `Memory` (object → gets a `structuredContent` mirror).
+- **`write_memory`** (`2965`): builds a `Memory` with a fresh `newID()`, requires non-empty `title`+`text`, calls `writeMemory`, then `indexUpsert` (an incremental index update — memory + FTS row only, reprocessing just this one memory instead of the whole vault; the entity graph and vectors reconcile on the next full rebuild). Returns the written `Memory` (object → gets a `structuredContent` mirror). A failed index update is a **degraded success** (`index_stale:true` + warning), never `isError` — retrying a stuck write would mint duplicate ids.
 - **`read_memory`** (`2975`): `findMemory(cfg, id)` — full body, no snippeting. This is how agents fetch full text after a snippeted `search_memory`.
 - **`search_memory`** (`2977`): routes through **`defaultSearch`** (`hybrid.go:70`), the embedder-gated router — hybrid retrieval *only* when `chooseEmbedder()` is actually semantic (Ollama opted in *and* reachable), otherwise pure FTS. This gate exists because hybrid under the static-hash floor *regresses* recall (0.591→0.394 @5; see [retrieval](./02-retrieval-search.md) and the T2 eval). Results pass through **`snippetMemories`** (`mora.go:2180`): each body flattened to one line, clipped to a `searchSnippetLen` = **240**-rune window **centered on the earliest query-term match** (`matchSnippet`, `think.go` — word-boundary, case-insensitive, stopword-filtered; head-clip fallback), and `Meta` dropped — so 8 rows stay under the token ceiling. The payload is `{results, freshness}` — the same `sourceFreshness` per-source `last_synced` map `context_memory` ships — so every search answer carries its data age (the honest-snapshot contract on the primary query surface).
 - **`list_memory`** (`2985`): `listMemories` — note these are NOT snippeted (full bodies, capped only by `limit`).
@@ -78,7 +78,7 @@ flowchart LR
 - **`digest`** (`3023`): `buildDigest` + `renderDigest(budget)`, returns a map with the rendered string **and** the full structured `sections`/`stale_tasks` beside it (the source of a budget bug — below). See [synthesis](./07-synthesis-think-digest.md).
 - **`delete_memory`** (`3039`): `findMemory` → `os.Remove` → `rebuildIndex`.
 
-`callMCPTool` opens config once at the top (`2960`); every call re-derives state from disk. The two mutating tools reindex synchronously: `write_memory` (`2973`) and `delete_memory` (`3048`) both call `rebuildIndex` after the file op. The read-only tools `read_memory`/`list_memory`/`list_entities`/`get_entity` do **not** reindex, but the search/context paths self-heal a missing DB inside `searchMemories` (`mora.go:2200`) / `hybridSearchTrace` (`hybrid.go:90`).
+`callMCPTool` opens config once at the top (`2960`); every call re-derives state from disk. The two mutating tools update the index synchronously after the file op, but by different paths: `write_memory` calls `indexUpsert` (incremental — memory + FTS only, reprocessing just the one memory), while `delete_memory` calls the full `rebuildIndex` (a delete must also drop the removed memory's graph edges and vectors, and serving deleted content warrants the loud error, so its rebuild uses `policyAllow`). The read-only tools `read_memory`/`list_memory`/`list_entities`/`get_entity` do **not** touch the index, but the search/context paths self-heal a missing DB inside `searchMemories` (`mora.go:2200`) / `hybridSearchTrace` (`hybrid.go:90`).
 
 ## The CallToolResult envelope
 

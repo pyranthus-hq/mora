@@ -898,12 +898,14 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	m.Path = memoryPath(cfg, m)
 	// The vault write already succeeded (vault is truth; the index is a derived
-	// cache). A BLOCKED rebuild — vault looks empty or unfamiliar — must NOT fail
-	// the write: failing here would lose nothing on disk but would report the save
-	// as failed, inviting a retry that mints a duplicate memory. Mirror the MCP
+	// cache). Reflect just this one memory into the index (O(1)) instead of a full
+	// vault rebuild, so concurrent agent writers don't serialize whole-vault
+	// rebuilds. A BLOCKED index update — vault looks empty or unfamiliar — must NOT
+	// fail the write: failing here would lose nothing on disk but would report the
+	// save as failed, inviting a retry that mints a duplicate memory. Mirror the MCP
 	// write_memory degraded-success path: warn loudly, still emit the saved
-	// memory, and exit 0. Any OTHER rebuild error is a genuine failure → surface it.
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
+	// memory, and exit 0. Any OTHER index error is a genuine failure → surface it.
+	if err := indexUpsert(ctx, cfg, m); err != nil {
 		if errors.Is(err, errRebuildBlocked) {
 			fmt.Fprintf(stdout, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
 			return emit(stdout, m, *jsonOut)
@@ -5109,14 +5111,16 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 			return nil, err
 		}
 		// The vault write succeeded (vault is truth; the index is a derived
-		// cache), but a failed rebuild must SURFACE — as a degraded SUCCESS,
-		// never an isError result: signaling failure for a write that stuck
+		// cache). Reflect just this one memory into the index (O(1)) instead of a
+		// full vault rebuild, so concurrent write_memory calls don't serialize
+		// whole-vault rebuilds. A failed index update must SURFACE — as a degraded
+		// SUCCESS, never an isError result: signaling failure for a write that stuck
 		// invites the client to retry, and each retry mints a fresh server-side
 		// ID (N retries = N duplicate memories). The structured result keeps
 		// the saved memory + its ID so the client has nothing to re-send.
 		// (delete_memory below is the deliberate asymmetry: its retry is
 		// harmless, and serving deleted content warrants the loud error.)
-		if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+		if rerr := indexUpsert(ctx, cfg, m); rerr != nil {
 			return map[string]any{
 				"memory":      m,
 				"index_stale": true,
