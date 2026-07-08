@@ -7,7 +7,7 @@ How `mora <command>` dispatches, and the byte-clean styling layer that lets the 
 | File | Lines | Responsibility |
 |---|---|---|
 | `cmd/mora/main.go` | 28 | The binary entrypoint. Injects `-ldflags` version vars into the package, calls `mora.Run`, maps any error to a stderr line + exit 1. |
-| `internal/mora/mora.go` | 5860 | The whole CLI: `Run` dispatch switch, most `cmd*` handlers (`init`, `search`, `connect`, `sync`, `context`, `usage`, …), the `emit` human/JSON splitter, `printUsage`, `isInteractive`, config load/preserve. (`doctor` now lives in `doctor.go`; this doc owns only the CLI/UX surface of this file — storage, MCP, ingest, graph live in their own docs.) |
+| `internal/mora/mora.go` | 1089 | The CLI spine: the `Run` dispatch switch, `printUsage`, `cmdVersion`, `flagsFirst`, plus shared model types/consts. Each subsystem's `cmd*` handlers now live in sibling files — `init`→`config.go`, `write`/`read`/`list`/`search`/`delete`/`context`/`think`→`commands_memory.go`, `connect`/`sync`/`ingest`→`ingest.go`, `usage`→`usage.go`, `schedule`→`schedule.go`, `backup`/`lint`→`vaultops.go`, `sources`/`connectors`→`sources.go`/`setup.go`, `doctor`→`doctor.go`, `mcp`→`mcp.go` — and the `emit` human/JSON splitter + `isInteractive` in `helpers.go`. (The `brief`/`pulse` handlers stay in mora.go pending the #62 branch.) |
 | `internal/mora/render.go` | 122 | The styling layer: the `colorEnabled` gate, `isTTYWriter`, the `styler` value type + `styAccent/styDim/styOK/styWarn/styBad` palette, and `styleDigestTTY` (the removable TTY skin over the digest). |
 | `internal/mora/banner.go` | 105 | The "Apocrypha eye" ASCII banner shown once at the top of the interactive setup menu (TTY-only decoration), plus its own `bannerColor` TTY check. |
 
@@ -106,7 +106,7 @@ flowchart TD
 
 `isTTYWriter` (`render.go:38`) deliberately uses `github.com/mattn/go-isatty` (`isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)`) and **not** an `os.ModeCharDevice` stat. The comment at `render.go:36` names the reason: `/dev/null` (and other character devices) pass a `ModeCharDevice` test, so redirecting `mora … > /dev/null` with `TERM` set would *wrongly* enable ANSI and violate the invariant. This was caught when Codex ran the tool with stdout pointed at `/dev/null`. The guard is pinned by `TestColorDisabledForDevNull` in `render_test.go`.
 
-Note the parallel-but-distinct check `isInteractive(r io.Reader)` (`mora.go:129`), used for **stdin** (consent menus). It uses the stdlib `os.ModeCharDevice` test instead of go-isatty — acceptable there because the failure mode is "menu blocks on a non-TTY," not "escape codes leak into a machine stream." Do not conflate the two: writer-side TTY detection (output cleanliness) must stay on go-isatty; reader-side (don't-block) can stay on the stdlib stat.
+Note the parallel-but-distinct check `isInteractive(r io.Reader)` (`helpers.go`), used for **stdin** (consent menus). It uses the stdlib `os.ModeCharDevice` test instead of go-isatty — acceptable there because the failure mode is "menu blocks on a non-TTY," not "escape codes leak into a machine stream." Do not conflate the two: writer-side TTY detection (output cleanliness) must stay on go-isatty; reader-side (don't-block) can stay on the stdlib stat.
 
 ### The styling layer
 
@@ -115,7 +115,7 @@ The visual language is a tiny 5-color palette using the **16-slot ANSI palette**
 Surfaces wired through the styler:
 - **`sync status`** (`ingest.go`): accented source name (`sty.accent(st.Source)`), dim `last_synced` timestamp, red `(STALE)` when `LastSynced` is past 48h, red error-count string when `ErrorCount > 0`.
 - **`doctor`** (`doctor.go`): green `ok`, yellow `warn`, storage status colored by threshold.
-- **`emit` tables** (`mora.go:3199`): memory rows dim the id+scope; `connectors list` shows `● enabled` (green) / `○ disabled` (dim) — but only on a TTY; off-path stays the byte-identical literal `"enabled"`/`"disabled"` (`mora.go:3209`).
+- **`emit` tables** (`helpers.go`): memory rows dim the id+scope; `connectors list` shows `● enabled` (green) / `○ disabled` (dim) — but only on a TTY; off-path stays the byte-identical literal `"enabled"`/`"disabled"` (`helpers.go`).
 - **digest** via `styleDigestTTY`.
 
 #### `styleDigestTTY` — a removable skin, never a fork of the data
@@ -130,7 +130,7 @@ The comment at `render.go:53` is a standing decision: glamour was rejected for t
 
 ### `emit` — the human/machine output splitter
 
-`emit(w, v, jsonOut)` (`mora.go:3190`) is the canonical output funnel for structured results. When `jsonOut` it `json.MarshalIndent`s and prints — no styler is constructed on that branch, so JSON is unconditionally clean. Otherwise it builds a styler (`newStyler(w, jsonOut)`) and type-switches over `Memory`, `[]Memory`, and `[]catalogRow` to print tab-separated human rows. The `default` case `Fprintf("%v\n", v)`. Commands that produce plain prose (doctor, sync status, pulse) bypass `emit` and `Fprintf` directly, constructing their own styler — there is no single output choke point, so **any new human-facing print must construct its styler from `colorEnabled`/`newStyler`**, never emit raw lipgloss.
+`emit(w, v, jsonOut)` (`helpers.go`) is the canonical output funnel for structured results. When `jsonOut` it `json.MarshalIndent`s and prints — no styler is constructed on that branch, so JSON is unconditionally clean. Otherwise it builds a styler (`newStyler(w, jsonOut)`) and type-switches over `Memory`, `[]Memory`, and `[]catalogRow` to print tab-separated human rows. The `default` case `Fprintf("%v\n", v)`. Commands that produce plain prose (doctor, sync status, pulse) bypass `emit` and `Fprintf` directly, constructing their own styler — there is no single output choke point, so **any new human-facing print must construct its styler from `colorEnabled`/`newStyler`**, never emit raw lipgloss.
 
 ```mermaid
 sequenceDiagram

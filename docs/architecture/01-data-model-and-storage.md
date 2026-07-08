@@ -6,7 +6,8 @@ The on-disk Markdown memory format, the identity rules that keep re-syncs idempo
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `internal/mora/mora.go` | 3933 | `Memory`/`Source`/`Config` model; `createMemory`; `atomicWrite`/`atomicCreate` |
+| `internal/mora/mora.go` | 3933 | `Memory`/`Source`/`Config` model; `createMemory`; `atomicCreate` |
+| `internal/mora/atomicio.go` | 53 | Atomic file primitives: `atomicWrite` (temp file + `os.Rename`); `appendFile` |
 | `internal/mora/ingest.go` | 1104 | Connector ingest/sync wiring & the write boundary: `writeMappedMemory`; `cmdIngest`/`cmdConnect`/`cmdSync`/`cmdReingest`; `ingestGoogle`/`ingestIMessage`/`ingestAppleCal`/`ingestFilesystem`; `persistSyncStatus`; `sourceFreshness`; `curatedExtractExt`/`extractDocxText` |
 | `internal/mora/index.go` | 364 | `rebuildIndex`/`rebuildIndexWithPolicy` + SQLite DDL; `cmdIndex`; `dbPath`/`roIndexDSN`/`openIndexRO`/`checkIndexSchema`; `writeGraph`/`writeVectors` |
 | `internal/mora/config.go` | 496 | `Config` load/parse/write (`defaultConfig`/`loadConfig`/`parseConfigValue`/`cmdConfig`/`writeConfig`); `init` scaffolding (`cmdInit`/`scaffoldControlFiles`/`confirmVaultRepoint`); retrieval-weight accessors (`Config.fusion`/`Config.mmr`) |
