@@ -6,7 +6,7 @@ The stdio JSON-RPC 2.0 server that exposes Mora's memory, retrieval, entity-grap
 
 | File | Lines (approx) | Responsibility |
 |---|---|---|
-| `internal/mora/mora.go` | `serveMCP` 2820–2832, `handleMCP` 2867–2926, `toCallToolResult` 2935–2957, `callMCPTool` 2959–3053, `mcpTool`/`mcpParam` 3072–3101, `cmdMCP` 1862–1867, `snippetMemories` 2180–2197, `usageEvent` (usage logging `usageEnabled`/`logUsage` now in `usage.go`) | The whole MCP surface: stdio dispatch loop, JSON-RPC method routing, the CallToolResult envelope, every tool case, the tools/list schema builders, and local usage logging |
+| `internal/mora/mcp.go` | `serveMCP`, `handleMCP`, `toCallToolResult`, `callMCPTool`, `mcpTool`/`mcpParam`, `cmdMCP`; `snippetMemories` (in `search.go`), `usageEvent` (in `mora.go`; usage logging `usageEnabled`/`logUsage` in `usage.go`) | The whole MCP surface: stdio dispatch loop, JSON-RPC method routing, the CallToolResult envelope, every tool case, the tools/list schema builders, and local usage logging |
 | `internal/mora/mora_mcp_result_test.go` | full file | Contract guard: every `tools/call` must return a CallToolResult, not a bare value (the Codex-rejection regression) |
 | `internal/mora/mora_mcp_budget_test.go` | full file | The "T0" output-size regression gate: pins each tool's serialized envelope under a fixed token ceiling; quarantines the still-RED tools |
 
@@ -14,7 +14,7 @@ The server is the *boundary*; nearly all the work it dispatches lives in sibling
 
 ## How it runs
 
-`mora mcp serve` is the only valid invocation — `cmdMCP` rejects anything else (`mora.go:1862`). It is a line-oriented stdio server: `serveMCP` (`mora.go:2820`) wraps `stdin` in a `bufio.Scanner` and processes one JSON-RPC request per line, writing exactly one JSON line to `stdout` per request via `fmt.Fprintln`.
+`mora mcp serve` is the only valid invocation — `cmdMCP` rejects anything else (`mcp.go`). It is a line-oriented stdio server: `serveMCP` (`mcp.go`) wraps `stdin` in a `bufio.Scanner` and processes one JSON-RPC request per line, writing exactly one JSON line to `stdout` per request via `fmt.Fprintln`.
 
 ```mermaid
 flowchart LR
@@ -39,15 +39,15 @@ flowchart LR
 
 ### Lifecycle methods
 
-`handleMCP` (`mora.go:2867`) is the method switch. Three methods are real; everything else is `-32601`:
+`handleMCP` (`mcp.go`) is the method switch. Three methods are real; everything else is `-32601`:
 
-- **`initialize`** (`2870`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. The instructions (`mcpInstructions`, `mora.go:2839`) are load-bearing product surface, not boilerplate: clients inject them into the model's context, so this is how a cold agent learns Mora exists and that "I don't have that context" is usually a bug — it should `search_memory` first. Treat edits to that string as a behavior change.
-- **`tools/list`** (`2872`) returns the twelve-tool catalog built by `mcpTool`.
-- **`tools/call`** (`2915`) decodes `{name, arguments}` and returns `toCallToolResult(callMCPTool(...))`.
+- **`initialize`** (`mcp.go`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. The instructions (`mcpInstructions`, `mora.go:2839`) are load-bearing product surface, not boilerplate: clients inject them into the model's context, so this is how a cold agent learns Mora exists and that "I don't have that context" is usually a bug — it should `search_memory` first. Treat edits to that string as a behavior change.
+- **`tools/list`** (`mcp.go`) returns the twelve-tool catalog built by `mcpTool`.
+- **`tools/call`** (`mcp.go`) decodes `{name, arguments}` and returns `toCallToolResult(callMCPTool(...))`.
 
 ## The tool catalog
 
-`tools/list` publishes twelve tools. Schemas are built by `mcpTool(name, desc, params...)` (`mora.go:3083`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*; tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mora.go:3072`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
+`tools/list` publishes twelve tools. Schemas are built by `mcpTool(name, desc, params...)` (`mcp.go`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*; tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mcp.go`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
 
 | Tool | Purpose | Key args | Default limit / budget |
 |---|---|---|---|
@@ -64,25 +64,25 @@ flowchart LR
 | `brief` | Session-start what-changed/what-matters briefing — same budgeted, cited, source-grouped engine as `digest`, resolved to the freshest available; opt into `envelope` for a synthesis_prompt | `max_tokens`, `envelope` | call FIRST at session start; local-only |
 | `meeting_prep` | Cited prep pack for the next (or in-progress) calendar event, optionally scoped to one attendee by name | `name`, `limit`, `max_tokens` | `limit` evidence = **8**, `max_tokens` ≈ 6000/20000; gap analysis + synthesis_prompt |
 
-(`*` = required.) The catalog is defined inline in `handleMCP:2873–2914`; the dispatch handlers are the `switch` cases in `callMCPTool:2964–3052`.
+(`*` = required.) The catalog is defined inline in `handleMCP` (`mcp.go`); the dispatch handlers are the `switch` cases in `callMCPTool` (`mcp.go`).
 
 ### What each handler actually does (and where the work lives)
 
-- **`write_memory`** (`2965`): builds a `Memory` with a fresh `newID()`, requires non-empty `title`+`text`, calls `writeMemory`, then `indexUpsert` (an incremental index update — memory + FTS row only, reprocessing just this one memory instead of the whole vault; the entity graph and vectors reconcile on the next full rebuild). Returns the written `Memory` (object → gets a `structuredContent` mirror). A failed index update is a **degraded success** (`index_stale:true` + warning), never `isError` — retrying a stuck write would mint duplicate ids.
-- **`read_memory`** (`2975`): `findMemory(cfg, id)` — full body, no snippeting. This is how agents fetch full text after a snippeted `search_memory`.
-- **`search_memory`** (`2977`): routes through **`defaultSearch`** (`hybrid.go:70`), the embedder-gated router — hybrid retrieval *only* when `chooseEmbedder()` is actually semantic (Ollama opted in *and* reachable), otherwise pure FTS. This gate exists because hybrid under the static-hash floor *regresses* recall (0.591→0.394 @5; see [retrieval](./02-retrieval-search.md) and the T2 eval). Results pass through **`snippetMemories`** (`search.go`): each body flattened to one line, clipped to a `searchSnippetLen` = **240**-rune window **centered on the earliest query-term match** (`matchSnippet`, `think.go` — word-boundary, case-insensitive, stopword-filtered; head-clip fallback), and `Meta` dropped — so 8 rows stay under the token ceiling. The payload is `{results, freshness}` — the same `sourceFreshness` per-source `last_synced` map `context_memory` ships — so every search answer carries its data age (the honest-snapshot contract on the primary query surface).
-- **`list_memory`** (`2985`): `listMemories` — note these are NOT snippeted (full bodies, capped only by `limit`).
-- **`context_memory`** (`2990`): `resolveContextBudget` converts `max_tokens` → a char budget (`× charsPerToken=4`); the default and ceiling are profile-aware (`mora config context`): default 3000/6000/12000 tokens for small/default/large, clamped to `contextMaxTokens()` — 20000, except the `large` profile which opts into 50000 (`largeContextMaxTokens`, an explicit window-headroom-for-density trade). With a query it calls **`hybridSearch` directly** (not `defaultSearch`) — the vector arm is empty/harmless under static-hash here, so the gate is unnecessary; without a query it lists recent. Output is one `buildContext` string plus `sourceFreshness`. See [synthesis](./07-synthesis-think-digest.md).
-- **`think`** (`3007`): `buildThink` — cited evidence + gap analysis. Object return. See [synthesis](./07-synthesis-think-digest.md).
-- **`list_entities`** (`3013`) / **`get_entity`** (`3018`): call `entitiesForMCP` (`entities.go:204`) / `entityMemoriesForMCP` (`entities.go:210`), thin wrappers over `graphListEntities` / `graphGetEntity`. See [entity-graph](./03-entity-graph.md).
-- **`digest`** (`3023`): `buildDigest` + `renderDigest(budget)`, returns a map with the rendered string **and** the full structured `sections`/`stale_tasks` beside it (the source of a budget bug — below). See [synthesis](./07-synthesis-think-digest.md).
-- **`delete_memory`** (`3039`): `findMemory` → `os.Remove` → `rebuildIndex`.
+- **`write_memory`** (`mcp.go`): builds a `Memory` with a fresh `newID()`, requires non-empty `title`+`text`, calls `writeMemory`, then `indexUpsert` (an incremental index update — memory + FTS row only, reprocessing just this one memory instead of the whole vault; the entity graph and vectors reconcile on the next full rebuild). Returns the written `Memory` (object → gets a `structuredContent` mirror). A failed index update is a **degraded success** (`index_stale:true` + warning), never `isError` — retrying a stuck write would mint duplicate ids.
+- **`read_memory`** (`mcp.go`): `findMemory(cfg, id)` — full body, no snippeting. This is how agents fetch full text after a snippeted `search_memory`.
+- **`search_memory`** (`mcp.go`): routes through **`defaultSearch`** (`hybrid.go:70`), the embedder-gated router — hybrid retrieval *only* when `chooseEmbedder()` is actually semantic (Ollama opted in *and* reachable), otherwise pure FTS. This gate exists because hybrid under the static-hash floor *regresses* recall (0.591→0.394 @5; see [retrieval](./02-retrieval-search.md) and the T2 eval). Results pass through **`snippetMemories`** (`search.go`): each body flattened to one line, clipped to a `searchSnippetLen` = **240**-rune window **centered on the earliest query-term match** (`matchSnippet`, `think.go` — word-boundary, case-insensitive, stopword-filtered; head-clip fallback), and `Meta` dropped — so 8 rows stay under the token ceiling. The payload is `{results, freshness}` — the same `sourceFreshness` per-source `last_synced` map `context_memory` ships — so every search answer carries its data age (the honest-snapshot contract on the primary query surface).
+- **`list_memory`** (`mcp.go`): `listMemories` — note these are NOT snippeted (full bodies, capped only by `limit`).
+- **`context_memory`** (`mcp.go`): `resolveContextBudget` converts `max_tokens` → a char budget (`× charsPerToken=4`); the default and ceiling are profile-aware (`mora config context`): default 3000/6000/12000 tokens for small/default/large, clamped to `contextMaxTokens()` — 20000, except the `large` profile which opts into 50000 (`largeContextMaxTokens`, an explicit window-headroom-for-density trade). With a query it calls **`hybridSearch` directly** (not `defaultSearch`) — the vector arm is empty/harmless under static-hash here, so the gate is unnecessary; without a query it lists recent. Output is one `buildContext` string plus `sourceFreshness`. See [synthesis](./07-synthesis-think-digest.md).
+- **`think`** (`mcp.go`): `buildThink` — cited evidence + gap analysis. Object return. See [synthesis](./07-synthesis-think-digest.md).
+- **`list_entities`** (`mcp.go`) / **`get_entity`** (`mcp.go`): call `entitiesForMCP` (`entities.go:204`) / `entityMemoriesForMCP` (`entities.go:210`), thin wrappers over `graphListEntities` / `graphGetEntity`. See [entity-graph](./03-entity-graph.md).
+- **`digest`** (`mcp.go`): `buildDigest` + `renderDigest(budget)`, returns a map with the rendered string **and** the full structured `sections`/`stale_tasks` beside it (the source of a budget bug — below). See [synthesis](./07-synthesis-think-digest.md).
+- **`delete_memory`** (`mcp.go`): `findMemory` → `os.Remove` → `rebuildIndex`.
 
-`callMCPTool` opens config once at the top (`2960`); every call re-derives state from disk. The two mutating tools update the index synchronously after the file op, but by different paths: `write_memory` calls `indexUpsert` (incremental — memory + FTS only, reprocessing just the one memory), while `delete_memory` calls the full `rebuildIndex` (a delete must also drop the removed memory's graph edges and vectors, and serving deleted content warrants the loud error, so its rebuild uses `policyAllow`). The read-only tools `read_memory`/`list_memory`/`list_entities`/`get_entity` do **not** touch the index, but the search/context paths self-heal a missing DB inside `searchMemories` (`search.go`) / `hybridSearchTrace` (`hybrid.go:90`).
+`callMCPTool` opens config once at the top (`mcp.go`); every call re-derives state from disk. The two mutating tools update the index synchronously after the file op, but by different paths: `write_memory` calls `indexUpsert` (incremental — memory + FTS only, reprocessing just the one memory), while `delete_memory` calls the full `rebuildIndex` (a delete must also drop the removed memory's graph edges and vectors, and serving deleted content warrants the loud error, so its rebuild uses `policyAllow`). The read-only tools `read_memory`/`list_memory`/`list_entities`/`get_entity` do **not** touch the index, but the search/context paths self-heal a missing DB inside `searchMemories` (`search.go`) / `hybridSearchTrace` (`hybrid.go:90`).
 
 ## The CallToolResult envelope
 
-Every `tools/call` return — value and error alike — is wrapped by `toCallToolResult` (`mora.go:2935`) into a spec-compliant MCP `CallToolResult`:
+Every `tools/call` return — value and error alike — is wrapped by `toCallToolResult` (`mcp.go`) into a spec-compliant MCP `CallToolResult`:
 
 ```mermaid
 flowchart TD
@@ -121,11 +121,11 @@ Before `toCallToolResult`, `tools/call` returned the tool's *native* value direc
 
 ### The structuredContent doubling (the token cost of the fix)
 
-`toCallToolResult` serializes the value into the `text` content block **and**, when the value is object-shaped (`text[0] == '{'`, `mora.go:2953`), mirrors the *same value* into `structuredContent` (`:2954`). So an object-returning tool ships its payload **twice** on the wire. Arrays (e.g. `list_memory`, `list_entities`) start with `[` and are NOT mirrored — they pay once (`search_memory` became object-shaped when it gained `freshness`, so it now mirrors like the other object tools). This was deliberate (strict clients want the text block; machine-readable clients want `structuredContent`) but it doubles the token cost of `write_memory`, `context_memory`, `think`, `get_entity`, and `digest`. The T0 gate measures the *whole* envelope precisely because the doubling lives here.
+`toCallToolResult` serializes the value into the `text` content block **and**, when the value is object-shaped (`text[0] == '{'`, `mcp.go`), mirrors the *same value* into `structuredContent` (`mcp.go`). So an object-returning tool ships its payload **twice** on the wire. Arrays (e.g. `list_memory`, `list_entities`) start with `[` and are NOT mirrored — they pay once (`search_memory` became object-shaped when it gained `freshness`, so it now mirrors like the other object tools). This was deliberate (strict clients want the text block; machine-readable clients want `structuredContent`) but it doubles the token cost of `write_memory`, `context_memory`, `think`, `get_entity`, and `digest`. The T0 gate measures the *whole* envelope precisely because the doubling lives here.
 
 ## Token-budget posture
 
-The redline is `maxContextTokens = 20000` (`mora.go:2849`) — Neil's pilot ceiling: *no single tool result may dominate the agent's window*. The budget unit is `bytes / charsPerToken` with `charsPerToken = 4` (`mora.go:2847`), a guardrail heuristic, not exact accounting (a pure-Go tokenizer was judged not worth the dep). `resolveContextBudget` (`mora.go:2857`) clamps `max_tokens` to `[default 6000, max 20000]` *before* the `× 4` conversion so a huge `max_tokens` cannot overflow.
+The redline is `maxContextTokens = 20000` (`mora.go:2849`) — Neil's pilot ceiling: *no single tool result may dominate the agent's window*. The budget unit is `bytes / charsPerToken` with `charsPerToken = 4` (`mora.go:2847`), a guardrail heuristic, not exact accounting (a pure-Go tokenizer was judged not worth the dep). `resolveContextBudget` (`mcp.go`) clamps `max_tokens` to `[default 6000, max 20000]` *before* the `× 4` conversion so a huge `max_tokens` cannot overflow.
 
 `mora_mcp_budget_test.go` ("T0") pins each tool's serialized envelope under a fixed per-tool ceiling (tiered: mutation/point-read tiny, synthesis/briefing ≤ half-window, raw enumeration moderate). Ceilings are **policy lines, not derived constants** — the point is they are fixed so a regression has something to cross. As of **v0.5.1 every tool is GREEN** — the gate has no `wantRED`-quarantined rows, so any tool that crosses its ceiling fails CI outright.
 
@@ -145,7 +145,7 @@ Every `callMCPTool` case calls `logUsage` (`usage.go`) with a `usageEvent` (`mor
 ## Invariants & gotchas
 
 - **`tools/call` MUST return a CallToolResult, never a bare value.** Codex rejects bare `[]Memory`/`map` with "unexpected response type"; Claude Code's leniency hid this in early dev. Guarded by `TestMCPToolsCallReturnsCallToolResult`. WHY: MCP spec conformance is the difference between "works in one client" and "works".
-- **Object-shaped returns are doubled** (text block + `structuredContent` mirror, `toCallToolResult:2953`). Any token-budget analysis must count both copies. WHY: arrays escape the doubling (`[` ≠ `{`); object tools don't, which is exactly where the budget RED rows live.
+- **Object-shaped returns are doubled** (text block + `structuredContent` mirror, `toCallToolResult`, `mcp.go`). Any token-budget analysis must count both copies. WHY: arrays escape the doubling (`[` ≠ `{`); object tools don't, which is exactly where the budget RED rows live.
 - **The T0 RED rows are load-bearing, not bugs to ignore.** `list_entities`, `get_entity`, and `digest` exceed their ceilings; the gate fails if they *silently improve* (forcing `wantRED:false`) or *worsen >25%*. WHY: a quarantined-but-watched failure is honest; a `t.Skip` is invisible and would never notice a fix or a 408KB→4MB regression.
 - **`search_memory` is embedder-gated (`defaultSearch`), `context_memory` is not.** `search_memory` only goes hybrid when the chosen embedder is genuinely semantic; `context_memory` always calls `hybridSearch` directly. WHY: hybrid under static-hash regresses search recall, but `context_memory`'s assembly is harmless under an empty vector arm. Do not "simplify" them to the same path.
 - **`search_memory` results are snippeted (240 runes, no Meta); `read_memory`/`list_memory` are full bodies.** `snippetMemories` is the *only* thing keeping the bumped `limit=8` default under budget. WHY: 8 full bodies blow the ceiling; the design is "snippet to find, `read_memory` to fetch". Raising `limit` without snippeting re-breaks the budget.

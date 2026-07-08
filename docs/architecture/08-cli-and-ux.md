@@ -61,7 +61,7 @@ flowchart TD
 | `reingest [--full]` | Re-fetch + rewrite memories with latest metadata, rebuild graph. | `cmdReingest` `ingest.go` |
 | `usage report\|off\|on` | Local-only content-free analytics. | `cmdUsage` `usage.go` |
 | `disconnect google` | Drop the Google token. | `cmdDisconnect` `setup.go` |
-| `mcp serve` | stdio JSON-RPC MCP server. | `cmdMCP` `:1862`, see [mcp-server](./06-mcp-server.md) |
+| `mcp serve` | stdio JSON-RPC MCP server. | `cmdMCP` `mcp.go`, see [mcp-server](./06-mcp-server.md) |
 | `upgrade [--check]` | GitHub-release self-update; refuses dev builds. | `cmdUpgrade` `upgrade.go:24` |
 | `version` / `--version` / `-v` | Version + commit + build date + Go runtime. | `cmdVersion` `:247` |
 
