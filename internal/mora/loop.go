@@ -404,14 +404,26 @@ func loopLockReleaser(lockPath string) func() {
 	}
 }
 
-// reapStaleLock removes an ABANDONED lease and reports whether it did. Stale :=
-// corrupt/empty/partial OR acquired_at older than the TTL. Liveness is NOT a
+// reapStaleLock removes an ABANDONED loop lease and reports whether it did,
+// using loopLockTTL as the abandonment bound. See reapStaleLockTTL for the
+// mechanics; this thin wrapper keeps the loop call sites (and their tests)
+// unchanged while the crash-safe lease primitives (publishLockFile / breakLock /
+// loopLockReleaser / loopLockBody + this reaper) are shared with the sources.json
+// lease in sources_lock.go.
+func reapStaleLock(lockPath string, now time.Time) (bool, error) {
+	return reapStaleLockTTL(lockPath, now, loopLockTTL)
+}
+
+// reapStaleLockTTL removes an ABANDONED lease and reports whether it did. Stale :=
+// corrupt/empty/partial OR acquired_at older than ttl. Liveness is NOT a
 // signal: the lock outlives its short-lived begin process by design, so a dead
 // pid is the NORMAL state of a legitimately-held lease and must never trigger a
 // reap (doing so would let a second begin start a concurrent run mid-flight).
 // The TTL is therefore the sole abandonment bound. Mirrors loadBriefSnapshot:
-// a corrupt lock is reapable, never a fatal error.
-func reapStaleLock(lockPath string, now time.Time) (bool, error) {
+// a corrupt lock is reapable, never a fatal error. ttl is a parameter (not the
+// loopLockTTL constant) so the shorter-lived sources.json lease can reuse this
+// exact reaper with its own abandonment bound.
+func reapStaleLockTTL(lockPath string, now time.Time, ttl time.Duration) (bool, error) {
 	data, err := os.ReadFile(lockPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return true, nil // freed between our publish attempt and read: path is free
@@ -426,8 +438,8 @@ func reapStaleLock(lockPath string, now time.Time) (bool, error) {
 		stale = true // corrupt / empty / partial
 	} else if t, perr := time.Parse(time.RFC3339, body.AcquiredAt); perr != nil {
 		stale = true // unparseable timestamp => corrupt => stale
-	} else if now.UTC().Sub(t.UTC()) >= loopLockTTL {
-		stale = true // EXPIRED — the run exceeded the abandonment bound
+	} else if now.UTC().Sub(t.UTC()) >= ttl {
+		stale = true // EXPIRED — the holder exceeded the abandonment bound
 	}
 	if !stale {
 		return false, nil // a fresh lease: the real holder (regardless of pid liveness)
