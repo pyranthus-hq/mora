@@ -39,14 +39,14 @@ flowchart TD
 | Command | What it does | Handler |
 |---|---|---|
 | `init [--vault DIR]` | Create dirs, **preserve** existing `config.toml`, scaffold control files, rebuild index, then launch the interactive setup menu (TTY only). | `cmdInit` `config.go` |
-| `write --title --text [--scope/--type/--tags/--source] [--json]` | Write a manual Markdown memory, incremental index upsert (`indexUpsert`), echo it. | `cmdWrite` `:406` |
-| `read <id> [--json]` | Print one memory (body or JSON). | `cmdRead` `:440` |
-| `list [--scope] [--json]` | Recent memories (id / scope / title rows). | `cmdList` `:461` |
-| `search <query> [--scope] [--limit] [--json]` | Embedder-gated routed search (see [retrieval](./02-retrieval-search.md)). | `cmdSearch` `:481` |
+| `write --title --text [--scope/--type/--tags/--source] [--json]` | Write a manual Markdown memory, incremental index upsert (`indexUpsert`), echo it. | `cmdWrite` `commands_memory.go` |
+| `read <id> [--json]` | Print one memory (body or JSON). | `cmdRead` `commands_memory.go` |
+| `list [--scope] [--json]` | Recent memories (id / scope / title rows). | `cmdList` `commands_memory.go` |
+| `search <query> [--scope] [--limit] [--json]` | Embedder-gated routed search (see [retrieval](./02-retrieval-search.md)). | `cmdSearch` `commands_memory.go` |
 | `entities [name] [--json]` / `graph [name]` | Browse / expand the person+topic graph. | `cmdEntities` `entities.go:104`, `cmdGraph` `graph_cmd.go:21`; see [entity-graph](./03-entity-graph.md) |
-| `delete <id> --yes` | Remove a memory file + reindex; refuses without `--yes`. | `cmdDelete` `:504` |
-| `context [--scope] [--query] [--budget] [--json]` | Build a budgeted context blob (FTS+vector via `hybridSearch`). | `cmdContext` `:535` |
-| `think "<q>" [--scope] [--limit] [--json]` | Cited-evidence synthesis envelope + gap analysis. | `cmdThink` `:570`, see [synthesis](./07-synthesis-think-digest.md) |
+| `delete <id> --yes` | Remove a memory file + reindex; refuses without `--yes`. | `cmdDelete` `commands_memory.go` |
+| `context [--scope] [--query] [--budget] [--json]` | Build a budgeted context blob (FTS+vector via `hybridSearch`). | `cmdContext` `commands_memory.go` |
+| `think "<q>" [--scope] [--limit] [--json]` | Cited-evidence synthesis envelope + gap analysis. | `cmdThink` `commands_memory.go`, see [synthesis](./07-synthesis-think-digest.md) |
 | `brief [--json] [--envelope]` | **Session-start default (Phase 16):** print the latest *what-changed/what-matters* brief — read the freshest persisted `briefs/<date>-brief.md` verbatim, else generate on demand. Local-only, zero network, never advances the watermark. `--json` → `{generated, body}`; `--envelope` → append a model-free synthesis prompt. | `cmdBrief` `:682`, see [synthesis](./07-synthesis-think-digest.md) + [the guide](../guide.md#make-the-brief-your-session-start-default) |
 | `index rebuild` | Re-parse vault → SQLite + graph + vectors. | `cmdIndex` `index.go` |
 | `tasks sync [--write]` / `tasks add <name> [flags]` / `tasks list [--json]` / `tasks done <name>` / `pulse [--write] [--digest]` | Task hygiene + lifecycle: `add` captures an open loop (idempotent by name), `list` shows live tasks, `done` closes one so it stops resurfacing as stale + daily digest. | `cmdTasks` `tasks.go`, `cmdPulse` `:678` |
