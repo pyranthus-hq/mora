@@ -892,11 +892,14 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	m := Memory{ID: newID(), Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
-	if err := writeMemory(cfg, m); err != nil {
+	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
+	// Create-exclusive publish: a colliding newID can never clobber an existing
+	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
+	// never silently loses its write. createMemory sets m.ID and m.Path.
+	m, err = createMemory(cfg, m)
+	if err != nil {
 		return err
 	}
-	m.Path = memoryPath(cfg, m)
 	// The vault write already succeeded (vault is truth; the index is a derived
 	// cache). Reflect just this one memory into the index (O(1)) instead of a full
 	// vault rebuild, so concurrent agent writers don't serialize whole-vault
@@ -3157,12 +3160,63 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	return serveMCP(ctx, stdout, stdin)
 }
 
+// writeMemory renders m and atomicWrites it to its memoryPath at the memory's
+// EXISTING id. It is the non-exclusive writer: it overwrites (last-writer-wins),
+// so it is NOT used for brand-new user memories — those go through createMemory,
+// which is collision-proof against a freshly minted, non-deterministic id. Its
+// remaining role is writing a memory at a known, caller-supplied id (test seeding,
+// and any caller that already owns the id); connector memories use writeMappedMemory.
 func writeMemory(cfg Config, m Memory) error {
 	body, err := renderMemory(m)
 	if err != nil {
 		return err
 	}
 	return atomicWrite(memoryPath(cfg, m), body, 0o644)
+}
+
+// maxCreateAttempts bounds createMemory's re-mint loop. A collision needs two
+// writers to mint the same second-granularity timestamp AND the same 4 random
+// bytes (~1 in 2^32 per pair), and each retry mints fresh entropy, so exhausting
+// this many attempts is astronomically improbable; the bound is a liveness
+// backstop, not an expected path.
+const maxCreateAttempts = 8
+
+// newIDFn is the id-minting seam (house pattern, cf. confirmVaultRepointFn /
+// ingestSourceFn). Production uses newID; tests override it to force a collision
+// and exercise createMemory's re-mint retry deterministically.
+var newIDFn = newID
+
+// createMemory publishes a BRAND-NEW user memory with a collision-proof,
+// create-exclusive publish. It mints an id, renders the memory, and atomicCreate()s
+// it — os.Link, which fails EEXIST rather than clobbering an existing memory
+// (atomicWrite's os.Rename would overwrite, silently losing the loser of a
+// same-id race). On the astronomically-unlikely id collision it re-mints and
+// retries, bounded by maxCreateAttempts. Returns the memory with its final
+// (winning) id and Path set, ready for indexUpsert and the response.
+//
+// Use ONLY for new user memories (cmdWrite, MCP write_memory). Connector re-writes
+// go through writeMappedMemory → atomicWrite (an existing provider memory is
+// re-rendered onto its own stable path, where an idempotent overwrite is correct,
+// not a collision); createMemory's anti-clobber applies specifically to freshly
+// minted, non-deterministic ids.
+func createMemory(cfg Config, m Memory) (Memory, error) {
+	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
+		m.ID = newIDFn()
+		body, err := renderMemory(m)
+		if err != nil {
+			return Memory{}, err
+		}
+		path := memoryPath(cfg, m)
+		if err := atomicCreate(path, body, 0o644); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue // id collision: re-mint and retry
+			}
+			return Memory{}, err
+		}
+		m.Path = path
+		return m, nil
+	}
+	return Memory{}, fmt.Errorf("create memory: could not mint a unique id after %d attempts", maxCreateAttempts)
 }
 
 func renderMemory(m Memory) ([]byte, error) {
@@ -5112,11 +5166,16 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 	}
 	switch name {
 	case "write_memory":
-		m := Memory{ID: newID(), Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: time.Now().Format(time.RFC3339)}
+		m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: time.Now().Format(time.RFC3339)}
 		if m.Title == "" || m.Text == "" {
 			return nil, errors.New("title and text required")
 		}
-		if err := writeMemory(cfg, m); err != nil {
+		// Create-exclusive publish: concurrent write_memory calls that mint the
+		// same id never clobber each other (os.Link fails EEXIST → re-mint). This
+		// is the server's most concurrent write path — N agents writing at once.
+		// createMemory sets m.ID and m.Path.
+		var err error
+		if m, err = createMemory(cfg, m); err != nil {
 			return nil, err
 		}
 		// The vault write succeeded (vault is truth; the index is a derived
@@ -5769,15 +5828,20 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
-	// Publish atomically. On POSIX this is a single rename(2) and the loop runs
-	// exactly once. On Windows, os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_
-	// EXISTING): replacing an existing target requires deleting it, so concurrent
-	// writers racing to rename onto the SAME target transiently fail with
-	// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION. Retry those with JITTERED,
-	// capped backoff — deterministic backoff makes racing writers retry in
-	// lockstep and keep colliding, so the jitter is what lets them de-correlate —
-	// up to a deadline. Only the error path pays this; a permanent error (or any
-	// non-Windows error) surfaces on the first attempt.
+	return renameReplaceWithRetry(tmp, path)
+}
+
+// renameReplaceWithRetry publishes tmp onto path via os.Rename, replacing any
+// existing target. On POSIX this is a single atomic rename(2) and the loop runs
+// exactly once. On Windows, os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_
+// EXISTING): replacing an existing target requires deleting it, so concurrent
+// writers racing to rename onto the SAME target transiently fail with
+// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION. Retry those with JITTERED, capped
+// backoff — deterministic backoff makes racing writers retry in lockstep and keep
+// colliding, so the jitter is what lets them de-correlate — up to a deadline. Only
+// the error path pays this; a permanent error (or any non-Windows error) surfaces
+// on the first attempt.
+func renameReplaceWithRetry(tmp, path string) error {
 	var deadline time.Time
 	for attempt := 0; ; attempt++ {
 		rerr := os.Rename(tmp, path)
@@ -5795,6 +5859,108 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 		capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
 		time.Sleep(time.Duration(1+mrand.IntN(capMs)) * time.Millisecond)
 	}
+}
+
+// linkPublish is the create-exclusive publish primitive (defaults to os.Link).
+// Seam: tests override it to simulate a filesystem that refuses hard links and so
+// exercise atomicCreate's fallback path on an ordinary filesystem.
+var linkPublish = os.Link
+
+// atomicCreate publishes body at path with a CREATE-EXCLUSIVE guarantee: unlike
+// atomicWrite (whose final os.Rename REPLACES any existing target, last-writer-
+// wins), atomicCreate never clobbers an existing file — a second writer racing
+// onto the SAME path fails with os.ErrExist so exactly one wins and the caller
+// (createMemory) re-mints a fresh id.
+//
+// PRIMARY path: os.Link the staged temp onto path. Link is BOTH create-exclusive
+// (fails EEXIST, never replaces) AND content-atomic (the published name appears
+// fully formed), so there is no torn-read window. This mirrors loop.go's proven
+// publishLockFile; on Windows os.Link maps to CreateHardLinkW, which likewise
+// fails ERROR_ALREADY_EXISTS on a present target.
+//
+// FALLBACK path: some filesystems (exFAT/FAT32 USB sticks, some SMB/NFS mounts)
+// do not support hard links, so os.Link returns EPERM/ENOTSUP/EOPNOTSUPP (POSIX)
+// or ERROR_NOT_SUPPORTED (Windows) — never os.ErrExist. vault_dir is
+// user-configurable, so a hard failure here would regress `mora write` / MCP
+// write_memory below where the old atomicWrite (plain os.Rename) worked. On that
+// (and only that) error class we preserve the no-clobber guarantee WITHOUT a hard
+// link: (1) claim the path with os.OpenFile(O_CREATE|O_EXCL) — an atomic
+// create-exclusive that fails EEXIST if a racer or a colliding id already owns it,
+// so we surface os.ErrExist exactly like the link path; then (2) rename our staged
+// temp onto our OWN claimed placeholder. The rename is safe from clobber because
+// every same-path racer already lost at the O_EXCL claim, so it can only replace
+// our own empty placeholder, never a rival's memory — and it keeps content
+// atomicity (no torn frontmatter). TRADEOFF, documented honestly: between (1) and
+// (2) a concurrent reader can observe an EMPTY placeholder file. That degrades
+// gracefully — parseMemory returns "missing frontmatter" on it and every
+// index/list/find caller (rebuildIndex, findMemory, listMemories, digest,
+// meetingprep, graph, share) skips a parse error with `continue`, so the
+// placeholder is ignored (never a crash) and picked up once the rename lands. Only
+// no-hardlink filesystems ever reach this branch; POSIX/NTFS keep the pure-link
+// path with no such window.
+//
+// A link error that is NEITHER os.ErrExist NOR the link-unsupported class is a
+// real fault and surfaces as-is — never masked as a collision or silently routed
+// through the slower fallback.
+func atomicCreate(path string, body []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	// Stage through a unique temp in the target dir (same filesystem, so the link
+	// is a cheap same-inode operation), never a fixed name, so concurrent creators
+	// never share or truncate each other's in-flight temp.
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	// Drop the temp name whether we publish it or fail; a no-op leftover name once
+	// the link/rename publishes the file under its real name.
+	defer os.Remove(tmp)
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp opens at 0600; raise to the caller's requested mode before publish.
+	if err := os.Chmod(tmp, mode); err != nil {
+		return err
+	}
+
+	// PRIMARY: create-exclusive hard-link publish (POSIX + NTFS).
+	err = linkPublish(tmp, path)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrExist) {
+		return err // genuine id collision → caller re-mints
+	}
+	if !linkUnsupported(err) {
+		return err // a real filesystem/IO error → surface, don't mask
+	}
+
+	// FALLBACK for filesystems without hard links (see doc above).
+	claim, cerr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if cerr != nil {
+		return cerr // EEXIST here wraps os.ErrExist → caller re-mints; else the real error
+	}
+	// Close our placeholder handle BEFORE the rename: on Windows MoveFileEx must
+	// delete the destination to replace it, and our own still-open handle would make
+	// every retry hit a sharing violation.
+	if closeErr := claim.Close(); closeErr != nil {
+		return errors.Join(closeErr, os.Remove(path))
+	}
+	// Move the staged body onto our own placeholder. renameReplaceWithRetry carries
+	// the Windows MoveFileEx jittered retry; on failure drop the empty placeholder so
+	// a failed write leaves nothing behind — and surface (join) any cleanup error so
+	// a leaked placeholder is never silently swallowed.
+	if rerr := renameReplaceWithRetry(tmp, path); rerr != nil {
+		return errors.Join(rerr, os.Remove(path))
+	}
+	return nil
 }
 
 // usageEvent records a single MCP tool invocation for local analytics.
@@ -5934,9 +6100,31 @@ func tableCols(line string) []string {
 	return out
 }
 
+// randRead is the entropy seam (defaults to crypto/rand.Read). Tests override it
+// to simulate an unavailable OS CSPRNG and exercise newID's fallback branch.
+var randRead = rand.Read
+
+// warnRandFallback surfaces (once per mint) that newID fell back off crypto/rand.
+// Seam: tests replace it to observe that the fallback is not silent, without
+// capturing the real os.Stderr.
+var warnRandFallback = func() {
+	fmt.Fprintln(os.Stderr, "warn: crypto/rand unavailable; deriving memory id suffix from math/rand (still unique, but not cryptographically random)")
+}
+
 func newID() string {
 	var b [4]byte
-	_, _ = rand.Read(b[:])
+	if _, err := randRead(b[:]); err != nil {
+		// crypto/rand essentially never fails; if the OS CSPRNG is unavailable,
+		// derive the suffix from the PRNG (math/rand/v2, auto-seeded at startup,
+		// independent of the OS entropy source) rather than leaving b all-zero.
+		// An all-zero suffix would collide on every mint within the same second
+		// AND stall createMemory's re-mint retry (identical id each attempt).
+		// Memory ids are uniqueness tokens, not secrets, so PRNG entropy suffices.
+		// Surface it — never silently degrade — but never fail the write.
+		warnRandFallback()
+		n := mrand.Uint32()
+		b[0], b[1], b[2], b[3] = byte(n>>24), byte(n>>16), byte(n>>8), byte(n)
+	}
 	return "mem_" + time.Now().Format("20060102_150405") + "_" + hex.EncodeToString(b[:])
 }
 
