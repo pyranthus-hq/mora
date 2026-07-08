@@ -892,11 +892,14 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	m := Memory{ID: newID(), Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
-	if err := writeMemory(cfg, m); err != nil {
+	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
+	// Create-exclusive publish: a colliding newID can never clobber an existing
+	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
+	// never silently loses its write. createMemory sets m.ID and m.Path.
+	m, err = createMemory(cfg, m)
+	if err != nil {
 		return err
 	}
-	m.Path = memoryPath(cfg, m)
 	// The vault write already succeeded (vault is truth; the index is a derived
 	// cache). Reflect just this one memory into the index (O(1)) instead of a full
 	// vault rebuild, so concurrent agent writers don't serialize whole-vault
@@ -3176,6 +3179,49 @@ func writeMemory(cfg Config, m Memory) error {
 	return atomicWrite(memoryPath(cfg, m), body, 0o644)
 }
 
+// maxCreateAttempts bounds createMemory's re-mint loop. A collision needs two
+// writers to mint the same second-granularity timestamp AND the same 4 random
+// bytes (~1 in 2^32 per pair), and each retry mints fresh entropy, so exhausting
+// this many attempts is astronomically improbable; the bound is a liveness
+// backstop, not an expected path.
+const maxCreateAttempts = 8
+
+// newIDFn is the id-minting seam (house pattern, cf. confirmVaultRepointFn /
+// ingestSourceFn). Production uses newID; tests override it to force a collision
+// and exercise createMemory's re-mint retry deterministically.
+var newIDFn = newID
+
+// createMemory publishes a BRAND-NEW user memory with a collision-proof,
+// create-exclusive publish. It mints an id, renders the memory, and atomicCreate()s
+// it — os.Link, which fails EEXIST rather than clobbering an existing memory
+// (atomicWrite's os.Rename would overwrite, silently losing the loser of a
+// same-id race). On the astronomically-unlikely id collision it re-mints and
+// retries, bounded by maxCreateAttempts. Returns the memory with its final
+// (winning) id and Path set, ready for indexUpsert and the response.
+//
+// Use ONLY for new user memories (cmdWrite, MCP write_memory). Updates and
+// connector re-writes keep writeMemory/atomicWrite: overwriting the same stable
+// path with fresh content is the correct, idempotent behavior there.
+func createMemory(cfg Config, m Memory) (Memory, error) {
+	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
+		m.ID = newIDFn()
+		body, err := renderMemory(m)
+		if err != nil {
+			return Memory{}, err
+		}
+		path := memoryPath(cfg, m)
+		if err := atomicCreate(path, body, 0o644); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue // id collision: re-mint and retry
+			}
+			return Memory{}, err
+		}
+		m.Path = path
+		return m, nil
+	}
+	return Memory{}, fmt.Errorf("create memory: could not mint a unique id after %d attempts", maxCreateAttempts)
+}
+
 func renderMemory(m Memory) ([]byte, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "---\n")
@@ -5103,11 +5149,16 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 	}
 	switch name {
 	case "write_memory":
-		m := Memory{ID: newID(), Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: time.Now().Format(time.RFC3339)}
+		m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: time.Now().Format(time.RFC3339)}
 		if m.Title == "" || m.Text == "" {
 			return nil, errors.New("title and text required")
 		}
-		if err := writeMemory(cfg, m); err != nil {
+		// Create-exclusive publish: concurrent write_memory calls that mint the
+		// same id never clobber each other (os.Link fails EEXIST → re-mint). This
+		// is the server's most concurrent write path — N agents writing at once.
+		// createMemory sets m.ID and m.Path.
+		var err error
+		if m, err = createMemory(cfg, m); err != nil {
 			return nil, err
 		}
 		// The vault write succeeded (vault is truth; the index is a derived
@@ -5786,6 +5837,57 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	}
 }
 
+// atomicCreate publishes body at path with a CREATE-EXCLUSIVE guarantee: unlike
+// atomicWrite (whose final os.Rename REPLACES any existing target, last-writer-
+// wins), atomicCreate stages the bytes in a unique temp in the target dir and
+// then os.Link()s the temp onto path. os.Link is atomic and fails with EEXIST
+// (os.ErrExist) if path already exists, so two writers racing onto the SAME path
+// can never silently clobber each other — exactly one wins, the rest see
+// os.ErrExist. The returned link error wraps os.ErrExist; the caller (createMemory)
+// re-mints a fresh id and retries on that signal. The staging temp name is always
+// dropped (defer os.Remove), leaving only the published link on success or an
+// untouched target on EEXIST.
+//
+// This is the anti-clobber sibling of atomicWrite, used only for brand-new user
+// memories where losing a write is data loss (colliding newID → same memoryPath).
+// It mirrors loop.go's proven publishLockFile: on Windows os.Link maps to
+// CreateHardLinkW, which likewise fails ERROR_ALREADY_EXISTS on a present target.
+// Because Link never REPLACES an existing file, it has no delete-then-create step,
+// so it is not subject to the MoveFileEx sharing-violation contention that forces
+// atomicWrite's jittered rename retry — hence no retry loop here, matching
+// publishLockFile.
+func atomicCreate(path string, body []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	// Stage through a unique temp in the target dir (same filesystem, so the link
+	// is a cheap same-inode operation), never a fixed name, so concurrent creators
+	// never share or truncate each other's in-flight temp.
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	// Drop the temp name whether the link succeeds or fails; a no-op leftover name
+	// once the link publishes the file under its real name.
+	defer os.Remove(tmp)
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp opens at 0600; raise to the caller's requested mode before publish.
+	if err := os.Chmod(tmp, mode); err != nil {
+		return err
+	}
+	// Publish create-exclusively: Link fails EEXIST if path already exists, and the
+	// error wraps os.ErrExist (errors.Is) — the collision signal createMemory retries.
+	return os.Link(tmp, path)
+}
+
 // usageEvent records a single MCP tool invocation for local analytics.
 type usageEvent struct {
 	TS      string `json:"ts"`
@@ -5923,9 +6025,22 @@ func tableCols(line string) []string {
 	return out
 }
 
+// randRead is the entropy seam (defaults to crypto/rand.Read). Tests override it
+// to simulate an unavailable OS CSPRNG and exercise newID's fallback branch.
+var randRead = rand.Read
+
 func newID() string {
 	var b [4]byte
-	_, _ = rand.Read(b[:])
+	if _, err := randRead(b[:]); err != nil {
+		// crypto/rand essentially never fails; if the OS CSPRNG is unavailable,
+		// derive the suffix from the PRNG (math/rand/v2, auto-seeded at startup,
+		// independent of the OS entropy source) rather than leaving b all-zero.
+		// An all-zero suffix would collide on every mint within the same second
+		// AND stall createMemory's re-mint retry (identical id each attempt).
+		// Memory ids are uniqueness tokens, not secrets, so PRNG entropy suffices.
+		n := mrand.Uint32()
+		b[0], b[1], b[2], b[3] = byte(n>>24), byte(n>>16), byte(n>>8), byte(n)
+	}
 	return "mem_" + time.Now().Format("20060102_150405") + "_" + hex.EncodeToString(b[:])
 }
 
