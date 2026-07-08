@@ -117,9 +117,10 @@ func TestDg_WindowDigestSkipsMalformedInputsAndCollapsesServiceSenders(t *testin
 func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 	t.Run("filtered advance rejected before io", func(t *testing.T) {
 		cfg := dgConfig(t)
-		_, err := buildDeltaDigest(cfg, fixedNow, briefOpts{advance: true, source: "gmail"}, 10, nil, nil)
+		// Post-#62 the guard lives in advanceBrief (the build is pure and never advances).
+		_, _, err := advanceBrief(cfg, fixedNow, briefOpts{advance: true, source: "gmail"}, 10000, false)
 		if err == nil || !strings.Contains(err.Error(), "preview-only") {
-			t.Fatalf("buildDeltaDigest error = %v, want preview-only advance guard", err)
+			t.Fatalf("advanceBrief error = %v, want preview-only advance guard", err)
 		}
 	})
 
@@ -128,7 +129,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "sources.json"), []byte("{not json"), 0o600); err != nil {
 			t.Fatalf("WriteFile sources: %v", err)
 		}
-		_, err := buildDeltaDigest(cfg, fixedNow, briefOpts{}, 10, nil, nil)
+		_, _, err := buildDeltaDigest(cfg, fixedNow, briefOpts{}, 10, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "invalid character") {
 			t.Fatalf("buildDeltaDigest error = %v, want json parse error", err)
 		}
@@ -140,7 +141,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		seedSyncStatus(t, cfg, "gmail", fixedNow.Add(-time.Hour))
 		seedSyncStatus(t, cfg, "imessage", fixedNow.Add(-time.Hour))
 
-		d, err := buildDeltaDigest(cfg, fixedNow, briefOpts{source: "gmail"}, 10, nil, nil)
+		d, _, err := buildDeltaDigest(cfg, fixedNow, briefOpts{source: "gmail"}, 10, nil, nil)
 		if err != nil {
 			t.Fatalf("buildDeltaDigest: %v", err)
 		}
@@ -155,9 +156,10 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(cfg.StateDir, "brief"), []byte("not a dir"), 0o600); err != nil {
 			t.Fatalf("WriteFile brief blocker: %v", err)
 		}
-		_, err := buildDeltaDigest(cfg, fixedNow, briefOpts{advance: true}, 10, nil, nil)
+		// Post-#62 the O_EXCL lock is taken by advanceBrief, not the pure build.
+		_, _, err := advanceBrief(cfg, fixedNow, briefOpts{advance: true}, 10000, false)
 		if err == nil || !strings.Contains(err.Error(), "brief commit in progress") {
-			t.Fatalf("buildDeltaDigest error = %v, want lock acquisition error", err)
+			t.Fatalf("advanceBrief error = %v, want lock acquisition error", err)
 		}
 	})
 
@@ -172,9 +174,11 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		if err := saveSources(cfg, sources); err != nil {
 			t.Fatalf("saveSources: %v", err)
 		}
-		_, err := buildDeltaDigest(cfg, fixedNow, briefOpts{advance: true}, 10, nil, nil)
+		// Post-#62 the build is PURE (never writes the watermark); the snapshot
+		// write happens in advanceBrief after budgeting, so the failure surfaces there.
+		_, _, err := advanceBrief(cfg, fixedNow, briefOpts{advance: true}, 10000, false)
 		if err == nil || !strings.Contains(err.Error(), "commit watermark") {
-			t.Fatalf("buildDeltaDigest error = %v, want snapshot commit error", err)
+			t.Fatalf("advanceBrief error = %v, want snapshot commit error", err)
 		}
 	})
 }
@@ -186,9 +190,17 @@ func TestDg_DeltaSectionItemsColdAndSteadyEdges(t *testing.T) {
 		dgMemory("bad-cold", "gmail", "bad cold", "not-rfc3339"),
 		dgMemory("good-cold", "gmail", "good cold", now.Add(-time.Hour).Format(time.RFC3339)),
 	}
-	cold, shownIDs, more := deltaSectionItems(cfg, briefDelta{ColdStart: true}, coldMems, now, "gmail", 10, nil)
-	if len(cold) != 1 || cold[0].ID != "good-cold" || len(shownIDs) != 0 || more != 0 {
-		t.Fatalf("cold items=%+v shown=%v more=%d, want only good cold item and no shown ids", cold, shownIDs, more)
+	cold, _, coldLines, coldCountOnly, more := deltaSectionItems(cfg, briefDelta{ColdStart: true}, coldMems, now, "gmail", 10, nil)
+	if len(cold) != 1 || cold[0].ID != "good-cold" || more != 0 {
+		t.Fatalf("cold items=%+v more=%d, want only good cold item", cold, more)
+	}
+	// Post-#62: acknowledgement is a PLAN (lineMembers/countOnlyIDs) consumed by
+	// commitSnapshot AFTER budgeting; the rendered cold line carries its own member.
+	if got := coldLines["good-cold"]; len(got) != 1 || got[0] != "good-cold" {
+		t.Fatalf("coldLines=%v, want good-cold line carrying itself", coldLines)
+	}
+	if len(coldCountOnly) != 0 {
+		t.Fatalf("coldCountOnly=%v, want empty", coldCountOnly)
 	}
 
 	seriesA := dgMemory("series-a", "calendar", "standup a", now.Add(time.Hour).Format(time.RFC3339))
@@ -204,15 +216,26 @@ func TestDg_DeltaSectionItemsColdAndSteadyEdges(t *testing.T) {
 		{ID: "bad-steady", Change: "updated"},
 	}}
 
-	items, shown, more := deltaSectionItems(cfg, delta, mems, now, "calendar", 10, map[string]int64{"series-b": 9})
+	items, _, lines, countOnly, more := deltaSectionItems(cfg, delta, mems, now, "calendar", 10, map[string]int64{"series-b": 9})
 	if more != 0 {
 		t.Fatalf("more=%d, want 0", more)
 	}
-	if shown["missing"] {
-		t.Fatalf("missing delta id was marked shown")
+	// Post-#62: build an acknowledged set from the commit PLAN (line members plus
+	// count-only tail) instead of the removed pre-truncation shownIDs map.
+	acked := map[string]bool{}
+	for _, members := range lines {
+		for _, id := range members {
+			acked[id] = true
+		}
 	}
-	if !shown["series-a"] || !shown["series-b"] || !shown["bad-steady"] {
-		t.Fatalf("shown ids=%v, want recurring members and bad timestamp item acknowledged", shown)
+	for _, id := range countOnly {
+		acked[id] = true
+	}
+	if acked["missing"] {
+		t.Fatalf("missing delta id was marked acknowledged")
+	}
+	if !acked["series-a"] || !acked["series-b"] || !acked["bad-steady"] {
+		t.Fatalf("acked ids=%v, want recurring members and bad timestamp item acknowledged", acked)
 	}
 	if len(items) != 2 {
 		t.Fatalf("items=%+v, want collapsed series plus bad timestamp item", items)

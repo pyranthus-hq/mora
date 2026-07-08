@@ -377,7 +377,7 @@ func TestColdStartWindowAppleCalendarLooksForward(t *testing.T) {
 		{ID: "future", Title: "Dentist", CreatedAt: now.Add(48 * time.Hour).Format(time.RFC3339), Provider: "applecal"},
 		{ID: "past", Title: "Two days ago", CreatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339), Provider: "applecal"},
 	}
-	items, _, _ := deltaSectionItems(Config{}, briefDelta{ColdStart: true}, mems, now, "applecalendar", 8, nil)
+	items, _, _, _, _ := deltaSectionItems(Config{}, briefDelta{ColdStart: true}, mems, now, "applecalendar", 8, nil)
 	if len(items) != 1 || items[0].ID != "future" {
 		t.Fatalf("cold-start applecalendar section = %+v; want exactly the upcoming event \"future\" (past events belong to the calendar's history, not its cold-start brief)", items)
 	}

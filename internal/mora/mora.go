@@ -1224,7 +1224,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 		if derr != nil {
 			return derr
 		}
-		fmt.Fprintln(stdout, digestSynthesisPrompt(d.Sections, buildSourceStates(cfg, d)))
+		fmt.Fprintln(stdout, digestSynthesisPrompt(d.Urgent, d.Sections, buildSourceStates(cfg, d)))
 	}
 	return nil
 }
@@ -1504,41 +1504,65 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 				}
 			}
 		}
-		d, derr := buildDigest(cfg, now, opts)
-		if derr != nil {
-			return derr
+		// The --advance path (the scheduled pulse-daily job) runs the whole
+		// build→budget→persist→commit as ONE locked transaction in advanceBrief, so the
+		// watermark advances ONLY over items that survive the byte budget and rendered
+		// into the persisted brief — never the pre-truncation cap (issue #62 defect 1).
+		// Every preview/window surface stays the pure buildDigest read path.
+		var d Digest
+		renderBudget := defaultContextTokens * charsPerToken
+		artifactPath := ""
+		persisted := false
+		if opts.advance {
+			// Budget stdout, the artifact, and the commit at the SAME persist budget so
+			// all three agree on exactly which items were shown.
+			budgetChars := cfg.contextDefaultTokens() * charsPerToken
+			bd, path, aerr := advanceBrief(cfg, now, opts, budgetChars, *briefFile)
+			if aerr != nil {
+				return aerr
+			}
+			d, renderBudget, artifactPath, persisted = bd, budgetChars, path, *briefFile
+		} else {
+			bd, derr := buildDigest(cfg, now, opts)
+			if derr != nil {
+				return derr
+			}
+			d = bd
 		}
 		// renderDigest is the data path (also what the MCP `digest` tool returns,
 		// byte-identical). styleDigestTTY is a TTY-only presentation skin on top;
-		// pipes, redirects, and the MCP transport get the raw Markdown unchanged.
-		out := renderDigest(d, defaultContextTokens*charsPerToken)
+		// pipes, redirects, and the MCP transport get the raw Markdown unchanged. When
+		// d is already budgeted (the --advance path) renderDigest is idempotent.
+		out := renderDigest(d, renderBudget)
 		out = styleDigestTTY(out, newStyler(stdout, false))
 		fmt.Fprintln(stdout, out)
-		// --envelope (15-02): preview-only append AFTER the brief — the human path
-		// renders the FULL digest, so the prompt cites the SAME rendered items
-		// (d.Sections, no separate item-budgeting). It only Fprintln's an additional
-		// block; the brief above + the persisted artifact below are untouched
-		// (T-15-07: no watermark, no artifact mutation). Model-free: digestSynthesisPrompt
-		// is a pure string builder — Mora makes no model/network call (SC#2).
+		// --envelope (15-02): preview-only append AFTER the brief — the prompt cites
+		// the SAME rendered items (d.Sections). Model-free: digestSynthesisPrompt is a
+		// pure string builder — Mora makes no model/network call (SC#2).
 		if *envelope {
-			fmt.Fprintln(stdout, digestSynthesisPrompt(d.Sections, buildSourceStates(cfg, d)))
+			fmt.Fprintln(stdout, digestSynthesisPrompt(d.Urgent, d.Sections, buildSourceStates(cfg, d)))
 		}
-		// Persist + notify (D13-5) — side effects of the human/scheduled stdout path
-		// ONLY (the MCP `digest` tool and any --json path are untouched, T-13-11).
-		// Both default OFF so ad-hoc `pulse --digest` is byte-for-byte unchanged.
-		if *briefFile {
-			// Persist the SAME render to the dated vault artifact using the SAME now
-			// (so the artifact date matches the digest). A write error is non-fatal —
-			// the brief already printed; a partial honest brief beats no brief (T-13-12).
+		// Persist the PREVIEW path's artifact here (the --advance path already persisted
+		// under the lock). A write error is non-fatal for a preview — the brief already
+		// printed; a partial honest brief beats no brief (T-13-12).
+		if *briefFile && !persisted {
 			path, werr := writeBriefArtifact(cfg, d, now)
 			if werr != nil {
 				warnf(stdout, "could not persist the brief artifact: %v", werr)
-			} else if *notify {
-				// Notify is the LAST step and best-effort: only fires when a brief was
-				// actually persisted (we have a path to point at), and notifyBriefFn
-				// (notify.go) is GOOS/env-gated and swallows its own error.
-				_ = notifyBriefFn(path)
+			} else {
+				artifactPath = path
 			}
+		}
+		// Notify is the LAST step and best-effort: only fires when a brief was actually
+		// persisted (we have a path to point at); notifyBriefFn is GOOS/env-gated and
+		// swallows its own error. When the brief has an Urgent shelf, enrich the toast
+		// with its top item so the deadline is visible without opening the brief (#62).
+		if *briefFile && *notify && artifactPath != "" {
+			var top *urgentNote
+			if len(d.Urgent) > 0 {
+				top = &urgentNote{subtitle: d.Urgent[0].Title, body: d.Urgent[0].Snippet}
+			}
+			_ = notifyBriefFn(artifactPath, top)
 		}
 	}
 	return nil

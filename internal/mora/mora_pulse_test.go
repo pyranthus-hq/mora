@@ -187,7 +187,7 @@ func TestPulseNotifyRoutesThroughInjectedNotifier(t *testing.T) {
 	called := false
 	orig := notifyBriefFn
 	t.Cleanup(func() { notifyBriefFn = orig })
-	notifyBriefFn = func(path string) error { called = true; gotPath = path; return nil }
+	notifyBriefFn = func(path string, _ *urgentNote) error { called = true; gotPath = path; return nil }
 
 	runPulse(t, "--digest", "--brief-file", "--notify")
 	if !called {
@@ -213,7 +213,7 @@ func TestPulseNotifySuppressedWithoutFlag(t *testing.T) {
 	called := false
 	orig := notifyBriefFn
 	t.Cleanup(func() { notifyBriefFn = orig })
-	notifyBriefFn = func(path string) error { called = true; return nil }
+	notifyBriefFn = func(path string, _ *urgentNote) error { called = true; return nil }
 
 	runPulse(t, "--digest", "--brief-file")
 	if called {
@@ -241,7 +241,7 @@ func TestPulseBriefFilePersistErrorIsNonFatal(t *testing.T) {
 	called := false
 	orig := notifyBriefFn
 	t.Cleanup(func() { notifyBriefFn = orig })
-	notifyBriefFn = func(path string) error { called = true; return nil }
+	notifyBriefFn = func(path string, _ *urgentNote) error { called = true; return nil }
 
 	// runPulse fails the test if Run returns non-nil — proves non-fatal.
 	out := runPulse(t, "--digest", "--brief-file", "--notify")
@@ -267,7 +267,7 @@ func TestPulseDefaultsOffNoPersistNoNotify(t *testing.T) {
 	called := false
 	orig := notifyBriefFn
 	t.Cleanup(func() { notifyBriefFn = orig })
-	notifyBriefFn = func(path string) error { called = true; return nil }
+	notifyBriefFn = func(path string, _ *urgentNote) error { called = true; return nil }
 
 	runPulse(t, "--digest")
 	if got := countBriefFiles(t, cfg); got != 0 {

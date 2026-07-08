@@ -68,29 +68,41 @@ func escapeAppleScriptString(s string) string {
 	return s
 }
 
-// notifyBrief posts a best-effort native macOS notification naming the persisted
-// brief at briefPath (SC#3, DIGH-06). It is gated by shouldNotify(goos): on any
-// non-darwin OS, or when MORA_NO_NOTIFY is set, it is a SILENT no-op (returns nil,
-// never an error) and the runner is never invoked.
+// urgentNote is the enriched-toast payload (issue #62 follow-on): the top Urgent-shelf
+// item's one-line summary, so the user acts on a deadline without opening the brief.
+// nil => the content-free "Daily brief ready" toast (no urgent item this run). It is
+// on-device only — carried into osascript, never sent off the machine.
+type urgentNote struct {
+	subtitle string // the item's subject / title
+	body     string // its deadline-anchored one-line ask
+}
+
+// notifyBrief posts a best-effort native macOS notification (SC#3, DIGH-06). It is
+// gated by shouldNotify(goos): on any non-darwin OS, or when MORA_NO_NOTIFY is set, it
+// is a SILENT no-op (returns nil, never an error) and the runner is never invoked.
 //
-// On darwin it builds the AppleScript `display notification "Daily brief ready"
-// with title "Mora" subtitle "<escaped briefPath>"` and invokes run("-e", script).
-// run is injectable (production: osascriptRunner). If run errors — osascript absent
-// or failing — the error is SWALLOWED and nil is returned: a failed toast must NEVER
-// fail the brief (D13-1, T-13-06).
+// When top is nil it names the persisted brief at briefPath ("Daily brief ready" +
+// path subtitle). When top is set (issue #62 follow-on) it leads with the top Urgent
+// item — title "Mora · ⚠ Urgent", the item's subject as subtitle, and its
+// deadline-anchored ask as the body — so the deadline is visible on the lock screen.
+// Both the subtitle and body are run through escapeAppleScriptString (the item text is
+// user-derived, so this is the script-injection boundary). Still on-device: osascript
+// is a local system binary, no bytes leave the machine.
 //
-// notifyBrief writes NOTHING to any io.Writer; its only effect is the runner call
-// (a side effect), so the toast can never contaminate --json/MCP/non-TTY output
-// (byte-clean invariant, T-13-07). The GUI/desktop gating that makes osascript work
-// in the scheduled run is the caller's opt-in flag (owned by 13-03) ∧ GOOS+env here,
-// NOT a TTY check — the pulse-daily LaunchAgent redirects stdout to a log file, so a
-// TTY check would be false in exactly the scheduled run we want to notify from.
-func notifyBrief(briefPath string, run notifyRunner, goos string) error {
+// run is injectable (production: osascriptRunner). If run errors the error is SWALLOWED
+// and nil is returned: a failed toast must NEVER fail the brief (D13-1, T-13-06).
+// notifyBrief writes NOTHING to any io.Writer (byte-clean invariant, T-13-07).
+func notifyBrief(briefPath string, top *urgentNote, run notifyRunner, goos string) error {
 	if !shouldNotify(goos) {
 		return nil // silent no-op: non-darwin or opted out — never an error
 	}
-	subtitle := escapeAppleScriptString(briefPath)
-	script := `display notification "Daily brief ready" with title "Mora" subtitle "` + subtitle + `"`
+	title, subtitle, body := "Mora", escapeAppleScriptString(briefPath), "Daily brief ready"
+	if top != nil {
+		title = "Mora · ⚠ Urgent"
+		subtitle = escapeAppleScriptString(top.subtitle)
+		body = escapeAppleScriptString(top.body)
+	}
+	script := `display notification "` + body + `" with title "` + title + `" subtitle "` + subtitle + `"`
 	// Best-effort: swallow any runner error — a missing/failing osascript must not
 	// abort the brief.
 	_ = run("-e", script)
@@ -105,6 +117,6 @@ var runtimeGOOS = func() string { return runtime.GOOS }
 // invokes after persisting a brief: it wires the real seams (osascriptRunner +
 // runtime.GOOS) into notifyBrief. It inherits notifyBrief's best-effort,
 // silent-no-op, byte-clean contract — it can never fail or contaminate the brief.
-func notifyBriefDefault(briefPath string) error {
-	return notifyBrief(briefPath, osascriptRunner, runtimeGOOS())
+func notifyBriefDefault(briefPath string, top *urgentNote) error {
+	return notifyBrief(briefPath, top, osascriptRunner, runtimeGOOS())
 }

@@ -41,6 +41,36 @@ func contentHashWithMeta(title, body, metaJSON string) string {
 	return ContentHash(title, body, metaJSON)
 }
 
+// volatileMetaKeys are Meta fields that describe an item's transient STATE rather
+// than its content, so they are persisted but EXCLUDED from the content hash. Gmail
+// actionability labels (issue #62) flip as a thread is read/starred/reclassified;
+// hashing them would re-surface an unchanged thread as "[updated]" on every toggle.
+var volatileMetaKeys = map[string]bool{"labels": true}
+
+// hashMeta returns meta with the volatile (state-only) keys removed, so the content
+// hash reflects the item's CONTENT, not its read/star state. It returns the SAME map
+// (no copy) when no volatile key is present — the common path stays allocation-free
+// and byte-identical to the pre-#62 hash.
+func hashMeta(meta map[string]any) map[string]any {
+	has := false
+	for k := range volatileMetaKeys {
+		if _, ok := meta[k]; ok {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return meta
+	}
+	out := make(map[string]any, len(meta))
+	for k, v := range meta {
+		if !volatileMetaKeys[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // CanonicalMeta encodes Meta as the single deterministic JSON line mora persists
 // (`meta: {...}`) and folds into ContentHash. json.Marshal of a map emits
 // sorted keys on one line, so the bytes are stable across runs and independent of
@@ -127,8 +157,11 @@ func MapItem(it Item, scope string, bodyBudget int) MappedMemory {
 	// Fold the canonical Meta into the content hash so a change in structured
 	// identity data (new participant, recovered address) rewrites the file instead
 	// of being skipped by the content-hash guard. Empty Meta contributes nothing,
-	// preserving the legacy two-part hash for memories without identity data.
-	metaJSON, _ := CanonicalMeta(meta)
+	// preserving the legacy two-part hash for memories without identity data. Volatile
+	// state keys (Gmail labels — issue #62) are stripped BEFORE hashing so a read/star
+	// toggle never churns the delta, while the full Meta (with labels) is still
+	// persisted below.
+	metaJSON, _ := CanonicalMeta(hashMeta(meta))
 
 	m := MappedMemory{
 		StableID:     StableID(it.Kind, it.ProviderID),

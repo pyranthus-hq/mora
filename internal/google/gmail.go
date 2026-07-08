@@ -2,6 +2,7 @@ package google
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -97,6 +98,13 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 	if !occurred.IsZero() {
 		meta["occurred_at"] = occurred.UTC().Format(time.RFC3339)
 	}
+	// Actionability labels for the brief's urgent lane (issue #62). These are captured
+	// into Meta but EXCLUDED from the content hash (memory.MapItem) so a read/star
+	// toggle never churns the delta. Absent when the thread carries none (backward
+	// compatible with pre-#62 ingests, which just get no urgency boost).
+	if labels := gmailUrgencyLabels(th); len(labels) > 0 {
+		meta["labels"] = labels
+	}
 	return Item{
 		Kind:        KindGmailThread,
 		ProviderID:  th.Id,
@@ -107,6 +115,31 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 		Attachments: atts,
 		Meta:        meta,
 	}
+}
+
+// gmailUrgencyLabels collects the actionability labels (UNREAD / IMPORTANT / STARRED)
+// present on ANY message in the thread, sorted for determinism. Routing/category
+// labels (INBOX, CATEGORY_*) are ignored — only the three signals the brief's urgent
+// lane ranks on are captured (issue #62 defect 2 enrichment).
+func gmailUrgencyLabels(th *gmail.Thread) []string {
+	want := map[string]bool{"UNREAD": true, "IMPORTANT": true, "STARRED": true}
+	seen := map[string]bool{}
+	for _, msg := range th.Messages {
+		for _, lid := range msg.LabelIds {
+			if want[lid] {
+				seen[lid] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for l := range seen {
+		out = append(out, l)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // decodeGmailBody walks the MIME tree for the first text/plain part.
