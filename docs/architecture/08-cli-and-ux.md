@@ -7,7 +7,7 @@ How `mora <command>` dispatches, and the byte-clean styling layer that lets the 
 | File | Lines | Responsibility |
 |---|---|---|
 | `cmd/mora/main.go` | 28 | The binary entrypoint. Injects `-ldflags` version vars into the package, calls `mora.Run`, maps any error to a stderr line + exit 1. |
-| `internal/mora/mora.go` | 3587 | The whole CLI: `Run` dispatch switch, every `cmd*` handler (`init`, `search`, `connect`, `sync`, `doctor`, `context`, `usage`, …), the `emit` human/JSON splitter, `printUsage`, `isInteractive`, config load/preserve. (This doc owns only the CLI/UX surface of this file; storage, MCP, ingest, graph live in their own docs.) |
+| `internal/mora/mora.go` | 5860 | The whole CLI: `Run` dispatch switch, most `cmd*` handlers (`init`, `search`, `connect`, `sync`, `context`, `usage`, …), the `emit` human/JSON splitter, `printUsage`, `isInteractive`, config load/preserve. (`doctor` now lives in `doctor.go`; this doc owns only the CLI/UX surface of this file — storage, MCP, ingest, graph live in their own docs.) |
 | `internal/mora/render.go` | 122 | The styling layer: the `colorEnabled` gate, `isTTYWriter`, the `styler` value type + `styAccent/styDim/styOK/styWarn/styBad` palette, and `styleDigestTTY` (the removable TTY skin over the digest). |
 | `internal/mora/banner.go` | 105 | The "Apocrypha eye" ASCII banner shown once at the top of the interactive setup menu (TTY-only decoration), plus its own `bannerColor` TTY check. |
 
@@ -51,7 +51,7 @@ flowchart TD
 | `index rebuild` | Re-parse vault → SQLite + graph + vectors. | `cmdIndex` `:637` |
 | `tasks sync [--write]` / `tasks add <name> [flags]` / `tasks list [--json]` / `tasks done <name>` / `pulse [--write] [--digest]` | Task hygiene + lifecycle: `add` captures an open loop (idempotent by name), `list` shows live tasks, `done` closes one so it stops resurfacing as stale + daily digest. | `cmdTasks` `:656`, `cmdPulse` `:678` |
 | `lint` / `backup` | Verify control files exist / tar.gz the vault to state dir. | `cmdLint` `:719`, `cmdBackup` `:746` |
-| `doctor` | Environment + storage + iMessage-readiness checks. | `cmdDoctor` `:785` |
+| `doctor` | Environment + storage + iMessage-readiness checks. | `cmdDoctor` `doctor.go` |
 | `schedule install/list` | Install a scheduled job through launchd on macOS, Task Scheduler on Windows, or a printed cron line on Linux. | `cmdSchedule` `:959` |
 | `sources add … / ingest run` | Register / run a filesystem source. | `cmdSources` `:980`, `cmdIngest` `:1520` |
 | `connectors list\|enable\|disable\|setup` | Catalog + per-type consent state. | `cmdConnectors` `:1006` |
@@ -114,7 +114,7 @@ The visual language is a tiny 5-color palette using the **16-slot ANSI palette**
 
 Surfaces wired through the styler:
 - **`sync status`** (`mora.go:1669`): accented source name (`sty.accent(st.Source)`), dim `last_synced` timestamp, red `(STALE)` when `LastSynced` is past 48h, red error-count string when `ErrorCount > 0`.
-- **`doctor`** (`mora.go:801`): green `ok`, yellow `warn`, storage status colored by threshold.
+- **`doctor`** (`doctor.go`): green `ok`, yellow `warn`, storage status colored by threshold.
 - **`emit` tables** (`mora.go:3199`): memory rows dim the id+scope; `connectors list` shows `● enabled` (green) / `○ disabled` (dim) — but only on a TTY; off-path stays the byte-identical literal `"enabled"`/`"disabled"` (`mora.go:3209`).
 - **digest** via `styleDigestTTY`.
 
@@ -158,12 +158,12 @@ sequenceDiagram
 
 ## `doctor` — environment checks
 
-`cmdDoctor` (`mora.go:785`) runs a set of boolean checks into a map and prints each as `ok`/`warn`, then storage + iMessage readiness:
+`cmdDoctor` (`doctor.go`) runs a set of boolean checks into a map and prints each as `ok`/`warn`, then storage + iMessage readiness:
 - `vault`, `index_db`, `token_dir`, `sources_config` — existence checks.
-- `tokens_disjoint_from_vault` (`disjointRealPaths`, `mora.go:769`) — the OAuth token dir must NOT live inside the vault (symlink-resolved, `EvalSymlinks`), so a synced/shared vault never carries credentials.
-- `looksSynced` (`mora.go:775`) emits a `warn` if the token dir path contains a cloud-sync marker (`com~apple~CloudDocs`, `Dropbox`, `Google Drive`, `OneDrive`, `Sync`) — a token in iCloud/Dropbox is a credential-leak smell.
-- **Storage footprint** (`vaultStorageBytes`, `mora.go:859`): vault size + the index DB size, but the DB is added **only when it resolves to a path outside the vault** (else `dirBytes` already counted it — double-count guard). `storageStatus` (`mora.go:873`) classifies the total `ok`/`warn`/`over` against a 3 GiB soft target / 15 GiB hard ceiling (`storageTargetBytes`/`storageCeilingBytes`, `mora.go:834`). Mora reports only; it never deletes or caps.
-- **iMessage readiness** (`printIMessageReadiness`, `mora.go:904`) prints in a dedicated *ordered* block (the checks map is unordered) so the Full Disk Access guidance reads top-to-bottom. The FDA check is a **real read probe** (`imessage.ProbeReadable` — open+read one row), never `os.Stat`: a present-but-unreadable `chat.db` is exactly the FDA-denied case. See [imessage connector](./05-connectors-imessage.md).
+- `tokens_disjoint_from_vault` (`disjointRealPaths`, `doctor.go`) — the OAuth token dir must NOT live inside the vault (symlink-resolved, `EvalSymlinks`, via `resolveReal` in `mora.go`), so a synced/shared vault never carries credentials.
+- `looksSynced` (`doctor.go`) emits a `warn` if the token dir path contains a cloud-sync marker (`com~apple~CloudDocs`, `Dropbox`, `Google Drive`, `OneDrive`, `Sync`) — a token in iCloud/Dropbox is a credential-leak smell.
+- **Storage footprint** (`vaultStorageBytes`, `doctor.go`): vault size + the index DB size, but the DB is added **only when it resolves to a path outside the vault** (else `dirBytes` already counted it — double-count guard). `storageStatus` (`doctor.go`) classifies the total `ok`/`warn`/`over` against a 3 GiB soft target / 15 GiB hard ceiling (`storageTargetBytes`/`storageCeilingBytes`, `doctor.go`). Mora reports only; it never deletes or caps.
+- **iMessage readiness** (`printIMessageReadiness`, `doctor.go`) prints in a dedicated *ordered* block (the checks map is unordered) so the Full Disk Access guidance reads top-to-bottom. The FDA check is a **real read probe** (`imessage.ProbeReadable` — open+read one row), never `os.Stat`: a present-but-unreadable `chat.db` is exactly the FDA-denied case. See [imessage connector](./05-connectors-imessage.md).
 
 The check-map iteration is unordered Go map iteration; the surrounding blocks (storage, iMessage) are deliberately printed *outside* the map loop so their ordering is stable. Doctor output is not `--json` aware — it is human-only prose with a styler.
 

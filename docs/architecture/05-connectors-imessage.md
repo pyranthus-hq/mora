@@ -126,7 +126,7 @@ On **any** mismatch the resolver degrades, never aborts:
 - **`mode=ro`, never `immutable=1`.** `mode=ro` lets SQLite apply the WAL sidecars on read (SQLite 3.22+), so a live Messages.app's uncheckpointed messages are still visible. `immutable=1` would ignore the WAL → stale/torn reads dropping recent messages (`IMSG-09`, `fda.go:11-14`).
 - **`Ping()` forces a real open.** `sql.Open` is lazy and macOS FDA denial lets `os.Stat` succeed while `open()` fails, so `openChatDB` Pings to force the actual open/read (`fda.go:19-33`). `ProbeReadable` goes further and reads one row from `sqlite_master` so an FDA-denied or corrupt DB surfaces here rather than at first `FetchPage` (`fda.go:40-53`).
 
-`mora doctor` / `connect imessage` use `ProbeReadable` (a real read probe, never `os.Stat`) as the FDA signal and print step-by-step grant guidance when it fails (`mora.go:898-954`). `ingestIMessage` is macOS-gated up front (`runtime.GOOS != "darwin"` prints an honest note and returns 0, never a false error) and translates a present-but-unreadable `chat.db` into the FDA guidance rather than a raw sqlite error (`mora.go:2660-2675`).
+`mora doctor` / `connect imessage` use `ProbeReadable` (a real read probe, never `os.Stat`) as the FDA signal and print step-by-step grant guidance when it fails (`printIMessageReadiness`, `doctor.go`). `ingestIMessage` is macOS-gated up front (`runtime.GOOS != "darwin"` prints an honest note and returns 0, never a false error) and translates a present-but-unreadable `chat.db` into the FDA guidance rather than a raw sqlite error (`mora.go:2660-2675`).
 
 ### Deny-list (thread-granularity)
 
