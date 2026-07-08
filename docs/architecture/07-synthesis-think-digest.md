@@ -409,7 +409,7 @@ The public knob over MCP is `max_tokens` (agents speak tokens; the pilot asked f
 
 The clamp happens **before** the multiply (`mora.go:2855-2864`) so an arbitrarily large `max_tokens` cannot overflow the int. The CLI `mora context` uses a separate `--budget` flag that is a **raw character** budget defaulting to 2000 (`mora.go:540`), *not* tokens — it does not go through `resolveContextBudget`.
 
-### The starvation guard (`buildContext`, `mora.go:2304`)
+### The starvation guard (`buildContext`, `search.go`)
 
 `buildContext` concatenates two blocks: a **wiki preamble** (the vault's standing files `index.md`, `priority-map.md`, `live-tasks.md`, `heartbeat.md`, `auto-resolver.md`, each read from `cfg.VaultDir` and skipped if absent — `mora.go:2308-2313`) and the **query items** (`# Title\n<text>` per memory, `mora.go:2314-2317`). The ordering flips on intent:
 
