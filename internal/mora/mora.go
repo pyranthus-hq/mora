@@ -16,7 +16,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
@@ -118,10 +117,6 @@ type Source struct {
 	DenyConversations []string `json:"deny_conversations,omitempty"`
 }
 
-// ptr returns a pointer to b. Used to set Source.Enabled on freshly-constructed
-// literals — leaving Enabled nil would grandfather to true on next load (D-11).
-func ptr(b bool) *bool { return &b }
-
 // connectorInfo is a static catalog entry describing a user-enableable connector
 // type. NeedsAuth marks types that require an OAuth consent moment on enable.
 //
@@ -182,23 +177,6 @@ var connectorCatalog = []connectorInfo{
 	// without it, applecal memories never reconcile with this instance and
 	// silently vanish from the delta brief.
 	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)", Provider: "applecal", Upcoming: true},
-}
-
-// isInteractive reports whether r is a real terminal (character device). It uses
-// only the stdlib: in production stdin is *os.File (os.Stdin) and we check for
-// ModeCharDevice; in tests/pipes stdin is a strings.Reader or a redirected file,
-// so this returns false. This keeps interactive consent/menus from blocking on a
-// non-TTY without adding a go-isatty dependency (deferred to Plan 04).
-func isInteractive(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // catalogRow is the per-type view emitted by `connectors list`. Enabled joins the
@@ -830,22 +808,6 @@ const (
 	searchMemoryResultsBudgetBytes = 11000
 )
 
-// truncateRunes returns s clipped to at most max bytes, never splitting a
-// multi-byte UTF-8 rune (a raw s[:max] could leave an invalid trailing byte).
-func truncateRunes(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if len(s) <= max {
-		return s
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
-}
-
 var p0Re = regexp.MustCompile(`^(\d+\.|-)\s+\*\*([^*]+)\*\*`)
 
 // terminalTaskStatuses are the Status (col 4) values that close a task. A row in
@@ -869,11 +831,6 @@ type LiveTask struct {
 	Blocker     string `json:"blocker"`
 	Horizon     string `json:"horizon"`
 	LastTouched string `json:"last_touched"`
-}
-
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
 }
 
 // mcpMaxRequestBytes caps one JSON-RPC request line. bufio.Scanner's 64KB
@@ -949,81 +906,6 @@ type scheduleCommandRunner func(name string, args ...string) ([]byte, error)
 
 var runScheduleCommand scheduleCommandRunner = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
-}
-
-func emit(w io.Writer, v any, jsonOut bool) error {
-	if jsonOut {
-		b, err := json.MarshalIndent(v, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(w, string(b))
-		return nil
-	}
-	sty := newStyler(w, jsonOut)
-	switch x := v.(type) {
-	case Memory:
-		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), ownedTitle(x))
-	case []Memory:
-		for _, m := range x {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), ownedTitle(m))
-		}
-	case []catalogRow:
-		for _, r := range x {
-			// Off-path stays byte-identical ("enabled"/"disabled"); glyph + color
-			// only appear on a real TTY.
-			state := "disabled"
-			if r.Enabled {
-				state = "enabled"
-			}
-			if sty.on {
-				if r.Enabled {
-					state = sty.ok("● enabled")
-				} else {
-					state = sty.dim("○ disabled")
-				}
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Type, r.Name, state)
-		}
-	default:
-		fmt.Fprintf(w, "%v\n", v)
-	}
-	return nil
-}
-
-func atomicWrite(path string, body []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	// Stage through a unique temp file (not a fixed `<path>.tmp`) so two
-	// processes writing the same target never share, truncate, or rename each
-	// other's in-flight temp. The temp stays in
-	// the target dir so the final os.Rename remains atomic on the same
-	// filesystem. NOTE: this does not by itself fix the higher-level
-	// read-modify-write lost-update on sources.json (two writers each load →
-	// mutate → save); that serialization is provided by mutateSources /
-	// acquireSourcesLock (sources_lock.go), which hold a lease around the whole
-	// load → mutate → save cycle.
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	// Remove the temp on any failure path; a no-op once the rename succeeds.
-	defer os.Remove(tmp)
-	if _, err := f.Write(body); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	// CreateTemp opens at 0600; raise to the caller's requested mode.
-	if err := os.Chmod(tmp, mode); err != nil {
-		return err
-	}
-	return renameReplaceWithRetry(tmp, path)
 }
 
 // renameReplaceWithRetry publishes tmp onto path via os.Rename, replacing any
@@ -1168,30 +1050,6 @@ type usageEvent struct {
 	Millis  int64  `json:"millis"`
 }
 
-func appendFile(path, line string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(line)
-	return err
-}
-
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
 // randRead is the entropy seam (defaults to crypto/rand.Read). Tests override it
 // to simulate an unavailable OS CSPRNG and exercise newID's fallback branch.
 var randRead = rand.Read
@@ -1201,20 +1059,6 @@ var randRead = rand.Read
 // capturing the real os.Stderr.
 var warnRandFallback = func() {
 	fmt.Fprintln(os.Stderr, "warn: crypto/rand unavailable; deriving memory id suffix from math/rand (still unique, but not cryptographically random)")
-}
-
-func expandHome(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, p[2:])
-	}
-	return p
-}
-
-// isHelpFlag reports whether a subcommand arg is a help request. Used by subcommands
-// (sync, search) that otherwise treat a leading flag as data and act on it.
-func isHelpFlag(s string) bool {
-	return s == "--help" || s == "-h" || s == "help"
 }
 
 // ftsStopwords are content-free English function words. They carry near-zero
