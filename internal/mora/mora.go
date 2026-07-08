@@ -2108,73 +2108,65 @@ func cmdConnectors(ctx context.Context, args []string, stdout io.Writer, stdin i
 // bogus row with the suffixed name as its Type). Errors on a missing name: the
 // connect flow runs ensureGoogleSources first, so absence is a real bug.
 func setSourceEnabledByName(cfg Config, name string, enabled bool) error {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return err
-	}
-	for i := range sources {
-		if sources[i].Name == name {
-			sources[i].Enabled = ptr(enabled)
-			return saveSources(cfg, sources)
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		for i := range sources {
+			if sources[i].Name == name {
+				sources[i].Enabled = ptr(enabled)
+				return sources, nil
+			}
 		}
-	}
-	return fmt.Errorf("no source named %q", name)
+		return nil, fmt.Errorf("no source named %q", name)
+	})
 }
 
 // setSourceSinceDaysByName mirrors setSourceEnabledByName for the window
 // override — account-scoped, never the whole type family.
 func setSourceSinceDaysByName(cfg Config, name string, days int) error {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return err
-	}
-	for i := range sources {
-		if sources[i].Name == name {
-			sources[i].SinceDays = days
-			return saveSources(cfg, sources)
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		for i := range sources {
+			if sources[i].Name == name {
+				sources[i].SinceDays = days
+				return sources, nil
+			}
 		}
-	}
-	return fmt.Errorf("no source named %q", name)
+		return nil, fmt.Errorf("no source named %q", name)
+	})
 }
 
 func setSourceSinceDays(cfg Config, ctype string, days int) error {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return err
-	}
-	for i := range sources {
-		if sources[i].Type == ctype {
-			sources[i].SinceDays = days
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		for i := range sources {
+			if sources[i].Type == ctype {
+				sources[i].SinceDays = days
+			}
 		}
-	}
-	return saveSources(cfg, sources)
+		return sources, nil
+	})
 }
 
 func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return err
-	}
-	found := false
-	for i := range sources {
-		if sources[i].Type == ctype {
-			sources[i].Enabled = ptr(enabled)
-			found = true
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		found := false
+		for i := range sources {
+			if sources[i].Type == ctype {
+				sources[i].Enabled = ptr(enabled)
+				found = true
+			}
 		}
-	}
-	if !found {
-		// No source row yet (e.g. filesystem before any `sources add`). Create a
-		// minimal row carrying the consent bit; an explicit Enabled avoids the
-		// load-time grandfather flipping a nil to true (D-11).
-		sources = append(sources, Source{
-			Name:      ctype,
-			Type:      ctype,
-			Scope:     "personal",
-			Enabled:   ptr(enabled),
-			CreatedAt: time.Now().Format(time.RFC3339),
-		})
-	}
-	return saveSources(cfg, sources)
+		if !found {
+			// No source row yet (e.g. filesystem before any `sources add`). Create a
+			// minimal row carrying the consent bit; an explicit Enabled avoids the
+			// load-time grandfather flipping a nil to true (D-11).
+			sources = append(sources, Source{
+				Name:      ctype,
+				Type:      ctype,
+				Scope:     "personal",
+				Enabled:   ptr(enabled),
+				CreatedAt: time.Now().Format(time.RFC3339),
+			})
+		}
+		return sources, nil
+	})
 }
 
 // enableConnector is the "log me in" half of consent (REG-02): it runs OAuth
@@ -2597,26 +2589,24 @@ func parseCSVList(s string) []string {
 // sources.json (creating the row if needed), so every future `mora sync imessage`
 // honors it (D-07; no new config file).
 func setIMessageDenyList(cfg Config, contacts, conversations []string) error {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return err
-	}
-	found := false
-	for i := range sources {
-		if sources[i].Type == "imessage" {
-			sources[i].DenyContacts = contacts
-			sources[i].DenyConversations = conversations
-			found = true
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		found := false
+		for i := range sources {
+			if sources[i].Type == "imessage" {
+				sources[i].DenyContacts = contacts
+				sources[i].DenyConversations = conversations
+				found = true
+			}
 		}
-	}
-	if !found {
-		sources = append(sources, Source{
-			Name: "imessage", Type: "imessage", Scope: "personal",
-			Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
-			DenyContacts: contacts, DenyConversations: conversations,
-		})
-	}
-	return saveSources(cfg, sources)
+		if !found {
+			sources = append(sources, Source{
+				Name: "imessage", Type: "imessage", Scope: "personal",
+				Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
+				DenyContacts: contacts, DenyConversations: conversations,
+			})
+		}
+		return sources, nil
+	})
 }
 
 // disableConnector is a non-destructive bit-flip (REG-04 / D-13): it sets Enabled
@@ -3063,20 +3053,21 @@ func cmdDisconnect(ctx context.Context, args []string, stdout io.Writer) error {
 // is keyed by NAME (not type) so a second account is not mistaken for the
 // first. New rows stay disabled (D-11); connect flips them.
 func ensureGoogleSources(cfg Config, account string) error {
-	sources, _ := loadSources(cfg)
-	have := map[string]bool{}
-	for _, s := range sources {
-		have[s.Name] = true
-	}
-	gmailName, calName := googleSourceNames(account)
-	now := time.Now().Format(time.RFC3339)
-	if !have[gmailName] {
-		sources = append(sources, Source{Name: gmailName, Type: "gmail", Scope: "personal", Account: account, Enabled: ptr(false), CreatedAt: now})
-	}
-	if !have[calName] {
-		sources = append(sources, Source{Name: calName, Type: "calendar", Scope: "personal", Calendar: "primary", Account: account, Enabled: ptr(false), CreatedAt: now})
-	}
-	return saveSources(cfg, sources)
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		have := map[string]bool{}
+		for _, s := range sources {
+			have[s.Name] = true
+		}
+		gmailName, calName := googleSourceNames(account)
+		now := time.Now().Format(time.RFC3339)
+		if !have[gmailName] {
+			sources = append(sources, Source{Name: gmailName, Type: "gmail", Scope: "personal", Account: account, Enabled: ptr(false), CreatedAt: now})
+		}
+		if !have[calName] {
+			sources = append(sources, Source{Name: calName, Type: "calendar", Scope: "personal", Calendar: "primary", Account: account, Enabled: ptr(false), CreatedAt: now})
+		}
+		return sources, nil
+	})
 }
 
 // loadSourcesOrEmpty is loadSources with the error collapsed to "no sources" —
@@ -3109,16 +3100,14 @@ func googleAccountForEmail(sources []Source, email string) (label string, found 
 // setSourceEmailByAccount stamps the signed-in address onto an account's
 // gmail/calendar rows (the guard's lookup data).
 func setSourceEmailByAccount(cfg Config, account, email string) error {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return err
-	}
-	for i := range sources {
-		if (sources[i].Type == "gmail" || sources[i].Type == "calendar") && sources[i].Account == account {
-			sources[i].Email = email
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		for i := range sources {
+			if (sources[i].Type == "gmail" || sources[i].Type == "calendar") && sources[i].Account == account {
+				sources[i].Email = email
+			}
 		}
-	}
-	return saveSources(cfg, sources)
+		return sources, nil
+	})
 }
 
 // sourceFreshlySynced reports whether a source completed a CLEAN sync within
@@ -4175,15 +4164,20 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	if s.Type == "filesystem" && s.Path == "" {
 		return errors.New("filesystem source requires --path")
 	}
-	sources, _ := loadSources(cfg)
-	var next []Source
-	for _, existing := range sources {
-		if existing.Name != s.Name {
-			next = append(next, existing)
+	// Serialize the read-modify-write (P3): mutateSources reloads inside the lease
+	// so a concurrent writer's change is not clobbered. Unlike the old swallowed
+	// load error, a corrupt registry now fails loudly instead of being replaced by
+	// only this new source (matching connectFilesystem's long-standing guard).
+	if err := mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		var next []Source
+		for _, existing := range sources {
+			if existing.Name != s.Name {
+				next = append(next, existing)
+			}
 		}
-	}
-	next = append(next, s)
-	if err := saveSources(cfg, next); err != nil {
+		next = append(next, s)
+		return next, nil
+	}); err != nil {
 		return err
 	}
 	return emit(stdout, s, true)
@@ -4216,9 +4210,12 @@ func loadSources(cfg Config) ([]Source, error) {
 
 // saveSources persists the source registry. atomicWrite stages through a unique
 // temp per writer, so this is safe against the temp-collision race (two writers
-// clobbering a shared `.tmp`). It does NOT serialize the higher-level
-// read-modify-write on sources.json: two callers each doing load → mutate → save
-// can still lose an update. That needs caller-level serialization, out of scope here.
+// clobbering a shared `.tmp`). It is NOT the serialization boundary for the
+// higher-level read-modify-write: two callers each doing load → mutate → save
+// could otherwise still lose an update. That serialization lives in
+// mutateSources / acquireSourcesLock (sources_lock.go); every load → mutate →
+// save on sources.json MUST go through one of them. Call saveSources directly
+// only while already holding the sources lease (mutateSources does).
 func saveSources(cfg Config, sources []Source) error {
 	b, err := json.MarshalIndent(sources, "", "  ")
 	if err != nil {
@@ -4649,30 +4646,42 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 		srcName = defaultFilesystemSourceName(path)
 	}
 	s := Source{Name: srcName, Type: "filesystem", Scope: *scope, Path: path, Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
-	// Refuse to overwrite an unreadable sources.json: with the error swallowed, a
-	// corrupt file would be replaced by ONLY the new source, destroying every other
-	// registered connector. Bail and leave the file for the user to repair.
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return fmt.Errorf("cannot read existing sources (fix or remove %s): %w", filepath.Join(cfg.ConfigDir, "sources.json"), err)
-	}
-	var next []Source
-	for _, existing := range sources {
-		if existing.Name == s.Name {
-			// Same name + same folder => a deliberate re-connect: refresh in place
-			// and preserve the original add time. Same name + a DIFFERENT folder
-			// (e.g. two dirs whose base name collides) would silently clobber the
-			// first — refuse and point at --name instead.
-			if existing.Type == "filesystem" && existing.Path == s.Path {
-				s.CreatedAt = existing.CreatedAt
-				continue
-			}
-			return fmt.Errorf("a source named %q already exists (path %q); pick another name with --name", existing.Name, existing.Path)
+	// Serialize the read-modify-write (P3) directly (not via mutateSources) so the
+	// custom "cannot read existing sources" error survives. The lease covers ONLY
+	// load->mutate->save and is released BEFORE the (potentially multi-minute)
+	// ingest+rebuild below — a sources lease must never be held across ingest.
+	if err := func() error {
+		release, lerr := acquireSourcesLock(cfg, time.Now())
+		if lerr != nil {
+			return lerr
 		}
-		next = append(next, existing)
-	}
-	next = append(next, s)
-	if err := saveSources(cfg, next); err != nil {
+		defer release()
+		// Refuse to overwrite an unreadable sources.json: with the error swallowed, a
+		// corrupt file would be replaced by ONLY the new source, destroying every other
+		// registered connector. Bail and leave the file for the user to repair. The
+		// reload happens INSIDE the lease so a concurrent writer's change is not lost.
+		sources, err := loadSources(cfg)
+		if err != nil {
+			return fmt.Errorf("cannot read existing sources (fix or remove %s): %w", filepath.Join(cfg.ConfigDir, "sources.json"), err)
+		}
+		var next []Source
+		for _, existing := range sources {
+			if existing.Name == s.Name {
+				// Same name + same folder => a deliberate re-connect: refresh in place
+				// and preserve the original add time. Same name + a DIFFERENT folder
+				// (e.g. two dirs whose base name collides) would silently clobber the
+				// first — refuse and point at --name instead.
+				if existing.Type == "filesystem" && existing.Path == s.Path {
+					s.CreatedAt = existing.CreatedAt
+					continue
+				}
+				return fmt.Errorf("a source named %q already exists (path %q); pick another name with --name", existing.Name, existing.Path)
+			}
+			next = append(next, existing)
+		}
+		next = append(next, s)
+		return saveSources(cfg, next)
+	}(); err != nil {
 		return err
 	}
 	// Ingest now (the named, consented convenience path — same as connect google).
@@ -5737,9 +5746,11 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	// processes writing the same target never share, truncate, or rename each
 	// other's in-flight temp. The temp stays in
 	// the target dir so the final os.Rename remains atomic on the same
-	// filesystem. NOTE: this does not fix the higher-level read-modify-write
-	// lost-update on sources.json (two writers each load → mutate → save);
-	// that needs caller-level serialization and is out of scope here.
+	// filesystem. NOTE: this does not by itself fix the higher-level
+	// read-modify-write lost-update on sources.json (two writers each load →
+	// mutate → save); that serialization is provided by mutateSources /
+	// acquireSourcesLock (sources_lock.go), which hold a lease around the whole
+	// load → mutate → save cycle.
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
