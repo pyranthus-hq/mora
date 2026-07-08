@@ -14,7 +14,7 @@ Read-only Gmail (thread-level) and Calendar (event) ingestion: an installed-app 
 | `internal/google/client.json` | 1 | Committed **NON-SECRET** placeholder so `//go:embed` compiles on a fresh clone |
 | `internal/google/types.go` | 27 | `package google` doc + thin aliases for the seam shapes (`Item`, `Fetcher`, …) defined in `internal/memory`; Gmail/Cal kind constants |
 | `internal/google/{ids,ingest,map,status}.go` | 11/12/10/12 | Re-export aliases for `StableID`/`ContentHash`/`SafeFilename`, `Ingest`, `MapItem`/`MappedMemory`, `SyncStatus`/`Load/SaveStatus` (real code in `internal/memory`) |
-| `internal/mora/mora.go` | (`writeMappedMemory` 2515; `ingestGoogle` 2538; `cmdConnect` 1567) | The wiring boundary: drives the consent flow, runs `Ingest`, converts `MappedMemory`→`Memory`, writes files |
+| `internal/mora/ingest.go` | (`writeMappedMemory`; `ingestGoogle`; `cmdConnect`) | The wiring boundary: drives the consent flow, runs `Ingest`, converts `MappedMemory`→`Memory`, writes files |
 
 The connector-agnostic core — `Item`, `Fetcher`, `Ingest`, `MapItem`, `MappedMemory`, `SyncStatus`, the ID helpers — lives in `internal/memory` and is shared with the iMessage connector. `internal/google` is now a thin *adapter*: it produces `Item`s and re-exports the shared shapes so its call-sites read unchanged (`internal/google/types.go:1`, `internal/google/ingest.go:1`).
 
@@ -22,7 +22,7 @@ The connector-agnostic core — `Item`, `Fetcher`, `Ingest`, `MapItem`, `MappedM
 
 `internal/google` MUST NOT import `internal/mora`. `mora` imports `google`, so the reverse would cycle. The connector returns plain `memory.MappedMemory` structs and knows nothing about Mora's `Memory` type, frontmatter rendering, or the SQLite index. The boundary is documented at the top of the package (`internal/google/types.go:2`) and verified mechanically — the only occurrence of the string `internal/mora` under `internal/google/` is that comment, not an import.
 
-The conversion happens in exactly one place, `writeMappedMemory` (`internal/mora/mora.go:2515`), which copies the flat `MappedMemory` fields into a `Memory`, computes the destination path, and renders. `internal/google` never touches the filesystem layout or the index.
+The conversion happens in exactly one place, `writeMappedMemory` (`internal/mora/ingest.go`), which copies the flat `MappedMemory` fields into a `Memory`, computes the destination path, and renders. `internal/google` never touches the filesystem layout or the index.
 
 ```mermaid
 flowchart LR
@@ -86,7 +86,7 @@ sequenceDiagram
 
 `SaveToken` (`internal/google/oauth.go:100`) writes `~/.config/mora/tokens/google.json` via a `.tmp`+rename atomic write at **0600** (dir 0700); the 0600 mode is asserted by `TestTokenStoreRoundtrip` (`internal/google/oauth_test.go:60`). At fetch time, `NewLiveFetcher` wraps the stored token in `cfg.TokenSource(ctx, tok)` (`internal/google/client.go:23`), so the `oauth2` library auto-refreshes access tokens from the refresh token — there is no manual refresh code.
 
-**Production-vs-Testing durability gotcha:** the refresh token survives indefinitely only if the OAuth app is in **Production** mode. Google's **Testing** mode expires refresh tokens after ~7 days, after which every sync fails with an auth error. `isGoogleAuthError` (`internal/mora/setup.go`) pattern-matches `oauth`/`token`/`invalid_grant`/`unauthorized`/`401`/`expired`/`refresh` (`internal/mora/setup.go`) and the sync path then prints the specific recovery: re-run `connect google`, and if it recurs every ~7 days, switch the app to Production (`internal/mora/mora.go:1251`).
+**Production-vs-Testing durability gotcha:** the refresh token survives indefinitely only if the OAuth app is in **Production** mode. Google's **Testing** mode expires refresh tokens after ~7 days, after which every sync fails with an auth error. `isGoogleAuthError` (`internal/mora/setup.go`) pattern-matches `oauth`/`token`/`invalid_grant`/`unauthorized`/`401`/`expired`/`refresh` (`internal/mora/setup.go`) and the sync path then prints the specific recovery: re-run `connect google`, and if it recurs every ~7 days, switch the app to Production (`internal/mora/ingest.go`).
 
 `RevokeToken` (`internal/google/oauth.go:128`) best-effort POSTs the refresh token to Google's revocation endpoint; `cmdDisconnect` (`internal/mora/setup.go`) calls it then removes the token file.
 
@@ -116,7 +116,7 @@ Both adapters populate `Item.Meta` with structured identity for the [entity grap
 
 ## The resumable Ingest loop
 
-`ingestGoogle` (`internal/mora/mora.go:2538`) wires it up: resolve creds, load the token, build the `LiveFetcher`, load prior `SyncStatus`, compute the window, then call the shared `memory.Ingest` with a `Write` callback that delegates to `writeMappedMemory` and prints a running count every 500 **successfully written** items (the counter increments only after `writeMappedMemory` returns nil, `:2571`). The body budget is **16 KiB** (`:2584`).
+`ingestGoogle` (`internal/mora/ingest.go`) wires it up: resolve creds, load the token, build the `LiveFetcher`, load prior `SyncStatus`, compute the window, then call the shared `memory.Ingest` with a `Write` callback that delegates to `writeMappedMemory` and prints a running count every 500 **successfully written** items (the counter increments only after `writeMappedMemory` returns nil, `ingest.go`). The body budget is **16 KiB** (`ingest.go`).
 
 `memory.Ingest` (`internal/memory/ingest.go:32`) pages from the checkpoint cursor:
 1. `FetchPage(kind, window, cursor)`. On error: bump `ErrorCount`/`LastError`, **keep `Checkpoint = cursor`** so the next run resumes this page, and return the error (page-fetch errors stop the run but preserve resume state).
@@ -124,7 +124,7 @@ Both adapters populate `Item.Meta` with structured identity for the [entity grap
 3. After a page, advance `Checkpoint = NextCursor`. Empty cursor → done.
 4. On clean completion, **clear the checkpoint** and set `LastSynced`.
 
-`writeMappedMemory` (`internal/mora/mora.go:2515`) does the **content-hash skip**: if a file already exists with the same `ContentHash` and this is not a tombstone, it returns early without rewriting and **preserves the original `created_at`** (`:2526`). The destination is `sources/<provider>/<SafeFilename(StableID)>.md` (`:2523`). `StableID` is `<kind>/<providerID>` — provider identity only, never content (`internal/memory/ids.go:11`) — so re-syncing an edited thread overwrites the same file rather than duplicating. The content hash folds in the canonical Meta only when non-empty (`contentHashWithMeta`, `internal/memory/mapped.go:36`), so adding a recovered participant rewrites the file while pre-Meta memories keep their legacy two-part hash.
+`writeMappedMemory` (`internal/mora/ingest.go`) does the **content-hash skip**: if a file already exists with the same `ContentHash` and this is not a tombstone, it returns early without rewriting and **preserves the original `created_at`** (`ingest.go`). The destination is `sources/<provider>/<SafeFilename(StableID)>.md` (`ingest.go`). `StableID` is `<kind>/<providerID>` — provider identity only, never content (`internal/memory/ids.go:11`) — so re-syncing an edited thread overwrites the same file rather than duplicating. The content hash folds in the canonical Meta only when non-empty (`contentHashWithMeta`, `internal/memory/mapped.go:36`), so adding a recovered participant rewrites the file while pre-Meta memories keep their legacy two-part hash.
 
 ```mermaid
 flowchart TD
@@ -144,9 +144,9 @@ flowchart TD
 
 ### Windows and the connect convenience
 
-`windowForSource` (`internal/mora/mora.go:2594`) defaults Gmail to a lean **90-day** lookback (a year is mostly low-signal for a memory index), overridable via `connect google --since-days N` which is **persisted** on the source (`setSourceSinceDays`) so future `sync google` reuses it. Calendar uses a fixed `[-6 months, +3 months]` window (`:2609`).
+`windowForSource` (`internal/mora/ingest.go`) defaults Gmail to a lean **90-day** lookback (a year is mostly low-signal for a memory index), overridable via `connect google --since-days N` which is **persisted** on the source (`setSourceSinceDays`) so future `sync google` reuses it. Calendar uses a fixed `[-6 months, +3 months]` window (`ingest.go`).
 
-`cmdConnect` (`internal/mora/mora.go:1567`) is the one-command convenience: print the read-only preamble, run the loopback consent, save the token, validate by listing labels (`AuthedLabels`, `internal/google/client.go:47`), ensure the gmail/calendar sources exist (created **disabled**), **flip them enabled before** the backfill, run ingest for both, then `rebuildIndex`. The backfill loop here is deliberately **ungated** — it is the named, consented path, not a silent background backfill (`:1632`).
+`cmdConnect` (`internal/mora/ingest.go`) is the one-command convenience: print the read-only preamble, run the loopback consent, save the token, validate by listing labels (`AuthedLabels`, `internal/google/client.go:47`), ensure the gmail/calendar sources exist (created **disabled**), **flip them enabled before** the backfill, run ingest for both, then `rebuildIndex`. The backfill loop here is deliberately **ungated** — it is the named, consented path, not a silent background backfill (`ingest.go`).
 
 ## Invariants & gotchas
 
@@ -154,11 +154,11 @@ flowchart TD
 - **Read-only scopes, zero egress.** Only `gmail.readonly` + `calendar.readonly` (`internal/google/oauth.go:32`). Never widen scopes without an explicit decision — write access changes the product's threat model and the consent preamble's promise.
 - **The embedded `client.json` is a non-secret placeholder.** It must exist for `//go:embed` to compile, must never hold real creds, and `configFromInstalledJSON` fails fast on the `DEV_PLACEHOLDER` ID so users get setup guidance, not a 401. (`internal/google/oauth.go:77`)
 - **Token file is 0600 (dir 0700), atomic write.** It holds a refresh token = standing read access to the user's mail. (`internal/google/oauth.go:100`, asserted by `oauth_test.go:60`)
-- **Refresh-token durability needs Production mode.** Testing mode expires refresh tokens in ~7 days; recurring auth failures every week mean the app is in Testing. Surface this, don't swallow it. (`internal/mora/mora.go:1251`)
+- **Refresh-token durability needs Production mode.** Testing mode expires refresh tokens in ~7 days; recurring auth failures every week mean the app is in Testing. Surface this, don't swallow it. (`internal/mora/ingest.go`)
 - **`StableID` is provider identity only**, never content (`<kind>/<providerID>`). Files are named with `SafeFilename` (`/`,`:`,` `→`_`), so any later ID lookup must match the SafeFilename form. (`internal/memory/ids.go:11`)
-- **Content-hash skip preserves `created_at`.** An unchanged thread is not rewritten, and rewrites keep the original creation time. The hash folds in Meta only when non-empty, so pre-Meta files don't spuriously rewrite. **Volatile state keys (Gmail `labels`, issue #62) are stripped before hashing** (`hashMeta`) so a read/star toggle never rewrites the file or churns the delta. (`internal/mora/mora.go:2526`, `internal/memory/mapped.go`)
+- **Content-hash skip preserves `created_at`.** An unchanged thread is not rewritten, and rewrites keep the original creation time. The hash folds in Meta only when non-empty, so pre-Meta files don't spuriously rewrite. **Volatile state keys (Gmail `labels`, issue #62) are stripped before hashing** (`hashMeta`) so a read/star toggle never rewrites the file or churns the delta. (`internal/mora/ingest.go`, `internal/memory/mapped.go`)
 - **Ingest is resumable, not live.** The checkpoint advances per page and survives a crash; cursors are stored in `SyncStatus` (`internal/memory/status.go:13`) but the `GmailHistory`/`CalSyncToken` incremental fields are **unused in v1** — sync is an honest full re-snapshot. See [sync & freshness](./11-sync-and-freshness.md).
-- **Never swallow sync errors.** Page-fetch errors stop the run but preserve resume state; per-item write errors are counted and skipped. Failures are surfaced to the user so a stale snapshot is always distinguishable from a fresh one. (`internal/memory/ingest.go:43`, `internal/mora/mora.go:1259`)
+- **Never swallow sync errors.** Page-fetch errors stop the run but preserve resume state; per-item write errors are counted and skipped. Failures are surfaced to the user so a stale snapshot is always distinguishable from a fresh one. (`internal/memory/ingest.go:43`, `internal/mora/ingest.go`)
 - **Gmail capture is thread-grained.** One thread → one `Item` → one memory; per-message edges are intentionally not modeled. Subject/From take the first message; `OccurredAt` is the latest message. (`internal/google/gmail.go:52`)
 - **Identity Meta must be byte-stable.** Addresses are sorted and lowercased; empty lists/names maps are omitted. This is load-bearing for the deterministic [entity graph](./03-entity-graph.md) — do not introduce map-iteration-order output. (`internal/google/identity.go:99`, `:111`)
 - **Attachments are metadata-only.** v1 never ingests attachment bodies. (`internal/google/gmail.go:128`)

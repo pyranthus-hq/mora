@@ -7,7 +7,7 @@
 | File | Responsibility |
 |---|---|
 | `internal/applecal/applecal.go` | The whole connector: `KindAppleCalEvent` + `RegisterKind` init, `DefaultDBPath`/`LegacyDBPath`, `LiveFetcher` (read-only + immutable open, schema probe), `FetchPage` (ROWID-cursor paging, window bounds), `participants`, `eventItem` |
-| `internal/mora/mora.go` | Wiring: `ingestAppleCal` (darwin gate, FDA error text, shared `Ingest` loop), `appleCalDBPath` (modern→legacy probe), `windowForAppleCal`, catalog entry `applecalendar`, `enableConnector` copy (`setup.go`) |
+| `internal/mora/mora.go` | Wiring: `ingestAppleCal` (darwin gate, FDA error text, shared `Ingest` loop), `appleCalDBPath` (modern→legacy probe), `windowForAppleCal` (these three now in `ingest.go`), catalog entry `applecalendar`, `enableConnector` copy (`setup.go`) |
 | `internal/mora/digest.go` | `syncStatusPathFor` case → `sync/applecal-<name>.json` |
 
 ```mermaid
