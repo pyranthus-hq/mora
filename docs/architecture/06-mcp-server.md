@@ -6,7 +6,7 @@ The stdio JSON-RPC 2.0 server that exposes Mora's memory, retrieval, entity-grap
 
 | File | Lines (approx) | Responsibility |
 |---|---|---|
-| `internal/mora/mora.go` | `serveMCP` 2820–2832, `handleMCP` 2867–2926, `toCallToolResult` 2935–2957, `callMCPTool` 2959–3053, `mcpTool`/`mcpParam` 3072–3101, `cmdMCP` 1862–1867, `snippetMemories` 2180–2197, `usageEvent`/`usageEnabled`/`logUsage` 3242–3271 | The whole MCP surface: stdio dispatch loop, JSON-RPC method routing, the CallToolResult envelope, every tool case, the tools/list schema builders, and local usage logging |
+| `internal/mora/mora.go` | `serveMCP` 2820–2832, `handleMCP` 2867–2926, `toCallToolResult` 2935–2957, `callMCPTool` 2959–3053, `mcpTool`/`mcpParam` 3072–3101, `cmdMCP` 1862–1867, `snippetMemories` 2180–2197, `usageEvent` (usage logging `usageEnabled`/`logUsage` now in `usage.go`) | The whole MCP surface: stdio dispatch loop, JSON-RPC method routing, the CallToolResult envelope, every tool case, the tools/list schema builders, and local usage logging |
 | `internal/mora/mora_mcp_result_test.go` | full file | Contract guard: every `tools/call` must return a CallToolResult, not a bare value (the Codex-rejection regression) |
 | `internal/mora/mora_mcp_budget_test.go` | full file | The "T0" output-size regression gate: pins each tool's serialized envelope under a fixed token ceiling; quarantines the still-RED tools |
 
@@ -140,7 +140,7 @@ The two long-standing RED rows were closed in v0.5.1 (`entities.go` `entitiesFor
 
 ## Usage logging
 
-Every `callMCPTool` case calls `logUsage` (`mora.go:3261`) with a `usageEvent` (`mora.go:3242`: `ts, tool, query, scope, results, millis`). Logging is **local-only JSONL** appended to `<StateDir>/usage/events.jsonl` (`logUsage:3270`) — never the vault, never any network. It is gated by `usageEnabled` (`mora.go:3251`): disabled if `DO_NOT_TRACK=1` **or** an `OFF` sentinel file exists at `<StateDir>/usage/OFF` (written by `mora usage off`). The `query` field is the *raw tier* — it stays on local disk and is "never sent" (the struct comment makes this explicit). `logUsage` runs before the error check in the search path, so even failed/empty searches are logged with `results: 0`.
+Every `callMCPTool` case calls `logUsage` (`usage.go`) with a `usageEvent` (`mora.go`: `ts, tool, query, scope, results, millis`). Logging is **local-only JSONL** appended to `<StateDir>/usage/events.jsonl` (`logUsage`, `usage.go`) — never the vault, never any network. It is gated by `usageEnabled` (`usage.go`): disabled if `DO_NOT_TRACK=1` **or** an `OFF` sentinel file exists at `<StateDir>/usage/OFF` (written by `mora usage off`). The `query` field is the *raw tier* — it stays on local disk and is "never sent" (the struct comment makes this explicit). `logUsage` runs before the error check in the search path, so even failed/empty searches are logged with `results: 0`.
 
 ## Invariants & gotchas
 

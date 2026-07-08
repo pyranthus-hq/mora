@@ -59,7 +59,7 @@ flowchart TD
 | `sync status\|google\|imessage` | Per-source freshness (no fetch) / re-backfill. | `cmdSync` `:1649` |
 | `share keygen\|init\|preview\|push\|subscribe\|pull\|list\|remove` | Scoped, age-encrypted, read-only sharing of authored memories over a dedicated private git remote; subscriptions union into search/think, owner-attributed. | `cmdShare` `share.go:1437`, see [sharing](./13-sharing.md) |
 | `reingest [--full]` | Re-fetch + rewrite memories with latest metadata, rebuild graph. | `cmdReingest` `:1709` |
-| `usage report\|off\|on` | Local-only content-free analytics. | `cmdUsage` `:1764` |
+| `usage report\|off\|on` | Local-only content-free analytics. | `cmdUsage` `usage.go` |
 | `disconnect google` | Drop the Google token. | `cmdDisconnect` `:1827` |
 | `mcp serve` | stdio JSON-RPC MCP server. | `cmdMCP` `:1862`, see [mcp-server](./06-mcp-server.md) |
 | `upgrade [--check]` | GitHub-release self-update; refuses dev builds. | `cmdUpgrade` `upgrade.go:24` |
