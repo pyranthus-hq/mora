@@ -117,7 +117,7 @@ Neil's redline: **one tool result must not dominate the 20000-token context wind
 
 ### The envelope-doubling bug it's built around
 
-`toCallToolResult` (`mora.go:2935-2957`) JSON-marshals an object-shaped return into a text block **and** attaches the same value as `structuredContent` (`mora.go:2953-2954`). So object-returning tools serialize their payload twice on the wire. The budget gate exists to keep that doubling — and three other structural blowups — visible and bounded.
+`toCallToolResult` (`mcp.go`) JSON-marshals an object-shaped return into a text block **and** attaches the same value as `structuredContent` (`mcp.go`). So object-returning tools serialize their payload twice on the wire. The budget gate exists to keep that doubling — and three other structural blowups — visible and bounded.
 
 Tokens are computed as `ceil(bytes / charsPerToken)` with `charsPerToken = 4` (`mora.go:2847`, `mora_mcp_budget_test.go:301`), matching the codebase's own budget unit so the ceilings mean the same thing the runtime budgeting means.
 
@@ -240,7 +240,7 @@ Get live numbers with `MORA_EMBEDDER=ollama MORA_EVAL_LIVE=1 go test ./internal/
 
 - **`wantRED` over `t.Skip` for known bugs.** `mora_mcp_budget_test.go:30`. WHY: a skip is invisible and won't notice when the bug is fixed; `wantRED` flips the gate RED on a fix (`FIXED` fatal) so the win is locked in, and on a >25%-worse regression (`WORSENED` fatal) so a quarantined tool can't balloon unnoticed.
 
-- **The budget gate measures the FULL envelope, not just the text block.** `measureEnvelope` marshals the whole result map including the `structuredContent` mirror (`mora_mcp_budget_test.go:68-76`). WHY: the doubling bug lives in `toCallToolResult` (`mora.go:2953-2954`); measuring only the text block would hide half the cost the agent actually pays.
+- **The budget gate measures the FULL envelope, not just the text block.** `measureEnvelope` marshals the whole result map including the `structuredContent` mirror (`mora_mcp_budget_test.go:68-76`). WHY: the doubling bug lives in `toCallToolResult` (`mcp.go`); measuring only the text block would hide half the cost the agent actually pays.
 
 ## Related
 
