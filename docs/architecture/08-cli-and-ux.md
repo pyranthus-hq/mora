@@ -52,7 +52,7 @@ flowchart TD
 | `tasks sync [--write]` / `tasks add <name> [flags]` / `tasks list [--json]` / `tasks done <name>` / `pulse [--write] [--digest]` | Task hygiene + lifecycle: `add` captures an open loop (idempotent by name), `list` shows live tasks, `done` closes one so it stops resurfacing as stale + daily digest. | `cmdTasks` `:656`, `cmdPulse` `:678` |
 | `lint` / `backup` | Verify control files exist / tar.gz the vault to state dir. | `cmdLint` `:719`, `cmdBackup` `:746` |
 | `doctor` | Environment + storage + iMessage-readiness checks. | `cmdDoctor` `doctor.go` |
-| `schedule install/list` | Install a scheduled job through launchd on macOS, Task Scheduler on Windows, or a printed cron line on Linux. | `cmdSchedule` `:959` |
+| `schedule install/list` | Install a scheduled job through launchd on macOS, Task Scheduler on Windows, or a printed cron line on Linux. | `cmdSchedule` `schedule.go` |
 | `sources add … / ingest run` | Register / run a filesystem source. | `cmdSources` `:980`, `cmdIngest` `:1520` |
 | `connectors list\|enable\|disable\|setup` | Catalog + per-type consent state. | `cmdConnectors` `:1006` |
 | `connect google\|imessage [--since-days N]` | OAuth/FDA consent **then** backfill. | `cmdConnect` `:1567` |
