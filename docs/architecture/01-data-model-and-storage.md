@@ -6,7 +6,8 @@ The on-disk Markdown memory format, the identity rules that keep re-syncs idempo
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `internal/mora/mora.go` | 3933 | `Memory`/`Source`/`Config` model; `createMemory`/`writeMappedMemory`; `atomicWrite`/`atomicCreate` |
+| `internal/mora/mora.go` | 3933 | `Memory`/`Source`/`Config` model; `createMemory`; `atomicWrite`/`atomicCreate` |
+| `internal/mora/ingest.go` | 1104 | Connector ingest/sync wiring & the write boundary: `writeMappedMemory`; `cmdIngest`/`cmdConnect`/`cmdSync`/`cmdReingest`; `ingestGoogle`/`ingestIMessage`/`ingestAppleCal`/`ingestFilesystem`; `persistSyncStatus`; `sourceFreshness`; `curatedExtractExt`/`extractDocxText` |
 | `internal/mora/index.go` | 364 | `rebuildIndex`/`rebuildIndexWithPolicy` + SQLite DDL; `cmdIndex`; `dbPath`/`roIndexDSN`/`openIndexRO`/`checkIndexSchema`; `writeGraph`/`writeVectors` |
 | `internal/mora/config.go` | 496 | `Config` load/parse/write (`defaultConfig`/`loadConfig`/`parseConfigValue`/`cmdConfig`/`writeConfig`); `init` scaffolding (`cmdInit`/`scaffoldControlFiles`/`confirmVaultRepoint`); retrieval-weight accessors (`Config.fusion`/`Config.mmr`) |
 | `internal/mora/memfile.go` | — | Memory-file render/parse/path: `renderMemory`/`parseMemory`/`writeMemory`; `findMemory`/`allMemoryFiles`/`listMemories`; the `memoriesRoot`/`sourcesRoot`/`memoryPath`/`osSafeBase` path helpers; `newID`; the mora-local `ContentHash` (filesystem ids only) |
@@ -33,7 +34,7 @@ type Memory struct {
 }
 ```
 
-`MappedMemory` (`internal/memory/mapped.go:12-31`) is the **parallel hand-off struct** the connector layer produces. It mirrors the frontmatter field-for-field but lives in `internal/memory` so connectors never import `internal/mora` (the import-cycle hard rule — see AGENTS.md). `writeMappedMemory` (`mora.go:2515`) is the single wiring boundary that copies a `MappedMemory` into a `Memory` and persists it.
+`MappedMemory` (`internal/memory/mapped.go:12-31`) is the **parallel hand-off struct** the connector layer produces. It mirrors the frontmatter field-for-field but lives in `internal/memory` so connectors never import `internal/mora` (the import-cycle hard rule — see AGENTS.md). `writeMappedMemory` (`ingest.go`) is the single wiring boundary that copies a `MappedMemory` into a `Memory` and persists it.
 
 ### On-disk Markdown format
 
@@ -92,18 +93,18 @@ flowchart LR
 ```
 
 - **`StableID`** (`ids.go:11-13`) = `kind + "/" + providerID`. Derived from **immutable provider identity only, never content** — re-syncing an edited thread overwrites the same logical memory instead of forking a new one. It is stored verbatim as the frontmatter `id`.
-- **`SafeFilename`** (`ids.go:22-25`) replaces `/`, `:`, and space with `_`, so `gmail_thread/199abc` files as `gmail_thread_199abc.md`. Provider memories live at `sources/<provider>/<SafeFilename>.md` (`writeMappedMemory`, `mora.go:2523`).
+- **`SafeFilename`** (`ids.go:22-25`) replaces `/`, `:`, and space with `_`, so `gmail_thread/199abc` files as `gmail_thread_199abc.md`. Provider memories live at `sources/<provider>/<SafeFilename>.md` (`writeMappedMemory`, `ingest.go`).
 - **Therefore the on-disk basename is NOT the id.** `findMemory` (`memfile.go`) must check **both** shapes: it builds `base := id + ".md"` and `safeBase := SafeFilename(id) + ".md"`, matches either (plus a `strings.Contains` fallback), then confirms by re-parsing and comparing `m.ID == id`. If you write any new id-based lookup, you must match the `SafeFilename` form too or Gmail/Calendar/iMessage ids silently won't resolve.
 
 Two other id shapes exist on disk:
 - **Manual memories** (`mora write`, MCP `write_memory`) get `newID()` (`memfile.go`, function `newID`): `mem_<local-timestamp>_<8 hex>` — the timestamp is `time.Now().Format("20060102_150405")`, **local time, not UTC** (only the provider `created_at` is UTC) — filed under `memories/<scope-as-path>/<id>.md` via `memoryPath` (function `memoryPath`, which turns scope `a:b` and `/` into path separators). The 8 hex are 4 `crypto/rand` bytes; because the timestamp is only second-granular, an id collision between two concurrent writers is possible, which is why manual memories publish create-exclusively (see `createMemory` above) instead of trusting the id to be unique. `newID` also handles a `crypto/rand` failure explicitly — it falls back to `math/rand/v2` entropy (emitting one non-fatal `warn:` line to stderr, never failing the write) rather than an all-zero suffix (which would collide every time within a second and stall the re-mint retry); the id is a uniqueness token, not a secret.
-- **Filesystem source files** get `src_<ContentHash(name:relpath)>` (`mora.go:2807`) using the **mora-local** `ContentHash` (`memfile.go`, a small FNV — distinct from the provider `ContentHash` in `ids.go`). This is the only place the FNV hash is used for an id.
+- **Filesystem source files** get `src_<ContentHash(name:relpath)>` (`ingest.go`) using the **mora-local** `ContentHash` (`memfile.go`, a small FNV — distinct from the provider `ContentHash` in `ids.go`). This is the only place the FNV hash is used for an id.
 
 ## Content-hash idempotency & `created_at` preservation
 
 `MapItem` (`mapped.go:93-154`) computes `ContentHash` over `(it.Title, it.Body, canonicalMeta)` — using the **original, untruncated** `it.Body` (`mapped.go:143`), not the byte-budgeted body it persists — but folds Meta in **only when non-empty** (`contentHashWithMeta`, `mapped.go:36-41`), so pre-Meta legacy files keep their exact two-part hash and aren't spuriously rewritten on the next sync. A new participant or recovered address therefore *does* change the hash and trigger a rewrite; cosmetic Meta-absence does not.
 
-`writeMappedMemory` (`mora.go:2515-2536`) is the idempotent write:
+`writeMappedMemory` (`ingest.go`) is the idempotent write:
 
 ```mermaid
 flowchart TD
@@ -116,13 +117,13 @@ flowchart TD
     E --> W
 ```
 
-Two invariants live here: (1) an unchanged, non-deleted item is a **no-op** (the hash skip at `mora.go:2526-2528`), so re-running a backfill is free; (2) when content *did* change, the **original `created_at` is preserved** (`mora.go:2529`) — the new fetch's recomputed timestamp never overwrites the first-seen time. A tombstone (`DeletedAt != ""`) always forces the rewrite even if the body hash matches.
+Two invariants live here: (1) an unchanged, non-deleted item is a **no-op** (the hash skip at `ingest.go`), so re-running a backfill is free; (2) when content *did* change, the **original `created_at` is preserved** (`ingest.go`) — the new fetch's recomputed timestamp never overwrites the first-seen time. A tombstone (`DeletedAt != ""`) always forces the rewrite even if the body hash matches.
 
 ## Document extraction & attachment-derived memories (`.docx` / `.pdf`)
 
 ### Filesystem sources: extract-don't-read formats
 
-`curatedExtractExt` (`mora.go:4553-4566`) names the non-plain-text formats a filesystem source ingests by **extracting** text rather than indexing raw bytes — today `.docx` and `.pdf`. `ingestFilesystem` branches on it (`mora.go:3561-3578`): `.pdf` goes through `extractPDFText`, everything else in the set through `extractDocxText`; an extraction error or empty result skips the file — unreadable/empty/oversized is never indexed as garbage. The extracted text then flows through the normal filesystem path: ids stay `src_<FNV>` (`mora.go:3590`), nothing else about filesystem identity changes.
+`curatedExtractExt` (`ingest.go`) names the non-plain-text formats a filesystem source ingests by **extracting** text rather than indexing raw bytes — today `.docx` and `.pdf`. `ingestFilesystem` branches on it (`ingest.go`): `.pdf` goes through `extractPDFText`, everything else in the set through `extractDocxText`; an extraction error or empty result skips the file — unreadable/empty/oversized is never indexed as garbage. The extracted text then flows through the normal filesystem path: ids stay `src_<FNV>` (`ingest.go`), nothing else about filesystem identity changes.
 
 `extractPDFText` (`pdf.go:32-77`) uses the pinned, audited `ledongthuc/pdf` (pure Go — the no-CGO constraint holds). The library panics on malformed input by design, so the entire parse is **recover-wrapped**: any panic becomes an error and the caller skips the file — a bad PDF must never crash a sync (`pdf.go:33-37`). Caps (`pdf.go:20-23`, package vars so tests can lower them):
 
@@ -138,7 +139,7 @@ A scanned/image-only PDF extracts to `""` with a nil error and is skipped — th
 
 `Attachment` (`types.go:16-27`) is **metadata-plus-location**: `Filename`/`MimeType`/`Size`, plus — when the body already exists on local disk (iMessage) — the absolute `Path` to it. Connectors never open the file; bytes are never carried on the struct; neither `Path` nor bytes ever appear in rendered vault output (the IMSG-07 amendment — see [iMessage connector](./05-connectors-imessage.md)). For Gmail, attachments remain metadata-only and `Path` stays empty — the field is the future seam, not a fetch.
 
-`writeAttachmentMemories` (`pdf.go:88-129`) consumes `Path` at the wiring boundary, immediately after the parent's `writeMappedMemory` in the iMessage write closure (`mora.go:3371-3380`). For each attachment that has a `Path` and is a PDF by MIME **or** extension (`isPDFAttachment`, `pdf.go:79-86` — chat.db rows sometimes carry one without the other), it derives one `MappedMemory` (`pdf.go:109-122`):
+`writeAttachmentMemories` (`pdf.go:88-129`) consumes `Path` at the wiring boundary, immediately after the parent's `writeMappedMemory` in the iMessage write closure (`ingest.go`). For each attachment that has a `Path` and is a PDF by MIME **or** extension (`isPDFAttachment`, `pdf.go:79-86` — chat.db rows sometimes carry one without the other), it derives one `MappedMemory` (`pdf.go:109-122`):
 
 - **`StableID`** = `"att_" + ContentHash(parent.StableID + ":" + a.Path)` (`pdf.go:110`) — the **provider** sha256 `ContentHash` (`ids.go:16`), not the mora-local FNV. Hashing parent id + path keeps the id stable across re-syncs, so an unchanged PDF is a no-op via the `writeMappedMemory` hash skip.
 - **`Type`** = `"source"`; **`Tags`** = the parent's tags plus `"attachment"`; **`Source`** = the attachment's on-disk path; **`Title`** = the attachment filename (basename fallback).
@@ -269,7 +270,7 @@ On `mora init`, Mora writes a `.mora-vault.json` marker inside `vault_dir`. This
 - **The vault is the source of truth; `index.db` is a disposable cache.** Every SQLite table is rebuilt from scratch on `rebuildIndex` (`index.go`). Never store state that lives *only* in SQLite — it will not survive a rebuild. WHY: a corrupt or deleted DB must be recoverable from the Markdown alone.
 - **`StableID` is provider identity, never content** (`ids.go:9-13`). Re-syncing an edited item must overwrite the same file, not duplicate it. WHY: idempotent backfills.
 - **Files are named by `SafeFilename`, not by id.** Any id→file lookup MUST match both `id+".md"` and `SafeFilename(id)+".md"` (`findMemory`, `memfile.go`). WHY: `gmail_thread/x` files as `gmail_thread_x.md`; a naive `id+".md"` match silently misses every provider memory.
-- **Content-hash skip + `created_at` preservation are paired** (`writeMappedMemory`, `mora.go:2524-2530`). Unchanged → no write; changed → keep the original `created_at`. WHY: re-backfill must be free and must not rewrite first-seen timestamps.
+- **Content-hash skip + `created_at` preservation are paired** (`writeMappedMemory`, `ingest.go`). Unchanged → no write; changed → keep the original `created_at`. WHY: re-backfill must be free and must not rewrite first-seen timestamps.
 - **Meta folds into the content hash only when non-empty** (`contentHashWithMeta`, `mapped.go:36-41`). WHY: a legacy pre-Meta file must keep its exact two-part hash, or every old source file gets spuriously rewritten on the next sync.
 - **`meta:` is exactly one canonical JSON line.** `CanonicalMeta` relies on `json.Marshal` emitting sorted keys with no embedded newline (`mapped.go:48-57`); the parser splits frontmatter by lines and `meta` by the first colon. WHY: a multi-line or unsorted meta breaks the hand-rolled parser and makes the content hash non-deterministic.
 - **A corrupt `meta:` line is surfaced (stderr warn), never swallowed** (`memfile.go`). WHY: silently dropping it erases the memory's entire entity-graph contribution.
@@ -279,8 +280,8 @@ On `mora init`, Mora writes a `.mora-vault.json` marker inside `vault_dir`. This
 - **New user memories are create-exclusive, not last-writer-wins** (`createMemory`/`atomicCreate`, functions `createMemory`/`atomicCreate`). `mora write` and MCP `write_memory` publish via `os.Link` (fails `EEXIST`) rather than `atomicWrite`'s replacing `os.Rename`; on a colliding `newID()` the loser re-mints and retries (bounded, `maxCreateAttempts`). WHY: two concurrent writers can mint the same second-granular id, and `os.Rename` would silently clobber one — real data loss. Connector re-writes stay on `writeMappedMemory` → `atomicWrite` (idempotent overwrite of a stable provider path is correct there). Mirrors `loop.go`'s `publishLockFile`; portable to Windows (`os.Link` = `CreateHardLinkW`, fails on a present target). On filesystems without hard links (exFAT/FAT32, some SMB/NFS) `os.Link` reports unsupported (never `EEXIST`); `atomicCreate` falls back to an `O_CREATE|O_EXCL` claim + rename-onto-own-placeholder, which keeps no-clobber at the cost of a brief empty-placeholder reader window that `parseMemory`/index callers skip gracefully.
 - **`type`/`created_at`/`path` are not in FTS** (`mora.go:2037` vs `2036`). WHY: they are metadata; search joins back to `memories` to recover them. Adding a column to one table without the other will desync the search projection.
 - **ANSI styling never reaches the data path.** `colorEnabled` (`render.go:21-32`) returns false on `--json`, `NO_COLOR`/`MORA_NO_COLOR`, empty-or-`dumb` `TERM`, or a non-TTY writer; the TTY test `isTTYWriter` (`render.go:38-44`) uses go-isatty (not `os.ModeCharDevice`, which is true for `/dev/null`). WHY: stray escape codes corrupt MCP stdio JSON and `--json` output. `render.go` styles human display only; it is *not* part of persisted bytes.
-- **Document extraction never indexes garbage** (`pdf.go:88-104`, `mora.go:3565-3578`). An unreadable, empty (scanned, no OCR), or over-cap extraction skips the file or attachment entirely. WHY: a scanned PDF extracting to `""` must not create an empty searchable memory, and a hostile PDF must not crash a sync (the parse is recover-wrapped, size/page/text-capped).
-- **Two different `ContentHash` functions exist.** `internal/memory/ids.go:16` = sha256, first 16 hex chars, for provider change-detection. `internal/mora/memfile.go` = small FNV, used only to mint filesystem-source `src_…` ids (`mora.go:2807`). Don't confuse them.
+- **Document extraction never indexes garbage** (`pdf.go:88-104`, `ingest.go`). An unreadable, empty (scanned, no OCR), or over-cap extraction skips the file or attachment entirely. WHY: a scanned PDF extracting to `""` must not create an empty searchable memory, and a hostile PDF must not crash a sync (the parse is recover-wrapped, size/page/text-capped).
+- **Two different `ContentHash` functions exist.** `internal/memory/ids.go:16` = sha256, first 16 hex chars, for provider change-detection. `internal/mora/memfile.go` = small FNV, used only to mint filesystem-source `src_…` ids (`ingest.go`). Don't confuse them.
 
 ## Related
 
