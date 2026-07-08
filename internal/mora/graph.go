@@ -421,16 +421,18 @@ func buildGraph(mems []Memory) ([]graphEntity, []graphEdge, []string) {
 					agg.aliases[p.name] = true // provenance-trusted -> a real match key
 				}
 			}
-			if inv == "" { // tombstoned edges don't count toward live stats
-				agg.evidence[m.ID] = true
-				if vf != "" {
-					if agg.first == "" || vf < agg.first {
-						agg.first = vf
-					}
-					if vf > agg.last {
-						agg.last = vf
-					}
-				}
+			if inv != "" { // tombstoned edges don't count toward live stats
+				continue
+			}
+			agg.evidence[m.ID] = true
+			if vf == "" {
+				continue
+			}
+			if agg.first == "" || vf < agg.first {
+				agg.first = vf
+			}
+			if vf > agg.last {
+				agg.last = vf
 			}
 		}
 		// EMAILED: sender -> each recipient (mail only), within the capped set.
