@@ -280,7 +280,7 @@ flowchart TD
 
 `buildDigest` attaches two side panels (`digest.go:248-255`, mirrored in `buildWindowDigest` `digest.go:175-182`):
 - `Freshness` = `sourceFreshness(cfg)` (`digest.go:253`), keyed off `SyncStatus.Source` (the Phase-12 fix). See [sync-and-freshness](./11-sync-and-freshness.md).
-- `StaleTasks` = `staleTasks(cfg, 3)`, parsing `live-tasks.md` for table rows whose last-touched date (column 7) is older than 3 days (`mora.go:2444-2465`). Best-effort: a missing `live-tasks.md` simply means no tasks (`digest.go:248`); the error is discarded. **NOT gated by the watermark** — tasks come from the vault, sync-independent (`digest.go:246-247`).
+- `StaleTasks` = `staleTasks(cfg, 3)`, parsing `live-tasks.md` for table rows whose last-touched date (column 7) is older than 3 days (`tasks.go`). Best-effort: a missing `live-tasks.md` simply means no tasks (`digest.go:248`); the error is discarded. **NOT gated by the watermark** — tasks come from the vault, sync-independent (`digest.go:246-247`).
 
 ### Rendering: CLI Markdown vs the D-05 budgeted MCP payload
 
