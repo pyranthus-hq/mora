@@ -38,7 +38,7 @@ flowchart TD
 
 | Command | What it does | Handler |
 |---|---|---|
-| `init [--vault DIR]` | Create dirs, **preserve** existing `config.toml`, scaffold control files, rebuild index, then launch the interactive setup menu (TTY only). | `cmdInit` `:346` |
+| `init [--vault DIR]` | Create dirs, **preserve** existing `config.toml`, scaffold control files, rebuild index, then launch the interactive setup menu (TTY only). | `cmdInit` `config.go` |
 | `write --title --text [--scope/--type/--tags/--source] [--json]` | Write a manual Markdown memory, incremental index upsert (`indexUpsert`), echo it. | `cmdWrite` `:406` |
 | `read <id> [--json]` | Print one memory (body or JSON). | `cmdRead` `:440` |
 | `list [--scope] [--json]` | Recent memories (id / scope / title rows). | `cmdList` `:461` |
@@ -169,7 +169,7 @@ The check-map iteration is unordered Go map iteration; the surrounding blocks (s
 
 ## `init` config-preservation
 
-`cmdInit` (`mora.go:346`) **never resets an existing install's config.** It calls `loadConfig()` (`mora.go:304`) first, which returns defaults only when no `config.toml` exists; an existing file is parsed and its `vault_dir`/`data_dir`/`state_dir` preserved. A re-run of `init` therefore cannot repoint Mora away from a custom vault and orphan it (the failure that `bba2c6c fix(init)` corrected). `--vault` is the only override, applied on top of the loaded config (`mora.go:361`). It then `MkdirAll`s all dirs (0700), writes config (atomic, 0600), scaffolds control files (`scaffoldControlFiles` skips files that already exist, `mora.go:396`), rebuilds the index, and finally launches `runSetupMenu` — which itself is TTY-guarded (`mora.go:1299`): on a non-TTY stdin it prints a hint and returns immediately, never blocking CI/scripts.
+`cmdInit` (`config.go`) **never resets an existing install's config.** It calls `loadConfig()` (`config.go`) first, which returns defaults only when no `config.toml` exists; an existing file is parsed and its `vault_dir`/`data_dir`/`state_dir` preserved. A re-run of `init` therefore cannot repoint Mora away from a custom vault and orphan it (the failure that `bba2c6c fix(init)` corrected). `--vault` is the only override, applied on top of the loaded config (`config.go`). It then `MkdirAll`s all dirs (0700), writes config (atomic, 0600), scaffolds control files (`scaffoldControlFiles` skips files that already exist, `config.go`), rebuilds the index, and finally launches `runSetupMenu` — which itself is TTY-guarded (`mora.go:1299`): on a non-TTY stdin it prints a hint and returns immediately, never blocking CI/scripts.
 
 ## `connect` — consent then backfill
 

@@ -6,7 +6,8 @@ The on-disk Markdown memory format, the identity rules that keep re-syncs idempo
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `internal/mora/mora.go` | 4775 | `Memory`/`Source`/`Config` model; `createMemory`/`writeMappedMemory`; `rebuildIndex` + SQLite DDL; `loadConfig`/`defaultConfig`; `atomicWrite`/`atomicCreate` |
+| `internal/mora/mora.go` | 4288 | `Memory`/`Source`/`Config` model; `createMemory`/`writeMappedMemory`; `rebuildIndex` + SQLite DDL; `atomicWrite`/`atomicCreate` |
+| `internal/mora/config.go` | 496 | `Config` load/parse/write (`defaultConfig`/`loadConfig`/`parseConfigValue`/`cmdConfig`/`writeConfig`); `init` scaffolding (`cmdInit`/`scaffoldControlFiles`/`confirmVaultRepoint`); retrieval-weight accessors (`Config.fusion`/`Config.mmr`) |
 | `internal/mora/memfile.go` | — | Memory-file render/parse/path: `renderMemory`/`parseMemory`/`writeMemory`; `findMemory`/`allMemoryFiles`/`listMemories`; the `memoriesRoot`/`sourcesRoot`/`memoryPath`/`osSafeBase` path helpers; `newID`; the mora-local `ContentHash` (filesystem ids only) |
 | `internal/memory/mapped.go` | 154 | `MappedMemory` hand-off struct; `MapItem` (Item→MappedMemory, byte budget, content-hash fold); `CanonicalMeta`; kind→(type,provider) registry |
 | `internal/memory/ids.go` | 25 | `StableID` (provider identity), `ContentHash` (provider change-detect, sha256/16), `SafeFilename` (`/`,`:`,` ` → `_`) |
@@ -243,7 +244,7 @@ Identity safety is preserved end-to-end. `indexUpsert` applies the **same** vaul
 
 ## Config & paths
 
-`defaultConfig` (`mora.go:294-302`) seeds XDG-style defaults under `$HOME`; `loadConfig` (`mora.go:304-336`) overlays a tiny hand-parsed `config.toml` (only `vault_dir`, `data_dir`, `state_dir` keys; `~` expanded via `expandHome`). `ConfigDir` is **not** overridable — it's always where `config.toml` lives.
+`defaultConfig` (`config.go`) seeds XDG-style defaults under `$HOME`; `loadConfig` (`config.go`) overlays a tiny hand-parsed `config.toml` (only `vault_dir`, `data_dir`, `state_dir` keys; `~` expanded via `expandHome`). `ConfigDir` is **not** overridable — it's always where `config.toml` lives.
 
 | Var / path | Default | Purpose |
 |---|---|---|
