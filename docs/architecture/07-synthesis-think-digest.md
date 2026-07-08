@@ -13,7 +13,7 @@ The three "assembly" surfaces that turn raw retrieved memories into something an
 | `internal/mora/artifact.go` | 49 | **Phase 13 — the dated VAULT artifact writer.** `briefArtifactPath(cfg, now)` (`<VaultDir>/briefs/<UTC-date>-brief.md`) + `writeBriefArtifact(cfg, d, now)`, which renders the SAME `renderDigest` body the human/MCP brief emits to a per-day file via `atomicWrite` (temp+rename, 0644) — idempotent (overwrite), local-only, and **decoupled from the watermark** (never calls `saveBriefSnapshot`/`acquireBriefLock`). Leaf: no render/wiring, no `net/*`. |
 | `internal/mora/notify.go` | 110 | **Phase 13 — the best-effort macOS notification.** `notifyBrief`/`notifyBriefDefault` post an `osascript` toast naming the persisted brief, gated by `shouldNotify(goos)` (`GOOS=="darwin"` ∧ `MORA_NO_NOTIFY` unset — **NOT a TTY check**). osascript is a SYSTEM binary via `os/exec` (no new Go dep — the `openBrowser` precedent); a failing/absent osascript is swallowed (never fails the brief); writes zero bytes (byte-clean). The injectable `goos`/`notifyRunner` seams make it unit-testable off-darwin. |
 | `internal/mora/connectors.go` | 132 | The Phase-12 connector seams the delta consumes: `sourceInstanceKey` (M-1 keying), `ingestingConnectors` (M-2 enabled∩ingesting enumeration), `connectorDisplay` (M-6 rank/label owner). The catalog descriptor (`connectorInfo.Ingesting/Rank/Label`) lives in `mora.go:117-142`. |
-| `internal/mora/mora.go` | (selected) | `context_memory` MCP case + `cmdContext` CLI, `buildContext` (budget split + wiki-preamble starvation guard), `resolveContextBudget`, `truncateRunes`. Also the MCP `think`/`digest` cases and tool schemas, the digest budget constants (`mcpDigestMaxItems`/`mcpDigestEnvelopeDivisor`/`mcpDigestBudgetChars`), `cmdPulse`'s flags (`--since-hours`/`--advance` from Phase 12; `--sync`/`--brief-file`/`--notify` from Phase 13), the `backfillGoogleFn`/`backfillIMessageFn`/`notifyBriefFn` test seams (`mora.go:1329-1339`), and the `scheduleCommands["pulse-daily"]` job string (`mora.go:3441-3442`). **Phase 16 — the session-start `brief` surface:** `cmdBrief` (the `mora brief` CLI, `mora.go:682`) + its `case "brief"` in `Run` (`mora.go:250`), the shared generate helper `briefDigest` (`mora.go:655`), and the MCP `brief` tool (`tools/list` entry `mcp.go`, `callMCPTool` case `mcp.go`, `mcpInstructions` nudge `mora.go:3069`). |
+| `internal/mora/mora.go` | (selected) | `context_memory` MCP case + `cmdContext` CLI (`commands_memory.go`), `buildContext` (budget split + wiki-preamble starvation guard), `resolveContextBudget`, `truncateRunes`. Also the MCP `think`/`digest` cases and tool schemas, the digest budget constants (`mcpDigestMaxItems`/`mcpDigestEnvelopeDivisor`/`mcpDigestBudgetChars`), `cmdPulse`'s flags (`--since-hours`/`--advance` from Phase 12; `--sync`/`--brief-file`/`--notify` from Phase 13), the `backfillGoogleFn`/`backfillIMessageFn`/`notifyBriefFn` test seams (`mora.go:1329-1339`), and the `scheduleCommands["pulse-daily"]` job string (`mora.go:3441-3442`). **Phase 16 — the session-start `brief` surface:** `cmdBrief` (the `mora brief` CLI, `mora.go:682`) + its `case "brief"` in `Run` (`mora.go:250`), the shared generate helper `briefDigest` (`mora.go:655`), and the MCP `brief` tool (`tools/list` entry `mcp.go`, `callMCPTool` case `mcp.go`, `mcpInstructions` nudge `mora.go:3069`). |
 
 The unifying design stance, stated verbatim in `think.go:13-19`: Mora **holds no API key and pays no synthesis bill**. Every surface here is a *floor* — useful headless with no model — and the agent that called it reads the evidence and writes the prose.
 
@@ -70,7 +70,7 @@ All three rules sort their inputs before iterating, so `buildThink` output is **
 
 ### The synthesis prompt (`thinkPrompt`, `think.go:184`)
 
-`thinkPrompt` builds the instruction the caller's model runs. It is a fixed template: "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. If the evidence is insufficient, say so plainly rather than guessing." followed by the `QUESTION`, the `EVIDENCE` list (`- [stable_id] (scope, created_at) title — snippet`, or `(none found)`), and — only when gaps are non-empty — a `KNOWN GAPS` block instructing the model to surface them in a "What the vault does not know" section (`think.go:184-207`). The CLI's `printThink` (`mora.go:615`) shows evidence and gaps for human reading but **omits** the prompt; you only get the runnable prompt via `--json` or the MCP `think` tool, which return the full `ThinkResult`.
+`thinkPrompt` builds the instruction the caller's model runs. It is a fixed template: "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. If the evidence is insufficient, say so plainly rather than guessing." followed by the `QUESTION`, the `EVIDENCE` list (`- [stable_id] (scope, created_at) title — snippet`, or `(none found)`), and — only when gaps are non-empty — a `KNOWN GAPS` block instructing the model to surface them in a "What the vault does not know" section (`think.go:184-207`). The CLI's `printThink` (`commands_memory.go`) shows evidence and gaps for human reading but **omits** the prompt; you only get the runnable prompt via `--json` or the MCP `think` tool, which return the full `ThinkResult`.
 
 ---
 
@@ -394,11 +394,11 @@ The WRITE side (`pulse-daily`, the only `--advance` committer) persists today's 
 
 ## `context_memory` — the budget-bounded context block
 
-`context_memory` (MCP case `mcp.go`; CLI `cmdContext` `mora.go:535`) assembles one dense context block — either *for a query* or, when no query is given, a session-start recency briefing.
+`context_memory` (MCP case `mcp.go`; CLI `cmdContext` `commands_memory.go`) assembles one dense context block — either *for a query* or, when no query is given, a session-start recency briefing.
 
 ### It always calls `hybridSearch`
 
-When a query is present, `context_memory` calls `hybridSearch` directly (`mcp.go`, `cmdContext` at `mora.go:551`) with a fixed pool of `limit=10`; with no query it falls back to `listMemories(cfg, scope, 10)` (`mcp.go`). Like `think`, it bypasses the `defaultSearch` gate: the vector arm is empty and harmless under static-hash, so hybrid is always safe here (see [retrieval](./02-retrieval-search.md)).
+When a query is present, `context_memory` calls `hybridSearch` directly (`mcp.go`, `cmdContext` at `commands_memory.go`) with a fixed pool of `limit=10`; with no query it falls back to `listMemories(cfg, scope, 10)` (`mcp.go`). Like `think`, it bypasses the `defaultSearch` gate: the vector arm is empty and harmless under static-hash, so hybrid is always safe here (see [retrieval](./02-retrieval-search.md)).
 
 ### Budget resolution (`resolveContextBudget`, `mcp.go`)
 
@@ -407,7 +407,7 @@ The public knob over MCP is `max_tokens` (agents speak tokens; the pilot asked f
 - request over `maxContextTokens = 20000` → clamped to 20000 (`mcp.go`),
 - then `× charsPerToken` → character budget.
 
-The clamp happens **before** the multiply (`mcp.go`) so an arbitrarily large `max_tokens` cannot overflow the int. The CLI `mora context` uses a separate `--budget` flag that is a **raw character** budget defaulting to 2000 (`mora.go:540`), *not* tokens — it does not go through `resolveContextBudget`.
+The clamp happens **before** the multiply (`mcp.go`) so an arbitrarily large `max_tokens` cannot overflow the int. The CLI `mora context` uses a separate `--budget` flag that is a **raw character** budget defaulting to 2000 (`commands_memory.go`), *not* tokens — it does not go through `resolveContextBudget`.
 
 ### The starvation guard (`buildContext`, `search.go`)
 
@@ -428,7 +428,7 @@ flowchart TD
 
 The invariant (comment `mora.go:2318-2321`): **when there IS a query, the items lead** so the static wiki preamble can never starve the most relevant memories out of the budget. The caller already filtered items to the most relevant; surfacing them first guarantees they get budget before the boilerplate wiki files. With **no** query (briefing mode), the wiki preamble leads and items fill whatever remains. `truncateRunes` (`mora.go:2290`) clips to a byte budget without splitting a multi-byte UTF-8 rune (it walks back to a `utf8.RuneStart`), so the budget is a byte ceiling honored rune-safely. The second block only gets the *remaining* bytes after the first is written (`mora.go:2328-2329`).
 
-Both the MCP and CLI paths return the assembled `context` string plus `freshness` (MCP: `mcp.go`; CLI `--json` also returns the raw `items`, `mora.go:560`).
+Both the MCP and CLI paths return the assembled `context` string plus `freshness` (MCP: `mcp.go`; CLI `--json` also returns the raw `items`, `commands_memory.go`).
 
 ---
 
