@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -111,5 +112,64 @@ func TestRebuildIsAtomicWhenGraphWriteFails(t *testing.T) {
 	got, _ = searchMemories(ctx, cfg, "epsilonnewtoken", "", 10)
 	if len(got) != 0 {
 		t.Fatalf("epsilonnewtoken=%d, want 0 (the partial new write must have rolled back)", len(got))
+	}
+}
+
+// TestRebuildListsVaultInsideWriteLock proves the vault directory listing runs
+// AFTER the immediate write transaction has acquired the writer lock, never
+// before (P1 snapshot-before-lock race). Were the listing snapshotted before
+// BeginTx, two concurrent rebuilds could interleave so the one that COMMITS LAST
+// indexed the OLDER file list — silently dropping a memory that is on disk until
+// some later rebuild. Because the immediate lock serializes rebuilds, listing
+// inside the transaction guarantees the later-committing rebuild also listed
+// later, so it always indexes a superset.
+//
+// Deterministic — no sleeps, no goroutine races. The rebuild's listing is routed
+// through the listRebuildFiles seam; the instant it fires we probe from a SECOND
+// connection with a competing `BEGIN IMMEDIATE` under busy_timeout(0). That probe
+// fails fast with SQLITE_BUSY iff the rebuild already holds the writer lock,
+// which is true only when the listing happens inside the transaction.
+func TestRebuildListsVaultInsideWriteLock(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+
+	if err := writeMemory(cfg, Memory{ID: "aa_one", Scope: "personal", Title: "One", Text: "onetoken"}); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := listRebuildFiles
+	defer func() { listRebuildFiles = orig }()
+
+	var fired, lockHeld bool
+	listRebuildFiles = func(c Config) ([]string, error) {
+		fired = true
+		// A second connection with busy_timeout(0) so a contended BEGIN IMMEDIATE
+		// returns immediately instead of waiting — keeps the probe deterministic.
+		db2, err := sql.Open("sqlite", dbPath(c)+"?_txlock=immediate&_pragma=busy_timeout(0)")
+		if err != nil {
+			t.Errorf("probe open: %v", err)
+			return orig(c)
+		}
+		defer db2.Close()
+		if tx2, err := db2.BeginTx(context.Background(), nil); err != nil {
+			// Could not take the writer lock -> the rebuild already holds it.
+			lockHeld = strings.Contains(err.Error(), "SQLITE_BUSY")
+		} else {
+			_ = tx2.Rollback()
+		}
+		return orig(c)
+	}
+
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !fired {
+		t.Fatal("listRebuildFiles seam never fired; the rebuild listing path moved")
+	}
+	if !lockHeld {
+		t.Fatal("vault listing ran BEFORE the write lock was acquired: snapshot-before-lock " +
+			"race (P1). Move the listRebuildFiles call inside the immediate transaction.")
 	}
 }
