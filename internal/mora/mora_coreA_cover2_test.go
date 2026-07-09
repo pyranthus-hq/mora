@@ -486,6 +486,12 @@ func TestCoreA_CmdSync(t *testing.T) {
 	if out := run(t, "sync", "--help"); !strings.Contains(out, "usage: mora sync") {
 		t.Fatalf("sync --help; got:\n%s", out)
 	}
+	if _, err := runErr(t, "sync"); err == nil {
+		t.Fatal("sync without an explicit source must error")
+	}
+	if _, err := runErr(t, "sync", "bogus"); err == nil {
+		t.Fatal("sync with an unknown source must error")
+	}
 	// status with nothing synced.
 	if out := run(t, "sync", "status"); !strings.Contains(out, "no sources synced yet") {
 		t.Fatalf("sync status (empty); got:\n%s", out)
@@ -516,6 +522,32 @@ func TestCoreA_CmdSync(t *testing.T) {
 	}
 	if out := run(t, "sync", "imessage"); !strings.Contains(out, "synced 0 item(s)") {
 		t.Fatalf("sync imessage (empty); got:\n%s", out)
+	}
+}
+
+func TestSyncFilesystemDoesNotInvokeGoogleBackfill(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.md"), []byte("# filesystem note\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSources(cfg, []Source{
+		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "docs", Type: "filesystem", Path: dir, Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := run(t, "sync", "filesystem")
+	if !strings.Contains(out, "synced 1 item(s)") {
+		t.Fatalf("sync filesystem should ingest the filesystem source; got:\n%s", out)
+	}
+	if strings.Contains(out, "Google sign-in") {
+		t.Fatalf("sync filesystem invoked the Google path; got:\n%s", out)
 	}
 }
 

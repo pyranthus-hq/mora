@@ -403,6 +403,7 @@ Two independent things stay fresh: **your data** and **the app**.
 ```bash
 mora sync status                 # per-source freshness — when each connector last pulled
 mora sync google                 # re-pull Gmail + Calendar
+mora sync filesystem             # re-index enabled filesystem sources
 mora sync imessage               # re-read the local Messages DB (macOS)
 mora reingest --full             # re-fetch + rewrite memories with the latest metadata AND rebuild the entity graph
 ```

@@ -333,6 +333,7 @@ USAGE:
   mora connect filesystem ~/Documents      # add + enable + index a folder in one step (one-shot of: sources add + ingest run)
   mora sync status
   mora sync google
+  mora sync filesystem
   mora sync imessage               # macOS: read local Messages (read-only) into memories
   mora reingest [--full]           # re-fetch + rewrite memories with latest metadata, rebuild graph
   mora usage report
