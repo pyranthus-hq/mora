@@ -22,6 +22,24 @@ It runs entirely on your machine: no server, no signup, no telemetry. iMessage a
   <img src="docs/assets/architecture.svg" width="760" alt="Mora architecture: your sources flow into one local vault of Markdown plus a SQLite index, served over MCP to every agent (Claude Code, Codex, Gemini CLI), with an opt-in git sync to another machine."/>
 </p>
 
+## Try it in 30s
+
+See Mora work before connecting Gmail, Calendar, iMessage, or files:
+
+```bash
+go install github.com/pyranthus-hq/mora/cmd/mora@latest
+export MORA_CONFIG_DIR="$(mktemp -d)/mora-demo"
+mora demo --dir "$MORA_CONFIG_DIR"
+mora brief --clean
+mora search "security addendum"
+```
+
+`mora demo` seeds a throwaway synthetic vault under `$MORA_CONFIG_DIR` and never touches your real vault or accounts. Delete that temp directory when you are done.
+
+<p align="center">
+  <img src="scripts/demo/mora-demo.gif" width="760" alt="Mora demo showing a synthetic cross-source brief, graph lookup, and local Markdown vault."/>
+</p>
+
 ## What it looks like
 
 ```console

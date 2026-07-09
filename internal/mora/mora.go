@@ -211,6 +211,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	switch cmd {
 	case "init":
 		return cmdInit(ctx, args[1:], stdout, stdin)
+	case "demo":
+		return cmdDemo(ctx, args[1:], stdout)
 	case "write":
 		return cmdWrite(ctx, args[1:], stdout)
 	case "read":
@@ -298,6 +300,7 @@ func printUsage(w io.Writer) {
 
 USAGE:
   mora init --vault ~/vault/mora
+  mora demo                        # seed a throwaway synthetic vault (no real data) to try Mora
   mora write --scope project:acme --type decision --title "OAuth" --text "..."
   mora search "OAuth status" --scope project:acme --json
   mora entities                    # the people/projects/topics across your memory
@@ -311,6 +314,7 @@ USAGE:
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
+  mora brief --clean               # presentation mode: drop internal ids + '+N more' noise (for demos/screenshots)
   mora index rebuild
   mora share init acme --scope project:acme --recipient age1... --remote <PRIVATE git URL>   # publish a scope, always encrypted
   mora share push acme             # preview exactly what leaves, then publish
@@ -423,6 +427,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "emit a byte-clean JSON result")
 	envelope := fs.Bool("envelope", false, "append a model-free synthesis prompt")
+	clean := fs.Bool("clean", false, "presentation mode: drop internal (id: ...) suffixes and '+N more' lines for a legible screenshot/recording")
 	entity := fs.String("entity", "", "filter to memories referencing one person (name or email/handle); preview-only")
 	scope := fs.String("scope", "", "filter to one memory scope/namespace (e.g. project:acme); preview-only")
 	sinceDays := fs.Int("since-days", 0, "only memories created in the last N days; preview-only (negative = no filter)")
@@ -457,6 +462,12 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 		// Byte-clean structured result; --envelope has no effect on --json (the
 		// envelope is a human-stdout addition, like pulse --digest --envelope).
 		return emit(stdout, briefResult{Generated: generated, Body: body}, *jsonOut)
+	}
+	if *clean {
+		// Presentation mode strips machine-id provenance + truncation counters from
+		// the plain body BEFORE styling, so the section structure reads cleanly on
+		// camera. --json is unaffected (the id is a structured field there).
+		body = cleanDigestBody(body)
 	}
 	if generated {
 		// Freshly generated: apply the TTY skin (off-TTY this is a no-op, byte-clean).

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1243,6 +1244,37 @@ func renderDigest(d Digest, budgetChars int) string {
 	}
 	bd, _ := budgetDigestForMarkdown(d, budgetChars)
 	return truncateRunes(renderDigestBody(bd), budgetChars)
+}
+
+// digestMoreLineRe matches exactly the "+N more since last brief" counter line
+// renderDigest emits, so cleanDigestBody drops only that line and never a real
+// bullet that happens to start with "- +".
+var digestMoreLineRe = regexp.MustCompile(`^\s*- \+\d+ more since last brief\s*$`)
+
+// digestIDSuffixRe matches exactly the trailing " (id: <stable-id>)" provenance
+// marker renderDigest appends to each item line (stable ids contain no spaces or
+// parens), so a parenthetical inside the snippet text is left intact.
+var digestIDSuffixRe = regexp.MustCompile(` \(id: [^()]*\)$`)
+
+// cleanDigestBody is the `mora brief --clean` presentation transform: it drops the
+// "+N more since last brief" counter lines and strips the trailing "(id: ...)"
+// provenance marker from item bullets, leaving the source-grouped structure
+// legible for a screenshot or recording. It is a pure string transform that only
+// touches those two generated forms; section headings, counts, change prefixes,
+// and item text are untouched.
+func cleanDigestBody(body string) string {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if digestMoreLineRe.MatchString(line) {
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			line = digestIDSuffixRe.ReplaceAllString(line, "")
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 // budgetDigestForMarkdown structurally budgets a digest to budgetChars of RENDERED

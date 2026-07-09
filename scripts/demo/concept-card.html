@@ -1,0 +1,81 @@
+<!doctype html>
+<!--
+  concept-card.html — a self-contained animated title card for the demo intro.
+  Four scattered sources (Gmail / iMessage / Calendar / Files) fade in and hold,
+  then hand off to the "mora." wordmark. Pure CSS, no JS, no dependencies: open
+  in a browser and screen-record the 1280x720 stage, or render it headless, e.g.:
+    npx playwright screenshot --viewport-size=1280,720 concept-card.html frame.png
+  (or drive playwright for ~6.5s to capture the animation as a video). Pairs as a
+  ~6s open before the VHS terminal clip from launch.tape.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mora — concept card</title>
+<style>
+  :root { --bg:#11111b; --fg:#cdd6f4; --dim:#7f849c; --accent:#89b4fa; --accent2:#a6e3a1; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; background:#000; }
+  .stage {
+    position:relative; width:1280px; height:720px; overflow:hidden;
+    background:radial-gradient(1100px 560px at 50% 42%, #1e1e2e, var(--bg));
+    color:var(--fg); font-family:"SF Pro Display","Helvetica Neue",Helvetica,Arial,sans-serif;
+  }
+
+  /* Phase 1 — the four scattered sources. The whole group fades out at 3.6s. */
+  .scatter {
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:46px;
+    animation:fadeOut .7s ease 3.6s forwards;
+  }
+  .lead { font-size:30px; color:var(--dim); opacity:0; animation:rise .7s ease .15s both; }
+  .chips { display:flex; gap:30px; }
+  .chip {
+    display:flex; align-items:center; gap:14px;
+    font-size:30px; font-weight:600; color:#e6e9ef;
+    background:#181825; border:1px solid #45475a; border-radius:16px;
+    padding:18px 28px; opacity:0;
+    animation:pop .55s cubic-bezier(.2,.8,.2,1) both;
+  }
+  .chip .dot { width:16px; height:16px; border-radius:50%; flex:none; }
+  .chip.gmail { animation-delay:.35s } .chip.gmail .dot { background:#f38ba8 }
+  .chip.imsg  { animation-delay:.55s } .chip.imsg  .dot { background:#a6e3a1 }
+  .chip.cal   { animation-delay:.75s } .chip.cal   .dot { background:#fab387 }
+  .chip.files { animation-delay:.95s } .chip.files .dot { background:#89b4fa }
+
+  /* Phase 2 — the unified core. Fades in at 4.1s, holds. */
+  .core {
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:14px; text-align:center;
+    opacity:0; animation:rise .8s ease 4.1s both;
+  }
+  .mark { font-size:96px; font-weight:800; letter-spacing:-3px; color:var(--fg); }
+  .mark span { color:var(--accent); }
+  .tag { font-size:32px; color:var(--dim); }
+  .badges { margin-top:18px; font-size:22px; color:var(--accent2); letter-spacing:.4px;
+    font-family:ui-monospace,Menlo,monospace; }
+
+  @keyframes pop  { from { opacity:0; transform:translateY(10px) scale(.96) } to { opacity:1; transform:none } }
+  @keyframes rise { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:none } }
+  @keyframes fadeOut { to { opacity:0 } }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="scatter">
+      <div class="lead">Your day lives in four places that never talk</div>
+      <div class="chips">
+        <div class="chip gmail"><span class="dot"></span>Gmail</div>
+        <div class="chip imsg"><span class="dot"></span>iMessage</div>
+        <div class="chip cal"><span class="dot"></span>Calendar</div>
+        <div class="chip files"><span class="dot"></span>Files</div>
+      </div>
+    </div>
+    <div class="core">
+      <div class="mark">mora<span>.</span></div>
+      <div class="tag">one local memory for your agents</div>
+      <div class="badges">Apache-2.0 · Pure Go · Zero egress</div>
+    </div>
+  </div>
+</body>
+</html>
