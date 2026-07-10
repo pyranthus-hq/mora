@@ -269,6 +269,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdDisconnect(ctx, args[1:], stdout)
 	case "mcp":
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
+	case "serve":
+		return cmdServe(ctx, args[1:], stdout)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stdin)
 	case "loop":
@@ -339,6 +341,7 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
+  mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora hook install|uninstall|status
   mora upgrade                     # self-update to the latest release (brew installs: brew upgrade)
   mora version`)
