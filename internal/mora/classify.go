@@ -15,6 +15,15 @@ import "strings"
 // matching uses explicit bulk-ESP labels, not single letters like "t".
 func classifyIdentity(identity, displayName string) string {
 	id := strings.ToLower(strings.TrimSpace(identity))
+	display := strings.ToLower(strings.TrimSpace(displayName))
+
+	if isArtifact(id, display) {
+		return "artifact"
+	}
+	if isRepo(id, display) {
+		return "repo"
+	}
+
 	at := strings.LastIndexByte(id, '@')
 	if at < 0 {
 		// Phone-handle / non-email branch. D14-5: an all-digits handle of length
@@ -25,11 +34,17 @@ func classifyIdentity(identity, displayName string) string {
 		if isShortcode(id) {
 			return "service"
 		}
+		if isOrg(id, display) {
+			return "org"
+		}
 		return "person" // phone handle / non-email identity -> real person
 	}
 	local, host := id[:at], id[at+1:]
 	if localPartIsService(local) || hostIsBulkESP(host) || displayIsService(displayName) {
 		return "service"
+	}
+	if isOrg(id, display) {
+		return "org"
 	}
 	return "person"
 }
@@ -179,4 +194,85 @@ func displayIsService(display string) bool {
 		}
 	}
 	return false
+}
+
+func isValidPhoneOrShortcode(handle string) bool {
+	if handle == "" {
+		return false
+	}
+	if handle[0] == '+' {
+		handle = handle[1:]
+	}
+	if len(handle) == 0 {
+		return false
+	}
+	for _, r := range handle {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isArtifact(id, display string) bool {
+	artifacts := map[string]bool{
+		"push": true, "author": true, "mention": true, "ci activity": true, "state change": true,
+		"ci-activity": true, "state-change": true,
+	}
+	return artifacts[id] || artifacts[display]
+}
+
+func isRepo(id, display string) bool {
+	if !strings.Contains(id, "@") && strings.Count(id, "/") == 1 {
+		return true
+	}
+	if !strings.Contains(display, "@") && strings.Count(display, "/") == 1 {
+		return true
+	}
+	return false
+}
+
+func isOrg(id, display string) bool {
+	orgBrands := map[string]bool{
+		"sofi": true, "one medical": true, "github": true, "google": true, "stripe": true, "chase": true,
+		"apple": true, "slack": true, "zoom": true, "facebook": true, "meta": true, "amazon": true,
+		"uber": true, "figma": true, "linkedin": true, "microsoft": true, "netflix": true, "paypal": true,
+		"venmo": true, "airbnb": true, "lyft": true, "salesforce": true,
+	}
+
+	if orgBrands[display] {
+		return true
+	}
+
+	orgKeywords := []string{
+		" inc.", " inc", " corp.", " corp", " co.", " llc", " ltd.", " ltd", " company", " corporation",
+		" association", " foundation", " university", " institute", " medical", " hospital",
+		" clinic", " school", " college", " bank", " ventures", " capital", " partners", " labs",
+	}
+	for _, kw := range orgKeywords {
+		if strings.HasSuffix(display, kw) {
+			return true
+		}
+	}
+
+	if !strings.Contains(id, "@") && strings.Contains(id, ".") && !strings.Contains(id, "/") && !isValidPhoneOrShortcode(id) {
+		return true
+	}
+	return false
+}
+
+// isStructuralNoise reports whether a handle is a GitHub notification field label /
+// event type (Push, Author, Mention, Ci activity, State change) — structural
+// boilerplate that is NOT a real entity (issue #70) and must never be minted as a
+// person at personRefs. It matches EXACT, whole-string, case-insensitive (via
+// isArtifact, the single source of the artifact set) — never a substring — so no
+// real handle is caught (real email/iMessage handles are never a bare artifact word).
+//
+// Repo slugs (owner/name) are deliberately NOT treated as noise here: they flow
+// through personRefs to classifyIdentity, which TYPES them "repo" (a distinct entity
+// kind), so they stay resolvable instead of vanishing. This precision-first split is
+// the whole point — dropping is unrecoverable (a real person mis-caught by an
+// over-broad shape rule is gone), typing is not.
+func isStructuralNoise(handle string) bool {
+	return isArtifact(strings.ToLower(strings.TrimSpace(handle)), "")
 }

@@ -19,6 +19,9 @@ func TestNormalizeGazName(t *testing.T) {
 		{"Support Team", "", false},      // stoplist token
 		{"No Reply", "", false},          // stoplist token
 		{"Support-Team Jane", "", false}, // hyphenated generic bypasses? must not (codex)
+		{"Push activity", "", false},     // new stoplist token
+		{"State change", "", false},      // new stoplist token
+		{"Author", "", false},            // new stoplist token
 		{"Will Brown", "", false},        // common function word "will" (codex)
 		{"May Day", "", false},           // common function word "may" (codex)
 		{"A Smith", "", false},           // single-rune initial token (codex)

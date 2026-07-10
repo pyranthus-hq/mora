@@ -210,6 +210,9 @@ func personRefs(m Memory) (parts []personRef, senders, recipients []string, rel 
 		if identity == "" {
 			return ""
 		}
+		if isStructuralNoise(identity) {
+			return ""
+		}
 		id := personID(identity)
 		if name == "" {
 			name = names[strings.ToLower(identity)]
@@ -538,7 +541,7 @@ func buildGraph(mems []Memory) ([]graphEntity, []graphEdge, []string) {
 		// address-only "person" to a service here — keep that service at 0 so a service
 		// never carries a positive ranking score (D14-1/D14-6).
 		salience := canonSal[id]
-		if kind == "service" {
+		if kind != "person" {
 			salience = 0
 		}
 		entities = append(entities, graphEntity{

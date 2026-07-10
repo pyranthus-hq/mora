@@ -30,6 +30,7 @@ var gazStoplist = map[string]bool{
 	"alert": true, "account": true, "accounts": true, "mailer": true, "daemon": true,
 	"help": true, "sales": true, "billing": true, "service": true, "services": true,
 	"updates": true, "update": true, "noreply-": true, "bot": true, "automated": true,
+	"push": true, "author": true, "mention": true, "ci": true, "activity": true, "state": true, "change": true,
 }
 
 // gazWordStoplist holds common English function words that frequently sit adjacent

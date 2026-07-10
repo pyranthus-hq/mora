@@ -212,11 +212,12 @@ func coOccurringPeople(ctx context.Context, db *sql.DB, personID string) ([]stri
 		SELECT DISTINCT e2.dst
 		FROM edges e1
 		JOIN edges e2 ON e1.src = e2.src
+		LEFT JOIN entities ent ON e2.dst = ent.id
 		WHERE e1.dst = ?
 		  AND e1.rel IN ('PARTICIPATED_IN','ATTENDED')
 		  AND e2.rel IN ('PARTICIPATED_IN','ATTENDED')
 		  AND e2.dst <> e1.dst
-		  AND e2.dst LIKE 'person:%'
+		  AND (ent.kind IS NULL OR ent.kind = 'person')
 		  AND e1.invalidated_at IS NULL
 		  AND e2.invalidated_at IS NULL
 		ORDER BY e2.dst`, personID)

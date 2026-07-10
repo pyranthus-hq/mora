@@ -84,7 +84,7 @@ func TestClassifyIdentity(t *testing.T) {
 		{"m@bounce.salesforce.com", "", "service"},
 
 		// --- display-name patterns -> service (even with a benign address) ---
-		{"venmo@person.venmo.com", "Venmo", "person"}, // address benign, display benign -> person (company, A4 defers)
+		{"venmo@person.venmo.com", "Venmo", "org"}, // address benign, display benign -> org (company, A4 defers)
 		{"x@somehost.com", "Acme Receipts", "service"},
 		{"y@somehost.com", "Weekly Alerts", "service"},
 		{"z@somehost.com", "Foo Notifications", "service"},
@@ -248,6 +248,32 @@ func TestClassifyIdentityDeterministic(t *testing.T) {
 			if got := classifyIdentity(id, ""); got != first {
 				t.Fatalf("classifyIdentity(%q) nondeterministic: %q vs %q", id, got, first)
 			}
+		}
+	}
+}
+
+func TestClassifyIdentityTypes(t *testing.T) {
+	cases := []struct {
+		identity, display, want string
+	}{
+		{"google.com", "", "org"},
+		{"sofi@email.sofi.com", "SoFi", "org"},
+		{"one-medical@something.com", "One Medical", "org"},
+		{"chase@chase.com", "Chase Bank", "org"},
+		{"pyranthus-hq/mora", "", "repo"},
+		{"", "pyranthus-hq/anthos", "repo"},
+		{"author", "", "artifact"},
+		{"push", "", "artifact"},
+		{"mention", "", "artifact"},
+		{"ci activity", "", "artifact"},
+		{"state change", "", "artifact"},
+		{"ci-activity", "", "artifact"},
+		{"state-change", "", "artifact"},
+		{"iMessage;-;weird", "", "person"},
+	}
+	for _, c := range cases {
+		if got := classifyIdentity(c.identity, c.display); got != c.want {
+			t.Errorf("classifyIdentity(%q, %q) = %q, want %q", c.identity, c.display, got, c.want)
 		}
 	}
 }

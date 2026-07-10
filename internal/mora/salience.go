@@ -166,7 +166,7 @@ type salienceInput struct {
 // though the math (sum/max) is order-independent regardless.
 func scoreSalience(in salienceInput, vaultMax string) int64 {
 	humanGate := 1.0
-	if in.kind == "service" {
+	if in.kind != "person" {
 		humanGate = 0
 	}
 	if humanGate == 0 {

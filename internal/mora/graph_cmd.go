@@ -78,7 +78,7 @@ func renderGraphOverview(w io.Writer, entities []Entity, top int) {
 		// Service-kind person identities are excluded from the People overview
 		// (D14-6) — render-time filter ONLY; graphListEntities still returns them so
 		// search/get_entity resolve them. Other kinds pass through unchanged.
-		if e.Kind == "service" {
+		if e.Kind == "service" || e.Kind == "org" || e.Kind == "repo" || e.Kind == "artifact" {
 			continue
 		}
 		byKind[e.Kind] = append(byKind[e.Kind], e)
