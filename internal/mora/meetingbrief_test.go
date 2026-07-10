@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"strings"
@@ -182,6 +183,346 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	}
 	if lines != 4 {
 		t.Fatalf("surfaced %d evidence lines, want exactly four actionable cited lines: %s", lines, firstJSON)
+	}
+}
+
+func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-forgettability",
+		"Portfolio commitments",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"dana@example.com": "Dana"},
+		"dana@example.com",
+	)
+	oldGem := meetingBriefEmail(
+		"forgotten-gem",
+		"Portfolio introduction commitment",
+		"Can you send the portfolio introduction document you promised?",
+		"dana@example.com",
+		[]string{"me@example.com"},
+		at.Add(-300*24*time.Hour),
+	)
+	recentNoise := meetingBriefEmail(
+		"daily-noise",
+		"Daily check-in",
+		"Can you confirm today's routine check-in?",
+		"dana@example.com",
+		[]string{"me@example.com"},
+		at.Add(-2*time.Hour),
+	)
+	for _, memory := range []Memory{event, oldGem, recentNoise} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(brief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), oldGem.ID) {
+		t.Fatalf("forgotten actionable gem did not win the single attendee slot: %s", payload)
+	}
+	if strings.Contains(string(payload), recentNoise.ID) {
+		t.Fatalf("recent routine noise displaced the forgotten actionable gem: %s", payload)
+	}
+}
+
+func TestMeetingBriefSharedThreadUsesSenderAttribution(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-shared-thread",
+		"Contract review",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{
+			"alice@example.com": "Alice",
+			"bob@example.com":   "Bob",
+		},
+		"alice@example.com",
+		"bob@example.com",
+	)
+	shared := meetingBriefEmail(
+		"shared-request",
+		"Contract approval",
+		"Can you approve the contract before Friday?",
+		"bob@example.com",
+		[]string{"me@example.com", "alice@example.com"},
+		at.Add(-30*24*time.Hour),
+	)
+	shared.Meta["names"] = map[string]string{
+		"alice@example.com": "Alice",
+		"bob@example.com":   "Bob",
+	}
+	for _, memory := range []Memory{event, shared} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(brief.Sections) != 1 || len(brief.Sections[0].Lines) != 1 {
+		t.Fatalf("shared thread should render once: %+v", brief.Sections)
+	}
+	if got := brief.Sections[0].Lines[0].Attendee; got != "Bob" {
+		t.Fatalf("shared thread attributed to %q, want sender Bob", got)
+	}
+}
+
+func TestMeetingBriefDropsAmbiguousOutboundGroupAttribution(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-ambiguous-outbound",
+		"Contract review",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{
+			"alice@example.com": "Alice",
+			"bob@example.com":   "Bob",
+		},
+		"alice@example.com",
+		"bob@example.com",
+	)
+	outbound := meetingBriefEmail(
+		"outbound-group-promise",
+		"Contract follow-up",
+		"I will send the signed contract tomorrow.",
+		"me@example.com",
+		[]string{"alice@example.com", "bob@example.com"},
+		at.Add(-30*24*time.Hour),
+	)
+	outbound.Meta["names"] = map[string]string{
+		"alice@example.com": "Alice",
+		"bob@example.com":   "Bob",
+		"me@example.com":    "Me",
+	}
+	for _, memory := range []Memory{event, outbound} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meetingBriefLineCount(brief) != 0 {
+		t.Fatalf("ambiguous group promise was assigned to an arbitrary attendee: %+v", brief.Sections)
+	}
+}
+
+func TestMeetingBriefRendersActionablePassageNotTriviaFromMixedThread(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-mixed-thread",
+		"Deck review",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"dana@example.com": "Dana"},
+		"dana@example.com",
+	)
+	mixed := meetingBriefEmail(
+		"mixed-thread",
+		"Catch up",
+		"My kid's name is Robin; can you send the revised deck before Friday?",
+		"dana@example.com",
+		[]string{"me@example.com"},
+		at.Add(-90*24*time.Hour),
+	)
+	for _, memory := range []Memory{event, mixed} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(brief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "Robin") || strings.Contains(string(payload), "kid's name") {
+		t.Fatalf("personal trivia leaked from an otherwise actionable thread: %s", payload)
+	}
+	if !strings.Contains(string(payload), "revised deck") {
+		t.Fatalf("actionable passage missing from mixed thread: %s", payload)
+	}
+}
+
+func TestMeetingBriefMaxTokensBudgetsSerializedPayload(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-budgeted-brief",
+		"Portfolio review",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"dana@example.com": "Dana"},
+		"dana@example.com",
+	)
+	if err := writeMemory(cfg, event); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 15; i++ {
+		memory := meetingBriefEmail(
+			fmt.Sprintf("budget-request-%02d", i),
+			fmt.Sprintf("Portfolio request %02d", i),
+			fmt.Sprintf("Can you send portfolio document %02d before the review?", i),
+			"dana@example.com",
+			[]string{"me@example.com"},
+			at.Add(-time.Duration(30+i)*24*time.Hour),
+		)
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	const maxTokens = 2000
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, maxTokens, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, budgetChars := resolveContextBudgetTokens(cfg, maxTokens)
+	if got, wantMax := jsonLen(brief), budgetChars/mcpDigestEnvelopeDivisor; got > wantMax {
+		t.Fatalf("serialized MeetingBrief = %d bytes, compact budget = %d", got, wantMax)
+	}
+	if meetingBriefLineCount(brief) == 0 {
+		t.Fatal("real-size budget dropped every actionable line")
+	}
+	if _, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 1, 15); err == nil || !strings.Contains(err.Error(), "meeting brief event requires") {
+		t.Fatalf("event-only payload exceeding max_tokens did not fail loudly: %v", err)
+	}
+}
+
+func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-dated-rail",
+		"Career update",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"dana@example.com": "Dana"},
+		"dana@example.com",
+	)
+	stale := meetingBriefEmail(
+		"stale-role",
+		"New role",
+		"Dana is now at Denver Labs in a new role.",
+		"dana@example.com",
+		[]string{"me@example.com"},
+		at.Add(-300*24*time.Hour),
+	)
+	for _, memory := range []Memory{event, stale} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered bytes.Buffer
+	if err := renderMeetingBrief(&rendered, brief); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.String(), "~10 months ago, the cited record involving Dana stated: “") {
+		t.Fatalf("stale fact was not rendered as dated historical evidence:\n%s", rendered.String())
+	}
+	if strings.Contains(rendered.String(), "- Dana: New role — Dana is now at Denver Labs") {
+		t.Fatalf("stale fact rendered as a present-tense attendee assertion:\n%s", rendered.String())
+	}
+
+	brief.Sections[0].Lines[0].Text = "Dana is now at Denver Labs."
+	rendered.Reset()
+	err = renderMeetingBrief(&rendered, brief)
+	if err == nil || !strings.Contains(err.Error(), "dated-historical rail") {
+		t.Fatalf("present-tense stale fact crossed the rendering rail: %v", err)
+	}
+	if rendered.Len() != 0 {
+		t.Fatalf("dated-historical rail wrote partial output: %q", rendered.String())
 	}
 }
 
