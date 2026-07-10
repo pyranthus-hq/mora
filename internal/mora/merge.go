@@ -116,8 +116,8 @@ func emailPhoneCandidates(persons map[string]*personAgg) []mergeCandidate {
 	ids := sortedPersonIDs(persons)
 
 	kindOf := make(map[string]string, len(ids))
-	names := make(map[string][]string, len(ids))           // id -> distinctive trusted names
-	carriers := map[string]map[string]bool{}               // name -> ids carrying it
+	names := make(map[string][]string, len(ids)) // id -> distinctive trusted names
+	carriers := map[string]map[string]bool{}     // name -> ids carrying it
 	for _, id := range ids {
 		p := persons[id]
 		kindOf[id] = personKindOf(id, p)

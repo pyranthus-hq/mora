@@ -372,9 +372,9 @@ func (g governance) activeMergeConfirms() []govEntry {
 // (or vice-versa) takes effect. Deterministic: confirmed is sorted.
 func (g governance) mergeDecisions() (confirmed []confirmedMerge, decided map[string]bool) {
 	decided = map[string]bool{}
-	verdict := map[string]string{}   // pairKey -> latest decision
-	ids := map[string][2]string{}    // pairKey -> (personA, personB)
-	govOf := map[string]string{}     // pairKey -> authorizing ledger id
+	verdict := map[string]string{} // pairKey -> latest decision
+	ids := map[string][2]string{}  // pairKey -> (personA, personB)
+	govOf := map[string]string{}   // pairKey -> authorizing ledger id
 	for _, e := range g.activeMergeConfirms() {
 		a, b := atomPersonID(e.Atom), atomPersonID(*e.Atom2)
 		if a == "" || b == "" || a == b {
