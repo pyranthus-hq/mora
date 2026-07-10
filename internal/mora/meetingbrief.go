@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,27 +36,123 @@ var meetingBriefSectionOrder = []string{
 // BriefCitation is the provenance rail for every surfaced meeting-brief line.
 // A line cannot be built or rendered without a complete local-memory citation.
 type BriefCitation struct {
+	memoryID string
+	channel  string
+	source   string
+	date     string
+}
+
+type briefCitationJSON struct {
 	MemoryID string `json:"memory_id"`
 	Channel  string `json:"channel"`
 	Source   string `json:"source"`
 	Date     string `json:"date"`
 }
 
+func newBriefCitation(memoryID, channel, source, date string) (BriefCitation, error) {
+	c := BriefCitation{
+		memoryID: strings.TrimSpace(memoryID),
+		channel:  strings.TrimSpace(channel),
+		source:   strings.TrimSpace(source),
+		date:     strings.TrimSpace(date),
+	}
+	if err := c.validate(); err != nil {
+		return BriefCitation{}, err
+	}
+	return c, nil
+}
+
+func (c BriefCitation) MemoryID() string { return c.memoryID }
+func (c BriefCitation) Channel() string  { return c.channel }
+func (c BriefCitation) Source() string   { return c.source }
+func (c BriefCitation) Date() string     { return c.date }
+
+func (c BriefCitation) MarshalJSON() ([]byte, error) {
+	return json.Marshal(briefCitationJSON{
+		MemoryID: c.memoryID,
+		Channel:  c.channel,
+		Source:   c.source,
+		Date:     c.date,
+	})
+}
+
+func (c *BriefCitation) UnmarshalJSON(b []byte) error {
+	var raw briefCitationJSON
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	parsed, err := newBriefCitation(raw.MemoryID, raw.Channel, raw.Source, raw.Date)
+	if err != nil {
+		return err
+	}
+	*c = parsed
+	return nil
+}
+
 func (c BriefCitation) validate() error {
-	if strings.TrimSpace(c.MemoryID) == "" {
+	if c.memoryID == "" {
 		return errors.New("missing memory_id")
 	}
-	if strings.TrimSpace(c.Channel) == "" {
+	if c.channel == "" {
 		return errors.New("missing channel")
 	}
-	if strings.TrimSpace(c.Source) == "" {
+	if c.source == "" {
 		return errors.New("missing source")
 	}
-	if strings.TrimSpace(c.Date) == "" {
+	if c.date == "" {
 		return errors.New("missing date")
 	}
-	if _, err := time.Parse(time.RFC3339, c.Date); err != nil {
-		return fmt.Errorf("invalid date %q: %w", c.Date, err)
+	if _, err := time.Parse(time.RFC3339, c.date); err != nil {
+		return fmt.Errorf("invalid date %q: %w", c.date, err)
+	}
+	return nil
+}
+
+// BriefLineCorrection is the one-action correction payload attached to each cited
+// line. Both actions write stable-atom keyed decisions to the governance confirm
+// queue:
+//   - correct (decision=confirm) keeps/pins this source line to the attendee;
+//   - unlink (decision=reject) removes this source line from this attendee's brief.
+//
+// Unlink is destructive and therefore requires explicit confirmation (`--yes`).
+type BriefLineCorrection struct {
+	StableAtom     govAtom `json:"stable_atom"`
+	AttendeeAtom   govAtom `json:"attendee_atom"`
+	CorrectCommand string  `json:"correct_command"`
+	UnlinkCommand  string  `json:"unlink_command"`
+}
+
+func newBriefLineCorrection(stableAtom, attendeeAtom govAtom) (BriefLineCorrection, error) {
+	c := BriefLineCorrection{
+		StableAtom:   stableAtom,
+		AttendeeAtom: attendeeAtom,
+		CorrectCommand: fmt.Sprintf(
+			"mora brief correct --memory-id %s --attendee %s --confirm",
+			stableAtom.Value, attendeeAtom.Value,
+		),
+		UnlinkCommand: fmt.Sprintf(
+			"mora brief correct --memory-id %s --attendee %s --unlink --yes",
+			stableAtom.Value, attendeeAtom.Value,
+		),
+	}
+	if err := c.validate(); err != nil {
+		return BriefLineCorrection{}, err
+	}
+	return c, nil
+}
+
+func (c BriefLineCorrection) validate() error {
+	if c.StableAtom.Kind != atomStableID || strings.TrimSpace(c.StableAtom.Value) == "" {
+		return errors.New("missing stable source atom")
+	}
+	if c.AttendeeAtom.Kind != atomHandle && c.AttendeeAtom.Kind != atomAddress {
+		return errors.New("missing attendee atom kind")
+	}
+	if strings.TrimSpace(c.AttendeeAtom.Value) == "" {
+		return errors.New("missing attendee atom value")
+	}
+	if strings.TrimSpace(c.CorrectCommand) == "" || strings.TrimSpace(c.UnlinkCommand) == "" {
+		return errors.New("missing correction commands")
 	}
 	return nil
 }
@@ -63,15 +160,17 @@ func (c BriefCitation) validate() error {
 // CitedBriefLine is the only renderable evidence atom. Text is a compact extract
 // from the cited memory, never an inferred conclusion.
 type CitedBriefLine struct {
-	Text     string        `json:"text"`
-	Attendee string        `json:"attendee,omitempty"`
-	Citation BriefCitation `json:"citation"`
+	Text       string              `json:"text"`
+	Attendee   string              `json:"attendee,omitempty"`
+	Citation   BriefCitation       `json:"citation"`
+	Correction BriefLineCorrection `json:"correction"`
 }
 
-func newCitedBriefLine(text, attendee string, citation BriefCitation, asOf time.Time) (CitedBriefLine, error) {
+func newCitedBriefLine(text, attendee string, citation BriefCitation, correction BriefLineCorrection, asOf time.Time) (CitedBriefLine, error) {
 	line := CitedBriefLine{
-		Attendee: strings.TrimSpace(attendee),
-		Citation: citation,
+		Attendee:   strings.TrimSpace(attendee),
+		Citation:   citation,
+		Correction: correction,
 	}
 	raw := oneLine(text)
 	if raw == "" {
@@ -80,7 +179,10 @@ func newCitedBriefLine(text, attendee string, citation BriefCitation, asOf time.
 	if err := line.Citation.validate(); err != nil {
 		return CitedBriefLine{}, err
 	}
-	line.Text = meetingBriefHistoricalText(asOf, line.Citation.Date, line.Attendee, raw)
+	if err := line.Correction.validate(); err != nil {
+		return CitedBriefLine{}, err
+	}
+	line.Text = meetingBriefHistoricalText(asOf, line.Citation.Date(), line.Attendee, raw)
 	return line, nil
 }
 
@@ -88,7 +190,10 @@ func (l CitedBriefLine) validate() error {
 	if strings.TrimSpace(l.Text) == "" {
 		return errors.New("empty text")
 	}
-	return l.Citation.validate()
+	if err := l.Citation.validate(); err != nil {
+		return err
+	}
+	return l.Correction.validate()
 }
 
 // CitedMeetingEvent carries one event memory citation covering all event fields,
@@ -167,6 +272,7 @@ type meetingBriefCandidate struct {
 	kind           string
 	line           CitedBriefLine
 	rank           forgettabilityCandidate
+	decisionKey    string
 	attendeeSender bool
 }
 
@@ -224,7 +330,10 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		return MeetingBrief{}, errors.New("cannot safely resolve meeting attendees: self email is unknown; connect a Google account first")
 	}
 	attendees := meetingBriefAttendees(eventMemory, self)
-	eventCitation := citationForMemory(eventMemory, eventMemory.ID, validFromOf(eventMemory))
+	eventCitation, err := citationForMemory(eventMemory, eventMemory.ID, validFromOf(eventMemory))
+	if err != nil {
+		return MeetingBrief{}, fmt.Errorf("event %s citation: %w", eventMemory.ID, err)
+	}
 	event := &CitedMeetingEvent{
 		ID:        eventMemory.ID,
 		Title:     eventMemory.Title,
@@ -245,6 +354,11 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 	}
 
 	associationsByMemory := map[string][]meetingBriefCandidate{}
+	governanceLedger, err := loadGovernance(cfg)
+	if err != nil {
+		return MeetingBrief{}, err
+	}
+	lineDecisions := governanceLedger.briefLineDecisions()
 	for _, attendee := range attendees {
 		dossier, derr := graphGetEntity(ctx, cfg, attendee.identity)
 		if derr != nil {
@@ -281,10 +395,19 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			if excerpt == "" {
 				continue
 			}
+			citation, cerr := citationForMemory(m, source, occurredAt)
+			if cerr != nil {
+				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s citation: %w", eventMemory.ID, attendee.identity, m.ID, cerr)
+			}
+			correction, corrErr := briefLineCorrectionForEvidence(m, attendee.identity)
+			if corrErr != nil {
+				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s correction: %w", eventMemory.ID, attendee.identity, m.ID, corrErr)
+			}
 			line, lerr := newCitedBriefLine(
 				excerpt,
 				display,
-				citationForMemory(m, source, occurredAt),
+				citation,
+				correction,
 				at,
 			)
 			if lerr != nil {
@@ -295,6 +418,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			candidate := meetingBriefCandidate{
 				kind:           kind,
 				line:           line,
+				decisionKey:    briefLineDecisionKey(line.Correction.StableAtom, line.Correction.AttendeeAtom),
 				attendeeSender: meetingBriefAttendeeIsSender(m, attendee.identity),
 				rank: forgettabilityCandidate{
 					StableID:             m.ID,
@@ -328,7 +452,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 	sort.Strings(candidateIDs)
 	candidates := make([]meetingBriefCandidate, 0, len(candidateIDs))
 	for _, id := range candidateIDs {
-		candidate, unambiguous := meetingBriefResolveAttribution(associationsByMemory[id])
+		candidate, unambiguous := meetingBriefResolveAttribution(associationsByMemory[id], lineDecisions)
 		if unambiguous {
 			candidates = append(candidates, candidate)
 		}
@@ -386,9 +510,27 @@ func meetingBriefWithCandidates(brief MeetingBrief, candidates []meetingBriefCan
 	return brief
 }
 
-func meetingBriefResolveAttribution(associations []meetingBriefCandidate) (meetingBriefCandidate, bool) {
-	byPerson := map[string]meetingBriefCandidate{}
+func meetingBriefResolveAttribution(associations []meetingBriefCandidate, lineDecisions map[string]string) (meetingBriefCandidate, bool) {
+	filtered := make([]meetingBriefCandidate, 0, len(associations))
+	confirmed := make([]meetingBriefCandidate, 0, len(associations))
 	for _, candidate := range associations {
+		switch lineDecisions[candidate.decisionKey] {
+		case mergeDecisionReject:
+			continue
+		case mergeDecisionConfirm:
+			confirmed = append(confirmed, candidate)
+		}
+		filtered = append(filtered, candidate)
+	}
+	if len(confirmed) == 1 {
+		return confirmed[0], true
+	}
+	if len(confirmed) > 1 || len(filtered) == 0 {
+		return meetingBriefCandidate{}, false
+	}
+
+	byPerson := map[string]meetingBriefCandidate{}
+	for _, candidate := range filtered {
 		current, exists := byPerson[candidate.rank.PersonID]
 		if !exists || candidate.attendeeSender {
 			byPerson[candidate.rank.PersonID] = candidate
@@ -486,7 +628,7 @@ func meetingBriefRelativeAge(asOf, factAt time.Time) string {
 }
 
 func (l CitedBriefLine) validateHistorical(asOf time.Time) error {
-	prefix := meetingBriefHistoricalPrefix(asOf, l.Citation.Date, l.Attendee)
+	prefix := meetingBriefHistoricalPrefix(asOf, l.Citation.Date(), l.Attendee)
 	if prefix == "" || !strings.HasPrefix(l.Text, prefix) || !strings.HasSuffix(l.Text, "”") {
 		return errors.New("evidence must be rendered as a dated, past-tense cited record")
 	}
@@ -574,7 +716,7 @@ func meetingBriefLineCount(brief MeetingBrief) int {
 	return count
 }
 
-func citationForMemory(m Memory, source, date string) BriefCitation {
+func citationForMemory(m Memory, source, date string) (BriefCitation, error) {
 	channel := strings.TrimSpace(m.Provider)
 	if channel == "" {
 		channel = strings.TrimSpace(m.Type)
@@ -592,12 +734,26 @@ func citationForMemory(m Memory, source, date string) BriefCitation {
 	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(date)); err == nil {
 		date = parsed.UTC().Format(time.RFC3339)
 	}
-	return BriefCitation{
-		MemoryID: m.ID,
-		Channel:  channel,
-		Source:   source,
-		Date:     strings.TrimSpace(date),
+	return newBriefCitation(m.ID, channel, source, date)
+}
+
+func attendeeAtomForIdentity(identity string) (govAtom, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return govAtom{}, errors.New("empty attendee identity")
 	}
+	if strings.Contains(identity, "@") {
+		return govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, identity)}, nil
+	}
+	return govAtom{Provider: "imessage", Kind: atomHandle, Value: normalizeIdentity(atomHandle, identity)}, nil
+}
+
+func briefLineCorrectionForEvidence(m Memory, attendeeIdentity string) (BriefLineCorrection, error) {
+	attendeeAtom, err := attendeeAtomForIdentity(attendeeIdentity)
+	if err != nil {
+		return BriefLineCorrection{}, err
+	}
+	return newBriefLineCorrection(itemAtom(m.Provider, m.ID), attendeeAtom)
 }
 
 func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind string) string {
@@ -862,11 +1018,12 @@ func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
 		fmt.Fprintf(w, "\n## %s\n", section.Title)
 		for _, line := range section.Lines {
 			fmt.Fprintf(w, "- %s %s\n", line.Text, renderBriefCitation(line.Citation))
+			fmt.Fprintf(w, "  actions: correct=`%s` unlink=`%s`\n", line.Correction.CorrectCommand, line.Correction.UnlinkCommand)
 		}
 	}
 	return nil
 }
 
 func renderBriefCitation(c BriefCitation) string {
-	return fmt.Sprintf("{memory-id: %s, channel: %s, source: %s, date: %s}", c.MemoryID, c.Channel, c.Source, c.Date)
+	return fmt.Sprintf("{memory-id: %s, channel: %s, source: %s, date: %s}", c.MemoryID(), c.Channel(), c.Source(), c.Date())
 }

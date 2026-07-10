@@ -350,6 +350,46 @@ func mergePairKey(a, b string) string {
 	return a + "\x00" + b
 }
 
+// briefLineDecisionKey is the stable key for one meeting-brief attribution decision:
+// "this cited source memory (stable atom) is / is not linked to this attendee atom".
+// Last writer wins by key.
+func briefLineDecisionKey(stableAtom, attendeeAtom govAtom) string {
+	return stableAtom.Provider + "\x00" +
+		stableAtom.Value + "\x00" +
+		attendeeAtom.Provider + "\x00" +
+		attendeeAtom.Kind + "\x00" +
+		attendeeAtom.Value
+}
+
+// briefLineDecisions resolves P16 click-to-correct entries from the governance
+// ledger: redact entries keyed by (stable_id atom, attendee atom) with decision
+// confirm/reject. Returned map uses briefLineDecisionKey and applies last-writer-
+// wins semantics.
+func (g governance) briefLineDecisions() map[string]string {
+	decisions := map[string]string{}
+	for _, e := range g.Entries {
+		if e.revoked() || e.Kind != govKindRedact || e.Action != govActionRecord || e.Atom2 == nil {
+			continue
+		}
+		if e.Atom.Kind != atomStableID || strings.TrimSpace(e.Atom.Value) == "" {
+			continue
+		}
+		attendee := *e.Atom2
+		if attendee.Kind != atomHandle && attendee.Kind != atomAddress {
+			continue
+		}
+		attendee.Value = normalizeIdentity(attendee.Kind, attendee.Value)
+		if attendee.Value == "" {
+			continue
+		}
+		if e.Decision != mergeDecisionConfirm && e.Decision != mergeDecisionReject {
+			continue
+		}
+		decisions[briefLineDecisionKey(e.Atom, attendee)] = e.Decision
+	}
+	return decisions
+}
+
 // activeMergeConfirms returns the non-revoked, two-atom merge_confirm entries.
 func (g governance) activeMergeConfirms() []govEntry {
 	var out []govEntry

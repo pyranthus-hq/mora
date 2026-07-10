@@ -287,6 +287,38 @@ func TestGovernance_MergeConfirmPersists(t *testing.T) {
 	}
 }
 
+func TestGovernance_BriefLineDecisionsPersistAndLastWriterWins(t *testing.T) {
+	cfg := Config{VaultDir: t.TempDir()}
+	stable := govAtom{Provider: "gmail", Kind: atomStableID, Value: "gmail_thread/t1"}
+	attendee := govAtom{Kind: atomAddress, Value: "sam@example.com"}
+	if _, err := appendGovernanceEntry(cfg, govEntry{
+		Kind:     govKindRedact,
+		Action:   govActionRecord,
+		Atom:     stable,
+		Atom2:    &attendee,
+		Decision: mergeDecisionReject,
+	}); err != nil {
+		t.Fatalf("append reject: %v", err)
+	}
+	if _, err := appendGovernanceEntry(cfg, govEntry{
+		Kind:     govKindRedact,
+		Action:   govActionRecord,
+		Atom:     stable,
+		Atom2:    &attendee,
+		Decision: mergeDecisionConfirm,
+	}); err != nil {
+		t.Fatalf("append confirm: %v", err)
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := briefLineDecisionKey(stable, attendee)
+	if got := g.briefLineDecisions()[key]; got != mergeDecisionConfirm {
+		t.Fatalf("brief line decision = %q, want last-writer %q", got, mergeDecisionConfirm)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // durability: rides `mora sync git`, ignored by index rebuild
 // ---------------------------------------------------------------------------

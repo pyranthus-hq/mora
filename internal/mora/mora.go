@@ -318,6 +318,7 @@ USAGE:
   mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
   mora brief --event-id <id>       # cited unfinished-business brief for one calendar event
+  mora brief correct --memory-id <id> --attendee <identity> --confirm
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
   mora index rebuild
@@ -430,6 +431,9 @@ var briefClock = time.Now
 // the test harness see raw Markdown either way; the skin only appears on a real
 // terminal for a freshly-generated brief.
 func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) > 0 && args[0] == "correct" {
+		return cmdBriefCorrect(ctx, args[1:], stdout)
+	}
 	fs := flag.NewFlagSet("brief", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "emit a byte-clean JSON result")
