@@ -381,16 +381,36 @@ func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
 		return 0, fmt.Errorf("unknown source type %q", s.Type)
 	}
 }
+
+// testHookMappedWriteCritical, when non-nil (tests only), fires inside
+// writeMappedMemory AFTER the fresh suppression check and the content-hash skip,
+// BEFORE atomicWrite — i.e. while the governance lease is held. It is the
+// connector-path twin of testHookInWriteCritical: it proves the lease SPANS the
+// check-and-write, closing the connector TOCTOU (#113 gap #1). Nil in production.
+var testHookMappedWriteCritical func()
+
 func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// Governance chokepoint (#52/#53): consult the vault-resident ledger before
 	// persisting ANY connector memory. A suppressed stable-atom (forgotten chat,
 	// forgotten 1:1 person, pruned item) is silently skipped so the hourly,
 	// agent-less sync can never resurrect it. This is the single place re-ingest
-	// is blocked; it covers all connector call sites without per-site edits. A
-	// corrupt ledger returns an error (fail-closed) rather than resurrecting.
-	if sup, _, err := shouldSuppressWrite(cfg, mm); err != nil {
+	// is blocked; it covers all connector call sites without per-site edits.
+	//
+	// The suppression check AND the atomicWrite run under a SINGLE held governance
+	// lease (governanceWriteLease) — the same lease `mora forget` takes to append
+	// its suppression. That makes check→write atomic w.r.t. that append and closes
+	// the connector-path TOCTOU (#113 gap #1): a fresh once-per-item load alone
+	// closed the STALE-SNAPSHOT variant but NOT the check-to-write window — a
+	// forget committing between an unlocked check and the atomicWrite was still
+	// missed and resurrected the atom. Holding the lease across both (mirroring the
+	// filesystem writeUnlessForgotten fix) is the durable close. A corrupt ledger
+	// returns an error (fail-closed) rather than resurrecting.
+	g, release, err := governanceWriteLease(cfg)
+	if err != nil {
 		return err
-	} else if sup {
+	}
+	defer release()
+	if sup, _ := g.suppresses(mm); sup {
 		return nil
 	}
 	m := Memory{
@@ -404,7 +424,8 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// reserved characters (? * " < > |); osSafeBase finishes the job on Windows
 	// and is a no-op elsewhere, so this stays byte-identical on macOS/Linux.
 	out := filepath.Join(sourcesRoot(cfg), mm.Provider, osSafeBase(memory.SafeFilename(mm.StableID))+".md")
-	// Skip rewrite if content unchanged (preserve created_at).
+	// Skip rewrite if content unchanged (preserve created_at). This read stays
+	// inside the lease so the whole check→skip→write is one critical section.
 	if existing, err := parseMemory(out); err == nil {
 		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" {
 			return nil
@@ -414,6 +435,9 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	body, err := renderMemory(m)
 	if err != nil {
 		return err
+	}
+	if testHookMappedWriteCritical != nil {
+		testHookMappedWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
 	}
 	return atomicWrite(out, body, 0o644)
 }

@@ -221,6 +221,13 @@ func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
 	if err != nil {
 		return govEntry{}, err
 	}
+	if testHookGovAppendPostLoad != nil {
+		// Test seam (nil in production): widen the read-modify-write window between
+		// load and save. Under the lease this merely slows one serialized writer; if
+		// the lease were removed it lets concurrent writers overlap their RMW and drop
+		// an append — the lost-update the ConcurrentAppendsNoLostUpdate test forces.
+		testHookGovAppendPostLoad()
+	}
 	if e.ID == "" {
 		e.ID = "gov_" + strings.TrimPrefix(newID(), "mem_")
 	}
@@ -500,34 +507,51 @@ func (g governance) mergeDecisions() (confirmed []confirmedMerge, decided map[st
 	return confirmed, decided
 }
 
+// governanceWriteLease is the shared primitive behind EVERY no-resurrection write
+// path: it acquires the governance lease (acquireGovernanceLock — the same lease
+// `mora forget` takes to append its suppression) and loads the ledger, returning
+// both the ledger and a release func the caller MUST defer. Holding the lease
+// across the suppression CHECK and the subsequent atomicWrite is what makes those
+// two steps atomic w.r.t. a concurrent forget's append: a forget can commit its
+// suppression EITHER entirely before the check (⇒ the write is skipped) or
+// entirely after the write releases the lease (⇒ its removal pass reaps the
+// just-written file) — never in between. A once-per-caller SNAPSHOT (release then
+// write) reopened that between window and silently resurrected the atom (#113).
+// On a load error the lease is released before returning so the caller need not.
+func governanceWriteLease(cfg Config) (governance, func(), error) {
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return governance{}, nil, err
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		release()
+		return governance{}, nil, err
+	}
+	return g, release, nil
+}
+
 // writeUnlessForgotten atomically writes body to dest UNLESS the governance
 // ledger suppresses the (provider, id) atom — the resurrection guard for a write
-// path that renders directly (ingestFilesystem). Crucially, the whole
-// load→decide→write runs under the SAME governance lease `mora forget` takes to
-// append its suppression (acquireGovernanceLock). That makes the check-and-write
-// atomic w.r.t. that append: once forget's suppression is committed, EVERY later
-// walker reload observes it and skips — so no walk re-materializes the atom after
-// the forget commits. A once-per-walk ledger SNAPSHOT could not give this — a
-// forget committing after the snapshot but before the write silently resurrected
-// the atom (#113) — and releasing the lease before the atomicWrite would reopen
-// the same window (forget could append+remove in the gap, then this write
-// resurrects). A write that lands just AHEAD of the commit is a normal re-index
-// that forget's removal pass reaps when its (pre-append) scan observed the file;
-// closing that last, pre-existing forget-scan gap is out of scope here (it needs
-// forget to compute its removal set under the lease, not a walk-side change).
-// Reports whether it wrote (false ⇒ suppressed). Reloading + relocking per file
-// costs an O_EXCL create/remove per write; that is the deliberate price of the
-// no-resurrection invariant on a local, single-user tool.
+// path that renders directly (ingestFilesystem). The whole load→decide→write runs
+// under a single governance lease (governanceWriteLease); see that helper for why
+// the lease must SPAN the check and the write. A once-per-walk ledger SNAPSHOT
+// could not give this — a forget committing after the snapshot but before the
+// write silently resurrected the atom (#113) — and releasing the lease before the
+// atomicWrite would reopen the same window. A write that lands just AHEAD of the
+// commit is a normal re-index that forget's removal pass reaps when its
+// (pre-append) scan observed the file; closing that last, pre-existing
+// forget-scan gap is out of scope here (it needs forget to compute its removal
+// set under the lease, not a walk-side change). Reports whether it wrote
+// (false ⇒ suppressed). Reloading + relocking per file costs an O_EXCL
+// create/remove per write; that is the deliberate price of the no-resurrection
+// invariant on a local, single-user tool.
 func writeUnlessForgotten(cfg Config, provider, id, dest string, body []byte, mode os.FileMode) (bool, error) {
-	release, err := acquireGovernanceLock(cfg, time.Now())
+	g, release, err := governanceWriteLease(cfg)
 	if err != nil {
 		return false, err
 	}
 	defer release()
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		return false, err
-	}
 	if sup, _ := g.decideSuppress(provider, id, nil); sup {
 		return false, nil
 	}
@@ -546,3 +570,10 @@ func writeUnlessForgotten(cfg Config, provider, id, dest string, body []byte, mo
 // SPANS the write (a mere per-file reload without the lease would leave this
 // window unlocked and #113 open). Nil in production.
 var testHookInWriteCritical func()
+
+// testHookGovAppendPostLoad, when non-nil (tests only), fires inside
+// appendGovernanceEntry AFTER loadGovernance and BEFORE the append+save — the
+// read-modify-write window. Tests use it to widen that window and prove the lease
+// serializes concurrent appends (without it, an unlocked RMW drops updates). Nil
+// in production.
+var testHookGovAppendPostLoad func()

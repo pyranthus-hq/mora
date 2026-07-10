@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -519,13 +520,37 @@ func TestGovernance_FilesystemWriteHoldsGovernanceLease(t *testing.T) {
 
 func TestGovernance_ConcurrentAppendsNoLostUpdate(t *testing.T) {
 	cfg := Config{VaultDir: t.TempDir()}
-	const n = 8
-	var wg sync.WaitGroup
+	const n = 16
+
+	// A start-barrier releases all n appenders at once, and a widened
+	// read-modify-write window (below) makes them observe the SAME pre-append
+	// ledger — so WITHOUT the lease every save clobbers the others and only one
+	// entry survives (a lost update = a resurrected suppression). WITH the lease
+	// the n RMWs serialize and every entry survives. The barrier is what makes the
+	// failure deterministic: without it, fast sequential appends can each finish
+	// before the next starts, so the old test passed even with the lease removed.
+	// (This lost update is at the FILESYSTEM level — each goroutine has its own
+	// in-memory ledger — so `go test -race` does NOT flag it; the count assertion
+	// is the sole detector, which is exactly why the barrier is required.)
+	testHookGovAppendPostLoad = func() {
+		// Widen the load→save window so overlapping unlocked writers collide. Under
+		// the lease this only slows one serialized holder at a time (no overlap).
+		for i := 0; i < 500; i++ {
+			runtime.Gosched()
+		}
+	}
+	t.Cleanup(func() { testHookGovAppendPostLoad = nil })
+
+	release := make(chan struct{})
+	var ready, wg sync.WaitGroup
+	ready.Add(n)
+	wg.Add(n)
 	errs := make(chan error, n)
 	for i := 0; i < n; i++ {
-		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			ready.Done() // parked at the barrier
+			<-release    // ...released simultaneously with the others
 			_, err := appendGovernanceEntry(cfg, govEntry{
 				Kind: govKindForget, Action: govActionSuppress,
 				Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: fmt.Sprintf("+1408555%04d", i)},
@@ -533,6 +558,8 @@ func TestGovernance_ConcurrentAppendsNoLostUpdate(t *testing.T) {
 			errs <- err
 		}(i)
 	}
+	ready.Wait()   // every goroutine is at the barrier
+	close(release) // fire them together
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -546,6 +573,128 @@ func TestGovernance_ConcurrentAppendsNoLostUpdate(t *testing.T) {
 	}
 	if len(g.Entries) != n {
 		t.Fatalf("lost update: want %d entries, got %d (unlocked read-modify-write clobbered a suppression)", n, len(g.Entries))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #113 gap #1: the CONNECTOR write path (writeMappedMemory) must hold the
+// governance lease ACROSS its suppression check and its atomicWrite — the same
+// TOCTOU class the filesystem path closed. A fresh once-per-item load alone
+// closes only the stale-snapshot variant; a forget committing between an unlocked
+// check and the write is still missed and resurrects the atom on re-sync.
+// ---------------------------------------------------------------------------
+
+// TestGovernance_MappedWriteHoldsGovernanceLease is the DETERMINISTIC regression
+// for the connector check-to-write window (the twin of
+// TestGovernance_FilesystemWriteHoldsGovernanceLease). A seam fires inside
+// writeMappedMemory, after the suppression check and content-hash skip and while
+// the governance lease is held, and asserts the lease FILE is present. Because
+// `mora forget`'s suppression append takes that same lease, its being held here
+// PROVES no forget can commit between the check and the write — so none can be
+// missed and resurrect. Revert the fix (back to a lease-less shouldSuppressWrite +
+// atomicWrite) and the lock file is absent here, failing the test.
+func TestGovernance_MappedWriteHoldsGovernanceLease(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	held := 0
+	testHookMappedWriteCritical = func() {
+		held++
+		// Between the suppression check and the atomicWrite the governance lease
+		// must be held — its lock file must exist. If a refactor dropped the lease
+		// around the connector write (keeping only a one-shot check), the file would
+		// be absent here and #113 gap #1 would be reopened for a concurrent forget.
+		if _, err := os.Stat(governanceLockPath(cfg)); err != nil {
+			t.Errorf("governance lease NOT held during the connector write (#113 gap #1): %v", err)
+		}
+	}
+	t.Cleanup(func() { testHookMappedWriteCritical = nil })
+
+	if err := writeMappedMemory(cfg, imsgMM("solo", "+14155550123")); err != nil {
+		t.Fatalf("writeMappedMemory: %v", err)
+	}
+	if held != 1 {
+		t.Fatalf("connector write-critical seam fired %d times, want 1", held)
+	}
+}
+
+// TestGovernance_ConcurrentSyncAndForgetNoResurrection is the behavioral
+// companion: a `mora forget` racing an hourly re-sync must never leave the
+// forgotten memory resurrected. Many writer goroutines re-persist the live item
+// (writeMappedMemory) while one goroutine runs the durable forget (append the
+// suppression under the lease, then remove the file — the exact cmdForget order).
+// The lease serializes each writer's check-and-write against the append, so the
+// forget either commits before a writer's check (the writer skips) or after the
+// writer releases (the forget's remove reaps the just-written file). Either way,
+// once the suppression is committed the final on-disk state has NO file. This
+// passes deterministically WITH the fix; without it, a writer that checked before
+// the commit but wrote after the remove resurrects the atom.
+func TestGovernance_ConcurrentSyncAndForgetNoResurrection(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	mm := imsgMM("solo", "+14155550123")
+	dest := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(mm.StableID)+".md")
+
+	// Seed the file (the first sync) so the forget's remove has something to reap.
+	if err := writeMappedMemory(cfg, mm); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	const writers = 12
+	const iterations = 40
+	release := make(chan struct{})
+	var ready, wg sync.WaitGroup
+	ready.Add(writers + 1)
+	wg.Add(writers + 1)
+
+	// Writers: re-persist the live item repeatedly (the hourly re-sync re-fetches
+	// it every pass) for the whole race window.
+	for w := 0; w < writers; w++ {
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-release
+			for i := 0; i < iterations; i++ {
+				if err := writeMappedMemory(cfg, mm); err != nil {
+					t.Errorf("re-sync write: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	// Forget: durable-first (append suppression, then remove the file), the exact
+	// order cmdForget uses so a crash can never leave files gone but re-ingestable.
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-release
+		if _, err := appendGovernanceEntry(cfg, govEntry{
+			Kind: govKindForget, Action: govActionSuppress,
+			Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
+		}); err != nil {
+			t.Errorf("forget append: %v", err)
+			return
+		}
+		if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+			t.Errorf("forget remove: %v", err)
+		}
+	}()
+
+	ready.Wait()
+	close(release)
+	wg.Wait()
+
+	// The suppression is committed, so a final re-sync pass must be a no-op and the
+	// file must stay gone — no writer may have resurrected it.
+	if err := writeMappedMemory(cfg, mm); err != nil {
+		t.Fatalf("post-forget write: %v", err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("RESURRECTION: a forget racing re-sync left the forgotten memory on disk")
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.activeSuppress()) != 1 {
+		t.Fatalf("want exactly 1 active suppression, got %d", len(g.activeSuppress()))
 	}
 }
 
