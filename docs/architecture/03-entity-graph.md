@@ -7,7 +7,7 @@ The deterministic, model-free pipeline that derives a person/topic entity graph 
 | File | Lines | Responsibility |
 |---|---|---|
 | `internal/mora/graph.go` | 887 | `buildGraph` and the 3-rule layered pipeline: A2 provenance trust (`resolvePersonName`, `senderSet`, `personAgg`/`aliases`), A3 identity-merge (`canonicalizePersons`, `mailboxKey`, `mergePersonAggs`, `rewritePersonEdges`, `maxNameMergeClusters`), structural-entity + hub-node emission, fan-out cap, deterministic union-find |
-| `internal/mora/classify.go` | 182 | A1 classification (`classifyIdentity`): `person` vs `service` from token-exact local-part denylist, bulk-ESP host labels, display-name suffixes, plus-addressing handling; Phase-14 precision fixes (`isShortcode`, `notify`/`alerts` host labels) + the deferred reciprocity-override rationale |
+| `internal/mora/classify.go` | 260 | A1 classification (`classifyIdentity`): 5-kind typing (`person`, `org`, `repo`, `service`, `artifact`) from token-exact local-part denylist, bulk-ESP host labels, display-name suffixes, plus-addressing handling; Phase-14 precision fixes (`isShortcode`, `notify`/`alerts` host labels) + the deferred reciprocity-override rationale; structural stoplist/no-@ drops |
 | `internal/mora/salience.go` | 294 | **Phase 14** — the pure, clock-free person-ranking kernel: `S = HumanGate × Recency × Core` (D14-1..D14-4). `sat`/`channelScale`/`recencyDecay`/`salienceMicros` primitives, `scoreSalience`, `metaMessageCount`, and the shared `aggregatePersonSalience([]Memory) map[string]int64` seam BOTH `buildGraph` (here) and the digest consume. No I/O, no `time.Now`, no new deps. |
 | `internal/mora/gazetteer.go` | 252 | S5 body-matching: build a gazetteer from trusted person aliases (`buildGazetteer`), scan message/email bodies on word boundaries (`gazetteerScan`, `tokenizeForScan`), emit `MENTIONS` edges; high-precision stoplists and join-only matching |
 | `internal/mora/entities.go` | 212 | Structural entity extraction (`extractEntities`: scopes/tags/`[[wikilinks]]`/`- [categories]`), the `mora entities` CLI command, MCP entity adapters |
@@ -85,9 +85,13 @@ stateDiagram-v2
 
 ### A1 — Classification (classify.go)
 
-`classifyIdentity(identity, displayName) → "person" | "service"` (`internal/mora/classify.go:16-27`) demotes automated/transactional senders so the People view stays human while keeping them searchable. It is pure and deterministic.
+`classifyIdentity(identity, displayName) → "person" | "service" | "org" | "repo" | "artifact"` (`internal/mora/classify.go:16-48`) demotes automated/transactional senders, repo slugs, orgs, and notification artifacts so the People view stays human while keeping them searchable. It is pure and deterministic.
 
-- **No `@` ⇒ always `person`** (`internal/mora/classify.go:19-21`). iMessage phone handles are real people by construction.
+- **Artifacts** are GitHub notification fields/labels (like `Push`, `Author`, `Mention`, `Ci activity`, `State change`).
+- **Repos** are slug-shaped handles containing exactly one `/` and no `@` (or display name contains `/`).
+- **Orgs** are recognized by company suffixes (`inc`, `llc`, etc.), brand names (`sofi`, `google`, `github`, etc.), or domain-like handles.
+- **Services** are SMS shortcodes (digits only, len ≤6) or email transactional senders.
+- **People** are any other valid handles (emails and phone/shortcode-shaped handles). iMessage phone handles are real people by construction.
 - An email is `service` if `localPartIsService(local) || hostIsBulkESP(host) || displayIsService(displayName)`.
 
 **Local-part matching is token-exact, never substring** (`localPartIsService`, `internal/mora/classify.go:82-105`). A denylist token must *be* a whole `.`/`-`/`_`-delimited token, or the entire local part. So `gmail`, `automotive`, `newsom` stay people — they merely *contain* a denylist substring. The only substring matches are the `serviceLocalSubstrings` no-reply family (`noreply`, `donotreply`, …, `internal/mora/classify.go:78`), distinctive enough to match anywhere and catch concatenated forms like `noreplypatientbilling`.

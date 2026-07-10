@@ -281,7 +281,7 @@ func memoryIsServiceOnly(m Memory) bool {
 		return false
 	}
 	for _, id := range senders {
-		if classifyIdentity(strings.TrimPrefix(id, "person:"), "") != "service" {
+		if classifyIdentity(strings.TrimPrefix(id, "person:"), "") == "person" {
 			return false
 		}
 	}
