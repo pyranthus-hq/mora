@@ -229,6 +229,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdForget(ctx, args[1:], stdout)
 	case "unforget":
 		return cmdUnforget(ctx, args[1:], stdout)
+	case "merge":
+		return cmdMerge(ctx, args[1:], stdout)
 	case "context":
 		return cmdContext(ctx, args[1:], stdout)
 	case "index":

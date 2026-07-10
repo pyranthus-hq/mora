@@ -302,13 +302,32 @@ type personAgg struct {
 	first, last string
 }
 
-// buildGraph derives the deterministic entity graph from the given memories: the
+// graphResult is the full output of a graph build: the entities and edges persisted
+// to the index, non-fatal warnings, the pending email<->phone merge candidates (for
+// the confirm-queue), and the provenance links that justify every applied merge.
+type graphResult struct {
+	entities   []graphEntity
+	edges      []graphEdge
+	warnings   []string
+	candidates []mergeCandidate
+	merges     []mergeLink
+}
+
+// buildGraph derives the deterministic entity graph from the given memories with no
+// applied confirm-queue decisions (the pure default used by most callers/tests).
+func buildGraph(mems []Memory) ([]graphEntity, []graphEdge, []string) {
+	r := buildGraphResult(mems, nil)
+	return r.entities, r.edges, r.warnings
+}
+
+// buildGraphResult derives the deterministic entity graph from the given memories: the
 // structural entities (scopes/tags/[[links]]/categories), per-memory hub nodes,
 // and the person graph (PARTICIPATED_IN/ATTENDED/EMAILED) compiled from Meta — all
 // with provenance + bi-temporal stamps. Output is fully sorted so the same vault
-// produces a byte-identical graph across rebuilds. The third return is the list of
-// non-fatal warnings (e.g. fan-out caps) for the caller to surface.
-func buildGraph(mems []Memory) ([]graphEntity, []graphEdge, []string) {
+// produces a byte-identical graph across rebuilds. `confirmed` are the user-confirmed
+// same-person pairs (RULE 3) resolved from the governance ledger; the pre-merge
+// person aggregates also yield the pending email<->phone candidates for the queue.
+func buildGraphResult(mems []Memory, confirmed []confirmedMerge) graphResult {
 	byID := make(map[string]Memory, len(mems))
 	for _, m := range mems {
 		byID[m.ID] = m
@@ -490,11 +509,18 @@ func buildGraph(mems []Memory) ([]graphEntity, []graphEdge, []string) {
 		}
 	}
 
+	// P13: propose cross-channel email<->phone unifications from the COMPLETE pre-merge
+	// aggregates (so both the phone's address-book name and the email's self-presented
+	// name are visible). Proposal only — nothing here merges; the CONFIRM tier is
+	// applied by RULE 3 below, and only for pairs a human already confirmed.
+	candidates := emailPhoneCandidates(persons)
+
 	// A3: cluster same-human identities (Gmail-inbox normalization + echo-corroborated
-	// shared-name) and collapse each cluster to one canonical entity, redirecting its
-	// edges. Done after all per-address aggregates + edges (incl. gazetteer MENTIONS)
-	// exist, so the merge sees complete aliases and rewrites every endpoint.
-	canon := canonicalizePersons(persons)
+	// shared-name + user-confirmed cross-channel pairs) and collapse each cluster to
+	// one canonical entity, redirecting its edges. Done after all per-address aggregates
+	// + edges (incl. gazetteer MENTIONS) exist, so the merge sees complete aliases and
+	// rewrites every endpoint. `merges` records why each fusion happened (provenance).
+	canon, merges := canonicalizePersons(persons, confirmed)
 	persons = mergePersonAggs(persons, canon)
 	edges = rewritePersonEdges(edges, canon)
 
@@ -569,7 +595,7 @@ func buildGraph(mems []Memory) ([]graphEntity, []graphEdge, []string) {
 		}
 		return edges[i].EvidenceID < edges[j].EvidenceID
 	})
-	return entities, edges, warnings
+	return graphResult{entities: entities, edges: edges, warnings: warnings, candidates: candidates, merges: merges}
 }
 
 // capParticipants reduces an over-cap, id-sorted participant set to `cap` entries
@@ -739,19 +765,26 @@ func personKindOf(id string, p *personAgg) string {
 }
 
 // canonicalizePersons clusters same-human person identities (A3) and returns a map
-// from every person id to its cluster's canonical id. Deterministic: groups are
-// formed in sorted order and the canonical is chosen independently of union order
-// (most evidence, then lexicographically smallest id).
+// from every person id to its cluster's canonical id, plus the provenance links that
+// justify each fusion (which signal joined which two source ids). Deterministic:
+// groups are formed in sorted order and the canonical is chosen independently of
+// union order (most evidence, then lexicographically smallest id).
 //
-// RULE 1: addresses that resolve to the same provider mailbox (mailboxKey).
-// RULE 2: PERSON-classified identities sharing a distinctive multi-token trusted
-// name, bridging at most maxNameMergeClusters mailbox clusters, AND corroborated —
-// each bridged cluster must have a member address whose local part echoes a token of
-// the shared name (so two unrelated people with the same name but unrelated addresses
-// are never fused).
-func canonicalizePersons(persons map[string]*personAgg) map[string]string {
+// RULE 1 (AUTO): addresses that resolve to the same provider mailbox (mailboxKey).
+// RULE 2 (AUTO): PERSON-classified identities sharing a distinctive multi-token
+// trusted name, bridging at most maxNameMergeClusters mailbox clusters, AND
+// corroborated — each bridged cluster must have a member address whose local part
+// echoes a token of the shared name (so two unrelated people with the same name but
+// unrelated addresses are never fused).
+// RULE 3 (CONFIRM): the pairs a human explicitly confirmed via the P13 confirm-queue
+// — the sole path that unifies cross-channel (email<->phone) identities.
+//
+// Precision-first: RULE 1/2 are NEVER loosened; RULE 3 only ever ADDS a fusion a
+// human authorized, so it cannot cause an inferred wrong-person merge.
+func canonicalizePersons(persons map[string]*personAgg, confirmed []confirmedMerge) (map[string]string, []mergeLink) {
 	ids := sortedPersonIDs(persons)
 	uf := newUnionFind(ids)
+	var links []mergeLink
 
 	// RULE 1 — same provider mailbox.
 	byMailbox := map[string][]string{}
@@ -763,6 +796,7 @@ func canonicalizePersons(persons map[string]*personAgg) map[string]string {
 		grp := byMailbox[key]
 		for i := 1; i < len(grp); i++ {
 			uf.union(grp[0], grp[i])
+			links = append(links, mergeLink{A: grp[0], B: grp[i], Signal: sigMailbox, Detail: key})
 		}
 	}
 
@@ -837,7 +871,32 @@ func canonicalizePersons(persons map[string]*personAgg) map[string]string {
 		sort.Strings(reps)
 		for i := 1; i < len(reps); i++ {
 			uf.union(reps[0], reps[i])
+			links = append(links, mergeLink{A: reps[0], B: reps[i], Signal: sigNameEcho, Detail: name})
 		}
+	}
+
+	// RULE 3 — user-confirmed same-person pairs (P13 one-tap confirm-queue). Applied
+	// ONLY when the pair was explicitly confirmed by a human (never inferred), and
+	// only when BOTH ids are present in this vault (a confirm for a since-forgotten
+	// identity is inert, not a ghost merge). Union is commutative, so applying these
+	// after the auto rules does not change the final partition; the canonical is
+	// re-selected order-independently below. confirmed is sorted for a stable link log.
+	confirmedSorted := append([]confirmedMerge(nil), confirmed...)
+	sort.Slice(confirmedSorted, func(i, j int) bool {
+		if confirmedSorted[i].A != confirmedSorted[j].A {
+			return confirmedSorted[i].A < confirmedSorted[j].A
+		}
+		return confirmedSorted[i].B < confirmedSorted[j].B
+	})
+	for _, cm := range confirmedSorted {
+		if _, ok := persons[cm.A]; !ok {
+			continue
+		}
+		if _, ok := persons[cm.B]; !ok {
+			continue
+		}
+		uf.union(cm.A, cm.B)
+		links = append(links, mergeLink{A: cm.A, B: cm.B, Signal: sigConfirmed, Detail: cm.GovID})
 	}
 
 	// Choose the canonical id per cluster: most evidence, then smallest id.
@@ -854,7 +913,16 @@ func canonicalizePersons(persons map[string]*personAgg) map[string]string {
 	for _, id := range ids {
 		canon[id] = rep[uf.find(id)]
 	}
-	return canon
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].A != links[j].A {
+			return links[i].A < links[j].A
+		}
+		if links[i].B != links[j].B {
+			return links[i].B < links[j].B
+		}
+		return links[i].Signal < links[j].Signal
+	})
+	return canon, links
 }
 
 // sortedStringKeys returns the sorted keys of a map[string][]string.
