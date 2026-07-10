@@ -305,6 +305,8 @@ func (s *httpServer) routes() http.Handler {
 	mux.HandleFunc("POST /meeting-prep", func(w http.ResponseWriter, r *http.Request) {
 		args := bodyArgs(r)
 		s.dispatch(w, r, "meeting_prep", map[string]any{
+			"event_id":   str(args, "event_id"),
+			"at":         str(args, "at"),
 			"name":       str(args, "name"),
 			"limit":      args["limit"],
 			"max_tokens": args["max_tokens"],

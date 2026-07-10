@@ -317,6 +317,7 @@ USAGE:
   mora delete <id> --yes
   mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
+  mora brief --event-id <id>       # cited unfinished-business brief for one calendar event
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
   mora index rebuild
@@ -433,6 +434,8 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "emit a byte-clean JSON result")
 	envelope := fs.Bool("envelope", false, "append a model-free synthesis prompt")
+	eventID := fs.String("event-id", "", "assemble a cited unfinished-business brief for this calendar memory id")
+	at := fs.String("at", "", "override 'now' (RFC3339) for deterministic event-brief assembly")
 	entity := fs.String("entity", "", "filter to memories referencing one person (name or email/handle); preview-only")
 	scope := fs.String("scope", "", "filter to one memory scope/namespace (e.g. project:acme); preview-only")
 	sinceDays := fs.Int("since-days", 0, "only memories created in the last N days; preview-only (negative = no filter)")
@@ -445,6 +448,30 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	now := briefClock()
+	if *at != "" {
+		parsed, perr := time.Parse(time.RFC3339, *at)
+		if perr != nil {
+			return fmt.Errorf("invalid --at %q (want RFC3339): %w", *at, perr)
+		}
+		now = parsed
+	}
+	if *eventID != "" {
+		if *entity != "" || *scope != "" || *sinceDays != 0 || *fresh || *envelope {
+			return errors.New("--event-id cannot be combined with --entity, --scope, --since-days, --fresh, or --envelope")
+		}
+		brief, berr := buildEventMeetingBrief(ctx, cfg, *eventID, now, 0, meetingBriefDefaultPerGuest)
+		if berr != nil {
+			return humanizeIndexBusy(berr)
+		}
+		logUsage(cfg, usageEvent{Tool: "brief", Results: meetingBriefLineCount(brief)})
+		if *jsonOut {
+			return emit(stdout, brief, true)
+		}
+		return renderMeetingBrief(stdout, brief)
+	}
+	if *at != "" {
+		return errors.New("--at requires --event-id")
+	}
 
 	// A filtered brief is preview-only and BYPASSES the persisted cache (§3); the
 	// entity is resolved eagerly here so buildDigest stays DB-free, with a hard

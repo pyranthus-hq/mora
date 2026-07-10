@@ -16,13 +16,26 @@ func pinPrepClock(t *testing.T, at time.Time) {
 	t.Cleanup(func() { prepClock = old })
 }
 
-// TestMCPMeetingPrepRoundTrip: the meeting_prep tool returns the full cited pack.
+// TestMCPMeetingPrepRoundTrip: meeting_prep returns the same fully-cited
+// unfinished-business shape as `mora brief --event-id`.
 func TestMCPMeetingPrepRoundTrip(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
 	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 	pinPrepClock(t, now)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@a.com",
+		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, meetingBriefEmail(
+		"ask", "Deck follow-up", "Can you send the deck by tomorrow?",
+		"riya@a.com", []string{"me@a.com"}, now.Add(-time.Hour),
+	)); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeMemory(cfg, eventMemFull("evt", "Acme sync", now.Add(2*time.Hour).Format(time.RFC3339),
 		map[string]string{"riya@a.com": "Riya"}, "riya@a.com")); err != nil {
 		t.Fatal(err)
@@ -30,11 +43,11 @@ func TestMCPMeetingPrepRoundTrip(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	text, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"meeting_prep","arguments":{}}}`)
+	text, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"meeting_prep","arguments":{"event_id":"evt","at":"2026-06-14T12:00:00Z"}}}`)
 	if isErr {
 		t.Fatalf("meeting_prep errored: %s", text)
 	}
-	for _, want := range []string{`"event"`, `"attendees"`, `"evidence"`, `"gaps"`, `"synthesis_prompt"`, "Acme sync"} {
+	for _, want := range []string{`"as_of"`, `"event"`, `"attendees"`, `"sections"`, `"egress_calls": 0`, `"citation"`, `"memory_id"`, `"open_loops"`, "Acme sync"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("meeting_prep payload missing %q:\n%s", want, text)
 		}
@@ -42,14 +55,20 @@ func TestMCPMeetingPrepRoundTrip(t *testing.T) {
 }
 
 // TestMeetingPrepPayloadUnderCeiling (T0 stress): a heavy meeting (25 attendees ×
-// 20 mems each) must still land under the 12000-token ceiling — the evidence/
-// attendee caps + byte budget hold the line.
+// 20 memories each) must still land under the 12000-token ceiling — per-attendee
+// dossier budgets plus the global cited-line cap hold the line.
 func TestMeetingPrepPayloadUnderCeiling(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
 	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 	pinPrepClock(t, now)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@x.com",
+		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	names := map[string]string{}
 	var attendees []string
 	for i := 0; i < 25; i++ {
@@ -72,12 +91,12 @@ func TestMeetingPrepPayloadUnderCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mp, ok := res.(MeetingPrepResult)
+	mp, ok := res.(MeetingBrief)
 	if !ok {
-		t.Fatalf("meeting_prep returned %T, want MeetingPrepResult", res)
+		t.Fatalf("meeting_prep returned %T, want MeetingBrief", res)
 	}
-	if len(mp.Evidence) > meetingPrepEvidenceCap {
-		t.Fatalf("evidence = %d, want capped at %d", len(mp.Evidence), meetingPrepEvidenceCap)
+	if n := meetingBriefLineCount(mp); n > meetingPrepEvidenceCap {
+		t.Fatalf("lines = %d, want capped at %d", n, meetingPrepEvidenceCap)
 	}
 	b, _ := json.Marshal(res)
 	if tok := len(b) / charsPerToken; tok > 12000 {

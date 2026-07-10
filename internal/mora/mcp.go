@@ -199,9 +199,11 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 				mcpParam{"scope", "string", `Filter the brief to one memory scope/namespace, e.g. "project:acme". Preview-only.`, false},
 				mcpParam{"since_days", "integer", "Additional look-back: only memories created in the last N days (negative = no filter). Preview-only.", false},
 			),
-			mcpTool("meeting_prep", "Assemble a CITED prep pack for the user's next (or in-progress) calendar event, optionally with one attendee by name: the event, recent emails/texts/events with each attendee, a deterministic 'what the vault does NOT know' gap analysis, and a model-free synthesis_prompt to compose the prep. Local + read-only; never advances the watermark; Mora makes NO model call and never invents decisions or open questions.",
+			mcpTool("meeting_prep", "Assemble the same fully-cited unfinished-business brief as `mora brief --event-id`: user-owned obligations, unresolved threads, staleness guards, and material shared context. Every evidence line carries memory_id, channel/source, and date. Local, deterministic, and model-free.",
+				mcpParam{"event_id", "string", "Calendar memory id to brief; omit to use the next (or in-progress) event", false},
+				mcpParam{"at", "string", "RFC3339 as-of time for reproducible assembly (default now)", false},
 				mcpParam{"name", "string", `Optional attendee name/email/handle: prep the next meeting WITH this person (falls back to the next meeting if they have none). Omit for the next meeting on the calendar.`, false},
-				mcpParam{"limit", "integer", "Max evidence memories per attendee (default 8)", false},
+				mcpParam{"limit", "integer", "Max actionable cited lines per attendee (default 8)", false},
 				mcpParam{"max_tokens", "integer", "Approximate token budget for the pack (default ~6000, max ~20000)", false},
 			),
 		}}
@@ -465,7 +467,19 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		return digestMCPPayload(cfg, d, budgetChars), nil
 	case "meeting_prep":
 		start := time.Now()
+		eventID := strArg(args, "event_id", "")
 		name := strArg(args, "name", "")
+		if eventID != "" && name != "" {
+			return nil, errors.New("meeting_prep event_id cannot be combined with name")
+		}
+		at := prepClock()
+		if raw := strArg(args, "at", ""); raw != "" {
+			parsed, perr := time.Parse(time.RFC3339, raw)
+			if perr != nil {
+				return nil, fmt.Errorf("invalid at %q (want RFC3339): %w", raw, perr)
+			}
+			at = parsed
+		}
 		var filter map[string]bool
 		if name != "" {
 			idSet, rerr := resolveEntityFilter(ctx, cfg, name)
@@ -474,13 +488,28 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 			}
 			filter = idSet
 		}
-		mp, err := buildMeetingPrep(ctx, cfg, prepClock(), name, filter, intArg(args, "limit", mcpSearchDefaultLimit))
+		var brief MeetingBrief
+		if eventID != "" {
+			brief, err = buildEventMeetingBrief(
+				ctx, cfg, eventID, at,
+				intArg(args, "max_tokens", 0),
+				intArg(args, "limit", meetingBriefDefaultPerGuest),
+			)
+		} else {
+			brief, err = buildNextMeetingBrief(
+				ctx, cfg, at, filter,
+				intArg(args, "max_tokens", 0),
+				intArg(args, "limit", meetingBriefDefaultPerGuest),
+			)
+		}
 		if err != nil {
 			return nil, humanizeIndexBusy(err)
 		}
-		budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
-		logUsage(cfg, usageEvent{Tool: "meeting_prep", Results: len(mp.Evidence), Millis: time.Since(start).Milliseconds()})
-		return meetingPrepMCPPayload(mp, budgetChars), nil
+		if verr := brief.validate(); verr != nil {
+			return nil, fmt.Errorf("refusing uncited meeting_prep payload: %w", verr)
+		}
+		logUsage(cfg, usageEvent{Tool: "meeting_prep", Results: meetingBriefLineCount(brief), Millis: time.Since(start).Milliseconds()})
+		return brief, nil
 	case "delete_memory":
 		id := strArg(args, "id", "")
 		m, err := findMemory(cfg, id)
