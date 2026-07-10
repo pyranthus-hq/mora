@@ -121,6 +121,9 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
 	second, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +138,16 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	}
 	if !bytes.Equal(firstJSON, secondJSON) {
 		t.Fatalf("fixed (vault, --at) must be byte-identical:\n%s\n%s", firstJSON, secondJSON)
+	}
+	var firstHuman, secondHuman bytes.Buffer
+	if err := renderMeetingBrief(&firstHuman, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderMeetingBrief(&secondHuman, second); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstHuman.Bytes(), secondHuman.Bytes()) {
+		t.Fatalf("rebuild changed human brief bytes:\n%s\n%s", firstHuman.Bytes(), secondHuman.Bytes())
 	}
 	if first.EgressCalls != 0 {
 		t.Fatalf("egress meter = %d, want 0", first.EgressCalls)
