@@ -917,6 +917,7 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 	}
 	return total, nil
 }
+
 // testHookFSPreWrite, when non-nil (tests only), fires just before each per-file
 // suppress-decision-and-write in ingestFilesystem. It is the deterministic seam
 // used to inject a concurrent `mora forget` into the write window and prove the
