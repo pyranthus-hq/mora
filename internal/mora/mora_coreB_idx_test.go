@@ -510,6 +510,7 @@ func TestCoreB_IdxWriteGraphDirect(t *testing.T) {
 	for _, s := range []string{
 		`CREATE TABLE entities (id TEXT PRIMARY KEY, kind TEXT, display_name TEXT, aliases TEXT, mention_count INTEGER, first_seen TEXT, last_seen TEXT, salience_micros INTEGER)`,
 		`CREATE TABLE edges (src TEXT, rel TEXT, dst TEXT, evidence_id TEXT, valid_from TEXT, valid_to TEXT, observed_at TEXT, invalidated_at TEXT, PRIMARY KEY (src, rel, dst, evidence_id))`,
+		`CREATE TABLE person_merges (member_a TEXT, member_b TEXT, signal TEXT, detail TEXT, PRIMARY KEY (member_a, member_b, signal))`,
 	} {
 		if _, err := db.Exec(s); err != nil {
 			t.Fatal(err)
@@ -534,7 +535,7 @@ func TestCoreB_IdxWriteGraphDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeGraph(context.Background(), tx, []Memory{structural, nullTs, blast}); err != nil {
+	if err := writeGraph(context.Background(), tx, Config{VaultDir: t.TempDir()}, []Memory{structural, nullTs, blast}); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("writeGraph: %v", err)
 	}

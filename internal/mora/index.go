@@ -185,6 +185,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		// (CREATE TABLE IF NOT EXISTS is a no-op once the table exists, so it can't add it).
 		`CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, kind TEXT, display_name TEXT, aliases TEXT, mention_count INTEGER, first_seen TEXT, last_seen TEXT, salience_micros INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS edges (src TEXT, rel TEXT, dst TEXT, evidence_id TEXT, valid_from TEXT, valid_to TEXT, observed_at TEXT, invalidated_at TEXT, PRIMARY KEY (src, rel, dst, evidence_id))`,
+		// person_merges (P13): the provenance of every applied identity fusion — which
+		// two SOURCE person ids were merged, and by which signal (same-mailbox /
+		// name-echo / confirmed). A dedicated table (not an edge) so merged-away member
+		// ids can never leak into get_entity's evidence/neighbor derivation. Rebuildable.
+		`CREATE TABLE IF NOT EXISTS person_merges (member_a TEXT, member_b TEXT, signal TEXT, detail TEXT, PRIMARY KEY (member_a, member_b, signal))`,
 		`CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)`,
 		`CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)`,
 		`CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(rel)`,
@@ -199,6 +204,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		`DELETE FROM memories_fts`,
 		`DELETE FROM entities`,
 		`DELETE FROM edges`,
+		`DELETE FROM person_merges`,
 		`DELETE FROM mem_vectors`,
 		// Stamp the schema this binary writes (read paths refuse a mismatch).
 		// Inside the same tx as everything else: a rolled-back rebuild must not
@@ -261,8 +267,10 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 
 	// Materialize the entity graph from the just-indexed memories, in the SAME
-	// transaction — a graph failure rolls back the whole index too (atomic).
-	if err := writeGraph(ctx, tx, parsed); err != nil {
+	// transaction — a graph failure rolls back the whole index too (atomic). cfg
+	// carries the vault dir so the graph can apply the governance ledger's confirmed
+	// cross-channel merges (a corrupt ledger fails the rebuild loud, never silently).
+	if err := writeGraph(ctx, tx, cfg, parsed); err != nil {
 		return count, err
 	}
 
@@ -336,8 +344,17 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 // inserts the entity + edge rows on the given transaction. Empty bi-temporal
 // timestamps persist as SQL NULL. Statements are prepared once and reused — a
 // real vault is ~10^5 edges, so per-row SQL re-parsing dominated the rebuild.
-func writeGraph(ctx context.Context, tx *sql.Tx, mems []Memory) error {
-	ents, edges, warnings := buildGraph(mems)
+func writeGraph(ctx context.Context, tx *sql.Tx, cfg Config, mems []Memory) error {
+	// Resolve the confirm-queue's confirmed cross-channel merges (RULE 3). An absent
+	// ledger is the common case (no confirms); a corrupt one fails loud so a rebuild
+	// can never silently drop a user's confirmed unification.
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		return err
+	}
+	confirmed, _ := g.mergeDecisions()
+	res := buildGraphResult(mems, confirmed)
+	ents, edges, warnings := res.entities, res.edges, res.warnings
 	for _, w := range warnings {
 		fmt.Fprintln(os.Stderr, w)
 	}
@@ -366,6 +383,19 @@ func writeGraph(ctx context.Context, tx *sql.Tx, mems []Memory) error {
 	defer edgeStmt.Close()
 	for _, ed := range edges {
 		if _, err := edgeStmt.ExecContext(ctx, ed.Src, ed.Rel, ed.Dst, ed.EvidenceID, nullStr(ed.ValidFrom), nullStr(ed.ObservedAt), nullStr(ed.InvalidatedAt)); err != nil {
+			return err
+		}
+	}
+	// Merge provenance (P13): one row per applied fusion, so "why is X the same as Y"
+	// is durable and auditable (feeds the trust model). Deterministic, so it keeps the
+	// rebuild byte-identical for a fixed vault + ledger.
+	mergeStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO person_merges (member_a, member_b, signal, detail) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer mergeStmt.Close()
+	for _, m := range res.merges {
+		if _, err := mergeStmt.ExecContext(ctx, m.A, m.B, m.Signal, m.Detail); err != nil {
 			return err
 		}
 	}

@@ -66,6 +66,15 @@ const (
 	govActionRecord   = "record"
 )
 
+// merge_confirm decisions — the two verdicts the P13 one-tap confirm-queue records
+// about a source-atom pair. "confirm" unifies the two identities in the graph build;
+// "reject" pins them apart (never re-proposed, never merged). A later entry on the
+// same pair supersedes an earlier one (last-writer-wins).
+const (
+	mergeDecisionConfirm = "confirm"
+	mergeDecisionReject  = "reject"
+)
+
 // govAtom is a stable-atom key. Provider "" is a cross-provider wildcard (e.g.
 // forget an email address across gmail AND calendar); a concrete provider scopes
 // the match to that connector (e.g. an iMessage handle).
@@ -313,4 +322,81 @@ func shouldSuppressWrite(cfg Config, mm memory.MappedMemory) (bool, string, erro
 	}
 	sup, id := g.suppresses(mm)
 	return sup, id, nil
+}
+
+// atomPersonID maps a handle/address stable-atom to the PRE-MERGE graph person id it
+// denotes (the same personID the entity graph mints). Returns "" for atoms that are
+// not a person identity (stable_id / host). This is the one bridge between the
+// source-native ledger key and the graph's identity space — and it maps to the
+// pre-merge id, never a post-merge canonical (the #52 trap): the canonical moves as
+// identities cluster, the source atom does not.
+func atomPersonID(a govAtom) string {
+	switch a.Kind {
+	case atomHandle, atomAddress:
+		if a.Value == "" {
+			return ""
+		}
+		return personID(a.Value)
+	}
+	return ""
+}
+
+// mergePairKey is the order-independent key of a source-atom person pair, used to
+// dedup decisions and to filter already-decided candidates out of the confirm-queue.
+func mergePairKey(a, b string) string {
+	if a > b {
+		a, b = b, a
+	}
+	return a + "\x00" + b
+}
+
+// activeMergeConfirms returns the non-revoked, two-atom merge_confirm entries.
+func (g governance) activeMergeConfirms() []govEntry {
+	var out []govEntry
+	for _, e := range g.Entries {
+		if e.revoked() || e.Kind != govKindMergeConfirm || e.Atom2 == nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// mergeDecisions resolves the ledger's merge_confirm entries into what P13 consumes:
+//   - confirmed: same-person pairs (as pre-merge person ids) the graph build unifies;
+//   - decided: the set of pairs (confirm OR reject) the confirm-queue must not
+//     re-propose. Keyed by mergePairKey over source-atom person ids (never a
+//     post-merge canonical id).
+//
+// Last-writer-wins per pair (entries are chronological), so a reject after a confirm
+// (or vice-versa) takes effect. Deterministic: confirmed is sorted.
+func (g governance) mergeDecisions() (confirmed []confirmedMerge, decided map[string]bool) {
+	decided = map[string]bool{}
+	verdict := map[string]string{}   // pairKey -> latest decision
+	ids := map[string][2]string{}    // pairKey -> (personA, personB)
+	govOf := map[string]string{}     // pairKey -> authorizing ledger id
+	for _, e := range g.activeMergeConfirms() {
+		a, b := atomPersonID(e.Atom), atomPersonID(*e.Atom2)
+		if a == "" || b == "" || a == b {
+			continue
+		}
+		key := mergePairKey(a, b)
+		verdict[key] = e.Decision
+		ids[key] = [2]string{a, b}
+		govOf[key] = e.ID
+		decided[key] = true
+	}
+	for key, d := range verdict {
+		if d == mergeDecisionConfirm {
+			p := ids[key]
+			confirmed = append(confirmed, confirmedMerge{A: p[0], B: p[1], GovID: govOf[key]})
+		}
+	}
+	sort.Slice(confirmed, func(i, j int) bool {
+		if confirmed[i].A != confirmed[j].A {
+			return confirmed[i].A < confirmed[j].A
+		}
+		return confirmed[i].B < confirmed[j].B
+	})
+	return confirmed, decided
 }
