@@ -43,22 +43,44 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 }
 func dbPath(cfg Config) string { return filepath.Join(cfg.DataDir, "index.db") }
 
-// roIndexDSN is the DSN every read-only index open uses. busy_timeout matters
-// for READERS too: the hourly rebuild does a whole-index DELETE-then-reinsert
-// inside ONE transaction, and its commit flush of a large rollback journal can
-// hold the writer lock for longer than a few seconds. A short reader timeout
-// surfaces a raw "database is locked" mid-rebuild (and openIndexRO can misread
-// that SQLITE_BUSY as a stale schema and launch a spurious rebuild). 15s lets an
-// interactive read (brief --entity, prep, think, get_entity) and an MCP tool call
-// ride out the rebuild's commit window instead of erroring; humanizeIndexBusy
-// gives an actionable message if a read still outlasts it.
-// (TestReadOnlyIndexWaitsOnWriteLock pins the wait behavior.)
+// roIndexDSN is the DSN every read-only index open uses. journal_mode(WAL) is the
+// load-bearing setting for MULTI-PROCESS safety: with N long-lived `mora mcp serve`
+// reader processes (one per agent session), the default rollback journal makes a
+// writer's EXCLUSIVE lock wait for every reader's SHARED lock, so a rebuild/write
+// blows past busy_timeout and surfaces "database is locked". In WAL, readers read
+// the last committed snapshot and are never blocked by an in-flight rebuild, and the
+// single writer proceeds concurrently. busy_timeout(15000) still covers the brief
+// windows a writer holds the WAL write lock or a checkpoint runs — and stops
+// openIndexRO from misreading a transient SQLITE_BUSY as a stale schema and firing a
+// spurious rebuild; humanizeIndexBusy gives an actionable message if a read still
+// outlasts it. (TestReadOnlyIndexWaitsOnWriteLock pins the wait; TestIndexIsWAL pins
+// the mode.)
 //
-// Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out
-// but NOT enforced (connections open read-write); it is kept as
-// documentation-of-intent until the read paths adopt a stricter pragma.
+// Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out but NOT
+// enforced (connections open read-write) — which is exactly why a "read-only" open
+// can still create the -wal/-shm sidecars WAL requires, so there is no read-only-WAL
+// breakage here.
 func roIndexDSN(cfg Config) string {
-	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(15000)"
+	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)"
+}
+
+// rwIndexDSN is the DSN every WRITER of the live index (full rebuild + incremental
+// upsert) uses. Two pragmas carry the concurrency contract:
+//   - _txlock=immediate grabs the writer lock at BeginTx (not lazily mid-tx), so
+//     two concurrent rebuilds serialize instead of both starting and one hitting an
+//     un-retryable SQLITE_BUSY inside an open transaction.
+//   - journal_mode(WAL) is what lets N long-lived `mora mcp serve` READER processes
+//     coexist with a writer. In the default rollback journal a writer's EXCLUSIVE
+//     lock is incompatible with every reader's SHARED lock, so under real
+//     multi-process load (each agent session holds one mcp serve) a write waits for
+//     ALL readers, blows past busy_timeout, and surfaces "database is locked". In
+//     WAL readers and the single writer never block each other. WAL persists in the
+//     db header, so the first open of THIS or the RO DSN converts a legacy
+//     delete-mode index in place; thereafter the pragma is a no-op. modernc opens
+//     even mode=ro connections read-write, so a reader can create the -wal/-shm
+//     sidecars — there is no read-only-WAL breakage here.
+func rwIndexDSN(cfg Config) string {
+	return dbPath(cfg) + "?_txlock=immediate&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)"
 }
 
 // openIndexRO opens the index read-only, refusing to serve a schema this
@@ -115,7 +137,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// would otherwise both start, then one hits SQLITE_BUSY on the first write and
 	// cannot retry inside an open tx. The 15s busy_timeout matches the RO DSN so a
 	// rebuild waits out a contending writer rather than failing fast.
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?_txlock=immediate&_pragma=busy_timeout(15000)")
+	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
 	if err != nil {
 		return 0, err
 	}
@@ -300,6 +322,12 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := tx.Commit(); err != nil {
 		return count, err
 	}
+	// A full rebuild reinserts the entire index into the WAL in one transaction, so
+	// the -wal file is now ~db-sized. Fold it back into index.db and reset the -wal
+	// to keep it from staying huge between the periodic auto-checkpoints. Best-effort:
+	// a busy checkpoint (a reader still attached) is harmless — auto-checkpoint will
+	// catch up — and must never fail a committed rebuild.
+	_, _ = db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 	_ = clearBlockRecord(cfg) // best-effort: a stale block record must not fail a good rebuild
 	return count, nil
 }
