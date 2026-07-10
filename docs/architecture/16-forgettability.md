@@ -1,10 +1,11 @@
 # Forgettability Reranker
 
-`internal/mora/forgettability.go` is the Wave-1 Track C kernel for future
-pre-meeting briefs. It is deliberately **query-time only**: it reads no files,
+`internal/mora/forgettability.go` is the pure Track C kernel used by the
+pre-meeting brief. It is deliberately **query-time only**: it reads no files,
 opens no database, performs no network calls, and writes nothing to the vault or
-index. P15 is the wiring step that will replace `buildMeetingPrep`'s current
-per-attendee recency sort with this global value-ranked pool.
+index. `buildMeetingBriefFromEvent` hydrates its inputs from the exact-attendee
+graph projection, filters them through the unfinished-business gate, and ranks
+the resulting global pool before applying output budgets.
 
 ## Scoring Contract
 
@@ -53,8 +54,10 @@ The scorer honors supersession in the three tiers from the FMB spec:
 - Cross-thread: newer same-person memories with overlapping distinctive tokens
   dampen old items through `Freshness`; overlap at or above the hard threshold
   drops the older item.
-- Presentation: this file does not render prose. The P15 wiring must render
-  forgettability evidence as dated historical context, never as current truth.
+- Presentation: this file does not render prose. `newCitedBriefLine` wraps every
+  surfaced extract as a dated historical record. `MeetingBrief.validate` rejects
+  any line that bypasses that wrapper, so CLI and MCP output cannot assert stale
+  evidence as current truth.
 
 ## Selection Shape
 

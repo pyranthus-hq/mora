@@ -68,18 +68,19 @@ type CitedBriefLine struct {
 	Citation BriefCitation `json:"citation"`
 }
 
-func newCitedBriefLine(text, attendee string, citation BriefCitation) (CitedBriefLine, error) {
+func newCitedBriefLine(text, attendee string, citation BriefCitation, asOf time.Time) (CitedBriefLine, error) {
 	line := CitedBriefLine{
-		Text:     oneLine(text),
 		Attendee: strings.TrimSpace(attendee),
 		Citation: citation,
 	}
-	if line.Text == "" {
+	raw := oneLine(text)
+	if raw == "" {
 		return CitedBriefLine{}, errors.New("empty cited line")
 	}
 	if err := line.Citation.validate(); err != nil {
 		return CitedBriefLine{}, err
 	}
+	line.Text = meetingBriefHistoricalText(asOf, line.Citation.Date, line.Attendee, raw)
 	return line, nil
 }
 
@@ -126,7 +127,8 @@ type MeetingBrief struct {
 }
 
 func (b MeetingBrief) validate() error {
-	if _, err := time.Parse(time.RFC3339, b.AsOf); err != nil {
+	asOf, err := time.Parse(time.RFC3339, b.AsOf)
+	if err != nil {
 		return fmt.Errorf("invalid as_of %q: %w", b.AsOf, err)
 	}
 	if b.EgressCalls != 0 {
@@ -152,6 +154,9 @@ func (b MeetingBrief) validate() error {
 		for i, line := range section.Lines {
 			if err := line.validate(); err != nil {
 				return fmt.Errorf("%s line %d is uncited: %w", section.Kind, i, err)
+			}
+			if err := line.validateHistorical(asOf); err != nil {
+				return fmt.Errorf("%s line %d violates the dated-historical rail: %w", section.Kind, i, err)
 			}
 		}
 	}
@@ -280,6 +285,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 				meetingBriefEvidenceText(memoryToEvidence(m, display)),
 				display,
 				citationForMemory(m, source, occurredAt),
+				at,
 			)
 			if lerr != nil {
 				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s: %w", eventMemory.ID, attendee.identity, m.ID, lerr)
@@ -368,6 +374,60 @@ func latestMeetingBriefEvidenceDate(mems []Memory, at time.Time) string {
 		return ""
 	}
 	return latest.UTC().Format(time.RFC3339)
+}
+
+func meetingBriefHistoricalText(asOf time.Time, date, attendee, raw string) string {
+	prefix := meetingBriefHistoricalPrefix(asOf, date, attendee)
+	return prefix + "“" + oneLine(raw) + "”"
+}
+
+func meetingBriefHistoricalPrefix(asOf time.Time, date, attendee string) string {
+	factAt, err := time.Parse(time.RFC3339, date)
+	if err != nil {
+		return ""
+	}
+	age := meetingBriefRelativeAge(asOf, factAt)
+	attendee = strings.TrimSpace(attendee)
+	if attendee == "" {
+		return age + ", the cited record stated: "
+	}
+	return fmt.Sprintf("%s, the cited record involving %s stated: ", age, attendee)
+}
+
+func meetingBriefRelativeAge(asOf, factAt time.Time) string {
+	age := asOf.Sub(factAt)
+	if age < 0 {
+		age = 0
+	}
+	days := int(age.Hours()/24 + 0.5)
+	switch {
+	case days < 1:
+		return "Earlier that day"
+	case days == 1:
+		return "~1 day ago"
+	case days < 60:
+		return fmt.Sprintf("~%d days ago", days)
+	case days < 730:
+		months := int(float64(days)/30.4375 + 0.5)
+		if months < 2 {
+			months = 2
+		}
+		return fmt.Sprintf("~%d months ago", months)
+	default:
+		years := int(float64(days)/365.25 + 0.5)
+		if years < 2 {
+			years = 2
+		}
+		return fmt.Sprintf("~%d years ago", years)
+	}
+}
+
+func (l CitedBriefLine) validateHistorical(asOf time.Time) error {
+	prefix := meetingBriefHistoricalPrefix(asOf, l.Citation.Date, l.Attendee)
+	if prefix == "" || !strings.HasPrefix(l.Text, prefix) || !strings.HasSuffix(l.Text, "”") {
+		return errors.New("evidence must be rendered as a dated, past-tense cited record")
+	}
+	return nil
 }
 
 type meetingBriefAttendee struct {
@@ -705,11 +765,7 @@ func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
 	for _, section := range brief.Sections {
 		fmt.Fprintf(w, "\n## %s\n", section.Title)
 		for _, line := range section.Lines {
-			if line.Attendee != "" {
-				fmt.Fprintf(w, "- %s: %s %s\n", line.Attendee, line.Text, renderBriefCitation(line.Citation))
-			} else {
-				fmt.Fprintf(w, "- %s %s\n", line.Text, renderBriefCitation(line.Citation))
-			}
+			fmt.Fprintf(w, "- %s %s\n", line.Text, renderBriefCitation(line.Citation))
 		}
 	}
 	return nil

@@ -245,6 +245,68 @@ func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing
 	}
 }
 
+func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-dated-rail",
+		"Career update",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"dana@example.com": "Dana"},
+		"dana@example.com",
+	)
+	stale := meetingBriefEmail(
+		"stale-role",
+		"New role",
+		"Dana is now at Denver Labs in a new role.",
+		"dana@example.com",
+		[]string{"me@example.com"},
+		at.Add(-300*24*time.Hour),
+	)
+	for _, memory := range []Memory{event, stale} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered bytes.Buffer
+	if err := renderMeetingBrief(&rendered, brief); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.String(), "~10 months ago, the cited record involving Dana stated: “") {
+		t.Fatalf("stale fact was not rendered as dated historical evidence:\n%s", rendered.String())
+	}
+	if strings.Contains(rendered.String(), "- Dana: New role — Dana is now at Denver Labs") {
+		t.Fatalf("stale fact rendered as a present-tense attendee assertion:\n%s", rendered.String())
+	}
+
+	brief.Sections[0].Lines[0].Text = "Dana is now at Denver Labs."
+	rendered.Reset()
+	err = renderMeetingBrief(&rendered, brief)
+	if err == nil || !strings.Contains(err.Error(), "dated-historical rail") {
+		t.Fatalf("present-tense stale fact crossed the rendering rail: %v", err)
+	}
+	if rendered.Len() != 0 {
+		t.Fatalf("dated-historical rail wrote partial output: %q", rendered.String())
+	}
+}
+
 func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
 	brief := MeetingBrief{
 		AsOf: "2026-07-10T15:00:00Z",

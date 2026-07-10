@@ -128,7 +128,7 @@ func printMeetingPrep(w io.Writer, mp MeetingPrepResult) {
 		fmt.Fprintf(w, "Attendees: %s\n", strings.Join(names, ", "))
 	}
 	if len(mp.Evidence) > 0 {
-		fmt.Fprintln(w, "\nRecent context (cited):")
+		fmt.Fprintln(w, "\nHistorical context (cited; possibly outdated):")
 		for _, e := range mp.Evidence {
 			fmt.Fprintf(w, "  [%s] (%s, %s) %s — %s\n", e.StableID, e.Scope, e.CreatedAt, e.Title, e.Snippet)
 		}
@@ -431,7 +431,7 @@ func buildMeetingPrep(ctx context.Context, cfg Config, now time.Time, attendeeNa
 // anti-fabrication clause. Pure string builder — no model call, no network.
 func meetingPrepPrompt(ev MeetingEvent, attendees []PrepAttendee, evidence []ThinkEvidence, gaps MeetingGaps, loops []PersonOpenLoops) string {
 	var b strings.Builder
-	b.WriteString("You are preparing the user for an upcoming meeting. Using ONLY the evidence below, write a short prep brief: who the attendees are, the most recent relevant context with each, and anything time-sensitive. Cite every claim with its [stable_id]. Do NOT invent decisions, action items, or open questions that are not in the evidence — if the vault is thin, say so plainly using the KNOWN GAPS below.\n\n")
+	b.WriteString("You are preparing the user for an upcoming meeting. Using ONLY the evidence below, write a short prep brief about the user's unfinished business with each attendee and anything they must not get wrong. Treat every evidence item as historical and possibly outdated; preserve its date and do NOT assert it is currently true. Cite every claim with its [stable_id]. Do NOT invent decisions, action items, or open questions that are not in the evidence — if the vault is thin, say so plainly using the KNOWN GAPS below.\n\n")
 	fmt.Fprintf(&b, "MEETING: %s — %s (%s)\n", ev.Title, ev.OccurredAt, ev.Source)
 	names := make([]string, 0, len(attendees))
 	for _, a := range attendees {
