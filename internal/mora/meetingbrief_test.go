@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 	"time"
@@ -207,6 +209,70 @@ func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
 	}
 }
 
+func TestBriefEventCLIAndMCPReturnSameShape(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "adit@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-42", "Board prep", at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"neil@example.com": "Neil Patel"}, "neil@example.com",
+	)
+	if err := writeMemory(cfg, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, meetingBriefEmail(
+		"ask-42", "Board deck", "Please review the board deck by tomorrow.",
+		"neil@example.com", []string{"adit@example.com"}, at.Add(-time.Hour),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	cliJSON := run(t, "brief", "--event-id", event.ID, "--at", at.Format(time.RFC3339), "--json")
+	var cli MeetingBrief
+	if err := json.Unmarshal([]byte(cliJSON), &cli); err != nil {
+		t.Fatalf("decode CLI meeting brief: %v\n%s", err, cliJSON)
+	}
+	mcpValue, err := callMCPTool(ctx, "meeting_prep", map[string]any{
+		"event_id": event.ID,
+		"at":       at.Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp, ok := mcpValue.(MeetingBrief)
+	if !ok {
+		t.Fatalf("meeting_prep returned %T, want MeetingBrief", mcpValue)
+	}
+	cliBytes, _ := json.Marshal(cli)
+	mcpBytes, _ := json.Marshal(mcp)
+	if !bytes.Equal(cliBytes, mcpBytes) {
+		t.Fatalf("CLI and MCP shapes differ:\nCLI %s\nMCP %s", cliBytes, mcpBytes)
+	}
+
+	human := run(t, "brief", "--event-id", event.ID, "--at", at.Format(time.RFC3339))
+	for _, line := range strings.Split(human, "\n") {
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		for _, field := range []string{"memory-id:", "channel:", "source:", "date:"} {
+			if !strings.Contains(line, field) {
+				t.Fatalf("surfaced line lacks %s citation:\n%s", field, line)
+			}
+		}
+	}
+}
+
 func TestMeetingBriefRejectsWrongOrAmbiguousEventID(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -220,5 +286,67 @@ func TestMeetingBriefRejectsWrongOrAmbiguousEventID(t *testing.T) {
 	}
 	if _, err := buildEventMeetingBrief(context.Background(), cfg, "gmail_thread/not-an-event", at, 0, 8); err == nil {
 		t.Fatal("non-event id must fail rather than attribute an unrelated memory")
+	}
+}
+
+func TestMeetingBriefUsesExactAttendeeIdentityNotSharedDisplayName(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	one := meetingBriefEmail(
+		"ask-one", "One request", "Can you send the contract by tomorrow?",
+		"one@example.com", []string{"me@example.com"}, at.Add(-time.Hour),
+	)
+	one.Meta["names"] = map[string]string{"one@example.com": "Jordan Lee"}
+	two := meetingBriefEmail(
+		"ask-two", "Wrong person's request", "Can you send the private deck by tomorrow?",
+		"two@example.com", []string{"me@example.com"}, at.Add(-2*time.Hour),
+	)
+	two.Meta["names"] = map[string]string{"two@example.com": "Jordan Lee"}
+	event := eventMemFull(
+		"event-jordan", "Jordan sync", at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"one@example.com": "Jordan Lee"}, "one@example.com",
+	)
+	for _, memory := range []Memory{one, two, event} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(brief)
+	if !strings.Contains(string(payload), "ask-one") {
+		t.Fatalf("exact attendee evidence missing: %s", payload)
+	}
+	if strings.Contains(string(payload), "ask-two") || strings.Contains(string(payload), "private deck") {
+		t.Fatalf("same-name wrong-person evidence leaked: %s", payload)
+	}
+}
+
+func TestMeetingBriefAssemblyHasNoNetworkImports(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "meetingbrief.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, imp := range file.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		if path == "net" || strings.HasPrefix(path, "net/") ||
+			path == "github.com/pyranthus-hq/mora/internal/google" ||
+			path == "github.com/pyranthus-hq/mora/internal/imessage" {
+			t.Fatalf("meeting brief assembly imports %q; inference must remain zero-egress", path)
+		}
 	}
 }

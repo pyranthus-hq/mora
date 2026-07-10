@@ -142,7 +142,8 @@ func (b MeetingBrief) validate() error {
 		return fmt.Errorf("event citation: %w", err)
 	}
 	for _, section := range b.Sections {
-		if meetingBriefSectionTitles[section.Kind] != section.Title {
+		title, known := meetingBriefSectionTitles[section.Kind]
+		if !known || title != section.Title {
 			return fmt.Errorf("unknown meeting brief section %q", section.Kind)
 		}
 		if len(section.Lines) == 0 {
@@ -218,7 +219,11 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		perAttendee = meetingBriefDefaultPerGuest
 	}
 
-	attendees := meetingBriefAttendees(eventMemory, selfEmails(cfg))
+	self := selfEmails(cfg)
+	if len(metaStrings(eventMemory.Meta["attendees"])) > 0 && len(self) == 0 {
+		return MeetingBrief{}, errors.New("cannot safely resolve meeting attendees: self email is unknown; connect a Google account first")
+	}
+	attendees := meetingBriefAttendees(eventMemory, self)
 	eventCitation := citationForMemory(eventMemory, eventMemory.ID, validFromOf(eventMemory))
 	event := &CitedMeetingEvent{
 		ID:        eventMemory.ID,
@@ -410,6 +415,14 @@ func meetingBriefKindRank(kind string) int {
 	return len(meetingBriefSectionOrder)
 }
 
+func meetingBriefLineCount(brief MeetingBrief) int {
+	count := 0
+	for _, section := range brief.Sections {
+		count += len(section.Lines)
+	}
+	return count
+}
+
 func citationForMemory(m Memory, source, date string) BriefCitation {
 	channel := strings.TrimSpace(m.Provider)
 	if channel == "" {
@@ -424,6 +437,9 @@ func citationForMemory(m Memory, source, date string) BriefCitation {
 	}
 	if channel == "" {
 		channel = source
+	}
+	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(date)); err == nil {
+		date = parsed.UTC().Format(time.RFC3339)
 	}
 	return BriefCitation{
 		MemoryID: m.ID,

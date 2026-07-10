@@ -80,6 +80,8 @@ func TestMCPToolSchemasAreSpecific(t *testing.T) {
 
 	hasProp("context_memory", "max_tokens")
 	hasProp("get_entity", "max_tokens")
+	hasProp("meeting_prep", "event_id")
+	hasProp("meeting_prep", "at")
 
 	hasProp("list_memory", "limit")
 

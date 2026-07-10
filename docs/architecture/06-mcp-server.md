@@ -68,7 +68,7 @@ To keep it always reachable, `mora serve http install|uninstall|status` (`serve_
 | `get_entity` | Budget-bounded, fully-cited entity dossier (merged identities, typed neighbors, evidence) | `name`*, `max_tokens` | `max_tokens` ≈ **6000** default, **20000** max; cited `evidence[]` (no raw bodies); neighbors typed (stub until #70) |
 | `digest` | Daily cross-source digest, grouped + cited + budget-bounded | `since_hours`, `source`, `max_tokens` | `since_hours` = **24**, `max_tokens` ≈ 6000/20000; `source` filters to one connector/family (preview-only — see [sync & freshness](./11-sync-and-freshness.md)) |
 | `brief` | Session-start what-changed/what-matters briefing — same budgeted, cited, source-grouped engine as `digest`, resolved to the freshest available; opt into `envelope` for a synthesis_prompt | `max_tokens`, `envelope` | call FIRST at session start; local-only |
-| `meeting_prep` | Cited prep pack for the next (or in-progress) calendar event, optionally scoped to one attendee by name | `name`, `limit`, `max_tokens` | `limit` evidence = **8**, `max_tokens` ≈ 6000/20000; gap analysis + synthesis_prompt |
+| `meeting_prep` | Fully-cited unfinished-business brief for one calendar event; exact attendees resolve through the budgeted `get_entity` dossier | `event_id`, `at`, `name`, `limit`, `max_tokens` | Same `MeetingBrief` shape as `mora brief --event-id`; every line has memory/channel/source/date provenance; global cap **24** |
 
 (`*` = required.) The catalog is defined inline in `handleMCP` (`mcp.go`); the dispatch handlers are the `switch` cases in `callMCPTool` (`mcp.go`).
 

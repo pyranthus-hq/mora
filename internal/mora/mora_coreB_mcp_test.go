@@ -729,14 +729,19 @@ func TestCoreB_McpCallBriefEntityResolves(t *testing.T) {
 }
 
 // TestCoreB_McpCallMeetingPrepWithEvent: a seeded next-meeting event + a named,
-// resolvable attendee drives the full prep pack — the success arm where the
-// attendee filter resolves and buildMeetingPrep returns a non-nil event.
+// resolvable attendee drives the shared cited MeetingBrief shape.
 func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
 	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 	pinPrepClock(t, now)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@a.com",
+		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatalf("save self source: %v", err)
+	}
 	if err := writeMemory(cfg, personMemNamed("e1", "gmail", "riya@a.com", "Riya Karode", now.Add(-48*time.Hour))); err != nil {
 		t.Fatalf("seed person: %v", err)
 	}
@@ -751,12 +756,12 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("meeting_prep with a resolvable attendee: %v", err)
 	}
-	mp := got.(MeetingPrepResult)
-	if mp.Event == nil || mp.Event.Title != "Acme sync" {
-		t.Fatalf("meeting_prep must resolve the Acme sync event, got %+v", mp.Event)
+	brief := got.(MeetingBrief)
+	if brief.Event == nil || brief.Event.Title != "Acme sync" {
+		t.Fatalf("meeting_prep must resolve the Acme sync event, got %+v", brief.Event)
 	}
-	if strings.TrimSpace(mp.SynthesisPrompt) == "" {
-		t.Fatalf("meeting_prep must carry a synthesis prompt")
+	if err := brief.validate(); err != nil {
+		t.Fatalf("meeting_prep must be fully cited: %v", err)
 	}
 }
 
@@ -839,21 +844,23 @@ func TestCoreB_McpCallBriefEnvelope(t *testing.T) {
 	}
 }
 
-// TestCoreB_McpCallMeetingPrep: with no calendar connected the next-meeting prep
-// resolves to a nil-event pack (returned as-is by meetingPrepMCPPayload).
+// TestCoreB_McpCallMeetingPrep: with no calendar connected the next-meeting brief
+// resolves to a valid nil-event shape.
 func TestCoreB_McpCallMeetingPrep(t *testing.T) {
 	coreBMcpInit(t)
 	got, err := callMCPTool(context.Background(), "meeting_prep", map[string]any{})
 	if err != nil {
 		t.Fatalf("meeting_prep: %v", err)
 	}
-	mp, ok := got.(MeetingPrepResult)
+	mp, ok := got.(MeetingBrief)
 	if !ok {
-		t.Fatalf("meeting_prep returned %T, want MeetingPrepResult", got)
+		t.Fatalf("meeting_prep returned %T, want MeetingBrief", got)
 	}
-	// No calendar source => no event; the payload passes through untouched.
 	if mp.Event != nil {
 		t.Fatalf("expected a nil event with no calendar connected, got %+v", mp.Event)
+	}
+	if err := mp.validate(); err != nil {
+		t.Fatalf("nil-event shape must remain valid: %v", err)
 	}
 }
 

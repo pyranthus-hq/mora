@@ -397,13 +397,13 @@ func budgetCases() []budgetCase {
 		{tool: "brief_envelope", line: budgetCall("brief", `{"envelope":true,"max_tokens":20000}`), ceil: 20000,
 			note: "Phase 16: brief envelope-on (cited items + synthesis_prompt via budgetEnvelopePayload) must STILL land under the 20000 redline — the same prompt-reserved budget as digest_envelope holds the ceiling (D16-3)"},
 
-		// meeting_prep: an entity-detail-shaped pack (capped evidence + attendees +
-		// 240-rune snippets). Over the shared fixture (no calendar event) it returns the
-		// tiny no-event payload; the heavy-meeting stress is pinned separately by
-		// TestMeetingPrepPayloadUnderCeiling. NO wantRED — green by design; if it ever
-		// measures over, fix the reservation/caps, do NOT raise the line.
+		// meeting_prep: the cited MeetingBrief shape (event + at most 24 compact
+		// unfinished-business lines). Over the shared fixture (no calendar event) it
+		// returns the tiny no-event payload; the heavy-meeting stress is pinned
+		// separately by TestMeetingPrepPayloadUnderCeiling. NO wantRED — green by
+		// design; if it ever measures over, fix the line/dossier caps, not the ceiling.
 		{tool: "meeting_prep", line: budgetCall("meeting_prep", `{"max_tokens":20000}`), ceil: 12000,
-			note: "entity-detail-shaped pack: capped evidence + attendees + 240-rune snippets; must land under the redline at max_tokens"},
+			note: "cited MeetingBrief: event + capped unfinished-business lines; must land under the redline at max_tokens"},
 
 		// mutations — keep LAST so they don't perturb the fixture for the reads above.
 		// write_memory echoes the caller's own text (already in their context) and
