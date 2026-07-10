@@ -36,6 +36,15 @@ func meetingBriefEmail(id, title, body, from string, to []string, at time.Time) 
 	}
 }
 
+func mustBriefCitationForTest(t *testing.T, memoryID, channel, source, date string) BriefCitation {
+	t.Helper()
+	c, err := newBriefCitation(memoryID, channel, source, date)
+	if err != nil {
+		t.Fatalf("newBriefCitation: %v", err)
+	}
+	return c
+}
+
 func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -533,23 +542,14 @@ func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
 			ID:       "calendar_event/e1",
 			Title:    "Sync",
 			StartsAt: "2026-07-10T17:00:00Z",
-			Citation: BriefCitation{
-				MemoryID: "calendar_event/e1",
-				Channel:  "calendar",
-				Source:   "calendar_event/e1",
-				Date:     "2026-07-10T17:00:00Z",
-			},
+			Citation: mustBriefCitationForTest(t, "calendar_event/e1", "calendar", "calendar_event/e1", "2026-07-10T17:00:00Z"),
 		},
 		Sections: []MeetingBriefSection{{
 			Kind:  meetingBriefOpenLoops,
 			Title: meetingBriefSectionTitles[meetingBriefOpenLoops],
 			Lines: []CitedBriefLine{{
-				Text: "Send the deck",
-				Citation: BriefCitation{
-					MemoryID: "gmail_thread/t1",
-					Channel:  "gmail",
-					Date:     "2026-07-10T13:00:00Z",
-				},
+				Text:     "Send the deck",
+				Citation: BriefCitation{},
 			}},
 		}},
 	}
@@ -560,6 +560,135 @@ func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("fail-closed renderer wrote partial output: %q", out.String())
+	}
+}
+
+func TestBriefCitationRejectsUncitedJSON(t *testing.T) {
+	var c BriefCitation
+	err := json.Unmarshal([]byte(`{"memory_id":"gmail_thread/t1","channel":"gmail","date":"2026-07-10T13:00:00Z"}`), &c)
+	if err == nil || !strings.Contains(err.Error(), "missing source") {
+		t.Fatalf("partial citation JSON should fail closed with missing source, got: %v", err)
+	}
+}
+
+func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "adit@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-correction-actions", "Board prep", at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"neil@example.com": "Neil Patel"}, "neil@example.com",
+	)
+	if err := writeMemory(cfg, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, meetingBriefEmail(
+		"ask-correction-actions", "Board deck", "Please review the board deck by tomorrow.",
+		"neil@example.com", []string{"adit@example.com"}, at.Add(-time.Hour),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meetingBriefLineCount(brief) == 0 {
+		t.Fatal("expected at least one cited line")
+	}
+	line := brief.Sections[0].Lines[0]
+	if line.Correction.StableAtom.Kind != atomStableID || line.Correction.StableAtom.Value != "ask-correction-actions" {
+		t.Fatalf("stable atom = %+v", line.Correction.StableAtom)
+	}
+	if line.Correction.AttendeeAtom.Kind != atomAddress || line.Correction.AttendeeAtom.Value != "neil@example.com" {
+		t.Fatalf("attendee atom = %+v", line.Correction.AttendeeAtom)
+	}
+	for _, cmd := range []string{line.Correction.CorrectCommand, line.Correction.UnlinkCommand} {
+		if !strings.Contains(cmd, "mora brief correct --memory-id ask-correction-actions --attendee neil@example.com") {
+			t.Fatalf("missing one-action command wiring: %q", cmd)
+		}
+	}
+}
+
+func TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "adit@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-correction-persist", "Founder sync", at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"neil@example.com": "Neil Patel"}, "neil@example.com",
+	)
+	ask := meetingBriefEmail(
+		"ask-correction-persist", "Deck follow-up", "Can you send the revised deck by tomorrow?",
+		"neil@example.com", []string{"adit@example.com"}, at.Add(-2*time.Hour),
+	)
+	for _, m := range []Memory{event, ask} {
+		if err := writeMemory(cfg, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meetingBriefLineCount(before) == 0 {
+		t.Fatal("expected the line before correction")
+	}
+	if _, err := runErr(t, "brief", "correct", "--memory-id", ask.ID, "--attendee", "neil@example.com", "--unlink"); err == nil {
+		t.Fatal("unlink without --yes must be rejected")
+	}
+	if out := run(t, "brief", "correct", "--memory-id", ask.ID, "--attendee", "neil@example.com", "--unlink", "--yes"); !strings.Contains(out, "unlinked citation") {
+		t.Fatalf("unlink output = %q", out)
+	}
+	afterUnlink, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meetingBriefLineCount(afterUnlink) != 0 {
+		t.Fatalf("unlink must suppress this cited line, got: %+v", afterUnlink.Sections)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	afterResync, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meetingBriefLineCount(afterResync) != 0 {
+		t.Fatalf("unlink must persist across rebuild/re-sync, got: %+v", afterResync.Sections)
+	}
+	if out := run(t, "brief", "correct", "--memory-id", ask.ID, "--attendee", "neil@example.com", "--confirm"); !strings.Contains(out, "confirmed citation link") {
+		t.Fatalf("confirm output = %q", out)
+	}
+	afterConfirm, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meetingBriefLineCount(afterConfirm) == 0 {
+		t.Fatalf("confirm should restore this source↔attendee line, got: %+v", afterConfirm.Sections)
 	}
 }
 
