@@ -261,20 +261,18 @@ func isOrg(id, display string) bool {
 	return false
 }
 
+// isStructuralNoise reports whether a handle is a GitHub notification field label /
+// event type (Push, Author, Mention, Ci activity, State change) — structural
+// boilerplate that is NOT a real entity (issue #70) and must never be minted as a
+// person at personRefs. It matches EXACT, whole-string, case-insensitive (via
+// isArtifact, the single source of the artifact set) — never a substring — so no
+// real handle is caught (real email/iMessage handles are never a bare artifact word).
+//
+// Repo slugs (owner/name) are deliberately NOT treated as noise here: they flow
+// through personRefs to classifyIdentity, which TYPES them "repo" (a distinct entity
+// kind), so they stay resolvable instead of vanishing. This precision-first split is
+// the whole point — dropping is unrecoverable (a real person mis-caught by an
+// over-broad shape rule is gone), typing is not.
 func isStructuralNoise(handle string) bool {
-	h := strings.ToLower(strings.TrimSpace(handle))
-	if h == "" {
-		return true
-	}
-	artifacts := map[string]bool{
-		"push": true, "author": true, "mention": true, "ci activity": true, "state change": true,
-		"ci-activity": true, "state-change": true,
-	}
-	if artifacts[h] {
-		return true
-	}
-	if !strings.Contains(h, "@") && strings.Count(h, "/") == 1 {
-		return true
-	}
-	return false
+	return isArtifact(strings.ToLower(strings.TrimSpace(handle)), "")
 }

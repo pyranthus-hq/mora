@@ -7,7 +7,7 @@ The deterministic, model-free pipeline that derives a person/topic entity graph 
 | File | Lines | Responsibility |
 |---|---|---|
 | `internal/mora/graph.go` | 887 | `buildGraph` and the 3-rule layered pipeline: A2 provenance trust (`resolvePersonName`, `senderSet`, `personAgg`/`aliases`), A3 identity-merge (`canonicalizePersons`, `mailboxKey`, `mergePersonAggs`, `rewritePersonEdges`, `maxNameMergeClusters`), structural-entity + hub-node emission, fan-out cap, deterministic union-find |
-| `internal/mora/classify.go` | 260 | A1 classification (`classifyIdentity`): 5-kind typing (`person`, `org`, `repo`, `service`, `artifact`) from token-exact local-part denylist, bulk-ESP host labels, display-name suffixes, plus-addressing handling; Phase-14 precision fixes (`isShortcode`, `notify`/`alerts` host labels) + the deferred reciprocity-override rationale; structural stoplist/no-@ drops |
+| `internal/mora/classify.go` | 260 | A1 classification (`classifyIdentity`): 5-kind typing (`person`, `org`, `repo`, `service`, `artifact`) from token-exact local-part denylist, bulk-ESP host labels, display-name suffixes, plus-addressing handling; Phase-14 precision fixes (`isShortcode`, `notify`/`alerts` host labels) + the deferred reciprocity-override rationale; `isStructuralNoise` drops only exact GitHub-artifact shapes at `personRefs` (repo slugs flow through to be TYPED `repo`, never dropped) |
 | `internal/mora/salience.go` | 294 | **Phase 14** — the pure, clock-free person-ranking kernel: `S = HumanGate × Recency × Core` (D14-1..D14-4). `sat`/`channelScale`/`recencyDecay`/`salienceMicros` primitives, `scoreSalience`, `metaMessageCount`, and the shared `aggregatePersonSalience([]Memory) map[string]int64` seam BOTH `buildGraph` (here) and the digest consume. No I/O, no `time.Now`, no new deps. |
 | `internal/mora/gazetteer.go` | 252 | S5 body-matching: build a gazetteer from trusted person aliases (`buildGazetteer`), scan message/email bodies on word boundaries (`gazetteerScan`, `tokenizeForScan`), emit `MENTIONS` edges; high-precision stoplists and join-only matching |
 | `internal/mora/entities.go` | 212 | Structural entity extraction (`extractEntities`: scopes/tags/`[[wikilinks]]`/`- [categories]`), the `mora entities` CLI command, MCP entity adapters |
@@ -87,8 +87,8 @@ stateDiagram-v2
 
 `classifyIdentity(identity, displayName) → "person" | "service" | "org" | "repo" | "artifact"` (`internal/mora/classify.go:16-48`) demotes automated/transactional senders, repo slugs, orgs, and notification artifacts so the People view stays human while keeping them searchable. It is pure and deterministic.
 
-- **Artifacts** are GitHub notification fields/labels (like `Push`, `Author`, `Mention`, `Ci activity`, `State change`).
-- **Repos** are slug-shaped handles containing exactly one `/` and no `@` (or display name contains `/`).
+- **Artifacts** are GitHub notification fields/labels (like `Push`, `Author`, `Mention`, `Ci activity`, `State change`) — structural boilerplate, not entities. `personRefs` drops these outright via `isStructuralNoise` (exact, whole-string match), so they are never minted as graph nodes; `classifyIdentity` still labels them `artifact` for any direct caller.
+- **Repos** are slug-shaped handles containing exactly one `/` and no `@` (or display name contains `/`). They are **typed, not dropped** — `personRefs` lets a repo slug flow through so `classifyIdentity` labels it `repo`, keeping it resolvable while the People view / co-occurrence kind-filter it out (issue #70). Dropping is unrecoverable; typing is not.
 - **Orgs** are recognized by company suffixes (`inc`, `llc`, etc.), brand names (`sofi`, `google`, `github`, etc.), or domain-like handles.
 - **Services** are SMS shortcodes (digits only, len ≤6) or email transactional senders.
 - **People** are any other valid handles (emails and phone/shortcode-shaped handles). iMessage phone handles are real people by construction.

@@ -397,8 +397,9 @@ func TestGr_PureGraphHelperEdges(t *testing.T) {
 		t.Fatalf("duplicate participant should backfill missing name: parts=%#v senders=%#v", parts, senders)
 	}
 
-	// raw non-@ iMessage handle stays a person and is not dropped
-	parts, senders, _, _ = personRefs(Memory{
+	// raw non-@ iMessage handle stays a person and is NOT dropped (precision-first:
+	// never lose a real person to an over-broad shape rule).
+	parts, _, _, _ = personRefs(Memory{
 		Type: "imessage",
 		Meta: map[string]any{
 			"from": []any{"iMessage;-;weird"},
@@ -408,15 +409,55 @@ func TestGr_PureGraphHelperEdges(t *testing.T) {
 		t.Fatalf("weird non-@ handle should not be dropped, got: %#v", parts)
 	}
 
-	// repo-slug owner/name is dropped from personRefs
-	parts, senders, _, _ = personRefs(Memory{
+	// GitHub notification artifact shapes are structural boilerplate, not entities
+	// (issue #70) -> dropped at personRefs so they're never minted as persons.
+	parts, _, _, _ = personRefs(Memory{
+		Type: "email",
+		Meta: map[string]any{
+			"from": []any{"Push"},
+		},
+	})
+	if len(parts) != 0 {
+		t.Fatalf("artifact shape 'Push' should be dropped from personRefs, got: %#v", parts)
+	}
+
+	// repo-slug owner/name is NOT dropped at personRefs — it flows through so it can
+	// be TYPED "repo" downstream (issue #70) rather than vanishing from the graph.
+	parts, _, _, _ = personRefs(Memory{
 		Type: "email",
 		Meta: map[string]any{
 			"from": []any{"pyranthus-hq/mora"},
 		},
 	})
-	if len(parts) != 0 {
-		t.Fatalf("repo-slug shape should be dropped from personRefs, got: %#v", parts)
+	if len(parts) != 1 || parts[0].id != "person:pyranthus-hq/mora" {
+		t.Fatalf("repo-slug should flow through personRefs to be typed, got: %#v", parts)
+	}
+}
+
+// TestGr_RepoSlugTypedAsRepo pins the full personRefs -> buildGraph -> classifyIdentity
+// path: a GitHub repo slug arriving as a person reference must NOT be dropped; it must
+// surface as a distinct "repo"-kind entity (issue #70) — resolvable, but never a person.
+func TestGr_RepoSlugTypedAsRepo(t *testing.T) {
+	entities, _, _ := buildGraph([]Memory{{
+		ID:        "m-repo",
+		Type:      "email",
+		Title:     "PR run failed: CI",
+		CreatedAt: "2026-07-01T00:00:00Z",
+		Meta:      map[string]any{"from": []any{"pyranthus-hq/mora"}},
+	}})
+	var kind string
+	found := false
+	for _, e := range entities {
+		if e.ID == "person:pyranthus-hq/mora" {
+			kind, found = e.Kind, true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("repo-slug entity missing from graph; it must be typed, not dropped")
+	}
+	if kind != "repo" {
+		t.Fatalf("repo-slug should be typed repo, got kind=%q", kind)
 	}
 }
 
