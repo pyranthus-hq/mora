@@ -185,6 +185,66 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	}
 }
 
+func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@example.com",
+		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event := eventMemFull(
+		"event-forgettability",
+		"Portfolio commitments",
+		at.Add(time.Hour).Format(time.RFC3339),
+		map[string]string{"dana@example.com": "Dana"},
+		"dana@example.com",
+	)
+	oldGem := meetingBriefEmail(
+		"forgotten-gem",
+		"Portfolio introduction commitment",
+		"Can you send the portfolio introduction document you promised?",
+		"dana@example.com",
+		[]string{"me@example.com"},
+		at.Add(-300*24*time.Hour),
+	)
+	recentNoise := meetingBriefEmail(
+		"daily-noise",
+		"Daily check-in",
+		"Can you confirm today's routine check-in?",
+		"dana@example.com",
+		[]string{"me@example.com"},
+		at.Add(-2*time.Hour),
+	)
+	for _, memory := range []Memory{event, oldGem, recentNoise} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := buildEventMeetingBrief(ctx, cfg, event.ID, at, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(brief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), oldGem.ID) {
+		t.Fatalf("forgotten actionable gem did not win the single attendee slot: %s", payload)
+	}
+	if strings.Contains(string(payload), recentNoise.ID) {
+		t.Fatalf("recent routine noise displaced the forgotten actionable gem: %s", payload)
+	}
+}
+
 func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
 	brief := MeetingBrief{
 		AsOf: "2026-07-10T15:00:00Z",

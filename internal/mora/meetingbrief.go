@@ -15,7 +15,7 @@ const (
 	meetingBriefUnresolved      = "unresolved_threads"
 	meetingBriefStaleness       = "staleness_guards"
 	meetingBriefSharedContext   = "material_shared_context"
-	meetingBriefDefaultPerGuest = 8
+	meetingBriefDefaultPerGuest = 3
 )
 
 var meetingBriefSectionTitles = map[string]string{
@@ -161,11 +161,13 @@ func (b MeetingBrief) validate() error {
 type meetingBriefCandidate struct {
 	kind string
 	line CitedBriefLine
+	rank forgettabilityCandidate
 }
 
 // buildEventMeetingBrief resolves one calendar memory by stable id, then assembles
-// an unfinished-business brief over each exact attendee identity. Every attendee's
-// candidate pool comes from Track B's budgeted cited get_entity projection.
+// an unfinished-business brief over each exact attendee identity. Candidate
+// discovery uses the same exact-identity graph projection as get_entity, but ranking
+// runs over the full cross-attendee pool before the output budget is applied.
 func buildEventMeetingBrief(ctx context.Context, cfg Config, eventID string, at time.Time, maxTokens, perAttendee int) (MeetingBrief, error) {
 	eventMemory, err := meetingEventByID(cfg, eventID)
 	if err != nil {
@@ -203,14 +205,6 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 	if eventMemory.DeletedAt != "" || eventMemory.Type != "event" {
 		return MeetingBrief{}, fmt.Errorf("memory %q is not an active calendar event", eventMemory.ID)
 	}
-	mems, err := meetingBriefMemories(cfg)
-	if err != nil {
-		return MeetingBrief{}, err
-	}
-	memoryByID := make(map[string]Memory, len(mems))
-	for _, m := range mems {
-		memoryByID[m.ID] = m
-	}
 	start, ok := eventStart(eventMemory)
 	if !ok {
 		return MeetingBrief{}, fmt.Errorf("calendar event %q has no valid RFC3339 start", eventMemory.ID)
@@ -238,19 +232,19 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		Sections:    []MeetingBriefSection{},
 		EgressCalls: 0,
 	}
-
-	tokenBudget, _ := resolveContextBudgetTokens(cfg, maxTokens)
-	perDossierTokens := tokenBudget
-	if len(attendees) > 0 {
-		perDossierTokens = tokenBudget / len(attendees)
-		if perDossierTokens < 200 {
-			perDossierTokens = 200
-		}
+	_, budgetChars := resolveContextBudgetTokens(cfg, maxTokens)
+	evidenceCap := budgetChars / 600
+	if evidenceCap < 1 {
+		evidenceCap = 1
+	}
+	if evidenceCap > meetingPrepEvidenceCap {
+		evidenceCap = meetingPrepEvidenceCap
 	}
 
 	candidates := make([]meetingBriefCandidate, 0)
+	seenEvidence := map[string]bool{}
 	for _, attendee := range attendees {
-		dossier, derr := entityDossierForMCP(ctx, cfg, attendee.identity, perDossierTokens)
+		dossier, derr := graphGetEntity(ctx, cfg, attendee.identity)
 		if derr != nil {
 			return MeetingBrief{}, derr
 		}
@@ -261,55 +255,83 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		if d, _ := dossier["display_name"].(string); strings.TrimSpace(d) != "" {
 			display = d
 		}
-		evidence, _ := dossier["evidence"].([]EntityEvidence)
-		kept := 0
-		for _, cited := range evidence {
-			if kept >= perAttendee {
-				break
-			}
-			if cited.ID == eventMemory.ID {
+		personKind, _ := dossier["kind"].(string)
+		mentionCount, _ := dossier["count"].(int)
+		evidence, _ := dossier["memories"].([]Memory)
+		personLastSeen := latestMeetingBriefEvidenceDate(evidence, at)
+		for _, m := range evidence {
+			if m.ID == eventMemory.ID || seenEvidence[m.ID] {
 				continue
 			}
-			m, found := memoryByID[cited.ID]
-			if !found || m.DeletedAt != "" {
+			if m.DeletedAt != "" {
 				continue
 			}
-			if ts, terr := time.Parse(time.RFC3339, cited.CreatedAt); terr != nil || ts.After(at) {
+			occurredAt := validFromOf(m)
+			if ts, terr := time.Parse(time.RFC3339, occurredAt); terr != nil || ts.After(at) {
 				continue
 			}
 			kind := classifyMeetingBriefEvidence(m, cfg, at)
 			if kind == "" {
 				continue
 			}
+			seenEvidence[m.ID] = true
+			source := evidenceSource(m)
 			line, lerr := newCitedBriefLine(
-				meetingBriefEvidenceText(cited),
+				meetingBriefEvidenceText(memoryToEvidence(m, display)),
 				display,
-				citationForMemory(m, cited.Source, cited.CreatedAt),
+				citationForMemory(m, source, occurredAt),
 			)
 			if lerr != nil {
-				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s: %w", eventMemory.ID, attendee.identity, cited.ID, lerr)
+				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s: %w", eventMemory.ID, attendee.identity, m.ID, lerr)
 			}
-			candidates = append(candidates, meetingBriefCandidate{kind: kind, line: line})
-			kept++
+			bulkAuthored := memoryIsServiceOnly(m)
+			messageCount := metaMessageCount(m)
+			candidates = append(candidates, meetingBriefCandidate{
+				kind: kind,
+				line: line,
+				rank: forgettabilityCandidate{
+					StableID:             m.ID,
+					Title:                m.Title,
+					Text:                 stripFromLine(m.Text),
+					CreatedAt:            m.CreatedAt,
+					OccurredAt:           occurredAt,
+					DeletedAt:            m.DeletedAt,
+					PersonID:             personID(attendee.identity),
+					PersonDisplay:        display,
+					PersonKind:           personKind,
+					PersonLastSeen:       personLastSeen,
+					AttendeeKnown:        true,
+					IdentityCorroborated: true,
+					BulkAuthored:         bulkAuthored,
+					HumanAuthored:        !bulkAuthored,
+					ContentCorroborated:  messageCount > 1,
+					Commit:               kind == meetingBriefOpenLoops,
+					MessageCount:         messageCount,
+					MentionCount:         mentionCount,
+				},
+			})
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		pi := meetingBriefKindRank(candidates[i].kind)
-		pj := meetingBriefKindRank(candidates[j].kind)
-		if pi != pj {
-			return pi < pj
-		}
-		if candidates[i].line.Citation.Date != candidates[j].line.Citation.Date {
-			return candidates[i].line.Citation.Date > candidates[j].line.Citation.Date
-		}
-		if candidates[i].line.Citation.MemoryID != candidates[j].line.Citation.MemoryID {
-			return candidates[i].line.Citation.MemoryID < candidates[j].line.Citation.MemoryID
-		}
-		return candidates[i].line.Attendee < candidates[j].line.Attendee
-	})
-	if len(candidates) > meetingPrepEvidenceCap {
-		candidates = candidates[:meetingPrepEvidenceCap]
+	rankInputs := make([]forgettabilityCandidate, 0, len(candidates))
+	candidateByID := make(map[string]meetingBriefCandidate, len(candidates))
+	for _, candidate := range candidates {
+		rankInputs = append(rankInputs, candidate.rank)
+		candidateByID[candidate.rank.StableID] = candidate
+	}
+	ranking := rankForgettability(
+		at,
+		eventMemory.Title,
+		attendeeDisplays(attendees),
+		rankInputs,
+		forgettabilityOptions{
+			PerAttendeeCap: perAttendee,
+			EvidenceCap:    evidenceCap,
+		},
+	)
+	candidates = candidates[:0]
+	for _, selected := range ranking.Selected {
+		candidates = append(candidates, candidateByID[selected.StableID])
 	}
 
 	for _, kind := range meetingBriefSectionOrder {
@@ -331,6 +353,21 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		return MeetingBrief{}, err
 	}
 	return brief, nil
+}
+
+func latestMeetingBriefEvidenceDate(mems []Memory, at time.Time) string {
+	var latest time.Time
+	for _, m := range mems {
+		ts, ok := parseForgettabilityTime(validFromOf(m), m.CreatedAt)
+		if !ok || ts.After(at) || !ts.After(latest) {
+			continue
+		}
+		latest = ts
+	}
+	if latest.IsZero() {
+		return ""
+	}
+	return latest.UTC().Format(time.RFC3339)
 }
 
 type meetingBriefAttendee struct {
@@ -404,15 +441,6 @@ func meetingBriefMemories(cfg Config) ([]Memory, error) {
 		mems = append(mems, m)
 	}
 	return mems, nil
-}
-
-func meetingBriefKindRank(kind string) int {
-	for i, candidate := range meetingBriefSectionOrder {
-		if candidate == kind {
-			return i
-		}
-	}
-	return len(meetingBriefSectionOrder)
 }
 
 func meetingBriefLineCount(brief MeetingBrief) int {
