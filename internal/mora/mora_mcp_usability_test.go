@@ -1,6 +1,12 @@
 package mora
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // TestMCPToolSchemasAreSpecific locks the discoverability contract: every MCP
 // tool must advertise a real inputSchema (typed properties + required fields),
@@ -73,6 +79,7 @@ func TestMCPToolSchemasAreSpecific(t *testing.T) {
 	mustRequire("get_entity", "name")
 
 	hasProp("context_memory", "max_tokens")
+	hasProp("get_entity", "max_tokens")
 
 	hasProp("list_memory", "limit")
 
@@ -138,5 +145,166 @@ func TestContextMemoryHonorsMaxTokens(t *testing.T) {
 	// freshness map, but it must stay far under the 4000-char body.
 	if len(small) > 1500 {
 		t.Fatalf("max_tokens=50 should truncate hard (~200 chars of body); got %d bytes: %s", len(small), small)
+	}
+}
+
+// TestContextMemoryBudgetUnit stamps budget_unit on the MCP envelope (#69).
+func TestContextMemoryBudgetUnit(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	text, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"context_memory","arguments":{"query":"lorem","max_tokens":500}}}`)
+	if isErr {
+		t.Fatalf("context_memory errored: %s", text)
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("decode: %v\n%s", err, text)
+	}
+	if env["budget_unit"] != budgetUnitTokens {
+		t.Fatalf("budget_unit = %v, want %q", env["budget_unit"], budgetUnitTokens)
+	}
+	if budget, ok := env["budget"].(float64); !ok || int(budget) != 500 {
+		t.Fatalf("budget = %v, want 500 tokens", env["budget"])
+	}
+	if _, ok := env["used"]; !ok {
+		t.Fatalf("missing used field: %v", env)
+	}
+}
+
+// TestContextCLIBudgetHonorsTokens proves mora context --budget counts tokens,
+// bounds the items array, and stamps budget_unit in --json output (#69).
+func TestContextCLIBudgetHonorsTokens(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	big := strings.Repeat("x", 4000)
+	run(t, "write", "--scope", "global", "--title", "Bulk", "--text", big)
+
+	out := run(t, "context", "--query", "Bulk", "--budget", "500", "--json")
+	var env struct {
+		Context    string   `json:"context"`
+		Items      []Memory `json:"items"`
+		BudgetUnit string   `json:"budget_unit"`
+		Budget     int      `json:"budget"`
+		Used       int      `json:"used"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	if env.BudgetUnit != budgetUnitTokens {
+		t.Fatalf("budget_unit = %q, want %q", env.BudgetUnit, budgetUnitTokens)
+	}
+	if env.Budget != 500 {
+		t.Fatalf("budget = %d, want 500 tokens", env.Budget)
+	}
+	// ~500 tokens ≈ 2000 chars of context; must not ship the full 4000-char body.
+	if len(env.Context) > 2500 {
+		t.Fatalf("context length %d exceeds ~500-token budget (~2000 chars)", len(env.Context))
+	}
+	itemsJSON, _ := json.Marshal(env.Items)
+	if len(itemsJSON) > 2500 {
+		t.Fatalf("items JSON %d bytes should honor the same token budget", len(itemsJSON))
+	}
+}
+
+// TestGetEntityDossierShape pins the budgeted, fully-cited dossier contract (Track B).
+// Neighbor type values are stubbed until Track A merges — this test locks shape only.
+func TestGetEntityDossierShape(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	if err := writeMemory(cfg, Memory{
+		ID: "m1", Scope: "project:demo", Title: "Kickoff with Neil",
+		Text: "[[Neil]] discussed the pilot", CreatedAt: "2026-05-30T10:00:00Z",
+		Provider: "gmail", Source: "gmail",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, Memory{
+		ID: "m2", Scope: "project:demo", Title: "Follow-up",
+		Text: "[[Neil]] ok", CreatedAt: "2026-05-31T10:00:00Z",
+		Provider: "gmail", Source: "gmail",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	text, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_entity","arguments":{"name":"Neil","max_tokens":6000}}}`)
+	if isErr {
+		t.Fatalf("get_entity errored: %s", text)
+	}
+	var dossier map[string]any
+	if err := json.Unmarshal([]byte(text), &dossier); err != nil {
+		t.Fatalf("decode: %v\n%s", err, text)
+	}
+	for _, key := range []string{"budget_unit", "budget", "used", "evidence", "aliases", "display_name", "found"} {
+		if _, ok := dossier[key]; !ok {
+			t.Fatalf("dossier missing %q: %v", key, dossier)
+		}
+	}
+	if dossier["budget_unit"] != budgetUnitTokens {
+		t.Fatalf("budget_unit = %v", dossier["budget_unit"])
+	}
+	if dossier["found"] != true {
+		t.Fatalf("found = %v", dossier["found"])
+	}
+	evidence, ok := dossier["evidence"].([]any)
+	if !ok || len(evidence) == 0 {
+		t.Fatalf("evidence = %v", dossier["evidence"])
+	}
+	row, ok := evidence[0].(map[string]any)
+	if !ok {
+		t.Fatalf("evidence row type: %T", evidence[0])
+	}
+	for _, field := range []string{"id", "title", "source", "created_at", "snippet"} {
+		if row[field] == nil || row[field] == "" {
+			t.Fatalf("evidence row missing cited field %q: %v", field, row)
+		}
+	}
+	if _, hasMemories := dossier["memories"]; hasMemories {
+		t.Fatalf("dossier must not ship raw memories — use evidence + read_memory")
+	}
+	if nbrs, ok := dossier["neighbors"].([]any); ok && len(nbrs) > 0 {
+		n := nbrs[0].(map[string]any)
+		if n["type"] != neighborTypeStub {
+			t.Fatalf("neighbor type = %v, want stub %q until Track A", n["type"], neighborTypeStub)
+		}
+	}
+}
+
+// TestGetEntityHonorsMaxTokens proves max_tokens scales the cited evidence payload.
+func TestGetEntityHonorsMaxTokens(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	body := strings.Repeat("lorem ipsum dolor sit amet ", 80)
+	for i := 0; i < 30; i++ {
+		if err := writeMemory(cfg, Memory{
+			ID: fmt.Sprintf("gmail_thread/t%04d", i), Scope: "personal", Type: "email",
+			Title: fmt.Sprintf("Thread %04d", i), Text: body + " [[Neil Patel]]",
+			CreatedAt: fmt.Sprintf("2026-05-%02dT00:00:00Z", (i%28)+1),
+			Meta: map[string]any{
+				"from":  []string{"neil@example.com"},
+				"names": map[string]string{"neil@example.com": "Neil Patel"},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	small, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_entity","arguments":{"name":"Neil Patel","max_tokens":200}}}`)
+	if isErr {
+		t.Fatalf("get_entity small: %s", small)
+	}
+	large, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_entity","arguments":{"name":"Neil Patel","max_tokens":8000}}}`)
+	if isErr {
+		t.Fatalf("get_entity large: %s", large)
+	}
+	if len(large) <= len(small) {
+		t.Fatalf("max_tokens=8000 (%d bytes) should exceed max_tokens=200 (%d bytes)", len(large), len(small))
 	}
 }

@@ -237,7 +237,7 @@ mora write --scope project:acme --type decision --title "Chose OAuth" --text "..
 mora read <id> --json                                    # one memory by id
 mora list --scope project:acme --json                    # browse memories in a scope
 mora delete <id> --yes                                   # remove one memory
-mora context --query "auth" --scope project:acme --budget 2000 --json   # one budget-bounded context block
+mora context --query "auth" --scope project:acme --budget 6000 --json   # token-budgeted context block + bounded items
 mora think "what did Sam decide about pricing?" --json   # cited evidence + gap analysis
 ```
 

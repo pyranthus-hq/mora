@@ -266,21 +266,24 @@ func graphGetEntity(ctx context.Context, cfg Config, name string) (map[string]an
 	// Resolve the entity by case-insensitive display name (excluding hub nodes),
 	// preferring the most-mentioned on ties — deterministic, matches the old
 	// "first by count desc" behavior.
-	rows, err := db.QueryContext(ctx, `SELECT id, kind, display_name, aliases, mention_count FROM entities WHERE id NOT LIKE 'memory:%'`)
+	rows, err := db.QueryContext(ctx, `SELECT id, kind, display_name, aliases, mention_count, salience_micros FROM entities WHERE id NOT LIKE 'memory:%'`)
 	if err != nil {
 		return nil, err
 	}
 	type cand struct {
 		id, specKind, display, aliases string
 		mention                        int
+		salience                       int64
 	}
 	var match *cand
 	for rows.Next() {
 		var c cand
-		if err := rows.Scan(&c.id, &c.specKind, &c.display, &c.aliases, &c.mention); err != nil {
+		var sal sql.NullInt64
+		if err := rows.Scan(&c.id, &c.specKind, &c.display, &c.aliases, &c.mention, &sal); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		c.salience = sal.Int64
 		// Match the display name OR any exact alias (email/handle/name variant), so a
 		// precise lookup like get_entity("neil@example.com") disambiguates two people
 		// who share a display name (codex S4). Name lookups still pick the
@@ -376,6 +379,7 @@ func graphGetEntity(ctx context.Context, cfg Config, name string) (map[string]an
 		"graph_kind":   match.specKind,
 		"display_name": match.display,
 		"aliases":      aliases,
+		"salience":     match.salience,
 		"degree":       len(edges),
 		"edges":        edges,
 		"neighbors":    neighbors,

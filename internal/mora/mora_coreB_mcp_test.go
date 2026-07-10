@@ -488,18 +488,37 @@ func TestCoreB_McpCallGetEntity(t *testing.T) {
 		t.Fatalf("get_entity: %v", err)
 	}
 	res := got.(map[string]any)
-	mems, ok := res["memories"].([]Memory)
-	if !ok || len(mems) == 0 {
-		t.Fatalf("get_entity must return the referencing memories, got %#v", res["memories"])
-	}
-	found := false
-	for _, m := range mems {
-		if m.Title == "Linkholder" {
-			found = true
+	evidence, ok := res["evidence"].([]EntityEvidence)
+	if !ok {
+		// JSON round-trip via map may decode as []any — try that path.
+		if rows, ok2 := res["evidence"].([]any); ok2 && len(rows) > 0 {
+			ok = true
+			found := false
+			for _, r := range rows {
+				row, _ := r.(map[string]any)
+				if row["title"] == "Linkholder" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("get_entity evidence should include Linkholder, got %+v", res["evidence"])
+			}
+		} else {
+			t.Fatalf("get_entity must return cited evidence, got %#v", res["evidence"])
+		}
+	} else {
+		found := false
+		for _, e := range evidence {
+			if e.Title == "Linkholder" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("get_entity evidence should include Linkholder, got %+v", evidence)
 		}
 	}
-	if !found {
-		t.Fatalf("get_entity memories should include Linkholder, got %+v", mems)
+	if res["budget_unit"] != budgetUnitTokens {
+		t.Fatalf("get_entity budget_unit = %v", res["budget_unit"])
 	}
 }
 

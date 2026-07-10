@@ -341,7 +341,9 @@ func budgetCases() []budgetCase {
 			note: "GREEN (v0.5.1): compact projection — memory_ids dropped, salience-ranked (entities.go entitiesForMCP)"},
 		{tool: "get_entity_notfound", line: budgetCall("get_entity", `{"name":"Nobody Here"}`), ceil: 12000},
 		{tool: "get_entity_found", line: budgetCall("get_entity", `{"name":"Neil Patel"}`), ceil: 12000,
-			note: "GREEN (v0.5.1): bodies snippeted + memories/edges/neighbors capped (entities.go entityMemoriesForMCP)"},
+			note: "GREEN: cited evidence dossier + budget_unit; bodies never shipped raw (entities.go entityDossierForMCP)"},
+		{tool: "get_entity_small", line: budgetCall("get_entity", `{"name":"Neil Patel","max_tokens":200}`), ceil: 12000,
+			note: "max_tokens knob alive on get_entity dossier"},
 
 		// briefing / synthesis
 		{tool: "context_default", line: budgetCall("context_memory", `{"query":"lorem"}`), ceil: 12000},

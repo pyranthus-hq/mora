@@ -309,7 +309,7 @@ USAGE:
   mora read <id> --json
   mora list --scope project:acme --json
   mora delete <id> --yes
-  mora context --scope project:acme --query "auth" --budget 2000 --json
+  mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
