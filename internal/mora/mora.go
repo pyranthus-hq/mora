@@ -342,6 +342,7 @@ USAGE:
   mora disconnect google
   mora mcp serve
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
+  mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora hook install|uninstall|status
   mora upgrade                     # self-update to the latest release (brew installs: brew upgrade)
   mora version`)

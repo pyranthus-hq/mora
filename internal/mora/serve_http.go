@@ -88,9 +88,20 @@ type httpConfig struct {
 // can slot in beside it without a new top-level command.
 func cmdServe(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 || args[0] != "http" {
-		return errors.New("usage: mora serve http [--port 7777] [--print-token]")
+		return errors.New("usage: mora serve http [install|uninstall|status] [--port 7777] [--print-token]")
 	}
-	return serveLoopbackHTTP(ctx, args[1:], stdout)
+	rest := args[1:]
+	if len(rest) > 0 {
+		switch rest[0] {
+		case "install", "uninstall", "status":
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			return serveHTTPService(cfg, rest[0], stdout)
+		}
+	}
+	return serveLoopbackHTTP(ctx, rest, stdout)
 }
 
 // serveLoopbackHTTP starts the loopback HTTP server and blocks until ctx is
