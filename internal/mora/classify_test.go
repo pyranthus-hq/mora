@@ -269,6 +269,7 @@ func TestClassifyIdentityTypes(t *testing.T) {
 		{"state change", "", "artifact"},
 		{"ci-activity", "", "artifact"},
 		{"state-change", "", "artifact"},
+		{"iMessage;-;weird", "", "person"},
 	}
 	for _, c := range cases {
 		if got := classifyIdentity(c.identity, c.display); got != c.want {

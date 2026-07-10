@@ -396,6 +396,28 @@ func TestGr_PureGraphHelperEdges(t *testing.T) {
 	if !reflect.DeepEqual(senders, []string{"person:dup@example.com"}) || len(parts) != 1 || parts[0].name != "Duplicate Name" {
 		t.Fatalf("duplicate participant should backfill missing name: parts=%#v senders=%#v", parts, senders)
 	}
+
+	// raw non-@ iMessage handle stays a person and is not dropped
+	parts, senders, _, _ = personRefs(Memory{
+		Type: "imessage",
+		Meta: map[string]any{
+			"from": []any{"iMessage;-;weird"},
+		},
+	})
+	if len(parts) != 1 || parts[0].id != "person:imessage;-;weird" {
+		t.Fatalf("weird non-@ handle should not be dropped, got: %#v", parts)
+	}
+
+	// repo-slug owner/name is dropped from personRefs
+	parts, senders, _, _ = personRefs(Memory{
+		Type: "email",
+		Meta: map[string]any{
+			"from": []any{"pyranthus-hq/mora"},
+		},
+	})
+	if len(parts) != 0 {
+		t.Fatalf("repo-slug shape should be dropped from personRefs, got: %#v", parts)
+	}
 }
 
 func TestGr_BuildGraphGazetteerMentionsAndRewriteEdges(t *testing.T) {

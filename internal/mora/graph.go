@@ -210,7 +210,7 @@ func personRefs(m Memory) (parts []personRef, senders, recipients []string, rel 
 		if identity == "" {
 			return ""
 		}
-		if !strings.Contains(identity, "@") && !isValidPhoneOrShortcode(identity) {
+		if isStructuralNoise(identity) {
 			return ""
 		}
 		id := personID(identity)

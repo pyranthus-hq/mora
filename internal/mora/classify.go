@@ -260,3 +260,21 @@ func isOrg(id, display string) bool {
 	}
 	return false
 }
+
+func isStructuralNoise(handle string) bool {
+	h := strings.ToLower(strings.TrimSpace(handle))
+	if h == "" {
+		return true
+	}
+	artifacts := map[string]bool{
+		"push": true, "author": true, "mention": true, "ci activity": true, "state change": true,
+		"ci-activity": true, "state-change": true,
+	}
+	if artifacts[h] {
+		return true
+	}
+	if !strings.Contains(h, "@") && strings.Count(h, "/") == 1 {
+		return true
+	}
+	return false
+}
