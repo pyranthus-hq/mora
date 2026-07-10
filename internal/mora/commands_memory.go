@@ -161,7 +161,7 @@ func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "scope")
 	query := fs.String("query", "", "query")
-	budget := fs.Int("budget", 2000, "character budget")
+	budget := fs.Int("budget", 0, "token budget (default: profile default)")
 	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -170,6 +170,7 @@ func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	tokenBudget, charBudget := resolveContextBudgetTokens(cfg, *budget)
 	var items []Memory
 	if *query != "" {
 		items, err = hybridSearch(ctx, cfg, *query, *scope, 10)
@@ -179,9 +180,17 @@ func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	text := buildContext(cfg, items, *budget, *query != "")
+	text := buildContext(cfg, items, charBudget, *query != "")
 	if *jsonOut {
-		return emit(stdout, map[string]any{"context": text, "items": items}, true)
+		bounded := budgetContextItemsJSON(items, len(text), charBudget, *query)
+		used := estimateTokensUsed(len(text) + jsonLen(bounded))
+		return emit(stdout, map[string]any{
+			"context":     text,
+			"items":       bounded,
+			"budget_unit": budgetUnitTokens,
+			"budget":      tokenBudget,
+			"used":        used,
+		}, true)
 	}
 	fmt.Fprint(stdout, text)
 	return nil

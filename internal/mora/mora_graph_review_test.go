@@ -140,12 +140,11 @@ func TestGetEntityPreservesMemoryFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mems, ok := res["memories"].([]Memory)
-	if !ok || len(mems) != 1 {
-		t.Fatalf("memories = %v", res["memories"])
+	ev, ok := res["evidence"].([]EntityEvidence)
+	if !ok || len(ev) != 1 {
+		t.Fatalf("evidence = %T %v", res["evidence"], res["evidence"])
 	}
-	m := mems[0]
-	if m.Provider != "gmail" || m.ProviderID != "gmail_thread/abc" || m.LastSynced != "2026-05-02T00:00:00Z" {
-		t.Fatalf("get_entity dropped Memory fields: provider=%q provider_id=%q last_synced=%q", m.Provider, m.ProviderID, m.LastSynced)
+	if ev[0].Source != "gmail" || ev[0].ID != "g1" {
+		t.Fatalf("evidence citation = %+v, want id=g1 source=gmail", ev[0])
 	}
 }

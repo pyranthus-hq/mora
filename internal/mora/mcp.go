@@ -88,20 +88,44 @@ func (c Config) digestSnippetChars() int {
 	}
 }
 
-// resolveContextBudget converts a requested token budget (the context_memory
-// max_tokens arg) into a character budget for buildContext. A non-positive
-// request falls back to the profile default (contextDefaultTokens); an
-// over-ceiling request is clamped to maxContextTokens. The token count is
-// clamped BEFORE the *charsPerToken conversion so an arbitrarily large
-// max_tokens cannot overflow.
-func resolveContextBudget(cfg Config, maxTokens int) int {
+// budgetUnitTokens is stamped on every budget-bounded MCP/CLI JSON envelope so
+// consumers can verify the knob unit (#69).
+const budgetUnitTokens = "tokens"
+
+// resolveContextBudgetTokens clamps a requested token budget and returns both
+// the token count and its char equivalent. Non-positive requests fall back to the
+// profile default; over-ceiling requests clamp to contextMaxTokens. Clamping
+// happens BEFORE the *charsPerToken conversion so an arbitrarily large max_tokens
+// cannot overflow.
+func resolveContextBudgetTokens(cfg Config, maxTokens int) (tokens int, charBudget int) {
 	if maxTokens <= 0 {
 		maxTokens = cfg.contextDefaultTokens()
 	}
 	if ceiling := cfg.contextMaxTokens(); maxTokens > ceiling {
 		maxTokens = ceiling
 	}
-	return maxTokens * charsPerToken
+	return maxTokens, maxTokens * charsPerToken
+}
+
+// resolveContextBudget converts a requested token budget (the context_memory
+// max_tokens arg) into a character budget for buildContext.
+func resolveContextBudget(cfg Config, maxTokens int) int {
+	_, chars := resolveContextBudgetTokens(cfg, maxTokens)
+	return chars
+}
+
+// estimateTokensUsed converts a byte count to the codebase's token heuristic.
+func estimateTokensUsed(bytes int) int {
+	if bytes <= 0 {
+		return 0
+	}
+	return (bytes + charsPerToken - 1) / charsPerToken
+}
+
+// mcpEntityBudgetChars converts max_tokens into a compact dossier byte budget,
+// accounting for the CallToolResult envelope inflation (same divisor as digest).
+func mcpEntityBudgetChars(cfg Config, maxTokens int) int {
+	return resolveContextBudget(cfg, maxTokens) / mcpDigestEnvelopeDivisor
 }
 
 // mcpDigestBudgetChars converts a requested max_tokens into a COMPACT-payload byte
@@ -155,8 +179,9 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 			mcpTool("list_entities", "List the entities (people, scopes, tags, [[links]], categories) referenced across memory, with counts, ranked by salience",
 				mcpParam{"kind", "string", `Optional kind filter: "person", "service", "scope", "tag", "link", or "category"`, false},
 				mcpParam{"limit", "integer", "Max entities to return, ranked by salience (default 200)", false}),
-			mcpTool("get_entity", "Get the memories that reference a named entity",
+			mcpTool("get_entity", "Get a budget-bounded, fully-cited dossier for a named entity (merged identities, typed neighbors, top evidence by salience)",
 				mcpParam{"name", "string", "The entity name (person, tag, scope, or [[link]]) to fetch", true},
+				mcpParam{"max_tokens", "integer", "Approximate token budget for the dossier (default ~6000, max ~20000)", false},
 			),
 			mcpTool("digest", "Assemble a daily cross-source digest (recent emails, texts, calendar items, and stale open tasks), grouped by source, cited, and budget-bounded; opt into `envelope` to also get a synthesis_prompt for composing a grounded, cited brief",
 				mcpParam{"since_hours", "integer", "Look-back window in hours (default 24)", false},
@@ -305,7 +330,7 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		start := time.Now()
 		scope := strArg(args, "scope", "")
 		query := strArg(args, "query", "")
-		budget := resolveContextBudget(cfg, intArg(args, "max_tokens", 0))
+		tokenBudget, charBudget := resolveContextBudgetTokens(cfg, intArg(args, "max_tokens", 0))
 		var items []Memory
 		if query != "" {
 			items, err = hybridSearch(ctx, cfg, query, scope, 10)
@@ -315,9 +340,16 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		if err != nil {
 			return nil, err
 		}
-		text := buildContext(cfg, items, budget, query != "")
+		text := buildContext(cfg, items, charBudget, query != "")
 		logUsage(cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
-		return map[string]any{"context": text, "freshness": sourceFreshness(cfg)}, nil
+		used := estimateTokensUsed(len(text))
+		return map[string]any{
+			"context":     text,
+			"freshness":   sourceFreshness(cfg),
+			"budget_unit": budgetUnitTokens,
+			"budget":      tokenBudget,
+			"used":        used,
+		}, nil
 	case "think":
 		start := time.Now()
 		query := strArg(args, "query", "")
@@ -331,7 +363,7 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		return ents, err
 	case "get_entity":
 		start := time.Now()
-		res, err := entityMemoriesForMCP(ctx, cfg, strArg(args, "name", ""))
+		res, err := entityDossierForMCP(ctx, cfg, strArg(args, "name", ""), intArg(args, "max_tokens", 0))
 		logUsage(cfg, usageEvent{Tool: "get_entity", Query: strArg(args, "name", ""), Millis: time.Since(start).Milliseconds()})
 		return res, err
 	case "digest":

@@ -205,14 +205,34 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 	return nil
 }
 
-// MCP get_entity caps: keep the agent-facing detail view well under the token
-// ceiling. The most-recent N referencing memories (bodies snippeted) plus bounded
-// incoming edges/neighbors; true totals stay in "count"/"degree".
+// MCP get_entity caps (fallback when no max_tokens): keep the agent-facing detail
+// view well under the token ceiling. True totals stay in "count"/"degree".
 const (
 	mcpEntityMemoriesCap  = 20
 	mcpEntityEdgesCap     = 25
 	mcpEntityNeighborsCap = 15
 )
+
+// neighborTypeStub is the placeholder neighbor kind until Track A (#70) lands
+// real person/org/repo/service/artifact typing. T0 pins dossier shape, not values.
+const neighborTypeStub = "person"
+
+// EntityEvidence is one cited memory line in a get_entity dossier — every
+// surfaced fact carries {id, channel, date} so agents never read uncited bodies.
+type EntityEvidence struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+	Snippet   string `json:"snippet"`
+}
+
+// EntityNeighbor is a typed 1-hop co-occurrence neighbor in the dossier.
+type EntityNeighbor struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Type        string `json:"type"`
+}
 
 // entitiesForMCP returns the entity list for the list_entities MCP tool,
 // graph-backed (materialized entities/edges tables), token-bounded for the agent
@@ -250,36 +270,247 @@ func entitiesForMCP(ctx context.Context, cfg Config, kind string, limit int) ([]
 	return ents, nil
 }
 
-// entityMemoriesForMCP returns the memories referencing a named entity plus graph
-// provenance (incoming edges, aliases, degree) for the get_entity MCP tool. Token-
-// bounded for the agent surface: bodies are snippeted and capped to the most-recent
-// mcpEntityMemoriesCap (a high-degree person otherwise dumps hundreds of KB / ~227k
-// tokens of full bodies). The true total stays in "count"; the CLI keeps full bodies.
-func entityMemoriesForMCP(ctx context.Context, cfg Config, name string) (map[string]any, error) {
-	res, err := graphGetEntity(ctx, cfg, name)
+// entityDossierForMCP returns a budget-bounded, fully-cited entity dossier for
+// the get_entity MCP tool: merged identities (aliases), typed neighbors, top-N
+// cited evidence titles, and salience. Raw memory bodies are never shipped —
+// expand via read_memory using each evidence id.
+func entityDossierForMCP(ctx context.Context, cfg Config, name string, maxTokens int) (map[string]any, error) {
+	tokenBudget, _ := resolveContextBudgetTokens(cfg, maxTokens)
+	budgetChars := mcpEntityBudgetChars(cfg, maxTokens)
+	raw, err := graphGetEntity(ctx, cfg, name)
 	if err != nil {
 		return nil, err
 	}
-	if mems, ok := res["memories"].([]Memory); ok && len(mems) > 0 {
-		mems = append([]Memory(nil), mems...) // copy before the in-place sort — never reorder the caller's slice
-		sort.SliceStable(mems, func(i, j int) bool { return mems[i].CreatedAt > mems[j].CreatedAt })
-		if len(mems) > mcpEntityMemoriesCap {
-			mems = mems[:mcpEntityMemoriesCap]
-			res["memories_truncated"] = true
+	return buildEntityDossierPayload(raw, name, tokenBudget, budgetChars), nil
+}
+
+// entityMemoriesForMCP is the test/compat entry point — delegates to the dossier
+// builder with the default token budget.
+func entityMemoriesForMCP(ctx context.Context, cfg Config, name string) (map[string]any, error) {
+	return entityDossierForMCP(ctx, cfg, name, 0)
+}
+
+func evidenceSource(m Memory) string {
+	if m.Source != "" {
+		return m.Source
+	}
+	if m.Provider != "" {
+		return m.Provider
+	}
+	return m.Type
+}
+
+func memoryToEvidence(m Memory, center string) EntityEvidence {
+	snipped := snippetMemories([]Memory{m}, center)
+	snippet := ""
+	if len(snipped) > 0 {
+		snippet = snipped[0].Text
+	}
+	return EntityEvidence{
+		ID:        m.ID,
+		Title:     m.Title,
+		Source:    evidenceSource(m),
+		CreatedAt: m.CreatedAt,
+		Snippet:   snippet,
+	}
+}
+
+func buildEntityDossierPayload(raw map[string]any, queryName string, tokenBudget, budgetChars int) map[string]any {
+	out := map[string]any{
+		"budget_unit": budgetUnitTokens,
+		"budget":      tokenBudget,
+	}
+	if raw["found"] != true {
+		out["name"] = queryName
+		out["found"] = false
+		out["used"] = 0
+		return out
+	}
+	out["name"] = raw["name"]
+	out["display_name"] = raw["display_name"]
+	out["kind"] = raw["kind"]
+	out["found"] = true
+	out["count"] = raw["count"]
+	if gk, ok := raw["graph_kind"]; ok {
+		out["graph_kind"] = gk
+	}
+	if sal, ok := raw["salience"].(int64); ok && sal > 0 {
+		out["salience"] = sal
+	}
+	if deg, ok := raw["degree"]; ok {
+		out["degree"] = deg
+	}
+	aliases, _ := raw["aliases"].([]string)
+	if aliases == nil {
+		aliases = []string{}
+	}
+	out["aliases"] = aliases
+
+	// Cited evidence from memories, newest first (already sorted in graphGetEntity).
+	var evidence []EntityEvidence
+	if mems, ok := raw["memories"].([]Memory); ok {
+		for _, m := range mems {
+			evidence = append(evidence, memoryToEvidence(m, queryName))
 		}
-		// Center each preview on the entity name itself — the mention is the
-		// evidence a get_entity caller is after.
-		res["memories"] = snippetMemories(mems, name)
 	}
-	// A high-degree person otherwise dumps every incoming edge + co-occurring
-	// neighbor; cap both (true totals stay in "degree"/"count").
-	if edges, ok := res["edges"].([]map[string]any); ok && len(edges) > mcpEntityEdgesCap {
-		res["edges"] = edges[:mcpEntityEdgesCap]
-		res["edges_truncated"] = true
+	evidence, evidenceTrunc := budgetEntityEvidence(evidence, budgetChars/2)
+	out["evidence"] = evidence
+	if evidenceTrunc {
+		out["evidence_truncated"] = true
 	}
-	if nbrs, ok := res["neighbors"].([]map[string]any); ok && len(nbrs) > mcpEntityNeighborsCap {
-		res["neighbors"] = nbrs[:mcpEntityNeighborsCap]
-		res["neighbors_truncated"] = true
+
+	// Typed neighbors — kind stubbed until Track A.
+	neighbors := []EntityNeighbor{}
+	if nbrs, ok := raw["neighbors"].([]map[string]any); ok {
+		for _, n := range nbrs {
+			neighbors = append(neighbors, EntityNeighbor{
+				ID:          fmt.Sprint(n["id"]),
+				DisplayName: fmt.Sprint(n["display_name"]),
+				Type:        neighborTypeStub,
+			})
+		}
 	}
-	return res, nil
+	if len(neighbors) > mcpEntityNeighborsCap {
+		neighbors = neighbors[:mcpEntityNeighborsCap]
+		out["neighbors_truncated"] = true
+	}
+	out["neighbors"] = neighbors
+
+	// Incoming edges (provenance), capped.
+	edges := []map[string]any{}
+	if rawEdges, ok := raw["edges"].([]map[string]any); ok {
+		edges = append(edges, rawEdges...)
+	}
+	if len(edges) > mcpEntityEdgesCap {
+		edges = edges[:mcpEntityEdgesCap]
+		out["edges_truncated"] = true
+	}
+	out["edges"] = edges
+
+	usedBytes := jsonLen(out)
+	out["used"] = estimateTokensUsed(usedBytes)
+	return out
+}
+
+// budgetEntityEvidence greedily keeps cited evidence rows under budgetChars. The
+// bound is HARD: no row may exceed the remaining budget. If the first row alone
+// is too large, its fields are truncated to fit (#69).
+func budgetEntityEvidence(items []EntityEvidence, budgetChars int) ([]EntityEvidence, bool) {
+	if budgetChars <= 2 || len(items) == 0 {
+		return nil, len(items) > 0
+	}
+	const jsonSep = 2
+	kept := make([]EntityEvidence, 0, len(items))
+	used := 2 // JSON array `[` + `]` overhead (conservative)
+	truncated := false
+	for _, e := range items {
+		e := e
+		cost := jsonLen(e) + jsonSep
+		if used+cost > budgetChars {
+			if len(kept) > 0 {
+				truncated = true
+				break
+			}
+			fitted, ok := fitEntityEvidence(e, budgetChars-used-jsonSep)
+			if !ok {
+				truncated = true
+				break
+			}
+			e = fitted
+			cost = jsonLen(e) + jsonSep
+			truncated = true
+		}
+		if used+cost > budgetChars {
+			truncated = true
+			break
+		}
+		kept = append(kept, e)
+		used += cost
+	}
+	if len(kept) < len(items) {
+		truncated = true
+	}
+	return kept, truncated
+}
+
+// fitEntityEvidence shrinks fields until the JSON encoding fits maxBytes.
+func fitEntityEvidence(e EntityEvidence, maxBytes int) (EntityEvidence, bool) {
+	if maxBytes <= 0 {
+		return EntityEvidence{}, false
+	}
+	out := e
+	for jsonLen(out) > maxBytes && len(out.Snippet) > 0 {
+		out.Snippet = truncateRunes(out.Snippet, len(out.Snippet)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.Title) > 0 {
+		out.Title = truncateRunes(out.Title, len(out.Title)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.CreatedAt) > 0 {
+		out.CreatedAt = truncateRunes(out.CreatedAt, len(out.CreatedAt)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.Source) > 0 {
+		out.Source = truncateRunes(out.Source, len(out.Source)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.ID) > 0 {
+		out.ID = truncateRunes(out.ID, len(out.ID)-1)
+	}
+	return out, jsonLen(out) <= maxBytes
+}
+
+// contextItemJSON is the compact items[] shape for `mora context --json` — only
+// the fields an agent reads, so empty Memory zero-values cannot consume budget.
+type contextItemJSON struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	CreatedAt string `json:"created_at"`
+	Text      string `json:"text,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// budgetContextItemsJSON returns snippeted items that fit in the remaining char
+// budget after the context string is built (#69 hard bound).
+func budgetContextItemsJSON(items []Memory, contextLen, totalBudgetChars int, center string) []contextItemJSON {
+	remaining := totalBudgetChars - contextLen
+	if remaining <= 2 || len(items) == 0 {
+		return []contextItemJSON{}
+	}
+	snipped := snippetMemories(items, center)
+	kept := make([]contextItemJSON, 0, len(snipped))
+	used := 2
+	const jsonSep = 2
+	for _, m := range snipped {
+		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Text: m.Text, Truncated: m.Truncated}
+		cost := jsonLen(row) + jsonSep
+		if used+cost > remaining {
+			if len(kept) > 0 {
+				break
+			}
+			fitted, ok := fitContextItemJSON(row, remaining-used-jsonSep)
+			if !ok {
+				break
+			}
+			row = fitted
+			cost = jsonLen(row) + jsonSep
+		}
+		if used+cost > remaining {
+			break
+		}
+		kept = append(kept, row)
+		used += cost
+	}
+	return kept
+}
+
+func fitContextItemJSON(row contextItemJSON, maxBytes int) (contextItemJSON, bool) {
+	for jsonLen(row) > maxBytes && len(row.Text) > 0 {
+		row.Text = truncateRunes(row.Text, len(row.Text)-1)
+		row.Truncated = true
+	}
+	for jsonLen(row) > maxBytes && len(row.Title) > 0 {
+		row.Title = truncateRunes(row.Title, len(row.Title)-1)
+	}
+	for jsonLen(row) > maxBytes && len(row.ID) > 0 {
+		row.ID = truncateRunes(row.ID, len(row.ID)-1)
+	}
+	return row, jsonLen(row) <= maxBytes
 }

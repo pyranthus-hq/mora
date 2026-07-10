@@ -326,9 +326,16 @@ func TestGetEntityReturnsGraphProvenance(t *testing.T) {
 	if res["count"] != 2 {
 		t.Fatalf("count = %v, want 2", res["count"])
 	}
-	mems, ok := res["memories"].([]Memory)
-	if !ok || len(mems) != 2 {
-		t.Fatalf("memories = %v, want 2 Memory rows", res["memories"])
+	evidence, ok := res["evidence"].([]EntityEvidence)
+	if !ok {
+		if rows, ok2 := res["evidence"].([]any); !ok2 || len(rows) != 2 {
+			t.Fatalf("evidence = %v, want 2 cited rows", res["evidence"])
+		}
+	} else if len(evidence) != 2 {
+		t.Fatalf("evidence = %v, want 2 cited rows", evidence)
+	}
+	if res["budget_unit"] != budgetUnitTokens {
+		t.Fatalf("budget_unit = %v", res["budget_unit"])
 	}
 	// Graph provenance extras (the new value-add).
 	if res["graph_kind"] != "topic" {
@@ -399,7 +406,11 @@ func TestMCPEntitiesRoundTrip(t *testing.T) {
 	if getRes["graph_kind"] != "topic" {
 		t.Fatalf("get_entity graph_kind: %+v", getRes["graph_kind"])
 	}
-	if edges, ok := getRes["edges"].([]any); !ok || len(edges) < 2 {
-		t.Fatalf("get_entity edges provenance: %+v", getRes["edges"])
+	evidence, ok := getRes["evidence"].([]any)
+	if !ok || len(evidence) < 2 {
+		t.Fatalf("get_entity cited evidence: %+v", getRes["evidence"])
+	}
+	if getRes["budget_unit"] != budgetUnitTokens {
+		t.Fatalf("get_entity budget_unit: %+v", getRes["budget_unit"])
 	}
 }
