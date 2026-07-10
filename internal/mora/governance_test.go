@@ -410,6 +410,109 @@ func TestGovernance_FilesystemChatForgetNoResurrection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// the REAL race the sequential test above cannot catch (#113): a `mora forget`
+// that commits its suppression AND removes the file DURING an in-flight
+// ingestFilesystem walk — after a once-per-walk ledger snapshot would have been
+// loaded but before the walker writes the file. The snapshot approach resurrected
+// it; the per-file re-check under the governance lease (writeUnlessForgotten)
+// closes the window. Deterministic (no goroutines/sleeps): a seam fires the REAL
+// `mora forget --chat` path exactly in that window.
+// ---------------------------------------------------------------------------
+
+func TestGovernance_FilesystemForgetDuringWalkNoResurrection(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Source{Name: "docs", Type: "filesystem", Path: srcDir, Scope: "personal"}
+
+	// First walk materializes the filesystem memory (no seam armed yet).
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil || n != 1 {
+		t.Fatalf("first ingest: n=%d err=%v", n, err)
+	}
+	id := "src_" + ContentHash(s.Name+":note.md")
+	dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("expected filesystem memory after first ingest: %v", err)
+	}
+
+	// Arm the seam: fire the REAL forget path exactly once, in the window a stale
+	// walker would use — right before this file's suppress-check-and-write. The
+	// hook runs `mora forget --chat` to completion (suppression committed via the
+	// governance lease + file removed) BEFORE the walker's own re-check, faithfully
+	// reproducing a forget that commits mid-walk. Synchronous ⇒ deterministic.
+	fired := 0
+	testHookFSPreWrite = func(gotID string) {
+		if gotID != id || fired > 0 {
+			return
+		}
+		fired++
+		run(t, "forget", "--chat", id, "--yes")
+	}
+	t.Cleanup(func() { testHookFSPreWrite = nil })
+
+	// Second walk: with a once-per-walk snapshot this resurrects the memory; the
+	// per-file re-check under the lease must honor the mid-walk forget instead.
+	n, err := ingestFilesystem(cfg, s, io.Discard)
+	if err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	if fired != 1 {
+		t.Fatalf("seam did not fire (fired=%d) — the race was not exercised", fired)
+	}
+	if n != 0 {
+		t.Fatalf("walker wrote %d file(s) after a mid-walk forget; want 0 (RESURRECTION)", n)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("RESURRECTION: a forget that committed mid-walk was undone by the stale walker")
+	}
+	// The forget really ran the durable path: exactly one active suppression.
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.activeSuppress()) != 1 {
+		t.Fatalf("mid-walk forget must record 1 active suppression, got %d", len(g.activeSuppress()))
+	}
+}
+
+// The above test proves the walk re-reads the ledger PER FILE; this one proves it
+// does so UNDER THE LEASE — i.e. the governance lock is held ACROSS the write, not
+// merely re-loaded. A per-file reload without the lease would still leave #113
+// open to a truly concurrent forget (append+remove landing between the walker's
+// check and its atomicWrite). Deterministic: the seam fires synchronously inside
+// the write critical section and asserts the lease file is present.
+func TestGovernance_FilesystemWriteHoldsGovernanceLease(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Source{Name: "docs", Type: "filesystem", Path: srcDir, Scope: "personal"}
+
+	held := 0
+	testHookInWriteCritical = func() {
+		held++
+		// While we are between the suppression check and the atomicWrite, the
+		// governance lease must be held — so its lock file must exist. If a refactor
+		// dropped the lock around the write (keeping only the per-file reload), the
+		// file would be absent here and #113 would be reopened for a concurrent forget.
+		if _, err := os.Stat(governanceLockPath(cfg)); err != nil {
+			t.Errorf("governance lease NOT held during the filesystem write (#113): %v", err)
+		}
+	}
+	t.Cleanup(func() { testHookInWriteCritical = nil })
+
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil || n != 1 {
+		t.Fatalf("ingest: n=%d err=%v", n, err)
+	}
+	if held != 1 {
+		t.Fatalf("write-critical seam fired %d times, want 1", held)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // serialized ledger writes: concurrent forgets must never lose a suppression
 // (a dropped entry whose files were removed is a resurrection).
 // ---------------------------------------------------------------------------

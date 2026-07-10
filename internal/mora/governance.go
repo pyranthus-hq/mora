@@ -499,3 +499,50 @@ func (g governance) mergeDecisions() (confirmed []confirmedMerge, decided map[st
 	})
 	return confirmed, decided
 }
+
+// writeUnlessForgotten atomically writes body to dest UNLESS the governance
+// ledger suppresses the (provider, id) atom — the resurrection guard for a write
+// path that renders directly (ingestFilesystem). Crucially, the whole
+// load→decide→write runs under the SAME governance lease `mora forget` takes to
+// append its suppression (acquireGovernanceLock). That makes the check-and-write
+// atomic w.r.t. that append: once forget's suppression is committed, EVERY later
+// walker reload observes it and skips — so no walk re-materializes the atom after
+// the forget commits. A once-per-walk ledger SNAPSHOT could not give this — a
+// forget committing after the snapshot but before the write silently resurrected
+// the atom (#113) — and releasing the lease before the atomicWrite would reopen
+// the same window (forget could append+remove in the gap, then this write
+// resurrects). A write that lands just AHEAD of the commit is a normal re-index
+// that forget's removal pass reaps when its (pre-append) scan observed the file;
+// closing that last, pre-existing forget-scan gap is out of scope here (it needs
+// forget to compute its removal set under the lease, not a walk-side change).
+// Reports whether it wrote (false ⇒ suppressed). Reloading + relocking per file
+// costs an O_EXCL create/remove per write; that is the deliberate price of the
+// no-resurrection invariant on a local, single-user tool.
+func writeUnlessForgotten(cfg Config, provider, id, dest string, body []byte, mode os.FileMode) (bool, error) {
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		return false, err
+	}
+	if sup, _ := g.decideSuppress(provider, id, nil); sup {
+		return false, nil
+	}
+	if testHookInWriteCritical != nil {
+		testHookInWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
+	}
+	if err := atomicWrite(dest, body, mode); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// testHookInWriteCritical, when non-nil (tests only), fires inside
+// writeUnlessForgotten AFTER the fresh suppression check and BEFORE atomicWrite —
+// i.e. while the governance lease is held. It is the seam that proves the lease
+// SPANS the write (a mere per-file reload without the lease would leave this
+// window unlocked and #113 open). Nil in production.
+var testHookInWriteCritical func()

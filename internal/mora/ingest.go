@@ -917,21 +917,25 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 	}
 	return total, nil
 }
+// testHookFSPreWrite, when non-nil (tests only), fires just before each per-file
+// suppress-decision-and-write in ingestFilesystem. It is the deterministic seam
+// used to inject a concurrent `mora forget` into the write window and prove the
+// walk never resurrects an atom forgotten mid-walk (#113). Nil in production.
+var testHookFSPreWrite func(id string)
+
 func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	// Governance chokepoint (#52): filesystem re-ingest renders directly and does
 	// NOT route through writeMappedMemory, so consult the ledger here too —
 	// otherwise `mora forget --chat <src-id>` removes a filesystem memory that the
-	// very next walk resurrects. Load once (fail-closed on a corrupt ledger, like
-	// writeMappedMemory) rather than per file. Only stable_id (item) forgets can
-	// match a filesystem memory: it carries no participant identity, so
-	// `forget --handle/--email` never targets it.
-	gov, err := loadGovernance(cfg)
-	if err != nil {
-		return 0, err
-	}
+	// very next walk resurrects. The ledger is re-read PER FILE, under the same
+	// governance lease `mora forget` takes, right at the write (writeUnlessForgotten)
+	// — NOT a once-per-walk snapshot, which left a TOCTOU window where a forget
+	// committing mid-walk was missed and the stale walker resurrected the atom
+	// (#113). Only stable_id (item) forgets can match a filesystem memory: it
+	// carries no participant identity, so `forget --handle/--email` never targets it.
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
-	err = filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -973,16 +977,21 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		}
 		rel, _ := filepath.Rel(s.Path, path)
 		id := "src_" + ContentHash(s.Name+":"+rel)
-		if sup, _ := gov.decideSuppress("", id, nil); sup {
-			return nil // forgotten (stable_id): do not resurrect it on re-ingest (#52).
-		}
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
 		body, _ := renderMemory(m)
-		if err := atomicWrite(dest, body, 0o644); err != nil {
-			return err
+		if testHookFSPreWrite != nil {
+			testHookFSPreWrite(id)
 		}
-		count++
+		// Suppression re-check + write, atomic under the governance lease so a
+		// `mora forget` that commits mid-walk is honored, never resurrected (#113).
+		wrote, werr := writeUnlessForgotten(cfg, "", id, dest, body, 0o644)
+		if werr != nil {
+			return werr
+		}
+		if wrote {
+			count++
+		}
 		return nil
 	})
 	// Record freshness so the brief/digest classifies this source by its real sync
