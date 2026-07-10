@@ -369,6 +369,11 @@ func TestMCPBriefEnvelopeOffByteIdentical(t *testing.T) {
 	if _, has := empty["synthesis_prompt"]; has {
 		t.Fatalf("plain brief {} must NOT carry synthesis_prompt; keys=%v", payloadKeys(empty))
 	}
+	// `generated` is a wall-clock stamp that legitimately differs between two
+	// separate invocations (the two calls can straddle a second on a slow runner);
+	// the envelope contract is about everything ELSE being identical.
+	delete(empty, "generated")
+	delete(off, "generated")
 	emptyB, _ := json.Marshal(empty)
 	offB, _ := json.Marshal(off)
 	if !bytes.Equal(emptyB, offB) {
