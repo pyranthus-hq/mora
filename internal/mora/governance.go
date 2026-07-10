@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -161,9 +162,61 @@ func saveGovernance(cfg Config, g governance) error {
 	return atomicWrite(governancePath(cfg), append(b, '\n'), 0o600)
 }
 
+// governanceLockPath is the ledger's cross-process lease file, co-located with
+// the ledger so breakLock's os.Rename stays atomic (same filesystem). It is a
+// `*.lock` file, excluded by the vault .gitignore, so a leftover lease never
+// rides `mora sync git`.
+func governanceLockPath(cfg Config) string { return governancePath(cfg) + ".lock" }
+
+// acquireGovernanceLock serializes a read-modify-write of the governance ledger
+// across processes, exactly as acquireSourcesLock does for sources.json: an
+// unlocked load→append→save races (the last save clobbers the other writer's
+// entry, and a dropped forget suppression silently resurrects forgotten content).
+// It reuses the crash-safe lease primitives (publishLockFile / reapStaleLockTTL /
+// loopLockReleaser) and the sources lease's TTL + jittered backoff — the same
+// single-host, single-user model (a manual `mora forget` racing another forget,
+// or the forward-declared scheduled prune #53). It returns a real error, never a
+// silent no-op, if the lease cannot be taken; the returned release is idempotent.
+func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error) {
+	if err := os.MkdirAll(cfg.VaultDir, 0o700); err != nil {
+		return nil, err
+	}
+	lockPath := governanceLockPath(cfg)
+	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
+	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+		published, perr := publishLockFile(lockPath, body)
+		switch {
+		case perr == nil && published:
+			return loopLockReleaser(lockPath), nil
+		case perr != nil && !sharingViolationRetryable(perr):
+			return nil, perr // a real, non-contention fs error: never interleave a partial write.
+		case perr == nil:
+			reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
+			if rerr != nil && !sharingViolationRetryable(rerr) {
+				return nil, rerr
+			}
+			if rerr == nil && reaped {
+				continue // cleared an abandoned lease; retry publish immediately.
+			}
+		}
+		if attempt < maxSourcesAcquireAttempts-1 {
+			time.Sleep(sourcesAcquireBackoff(attempt))
+		}
+	}
+	return nil, fmt.Errorf("governance ledger is locked by another mora process (%s); retry in a moment", lockPath)
+}
+
 // appendGovernanceEntry mints id/created_at/created_by, appends, and persists.
-// Returns the stored entry (with its minted id, for a later unforget/undo).
+// Returns the stored entry (with its minted id, for a later unforget/undo). The
+// whole read-modify-write is serialized across processes (acquireGovernanceLock)
+// and RELOADS inside the lease, so two concurrent writers can never clobber each
+// other's entry — a dropped forget suppression would silently resurrect content.
 func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return govEntry{}, err
+	}
+	defer release()
 	g, err := loadGovernance(cfg)
 	if err != nil {
 		return govEntry{}, err
@@ -185,8 +238,14 @@ func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
 }
 
 // revokeGovernanceEntry marks an entry inert (unforget/undo). Returns whether an
-// active entry with that id was found.
+// active entry with that id was found. Serialized + reloaded under the same lease
+// as appendGovernanceEntry so a concurrent append is never clobbered by a revoke.
 func revokeGovernanceEntry(cfg Config, id string) (bool, error) {
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	g, err := loadGovernance(cfg)
 	if err != nil {
 		return false, err

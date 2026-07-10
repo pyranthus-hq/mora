@@ -918,9 +918,20 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 	return total, nil
 }
 func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
+	// Governance chokepoint (#52): filesystem re-ingest renders directly and does
+	// NOT route through writeMappedMemory, so consult the ledger here too —
+	// otherwise `mora forget --chat <src-id>` removes a filesystem memory that the
+	// very next walk resurrects. Load once (fail-closed on a corrupt ledger, like
+	// writeMappedMemory) rather than per file. Only stable_id (item) forgets can
+	// match a filesystem memory: it carries no participant identity, so
+	// `forget --handle/--email` never targets it.
+	gov, err := loadGovernance(cfg)
+	if err != nil {
+		return 0, err
+	}
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
-	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -962,6 +973,9 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		}
 		rel, _ := filepath.Rel(s.Path, path)
 		id := "src_" + ContentHash(s.Name+":"+rel)
+		if sup, _ := gov.decideSuppress("", id, nil); sup {
+			return nil // forgotten (stable_id): do not resurrect it on re-ingest (#52).
+		}
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
 		body, _ := renderMemory(m)

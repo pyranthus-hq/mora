@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 )
 
 // cmdForget implements `mora forget` — the durable, local, cross-connector
@@ -127,8 +128,12 @@ func cmdUnforget(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
-// forgetTarget builds the stable-atom key from exactly one selector flag.
+// forgetTarget builds the stable-atom key from exactly one selector flag. A
+// selector is trimmed FIRST so a whitespace-only value ("   ") counts as unset
+// rather than passing the "exactly one" gate and minting an inert junk
+// suppression that reports false success.
 func forgetTarget(chat, handle, email string) (govAtom, string, error) {
+	chat, handle, email = strings.TrimSpace(chat), strings.TrimSpace(handle), strings.TrimSpace(email)
 	set := 0
 	for _, s := range []string{chat, handle, email} {
 		if s != "" {

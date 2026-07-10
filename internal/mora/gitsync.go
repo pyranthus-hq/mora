@@ -60,6 +60,7 @@ index.db
 .DS_Store
 tokens/
 *.token
+*.lock
 identity*
 share/
 `

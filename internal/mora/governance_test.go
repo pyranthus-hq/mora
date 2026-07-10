@@ -2,9 +2,12 @@ package mora
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -356,5 +359,108 @@ func TestGovernance_LedgerDotfileIgnoredByRebuild(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("rebuild must index exactly the 1 memory (ledger dotfile ignored), got %d", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the FIFTH (filesystem) write path: ingestFilesystem renders directly, so it
+// needs its own item-atom guard or a `forget --chat <src-id>` is resurrected.
+// ---------------------------------------------------------------------------
+
+func TestGovernance_FilesystemChatForgetNoResurrection(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Source{Name: "docs", Type: "filesystem", Path: srcDir, Scope: "personal"}
+
+	// First walk writes the filesystem memory.
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil || n != 1 {
+		t.Fatalf("first ingest: n=%d err=%v", n, err)
+	}
+	id := "src_" + ContentHash(s.Name+":note.md")
+	dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("expected filesystem memory after first ingest: %v", err)
+	}
+
+	// Forget it exactly as `mora forget --chat <src-id>` does: record the
+	// stable_id suppression, then remove the file.
+	if _, err := appendGovernanceEntry(cfg, govEntry{
+		Kind: govKindForget, Action: govActionSuppress,
+		Atom: govAtom{Kind: atomStableID, Value: id},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dest); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next walk must NOT resurrect it (the bug: ingestFilesystem bypasses the
+	// writeMappedMemory guard).
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	} else if n != 0 {
+		t.Fatalf("suppressed filesystem memory must not be re-written, got n=%d", n)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("RESURRECTION: forgotten filesystem memory was re-created by the next walk")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serialized ledger writes: concurrent forgets must never lose a suppression
+// (a dropped entry whose files were removed is a resurrection).
+// ---------------------------------------------------------------------------
+
+func TestGovernance_ConcurrentAppendsNoLostUpdate(t *testing.T) {
+	cfg := Config{VaultDir: t.TempDir()}
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := appendGovernanceEntry(cfg, govEntry{
+				Kind: govKindForget, Action: govActionSuppress,
+				Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: fmt.Sprintf("+1408555%04d", i)},
+			})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent append: %v", err)
+		}
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Entries) != n {
+		t.Fatalf("lost update: want %d entries, got %d (unlocked read-modify-write clobbered a suppression)", n, len(g.Entries))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the P13-deferred limitation, made explicit: for Gmail/Calendar the address
+// set INCLUDES the user's own address, so a realistic 1:1 thread (self + one
+// other = 2 atoms) is NOT sole-matched by `forget --email`. We UNDER-match
+// (precision-first) rather than risk deleting a group thread; person-level email
+// suppression needs self-identity (P13). See docs/architecture/17.
+// ---------------------------------------------------------------------------
+
+func TestGovernance_GmailRealisticOneToOneNotSuppressed(t *testing.T) {
+	g := governance{Schema: governanceSchema, Entries: []govEntry{{
+		ID: "e1", Kind: govKindForget, Action: govActionSuppress,
+		Atom: govAtom{Kind: atomAddress, Value: "sam@example.com"},
+	}}}
+	// from=[sam], to=[me]: the normal inbound shape, self present ⇒ 2 atoms.
+	if sup, _ := g.suppresses(gmailMM("t", []string{"sam@example.com"}, []string{"me@x.com"})); sup {
+		t.Fatal("realistic 1:1 email (self included) must NOT be whole-suppressed by --email (P13-deferred)")
 	}
 }
