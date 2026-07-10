@@ -225,6 +225,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdGraph(ctx, args[1:], stdout)
 	case "delete":
 		return cmdDelete(ctx, args[1:], stdout)
+	case "forget":
+		return cmdForget(ctx, args[1:], stdout)
+	case "unforget":
+		return cmdUnforget(ctx, args[1:], stdout)
 	case "context":
 		return cmdContext(ctx, args[1:], stdout)
 	case "index":

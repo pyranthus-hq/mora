@@ -243,6 +243,21 @@ mora think "what did Sam decide about pricing?" --json   # cited evidence + gap 
 
 `mora context` assembles a single character-budgeted block for a query (default 2000 characters; omit `--query` for a recency briefing). `mora write` is the only command here that changes anything, and it only writes to the local vault, never to your connected accounts.
 
+### Permanently forget a person or chat
+
+`mora delete` removes one memory now, but for anything that came from a connector the next hourly sync brings it right back. `mora forget` is the durable version: it removes the matching memories **and** records a local suppression so sync can never re-create them.
+
+```bash
+mora forget --chat imessage_chat/<guid> --dry-run   # preview exactly what would be removed
+mora forget --chat imessage_chat/<guid> --yes       # forget one conversation/thread/event
+mora forget --handle +14155550123 --yes             # forget a 1:1 iMessage counterpart
+mora forget --email sam@example.com --yes           # forget a 1:1 email counterpart
+mora forget list                                     # show active suppressions
+mora unforget <entry-id> --yes                       # reverse a forget
+```
+
+Forgetting is **local-only**: it stops Mora from holding and re-acquiring the content on this Mac (and your other devices, via `mora sync git`) — it never deletes anything at Gmail or Apple. `--handle`/`--email` act conservatively: they remove one-to-one memories with that counterpart but keep group threads they merely appear in. Always `--dry-run` first to see exactly which memories a forget will touch. `unforget` reverses the suppression, and future syncs may re-ingest the content again (within the connector's lookback window). See [architecture: governance ledger](architecture/17-governance-ledger.md) for the design.
+
 ## Make the brief your session-start default
 
 The brief is a daily *what-changed / what-matters* digest: new-or-updated threads since you last looked,

@@ -126,6 +126,7 @@ These span subsystems. Each subsystem doc enforces its own; these are the rules 
 | [13 — Sharing](./13-sharing.md) | `mora share`: scoped, age-encrypted, read-only sharing of authored memories over a dedicated private git remote; subscriptions as separately-indexed, owner-attributed corpora unioned into search/think. |
 | [14 — Share transports](./14-share-transports.md) | The transport seam behind `mora share`: a signed content-addressed manifest lets a share travel over a user-owned S3/R2 bucket (`--via r2`) with the same authenticity/freshness/egress guarantees git got from its ACL + `--ff-only` + `ls-files`. |
 | [15 — Concurrency contract](./15-concurrency-contract.md) | What stays correct when writers (`cmdWrite`/`write_memory`), readers, a full `rebuildIndex`, and a sync collide on one host: per-memory atomic files, create-exclusive ids, tiny upsert txns, serialized rebuilds, the `sources.json` lease, `busy_timeout`, and the index's bounded eventual-consistency window. |
+| [17 — Governance ledger](./17-governance-ledger.md) | `mora forget`: the vault-resident, stable-atom-keyed suppression ledger consulted at `writeMappedMemory` so a deletion survives the hourly sync (#52); the 1:1-vs-group cut, fail-closed on corruption, and the reconciliation with the fetch-time iMessage deny-list. |
 
 ## Glossary
 
