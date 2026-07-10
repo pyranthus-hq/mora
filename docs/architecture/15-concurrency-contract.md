@@ -27,7 +27,7 @@ processes racing each other."
 |---|---|---|---|
 | G1 | **No lost writes** — a write reported as saved is on disk exactly once; a same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicCreate` |
 | G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicWrite`, `atomicCreate` |
-| G3 | **No surfaced `database is locked`** — a contended caller waits out the commit window instead of erroring | `busy_timeout(15000)` on every writer and read-only DSN; `_txlock=immediate` on writers | `rebuildIndexWithPolicy`, `indexUpsert`, `roIndexDSN` |
+| G3 | **No surfaced `database is locked`** — concurrent reader *processes* never block a writer, and a contended writer waits out its rival's commit instead of erroring | `journal_mode(WAL)` on the index (readers read a snapshot, never hold a lock a writer must wait for) + `busy_timeout(15000)` on every writer and read-only DSN + `_txlock=immediate` on writers | `rwIndexDSN`, `roIndexDSN`, `rebuildIndexWithPolicy`, `indexUpsert` |
 | G4 | **Bounded eventual consistency** — the vault is the source of truth; the index converges | Tiny synchronous upsert on the write path; serialized full rebuilds reconcile the rest | `indexUpsert`, `rebuildIndexWithPolicy` |
 
 ## 1. Per-memory atomic files
@@ -235,22 +235,34 @@ vector reconcile at the next full rebuild.** A reconciling full rebuild after an
 storm restores exact vault↔index correspondence — which is what the contract
 stress test asserts as G4.
 
-### Reader survival during a rebuild — `busy_timeout`
+### Multi-process reader/writer coexistence — WAL (+ `busy_timeout`)
 
-The read-only DSN (`roIndexDSN`) carries `busy_timeout(15000)` too, not just the
-writers. A full rebuild's single-transaction commit can hold the writer lock for
-longer than a few milliseconds while it flushes; a short reader timeout would
-surface a raw `database is locked` mid-rebuild (and worse, `openIndexRO` could
-misread that `SQLITE_BUSY` as a stale schema and launch a spurious rebuild). The
-15 s window lets an interactive read or an MCP tool call **ride out** the commit
-instead of erroring — the G3 guarantee. `humanizeIndexBusy` gives an actionable
-message only if a read genuinely outlasts 15 s.
+The index is opened in **WAL** (`journal_mode(WAL)` on both `roIndexDSN` and the
+writer `rwIndexDSN`). This is what makes the contract hold across *processes*, not
+just goroutines: in production ~18 long-lived `mora mcp serve` processes (one per
+agent session) read the index concurrently. In the default rollback journal a
+writer needs an EXCLUSIVE lock incompatible with every reader's SHARED lock, so a
+rebuild/write must wait for **all** readers and — under that load — blows past
+`busy_timeout` and surfaces `database is locked`. In WAL, readers read the last
+committed snapshot and never block the writer (and the writer never blocks them);
+a full rebuild builds the whole new index in the `-wal` file while readers keep
+serving the old snapshot, then commits atomically (a `wal_checkpoint(TRUNCATE)`
+folds it back and resets the `-wal`). WAL persists in the db header, so the first
+open of either DSN converts a legacy `delete`-mode index in place.
 
-> modernc caveat: with `modernc.org/sqlite`, `mode=ro` on a non-`file:` DSN is
-> parsed but **not enforced** (connections open read-write). It is kept as
-> documentation-of-intent; the actual read-path contract is `busy_timeout` plus
-> the convention that read paths never write. Do not rely on `mode=ro` for
-> mutual exclusion.
+`busy_timeout(15000)` still matters — WAL still serializes concurrent *writers*
+(one writer at a time), and a reader can briefly contend during a checkpoint — so a
+contended writer/reader waits out the short window instead of erroring, and
+`openIndexRO` won't misread a transient `SQLITE_BUSY` as a stale schema and fire a
+spurious rebuild. `humanizeIndexBusy` gives an actionable message only if a caller
+genuinely outlasts 15 s. Guarded by `TestIndexIsWAL` / `TestIndexUpsertKeepsWAL`.
+
+> modernc caveat (now load-bearing, not just intent): with `modernc.org/sqlite`,
+> `mode=ro` on a non-`file:` DSN is parsed but **not enforced** — connections open
+> read-write. That is *why* a "read-only" open can still create the `-wal`/`-shm`
+> sidecars WAL needs, so there is no read-only-WAL breakage. The read-path contract
+> remains WAL + `busy_timeout` + the convention that read paths never write; do not
+> rely on `mode=ro` for mutual exclusion.
 
 ## 7. What is deliberately NOT provided
 

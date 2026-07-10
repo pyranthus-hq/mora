@@ -80,12 +80,13 @@ func indexUpsert(ctx context.Context, cfg Config, m Memory) error {
 		return rerr
 	}
 
-	// Incremental fast path. Mirror rebuildIndex's DSN and one-tiny-immediate-tx
-	// discipline: _txlock=immediate grabs the writer lock up front (no mid-tx
-	// deferred-to-immediate upgrade that cannot retry), and the 15s busy_timeout
-	// lets concurrent writers wait out each other's sub-millisecond commit window
-	// instead of surfacing a raw "database is locked".
-	db, err := sql.Open("sqlite", dbPath(cfg)+"?_txlock=immediate&_pragma=busy_timeout(15000)")
+	// Incremental fast path. Share rebuildIndex's writer DSN (rwIndexDSN) and its
+	// one-tiny-immediate-tx discipline: _txlock=immediate grabs the writer lock up
+	// front (no mid-tx deferred-to-immediate upgrade that cannot retry), the 15s
+	// busy_timeout lets concurrent writers wait out each other's sub-millisecond
+	// commit window instead of surfacing a raw "database is locked", and
+	// journal_mode(WAL) keeps concurrent reader processes from blocking this write.
+	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
 	if err != nil {
 		return err
 	}
