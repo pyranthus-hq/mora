@@ -392,22 +392,40 @@ func buildEntityDossierPayload(raw map[string]any, queryName string, tokenBudget
 	return out
 }
 
-// budgetEntityEvidence greedily keeps cited evidence rows under budgetChars.
+// budgetEntityEvidence greedily keeps cited evidence rows under budgetChars. The
+// bound is HARD: no row may exceed the remaining budget. If the first row alone
+// is too large, its fields are truncated to fit (#69).
 func budgetEntityEvidence(items []EntityEvidence, budgetChars int) ([]EntityEvidence, bool) {
-	if budgetChars <= 0 || len(items) == 0 {
+	if budgetChars <= 2 || len(items) == 0 {
 		return nil, len(items) > 0
 	}
+	const jsonSep = 2
 	kept := make([]EntityEvidence, 0, len(items))
-	used := 0
+	used := 2 // JSON array `[` + `]` overhead (conservative)
 	truncated := false
 	for _, e := range items {
-		sz := len(e.ID) + len(e.Title) + len(e.Source) + len(e.CreatedAt) + len(e.Snippet) + 32
-		if len(kept) > 0 && used+sz > budgetChars {
+		e := e
+		cost := jsonLen(e) + jsonSep
+		if used+cost > budgetChars {
+			if len(kept) > 0 {
+				truncated = true
+				break
+			}
+			fitted, ok := fitEntityEvidence(e, budgetChars-used-jsonSep)
+			if !ok {
+				truncated = true
+				break
+			}
+			e = fitted
+			cost = jsonLen(e) + jsonSep
+			truncated = true
+		}
+		if used+cost > budgetChars {
 			truncated = true
 			break
 		}
-		used += sz
 		kept = append(kept, e)
+		used += cost
 	}
 	if len(kept) < len(items) {
 		truncated = true
@@ -415,23 +433,84 @@ func budgetEntityEvidence(items []EntityEvidence, budgetChars int) ([]EntityEvid
 	return kept, truncated
 }
 
-// budgetContextItems returns snippeted Memory rows that fit in the remaining char
-// budget after the context string is built (#69: items honor the same budget).
-func budgetContextItems(items []Memory, contextLen, totalBudgetChars int, center string) []Memory {
+// fitEntityEvidence shrinks fields until the JSON encoding fits maxBytes.
+func fitEntityEvidence(e EntityEvidence, maxBytes int) (EntityEvidence, bool) {
+	if maxBytes <= 0 {
+		return EntityEvidence{}, false
+	}
+	out := e
+	for jsonLen(out) > maxBytes && len(out.Snippet) > 0 {
+		out.Snippet = truncateRunes(out.Snippet, len(out.Snippet)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.Title) > 0 {
+		out.Title = truncateRunes(out.Title, len(out.Title)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.CreatedAt) > 0 {
+		out.CreatedAt = truncateRunes(out.CreatedAt, len(out.CreatedAt)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.Source) > 0 {
+		out.Source = truncateRunes(out.Source, len(out.Source)-1)
+	}
+	for jsonLen(out) > maxBytes && len(out.ID) > 0 {
+		out.ID = truncateRunes(out.ID, len(out.ID)-1)
+	}
+	return out, jsonLen(out) <= maxBytes
+}
+
+// contextItemJSON is the compact items[] shape for `mora context --json` — only
+// the fields an agent reads, so empty Memory zero-values cannot consume budget.
+type contextItemJSON struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	CreatedAt string `json:"created_at"`
+	Text      string `json:"text,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// budgetContextItemsJSON returns snippeted items that fit in the remaining char
+// budget after the context string is built (#69 hard bound).
+func budgetContextItemsJSON(items []Memory, contextLen, totalBudgetChars int, center string) []contextItemJSON {
 	remaining := totalBudgetChars - contextLen
-	if remaining <= 0 || len(items) == 0 {
-		return nil
+	if remaining <= 2 || len(items) == 0 {
+		return []contextItemJSON{}
 	}
 	snipped := snippetMemories(items, center)
-	kept := make([]Memory, 0, len(snipped))
-	used := 0
+	kept := make([]contextItemJSON, 0, len(snipped))
+	used := 2
+	const jsonSep = 2
 	for _, m := range snipped {
-		sz := len(m.ID) + len(m.Title) + len(m.Text) + len(m.CreatedAt) + 32
-		if len(kept) > 0 && used+sz > remaining {
+		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Text: m.Text, Truncated: m.Truncated}
+		cost := jsonLen(row) + jsonSep
+		if used+cost > remaining {
+			if len(kept) > 0 {
+				break
+			}
+			fitted, ok := fitContextItemJSON(row, remaining-used-jsonSep)
+			if !ok {
+				break
+			}
+			row = fitted
+			cost = jsonLen(row) + jsonSep
+		}
+		if used+cost > remaining {
 			break
 		}
-		used += sz
-		kept = append(kept, m)
+		kept = append(kept, row)
+		used += cost
 	}
 	return kept
+}
+
+func fitContextItemJSON(row contextItemJSON, maxBytes int) (contextItemJSON, bool) {
+	for jsonLen(row) > maxBytes && len(row.Text) > 0 {
+		row.Text = truncateRunes(row.Text, len(row.Text)-1)
+		row.Truncated = true
+	}
+	for jsonLen(row) > maxBytes && len(row.Title) > 0 {
+		row.Title = truncateRunes(row.Title, len(row.Title)-1)
+	}
+	for jsonLen(row) > maxBytes && len(row.ID) > 0 {
+		row.ID = truncateRunes(row.ID, len(row.ID)-1)
+	}
+	return row, jsonLen(row) <= maxBytes
 }

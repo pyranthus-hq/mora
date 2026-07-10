@@ -488,25 +488,7 @@ func TestCoreB_McpCallGetEntity(t *testing.T) {
 		t.Fatalf("get_entity: %v", err)
 	}
 	res := got.(map[string]any)
-	evidence, ok := res["evidence"].([]EntityEvidence)
-	if !ok {
-		// JSON round-trip via map may decode as []any — try that path.
-		if rows, ok2 := res["evidence"].([]any); ok2 && len(rows) > 0 {
-			ok = true
-			found := false
-			for _, r := range rows {
-				row, _ := r.(map[string]any)
-				if row["title"] == "Linkholder" {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatalf("get_entity evidence should include Linkholder, got %+v", res["evidence"])
-			}
-		} else {
-			t.Fatalf("get_entity must return cited evidence, got %#v", res["evidence"])
-		}
-	} else {
+	if evidence, hasTyped := res["evidence"].([]EntityEvidence); hasTyped {
 		found := false
 		for _, e := range evidence {
 			if e.Title == "Linkholder" {
@@ -516,6 +498,19 @@ func TestCoreB_McpCallGetEntity(t *testing.T) {
 		if !found {
 			t.Fatalf("get_entity evidence should include Linkholder, got %+v", evidence)
 		}
+	} else if rows, hasRows := res["evidence"].([]any); hasRows && len(rows) > 0 {
+		found := false
+		for _, r := range rows {
+			row, _ := r.(map[string]any)
+			if row["title"] == "Linkholder" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("get_entity evidence should include Linkholder, got %+v", res["evidence"])
+		}
+	} else {
+		t.Fatalf("get_entity must return cited evidence, got %#v", res["evidence"])
 	}
 	if res["budget_unit"] != budgetUnitTokens {
 		t.Fatalf("get_entity budget_unit = %v", res["budget_unit"])

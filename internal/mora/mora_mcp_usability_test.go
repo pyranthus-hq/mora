@@ -181,11 +181,11 @@ func TestContextCLIBudgetHonorsTokens(t *testing.T) {
 
 	out := run(t, "context", "--query", "Bulk", "--budget", "500", "--json")
 	var env struct {
-		Context    string   `json:"context"`
-		Items      []Memory `json:"items"`
-		BudgetUnit string   `json:"budget_unit"`
-		Budget     int      `json:"budget"`
-		Used       int      `json:"used"`
+		Context    string            `json:"context"`
+		Items      []contextItemJSON `json:"items"`
+		BudgetUnit string            `json:"budget_unit"`
+		Budget     int               `json:"budget"`
+		Used       int               `json:"used"`
 	}
 	if err := json.Unmarshal([]byte(out), &env); err != nil {
 		t.Fatalf("decode: %v\n%s", err, out)
@@ -306,5 +306,115 @@ func TestGetEntityHonorsMaxTokens(t *testing.T) {
 	}
 	if len(large) <= len(small) {
 		t.Fatalf("max_tokens=8000 (%d bytes) should exceed max_tokens=200 (%d bytes)", len(large), len(small))
+	}
+}
+
+// TestBudgetHardBoundContextCLI asserts a tiny --budget cannot be exceeded by the
+// items array even when a single memory body alone is larger (#69 hard bound).
+func TestBudgetHardBoundContextCLI(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	huge := strings.Repeat("z", 8000)
+	run(t, "write", "--scope", "global", "--title", "Huge", "--text", huge)
+
+	tokenBudget := 50
+	charBudget := tokenBudget * charsPerToken
+	out := run(t, "context", "--query", "Huge", "--budget", fmt.Sprint(tokenBudget), "--json")
+	var env struct {
+		Context string   `json:"context"`
+		Items   []Memory `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	itemsJSON, _ := json.Marshal(env.Items)
+	if len(env.Context) > charBudget {
+		t.Fatalf("context %d chars exceeds %d-char budget for %d tokens", len(env.Context), charBudget, tokenBudget)
+	}
+	remaining := charBudget - len(env.Context)
+	if remaining < 0 {
+		remaining = 0
+	}
+	if remaining == 0 {
+		if string(itemsJSON) != "[]" {
+			t.Fatalf("with no remaining budget, items must be []; got %s", itemsJSON)
+		}
+	} else if len(itemsJSON) > remaining {
+		t.Fatalf("items JSON %d chars exceeds remaining budget %d (context=%d, total=%d)",
+			len(itemsJSON), remaining, len(env.Context), charBudget)
+	}
+}
+
+// TestBudgetHardBoundGetEntity asserts get_entity dossier evidence respects max_tokens.
+func TestBudgetHardBoundGetEntity(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	body := strings.Repeat("alpha beta gamma ", 200)
+	if err := writeMemory(cfg, Memory{
+		ID: "gmail_thread/huge", Scope: "personal", Type: "email",
+		Title: "Oversized thread", Text: body + " [[Neil Patel]]",
+		CreatedAt: "2026-05-01T00:00:00Z",
+		Meta: map[string]any{
+			"from":  []string{"neil@example.com"},
+			"names": map[string]string{"neil@example.com": "Neil Patel"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	tokenBudget := 30
+	text, isErr := mcpToolText(t, fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_entity","arguments":{"name":"Neil Patel","max_tokens":%d}}}`,
+		tokenBudget))
+	if isErr {
+		t.Fatalf("get_entity errored: %s", text)
+	}
+	charBudget := mcpEntityBudgetChars(Config{}, tokenBudget) / 2
+	var dossier map[string]any
+	if err := json.Unmarshal([]byte(text), &dossier); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	evidenceJSON, _ := json.Marshal(dossier["evidence"])
+	if len(evidenceJSON) > charBudget {
+		t.Fatalf("evidence JSON %d chars exceeds dossier char budget %d", len(evidenceJSON), charBudget)
+	}
+}
+
+// TestBudgetEntityEvidenceHardBound unit-tests the greedy evidence capper.
+func TestBudgetEntityEvidenceHardBound(t *testing.T) {
+	big := EntityEvidence{
+		ID: "x", Title: "T", Source: "gmail", CreatedAt: "2026-01-01T00:00:00Z",
+		Snippet: strings.Repeat("s", 5000),
+	}
+	got, _ := budgetEntityEvidence([]EntityEvidence{big}, 100)
+	if len(got) == 0 {
+		t.Fatal("expected a truncated evidence row")
+	}
+	if jsonLen(got)+2 > 100 {
+		t.Fatalf("evidence payload %d bytes exceeds 100-byte budget", jsonLen(got)+2)
+	}
+}
+
+// TestBudgetContextItemsHardBound unit-tests the items capper.
+func TestBudgetContextItemsHardBound(t *testing.T) {
+	m := Memory{ID: "m1", Title: "Big", Text: strings.Repeat("t", 5000), CreatedAt: "2026-01-01T00:00:00Z"}
+	row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Text: m.Text}
+	fitted, ok := fitContextItemJSON(row, 116)
+	if !ok {
+		t.Fatalf("fitContextItemJSON failed for compact projection")
+	}
+	if jsonLen(fitted) > 116 {
+		t.Fatalf("fitted item %d bytes exceeds 116-byte cap", jsonLen(fitted))
+	}
+	got := budgetContextItemsJSON([]Memory{m}, 0, 120, "Big")
+	if len(got) == 0 {
+		t.Fatal("expected a truncated item")
+	}
+	payload, _ := json.Marshal(got)
+	if len(payload) > 120 {
+		t.Fatalf("items JSON %d bytes exceeds 120-byte budget", len(payload))
 	}
 }

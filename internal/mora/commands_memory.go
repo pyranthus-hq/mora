@@ -182,7 +182,7 @@ func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	text := buildContext(cfg, items, charBudget, *query != "")
 	if *jsonOut {
-		bounded := budgetContextItems(items, len(text), charBudget, *query)
+		bounded := budgetContextItemsJSON(items, len(text), charBudget, *query)
 		used := estimateTokensUsed(len(text) + jsonLen(bounded))
 		return emit(stdout, map[string]any{
 			"context":     text,
