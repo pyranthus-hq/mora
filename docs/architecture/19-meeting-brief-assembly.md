@@ -16,16 +16,23 @@ compatibility.
 3. For each exact attendee identity, read the same exact-identity graph
    projection used by `get_entity`. The full evidence set remains available to
    the query-time reranker; display-name fallback is deliberately forbidden, so
-   two people with the same name remain separate.
+   two people with the same name remain separate. Shared evidence prefers its
+   sole attendee sender; if a group record cannot be assigned to exactly one
+   attendee, it is dropped rather than attributed arbitrarily.
 4. Select only evidence that describes the user's unfinished business:
    user-owned obligations or unanswered asks, unresolved decisions/threads,
    explicit staleness guards, and load-bearing shared work context. Personal
-   trivia without an actionable relationship to the user is dropped.
+   trivia without an actionable relationship to the user is dropped. Rendering
+   extracts the qualifying sentence/clause itself, so trivia elsewhere in an
+   otherwise-actionable thread cannot ride along in the cited line.
 5. Hydrate `forgettabilityCandidate` values and call `rankForgettability` once
    over the global cross-attendee pool. Selection is `value_micros` descending,
    then dated evidence and stable id, with a three-line per-attendee cap and a
-   budget-bounded global cap. Fixed section order remains a presentation layer;
-   within each section the selected lines retain value order.
+   budget-bounded global cap. Candidates are greedily admitted by actual
+   serialized `MeetingBrief` size with the MCP envelope reserve; even the
+   mandatory event-only shape must fit or assembly fails loudly. Fixed section
+   order remains a presentation layer; within each section the selected lines
+   retain value order.
 
 ## Citation invariant
 
