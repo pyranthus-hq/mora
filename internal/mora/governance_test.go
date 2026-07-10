@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -616,6 +617,47 @@ func TestGovernance_MappedWriteHoldsGovernanceLease(t *testing.T) {
 	}
 }
 
+// transientContentionTimeout bounds retryTransientContention. It is generous
+// relative to acquireGovernanceLock's own ~1.5s bounded spin (100 attempts x
+// jittered backoff): under heavy Windows CI contention that internal spin can
+// still be exhausted, at which point the lease returns its fail-fast "retry in a
+// moment" error by design. A real caller — and this test, standing in for one —
+// must retry that transient error rather than treat it as fatal. Only liveness
+// is made robust here; the lease's mutual exclusion (the no-resurrection SAFETY
+// guarantee) is untouched. See issue #115.
+const transientContentionTimeout = 30 * time.Second
+
+// isTransientContention reports whether err is a retryable contention error:
+// the governance/sources lease's fail-fast "retry in a moment" (a plain
+// fmt.Errorf with no typed sentinel to errors.Is against), OR — on Windows only
+// — an ERROR_SHARING_VIOLATION/ACCESS_DENIED from a file op racing a concurrent
+// rename/remove (sharingViolationRetryable is always false off Windows, so this
+// clause adds no non-Windows behavior). Anything else is a genuine failure.
+func isTransientContention(err error) bool {
+	return err != nil &&
+		(strings.Contains(err.Error(), "retry in a moment") || sharingViolationRetryable(err))
+}
+
+// retryTransientContention re-runs fn until it succeeds, returns a non-transient
+// error, or the generous deadline elapses — mirroring how a real caller
+// (writeMappedMemory during sync, cmdForget) must treat the lease's fail-fast
+// contract (issue #115). It NEVER masks a genuine failure: a non-transient error
+// is returned immediately, and an op still contended past the deadline returns
+// its last contention error, so the test still fails loudly on a real deadlock —
+// just not on a transient lock-contention blip. Retrying is safe because each
+// wrapped op is all-or-nothing under the lease: a transient acquire failure
+// means it did NOT append/write, so a retry performs the effect exactly once.
+func retryTransientContention(fn func() error) error {
+	deadline := time.Now().Add(transientContentionTimeout)
+	for attempt := 0; ; attempt++ {
+		err := fn()
+		if err == nil || !isTransientContention(err) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(sourcesAcquireBackoff(attempt))
+	}
+}
+
 // TestGovernance_ConcurrentSyncAndForgetNoResurrection is the behavioral
 // companion: a `mora forget` racing an hourly re-sync must never leave the
 // forgotten memory resurrected. Many writer goroutines re-persist the live item
@@ -652,7 +694,7 @@ func TestGovernance_ConcurrentSyncAndForgetNoResurrection(t *testing.T) {
 			ready.Done()
 			<-release
 			for i := 0; i < iterations; i++ {
-				if err := writeMappedMemory(cfg, mm); err != nil {
+				if err := retryTransientContention(func() error { return writeMappedMemory(cfg, mm) }); err != nil {
 					t.Errorf("re-sync write: %v", err)
 					return
 				}
@@ -665,14 +707,27 @@ func TestGovernance_ConcurrentSyncAndForgetNoResurrection(t *testing.T) {
 		defer wg.Done()
 		ready.Done()
 		<-release
-		if _, err := appendGovernanceEntry(cfg, govEntry{
-			Kind: govKindForget, Action: govActionSuppress,
-			Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
+		if err := retryTransientContention(func() error {
+			_, err := appendGovernanceEntry(cfg, govEntry{
+				Kind: govKindForget, Action: govActionSuppress,
+				Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
+			})
+			return err
 		}); err != nil {
 			t.Errorf("forget append: %v", err)
 			return
 		}
-		if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+		// The remove is a raw os.Remove (as cmdForget does), NOT the writers'
+		// self-retrying atomicWrite rename, so on Windows it can lose a race with a
+		// concurrent writer's rename-into-dest and return ERROR_SHARING_VIOLATION.
+		// Retry that transient error (still tolerating IsNotExist); the durable-first
+		// order is preserved because the suppression append already committed above.
+		if err := retryTransientContention(func() error {
+			if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}); err != nil {
 			t.Errorf("forget remove: %v", err)
 		}
 	}()
@@ -683,7 +738,7 @@ func TestGovernance_ConcurrentSyncAndForgetNoResurrection(t *testing.T) {
 
 	// The suppression is committed, so a final re-sync pass must be a no-op and the
 	// file must stay gone — no writer may have resurrected it.
-	if err := writeMappedMemory(cfg, mm); err != nil {
+	if err := retryTransientContention(func() error { return writeMappedMemory(cfg, mm) }); err != nil {
 		t.Fatalf("post-forget write: %v", err)
 	}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
