@@ -93,6 +93,16 @@ func isPDFAttachment(a memory.Attachment) bool {
 // The stable ID hashes parent StableID + path, so re-syncs hit the content-hash
 // skip in writeMappedMemory and an unchanged PDF is a no-op.
 func writeAttachmentMemories(cfg Config, parent memory.MappedMemory) (int, error) {
+	// Derived attachment memories carry `att_<hash>` ids that DON'T inherit the
+	// parent's participant Meta, so the per-item guard in writeMappedMemory can't
+	// see they belong to a forgotten chat. Consult the parent's suppression here
+	// so a forgotten conversation's PDFs are not smuggled in through this 5th
+	// (derived) write path (#52).
+	if sup, _, err := shouldSuppressWrite(cfg, parent); err != nil {
+		return 0, err
+	} else if sup {
+		return 0, nil
+	}
 	count := 0
 	for _, a := range parent.Attachments {
 		if a.Path == "" || !isPDFAttachment(a) {

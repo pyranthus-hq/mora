@@ -382,6 +382,17 @@ func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
 	}
 }
 func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
+	// Governance chokepoint (#52/#53): consult the vault-resident ledger before
+	// persisting ANY connector memory. A suppressed stable-atom (forgotten chat,
+	// forgotten 1:1 person, pruned item) is silently skipped so the hourly,
+	// agent-less sync can never resurrect it. This is the single place re-ingest
+	// is blocked; it covers all connector call sites without per-site edits. A
+	// corrupt ledger returns an error (fail-closed) rather than resurrecting.
+	if sup, _, err := shouldSuppressWrite(cfg, mm); err != nil {
+		return err
+	} else if sup {
+		return nil
+	}
 	m := Memory{
 		ID: mm.StableID, Scope: mm.Scope, Type: mm.Type, Title: mm.Title,
 		Tags: mm.Tags, Source: mm.Source, CreatedAt: mm.CreatedAt, Text: mm.Body,
