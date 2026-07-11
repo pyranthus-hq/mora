@@ -390,6 +390,14 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			if kind == "" {
 				continue
 			}
+			// A Gmail message is unfinished business WITH this attendee only when the
+			// user or the attendee actually wrote it. Inbound third-party mail the
+			// attendee was merely co-copied on (a vendor emailing you both, a marketing
+			// blast) is not an obligation between you and them — drop it so it can't
+			// surface under their name.
+			if isGmailMemory(m) && !meetingBriefSelfIsSender(m, self) && !meetingBriefSenderIs(m, attendee.identity) {
+				continue
+			}
 			source := evidenceSource(m)
 			excerpt := meetingBriefActionableEvidenceText(m, cfg, at, kind)
 			if excerpt == "" {
@@ -560,6 +568,35 @@ func meetingBriefAttendeeIsSender(m Memory, identity string) bool {
 	_, senders, _, _ := personRefs(m)
 	for _, sender := range senders {
 		if sender == target {
+			return true
+		}
+	}
+	return false
+}
+
+// meetingBriefSenderIs reports whether any From address canonicalizes (gmail
+// dot/plus aware, via mailboxKey) to the same mailbox as want. Used so an attendee
+// who wrote from an alias variant of their address still counts as the sender,
+// rather than having their genuine mail dropped by an exact-string mismatch.
+func meetingBriefSenderIs(m Memory, want string) bool {
+	target := mailboxKey(want)
+	if target == "" {
+		return false
+	}
+	for _, from := range lowerStrings(metaStrings(m.Meta["from"])) {
+		if mailboxKey(from) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// meetingBriefSelfIsSender reports whether the user sent this mail (any From
+// address canonicalizes to one of the user's own). Keeps the user's OWN outbound
+// asks while dropping inbound third-party mail the attendee was merely co-copied on.
+func meetingBriefSelfIsSender(m Memory, self map[string]bool) bool {
+	for s := range self {
+		if meetingBriefSenderIs(m, s) {
 			return true
 		}
 	}
@@ -757,7 +794,11 @@ func briefLineCorrectionForEvidence(m Memory, attendeeIdentity string) (BriefLin
 }
 
 func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind string) string {
-	for _, segment := range meetingBriefEvidenceSegments(stripFromLine(m.Text)) {
+	for _, rawSegment := range meetingBriefEvidenceSegments(stripFromLine(m.Text)) {
+		segment := stripNoiseTokens(rawSegment)
+		if segment == "" {
+			continue
+		}
 		probe := m
 		probe.Title = ""
 		probe.Text = segment
@@ -809,6 +850,13 @@ func oneLine(s string) string {
 // classifyMeetingBriefEvidence performs P14's deterministic selection only.
 // P15 replaces ordering, not these unfinished-business gates.
 func classifyMeetingBriefEvidence(m Memory, cfg Config, at time.Time) string {
+	// Bulk/marketing/transactional mail (every sender a service identity) is never
+	// unfinished business with a person — exclude it from every section so a
+	// co-recipient blast can't surface as an attendee's "open loop". Framing: the
+	// brief is the obligations the USER owns, not noise their address co-occurs with.
+	if memoryIsServiceOnly(m) {
+		return ""
+	}
 	if userOwnedOpenLoop(m, cfg) {
 		return meetingBriefOpenLoops
 	}
@@ -904,9 +952,9 @@ func userOwnedOpenLoop(m Memory, cfg Config) bool {
 		}
 		switch {
 		case allSelf:
-			return containsAnyPhrase(text, firstPersonCommitmentPhrases) || actionableQuestion(text)
+			return containsAnyPhrase(text, firstPersonCommitmentPhrases) || gmailActionableAsk(text)
 		case !anySelfSender && toSelf:
-			return containsAnyPhrase(text, directRequestPhrases) || actionableQuestion(text)
+			return containsAnyPhrase(text, directRequestPhrases) || gmailActionableAsk(text)
 		default:
 			return false
 		}
@@ -971,7 +1019,97 @@ func endsInActionableQuestion(m Memory) bool {
 }
 
 func actionableQuestion(text string) bool {
-	return strings.Contains(text, "?") && !personalTriviaOnly(text)
+	return strings.Contains(text, "?") &&
+		!personalTriviaOnly(text) &&
+		!containsAnyPhrase(strings.ToLower(text), nonObligationQuestionPhrases)
+}
+
+// gmailActionableAsk is the stricter open-loop question gate for Gmail. Email —
+// unlike iMessage — is where marketing and cold outreach live, so a bare "?" there
+// is far more often a CTA or a co-recipient blast than an obligation the user owns.
+// A Gmail "?" therefore counts only when it carries a genuine interrogative opener
+// ("can you", "when", "how") or a direct request. iMessage keeps the looser bare-"?"
+// test (real terse conversation), so this gate is Gmail-only by design.
+func gmailActionableAsk(text string) bool {
+	if !actionableQuestion(text) {
+		return false
+	}
+	lower := strings.ToLower(text)
+	return containsAnyPhrase(lower, interrogativeOpeners) || containsAnyPhrase(lower, directRequestPhrases)
+}
+
+// tokenIsNoise reports whether a single whitespace-delimited token is a URL, a URL
+// path/encoded blob, or mostly non-letter punctuation — i.e. not a real word. Used
+// to STRIP such tokens (not drop the whole segment), so a genuine ask that merely
+// contains a link ("can you review <url>?") keeps a clean excerpt.
+func tokenIsNoise(tok string) bool {
+	lower := strings.ToLower(tok)
+	for _, marker := range urlNoiseMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	// 2+ "letter/letter" slashes = a URL path ("com/calendar/event"), not a lone
+	// slash pair ("A/B", "yes/no", "CA/NY") or a numeric date ("3/15").
+	slashes := 0
+	for i := 1; i+1 < len(tok); i++ {
+		a, b := tok[i-1], tok[i+1]
+		if tok[i] == '/' &&
+			((a >= 'a' && a <= 'z') || (a >= 'A' && a <= 'Z')) &&
+			((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')) {
+			slashes++
+		}
+	}
+	if slashes >= 2 {
+		return true
+	}
+	// A real word is mostly letters; a URL-encoded or address blob
+	// (",+Dublin,+CA+94568?") is mostly "+", "%", digits, and punctuation.
+	letters := 0
+	for _, r := range tok {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			letters++
+		}
+	}
+	total := len([]rune(tok))
+	return total >= 8 && letters*2 < total
+}
+
+// stripNoiseTokens removes URL / path / encoded tokens from a text segment, keeping
+// the prose. A pure URL shard ("com/maps/search/...+United+States?") collapses to
+// "", while a genuine ask that merely contains a link keeps its words — so the URL
+// noise is removed without dropping the obligation. Applied per-segment ONLY.
+func stripNoiseTokens(text string) string {
+	kept := make([]string, 0, 8)
+	for _, tok := range strings.Fields(text) {
+		if !tokenIsNoise(tok) {
+			kept = append(kept, tok)
+		}
+	}
+	return strings.Join(kept, " ")
+}
+
+var urlNoiseMarkers = []string{
+	"http://", "https://", "://", "www.", ".com/", ".org/", ".net/",
+	"/search", "/maps", "/url?", "%0a", "%20", "%2f", "utm_",
+}
+
+// interrogativeOpeners mark a "?" as a real question aimed at a person rather than a
+// marketing hook; a Gmail open loop requires one of these (or a direct request).
+var interrogativeOpeners = []string{
+	"who ", "what ", "when ", "where ", "why ", "how ", "which ", "whose ",
+	"is there", "are there", "is it", "do we", "can you", "could you",
+	"would you", "will you", "do you", "did you", "are you", "have you",
+	"should we", "should i", "any chance", "when can", "let me know if",
+}
+
+// nonObligationQuestionPhrases are bulk/marketing/transactional "questions" that end
+// in "?" yet are never a user obligation — order confirmations, surveys, CTAs.
+var nonObligationQuestionPhrases = []string{
+	"questions about your order", "any questions", "how did we do",
+	"how are we doing", "rate your", "your feedback", "give feedback",
+	"leave a review", "take our survey", "was this helpful",
+	"view in browser", "unsubscribe", "manage your subscription",
 }
 
 func personalTriviaOnly(text string) bool {
