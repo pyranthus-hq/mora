@@ -400,7 +400,40 @@ func loopLockReleaser(lockPath string) func() {
 			return
 		}
 		released = true
-		_ = os.Remove(lockPath)
+		removeLeaseFile(lockPath)
+	}
+}
+
+// removeLeaseFile frees a held lease by deleting its lock file, and the release
+// MUST actually succeed. On Windows os.Remove can transiently fail with
+// ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED when a concurrent acquirer is
+// touching the same path in the same instant — reading the body in
+// reapStaleLockTTL, or os.Link-ing its own temp into place in publishLockFile.
+// A dropped remove ORPHANS the lock: it lingers with a fresh acquired_at, so
+// every later acquirer sees a non-reapable lease and starves for the whole
+// sourcesLockTTL. That is the #113 Windows lease-liveness bug — even two
+// concurrent governance writers exhaust the acquire budget, and a forget racing
+// an hourly re-sync then can't append its suppression or remove the file and
+// silently resurrects the forgotten memory. The acquire loop already tolerates
+// this same sharing violation on publish/reap (it just backs off and retries);
+// release was the one path that ignored it. So retry the remove on that transient
+// error with the same jittered, budget-bounded backoff the acquire loop uses
+// (release therefore can never hang): a lock already gone (IsNotExist) is success,
+// and a genuine non-contention error is terminal. Off Windows
+// sharingViolationRetryable is always false, so this collapses to exactly one
+// os.Remove — behavior there is unchanged.
+func removeLeaseFile(lockPath string) {
+	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+		err := os.Remove(lockPath)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if !sharingViolationRetryable(err) {
+			return // a real, non-contention fs error: nothing safe left to do
+		}
+		if attempt < maxSourcesAcquireAttempts-1 {
+			time.Sleep(sourcesAcquireBackoff(attempt))
+		}
 	}
 }
 

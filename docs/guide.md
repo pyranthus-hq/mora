@@ -256,7 +256,7 @@ mora forget list                                     # show active suppressions
 mora unforget <entry-id> --yes                       # reverse a forget
 ```
 
-Forgetting is **local-only**: it stops Mora from holding and re-acquiring the content on this Mac (and your other devices, via `mora sync git`) — it never deletes anything at Gmail or Apple. `--handle`/`--email` act conservatively: they remove one-to-one memories with that counterpart but keep group threads they merely appear in. Always `--dry-run` first to see exactly which memories a forget will touch. `unforget` reverses the suppression, and future syncs may re-ingest the content again (within the connector's lookback window). See [architecture: governance ledger](architecture/17-governance-ledger.md) for the design.
+Forgetting is **local-only**: it stops Mora from holding and re-acquiring the content on this Mac (and your other devices, via `mora sync git`) — it never deletes anything at Gmail or Apple. `--handle`/`--email` act conservatively: they remove one-to-one memories with that counterpart but keep group threads they merely appear in. (Because your own address is on every email thread, `--email` matches only a thread whose sole *other* party is that address — for a specific email thread with more people on it, forget it by `--chat <thread-id>`; broader person-level email forgetting arrives with the identity graph.) Always `--dry-run` first to see exactly which memories a forget will touch. `unforget` reverses the suppression, and future syncs may re-ingest the content again (within the connector's lookback window). See [architecture: governance ledger](architecture/17-governance-ledger.md) for the design.
 
 ## Make the brief your session-start default
 

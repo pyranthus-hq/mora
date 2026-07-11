@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -161,12 +162,71 @@ func saveGovernance(cfg Config, g governance) error {
 	return atomicWrite(governancePath(cfg), append(b, '\n'), 0o600)
 }
 
+// governanceLockPath is the ledger's cross-process lease file, co-located with
+// the ledger so breakLock's os.Rename stays atomic (same filesystem). It is a
+// `*.lock` file, excluded by the vault .gitignore, so a leftover lease never
+// rides `mora sync git`.
+func governanceLockPath(cfg Config) string { return governancePath(cfg) + ".lock" }
+
+// acquireGovernanceLock serializes a read-modify-write of the governance ledger
+// across processes, exactly as acquireSourcesLock does for sources.json: an
+// unlocked load→append→save races (the last save clobbers the other writer's
+// entry, and a dropped forget suppression silently resurrects forgotten content).
+// It reuses the crash-safe lease primitives (publishLockFile / reapStaleLockTTL /
+// loopLockReleaser) and the sources lease's TTL + jittered backoff — the same
+// single-host, single-user model (a manual `mora forget` racing another forget,
+// or the forward-declared scheduled prune #53). It returns a real error, never a
+// silent no-op, if the lease cannot be taken; the returned release is idempotent.
+func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error) {
+	if err := os.MkdirAll(cfg.VaultDir, 0o700); err != nil {
+		return nil, err
+	}
+	lockPath := governanceLockPath(cfg)
+	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
+	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+		published, perr := publishLockFile(lockPath, body)
+		switch {
+		case perr == nil && published:
+			return loopLockReleaser(lockPath), nil
+		case perr != nil && !sharingViolationRetryable(perr):
+			return nil, perr // a real, non-contention fs error: never interleave a partial write.
+		case perr == nil:
+			reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
+			if rerr != nil && !sharingViolationRetryable(rerr) {
+				return nil, rerr
+			}
+			if rerr == nil && reaped {
+				continue // cleared an abandoned lease; retry publish immediately.
+			}
+		}
+		if attempt < maxSourcesAcquireAttempts-1 {
+			time.Sleep(sourcesAcquireBackoff(attempt))
+		}
+	}
+	return nil, fmt.Errorf("governance ledger is locked by another mora process (%s); retry in a moment", lockPath)
+}
+
 // appendGovernanceEntry mints id/created_at/created_by, appends, and persists.
-// Returns the stored entry (with its minted id, for a later unforget/undo).
+// Returns the stored entry (with its minted id, for a later unforget/undo). The
+// whole read-modify-write is serialized across processes (acquireGovernanceLock)
+// and RELOADS inside the lease, so two concurrent writers can never clobber each
+// other's entry — a dropped forget suppression would silently resurrect content.
 func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return govEntry{}, err
+	}
+	defer release()
 	g, err := loadGovernance(cfg)
 	if err != nil {
 		return govEntry{}, err
+	}
+	if testHookGovAppendPostLoad != nil {
+		// Test seam (nil in production): widen the read-modify-write window between
+		// load and save. Under the lease this merely slows one serialized writer; if
+		// the lease were removed it lets concurrent writers overlap their RMW and drop
+		// an append — the lost-update the ConcurrentAppendsNoLostUpdate test forces.
+		testHookGovAppendPostLoad()
 	}
 	if e.ID == "" {
 		e.ID = "gov_" + strings.TrimPrefix(newID(), "mem_")
@@ -185,8 +245,14 @@ func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
 }
 
 // revokeGovernanceEntry marks an entry inert (unforget/undo). Returns whether an
-// active entry with that id was found.
+// active entry with that id was found. Serialized + reloaded under the same lease
+// as appendGovernanceEntry so a concurrent append is never clobbered by a revoke.
 func revokeGovernanceEntry(cfg Config, id string) (bool, error) {
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	g, err := loadGovernance(cfg)
 	if err != nil {
 		return false, err
@@ -440,3 +506,74 @@ func (g governance) mergeDecisions() (confirmed []confirmedMerge, decided map[st
 	})
 	return confirmed, decided
 }
+
+// governanceWriteLease is the shared primitive behind EVERY no-resurrection write
+// path: it acquires the governance lease (acquireGovernanceLock — the same lease
+// `mora forget` takes to append its suppression) and loads the ledger, returning
+// both the ledger and a release func the caller MUST defer. Holding the lease
+// across the suppression CHECK and the subsequent atomicWrite is what makes those
+// two steps atomic w.r.t. a concurrent forget's append: a forget can commit its
+// suppression EITHER entirely before the check (⇒ the write is skipped) or
+// entirely after the write releases the lease (⇒ its removal pass reaps the
+// just-written file) — never in between. A once-per-caller SNAPSHOT (release then
+// write) reopened that between window and silently resurrected the atom (#113).
+// On a load error the lease is released before returning so the caller need not.
+func governanceWriteLease(cfg Config) (governance, func(), error) {
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return governance{}, nil, err
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		release()
+		return governance{}, nil, err
+	}
+	return g, release, nil
+}
+
+// writeUnlessForgotten atomically writes body to dest UNLESS the governance
+// ledger suppresses the (provider, id) atom — the resurrection guard for a write
+// path that renders directly (ingestFilesystem). The whole load→decide→write runs
+// under a single governance lease (governanceWriteLease); see that helper for why
+// the lease must SPAN the check and the write. A once-per-walk ledger SNAPSHOT
+// could not give this — a forget committing after the snapshot but before the
+// write silently resurrected the atom (#113) — and releasing the lease before the
+// atomicWrite would reopen the same window. A write that lands just AHEAD of the
+// commit is a normal re-index that forget's removal pass reaps when its
+// (pre-append) scan observed the file; closing that last, pre-existing
+// forget-scan gap is out of scope here (it needs forget to compute its removal
+// set under the lease, not a walk-side change). Reports whether it wrote
+// (false ⇒ suppressed). Reloading + relocking per file costs an O_EXCL
+// create/remove per write; that is the deliberate price of the no-resurrection
+// invariant on a local, single-user tool.
+func writeUnlessForgotten(cfg Config, provider, id, dest string, body []byte, mode os.FileMode) (bool, error) {
+	g, release, err := governanceWriteLease(cfg)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	if sup, _ := g.decideSuppress(provider, id, nil); sup {
+		return false, nil
+	}
+	if testHookInWriteCritical != nil {
+		testHookInWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
+	}
+	if err := atomicWrite(dest, body, mode); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// testHookInWriteCritical, when non-nil (tests only), fires inside
+// writeUnlessForgotten AFTER the fresh suppression check and BEFORE atomicWrite —
+// i.e. while the governance lease is held. It is the seam that proves the lease
+// SPANS the write (a mere per-file reload without the lease would leave this
+// window unlocked and #113 open). Nil in production.
+var testHookInWriteCritical func()
+
+// testHookGovAppendPostLoad, when non-nil (tests only), fires inside
+// appendGovernanceEntry AFTER loadGovernance and BEFORE the append+save — the
+// read-modify-write window. Tests use it to widen that window and prove the lease
+// serializes concurrent appends (without it, an unlocked RMW drops updates). Nil
+// in production.
+var testHookGovAppendPostLoad func()

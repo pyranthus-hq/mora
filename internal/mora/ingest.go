@@ -381,16 +381,36 @@ func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
 		return 0, fmt.Errorf("unknown source type %q", s.Type)
 	}
 }
+
+// testHookMappedWriteCritical, when non-nil (tests only), fires inside
+// writeMappedMemory AFTER the fresh suppression check and the content-hash skip,
+// BEFORE atomicWrite — i.e. while the governance lease is held. It is the
+// connector-path twin of testHookInWriteCritical: it proves the lease SPANS the
+// check-and-write, closing the connector TOCTOU (#113 gap #1). Nil in production.
+var testHookMappedWriteCritical func()
+
 func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// Governance chokepoint (#52/#53): consult the vault-resident ledger before
 	// persisting ANY connector memory. A suppressed stable-atom (forgotten chat,
 	// forgotten 1:1 person, pruned item) is silently skipped so the hourly,
 	// agent-less sync can never resurrect it. This is the single place re-ingest
-	// is blocked; it covers all connector call sites without per-site edits. A
-	// corrupt ledger returns an error (fail-closed) rather than resurrecting.
-	if sup, _, err := shouldSuppressWrite(cfg, mm); err != nil {
+	// is blocked; it covers all connector call sites without per-site edits.
+	//
+	// The suppression check AND the atomicWrite run under a SINGLE held governance
+	// lease (governanceWriteLease) — the same lease `mora forget` takes to append
+	// its suppression. That makes check→write atomic w.r.t. that append and closes
+	// the connector-path TOCTOU (#113 gap #1): a fresh once-per-item load alone
+	// closed the STALE-SNAPSHOT variant but NOT the check-to-write window — a
+	// forget committing between an unlocked check and the atomicWrite was still
+	// missed and resurrected the atom. Holding the lease across both (mirroring the
+	// filesystem writeUnlessForgotten fix) is the durable close. A corrupt ledger
+	// returns an error (fail-closed) rather than resurrecting.
+	g, release, err := governanceWriteLease(cfg)
+	if err != nil {
 		return err
-	} else if sup {
+	}
+	defer release()
+	if sup, _ := g.suppresses(mm); sup {
 		return nil
 	}
 	m := Memory{
@@ -404,7 +424,8 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// reserved characters (? * " < > |); osSafeBase finishes the job on Windows
 	// and is a no-op elsewhere, so this stays byte-identical on macOS/Linux.
 	out := filepath.Join(sourcesRoot(cfg), mm.Provider, osSafeBase(memory.SafeFilename(mm.StableID))+".md")
-	// Skip rewrite if content unchanged (preserve created_at).
+	// Skip rewrite if content unchanged (preserve created_at). This read stays
+	// inside the lease so the whole check→skip→write is one critical section.
 	if existing, err := parseMemory(out); err == nil {
 		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" {
 			return nil
@@ -414,6 +435,9 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	body, err := renderMemory(m)
 	if err != nil {
 		return err
+	}
+	if testHookMappedWriteCritical != nil {
+		testHookMappedWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
 	}
 	return atomicWrite(out, body, 0o644)
 }
@@ -917,7 +941,23 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 	}
 	return total, nil
 }
+
+// testHookFSPreWrite, when non-nil (tests only), fires just before each per-file
+// suppress-decision-and-write in ingestFilesystem. It is the deterministic seam
+// used to inject a concurrent `mora forget` into the write window and prove the
+// walk never resurrects an atom forgotten mid-walk (#113). Nil in production.
+var testHookFSPreWrite func(id string)
+
 func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
+	// Governance chokepoint (#52): filesystem re-ingest renders directly and does
+	// NOT route through writeMappedMemory, so consult the ledger here too —
+	// otherwise `mora forget --chat <src-id>` removes a filesystem memory that the
+	// very next walk resurrects. The ledger is re-read PER FILE, under the same
+	// governance lease `mora forget` takes, right at the write (writeUnlessForgotten)
+	// — NOT a once-per-walk snapshot, which left a TOCTOU window where a forget
+	// committing mid-walk was missed and the stale walker resurrected the atom
+	// (#113). Only stable_id (item) forgets can match a filesystem memory: it
+	// carries no participant identity, so `forget --handle/--email` never targets it.
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
@@ -965,10 +1005,18 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
 		body, _ := renderMemory(m)
-		if err := atomicWrite(dest, body, 0o644); err != nil {
-			return err
+		if testHookFSPreWrite != nil {
+			testHookFSPreWrite(id)
 		}
-		count++
+		// Suppression re-check + write, atomic under the governance lease so a
+		// `mora forget` that commits mid-walk is honored, never resurrected (#113).
+		wrote, werr := writeUnlessForgotten(cfg, "", id, dest, body, 0o644)
+		if werr != nil {
+			return werr
+		}
+		if wrote {
+			count++
+		}
 		return nil
 	})
 	// Record freshness so the brief/digest classifies this source by its real sync

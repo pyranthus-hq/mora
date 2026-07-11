@@ -2,10 +2,15 @@ package mora
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -356,5 +361,413 @@ func TestGovernance_LedgerDotfileIgnoredByRebuild(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("rebuild must index exactly the 1 memory (ledger dotfile ignored), got %d", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the FIFTH (filesystem) write path: ingestFilesystem renders directly, so it
+// needs its own item-atom guard or a `forget --chat <src-id>` is resurrected.
+// ---------------------------------------------------------------------------
+
+func TestGovernance_FilesystemChatForgetNoResurrection(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Source{Name: "docs", Type: "filesystem", Path: srcDir, Scope: "personal"}
+
+	// First walk writes the filesystem memory.
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil || n != 1 {
+		t.Fatalf("first ingest: n=%d err=%v", n, err)
+	}
+	id := "src_" + ContentHash(s.Name+":note.md")
+	dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("expected filesystem memory after first ingest: %v", err)
+	}
+
+	// Forget it exactly as `mora forget --chat <src-id>` does: record the
+	// stable_id suppression, then remove the file.
+	if _, err := appendGovernanceEntry(cfg, govEntry{
+		Kind: govKindForget, Action: govActionSuppress,
+		Atom: govAtom{Kind: atomStableID, Value: id},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dest); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next walk must NOT resurrect it (the bug: ingestFilesystem bypasses the
+	// writeMappedMemory guard).
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	} else if n != 0 {
+		t.Fatalf("suppressed filesystem memory must not be re-written, got n=%d", n)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("RESURRECTION: forgotten filesystem memory was re-created by the next walk")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the REAL race the sequential test above cannot catch (#113): a `mora forget`
+// that commits its suppression AND removes the file DURING an in-flight
+// ingestFilesystem walk — after a once-per-walk ledger snapshot would have been
+// loaded but before the walker writes the file. The snapshot approach resurrected
+// it; the per-file re-check under the governance lease (writeUnlessForgotten)
+// closes the window. Deterministic (no goroutines/sleeps): a seam fires the REAL
+// `mora forget --chat` path exactly in that window.
+// ---------------------------------------------------------------------------
+
+func TestGovernance_FilesystemForgetDuringWalkNoResurrection(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Source{Name: "docs", Type: "filesystem", Path: srcDir, Scope: "personal"}
+
+	// First walk materializes the filesystem memory (no seam armed yet).
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil || n != 1 {
+		t.Fatalf("first ingest: n=%d err=%v", n, err)
+	}
+	id := "src_" + ContentHash(s.Name+":note.md")
+	dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("expected filesystem memory after first ingest: %v", err)
+	}
+
+	// Arm the seam: fire the REAL forget path exactly once, in the window a stale
+	// walker would use — right before this file's suppress-check-and-write. The
+	// hook runs `mora forget --chat` to completion (suppression committed via the
+	// governance lease + file removed) BEFORE the walker's own re-check, faithfully
+	// reproducing a forget that commits mid-walk. Synchronous ⇒ deterministic.
+	fired := 0
+	testHookFSPreWrite = func(gotID string) {
+		if gotID != id || fired > 0 {
+			return
+		}
+		fired++
+		run(t, "forget", "--chat", id, "--yes")
+	}
+	t.Cleanup(func() { testHookFSPreWrite = nil })
+
+	// Second walk: with a once-per-walk snapshot this resurrects the memory; the
+	// per-file re-check under the lease must honor the mid-walk forget instead.
+	n, err := ingestFilesystem(cfg, s, io.Discard)
+	if err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	if fired != 1 {
+		t.Fatalf("seam did not fire (fired=%d) — the race was not exercised", fired)
+	}
+	if n != 0 {
+		t.Fatalf("walker wrote %d file(s) after a mid-walk forget; want 0 (RESURRECTION)", n)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("RESURRECTION: a forget that committed mid-walk was undone by the stale walker")
+	}
+	// The forget really ran the durable path: exactly one active suppression.
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.activeSuppress()) != 1 {
+		t.Fatalf("mid-walk forget must record 1 active suppression, got %d", len(g.activeSuppress()))
+	}
+}
+
+// The above test proves the walk re-reads the ledger PER FILE; this one proves it
+// does so UNDER THE LEASE — i.e. the governance lock is held ACROSS the write, not
+// merely re-loaded. A per-file reload without the lease would still leave #113
+// open to a truly concurrent forget (append+remove landing between the walker's
+// check and its atomicWrite). Deterministic: the seam fires synchronously inside
+// the write critical section and asserts the lease file is present.
+func TestGovernance_FilesystemWriteHoldsGovernanceLease(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Source{Name: "docs", Type: "filesystem", Path: srcDir, Scope: "personal"}
+
+	held := 0
+	testHookInWriteCritical = func() {
+		held++
+		// While we are between the suppression check and the atomicWrite, the
+		// governance lease must be held — so its lock file must exist. If a refactor
+		// dropped the lock around the write (keeping only the per-file reload), the
+		// file would be absent here and #113 would be reopened for a concurrent forget.
+		if _, err := os.Stat(governanceLockPath(cfg)); err != nil {
+			t.Errorf("governance lease NOT held during the filesystem write (#113): %v", err)
+		}
+	}
+	t.Cleanup(func() { testHookInWriteCritical = nil })
+
+	if n, err := ingestFilesystem(cfg, s, io.Discard); err != nil || n != 1 {
+		t.Fatalf("ingest: n=%d err=%v", n, err)
+	}
+	if held != 1 {
+		t.Fatalf("write-critical seam fired %d times, want 1", held)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serialized ledger writes: concurrent forgets must never lose a suppression
+// (a dropped entry whose files were removed is a resurrection).
+// ---------------------------------------------------------------------------
+
+func TestGovernance_ConcurrentAppendsNoLostUpdate(t *testing.T) {
+	cfg := Config{VaultDir: t.TempDir()}
+	const n = 16
+
+	// A start-barrier releases all n appenders at once, and a widened
+	// read-modify-write window (below) makes them observe the SAME pre-append
+	// ledger — so WITHOUT the lease every save clobbers the others and only one
+	// entry survives (a lost update = a resurrected suppression). WITH the lease
+	// the n RMWs serialize and every entry survives. The barrier is what makes the
+	// failure deterministic: without it, fast sequential appends can each finish
+	// before the next starts, so the old test passed even with the lease removed.
+	// (This lost update is at the FILESYSTEM level — each goroutine has its own
+	// in-memory ledger — so `go test -race` does NOT flag it; the count assertion
+	// is the sole detector, which is exactly why the barrier is required.)
+	testHookGovAppendPostLoad = func() {
+		// Widen the load→save window so overlapping unlocked writers collide. Under
+		// the lease this only slows one serialized holder at a time (no overlap).
+		for i := 0; i < 500; i++ {
+			runtime.Gosched()
+		}
+	}
+	t.Cleanup(func() { testHookGovAppendPostLoad = nil })
+
+	release := make(chan struct{})
+	var ready, wg sync.WaitGroup
+	ready.Add(n)
+	wg.Add(n)
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ready.Done() // parked at the barrier
+			<-release    // ...released simultaneously with the others
+			_, err := appendGovernanceEntry(cfg, govEntry{
+				Kind: govKindForget, Action: govActionSuppress,
+				Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: fmt.Sprintf("+1408555%04d", i)},
+			})
+			errs <- err
+		}(i)
+	}
+	ready.Wait()   // every goroutine is at the barrier
+	close(release) // fire them together
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent append: %v", err)
+		}
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Entries) != n {
+		t.Fatalf("lost update: want %d entries, got %d (unlocked read-modify-write clobbered a suppression)", n, len(g.Entries))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #113 gap #1: the CONNECTOR write path (writeMappedMemory) must hold the
+// governance lease ACROSS its suppression check and its atomicWrite — the same
+// TOCTOU class the filesystem path closed. A fresh once-per-item load alone
+// closes only the stale-snapshot variant; a forget committing between an unlocked
+// check and the write is still missed and resurrects the atom on re-sync.
+// ---------------------------------------------------------------------------
+
+// TestGovernance_MappedWriteHoldsGovernanceLease is the DETERMINISTIC regression
+// for the connector check-to-write window (the twin of
+// TestGovernance_FilesystemWriteHoldsGovernanceLease). A seam fires inside
+// writeMappedMemory, after the suppression check and content-hash skip and while
+// the governance lease is held, and asserts the lease FILE is present. Because
+// `mora forget`'s suppression append takes that same lease, its being held here
+// PROVES no forget can commit between the check and the write — so none can be
+// missed and resurrect. Revert the fix (back to a lease-less shouldSuppressWrite +
+// atomicWrite) and the lock file is absent here, failing the test.
+func TestGovernance_MappedWriteHoldsGovernanceLease(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	held := 0
+	testHookMappedWriteCritical = func() {
+		held++
+		// Between the suppression check and the atomicWrite the governance lease
+		// must be held — its lock file must exist. If a refactor dropped the lease
+		// around the connector write (keeping only a one-shot check), the file would
+		// be absent here and #113 gap #1 would be reopened for a concurrent forget.
+		if _, err := os.Stat(governanceLockPath(cfg)); err != nil {
+			t.Errorf("governance lease NOT held during the connector write (#113 gap #1): %v", err)
+		}
+	}
+	t.Cleanup(func() { testHookMappedWriteCritical = nil })
+
+	if err := writeMappedMemory(cfg, imsgMM("solo", "+14155550123")); err != nil {
+		t.Fatalf("writeMappedMemory: %v", err)
+	}
+	if held != 1 {
+		t.Fatalf("connector write-critical seam fired %d times, want 1", held)
+	}
+}
+
+// transientContentionTimeout bounds retryTransientContention. It is generous
+// relative to acquireGovernanceLock's own ~1.5s bounded spin (100 attempts x
+// jittered backoff): under heavy Windows CI contention that internal spin can
+// still be exhausted, at which point the lease returns its fail-fast "retry in a
+// moment" error by design. A real caller — and this test, standing in for one —
+// must retry that transient error rather than treat it as fatal. Only liveness
+// is made robust here; the lease's mutual exclusion (the no-resurrection SAFETY
+// guarantee) is untouched. See issue #115.
+const transientContentionTimeout = 30 * time.Second
+
+// isTransientContention reports whether err is a retryable contention error:
+// the governance/sources lease's fail-fast "retry in a moment" (a plain
+// fmt.Errorf with no typed sentinel to errors.Is against), OR — on Windows only
+// — an ERROR_SHARING_VIOLATION/ACCESS_DENIED from a file op racing a concurrent
+// rename/remove (sharingViolationRetryable is always false off Windows, so this
+// clause adds no non-Windows behavior). Anything else is a genuine failure.
+func isTransientContention(err error) bool {
+	return err != nil &&
+		(strings.Contains(err.Error(), "retry in a moment") || sharingViolationRetryable(err))
+}
+
+// retryTransientContention re-runs fn until it succeeds, returns a non-transient
+// error, or the generous deadline elapses — mirroring how a real caller
+// (writeMappedMemory during sync, cmdForget) must treat the lease's fail-fast
+// contract (issue #115). It NEVER masks a genuine failure: a non-transient error
+// is returned immediately, and an op still contended past the deadline returns
+// its last contention error, so the test still fails loudly on a real deadlock —
+// just not on a transient lock-contention blip. Retrying is safe because each
+// wrapped op is all-or-nothing under the lease: a transient acquire failure
+// means it did NOT append/write, so a retry performs the effect exactly once.
+func retryTransientContention(fn func() error) error {
+	deadline := time.Now().Add(transientContentionTimeout)
+	for attempt := 0; ; attempt++ {
+		err := fn()
+		if err == nil || !isTransientContention(err) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(sourcesAcquireBackoff(attempt))
+	}
+}
+
+// TestGovernance_ConcurrentSyncAndForgetNoResurrection is the behavioral
+// companion: a `mora forget` racing an hourly re-sync must never leave the
+// forgotten memory resurrected. Many writer goroutines re-persist the live item
+// (writeMappedMemory) while one goroutine runs the durable forget (append the
+// suppression under the lease, then remove the file — the exact cmdForget order).
+// The lease serializes each writer's check-and-write against the append, so the
+// forget either commits before a writer's check (the writer skips) or after the
+// writer releases (the forget's remove reaps the just-written file). Either way,
+// once the suppression is committed the final on-disk state has NO file. This
+// passes deterministically WITH the fix; without it, a writer that checked before
+// the commit but wrote after the remove resurrects the atom.
+func TestGovernance_ConcurrentSyncAndForgetNoResurrection(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	mm := imsgMM("solo", "+14155550123")
+	dest := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(mm.StableID)+".md")
+
+	// Seed the file (the first sync) so the forget's remove has something to reap.
+	if err := writeMappedMemory(cfg, mm); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	const writers = 12
+	const iterations = 40
+	release := make(chan struct{})
+	var ready, wg sync.WaitGroup
+	ready.Add(writers + 1)
+	wg.Add(writers + 1)
+
+	// Writers: re-persist the live item repeatedly (the hourly re-sync re-fetches
+	// it every pass) for the whole race window.
+	for w := 0; w < writers; w++ {
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-release
+			for i := 0; i < iterations; i++ {
+				if err := retryTransientContention(func() error { return writeMappedMemory(cfg, mm) }); err != nil {
+					t.Errorf("re-sync write: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	// Forget: durable-first (append suppression, then remove the file), the exact
+	// order cmdForget uses so a crash can never leave files gone but re-ingestable.
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-release
+		if err := retryTransientContention(func() error {
+			_, err := appendGovernanceEntry(cfg, govEntry{
+				Kind: govKindForget, Action: govActionSuppress,
+				Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
+			})
+			return err
+		}); err != nil {
+			t.Errorf("forget append: %v", err)
+			return
+		}
+		// The remove is a raw os.Remove (as cmdForget does), NOT the writers'
+		// self-retrying atomicWrite rename, so on Windows it can lose a race with a
+		// concurrent writer's rename-into-dest and return ERROR_SHARING_VIOLATION.
+		// Retry that transient error (still tolerating IsNotExist); the durable-first
+		// order is preserved because the suppression append already committed above.
+		if err := retryTransientContention(func() error {
+			if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}); err != nil {
+			t.Errorf("forget remove: %v", err)
+		}
+	}()
+
+	ready.Wait()
+	close(release)
+	wg.Wait()
+
+	// The suppression is committed, so a final re-sync pass must be a no-op and the
+	// file must stay gone — no writer may have resurrected it.
+	if err := retryTransientContention(func() error { return writeMappedMemory(cfg, mm) }); err != nil {
+		t.Fatalf("post-forget write: %v", err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("RESURRECTION: a forget racing re-sync left the forgotten memory on disk")
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.activeSuppress()) != 1 {
+		t.Fatalf("want exactly 1 active suppression, got %d", len(g.activeSuppress()))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the P13-deferred limitation, made explicit: for Gmail/Calendar the address
+// set INCLUDES the user's own address, so a realistic 1:1 thread (self + one
+// other = 2 atoms) is NOT sole-matched by `forget --email`. We UNDER-match
+// (precision-first) rather than risk deleting a group thread; person-level email
+// suppression needs self-identity (P13). See docs/architecture/17.
+// ---------------------------------------------------------------------------
+
+func TestGovernance_GmailRealisticOneToOneNotSuppressed(t *testing.T) {
+	g := governance{Schema: governanceSchema, Entries: []govEntry{{
+		ID: "e1", Kind: govKindForget, Action: govActionSuppress,
+		Atom: govAtom{Kind: atomAddress, Value: "sam@example.com"},
+	}}}
+	// from=[sam], to=[me]: the normal inbound shape, self present ⇒ 2 atoms.
+	if sup, _ := g.suppresses(gmailMM("t", []string{"sam@example.com"}, []string{"me@x.com"})); sup {
+		t.Fatal("realistic 1:1 email (self included) must NOT be whole-suppressed by --email (P13-deferred)")
 	}
 }
