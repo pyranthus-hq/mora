@@ -163,3 +163,21 @@ func TestUnsupportedSchemaErrors(t *testing.T) {
 		t.Fatalf("want schema error, got: %v", err)
 	}
 }
+
+func TestDefaultDBPath(t *testing.T) {
+	home := "/Users/testuser"
+	expected := filepath.Join(home, "Library", "Group Containers", "group.com.apple.calendar", "Calendar.sqlitedb")
+	actual := DefaultDBPath(home)
+	if actual != expected {
+		t.Errorf("DefaultDBPath(%q) = %q, want %q", home, actual, expected)
+	}
+}
+
+func TestLegacyDBPath(t *testing.T) {
+	home := "/Users/testuser"
+	expected := filepath.Join(home, "Library", "Calendars", "Calendar.sqlitedb")
+	actual := LegacyDBPath(home)
+	if actual != expected {
+		t.Errorf("LegacyDBPath(%q) = %q, want %q", home, actual, expected)
+	}
+}
