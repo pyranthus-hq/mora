@@ -921,6 +921,28 @@ func TestGg_AuthedEmail(t *testing.T) {
 			t.Fatal("AuthedEmail must surface an API error")
 		}
 	})
+	t.Run("empty email response", func(t *testing.T) {
+		g := &ggFakeGoogle{profile: func(r *http.Request) (int, string) {
+			return 200, `{"emailAddress":""}`
+		}}
+		f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+		got, err := f.AuthedEmail()
+		if err != nil {
+			t.Fatalf("AuthedEmail: %v", err)
+		}
+		if got != "" {
+			t.Fatalf("AuthedEmail = %q, want empty string", got)
+		}
+	})
+	t.Run("invalid json response", func(t *testing.T) {
+		g := &ggFakeGoogle{profile: func(r *http.Request) (int, string) {
+			return 200, `{"emailAddress":"foo` // missing closing quote/brace
+		}}
+		f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+		if _, err := f.AuthedEmail(); err == nil {
+			t.Fatal("AuthedEmail must surface an error for invalid JSON")
+		}
+	})
 }
 
 func TestGg_AuthedLabels(t *testing.T) {
