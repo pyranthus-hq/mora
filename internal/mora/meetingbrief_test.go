@@ -519,7 +519,9 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 	if err := renderMeetingBrief(&rendered, brief); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(rendered.String(), "~10 months ago, the cited record involving Dana stated: “") {
+	// The INVARIANT is the dated, attributed, quoted framing — a ten-month-old fact
+	// must never read as true now. The exact wording is presentation, not the rail.
+	if !strings.Contains(rendered.String(), "~10 months ago · Dana — “") {
 		t.Fatalf("stale fact was not rendered as dated historical evidence:\n%s", rendered.String())
 	}
 	if strings.Contains(rendered.String(), "- Dana: New role — Dana is now at Denver Labs") {

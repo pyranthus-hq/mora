@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -381,6 +382,13 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		return MeetingBrief{}, fmt.Errorf("meeting brief event requires %d compact bytes, exceeding the %d-byte max_tokens budget", baseSize, payloadBudget)
 	}
 
+	// roster is everyone in this meeting. A thread among the meeting's own people is
+	// still the meeting's business; an OUTSIDER on the thread is what breaks attribution.
+	roster := make([]string, 0, len(attendees))
+	for _, a := range attendees {
+		roster = append(roster, a.identity)
+	}
+
 	associationsByMemory := map[string][]meetingBriefCandidate{}
 	governanceLedger, err := loadGovernance(cfg)
 	if err != nil {
@@ -433,6 +441,12 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			// blast) is not an obligation between you and them — drop it so it can't
 			// surface under their name.
 			if isGmailMemory(m) && !meetingBriefSelfIsSender(m, self) && !meetingBriefSenderIs(m, attendee.identity) {
+				continue
+			}
+			// ...and only when the two of them were actually the ones talking. A thread
+			// carrying another human recipient leaves the addressee ambiguous — the ask
+			// may well be aimed at them, not at the user — and Mora does not guess.
+			if isGmailMemory(m) && !meetingBriefIsTwoPartyExchange(m, self, roster...) {
 				continue
 			}
 			source := evidenceSource(m)
@@ -660,6 +674,14 @@ func meetingBriefHistoricalText(asOf time.Time, date, attendee, raw string) stri
 	return prefix + "“" + oneLine(raw) + "”"
 }
 
+// meetingBriefHistoricalPrefix stamps every line with its age and the person it
+// concerns. The DATED framing is the P15 invariant — a fact from ten months ago must
+// never read as true now — and it is load-bearing, not decoration.
+//
+// The wording is deliberately "· <person> —" rather than "<person> wrote:": the
+// memory is one this person is INVOLVED in, and Mora does not always know they
+// authored it. Claiming authorship it cannot prove would be its own wrong-person bug.
+// What it can say honestly is when, who it involves, and the exact words.
 func meetingBriefHistoricalPrefix(asOf time.Time, date, attendee string) string {
 	factAt, err := time.Parse(time.RFC3339, date)
 	if err != nil {
@@ -668,9 +690,9 @@ func meetingBriefHistoricalPrefix(asOf time.Time, date, attendee string) string 
 	age := meetingBriefRelativeAge(asOf, factAt)
 	attendee = strings.TrimSpace(attendee)
 	if attendee == "" {
-		return age + ", the cited record stated: "
+		return age + " — "
 	}
-	return fmt.Sprintf("%s, the cited record involving %s stated: ", age, attendee)
+	return fmt.Sprintf("%s · %s — ", age, attendee)
 }
 
 func meetingBriefRelativeAge(asOf, factAt time.Time) string {
@@ -858,9 +880,17 @@ func briefLineCorrectionForEvidence(m Memory, attendeeIdentity string) (BriefLin
 }
 
 func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind string) string {
-	for _, rawSegment := range meetingBriefEvidenceSegments(stripFromLine(m.Text)) {
+	// Only the sender's OWN prose is evidence — never a forwarded stranger, a quoted
+	// reply chain, a signature, or a legal disclaimer.
+	body := senderAuthoredBody(stripFromLine(m.Text))
+	for _, rawSegment := range meetingBriefEvidenceSegments(body) {
 		segment := stripNoiseTokens(rawSegment)
-		if segment == "" {
+		if isIMessageMemory(m) {
+			// "Me: Good morning leaving now" — the transcript's speaker label is
+			// scaffolding, not part of what was said, and must never render in a line.
+			segment = stripSpeakerPrefix(segment)
+		}
+		if segment == "" || isLeadInFragment(segment) {
 			continue
 		}
 		probe := m
@@ -870,8 +900,11 @@ func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind
 			return truncateRunes(oneLine(segment), 360)
 		}
 	}
+	// Fallback: the subject line. A FORWARDED subject is a stranger's subject — the
+	// same reason the forwarded body is not the sender's words — so it is not evidence
+	// of anything between the user and this attendee.
 	title := oneLine(m.Title)
-	if title == "" || containsPersonalTrivia(title) {
+	if title == "" || containsPersonalTrivia(title) || isForwardedSubject(title) || isLeadInFragment(title) {
 		return ""
 	}
 	probe := m
@@ -883,7 +916,22 @@ func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind
 	return ""
 }
 
+// meetingBriefEvidenceSegments cuts a memory body into candidate sentences.
+//
+// The text is CLEANED BEFORE it is cut, and that order is the whole point. Cutting
+// first is what produced the gibberish: a sentence split on "." shreds
+// "https://meet.google.com/ctk-rdtz-jnx?hs=224" into "https://meet." + "google." +
+// "com/ctk-rdtz-jnx?", and that last shard — one slash, mostly letters, ending in
+// "?" — no longer looks like a URL to any downstream filter, so it read as a
+// question the user owed someone. Strip URLs while they are still URLs.
+//
+// Hard wraps are unwrapped for the same reason. Gmail plain text wraps at ~72
+// columns, and treating "\n" as a sentence terminator cut clauses in half ("Please
+// share the Ahrefs findings/report prior to the"). A newline only ends a sentence
+// when the line actually ended one.
 func meetingBriefEvidenceSegments(text string) []string {
+	text = unwrapHardWraps(stripURLs(text))
+
 	var segments []string
 	var current strings.Builder
 	flush := func() {
@@ -903,6 +951,150 @@ func meetingBriefEvidenceSegments(text string) []string {
 	return segments
 }
 
+// quotedBlockMarkers open a region of a mail body that the SENDER DID NOT WRITE: a
+// forwarded message, a quoted reply chain, a signature, or a legal disclaimer.
+// Everything from the first such marker onward belongs to someone else (or to
+// nobody), and attributing it to the sender is how "Fwd: Ai / AEO" — Gouri
+// forwarding a marketing mail — put a stranger's CTA ("Open to see how the loop
+// works?") into the brief as Gouri's unfinished business with the user.
+var quotedBlockMarkers = []string{
+	"---------- forwarded message",
+	"-----original message-----",
+	"begin forwarded message:",
+	"________________________________",
+	"this email and any files transmitted",
+	"confidential and intended solely",
+	"sent from my iphone",
+	"unsubscribe",
+}
+
+// quotedReplyLine matches the "On <date>, <someone> wrote:" attribution line that
+// opens a quoted reply chain, in the forms Gmail/Outlook actually emit.
+var quotedReplyLine = regexp.MustCompile(`(?i)^\s*on .{0,120}\bwrote:\s*$`)
+
+// signatureDelimiter is the RFC 3676 signature separator ("-- ") plus the bare "--"
+// that most clients emit in practice.
+func isSignatureDelimiter(line string) bool {
+	t := strings.TrimRight(line, " \t")
+	return t == "--" || t == "-"
+}
+
+// senderAuthoredBody returns only the prose the sender actually wrote: the body up to
+// the first forwarded block, quoted reply, signature, or legal disclaimer. Quoted
+// lines (">") are dropped wherever they appear.
+//
+// Without this, every reply chain re-litigates its own history and every forward puts
+// a stranger's words in the sender's mouth — and the brief attributes both to the
+// attendee as things they are waiting on the user for.
+func senderAuthoredBody(text string) string {
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if quotedReplyLine.MatchString(line) || isSignatureDelimiter(line) {
+			break
+		}
+		stop := false
+		for _, marker := range quotedBlockMarkers {
+			if strings.Contains(lower, marker) {
+				stop = true
+				break
+			}
+		}
+		if stop {
+			break
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), ">") {
+			continue // quoted remnant
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// speakerPrefix matches the transcript label an iMessage line carries ("Me: ",
+// "Gouri Karode: "). It is scaffolding the renderer added, not words anybody spoke.
+var speakerPrefix = regexp.MustCompile(`^[\p{L}][\p{L}\p{N} .'’\-]{0,30}:\s+`)
+
+// stripSpeakerPrefix removes a leading transcript speaker label from a line.
+func stripSpeakerPrefix(segment string) string {
+	return strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))
+}
+
+// isForwardedSubject reports whether a subject line marks the mail as a forward.
+// "Re:" is deliberately NOT included: a reply is still the sender writing to you.
+func isForwardedSubject(title string) bool {
+	lower := strings.ToLower(strings.TrimSpace(title))
+	return strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")
+}
+
+// isLeadInFragment reports whether a sentence merely ANNOUNCES content instead of
+// carrying it. "Based on our conversation, here are the next steps and deliverables:"
+// ends in a colon and states nothing the user must do — it points at a list that the
+// sentence splitter then threw away. A brief line has to stand on its own.
+func isLeadInFragment(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return true
+	}
+	if strings.HasSuffix(t, ":") {
+		return true
+	}
+	// A "sentence" of one or two words is a header, not a statement.
+	return len(strings.Fields(t)) < 3
+}
+
+// urlPattern matches a URL while it is still whole: an explicit scheme, a www.
+// host, or a bare host-with-path ("meet.google.com/ctk-rdtz-jnx?hs=224",
+// "aka.ms/JoinTeamsMeeting?omkt=en-US") — the shape that survives a plain-text
+// email once the mail client has dropped the angle brackets.
+var urlPattern = regexp.MustCompile(`(?i)(?:https?://|www\.)\S+|[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}/\S*`)
+
+// stripURLs removes whole URLs from a body before it is segmented, so URL debris
+// can never be mistaken for prose. It runs on the RAW text — after segmentation the
+// pieces no longer look like URLs, which is exactly how the shards got through.
+func stripURLs(text string) string {
+	return urlPattern.ReplaceAllString(text, " ")
+}
+
+// unwrapHardWraps joins a line to the next when the line did not actually end a
+// sentence and the next line continues it (a lowercase or digit start). Plain-text
+// email is hard-wrapped at a fixed column, so those newlines are typography, not
+// punctuation. Blank lines, and lines that end in real terminators, still break.
+//
+// The lowercase-continuation test is deliberately conservative: it never merges two
+// iMessage turns, because a new turn starts with a capitalized speaker name.
+func unwrapHardWraps(text string) string {
+	lines := strings.Split(text, "\n")
+	var out strings.Builder
+	for i, line := range lines {
+		out.WriteString(line)
+		if i == len(lines)-1 {
+			break
+		}
+		trimmed := strings.TrimRight(line, " \t")
+		next := strings.TrimLeft(lines[i+1], " \t")
+		if continuesSentence(trimmed, next) {
+			out.WriteByte(' ')
+			continue
+		}
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+// continuesSentence reports whether next is the wrapped remainder of line.
+func continuesSentence(line, next string) bool {
+	if line == "" || next == "" {
+		return false
+	}
+	switch line[len(line)-1] {
+	case '.', '!', '?', ';', ':', '|', '-', '*':
+		return false
+	}
+	r := rune(next[0])
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+}
+
 func containsPersonalTrivia(text string) bool {
 	return containsAnyPhrase(strings.ToLower(text), personalTriviaPhrases)
 }
@@ -911,9 +1103,148 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// meetingNotificationSubjects are the Google Calendar RSVP/invite subject prefixes.
+// These mails are EVENT PLUMBING, machine-generated by the calendar server — nobody
+// wrote them to the user.
+var meetingNotificationSubjects = []string{
+	"invitation:", "updated invitation:", "declined:", "accepted:", "tentative:",
+	"canceled:", "cancelled:", "rescheduled:", "reminder:", "notification:",
+}
+
+// meetingNotificationBodyMarkers are boilerplate blocks emitted by conferencing
+// tools. Their presence means the body is join-instructions, not correspondence.
+var meetingNotificationBodyMarkers = []string{
+	"has declined this invitation", "has accepted this invitation",
+	"you have been invited to the following event", "view all guest info",
+	"join with google meet", "microsoft teams meeting", "join zoom meeting",
+	"join by phone", "meeting id:", "passcode:", "rsvp to this event",
+}
+
+// isMeetingNotification reports whether a mail is a machine-generated calendar /
+// conferencing notification rather than something a human wrote to the user.
+//
+// These were being mined for evidence, and they are where the gibberish came from:
+// a "Declined: Sync up meeting" RSVP notice contributed the Google Meet URL that got
+// shredded into "com/ctk-rdtz-jnx?", and a Microsoft Teams invite contributed
+// "Need help?" — its own support-link footer — as an unresolved thread with an
+// attendee. There is no unfinished business inside an RSVP receipt.
+func isMeetingNotification(m Memory) bool {
+	title := strings.ToLower(strings.TrimSpace(m.Title))
+	for _, prefix := range meetingNotificationSubjects {
+		if strings.HasPrefix(title, prefix) {
+			return true
+		}
+	}
+	return containsAnyPhrase(strings.ToLower(m.Text), meetingNotificationBodyMarkers)
+}
+
+// selfNameTokens derives the user's own name tokens from the addresses Mora already
+// knows (source mailboxes + declared self_emails), so the third-party check has
+// something to compare an explicit assignee against. Only the LOCAL part is used —
+// the domain is a company, not a person.
+func selfNameTokens(self map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for addr := range self {
+		local, _, found := strings.Cut(addr, "@")
+		if !found {
+			local = addr
+		}
+		for _, part := range strings.FieldsFunc(local, func(r rune) bool {
+			return r == '.' || r == '_' || r == '-' || r == '+'
+		}) {
+			if len(part) >= 2 {
+				out[strings.ToLower(part)] = true
+			}
+		}
+	}
+	return out
+}
+
+// thirdPartyAssignmentPrefixes are the ways a line names whose job something is.
+var thirdPartyAssignmentPrefixes = []string{"action item for", "action items for", "todo for", "to do for"}
+
+// assignedToThirdParty reports whether a line explicitly assigns its obligation to
+// someone who is NOT the user.
+//
+// The brief surfaced "*Action Item for Kim:* Please share the Ahrefs findings" as
+// the USER's open loop. It is Kim's. A line that names its assignee has told us who
+// owes it; if that is not the user, it is not the user's unfinished business, and
+// FMB doctrine is explicit that every surfaced line must answer "what must the USER
+// do or not-get-wrong" — never "what did somebody say to somebody else".
+func assignedToThirdParty(text string, self map[string]bool) bool {
+	lower := strings.ToLower(text)
+	for _, prefix := range thirdPartyAssignmentPrefixes {
+		idx := strings.Index(lower, prefix)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.TrimLeft(lower[idx+len(prefix):], " \t*:")
+		assignee := strings.FieldsFunc(rest, func(r rune) bool {
+			return r < 'a' || r > 'z'
+		})
+		if len(assignee) == 0 {
+			continue
+		}
+		if !self[assignee[0]] {
+			return true
+		}
+	}
+	return false
+}
+
+// meetingBriefIsTwoPartyExchange reports whether a Gmail message is business among
+// THIS MEETING'S people, rather than a thread the user merely sits on.
+//
+// The sender gate alone is not enough. Gouri (an attendee) really did send "Is there
+// a pdf export version from Ahrefs?", and Adit really was a recipient — so the sender
+// gate passed it — but the mail also went to Beth, a client, and opened "Hi Beth".
+// Gouri was asking BETH. Adit was a bystander on his parents' client thread, and the
+// brief told him it was his obligation.
+//
+// The line is not "only two people". A thread among several people who are ALL in the
+// meeting is still that meeting's business, and the sender decides attribution (a
+// rule the brief already relies on). What breaks attribution is an OUTSIDER on the
+// thread: once someone who is not in this meeting is being spoken to, the ask may
+// well be aimed at them, and Mora does not guess — the same refusal it already makes
+// outbound, where "a group record that cannot be assigned to exactly one attendee is
+// dropped rather than attributed arbitrarily".
+//
+// Alias-safe via mailboxKey, so a dotted/plussed alias is still the same human.
+func meetingBriefIsTwoPartyExchange(m Memory, self map[string]bool, attendees ...string) bool {
+	inRoom := map[string]bool{}
+	for addr := range self {
+		inRoom[mailboxKey(addr)] = true
+	}
+	for _, a := range attendees {
+		if key := mailboxKey(a); key != "" {
+			inRoom[key] = true
+		}
+	}
+
+	for _, field := range []string{"to", "cc", "bcc"} {
+		for _, raw := range metaStrings(m.Meta[field]) {
+			key := mailboxKey(strings.ToLower(strings.TrimSpace(raw)))
+			if key == "" || inRoom[key] {
+				continue
+			}
+			return false // an outsider was being spoken to; who owes what is unknowable
+		}
+	}
+	return true
+}
+
 // classifyMeetingBriefEvidence performs P14's deterministic selection only.
 // P15 replaces ordering, not these unfinished-business gates.
 func classifyMeetingBriefEvidence(m Memory, cfg Config, at time.Time) string {
+	// Machine-generated calendar/conferencing notifications are event plumbing, not
+	// correspondence. Excluded from EVERY section before anything else looks at them.
+	if isMeetingNotification(m) {
+		return ""
+	}
+	// An obligation the text explicitly hands to someone else is not the user's.
+	if assignedToThirdParty(signalText(m), selfNameTokens(selfEmails(cfg))) {
+		return ""
+	}
 	// Bulk/marketing/transactional mail (every sender a service identity) is never
 	// unfinished business with a person — exclude it from every section so a
 	// co-recipient blast can't surface as an attendee's "open loop". Framing: the
@@ -957,10 +1288,18 @@ var unresolvedThreadPhrases = []string{
 	"follow-up", "next steps", "awaiting",
 }
 
+// stalenessGuardPhrases mark a fact that has CHANGED, so the user does not walk in
+// and assert something now-wrong ("she's still at Acme", "you're still in Boston").
+//
+// They must denote an identity/role/location change, and nothing else. The bare verbs
+// that used to live here — "joined ", "leaving ", "left " — matched everyday speech:
+// "Good morning leaving now" (the user walking out the door) was rendered as a
+// staleness guard about an attendee. A guard has to be about who someone now IS.
 var stalenessGuardPhrases = []string{
-	"moved to ", "moving to ", "joined ", "leaving ", "left ",
-	"new role", "new title", "now at ", "no longer ", "formerly ",
-	"changed roles", "changed companies", "renamed ", "rescheduled",
+	"moved to ", "moving to ", "relocated to ",
+	"new role", "new title", "new job", "new company",
+	"now at ", "no longer at", "no longer with", "formerly at", "formerly with",
+	"changed roles", "changed companies", "changed jobs",
 }
 
 var materialContextPhrases = []string{
@@ -1098,12 +1437,23 @@ func lastConversationLine(text string) (speaker, body string) {
 	return "", ""
 }
 
+// endsInActionableQuestion reports whether this memory carries a question the user
+// actually has to answer.
+//
+// Gmail goes through the STRICT gate (a real interrogative opener or a direct
+// request), the same one the open-loops path uses. It did not, and that gap is why
+// "Need help?" — the footer of a Microsoft Teams invite — surfaced as an unresolved
+// thread with an attendee. A bare "?" in email is far more often a CTA, a footer, or
+// URL debris than an obligation. iMessage deliberately keeps the loose bare-"?" test:
+// terse real conversation is exactly where "the deck?" is a genuine ask.
 func endsInActionableQuestion(m Memory) bool {
-	var question string
 	if isIMessageMemory(m) {
-		_, question = lastConversationLine(m.Text)
-	} else {
-		question = signalText(m)
+		_, question := lastConversationLine(m.Text)
+		return actionableQuestion(question)
+	}
+	question := signalText(m)
+	if isGmailMemory(m) {
+		return gmailActionableAsk(question)
 	}
 	return actionableQuestion(question)
 }
@@ -1219,11 +1569,41 @@ func signalText(m Memory) string {
 	return strings.ToLower(oneLine(m.Title + " " + stripFromLine(m.Text)))
 }
 
+// containsAnyPhrase reports whether text contains any phrase AT A WORD BOUNDARY.
+//
+// A raw substring test is not good enough here, and the difference is not academic:
+// "pending" matched "de-pending-on", so a vendor's price quote ("proper SEM setup
+// will cost $2,000+ depending on how many campaigns") was filed as an unresolved
+// decision on the strength of a word that wasn't there. Same class of error would
+// let "intro" match "introduction" and "left" match "leftover".
 func containsAnyPhrase(text string, phrases []string) bool {
 	for _, phrase := range phrases {
-		if strings.Contains(text, phrase) {
+		if containsPhrase(text, phrase) {
 			return true
 		}
+	}
+	return false
+}
+
+func containsPhrase(text, phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	for start := 0; start < len(text); {
+		i := strings.Index(text[start:], phrase)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(phrase)
+		// A phrase that already begins/ends with a space or punctuation carries its
+		// own boundary; only check the side that ends in a word character.
+		okBefore := i == 0 || !isWordByte(text[i-1]) || !isWordByte(phrase[0])
+		okAfter := end == len(text) || !isWordByte(text[end]) || !isWordByte(phrase[len(phrase)-1])
+		if okBefore && okAfter {
+			return true
+		}
+		start = i + 1
 	}
 	return false
 }
