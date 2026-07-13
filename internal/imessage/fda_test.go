@@ -1,6 +1,7 @@
 package imessage
 
 import (
+	"database/sql"
 	"go/parser"
 	"go/token"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 // TestReadOnlyDSN asserts the chat.db DSN is read-only and WAL-safe: it MUST
@@ -23,6 +26,81 @@ func TestReadOnlyDSN(t *testing.T) {
 	}
 	if strings.Contains(dsn, "immutable") {
 		t.Errorf("DSN %q must NEVER contain immutable (IMSG-09)", dsn)
+	}
+}
+
+// TestProbeReadable asserts that the FDA probe correctly identifies a readable
+// database, a missing file, and a corrupt/garbage file.
+func TestProbeReadable(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Valid database
+	validDBPath := filepath.Join(tmpDir, "valid.db")
+	db, err := sql.Open("sqlite", "file:"+validDBPath+"?mode=rwc")
+	if err != nil {
+		t.Fatalf("failed to create valid db: %v", err)
+	}
+	// Needs to have sqlite_master populated or at least be a valid db.
+	// Creating a table ensures it's a valid sqlite db file.
+	if _, err := db.Exec("CREATE TABLE test (id INTEGER)"); err != nil {
+		t.Fatalf("failed to init valid db: %v", err)
+	}
+	db.Close()
+
+	readable, err := ProbeReadable(validDBPath)
+	if err != nil {
+		t.Errorf("ProbeReadable(valid) returned error: %v", err)
+	}
+	if !readable {
+		t.Errorf("ProbeReadable(valid) = false, want true")
+	}
+
+	// 2. Missing file
+	missingPath := filepath.Join(tmpDir, "missing.db")
+	readable, err = ProbeReadable(missingPath)
+	if err == nil {
+		t.Errorf("ProbeReadable(missing) expected error, got nil")
+	}
+	if readable {
+		t.Errorf("ProbeReadable(missing) = true, want false")
+	}
+
+	// 3. Corrupt / Garbage file
+	garbagePath := filepath.Join(tmpDir, "garbage.db")
+	if err := os.WriteFile(garbagePath, []byte("not a sqlite database"), 0644); err != nil {
+		t.Fatalf("failed to create garbage file: %v", err)
+	}
+	readable, err = ProbeReadable(garbagePath)
+	if err == nil {
+		t.Errorf("ProbeReadable(garbage) expected error, got nil")
+	}
+	if readable {
+		t.Errorf("ProbeReadable(garbage) = true, want false")
+	}
+
+	// 4. Unreadable permissions (simulating FDA denial)
+	unreadablePath := filepath.Join(tmpDir, "unreadable.db")
+	// Make it a valid DB first
+	dbUnreadable, err := sql.Open("sqlite", "file:"+unreadablePath+"?mode=rwc")
+	if err != nil {
+		t.Fatalf("failed to create unreadable db: %v", err)
+	}
+	if _, err := dbUnreadable.Exec("CREATE TABLE test2 (id INTEGER)"); err != nil {
+		t.Fatalf("failed to init unreadable db: %v", err)
+	}
+	dbUnreadable.Close()
+
+	// Strip read permissions
+	if err := os.Chmod(unreadablePath, 0000); err != nil {
+		t.Fatalf("failed to chmod unreadable db: %v", err)
+	}
+
+	readable, err = ProbeReadable(unreadablePath)
+	if err == nil {
+		t.Errorf("ProbeReadable(unreadable) expected error, got nil")
+	}
+	if readable {
+		t.Errorf("ProbeReadable(unreadable) = true, want false")
 	}
 }
 
