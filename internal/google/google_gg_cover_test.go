@@ -890,13 +890,6 @@ func TestGg_NewLiveFetcher(t *testing.T) {
 	}
 }
 
-func TestGg_FetchPageUnsupportedKind(t *testing.T) {
-	f := ggNewLiveFetcher(nil, nil) // services never dereferenced for an unknown kind
-	_, err := f.FetchPage(ItemKind("bogus"), FetchWindow{}, "")
-	if err == nil || !strings.Contains(err.Error(), "unsupported kind") {
-		t.Fatalf("want unsupported-kind error, got %v", err)
-	}
-}
 
 func TestGg_AuthedEmail(t *testing.T) {
 	t.Run("success lowercases and trims", func(t *testing.T) {
@@ -1168,4 +1161,53 @@ func TestGg_ParseCalTime(t *testing.T) {
 	if got := parseCalTime(&calendar.EventDateTime{}); !got.IsZero() {
 		t.Fatalf("empty => %v, want zero", got)
 	}
+}
+
+func TestGg_LiveFetcherFetchPage(t *testing.T) {
+	t.Run("unsupported kind", func(t *testing.T) {
+		f := ggNewLiveFetcher(nil, nil)
+		_, err := f.FetchPage(ItemKind("bogus"), FetchWindow{}, "")
+		if err == nil || !strings.Contains(err.Error(), "unsupported kind") {
+			t.Fatalf("want unsupported-kind error, got %v", err)
+		}
+	})
+
+	t.Run("routes to gmail", func(t *testing.T) {
+		g := &ggFakeGoogle{
+			threadsList: func(r *http.Request) (int, string) {
+				return 200, ggMustJSON(t, &gmail.ListThreadsResponse{
+					Threads: []*gmail.Thread{{Id: "t1"}},
+				})
+			},
+			threadGet: func(id string, r *http.Request) (int, string) {
+				return 200, ggMustJSON(t, &gmail.Thread{Id: "t1"})
+			},
+		}
+		f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+		page, err := f.FetchPage(KindGmailThread, FetchWindow{}, "")
+		if err != nil {
+			t.Fatalf("FetchPage failed: %v", err)
+		}
+		if len(page.Items) != 1 || page.Items[0].ProviderID != "t1" {
+			t.Fatalf("unexpected items: %+v", page.Items)
+		}
+	})
+
+	t.Run("routes to calendar", func(t *testing.T) {
+		g := &ggFakeGoogle{
+			events: func(r *http.Request) (int, string) {
+				return 200, ggMustJSON(t, &calendar.Events{
+					Items: []*calendar.Event{{Id: "e1", Start: &calendar.EventDateTime{DateTime: "2026-06-04T09:00:00Z"}}},
+				})
+			},
+		}
+		f := ggNewLiveFetcher(nil, ggCalSvc(t, ggServe(t, g)))
+		page, err := f.FetchPage(KindCalEvent, FetchWindow{}, "")
+		if err != nil {
+			t.Fatalf("FetchPage failed: %v", err)
+		}
+		if len(page.Items) != 1 || page.Items[0].ProviderID != "primary/e1" {
+			t.Fatalf("unexpected items: %+v", page.Items)
+		}
+	})
 }
