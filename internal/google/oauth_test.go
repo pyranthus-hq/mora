@@ -1,6 +1,9 @@
 package google
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -190,6 +193,66 @@ func TestIsWSL(t *testing.T) {
 	if isWSLProcVersion("Linux version 6.1.0-generic") != false {
 		t.Fatal("should not flag plain linux")
 	}
+}
+
+type mockRoundTripper struct {
+	roundTrip func(*http.Request) (*http.Response, error)
+}
+
+func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.roundTrip(req)
+}
+
+func TestRevokeToken(t *testing.T) {
+	origTransport := http.DefaultClient.Transport
+	t.Cleanup(func() { http.DefaultClient.Transport = origTransport })
+
+	tok := &oauth2.Token{RefreshToken: "test-refresh-token"}
+
+	t.Run("success", func(t *testing.T) {
+		reqCount := 0
+		http.DefaultClient.Transport = &mockRoundTripper{
+			roundTrip: func(req *http.Request) (*http.Response, error) {
+				reqCount++
+				if req.Method != "POST" {
+					t.Errorf("expected POST method, got %s", req.Method)
+				}
+				expectedURL := "https://oauth2.googleapis.com/revoke?token=test-refresh-token"
+				if req.URL.String() != expectedURL {
+					t.Errorf("expected URL %s, got %s", expectedURL, req.URL.String())
+				}
+				if ct := req.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
+					t.Errorf("expected Content-Type application/x-www-form-urlencoded, got %s", ct)
+				}
+
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			},
+		}
+
+		err := RevokeToken(context.Background(), tok)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if reqCount != 1 {
+			t.Fatalf("expected 1 request, got %d", reqCount)
+		}
+	})
+
+	t.Run("network error", func(t *testing.T) {
+		http.DefaultClient.Transport = &mockRoundTripper{
+			roundTrip: func(req *http.Request) (*http.Response, error) {
+				return nil, os.ErrDeadlineExceeded
+			},
+		}
+
+		err := RevokeToken(context.Background(), tok)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
 }
 
 func TestOpenBrowserRejectsInvalidURLs(t *testing.T) {
