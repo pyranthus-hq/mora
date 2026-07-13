@@ -225,10 +225,17 @@ type MeetingBriefSection struct {
 // MeetingBrief is the shared CLI/MCP P14 shape. EgressCalls is an explicit meter:
 // assembly reads only the local vault/index and therefore always reports zero.
 type MeetingBrief struct {
-	AsOf        string                `json:"as_of"`
-	Event       *CitedMeetingEvent    `json:"event"`
-	Sections    []MeetingBriefSection `json:"sections"`
-	EgressCalls int                   `json:"egress_calls"`
+	AsOf     string                `json:"as_of"`
+	Event    *CitedMeetingEvent    `json:"event"`
+	Sections []MeetingBriefSection `json:"sections"`
+	// Gaps are honest, user-facing statements of what this brief could NOT establish.
+	// A gap suppresses a CLAIM; it never fabricates one and never hides the artifact.
+	Gaps []string `json:"gaps,omitempty"`
+	// SelfUnresolved reports that Mora could not tell which invitee is the user, so it
+	// attributed nothing: any of the invited addresses could BE the user, and citing a
+	// record to the user as if it were a counterparty's is wrong-person attribution.
+	SelfUnresolved bool `json:"self_unresolved,omitempty"`
+	EgressCalls    int  `json:"egress_calls"`
 }
 
 func (b MeetingBrief) validate() error {
@@ -326,9 +333,12 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 	}
 
 	self := selfEmails(cfg)
-	if len(metaStrings(eventMemory.Meta["attendees"])) > 0 && len(self) == 0 {
-		return MeetingBrief{}, errors.New("cannot safely resolve meeting attendees: self email is unknown; connect a Google account first")
-	}
+	rawAttendees := metaStrings(eventMemory.Meta["attendees"])
+	// Can Mora pick the user out of the invitee list? Knowing SOME address of the user
+	// is not enough: if none of the invited addresses is one of them, the user was
+	// invited under an alias, and Mora cannot tell which invitee is the user.
+	selfUnresolved := len(rawAttendees) > 0 && !meetingBriefSelfAmongAttendees(eventMemory, rawAttendees, self)
+
 	attendees := meetingBriefAttendees(eventMemory, self)
 	eventCitation, err := citationForMemory(eventMemory, eventMemory.ID, validFromOf(eventMemory))
 	if err != nil {
@@ -347,6 +357,24 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		Sections:    []MeetingBriefSection{},
 		EgressCalls: 0,
 	}
+	// Refuse-to-GAP, not refuse-to-error. If Mora cannot pick the user out of the
+	// invitee list, then ANY invitee could BE the user, so it must not attribute a
+	// single line to any of them — citing the user's own record back as a
+	// counterparty's unfinished business is wrong-person attribution (severity-1).
+	//
+	// Suppress the claims; keep the artifact. Erroring buys no extra safety (an
+	// unattributed brief emits zero lines either way) and would take the whole
+	// next-meeting brief down over one unresolvable event — `selectNextEvent` is
+	// provider-agnostic, so a single unrecognized dentist appointment would break the
+	// flagship surface. Gapping states the limit honestly and says how to fix it.
+	if selfUnresolved {
+		brief.SelfUnresolved = true
+		brief.Gaps = append(brief.Gaps, fmt.Sprintf(
+			"Cannot tell which invitee is you (%s), so nothing is attributed for this meeting. Add your other addresses to config.toml: self_emails = \"you@alias.com\".",
+			strings.Join(rawAttendees, ", ")))
+		return brief, nil
+	}
+
 	_, budgetChars := resolveContextBudgetTokens(cfg, maxTokens)
 	payloadBudget := budgetChars / mcpDigestEnvelopeDivisor
 	if baseSize := jsonLen(brief); baseSize > payloadBudget {
@@ -374,12 +402,21 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		personKind, _ := dossier["kind"].(string)
 		mentionCount, _ := dossier["count"].(int)
 		evidence, _ := dossier["memories"].([]Memory)
+		related := relationalEvidenceIDs(dossier)
 		personLastSeen := latestMeetingBriefEvidenceDate(evidence, at)
 		for _, m := range evidence {
 			if m.ID == eventMemory.ID {
 				continue
 			}
 			if m.DeletedAt != "" {
+				continue
+			}
+			// The dossier pools every edge rel. A MENTIONS edge means the gazetteer
+			// found this person's NAME in a body they were not a participant of — so
+			// the record is someone writing ABOUT them, never unfinished business
+			// BETWEEN the user and them. Surfacing it under their name is wrong-person
+			// attribution (severity-1), so require a relationship edge.
+			if !related[m.ID] {
 				continue
 			}
 			occurredAt := validFromOf(m)
@@ -677,13 +714,40 @@ type meetingBriefAttendee struct {
 	display  string
 }
 
+// meetingBriefSelfAmongAttendees reports whether the user is identifiable among the
+// event's invited addresses — either because the connector recorded Google's
+// authoritative Attendee.Self, or because one invited address is a known address of
+// theirs (source mailbox or a declared self_emails alias). A solo event (no other
+// invitee) is not a wrong-person risk, so it is allowed through.
+func meetingBriefSelfAmongAttendees(event Memory, rawAttendees []string, self map[string]bool) bool {
+	if s, _ := event.Meta["self_email"].(string); strings.TrimSpace(s) != "" {
+		return true
+	}
+	for _, raw := range rawAttendees {
+		if self[strings.ToLower(strings.TrimSpace(raw))] {
+			return true
+		}
+	}
+	return false
+}
+
 func meetingBriefAttendees(event Memory, self map[string]bool) []meetingBriefAttendee {
 	names := metaNames(event.Meta["names"])
 	seen := map[string]bool{}
+	// The event's own self_email is Google's authoritative answer to "which of these
+	// attendees is the user" (Attendee.Self), and it beats every inference: the
+	// calendar routinely invites an alias the connected mailbox has never seen. Union
+	// it with the configured/source-derived self set so the user is never admitted as
+	// an attendee of their own meeting.
+	eventSelf, _ := event.Meta["self_email"].(string)
+	eventSelf = strings.ToLower(strings.TrimSpace(eventSelf))
 	var out []meetingBriefAttendee
 	for _, raw := range metaStrings(event.Meta["attendees"]) {
 		identity := strings.ToLower(strings.TrimSpace(raw))
 		if identity == "" || self[identity] || seen[identity] || isStructuralNoise(identity) {
+			continue
+		}
+		if eventSelf != "" && identity == eventSelf {
 			continue
 		}
 		seen[identity] = true
@@ -978,6 +1042,32 @@ func isIMessageMemory(m Memory) bool {
 
 func isGmailMemory(m Memory) bool {
 	return strings.EqualFold(m.Provider, "gmail") || strings.Contains(strings.ToLower(m.ProviderID), "gmail")
+}
+
+// relationalEvidenceIDs returns the dossier evidence ids this person is actually a
+// PARTY to — reached by a relationship edge (PARTICIPATED_IN / EMAILED / ATTENDED /
+// TEXTED ...) rather than a body-text MENTIONS edge.
+//
+// buildGraph emits MENTIONS only for a gazetteer name-hit on a memory the person is
+// NOT a participant of (it skips anyone already covered by a participant edge), so a
+// mention-only memory is by construction "a third party wrote this person's name" —
+// e.g. a note reading "I spoke to Neil about the pilot; can you follow up?" is an ask
+// owed to its AUTHOR, not to Neil. graphGetEntity pools every rel into one evidence
+// list (correct for a dossier, which is about the person), but the brief is about the
+// user's unfinished business WITH the person, so it must take only the relational
+// slice. Attributing a mention is wrong-person attribution — severity-1.
+func relationalEvidenceIDs(dossier map[string]any) map[string]bool {
+	out := map[string]bool{}
+	edges, _ := dossier["edges"].([]map[string]any)
+	for _, e := range edges {
+		if rel, _ := e["rel"].(string); rel == graphRelMentions {
+			continue
+		}
+		if id, _ := e["evidence_id"].(string); id != "" {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 func lowerStrings(in []string) []string {

@@ -206,9 +206,9 @@ func (f *LiveFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, curs
 	last := after
 	for _, e := range evs {
 		last = e.rowid
-		attendees, organizer := f.participants(e.rowid)
+		attendees, organizer, self := f.participants(e.rowid)
 		items = append(items, eventItem(e.rowid, e.summary, e.desc, e.cal, e.locStr, e.uuid,
-			appleTime(e.start), appleTime(e.end), e.allDay != 0, attendees, organizer))
+			appleTime(e.start), appleTime(e.end), e.allDay != 0, attendees, organizer, self))
 	}
 	next := ""
 	if len(evs) == pageSize {
@@ -220,19 +220,34 @@ func (f *LiveFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, curs
 // participants returns the sorted attendee emails + the organizer email for an
 // event. Best-effort: a query error degrades to no participants rather than
 // failing the event (the entity graph loses an edge, the memory survives).
-func (f *LiveFetcher) participants(eventROWID int64) (attendees []string, organizer string) {
+// participants reads an event's invitees, its organizer, and — critically — which
+// row is the LOCAL USER. Calendar.sqlitedb marks the user's own Participant row with
+// is_self=1. Mora used to drop that bit, leaving the brief unable to recognize the
+// user among their own meeting's invitees: the calendar lists them under whichever
+// alias the invite used (an iCloud/me.com address the connected Google mailbox has
+// never seen), so self-exclusion missed them, they were admitted as an attendee of
+// their own meeting, and their own records were cited back to them as the
+// counterparty's unfinished business — wrong-person attribution, severity-1.
+//
+// is_self is read defensively: an older/foreign schema without the column must keep
+// working (attendees + organizer as before, no self signal) rather than fail the sync.
+func (f *LiveFetcher) participants(eventROWID int64) (attendees []string, organizer, self string) {
+	selfExpr := "0"
+	if f.hasSelfColumn() {
+		selfExpr = "COALESCE(is_self, 0)"
+	}
 	rows, err := f.db.Query(
-		`SELECT COALESCE(email, ''), COALESCE(role, 0) FROM Participant WHERE owner_id = ?`, eventROWID)
+		`SELECT COALESCE(email, ''), COALESCE(role, 0), `+selfExpr+` FROM Participant WHERE owner_id = ?`, eventROWID)
 	if err != nil {
-		return nil, ""
+		return nil, "", ""
 	}
 	defer rows.Close()
 	seen := map[string]bool{}
 	for rows.Next() {
 		var email string
-		var role int
-		if err := rows.Scan(&email, &role); err != nil {
-			return nil, ""
+		var role, isSelf int
+		if err := rows.Scan(&email, &role, &isSelf); err != nil {
+			return nil, "", ""
 		}
 		email = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(email, "mailto:")))
 		if email == "" || seen[email] {
@@ -243,16 +258,29 @@ func (f *LiveFetcher) participants(eventROWID int64) (attendees []string, organi
 		if role == 1 && organizer == "" {
 			organizer = email
 		}
+		if isSelf == 1 && self == "" {
+			self = email
+		}
 		attendees = append(attendees, email)
 	}
 	sort.Strings(attendees)
-	return attendees, organizer
+	return attendees, organizer, self
+}
+
+// hasSelfColumn reports whether this Calendar.sqlitedb exposes Participant.is_self.
+func (f *LiveFetcher) hasSelfColumn() bool {
+	rows, err := f.db.Query(`SELECT 1 FROM pragma_table_info('Participant') WHERE name = 'is_self'`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
 }
 
 // eventItem renders one event as a provider-agnostic Item. Meta mirrors the
 // Google Calendar conventions ("attendees", "organizer", "occurred_at") so the
 // entity graph's connector-capture path reads both calendars identically.
-func eventItem(rowid int64, summary, desc, calTitle, locTitle, uuid string, start, end time.Time, allDay bool, attendees []string, organizer string) memory.Item {
+func eventItem(rowid int64, summary, desc, calTitle, locTitle, uuid string, start, end time.Time, allDay bool, attendees []string, organizer, self string) memory.Item {
 	providerID := uuid
 	if providerID == "" {
 		providerID = strconv.FormatInt(rowid, 10)
@@ -279,6 +307,13 @@ func eventItem(rowid int64, summary, desc, calTitle, locTitle, uuid string, star
 	}
 	if organizer != "" {
 		meta["organizer"] = organizer
+	}
+	// The local user's own address on THIS event (Participant.is_self). Mirrors the
+	// key the Google connector emits from Attendee.Self, so the meeting brief can
+	// exclude the user from their own meeting regardless of which calendar it came
+	// from and which alias the invite used.
+	if self != "" {
+		meta["self_email"] = self
 	}
 	return memory.Item{
 		Kind:       KindAppleCalEvent,

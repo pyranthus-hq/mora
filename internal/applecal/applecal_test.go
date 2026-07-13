@@ -23,7 +23,7 @@ func seedDB(t *testing.T) string {
 	stmts := []string{
 		`CREATE TABLE Calendar (ROWID INTEGER PRIMARY KEY, title TEXT)`,
 		`CREATE TABLE Location (ROWID INTEGER PRIMARY KEY, title TEXT)`,
-		`CREATE TABLE Participant (ROWID INTEGER PRIMARY KEY, owner_id INTEGER, email TEXT, role INTEGER)`,
+		`CREATE TABLE Participant (ROWID INTEGER PRIMARY KEY, owner_id INTEGER, email TEXT, role INTEGER, is_self INTEGER DEFAULT 0)`,
 		`CREATE TABLE CalendarItem (ROWID INTEGER PRIMARY KEY, summary TEXT, description TEXT,
 			start_date REAL, end_date REAL, all_day INTEGER DEFAULT 0, calendar_id INTEGER,
 			location_id INTEGER, entity_type INTEGER, UUID TEXT, hidden INTEGER DEFAULT 0)`,
@@ -65,8 +65,11 @@ func seedDB(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO Participant (owner_id, email, role) VALUES
-		(10, 'neil@example.com', 0), (10, 'mailto:Alex.Owner@gmail.com', 1), (10, '', 0)`); err != nil {
+	// Alex is the local user (is_self=1) AND the organizer, exactly as the real
+	// Calendar.sqlitedb records it. The empty-email row is the participant the
+	// attendee list legitimately drops.
+	if _, err := db.Exec(`INSERT INTO Participant (owner_id, email, role, is_self) VALUES
+		(10, 'neil@example.com', 0, 0), (10, 'mailto:Alex.Owner@gmail.com', 1, 1), (10, '', 0, 0)`); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -161,5 +164,36 @@ func TestUnsupportedSchemaErrors(t *testing.T) {
 	db.Close()
 	if _, err := NewLiveFetcher(path); err == nil || !strings.Contains(err.Error(), "unsupported Calendar.sqlitedb schema") {
 		t.Fatalf("want schema error, got: %v", err)
+	}
+}
+
+// TestFetchPageCapturesSelfParticipant pins the zero-config self signal for Apple
+// Calendar. The local Participant table carries an is_self column marking the user's
+// own row, and Mora was dropping it. Without it the brief cannot recognize the user
+// among a meeting's invitees (the calendar routinely lists them under an iCloud/me
+// alias the connected Google mailbox has never seen), admits them as an attendee of
+// their own meeting, and cites their own records back as the counterparty's
+// unfinished business — wrong-person attribution, severity-1. Mirrors the
+// meta["self_email"] key the Google connector emits from Attendee.Self.
+func TestFetchPageCapturesSelfParticipant(t *testing.T) {
+	f, err := NewLiveFetcher(seedDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	page, err := f.FetchPage(KindAppleCalEvent, memory.FetchWindow{
+		Since: now.Add(-90 * 24 * time.Hour),
+		Until: now.Add(180 * 24 * time.Hour),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("want the seeded event, got %d", len(page.Items))
+	}
+	if got, _ := page.Items[0].Meta["self_email"].(string); got != "alex.owner@gmail.com" {
+		t.Fatalf("meta[self_email] = %q, want the lowercased is_self participant %q", got, "alex.owner@gmail.com")
 	}
 }

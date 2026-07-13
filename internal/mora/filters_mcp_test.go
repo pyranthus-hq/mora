@@ -37,7 +37,7 @@ func TestMCPMeetingPrepRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeMemory(cfg, eventMemFull("evt", "Acme sync", now.Add(2*time.Hour).Format(time.RFC3339),
-		map[string]string{"riya@a.com": "Riya"}, "riya@a.com")); err != nil {
+		map[string]string{"riya@a.com": "Riya", "me@a.com": "Me"}, "me@a.com", "riya@a.com")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {

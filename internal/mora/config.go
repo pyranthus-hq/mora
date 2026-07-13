@@ -72,6 +72,18 @@ func defaultConfig() Config {
 // persisted back, orphaning the real vault. Hand-editing config.toml is a
 // path our own refusal messages recommend, so it must parse exactly. An
 // unquoted value cuts at the first '#'.
+// splitCommaList parses a comma-separated config value into trimmed, non-empty
+// entries, preserving order and dropping blanks ("a, ,b" -> ["a","b"]).
+func splitCommaList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func parseConfigValue(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, `"`) {
@@ -125,6 +137,10 @@ func loadConfig() (Config, error) {
 			cfg.Embedder = val
 		case "context":
 			cfg.ContextProfile = val
+		case "self_emails":
+			// Comma-separated list of the user's own additional addresses. Merged into
+			// the self set used for self-exclusion; see Config.SelfEmails.
+			cfg.SelfEmails = splitCommaList(val)
 		case "mmr":
 			// Bool opt-in (`mmr = true`); only "true"/"1" enable. A bool can't be
 			// mistyped into a silent wrong-mode the way a free-form string can.

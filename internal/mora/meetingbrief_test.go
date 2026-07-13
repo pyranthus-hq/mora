@@ -211,8 +211,8 @@ func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing
 		"event-forgettability",
 		"Portfolio commitments",
 		at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"dana@example.com": "Dana"},
-		"dana@example.com",
+		map[string]string{"dana@example.com": "Dana", "me@example.com": "Me"},
+		"me@example.com", "dana@example.com",
 	)
 	oldGem := meetingBriefEmail(
 		"forgotten-gem",
@@ -274,8 +274,9 @@ func TestMeetingBriefSharedThreadUsesSenderAttribution(t *testing.T) {
 		map[string]string{
 			"alice@example.com": "Alice",
 			"bob@example.com":   "Bob",
+			"me@example.com":    "Me",
 		},
-		"alice@example.com",
+		"me@example.com", "alice@example.com",
 		"bob@example.com",
 	)
 	shared := meetingBriefEmail(
@@ -330,8 +331,9 @@ func TestMeetingBriefDropsAmbiguousOutboundGroupAttribution(t *testing.T) {
 		map[string]string{
 			"alice@example.com": "Alice",
 			"bob@example.com":   "Bob",
+			"me@example.com":    "Me",
 		},
-		"alice@example.com",
+		"me@example.com", "alice@example.com",
 		"bob@example.com",
 	)
 	outbound := meetingBriefEmail(
@@ -381,8 +383,8 @@ func TestMeetingBriefRendersActionablePassageNotTriviaFromMixedThread(t *testing
 		"event-mixed-thread",
 		"Deck review",
 		at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"dana@example.com": "Dana"},
-		"dana@example.com",
+		map[string]string{"dana@example.com": "Dana", "me@example.com": "Me"},
+		"me@example.com", "dana@example.com",
 	)
 	mixed := meetingBriefEmail(
 		"mixed-thread",
@@ -433,8 +435,8 @@ func TestMeetingBriefMaxTokensBudgetsSerializedPayload(t *testing.T) {
 		"event-budgeted-brief",
 		"Portfolio review",
 		at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"dana@example.com": "Dana"},
-		"dana@example.com",
+		map[string]string{"dana@example.com": "Dana", "me@example.com": "Me"},
+		"me@example.com", "dana@example.com",
 	)
 	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
@@ -489,8 +491,8 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 		"event-dated-rail",
 		"Career update",
 		at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"dana@example.com": "Dana"},
-		"dana@example.com",
+		map[string]string{"dana@example.com": "Dana", "me@example.com": "Me"},
+		"me@example.com", "dana@example.com",
 	)
 	stale := meetingBriefEmail(
 		"stale-role",
@@ -585,7 +587,7 @@ func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
 	}
 	event := eventMemFull(
 		"event-correction-actions", "Board prep", at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"neil@example.com": "Neil Patel"}, "neil@example.com",
+		map[string]string{"neil@example.com": "Neil Patel", "adit@example.com": "Me"}, "adit@example.com", "neil@example.com",
 	)
 	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
@@ -635,7 +637,7 @@ func TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed(t *testing.T
 	}
 	event := eventMemFull(
 		"event-correction-persist", "Founder sync", at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"neil@example.com": "Neil Patel"}, "neil@example.com",
+		map[string]string{"neil@example.com": "Neil Patel", "adit@example.com": "Me"}, "adit@example.com", "neil@example.com",
 	)
 	ask := meetingBriefEmail(
 		"ask-correction-persist", "Deck follow-up", "Can you send the revised deck by tomorrow?",
@@ -706,7 +708,7 @@ func TestBriefEventCLIAndMCPReturnSameShape(t *testing.T) {
 	}
 	event := eventMemFull(
 		"event-42", "Board prep", at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"neil@example.com": "Neil Patel"}, "neil@example.com",
+		map[string]string{"neil@example.com": "Neil Patel", "adit@example.com": "Me"}, "adit@example.com", "neil@example.com",
 	)
 	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
@@ -796,7 +798,7 @@ func TestMeetingBriefUsesExactAttendeeIdentityNotSharedDisplayName(t *testing.T)
 	two.Meta["names"] = map[string]string{"two@example.com": "Jordan Lee"}
 	event := eventMemFull(
 		"event-jordan", "Jordan sync", at.Add(time.Hour).Format(time.RFC3339),
-		map[string]string{"one@example.com": "Jordan Lee"}, "one@example.com",
+		map[string]string{"one@example.com": "Jordan Lee", "me@example.com": "Me"}, "me@example.com", "one@example.com",
 	)
 	for _, memory := range []Memory{one, two, event} {
 		if err := writeMemory(cfg, memory); err != nil {
