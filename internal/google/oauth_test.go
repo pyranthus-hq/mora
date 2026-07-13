@@ -1,6 +1,10 @@
 package google
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -95,6 +99,65 @@ func TestOpenBrowserUsesPlatformCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestRevokeToken(t *testing.T) {
+	t.Run("success posts to revoke endpoint with the refresh token", func(t *testing.T) {
+		var gotMethod, gotURL, gotContentType string
+		old := http.DefaultClient
+		http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			gotMethod = r.Method
+			gotURL = r.URL.String()
+			gotContentType = r.Header.Get("Content-Type")
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		})}
+		defer func() { http.DefaultClient = old }()
+
+		if err := RevokeToken(context.Background(), &oauth2.Token{RefreshToken: "rt-abc"}); err != nil {
+			t.Fatalf("RevokeToken: %v", err)
+		}
+		if gotMethod != "POST" {
+			t.Fatalf("method = %q, want POST", gotMethod)
+		}
+		if !strings.Contains(gotURL, "oauth2.googleapis.com/revoke") || !strings.Contains(gotURL, "token=rt-abc") {
+			t.Fatalf("revoke URL = %q, want revoke endpoint with token", gotURL)
+		}
+		if gotContentType != "application/x-www-form-urlencoded" {
+			t.Fatalf("content-type = %q", gotContentType)
+		}
+	})
+
+	t.Run("transport error is returned", func(t *testing.T) {
+		old := http.DefaultClient
+		http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return nil, errors.New("boom-network")
+		})}
+		defer func() { http.DefaultClient = old }()
+
+		err := RevokeToken(context.Background(), &oauth2.Token{RefreshToken: "rt"})
+		if err == nil || !strings.Contains(err.Error(), "boom-network") {
+			t.Fatalf("want transport error surfaced, got %v", err)
+		}
+	})
+
+	t.Run("request build error on unparseable token", func(t *testing.T) {
+		// A control char in the refresh token makes the request URL unparseable, so
+		// http.NewRequestWithContext fails before any network call.
+		err := RevokeToken(context.Background(), &oauth2.Token{RefreshToken: "bad\ntoken"})
+		if err == nil {
+			t.Fatal("control char in refresh token must fail request construction")
+		}
+	})
 }
 
 func TestOpenBrowserUnsupportedPlatform(t *testing.T) {
