@@ -56,7 +56,7 @@ flowchart TD
 | `sources add … / ingest run` | Register / run a filesystem source. | `cmdSources` `sources.go`, `cmdIngest` `ingest.go` |
 | `connectors list\|enable\|disable\|setup` | Catalog + per-type consent state. | `cmdConnectors` `setup.go` |
 | `connect google\|imessage [--since-days N]` | OAuth/FDA consent **then** backfill. | `cmdConnect` `ingest.go` |
-| `sync status\|google\|imessage` | Per-source freshness (no fetch) / re-backfill. | `cmdSync` `ingest.go` |
+| `sync status\|google\|filesystem\|imessage` | Per-source freshness (no fetch) / re-backfill. A source is required; unknown names fail closed. | `cmdSync` `ingest.go` |
 | `share keygen\|init\|preview\|push\|subscribe\|pull\|list\|remove` | Scoped, age-encrypted, read-only sharing of authored memories over a dedicated private git remote; subscriptions union into search/think, owner-attributed. | `cmdShare` `share.go:1437`, see [sharing](./13-sharing.md) |
 | `reingest [--full]` | Re-fetch + rewrite memories with latest metadata, rebuild graph. | `cmdReingest` `ingest.go` |
 | `usage report\|off\|on` | Local-only content-free analytics. | `cmdUsage` `usage.go` |
