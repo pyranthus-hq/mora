@@ -30,27 +30,6 @@ func TestContentHashIncludesMeta(t *testing.T) {
 	}
 }
 
-// TestCanonicalMetaSorted proves the canonical encoding is single-line, sorted,
-// and "" for empty — the contract render + hash both rely on.
-func TestCanonicalMetaSorted(t *testing.T) {
-	if s, _ := CanonicalMeta(nil); s != "" {
-		t.Fatalf("nil meta must canonicalize to empty, got %q", s)
-	}
-	if s, _ := CanonicalMeta(map[string]any{}); s != "" {
-		t.Fatalf("empty meta must canonicalize to empty, got %q", s)
-	}
-	s, err := CanonicalMeta(map[string]any{"b": "2", "a": "1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(s, "\n") {
-		t.Fatalf("canonical meta must be single-line: %q", s)
-	}
-	if s != `{"a":"1","b":"2"}` {
-		t.Fatalf("canonical meta not sorted: %q", s)
-	}
-}
-
 // TestMapItemCopiesMeta proves Meta is defensively copied (mutating the source
 // map after mapping must not change the mapped memory).
 func TestMapItemCopiesMeta(t *testing.T) {
@@ -60,5 +39,59 @@ func TestMapItemCopiesMeta(t *testing.T) {
 	src["k"] = "mutated"
 	if !reflect.DeepEqual(m.Meta, map[string]any{"k": "v"}) {
 		t.Fatalf("Meta not defensively copied: %#v", m.Meta)
+	}
+}
+
+// TestCanonicalMeta proves the canonical encoding is single-line, sorted,
+// and "" for empty — the contract render + hash both rely on, and tests error handling.
+func TestCanonicalMeta(t *testing.T) {
+	tests := []struct {
+		name    string
+		meta    map[string]any
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "nil meta",
+			meta:    nil,
+			want:    "",
+			wantErr: false,
+		},
+		{
+			name:    "empty meta",
+			meta:    map[string]any{},
+			want:    "",
+			wantErr: false,
+		},
+		{
+			name:    "sorted keys",
+			meta:    map[string]any{"b": "2", "a": "1"},
+			want:    `{"a":"1","b":"2"}`,
+			wantErr: false,
+		},
+		{
+			name: "unmarshalable type",
+			meta: map[string]any{
+				"unmarshalable": func() {},
+			},
+			want:    "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CanonicalMeta(tt.meta)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CanonicalMeta() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("CanonicalMeta() = %v, want %v", got, tt.want)
+			}
+			if !tt.wantErr && strings.Contains(got, "\n") {
+				t.Errorf("canonical meta must be single-line: %q", got)
+			}
+		})
 	}
 }
