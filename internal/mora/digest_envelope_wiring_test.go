@@ -198,6 +198,12 @@ func TestBudgetEnvelopePayloadBaseFieldsMatchPlainPayload(t *testing.T) {
 // byte-identical, no synthesis_prompt key — proving the off path is unperturbed.
 func TestMCPDigestEnvelopeOffByteIdentical(t *testing.T) {
 	seedDigestVault(t)
+	// The two calls each stamp `generated` from the wall clock (mcp.go reads
+	// briefClock()), so a byte-comparison across them fails whenever the pair
+	// straddles a second boundary — a real flake on slow CI, and nothing to do with
+	// the envelope contract under test. Pin the clock so the comparison measures the
+	// only thing it means to: that the two code paths render the same payload.
+	pinBriefClock(t)
 
 	empty := digestMCPStructured(t, `{}`)
 	off := digestMCPStructured(t, `{"envelope":false}`)
