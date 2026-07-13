@@ -101,7 +101,7 @@ homebrew_casks:
     directory: Casks
     homepage: "https://github.com/pyranthus-hq/mora"
     description: "Local-first, agent-agnostic memory CLI"
-    license: "Apache-2.0" # TODO: confirm SPDX id (Apache-2.0 vs MIT)
+    license: "Apache-2.0"
     commit_author:
       name: goreleaserbot
       email: bot@pyranthus.com
