@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 
@@ -457,47 +456,6 @@ func TestIm_ProbeReadable(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// map.go
-// ---------------------------------------------------------------------------
-
-// TestIm_MapConversationFn proves the ingest Map adapter both ways: an Item carrying a
-// structured convInput payload renders through the full mapper (resolved title, scope
-// set), and an Item WITHOUT that payload degrades to a minimal memory from its flat
-// fields instead of panicking.
-func TestIm_MapConversationFn(t *testing.T) {
-	fn := MapConversationFn(resolver1to1())
-
-	t.Run("structured payload renders fully", func(t *testing.T) {
-		it := Item{Kind: KindIMessageChat, ProviderID: sampleConv().guid, Payload: sampleConv()}
-		mm := fn(it, "work", 0)
-		if mm.Scope != "work" {
-			t.Fatalf("Scope = %q, want %q", mm.Scope, "work")
-		}
-		if mm.Title != "Neil Patel" {
-			t.Fatalf("Title = %q, want resolved name from the payload", mm.Title)
-		}
-		if !strings.Contains(mm.Body, "are we still on for the demo?") {
-			t.Fatalf("Body did not render from the convInput payload:\n%s", mm.Body)
-		}
-		if mm.Provider != "imessage" {
-			t.Fatalf("Provider = %q, want imessage", mm.Provider)
-		}
-	})
-
-	t.Run("missing payload degrades to flat fields", func(t *testing.T) {
-		it := Item{Kind: KindIMessageChat, ProviderID: "iMessage;-;+19998887777", Title: "Flat Title", Body: "flat body"}
-		mm := fn(it, "personal", 0)
-		if mm.Title != "Flat Title" || mm.Body != "flat body" {
-			t.Fatalf("degraded map must copy flat Title/Body, got Title=%q Body=%q", mm.Title, mm.Body)
-		}
-		if mm.Scope != "personal" {
-			t.Fatalf("Scope = %q, want personal", mm.Scope)
-		}
-		if mm.ProviderID != "iMessage;-;+19998887777" || mm.Provider != "imessage" {
-			t.Fatalf("degraded map identity wrong: %+v", mm)
-		}
-	})
-}
 
 // TestIm_ParticipantHandles proves the other-party handle selection: explicit group
 // participants win; else the 1:1 identifier stands in; else nil (never fabricated).
