@@ -1,6 +1,9 @@
 package imessage
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // TestHandleResolution proves the AddressBook handle→name contract (IMSG-04 / D-09):
 // a matching contact resolves to its name, phone/email handles normalize so
@@ -63,5 +66,38 @@ func TestNewResolverMissingDBDegrades(t *testing.T) {
 	}
 	if got := r.Resolve("+14155551234"); got != "+14155551234" {
 		t.Fatalf("missing-DB resolver should fall back to raw handle, got %q", got)
+	}
+}
+
+func TestDefaultAddressBookRoot(t *testing.T) {
+	cases := []struct {
+		name string
+		home string
+		want string
+	}{
+		{
+			name: "standard home",
+			home: "/Users/jules",
+			want: filepath.Join("/Users/jules", "Library", "Application Support", "AddressBook", "Sources"),
+		},
+		{
+			name: "empty home",
+			home: "",
+			want: filepath.Join("", "Library", "Application Support", "AddressBook", "Sources"),
+		},
+		{
+			name: "home with trailing slash",
+			home: "/Users/jules/",
+			want: filepath.Join("/Users/jules/", "Library", "Application Support", "AddressBook", "Sources"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DefaultAddressBookRoot(tc.home)
+			if got != tc.want {
+				t.Errorf("DefaultAddressBookRoot(%q) = %q, want %q", tc.home, got, tc.want)
+			}
+		})
 	}
 }
