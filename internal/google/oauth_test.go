@@ -59,6 +59,42 @@ func TestResolveCredentialsMissingEnvFileErrors(t *testing.T) {
 	}
 }
 
+func TestIsConfigured(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. Valid JSON should return true
+	validP := filepath.Join(dir, "valid.json")
+	if err := os.WriteFile(validP, []byte(`{"installed":{"client_id":"byo.apps.googleusercontent.com","client_secret":"s","auth_uri":"https://a","token_uri":"https://t"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Placeholder JSON should return false
+	devP := filepath.Join(dir, "dev.json")
+	if err := os.WriteFile(devP, []byte(`{"installed":{"client_id":"DEV_PLACEHOLDER-test","client_secret":"s","auth_uri":"https://a","token_uri":"https://t"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		envVal   string
+		expected bool
+	}{
+		{"Valid credentials", validP, true},
+		{"Empty env (uses embedded placeholder)", "", false},
+		{"Missing file", filepath.Join(dir, "missing.json"), false},
+		{"DEV_PLACEHOLDER client ID", devP, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("MORA_GOOGLE_CREDENTIALS", tt.envVal)
+			if got := IsConfigured(); got != tt.expected {
+				t.Errorf("IsConfigured() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestOpenBrowserUsesPlatformCommand(t *testing.T) {
 	origGOOS := browserGOOS
 	origStart := startBrowserCommand
