@@ -1180,7 +1180,7 @@ func assignedToThirdParty(text string, self map[string]bool) bool {
 		}
 		rest := strings.TrimLeft(lower[idx+len(prefix):], " \t*:")
 		assignee := strings.FieldsFunc(rest, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z')
+			return r < 'a' || r > 'z'
 		})
 		if len(assignee) == 0 {
 			continue
