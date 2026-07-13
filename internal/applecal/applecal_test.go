@@ -163,3 +163,31 @@ func TestUnsupportedSchemaErrors(t *testing.T) {
 		t.Fatalf("want schema error, got: %v", err)
 	}
 }
+
+func TestLegacyDBPath(t *testing.T) {
+	tests := []struct {
+		name string
+		home string
+		want string
+	}{
+		{
+			name: "typical home",
+			home: "/Users/testuser",
+			want: filepath.Join("/Users/testuser", "Library", "Calendars", "Calendar.sqlitedb"),
+		},
+		{
+			name: "empty home",
+			home: "",
+			want: filepath.Join("Library", "Calendars", "Calendar.sqlitedb"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LegacyDBPath(tc.home)
+			if got != tc.want {
+				t.Errorf("LegacyDBPath(%q) = %q, want %q", tc.home, got, tc.want)
+			}
+		})
+	}
+}
