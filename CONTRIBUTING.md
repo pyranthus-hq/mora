@@ -1,14 +1,15 @@
 # Contributing to Mora
 
-Thanks for taking a look. Mora is local-first memory for AI agents: one pure-Go
+Thanks for taking a look. Mora is experimental local-first memory for AI agents: one pure-Go
 binary that pulls your Gmail, calendars, iMessage, and files into a Markdown
 vault and serves it over MCP. It's open source under Apache-2.0, and I build it
 in the open.
 
-The most useful thing you can send is a real usage report. I dogfood this every
-day, but my vault is one person's data on one set of machines. If something
-breaks, feels wrong, or surprises you, open an issue. PRs are welcome too — this
-guide covers how to get the same checks CI runs before you push.
+The active milestone is product quality before promotion or charging. The most
+useful reports are reproducible failures, redacted product-quality examples, and
+bounded changes tied to the [alpha gates](https://github.com/pyranthus-hq/mora/issues/137).
+If something breaks, feels wrong, or surprises you, use the matching issue form.
+PRs are welcome too — this guide covers how to run the same checks as CI.
 
 ## Get oriented first
 
@@ -69,7 +70,7 @@ These are enforced on PRs and flagged as blocking. Full text in
 
 1. **No import cycle.** Connector packages (`internal/google`, etc.) must not import `internal/mora`. They return plain `MappedMemory` structs; `mora` wires them at the boundary. New connectors live in `internal/<provider>` and import only `internal/memory`.
 2. **Pure Go, no CGO.** The product builds with `CGO_ENABLED=0`. No C extensions, no `mattn/go-sqlite3` — `modernc.org/sqlite` only. The race detector's `CGO_ENABLED=1` is test-only.
-3. **Read-only and zero egress.** Google scopes stay `gmail.readonly` / `calendar.readonly`. Connectors never write to their source, and there's no telemetry. The only intentional network egress is syncing your sources, `mora upgrade`, the opt-in git backup, and the opt-in, age-encrypted `mora share` push/pull.
+3. **Read-only sources and explicit network boundaries.** Google scopes stay `gmail.readonly` / `calendar.readonly`. Connectors never write to their source, and Mora operates no hosted corpus or telemetry service. Source sync, `mora upgrade`, and opt-in backup/share use the network. After an MCP client retrieves context, that client's model and data policy apply.
 4. **Honest-snapshot sync.** Never swallow a sync error — surface it. Freshness is the product's value.
 5. **State vs vault.** Usage logging and sync cursors live in the state dir, never in the vault. Honor `DO_NOT_TRACK` / `mora usage off`.
 6. **Identity vs filename.** `StableID` is provider identity only, never content; files are named with `SafeFilename`. Any ID lookup must match the SafeFilename form.
@@ -90,7 +91,9 @@ run them first.
 
 ## Reporting bugs
 
-Open an issue with what you ran, what you expected, and what happened. Mora is
-local, so a lot of what's useful never leaves your machine: `mora doctor` output,
-the failing command with `--json`, and your OS and Go version go a long way.
-Don't paste anything from your actual vault that you wouldn't want public.
+Use the bug or product-quality issue form with what you ran, what you expected,
+and what happened. `mora doctor --json`, source freshness, the failing command,
+and your OS and Go version help after aggressive redaction. Never paste vault
+content, credentials, tokens, personal identifiers, or source databases.
+
+Report suspected vulnerabilities privately through [the security policy](SECURITY.md).

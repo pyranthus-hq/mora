@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose an outcome that supports an active quality gate.
+title: "[Request]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the repeated problem, not a preferred implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current workaround
+    validations:
+      required: true
+  - type: dropdown
+    id: gate
+    attributes:
+      label: Active product gate
+      description: Requests outside the active program may be closed or deferred.
+      options:
+        - Gate 1 — rendered-output quality
+        - Gate 2 — source health and operational honesty
+        - Gate 3 — commitment direction and closure
+        - Gate 4 — identity review and reversible correction
+        - Gate 5 — cross-client agent continuity
+        - Gate 6 — Before / Teach / Health surface
+        - Gate 7 — real-data and design-partner validation
+        - Maintenance — security, data integrity, or portability
+        - Outside the current program
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Testable outcome
+      description: What evidence would show the problem is solved?
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Data and trust boundaries
+      description: Note affected sources, writes, network paths, credentials, or downstream-agent behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: Keep the request narrow enough for one reviewable issue.

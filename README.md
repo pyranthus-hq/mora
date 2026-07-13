@@ -4,110 +4,137 @@
 
 # Mora
 
-**Local-first memory for your AI agents.**
+**Experimental local-first memory and cited meeting context for AI agents.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/pure%20Go-no%20CGO-00ADD8)](go.mod)
-[![Egress](https://img.shields.io/badge/egress-zero%20by%20default-0a3d33)](docs/guide.md#why-not-just-use-a-cloud-connector)
+[![Corpus](https://img.shields.io/badge/corpus-local%20by%20default-0a3d33)](#privacy-boundary)
 
 </div>
 
-Mora indexes your Gmail (one or several accounts), Google Calendar, iMessage, Apple Calendar, and local files into a **vault** of Markdown files and a SQLite index on your machine, then serves it over MCP to Claude Code, Codex, or any other MCP client. Point several agents at the same vault and they all answer from your history, with citations.
+> [!WARNING]
+> Mora is early alpha software. Its connectors, local corpus, retrieval,
+> citations, and identity-review machinery are real. Its meeting output has not
+> yet passed a real-data product-quality evaluation. Treat surfaced items as
+> historical evidence to inspect, not as verified current obligations. Follow
+> the [quality-gated alpha plan](https://github.com/pyranthus-hq/mora/issues/137).
 
-It runs entirely on your machine: no server, no signup, no telemetry. iMessage and Apple Calendar need macOS; Gmail, Calendar, files, notes, and local Ollama embeddings also run on Linux and Windows.
+Mora syncs read-only copies of Gmail, Google Calendar, iMessage, Apple Calendar,
+and selected files into human-readable Markdown plus a rebuildable SQLite index
+on your machine. It exposes that corpus to MCP clients and the shell, so several
+agents can retrieve the same history with citations.
+
+Mora does not upload or centrally host your corpus. A connected cloud agent may
+send retrieved snippets to its model provider; that behavior is governed by the
+agent and its organization policy.
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" width="760" alt="Mora architecture: your sources flow into one local vault of Markdown plus a SQLite index, served over MCP to every agent (Claude Code, Codex, Gemini CLI), with an opt-in git sync to another machine."/>
+  <img src="docs/assets/architecture.svg" width="760" alt="Read-only sources flow into a local Markdown vault and SQLite index, then into any MCP client. Backup and sharing are optional network paths."/>
 </p>
 
-## What it looks like
+## Current product hypothesis
 
-```console
-$ mora think "what did we decide with Sam about pricing?"
+Before a client meeting, Mora should show what you owe, what they may owe, and
+what changed across Gmail, iMessage, and Calendar—with exact evidence and a
+visible warning when a required source is stale.
 
-Evidence (3):
-  [mem_20260610_204655_f3049131] Pricing call with Sam: agreed to $29 one-time
-  for the pilot; revisit a subscription tier once we cross 10 seats. He wants the
-  invoice before Friday.
-  ...
+That is the product hypothesis, not a validated claim. Today Mora retrieves and
+cites historical candidate lines. Typed direction and closure, fail-closed
+product health, the narrow Before / Teach / Health experience, and real-user
+validation are still being built through [seven ordered evidence gates](https://github.com/pyranthus-hq/mora/issues/137).
 
-Gaps: none detected.
-```
+## What works today
 
-`think` returns cited evidence plus the gaps it found: stale results, thin coverage, a name the vault has never seen. There's no API key and no model to host; your agent does the reasoning and calls `search_memory`, `think`, and `brief` over MCP.
+- **Read-only ingestion.** Gmail, Google Calendar, iMessage, Apple Calendar, and
+  selected folders become local Markdown memories. iMessage and Apple Calendar
+  require macOS.
+- **A corpus you own.** Markdown is the source of truth; embedded SQLite, FTS,
+  vectors, and the person graph are disposable indexes that can be rebuilt.
+- **Cited recall.** `search`, `think`, `brief`, and meeting-prep surfaces return
+  stable IDs and dated evidence. Optional Ollama embeddings are loopback-only.
+- **Cited meeting context (experimental).** Meeting output surfaces historical
+  extracts likely to matter. It does not yet establish obligation owner,
+  direction, or closure; inspect each citation before acting.
+- **Reviewable identity proposals.** Mora can propose email↔phone joins from
+  Address Book evidence, but never applies those joins automatically. Confirm,
+  reject, and undo are local and auditable.
+- **Agent-agnostic access.** Twelve MCP tools and equivalent CLI commands work
+  with any client that can launch a local stdio MCP server.
 
-## Install
+## Install — experimental
 
-### macOS / Linux
+Release artifacts are convenient evaluation builds. macOS artifacts are ad-hoc
+signed, not Developer ID signed or notarized. Windows artifacts are unsigned.
+The remote installers verify the selected archive against the release
+`checksums.txt` and refuse to continue if verification is unavailable.
+
+### macOS / Linux release build
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
-The script downloads the release binary for your platform, **verifies it against the release `checksums.txt`** before extracting, clears the macOS Gatekeeper quarantine (binaries are ad-hoc signed, not notarized — it prints exactly what it does to Gatekeeper and why), and runs `mora init` (your vault lives at `~/vault/mora`). The checksums file is cosign-signed on each [release](https://github.com/pyranthus-hq/mora/releases) if you want to verify the stronger chain by hand. Update in place later with `mora upgrade` (source builds report `dev` and cannot self-update). Prefer to build it yourself? `go install github.com/pyranthus-hq/mora/cmd/mora@latest` (Go 1.25+, pure Go, no CGO).
+The installer downloads the current release, verifies its SHA-256 before
+extracting, installs `mora`, and initializes `~/vault/mora`. On macOS it prints
+and performs the quarantine removal and ad-hoc signing required by the current
+unnotarized build.
+
+### Build from source
+
+```bash
+go install github.com/pyranthus-hq/mora/cmd/mora@latest
+```
+
+This requires Go 1.25+. Source builds report `dev` and do not self-update. They
+ship only the committed non-secret OAuth placeholder, so Google access requires
+your own client via `MORA_GOOGLE_CREDENTIALS`. See
+[Connect Google](docs/guide.md#connect-google-gmail--calendar).
 
 ### Windows
-
-Run this from PowerShell:
 
 ```powershell
 iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.ps1 -OutFile $env:TEMP\install-mora.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\install-mora.ps1
 ```
 
-The Windows installer downloads `mora_<version>_windows_amd64.zip`, verifies it against the release `checksums.txt`, installs `mora.exe` to `%LOCALAPPDATA%\Mora\bin\mora.exe`, and adds that directory to your User PATH. The v1 Windows binary is unsigned, so SmartScreen may show **Windows protected your PC**. After the checksum passes, choose **More info > Run anyway** or run `Unblock-File "$env:LOCALAPPDATA\Mora\bin\mora.exe"`.
+The PowerShell installer verifies the release checksum, installs to
+`%LOCALAPPDATA%\Mora\bin`, and adds that directory to the user PATH. SmartScreen
+may still warn because the binary is unsigned. Platform details and Task
+Scheduler commands are in the [Windows guide](docs/windows.md).
 
-Windows supports Gmail, Google Calendar, filesystem folders, notes, and local Ollama embeddings. iMessage, Apple Calendar, and Address Book are macOS-only. `mora schedule install <job>` uses Windows Task Scheduler and creates tasks named `Mora\<job>`; see [the Windows guide](docs/windows.md).
+## Connect one source
 
-### Uninstall
-
-macOS / Linux:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.sh | sh
-```
-
-Windows:
-
-```powershell
-iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall.ps1 -OutFile $env:TEMP\uninstall-mora.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\uninstall-mora.ps1
-```
-
-Removes the `mora` binary and de-registers the MCP server from Claude Code / Codex on macOS/Linux. On Windows it removes `%LOCALAPPDATA%\Mora`, the User PATH entry, and scheduled tasks under `\Mora\`. Your vault is **preserved by default**; re-run with `--purge` / `MORA_PURGE=1` on macOS/Linux or `-Purge` on Windows to also delete Mora data paths.
-
-### How Mora is laid out
-
-Mora keeps your data in four places. Only the first is precious:
-
-| Path | Holds | If lost |
-| --- | --- | --- |
-| `vault_dir` (`~/vault/mora`) | your memories, as Markdown | **back this up** (`mora sync git` mirrors it to a private repo) |
-| `data_dir` (`~/.local/share/mora`) | the search index | rebuilt with `mora index rebuild` |
-| `state_dir` (`~/.local/state/mora`) | connector sync watermarks | rebuilt on the next sync |
-| `config_dir` (`~/.config/mora`) | settings + OAuth tokens | re-create with `mora init` / re-auth |
-
-Run `mora config` to see the resolved paths. Mora will refuse to rebuild the index from a vault that suddenly looks empty or unfamiliar (it could mean your `vault_dir` moved). It tells you how to fix it, or pass `--force` to override.
-
-Then connect your sources:
+The fastest low-trust path is a folder you choose:
 
 ```bash
-mora connect google                    # OAuth login, then backfill Gmail + Calendar (read-only; ~90 days, --since-days to widen)
-mora connect google --account work     # add a second mailbox (gmail-work / calendar-work sources)
-mora connect imessage                  # macOS; walks you through Full Disk Access
-mora schedule install ingest-hourly    # background sync (launchd, Task Scheduler, or a Linux cron line)
+mora doctor
+mora connect filesystem ~/notes
+mora search "a project or person"
 ```
 
-> **First Google sign-in:** Mora's shared Google app is still going through Google's review, so you'll see a "Google hasn't verified this app" screen. Click **Advanced → Go to Mora** to continue; the access stays read-only and on-device. Prefer your own keys? Set `MORA_GOOGLE_CREDENTIALS=/path/to/client.json` to use your own Google OAuth client instead (optional). See [Connect Google](docs/guide.md#connect-google-gmail--calendar).
-
-Wire Mora into your agents (registers the local MCP server):
+Then add the sources you actually want:
 
 ```bash
-claude mcp add mora -s user -- mora mcp serve    # Claude Code
-codex  mcp add mora -- mora mcp serve            # Codex
+mora connect google                 # Gmail + Google Calendar, read-only
+mora connect google --account work  # optional second Google account
+mora connect imessage               # macOS; requires Full Disk Access
+mora schedule install ingest-hourly
 ```
 
-Any other MCP client (Gemini CLI, Cursor, custom hosts) takes the same stdio server as JSON:
+Mora's shared Google OAuth app is currently unverified and subject to Google's
+testing-user limit. The trust-first path is your own OAuth client through
+`MORA_GOOGLE_CREDENTIALS`; the [guide](docs/guide.md#connect-google-gmail--calendar)
+covers both paths.
+
+## Wire it into an agent
+
+```bash
+claude mcp add mora -s user -- mora mcp serve
+codex mcp add mora -- mora mcp serve
+```
+
+Any other MCP client can launch the same local stdio server:
 
 ```json
 {
@@ -117,87 +144,69 @@ Any other MCP client (Gemini CLI, Cursor, custom hosts) takes the same stdio ser
 }
 ```
 
-Drop that into the client's MCP config (`examples/mcp.json` has a copy). Per-connector setup and options are in [the guide](docs/guide.md).
+Every MCP tool also has a CLI sibling, so an agent with shell access can use
+`mora search`, `mora think`, `mora brief`, and `mora write` without MCP. See the
+[wiring guide](docs/guide.md#wire-mora-into-your-agent-mcp).
 
-### No MCP? Use the shell
+## Review identity proposals
 
-Every MCP tool is also a CLI command, so any agent with shell access can use Mora without registering the server. Paste this into the agent's instructions file (`AGENTS.md`, `CLAUDE.md`, Cursor rules) to teach it to both **recall from** and **capture to** your vault:
+Mora never automatically joins an email identity to a phone number. On macOS it
+can propose matches from Address Book evidence for review:
 
-```markdown
-## Memory: mora (local)
-
-You have `mora`, a local memory over my Gmail, calendars, iMessage, and files.
-
-RECALL — before answering anything about people, past decisions, projects, or
-commitments, query mora first and answer from what it returns:
-
-  mora think "<question>" --json    # cited evidence + an explicit gap check
-  mora search "<query>" --json      # search the vault
-  mora graph "<person>"             # one person across email, texts, and calendar
-  mora brief                        # what changed and what matters lately
-
-Cite every claim with its [stable_id]. If the evidence is insufficient, say so
-plainly rather than guessing, and surface any gaps mora reports. Never invent a
-memory it did not return.
-
-CAPTURE — when I tell you a durable fact, decision, preference, or commitment
-worth recalling later, save it back without being asked:
-
-  mora write --type <fact|decision|insight|task> --title "<title>" --text "<body>"
-
-Capture the signal, not chit-chat: things a future session would want surfaced.
-Do not store secrets I mention in passing unless I ask you to.
+```bash
+mora merge list
+mora merge confirm --handle <phone> --email <address>
+mora merge reject --handle <phone> --email <address>
+mora merge undo <ledger-id>
 ```
 
-The CLI siblings of every tool (`mora search`, `mora write`, `mora think`, ...) are in [the guide](docs/guide.md#use-mora-from-the-shell).
+Every decision is local, auditable, and reversible.
 
-### Agent skills (optional)
+## Data layout
 
-A small plugin of agent-side recipes that pair with the MCP server; they teach an agent to resolve people, shared history, and calendar context from the vault *before* reaching for the web:
+Mora keeps data in four places. Only the vault is irreplaceable:
 
-```
-/plugin marketplace add pyranthus-hq/mora
-/plugin install mora@mora
-```
+| Path | Holds | Recovery |
+| --- | --- | --- |
+| `vault_dir` (`~/vault/mora`) | Human-readable memories | Back up explicitly |
+| `data_dir` (`~/.local/share/mora`) | SQLite search index | `mora index rebuild` |
+| `state_dir` (`~/.local/state/mora`) | Sync watermarks and local usage log | Recreated on sync |
+| `config_dir` (`~/.config/mora`) | Settings and OAuth tokens | Reconfigure/re-authenticate |
 
-First skill: `/mora:dining-concierge`, for outing recommendations grounded in who's coming and where you've actually been. Skills are plain Markdown ([plugins/mora](plugins/mora)); other agents can copy them into their own skills directory.
+Run `mora config` to see the resolved paths. The vault is plaintext Markdown;
+use full-disk encryption such as FileVault or BitLocker. Advanced opt-in backup
+and encrypted sharing exist, but they are not part of the current product
+hypothesis; read the [guide](docs/guide.md) before enabling either.
 
-## Why a local corpus
+## Privacy boundary
 
-Mora keeps a persistent local corpus, so you can ask "what did I commit to, and to whom" across months and have the same context whichever assistant you use. It indexes iMessage (which has no cloud API) and handles several mail accounts at once, then serves all of it to whatever agent you use. Cloud connectors fetch from Google's APIs per query and keep nothing between calls.
+- **Read-only at the source.** Google scopes are `gmail.readonly` and
+  `calendar.readonly`; iMessage and Apple Calendar databases are opened
+  read-only. Mora never sends mail or changes source records.
+- **Local corpus.** The vault, index, tokens, sync state, and usage log remain on
+  your machine. The usage log records local operational metadata, not query text
+  by default, and honors `mora usage off` / `DO_NOT_TRACK=1`.
+- **Explicit network paths.** The Mora process uses the network for enabled
+  source sync, release updates, and explicitly enabled backup or sharing.
+  Optional Ollama inference is restricted to loopback.
+- **Downstream agents are a separate boundary.** After an MCP client retrieves
+  context, that client's model and data policy govern it. A cloud-hosted agent
+  may transmit retrieved snippets to its provider.
+- **Plaintext at rest.** Portability and greppability mean anything that can read
+  your home directory may read the vault. Protect the device and avoid putting
+  the vault in an unencrypted remote.
 
-| | Mora | Cloud connectors | MCP Gmail servers |
-|---|---|---|---|
-| Data lives | Your disk (Markdown + SQLite) | Vendor cloud | Nowhere (live fetch) |
-| iMessage | Yes (local `chat.db`, read-only) | No | No |
-| Multiple mailboxes in one view | Yes | No | Per server |
-| One person across email + texts + calendar | Yes | No | No |
-| Shared by every agent (Claude, Codex, etc.) | Yes | Tied to the vendor | Per client |
-| Works offline / greppable | Yes | No | No |
-| Cost | $0, no Mora account | Subscription | Free |
+## Project status and contributing
 
-## What you get
+The active product plan is the [Mora Home alpha epic](https://github.com/pyranthus-hq/mora/issues/137),
+with no ship or payment deadline. Current work is closing the rendered-output
+audit and operational replay evidence before commitment-quality implementation.
 
-- **Plain files you own.** Every email thread, text conversation, and calendar event is one Markdown file. Open them in [Obsidian](docs/guide.md#browse-the-vault-in-obsidian), `grep` them, or back them up like any folder. The SQLite index is disposable: delete it and `mora index rebuild` rebuilds it from the files.
-- **Documents and PDFs.** Point Mora at a folder and it indexes your notes, text files, Word documents, and text-based PDFs, including a PDF someone texts you. [Add a files source](docs/guide.md#add-a-filesystem-source).
-- **One view of each person.** `mora graph "Sam"` pulls someone together across email, texts, and calendar (including mail from different accounts) into shared threads, meetings, and the people they appear with, every line cited. Identity matching is deterministic: it merges the same mailbox written different ways (Gmail dot and +tag variants) and links different addresses only by a shared trusted name with a corroborating address. [How the graph works](docs/guide.md#1-the-entity-graph--derived-from-message-metadata).
-- **Keyword and semantic search.** Keyword search (BM25) is built in. Run `mora config embedder ollama` to add local semantic search through [Ollama](https://ollama.com). [How retrieval works](docs/guide.md#2-hybrid-retrieval--bm25--embeddings--graph-expansion-fused-by-rrf).
-- **A daily brief.** `mora brief` shows new and updated threads, upcoming events, and stale open tasks, ranked by a per-person salience score. Filter it to one person with `mora brief --entity "Riya"`, or build a fully cited meeting brief with `mora brief --event-id <calendar-memory-id>`.
-- **Off-device backup.** `mora sync git` pushes the vault to any private git remote you control: GitHub, GitLab, self-hosted, or a bare repo on a USB stick. It pushes vault files only; your tokens and the index stay on your machine. Restore with `git clone` and `mora index rebuild`. [Details](docs/guide.md#back-up-the-vault-off-device-opt-in).
-- **Encrypted sharing (opt-in).** `mora share` publishes one scope of your authored notes to a dedicated private git remote — or a user-owned S3/R2 bucket — age-encrypted per recipient, with a mandatory preview of exactly what leaves. A subscriber searches your notes as a read-only, attributed corpus beside their own vault — never merged into it. [Details](docs/guide.md#share-memories-with-someone-opt-in-encrypted).
-- **Shared across agents, or used from your shell.** 12 MCP tools let any MCP client search memory, read the brief, prep for a meeting (`meeting_prep`), and write facts back (`write_memory`). `mora mcp serve` runs as a local stdio process, so several agents share the same vault, and every search result reports how fresh each source is. Every tool is also a plain CLI command (`mora search`, `mora write`, `mora think`), so the vault is just as usable from a terminal. [Wiring guide](docs/guide.md#wire-mora-into-your-agent-mcp).
-
-## Privacy
-
-- **Read-only at the source.** Google scopes are `gmail.readonly` and `calendar.readonly`; iMessage and Apple Calendar are opened read-only. Mora never sends, changes, or deletes anything in your accounts. Its `write_memory` and `delete_memory` tools only touch the local vault.
-- **Everything on your disk.** The vault, index, and OAuth tokens (`~/.config/mora/tokens/`, mode 0600) live on your machine. There is no analytics endpoint. The only log is a local usage log of tool name, timing, result counts, and scope. It does **not** record your query text by default (opt in with `mora usage queries on`); turn the log off entirely with `mora usage off` or `DO_NOT_TRACK=1`.
-- **Plaintext at rest.** Your vault is unencrypted Markdown on disk. That is what makes it greppable and portable, but it also means anything that can read your home directory can read your memories. Protect it with full-disk encryption (FileVault on macOS), and use [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) for an encrypted off-device backup. Tokens are mode 0600; vault files inherit your filesystem permissions.
-- **Bring your own Google keys (optional).** Mora's shared Google app is still in Google's verification queue, so you hit an "unverified app" screen and a ~100-user cap. Point Mora at your own OAuth client with `MORA_GOOGLE_CREDENTIALS=/path/to/client.json` to sidestep both. [Connect Google](docs/guide.md#connect-google-gmail--calendar).
-- **Zero egress by default.** No server, no hosting. Mora reaches the network only to sync your sources, fetch updates during `mora upgrade`, and push or pull the opt-in egress paths (vault backup over git, age-encrypted `mora share` over git or a user-owned S3/R2 bucket); the optional Ollama embedder is loopback-only. `mora doctor` warns if the vault is a git repo, and [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) gives you an encrypted remote.
-
-## Docs
-
-**[The guide](docs/guide.md)** covers connectors, MCP wiring, daily use, retrieval, and the cloud comparison. **[Windows setup](docs/windows.md)** covers PowerShell install, SmartScreen, Windows connectors, and Task Scheduler. **[docs/architecture/](docs/architecture/00-overview.md)** is the contributor spec: 14 subsystem docs with diagrams and `file:line` citations.
+- [Guide](docs/guide.md) — commands, connectors, and operational details.
+- [Architecture](docs/architecture/00-overview.md) — as-built subsystem spec.
+- [Contributing](CONTRIBUTING.md) — build, test, and review contract.
+- [Security policy](SECURITY.md) — report vulnerabilities privately; never paste
+  vault contents or credentials into a public issue.
 
 ---
 

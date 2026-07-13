@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible failure in shipped Mora behavior.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Mora handles private data. Do not paste vault contents, credentials, OAuth tokens, `chat.db`, Calendar databases, or unredacted personal identifiers. Report security problems through the private security link instead.
+  - type: input
+    id: version
+    attributes:
+      label: Mora version
+      description: Paste `mora version` or the commit SHA for a source build.
+      placeholder: v0.10.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS version and architecture.
+      placeholder: macOS 15.5 arm64
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Install or upgrade
+        - Google connector
+        - iMessage connector
+        - Apple Calendar connector
+        - Filesystem connector
+        - Search or think
+        - Brief or meeting prep
+        - Identity merge or governance
+        - MCP or loopback HTTP
+        - Scheduler or background sync
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or request
+      description: Include flags but replace private values with placeholders.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+      description: Include the exact error after redacting private data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Prefer a synthetic vault and isolated MORA_CONFIG_DIR.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted health and freshness
+      description: Paste only relevant, sanitized fields from `mora doctor --json` and `mora sync status`.
+      render: json
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed vault content, credentials, tokens, email addresses, phone numbers, and private filesystem paths.
+          required: true
+        - label: This is not a security vulnerability requiring a private report.
+          required: true
