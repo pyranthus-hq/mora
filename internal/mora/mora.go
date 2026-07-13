@@ -47,6 +47,15 @@ type Config struct {
 	// NEVER moves the 20k per-call ceiling, and an explicit max_tokens from
 	// the caller always wins. Set via `mora config context <profile>`.
 	ContextProfile string
+	// SelfEmails are the user's OWN additional addresses, from config.toml
+	// (`self_emails = "you@work.com, you@alias.com"`). Mora derives self from the
+	// mailbox Google OAuth was granted on (Source.Email), but a calendar routinely
+	// invites a different alias — a Workspace address, a custom domain. An alias it
+	// cannot recognize as self fails self-exclusion, so the user becomes an
+	// "attendee" of their own meeting and their own records get cited back to them
+	// as the counterparty's unfinished business (wrong-person attribution).
+	// Declared, never guessed: Mora will not infer self from a display name.
+	SelfEmails []string
 	// fusionOv overrides the production RRF arm weights / k (retrieval tuning + the
 	// TestEvalWeightSweep grid). nil ⇒ defaultFusion. Unexported and NOT loaded from
 	// TOML — it is a code/eval seam, not a user knob.

@@ -9,16 +9,44 @@ compatibility.
 
 1. Resolve the event by exact memory/provider id. A missing, non-event, or
    ambiguous id is an error.
-2. Read the event's structured attendee identities, exclude only configured
-   self email addresses, and sort the remaining identities. If an event has
-   attendees but Mora cannot identify the user's own address, assembly fails
-   closed rather than risk presenting the user as another attendee.
+2. Read the event's structured attendee identities, exclude the user, and sort
+   the remaining identities. The user is resolved from three sources, in order
+   of authority: the event's own `self_email` (Google `Attendee.Self`, Apple
+   `Participant.is_self` — the connector records which invitee IS the user),
+   the mailbox each Google source was authorized on (`Source.Email`), and any
+   aliases declared in `config.toml` `self_emails`. Identity is **declared,
+   never inferred** — Mora will not guess self from a display name.
+
+   **Why three sources.** The address a calendar *invites* is routinely not the
+   mailbox OAuth was granted on (a Workspace alias, a custom domain, an iCloud
+   address). An unrecognized alias fails self-exclusion, so the user is admitted
+   as an attendee of their own meeting and their own records are cited back to
+   them as the counterparty's unfinished business — wrong-person attribution,
+   which is severity-1.
+
+   If Mora cannot tell which invitee is the user, it **gaps rather than
+   guesses**: any invitee could BE the user, so it attributes nothing, sets
+   `self_unresolved`, and states in `gaps` how to fix it (`self_emails`). It
+   does *not* error — an unattributed brief emits zero lines and is exactly as
+   safe, whereas erroring would take the whole next-meeting brief down over one
+   unresolvable event (`selectNextEvent` is provider-agnostic). Gapping
+   suppresses the *claim*; it never destroys the *artifact*.
 3. For each exact attendee identity, read the same exact-identity graph
-   projection used by `get_entity`. The full evidence set remains available to
-   the query-time reranker; display-name fallback is deliberately forbidden, so
-   two people with the same name remain separate. Shared evidence prefers its
-   sole attendee sender; if a group record cannot be assigned to exactly one
-   attendee, it is dropped rather than attributed arbitrarily.
+   projection used by `get_entity`, and keep only the evidence this person is a
+   **party to** — reached by a relationship edge (`PARTICIPATED_IN`, `EMAILED`,
+   `ATTENDED`), never by a body-text `MENTIONS` edge. `buildGraph` emits
+   `MENTIONS` only for a gazetteer name-hit on a memory the person is *not* a
+   participant of, so a mention-only record is by construction a third party
+   writing this person's name: a note reading *"I spoke to Neil about the pilot;
+   can you follow up?"* is an ask owed to its **author**, not to Neil.
+   `get_entity` correctly pools every rel (a dossier is *about* the person), but
+   the brief is about the user's unfinished business **with** them, so it takes
+   only the relational slice. Attributing a mention is wrong-person attribution.
+
+   Display-name fallback is deliberately forbidden, so two people with the same
+   name remain separate. Shared evidence prefers its sole attendee sender; if a
+   group record cannot be assigned to exactly one attendee, it is dropped rather
+   than attributed arbitrarily.
 4. Select only evidence that describes the user's unfinished business:
    user-owned obligations or unanswered asks, unresolved decisions/threads,
    explicit staleness guards, and load-bearing shared work context. Personal

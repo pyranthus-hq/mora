@@ -128,3 +128,25 @@ func TestCalendarMetaAttendees(t *testing.T) {
 		t.Fatalf("recurring_event_id = %q", rid)
 	}
 }
+
+// TestCalendarMetaCapturesSelfAttendee pins the zero-config self signal. Google
+// marks the authenticated user's own attendee entry with Self=true. Mora otherwise
+// derives "self" from the mailbox OAuth was granted on, which is routinely NOT the
+// address the calendar invites (a Workspace alias / custom domain) — and an
+// unrecognized self is admitted as an attendee of the user's own meeting, so their
+// own records get cited back to them as the counterparty's unfinished business
+// (wrong-person attribution, severity-1). Capture the flag the API already gives us.
+func TestCalendarMetaCapturesSelfAttendee(t *testing.T) {
+	it := calEventToItem("primary", &calendar.Event{
+		Id:      "ev1",
+		Summary: "Dan sync",
+		Start:   &calendar.EventDateTime{DateTime: "2026-07-13T17:00:00Z"},
+		Attendees: []*calendar.EventAttendee{
+			{Email: "Adit@AdisamConsulting.com", DisplayName: "Adit Karode", Self: true},
+			{Email: "dan@example.com", DisplayName: "Daniel Rachev"},
+		},
+	})
+	if got, _ := it.Meta["self_email"].(string); got != "adit@adisamconsulting.com" {
+		t.Fatalf("meta[self_email] = %q, want lowercased self attendee %q", got, "adit@adisamconsulting.com")
+	}
+}

@@ -67,13 +67,26 @@ func calEventToItem(calID string, ev *calendar.Event) Item {
 	// lowercased, with display-name aliases. Calendar emails arrive pre-parsed so
 	// they're added directly (no net/mail header parse needed).
 	attendees, organizer := newAddrSet(), newAddrSet()
+	// selfEmail is the authenticated user's OWN attendee entry. Google marks it with
+	// Self=true, and it is frequently NOT the mailbox OAuth was granted on (a
+	// Workspace alias, a custom domain). Without it Mora cannot recognize the user in
+	// their own invite, admits them as an attendee of their own meeting, and cites
+	// their own records back as the counterparty's unfinished business — wrong-person
+	// attribution. Capture the authoritative flag rather than inferring identity.
+	selfEmail := ""
 	for _, a := range ev.Attendees {
 		attendees.add(a.Email, a.DisplayName)
+		if a.Self && a.Email != "" && selfEmail == "" {
+			selfEmail = strings.ToLower(strings.TrimSpace(a.Email))
+		}
 	}
 	if ev.Organizer != nil {
 		organizer.add(ev.Organizer.Email, ev.Organizer.DisplayName)
 	}
 	meta := map[string]any{}
+	if selfEmail != "" {
+		meta["self_email"] = selfEmail
+	}
 	// recurring_event_id only when present — an empty value would be hash material
 	// and a pointless meta line on every non-recurring event (codex S2 review).
 	if ev.RecurringEventId != "" {

@@ -375,6 +375,14 @@ mora config mmr on              # diversity-aware rerank of hybrid results (off 
 
 MMR trims near-duplicate hits from a result set; it is off by default and only applies when the Ollama embedder is on.
 
+**Tell Mora your other email addresses** (`self_emails` in `config.toml`):
+
+```toml
+self_emails = "you@work.com, you@icloud.com"
+```
+
+Mora already knows the mailbox you authorized Google on, and the connectors record which invitee is you (Google's `Attendee.Self`, Apple's `Participant.is_self`). But a calendar often invites an address neither one covers — a Workspace alias, a custom domain. If Mora cannot recognize you among a meeting's invitees it will **not guess**: it refuses to attribute anything for that meeting and tells you to add the alias here. Listing your addresses removes the guesswork, and keeps your own records from being presented as the other person's unfinished business.
+
 **Re-sync Google data manually:**
 
 ```bash

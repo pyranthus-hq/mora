@@ -62,10 +62,16 @@ func nullStr(s string) any {
 	return s
 }
 
+// graphRelMentions is the rel for a body-text name hit: the entity was named in a
+// memory it is NOT a participant of. It is deliberately weaker than the participant
+// rels — a mention says "someone wrote this name", not "these two people interacted"
+// — so attribution-sensitive consumers (the meeting brief) must exclude it.
+const graphRelMentions = "MENTIONS"
+
 // relForStructuralKind maps a structural extraction kind to a hub->entity rel.
 func relForStructuralKind(kind string) string {
 	if kind == "link" {
-		return "MENTIONS"
+		return graphRelMentions
 	}
 	return "ABOUT" // scope, tag, category
 }
@@ -493,7 +499,7 @@ func buildGraphResult(mems []Memory, confirmed []confirmedMerge) graphResult {
 				continue
 			}
 			edges = append(edges, graphEdge{
-				Src: hubID(m.ID), Rel: "MENTIONS", Dst: pid, EvidenceID: m.ID,
+				Src: hubID(m.ID), Rel: graphRelMentions, Dst: pid, EvidenceID: m.ID,
 				ValidFrom: vf, ObservedAt: obs,
 			})
 			agg := getP(pid)

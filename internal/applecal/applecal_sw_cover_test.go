@@ -178,22 +178,24 @@ func TestSw_ParticipantsDegradeOnQueryAndScanErrors(t *testing.T) {
 	if err := closedDB.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if attendees, organizer := (&LiveFetcher{db: closedDB}).participants(1); len(attendees) != 0 || organizer != "" {
-		t.Fatalf("query error should degrade to no participants, got attendees=%v organizer=%q", attendees, organizer)
+	if attendees, organizer, self := (&LiveFetcher{db: closedDB}).participants(1); len(attendees) != 0 || organizer != "" || self != "" {
+		t.Fatalf("query error should degrade to no participants, got attendees=%v organizer=%q self=%q", attendees, organizer, self)
 	}
 
 	db := swOpenSQLite(t, filepath.Join(t.TempDir(), "bad-participants.sqlitedb"))
 	defer db.Close()
 	swMustExec(t, db, `CREATE TABLE Participant (owner_id INTEGER, email TEXT, role TEXT)`)
 	swMustExec(t, db, `INSERT INTO Participant (owner_id, email, role) VALUES (1, 'chair@example.com', 'chair')`)
-	if attendees, organizer := (&LiveFetcher{db: db}).participants(1); len(attendees) != 0 || organizer != "" {
-		t.Fatalf("scan error should degrade to no participants, got attendees=%v organizer=%q", attendees, organizer)
+	// This fixture also has NO is_self column — an older/foreign schema must keep
+	// working (no self signal) rather than fail the sync.
+	if attendees, organizer, self := (&LiveFetcher{db: db}).participants(1); len(attendees) != 0 || organizer != "" || self != "" {
+		t.Fatalf("scan error should degrade to no participants, got attendees=%v organizer=%q self=%q", attendees, organizer, self)
 	}
 }
 
 func TestSw_EventItemAllDayFallbackAndSparseBody(t *testing.T) {
 	start := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
-	it := eventItem(42, "Independence Day", "", "Personal", "", "", start, start, true, nil, "")
+	it := eventItem(42, "Independence Day", "", "Personal", "", "", start, start, true, nil, "", "")
 
 	if it.ProviderID != "42" {
 		t.Fatalf("empty UUID should fall back to ROWID, got %q", it.ProviderID)
