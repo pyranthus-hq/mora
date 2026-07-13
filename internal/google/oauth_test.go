@@ -191,3 +191,47 @@ func TestIsWSL(t *testing.T) {
 		t.Fatal("should not flag plain linux")
 	}
 }
+
+func TestOpenBrowserRejectsInvalidURLs(t *testing.T) {
+	origGOOS := browserGOOS
+	origStart := startBrowserCommand
+	t.Cleanup(func() {
+		browserGOOS = origGOOS
+		startBrowserCommand = origStart
+	})
+
+	browserGOOS = func() string { return "linux" }
+	startBrowserCommand = func(name string, args ...string) error {
+		return nil
+	}
+
+	tests := []struct {
+		url     string
+		wantErr string
+	}{
+		{url: "file:///etc/passwd", wantErr: "unsupported browser URL scheme: file"},
+		{url: "javascript:alert(1)", wantErr: "unsupported browser URL scheme: javascript"},
+		{url: ":/malformed", wantErr: "invalid URL for browser"},
+		{url: "-http://example.com", wantErr: "invalid URL for browser"},
+		{url: "http://example.com", wantErr: ""},
+		{url: "https://example.com", wantErr: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			err := openBrowser(tt.url)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+				}
+			}
+		})
+	}
+}
