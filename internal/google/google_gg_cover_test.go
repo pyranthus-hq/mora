@@ -946,6 +946,42 @@ func TestGg_AuthedLabels(t *testing.T) {
 			t.Fatal("AuthedLabels must surface an API error")
 		}
 	})
+	t.Run("empty labels returns empty map", func(t *testing.T) {
+		g := &ggFakeGoogle{labels: func(r *http.Request) (int, string) {
+			return 200, `{"labels":[]}`
+		}}
+		f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+		got, err := f.AuthedLabels()
+		if err != nil {
+			t.Fatalf("AuthedLabels: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("expected empty map, got %v", got)
+		}
+	})
+	t.Run("missing fields handled gracefully", func(t *testing.T) {
+		g := &ggFakeGoogle{labels: func(r *http.Request) (int, string) {
+			// one label is missing name, one is missing id
+			return 200, `{"labels":[{"id":"L1"},{"name":"Personal"}]}`
+		}}
+		f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+		got, err := f.AuthedLabels()
+		if err != nil {
+			t.Fatalf("AuthedLabels: %v", err)
+		}
+		if got["L1"] != "" || got[""] != "Personal" {
+			t.Fatalf("labels = %v", got)
+		}
+	})
+	t.Run("invalid json surfaces error", func(t *testing.T) {
+		g := &ggFakeGoogle{labels: func(r *http.Request) (int, string) {
+			return 200, `{"labels":[{invalid json`
+		}}
+		f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+		if _, err := f.AuthedLabels(); err == nil {
+			t.Fatal("AuthedLabels must surface an error for invalid JSON")
+		}
+	})
 }
 
 // ============================================================================
