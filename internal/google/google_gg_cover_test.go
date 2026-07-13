@@ -131,12 +131,6 @@ func ggMustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// ggRoundTripFunc adapts a func into an http.RoundTripper for stubbing
-// http.DefaultClient in the RevokeToken tests.
-type ggRoundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f ggRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
 // ggSyncBuf is a concurrency-safe io.Writer + reader used to capture what
 // StartLoopbackAuth prints while it runs in a goroutine.
 type ggSyncBuf struct {
@@ -268,7 +262,6 @@ func TestGg_IsWSL(t *testing.T) {
 		}
 	}
 }
-
 
 // ============================================================================
 // oauth.go — openBrowser
