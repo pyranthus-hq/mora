@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -79,28 +80,31 @@ func TestProbeReadable(t *testing.T) {
 	}
 
 	// 4. Unreadable permissions (simulating FDA denial)
-	unreadablePath := filepath.Join(tmpDir, "unreadable.db")
-	// Make it a valid DB first
-	dbUnreadable, err := sql.Open("sqlite", "file:"+unreadablePath+"?mode=rwc")
-	if err != nil {
-		t.Fatalf("failed to create unreadable db: %v", err)
-	}
-	if _, err := dbUnreadable.Exec("CREATE TABLE test2 (id INTEGER)"); err != nil {
-		t.Fatalf("failed to init unreadable db: %v", err)
-	}
-	dbUnreadable.Close()
+	// Skip on Windows because os.Chmod(0000) does not reliably prevent file reading.
+	if runtime.GOOS != "windows" {
+		unreadablePath := filepath.Join(tmpDir, "unreadable.db")
+		// Make it a valid DB first
+		dbUnreadable, err := sql.Open("sqlite", "file:"+unreadablePath+"?mode=rwc")
+		if err != nil {
+			t.Fatalf("failed to create unreadable db: %v", err)
+		}
+		if _, err := dbUnreadable.Exec("CREATE TABLE test2 (id INTEGER)"); err != nil {
+			t.Fatalf("failed to init unreadable db: %v", err)
+		}
+		dbUnreadable.Close()
 
-	// Strip read permissions
-	if err := os.Chmod(unreadablePath, 0000); err != nil {
-		t.Fatalf("failed to chmod unreadable db: %v", err)
-	}
+		// Strip read permissions
+		if err := os.Chmod(unreadablePath, 0000); err != nil {
+			t.Fatalf("failed to chmod unreadable db: %v", err)
+		}
 
-	readable, err = ProbeReadable(unreadablePath)
-	if err == nil {
-		t.Errorf("ProbeReadable(unreadable) expected error, got nil")
-	}
-	if readable {
-		t.Errorf("ProbeReadable(unreadable) = true, want false")
+		readable, err = ProbeReadable(unreadablePath)
+		if err == nil {
+			t.Errorf("ProbeReadable(unreadable) expected error, got nil")
+		}
+		if readable {
+			t.Errorf("ProbeReadable(unreadable) = true, want false")
+		}
 	}
 }
 
