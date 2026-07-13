@@ -890,7 +890,6 @@ func TestGg_NewLiveFetcher(t *testing.T) {
 	}
 }
 
-
 func TestGg_AuthedEmail(t *testing.T) {
 	t.Run("success lowercases and trims", func(t *testing.T) {
 		g := &ggFakeGoogle{profile: func(r *http.Request) (int, string) {
