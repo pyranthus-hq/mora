@@ -27,7 +27,7 @@
         "to": ["p/self", "p/kim", "p/lee"],
         "cc": [],
         "at": "2026-07-14T09:00:00Z",
-        "body": [{"id": "b1", "kind": "notification", "text": "Join the standup at https://meet.example.com/abc-defg-hij before the review."}]
+        "body": [{"id": "b1", "kind": "notification", "text": "Join the standup at https://example.com/meet/abc-defg-hij before the review."}]
       }]
     },
     {
@@ -411,7 +411,7 @@
     }
   ],
   "non_obligations": [
-    {"id": "n/sab-url", "span": {"artifact_id": "a/sab-calendar", "message_id": "m1", "block_id": "b1", "quote": "https://meet.example.com/abc-defg-hij"}, "class": "url_shard", "why": "A meeting URL is a link, not an obligation."},
+    {"id": "n/sab-url", "span": {"artifact_id": "a/sab-calendar", "message_id": "m1", "block_id": "b1", "quote": "https://example.com/meet/abc-defg-hij"}, "class": "url_shard", "why": "A meeting URL is a link, not an obligation."},
     {"id": "n/sab-quoted", "span": {"artifact_id": "a/sab-quoted", "message_id": "m1", "block_id": "b1", "quote": "Can you resend the retired budget sheet?"}, "class": "trivia", "why": "Connector-surviving quoted context is not authored by the sender."},
     {"id": "n/sab-forwarded", "span": {"artifact_id": "a/sab-forwarded", "message_id": "m1", "block_id": "b1", "quote": "Book a free product demo this week."}, "class": "marketing", "why": "A forwarded generic call to action is not a personal obligation."},
     {"id": "n/sab-footer", "span": {"artifact_id": "a/sab-footer", "message_id": "m1", "block_id": "b1", "quote": "Please do not reply to this automated message."}, "class": "footer", "why": "Footer boilerplate from a service identity is not an obligation."},
