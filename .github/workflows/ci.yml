@@ -48,7 +48,7 @@ jobs:
       - name: exam scorer self-tests and sabotage
         run: |
           go test ./internal/mora/exam \
-            -run 'TestScorerRedTeam|TestEveryMetricHasASabotageCase|TestMetricRegistryCoversEveryScorecardField|TestExamDeterminismGuard|TestScoreRefuses|TestGateControls' -count=1
+            -run 'TestScorerRedTeam|TestEveryMetricHasASabotageCase|TestMetricRegistryCoversEveryScorecardField|TestExamDeterminismGuard|TestScoreRefuses|TestGateControls|TestMatchIsExactNotContainment|TestUnknownNeverScoresCorrect|TestRedTeamManifestIsComplete' -count=1
           go test ./internal/mora -run 'TestObligationScoreReport|TestExamRealPredictionsPin|TestExamRealEngineScorecard|TestExamTestOnlyDepsAreNotLinked' -count=1
       - name: gofmt check
         run: |

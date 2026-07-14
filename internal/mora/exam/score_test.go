@@ -322,6 +322,67 @@ func TestRealEngineBornRedRowsAreRed(t *testing.T) {
 	}
 }
 
+// TestMatchIsExactNotContainment guards THE PREDICATE, which is the whole exam.
+//
+// It exists because the copy-the-input row alone does not. That row asserts
+// LooseMatches > 0, and on this corpus that assertion is satisfied INCIDENTALLY —
+// two thread subjects happen to be substrings of gold quotes — so loosening the
+// predicate from equality to containment left the row green while silently
+// crediting every padded line as a true positive. A gate that passes for a reason
+// unrelated to the thing it is guarding is not a gate.
+//
+// So this asserts the predicate directly, in both directions: a line that merely
+// CONTAINS a gold quote is never credited, and neither is a line the gold quote
+// contains. Both are recorded as loose matches. Brittleness is reported, never
+// absorbed — otherwise an extractor that emits the whole memory body "contains"
+// every gold quote and scores perfectly.
+func TestMatchIsExactNotContainment(t *testing.T) {
+	l := loadLedger(t, examLedgerPath)
+	oracle := Oracle(l, SurfaceMeeting)
+	base, err := Score(l, oracle, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Extraction.Precision != 1 || base.LooseMatches != 0 {
+		t.Fatalf("the oracle is not a clean baseline: precision=%v loose=%d", base.Extraction.Precision, base.LooseMatches)
+	}
+	quote := UnwrapEmitted(oracle[0].Text)
+
+	for name, text := range map[string]string{
+		"padded (the copy-the-input attack)": quote + " And an unrelated extra sentence.",
+		"truncated (a fragment of the gold)": quote[:len(quote)/2],
+	} {
+		attack := clonePredictions(oracle)
+		attack[0].Text = "· x — “" + text + "”"
+
+		got, err := Score(l, attack, SurfaceMeeting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Extraction.Precision >= base.Extraction.Precision {
+			t.Errorf("%s: precision = %v, want BELOW %v — the predicate credited a containment hit",
+				name, got.Extraction.Precision, base.Extraction.Precision)
+		}
+		if got.Extraction.Recall >= base.Extraction.Recall {
+			t.Errorf("%s: recall = %v, want BELOW %v — the gold item was credited to a line that does not quote it",
+				name, got.Extraction.Recall, base.Extraction.Recall)
+		}
+		if got.LooseMatches != 1 {
+			t.Errorf("%s: LooseMatches = %d, want exactly 1 — brittleness is REPORTED, never absorbed", name, got.LooseMatches)
+		}
+
+		verdicts, err := Classify(l, attack, SurfaceMeeting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range verdicts {
+			if v.Kind == VerdictTruePositive && strings.Contains(v.Text, "unrelated extra sentence") {
+				t.Errorf("%s: the padded line was credited as a TRUE POSITIVE", name)
+			}
+		}
+	}
+}
+
 // TestUnknownNeverScoresCorrect is the test that keeps the typed sentinels honest.
 // The gold ledger has obligations with NO due time and NO closure. If the scorer
 // treated the adapters' "" as "correctly reports no due time", a surface that cannot
