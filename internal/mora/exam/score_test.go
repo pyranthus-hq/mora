@@ -322,6 +322,51 @@ func TestRealEngineBornRedRowsAreRed(t *testing.T) {
 	}
 }
 
+// TestUnknownNeverScoresCorrect is the test that keeps the typed sentinels honest.
+// The gold ledger has obligations with NO due time and NO closure. If the scorer
+// treated the adapters' "" as "correctly reports no due time", a surface that cannot
+// express a due time at all would score CORRECT on them — the born-red rows would be
+// accidentally green and the exam would be lying in the flattering direction.
+func TestUnknownNeverScoresCorrect(t *testing.T) {
+	l := loadLedger(t, examLedgerPath)
+	oracle := Oracle(l, SurfaceMeeting)
+
+	silent := clonePredictions(oracle)
+	for i := range silent {
+		silent[i].Due, silent[i].ClosureRef = "", ""
+		silent[i].Direction, silent[i].Lifecycle = Unknown, Unknown
+	}
+	sc, err := Score(l, silent, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, row := range map[string]PR{
+		MetricDueTime: sc.DueTime, MetricClosureLinkage: sc.ClosureLinkage,
+		MetricDirection: sc.Direction, MetricLifecycle: sc.Lifecycle,
+	} {
+		if row.Recall != 0 {
+			t.Errorf("%s recall = %v for a surface that expressed NOTHING; silence is not a correct answer", name, row.Recall)
+		}
+		if row.Defined {
+			t.Errorf("%s reported a DEFINED precision over zero expressed values, which must be N/A", name)
+		}
+	}
+	if sc.DirectionScorable {
+		t.Error("DirectionScorable = true when every prediction was unknown")
+	}
+
+	// And the converse: the same predictions with the TYPED gold values must score
+	// perfectly, which is what proves the rows are red because the PRODUCT is silent
+	// and not because the scorer cannot pass them.
+	typed, err := Score(l, oracle, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typed.DueTime.Recall != 1 || typed.ClosureLinkage.Recall != 1 {
+		t.Fatalf("the oracle could not pass the typed rows: due=%+v closure=%+v", typed.DueTime, typed.ClosureLinkage)
+	}
+}
+
 // TestZeroPredictionsReportNA is Finding 6 made mechanical: precision over zero
 // predictions is N/A, never a flattering 1.0, and N/A is a failure.
 func TestZeroPredictionsReportNA(t *testing.T) {
@@ -455,9 +500,9 @@ func TestRedTeamManifestIsComplete(t *testing.T) {
 }
 
 // TestSyntheticGibberishCarriesEveryDefectSignature is the frozen-incident table's
-// synthetic twin. The exam never reads eval/sabotage/gibberish-2026-07 — that tree
-// carries real names on a public repo — so the defect SIGNATURES are re-asserted
-// here against the synthetic world instead.
+// synthetic twin. The exam never reads the committed frozen-incident tree — it carries
+// real names on a public repo — so the defect SIGNATURES are re-asserted here against
+// the synthetic world instead.
 func TestSyntheticGibberishCarriesEveryDefectSignature(t *testing.T) {
 	in := redTeamInput(t)
 	cases := RedTeamRows()[RedTeamRowID{Surface: SurfaceMeeting, Name: RowSyntheticGibberish}](in)

@@ -18,6 +18,9 @@ require (
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.282.0
 	modernc.org/sqlite v1.29.0
+	// test-only: the property tests. Nothing under cmd/ reaches it, and
+	// TestExamTestOnlyDepsAreNotLinked asserts that rather than promising it.
+	pgregory.net/rapid v1.3.0
 )
 
 require (
