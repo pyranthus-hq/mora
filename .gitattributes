@@ -7,4 +7,4 @@
 # Frozen-incident fixtures are replayed as Mora vault input. The Markdown
 # parser's frontmatter delimiter and the rendered scorer artifact are LF-byte
 # contracts, so Git must not rewrite this tree under core.autocrlf on Windows.
-internal/mora/eval/sabotage/** text eol=lf
+internal/mora/eval/** text eol=lf
