@@ -74,6 +74,7 @@ mora schedule list
 The scheduled job names are:
 
 - `pulse-daily`
+- `doctor-pulse`
 - `index-hourly`
 - `backup-daily`
 - `lint-weekly`

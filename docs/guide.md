@@ -90,7 +90,7 @@ mora schedule install ingest-hourly
 mora schedule list
 ```
 
-Task names use the `Mora\<job>` form, for example `Mora\ingest-hourly`. The same job names are available across platforms: `ingest-hourly`, `index-hourly`, `pulse-daily`, `backup-daily`, `git-daily`, and `lint-weekly`.
+Task names use the `Mora\<job>` form, for example `Mora\ingest-hourly`. The same job names are available across platforms: `ingest-hourly`, `index-hourly`, `pulse-daily`, `doctor-pulse`, `backup-daily`, `git-daily`, and `lint-weekly`.
 
 Uninstall with:
 
@@ -323,10 +323,11 @@ Open Obsidian and add the vault directory (default: `~/vault/mora`) as a new vau
 ```bash
 mora schedule install ingest-hourly   # hourly background sync of every enabled source
 mora schedule install pulse-daily     # 8am daily brief (sync-first, persisted, notification)
+mora schedule install doctor-pulse    # 9am freshness alarm (native toast + exit 2 when a source is unhealthy)
 mora schedule list                    # show which jobs are installed
 ```
 
-The full set of jobs is `ingest-hourly`, `index-hourly`, `pulse-daily`, `backup-daily`, `git-daily`, and `lint-weekly`.
+The full set of jobs is `ingest-hourly`, `index-hourly`, `pulse-daily`, `doctor-pulse`, `backup-daily`, `git-daily`, and `lint-weekly`.
 
 **Check sync freshness:**
 
@@ -340,7 +341,17 @@ mora sync status
 mora doctor
 ```
 
-`mora doctor` reports the health of the install: the vault and index, that your tokens live outside the vault, when you last signed in to each Google account, the storage footprint, whether the vault is a git repo, and (on macOS) Full Disk Access for iMessage and Apple Calendar.
+`mora doctor` reports the health of the install: the vault and index, that your tokens live outside the vault, when you last signed in to each Google account, the storage footprint, whether the vault is a git repo, per-source freshness for every enabled connector, and (on macOS) Full Disk Access for iMessage and Apple Calendar.
+
+**Per-source freshness and the health alarm:**
+
+```bash
+mora doctor --json      # machine-readable report; each connector gets a `source_fresh:<key>` check
+mora doctor --strict    # exit non-zero if any critical check fails, incl. a stale/failed/never-synced source
+mora doctor --pulse     # freshness-only check: a native toast + exit 2 when any source is unhealthy, exit 0 when all are fresh
+```
+
+A connector goes stale silently if a sync keeps failing in the background — the six-day version of this bug is why `doctor --pulse` exists. Gmail/Calendar/Apple Calendar alarm after 24h without a clean sync; iMessage/filesystem after 48h. Any recorded sync error (not just age) alarms immediately. When a source is unhealthy, the SAME red banner — `🔴 MORA HEALTH: <source> — no successful sync for <N>h (<error>). Run: mora doctor` — leads both `mora brief` and `mora brief --event-id`, so a stale or dead source is never quietly missing from a brief that otherwise renders with full confidence. Install `doctor-pulse` on a schedule to get the native toast without having to remember to check.
 
 **Record open tasks so the brief can surface them:**
 

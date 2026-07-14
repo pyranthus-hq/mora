@@ -83,6 +83,21 @@ The event and its attendee roster are likewise carried in `CitedMeetingEvent`
 with the calendar memory's citation. The explicit `egress_calls` meter is always
 zero.
 
+## The health banner (HEALTH-02)
+
+`MeetingBrief.SourceHealth` is populated once, at build time, by
+`sourceHealthAll(cfg, at)` — the SAME per-source freshness snapshot `mora doctor`
+and the daily brief read (see [sync-and-freshness](./11-sync-and-freshness.md)).
+`renderMeetingBrief` renders `healthBannerFromSources(brief.SourceHealth)` as the
+FIRST line, even when there is no upcoming event (`brief.Event == nil`) — a
+broken source is worth surfacing on its own, independent of whether a next
+meeting happens to exist. Because MCP `meeting_prep` returns the `MeetingBrief`
+struct directly, the health snapshot travels with it for free: no extra tool
+plumbing, and an agent reading the struct can see a dead corpus without parsing
+Markdown. A brief that renders confidently over stale/failed source data is a
+WRONG brief — this is a correctness signal riding alongside the citations, not
+an ops-only addition.
+
 ## Time, determinism, and egress
 
 `--at <RFC3339>` injects the assembly time; default is the process clock.

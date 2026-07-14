@@ -17,6 +17,8 @@ How Mora tracks and surfaces per-source data freshness under an **honest-snapsho
 | `internal/mora/sources_lock.go` | — | The **sources.json read-modify-write lease (P3)**: `mutateSources` (acquire → reload-inside-lock → mutate → `saveSources` → release) and `acquireSourcesLock` (`<ConfigDir>/sources.json.lock`, TTL-reaped). Reuses the crash-safe file-lock primitives from `loop.go` (`publishLockFile`/`reapStaleLockTTL`/`breakLock`/`loopLockReleaser`). The single boundary every registry mutation goes through — see the invariant below. |
 | `internal/mora/gitsync.go` | 234 | `mora sync git` — opt-in **off-device backup** of the vault to a private git remote (issue #6). `syncGit` (one-way push-only orchestration), `configureRemote` (`--github`/`--remote`/existing-origin precedence), `commitIdentityArgs` (fresh-machine identity fallback), `redactCredentials` (strips PAT userinfo from fail-loud git output), `realExec` (the injectable git/gh exec seam). |
 | `internal/mora/digest.go` | 758 | `buildDigest` embeds `sourceFreshness(cfg)` into the digest `Freshness` map and reads per-instance `SyncStatus` via `loadConnectorSyncStatus`/`syncStatusPathFor` for the three-state health labels; `renderDigest` prints the `Fresh as of:` line. |
+| `internal/mora/health.go` | — | Gate 1 (HEALTH-01..05): `sourceHealth`/`sourceHealthAll` (the never/failed/stale/fresh classification, stricter thresholds than the digest three-state), `healthBanner`/`healthBannerFromSources` (the red one-line alarm), `stampSyncAttemptFailure` (closes the pre-Ingest stamping gap). |
+| `internal/mora/doctor.go` | — | `cmdDoctor`'s `--pulse` flag (`cmdDoctorPulse`) — freshness-only check, exits 2 + posts a toast when unhealthy — plus the `source_fresh:<key>` checks appended to the normal `doctor`/`doctor --json`/`doctor --strict` report. |
 
 > Canonical source only: `./internal/`, `./cmd/`, repo-root config. The `SyncStatus` type and the `Ingest` loop physically live in `internal/memory`; `internal/google` re-exports thin aliases so connector call-sites read unchanged (`internal/google/status.go:7`, `internal/google/ingest.go:8-12`).
 
@@ -216,6 +218,71 @@ Freshness is not confined to the `sync status` command — it rides along inside
 - **iMessage was mis-keyed.** The old reader stripped only the `google-` prefix from the filename, so `imessage-<name>.json` became the map key `imessage-<name>` instead of `imessage` — disagreeing with `cmdSync status`, which keys off `st.Source`. Keying off `st.Source` makes both readers agree (the filename stem is now only a fallback used when `st.Source` is empty, and even then strips both known prefixes — `internal/mora/ingest.go`).
 - **Never-synced sources were silently dropped.** The old reader effectively only surfaced sources with a real timestamp; a present-but-never-cleanly-synced status (`LastSynced==""`) vanished from the map, hiding a broken source. It is now **INCLUDED with an empty value** (`internal/mora/ingest.go`) so a broken source can read "unavailable" downstream rather than disappearing (the SC#3 gap).
 
+## Gate 1: the health alarm (HEALTH-01..05)
+
+The digest's three-state (`classifyState`, above) computes the right freshness state, but pre-Gate-1 it was consumed **only by a digest section heading** — text nobody reads on a schedule. The incident that motivated this: a source can fail on every hourly attempt for days while `LastSuccessAt` just sits there, aging quietly, with no surface that actively alarms. Gate 1 (`internal/mora/health.go`) adds a SEPARATE, stricter freshness signal that feeds `mora doctor`, a red banner on every brief surface, and a schedulable pulse check — so a dead source can no longer go unnoticed for six days.
+
+### `sourceHealth` — a second, stricter classification (not a replacement for the digest three-state)
+
+`sourceHealthAll(cfg, now)` (`internal/mora/health.go`) walks the same enabled-source set `loadConnectorSyncStatus` does, and classifies each instance into one of four states — **`never` / `failed` / `stale` / `fresh`** — first-match-wins in that order:
+
+1. `never` — no `LastSuccessAt` has ever been recorded.
+2. `failed` — the last recorded attempt carries `LastError`/`ErrorCount>0`, even over an OLDER success (HEALTH-04: a fresh failure must read as a live problem, not merely "old").
+3. `stale` — the last success is older than the type's threshold.
+4. `fresh` — otherwise.
+
+This deliberately does **not** unify with `classifyState`'s `unavailable`/`stale`/`no changes`/`baseline` states, and the thresholds deliberately DIFFER:
+
+| | digest three-state (`classifyState`) | `sourceHealth` |
+|---|---|---|
+| Threshold | `digestStaleHours` = 48h for every type | 24h for `gmail`/`calendar`/`applecalendar`, 48h for `imessage`/`filesystem` |
+| Consumed by | digest section headings (cosmetic) | `doctor`, `doctor --pulse`, the red banner |
+| `never` vs `failed` | both collapse into `unavailable` | kept distinct — "no data point" reads differently from "actively erroring" |
+
+**WHY two systems instead of one:** the digest heading is a background-informational label the reader skims; the health alarm is the PRODUCT-INVALID threshold — the point past which Mora is confidently answering from a corpus that stopped updating. Google connectors are polled hourly, so 24h already means several missed cycles; iMessage/filesystem are local, slower-moving stores where 48h is still honest. Forking the threshold silently (without a name for the new concept) would read as a bug; `sourceHealth` is the named, separate concept instead. Do not fork `digestStaleHours` itself — both call sites (`digest.go`, `health.go`) keep independent constants with a comment explaining why.
+
+### Closing the pre-Ingest stamping gap
+
+`LastAttemptAt`/`LastError` are stamped by `memory.Ingest` itself (`internal/memory/ingest.go:56-108`) — but only once it actually RUNS. OAuth config resolution, token load, and fetcher construction in `ingestGoogle`/`ingestIMessage`/`ingestAppleCal` (`internal/mora/ingest.go`) can all fail BEFORE `memory.Ingest` is ever called, leaving the on-disk `SyncStatus` completely untouched — `doctor` could see a source had gone old, but never learn WHY.
+
+`ingestSource` (`internal/mora/ingest.go`) — the single dispatch chokepoint every caller (`backfillEnabledGoogle`, `cmdIngest`, `cmdReingest`, `applySetupSelection`) routes through — closes this: on any returned error it calls `stampSyncAttemptFailure` (`internal/mora/health.go`), which loads the current on-disk status and, **only if it doesn't already carry this exact error** (i.e. the inner path hasn't already stamped it), stamps `LastAttemptAt`/`LastError`/`ErrorCount++`. The compare-first guard matters: re-stamping unconditionally would risk clobbering a checkpoint/counter update that `persistSyncStatus` already wrote with a stale re-read for no benefit. A save failure here is warned, never returned — it must not mask the real ingest error the caller is already propagating.
+
+### The red banner
+
+`healthBannerFromSources([]sourceHealth) string` (`internal/mora/health.go`) is a PURE function: given the worst state present (`failed` > `never` > `stale`, ties broken by age descending), it renders ONE line —
+
+```
+🔴 MORA HEALTH: gmail — no successful sync for 52h (database or disk is full (13)). Run: mora doctor
+```
+
+— or `""` when every enabled source is fresh. `healthBanner(cfg, now)` is the cfg/now convenience wrapper; render paths never call it directly. Instead, `sourceHealthAll(cfg, now)` is computed ONCE at build time and stored on `Digest.SourceHealth` (`digest.go`) and `MeetingBrief.SourceHealth` (`meetingbrief.go`), so every render function stays a pure function of the already-built struct — no `time.Now()` in a render path (the determinism invariant `TestMCPDigestEnvelopeOffByteIdentical` depends on).
+
+Render points:
+
+- **Daily brief** — `renderDigestHealthBanner(d)` runs right after `renderDigestHeader`, before `renderDigestFreshness` (`digest.go`). Its bytes are folded into `budgetDigestForMarkdown`'s reserved frame alongside header/freshness/tasks — a banner rendered outside that frame would let the final `truncateRunes` safety net silently clip an item the budgeter had already counted as a survivor (pinned by `TestDigestTightBudgetNeverEvictsASurvivor`).
+- **Meeting brief** — `renderMeetingBrief` renders the banner FIRST, before the `Event == nil` early return — a broken source is worth surfacing even when there happens to be no upcoming meeting. MCP `meeting_prep` returns the `MeetingBrief` struct directly, so the health snapshot rides along with no extra wiring: a brief that renders confidently over a dead corpus is a WRONG brief, not an ops footnote.
+- **MCP `digest`/`brief`** — `source_health` rides in `digestMCPPayload`'s always-included frame (alongside `source_states`) and in `DigestEnvelope`/`budgetEnvelopePayload`, so an agent reads the typed state without parsing Markdown.
+
+### `mora doctor --pulse`
+
+A new flag on the existing `doctor` command (`internal/mora/doctor.go`) that runs ONLY the freshness checks — none of `doctor`'s vault/index/token checks — and is meant to run on a schedule:
+
+- All sources fresh → prints one OK line, exits 0.
+- Any source unhealthy → prints the banner, posts a best-effort native macOS toast (`notifyHealthAlarm`, gated identically to the existing brief-toast: `shouldNotify(goos)`, best-effort, a failed/missing `osascript` never fails the check), and **exits 2** — a distinct code from `--strict`'s generic non-zero, so automation can tell "sick" from "broken."
+- `--pulse --json` emits ONLY `{"sources": [...]}` — no banner text mixed into the JSON stream.
+- `--pulse --strict` is a no-op combination — `--pulse` alone already exits 2.
+
+Exit 2 requires the TYPED `exitCodeError{code: 2}` (`internal/mora/loop.go`, the same sentinel `mora loop begin` already uses) — an ordinary `error` maps to exit 1 in `cmd/mora/main.go`'s `ExitCodeFor` dispatch and could never produce 2.
+
+Scheduling: `doctor-pulse` → `doctor --pulse` in `scheduleCommands` (`internal/mora/mora.go`), installed daily at 09:00 (after the 08:00 `pulse-daily` brief), snapshotting `MORA_GOOGLE_CREDENTIALS`/`MORA_CONFIG_DIR` exactly as `schedulePlistFor` already does for every other job (the same launchd-inherits-nothing lesson as `pulse-daily`, above).
+
+### Fail-closed, not fail-open
+
+Two properties worth calling out because they were explicitly tested (`internal/mora/incident_replay_test.go`), not just implied:
+
+- **A corrupt `sources.json` alarms rather than reading as "no sources enabled."** `sourceHealthAll` returns a synthetic `{Key: "sources_config", State: "failed"}` entry when `loadSources` errors, rather than silently returning `[]sourceHealth{}` (which would read as healthy — the connectors just happen not to exist). Fail-closed: the config being unreadable is itself a health event.
+- **An unwritable stamp still alarms.** `SaveStatus` writes `<path>.tmp` + rename (`internal/memory/status.go`), which bypasses the TARGET file's permissions — chmodding the status file itself does nothing. The alarm survives a genuinely unwritable STATUS DIRECTORY (disk full, permissions) because it only ever READS the last successfully recorded stamp and keys on its AGE — an unwritable stamp just keeps getting older, and the alarm fires anyway. `stampSyncAttemptFailure`'s own save failures are swallowed (warned, never returned) for the same reason: a write failure while trying to RECORD a failure must not additionally break the read-only alarm path.
+
 ## Off-device git backup (`mora sync git`) — opt-in egress
 
 Issue #6. The vault is plaintext Markdown with no durable off-machine copy; `mora
@@ -277,6 +344,8 @@ Mora's otherwise-zero-egress posture, so the design is opt-in and loud by constr
 - **Status file naming is connector-prefixed; both readers now key off `Source`.** `google-<name>.json` vs `imessage-<name>.json`. As of Phase 12 BOTH `cmdSync status` and `sourceFreshness` key off the in-file `SyncStatus.Source` (`internal/mora/ingest.go`), so they agree — the old `google-`-only filename-strip bug that mis-keyed iMessage is fixed. The digest resolves a connector's status via `loadConnectorSyncStatus`/`syncStatusPathFor` (`internal/mora/digest.go:447-487`), which reconstructs the `google-`/`imessage-` filename from `Source.Type`. **WHY:** any new connector adding a status path must set `SyncStatus.Source` so all three readers (status / freshness / digest health) resolve the same key.
 - **The watermark store is SEPARATE from `sync/` — by design (Phase 12).** The per-instance delta watermark lives at `<StateDir>/brief/<key>.json` (`internal/mora/brief.go:80-82`), NOT in `sync/` and NOT as a `SyncStatus` field. **WHY:** `SyncStatus.LastSynced` advances on *every* sync regardless of whether content changed, so a watermark built on it would mark everything "seen" on the next re-pull and surface no delta. `sourceFreshness` must keep scanning only `sync/` and never read `brief/`. The two stores answer different questions: `sync/` = "how old is this snapshot," `brief/` = "what have I already shown you." (Store details: [synthesis-think-digest](./07-synthesis-think-digest.md).)
 - **`LastSynced` advancing means "reached end of pagination."** It is stamped only at `internal/memory/ingest.go:81`, after the checkpoint clears (alongside `LastSuccessAt`). **WHY:** if you start writing `LastSynced` per-page, the 48h STALE check and the agent-facing freshness map would report a source as "fresh" even when its last run aborted halfway — defeating the honesty guarantee.
+- **The health alarm is a SEPARATE, stricter system from the digest three-state — do not merge their thresholds.** `sourceHealth` (`internal/mora/health.go`) alarms at 24h (Google)/48h (local) and keeps `never` distinct from `failed`; `classifyState` (`digest.go`) still alarms its heading at a flat 48h and collapses both into `unavailable`. **WHY:** the digest heading is informational; the health alarm is the product-invalid threshold that drives `doctor --pulse`'s exit code and the red banner. Silently forking one from the other (without naming the new concept) would read as an inconsistency bug rather than a deliberate, tighter alarm.
+- **`sourceHealthAll` fails CLOSED on a broken registry, never open.** A `loadSources` error returns a synthetic `failed` entry, not `[]sourceHealth{}` (`internal/mora/health.go`) — an empty slice would read as "no sources enabled," which is indistinguishable from healthy. **WHY:** this is the exact shape of silent failure Gate 1 exists to close; the one input that could make the alarm itself go quiet must not.
 - **The sources.json registry serializes its read-modify-write behind a lease (P3).** Every `load → mutate → save` on the source registry goes through `mutateSources` / `acquireSourcesLock` (`internal/mora/sources_lock.go`), which holds a crash-safe file lease at `<ConfigDir>/sources.json.lock` around the WHOLE cycle and **reloads the registry inside the lease**. `saveSources` + `atomicWrite` already made each individual write collision-free (a unique temp per writer), but two processes — e.g. a manual `mora connect` racing the scheduled `ingest run --all` — each doing load→mutate→save could still lose an update: last `os.Rename` wins, silently dropping the other's enable bit / deny-list / persisted window. The lease closes that hole. **WHY reload-inside-lock:** loading before the lease reintroduces the race — the fix is that the second writer re-reads the first writer's *committed* state before it mutates, so no field is clobbered. The lease reuses the exact primitives proven for `mora loop` (`publishLockFile`'s `os.Link`-atomic publish + `reapStaleLockTTL`'s TTL reap in `loop.go`), so it is Windows-portable; a lease leaked by a SIGKILL is force-reaped after `sourcesLockTTL` (30s), the same stale-after-SIGKILL model as `acquireBriefLock`. The lease is scoped to load→mutate→save ONLY — `connectFilesystem` releases it *before* its ingest/rebuild, so a long backfill never holds it. **Adding a new registry writer:** route it through `mutateSources` (or `acquireSourcesLock` directly if you need custom load-error handling, as `connectFilesystem` does) — a bare `loadSources`→`saveSources` outside the lease reopens the lost-update hole.
 
 ## Related
@@ -285,6 +354,7 @@ Mora's otherwise-zero-egress posture, so the design is opt-in and loud by constr
 - [connectors-google](./04-connectors-google.md) — `LiveFetcher.FetchPage`, the `FetchWindow`, tombstones, OAuth/refresh-token expiry.
 - [connectors-imessage](./05-connectors-imessage.md) — the iMessage `Fetcher`, Full Disk Access gating, `imessage-` status path.
 - [synthesis-think-digest](./07-synthesis-think-digest.md) — how `digest`/`context_memory` embed `sourceFreshness` into agent-facing results, the `brief/` watermark store, and the digest three-state that reads the M-3 health fields.
+- [meeting-brief-assembly](./19-meeting-brief-assembly.md) — where `MeetingBrief.SourceHealth` is populated and the banner is rendered ahead of the cited sections.
 - [cli-and-ux](./08-cli-and-ux.md) — `mora sync` subcommands, the lipgloss styler, byte-clean non-TTY output.
 - [distribution-and-ops](./10-distribution-and-ops.md) — `mora schedule install` launchd jobs, the periodic `ingest run --all` re-pull, state-dir layout. Note the `pulse-daily` job (Phase 13: `pulse --write --digest --advance --sync --brief-file --notify`) drops `RunAtLoad` (`scheduleRunAtLoad`, `internal/mora/schedule.go`) so a reboot/login no longer re-fires the once-daily watermark commit and consumes the morning delta.
 

@@ -158,14 +158,21 @@ sequenceDiagram
 
 ## `doctor` — environment checks
 
-`cmdDoctor` (`doctor.go`) runs a set of boolean checks into a map and prints each as `ok`/`warn`, then storage + iMessage readiness:
+`cmdDoctor` (`doctor.go`) runs an ordered slice of named checks and prints each as `ok`/`warn` (or, with `--json`, a machine-readable `doctorReport`), then storage + iMessage readiness:
 - `vault`, `index_db`, `token_dir`, `sources_config` — existence checks.
 - `tokens_disjoint_from_vault` (`disjointRealPaths`, `doctor.go`) — the OAuth token dir must NOT live inside the vault (symlink-resolved, `EvalSymlinks`, via `resolveReal` in `mora.go`), so a synced/shared vault never carries credentials.
 - `looksSynced` (`doctor.go`) emits a `warn` if the token dir path contains a cloud-sync marker (`com~apple~CloudDocs`, `Dropbox`, `Google Drive`, `OneDrive`, `Sync`) — a token in iCloud/Dropbox is a credential-leak smell.
+- **`source_fresh:<key>`** (Gate 1, HEALTH-01/-03) — one critical check per enabled connector instance, from `sourceHealthAll(cfg, now)` (`internal/mora/health.go`). An enabled-but-never-synced/stale/failed source makes `.healthy` false. See [sync & freshness](./11-sync-and-freshness.md) for the full alarm design (stricter thresholds than the digest three-state, the red banner, `doctor --pulse`).
 - **Storage footprint** (`vaultStorageBytes`, `doctor.go`): vault size + the index DB size, but the DB is added **only when it resolves to a path outside the vault** (else `dirBytes` already counted it — double-count guard). `storageStatus` (`doctor.go`) classifies the total `ok`/`warn`/`over` against a 3 GiB soft target / 15 GiB hard ceiling (`storageTargetBytes`/`storageCeilingBytes`, `doctor.go`). Mora reports only; it never deletes or caps.
 - **iMessage readiness** (`printIMessageReadiness`, `doctor.go`) prints in a dedicated *ordered* block (the checks map is unordered) so the Full Disk Access guidance reads top-to-bottom. The FDA check is a **real read probe** (`imessage.ProbeReadable` — open+read one row), never `os.Stat`: a present-but-unreadable `chat.db` is exactly the FDA-denied case. See [imessage connector](./05-connectors-imessage.md).
 
-The check-map iteration is unordered Go map iteration; the surrounding blocks (storage, iMessage) are deliberately printed *outside* the map loop so their ordering is stable. Doctor output is not `--json` aware — it is human-only prose with a styler.
+Checks are collected into an ordered slice (not a map) precisely so both the JSON report and the text output are deterministic; the surrounding blocks (storage, iMessage) are printed *outside* that slice so their ordering is stable too.
+
+**The flag matrix:** `--json` emits `doctorReport` (a `healthy` bool, every named check, storage/share/version/platform fields, and a `sources` array that is always `[]`, never `null`); `--strict` makes `Run` return a non-zero-mapped error when any critical check is `false` (default `doctor`/`doctor --json` stay exit-0 even when unhealthy — a deliberate backward-compat choice, `TestDoctorStrictErrorsWhenUnhealthy`); `--pulse` (Gate 1) is a DIFFERENT mode entirely — see below. `--pulse --json` and `--pulse --strict` are two of the three documented combinations (`cmdDoctor`, `doctor.go`); the plain `--json`/`--strict` pair above is the third.
+
+### `doctor --pulse` — the freshness-only alarm
+
+`--pulse` skips every check above and runs ONLY the per-source freshness classification: all fresh → one `ok` line, exit 0; any source `stale`/`failed`/`never` → prints the red banner (`healthBannerFromSources`, shared with the daily/meeting brief — see [sync & freshness](./11-sync-and-freshness.md)), posts a best-effort native toast (`notifyHealthAlarm`, the same GOOS/`MORA_NO_NOTIFY`-gated seam as the brief's toast), and returns the TYPED `exitCodeError{code: 2}` (`loop.go`) so `cmd/mora/main.go` exits 2 — distinct from `--strict`'s generic non-zero, so a caller can tell "sick" (`--pulse`) from "broken" (`--strict`). `--pulse --json` emits ONLY `{"sources": [...]}`; no banner text reaches the JSON stream. Meant to be scheduled: `mora schedule install doctor-pulse` installs a daily 09:00 job.
 
 ## `init` config-preservation
 
@@ -203,4 +210,3 @@ The check-map iteration is unordered Go map iteration; the surrounding blocks (s
 ## Open questions / unverified
 
 - The CLI has no global `--no-color`/`--color` flag; color is controlled only by env (`NO_COLOR`/`MORA_NO_COLOR`/`TERM`) and TTY detection. This appears intentional but is not asserted anywhere I read.
-- `doctor` has no `--json` mode (it is human-only prose). Whether a machine-readable health check is wanted is out of scope for what the code shows.
