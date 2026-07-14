@@ -181,6 +181,7 @@ func TestBudgetEnvelopePayloadBaseFieldsMatchPlainPayload(t *testing.T) {
 		"source_states": env.SourceStates,
 		"freshness":     env.Freshness,
 		"stale_tasks":   env.StaleTasks,
+		"source_health": env.SourceHealth,
 	}
 	gotB, _ := json.Marshal(envBase)
 	wantB, _ := json.Marshal(plain)

@@ -363,7 +363,23 @@ func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	return nil
 }
+
+// ingestSource is the single dispatch chokepoint every caller (backfillEnabledGoogle,
+// cmdIngest, cmdReingest, applySetupSelection, ...) routes through, so it is also
+// the one place that closes the pre-Ingest stamping gap (▸CX, health.go): an
+// error here — including one from BEFORE the type-specific path ever reaches
+// memory.Ingest (OAuth/token/fetcher/DB-open failures) — always stamps
+// LastAttemptAt/LastError so doctor can show WHY a source is failing, not only
+// that it has gone quiet.
 func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
+	n, err := ingestSourceDispatch(cfg, s, out)
+	if err != nil {
+		stampSyncAttemptFailure(cfg, s, err, time.Now(), out)
+	}
+	return n, err
+}
+
+func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {
 	switch s.Type {
 	case "filesystem":
 		return ingestFilesystem(cfg, s, out)

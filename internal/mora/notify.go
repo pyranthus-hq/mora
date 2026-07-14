@@ -113,6 +113,22 @@ func notifyBrief(briefPath string, top *urgentNote, run notifyRunner, goos strin
 // runtime.GOOS while tests inject an arbitrary goos into OS-gated branches.
 var runtimeGOOS = func() string { return runtime.GOOS }
 
+// notifyHealthAlarm posts a best-effort native toast naming the health banner
+// (HEALTH-02 delivery, `doctor --pulse`). Gated identically to notifyBrief —
+// shouldNotify(goos): a silent no-op on non-darwin or when MORA_NO_NOTIFY is
+// set, the runner never invoked. A failed/missing osascript is swallowed
+// (D13-1): a toast failure must never fail the pulse check itself. The banner
+// text is user/error-derived (carries LastError), so it is escaped exactly
+// like notifyBrief's urgent-note text (T-13-05, script injection).
+func notifyHealthAlarm(banner string, run notifyRunner, goos string) error {
+	if !shouldNotify(goos) {
+		return nil
+	}
+	script := `display notification "` + escapeAppleScriptString(banner) + `" with title "Mora · Health"`
+	_ = run("-e", script)
+	return nil
+}
+
 // notifyBriefDefault is the production entry point the integration caller (13-03)
 // invokes after persisting a brief: it wires the real seams (osascriptRunner +
 // runtime.GOOS) into notifyBrief. It inherits notifyBrief's best-effort,
