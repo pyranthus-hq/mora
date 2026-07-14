@@ -642,6 +642,50 @@ func TestStampSyncAttemptFailureSkipsWhenInnerPathAlreadyStamped(t *testing.T) {
 	}
 }
 
+// TestStampSyncAttemptFailureSkipsWhenInnerPathStampsSameSecond (review
+// fix, round 2): RFC3339-serialized SyncStatus timestamps have only SECOND
+// resolution, but attemptStart is a real time.Now() capture and carries
+// nanoseconds. If the inner path (memory.Ingest via persistSyncStatus) ran
+// LATER within the SAME wall-clock second, its stamp round-trips through
+// RFC3339 losing the sub-second offset — comparing that against an
+// un-truncated attemptStart would wrongly read as "before attemptStart" and
+// double-stamp (clobbering the checkpoint/counters and double-counting
+// ErrorCount) even though the inner path genuinely already handled this
+// attempt.
+func TestStampSyncAttemptFailureSkipsWhenInnerPathStampsSameSecond(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	s := Source{Name: "gmail", Type: "gmail"}
+	path := syncStatusPathFor(cfg, s)
+
+	// attemptStart is captured mid-second (.900s), matching a real time.Now().
+	// The inner path ran a little later in that SAME second (.950s) and its
+	// RFC3339-formatted stamp drops the fractional part, persisting as :00.000.
+	attemptStart := time.Date(2026, 7, 1, 9, 0, 0, 900_000_000, time.UTC)
+	sameSecondInnerStamp := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	if err := memory.SaveStatus(path, &memory.SyncStatus{
+		Source: "gmail", LastAttemptAt: sameSecondInnerStamp.UTC().Format(time.RFC3339),
+		LastError: "boom", ErrorCount: 1, ItemCount: 4, Checkpoint: "page-7",
+	}); err != nil {
+		t.Fatalf("SaveStatus: %v", err)
+	}
+
+	stampSyncAttemptFailure(cfg, s, errors.New("boom"), attemptStart, nil)
+
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatalf("LoadStatus: %v", err)
+	}
+	if st.Checkpoint != "page-7" || st.ItemCount != 4 {
+		t.Fatalf("a same-second inner stamp must not be mistaken for an earlier attempt (checkpoint/counters clobbered): %+v", st)
+	}
+	if st.ErrorCount != 1 {
+		t.Fatalf("must not double-count the inner path's error for a same-second stamp: ErrorCount = %d, want 1", st.ErrorCount)
+	}
+}
+
 // TestDoctorUsesInjectedClockForGoogleAuthRecency (review fix): the normal
 // (non --pulse) doctor check/render path must use the SAME injected
 // doctorClock for EVERY rendered line, including the Google-auth-recency

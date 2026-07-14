@@ -262,7 +262,17 @@ func healthBanner(cfg Config, now time.Time) string {
 // `mora sync status` never reads "0 errors" beside a LastError. Best-effort: a
 // save failure here is warned, never returned — it must not mask the real
 // ingest error the caller is already propagating.
+//
+// Precision note: SyncStatus.LastAttemptAt round-trips through RFC3339, which
+// drops fractional seconds — but attemptStart is a raw time.Now() capture and
+// carries nanoseconds. Comparing the (second-truncated) persisted stamp
+// against a nanosecond attemptStart would misclassify an inner-path stamp
+// that lands LATER in the SAME wall-clock second as "before attemptStart",
+// causing a spurious double-stamp. attemptStart is truncated to second
+// precision up front so the comparison matches the precision it was actually
+// persisted at.
 func stampSyncAttemptFailure(cfg Config, s Source, ingestErr error, attemptStart time.Time, out io.Writer) {
+	attemptStart = attemptStart.Truncate(time.Second)
 	path := syncStatusPathFor(cfg, s)
 	if path == "" {
 		return
