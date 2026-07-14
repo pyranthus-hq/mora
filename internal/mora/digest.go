@@ -91,6 +91,12 @@ type Digest struct {
 	Sections   []DigestSection   `json:"sections"`
 	Freshness  map[string]string `json:"freshness,omitempty"`
 	StaleTasks []string          `json:"stale_tasks,omitempty"`
+	// SourceHealth is the per-connector freshness snapshot (HEALTH-01/-02),
+	// computed ONCE at build time (sourceHealthAll) and carried on the struct so
+	// every render/projection path (Markdown banner, MCP digest/brief payload)
+	// reads the SAME snapshot instead of re-deriving it against a possibly-later
+	// clock. The red banner (healthBannerFromSources) is a pure function of this.
+	SourceHealth []sourceHealth `json:"source_health,omitempty"`
 }
 
 // briefOpts is the buildDigest options seam. advance gates the watermark commit
@@ -375,13 +381,14 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 	shelf, shelfMore := assembleUrgentShelf(urgentAll)
 	stale, _ := staleTasks(cfg, 3)
 	return Digest{
-		Generated:  now.UTC().Format(time.RFC3339),
-		SinceHours: sinceHours,
-		Urgent:     shelf,
-		UrgentMore: shelfMore,
-		Sections:   sections,
-		Freshness:  sourceFreshness(cfg),
-		StaleTasks: stale,
+		Generated:    now.UTC().Format(time.RFC3339),
+		SinceHours:   sinceHours,
+		Urgent:       shelf,
+		UrgentMore:   shelfMore,
+		Sections:     sections,
+		Freshness:    sourceFreshness(cfg),
+		StaleTasks:   stale,
+		SourceHealth: sourceHealthAll(cfg, now),
 	}, nil
 }
 
@@ -465,13 +472,14 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 	// NOT gated by the watermark (D-03 note).
 	stale, _ := staleTasks(cfg, 3)
 	return Digest{
-		Generated:  now.UTC().Format(time.RFC3339),
-		SinceHours: 0,
-		Urgent:     shelf,
-		UrgentMore: shelfMore,
-		Sections:   sections,
-		Freshness:  sourceFreshness(cfg),
-		StaleTasks: stale,
+		Generated:    now.UTC().Format(time.RFC3339),
+		SinceHours:   0,
+		Urgent:       shelf,
+		UrgentMore:   shelfMore,
+		Sections:     sections,
+		Freshness:    sourceFreshness(cfg),
+		StaleTasks:   stale,
+		SourceHealth: sourceHealthAll(cfg, now),
 	}, plans, nil
 }
 
@@ -1138,6 +1146,20 @@ func renderDigestHeader(d Digest) string {
 	return fmt.Sprintf("# Mora digest — %s (since last brief)\n", d.Generated)
 }
 
+// renderDigestHealthBanner renders the red health-alarm line (HEALTH-02), or ""
+// when every enabled source is fresh. Pure over d.SourceHealth — no cfg/now
+// needed at render time; sourceHealthAll already pinned the snapshot at build
+// time (D-03: no time.Now() in a render path). This is the FIRST content line
+// after the header, before "Fresh as of:" — "stale" must never again be a
+// heading string with no reader.
+func renderDigestHealthBanner(d Digest) string {
+	banner := healthBannerFromSources(d.SourceHealth)
+	if banner == "" {
+		return ""
+	}
+	return banner + "\n"
+}
+
 // renderDigestFreshness renders the "Fresh as of:" line, or "" when absent.
 func renderDigestFreshness(d Digest) string {
 	if len(d.Freshness) == 0 {
@@ -1216,6 +1238,7 @@ func renderDigestUrgentHeading(n int) string {
 func renderDigestBody(d Digest) string {
 	var b strings.Builder
 	b.WriteString(renderDigestHeader(d))
+	b.WriteString(renderDigestHealthBanner(d))
 	b.WriteString(renderDigestFreshness(d))
 	b.WriteString(renderDigestUrgentShelf(d))
 	for _, s := range d.Sections {
@@ -1271,7 +1294,12 @@ func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
 	// room for, mark ONLY those as survivors, and fold the rest into UrgentMore
 	// (unrendered => NOT committed => re-surfaces next run). At the normal budget the
 	// whole shelf (≤ urgentShelfCap items) fits and nothing is trimmed.
-	frame := len(renderDigestHeader(d)) + len(renderDigestFreshness(d)) + len(renderDigestStaleTasks(d))
+	// The health banner (▸CX budget accounting) is reserved in the SAME frame as
+	// header/freshness/tasks: it renders unconditionally as the first content
+	// line, outside any section, so its bytes must be accounted for here — a
+	// banner rendered outside this frame would let final truncation cut an item
+	// already marked as a budget survivor (the watermark/render invariant).
+	frame := len(renderDigestHeader(d)) + len(renderDigestHealthBanner(d)) + len(renderDigestFreshness(d)) + len(renderDigestStaleTasks(d))
 	if len(d.Urgent) > 0 {
 		// Reserve the shelf heading (costed exactly at the full count, an over-estimate
 		// of the possibly-fewer fitted count). No "+N more urgent" reserve: if trimming
@@ -1487,6 +1515,10 @@ func digestMCPPayload(cfg Config, d Digest, budgetChars int) map[string]any {
 		"source_states": states,
 		"freshness":     d.Freshness,
 		"stale_tasks":   d.StaleTasks,
+		// source_health (HEALTH-02): the typed freshness snapshot MCP consumers read
+		// structurally instead of parsing the Markdown banner. Always included in the
+		// fixed frame — never budgeted away — mirroring source_states above.
+		"source_health": d.SourceHealth,
 	}
 	frameBytes := jsonLen(base) + jsonLen([]DigestSection{}) // + an empty sections array key
 	remaining := budgetChars - frameBytes

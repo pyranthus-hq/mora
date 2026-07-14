@@ -341,7 +341,12 @@ USAGE:
   mora pulse --write --digest
   mora sources add filesystem --name docs --path ~/Documents --scope personal
   mora ingest run --source docs
+  mora doctor                      # health checks, incl. per-source freshness (HEALTH-01)
+  mora doctor --json               # machine-readable report; --strict also exits non-zero on a critical failure
+  mora doctor --pulse              # freshness-only check: exit 2 + a native toast when any source is unhealthy, exit 0 when all fresh
+  mora doctor --pulse --json       # --pulse combined with --json emits ONLY the sources array (no banner text)
   mora schedule install pulse-daily
+  mora schedule install doctor-pulse   # daily 09:00 freshness alarm (after the 08:00 brief)
   mora config context large        # context profile: small | default | large (budget + snippet density)
   mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
   mora connectors list|enable <type>|disable <type>
@@ -950,6 +955,10 @@ var scheduleCommands = map[string]string{
 	"lint-weekly":   "lint",
 	"ingest-hourly": "ingest run --all",
 	"git-daily":     "sync git",
+	// doctor-pulse (HEALTH-02 delivery): the freshness-only alarm, run daily
+	// AFTER the 08:00 brief so a source that went dark overnight is caught
+	// within the day rather than waiting for the next time someone reads a brief.
+	"doctor-pulse": "doctor --pulse",
 }
 
 type scheduleCommandRunner func(name string, args ...string) ([]byte, error)

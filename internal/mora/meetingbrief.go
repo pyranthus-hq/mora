@@ -237,6 +237,12 @@ type MeetingBrief struct {
 	// record to the user as if it were a counterparty's is wrong-person attribution.
 	SelfUnresolved bool `json:"self_unresolved,omitempty"`
 	EgressCalls    int  `json:"egress_calls"`
+	// SourceHealth is the per-connector freshness snapshot (HEALTH-02), computed
+	// ONCE at build time so MCP meeting_prep — which returns this struct
+	// directly — stops being confidently silent over a dead corpus. A brief
+	// that renders confidently over dead data is a WRONG brief; this is a
+	// correctness signal, not ops telemetry.
+	SourceHealth []sourceHealth `json:"source_health,omitempty"`
 }
 
 func (b MeetingBrief) validate() error {
@@ -298,9 +304,10 @@ func buildEventMeetingBrief(ctx context.Context, cfg Config, eventID string, at 
 
 func buildNextMeetingBrief(ctx context.Context, cfg Config, at time.Time, attendeeFilterIDs map[string]bool, maxTokens, perAttendee int) (MeetingBrief, error) {
 	empty := MeetingBrief{
-		AsOf:        at.UTC().Format(time.RFC3339),
-		Sections:    []MeetingBriefSection{},
-		EgressCalls: 0,
+		AsOf:         at.UTC().Format(time.RFC3339),
+		Sections:     []MeetingBriefSection{},
+		EgressCalls:  0,
+		SourceHealth: sourceHealthAll(cfg, at),
 	}
 	mems, err := meetingBriefMemories(cfg)
 	if err != nil {
@@ -353,10 +360,11 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		Citation:  eventCitation,
 	}
 	brief := MeetingBrief{
-		AsOf:        at.UTC().Format(time.RFC3339),
-		Event:       event,
-		Sections:    []MeetingBriefSection{},
-		EgressCalls: 0,
+		AsOf:         at.UTC().Format(time.RFC3339),
+		Event:        event,
+		Sections:     []MeetingBriefSection{},
+		EgressCalls:  0,
+		SourceHealth: sourceHealthAll(cfg, at),
 	}
 	// Refuse-to-GAP, not refuse-to-error. If Mora cannot pick the user out of the
 	// invitee list, then ANY invitee could BE the user, so it must not attribute a
@@ -1611,6 +1619,15 @@ func containsPhrase(text, phrase string) bool {
 func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
 	if err := brief.validate(); err != nil {
 		return fmt.Errorf("refusing to render uncited meeting brief: %w", err)
+	}
+	// The red health banner (HEALTH-02) renders FIRST, unconditionally — even
+	// when there's no next meeting (brief.Event == nil below): a broken source
+	// is worth surfacing regardless of whether there happens to be an upcoming
+	// event. Pure over the pre-built brief.SourceHealth (no cfg/now at render
+	// time — D-03).
+	if banner := healthBannerFromSources(brief.SourceHealth); banner != "" {
+		fmt.Fprintln(w, banner)
+		fmt.Fprintln(w)
 	}
 	if brief.Event == nil {
 		return nil

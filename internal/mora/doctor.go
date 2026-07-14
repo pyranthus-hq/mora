@@ -59,6 +59,86 @@ type doctorReport struct {
 	Version            string        `json:"version"`
 	Platform           string        `json:"platform"`
 	RebuildBlock       *rebuildBlock `json:"rebuild_block,omitempty"`
+	// Sources is the per-connector freshness snapshot (HEALTH-01/-03). Always a
+	// deterministic non-null array — `[]` on a vault with no enabled sources,
+	// never `null` — so a JSON consumer never needs a nil-check.
+	Sources []sourceHealth `json:"sources"`
+}
+
+// doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
+// against — a var (mirrors briefClock/prepClock) so tests can pin "now" instead
+// of racing the real clock (D-03 determinism invariant: no time.Now() in a
+// check path). Production never reassigns it.
+var doctorClock = time.Now
+
+// doctorNotifyRunner is the injectable exec seam `doctor --pulse` posts its
+// toast through (notify.go's notifyRunner). Defaults to the real osascript
+// runner; tests swap it (t.Cleanup-restore, never t.Parallel) to capture argv
+// without spawning a process, mirroring notify_test.go's recordingRunner.
+var doctorNotifyRunner notifyRunner = osascriptRunner
+
+// sourceHealthDetailLine renders one unhealthy source's human-readable line,
+// e.g. "gmail        FAILED — last success 52h ago — database or disk is full (13)".
+func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
+	var status string
+	switch h.State {
+	case healthNever:
+		return fmt.Sprintf("%-12s NEVER SYNCED", h.Key)
+	case healthFailed:
+		status = "FAILED"
+	case healthStale:
+		status = "STALE"
+	default:
+		status = strings.ToUpper(h.State)
+	}
+	ago := "unknown"
+	if t, err := time.Parse(time.RFC3339, h.LastSuccessAt); err == nil {
+		ago = humanizeAgo(now.Sub(t))
+	}
+	line := fmt.Sprintf("%-12s %s — last success %s ago", h.Key, status, ago)
+	if h.LastError != "" {
+		line += " — " + h.LastError
+	}
+	return line
+}
+
+// cmdDoctorPulse is `mora doctor --pulse` (HEALTH-02 delivery): the freshness-
+// only health check meant to run on a schedule. It skips every other doctor
+// check, posts a best-effort native toast when unhealthy (notifyHealthAlarm —
+// GOOS/env-gated, best-effort, never fails the check itself), and returns a
+// TYPED exit-code error so main() exits 2 — a plain error maps to exit 1 and
+// could never distinguish "sick" from "broken" for a caller/automation.
+// --pulse --json emits ONLY the sources array (no banner text, no other
+// checks); --pulse --strict is a no-op (--pulse already exits 2 on its own).
+func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) error {
+	srcHealth := sourceHealthAll(cfg, now)
+	banner := healthBannerFromSources(srcHealth)
+
+	if jsonOut {
+		b, err := json.MarshalIndent(struct {
+			Sources []sourceHealth `json:"sources"`
+		}{Sources: srcHealth}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(b))
+	}
+
+	if banner == "" {
+		if !jsonOut {
+			sty := newStyler(stdout, false)
+			fmt.Fprintf(stdout, "%s all sources fresh\n", sty.ok("ok  "))
+		}
+		return nil
+	}
+
+	if !jsonOut {
+		fmt.Fprintln(stdout, banner)
+	}
+	_ = notifyHealthAlarm(banner, doctorNotifyRunner, runtimeGOOS())
+	// Blank message: the banner/JSON already printed above (mirrors loop.go's
+	// exitCodeError convention — a non-empty message would double-print to stderr).
+	return exitCodeError{code: 2}
 }
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
@@ -75,8 +155,9 @@ func doctorFailSummary(checks []doctorCheck) string {
 func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report")
-	strict := fs.Bool("strict", false, "exit non-zero if a critical health check fails")
+	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report (with --pulse: only the sources array)")
+	strict := fs.Bool("strict", false, "exit non-zero if a critical health check fails (a no-op alongside --pulse, which already exits 2 on any unhealthy source)")
+	pulse := fs.Bool("pulse", false, "run ONLY the per-source freshness checks; post a native toast and exit 2 when any source is unhealthy, exit 0 when all are fresh")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -84,6 +165,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	now := doctorClock()
+
+	if *pulse {
+		return cmdDoctorPulse(cfg, now, *jsonOut, stdout)
 	}
 
 	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
@@ -116,6 +202,13 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		// share corpora inside the vault would ride `mora backup`/git-sync.
 		{Name: "share_disjoint_from_vault", OK: shareGuardPaths(cfg) == nil, Critical: true},
 	}
+	// Per-source freshness (HEALTH-01/-03): one critical check per enabled
+	// connector instance, so an enabled-but-never-synced/stale/failed source
+	// makes `.healthy` false — not just a digest heading nobody reads.
+	srcHealth := sourceHealthAll(cfg, now)
+	for _, h := range srcHealth {
+		checks = append(checks, doctorCheck{Name: "source_fresh:" + h.Key, OK: h.State == healthFresh, Critical: true})
+	}
 	healthy := true
 	for _, c := range checks {
 		if c.Critical && !c.OK {
@@ -142,6 +235,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			ShareSubscriptions: len(shares.Subscriptions),
 			Version:            BuildVersion,
 			Platform:           runtimeGOOS(),
+			Sources:            srcHealth,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -167,6 +261,12 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		} else {
 			fmt.Fprintf(stdout, "%s %s\n", sty.warn("warn"), c.Name)
 		}
+	}
+	for _, h := range srcHealth {
+		if h.State == healthFresh {
+			continue
+		}
+		fmt.Fprintf(stdout, "     %s\n", sourceHealthDetailLine(h, now))
 	}
 	if rec, present, _ := readBlockRecord(cfg); present {
 		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — fix vault_dir in config.toml then `mora index rebuild`; `--force` only if the current vault is correct (it discards the %d indexed memories)\n",
@@ -197,7 +297,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
 	// surface "last authed / how long ago" per connected account so the user can
 	// tell at a glance when they last signed in.
-	printGoogleAuthRecency(cfg, stdout, time.Now())
+	printGoogleAuthRecency(cfg, stdout, now)
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
 	// Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(stdout, false)
