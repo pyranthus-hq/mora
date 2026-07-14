@@ -1,0 +1,5 @@
+{
+  "base": "committed-ledger",
+  "owner": "p/self",
+  "direction": "owed_by_self"
+}

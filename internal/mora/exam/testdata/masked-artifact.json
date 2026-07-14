@@ -1,0 +1,14 @@
+{
+  "base": "committed-ledger",
+  "non_obligation": {
+    "id": "n/masked",
+    "span": {
+      "artifact_id": "a/gmail-reply-chain",
+      "message_id": "m1",
+      "block_id": "b1",
+      "quote": "Can you send the signed outline by July 14?"
+    },
+    "class": "trivia",
+    "why": "Deliberately collides with a positive label to mutation-test rule 9."
+  }
+}

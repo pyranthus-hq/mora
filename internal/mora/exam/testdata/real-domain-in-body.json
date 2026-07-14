@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "as_of": "2026-07-14T12:00:00Z",
+  "self": {"id": "p/self", "display": "Alex Morgan", "emails": ["alex@example.com"], "handles": ["+15550100101"]},
+  "people": [],
+  "artifacts": [{
+    "id": "a/body",
+    "memory_id": "fixture-body",
+    "channel": "notes",
+    "subject": "fixture",
+    "occurred_at": "2026-07-10T12:00:00Z",
+    "messages": [{"id": "m1", "from": "p/self", "to": [], "cc": [], "at": "2026-07-10T12:00:00Z", "body": [{"id": "b1", "kind": "authored", "text": "Email dana@acme.com or call +14155550123."}]}]
+  }],
+  "commitments": [],
+  "non_obligations": []
+}
