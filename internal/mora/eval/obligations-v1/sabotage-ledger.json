@@ -1,0 +1,424 @@
+{
+  "version": 1,
+  "as_of": "2026-07-14T12:00:00Z",
+  "self": {
+    "id": "p/self",
+    "display": "Rae Quinn",
+    "emails": ["rae@example.com"],
+    "handles": ["+15550100110"],
+    "service": false
+  },
+  "people": [
+    {"id": "p/kim", "display": "Kim Alvarez", "emails": ["kim@example.org"], "handles": ["+15550100111"], "service": false},
+    {"id": "p/lee", "display": "Lee Nakamura", "emails": ["lee@example.net"], "handles": ["+15550100112"], "service": false},
+    {"id": "p/pat", "display": "Pat Osei", "emails": ["pat@example.org"], "handles": ["+15550100113"], "service": false},
+    {"id": "p/noreply", "display": "Example Notices", "emails": ["noreply@example.invalid"], "handles": [], "service": true}
+  ],
+  "artifacts": [
+    {
+      "id": "a/sab-calendar",
+      "memory_id": "calendar_event/sab-standup",
+      "channel": "calendar",
+      "subject": "Weekly standup",
+      "occurred_at": "2026-07-14T09:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/kim",
+        "to": ["p/self", "p/kim", "p/lee"],
+        "cc": [],
+        "at": "2026-07-14T09:00:00Z",
+        "body": [{"id": "b1", "kind": "notification", "text": "Join the standup at https://meet.example.com/abc-defg-hij before the review."}]
+      }]
+    },
+    {
+      "id": "a/sab-reply-chain",
+      "memory_id": "gmail_thread/sab-reply-chain",
+      "channel": "gmail",
+      "subject": "Vendor list",
+      "occurred_at": "2026-07-12T16:00:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/kim",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-12T15:00:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "Can you approve the vendor list before Friday?"}]
+        },
+        {
+          "id": "m2",
+          "from": "p/self",
+          "to": ["p/kim"],
+          "cc": [],
+          "at": "2026-07-12T16:00:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "I will approve the vendor list tomorrow."}]
+        }
+      ]
+    },
+    {
+      "id": "a/sab-appendix",
+      "memory_id": "gmail_thread/sab-appendix",
+      "channel": "gmail",
+      "subject": "Vendor contract",
+      "occurred_at": "2026-07-13T10:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/kim",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-13T10:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "The vendor contract still needs your signature."}]
+      }]
+    },
+    {
+      "id": "a/sab-lee-deck",
+      "memory_id": "gmail_thread/sab-lee-deck",
+      "channel": "gmail",
+      "subject": "Revised deck",
+      "occurred_at": "2026-07-09T15:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/lee",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-09T15:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I will send the revised deck next week."}]
+      }]
+    },
+    {
+      "id": "a/sab-quoted",
+      "memory_id": "gmail_thread/sab-quoted",
+      "channel": "gmail",
+      "subject": "Old thread context",
+      "occurred_at": "2026-07-11T10:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/kim",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-11T10:00:00Z",
+        "body": [{"id": "b1", "kind": "quoted_reply", "text": "Earlier note from the archive:\nCan you resend the retired budget sheet?"}]
+      }]
+    },
+    {
+      "id": "a/sab-forwarded",
+      "memory_id": "gmail_thread/sab-forwarded",
+      "channel": "gmail",
+      "subject": "Fwd: product tour",
+      "occurred_at": "2026-07-11T11:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/kim",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-11T11:00:00Z",
+        "body": [{"id": "b1", "kind": "forwarded", "text": "-----Original Message-----\nBook a free product demo this week."}]
+      }]
+    },
+    {
+      "id": "a/sab-footer",
+      "memory_id": "gmail_thread/sab-footer",
+      "channel": "gmail",
+      "subject": "Delivery receipt",
+      "occurred_at": "2026-07-11T12:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/noreply",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-11T12:00:00Z",
+        "body": [{"id": "b1", "kind": "footer", "text": "________________________________\nPlease do not reply to this automated message."}]
+      }]
+    },
+    {
+      "id": "a/sab-notification",
+      "memory_id": "gmail_thread/sab-notification",
+      "channel": "gmail",
+      "subject": "Invitation accepted",
+      "occurred_at": "2026-07-11T13:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/noreply",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-11T13:00:00Z",
+        "body": [{"id": "b1", "kind": "notification", "text": "Kim Alvarez has accepted your invitation to the standup."}]
+      }]
+    },
+    {
+      "id": "a/sab-lead-in",
+      "memory_id": "gmail_thread/sab-lead-in",
+      "channel": "gmail",
+      "subject": "Rollout status",
+      "occurred_at": "2026-07-11T14:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/lee",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-11T14:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "As discussed, the next step depends on the vendor\nresponse, so nothing is needed from you."}]
+      }]
+    },
+    {
+      "id": "a/sab-substring",
+      "memory_id": "gmail_thread/sab-substring",
+      "channel": "gmail",
+      "subject": "Schedule note",
+      "occurred_at": "2026-07-10T16:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/lee",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-10T16:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "The schedule is independent of the vendor sign-off."}]
+      }]
+    },
+    {
+      "id": "a/sab-bystander",
+      "memory_id": "gmail_thread/sab-bystander",
+      "channel": "gmail",
+      "subject": "Parking plan",
+      "occurred_at": "2026-07-10T15:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/kim",
+        "to": ["p/lee"],
+        "cc": ["p/self"],
+        "at": "2026-07-10T15:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "Lee, can you approve the parking plan?"}]
+      }]
+    },
+    {
+      "id": "a/sab-third-party",
+      "memory_id": "gmail_thread/sab-third-party",
+      "channel": "gmail",
+      "subject": "Venue map",
+      "occurred_at": "2026-07-10T14:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/lee",
+        "to": ["p/self"],
+        "cc": ["p/kim"],
+        "at": "2026-07-10T14:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "Kim, please send Lee the venue map."}]
+      }]
+    },
+    {
+      "id": "a/sab-self",
+      "memory_id": "imessage_chat/sab-self",
+      "channel": "imessage",
+      "subject": "Lee Nakamura",
+      "occurred_at": "2026-07-11T18:05:00Z",
+      "participants": ["p/lee"],
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/lee",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-11T18:00:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "Are we still on for the standup?"}]
+        },
+        {
+          "id": "m2",
+          "from": "p/self",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-11T18:05:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "Yes, see you there."}]
+        }
+      ]
+    },
+    {
+      "id": "a/sab-closed",
+      "memory_id": "gmail_thread/sab-closed",
+      "channel": "gmail",
+      "subject": "Badge list",
+      "occurred_at": "2026-07-07T12:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/kim",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-07T12:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "Can you send the badge list?"}]
+      }]
+    },
+    {
+      "id": "a/sab-note-closure",
+      "memory_id": "sab-note-closure",
+      "channel": "notes",
+      "subject": "Badge list delivered",
+      "occurred_at": "2026-07-08T12:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-08T12:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "The badge list was delivered to Kim."}]
+      }]
+    },
+    {
+      "id": "a/sab-dup-canonical",
+      "memory_id": "gmail_thread/sab-dup-canonical",
+      "channel": "gmail",
+      "subject": "Sample photos",
+      "occurred_at": "2026-07-08T14:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/lee",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-08T14:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I will share the sample photos this week."}]
+      }]
+    },
+    {
+      "id": "a/sab-note-dup",
+      "memory_id": "sab-note-dup-copy",
+      "channel": "notes",
+      "subject": "Copied photo promise",
+      "occurred_at": "2026-07-08T15:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-08T15:00:00Z",
+        "body": [
+          {"id": "b1", "kind": "authored", "text": "Lee will share the sample photos this week."},
+          {"id": "b2", "kind": "authored", "text": "The copied photo reminder was replaced by the source thread."}
+        ]
+      }]
+    },
+    {
+      "id": "a/sab-note-plan",
+      "memory_id": "sab-note-plan",
+      "channel": "notes",
+      "subject": "Rollout plan",
+      "occurred_at": "2026-07-09T09:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-09T09:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I will draft the rollout plan before the standup."}]
+      }]
+    }
+  ],
+  "commitments": [
+    {
+      "id": "c/sab-approve",
+      "owner": "p/self",
+      "counterparty": "p/kim",
+      "direction": "owed_by_self",
+      "summary": "Approve the vendor list",
+      "opened_by": {"artifact_id": "a/sab-reply-chain", "message_id": "m1", "block_id": "b1", "quote": "Can you approve the vendor list before Friday?"},
+      "due_at": "2026-07-13T17:00:00Z",
+      "due_kind": "explicit_date",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/sab-standup"]
+    },
+    {
+      "id": "c/sab-self-appendix",
+      "owner": "p/self",
+      "counterparty": "p/kim",
+      "direction": "owed_by_self",
+      "summary": "Sign the vendor contract",
+      "opened_by": {"artifact_id": "a/sab-appendix", "message_id": "m1", "block_id": "b1", "quote": "The vendor contract still needs your signature."},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/sab-standup"]
+    },
+    {
+      "id": "c/sab-lee-deck",
+      "owner": "p/lee",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Send the revised deck",
+      "opened_by": {"artifact_id": "a/sab-lee-deck", "message_id": "m1", "block_id": "b1", "quote": "I will send the revised deck next week."},
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/sab-standup", "daily"]
+    },
+    {
+      "id": "c/sab-self-note",
+      "owner": "p/self",
+      "counterparty": "p/lee",
+      "direction": "owed_by_self",
+      "summary": "Draft the rollout plan",
+      "opened_by": {"artifact_id": "a/sab-note-plan", "message_id": "m1", "block_id": "b1", "quote": "I will draft the rollout plan before the standup."},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/sab-third-party",
+      "owner": "p/kim",
+      "counterparty": "p/lee",
+      "direction": "owed_by_counterparty",
+      "summary": "Send Lee the venue map",
+      "opened_by": {"artifact_id": "a/sab-third-party", "message_id": "m1", "block_id": "b1", "quote": "Kim, please send Lee the venue map."},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/sab-dup-canonical",
+      "owner": "p/lee",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Share the sample photos",
+      "opened_by": {"artifact_id": "a/sab-dup-canonical", "message_id": "m1", "block_id": "b1", "quote": "I will share the sample photos this week."},
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/sab-dup-copy",
+      "owner": "p/lee",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Copied sample-photo promise",
+      "opened_by": {"artifact_id": "a/sab-note-dup", "message_id": "m1", "block_id": "b1", "quote": "Lee will share the sample photos this week."},
+      "due_kind": "relative",
+      "state": "superseded",
+      "transitions": [{"to": "superseded", "at": "2026-07-08T15:00:00Z", "evidence": {"artifact_id": "a/sab-note-dup", "message_id": "m1", "block_id": "b2", "quote": "The copied photo reminder was replaced by the source thread."}}],
+      "duplicate_of": "c/sab-dup-canonical",
+      "expected_in": []
+    },
+    {
+      "id": "c/sab-closed",
+      "owner": "p/self",
+      "counterparty": "p/kim",
+      "direction": "owed_by_self",
+      "summary": "Send the badge list",
+      "opened_by": {"artifact_id": "a/sab-closed", "message_id": "m1", "block_id": "b1", "quote": "Can you send the badge list?"},
+      "due_kind": "none",
+      "state": "closed",
+      "transitions": [{"to": "closed", "at": "2026-07-08T12:00:00Z", "evidence": {"artifact_id": "a/sab-note-closure", "message_id": "m1", "block_id": "b1", "quote": "The badge list was delivered to Kim."}}],
+      "expected_in": []
+    }
+  ],
+  "non_obligations": [
+    {"id": "n/sab-url", "span": {"artifact_id": "a/sab-calendar", "message_id": "m1", "block_id": "b1", "quote": "https://meet.example.com/abc-defg-hij"}, "class": "url_shard", "why": "A meeting URL is a link, not an obligation."},
+    {"id": "n/sab-quoted", "span": {"artifact_id": "a/sab-quoted", "message_id": "m1", "block_id": "b1", "quote": "Can you resend the retired budget sheet?"}, "class": "trivia", "why": "Connector-surviving quoted context is not authored by the sender."},
+    {"id": "n/sab-forwarded", "span": {"artifact_id": "a/sab-forwarded", "message_id": "m1", "block_id": "b1", "quote": "Book a free product demo this week."}, "class": "marketing", "why": "A forwarded generic call to action is not a personal obligation."},
+    {"id": "n/sab-footer", "span": {"artifact_id": "a/sab-footer", "message_id": "m1", "block_id": "b1", "quote": "Please do not reply to this automated message."}, "class": "footer", "why": "Footer boilerplate from a service identity is not an obligation."},
+    {"id": "n/sab-notification", "span": {"artifact_id": "a/sab-notification", "message_id": "m1", "block_id": "b1", "quote": "Kim Alvarez has accepted your invitation to the standup."}, "class": "notification", "why": "An RSVP notification reports a fact; it asks for nothing."},
+    {"id": "n/sab-lead-in", "span": {"artifact_id": "a/sab-lead-in", "message_id": "m1", "block_id": "b1", "quote": "As discussed,"}, "class": "lead_in", "why": "A hard-wrapped lead-in fragment is not a sentence, let alone an obligation."},
+    {"id": "n/sab-substring", "span": {"artifact_id": "a/sab-substring", "message_id": "m1", "block_id": "b1", "quote": "The schedule is independent of the vendor sign-off."}, "class": "trivia", "why": "The substring trap: \"independent\" contains \"depend\", and a naive phrase match reads a dependency that is not there."},
+    {"id": "n/sab-bystander", "span": {"artifact_id": "a/sab-bystander", "message_id": "m1", "block_id": "b1", "quote": "Lee, can you approve the parking plan?"}, "class": "bystander", "why": "The user is only cc'd; this ask belongs to two other people."},
+    {"id": "n/sab-self-spoken", "span": {"artifact_id": "a/sab-self", "message_id": "m2", "block_id": "b1", "quote": "Yes, see you there."}, "class": "self_spoken", "why": "The user's own message is not an obligation someone owes them."}
+  ]
+}
