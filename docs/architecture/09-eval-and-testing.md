@@ -2,6 +2,8 @@
 
 Three purpose-built test harnesses measure what the rest of the codebase cannot self-assert: **retrieval recall quality** (the T2 eval, which attributes every miss to a fixable cause), **MCP output-size discipline** (the T0 gate, which pins per-tool token blowups so they can't silently regress), and the **meeting-brief sabotage gate** (which replays the sanitized July 2026 gibberish incident through the assembled production path).
 
+The rendered-output obligation exam adds a single typed ledger that deterministically renders its synthetic Gmail, iMessage, Calendar, and notes corpus. Its regenerate-and-hash and forbidden-real-identity shape uses AMD GAIA issue #848 and the historical generator at commit `0c197ef3` (MIT) as design evidence only; Mora imports no GAIA code or corpus. A high, clean, uniform first score is a defect report against the ledger, not a win: known misses remain labeled so the exam measures the product rather than fitting the fixture to it.
+
 ## Files
 
 | File | Lines | Responsibility |
@@ -12,8 +14,20 @@ Three purpose-built test harnesses measure what the rest of the codebase cannot 
 | `internal/mora/eval/sabotage/gibberish-2026-07/` | — | Sanitized frozen-incident input vault, pinned event/as-of clock, and a rendered broken artifact used to self-check the scorer |
 | `internal/mora/sabotage_test.go`, `junk_invariance_test.go` | — | End-to-end meeting-brief replay through the direct builder/renderer and MCP `meeting_prep`; scorer degeneration checks; older-junk byte invariance and newer-junk line invariance |
 | `internal/mora/junk_patterns_test.go` | — | Test-only table mapping the frozen incident signatures to defect classes and source fixtures; shared by replay and invariance gates without shipping scorer data in the binary |
+| `internal/mora/exam/` | — | Stdlib plus `internal/memory` ledger schema, twelve-rule validator, real-identity lint, and deterministic corpus renderer. The package is test infrastructure and must never be imported by `cmd/mora`. |
+| `internal/mora/eval/obligations-v1/` | — | Plain-English contract, typed synthetic ledger, generated four-channel vault, event pin, and the sorted regenerate-and-hash manifest. The ledger is input; every vault byte is renderer output. |
 
 The production code they couple to (`hybrid.go`, `mora.go`, `embed.go`, `digest.go`, `meetingbrief.go`, and `mcp.go`) is documented in [retrieval](./02-retrieval-search.md), [the MCP server](./06-mcp-server.md), and [synthesis](./07-synthesis-think-digest.md).
+
+---
+
+## Rendered-output obligation corpus
+
+`OBLIGATIONS.md` is the adjudication contract and predates the typed ledger in git history. `ledger.json` records positive obligations, explicit negative spans, lifecycle transitions, duplicate links, surface expectations, and known expected failures without borrowing the production meeting cleaner. The separate `internal/mora/exam` package may import `internal/memory` for canonical metadata, but it may not import `internal/mora`; connector-side parity tests and Mora-side production round trips point inward toward `exam`, never the reverse.
+
+`exam.Render` produces the complete committed vault. Gmail artifacts retain thread grain, iMessage artifacts retain conversation grain including `Me:` turns, Calendar artifacts retain attendee identity metadata, and notes live under `memories/` as user-authored memories. CI validates the ledger and identity lint first, re-renders and checks `CORPUS.sha256` second, then lets the normal suite drive the production index and output builders. `ERR_LEDGER_DRIFT` identifies source-to-render disagreement; `ERR_CORPUS_TAMPERED` identifies a checked-out vault byte that differs from the recorded render. CI never rewrites either the corpus or its manifest.
+
+All fixture identities use RFC-2606 domains and the designated fictional handle range. No framework is imported by production, no exam test needs network, and no corpus, output, or score is sent to an LLM judge.
 
 ---
 

@@ -22,6 +22,12 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: exam schema, ledger, and identity validation
+        run: |
+          go test ./internal/mora/exam -run 'TestLedgerValidator|TestCommittedLedgerIsValid|TestManifest|TestExamNoRealIdentities' -count=1
+          go test ./internal/mora -run TestExamCorpusNoRealIdentities -count=1
+      - name: exam regenerate-and-hash
+        run: go test ./internal/mora -run TestExamCorpusHashesMatch -count=1
       - name: gofmt check
         run: |
           unformatted=$(gofmt -l .)
@@ -128,6 +134,12 @@ jobs:
       - name: build (linux/amd64)
         env: { CGO_ENABLED: "0", GOOS: linux, GOARCH: amd64 }
         run: go build -trimpath -ldflags="-s -w" -o mora ./cmd/mora
+      - name: exam corpus is not linked into the product
+        run: |
+          if go list -deps ./cmd/mora | grep -q '/internal/mora/exam$'; then
+            echo "::error::internal/mora/exam is linked into cmd/mora"
+            exit 1
+          fi
       - name: size diff vs main
         uses: jacobras/size-diff-action@v1
         continue-on-error: true # advisory only — a size hiccup must never block merge

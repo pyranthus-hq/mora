@@ -1,0 +1,465 @@
+{
+  "version": 1,
+  "as_of": "2026-07-14T12:00:00Z",
+  "self": {
+    "id": "p/self",
+    "display": "Alex Morgan",
+    "emails": ["alex@example.com"],
+    "handles": ["+15550100101"],
+    "service": false
+  },
+  "people": [
+    {"id": "p/sam", "display": "Sam Rivera", "emails": ["sam@example.org"], "handles": ["+15550100102"], "service": false},
+    {"id": "p/marcus", "display": "Marcus Vance", "emails": ["marcus@example.net"], "handles": ["+15550100103"], "service": false},
+    {"id": "p/dana", "display": "", "emails": ["dana@example.net"], "handles": ["+15550100137"], "service": false},
+    {"id": "p/nina", "display": "Nina Ellis", "emails": ["nina@example.org"], "handles": ["+15550100104"], "service": false},
+    {"id": "p/omar", "display": "Omar Reed", "emails": ["omar@example.com"], "handles": ["+15550100105"], "service": false},
+    {"id": "p/service", "display": "Example Updates", "emails": ["updates@example.invalid"], "handles": [], "service": true}
+  ],
+  "artifacts": [
+    {
+      "id": "a/calendar-review",
+      "memory_id": "calendar_event/exam-review",
+      "channel": "calendar",
+      "subject": "Rendered output review",
+      "occurred_at": "2026-07-14T11:30:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/sam",
+        "to": ["p/self", "p/sam", "p/dana"],
+        "cc": [],
+        "at": "2026-07-14T11:30:00Z",
+        "body": [{"id": "b1", "kind": "notification", "text": "Review the signed outline, checklist, and launch appendix."}]
+      }]
+    },
+    {
+      "id": "a/gmail-reply-chain",
+      "memory_id": "gmail_thread/exam-reply-chain",
+      "channel": "gmail",
+      "subject": "Signed outline",
+      "occurred_at": "2026-07-12T18:00:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/sam",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-12T17:00:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "Can you send the signed outline by July 14?"}]
+        },
+        {
+          "id": "m2",
+          "from": "p/self",
+          "to": ["p/sam"],
+          "cc": [],
+          "at": "2026-07-12T18:00:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "I will send the signed outline today."}]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-subject",
+      "memory_id": "gmail_thread/exam-subject-checklist",
+      "channel": "gmail",
+      "subject": "Please bring the signed checklist",
+      "occurred_at": "2026-07-13T16:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/dana",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-13T16:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "The room packet is attached for reference."}]
+      }]
+    },
+    {
+      "id": "a/gmail-statement",
+      "memory_id": "gmail_thread/exam-statement",
+      "channel": "gmail",
+      "subject": "Launch appendix",
+      "occurred_at": "2026-07-13T17:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/dana",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-13T17:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "The launch appendix still needs your initials."}]
+      }]
+    },
+    {
+      "id": "a/imessage-flywheel",
+      "memory_id": "imessage_chat/exam-flywheel",
+      "channel": "imessage",
+      "subject": "+15550100137",
+      "occurred_at": "2026-07-13T19:05:00Z",
+      "participants": ["p/dana"],
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/dana",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-13T19:00:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "I will bring the room key to the review."}]
+        },
+        {
+          "id": "m2",
+          "from": "p/self",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-13T19:05:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "Thanks, I will meet you there."}]
+        }
+      ]
+    },
+    {
+      "id": "a/imessage-marcus",
+      "memory_id": "imessage_chat/exam-marcus",
+      "channel": "imessage",
+      "subject": "Marcus Vance",
+      "occurred_at": "2026-07-13T20:10:00Z",
+      "participants": ["p/marcus"],
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/self",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-13T20:00:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "Could you confirm the sample count tomorrow?"}]
+        },
+        {
+          "id": "m2",
+          "from": "p/marcus",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-13T20:10:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "I will confirm the sample count tomorrow."}]
+        }
+      ]
+    },
+    {
+      "id": "a/note-plan",
+      "memory_id": "exam-note-plan",
+      "channel": "notes",
+      "subject": "Private preparation note",
+      "occurred_at": "2026-07-11T09:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-11T09:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I will organize the private preparation notes before the next review."}]
+      }]
+    },
+    {
+      "id": "a/note-private",
+      "memory_id": "exam-note-private",
+      "channel": "notes",
+      "subject": "Private follow-up",
+      "occurred_at": "2026-07-11T10:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-11T10:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I will archive my private review notes."}]
+      }]
+    },
+    {
+      "id": "a/gmail-nina-summary",
+      "memory_id": "gmail_thread/exam-nina-summary",
+      "channel": "gmail",
+      "subject": "Summary table",
+      "occurred_at": "2026-07-09T15:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/nina",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-09T15:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I will send you the summary table next week."}]
+      }]
+    },
+    {
+      "id": "a/gmail-third-party",
+      "memory_id": "gmail_thread/exam-third-party",
+      "channel": "gmail",
+      "subject": "Omar's action item",
+      "occurred_at": "2026-07-09T16:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/nina",
+        "to": ["p/self"],
+        "cc": ["p/omar"],
+        "at": "2026-07-09T16:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "Omar, please send me the venue map."}]
+      }]
+    },
+    {
+      "id": "a/gmail-duplicate-canonical",
+      "memory_id": "gmail_thread/exam-duplicate-canonical",
+      "channel": "gmail",
+      "subject": "Sample labels",
+      "occurred_at": "2026-07-08T14:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/marcus",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-08T14:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I will send the sample labels this week."}]
+      }]
+    },
+    {
+      "id": "a/note-duplicate-copy",
+      "memory_id": "exam-note-duplicate-copy",
+      "channel": "notes",
+      "subject": "Copied sample-label promise",
+      "occurred_at": "2026-07-08T15:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-08T15:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "Marcus will send the sample labels this week."}, {"id": "b2", "kind": "authored", "text": "The copied reminder was superseded by the source thread."}]
+      }]
+    },
+    {
+      "id": "a/gmail-closed-open",
+      "memory_id": "gmail_thread/exam-closed-open",
+      "channel": "gmail",
+      "subject": "Reviewer list",
+      "occurred_at": "2026-07-07T12:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/sam",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-07T12:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "Can you send the reviewer list?"}]
+      }]
+    },
+    {
+      "id": "a/note-closure",
+      "memory_id": "exam-note-closure",
+      "channel": "notes",
+      "subject": "Reviewer list delivered",
+      "occurred_at": "2026-07-08T12:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-08T12:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "The reviewer list was delivered to Sam."}]
+      }]
+    },
+    {
+      "id": "a/gmail-quoted-negative",
+      "memory_id": "gmail_thread/exam-quoted-negative",
+      "channel": "gmail",
+      "subject": "Old request context",
+      "occurred_at": "2026-07-06T10:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/sam",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-06T10:00:00Z",
+        "body": [{"id": "b1", "kind": "quoted_reply", "text": "Earlier request from the archive:\nCan you resend the retired worksheet?"}]
+      }]
+    },
+    {
+      "id": "a/gmail-forwarded-negative",
+      "memory_id": "gmail_thread/exam-forwarded-negative",
+      "channel": "gmail",
+      "subject": "Fwd: generic offer",
+      "occurred_at": "2026-07-06T11:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/sam",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-06T11:00:00Z",
+        "body": [{"id": "b1", "kind": "forwarded", "text": "-----Original Message-----\nBook a generic product tour today."}]
+      }]
+    },
+    {
+      "id": "a/gmail-footer-negative",
+      "memory_id": "gmail_thread/exam-footer-negative",
+      "channel": "gmail",
+      "subject": "Delivery note",
+      "occurred_at": "2026-07-06T12:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/service",
+        "to": ["p/self"],
+        "cc": [],
+        "at": "2026-07-06T12:00:00Z",
+        "body": [{"id": "b1", "kind": "footer", "text": "Please consider the environment before printing this automated notice."}]
+      }]
+    }
+  ],
+  "commitments": [
+    {
+      "id": "c/sam-outline",
+      "owner": "p/self",
+      "counterparty": "p/sam",
+      "direction": "owed_by_self",
+      "summary": "Send the signed outline",
+      "opened_by": {"artifact_id": "a/gmail-reply-chain", "message_id": "m1", "block_id": "b1", "quote": "Can you send the signed outline by July 14?"},
+      "due_at": "2026-07-14T11:00:00Z",
+      "due_kind": "explicit_date",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/exam-review", "daily"]
+    },
+    {
+      "id": "c/subject-checklist",
+      "owner": "p/self",
+      "counterparty": "p/dana",
+      "direction": "owed_by_self",
+      "summary": "Bring the signed checklist",
+      "opened_by": {"artifact_id": "a/gmail-subject", "quote": "Please bring the signed checklist"},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/exam-review"]
+    },
+    {
+      "id": "c/dana-statement",
+      "owner": "p/self",
+      "counterparty": "p/dana",
+      "direction": "owed_by_self",
+      "summary": "Initial the launch appendix",
+      "opened_by": {"artifact_id": "a/gmail-statement", "message_id": "m1", "block_id": "b1", "quote": "The launch appendix still needs your initials."},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/exam-review"],
+      "expected_failure": "extraction_statement_form"
+    },
+    {
+      "id": "c/note-plan",
+      "owner": "p/self",
+      "counterparty": "p/sam",
+      "direction": "owed_by_self",
+      "summary": "Organize private preparation notes",
+      "opened_by": {"artifact_id": "a/note-plan", "message_id": "m1", "block_id": "b1", "quote": "I will organize the private preparation notes before the next review."},
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/self-private",
+      "owner": "p/self",
+      "counterparty": "p/sam",
+      "direction": "owed_by_self",
+      "summary": "Archive private notes",
+      "opened_by": {"artifact_id": "a/note-private", "message_id": "m1", "block_id": "b1", "quote": "I will archive my private review notes."},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/flywheel",
+      "owner": "p/dana",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Bring the room key",
+      "opened_by": {"artifact_id": "a/imessage-flywheel", "message_id": "m1", "block_id": "b1", "quote": "I will bring the room key to the review."},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/exam-review"],
+      "requires_merge": "+15550100137|dana@example.net",
+      "expected_failure": "identity_merge_required"
+    },
+    {
+      "id": "c/marcus-confirm",
+      "owner": "p/marcus",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Confirm the sample count",
+      "opened_by": {"artifact_id": "a/imessage-marcus", "message_id": "m2", "block_id": "b1", "quote": "I will confirm the sample count tomorrow."},
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"],
+      "expected_failure": "due_time_unknown"
+    },
+    {
+      "id": "c/nina-summary",
+      "owner": "p/nina",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Send summary table",
+      "opened_by": {"artifact_id": "a/gmail-nina-summary", "message_id": "m1", "block_id": "b1", "quote": "I will send you the summary table next week."},
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/third-party",
+      "owner": "p/omar",
+      "counterparty": "p/nina",
+      "direction": "owed_by_counterparty",
+      "summary": "Send Nina the venue map",
+      "opened_by": {"artifact_id": "a/gmail-third-party", "message_id": "m1", "block_id": "b1", "quote": "Omar, please send me the venue map."},
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/duplicate-canonical",
+      "owner": "p/marcus",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Send sample labels",
+      "opened_by": {"artifact_id": "a/gmail-duplicate-canonical", "message_id": "m1", "block_id": "b1", "quote": "I will send the sample labels this week."},
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/duplicate-copy",
+      "owner": "p/marcus",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Copied sample-label promise",
+      "opened_by": {"artifact_id": "a/note-duplicate-copy", "message_id": "m1", "block_id": "b1", "quote": "Marcus will send the sample labels this week."},
+      "due_kind": "relative",
+      "state": "superseded",
+      "transitions": [{"to": "superseded", "at": "2026-07-08T15:00:00Z", "evidence": {"artifact_id": "a/note-duplicate-copy", "message_id": "m1", "block_id": "b2", "quote": "The copied reminder was superseded by the source thread."}}],
+      "duplicate_of": "c/duplicate-canonical",
+      "expected_in": []
+    },
+    {
+      "id": "c/closed-reviewers",
+      "owner": "p/self",
+      "counterparty": "p/sam",
+      "direction": "owed_by_self",
+      "summary": "Send reviewer list",
+      "opened_by": {"artifact_id": "a/gmail-closed-open", "message_id": "m1", "block_id": "b1", "quote": "Can you send the reviewer list?"},
+      "due_kind": "none",
+      "state": "closed",
+      "transitions": [{"to": "closed", "at": "2026-07-08T12:00:00Z", "evidence": {"artifact_id": "a/note-closure", "message_id": "m1", "block_id": "b1", "quote": "The reviewer list was delivered to Sam."}}],
+      "expected_in": []
+    }
+  ],
+  "non_obligations": [
+    {"id": "n/quoted", "span": {"artifact_id": "a/gmail-quoted-negative", "message_id": "m1", "block_id": "b1", "quote": "Can you resend the retired worksheet?"}, "class": "trivia", "why": "Connector-surviving quoted context is not authored by the sender."},
+    {"id": "n/forwarded", "span": {"artifact_id": "a/gmail-forwarded-negative", "message_id": "m1", "block_id": "b1", "quote": "Book a generic product tour today."}, "class": "marketing", "why": "A forwarded generic call to action is not a personal obligation."},
+    {"id": "n/footer", "span": {"artifact_id": "a/gmail-footer-negative", "message_id": "m1", "block_id": "b1", "quote": "Please consider the environment before printing this automated notice."}, "class": "footer", "why": "Footer boilerplate is not an obligation."}
+  ]
+}
