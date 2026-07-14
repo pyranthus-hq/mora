@@ -2,6 +2,7 @@ package exam
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -167,18 +168,29 @@ func TestManifestCompleteness(t *testing.T) {
 
 func implementedValidatorRules(t *testing.T) map[string]bool {
 	t.Helper()
-	constants := map[string]string{}
 	paths, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	implemented, problems, err := implementedValidatorRulesFromPaths(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, problem := range problems {
+		t.Error(problem)
+	}
+	return implemented
+}
+
+func implementedValidatorRulesFromPaths(paths []string) (map[string]bool, []string, error) {
+	constants := map[string]string{}
 	for _, path := range paths {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
 		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if err != nil {
-			t.Fatal(err)
+			return nil, nil, err
 		}
 		for _, decl := range file.Decls {
 			gen, ok := decl.(*ast.GenDecl)
@@ -200,7 +212,7 @@ func implementedValidatorRules(t *testing.T) map[string]bool {
 					}
 					value, err := strconv.Unquote(literal.Value)
 					if err != nil {
-						t.Fatal(err)
+						return nil, nil, err
 					}
 					constants[name.Name] = value
 				}
@@ -209,6 +221,7 @@ func implementedValidatorRules(t *testing.T) map[string]bool {
 	}
 
 	implemented := map[string]bool{}
+	var problems []string
 	for _, path := range paths {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
@@ -216,34 +229,78 @@ func implementedValidatorRules(t *testing.T) map[string]bool {
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
-			t.Fatal(err)
+			return nil, nil, err
+		}
+		directReferences := map[token.Pos]bool{}
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "ruleError" {
+				directReferences[fn.Name.Pos()] = true
+			}
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
-			if !ok || len(call.Args) == 0 {
+			if !ok {
 				return true
 			}
 			fun, ok := call.Fun.(*ast.Ident)
 			if !ok || fun.Name != "ruleError" {
 				return true
 			}
+			directReferences[fun.Pos()] = true
+			if len(call.Args) == 0 {
+				problems = append(problems, fmt.Sprintf("ruleError has no named rule argument at %s", fset.Position(call.Pos())))
+				return true
+			}
 			name, ok := call.Args[0].(*ast.Ident)
 			if !ok {
-				t.Errorf("ruleError first argument must be a named rule constant at %s", fset.Position(call.Pos()))
+				problems = append(problems, fmt.Sprintf("ruleError first argument must be a named rule constant at %s", fset.Position(call.Pos())))
 				return true
 			}
 			value, ok := constants[name.Name]
 			if !ok {
-				if strings.HasPrefix(name.Name, "Rule") {
-					t.Errorf("ruleError uses unknown rule constant %s", name.Name)
-				}
+				problems = append(problems, fmt.Sprintf("ruleError uses non-manifest rule argument %s at %s", name.Name, fset.Position(call.Pos())))
 				return true
 			}
 			implemented[value] = true
 			return true
 		})
+		ast.Inspect(file, func(node ast.Node) bool {
+			ident, ok := node.(*ast.Ident)
+			if ok && ident.Name == "ruleError" && !directReferences[ident.Pos()] {
+				problems = append(problems, fmt.Sprintf("ruleError used through indirection at %s", fset.Position(ident.Pos())))
+			}
+			return true
+		})
 	}
-	return implemented
+	return implemented, problems, nil
+}
+
+func TestValidatorRuleWalkRejectsErrorWrapperIndirection(t *testing.T) {
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(t.TempDir(), "wrapper.go")
+	source := `package exam
+func wrappedRuleError(rule, format string, args ...any) error {
+	return ruleError(rule, format, args...)
+}
+var indirectRuleError = ruleError
+`
+	if err := os.WriteFile(planted, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths = append(paths, planted)
+	_, problems, err := implementedValidatorRulesFromPaths(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(problems, "\n")
+	for _, want := range []string{"non-manifest rule argument rule", "used through indirection"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("planted violation did not report %q:\n%s", want, got)
+		}
+	}
 }
 
 func TestCommittedLedgerIsValid(t *testing.T) {
