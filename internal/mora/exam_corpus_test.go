@@ -342,6 +342,7 @@ func seedExamHome(t *testing.T) (Config, examEventFixture, time.Time) {
 }
 
 func TestExamCorpusProducesANonEmptyBrief(t *testing.T) {
+	ledger := loadExamLedger(t)
 	cfg, event, at := seedExamHome(t)
 	brief, err := buildEventMeetingBrief(context.Background(), cfg, event.EventID, at, 0, 25)
 	if err != nil {
@@ -356,15 +357,12 @@ func TestExamCorpusProducesANonEmptyBrief(t *testing.T) {
 	for _, section := range brief.Sections {
 		for _, line := range section.Lines {
 			lines++
-			attendees[strings.ToLower(line.Attendee)] = true
-			related, ok := relationalByAttendee[line.Attendee]
+			attendeeKey := strings.ToLower(line.Attendee)
+			attendees[attendeeKey] = true
+			related, ok := relationalByAttendee[attendeeKey]
 			if !ok {
-				dossier, err := graphGetEntity(context.Background(), cfg, line.Attendee)
-				if err != nil {
-					t.Fatal(err)
-				}
-				related = relationalEvidenceIDs(dossier)
-				relationalByAttendee[line.Attendee] = related
+				related = ledgerRelationalEvidenceIDs(t, ledger, line.Attendee)
+				relationalByAttendee[attendeeKey] = related
 			}
 			if memoryID := line.Citation.MemoryID(); !related[memoryID] {
 				t.Errorf("brief evidence %s for %q has no relational graph edge (MENTIONS is insufficient)", memoryID, line.Attendee)
@@ -379,6 +377,43 @@ func TestExamCorpusProducesANonEmptyBrief(t *testing.T) {
 			t.Errorf("exam brief has no line for expected attendee %q; got %v", expected, attendees)
 		}
 	}
+}
+
+func ledgerRelationalEvidenceIDs(t *testing.T, ledger exam.Ledger, attendee string) map[string]bool {
+	t.Helper()
+	target := strings.ToLower(strings.TrimSpace(attendee))
+	identityID := ""
+	identities := append([]exam.Identity{ledger.Self}, ledger.People...)
+	for _, identity := range identities {
+		aliases := append(append([]string{identity.Display}, identity.Emails...), identity.Handles...)
+		for _, alias := range aliases {
+			if strings.ToLower(strings.TrimSpace(alias)) == target {
+				identityID = identity.ID
+				break
+			}
+		}
+	}
+	if identityID == "" {
+		t.Fatalf("brief attendee %q does not resolve to a ledger identity", attendee)
+	}
+
+	related := map[string]bool{}
+	for _, artifact := range ledger.Artifacts {
+		isRelated := false
+		for _, participant := range artifact.Participants {
+			isRelated = isRelated || participant == identityID
+		}
+		for _, message := range artifact.Messages {
+			isRelated = isRelated || message.From == identityID
+			for _, recipient := range append(append([]string(nil), message.To...), message.Cc...) {
+				isRelated = isRelated || recipient == identityID
+			}
+		}
+		if isRelated {
+			related[artifact.MemoryID] = true
+		}
+	}
+	return related
 }
 
 func TestExamCorpusProducesANonEmptyDigest(t *testing.T) {

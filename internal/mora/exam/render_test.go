@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRenderDeterministic(t *testing.T) {
@@ -38,6 +39,10 @@ func TestRenderDeterministic(t *testing.T) {
 }
 
 func TestRenderUsesPinnedTimezone(t *testing.T) {
+	originalLocal := time.Local
+	t.Cleanup(func() { time.Local = originalLocal })
+	time.Local = time.FixedZone("exam+9", 9*60*60)
+
 	l := validTestLedger()
 	l.Artifacts[1].Messages[0].At = "2026-07-13T23:30:00Z"
 	l.Artifacts[1].Messages[1].At = "2026-07-13T23:45:00Z"

@@ -260,6 +260,21 @@
       }]
     },
     {
+      "id": "a/note-sam-mention",
+      "memory_id": "exam-note-sam-mention",
+      "channel": "notes",
+      "subject": "Third-party attendee mention",
+      "occurred_at": "2026-07-08T13:00:00Z",
+      "messages": [{
+        "id": "m1",
+        "from": "p/self",
+        "to": [],
+        "cc": [],
+        "at": "2026-07-08T13:00:00Z",
+        "body": [{"id": "b1", "kind": "authored", "text": "I spoke to Sam Rivera about the pilot; can you follow up on the contract?"}]
+      }]
+    },
+    {
       "id": "a/gmail-quoted-negative",
       "memory_id": "gmail_thread/exam-quoted-negative",
       "channel": "gmail",

@@ -147,7 +147,7 @@ func TestManifestCompleteness(t *testing.T) {
 	}
 	for name := range want {
 		if !implemented[name] {
-			t.Errorf("manifested validator rule %q is not emitted by validate.go", name)
+			t.Errorf("manifested validator rule %q is not emitted by the exam package", name)
 		}
 	}
 	// This is intentionally a second, manifest-owned drive of every broken row.
@@ -208,36 +208,41 @@ func implementedValidatorRules(t *testing.T) map[string]bool {
 		}
 	}
 
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "validate.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
 	implemented := map[string]bool{}
-	ast.Inspect(file, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 {
-			return true
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
 		}
-		fun, ok := call.Fun.(*ast.Ident)
-		if !ok || fun.Name != "ruleError" {
-			return true
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
 		}
-		name, ok := call.Args[0].(*ast.Ident)
-		if !ok {
-			t.Errorf("ruleError first argument must be a named rule constant at %s", fset.Position(call.Pos()))
-			return true
-		}
-		value, ok := constants[name.Name]
-		if !ok {
-			if strings.HasPrefix(name.Name, "Rule") {
-				t.Errorf("ruleError uses unknown rule constant %s", name.Name)
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
 			}
+			fun, ok := call.Fun.(*ast.Ident)
+			if !ok || fun.Name != "ruleError" {
+				return true
+			}
+			name, ok := call.Args[0].(*ast.Ident)
+			if !ok {
+				t.Errorf("ruleError first argument must be a named rule constant at %s", fset.Position(call.Pos()))
+				return true
+			}
+			value, ok := constants[name.Name]
+			if !ok {
+				if strings.HasPrefix(name.Name, "Rule") {
+					t.Errorf("ruleError uses unknown rule constant %s", name.Name)
+				}
+				return true
+			}
+			implemented[value] = true
 			return true
-		}
-		implemented[value] = true
-		return true
-	})
+		})
+	}
 	return implemented
 }
 
