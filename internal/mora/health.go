@@ -247,17 +247,22 @@ func healthBanner(cfg Config, now time.Time) string {
 // LastError untouched — doctor could see a source was OLD but never WHY.
 //
 // Called from the single ingestSource dispatch chokepoint on any returned
-// error. It first checks whether the on-disk status ALREADY carries this
-// exact error: when the failure happened AFTER memory.Ingest ran, the inner
-// path (persistSyncStatus) already stamped it, and re-loading+re-saving here
-// would risk clobbering a checkpoint/counter update with a stale re-read for
-// no benefit — so that case is a deliberate no-op. Only a genuinely
-// untouched/different failure (the pre-Ingest gap, or a save that failed
-// deeper in the stack) gets stamped, and ErrorCount is bumped so `mora sync
-// status` never reads "0 errors" beside a LastError. Best-effort: a save
-// failure here is warned, never returned — it must not mask the real ingest
-// error the caller is already propagating.
-func stampSyncAttemptFailure(cfg Config, s Source, ingestErr error, now time.Time, out io.Writer) {
+// error, with attemptStart captured BEFORE dispatch ran. It first checks
+// whether the inner path (persistSyncStatus, after memory.Ingest ran) already
+// stamped THIS attempt — i.e. the on-disk LastAttemptAt is already at or after
+// attemptStart — and if so is a deliberate no-op: re-loading+re-saving would
+// risk clobbering a checkpoint/counter update the inner path just persisted,
+// for no benefit. Identity is attempt TIMING, never error TEXT: the six-day
+// incident was the SAME error ("database or disk is full (13)") recurring
+// every hour, and a text-equality check cannot distinguish "the inner path
+// stamped this during the CURRENT attempt" from "the PREVIOUS attempt failed
+// with the same string" — the latter must still advance LastAttemptAt. Only a
+// genuinely untouched/earlier attempt (the pre-Ingest gap, or a save that
+// failed deeper in the stack) gets (re)stamped, and ErrorCount is bumped so
+// `mora sync status` never reads "0 errors" beside a LastError. Best-effort: a
+// save failure here is warned, never returned — it must not mask the real
+// ingest error the caller is already propagating.
+func stampSyncAttemptFailure(cfg Config, s Source, ingestErr error, attemptStart time.Time, out io.Writer) {
 	path := syncStatusPathFor(cfg, s)
 	if path == "" {
 		return
@@ -266,11 +271,11 @@ func stampSyncAttemptFailure(cfg Config, s Source, ingestErr error, now time.Tim
 	if err != nil {
 		return
 	}
-	if st.LastError == ingestErr.Error() {
-		return // already stamped by the inner path for this exact failure.
+	if lastAttempt, perr := time.Parse(time.RFC3339, st.LastAttemptAt); perr == nil && !lastAttempt.Before(attemptStart) {
+		return // the inner path already stamped this attempt.
 	}
 	st.Source = s.Name
-	st.LastAttemptAt = now.UTC().Format(time.RFC3339)
+	st.LastAttemptAt = attemptStart.UTC().Format(time.RFC3339)
 	st.LastError = ingestErr.Error()
 	st.ErrorCount++
 	if serr := saveSyncStatusFn(path, st); serr != nil && out != nil {

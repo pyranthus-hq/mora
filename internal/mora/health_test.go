@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -546,5 +550,132 @@ func TestDoctorPulseJSONEmitsOnlySources(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "MORA HEALTH") {
 		t.Fatalf("--pulse --json must not mix banner text into the JSON output:\n%s", out.String())
+	}
+}
+
+// TestStampSyncAttemptFailureAdvancesOnRepeatedIdenticalError (review fix): the
+// six-day incident was exactly this shape — the SAME error ("database or disk
+// is full (13)") recurring every hour. Comparing LastError by TEXT to decide
+// "already stamped" cannot tell "the inner path stamped this during the
+// current attempt" from "a PREVIOUS attempt failed with the same string" — so
+// a repeated identical pre-Ingest failure must still advance LastAttemptAt
+// (and ErrorCount) on every attempt, not just the first.
+func TestStampSyncAttemptFailureAdvancesOnRepeatedIdenticalError(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	s := Source{Name: "gmail", Type: "gmail"}
+	path := syncStatusPathFor(cfg, s)
+
+	sameErr := errors.New("database or disk is full (13)")
+	t1 := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	stampSyncAttemptFailure(cfg, s, sameErr, t1, nil)
+
+	st1, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatalf("LoadStatus: %v", err)
+	}
+	if st1.LastAttemptAt != t1.UTC().Format(time.RFC3339) {
+		t.Fatalf("first attempt: LastAttemptAt = %q, want %q", st1.LastAttemptAt, t1.UTC().Format(time.RFC3339))
+	}
+	if st1.ErrorCount != 1 {
+		t.Fatalf("first attempt: ErrorCount = %d, want 1", st1.ErrorCount)
+	}
+
+	// A SECOND attempt, one hour later, fails with the EXACT SAME error string.
+	t2 := t1.Add(1 * time.Hour)
+	stampSyncAttemptFailure(cfg, s, sameErr, t2, nil)
+
+	st2, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatalf("LoadStatus: %v", err)
+	}
+	if st2.LastAttemptAt != t2.UTC().Format(time.RFC3339) {
+		t.Fatalf("a repeated IDENTICAL failure must still advance LastAttemptAt: got %q, want %q (the six-day incident's exact shape)", st2.LastAttemptAt, t2.UTC().Format(time.RFC3339))
+	}
+	if st2.ErrorCount != 2 {
+		t.Fatalf("ErrorCount must keep incrementing across repeated identical failures: got %d, want 2", st2.ErrorCount)
+	}
+	if st2.LastError != sameErr.Error() {
+		t.Fatalf("LastError = %q, want %q", st2.LastError, sameErr.Error())
+	}
+}
+
+// TestStampSyncAttemptFailureSkipsWhenInnerPathAlreadyStamped: the ORIGINAL
+// protective intent must survive the fix above — when the inner path
+// (memory.Ingest via persistSyncStatus) already stamped THIS attempt (its
+// LastAttemptAt is at-or-after the attempt's start), the outer stamp must NOT
+// re-load-and-save, so it can never clobber a checkpoint/counter update the
+// inner path already persisted with a stale re-read.
+func TestStampSyncAttemptFailureSkipsWhenInnerPathAlreadyStamped(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	s := Source{Name: "gmail", Type: "gmail"}
+	path := syncStatusPathFor(cfg, s)
+
+	attemptStart := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	innerStampedAt := attemptStart.Add(2 * time.Second) // the inner path ran AFTER attemptStart was captured
+	if err := memory.SaveStatus(path, &memory.SyncStatus{
+		Source: "gmail", LastAttemptAt: innerStampedAt.UTC().Format(time.RFC3339),
+		LastError: "boom", ErrorCount: 1, ItemCount: 4, Checkpoint: "page-7",
+	}); err != nil {
+		t.Fatalf("SaveStatus: %v", err)
+	}
+
+	stampSyncAttemptFailure(cfg, s, errors.New("boom"), attemptStart, nil)
+
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatalf("LoadStatus: %v", err)
+	}
+	if st.Checkpoint != "page-7" || st.ItemCount != 4 {
+		t.Fatalf("must not clobber the inner path's checkpoint/counters: %+v", st)
+	}
+	if st.LastAttemptAt != innerStampedAt.UTC().Format(time.RFC3339) {
+		t.Fatalf("must not overwrite the inner path's own attempt stamp: got %q, want %q", st.LastAttemptAt, innerStampedAt.UTC().Format(time.RFC3339))
+	}
+	if st.ErrorCount != 1 {
+		t.Fatalf("must not double-count the inner path's own error: ErrorCount = %d, want 1", st.ErrorCount)
+	}
+}
+
+// TestDoctorUsesInjectedClockForGoogleAuthRecency (review fix): the normal
+// (non --pulse) doctor check/render path must use the SAME injected
+// doctorClock for EVERY rendered line, including the Google-auth-recency
+// line — a stray time.Now() there would give one pinned doctor invocation two
+// different "now"s.
+func TestDoctorUsesInjectedClockForGoogleAuthRecency(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
+	if err := os.MkdirAll(tokenDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tokenDir, "google.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	authAt := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	if err := google.RecordAuth(tokenDir, "google", authAt); err != nil {
+		t.Fatalf("RecordAuth: %v", err)
+	}
+
+	// Pin doctorClock far from the real wall clock: if the auth-recency line
+	// used time.Now() instead of the injected clock, "X ago" would reflect the
+	// real (near-zero) elapsed time since RecordAuth just ran, not this
+	// deliberately large 52h gap.
+	now := authAt.Add(52 * time.Hour)
+	origClock := doctorClock
+	doctorClock = func() time.Time { return now }
+	t.Cleanup(func() { doctorClock = origClock })
+
+	out := run(t, "doctor")
+	want := "last authed " + authAt.Format(time.RFC3339) + " (2 days ago)"
+	if !strings.Contains(out, want) {
+		t.Fatalf("doctor text output must use the injected clock for auth recency, want %q in:\n%s", want, out)
 	}
 }

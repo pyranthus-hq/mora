@@ -297,7 +297,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
 	// surface "last authed / how long ago" per connected account so the user can
 	// tell at a glance when they last signed in.
-	printGoogleAuthRecency(cfg, stdout, time.Now())
+	printGoogleAuthRecency(cfg, stdout, now)
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
 	// Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(stdout, false)
