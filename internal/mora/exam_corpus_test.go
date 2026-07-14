@@ -230,6 +230,44 @@ func TestExamCorpusNoRealIdentities(t *testing.T) {
 	}
 }
 
+func TestExamFlywheelArtifactsShareNoIdentityBytes(t *testing.T) {
+	l := loadExamLedger(t)
+	rendered, err := exam.Render(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const handle = "+15550100137"
+	const email = "dana@example.net"
+	var flywheel []byte
+	var danaGmail [][]byte
+	for _, a := range l.Artifacts {
+		if a.ID == "a/imessage-flywheel" {
+			flywheel = rendered["vault/sources/imessage/"+strings.ReplaceAll(a.MemoryID, "/", "_")+".md"]
+		}
+		if a.Channel != "gmail" {
+			continue
+		}
+		fromDana := false
+		for _, m := range a.Messages {
+			fromDana = fromDana || m.From == "p/dana"
+		}
+		if fromDana {
+			danaGmail = append(danaGmail, rendered["vault/sources/gmail/"+strings.ReplaceAll(a.MemoryID, "/", "_")+".md"])
+		}
+	}
+	if len(flywheel) == 0 || !bytes.Contains(flywheel, []byte(handle)) || bytes.Contains(flywheel, []byte(email)) {
+		t.Fatalf("flywheel iMessage must expose only the bare handle")
+	}
+	if len(danaGmail) == 0 {
+		t.Fatal("flywheel ledger has no Gmail arm")
+	}
+	for _, body := range danaGmail {
+		if !bytes.Contains(body, []byte(email)) || bytes.Contains(body, []byte(handle)) {
+			t.Fatal("flywheel Gmail must expose only the email identity")
+		}
+	}
+}
+
 func seedExamHome(t *testing.T) (Config, examEventFixture, time.Time) {
 	t.Helper()
 	withTempHome(t)
@@ -354,7 +392,13 @@ func TestExamCorpusHashesMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for rel, wantHash := range entries {
+	paths := make([]string, 0, len(entries))
+	for rel := range entries {
+		paths = append(paths, rel)
+	}
+	sort.Strings(paths)
+	for _, rel := range paths {
+		wantHash := entries[rel]
 		if strings.HasPrefix(rel, "vault/") {
 			generated, ok := rendered[rel]
 			if !ok {

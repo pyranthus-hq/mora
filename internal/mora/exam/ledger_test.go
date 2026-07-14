@@ -63,11 +63,13 @@ func validTestLedger() Ledger {
 	}
 }
 
-func TestLedgerValidatorRejects(t *testing.T) {
-	tests := []struct {
-		rule   string
-		mutate func(*Ledger)
-	}{
+type validatorMutation struct {
+	rule   string
+	mutate func(*Ledger)
+}
+
+func validatorMutations() []validatorMutation {
+	return []validatorMutation{
 		{RuleIdentity, func(l *Ledger) { l.Commitments[0].Owner = "p/missing" }},
 		{RuleTimestamp, func(l *Ledger) { l.Artifacts[0].Messages[0].At = "not-a-time" }},
 		{RuleTransition, func(l *Ledger) { l.Commitments[2].State = "open" }},
@@ -81,12 +83,15 @@ func TestLedgerValidatorRejects(t *testing.T) {
 		{RuleOneDefectArtifact, func(l *Ledger) {
 			l.NonObligations = []NonObligation{{ID: "n/masked", Span: l.Commitments[0].OpenedBy, Class: "trivia", Why: "collides with a commitment"}}
 		}},
-		{RuleClassBalance, func(l *Ledger) { l.Commitments[1].Owner, l.Commitments[1].Direction = "p/self", "owed_by_self" }},
+		{RuleClassBalance, func(l *Ledger) { l.Commitments[0].Owner, l.Commitments[0].Direction = "p/dana", "owed_by_counterparty" }},
 		{RulePersonaHygiene, func(l *Ledger) { l.People[0].Emails[0] = "sam@company.dev" }},
 		{RuleChannelGrain, func(l *Ledger) { l.Artifacts[0].Messages[0].Body[3].Text = "> removed by connector" }},
 	}
+}
+
+func TestLedgerValidatorRejects(t *testing.T) {
 	seen := map[string]bool{}
-	for _, tt := range tests {
+	for _, tt := range validatorMutations() {
 		t.Run(tt.rule, func(t *testing.T) {
 			l := cloneLedger(t, validTestLedger())
 			tt.mutate(&l)
@@ -117,6 +122,19 @@ func TestManifestCompleteness(t *testing.T) {
 			t.Errorf("validator emits unmanifested rule %q", name)
 		}
 	}
+	if len(ValidatorErrorNames) != len(RequiredValidatorRules) {
+		t.Fatalf("validator error vocabulary has %d entries, manifest has %d", len(ValidatorErrorNames), len(RequiredValidatorRules))
+	}
+	// This is intentionally a second, manifest-owned drive of every broken row.
+	// Neutering a validator branch therefore makes both the behavioral table and
+	// the completeness meta-test fail by the rule's public name.
+	for _, tt := range validatorMutations() {
+		l := cloneLedger(t, validTestLedger())
+		tt.mutate(&l)
+		if err := Validate(l); err == nil || !strings.Contains(err.Error(), tt.rule) {
+			t.Errorf("manifested rule %q has no live rejecting implementation: %v", tt.rule, err)
+		}
+	}
 	if len(RequiredLints) != 2 {
 		t.Fatalf("lint manifest has %d entries, want 2", len(RequiredLints))
 	}
@@ -145,6 +163,67 @@ func TestCommittedLedgerIsValid(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("..", "eval", "obligations-v1", "OBLIGATIONS.md")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestCommittedLedgerCoverage(t *testing.T) {
+	l, err := Load(filepath.Join("..", "eval", "obligations-v1", "ledger.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channels := map[string]bool{}
+	blockKinds := map[string]bool{}
+	hasReply, hasSelfTurn := false, false
+	artifactChannel := map[string]string{}
+	for _, a := range l.Artifacts {
+		channels[a.Channel] = true
+		artifactChannel[a.ID] = a.Channel
+		hasReply = hasReply || a.Channel == "gmail" && len(a.Messages) > 1
+		for _, m := range a.Messages {
+			hasSelfTurn = hasSelfTurn || a.Channel == "imessage" && m.From == l.Self.ID
+			for _, b := range m.Body {
+				blockKinds[b.Kind] = true
+			}
+		}
+	}
+	for _, channel := range []string{"gmail", "imessage", "calendar", "notes"} {
+		if !channels[channel] {
+			t.Errorf("ledger lacks channel %s", channel)
+		}
+	}
+	for _, kind := range []string{"quoted_reply", "forwarded", "footer"} {
+		if !blockKinds[kind] {
+			t.Errorf("ledger lacks block kind %s", kind)
+		}
+	}
+	if !hasReply || !hasSelfTurn {
+		t.Errorf("reply_chain=%v imessage_self_turn=%v", hasReply, hasSelfTurn)
+	}
+	hasSubject, hasCrossClosure, hasDuplicate, hasThirdParty := false, false, false, false
+	hasExplicit, hasRelative, hasDaily, hasFlywheel := false, false, false, false
+	for _, c := range l.Commitments {
+		hasSubject = hasSubject || c.OpenedBy.MessageID == ""
+		hasDuplicate = hasDuplicate || c.DuplicateOf != ""
+		hasThirdParty = hasThirdParty || (c.Owner != l.Self.ID && c.Counterparty != l.Self.ID)
+		hasExplicit = hasExplicit || c.DueKind == "explicit_date"
+		hasRelative = hasRelative || c.DueKind == "relative"
+		hasDaily = hasDaily || contains(c.ExpectedIn, "daily")
+		hasFlywheel = hasFlywheel || c.ID == "c/flywheel" && c.RequiresMerge == "+15550100137|dana@example.net" && artifactChannel[c.OpenedBy.ArtifactID] == "imessage"
+		for _, tr := range c.Transitions {
+			hasCrossClosure = hasCrossClosure || artifactChannel[c.OpenedBy.ArtifactID] != artifactChannel[tr.Evidence.ArtifactID]
+		}
+	}
+	if !hasSubject || !hasCrossClosure || !hasDuplicate || !hasThirdParty || !hasExplicit || !hasRelative || !hasDaily || !hasFlywheel {
+		t.Fatalf("coverage subject=%v cross_closure=%v duplicate=%v third_party=%v explicit=%v relative=%v daily=%v flywheel=%v", hasSubject, hasCrossClosure, hasDuplicate, hasThirdParty, hasExplicit, hasRelative, hasDaily, hasFlywheel)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCommittedBrokenFixtures(t *testing.T) {
@@ -186,6 +265,9 @@ func TestCommittedBrokenFixtures(t *testing.T) {
 			if l.Commitments[i].State == "open" && l.Commitments[i].DuplicateOf == "" {
 				l.Commitments[i].Owner = fixture.Owner
 				l.Commitments[i].Direction = fixture.Direction
+				if l.Commitments[i].Counterparty == fixture.Owner {
+					l.Commitments[i].Counterparty = "p/sam"
+				}
 			}
 		}
 		if err := Validate(l); err == nil || !strings.Contains(err.Error(), RuleClassBalance) {

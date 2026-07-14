@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -24,7 +25,13 @@ func Lint(l Ledger) error {
 }
 
 func LintCorpus(files map[string][]byte) error {
-	for path, b := range files {
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		b := files[path]
 		if err := lintBytes(LintCorpusBytes, path, b); err != nil {
 			return err
 		}

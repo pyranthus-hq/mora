@@ -104,6 +104,9 @@ func validateIdentity(l Ledger) (map[string]Identity, error) {
 		if err := resolve("commitment counterparty", c.Counterparty); err != nil {
 			return nil, err
 		}
+		if c.Owner == c.Counterparty {
+			return nil, ruleError(RuleIdentity, "commitment %q has the same owner and counterparty", c.ID)
+		}
 		if c.RequiresMerge != "" {
 			parts := strings.Split(c.RequiresMerge, "|")
 			if len(parts) != 2 || addresses[strings.ToLower(parts[0])] == "" || addresses[strings.ToLower(parts[0])] != addresses[strings.ToLower(parts[1])] {
@@ -147,6 +150,19 @@ func validateTimestamps(l Ledger) error {
 		}
 	}
 	for _, c := range l.Commitments {
+		switch c.DueKind {
+		case "explicit_date":
+			if c.DueAt == "" {
+				return ruleError(RuleTimestamp, "commitment %q has explicit_date without due_at", c.ID)
+			}
+		case "relative":
+		case "none":
+			if c.DueAt != "" {
+				return ruleError(RuleTimestamp, "commitment %q has due_kind none with due_at", c.ID)
+			}
+		default:
+			return ruleError(RuleTimestamp, "commitment %q has invalid due_kind %q", c.ID, c.DueKind)
+		}
 		if c.DueAt != "" {
 			if _, err := parseAt(RuleTimestamp, "due_at", c.DueAt, asOf); err != nil {
 				return err
@@ -237,6 +253,14 @@ func validateSpansAndClosure(l Ledger) error {
 			return ruleError(RuleEvidenceSpan, "duplicate or empty commitment id %q", c.ID)
 		}
 		commitmentIDs[c.ID] = true
+		if strings.TrimSpace(c.Summary) == "" {
+			return ruleError(RuleEvidenceSpan, "commitment %q has no summary", c.ID)
+		}
+		for _, surface := range c.ExpectedIn {
+			if surface != "daily" && !strings.HasPrefix(surface, "meeting:") {
+				return ruleError(RuleEvidenceSpan, "commitment %q has unknown surface %q", c.ID, surface)
+			}
+		}
 		openingChannel, err := resolveSpan(l, c.OpenedBy)
 		if err != nil {
 			return err
@@ -385,7 +409,13 @@ func validateSelfAttendee(l Ledger) error {
 
 func validateDefectIsolation(l Ledger) error {
 	byArtifact, commitments := map[string]int{}, map[string]bool{}
+	nonObligationIDs := map[string]bool{}
+	validClass := map[string]bool{"footer": true, "marketing": true, "notification": true, "url_shard": true, "self_spoken": true, "lead_in": true, "bystander": true, "trivia": true}
 	for _, n := range l.NonObligations {
+		if n.ID == "" || nonObligationIDs[n.ID] || !validClass[n.Class] || strings.TrimSpace(n.Why) == "" {
+			return ruleError(RuleOneDefectArtifact, "non-obligation %q has duplicate id, invalid class, or empty reason", n.ID)
+		}
+		nonObligationIDs[n.ID] = true
 		byArtifact[n.Span.ArtifactID]++
 	}
 	for _, c := range l.Commitments {
@@ -423,7 +453,11 @@ func validatePersona(ids map[string]Identity) error {
 	for id, p := range ids {
 		for _, raw := range p.Emails {
 			a, err := mail.ParseAddress(raw)
-			if err != nil || !reservedDomain(strings.ToLower(strings.TrimSpace(strings.Split(a.Address, "@")[1]))) {
+			domain := ""
+			if err == nil {
+				_, domain, _ = strings.Cut(a.Address, "@")
+			}
+			if err != nil || domain == "" || !reservedDomain(strings.ToLower(strings.TrimSpace(domain))) {
 				return ruleError(RulePersonaHygiene, "identity %q has non-reserved email %q", id, raw)
 			}
 		}
@@ -453,7 +487,18 @@ func fictionalHandle(raw string) bool {
 }
 
 func validateChannelGrain(l Ledger) error {
+	validBlockKind := map[string]bool{"authored": true, "quoted_reply": true, "forwarded": true, "signature": true, "footer": true, "disclaimer": true, "url_only": true, "notification": true}
 	for _, a := range l.Artifacts {
+		for _, m := range a.Messages {
+			if len(m.Body) == 0 {
+				return ruleError(RuleChannelGrain, "message %q has no body blocks", m.ID)
+			}
+			for _, b := range m.Body {
+				if !validBlockKind[b.Kind] || strings.TrimSpace(b.Text) == "" {
+					return ruleError(RuleChannelGrain, "block %q has invalid kind or empty text", b.ID)
+				}
+			}
+		}
 		switch a.Channel {
 		case "gmail":
 			if len(a.Participants) != 0 || len(a.Messages) == 0 {
@@ -472,6 +517,9 @@ func validateChannelGrain(l Ledger) error {
 					}
 				}
 			}
+			if newestMessage(a.Messages).Format(time.RFC3339) != a.OccurredAt {
+				return ruleError(RuleChannelGrain, "gmail artifact %q occurred_at is not its newest message", a.ID)
+			}
 		case "imessage":
 			if len(a.Participants) == 0 || len(a.Messages) == 0 {
 				return ruleError(RuleChannelGrain, "imessage artifact %q lacks participants/messages", a.ID)
@@ -480,6 +528,9 @@ func validateChannelGrain(l Ledger) error {
 				if len(m.To) != 0 || len(m.Cc) != 0 {
 					return ruleError(RuleChannelGrain, "imessage message %q has To/Cc", m.ID)
 				}
+			}
+			if newestMessage(a.Messages).Format(time.RFC3339) != a.OccurredAt {
+				return ruleError(RuleChannelGrain, "imessage artifact %q occurred_at is not its newest message", a.ID)
 			}
 		case "calendar", "notes":
 			if len(a.Participants) != 0 || len(a.Messages) != 1 {
