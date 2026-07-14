@@ -277,7 +277,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "brief":
 		return cmdBrief(ctx, args[1:], stdout)
 	case "prep":
-		return cmdPrep(ctx, args[1:], stdout)
+		fmt.Fprintln(stdout, "mora prep was removed (#137): use 'mora brief --event-id <id>' — same engine as MCP meeting_prep")
+		return errors.New("usage: mora brief --event-id <id>")
 	case "usage":
 		return cmdUsage(ctx, args[1:], stdout)
 	case "disconnect":

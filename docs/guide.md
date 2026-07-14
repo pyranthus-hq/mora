@@ -371,8 +371,6 @@ mora brief                                                 # what changed / what
 mora brief --event-id calendar_event/abc --at 2026-07-10T15:00:00Z  # reproducible, fully-cited meeting brief
 mora brief --entity "Riya" --since-days 7                  # just one person, last week (preview-only)
 mora pulse --digest --source imessage --since-hours 168    # "just my texts this week"
-mora prep                                                  # legacy cited prep envelope for your next meeting
-mora prep "Riya"                                           # prep the next meeting WITH Riya
 ```
 
 **Tune context density** (scales default budgets for context/digest/brief; `large` raises the

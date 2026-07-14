@@ -3,7 +3,8 @@
 `mora brief --event-id <calendar-memory-id>` builds a local pre-meeting brief for
 one calendar event. The MCP `meeting_prep` tool returns the same `MeetingBrief`
 shape; without `event_id`, it selects the next or just-started event for backward
-compatibility.
+compatibility. These two surfaces share the current gated assembly pipeline; there
+is no separate legacy CLI assembly path.
 
 ## Assembly pipeline
 
