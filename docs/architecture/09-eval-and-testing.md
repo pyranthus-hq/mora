@@ -1,6 +1,6 @@
 # Evaluation & Testing
 
-Two purpose-built test harnesses that measure what the rest of the codebase cannot self-assert: **retrieval recall quality** (the T2 eval, which attributes every miss to a fixable cause) and **MCP output-size discipline** (the T0 gate, which pins per-tool token blowups so they can't silently regress).
+Three purpose-built test harnesses measure what the rest of the codebase cannot self-assert: **retrieval recall quality** (the T2 eval, which attributes every miss to a fixable cause), **MCP output-size discipline** (the T0 gate, which pins per-tool token blowups so they can't silently regress), and the **meeting-brief sabotage gate** (which replays the sanitized July 2026 gibberish incident through the assembled production path).
 
 ## Files
 
@@ -9,8 +9,11 @@ Two purpose-built test harnesses that measure what the rest of the codebase cann
 | `internal/mora/eval_test.go` | 717 | T2 retrieval-recall eval: golden-set TSV loaders, the `classifyBucket` §6 attribution switch, the deterministic synthetic gate (`TestEvalSynthetic`), the read-only live diagnosis (`TestEvalLive`), the static-vs-Ollama A/B (`TestEvalAB`), the per-surface histogram printer (`reportEval`), the `kFTS`/`kHybrid`/`tracePoolDepth` constants |
 | `internal/mora/eval_metrics.go` | 120 | Pure-Go IR metrics ported from `trec_eval`: `recallAtK`, `hitAtK`, `reciprocalRank`, `rankOf`, `meanBy`, and the `existsInMemoriesTable` COVERAGE probe. stdlib only, no CGO/network/Python |
 | `internal/mora/mora_mcp_budget_test.go` | 324 | T0 MCP token-budget regression gate: `budgetCase` table, `wantRED` quarantine semantics, per-tool ceilings anchored to 20000, `seedBudgetFixture`, `TestMCPBudgetCeilings`, `TestMCPSearchDefaultLimitIsEight` |
+| `internal/mora/eval/sabotage/gibberish-2026-07/` | — | Sanitized frozen-incident input vault, pinned event/as-of clock, and a rendered broken artifact used to self-check the scorer |
+| `internal/mora/sabotage_test.go`, `junk_invariance_test.go` | — | End-to-end meeting-brief replay through the direct builder/renderer and MCP `meeting_prep`; scorer degeneration checks; older-junk byte invariance and newer-junk line invariance |
+| `internal/mora/junk_patterns.go` | — | One table mapping the frozen incident signatures to defect classes and source fixtures; shared by replay and invariance gates |
 
-These are the only files this doc owns. The production code they couple to (`hybrid.go`, `mora.go`, `embed.go`, `digest.go`) is documented in [retrieval](./02-retrieval-search.md), [the MCP server](./06-mcp-server.md), and [synthesis](./07-synthesis-think-digest.md).
+The production code they couple to (`hybrid.go`, `mora.go`, `embed.go`, `digest.go`, `meetingbrief.go`, and `mcp.go`) is documented in [retrieval](./02-retrieval-search.md), [the MCP server](./06-mcp-server.md), and [synthesis](./07-synthesis-think-digest.md).
 
 ---
 
@@ -202,6 +205,16 @@ A footgun baked into the fixture comment (`mora_mcp_budget_test.go:141-150`): th
 ### `TestMCPBudgetLive`
 
 `TestMCPBudgetLive` (`mora_mcp_budget_test.go:318-324`) measures the same contracts against a real vault via `MORA_BUDGET_LIVE=/path`, but is **double-skipped** today: it needs read-only config repointing that isn't wired yet. The documented fast path for live numbers is the stdio binary directly: `printf '<jsonrpc line>' | mora mcp serve | wc -c` (`mora_mcp_budget_test.go:311-317`).
+
+---
+
+## Meeting-brief frozen-incident sabotage gate
+
+The Gate 1 sabotage fixture is sanitized input, not only a golden output. `TestSabotageGibberishNeverRenders` copies that vault into an isolated test home, rebuilds the real index, assembles the pinned event through `buildEventMeetingBrief`, renders it, and calls the MCP `meeting_prep` handler. Every surfaced evidence line is checked against one defect-signature table, while a genuine signed-pilot obligation must survive so an empty brief cannot pass.
+
+`TestSabotageScorerSelfCheck` evaluates the evaluator: the scorer must reject the committed broken rendering, an empty artifact, and a question-only extraction of the fixture vault. The assembled-boundary invariance tests then distinguish two honest contracts. Junk older than the newest genuine attendee evidence must leave the rendered meeting brief byte-identical; junk newer than genuine evidence may shift pre-filter recency/ranking state, so it gets the weaker but truthful line-exclusion plus non-empty-control assertion. The daily digest deliberately does not claim full byte invariance because a newly ingested junk email is still a new delta item; only its urgent shelf, freshness state, and stale open-task lane are pinned.
+
+All fixture names and path construction are Windows-safe, dates and the briefing clock are fixed, and the gate runs without network access or a live vault.
 
 ---
 
