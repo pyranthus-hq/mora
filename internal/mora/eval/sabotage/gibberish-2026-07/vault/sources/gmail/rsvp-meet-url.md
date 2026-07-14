@@ -14,6 +14,7 @@ meta: {"from":["gouri@example.com"],"names":{"gouri@example.com":"Gouri Karode"}
 
 From: Gouri Karode <gouri@example.com>
 
+Can you confirm the Declined: Sync up meeting notice?
 Gouri Karode has declined this invitation.
 Sync up meeting
 Join with Google Meet

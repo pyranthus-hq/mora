@@ -18,5 +18,5 @@ Microsoft Teams meeting
 Join: https://teams.microsoft.com/meet/226094548165923
 Meeting ID: 226 094 548 165 923
 Passcode: zR7Fb9GW
-Need help?
-Was this helpful?
+Can you review these meeting details — Need help?
+Can you confirm: Was this helpful?

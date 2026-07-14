@@ -11,7 +11,7 @@ Three purpose-built test harnesses measure what the rest of the codebase cannot 
 | `internal/mora/mora_mcp_budget_test.go` | 324 | T0 MCP token-budget regression gate: `budgetCase` table, `wantRED` quarantine semantics, per-tool ceilings anchored to 20000, `seedBudgetFixture`, `TestMCPBudgetCeilings`, `TestMCPSearchDefaultLimitIsEight` |
 | `internal/mora/eval/sabotage/gibberish-2026-07/` | — | Sanitized frozen-incident input vault, pinned event/as-of clock, and a rendered broken artifact used to self-check the scorer |
 | `internal/mora/sabotage_test.go`, `junk_invariance_test.go` | — | End-to-end meeting-brief replay through the direct builder/renderer and MCP `meeting_prep`; scorer degeneration checks; older-junk byte invariance and newer-junk line invariance |
-| `internal/mora/junk_patterns.go` | — | One table mapping the frozen incident signatures to defect classes and source fixtures; shared by replay and invariance gates |
+| `internal/mora/junk_patterns_test.go` | — | Test-only table mapping the frozen incident signatures to defect classes and source fixtures; shared by replay and invariance gates without shipping scorer data in the binary |
 
 The production code they couple to (`hybrid.go`, `mora.go`, `embed.go`, `digest.go`, `meetingbrief.go`, and `mcp.go`) is documented in [retrieval](./02-retrieval-search.md), [the MCP server](./06-mcp-server.md), and [synthesis](./07-synthesis-think-digest.md).
 
@@ -211,6 +211,8 @@ A footgun baked into the fixture comment (`mora_mcp_budget_test.go:141-150`): th
 ## Meeting-brief frozen-incident sabotage gate
 
 The Gate 1 sabotage fixture is sanitized input, not only a golden output. `TestSabotageGibberishNeverRenders` copies that vault into an isolated test home, rebuilds the real index, assembles the pinned event through `buildEventMeetingBrief`, renders it, and calls the MCP `meeting_prep` handler. Every surfaced evidence line is checked against one defect-signature table, while a genuine signed-pilot obligation must survive so an empty brief cannot pass.
+
+The four incident gates are mutation-checked one at a time. Their fixtures are intentionally independent: a direct two-party third-party assignment pins `assignedToThirdParty`; a genuine ask on a thread with an outsider pins `meetingBriefIsTwoPartyExchange`; actionable RSVP/Teams boilerplate pins `isMeetingNotification`; and a non-notification Meet URL whose hard-wrapped continuation turns a post-segmentation URL shard into a candidate pins pre-segmentation `stripURLs`. Disabling any one gate makes its fixture's junk reach the rendered brief, so redundant filtering cannot hide an unwired call site.
 
 `TestSabotageScorerSelfCheck` evaluates the evaluator: the scorer must reject the committed broken rendering, an empty artifact, and a question-only extraction of the fixture vault. The assembled-boundary invariance tests then distinguish two honest contracts. Junk older than the newest genuine attendee evidence must leave the rendered meeting brief byte-identical; junk newer than genuine evidence may shift pre-filter recency/ranking state, so it gets the weaker but truthful line-exclusion plus non-empty-control assertion. The daily digest deliberately does not claim full byte invariance because a newly ingested junk email is still a new delta item; only its urgent shelf, freshness state, and stale open-task lane are pinned.
 

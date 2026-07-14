@@ -154,6 +154,17 @@ func assertSabotageBriefPasses(t *testing.T, surface string, brief MeetingBrief)
 }
 
 func TestSabotageGibberishNeverRenders(t *testing.T) {
+	// Load-bearing mutation map for the four production gates that the frozen
+	// incident depends on. Each fixture is deliberately clean with respect to the
+	// other three gates, so disabling any ONE gate makes its named junk render:
+	//
+	//   assignedToThirdParty            -> wrapped-third-party.md
+	//   meetingBriefIsTwoPartyExchange  -> ambiguous-group-ask.md
+	//   isMeetingNotification           -> rsvp-meet-url.md / teams-footer.md
+	//   stripURLs                       -> meet-url-action.md
+	//
+	// Keep this isolation intact: coupling two defects in one memory recreates the
+	// false-green failure mode this sabotage gate exists to prevent.
 	cfg, event, at := seedSabotageHome(t, nil)
 	ctx := context.Background()
 
@@ -185,6 +196,28 @@ func TestSabotageGibberishNeverRenders(t *testing.T) {
 		t.Fatalf("MCP meeting_prep returned %T, want MeetingBrief", mcpValue)
 	}
 	assertSabotageBriefPasses(t, "MCP meeting_prep", mcpBrief)
+}
+
+func TestSabotageJunkPatternWhitespaceVariants(t *testing.T) {
+	variants := []struct {
+		line        string
+		defectClass string
+	}{
+		{"Need\thelp ?", "invite-footer"},
+		{"Was this   helpful ?", "generic-footer-question"},
+		{"Open to see how the loop  works ?", "forwarded-cta"},
+		{"Cost varies depending  on   usage", "substring-pending"},
+		{"Declined:Sync up meeting", "rsvp-notification"},
+		{"Fwd:Google  Ads Account Audit", "forwarded-subject"},
+	}
+	for _, variant := range variants {
+		t.Run(variant.defectClass, func(t *testing.T) {
+			matches := scanSabotageJunk([]string{variant.line})
+			if len(matches) == 0 || matches[0].DefectClass != variant.defectClass {
+				t.Fatalf("junk scorer missed whitespace/punctuation variant %q: %+v", variant.line, matches)
+			}
+		})
+	}
 }
 
 func questionExtractionFromSabotageVault(t *testing.T) string {
