@@ -12,6 +12,8 @@ import (
 
 const RendererVersion = "exam-render-v1"
 
+var renderLocation = time.FixedZone("exam-render", 0)
+
 type renderedMemory struct {
 	id, scope, typ, title, source, createdAt string
 	tags, provider, providerID, contentHash  string
@@ -99,7 +101,7 @@ func renderIMessage(a Artifact, ids map[string]Identity, selfID string) (string,
 	lastDay := ""
 	for _, msg := range a.Messages {
 		at, _ := time.Parse(time.RFC3339, msg.At)
-		day := at.Local().Format("2006-01-02")
+		day := at.In(renderLocation).Format("2006-01-02")
 		if day != lastDay {
 			if lastDay != "" {
 				b.WriteString("\n")

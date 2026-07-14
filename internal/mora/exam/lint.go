@@ -11,9 +11,12 @@ import (
 
 var (
 	emailToken = regexp.MustCompile(`(?i)[a-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)`)
-	plusPhone  = regexp.MustCompile(`\+[0-9]{11}`)
+	urlDomain  = regexp.MustCompile(`(?i)\bhttps?://([a-z0-9-]+(?:\.[a-z0-9-]+)+)`)
+	plusPhone  = regexp.MustCompile(`\+[0-9]{11,15}\b`)
 	parenPhone = regexp.MustCompile(`\([0-9]{3}\)[ ]*[0-9]{3}-[0-9]{4}`)
 	dashPhone  = regexp.MustCompile(`\b[0-9]{3}-[0-9]{3}-[0-9]{4}\b`)
+	barePhone  = regexp.MustCompile(`\b[0-9]{10}\b`)
+	digitsOnly = regexp.MustCompile(`[0-9]`)
 )
 
 func Lint(l Ledger) error {
@@ -51,14 +54,19 @@ func lintBytes(rule, path string, b []byte) error {
 			return fmt.Errorf("ERR_%s [%s]: %s contains non-reserved email %q", strings.ToUpper(rule), rule, path, match[0])
 		}
 	}
+	for _, match := range urlDomain.FindAllStringSubmatch(s, -1) {
+		if !reservedDomain(match[1]) {
+			return fmt.Errorf("ERR_%s [%s]: %s contains non-reserved URL domain %q", strings.ToUpper(rule), rule, path, match[1])
+		}
+	}
 	for _, token := range plusPhone.FindAllString(s, -1) {
 		if !fictionalHandle(token) {
 			return fmt.Errorf("ERR_%s [%s]: %s contains non-fictional handle %q", strings.ToUpper(rule), rule, path, token)
 		}
 	}
-	for _, re := range []*regexp.Regexp{parenPhone, dashPhone} {
+	for _, re := range []*regexp.Regexp{parenPhone, dashPhone, barePhone} {
 		for _, token := range re.FindAllString(s, -1) {
-			digits := regexp.MustCompile(`[0-9]`).FindAllString(token, -1)
+			digits := digitsOnly.FindAllString(token, -1)
 			if len(digits) != 10 {
 				return fmt.Errorf("ERR_%s [%s]: %s contains malformed handle %q", strings.ToUpper(rule), rule, path, token)
 			}

@@ -394,6 +394,9 @@ func validateSelfAttendee(l Ledger) error {
 				if a.MemoryID != memoryID || a.Channel != "calendar" {
 					continue
 				}
+				if len(a.Messages) == 0 {
+					return ruleError(RuleChannelGrain, "calendar artifact %q has no messages", a.ID)
+				}
 				found = true
 				for _, to := range a.Messages[0].To {
 					self = self || to == l.Self.ID

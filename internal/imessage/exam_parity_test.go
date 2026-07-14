@@ -12,6 +12,11 @@ import (
 	"github.com/pyranthus-hq/mora/internal/mora/exam"
 )
 
+func TestMain(m *testing.M) {
+	time.Local = time.FixedZone("exam-render", 0)
+	os.Exit(m.Run())
+}
+
 func loadExamIMessageLedger(t *testing.T) exam.Ledger {
 	t.Helper()
 	l, err := exam.Load(filepath.Join("..", "mora", "eval", "obligations-v1", "ledger.json"))

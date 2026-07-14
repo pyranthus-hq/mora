@@ -2,6 +2,7 @@ package exam
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +34,21 @@ func TestRenderDeterministic(t *testing.T) {
 		if _, ok := a[path]; !ok {
 			t.Errorf("missing rendered channel path %q", path)
 		}
+	}
+}
+
+func TestRenderUsesPinnedTimezone(t *testing.T) {
+	l := validTestLedger()
+	l.Artifacts[1].Messages[0].At = "2026-07-13T23:30:00Z"
+	l.Artifacts[1].Messages[1].At = "2026-07-13T23:45:00Z"
+	l.Artifacts[1].OccurredAt = "2026-07-13T23:45:00Z"
+
+	files, err := Render(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(files["vault/sources/imessage/imessage_chat_exam-chat.md"])
+	if !strings.Contains(body, "## 2026-07-13\n") {
+		t.Fatalf("iMessage day was not rendered in the pinned timezone:\n%s", body)
 	}
 }

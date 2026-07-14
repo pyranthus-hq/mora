@@ -33,22 +33,4 @@ var RequiredValidatorRules = []string{
 	RuleChannelGrain,
 }
 
-// ValidatorErrorNames is deliberately separate from RequiredValidatorRules. The
-// completeness test compares the implementation's named error vocabulary with
-// the public manifest so adding a silent thirteenth rule cannot pass unnoticed.
-var ValidatorErrorNames = []string{
-	RuleIdentity,
-	RuleTimestamp,
-	RuleTransition,
-	RuleDirection,
-	RuleClosure,
-	RuleEvidenceSpan,
-	RuleReplyChainQuotes,
-	RuleSelfAttendee,
-	RuleOneDefectArtifact,
-	RuleClassBalance,
-	RulePersonaHygiene,
-	RuleChannelGrain,
-}
-
 var RequiredLints = []string{LintRealIdentity, LintCorpusBytes}

@@ -1,8 +1,10 @@
 package exam
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -92,10 +94,17 @@ func Load(path string) (Ledger, error) {
 	if err != nil {
 		return Ledger{}, err
 	}
+	if err := lintBytes(LintRealIdentity, path, b); err != nil {
+		return Ledger{}, err
+	}
 	var l Ledger
-	decErr := json.Unmarshal(b, &l)
-	if decErr != nil {
-		return Ledger{}, fmt.Errorf("decode ledger: %w", decErr)
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&l); err != nil {
+		return Ledger{}, fmt.Errorf("decode ledger: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return Ledger{}, fmt.Errorf("decode ledger: trailing JSON: %v", err)
 	}
 	return l, nil
 }

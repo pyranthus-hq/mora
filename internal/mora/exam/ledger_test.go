@@ -2,11 +2,23 @@ package exam
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func hasNamedError(err error, name string) bool {
+	if err == nil {
+		return false
+	}
+	want := "ERR_" + strings.ToUpper(name) + " [" + name + "]:"
+	return strings.HasPrefix(err.Error(), want)
+}
 
 func cloneLedger(t *testing.T, in Ledger) Ledger {
 	t.Helper()
@@ -96,7 +108,7 @@ func TestLedgerValidatorRejects(t *testing.T) {
 			l := cloneLedger(t, validTestLedger())
 			tt.mutate(&l)
 			err := Validate(l)
-			if err == nil || !strings.Contains(err.Error(), tt.rule) {
+			if !hasNamedError(err, tt.rule) {
 				t.Fatalf("Validate error = %v, want named rule %q", err, tt.rule)
 			}
 			seen[tt.rule] = true
@@ -109,6 +121,16 @@ func TestLedgerValidatorRejects(t *testing.T) {
 	}
 }
 
+func TestValidateZeroMessageCalendarReturnsChannelGrain(t *testing.T) {
+	l := cloneLedger(t, validTestLedger())
+	l.Artifacts[2].Messages = nil
+
+	err := Validate(l)
+	if !hasNamedError(err, RuleChannelGrain) {
+		t.Fatalf("Validate error = %v, want named rule %q", err, RuleChannelGrain)
+	}
+}
+
 func TestManifestCompleteness(t *testing.T) {
 	if len(RequiredValidatorRules) != 12 {
 		t.Fatalf("validator manifest has %d rules, want 12", len(RequiredValidatorRules))
@@ -117,13 +139,16 @@ func TestManifestCompleteness(t *testing.T) {
 	for _, name := range RequiredValidatorRules {
 		want[name] = true
 	}
-	for _, name := range ValidatorErrorNames {
+	implemented := implementedValidatorRules(t)
+	for name := range implemented {
 		if !want[name] {
 			t.Errorf("validator emits unmanifested rule %q", name)
 		}
 	}
-	if len(ValidatorErrorNames) != len(RequiredValidatorRules) {
-		t.Fatalf("validator error vocabulary has %d entries, manifest has %d", len(ValidatorErrorNames), len(RequiredValidatorRules))
+	for name := range want {
+		if !implemented[name] {
+			t.Errorf("manifested validator rule %q is not emitted by validate.go", name)
+		}
 	}
 	// This is intentionally a second, manifest-owned drive of every broken row.
 	// Neutering a validator branch therefore makes both the behavioral table and
@@ -131,13 +156,89 @@ func TestManifestCompleteness(t *testing.T) {
 	for _, tt := range validatorMutations() {
 		l := cloneLedger(t, validTestLedger())
 		tt.mutate(&l)
-		if err := Validate(l); err == nil || !strings.Contains(err.Error(), tt.rule) {
+		if err := Validate(l); !hasNamedError(err, tt.rule) {
 			t.Errorf("manifested rule %q has no live rejecting implementation: %v", tt.rule, err)
 		}
 	}
 	if len(RequiredLints) != 2 {
 		t.Fatalf("lint manifest has %d entries, want 2", len(RequiredLints))
 	}
+}
+
+func implementedValidatorRules(t *testing.T) map[string]bool {
+	t.Helper()
+	constants := map[string]string{}
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				values, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range values.Names {
+					if !strings.HasPrefix(name.Name, "Rule") || i >= len(values.Values) {
+						continue
+					}
+					literal, ok := values.Values[i].(*ast.BasicLit)
+					if !ok || literal.Kind != token.STRING {
+						continue
+					}
+					value, err := strconv.Unquote(literal.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					constants[name.Name] = value
+				}
+			}
+		}
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "validate.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	implemented := map[string]bool{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		fun, ok := call.Fun.(*ast.Ident)
+		if !ok || fun.Name != "ruleError" {
+			return true
+		}
+		name, ok := call.Args[0].(*ast.Ident)
+		if !ok {
+			t.Errorf("ruleError first argument must be a named rule constant at %s", fset.Position(call.Pos()))
+			return true
+		}
+		value, ok := constants[name.Name]
+		if !ok {
+			if strings.HasPrefix(name.Name, "Rule") {
+				t.Errorf("ruleError uses unknown rule constant %s", name.Name)
+			}
+			return true
+		}
+		implemented[value] = true
+		return true
+	})
+	return implemented
 }
 
 func TestCommittedLedgerIsValid(t *testing.T) {
@@ -244,7 +345,7 @@ func TestCommittedBrokenFixtures(t *testing.T) {
 		}
 		l := cloneLedger(t, base)
 		l.NonObligations = append(l.NonObligations, fixture.NonObligation)
-		if err := Validate(l); err == nil || !strings.Contains(err.Error(), RuleOneDefectArtifact) {
+		if err := Validate(l); !hasNamedError(err, RuleOneDefectArtifact) {
 			t.Fatalf("Validate error = %v, want %s", err, RuleOneDefectArtifact)
 		}
 	})
@@ -270,7 +371,7 @@ func TestCommittedBrokenFixtures(t *testing.T) {
 				}
 			}
 		}
-		if err := Validate(l); err == nil || !strings.Contains(err.Error(), RuleClassBalance) {
+		if err := Validate(l); !hasNamedError(err, RuleClassBalance) {
 			t.Fatalf("Validate error = %v, want %s", err, RuleClassBalance)
 		}
 	})

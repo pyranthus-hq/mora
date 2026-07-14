@@ -98,7 +98,7 @@ func assertNoUnexpectedCorpusFiles(t *testing.T, rendered map[string][]byte) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() || filepath.Ext(path) != ".md" {
+		if d.IsDir() {
 			return nil
 		}
 		rel, err := filepath.Rel(examFixtureRoot, path)
@@ -178,32 +178,68 @@ func TestExamCorpusMatchesConnectorShape(t *testing.T) {
 
 func TestLedgerQuotesAreRenderable(t *testing.T) {
 	l := loadExamLedger(t)
-	check := func(id string, span exam.Span) {
-		t.Helper()
-		if span.MessageID == "" {
-			clean := stripNoiseTokens(oneLine(span.Quote))
-			if clean != span.Quote {
-				t.Errorf("%s subject quote is not renderable: got %q want %q", id, clean, span.Quote)
-			}
-			return
+	for _, quote := range ledgerQuoteCases(l) {
+		got, err := renderLedgerQuote(quote.span)
+		if err != nil {
+			t.Errorf("%s quote is not renderable: %v", quote.id, err)
+			continue
 		}
-		cleaned := senderAuthoredBody(span.Quote)
-		segments := meetingBriefEvidenceSegments(cleaned)
-		if len(segments) != 1 {
-			t.Errorf("%s quote split into %d segments: %q", id, len(segments), segments)
-			return
-		}
-		got := stripNoiseTokens(stripSpeakerPrefix(segments[0]))
-		if got != span.Quote {
-			t.Errorf("%s quote is not renderable: got %q want %q", id, got, span.Quote)
+		if got != quote.span.Quote {
+			t.Errorf("%s quote is not renderable: got %q want %q", quote.id, got, quote.span.Quote)
 		}
 	}
+}
+
+func TestLedgerQuoteOracleAppliesByteCap(t *testing.T) {
+	quote := strings.Repeat("a", 400)
+	got, err := renderLedgerQuote(exam.Span{MessageID: "m1", Quote: quote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > 360 {
+		t.Fatalf("quote oracle returned %d bytes, want at most 360", len(got))
+	}
+}
+
+func TestLedgerQuoteOracleCoversNonObligations(t *testing.T) {
+	l := loadExamLedger(t)
+	want := len(l.NonObligations)
 	for _, c := range l.Commitments {
-		check(c.ID, c.OpenedBy)
+		want += 1 + len(c.Transitions)
+	}
+	if got := len(ledgerQuoteCases(l)); got != want {
+		t.Fatalf("quote oracle covers %d spans, want %d including %d non-obligations", got, want, len(l.NonObligations))
+	}
+}
+
+type ledgerQuoteCase struct {
+	id   string
+	span exam.Span
+}
+
+func ledgerQuoteCases(l exam.Ledger) []ledgerQuoteCase {
+	var cases []ledgerQuoteCase
+	for _, c := range l.Commitments {
+		cases = append(cases, ledgerQuoteCase{id: c.ID, span: c.OpenedBy})
 		for _, tr := range c.Transitions {
-			check(c.ID+" transition", tr.Evidence)
+			cases = append(cases, ledgerQuoteCase{id: c.ID + " transition", span: tr.Evidence})
 		}
 	}
+	for _, n := range l.NonObligations {
+		cases = append(cases, ledgerQuoteCase{id: n.ID, span: n.Span})
+	}
+	return cases
+}
+
+func renderLedgerQuote(span exam.Span) (string, error) {
+	if span.MessageID == "" {
+		return truncateRunes(stripNoiseTokens(oneLine(span.Quote)), 360), nil
+	}
+	segments := meetingBriefEvidenceSegments(senderAuthoredBody(span.Quote))
+	if len(segments) != 1 {
+		return "", fmt.Errorf("split into %d segments: %q", len(segments), segments)
+	}
+	return truncateRunes(stripNoiseTokens(stripSpeakerPrefix(segments[0])), 360), nil
 }
 
 func TestExamCorpusNoRealIdentities(t *testing.T) {
@@ -316,10 +352,23 @@ func TestExamCorpusProducesANonEmptyBrief(t *testing.T) {
 	}
 	lines := 0
 	attendees := map[string]bool{}
+	relationalByAttendee := map[string]map[string]bool{}
 	for _, section := range brief.Sections {
 		for _, line := range section.Lines {
 			lines++
 			attendees[strings.ToLower(line.Attendee)] = true
+			related, ok := relationalByAttendee[line.Attendee]
+			if !ok {
+				dossier, err := graphGetEntity(context.Background(), cfg, line.Attendee)
+				if err != nil {
+					t.Fatal(err)
+				}
+				related = relationalEvidenceIDs(dossier)
+				relationalByAttendee[line.Attendee] = related
+			}
+			if memoryID := line.Citation.MemoryID(); !related[memoryID] {
+				t.Errorf("brief evidence %s for %q has no relational graph edge (MENTIONS is insufficient)", memoryID, line.Attendee)
+			}
 		}
 	}
 	if lines == 0 {
@@ -383,14 +432,20 @@ func TestExamCorpusHashesMatch(t *testing.T) {
 		writeExamHashes(t, l, rendered)
 		return
 	}
-	manifestPath := filepath.Join(examFixtureRoot, "CORPUS.sha256")
+	if err := verifyExamHashes(examFixtureRoot, l, rendered); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func verifyExamHashes(root string, l exam.Ledger, rendered map[string][]byte) error {
+	manifestPath := filepath.Join(root, "CORPUS.sha256")
 	b, err := os.ReadFile(manifestPath)
 	if err != nil {
-		t.Fatalf("ERR_CORPUS_HASH_MISSING: %v", err)
+		return fmt.Errorf("ERR_CORPUS_HASH_MISSING: %v", err)
 	}
 	entries, err := parseExamHashes(b, l.Version)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	paths := make([]string, 0, len(entries))
 	for rel := range entries {
@@ -402,26 +457,93 @@ func TestExamCorpusHashesMatch(t *testing.T) {
 		if strings.HasPrefix(rel, "vault/") {
 			generated, ok := rendered[rel]
 			if !ok {
-				t.Fatalf("ERR_LEDGER_DRIFT: manifest names corpus file not rendered by ledger: %s", rel)
+				return fmt.Errorf("ERR_LEDGER_DRIFT: manifest names corpus file not rendered by ledger: %s", rel)
 			}
 			if hashBytes(generated) != wantHash {
-				t.Fatalf("ERR_LEDGER_DRIFT: rendered %s hash differs from manifest", rel)
+				return fmt.Errorf("ERR_LEDGER_DRIFT: rendered %s hash differs from manifest", rel)
 			}
-			committed, err := os.ReadFile(filepath.Join(examFixtureRoot, filepath.FromSlash(rel)))
+			committed, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 			if err != nil || hashBytes(committed) != wantHash {
-				t.Fatalf("ERR_CORPUS_TAMPERED: checked-out %s differs from manifest", rel)
+				return fmt.Errorf("ERR_CORPUS_TAMPERED: checked-out %s differs from manifest", rel)
 			}
 			continue
 		}
-		source, err := os.ReadFile(filepath.Join(examFixtureRoot, filepath.FromSlash(rel)))
+		source, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 		if err != nil || hashBytes(source) != wantHash {
-			t.Fatalf("ERR_LEDGER_DRIFT: source artifact %s differs from manifest", rel)
+			return fmt.Errorf("ERR_LEDGER_DRIFT: source artifact %s differs from manifest", rel)
 		}
 	}
 	for rel := range rendered {
 		if _, ok := entries[rel]; !ok {
-			t.Fatalf("ERR_LEDGER_DRIFT: rendered file %s is missing from manifest", rel)
+			return fmt.Errorf("ERR_LEDGER_DRIFT: rendered file %s is missing from manifest", rel)
 		}
+	}
+	sources, err := examSourceArtifactNames(root)
+	if err != nil {
+		return fmt.Errorf("ERR_LEDGER_DRIFT: enumerate source artifacts: %w", err)
+	}
+	for _, rel := range sources {
+		if _, ok := entries[rel]; !ok {
+			return fmt.Errorf("ERR_LEDGER_DRIFT: source artifact %s is missing from manifest", rel)
+		}
+	}
+	return nil
+}
+
+func TestExamCorpusHashesRequireEverySourceArtifact(t *testing.T) {
+	tests := []struct {
+		name      string
+		extraName string
+		omit      string
+	}{
+		{name: "ledger manifest line", omit: "ledger.json"},
+		{name: "additional ledger", extraName: "sabotage-ledger.json", omit: "sabotage-ledger.json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			files := map[string][]byte{
+				"ledger.json": []byte(`{"version":1}`),
+				"events.json": []byte(`{"as_of":"2026-07-14T12:00:00Z"}`),
+			}
+			if tt.extraName != "" {
+				files[tt.extraName] = []byte(`{"version":1,"fixture":"synthetic"}`)
+			}
+			for name, body := range files {
+				if err := os.WriteFile(filepath.Join(root, name), body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			manifestFiles := map[string][]byte{}
+			for name, body := range files {
+				if name != tt.omit {
+					manifestFiles[name] = body
+				}
+			}
+			writeTestExamHashManifest(t, root, 1, manifestFiles)
+
+			err := verifyExamHashes(root, exam.Ledger{Version: 1}, map[string][]byte{})
+			if err == nil || !strings.Contains(err.Error(), tt.omit+" is missing from manifest") {
+				t.Fatalf("verifyExamHashes error = %v, want missing %s", err, tt.omit)
+			}
+		})
+	}
+}
+
+func writeTestExamHashManifest(t *testing.T, root string, schema int, files map[string][]byte) {
+	t.Helper()
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	var out strings.Builder
+	fmt.Fprintf(&out, "# renderer_version=%s ledger_schema=%d\n", exam.RendererVersion, schema)
+	for _, path := range paths {
+		fmt.Fprintf(&out, "%s  %s\n", hashBytes(files[path]), path)
+	}
+	if err := os.WriteFile(filepath.Join(root, "CORPUS.sha256"), []byte(out.String()), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -431,23 +553,16 @@ func writeExamHashes(t *testing.T, l exam.Ledger, rendered map[string][]byte) {
 	for rel, body := range rendered {
 		entries[rel] = body
 	}
-	for _, name := range []string{"ledger.json", "events.json"} {
+	sources, err := examSourceArtifactNames(examFixtureRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range sources {
 		b, err := os.ReadFile(filepath.Join(examFixtureRoot, name))
 		if err != nil {
 			t.Fatal(err)
 		}
 		entries[name] = b
-	}
-	extra, err := filepath.Glob(filepath.Join(examFixtureRoot, "*-ledger.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range extra {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		entries[filepath.Base(path)] = b
 	}
 	paths := make([]string, 0, len(entries))
 	for path := range entries {
@@ -462,6 +577,19 @@ func writeExamHashes(t *testing.T, l exam.Ledger, rendered map[string][]byte) {
 	if err := os.WriteFile(filepath.Join(examFixtureRoot, "CORPUS.sha256"), []byte(out.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func examSourceArtifactNames(root string) ([]string, error) {
+	names := []string{"ledger.json", "events.json"}
+	extra, err := filepath.Glob(filepath.Join(root, "*-ledger.json"))
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range extra {
+		names = append(names, filepath.Base(path))
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func parseExamHashes(b []byte, schema int) (map[string]string, error) {
