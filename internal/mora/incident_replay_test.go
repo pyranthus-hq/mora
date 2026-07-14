@@ -221,3 +221,73 @@ func TestUnwritableStampStillAlarms(t *testing.T) {
 		t.Fatalf("an unwritable stamp must still produce a banner")
 	}
 }
+
+// TestPreIngestFailureStampsThroughRealChokepoint (HEALTH-04/-05, the
+// mutation-coverage gap): the six-day incident's pre-Ingest gap must be closed
+// at the REAL production chokepoint, not merely provable by calling
+// stampSyncAttemptFailure directly. This test induces an actual pre-Ingest
+// failure through ingestSource — empty MORA_GOOGLE_CREDENTIALS forces the
+// embedded placeholder OAuth client, which google.ResolveOAuthConfig rejects
+// BEFORE memory.Ingest ever runs (the same "not connected"/config gap the
+// real incident hit) — and asserts the on-disk stamp actually advanced
+// through that call, then that the freshness alarm still keys off the
+// FROZEN LastSuccessAt age, never the just-advanced LastAttemptAt.
+//
+// If stampSyncAttemptFailure is no-op'd, or its call site in ingestSource is
+// removed, this test must go red: LastAttemptAt/LastError would stay at the
+// seeded baseline instead of advancing. (Verified by mutation — see the PR
+// body's verification section, not committed here.)
+func TestPreIngestFailureStampsThroughRealChokepoint(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+
+	// Healthy baseline frozen 25h in the past — the six-day incident's exact
+	// shape: LastSuccessAt ages while attempts keep happening around it.
+	staleSuccess := time.Now().Add(-25 * time.Hour)
+	seedSyncStatus(t, cfg, "gmail", staleSuccess)
+
+	// Force a REAL pre-Ingest failure through the production ingestSource
+	// dispatch chokepoint — never stampSyncAttemptFailure directly.
+	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
+	before := time.Now()
+	var out bytes.Buffer
+	if _, ingestErr := ingestSource(cfg, Source{Name: "gmail", Type: "gmail"}, &out); ingestErr == nil ||
+		!strings.Contains(ingestErr.Error(), "Google sign-in needs a one-time setup") {
+		t.Fatalf("ingestSource must fail pre-Ingest via the real dispatch path, got %v", ingestErr)
+	}
+
+	// (a) LastAttemptAt genuinely advanced through the real chokepoint.
+	st, err := memory.LoadStatus(syncStatusPathFor(cfg, Source{Name: "gmail", Type: "gmail"}))
+	if err != nil {
+		t.Fatalf("LoadStatus: %v", err)
+	}
+	attemptAt, perr := time.Parse(time.RFC3339, st.LastAttemptAt)
+	if perr != nil {
+		t.Fatalf("LastAttemptAt did not parse: %q", st.LastAttemptAt)
+	}
+	if attemptAt.Before(before.Truncate(time.Second)) {
+		t.Fatalf("LastAttemptAt did not advance through the real ingestSource chokepoint: got %s, want >= %s", attemptAt, before)
+	}
+	if st.LastError == "" {
+		t.Fatalf("LastError must be recorded through the real chokepoint")
+	}
+
+	// (b) the freshness/doctor alarm keys off the FROZEN LastSuccessAt age, not
+	// the attempt that just advanced — the by-construction property the six-day
+	// incident violated.
+	now := staleSuccess.Add(25 * time.Hour)
+	h := sourceHealthAll(cfg, now)
+	if len(h) != 1 || h[0].Key != "gmail" || h[0].State != healthFailed {
+		t.Fatalf("sourceHealthAll after a real chokepoint failure = %+v, want a single failed gmail entry", h)
+	}
+
+	origClock := doctorClock
+	doctorClock = func() time.Time { return now }
+	t.Cleanup(func() { doctorClock = origClock })
+	var strictOut bytes.Buffer
+	if err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
+		t.Fatalf("doctor --strict must fail closed after a real pre-Ingest chokepoint failure")
+	}
+}
