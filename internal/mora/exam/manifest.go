@@ -60,8 +60,9 @@ const (
 	MetricUnmatched          = "unmatched"
 )
 
-// The slices every ratcheted metric must carry a floor for. A corpus-wide 0.91 with
-// the iMessage channel at 0.20 is a regression the global number cannot see.
+// The slices every ratcheted metric must carry a floor for. A healthy corpus-wide
+// average with one collapsed channel underneath it is a regression the global number
+// structurally cannot see.
 const (
 	SliceChannel    = "channel"
 	SliceBlockKind  = "block_kind"

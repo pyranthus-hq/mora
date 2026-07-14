@@ -31,6 +31,34 @@ All fixture identities use RFC-2606 domains and the designated fictional handle 
 
 ---
 
+## The obligation scorer, and why it refuses things
+
+`internal/mora/exam/{score,baseline,mutate}.go` is a typed Go scorer. It is typed Go and not a preference judge because an LLM judge measured **τ = −0.40** on this corpus — anti-correlated with truth. It scores one `Scorecard` per surface and never merges them: the meeting brief is scored at **quote grain**, the daily digest at **artifact grain**, and a single number spanning both would describe neither.
+
+**The predicate is the whole exam.** A surfaced meeting line joins to gold on the memory id (a hard gate) **and** an exactly-equal normalized quote. A hit that would need *containment* is recorded as a `loose_match` and never credited — otherwise a copy-the-input extractor that emits the whole memory body "contains" every gold quote and scores well. `Unmatched` is measured against **every labelled span in the ledger**, not against the gold set: a line that hits a labelled *non*-obligation is a false positive, not a hallucination. Collapsing the two would show a nonzero `Unmatched` on a healthy engine, and the natural "fix" for that is to loosen the predicate into containment — which destroys the instrument. Both counters must be **zero on the real engine** before the human audit may start.
+
+**Three run states, never collapsed.** `INVALID_HARNESS` (invalid ledger, unknown surface, zero required samples, a missing cited source artifact) is an `error` and a **zero** scorecard — never a low score. `SCORED_FAILURE` is a real, comparable number. `PASS` means the product got everything right. A broken instrument must never be reportable as a bad product, and a bad product must never be excused as a broken instrument.
+
+**Owner is `UNSCORABLE`,** and says so in the scorecard. No commitment-owner field exists on either payload; deriving one from `SectionKind == "open_loops"` would restate extraction precision on one section, not measure ownership. Third-party leaks are counted as critical absolutes instead.
+
+**Four rows are born red, by measurement.** Direction, due time, lifecycle state and closure linkage have no production field, so the adapters emit `unknown`/`""` and the rows measure zero. `Due` and `ClosureRef` carry explicit `none` sentinels for the gold values — without them, a surface that cannot express a due time at all would score *correct* against an obligation that has none, and the row would be accidentally green. The **oracle** fills every typed field from gold and must pass every row, which is what proves each one can go green the day the typed commitment model exists.
+
+### The metric sensitivity contract
+
+The most dangerous eval failure is not a wrong number; it is a **green metric that is insensitive to the bug it claims to detect**. So `RequiredMetrics` registers every number on the `Scorecard` with at least one red-team row that moves it, and two meta-tests make that structural: `TestEveryMetricHasASabotageCase` fails by metric name if a metric names no sabotage, and `TestMetricRegistryCoversEveryScorecardField` walks the struct by reflection so a new number cannot enter the scoreboard without declaring what breaks it.
+
+`RequiredRedTeamRows` is a version-pinned manifest, and `TestScorerRedTeam` **iterates the manifest, not a list of subtests** — a row with no registered baseline is a named failure, so deleting a subtest cannot delete the failure it was there to raise. The rows include the degenerate baselines (empty, every-question, copy-the-input, synthetic gibberish), the mutants that corrupt the **real** engine output (identity flip, unsupported citation, citation-span move, daily citation blanking), the mutants that corrupt the **gold** (owner flip, authored→quoted, removed source), three **invariance** rows that fail if the score *moves* (duplicate noise, input order), the **gate-disable sweep** that binds all seventeen production exclusion gates to a scored consequence, and the **oracle** — without which every negative row is satisfiable by a scorer that unconditionally fails, and an eval broken in the safe direction is still broken.
+
+`sabotage-ledger.json` is a self-contained synthetic world carrying every defect class. The exam **never reads** `eval/sabotage/gibberish-2026-07/`: that tree carries real names on a public repo.
+
+### Determinism is structural, not a convention
+
+`determinism_guard_test.go` parses every file that can reach a score, a baseline, a mutant, an adapter or a gate, and fails on any `math/rand` import or any `time.Now`/`Since`/`Until` selector. It also enforces the inverse rule: `pgregory.net/rapid` may be imported **only** in a `*_prop_test.go` file, because a PRNG on a scoring path would quietly void every byte-stability promise the exam makes. `rapid` v1.3.0 is pinned, test-only, run with a fixed CI seed that is printed for replay; `TestExamTestOnlyDepsAreNotLinked` asserts `go list -deps ./cmd/mora` never reaches it.
+
+**A high, clean, uniform first score is a defect report against the ledger, not a win.**
+
+---
+
 ## T2: retrieval-recall attribution
 
 The hard question for a retrieval system is not "what's my recall" — it's "**when I miss a relevant doc, whose fault is it and what fixes it**." A miss can mean: the doc was never ingested (connector bug), the embedder couldn't surface it on meaning (embedder bug), or an arm found it but fusion buried it past the cutoff (RRF/pool/rank bug). Each routes work to a different subsystem. Conflating them is the named #1 risk in the design doc. The T2 eval's load-bearing deliverable is therefore **not a recall number** — it's a histogram that mechanically attributes every gold-doc miss to exactly one of those causes, with zero metric math (`eval_test.go:18-20`).
