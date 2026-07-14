@@ -12,6 +12,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # A property test with a random seed reports a different failure every run and
+  # gets muted. Pin the seed, print it, and a counterexample is replayable — then
+  # promoted into the committed ledger, which owns it forever.
+  RAPID_SEED: "20260714"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -28,6 +34,22 @@ jobs:
           go test ./internal/mora -run TestExamCorpusNoRealIdentities -count=1
       - name: exam regenerate-and-hash
         run: go test ./internal/mora -run TestExamCorpusHashesMatch -count=1
+      # The stage order is the point: every stage's failure mode is cheaper to
+      # diagnose than the next one's, and nothing downstream runs until the ground
+      # truth is proven intact. A scorer number computed over a corpus that no longer
+      # matches its ledger is not a low score — it is a lie, and it will be defended.
+      - name: exam unit, property and round-trip
+        # A FIXED seed, printed, so a failure here is replayable rather than a ghost.
+        run: |
+          echo "rapid replay seed: ${{ env.RAPID_SEED }}"
+          go test ./internal/mora/exam ./internal/mora \
+            -run 'TestExam(Render|Corpus)|TestLedgerQuotes|TestProp' \
+            -count=1 -rapid.seed=$RAPID_SEED -rapid.checks=200
+      - name: exam scorer self-tests and sabotage
+        run: |
+          go test ./internal/mora/exam \
+            -run 'TestScorerRedTeam|TestEveryMetricHasASabotageCase|TestEveryRegisteredSabotageMovesItsMetric|TestMetricRegistryCoversEveryScorecardField|TestDuplicatePredictionsCannotInflateAnyCountedMetric|TestExamDeterminismGuard|TestScoreRefuses|TestGateControls|TestMatchIsExactNotContainment|TestUnknownNeverScoresCorrect|TestRedTeamManifestIsComplete' -count=1
+          go test ./internal/mora -run 'TestObligationScoreReport|TestExamRealPredictionsPin|TestExamRealEngineScorecard|TestExamTestOnlyDepsAreNotLinked' -count=1
       - name: gofmt check
         run: |
           unformatted=$(gofmt -l .)
