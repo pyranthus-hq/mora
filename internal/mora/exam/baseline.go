@@ -64,10 +64,11 @@ type Expectation struct {
 }
 
 type RedTeamCase struct {
-	Label       string
-	Ledger      Ledger
-	Predictions []Prediction
-	Expect      Expectation
+	Label               string
+	Ledger              Ledger
+	Predictions         []Prediction
+	UncappedPredictions *[]Prediction
+	Expect              Expectation
 }
 
 // RedTeamInput carries everything a row may transform: the gold world, the synthetic
@@ -415,7 +416,7 @@ func rowSyntheticGibberish(in RedTeamInput) []RedTeamCase {
 
 func rowEmpty(surface string) func(RedTeamInput) []RedTeamCase {
 	return func(in RedTeamInput) []RedTeamCase {
-		return []RedTeamCase{{
+		c := RedTeamCase{
 			Ledger:      in.Ledger,
 			Predictions: nil,
 			Expect: Expectation{
@@ -426,7 +427,16 @@ func rowEmpty(surface string) func(RedTeamInput) []RedTeamCase {
 					{MetricCitationCoverage + ".defined", OpEq, 0, "coverage over zero predictions is N/A"},
 				},
 			},
-		}}
+		}
+		if surface == SurfaceMeeting {
+			empty := []Prediction(nil)
+			c.UncappedPredictions = &empty
+			c.Expect.Checks = append(c.Expect.Checks,
+				Check{MetricRecallUncapped + ".recall", OpEq, 0, "the uncapped run was sabotaged too, so it finds nothing"},
+				Check{MetricRecallUncapped + ".defined", OpEq, 0, "the uncapped run cannot become decorative when it has no predictions"},
+			)
+		}
+		return []RedTeamCase{c}
 	}
 }
 

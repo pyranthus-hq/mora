@@ -208,6 +208,7 @@ func score(l Ledger, preds []Prediction, surface string, only sliceAny) (Scoreca
 			return Scorecard{}, harnessError("prediction %d declares surface %q, want %q", i, p.Surface, grain)
 		}
 	}
+	preds = uniquePredictions(preds)
 	idx, err := indexLedger(l)
 	if err != nil {
 		return Scorecard{}, err
@@ -220,6 +221,22 @@ func score(l Ledger, preds []Prediction, surface string, only sliceAny) (Scoreca
 		return scoreDaily(l, idx, gold, preds), nil
 	}
 	return scoreMeeting(l, idx, gold, preds), nil
+}
+
+// uniquePredictions makes the prediction list set-like before any metric consumes
+// it. Repeating an identical claim cannot create more truth, improve a ratio, or
+// multiply an absolute leak/health counter.
+func uniquePredictions(preds []Prediction) []Prediction {
+	seen := make(map[Prediction]struct{}, len(preds))
+	out := make([]Prediction, 0, len(preds))
+	for _, p := range preds {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
 
 func grainOf(surface string) (string, error) {

@@ -132,7 +132,7 @@ var RequiredMetrics = []MetricSpec{
 		Description: "the same meeting run at a raised per-attendee cap — makes the ranker cap a number, not a hidden confound",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
-		SabotageCases: []string{RowEmptyBrief, RowAuthoredToQuoted},
+		SabotageCases: []string{RowEmptyBrief},
 	},
 	{
 		ID: MetricCitationCoverage, Field: "CitationCoverage", Version: 1,
@@ -209,7 +209,7 @@ var RequiredMetrics = []MetricSpec{
 		Description: "false while every prediction is \"unknown\" — blocks a vacuous zero from reading as a measurement",
 		Direction:   DirectionHigherBetter, Unit: UnitFlag, Aggregation: AggregationAbsolute,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
-		SabotageCases: []string{RowOracle, RowConstantClassifier},
+		SabotageCases: []string{RowOracle},
 	},
 	{
 		ID: MetricDirection, Field: "Direction", Version: 1,

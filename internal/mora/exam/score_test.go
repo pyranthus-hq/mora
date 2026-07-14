@@ -87,7 +87,7 @@ func TestScorerRedTeam(t *testing.T) {
 
 func assertRedTeamCase(t *testing.T, id RedTeamRowID, c RedTeamCase) {
 	t.Helper()
-	got, err := Score(c.Ledger, c.Predictions, id.Surface)
+	got, err := scoreRedTeamCase(c, id.Surface)
 	if c.Expect.HarnessError {
 		if err == nil || !errors.Is(err, ErrInvalidHarness) {
 			t.Fatalf("EVAL_BROKEN: row %s must fail closed with INVALID_HARNESS, got err=%v", id.Name, err)
@@ -126,6 +126,14 @@ func assertRedTeamCase(t *testing.T, id RedTeamRowID, c RedTeamCase) {
 	}
 }
 
+func scoreRedTeamCase(c RedTeamCase, surface string) (Scorecard, error) {
+	sc, err := Score(c.Ledger, c.Predictions, surface)
+	if err != nil || c.UncappedPredictions == nil {
+		return sc, err
+	}
+	return WithRecallUncapped(sc, c.Ledger, *c.UncappedPredictions, surface)
+}
+
 // TestEveryMetricHasASabotageCase is the sensitivity contract: a metric with no
 // declared, registered sabotage case is not a metric, it is decoration.
 func TestEveryMetricHasASabotageCase(t *testing.T) {
@@ -153,6 +161,116 @@ func TestEveryMetricHasASabotageCase(t *testing.T) {
 			t.Errorf("metric %q declares no required slices; a global average must never hide a collapsed slice", spec.ID)
 		}
 	}
+}
+
+// TestEveryRegisteredSabotageMovesItsMetric executes the sensitivity contract.
+// A row name in the registry is not evidence: the row must move the exact
+// Scorecard field it claims to sabotage relative to a typed positive control.
+func TestEveryRegisteredSabotageMovesItsMetric(t *testing.T) {
+	in := redTeamInput(t)
+	rows := RedTeamRows()
+	for _, spec := range RequiredMetrics {
+		for _, rowName := range spec.SabotageCases {
+			t.Run(spec.ID+"/"+rowName, func(t *testing.T) {
+				moved := false
+				for _, id := range RequiredRedTeamRows {
+					if id.Name != rowName {
+						continue
+					}
+					build, ok := rows[id]
+					if !ok {
+						continue
+					}
+					for _, c := range build(in) {
+						if c.Expect.HarnessError || c.Expect.Identical != nil {
+							continue
+						}
+						if spec.ID == MetricRecallUncapped && c.UncappedPredictions == nil {
+							// A zero-valued RecallUncapped field is not movement. The row
+							// must provide and score a typed uncapped prediction run.
+							continue
+						}
+						got, err := scoreRedTeamCase(c, id.Surface)
+						if err != nil {
+							t.Fatalf("EVAL_BROKEN: sabotage row %s failed to score: %v", rowName, err)
+						}
+						baseLedger, basePredictions := sensitivityBaseline(in, id, c)
+						base, err := Score(baseLedger, basePredictions, id.Surface)
+						if err != nil {
+							t.Fatalf("EVAL_BROKEN: sensitivity baseline for %s failed to score: %v", rowName, err)
+						}
+						if spec.ID == MetricRecallUncapped {
+							base, err = WithRecallUncapped(base, baseLedger, basePredictions, id.Surface)
+							if err != nil {
+								t.Fatalf("EVAL_BROKEN: uncapped sensitivity baseline for %s failed to score: %v", rowName, err)
+							}
+						}
+						baseValue := reflect.ValueOf(base).FieldByName(spec.Field).Interface()
+						gotValue := reflect.ValueOf(got).FieldByName(spec.Field).Interface()
+						moved = moved || !reflect.DeepEqual(baseValue, gotValue)
+					}
+				}
+				if !moved {
+					t.Fatalf("EVAL_BROKEN: metric %q names sabotage row %q, but that row leaves Scorecard.%s unchanged", spec.ID, rowName, spec.Field)
+				}
+			})
+		}
+	}
+}
+
+func sensitivityBaseline(in RedTeamInput, id RedTeamRowID, c RedTeamCase) (Ledger, []Prediction) {
+	switch id.Name {
+	case RowOracle:
+		return c.Ledger, in.real(id.Surface)
+	case RowGateDisableSweep:
+		return in.Sabotage, Oracle(in.Sabotage, id.Surface)
+	case RowGoldOwnerFlip, RowCitationSpanMove, RowAuthoredToQuoted:
+		return in.Ledger, Oracle(in.Ledger, id.Surface)
+	default:
+		return c.Ledger, Oracle(c.Ledger, id.Surface)
+	}
+}
+
+func TestDuplicatePredictionsCannotInflateAnyCountedMetric(t *testing.T) {
+	l := loadLedger(t, examLedgerPath)
+	tests := []struct {
+		name    string
+		surface string
+		preds   []Prediction
+		attack  func([]Prediction) []Prediction
+	}{
+		{name: "meeting true positives", surface: SurfaceMeeting, preds: append(Oracle(l, SurfaceMeeting), Prediction{Surface: SurfaceMeeting, Text: "not in the ledger", MemoryID: Oracle(l, SurfaceMeeting)[0].MemoryID, Direction: Unknown, Lifecycle: Unknown}), attack: duplicateFirstPrediction},
+		{name: "meeting loose matches and leaks", surface: SurfaceMeeting, preds: CopyTheInputPredictions(l, SurfaceMeeting), attack: duplicateAllPredictions},
+		{name: "daily true positives", surface: SurfaceDaily, preds: append(Oracle(l, SurfaceDaily), Prediction{Surface: SurfaceDaily, Text: "not in the ledger", MemoryID: "missing", Direction: Unknown, Lifecycle: Unknown}), attack: duplicateFirstPrediction},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base, err := Score(l, tt.preds, tt.surface)
+			if err != nil {
+				t.Fatal(err)
+			}
+			duplicated := tt.attack(tt.preds)
+			got, err := Score(l, duplicated, tt.surface)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, base) {
+				t.Fatalf("duplicating predictions moved the scorecard:\nbase=%+v\n got=%+v", base, got)
+			}
+		})
+	}
+}
+
+func duplicateFirstPrediction(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for range 100 {
+		out = append(out, preds[0])
+	}
+	return out
+}
+
+func duplicateAllPredictions(preds []Prediction) []Prediction {
+	return append(clonePredictions(preds), clonePredictions(preds)...)
 }
 
 // TestMetricRegistryCoversEveryScorecardField is the other half of the contract:
