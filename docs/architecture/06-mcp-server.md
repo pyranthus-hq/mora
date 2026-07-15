@@ -6,9 +6,12 @@ The stdio JSON-RPC 2.0 server that exposes Mora's memory, retrieval, entity-grap
 
 | File | Lines (approx) | Responsibility |
 |---|---|---|
-| `internal/mora/mcp.go` | `serveMCP`, `handleMCP`, `toCallToolResult`, `callMCPTool`, `mcpTool`/`mcpParam`, `cmdMCP`; `snippetMemories` (in `search.go`), `usageEvent` (in `mora.go`; usage logging `usageEnabled`/`logUsage` in `usage.go`) | The whole MCP surface: stdio dispatch loop, JSON-RPC method routing, the CallToolResult envelope, every tool case, the tools/list schema builders, and local usage logging |
+| `internal/mora/mcp.go` | `serveMCP`, `handleMCP`, `toCallToolResult`, `callMCPTool`, `mcpToolDef`/`mcpToolRegistry`/`mcpToolIndex`, `mcpTool`/`mcpParam`, `cmdMCP`; `snippetMemories` (in `search.go`), `usageEvent` (in `mora.go`; usage logging `usageEnabled`/`logUsage` in `usage.go`) | The whole MCP surface: stdio dispatch loop, JSON-RPC method routing, the CallToolResult envelope, the derived tool registry each handler hangs off, the tools/list schema builders, and local usage logging |
+| `internal/mora/health_envelope.go` | `compactHealth`, `compactHealthFrom`, `compactHealthOf`, `healthFromParts`, `printHealthBannerLine` | The bounded typed health object every MCP tool/HTTP route carries (vs. doctor/digest/meetingbrief's richer arrays), plus the CLI banner-print helper |
+| `internal/mora/health_registry.go` | `mcpHealthExemptTools`, `httpHealthExemptRoutes`, `cliHealthSurfaces` | The completeness allowlists `TestEverySurfaceCarriesHealth` walks — every MCP tool, HTTP route, and required CLI verb that must carry typed health / render the banner |
 | `internal/mora/mora_mcp_result_test.go` | full file | Contract guard: every `tools/call` must return a CallToolResult, not a bare value (the Codex-rejection regression) |
-| `internal/mora/mora_mcp_budget_test.go` | full file | The "T0" output-size regression gate: pins each tool's serialized envelope under a fixed token ceiling; quarantines the still-RED tools |
+| `internal/mora/mora_mcp_budget_test.go` | full file | The "T0" output-size regression gate: pins each tool's serialized envelope under a fixed token ceiling; quarantines the still-RED tools; also proves the tightest ceilings (`write_memory`, `delete_memory`) hold under a MAX-length unhealthy banner (C1) |
+| `internal/mora/health_registry_test.go` | full file | `TestEverySurfaceCarriesHealth` (every surface carries health) and `TestSixDayFreezeSurfacesOnEverySurface` (HEALTH-05 replayed across every surface, not just Gate 1's subset) |
 
 The server is the *boundary*; nearly all the work it dispatches lives in sibling subsystems — retrieval (`hybrid.go`, `defaultSearch`), the entity graph (`graph_read.go` via `entities.go`), synthesis (`think.go`, `digest.go`). This doc owns the protocol plumbing and the envelope; follow the links for the engines.
 
@@ -48,7 +51,7 @@ flowchart LR
 
 ### Loopback HTTP transport (`mora serve http`)
 
-`mora mcp serve` (stdio) covers agents that can spawn the process and pipe stdin/stdout. A **sandboxed AI browser** (e.g. Aside) can do neither — its only channel into the machine is a Chrome tab that can fetch `127.0.0.1`. `mora serve http` (`serve_http.go`) bridges that gap: a tiny **loopback-only** HTTP server whose data routes are transports over `callMCPTool`, so tool names, argument shapes, and payloads match the stdio path rather than implementing parallel engines. It binds `127.0.0.1` only (never `0.0.0.0`), mints a bearer token persisted at `<ConfigDir>/http.json` (`0600`, stable across restarts), and layers four defenses: a **Host-header allowlist** (`127.0.0.1`/`localhost`/`[::1]` on the bound port) against DNS rebinding; a **constant-time bearer check** on every data endpoint; **no CORS** allow-origin header (so a cross-origin page can't read a response body even if it guessed the token); and a **`/call` allowlist** (`httpCallAllowed`) that excludes `delete_memory` — the token holder reads untrusted web pages, so a prompt-injected page must not drive an irreversible delete through the authorized agent. Convenience routes (`GET /brief`, `POST /think`, `POST /search`, `POST /write`, `POST /meeting-prep`, `GET /entity/{name}`) map to the same tools; `GET /healthz` (liveness) and the token-bearing landing page `GET /` are the only unauthenticated routes. Requests are serialized behind one mutex to mirror the stdio server's single-flight semantics. Guarded by `serve_http_test.go`.
+`mora mcp serve` (stdio) covers agents that can spawn the process and pipe stdin/stdout. A **sandboxed AI browser** (e.g. Aside) can do neither — its only channel into the machine is a Chrome tab that can fetch `127.0.0.1`. `mora serve http` (`serve_http.go`) bridges that gap: a tiny **loopback-only** HTTP server whose data routes are transports over `callMCPTool`, so tool names, argument shapes, and payloads match the stdio path rather than implementing parallel engines. Routes are a derived registry too (C3 ▸R2): `(s *httpServer) httpRoutes() []httpRoute` is the single `{Method, Pattern, Handler}` list `routes()` builds the `ServeMux` from, so a route can't ship registered-but-unwired or vice versa — the same problem `mcpToolRegistry` solves for MCP. It binds `127.0.0.1` only (never `0.0.0.0`), mints a bearer token persisted at `<ConfigDir>/http.json` (`0600`, stable across restarts), and layers four defenses: a **Host-header allowlist** (`127.0.0.1`/`localhost`/`[::1]` on the bound port) against DNS rebinding; a **constant-time bearer check** on every data endpoint; **no CORS** allow-origin header (so a cross-origin page can't read a response body even if it guessed the token); and a **`/call` allowlist** (`httpCallAllowed`) that excludes `delete_memory` — the token holder reads untrusted web pages, so a prompt-injected page must not drive an irreversible delete through the authorized agent. Convenience routes (`GET /brief`, `POST /think`, `POST /search`, `POST /write`, `POST /meeting-prep`, `GET /entity/{name}`) map to the same tools; `GET /healthz` (liveness) and the token-bearing landing page `GET /` are the only unauthenticated routes. Requests are serialized behind one mutex to mirror the stdio server's single-flight semantics. Guarded by `serve_http_test.go`.
 
 To keep it always reachable, `mora serve http install|uninstall|status` (`serve_http_install.go`) registers it as an auto-restarting per-user service — a launchd agent (`com.mora.serve-http`, `KeepAlive={SuccessfulExit:false}` + `ThrottleInterval` so a crash relaunches but a deliberate `bootout` stays down) on macOS, a systemd `--user` unit (`Restart=on-failure`) on Linux, or a logon task on Windows. `install` preflights the port (after booting out any prior instance) and refuses rather than register a crash-looping daemon; the plist/unit **snapshots `MORA_CONFIG_DIR`/`MORA_PORT`** because the service runs with a bare environment (same reasoning as `schedule.go`). `status` probes `/healthz` so an installed-but-dead daemon reads as not-listening. Guarded by `serve_http_install_test.go`.
 
@@ -57,8 +60,12 @@ To keep it always reachable, `mora serve http install|uninstall|status` (`serve_
 `handleMCP` (`mcp.go`) is the method switch. Three methods are real; everything else is `-32601`:
 
 - **`initialize`** (`mcp.go`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. The instructions (`mcpInstructions`, `mora.go:2839`) are load-bearing product surface, not boilerplate: clients inject them into the model's context, so this is how a cold agent learns Mora exists and that "I don't have that context" is usually a bug — it should `search_memory` first. Treat edits to that string as a behavior change.
-- **`tools/list`** (`mcp.go`) returns the twelve-tool catalog built by `mcpTool`.
-- **`tools/call`** (`mcp.go`) decodes `{name, arguments}` and returns `toCallToolResult(callMCPTool(...))`.
+- **`tools/list`** (`mcp.go`) ranges `mcpToolRegistry` and returns the twelve-tool catalog built by `mcpTool`.
+- **`tools/call`** (`mcp.go`) decodes `{name, arguments}`, looks the name up in `mcpToolIndex`, and returns `toCallToolResult(callMCPTool(...))`.
+
+### The derived tool registry (`mcpToolRegistry`)
+
+Before Gate 2 PR 2, MCP had **three** independent hand-maintained lists that could silently drift apart: the `tools/list` literal, a `callMCPTool` switch, and `httpCallAllowed`'s allowlist. `mcpToolRegistry` (`mcp.go`) is now the single `[]mcpToolDef{Name, Description, Params, Handler}` source of truth: `tools/list` ranges it to build schemas, and `callMCPTool` looks the name up in `mcpToolIndex` (built once via `buildMCPToolIndex`) and calls `def.Handler(ctx, cfg, args)` — a tool added to the registry needs no second edit to be dispatchable. `mcpToolNames()` returns the sorted name list that `TestEverySurfaceCarriesHealth` (`health_registry_test.go`) walks to prove every registered tool carries the health envelope.
 
 ## The tool catalog
 
@@ -66,20 +73,28 @@ To keep it always reachable, `mora serve http install|uninstall|status` (`serve_
 
 | Tool | Purpose | Key args | Default limit / budget |
 |---|---|---|---|
-| `write_memory` | Persist a durable memory; incremental index upsert | `title`*, `text`*, `scope`, `type`, `source` | scope `global`, type `insight`, source `mcp` |
-| `read_memory` | Fetch one memory by id (full body) | `id`* | — |
-| `search_memory` | Most-relevant memories; hybrid only when a semantic embedder is active, else FTS-only | `query`*, `scope`, `limit` | `limit` = `mcpSearchDefaultLimit` = **8**; bodies snippeted to 240 runes; payload is `{results, freshness}` (per-source `last_synced`) |
-| `list_memory` | Recent memories, newest first | `scope`, `limit` | `limit` = **10** |
-| `delete_memory` | Remove a memory by id; reindexes | `id`* | — |
-| `context_memory` | One dense, budget-bounded context block (or session-start briefing when no query) | `query`, `scope`, `max_tokens` | `max_tokens` ≈ **6000** default, **20000** max; returns `{context, freshness, budget_unit, budget, used}` |
-| `think` | Synthesis envelope: cited evidence + deterministic gap analysis + a compose-prompt | `query`*, `scope`, `limit` | `limit` evidence = **8** |
-| `list_entities` | Graph entities with counts, salience-ranked | `kind`, `limit` | `limit` = **200**; `memory_ids` dropped (compact) |
-| `get_entity` | Budget-bounded, fully-cited entity dossier (merged identities, typed neighbors, evidence) | `name`*, `max_tokens` | `max_tokens` ≈ **6000** default, **20000** max; cited `evidence[]` (no raw bodies); neighbors typed (stub until #70) |
-| `digest` | Daily cross-source digest, grouped + cited + budget-bounded | `since_hours`, `source`, `max_tokens` | `since_hours` = **24**, `max_tokens` ≈ 6000/20000; `source` filters to one connector/family (preview-only — see [sync & freshness](./11-sync-and-freshness.md)) |
-| `brief` | Session-start what-changed/what-matters briefing — same budgeted, cited, source-grouped engine as `digest`, resolved to the freshest available; opt into `envelope` for a synthesis_prompt | `max_tokens`, `envelope` | call FIRST at session start; local-only |
-| `meeting_prep` | Fully-cited unfinished-business brief for one calendar event; exact-attendee evidence is forgettability-ranked globally | `event_id`, `at`, `name`, `limit`, `max_tokens` | Same `MeetingBrief` shape as `mora brief --event-id`; every line is dated historical evidence with memory/channel/source/date provenance; global cap **24** |
+| `write_memory` | Persist a durable memory; incremental index upsert | `title`*, `text`*, `scope`, `type`, `source` | scope `global`, type `insight`, source `mcp`; payload is `{memory, health}` |
+| `read_memory` | Fetch one memory by id (full body) | `id`* | payload is `{memory, health}` |
+| `search_memory` | Most-relevant memories; hybrid only when a semantic embedder is active, else FTS-only | `query`*, `scope`, `limit` | `limit` = `mcpSearchDefaultLimit` = **8**; bodies snippeted to 240 runes; payload is `{results, freshness, health}` |
+| `list_memory` | Recent memories, newest first | `scope`, `limit` | `limit` = **10**; payload is `{memories, health}` |
+| `delete_memory` | Remove a memory by id; reindexes | `id`* | payload is `{deleted, health}` |
+| `context_memory` | One dense, budget-bounded context block (or session-start briefing when no query) | `query`, `scope`, `max_tokens` | `max_tokens` ≈ **6000** default, **20000** max; returns `{context, freshness, budget_unit, budget, used, health}` |
+| `think` | Synthesis envelope: cited evidence + deterministic gap analysis + a compose-prompt | `query`*, `scope`, `limit` | `limit` evidence = **8**; payload is `{think, health}` |
+| `list_entities` | Graph entities with counts, salience-ranked | `kind`, `limit` | `limit` = **150**; `memory_ids` dropped (compact); payload is `{entities, health}` |
+| `get_entity` | Budget-bounded, fully-cited entity dossier (merged identities, typed neighbors, evidence) | `name`*, `max_tokens` | `max_tokens` ≈ **6000** default, **20000** max; cited `evidence[]` (no raw bodies); neighbors typed (stub until #70); payload is `{entity, health}` |
+| `digest` | Daily cross-source digest, grouped + cited + budget-bounded | `since_hours`, `source`, `max_tokens` | `since_hours` = **24**, `max_tokens` ≈ 6000/20000; `source` filters to one connector/family (preview-only — see [sync & freshness](./11-sync-and-freshness.md)); base payload carries `health` |
+| `brief` | Session-start what-changed/what-matters briefing — same budgeted, cited, source-grouped engine as `digest`, resolved to the freshest available; opt into `envelope` for a synthesis_prompt | `max_tokens`, `envelope` | call FIRST at session start; local-only; base payload carries `health` |
+| `meeting_prep` | Fully-cited unfinished-business brief for one calendar event; exact-attendee evidence is forgettability-ranked globally | `event_id`, `at`, `name`, `limit`, `max_tokens` | Same `MeetingBrief` shape as `mora brief --event-id`; every line is dated historical evidence with memory/channel/source/date provenance; global cap **24**; `MeetingBrief.Health` carries the envelope |
 
-(`*` = required.) The catalog is defined inline in `handleMCP` (`mcp.go`); the dispatch handlers are the `switch` cases in `callMCPTool` (`mcp.go`).
+(`*` = required.) The catalog is defined inline in `handleMCP` (`mcp.go`); the dispatch handlers are the `Handler` funcs registered on each `mcpToolDef` in `mcpToolRegistry` (`mcp.go`).
+
+### The health envelope on every tool (Gate 2 PR 2)
+
+Every registered tool now carries a **compact health envelope** — `compactHealth{State, Sources, Index, Banner}` (`health_envelope.go`), the same bounded typed object `doctor`/`digest`/`meetingbrief` already had reason to keep richer arrays for (Gate 2 Finding 8's budget constraint), scaled down for the tools that had nothing before. `list_entities`'s default `limit` dropped **200 → 150** (`mcpListEntitiesDefaultLimit`, `mora.go`) specifically because wrapping its previously-bare array in an object triggers `toCallToolResult`'s `structuredContent` mirror (see below) — a direct, documented consequence of the envelope break, not an unrelated behavior change; ceilings are not raised elsewhere.
+
+**The envelope break (bare-result tools):** `read_memory`, `list_memory`, `think`, `list_entities`, and `get_entity` used to return their native value directly (a bare `Memory`, `[]Memory`, `ThinkResult`, `[]Entity`, or dossier map). They now return `{"<payload-key>": <native value>, "health": <compactHealth>}` — e.g. `read_memory` → `{"memory": ..., "health": ...}`. `search_memory` and `context_memory` were already object-shaped (`{results, freshness}` / `{context, freshness, ...}`) and simply gained a `health` key alongside the existing `freshness`, which stays as a **documented deprecated alias** for one release; `health.index` is the piece `freshness` never had — a dirty/failed *index* state distinct from a stale *source*. `digest`/`brief`'s base payload map and `MeetingBrief` gained a `health`/`Health` field the same way (`digest.go`, `digest_envelope.go`, `meetingbrief.go`) — `DigestEnvelope`'s `Health` field must stay in sync across `digest.go`, `digest_envelope.go`, and `digest_envelope_wiring_test.go`'s base-field parity check.
+
+**Ownership note:** Gate 2 PR 2 owns this envelope shape. PR 5 (producer health) is expected to add `shares_unhealthy` as an **additional key on the same envelope** — it must not introduce a second, competing health shape.
 
 ### What each handler actually does (and where the work lives)
 
@@ -168,6 +183,8 @@ Every `callMCPTool` case calls `logUsage` (`usage.go`) with a `usageEvent` (`mor
 - **The `mcpInstructions` string is product, not prose.** It is injected into the model's context on `initialize` and is the only reason a cold agent reaches for Mora. Edits change behavior. WHY: without it the tools sit unused.
 - **Notifications get no response; malformed inbound lines are still silently dropped.** The notification half of this was a real bug: Mora used to reply to `notifications/initialized` with an id-less `-32601`, and Antigravity's strict `go-sdk` client choked on it and dropped every tool. Fixed (`if req.ID == nil { continue }`, guarded by `TestMCPNotificationsGetNoResponse`). The malformed-line drop (no `-32700` reply) remains a deliberate, spec-loose simplification. WHY: never answer a notification — strict clients treat a reply to a no-ID message as a protocol violation and abort the session.
 - **A single tool result must not dominate the 20k-token window.** This is the governing design constraint behind every ceiling and clamp. WHY: it is Neil's explicit pilot requirement and the reason the budget unit exists at all.
+- **Every registered tool carries a `health` key; `freshness`/`source_states` are deprecated aliases, not replacements.** `search_memory`/`context_memory` keep `freshness` for one release alongside the new `health`; do not remove `freshness` without a separate deprecation pass. WHY: existing callers read `freshness` today — the break is additive, not a rename.
+- **`mcpToolRegistry`/`mcpToolIndex` are the only place a tool's dispatch lives.** Do not add a second switch or hand-list for a new tool — register it in `mcpToolRegistry` and both `tools/list` and `callMCPTool` pick it up. WHY: three independent hand-lists (`tools/list`, the old `callMCPTool` switch, `httpCallAllowed`) used to drift silently; `TestEverySurfaceCarriesHealth` (`health_registry_test.go`) now walks the derived registry, not a parallel list, so a tool that's registered-but-unwired fails loudly instead of shipping quietly broken.
 
 ## Related
 
@@ -179,6 +196,7 @@ Every `callMCPTool` case calls `logUsage` (`usage.go`) with a `usageEvent` (`mor
 - [eval & testing](./09-eval-and-testing.md) — the T0 budget gate and the CallToolResult contract test
 - [distribution & ops](./10-distribution-and-ops.md) — zero-egress posture, `DO_NOT_TRACK`, state dirs
 - [sync & freshness](./11-sync-and-freshness.md) — `sourceFreshness` surfaced by `context_memory`/`digest`
+- [index & health](./20-index-health.md) — the `Health`/`compactHealth` kernel every tool's `health` key is derived from
 
 ## Open questions / unverified
 
