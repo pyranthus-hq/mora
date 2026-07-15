@@ -214,6 +214,41 @@ func TestOutOfBandVaultEditIsDirty(t *testing.T) {
 			t.Fatalf("indexMatchesVault after equal-mtime edit = (%v,%v), want (false,true)", ok, crit)
 		}
 	})
+
+	t.Run("no_recompute", func(t *testing.T) {
+		// Drives the REAL cmdDoctor, so the recompute is exercised through the
+		// production call site (doctor.go's indexMatchesVault(cfg)), not the helper.
+		// MUTATION (row 26a): replace that call with (true,false) — skip the recompute.
+		// Then an out-of-band edit is never detected: index_matches_vault stays OK,
+		// doctor reports healthy, --strict exits 0 => RED.
+		if err := os.WriteFile(target, []byte("---\nid: mem_edit\n---\n\nout-of-band tampered body\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf)
+		if err == nil {
+			t.Fatal("doctor --strict exited 0 despite an out-of-band vault edit")
+		}
+		var rep doctorReport
+		if jerr := json.Unmarshal(buf.Bytes(), &rep); jerr != nil {
+			t.Fatal(jerr)
+		}
+		var present, ok, critical bool
+		for _, c := range rep.Checks {
+			if c.Name == "index_matches_vault" {
+				present, ok, critical = true, c.OK, c.Critical
+			}
+		}
+		if !present {
+			t.Fatal("no index_matches_vault check in the report")
+		}
+		if ok || !critical {
+			t.Fatalf("index_matches_vault = (OK=%v,Critical=%v) after an out-of-band edit, want (false,true)", ok, critical)
+		}
+		if rep.Healthy {
+			t.Fatal("doctor healthy=true despite an out-of-band vault edit")
+		}
+	})
 }
 
 // TestWikiIndexTimestampMatchesIndexMeta (matrix row 27) — vault/index.md's Updated:

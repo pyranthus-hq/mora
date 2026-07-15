@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // gate2_durable_test.go — the durable-marker call-trace gates (matrix rows 33/33b),
@@ -96,24 +98,42 @@ func TestMarkerSurvivesCrashBeforeVaultPublish(t *testing.T) {
 // every published path; the header's durability is the load-bearing barrier.
 func TestKilledIngestRecovers(t *testing.T) {
 	t.Run("journal_before_first_file", func(t *testing.T) {
-		// MUTATION: journaling the run AFTER the terminal rebuild (instead of the
-		// durable header before the first publish) => a SIGKILL after N publishes
-		// leaves no journal => the next rebuild is clean-and-missing.
+		// MUTATION (row 34a): remove the production ensureIngestJournalHeader call from
+		// writeMappedMemory (journal AFTER the terminal rebuild instead of BEFORE the
+		// first publish). Then a SIGKILL after a publish but before the rebuild leaves
+		// NO journal => the recovery rebuild is clean-and-missing => this test's "dirty
+		// after the killed publish" assertion goes RED. This drives the REAL
+		// writeMappedMemory (the mutated site), NOT a hand-built header, so the mutation
+		// is load-bearing.
 		cfg := gate2Vault(t)
-		sourceKey := ingestSourceKey("gmail", "")
-		// Simulate a killed ingest: header written, one file published, then killed
-		// (no terminal rebuild).
-		if err := ensureIngestJournalHeader(cfg, sourceKey); err != nil {
-			t.Fatal(err)
+		mm := memory.MappedMemory{
+			StableID: "gmail_thread_x", Scope: "global", Type: "email", Title: "Killed",
+			Body: "killedbody", Source: "gmail", Provider: "gmail",
+			CreatedAt: nowRFC3339(), ContentHash: "hash_killed",
 		}
-		published := filepath.Join(sourcesRoot(cfg), "gmail", "killed_thread.md")
-		if err := os.MkdirAll(filepath.Dir(published), 0o700); err != nil {
-			t.Fatal(err)
+		// Production publish path, SIGKILLed in the publish->journal-line window: the
+		// file lands, but the best-effort path line never appends. Only the durable
+		// header (written BEFORE the publish) keeps the index dirty — remove that
+		// production call and this crash is a clean-and-missing false-clean.
+		crashed := false
+		func() {
+			defer func() { _ = recover(); crashed = true }()
+			testHookPostConnectorPublish = func() { panic("SIGKILL after publish, before journal line") }
+			defer func() { testHookPostConnectorPublish = nil }()
+			_ = writeMappedMemory(cfg, mm)
+		}()
+		if !crashed {
+			t.Fatal("crash simulation did not fire")
 		}
-		if err := os.WriteFile(published, []byte("---\nid: gmail_thread_x\n---\n\nkilledbody\n"), 0o644); err != nil {
-			t.Fatal(err)
+		sourceKey := ingestSourceKey(mm.Provider, mm.Account)
+		published := filepath.Join(sourcesRoot(cfg), "gmail", "gmail_thread_x.md")
+		if _, err := os.Stat(published); err != nil {
+			t.Fatalf("connector memory did not land: %v", err)
 		}
-		journalPublishedPath(cfg, sourceKey, published)
+		// The ingesting process is now dead: a real kill leaves a lease naming a
+		// now-dead pid that the next rebuild reclaims. Model that by dropping this
+		// (still-live) test process's lease.
+		_ = os.Remove(ingestLeasePath(cfg, sourceKey))
 
 		// A killed ingest never truncated its journal => the index reads dirty.
 		if st := gate2IndexState(t, cfg); st != idxDirty {

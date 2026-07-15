@@ -1,12 +1,15 @@
 package mora
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // gate2_pending_test.go — Packet A (the index-state ledger) acceptance + mutation
@@ -45,80 +48,219 @@ func TestUpgradeFromV2IndexStillWrites(t *testing.T) {
 	}
 }
 
-// TestEveryVaultMutationMarksDirty (matrix row 1) — every registered mutation marks
-// a pending op BEFORE the file becomes visible. MUTATION: drop markIndexDirty from a
-// site => the hook never sees the op => RED.
+// govFingerprint captures a snapshot of the governance ledger — total entries and
+// how many are revoked — so a test can prove the ledger had NOT yet been mutated at a
+// given instant. An append changes the entry count; a revoke changes the revoked
+// count. Every A5-row-7/8 governance mutation is an index input via writeGraph.
+func govFingerprint(t *testing.T, cfg Config) (entries, revoked int) {
+	t.Helper()
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		t.Fatalf("loadGovernance: %v", err)
+	}
+	for _, e := range g.Entries {
+		entries++
+		if e.revoked() {
+			revoked++
+		}
+	}
+	return entries, revoked
+}
+
+// TestEveryVaultMutationMarksDirty (matrix row 1 + the A5 registry completeness
+// meta-test) — every registered mutation marks the index dirty BEFORE its mutation
+// becomes visible, driven through the REAL dispatcher (not a hand-run helper). Each
+// subtest reddens when markIndexDirty is dropped from that site: the mark-before-
+// visible observation is captured at the FIRST durable-marker write, so removing a
+// site's own mark leaves only the rebuild's A4 self-mark, which fires AFTER the
+// vault/ledger byte already changed.
 func TestEveryVaultMutationMarksDirty(t *testing.T) {
-	cfg := gate2Vault(t)
-	ctx := context.Background()
+	// captureFirstMark installs a testHookPostMarkerWrite that runs `record` exactly
+	// once, at the first markIndexDirty of the dispatch. Returns a restore func.
+	captureFirstMark := func(record func()) func() {
+		fired := false
+		testHookPostMarkerWrite = func() {
+			if fired {
+				return
+			}
+			fired = true
+			record()
+		}
+		return func() { testHookPostMarkerWrite = nil }
+	}
 
 	t.Run("write_marks_before_file_exists", func(t *testing.T) {
+		cfg := gate2Vault(t)
+		ctx := context.Background()
 		var sawOpBeforeFile bool
-		var pendingAtMark int
-		testHookPostMarkerWrite = func() {
+		restore := captureFirstMark(func() {
 			ops, _ := listPendingOps(cfg)
-			pendingAtMark = len(ops)
-			sawOpBeforeFile = pendingAtMark > 0
-		}
-		defer func() { testHookPostMarkerWrite = nil }()
-		got, op, err := createMemory(ctx, cfg, coreBIdxmem("", "global", "insight", "Marked", "markbody"))
+			sawOpBeforeFile = len(ops) > 0
+		})
+		defer restore()
+		_, op, err := createMemory(ctx, cfg, coreBIdxmem("", "global", "insight", "Marked", "markbody"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !sawOpBeforeFile {
-			t.Fatal("createMemory did not mark a pending op before the vault write")
+			t.Fatal("createMemory did not mark a pending op before the vault write (row 1 / A5 row 1)")
 		}
 		_ = unmarkIndexDirty(cfg, op.OpID)
-		_ = got
 	})
 
 	t.Run("delete_marks_before_removal", func(t *testing.T) {
-		m := gate2Write(t, cfg, coreBIdxmem("", "global", "insight", "Doomed", "deleteme body"))
-		var fileStillPresentAtMark bool
-		testHookPostMarkerWrite = func() {
-			_, err := os.Stat(m.Path)
-			fileStillPresentAtMark = err == nil
-			ops, _ := listPendingOps(cfg)
-			if len(ops) == 0 {
-				t.Error("no delete op present at mark time")
+		// Drives the REAL cmdDelete. MUTATION: drop cmdDelete's markIndexDirty => the
+		// first mark is then the rebuild's A4 self-mark, which fires AFTER os.Remove =>
+		// the file is already gone at capture => RED. (A5 row 4.)
+		cfg := gate2Vault(t, coreBIdxmem("mem_del", "global", "insight", "Doomed", "deletemebody"))
+		target := filepath.Join(memoriesRoot(cfg), "global", "mem_del.md")
+		var fileStillPresentAtMark, sawDeleteOp bool
+		restore := captureFirstMark(func() {
+			_, statErr := os.Stat(target)
+			fileStillPresentAtMark = statErr == nil
+			for _, o := range mustListOps(t, cfg) {
+				if o.Kind == opKindDelete && o.MemoryID == "mem_del" {
+					sawDeleteOp = true
+				}
 			}
+		})
+		defer restore()
+		var buf bytes.Buffer
+		if err := cmdDelete(context.Background(), []string{"--yes", "mem_del"}, &buf); err != nil {
+			t.Fatal(err)
 		}
-		defer func() { testHookPostMarkerWrite = nil }()
-		op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+		if !fileStillPresentAtMark || !sawDeleteOp {
+			t.Fatalf("cmdDelete did not mark a delete op before the file removal (filePresent=%v, deleteOp=%v)", fileStillPresentAtMark, sawDeleteOp)
+		}
+	})
+
+	t.Run("unforget_marks_before_ledger_change", func(t *testing.T) {
+		// Drives the REAL cmdUnforget. It revokes a governance entry (an index input),
+		// so it must mark BEFORE the revoke. MUTATION: drop cmdUnforget's markIndexDirty
+		// => the first mark is the rebuild's A4 self-mark AFTER the revoke => the ledger
+		// fingerprint already changed at capture => RED. (A5 row 7.)
+		cfg := gate2Vault(t)
+		seed, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindForget, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: "gmail_thread_z"}, Reason: "seed"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !fileStillPresentAtMark {
-			t.Fatal("delete op was not marked before the file removal")
+		baseE, baseR := govFingerprint(t, cfg)
+		var ledgerUnchangedAtMark bool
+		restore := captureFirstMark(func() {
+			e, r := govFingerprint(t, cfg)
+			ledgerUnchangedAtMark = e == baseE && r == baseR
+		})
+		defer restore()
+		var buf bytes.Buffer
+		if err := cmdUnforget(context.Background(), []string{"--yes", seed.ID}, &buf); err != nil {
+			t.Fatal(err)
 		}
-		_ = os.Remove(m.Path)
-		_ = unmarkIndexDirty(cfg, op.OpID)
+		if !ledgerUnchangedAtMark {
+			t.Fatal("cmdUnforget mutated the governance ledger before marking the index dirty (A5 row 7)")
+		}
+	})
+
+	t.Run("brief_correct_marks_before_ledger_change", func(t *testing.T) {
+		// Drives the REAL cmdBriefCorrect (A5 row 7). MUTATION: drop its markIndexDirty
+		// => the append lands before the first (A4) mark => RED.
+		cfg := gate2Vault(t, coreBIdxmem("mem_cite", "global", "insight", "Cited", "citebody"))
+		baseE, baseR := govFingerprint(t, cfg)
+		var ledgerUnchangedAtMark bool
+		restore := captureFirstMark(func() {
+			e, r := govFingerprint(t, cfg)
+			ledgerUnchangedAtMark = e == baseE && r == baseR
+		})
+		defer restore()
+		var buf bytes.Buffer
+		if err := cmdBriefCorrect(context.Background(), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf); err != nil {
+			t.Fatal(err)
+		}
+		if !ledgerUnchangedAtMark {
+			t.Fatal("cmdBriefCorrect appended to the governance ledger before marking the index dirty (A5 row 7)")
+		}
+	})
+
+	t.Run("merge_marks_before_ledger_change", func(t *testing.T) {
+		// Drives the REAL mergeDecide (A5 row 8). MUTATION: drop its markIndexDirty =>
+		// the append lands before the first (A4) mark => RED.
+		cfg := gate2Vault(t)
+		baseE, baseR := govFingerprint(t, cfg)
+		var ledgerUnchangedAtMark bool
+		restore := captureFirstMark(func() {
+			e, r := govFingerprint(t, cfg)
+			ledgerUnchangedAtMark = e == baseE && r == baseR
+		})
+		defer restore()
+		var buf bytes.Buffer
+		if err := mergeDecide(context.Background(), []string{"--handle", "+14155550123", "--email", "person@example.com"}, &buf, mergeDecisionConfirm); err != nil {
+			t.Fatal(err)
+		}
+		if !ledgerUnchangedAtMark {
+			t.Fatal("mergeDecide appended to the governance ledger before marking the index dirty (A5 row 8)")
+		}
+	})
+
+	t.Run("connector_ingest_journals_before_publish", func(t *testing.T) {
+		// Drives the REAL writeMappedMemory (A5 row 2). The durable journal header is
+		// the mark-before-visible for a connector publish; it must exist BEFORE the file
+		// is published. MUTATION: drop ensureIngestJournalHeader from writeMappedMemory
+		// => at publish time no journal exists => RED.
+		cfg := gate2Vault(t)
+		var journalPresentAtPublish bool
+		testHookPostConnectorPublish = func() {
+			dirty, _, _, _ := ingestJournalStatus(cfg)
+			journalPresentAtPublish = dirty
+		}
+		defer func() { testHookPostConnectorPublish = nil }()
+		mm := memory.MappedMemory{
+			StableID: "gmail_thread_mark", Scope: "global", Type: "email", Title: "M",
+			Body: "markbody", Source: "gmail", Provider: "gmail",
+			CreatedAt: nowRFC3339(), ContentHash: "hash_mark",
+		}
+		if err := writeMappedMemory(cfg, mm); err != nil {
+			t.Fatal(err)
+		}
+		if !journalPresentAtPublish {
+			t.Fatal("writeMappedMemory published a connector memory before writing the durable journal header (A5 row 2)")
+		}
 	})
 }
 
+// mustListOps is a fatal-on-error listPendingOps for tests.
+func mustListOps(t *testing.T, cfg Config) []pendingOp {
+	t.Helper()
+	ops, err := listPendingOps(cfg)
+	if err != nil {
+		t.Fatalf("listPendingOps: %v", err)
+	}
+	return ops
+}
+
 // TestFailedUpsertLeavesIndexDirty (matrix row 2) — an upsert that fails leaves the
-// op in place, so the index is not fresh. MUTATION: retire the op before the upsert
-// commits (clear-then-commit) => op gone => RED.
+// op in place, so the index is not fresh. This drives the REAL cmdWrite dispatcher
+// (not a hand-run createMemory+indexUpsert), so MUTATION: moving cmdWrite's
+// unmarkIndexDirty BEFORE indexUpsert (clear-then-commit) retires the op before the
+// blocked upsert => 0 surviving ops => index reads fresh => RED.
 func TestFailedUpsertLeavesIndexDirty(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
-	// Force the identity guard to block the upsert (index bound to a different id).
+	// Force the identity guard to block the upsert: bind the index to a DIFFERENT id
+	// than the marker/config, so cmdWrite's indexUpsert returns errRebuildBlocked and
+	// takes its degraded-success path (warn, exit 0, op REMAINS).
 	idxUpsertStampVaultID(t, cfg, "v_someone_else")
 
-	got, op, err := createMemory(ctx, cfg, coreBIdxmem("", "global", "insight", "Blocked", "blockedbody"))
-	if err != nil {
-		t.Fatal(err)
+	var buf bytes.Buffer
+	if err := cmdWrite(context.Background(), []string{"--title", "Blocked", "--text", "blockedbody"}, &buf); err != nil {
+		t.Fatalf("cmdWrite should degrade-succeed on a blocked upsert, got %v", err)
 	}
-	uerr := indexUpsert(ctx, cfg, got)
-	if !errors.Is(uerr, errRebuildBlocked) {
-		t.Fatalf("indexUpsert error = %v, want errRebuildBlocked", uerr)
-	}
-	// cmdWrite does NOT retire on failure; assert the op survives and the index is
-	// not fresh. (A blocked index reads `failed`; the discriminating assertion for
-	// this row is that the pending write op is still present.)
 	ops, _ := listPendingOps(cfg)
-	if len(ops) == 0 || ops[0].OpID != op.OpID {
-		t.Fatalf("pending ops after failed upsert = %+v, want the write op %s to survive", ops, op.OpID)
+	writeOps := 0
+	for _, o := range ops {
+		if o.Kind == opKindWrite {
+			writeOps++
+		}
+	}
+	if writeOps != 1 {
+		t.Fatalf("pending write ops after a failed upsert = %d, want 1 (the op must survive a failed upsert; MUTATION clears it before commit)", writeOps)
 	}
 	if st := gate2IndexState(t, cfg); st == idxFresh {
 		t.Fatal("index reads fresh after a failed upsert")
