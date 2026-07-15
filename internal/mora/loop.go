@@ -788,7 +788,15 @@ func lockOwner(cfg Config, id string) (owner string, present bool) {
 // the lock in the read->remove window, the new lock is RESTORED, never deleted —
 // the fix for a late done stealing a live lease.
 func releaseLoopLockFor(cfg Config, id, owner string) {
-	lockPath := loopLockPath(cfg, id)
+	releaseLockFileFor(loopLockPath(cfg, id), owner)
+}
+
+// releaseLockFileFor is the PATH-based extract of releaseLoopLockFor (Packet H):
+// it releases the lease at lockPath only if it still belongs to owner (or is
+// absent / unreadable / legacy with no run_id). The share import lease reuses
+// this against subs/<name>/import.lock, so a reaped holder's late release can
+// NEVER remove its successor's lease (the blind-release-drops-B's-lease hole).
+func releaseLockFileFor(lockPath, owner string) {
 	data, err := os.ReadFile(lockPath)
 	if err != nil {
 		return // absent/unreadable: nothing to release
@@ -798,6 +806,34 @@ func releaseLoopLockFor(cfg Config, id, owner string) {
 		return // a different run owns the lease now; leave it
 	}
 	_, _ = breakLock(lockPath, data) // atomic: deletes only if still these exact bytes
+}
+
+// heartbeatLockFileFor is the CAS re-stamp (Packet H): it re-publishes
+// acquired_at=now ONLY if the on-disk run_id is still owner. If it changed
+// (reaped), it returns false and the caller must treat ownership as lost. A
+// blind re-stamp could RESURRECT a reaped holder's lease over its successor and
+// let the reaped holder's commit fence pass falsely — the CAS makes that
+// impossible. It re-uses breakLock's atomic rename-claim to replace only the
+// bytes it just read, restoring a racing newer lease untouched.
+func heartbeatLockFileFor(lockPath, owner string, now time.Time) bool {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return false
+	}
+	var body loopLockBody
+	if json.Unmarshal(data, &body) != nil || body.RunID != owner {
+		return false // reaped/replaced: ownership lost
+	}
+	next, _ := json.Marshal(loopLockBody{RunID: owner, PID: body.PID, AcquiredAt: now.UTC().Format(time.RFC3339)})
+	// Atomically remove the exact bytes we read, then publish the re-stamped body.
+	// If a successor republished in the window, breakLock restores it and the
+	// re-publish EEXISTs — ownership is (correctly) reported lost.
+	claimed, _ := breakLock(lockPath, data)
+	if !claimed {
+		return false
+	}
+	published, perr := publishLockFile(lockPath, next)
+	return perr == nil && published
 }
 
 // ---------------------------------------------------------------------------
