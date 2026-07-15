@@ -253,7 +253,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		ids = ids[:limit]
 	}
 
-	mems, err := loadMemoriesByID(ctx, db, ids)
+	mems, err := loadMemoriesByID(ctx, cfg, db, ids)
 	if err != nil {
 		return nil, tr, err
 	}

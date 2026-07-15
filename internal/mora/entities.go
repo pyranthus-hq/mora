@@ -191,7 +191,7 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 		return err
 	}
 	defer db.Close()
-	refs, err := loadMemoriesByID(ctx, db, match.MemoryIDs)
+	refs, err := loadMemoriesByID(ctx, cfg, db, match.MemoryIDs)
 	if err != nil {
 		return err
 	}

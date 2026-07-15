@@ -106,7 +106,13 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 		m.Tags = splitCSV(tags)
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// B4: a memory with a pending delete op is suppressed from the search chokepoint
+	// (the memories JOIN) while its rebuild is broken, so deleted content is never
+	// served even when the index still carries the row.
+	return suppressPendingDeletes(cfg, out), nil
 }
 func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string {
 	if budget <= 0 {
