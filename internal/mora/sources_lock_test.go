@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -127,10 +128,11 @@ func TestSourcesLockReapsStaleLock(t *testing.T) {
 	}
 }
 
-// TestSourcesConcurrentRMWNoLostUpdate is the regression guard: N processes each
-// flip a DISTINCT row's enable bit at the same time. With the lease +
-// reload-inside-lock every flip survives; a bare load->mutate->save would keep
-// only the last writer's flip. Run under -race in CI.
+// TestSourcesConcurrentRMWNoLostUpdate is the in-process regression guard: N
+// goroutines each flip a DISTINCT row's enable bit at the same time. With the
+// lease + reload-inside-lock every flip survives; a bare load->mutate->save would
+// keep only the last writer's flip. Run under -race in CI. (Cross-process replay:
+// TestSourcesRMWNoLostUpdateAcrossProcesses.)
 func TestSourcesConcurrentRMWNoLostUpdate(t *testing.T) {
 	cfg := Config{ConfigDir: t.TempDir()}
 	const n = 8
@@ -168,6 +170,75 @@ func TestSourcesConcurrentRMWNoLostUpdate(t *testing.T) {
 	for _, s := range got {
 		if s.Enabled == nil || !*s.Enabled {
 			t.Fatalf("lost update: %s not enabled after %d concurrent RMWs", s.Name, n)
+		}
+	}
+}
+
+// TestSourcesRMWNoLostUpdateAcrossProcesses is the historical sources.json
+// lost-update incident replay through REAL PROCESSES (not goroutines). N
+// subprocesses each flip a distinct enable bit against one shared ConfigDir;
+// with the lease every flip survives.
+func TestSourcesRMWNoLostUpdateAcrossProcesses(t *testing.T) {
+	if role := os.Getenv("MORA_SOURCES_MP_ROLE"); role != "" {
+		cfgDir := os.Getenv("MORA_SOURCES_MP_CONFIG")
+		name := os.Getenv("MORA_SOURCES_MP_NAME")
+		_ = os.Setenv("MORA_CONFIG_DIR", cfgDir)
+		cfg, err := loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "loadConfig: %v\n", err)
+			os.Exit(1)
+		}
+		if err := setSourceEnabledByName(cfg, name, true); err != nil {
+			fmt.Fprintf(os.Stderr, "enable %s: %v\n", name, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	cfg := Config{ConfigDir: t.TempDir()}
+	const n = 8
+	seed := make([]Source, n)
+	for i := range seed {
+		seed[i] = Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: ptr(false)}
+	}
+	if err := saveSources(cfg, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	outs := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cmd := exec.Command(os.Args[0], "-test.run=^TestSourcesRMWNoLostUpdateAcrossProcesses$", "-test.count=1")
+			cmd.Env = append(os.Environ(),
+				"MORA_SOURCES_MP_ROLE=1",
+				"MORA_SOURCES_MP_CONFIG="+cfg.ConfigDir,
+				fmt.Sprintf("MORA_SOURCES_MP_NAME=s%d", i),
+			)
+			out, err := cmd.CombinedOutput()
+			outs[i] = string(out)
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+	for i, e := range errs {
+		if e != nil {
+			t.Fatalf("child s%d: %v\n%s", i, e, outs[i])
+		}
+	}
+	got, err := loadSources(cfg)
+	if err != nil {
+		t.Fatalf("final load: %v", err)
+	}
+	if len(got) != n {
+		t.Fatalf("row count changed under cross-process RMW: got %d want %d", len(got), n)
+	}
+	for _, s := range got {
+		if s.Enabled == nil || !*s.Enabled {
+			t.Fatalf("lost update across processes: %s not enabled", s.Name)
 		}
 	}
 }

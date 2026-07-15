@@ -704,6 +704,22 @@ func windowForIMessage(s Source) memory.FetchWindow {
 	return memory.FetchWindow{Since: time.Now().AddDate(0, 0, -days)}
 }
 
+// iMessageFetcher is the injectable open+close seam for chat.db (Packet G2 /
+// HEALTH-08). Production uses imessage.NewLiveFetcher; tests inject a denial or
+// a zero-row Fetcher so FDA loss is drivable on Linux and Windows CI (macOS is
+// not in CI, and the real GOOS gate would otherwise make the denial test a
+// permanent false green).
+type iMessageFetcher interface {
+	memory.Fetcher
+	Close() error
+}
+
+// newIMessageFetcher opens chat.db for ingestIMessage. Package var so
+// TestFDALossNeverStampsSuccess can inject an open denial without chmod.
+var newIMessageFetcher = func(path string, deny imessage.DenyList) (iMessageFetcher, error) {
+	return imessage.NewLiveFetcher(path, deny)
+}
+
 // ingestIMessage reads the local chat.db read-only and writes one memory per
 // conversation (IMSG-01/03). It is macOS-gated (a non-darwin host prints an honest
 // note and returns 0, never a false error), resolves contact names via the
@@ -712,16 +728,16 @@ func windowForIMessage(s Source) memory.FetchWindow {
 // through the shared resumable Ingest loop via the Map hook — the writeMappedMemory
 // boundary is reused, never reimplemented.
 func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
-	if runtime.GOOS != "darwin" {
+	if runtimeGOOS() != "darwin" {
 		if out != nil {
-			fmt.Fprintf(out, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtime.GOOS)
+			fmt.Fprintf(out, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return 0, nil
 	}
 
 	path := chatDBPath()
 	deny := imessage.DenyList{Contacts: s.DenyContacts, Conversations: s.DenyConversations}
-	fetcher, err := imessage.NewLiveFetcher(path, deny)
+	fetcher, err := newIMessageFetcher(path, deny)
 	if err != nil {
 		// A present-but-unreadable chat.db is the FDA-denied case — point the user at
 		// the doctor guidance rather than dumping a raw sqlite error.
