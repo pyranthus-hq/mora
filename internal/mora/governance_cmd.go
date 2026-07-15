@@ -126,12 +126,27 @@ func cmdUnforget(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// A5 row 7: the governance ledger is an INDEX input (writeGraph loads it, so a
+	// revoked suppression changes the graph the next rebuild derives). Mark the index
+	// dirty BEFORE mutating the ledger and rebuild AFTER — a crash between the two
+	// leaves the pending rebuild op, so the index reads dirty and never false-clean.
+	// The committed rebuild retires the op (A3 rule a: marked_at <= listing_started_at).
+	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild})
+	if merr != nil {
+		return merr
+	}
 	found, err := revokeGovernanceEntry(cfg, fs.Arg(0))
 	if err != nil {
+		_ = unmarkIndexDirty(cfg, op.OpID) // the ledger never changed
 		return err
 	}
 	if !found {
+		_ = unmarkIndexDirty(cfg, op.OpID) // nothing revoked; no index change owed
 		return fmt.Errorf("no active governance entry %q", fs.Arg(0))
+	}
+	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
+		// The op REMAINS -> the index reads dirty until a rebuild covers the change.
+		return fmt.Errorf("unforgot %s, but the search index could not be updated: %w — run `mora index rebuild`", fs.Arg(0), err)
 	}
 	fmt.Fprintf(stdout, "unforgot %s; future syncs may re-ingest this content (within the connector's lookback window)\n", fs.Arg(0))
 	return nil

@@ -17,7 +17,6 @@ import (
 // The key is ALWAYS source-native atoms (stable_id + handle/address), never a
 // canonical person id, so the correction persists across connector re-sync.
 func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error {
-	_ = ctx
 	fs := flag.NewFlagSet("brief correct", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	memoryID := fs.String("memory-id", "", "cited source memory id")
@@ -61,6 +60,16 @@ func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error
 	if *unlink {
 		decision = mergeDecisionReject
 	}
+	// A5 row 7: the governance ledger is an INDEX input (writeGraph applies the
+	// confirmed/rejected citation links a brief renders from), so a redact record is a
+	// vault mutation. Mark the index dirty BEFORE the append and rebuild AFTER — a
+	// crash in between leaves the pending rebuild op, so the index reads dirty and
+	// never false-clean while the ledger has changed. The rebuild retires the op
+	// (A3 rule a). Its siblings (merge confirm/reject) rebuild too.
+	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild})
+	if merr != nil {
+		return merr
+	}
 	entry, err := appendGovernanceEntry(cfg, govEntry{
 		Kind:     govKindRedact,
 		Action:   govActionRecord,
@@ -70,7 +79,12 @@ func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error
 		Reason:   fmt.Sprintf("mora brief correct --memory-id %s --attendee %s --%s", m.ID, attendeeAtom.Value, map[bool]string{true: "unlink", false: "confirm"}[*unlink]),
 	})
 	if err != nil {
+		_ = unmarkIndexDirty(cfg, op.OpID) // the ledger never changed
 		return err
+	}
+	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
+		// The op REMAINS -> the index reads dirty until a rebuild covers the change.
+		return fmt.Errorf("recorded correction, but the search index could not be updated: %w — run `mora index rebuild`", err)
 	}
 	if decision == mergeDecisionConfirm {
 		fmt.Fprintf(stdout, "confirmed citation link: %s ↔ %s (entry %s)\n", stableAtom.Value, attendeeAtom.Value, entry.ID)

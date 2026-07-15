@@ -148,6 +148,16 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 	if err != nil {
 		return err
 	}
+	// A5 row 8: mark the index dirty BEFORE appending to the governance ledger (an
+	// index input via writeGraph), not after. The append at :151 landed before the
+	// rebuild's own A4 mark, so a crash in that window left the ledger changed while
+	// the index read fresh — a false-clean. Marking first closes it: the pending
+	// rebuild op survives the crash and the committed rebuild below retires it
+	// (A3 rule a).
+	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild})
+	if merr != nil {
+		return merr
+	}
 	entry, err := appendGovernanceEntry(cfg, govEntry{
 		Kind:     govKindMergeConfirm,
 		Action:   govActionRecord,
@@ -157,6 +167,7 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 		Reason:   fmt.Sprintf("mora merge %s --handle %s --email %s", decision, *handle, *email),
 	})
 	if err != nil {
+		_ = unmarkIndexDirty(cfg, op.OpID) // the ledger never changed
 		return err
 	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
@@ -180,11 +191,20 @@ func mergeUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// A5 row 8: mark before mutating the ledger (see mergeDecide) — a crash between
+	// the revoke and the rebuild must leave the index dirty, never fresh-with-a-
+	// changed-ledger. The committed rebuild retires the op (A3 rule a).
+	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild})
+	if merr != nil {
+		return merr
+	}
 	found, err := revokeGovernanceEntry(cfg, args[0])
 	if err != nil {
+		_ = unmarkIndexDirty(cfg, op.OpID)
 		return err
 	}
 	if !found {
+		_ = unmarkIndexDirty(cfg, op.OpID)
 		return fmt.Errorf("no active governance entry %q", args[0])
 	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
