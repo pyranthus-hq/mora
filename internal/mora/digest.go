@@ -1528,15 +1528,22 @@ func digestMCPPayload(cfg Config, d Digest, budgetChars int) map[string]any {
 	return base
 }
 
-// budgetSections greedily fills a byte budget with sections highest-rank-first
-// (d.Sections is already rank-sorted), item by item. A section that partially
-// fits keeps the fitting items and accumulates the rest into MoreCount/Truncated.
-// Once the budget is exhausted, every REMAINING section is kept as a TRUNCATED
-// SHELL (its State + a MoreCount of all its items, empty Items) rather than
-// silently dropped — so the agent can distinguish "this source was suppressed
-// for budget" from "this source had nothing" (its true state + count also ride in
-// source_states). The result is deterministic and byte-stable: input order is
-// preserved and each section's cut is a pure prefix of its items.
+// budgetSections fills a byte budget with section items in two passes, mirroring
+// the Markdown budgeter (budgetDigestForMarkdown): PASS 1 gives every section up
+// to budgetSourceFloor items in rank order, so a noisy high-rank source (calendar
+// subscriptions) can NOT starve a lower-rank one (Emails, iMessage) below its
+// floor; PASS 2 then fills the remaining budget greedily highest-rank-first. A
+// section that keeps zero items becomes a TRUNCATED SHELL (its State + a MoreCount
+// of all its items, empty Items) rather than being silently dropped — so the agent
+// distinguishes "suppressed for budget" from "had nothing" (its true state + count
+// also ride in source_states). The result is deterministic and byte-stable: input
+// order is preserved and each section's cut is a pure prefix of its items.
+//
+// The single-pass greedy version this replaced latched an `exhausted` flag the
+// moment ANY section overflowed, collapsing every lower-rank section to an empty
+// shell. Because sections are rank-sorted calendar→imessage→gmail, a calendar
+// flood guaranteed the MCP brief returned zero emails and zero texts (issue #62
+// defect 3 was fixed in the Markdown budgeter only; this ports the fix here too).
 //
 // jsonSep accounts for the array/struct glue (commas, brackets, the "items" key)
 // that a per-element json.Marshal length omits, so the running total is a slight
@@ -1546,42 +1553,65 @@ func budgetSections(sections []DigestSection, budget int) []DigestSection {
 		budget = 0
 	}
 	const jsonSep = 2 // per-element comma + brace/bracket glue (conservative over-count).
-	out := make([]DigestSection, 0, len(sections))
+	n := len(sections)
+	kept := make([]int, n)    // items kept per section
+	opened := make([]bool, n) // whether this section's shell cost is already paid
 	used := 0
-	exhausted := false
-	for _, s := range sections {
-		if exhausted {
-			// Budget already spent: keep a truncated shell so the agent sees the
-			// section was suppressed, not absent.
-			out = append(out, truncatedShell(s))
-			continue
+
+	// add tries to keep item j of section i, paying the section's shell cost once
+	// (the first time an item from it is kept). Returns false if it doesn't fit.
+	add := func(i, j int) bool {
+		s := sections[i]
+		extra := 0
+		if !opened[i] {
+			extra = jsonLen(DigestSection{Source: s.Source, State: s.State}) + jsonSep
 		}
-		shellCost := jsonLen(DigestSection{Source: s.Source, State: s.State}) + jsonSep
-		if used+shellCost > budget {
-			// No room for even this section's shell — suppress it (and the rest) as
-			// truncated shells.
-			out = append(out, truncatedShell(s))
-			exhausted = true
-			continue
+		itCost := jsonLen(s.Items[j]) + jsonSep
+		if used+extra+itCost > budget {
+			return false
 		}
-		kept := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated}
-		used += shellCost
-		dropped := 0
-		for idx, it := range s.Items {
-			itCost := jsonLen(it) + jsonSep
-			if used+itCost > budget {
-				dropped = len(s.Items) - idx
+		if !opened[i] {
+			opened[i] = true
+			used += extra
+		}
+		used += itCost
+		kept[i]++
+		return true
+	}
+
+	// Pass 1 (fair floor): up to budgetSourceFloor items each, rank order.
+	for i := range sections {
+		for j := 0; j < len(sections[i].Items) && j < budgetSourceFloor; j++ {
+			if !add(i, j) {
 				break
 			}
-			kept.Items = append(kept.Items, it)
-			used += itCost
 		}
-		if dropped > 0 {
-			kept.MoreCount += dropped
-			kept.Truncated = true
-			exhausted = true // later sections won't fit either; suppress them as shells.
+	}
+	// Pass 2 (greedy): fill the rest, highest-rank-first, until the budget is spent.
+	for i := range sections {
+		for j := kept[i]; j < len(sections[i].Items); j++ {
+			if !add(i, j) {
+				break
+			}
 		}
-		out = append(out, kept)
+	}
+
+	out := make([]DigestSection, 0, n)
+	for i, s := range sections {
+		switch {
+		case len(s.Items) == 0:
+			out = append(out, s) // empty section: state only, keep original MoreCount.
+		case kept[i] == 0:
+			out = append(out, truncatedShell(s)) // suppressed for budget.
+		default:
+			ns := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated}
+			ns.Items = append([]DigestItem(nil), s.Items[:kept[i]]...)
+			if dropped := len(s.Items) - kept[i]; dropped > 0 {
+				ns.MoreCount += dropped
+				ns.Truncated = true
+			}
+			out = append(out, ns)
+		}
 	}
 	return out
 }
