@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +31,39 @@ func TestShareSubprocessWorker(t *testing.T) {
 	dir := os.Getenv("MORA_SHARE_WORKER_REPO")
 	parked := os.Getenv("MORA_SHARE_PARKED")
 	resume := os.Getenv("MORA_SHARE_RESUME")
+
+	// ro-search mode: a pure reader process. It opens the published generation
+	// read-only and searches it in a tight loop; the test's whole point is that a
+	// second live process never surfaces SQLITE_BUSY, so any busy error is fatal.
+	if os.Getenv("MORA_SHARE_MODE") == "ro-search" {
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			c, ok, rerr := resolvePublishedCommit(cfg, name)
+			if rerr != nil {
+				t.Fatalf("child resolvePublishedCommit: %v", rerr)
+			}
+			if !ok {
+				continue
+			}
+			db, oerr := openShareIndexRO(context.Background(), shareGenIndexPath(cfg, name, c.Gen), c.IndexDigest)
+			if oerr != nil {
+				if isSQLiteBusy(oerr) {
+					t.Fatalf("child reader hit SQLITE_BUSY on open: %v", oerr)
+				}
+				t.Fatalf("child openShareIndexRO: %v", oerr)
+			}
+			var n int
+			qerr := db.QueryRowContext(context.Background(), `SELECT count(*) FROM memories`).Scan(&n)
+			_ = db.Close()
+			if qerr != nil {
+				if isSQLiteBusy(qerr) {
+					t.Fatalf("child reader hit SQLITE_BUSY on query: %v", qerr)
+				}
+				t.Fatalf("child query: %v", qerr)
+			}
+		}
+		return
+	}
 
 	switch os.Getenv("MORA_SHARE_HOOK") {
 	case "post-first-corpus":
@@ -56,6 +90,16 @@ func TestShareSubprocessWorker(t *testing.T) {
 	// The result is intentionally ignored — the parent asserts on-disk state.
 	_, _ = importFixtureGeneration(context.Background(), cfg,
 		shareSubscription{Name: name, Remote: "r"}, dir)
+}
+
+// isSQLiteBusy reports whether err is a raw SQLITE_BUSY ("database is locked"),
+// the failure the share-DSN busy_timeout + WAL fix exists to prevent.
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") || strings.Contains(s, "database is locked")
 }
 
 // ageImportLease rewrites the import lease's acquired_at to well past the TTL so a
@@ -92,6 +136,24 @@ func spawnShareWorker(t *testing.T, home, sub, repo, hook, parked, resume string
 	)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("spawn worker: %v", err)
+	}
+	return cmd
+}
+
+// spawnROSearchWorker starts a pure-reader child that opens the published
+// generation read-only and searches it in a loop, failing on any SQLITE_BUSY.
+func spawnROSearchWorker(t *testing.T, home, sub string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestShareSubprocessWorker", "-test.timeout=120s")
+	cmd.Env = append(os.Environ(),
+		"MORA_SHARE_WORKER=1",
+		"MORA_SHARE_MODE=ro-search",
+		"HOME="+home, "USERPROFILE="+home, "MORA_CONFIG_DIR=",
+		"MORA_SHARE_WORKER_SUB="+sub,
+	)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("spawn ro-search worker: %v", err)
 	}
 	return cmd
 }
@@ -150,6 +212,44 @@ func TestInterruptedShareImportServesLastGoodGeneration(t *testing.T) {
 	ageImportLease(cfg, "neil") // simulate the dead holder's lease aging past TTL
 	if h := shareHealthOne(cfg, "neil", time.Now()); h.State == healthFresh {
 		t.Fatalf("a SIGKILLed import was read fresh; want failed/stale (state %q)", h.State)
+	}
+}
+
+// TestShareIndexNoSQLITEBUSYAcrossProcesses: separate OS processes reading a
+// subscribed share's published generation while THIS process keeps publishing
+// fresh generations (each build opens WAL + checkpoints TRUNCATE) must never
+// surface a raw SQLITE_BUSY. The share-DSN fix (WAL + busy_timeout on both the
+// builder and the mode=ro reader) plus the generation-publish layout — readers
+// only ever open frozen, checkpointed, run-private index.db files — guarantees it.
+func TestShareIndexNoSQLITEBUSYAcrossProcesses(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	home := os.Getenv("HOME")
+	id := writeTestIdentity(t, cfg)
+	registerSub(t, cfg, "neil")
+
+	keep := fixtureMemory("mem_20260601_000000_aaaaaaaa", "Keep", "durable content")
+	publishGen(t, cfg, "neil", id, []Memory{keep}) // seq 1: something to read
+
+	readers := []*exec.Cmd{
+		spawnROSearchWorker(t, home, "neil"),
+		spawnROSearchWorker(t, home, "neil"),
+		spawnROSearchWorker(t, home, "neil"),
+	}
+
+	// While three separate processes read, publish several more generations here.
+	for i := 0; i < 4; i++ {
+		extra := fixtureMemory(
+			"mem_20260601_00000"+string(rune('1'+i))+"_bbbbbbbb",
+			"Extra", "generation churn")
+		publishGen(t, cfg, "neil", id, []Memory{keep, extra})
+	}
+
+	for i, r := range readers {
+		if err := r.Wait(); err != nil {
+			t.Fatalf("reader %d exited non-zero (SQLITE_BUSY or worse): %v", i, err)
+		}
 	}
 }
 
