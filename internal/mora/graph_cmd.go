@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // cmdGraph renders the entity graph visually in the terminal — the fast way to
@@ -59,6 +60,7 @@ func cmdGraph(ctx context.Context, args []string, stdout io.Writer) error {
 	if jsonOut {
 		return emit(stdout, entities, true)
 	}
+	printHealthBannerLine(stdout, cfg, time.Now())
 	if len(entities) == 0 {
 		fmt.Fprintln(stdout, "No entity graph yet. Connect a source (mora connect google / mora connect imessage), sync, then try again.")
 		return nil
@@ -156,6 +158,7 @@ func graphDetailView(ctx context.Context, cfg Config, w io.Writer, name string, 
 	if jsonOut {
 		return emit(w, data, true)
 	}
+	printHealthBannerLine(w, cfg, time.Now())
 	if found, _ := data["found"].(bool); !found {
 		fmt.Fprintf(w, "No entity named %q in the graph. Run `mora graph` to see what's there.\n", name)
 		return nil

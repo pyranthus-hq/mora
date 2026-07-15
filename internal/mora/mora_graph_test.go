@@ -375,10 +375,14 @@ func TestMCPEntitiesRoundTrip(t *testing.T) {
 	if isErr {
 		t.Fatalf("list_entities unexpectedly isError; text=%s", listText)
 	}
-	var ents []Entity
-	if err := json.Unmarshal([]byte(listText), &ents); err != nil {
+	var listRes struct {
+		Entities []Entity      `json:"entities"`
+		Health   compactHealth `json:"health"`
+	}
+	if err := json.Unmarshal([]byte(listText), &listRes); err != nil {
 		t.Fatalf("list_entities text decode: %v\n%s", err, listText)
 	}
+	ents := listRes.Entities
 	foundNeil := false
 	for _, e := range ents {
 		if e.Kind == "link" && e.Name == "Neil" && e.Count == 2 {
@@ -396,10 +400,14 @@ func TestMCPEntitiesRoundTrip(t *testing.T) {
 	if isErr2 {
 		t.Fatalf("get_entity unexpectedly isError; text=%s", getText)
 	}
-	var getRes map[string]any
-	if err := json.Unmarshal([]byte(getText), &getRes); err != nil {
+	var getWrapped struct {
+		Entity map[string]any `json:"entity"`
+		Health compactHealth  `json:"health"`
+	}
+	if err := json.Unmarshal([]byte(getText), &getWrapped); err != nil {
 		t.Fatalf("get_entity text decode: %v\n%s", err, getText)
 	}
+	getRes := getWrapped.Entity
 	if getRes["found"] != true {
 		t.Fatalf("get_entity found: %+v", getRes)
 	}

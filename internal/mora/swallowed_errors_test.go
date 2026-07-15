@@ -94,9 +94,13 @@ func TestMCPDeleteMemorySurfacesRebuildFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doomed, ok := res.(Memory)
+	wrapped, ok := res.(map[string]any)
 	if !ok {
-		t.Fatalf("write_memory returned %T, want Memory", res)
+		t.Fatalf("write_memory returned %T, want map[string]any{memory,health}", res)
+	}
+	doomed, ok := wrapped["memory"].(Memory)
+	if !ok {
+		t.Fatalf("write_memory[memory] = %T, want Memory", wrapped["memory"])
 	}
 	// A second memory keeps the failing rebuild non-empty (the trigger fires on
 	// INSERT, so an empty vault would rebuild "successfully").

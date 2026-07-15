@@ -82,9 +82,15 @@ func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {
 		// Read-only fallback: ids from subscribed share corpora are searchable,
 		// so they must be readable too. Delete paths never take this fallback.
 		if sm, ok := findSharedMemory(cfg, fs.Arg(0)); ok {
+			if !*jsonOut {
+				printHealthBannerLine(stdout, cfg, time.Now())
+			}
 			return emit(stdout, sm, *jsonOut)
 		}
 		return err
+	}
+	if !*jsonOut {
+		printHealthBannerLine(stdout, cfg, time.Now())
 	}
 	return emit(stdout, m, *jsonOut)
 }
@@ -104,6 +110,9 @@ func cmdList(ctx context.Context, args []string, stdout io.Writer) error {
 	items, err := listMemories(cfg, *scope, *limit)
 	if err != nil {
 		return err
+	}
+	if !*jsonOut {
+		printHealthBannerLine(stdout, cfg, time.Now())
 	}
 	return emit(stdout, items, *jsonOut)
 }
@@ -126,6 +135,9 @@ func cmdSearch(ctx context.Context, args []string, stdout io.Writer) error {
 	items, err := defaultSearch(ctx, cfg, strings.Join(queryArgs, " "), scope, limit)
 	if err != nil {
 		return err
+	}
+	if !jsonOut {
+		printHealthBannerLine(stdout, cfg, time.Now())
 	}
 	return emit(stdout, items, jsonOut)
 }
@@ -206,6 +218,7 @@ func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
 			"used":        used,
 		}, true)
 	}
+	printHealthBannerLine(stdout, cfg, time.Now())
 	fmt.Fprint(stdout, text)
 	return nil
 }
@@ -255,6 +268,7 @@ func cmdThink(ctx context.Context, args []string, stdout io.Writer) error {
 	if jsonOut {
 		return emit(stdout, res, true)
 	}
+	printHealthBannerLine(stdout, cfg, time.Now())
 	printThink(stdout, res)
 	return nil
 }

@@ -60,17 +60,22 @@ func TestMCPToolsCallReturnsCallToolResult(t *testing.T) {
 	run(t, "init")
 	run(t, "write", "--scope", "global", "--title", "Alpha", "--text", "alpha body")
 
-	// SUCCESS (array-returning tool): the array payload must ride inside the text
-	// content block, parseable as the tool's native JSON. list_memory still
-	// returns a bare array (search_memory moved to {results,freshness}).
+	// SUCCESS (object-returning tool via the C4 envelope break): the payload
+	// must ride inside the text content block, parseable as the tool's native
+	// JSON. list_memory moved to {memories,health} alongside search_memory's
+	// pre-existing {results,freshness}.
 	text, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_memory","arguments":{}}}`)
 	if isErr {
 		t.Fatalf("list_memory unexpectedly isError; text=%s", text)
 	}
-	var hits []Memory
-	if err := json.Unmarshal([]byte(text), &hits); err != nil {
+	var wrapped struct {
+		Memories []Memory      `json:"memories"`
+		Health   compactHealth `json:"health"`
+	}
+	if err := json.Unmarshal([]byte(text), &wrapped); err != nil {
 		t.Fatalf("content[0].text is not the tool's JSON payload: %v\n%s", err, text)
 	}
+	hits := wrapped.Memories
 	if len(hits) != 1 || hits[0].Title != "Alpha" {
 		t.Fatalf("expected Alpha via the text content block, got: %s", text)
 	}

@@ -237,10 +237,14 @@ func TestGetEntityDossierShape(t *testing.T) {
 	if isErr {
 		t.Fatalf("get_entity errored: %s", text)
 	}
-	var dossier map[string]any
-	if err := json.Unmarshal([]byte(text), &dossier); err != nil {
+	var wrapped struct {
+		Entity map[string]any `json:"entity"`
+		Health compactHealth  `json:"health"`
+	}
+	if err := json.Unmarshal([]byte(text), &wrapped); err != nil {
 		t.Fatalf("decode: %v\n%s", err, text)
 	}
+	dossier := wrapped.Entity
 	for _, key := range []string{"budget_unit", "budget", "used", "evidence", "aliases", "display_name", "found"} {
 		if _, ok := dossier[key]; !ok {
 			t.Fatalf("dossier missing %q: %v", key, dossier)

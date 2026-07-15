@@ -247,91 +247,142 @@ func (s *httpServer) auth(next http.Handler) http.Handler {
 	})
 }
 
-// routes wires the convenience endpoints the AI-browser bridge expects, plus a
-// generic /call that exposes any non-destructive MCP tool by name (see
-// httpCallAllowed).
+// httpRoute is one route's registry entry — the DERIVED source of truth
+// routes() ranges over (C3 ▸R2). HTTP routes used to be imperative
+// mux.HandleFunc calls with no production registry for the health-surface
+// completeness check to enumerate against; httpRoutes() is that registry.
+type httpRoute struct {
+	Method  string
+	Pattern string
+	Handler http.HandlerFunc
+}
+
+// httpRoutes is the derived list every real route comes from — routes()
+// builds the ServeMux from it, and it is the registry
+// TestEverySurfaceCarriesHealth enumerates (minus the explicit health-exempt
+// allowlist) to prove no route is silently absent from the health check.
+func (s *httpServer) httpRoutes() []httpRoute {
+	return []httpRoute{
+		// GET /healthz is a LIVENESS probe, not a rendered/typed-payload surface
+		// — it reports Health.State (never a static {"ok":true} again) but is
+		// exempt from the rendered-banner completeness set (C3).
+		{"GET", "/healthz", s.handleHealthz},
+		{"GET", "/{$}", s.landing},
+		// Generic escape hatch: POST {"name":"search_memory","arguments":{...}}.
+		{"POST", "/call", s.handleCall},
+		// Convenience routes (the shapes the mora-memory Aside skill documents).
+		{"POST", "/think", s.handleThink},
+		{"POST", "/search", s.handleSearch},
+		{"POST", "/write", s.handleWrite},
+		{"POST", "/meeting-prep", s.handleMeetingPrep},
+		{"GET", "/entity/{name}", s.handleEntity},
+		{"GET", "/brief", s.handleBrief},
+	}
+}
+
+// routes wires httpRoutes() onto a ServeMux.
 func (s *httpServer) routes() http.Handler {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "mora", "version": BuildVersion})
-	})
-	mux.HandleFunc("GET /{$}", s.landing)
-
-	// Generic escape hatch: POST {"name":"search_memory","arguments":{...}}.
-	mux.HandleFunc("POST /call", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := decodeBody(r, &body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return
-		}
-		if !httpCallAllowed[body.Name] {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "tool not permitted over loopback HTTP", "tool": body.Name})
-			return
-		}
-		s.dispatch(w, r, body.Name, body.Arguments)
-	})
-
-	// Convenience routes (the shapes the mora-memory Aside skill documents).
-	mux.HandleFunc("POST /think", func(w http.ResponseWriter, r *http.Request) {
-		args := bodyArgs(r)
-		s.dispatch(w, r, "think", map[string]any{
-			"query": firstStr(args, "q", "query"),
-			"scope": str(args, "scope"),
-			"limit": args["limit"],
-		})
-	})
-	mux.HandleFunc("POST /search", func(w http.ResponseWriter, r *http.Request) {
-		args := bodyArgs(r)
-		s.dispatch(w, r, "search_memory", map[string]any{
-			"query": firstStr(args, "q", "query"),
-			"scope": str(args, "scope"),
-			"limit": args["limit"],
-		})
-	})
-	mux.HandleFunc("POST /write", func(w http.ResponseWriter, r *http.Request) {
-		args := bodyArgs(r)
-		s.dispatch(w, r, "write_memory", map[string]any{
-			"title":  str(args, "title"),
-			"text":   str(args, "text"),
-			"type":   str(args, "type"),
-			"scope":  str(args, "scope"),
-			"source": str(args, "source"),
-		})
-	})
-	mux.HandleFunc("POST /meeting-prep", func(w http.ResponseWriter, r *http.Request) {
-		args := bodyArgs(r)
-		s.dispatch(w, r, "meeting_prep", map[string]any{
-			"event_id":   str(args, "event_id"),
-			"at":         str(args, "at"),
-			"name":       str(args, "name"),
-			"limit":      args["limit"],
-			"max_tokens": args["max_tokens"],
-		})
-	})
-	mux.HandleFunc("GET /entity/{name}", func(w http.ResponseWriter, r *http.Request) {
-		s.dispatch(w, r, "get_entity", map[string]any{"name": r.PathValue("name")})
-	})
-	mux.HandleFunc("GET /brief", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		args := map[string]any{
-			"entity":   q.Get("entity"),
-			"scope":    q.Get("scope"),
-			"envelope": q.Get("envelope") == "true" || q.Get("envelope") == "1",
-		}
-		if n, ok := queryInt(q, "max_tokens"); ok {
-			args["max_tokens"] = n
-		}
-		if n, ok := queryInt(q, "since_days"); ok {
-			args["since_days"] = n
-		}
-		s.dispatch(w, r, "brief", args)
-	})
-
+	for _, rt := range s.httpRoutes() {
+		mux.HandleFunc(rt.Method+" "+rt.Pattern, rt.Handler)
+	}
 	return mux
+}
+
+// handleHealthz reports REAL health (C3 ▸R2): a monitor's green light over a
+// dead corpus is the purest form of the bug this gate exists to close. Still a
+// LIVENESS probe — always HTTP 200 (the SERVER is up even when the DATA is
+// not) — so a caller reads `state`/`ok`, never an HTTP error code, to learn
+// the vault is unhealthy.
+func (s *httpServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	cfg, err := loadConfig()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "service": "mora", "version": BuildVersion, "state": healthUnhealthy, "error": err.Error()})
+		return
+	}
+	h := healthOf(cfg, time.Now())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      h.State == healthHealthy,
+		"service": "mora",
+		"version": BuildVersion,
+		"state":   h.State,
+	})
+}
+
+func (s *httpServer) handleCall(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if !httpCallAllowed[body.Name] {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "tool not permitted over loopback HTTP", "tool": body.Name})
+		return
+	}
+	s.dispatch(w, r, body.Name, body.Arguments)
+}
+
+func (s *httpServer) handleThink(w http.ResponseWriter, r *http.Request) {
+	args := bodyArgs(r)
+	s.dispatch(w, r, "think", map[string]any{
+		"query": firstStr(args, "q", "query"),
+		"scope": str(args, "scope"),
+		"limit": args["limit"],
+	})
+}
+
+func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
+	args := bodyArgs(r)
+	s.dispatch(w, r, "search_memory", map[string]any{
+		"query": firstStr(args, "q", "query"),
+		"scope": str(args, "scope"),
+		"limit": args["limit"],
+	})
+}
+
+func (s *httpServer) handleWrite(w http.ResponseWriter, r *http.Request) {
+	args := bodyArgs(r)
+	s.dispatch(w, r, "write_memory", map[string]any{
+		"title":  str(args, "title"),
+		"text":   str(args, "text"),
+		"type":   str(args, "type"),
+		"scope":  str(args, "scope"),
+		"source": str(args, "source"),
+	})
+}
+
+func (s *httpServer) handleMeetingPrep(w http.ResponseWriter, r *http.Request) {
+	args := bodyArgs(r)
+	s.dispatch(w, r, "meeting_prep", map[string]any{
+		"event_id":   str(args, "event_id"),
+		"at":         str(args, "at"),
+		"name":       str(args, "name"),
+		"limit":      args["limit"],
+		"max_tokens": args["max_tokens"],
+	})
+}
+
+func (s *httpServer) handleEntity(w http.ResponseWriter, r *http.Request) {
+	s.dispatch(w, r, "get_entity", map[string]any{"name": r.PathValue("name")})
+}
+
+func (s *httpServer) handleBrief(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	args := map[string]any{
+		"entity":   q.Get("entity"),
+		"scope":    q.Get("scope"),
+		"envelope": q.Get("envelope") == "true" || q.Get("envelope") == "1",
+	}
+	if n, ok := queryInt(q, "max_tokens"); ok {
+		args["max_tokens"] = n
+	}
+	if n, ok := queryInt(q, "since_days"); ok {
+		args["since_days"] = n
+	}
+	s.dispatch(w, r, "brief", args)
 }
 
 // dispatch runs one MCP tool under the serialization lock and writes its native

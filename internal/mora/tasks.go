@@ -100,6 +100,7 @@ func cmdTasks(ctx context.Context, args []string, stdout io.Writer) error {
 			fmt.Fprintln(stdout, string(b))
 			return nil
 		}
+		printHealthBannerLine(stdout, cfg, time.Now())
 		for _, lt := range tasks {
 			fmt.Fprintf(stdout, "%-8s %-10s %s\n", lt.Pri, lt.Status, lt.Task)
 		}

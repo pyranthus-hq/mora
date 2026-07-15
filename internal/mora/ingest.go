@@ -274,15 +274,27 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 			fmt.Fprintln(stdout, "no sources synced yet")
 			return nil
 		}
+		now := time.Now()
+		// C3 ▸R2: this used to read st.LastSynced against a flat 48h threshold,
+		// ignoring ErrorCount entirely — a DIVERGENT, parallel staleness verdict
+		// that could disagree with the health banner (a fresh sync-status line
+		// sitting above an unhealthy index, or a source that errored every hour
+		// still reading merely "old"). Route through the SAME success-only
+		// watermark + per-type threshold + failed/never precedence as
+		// sourceHealthFor (health.go), so the two can never again disagree.
+		if banner := healthBanner(cfg, now); banner != "" {
+			fmt.Fprintln(stdout, banner)
+		}
 		sty := newStyler(stdout, false)
 		for _, e := range entries {
 			st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
 			if err != nil {
 				continue
 			}
+			state := syncStatusFileState(st, syncStatusFileThreshold(e.Name()), now)
 			stale := ""
-			if t, perr := time.Parse(time.RFC3339, st.LastSynced); perr == nil && time.Since(t) > 48*time.Hour {
-				stale = " " + sty.bad("(STALE)")
+			if state != healthFresh {
+				stale = " " + sty.bad("("+strings.ToUpper(state)+")")
 			}
 			errs := fmt.Sprintf("%d errors", st.ErrorCount)
 			if st.ErrorCount > 0 {
@@ -303,6 +315,48 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	total, err := backfillEnabledGoogle(ctx, cfg, stdout)
 	fmt.Fprintf(stdout, "synced %d item(s)\n", total)
 	return err
+}
+
+// syncStatusFileThreshold infers the freshness threshold for a raw sync/
+// status file from its filename prefix (mirrors syncStatusPathFor's own
+// naming: "google-"/"applecal-"/"imessage-"/"filesystem-"). `mora sync status`
+// walks the raw directory rather than sources.json (a file can outlive its
+// source being disabled/removed), so it cannot resolve a full Source struct —
+// but the filename prefix is enough to pick the SAME threshold family
+// sourceHealthThreshold does, which is all classification needs.
+func syncStatusFileThreshold(fileName string) time.Duration {
+	switch {
+	case strings.HasPrefix(fileName, "google-"), strings.HasPrefix(fileName, "applecal-"):
+		return sourceHealthGoogleThreshold
+	default: // imessage-, filesystem-, and any future/unknown prefix
+		return sourceHealthLocalThreshold
+	}
+}
+
+// syncStatusFileState classifies one raw sync/ status file with the EXACT same
+// worst-first precedence as sourceHealthFor (never > failed > stale > fresh),
+// so `mora sync status`'s per-line verdict can never again disagree with the
+// health banner (C3 ▸R2: the old flat-48h/LastSynced check ignored ErrorCount
+// and used a single threshold for every connector type).
+func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now time.Time) string {
+	if st.LastSuccessAt == "" {
+		return healthNever
+	}
+	if st.LastError != "" || st.ErrorCount > 0 {
+		return healthFailed
+	}
+	t, err := time.Parse(time.RFC3339, st.LastSuccessAt)
+	if err != nil {
+		return healthNever
+	}
+	age := now.Sub(t)
+	if age < 0 {
+		age = 0
+	}
+	if age > threshold {
+		return healthStale
+	}
+	return healthFresh
 }
 
 // cmdReingest re-fetches enabled sources and rewrites memories with the latest
