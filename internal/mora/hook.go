@@ -183,8 +183,21 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	if err != nil {
 		return nil
 	}
-	body, _, err := hookResolveBrief(cfg, hookNow(), briefOpts{})
-	if err != nil || strings.TrimSpace(body) == "" {
+	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{})
+	if berr != nil {
+		// C2 ▸A: hookSessionStart used to swallow EVERY resolveBrief error with
+		// a silent return nil — a failed brief build injected nothing, and the
+		// agent's session started with no signal at all that anything was
+		// wrong. resolveBrief's own success path already carries a fresh
+		// banner (reconcileCachedBriefHealth / the generate path's render), so
+		// this is scoped to the one gap that isn't otherwise covered: inject
+		// just the banner line instead of staying silent.
+		if banner := healthBannerFrom(healthOf(cfg, hookNow())); banner != "" {
+			_ = writeHookOutput(stdout, "SessionStart", banner)
+		}
+		return nil
+	}
+	if strings.TrimSpace(body) == "" {
 		return nil
 	}
 	_ = writeHookOutput(stdout, "SessionStart", body)
@@ -208,18 +221,37 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	if err != nil {
 		return nil
 	}
+	// C2 ▸A: hook recall injects into EVERY user prompt, so it gets the same
+	// one-line treatment as session-start — the banner rides along whenever the
+	// vault is unhealthy, on both the search-succeeded and search-failed paths,
+	// instead of a failed/timed-out search silently injecting nothing.
+	banner := healthBannerFrom(healthOf(cfg, hookNow()))
 	searchCtx, cancel := context.WithTimeout(ctx, hookRecallTimeout)
 	defer cancel()
-	mems, err := hookSearchMemories(searchCtx, cfg, prompt, "", hookRecallLimit*4)
-	if err != nil || searchCtx.Err() != nil {
-		return nil
+	mems, serr := hookSearchMemories(searchCtx, cfg, prompt, "", hookRecallLimit*4)
+	var body string
+	if serr == nil && searchCtx.Err() == nil {
+		body = formatRecallContext(mems, threshold, hookNow())
 	}
-	body := formatRecallContext(mems, threshold, hookNow())
+	body = prependBannerLine(banner, body)
 	if body == "" {
 		return nil
 	}
 	_ = writeHookOutput(stdout, "UserPromptSubmit", body)
 	return nil
+}
+
+// prependBannerLine puts the health banner on its own leading line above body,
+// or returns body/banner alone when the other is empty.
+func prependBannerLine(banner, body string) string {
+	switch {
+	case banner == "":
+		return body
+	case body == "":
+		return banner
+	default:
+		return banner + "\n" + body
+	}
 }
 
 func parseHookRecallArgs(args []string) (float64, bool) {
