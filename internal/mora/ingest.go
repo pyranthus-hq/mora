@@ -375,6 +375,11 @@ func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
 // "a previous attempt failed" by timing, not by comparing error text (a
 // repeated identical failure must still advance LastAttemptAt every time).
 func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
+	// Release any ingest lease this run took (A3 rule d / Finding 2) once the run
+	// ends: no more files land for it, so cmdIngest's terminal rebuild may retire the
+	// covered journal instead of waiting for process exit. A hard SIGKILL skips this;
+	// the lease then names a dead pid and the next rebuild reclaims it.
+	defer releaseIngestLeasesOwnedHere(cfg)
 	attemptStart := time.Now()
 	n, err := ingestSourceDispatch(cfg, s, out)
 	if err != nil {
@@ -471,9 +476,22 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	if err := atomicWrite(out, body, 0o644); err != nil {
 		return err
 	}
+	if testHookPostConnectorPublish != nil {
+		// Test seam (matrix 34a): a SIGKILL in the publish->journal-line window. The
+		// file is on disk; the best-effort path line has NOT appended. The durable
+		// header (written BEFORE the publish) is what still keeps the index dirty here,
+		// so removing it is a false-clean. Nil in production.
+		testHookPostConnectorPublish()
+	}
 	journalPublishedPath(cfg, sourceKey, out)
 	return nil
 }
+
+// testHookPostConnectorPublish fires inside writeMappedMemory AFTER the vault publish
+// but BEFORE the best-effort journal path line, so a test can crash in exactly the
+// window the durable header protects (matrix 34a). Nil in production.
+var testHookPostConnectorPublish func()
+
 func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (int, error) {
 	ctx := context.Background()
 	oc, err := google.ResolveOAuthConfig(google.Scopes)
