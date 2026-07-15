@@ -64,6 +64,7 @@ func renderMemory(m Memory) ([]byte, error) {
 	fmt.Fprintf(&b, "---\n\n%s\n", m.Text)
 	return []byte(b.String()), nil
 }
+
 // parseMemory reads and parses a memory file. It is a thin wrapper over
 // parseMemoryBytes so the rebuild loop, which needs the raw bytes for the content
 // manifest's sha256 (B1a), can read the file ONCE and get both the hash and the
@@ -263,6 +264,7 @@ func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
 	}
 	return out, nil
 }
+
 // writeWikiIndex refreshes vault/index.md — the page buildContext injects verbatim
 // into every `mora context` / MCP context_memory payload. `updated` is the SAME
 // stamp the rebuild wrote into index_meta.indexed_at (B5): deriving the timestamp

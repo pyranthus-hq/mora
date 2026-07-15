@@ -39,6 +39,7 @@ func atomicWrite(path string, body []byte, mode os.FileMode) error {
 	}
 	return renameReplaceWithRetry(tmp, path)
 }
+
 // markerSyncFn and syncDirFn are injectable seams over the two crash-durability
 // barriers atomicWriteDurable applies: the temp file's own data sync (f.Sync)
 // and the parent-directory sync (syncDir). Production always uses the real
