@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -790,6 +791,69 @@ func fixtureMemory(id, title, text string) Memory {
 		Source: "manual", CreatedAt: "2026-06-30T10:00:00Z", Text: text}
 }
 
+// mustGit runs a git command in dir, failing the test on error.
+func mustGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := realExec(context.Background(), dir, "git", args...)
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return out
+}
+
+// realGitShareRemote builds a REAL committed git repo (share.json + encrypted
+// memories) that subscribe can clone and the H1 pin can fetch from. Returns the
+// repo path to pass as --remote.
+func realGitShareRemote(t *testing.T, rec age.Recipient, mems []Memory) string {
+	t.Helper()
+	remote := t.TempDir()
+	buildShareRepoFixture(t, remote, rec, mems, false)
+	mustGit(t, remote, "init", "-q")
+	mustGit(t, remote, "config", "user.email", "t@t")
+	mustGit(t, remote, "config", "user.name", "t")
+	mustGit(t, remote, "add", "-A")
+	mustGit(t, remote, "commit", "-q", "-m", "share")
+	return remote
+}
+
+// importFixtureGeneration runs the NEW generation-publish import from a
+// materialized fixture dir (memories/*.md.age + share.json) under the import
+// lease, committing a generation — the test analogue of a git/bucket pull for
+// serving-layer tests that don't need to exercise real git.
+func importFixtureGeneration(ctx context.Context, cfg Config, sub shareSubscription, dir string) (shareImportStats, error) {
+	var stats shareImportStats
+	err := shareBuildAndPublish(ctx, cfg, sub.Name, buildModeImport, func(runID string) (int, error) {
+		man, merr := readShareManifest(dir)
+		if merr != nil {
+			return 0, merr
+		}
+		entries, derr := decryptShareBlobs(cfg, man, bucketDirBlobs(dir))
+		if derr != nil {
+			return 0, derr
+		}
+		seq, st, berr := buildAndCommitGeneration(ctx, cfg, sub, runID, "fixture", entries, shareCommitParams{parentFloor: -1})
+		st.Owner, st.Scope = man.Owner, man.Scope
+		stats = st
+		return seq, berr
+	})
+	return stats, err
+}
+
+// resolveGenIndexRO resolves the published generation and opens its index.db with
+// the committed integrity digest, failing the test if nothing resolves.
+func resolveGenIndexRO(t *testing.T, cfg Config, name string) *sql.DB {
+	t.Helper()
+	c, ok, err := resolvePublishedCommit(cfg, name)
+	if err != nil || !ok {
+		t.Fatalf("resolvePublishedCommit(%q) = ok %v, err %v", name, ok, err)
+	}
+	db, err := openShareIndexRO(context.Background(), shareGenIndexPath(cfg, name, c.Gen), c.IndexDigest)
+	if err != nil {
+		t.Fatalf("openShareIndexRO: %v", err)
+	}
+	return db
+}
+
 // treeDigest hashes every file under root (path + content), for before/after
 // no-mutation assertions.
 func treeDigest(t *testing.T, root string) string {
@@ -833,22 +897,23 @@ func TestShareImportDecryptsIndexesAndNeverTouchesVault(t *testing.T) {
 	vaultBefore := treeDigest(t, cfg.VaultDir)
 	indexBefore := treeDigest(t, cfg.DataDir+"/index.db")
 
-	stats, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
+	stats, err := importFixtureGeneration(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
 	if err != nil {
-		t.Fatalf("shareImport: %v", err)
+		t.Fatalf("import: %v", err)
 	}
 	if stats.Imported != 2 || stats.Total != 2 || stats.Owner != "Adit" {
 		t.Fatalf("stats = %+v; want 2 imported, owner Adit", stats)
 	}
 
-	// Corpus decrypted next to the clone, indexed in the share's own index.
-	if _, err := os.Stat(filepath.Join(shareCorpusDir(cfg, "neil"), "mem_20260601_000000_aaaaaaaa.md")); err != nil {
+	// Corpus decrypted into the published generation, indexed in its own index.
+	commit, ok, cerr := resolvePublishedCommit(cfg, "neil")
+	if cerr != nil || !ok {
+		t.Fatalf("no published generation: ok %v err %v", ok, cerr)
+	}
+	if _, err := os.Stat(filepath.Join(shareGenCorpusDir(cfg, "neil", commit.Gen), "mem_20260601_000000_aaaaaaaa.md")); err != nil {
 		t.Fatalf("corpus file missing: %v", err)
 	}
-	db, err := openShareIndexRO(context.Background(), shareIndexPath(cfg, "neil"))
-	if err != nil {
-		t.Fatalf("openShareIndexRO: %v", err)
-	}
+	db := resolveGenIndexRO(t, cfg, "neil")
 	defer db.Close()
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM memories`).Scan(&n); err != nil || n != 2 {
@@ -885,7 +950,7 @@ func TestShareImportRefusesIDSpoof(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(shareRepoDir(cfg, "neil"), "memories", "mem_20260601_000000_dddddddd.md.age"), ct, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err == nil || !strings.Contains(err.Error(), "id") {
+	if _, err := importFixtureGeneration(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err == nil || !strings.Contains(err.Error(), "id") {
 		t.Fatalf("id-spoofed import = %v; want refusal", err)
 	}
 }
@@ -900,26 +965,26 @@ func TestShareImportPrunesRemovedMemories(t *testing.T) {
 	m1 := fixtureMemory("mem_20260601_000000_aaaaaaaa", "Keep", "kept")
 	m2 := fixtureMemory("mem_20260601_000001_bbbbbbbb", "Drop", "dropped")
 	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(), []Memory{m1, m2}, true)
-	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err != nil {
+	if _, err := importFixtureGeneration(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err != nil {
 		t.Fatal(err)
 	}
+	// The publisher drops a memory; re-import builds a NEW immutable generation
+	// from the current repo (never mutating the old one) that simply excludes it.
 	if err := os.Remove(filepath.Join(shareRepoDir(cfg, "neil"), "memories", m2.ID+".md.age")); err != nil {
 		t.Fatal(err)
 	}
-	stats, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
+	stats, err := importFixtureGeneration(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Removed != 1 || stats.Total != 1 {
-		t.Fatalf("stats after removal = %+v; want 1 removed, 1 total", stats)
+	if stats.Total != 1 {
+		t.Fatalf("stats after removal = %+v; want 1 total", stats)
 	}
-	if _, err := os.Stat(filepath.Join(shareCorpusDir(cfg, "neil"), m2.ID+".md")); !os.IsNotExist(err) {
-		t.Fatal("removed memory still in corpus — removal must propagate")
+	// The dropped memory is no longer served on any surface.
+	if _, ok := findSharedMemory(cfg, m2.ID); ok {
+		t.Fatal("removed memory still served — the new generation must exclude it")
 	}
-	db, err := openShareIndexRO(context.Background(), shareIndexPath(cfg, "neil"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := resolveGenIndexRO(t, cfg, "neil")
 	defer db.Close()
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM memories`).Scan(&n); err != nil || n != 1 {
@@ -947,18 +1012,12 @@ func TestShareSubscribeImportsExistingCloneAndSaves(t *testing.T) {
 	run(t, "init")
 	cfg := mustConfig(t)
 	id := writeTestIdentity(t, cfg)
-	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
-		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
+	remote := realGitShareRemote(t, id.Recipient(),
+		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")})
 
-	// hasOrigin: the existing clone's origin resolves to the same remote being
-	// subscribed to (the fake returns git@example.test:me/vault.git).
-	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
 	var buf bytes.Buffer
-	if err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run); err != nil {
+	if err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", remote}, &buf, realExec); err != nil {
 		t.Fatalf("shareSubscribe: %v\n%s", err, buf.String())
-	}
-	if fx.sawSubcommand("git", "clone") {
-		t.Fatal("re-cloned over an existing repo")
 	}
 	sf, err := loadShares(cfg)
 	if err != nil || len(sf.Subscriptions) != 1 || sf.Subscriptions[0].Name != "neil" {
@@ -966,6 +1025,10 @@ func TestShareSubscribeImportsExistingCloneAndSaves(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Adit") || !strings.Contains(buf.String(), "1") {
 		t.Fatalf("subscribe output missing owner/count:\n%s", buf.String())
+	}
+	// The first pull minted and committed a generation, now served.
+	if _, ok := findSharedMemory(cfg, "mem_20260601_000000_aaaaaaaa"); !ok {
+		t.Fatal("subscribed memory not served from the committed generation")
 	}
 }
 
@@ -975,45 +1038,62 @@ func TestShareSubscribeClonesWhenMissing(t *testing.T) {
 	cfg := mustConfig(t)
 	writeTestIdentity(t, cfg)
 
-	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}}
-	var buf bytes.Buffer
-	err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run)
-	// The fake clone materializes nothing, so import fails on the manifest —
-	// but the clone itself must have been attempted with the right args.
-	if err == nil {
-		t.Fatal("subscribe succeeded despite empty clone; want manifest error")
+	// A real remote with a commit but NO share.json: the clone succeeds and the
+	// pin resolves, but reading the manifest from the pinned tree fails loudly.
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "readme"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !fx.sawSubcommand("git", "clone", "git@example.test:me/vault.git", shareRepoDir(cfg, "neil")) {
-		t.Fatalf("clone not attempted with remote+dir; calls: %v", fx.calls)
+	mustGit(t, remote, "init", "-q")
+	mustGit(t, remote, "config", "user.email", "t@t")
+	mustGit(t, remote, "config", "user.name", "t")
+	mustGit(t, remote, "add", "-A")
+	mustGit(t, remote, "commit", "-q", "-m", "no-manifest")
+
+	var buf bytes.Buffer
+	err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", remote}, &buf, realExec)
+	if err == nil {
+		t.Fatal("subscribe succeeded despite a repo with no share.json; want manifest error")
+	}
+	// The failed fresh subscription leaves no registered state behind.
+	if _, ierr := os.Stat(shareSubRoot(cfg, "neil")); !os.IsNotExist(ierr) {
+		t.Fatal("failed fresh subscribe left share state behind")
 	}
 }
 
-func TestSharePullFFOnlyAndReimports(t *testing.T) {
+func TestSharePullReimportsAfterPublisherUpdate(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
 	id := writeTestIdentity(t, cfg)
-	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
-		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
-	sf, err := loadShares(cfg)
+	remote := realGitShareRemote(t, id.Recipient(),
+		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")})
+	var buf bytes.Buffer
+	if err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", remote}, &buf, realExec); err != nil {
+		t.Fatalf("subscribe: %v\n%s", err, buf.String())
+	}
+
+	// Publisher adds a second memory and commits.
+	body, err := renderMemory(fixtureMemory("mem_20260601_000001_bbbbbbbb", "Second", "more"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sf.Subscriptions = append(sf.Subscriptions, shareSubscription{Name: "neil", Remote: "git@example.test:me/vault.git", CreatedAt: "2026-07-01T00:00:00Z"})
-	if err := saveShares(cfg, sf); err != nil {
+	ct, err := encryptShareBytes([]age.Recipient{id.Recipient()}, body)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(remote, "memories", "mem_20260601_000001_bbbbbbbb.md.age"), ct, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, remote, "add", "-A")
+	mustGit(t, remote, "commit", "-q", "-m", "add second")
 
-	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
-	var buf bytes.Buffer
-	if err := sharePull(context.Background(), cfg, nil, &buf, fx.run); err != nil {
+	buf.Reset()
+	if err := sharePull(context.Background(), cfg, nil, &buf, realExec); err != nil {
 		t.Fatalf("sharePull: %v\n%s", err, buf.String())
 	}
-	if !fx.sawSubcommand("git", "pull", "--ff-only", "origin") {
-		t.Fatalf("pull not --ff-only; calls: %v", fx.calls)
-	}
-	if _, err := os.Stat(filepath.Join(shareCorpusDir(cfg, "neil"), "mem_20260601_000000_aaaaaaaa.md")); err != nil {
-		t.Fatalf("pull did not import: %v", err)
+	if _, ok := findSharedMemory(cfg, "mem_20260601_000001_bbbbbbbb"); !ok {
+		t.Fatal("pull did not import the publisher's new memory")
 	}
 }
 
@@ -1024,7 +1104,7 @@ func setupSubscription(t *testing.T, cfg Config, name string, mems []Memory) {
 	id := writeTestIdentity(t, cfg)
 	buildShareRepoFixture(t, shareRepoDir(cfg, name), id.Recipient(), mems, true)
 	sub := shareSubscription{Name: name, Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
-	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err != nil {
+	if _, err := importFixtureGeneration(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err != nil {
 		t.Fatal(err)
 	}
 	sf, err := loadShares(cfg)
@@ -1092,7 +1172,10 @@ func TestSearchSkipsNeverPulledSubscription(t *testing.T) {
 	}
 }
 
-func TestSearchCorruptShareIndexSelfHealsOrFailsLoud(t *testing.T) {
+// Per-artifact suppression (H5): a subscription with no valid committed
+// generation is EXCLUDED from search, but one bad subscription never takes down
+// local-vault recall — and doctor surfaces it as failed.
+func TestSearchCorruptShareIndexNeverTakesDownLocalRecall(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
@@ -1105,33 +1188,23 @@ func TestSearchCorruptShareIndexSelfHealsOrFailsLoud(t *testing.T) {
 	if err := saveShares(cfg, sf); err != nil {
 		t.Fatal(err)
 	}
+	// A legacy flat garbage layout with no committed generation: fail-closed.
 	if err := os.MkdirAll(shareSubRoot(cfg, "bad"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(shareIndexPath(cfg, "bad"), []byte("not a database"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The index is a derived cache: a garbage index with an empty corpus heals
-	// to an empty share, and local search keeps working.
+	// Local search still works; the bad share is silently excluded (never served,
+	// never crashing the whole search).
 	out := run(t, "search", "sqlite")
-	if !strings.Contains(out, "Local sqlite note") || strings.Contains(out, "bad") {
-		t.Fatalf("self-heal of a corpus-less share broke or polluted search:\n%s", out)
+	if !strings.Contains(out, "Local sqlite note") || strings.Contains(out, "[bad]") {
+		t.Fatalf("a bad share broke or polluted local search:\n%s", out)
 	}
-	// But a heal that CANNOT trust the corpus (unparseable file) fails loud —
-	// silently serving a partial share would violate the honest-failure rule.
-	if err := os.WriteFile(shareIndexPath(cfg, "bad"), []byte("not a database"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(shareCorpusDir(cfg, "bad"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(shareCorpusDir(cfg, "bad"), "junk.md"), []byte("no frontmatter"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	err = Run(context.Background(), []string{"search", "sqlite"}, &buf, &buf, strings.NewReader(""))
-	if err == nil || !strings.Contains(err.Error(), "share pull") {
-		t.Fatalf("broken corpus during heal = %v; want loud error pointing at share pull", err)
+	// Doctor surfaces the unhealthy subscription (fail-closed visibility).
+	h := shareHealthOne(cfg, "bad", time.Now())
+	if h.State == healthFresh {
+		t.Fatalf("bad share reported fresh; want failed/never, got %s", h.State)
 	}
 }
 
@@ -1386,7 +1459,7 @@ func TestShareImportRefusesOversizedCiphertext(t *testing.T) {
 	}
 	f.Close()
 	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
-	_, err = shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
+	_, err = importFixtureGeneration(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name))
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized ciphertext = %v; want size refusal", err)
 	}
@@ -1548,28 +1621,9 @@ func TestShareSubscribeCleansUpFreshCloneOnImportFailure(t *testing.T) {
 
 // Re-subscribing over an existing clone must freshen it (pull --ff-only), not
 // import whatever stale state the clone holds (review finding).
-func TestShareSubscribeFreshensExistingClone(t *testing.T) {
-	withTempHome(t)
-	run(t, "init")
-	cfg := mustConfig(t)
-	id := writeTestIdentity(t, cfg)
-	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
-		[]Memory{fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")}, true)
-
-	fx := &fakeExec{out: map[string]string{}, errOn: map[string]error{}, hasOrigin: true}
-	var buf bytes.Buffer
-	if err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", "git@example.test:me/vault.git"}, &buf, fx.run); err != nil {
-		t.Fatalf("shareSubscribe: %v", err)
-	}
-	if !fx.sawSubcommand("git", "pull", "--ff-only", "origin") {
-		t.Fatalf("existing clone not freshened before import; calls: %v", fx.calls)
-	}
-}
-
-// The share index is a derived cache of the local corpus — like the personal
-// index, it self-heals: a corrupt or schema-stale index file is rebuilt from
-// the decrypted corpus instead of bricking every search until a manual pull
-// (review finding: an indexSchemaVersion bump would break all subscribers).
+// The published generation's index.db is immutable, but on-disk corruption is
+// still possible — search heals by re-cutting a repair generation from the head's
+// OWN frozen corpus (never bricking recall) and keeps serving.
 func TestShareIndexSelfHealsFromCorpus(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -1578,13 +1632,17 @@ func TestShareIndexSelfHealsFromCorpus(t *testing.T) {
 	setupSubscription(t, cfg, "neil", []Memory{
 		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
 	})
-	// Corrupt the share index outright.
-	if err := os.WriteFile(shareIndexPath(cfg, "neil"), []byte("not a database"), 0o644); err != nil {
+	// Corrupt the PUBLISHED generation's index.db outright.
+	commit, ok, err := resolvePublishedCommit(cfg, "neil")
+	if err != nil || !ok {
+		t.Fatalf("no published gen: %v", err)
+	}
+	if err := os.WriteFile(shareGenIndexPath(cfg, "neil", commit.Gen), []byte("not a database"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out := run(t, "search", "sqlite")
 	if !strings.Contains(out, "[neil] Neil sqlite decision") {
-		t.Fatalf("search did not self-heal the corrupt share index from the corpus:\n%s", out)
+		t.Fatalf("search did not heal the corrupt share index from the frozen corpus:\n%s", out)
 	}
 }
 
@@ -1818,7 +1876,7 @@ func TestShareImportRefusesCaseFoldCollision(t *testing.T) {
 		t.Skip("filesystem collapsed the fixture names; collision unrepresentable here")
 	}
 	sub := shareSubscription{Name: "neil", Remote: "r", CreatedAt: "2026-07-01T00:00:00Z"}
-	if _, err := shareImport(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err == nil || !strings.Contains(err.Error(), "case") {
+	if _, err := importFixtureGeneration(context.Background(), cfg, sub, shareRepoDir(cfg, sub.Name)); err == nil || !strings.Contains(err.Error(), "case") {
 		t.Fatalf("case-fold collision import = %v; want refusal naming the collision", err)
 	}
 }

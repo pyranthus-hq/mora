@@ -174,11 +174,12 @@ func TestBucketPublishFetchImportRoundtrip(t *testing.T) {
 		}
 	}
 
-	// End-to-end: the existing shareImport validates + indexes the materialized dir.
+	// End-to-end: the import validates + indexes the materialized dir into a
+	// published generation.
 	sub.PinnedPubkey, sub.LastVersion = pin, ver
-	stats, err := shareImport(f.ctx, f.cfg, sub, dest)
+	stats, err := importFixtureGeneration(f.ctx, f.cfg, sub, dest)
 	if err != nil {
-		t.Fatalf("shareImport of materialized dir: %v", err)
+		t.Fatalf("import of materialized dir: %v", err)
 	}
 	if stats.Total != 2 {
 		t.Fatalf("imported %d memories, want 2", stats.Total)
