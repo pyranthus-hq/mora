@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -290,5 +291,96 @@ func TestExamSurfaceClockGuard(t *testing.T) {
 	})
 	if briefClockCalls != 1 {
 		t.Fatalf("cmdPulse briefClock calls = %d, want exactly 1 captured clock", briefClockCalls)
+	}
+}
+
+// TestExamServiceOnlyGateIsAssembled closes the historical helper-test hole for
+// memoryIsServiceOnly. The service sender is deliberately given a recent,
+// actionable message that the daily window would otherwise render in full.
+func TestExamServiceOnlyGateIsAssembled(t *testing.T) {
+	cfg, _, at := seedExamHome(t)
+	pinExamSurfaceClocks(t, at)
+	m, err := findMemory(cfg, "gmail_thread/exam-footer-negative")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Title = "Action required"
+	m.Text = "From: Example Updates <no-reply@example.invalid>\n\nCan you send the review access code?"
+	m.Meta = map[string]any{
+		"from":          []string{"no-reply@example.invalid"},
+		"to":            []string{"alex@example.com"},
+		"message_count": "1",
+		"names": map[string]string{
+			"alex@example.com":         "Alex Morgan",
+			"no-reply@example.invalid": "Example Updates",
+		},
+	}
+	var ids []string
+	for i := 0; i < 3; i++ {
+		item := m
+		item.ID = fmt.Sprintf("gmail_thread/exam-service-tripwire-%d", i)
+		item.ProviderID = fmt.Sprintf("exam-service-tripwire-%d", i)
+		item.ContentHash = fmt.Sprintf("exam-service-tripwire-%d", i)
+		item.CreatedAt = at.Add(-time.Duration(i+1) * time.Minute).Format(time.RFC3339)
+		item.Meta["occurred_at"] = item.CreatedAt
+		if err := writeMemory(cfg, item); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, item.ID)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	output := runExamCLI(t, "pulse", "--digest", "--since-hours", "720")
+	for _, id := range ids[:2] {
+		if !strings.Contains(output, "(id: "+id+")") {
+			t.Fatalf("service low-signal floor did not render %s; tripwire is vacuous:\n%s", id, output)
+		}
+	}
+	if strings.Contains(output, "(id: "+ids[2]+")") {
+		t.Fatalf("service-only tail escaped into assembled daily brief:\n%s", output)
+	}
+}
+
+// TestExamIMessageSpeakerPrefixIsNotProductText drives the transcript cleaner
+// through graph retrieval and the real event CLI. Renderer scaffolding such as
+// "Dana:" must not become claimed evidence text.
+func TestExamIMessageSpeakerPrefixIsNotProductText(t *testing.T) {
+	cfg, event, at := seedExamHome(t)
+	pinExamSurfaceClocks(t, at)
+	m, err := findMemory(cfg, "imessage_chat/exam-flywheel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Text = "## 2026-07-13\nMe: Thanks, I will meet you there.\nDana Ellis: The launch review decision is final."
+	body, err := renderMemory(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.Path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net")
+	brief := runExamEventCLI(t, event.EventID, at)
+	found := false
+	for _, section := range brief.Sections {
+		for _, line := range section.Lines {
+			if line.Citation.MemoryID() != "imessage_chat/exam-flywheel" {
+				continue
+			}
+			found = true
+			if !strings.Contains(line.Text, "The launch review decision is final.") {
+				t.Fatalf("named-speaker tripwire did not reach product text: %q", line.Text)
+			}
+			if strings.Contains(line.Text, "Dana Ellis:") || strings.Contains(line.Text, "Me:") {
+				t.Fatalf("iMessage speaker scaffolding escaped into product text: %q", line.Text)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("flywheel iMessage evidence did not reach the assembled brief")
 	}
 }
