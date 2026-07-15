@@ -439,6 +439,12 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if dropped > 0 {
 		out["results_truncated"] = dropped
 	}
+	// Packet H5: surface any subscription that is degraded/failed/never so an
+	// unhealthy share is visible (never silently dropped). Additive key on the
+	// same envelope PR 2 introduces — neither reshapes the other's field.
+	if su := sharesUnhealthy(cfg, time.Now()); len(su) > 0 {
+		out["shares_unhealthy"] = su
+	}
 	return out, nil
 }
 

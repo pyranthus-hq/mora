@@ -264,7 +264,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// already returned above for --pulse) and never on the MCP hot path. Absent =>
 	// unverified (non-critical, so a legacy index does not redden every first
 	// doctor); present+mismatch => the index provably does not reflect the vault
-	// (critical). PR 4's producer_live:* checks are absent here (fail-open contract).
+	// (critical).
 	mOK, mCritical := indexMatchesVault(cfg)
 	checks = append(checks, doctorCheck{Name: "index_matches_vault", OK: mOK, Critical: mCritical})
 
@@ -283,6 +283,29 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		checks = append(checks, doctorCheck{Name: "brief_artifact_fresh", OK: aOK, Critical: true})
 	}
 
+	// Packet H4: one critical share_fresh:<name> check per subscription (never/
+	// unreadable fail closed; a `failed` share still serves its last-good head but
+	// is surfaced for investigation). The Index arm carries the per-share sub-arm.
+	shareHealth := shareHealthAll(cfg, now)
+	for _, sh := range shareHealth {
+		checks = append(checks, doctorCheck{Name: "share_fresh:" + sh.Name, OK: sh.State == healthFresh, Critical: true})
+	}
+	idxH.Shares = shareIndexHealthAll(cfg, now)
+
+	// Whole-product storage accountant (Packet H3b): doctor's storage_status and
+	// share admission measure the same footprint. A walk/stat failure is a critical
+	// `unknown`, never a silent undercount. This MUST precede the `healthy` collapse
+	// below so its critical check is actually counted.
+	used, storageErr := productStorageBytes(cfg)
+	var st string
+	if storageErr != nil {
+		st = "unknown"
+		used = 0
+		checks = append(checks, doctorCheck{Name: "storage_status", OK: false, Critical: true})
+	} else {
+		st = storageStatus(used)
+	}
+
 	healthy := true
 	for _, c := range checks {
 		if c.Critical && !c.OK {
@@ -290,9 +313,6 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 
-	// Storage footprint vs target/ceiling — visibility only; Mora never caps.
-	used := vaultStorageBytes(cfg)
-	st := storageStatus(used)
 	gitSync := false
 	if _, err := os.Stat(filepath.Join(cfg.VaultDir, ".git")); err == nil {
 		gitSync = true
