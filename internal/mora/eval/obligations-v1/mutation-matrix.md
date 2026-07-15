@@ -9,30 +9,32 @@ CI job.
 
 ## Matrix 1 — production exclusion gates
 
-Each row is exercised by its exact
-`TestScorerRedTeam/meeting/s_gate_disable_sweep/<gate>` subtest. The mutant
-injects the forbidden control output that disabling that production exclusion
-would leak and requires the gate's registered scorecard counter to move.
+Each row first runs its
+`TestScorerRedTeam/meeting/s_gate_disable_sweep/<gate>` consequence control.
+The `CLOSED` rows additionally rewrite the real production call site or body in
+a disposable source copy and require the named assembled `internal/mora` test
+to fail. A synthetic consequence control alone is not production mutation
+coverage.
 
 | Production gate | Result |
 |---|---|
-| `classifyMeetingBriefEvidence` | CLOSED — `TestScorerRedTeam/.../classifyMeetingBriefEvidence` goes red |
-| `isMeetingNotification` | CLOSED — `TestScorerRedTeam/.../isMeetingNotification` goes red |
-| `assignedToThirdParty` | CLOSED — `TestScorerRedTeam/.../assignedToThirdParty` goes red |
-| `memoryIsServiceOnly` | CLOSED — `TestScorerRedTeam/.../memoryIsServiceOnly` goes red |
-| `userOwnedOpenLoop` | CLOSED — `TestScorerRedTeam/.../userOwnedOpenLoop` goes red |
-| `meetingBriefIsTwoPartyExchange` | CLOSED — `TestScorerRedTeam/.../meetingBriefIsTwoPartyExchange` goes red |
-| `relationalEvidenceIDs` | CLOSED — `TestScorerRedTeam/.../relationalEvidenceIDs` goes red |
-| `meetingBriefResolveAttribution` | CLOSED — `TestScorerRedTeam/.../meetingBriefResolveAttribution` goes red |
-| `stripURLs` | CLOSED — `TestScorerRedTeam/.../stripURLs` goes red |
-| `unwrapHardWraps` | CLOSED — `TestScorerRedTeam/.../unwrapHardWraps` goes red |
-| `senderAuthoredBody` | CLOSED — `TestScorerRedTeam/.../senderAuthoredBody` goes red |
-| `stripSpeakerPrefix` | CLOSED — `TestScorerRedTeam/.../stripSpeakerPrefix` goes red |
-| `isForwardedSubject` | CLOSED — `TestScorerRedTeam/.../isForwardedSubject` goes red |
-| `isLeadInFragment` | CLOSED — `TestScorerRedTeam/.../isLeadInFragment` goes red |
-| `stripNoiseTokens` | CLOSED — `TestScorerRedTeam/.../stripNoiseTokens` goes red |
-| `gmailActionableAsk` | CLOSED — `TestScorerRedTeam/.../gmailActionableAsk` goes red |
-| `containsPhrase` | CLOSED — `TestScorerRedTeam/.../containsPhrase` goes red |
+| `classifyMeetingBriefEvidence` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `isMeetingNotification` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `assignedToThirdParty` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `memoryIsServiceOnly` | CLOSED — `TestExamServiceOnlyGateIsAssembled` goes red |
+| `userOwnedOpenLoop` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `meetingBriefIsTwoPartyExchange` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `relationalEvidenceIDs` | CLOSED — `TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation` goes red |
+| `meetingBriefResolveAttribution` | CLOSED — `TestMeetingBriefDropsAmbiguousOutboundGroupAttribution` goes red |
+| `stripURLs` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `unwrapHardWraps` | HOLE — issue #139, expires 2026-07-21 |
+| `senderAuthoredBody` | CLOSED — `TestExamAuthoredToQuotedDisappearsFromTheRealBrief` goes red |
+| `stripSpeakerPrefix` | CLOSED — `TestExamIMessageSpeakerPrefixIsNotProductText` goes red |
+| `isForwardedSubject` | HOLE — issue #139, expires 2026-07-21 |
+| `isLeadInFragment` | HOLE — issue #139, expires 2026-07-21 |
+| `stripNoiseTokens` | CLOSED — `TestExamCorrectionFlywheel` goes red |
+| `gmailActionableAsk` | HOLE — issue #139, expires 2026-07-21 |
+| `containsPhrase` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
 
 ## Matrix 2 — exam machinery
 

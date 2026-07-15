@@ -36,7 +36,7 @@ production_gates=(
 )
 
 for gate in "${production_gates[@]}"; do
-  run "production/$gate" "$GO" test ./internal/mora/exam \
+  run "consequence/$gate" "$GO" test ./internal/mora/exam \
     -run "^TestScorerRedTeam/meeting/s_gate_disable_sweep/$gate$" -count=1
 done
 
@@ -87,6 +87,91 @@ PY
   rm -rf "$tmp"
 }
 
+kill_mutant "production/classifyMeetingBriefEvidence" \
+  internal/mora/meetingbrief.go \
+  'kind := classifyMeetingBriefEvidence(m, cfg, at)' \
+  'kind := meetingBriefOpenLoops' \
+  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+
+kill_mutant "production/isMeetingNotification" \
+  internal/mora/meetingbrief.go \
+  $'if isMeetingNotification(m) {\n\t\treturn ""\n\t}' \
+  $'if false {\n\t\treturn ""\n\t}' \
+  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+
+kill_mutant "production/assignedToThirdParty" \
+  internal/mora/meetingbrief.go \
+  $'if assignedToThirdParty(signalText(m), selfNameTokens(selfEmails(cfg))) {\n\t\treturn ""\n\t}' \
+  $'if false {\n\t\treturn ""\n\t}' \
+  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+
+kill_mutant "production/memoryIsServiceOnly" \
+  internal/mora/digest.go \
+  $'\treturn true\n}\n\n// isLowSignalItem' \
+  $'\treturn false\n}\n\n// isLowSignalItem' \
+  ./internal/mora '^TestExamServiceOnlyGateIsAssembled$'
+
+kill_mutant "production/userOwnedOpenLoop" \
+  internal/mora/meetingbrief.go \
+  $'if userOwnedOpenLoop(m, cfg) {\n\t\treturn meetingBriefOpenLoops\n\t}' \
+  $'if true {\n\t\treturn meetingBriefOpenLoops\n\t}' \
+  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+
+kill_mutant "production/meetingBriefIsTwoPartyExchange" \
+  internal/mora/meetingbrief.go \
+  $'if isGmailMemory(m) && !meetingBriefIsTwoPartyExchange(m, self, roster...) {\n\t\t\t\tcontinue\n\t\t\t}' \
+  $'if false {\n\t\t\t\tcontinue\n\t\t\t}' \
+  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+
+kill_mutant "production/relationalEvidenceIDs" \
+  internal/mora/meetingbrief.go \
+  $'if rel, _ := e["rel"].(string); rel == graphRelMentions {\n\t\t\tcontinue\n\t\t}' \
+  $'if false {\n\t\t\tcontinue\n\t\t}' \
+  ./internal/mora '^TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation$'
+
+kill_mutant "production/meetingBriefResolveAttribution" \
+  internal/mora/meetingbrief.go \
+  'candidate, unambiguous := meetingBriefResolveAttribution(associationsByMemory[id], lineDecisions)' \
+  $'candidate, unambiguous := associationsByMemory[id][0], true\n\t\t_ = lineDecisions' \
+  ./internal/mora '^TestMeetingBriefDropsAmbiguousOutboundGroupAttribution$'
+
+kill_mutant "production/stripURLs" \
+  internal/mora/meetingbrief.go \
+  'text = unwrapHardWraps(stripURLs(text))' \
+  'text = unwrapHardWraps(text)' \
+  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+
+printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/unwrapHardWraps"
+
+kill_mutant "production/senderAuthoredBody" \
+  internal/mora/meetingbrief.go \
+  'body := senderAuthoredBody(stripFromLine(m.Text))' \
+  'body := stripFromLine(m.Text)' \
+  ./internal/mora '^TestExamAuthoredToQuotedDisappearsFromTheRealBrief$'
+
+kill_mutant "production/stripSpeakerPrefix" \
+  internal/mora/meetingbrief.go \
+  $'func stripSpeakerPrefix(segment string) string {\n\treturn strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))\n}' \
+  $'func stripSpeakerPrefix(segment string) string {\n\treturn segment\n}' \
+  ./internal/mora '^TestExamIMessageSpeakerPrefixIsNotProductText$'
+
+printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/isForwardedSubject"
+printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/isLeadInFragment"
+
+kill_mutant "production/stripNoiseTokens" \
+  internal/mora/meetingbrief.go \
+  'segment := stripNoiseTokens(rawSegment)' \
+  'segment := strings.TrimSpace(rawSegment)' \
+  ./internal/mora '^TestExamCorrectionFlywheel$'
+
+printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/gmailActionableAsk"
+
+kill_mutant "production/containsPhrase" \
+  internal/mora/meetingbrief.go \
+  $'func containsPhrase(text, phrase string) bool {\n\tif phrase == ""' \
+  $'func containsPhrase(text, phrase string) bool {\n\treturn strings.Contains(text, phrase)\n\tif phrase == ""' \
+  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+
 kill_mutant "surface/direct-wall-clock" \
   internal/mora/mora.go \
   'now := briefClock()
@@ -125,4 +210,4 @@ kill_mutant "flywheel/graph-blind-scorer" \
   'Before:     clonePredictions(in.FlywheelPost),' \
   ./internal/mora/exam '^TestScorerRedTeam/meeting/t_graph_state_insensitive$'
 
-printf 'All obligation-exam mutation rows CLOSED.\n'
+printf 'Obligation-exam mutation audit complete; dated holes are listed above.\n'

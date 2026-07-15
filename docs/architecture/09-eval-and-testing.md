@@ -69,7 +69,7 @@ This measures the value of a human confirmation. It deliberately does not test w
 
 ### Mutation matrices
 
-`scripts/eval/exam-mutation-matrix.sh` is the reproducible audit driver, and `eval/obligations-v1/mutation-matrix.md` records its dated result. Matrix 1 covers all seventeen production exclusion gates reachable from meeting-brief assembly. Matrix 2 attacks the exam itself: validator refusal, scorer dimensions and sensitivity relations, red-team registration, determinism and identity guards, corpus hashes, current-surface clocks/caps, and both flywheel arms. A row is either `CLOSED` by a named red test or a dated, issue-linked `HOLE`; there are no silent or undated exceptions.
+`scripts/eval/exam-mutation-matrix.sh` is the reproducible audit driver, and `eval/obligations-v1/mutation-matrix.md` records its dated result. Matrix 1 plants source-level mutants at all seventeen production exclusion gates reachable from meeting-brief assembly: thirteen are closed by assembled-surface tests, while four are dated holes owned by #139. Matrix 2 attacks the exam itself: validator refusal, scorer dimensions and sensitivity relations, red-team registration, determinism and identity guards, corpus hashes, current-surface clocks/caps, and both flywheel arms. A row is either `CLOSED` by a named red test or a dated, issue-linked `HOLE`; there are no silent or undated exceptions.
 
 ### Determinism is structural, not a convention
 
