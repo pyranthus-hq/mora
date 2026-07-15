@@ -388,6 +388,9 @@ func ledgerRelationalEvidenceIDs(t *testing.T, ledger exam.Ledger, attendee stri
 		aliases := append(append([]string{identity.Display}, identity.Emails...), identity.Handles...)
 		for _, alias := range aliases {
 			if strings.ToLower(strings.TrimSpace(alias)) == target {
+				if identityID != "" && identityID != identity.ID {
+					t.Fatalf("brief attendee %q ambiguously resolves to ledger identities %q and %q", attendee, identityID, identity.ID)
+				}
 				identityID = identity.ID
 				break
 			}
@@ -397,6 +400,9 @@ func ledgerRelationalEvidenceIDs(t *testing.T, ledger exam.Ledger, attendee stri
 		t.Fatalf("brief attendee %q does not resolve to a ledger identity", attendee)
 	}
 
+	// This oracle is intentionally one-sided: surfaced citations must be a subset
+	// of ledger-relational evidence. It catches wrong-person attribution without
+	// turning every missing obligation into a second extraction-recall assertion.
 	related := map[string]bool{}
 	for _, artifact := range ledger.Artifacts {
 		isRelated := false

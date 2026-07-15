@@ -125,7 +125,7 @@ var RequiredMetrics = []MetricSpec{
 		Description: "obligation extraction P/R — meeting at quote grain, daily at artifact grain",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
-		SabotageCases: []string{RowEmptyBrief, RowEveryQuestion, RowCopyTheInput, RowAuthoredToQuoted, RowCitationSpanMove, RowDailyEmpty},
+		SabotageCases: []string{RowEmptyBrief, RowEveryQuestion, RowCopyTheInput, RowAuthoredToQuoted, RowCitationSpanMove, RowDailyEmpty, RowGraphStateInsensitive},
 	},
 	{
 		ID: MetricRecallUncapped, Field: "RecallUncapped", Version: 1,
@@ -255,30 +255,28 @@ var RequiredMetrics = []MetricSpec{
 	},
 }
 
-// Red-team row ids. Row (t) — the graph-state-insensitive scorer — needs the
-// two-state merge run, which lands with the correction-flywheel fixture; it is
-// deliberately NOT registered here, because a manifested row with no baseline is a
-// named failure and a silently registered row that nothing exercises is worse.
+// Red-team row ids.
 const (
-	RowSyntheticGibberish  = "a_synthetic_gibberish"
-	RowEmptyBrief          = "b_empty_brief"
-	RowEveryQuestion       = "c_every_question"
-	RowCopyTheInput        = "d_copy_the_input"
-	RowIdentityFlip        = "e_identity_flip"
-	RowDirectionFlip       = "f_direction_flip"
-	RowUnsupportedCitation = "g_unsupported_citation"
-	RowConstantClassifier  = "h_constant_classifier"
-	RowDailyEmpty          = "i_daily_empty"
-	RowDailyCitation       = "j_daily_citation"
-	RowOracle              = "k_oracle"
-	RowClosedAsOpen        = "l_closed_as_open"
-	RowGoldOwnerFlip       = "m_gold_owner_flip"
-	RowCitationSpanMove    = "n_citation_span_move"
-	RowAuthoredToQuoted    = "o_authored_to_quoted"
-	RowRemovedSource       = "p_removed_source"
-	RowDuplicateNoise      = "q_duplicate_noise"
-	RowInputOrder          = "r_input_order"
-	RowGateDisableSweep    = "s_gate_disable_sweep"
+	RowSyntheticGibberish    = "a_synthetic_gibberish"
+	RowEmptyBrief            = "b_empty_brief"
+	RowEveryQuestion         = "c_every_question"
+	RowCopyTheInput          = "d_copy_the_input"
+	RowIdentityFlip          = "e_identity_flip"
+	RowDirectionFlip         = "f_direction_flip"
+	RowUnsupportedCitation   = "g_unsupported_citation"
+	RowConstantClassifier    = "h_constant_classifier"
+	RowDailyEmpty            = "i_daily_empty"
+	RowDailyCitation         = "j_daily_citation"
+	RowOracle                = "k_oracle"
+	RowClosedAsOpen          = "l_closed_as_open"
+	RowGoldOwnerFlip         = "m_gold_owner_flip"
+	RowCitationSpanMove      = "n_citation_span_move"
+	RowAuthoredToQuoted      = "o_authored_to_quoted"
+	RowRemovedSource         = "p_removed_source"
+	RowDuplicateNoise        = "q_duplicate_noise"
+	RowInputOrder            = "r_input_order"
+	RowGateDisableSweep      = "s_gate_disable_sweep"
+	RowGraphStateInsensitive = "t_graph_state_insensitive"
 )
 
 // RedTeamRowID is version-pinned by (surface, name). TestScorerRedTeam iterates THIS
@@ -312,6 +310,7 @@ var RequiredRedTeamRows = []RedTeamRowID{
 	{SurfaceMeeting, RowInputOrder},
 	{SurfaceDaily, RowInputOrder},
 	{SurfaceMeeting, RowGateDisableSweep},
+	{SurfaceMeeting, RowGraphStateInsensitive},
 }
 
 // ProductionExclusionGates are the seventeen gates reachable from

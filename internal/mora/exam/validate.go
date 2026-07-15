@@ -117,13 +117,13 @@ func validateIdentity(l Ledger) (map[string]Identity, error) {
 	return ids, nil
 }
 
-func parseAt(rule, label, raw string, asOf time.Time) (time.Time, error) {
+func parseAt(label, raw string, asOf time.Time) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
-		return time.Time{}, ruleError(rule, "%s is not RFC3339: %q", label, raw)
+		return time.Time{}, ruleError(RuleTimestamp, "%s is not RFC3339: %q", label, raw)
 	}
 	if t.After(asOf) {
-		return time.Time{}, ruleError(rule, "%s is after as_of: %q", label, raw)
+		return time.Time{}, ruleError(RuleTimestamp, "%s is after as_of: %q", label, raw)
 	}
 	return t, nil
 }
@@ -134,12 +134,12 @@ func validateTimestamps(l Ledger) error {
 		return ruleError(RuleTimestamp, "as_of is not RFC3339: %q", l.AsOf)
 	}
 	for _, a := range l.Artifacts {
-		if _, err := parseAt(RuleTimestamp, "artifact occurred_at", a.OccurredAt, asOf); err != nil {
+		if _, err := parseAt("artifact occurred_at", a.OccurredAt, asOf); err != nil {
 			return err
 		}
 		var prior time.Time
 		for _, m := range a.Messages {
-			at, err := parseAt(RuleTimestamp, "message at", m.At, asOf)
+			at, err := parseAt("message at", m.At, asOf)
 			if err != nil {
 				return err
 			}
@@ -164,12 +164,12 @@ func validateTimestamps(l Ledger) error {
 			return ruleError(RuleTimestamp, "commitment %q has invalid due_kind %q", c.ID, c.DueKind)
 		}
 		if c.DueAt != "" {
-			if _, err := parseAt(RuleTimestamp, "due_at", c.DueAt, asOf); err != nil {
+			if _, err := parseAt("due_at", c.DueAt, asOf); err != nil {
 				return err
 			}
 		}
 		for _, tr := range c.Transitions {
-			if _, err := parseAt(RuleTimestamp, "transition at", tr.At, asOf); err != nil {
+			if _, err := parseAt("transition at", tr.At, asOf); err != nil {
 				return err
 			}
 		}

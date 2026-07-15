@@ -13,5 +13,5 @@ meta: {"message_count":"2","occurred_at":"2026-07-13T19:05:00Z","participants":[
 ---
 
 ## 2026-07-13
-+15550100137: I will bring the room key to the review.
 Me: Thanks, I will meet you there.
++15550100137: I will bring the room key to the review.

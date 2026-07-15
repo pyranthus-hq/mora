@@ -97,19 +97,19 @@
       "messages": [
         {
           "id": "m1",
-          "from": "p/dana",
-          "to": [],
-          "cc": [],
-          "at": "2026-07-13T19:00:00Z",
-          "body": [{"id": "b1", "kind": "authored", "text": "I will bring the room key to the review."}]
-        },
-        {
-          "id": "m2",
           "from": "p/self",
           "to": [],
           "cc": [],
-          "at": "2026-07-13T19:05:00Z",
+          "at": "2026-07-13T19:00:00Z",
           "body": [{"id": "b1", "kind": "authored", "text": "Thanks, I will meet you there."}]
+        },
+        {
+          "id": "m2",
+          "from": "p/dana",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-13T19:05:00Z",
+          "body": [{"id": "b1", "kind": "authored", "text": "I will bring the room key to the review."}]
         }
       ]
     },
@@ -389,7 +389,7 @@
       "counterparty": "p/self",
       "direction": "owed_by_counterparty",
       "summary": "Bring the room key",
-      "opened_by": {"artifact_id": "a/imessage-flywheel", "message_id": "m1", "block_id": "b1", "quote": "I will bring the room key to the review."},
+      "opened_by": {"artifact_id": "a/imessage-flywheel", "message_id": "m2", "block_id": "b1", "quote": "I will bring the room key to the review."},
       "due_kind": "none",
       "state": "open",
       "transitions": [],

@@ -43,6 +43,11 @@ func TestRenderUsesPinnedTimezone(t *testing.T) {
 	t.Cleanup(func() { time.Local = originalLocal })
 	time.Local = time.FixedZone("exam+9", 9*60*60)
 
+	_, offset := time.Unix(0, 0).In(renderLocation).Zone()
+	if offset != 0 {
+		t.Fatalf("renderLocation offset = %d seconds, want UTC (0); a westward pin can silently move day headers", offset)
+	}
+
 	l := validTestLedger()
 	l.Artifacts[1].Messages[0].At = "2026-07-13T23:30:00Z"
 	l.Artifacts[1].Messages[1].At = "2026-07-13T23:45:00Z"
