@@ -109,7 +109,12 @@ func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder
 func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
 	var local []Memory
 	var err error
-	if embedderIsSemantic(chooseEmbedderFor(cfg)) {
+	// HEALTH-12 / Packet D2 read path: DEGRADE VISIBLY. An unreachable configured
+	// `ollama` embedder makes chooseEmbedderFor err — route to FTS-only rather than
+	// hard-failing a search on a one-second daemon blip. The failure is disclosed by
+	// the reddened index health banner (indexHealthOf → degraded), not by a crash.
+	emb, embErr := chooseEmbedderFor(cfg)
+	if embErr == nil && embedderIsSemantic(emb) {
 		local, err = hybridSearch(ctx, cfg, query, scope, limit)
 	} else {
 		local, err = searchMemories(ctx, cfg, query, scope, limit)
@@ -172,7 +177,11 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		// use the same model. Calling chooseEmbedder() twice would let a daemon that
 		// drops between the calls query an ollama-keyed index with a static vector
 		// (dim/model mismatch → empty arm), silently corrupting the trace.
-		emb = chooseEmbedderFor(cfg)
+		//
+		// HEALTH-12 read path: an unreachable configured embedder makes this err;
+		// leave emb nil and useVec false so the vector arm is simply skipped (FTS +
+		// graph still answer) rather than hard-failing. Never substitute static here.
+		resolved, embErr := chooseEmbedderFor(cfg)
 		// The vector arm only EARNS a place in the fusion when the embedder is
 		// SEMANTIC. Under the static-hash floor the stored vectors are deterministic
 		// noise; fusing a noise arm via RRF rewards cross-arm coincidence and DEMOTES
@@ -180,7 +189,10 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		// scored BELOW FTS-only on the live recall eval (a gold doc at FTS#0 fused to
 		// #15 because the noise vec arm ranked it #52). Graph expansion is
 		// embedder-independent (pure metadata), so it always stays.
-		useVec = embedderIsSemantic(emb)
+		if embErr == nil {
+			emb = resolved
+			useVec = embedderIsSemantic(emb)
+		}
 		if useVec {
 			if vecIDs, err = vectorSearchIDs(ctx, db, emb, query, scope, pool); err != nil {
 				return nil, tr, err
@@ -241,7 +253,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// vecOK gates it: with no stored vectors (a pre-I2 index) there is nothing to
 	// rerank on AND emb is unset, so MMR must no-op rather than deref a nil Embedder
 	// (the force seam bypasses the useVec/semantic gate, never the vectors-exist gate).
-	if mp := cfg.mmr(); mp != nil && vecOK && mmrActive(useVec, mp) && len(ids) > 1 {
+	if mp := cfg.mmr(); mp != nil && vecOK && emb != nil && mmrActive(useVec, mp) && len(ids) > 1 {
 		vecByID, err := loadVectorsByID(ctx, db, emb.ModelID(), ids)
 		if err != nil {
 			return nil, tr, err
@@ -309,7 +321,10 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 // cosine similarity (brute force; <100ms to ~250k vectors). Zero-similarity rows
 // are dropped so a query never pulls in wholly unrelated memories on vector alone.
 func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope string, pool int) ([]string, error) {
-	qv := emb.Embed(query)
+	qv, err := emb.Embed(query)
+	if err != nil {
+		return nil, err
+	}
 	q := `SELECT v.memory_id, v.vec FROM mem_vectors v JOIN memories m ON m.id = v.memory_id WHERE v.model = ?`
 	args := []any{emb.ModelID()}
 	if scope != "" {

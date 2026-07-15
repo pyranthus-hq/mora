@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,8 +18,9 @@ import (
 // come from a transformer model (e.g. nomic-embed-text) instead of the built-in
 // static embedder. This is the ONLY path that touches a network socket, it is
 // strictly opt-in (never the default), and it only talks to localhost — the
-// zero-egress thesis holds (no data leaves the machine). If the daemon is
-// unreachable, it degrades to the static embedder with a warning, never an error.
+// zero-egress thesis holds (no data leaves the machine). If an opted-in daemon is
+// unreachable, resolution FAILS CLOSED (errEmbedderUnavailable) — it never silently
+// substitutes the static embedder (HEALTH-12, D2); callers propagate the error.
 
 // ollamaEmbedder calls a local Ollama daemon's /api/embeddings endpoint.
 type ollamaEmbedder struct {
@@ -72,25 +74,39 @@ func digestForModel(tagsBody []byte, model string) string {
 	return ""
 }
 
-func (e ollamaEmbedder) Embed(text string) []float32 {
+// Digest returns the resolved Ollama model digest ("" when the daemon didn't list
+// one). It is stamped as index provenance (embedder_digest) so a later `ollama pull`
+// that re-resolves the same NAME to new weights is detectable (HEALTH-12, D3).
+func (e ollamaEmbedder) Digest() string { return e.digest }
+
+// Embed calls the daemon and returns an error on ANY transport/decode failure — it
+// NEVER fabricates a zero vector. The pre-D1 code returned a dim-length zero slice on
+// failure "to never crash indexing"; that is exactly how a daemon that died
+// mid-rebuild committed zero vectors stamped with the real Ollama model id and the
+// rebuild still exited 0 (the recorded incident, HEALTH-12). A real error lets the
+// rebuild tx roll back to the last good index (index.go's deferred tx.Rollback).
+func (e ollamaEmbedder) Embed(text string) ([]float32, error) {
 	reqBody, _ := json.Marshal(map[string]string{"model": e.model, "prompt": text})
 	resp, err := e.client.Post(e.baseURL+"/api/embeddings", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return make([]float32, e.dim) // degrade to a zero vector; never crash indexing
+		return nil, fmt.Errorf("%w: %v", errEmbedderUnavailable, err)
 	}
 	defer resp.Body.Close()
 	var out struct {
 		Embedding []float64 `json:"embedding"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || len(out.Embedding) == 0 {
-		return make([]float32, e.dim)
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("%w: decoding /api/embeddings: %v", errEmbedderUnavailable, err)
+	}
+	if len(out.Embedding) == 0 {
+		return nil, fmt.Errorf("%w: /api/embeddings returned an empty vector", errEmbedderUnavailable)
 	}
 	vec := make([]float32, len(out.Embedding))
 	for i, v := range out.Embedding {
 		vec[i] = float32(v)
 	}
 	normalize(vec) // RRF/cosine assume unit vectors; Ollama returns unnormalized
-	return vec
+	return vec, nil
 }
 
 // isLoopbackURL reports whether the URL's host is localhost or a loopback IP, so
@@ -148,7 +164,7 @@ func (e ollamaEmbedder) reachable() bool { _, ok := e.probe(); return ok }
 // Index-time and query-time both call this with the SAME cfg, so the model id stored
 // per vector matches the query model (a mismatch just empties the vector arm — the
 // FTS + graph arms still answer).
-func chooseEmbedderFor(cfg Config) Embedder {
+func chooseEmbedderFor(cfg Config) (Embedder, error) {
 	pref, ok := os.LookupEnv("MORA_EMBEDDER")
 	if !ok {
 		pref = cfg.Embedder // env unset ⇒ fall back to the durable config opt-in
@@ -158,25 +174,36 @@ func chooseEmbedderFor(cfg Config) Embedder {
 
 // chooseEmbedder is the env-only resolver, retained for call sites and tests that
 // have no Config in hand. It is exactly chooseEmbedderFor with an empty config.
-func chooseEmbedder() Embedder { return embedderForPref(os.Getenv("MORA_EMBEDDER")) }
+func chooseEmbedder() (Embedder, error) { return embedderForPref(os.Getenv("MORA_EMBEDDER")) }
 
-// embedderForPref maps a resolved preference string to an Embedder: "ollama" yields
-// the local Ollama embedder when the daemon is reachable and the URL is loopback;
-// anything else (incl. "") yields the deterministic static embedder.
-func embedderForPref(pref string) Embedder {
+// errEmbedderUnavailable is the fail-closed sentinel (HEALTH-12): an EXPLICIT
+// `ollama` preference whose daemon is unreachable — or whose URL is non-loopback —
+// resolves to this error, NEVER a silent static substitute. It is the ONE
+// load-bearing gate (Packet D2): every caller propagates it. Write paths hard-fail
+// (a rebuild refuses rather than re-embedding the whole vault with the static
+// fallback); read paths degrade visibly to FTS and redden the health banner.
+var errEmbedderUnavailable = errors.New("configured embedder (ollama) is unavailable; refusing to substitute the static embedder — start the Ollama daemon, fix MORA_OLLAMA_URL, or set embedder=static")
+
+// embedderForPref maps a resolved preference string to an Embedder. "ollama" yields
+// the local Ollama embedder ONLY when the daemon is reachable and the URL is
+// loopback; an unreachable daemon or a non-loopback URL returns errEmbedderUnavailable
+// (it NEVER substitutes the static embedder — that silent swap is the recorded
+// incident). Anything else (incl. "") is the deterministic static floor, which
+// cannot fail.
+func embedderForPref(pref string) (Embedder, error) {
 	if pref != "ollama" {
-		return defaultEmbedder()
+		return defaultEmbedder(), nil
 	}
 	base := os.Getenv("MORA_OLLAMA_URL")
 	if base == "" {
 		base = "http://localhost:11434"
 	}
 	// Zero-egress guard: Embed POSTs memory text to this host, so refuse any
-	// non-loopback URL — memory bytes must never leave the machine (codex I2). A
-	// misconfigured remote URL falls back to the local static embedder.
+	// non-loopback URL — memory bytes must never leave the machine (codex I2). This
+	// is a fail-closed refusal, NOT a silent fall back to static: an explicit ollama
+	// opt-in pointed at a bad URL must be visible, never quietly downgraded.
 	if !isLoopbackURL(base) {
-		fmt.Fprintf(os.Stderr, "warn: MORA_OLLAMA_URL %q is not loopback; refusing to send memory text off-machine, using the static embedder\n", base)
-		return defaultEmbedder()
+		return nil, fmt.Errorf("%w: MORA_OLLAMA_URL %q is not loopback (memory text must never leave the machine)", errEmbedderUnavailable, base)
 	}
 	model := os.Getenv("MORA_OLLAMA_MODEL")
 	if model == "" {
@@ -185,9 +212,8 @@ func embedderForPref(pref string) Embedder {
 	e := ollamaEmbedder{baseURL: base, model: model, dim: 768, client: &http.Client{Timeout: 30 * time.Second}}
 	digest, ok := e.probe()
 	if !ok {
-		fmt.Fprintln(os.Stderr, "warn: MORA_EMBEDDER=ollama but the Ollama daemon is unreachable; using the built-in static embedder")
-		return defaultEmbedder()
+		return nil, fmt.Errorf("%w: the Ollama daemon at %s is unreachable", errEmbedderUnavailable, base)
 	}
 	e.digest = digest // stamp the resolved digest into ModelID() (see ollamaEmbedder.ModelID)
-	return e
+	return e, nil
 }

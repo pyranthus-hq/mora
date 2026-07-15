@@ -10,7 +10,13 @@ import (
 // default is a pure-Go, zero-egress, single-binary static embedder (no model
 // download, no CGO); an Ollama-backed embedder is an opt-in upgrade (embed_ollama.go).
 type Embedder interface {
-	Embed(text string) []float32
+	// Embed returns a unit-length dense vector, or an error the caller MUST
+	// propagate. An embedder that cannot produce a real vector (e.g. Ollama down)
+	// NEVER fabricates a zero/substitute vector — HEALTH-12: the recorded incident
+	// was a rebuild that committed 3,400 static-fallback vectors and exited 0
+	// because Embed could not signal failure. Write paths fail closed; read paths
+	// degrade visibly (embed.go / embed_ollama.go).
+	Embed(text string) ([]float32, error)
 	Dim() int
 	ModelID() string // stored per-vector so a model change triggers re-embed
 }
@@ -40,7 +46,9 @@ func charNGrams(tok string, emit func(string)) {
 	}
 }
 
-func (e staticEmbedder) Embed(text string) []float32 {
+// Embed for the static embedder never errors: it is the deterministic, zero-egress
+// floor. The error in the return is the interface contract every Embedder shares.
+func (e staticEmbedder) Embed(text string) ([]float32, error) {
 	vec := make([]float32, e.dim)
 	add := func(feature string) {
 		h := fnv.New64a()
@@ -59,7 +67,7 @@ func (e staticEmbedder) Embed(text string) []float32 {
 		charNGrams(tok, add)
 	}
 	normalize(vec)
-	return vec
+	return vec, nil
 }
 
 // normalize scales vec to unit L2 length in place (zero vector stays zero, so a

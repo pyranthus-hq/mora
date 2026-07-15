@@ -167,10 +167,10 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		if profile == "" {
 			profile = "default"
 		}
-		embedder := cfg.Embedder
-		if embedder == "" {
-			embedder = "static"
-		}
+		// D3: report the RESOLVED embedder (probing Ollama), not the raw cfg.Embedder
+		// — an opted-in daemon that is down must read "UNREACHABLE — index built with
+		// static-hash-v1", never a confident "ollama".
+		embedder := resolvedEmbedderLine(cfg)
 		mmr := "off"
 		if cfg.MMR {
 			mmr = "on"

@@ -32,7 +32,7 @@ func TestEvalWeightSweep(t *testing.T) {
 	}
 	// Build the index under Ollama so the vec arm carries real semantic signal.
 	t.Setenv("MORA_EMBEDDER", "ollama")
-	model := chooseEmbedder().ModelID()
+	model := chooseEmbedderModelID(t)
 	if !strings.HasPrefix(model, "ollama:") {
 		t.Skipf("Ollama daemon unreachable (embedder=%q) — sweep needs it; skipping", model)
 	}

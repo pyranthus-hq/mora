@@ -32,6 +32,20 @@ import (
 	"testing"
 )
 
+// chooseEmbedderModelID resolves the env-configured embedder and returns its
+// ModelID, or an "unavailable: …" marker when it fails closed (D2 — a down ollama
+// daemon now returns errEmbedderUnavailable instead of a silent static substitute).
+// The LIVE eval skip-guards key on the "ollama:" prefix, so an error string that is
+// NOT that prefix keeps their "daemon down ⇒ skip" behavior intact.
+func chooseEmbedderModelID(t *testing.T) string {
+	t.Helper()
+	e, err := chooseEmbedder()
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	return e.ModelID()
+}
+
 // ---- attribution buckets (§6) ----
 
 const (
@@ -718,7 +732,11 @@ func TestEvalFixtureNearDupPrecondition(t *testing.T) {
 	emb := defaultEmbedder()
 	embedDoc := func(id string) []float32 {
 		m := evalFixtureByID(t, id)
-		return emb.Embed(m.Title + "\n" + m.Text) // exactly what writeVectors embeds
+		v, err := emb.Embed(m.Title + "\n" + m.Text) // exactly what writeVectors embeds
+		if err != nil {
+			t.Fatalf("Embed(%s): %v", id, err)
+		}
+		return v
 	}
 	dup := cosine(embedDoc("synth/migration-1"), embedDoc("synth/migration-2"))
 	far := cosine(embedDoc("synth/migration-1"), embedDoc("synth/decoy-a"))
@@ -778,7 +796,7 @@ func TestEvalLive(t *testing.T) {
 	rel, meta, qids := loadQrels(t, rPath)
 	db := openRO(t, cfg)
 	defer db.Close()
-	t.Logf("LIVE eval against %s (query embedder=%s)", dbPath(cfg), chooseEmbedder().ModelID())
+	t.Logf("LIVE eval against %s (query embedder=%s)", dbPath(cfg), chooseEmbedderModelID(t))
 	reportEval(t, ctx, cfg, db, queries, rel, meta, qids)
 }
 
@@ -799,7 +817,7 @@ func TestEvalAB(t *testing.T) {
 	}
 	// Probe Ollama WITHOUT mutating anything; degrade-to-static ⇒ skip (never fatal here).
 	t.Setenv("MORA_EMBEDDER", "ollama")
-	ollamaModel := chooseEmbedder().ModelID()
+	ollamaModel := chooseEmbedderModelID(t)
 	if !strings.HasPrefix(ollamaModel, "ollama:") {
 		t.Skipf("Ollama daemon unreachable (embedder resolved to %q) — A/B needs it; skipping (never gates)", ollamaModel)
 	}
@@ -840,7 +858,7 @@ func TestEvalAB(t *testing.T) {
 
 	// Arm 2 — Ollama (re-indexed; vectors keyed by the new ModelID).
 	t.Setenv("MORA_EMBEDDER", "ollama")
-	if m := chooseEmbedder().ModelID(); m != ollamaModel {
+	if m := chooseEmbedderModelID(t); m != ollamaModel {
 		t.Skipf("Ollama embedder changed/degraded mid-test (%q → %q) — aborting A/B (never gates)", ollamaModel, m)
 	}
 	if _, err := rebuildIndex(ctx, tmpCfg); err != nil {
@@ -859,7 +877,7 @@ func TestEvalAB(t *testing.T) {
 	ollamaHist, vecHits := bucketHistogram(t, ctx, tmpCfg, queries, rel, qids)
 	// Verify Ollama is STILL the embedder after scoring (not just before rebuild):
 	// a daemon that dropped mid-scoring would silently mix static/ollama results.
-	if m := chooseEmbedder().ModelID(); m != ollamaModel {
+	if m := chooseEmbedderModelID(t); m != ollamaModel {
 		t.Fatalf("A/B INVALID: Ollama embedder degraded to %q during scoring — the comparison would be mixed static/ollama", m)
 	}
 	if vecHits == 0 {

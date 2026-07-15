@@ -532,7 +532,7 @@ func TestEvalMMRAB(t *testing.T) {
 		t.Skip("set MORA_EVAL_LIVE=1 (+ a running Ollama daemon) to measure MMR semantic benefit")
 	}
 	t.Setenv("MORA_EMBEDDER", "ollama")
-	model := chooseEmbedder().ModelID()
+	model := chooseEmbedderModelID(t)
 	if !strings.HasPrefix(model, "ollama:") {
 		t.Skipf("Ollama unreachable (embedder=%q) — the AB needs real vectors; skipping (never gates)", model)
 	}

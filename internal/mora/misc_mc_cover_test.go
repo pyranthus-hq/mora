@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -165,8 +166,8 @@ func TestMc_OllamaDim(t *testing.T) {
 }
 
 // TestMc_OllamaEmbedDecodeError: a daemon that answers /api/embeddings with a
-// bad body (undecodable, or an empty embedding) degrades to a defined zero
-// vector of the configured dim — never a panic, never a partial vector.
+// bad body (undecodable, or an empty embedding) FAILS CLOSED — Embed returns
+// errEmbedderUnavailable and a nil vector, never a fabricated zero vector (D1).
 func TestMc_OllamaEmbedDecodeError(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -181,14 +182,15 @@ func TestMc_OllamaEmbedDecodeError(t *testing.T) {
 			}))
 			defer srv.Close()
 			e := ollamaEmbedder{baseURL: srv.URL, model: "m", dim: 5, client: &http.Client{Timeout: 5 * time.Second}}
-			v := e.Embed("hello")
-			if len(v) != 5 {
-				t.Fatalf("degraded embed must return a dim-length vector, got %d", len(v))
+			v, err := e.Embed("hello")
+			if err == nil {
+				t.Fatalf("a bad /api/embeddings body must error, got vector %v", v)
 			}
-			for _, x := range v {
-				if x != 0 {
-					t.Fatalf("degraded embed must be the zero vector, got %v", v)
-				}
+			if !errors.Is(err, errEmbedderUnavailable) {
+				t.Fatalf("error must wrap errEmbedderUnavailable, got %v", err)
+			}
+			if v != nil {
+				t.Fatalf("failed embed must return a nil vector, got %v", v)
 			}
 		})
 	}
