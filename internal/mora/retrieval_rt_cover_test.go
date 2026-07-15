@@ -71,8 +71,8 @@ type rtEmbedder struct {
 }
 
 func (e rtEmbedder) Embed(string) ([]float32, error) { return e.vec, nil }
-func (e rtEmbedder) Dim() int                         { return len(e.vec) }
-func (e rtEmbedder) ModelID() string                  { return e.model }
+func (e rtEmbedder) Dim() int                        { return len(e.vec) }
+func (e rtEmbedder) ModelID() string                 { return e.model }
 
 // ---- vectorSearchIDs ----
 
