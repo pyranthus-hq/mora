@@ -53,6 +53,24 @@ The generated render→`parseMemory` property proves only what the production me
 
 `sabotage-ledger.json` is a self-contained synthetic world carrying every defect class. The exam **never reads** `eval/sabotage/gibberish-2026-07/`: that tree carries real names on a public repo.
 
+### Current-surface scoreboard
+
+`exam_surfaces_test.go` runs the corpus through the real `Run` and `callMCPTool` switches, not helper-only builders. It scores daily CLI and MCP independently, pins the daily ID ordering and their intentional cap relationship, and requires event CLI and MCP to marshal to the same `MeetingBrief` bytes. `POST /meeting-prep` is checked end to end as an extra transport over `callMCPTool`; it is not counted as another engine. Both `briefClock` and `prepClock` are pinned, and `cmdPulse` reads the same `briefClock` seam as MCP digest so a machine's wall clock cannot move the scored window.
+
+The daily obligation lane remains an explicit known-red row through [DIGEST-OBLIGATION-LANE #154](https://github.com/pyranthus-hq/mora/issues/154), expiring 2026-10-14. That row says only that `DigestItem` lacks owner, direction, due, lifecycle, and closure fields. Daily citation coverage and correctness are live measurements; calling the digest "uncited" would be false.
+
+Home is `MISSING`, not simulated: HOME-09/#141 owns its future call-site proof. A high, clean, uniform first score remains a defect report against the ledger, not a win.
+
+### Correction flywheel
+
+`TestExamCorrectionFlywheel` runs the same vault in two graph states. PRE-MERGE has no governance entry. POST-MERGE is established only through the real `Run(["merge","confirm",...])` CLI path, which appends the governance decision and rebuilds the graph. The test then reruns the real event brief, requires the designated iMessage commitment to become a correctly attributed and cited true positive, and pins both complete typed scorecards. There are four meeting-surface gold commitments (`G=4`): extraction recall moves from `0.50` to `0.75`, so the recorded flywheel gain is exactly `1/G = 0.25`. If the commitment is already correct before confirmation, or if the scorecard does not move between states, the exam fails `EVAL_BROKEN`.
+
+This measures the value of a human confirmation. It deliberately does not test whether `emailPhoneCandidates` proposes the pair; proposal recall belongs to the Teach gate.
+
+### Mutation matrices
+
+`scripts/eval/exam-mutation-matrix.sh` is the reproducible audit driver, and `eval/obligations-v1/mutation-matrix.md` records its dated result. Matrix 1 covers all seventeen production exclusion gates reachable from meeting-brief assembly. Matrix 2 attacks the exam itself: validator refusal, scorer dimensions and sensitivity relations, red-team registration, determinism and identity guards, corpus hashes, current-surface clocks/caps, and both flywheel arms. A row is either `CLOSED` by a named red test or a dated, issue-linked `HOLE`; there are no silent or undated exceptions.
+
 ### Determinism is structural, not a convention
 
 `determinism_guard_test.go` parses every file that can reach a score, a baseline, a mutant, an adapter or a gate, and fails on any `math/rand` import or any `time.Now`/`Since`/`Until` selector. It also enforces the inverse rule: `pgregory.net/rapid` may be imported **only** in a `*_prop_test.go` file, because a PRNG on a scoring path would quietly void every byte-stability promise the exam makes. `rapid` v1.3.0 is pinned, test-only, run with a fixed CI seed that is printed for replay; `TestExamTestOnlyDepsAreNotLinked` asserts `go list -deps ./cmd/mora` never reaches it.

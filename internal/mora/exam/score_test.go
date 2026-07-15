@@ -708,9 +708,8 @@ func TestSabotageLedgerIsAValidSyntheticWorld(t *testing.T) {
 	}
 }
 
-// TestRedTeamManifestIsComplete makes shrinking the manifest a named failure, and
-// keeps the flywheel row (t) — which needs the two-state graph run — honestly out
-// of this PR rather than silently registered and never exercised.
+// TestRedTeamManifestIsComplete makes shrinking the manifest a named failure,
+// including flywheel row (t), whose two graph states are pinned by PR 3's fixture.
 func TestRedTeamManifestIsComplete(t *testing.T) {
 	rows := RedTeamRows()
 	if len(rows) != len(RequiredRedTeamRows) {
