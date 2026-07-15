@@ -459,7 +459,20 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	if testHookMappedWriteCritical != nil {
 		testHookMappedWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
 	}
-	return atomicWrite(out, body, 0o644)
+	// A3 rule d: mark-before-visible for connector writes. The durable journal
+	// header must land BEFORE the file is published, so a SIGKILL after the publish
+	// still reads the index dirty and the next rebuild recovers the memory. Only an
+	// ACTUAL publish is journaled — the content-hash-unchanged / suppressed early
+	// returns above wrote no new file and reach neither line.
+	sourceKey := ingestSourceKey(mm.Provider, mm.Account)
+	if jerr := ensureIngestJournalHeader(cfg, sourceKey); jerr != nil {
+		return jerr
+	}
+	if err := atomicWrite(out, body, 0o644); err != nil {
+		return err
+	}
+	journalPublishedPath(cfg, sourceKey, out)
+	return nil
 }
 func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (int, error) {
 	ctx := context.Background()
@@ -1028,6 +1041,14 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		if testHookFSPreWrite != nil {
 			testHookFSPreWrite(id)
 		}
+		// A3 rule d: the filesystem path does NOT route through writeMappedMemory, so
+		// journal it here too (miss it and every filesystem memory is silently
+		// unrecoverable after a killed ingest). Durable header BEFORE the write is
+		// visible; path line after a real publish.
+		sourceKey := ingestSourceKey("filesystem", s.Name)
+		if jerr := ensureIngestJournalHeader(cfg, sourceKey); jerr != nil {
+			return jerr
+		}
 		// Suppression re-check + write, atomic under the governance lease so a
 		// `mora forget` that commits mid-walk is honored, never resurrected (#113).
 		wrote, werr := writeUnlessForgotten(cfg, "", id, dest, body, 0o644)
@@ -1035,6 +1056,7 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 			return werr
 		}
 		if wrote {
+			journalPublishedPath(cfg, sourceKey, dest)
 			count++
 		}
 		return nil
