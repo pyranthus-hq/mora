@@ -592,10 +592,11 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// One clock: compute now ONCE and thread the SAME value into buildDigest and the
+	// One clock: compute now ONCE through the shared brief-surface seam and thread
+	// the SAME value into buildDigest and the
 	// persist/notify step (Task 2) so the digest, the dated artifact path, and any
 	// watermark all agree on the logical day (D13-3, determinism).
-	now := time.Now()
+	now := briefClock()
 	added, err := syncTasks(cfg, *write)
 	if err != nil {
 		return err
@@ -604,7 +605,7 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	line := fmt.Sprintf("- [%s] pulse | tasks_added:%d | stale:%d\n", time.Now().Format(time.RFC3339), added, len(stale))
+	line := fmt.Sprintf("- [%s] pulse | tasks_added:%d | stale:%d\n", now.Format(time.RFC3339), added, len(stale))
 	if *write {
 		if err := appendFile(filepath.Join(cfg.VaultDir, "log.md"), line); err != nil {
 			return err
