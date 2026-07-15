@@ -759,7 +759,7 @@ func TestGr_SQLReadHelpersSuccessAndErrors(t *testing.T) {
 		t.Fatalf("liveEvidenceByEntity rows err = %v", err)
 	}
 
-	if mems, err := loadMemoriesByID(ctx, db, nil); err != nil || mems != nil {
+	if mems, err := loadMemoriesByID(ctx, Config{}, db, nil); err != nil || mems != nil {
 		t.Fatalf("empty loadMemoriesByID = %#v, %v", mems, err)
 	}
 
@@ -771,7 +771,7 @@ func TestGr_SQLReadHelpersSuccessAndErrors(t *testing.T) {
 			{"m-new", "s", "note", "New", "", "src", "2026-01-02T00:00:00Z", "/missing-new.md", "new text"},
 		},
 	})
-	mems, err := loadMemoriesByID(ctx, db, []string{"m-old", "m-new", "m-a"})
+	mems, err := loadMemoriesByID(ctx, Config{}, db, []string{"m-old", "m-new", "m-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,12 +780,12 @@ func TestGr_SQLReadHelpersSuccessAndErrors(t *testing.T) {
 	}
 
 	db = grOpenScriptDB(t, grSQLQuery{queryErr: errors.New("memory query failed")})
-	if _, err := loadMemoriesByID(ctx, db, []string{"m"}); err == nil || !strings.Contains(err.Error(), "memory query failed") {
+	if _, err := loadMemoriesByID(ctx, Config{}, db, []string{"m"}); err == nil || !strings.Contains(err.Error(), "memory query failed") {
 		t.Fatalf("loadMemoriesByID query err = %v", err)
 	}
 
 	db = grOpenScriptDB(t, grSQLQuery{cols: []string{"id"}, rows: [][]driver.Value{{"m"}}})
-	if _, err := loadMemoriesByID(ctx, db, []string{"m"}); err == nil || !strings.Contains(err.Error(), "expected 1 destination") {
+	if _, err := loadMemoriesByID(ctx, Config{}, db, []string{"m"}); err == nil || !strings.Contains(err.Error(), "expected 1 destination") {
 		t.Fatalf("loadMemoriesByID scan err = %v", err)
 	}
 
@@ -793,7 +793,7 @@ func TestGr_SQLReadHelpersSuccessAndErrors(t *testing.T) {
 		cols:    []string{"id", "scope", "type", "title", "tags", "source", "created_at", "path", "text"},
 		rowsErr: errors.New("memory rows failed"),
 	})
-	if _, err := loadMemoriesByID(ctx, db, []string{"m"}); err == nil || !strings.Contains(err.Error(), "memory rows failed") {
+	if _, err := loadMemoriesByID(ctx, Config{}, db, []string{"m"}); err == nil || !strings.Contains(err.Error(), "memory rows failed") {
 		t.Fatalf("loadMemoriesByID rows err = %v", err)
 	}
 
