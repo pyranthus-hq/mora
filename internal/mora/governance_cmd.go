@@ -84,7 +84,16 @@ func cmdForget(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	removed := 0
 	for _, m := range matches {
+		// Mark-before-visible for the forget delete (A5 row 6): the file is about to
+		// vanish, so a rebuild failure below must leave the index dirty and suppress
+		// the removed id on reads, never keep serving forgotten content. The rebuild
+		// retires each op (rule c: path gone).
+		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+		if merr != nil {
+			return merr
+		}
 		if err := os.Remove(m.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = unmarkIndexDirty(cfg, op.OpID)
 			return err
 		}
 		removed++

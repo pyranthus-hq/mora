@@ -39,7 +39,7 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	// Create-exclusive publish: a colliding newID can never clobber an existing
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
-	m, err = createMemory(cfg, m)
+	m, op, err := createMemory(ctx, cfg, m)
 	if err != nil {
 		return err
 	}
@@ -52,12 +52,15 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	// write_memory degraded-success path: warn loudly, still emit the saved
 	// memory, and exit 0. Any OTHER index error is a genuine failure → surface it.
 	if err := indexUpsert(ctx, cfg, m); err != nil {
+		// The op REMAINS on failure — the vault has the memory, the index does not,
+		// so the index reads dirty until a rebuild covers it (A2). Do not retire it.
 		if errors.Is(err, errRebuildBlocked) {
 			fmt.Fprintf(stdout, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
 			return emit(stdout, m, *jsonOut)
 		}
 		return err
 	}
+	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
 	return emit(stdout, m, *jsonOut)
 }
 func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {
@@ -147,11 +150,22 @@ func cmdDelete(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Mark the delete BEFORE removing the file (A5 row 4): a rebuild that fails
+	// after the file is gone would otherwise keep SERVING the deleted content
+	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
+	// suppressed on every read path (B4), so fail-closed here is an actual
+	// guarantee, not just a banner.
+	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+	if merr != nil {
+		return merr
+	}
 	if err := os.Remove(m.Path); err != nil {
+		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
 		return err
 	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
-		return err
+		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
+		return fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
 	}
 	fmt.Fprintf(stdout, "deleted %s\n", m.ID)
 	return nil

@@ -266,7 +266,8 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// is the server's most concurrent write path — N agents writing at once.
 		// createMemory sets m.ID and m.Path.
 		var err error
-		if m, err = createMemory(cfg, m); err != nil {
+		var op pendingOp
+		if m, op, err = createMemory(ctx, cfg, m); err != nil {
 			return nil, err
 		}
 		// The vault write succeeded (vault is truth; the index is a derived
@@ -280,12 +281,15 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		// (delete_memory below is the deliberate asymmetry: its retry is
 		// harmless, and serving deleted content warrants the loud error.)
 		if rerr := indexUpsert(ctx, cfg, m); rerr != nil {
+			// Degraded SUCCESS — the op REMAINS so the index reads dirty (A2), now
+			// backed by durable state instead of one lost warning string.
 			return map[string]any{
 				"memory":      m,
 				"index_stale": true,
 				"warning":     fmt.Sprintf("memory %s saved, but the search index could not be updated: %v — run `mora index rebuild` (do NOT retry the write; it is saved)", m.ID, rerr),
 			}, nil
 		}
+		_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
 		return m, nil
 	case "read_memory":
 		m, err := findMemory(cfg, strArg(args, "id", ""))
@@ -516,7 +520,16 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 		if err != nil {
 			return nil, err
 		}
+		// Mark the delete BEFORE removing the file (A5 row 5). A rebuild that fails
+		// after the file is gone would keep serving the deleted content; the pending
+		// op both reddens the index and suppresses the id on every read path (B4),
+		// so serving-deleted-content is impossible even while the rebuild is broken.
+		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+		if merr != nil {
+			return nil, merr
+		}
 		if err := os.Remove(m.Path); err != nil {
+			_ = unmarkIndexDirty(cfg, op.OpID)
 			return nil, err
 		}
 		// A failed rebuild after a delete is worse than after a write: search
