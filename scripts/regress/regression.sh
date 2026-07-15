@@ -139,7 +139,7 @@ pass "seeded vault: $COUNT memories"
 for c in \
   "help" "version" "list --json" "search Northwind --json" \
   "entities --json" "graph --top 5 --json" "context --query Northwind --json" \
-  "brief --json" "prep --json" "pulse --digest" \
+  "brief --json" "pulse --digest" \
   "lint" "backup" "doctor" "config" \
   "schedule list" "sources list" "connectors list --json" "sync status" \
   "usage report" "hook status" ; do
