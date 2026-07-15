@@ -1529,6 +1529,12 @@ func digestMCPPayload(cfg Config, d Digest, budgetChars int) map[string]any {
 		// structurally instead of parsing the Markdown banner. Always included in the
 		// fixed frame — never budgeted away — mirroring source_states above.
 		"source_health": d.SourceHealth,
+		// health (C1/C4, Open Q1): the BOUNDED envelope — source_health above is the
+		// rich per-connector array (kept as a documented deprecated-shape sibling for
+		// one release); health.state/.index is what it never had — the aggregate
+		// worst-of-3 state and the index arm, which a stale-but-present source_health
+		// array cannot distinguish from a dirty/failed index.
+		"health": compactHealthFrom(healthFromParts(d.SourceHealth, d.idxHealth)),
 	}
 	frameBytes := jsonLen(base) + jsonLen([]DigestSection{}) // + an empty sections array key
 	remaining := budgetChars - frameBytes

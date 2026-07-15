@@ -244,11 +244,15 @@ type MeetingBrief struct {
 	// correctness signal, not ops telemetry.
 	SourceHealth []sourceHealth `json:"source_health,omitempty"`
 	// idxHealth is the index arm snapshot (Gate 2), pinned at build time next to
-	// SourceHealth for the aggregate banner. UNEXPORTED so meeting_prep's payload
-	// (and its byte-determinism tests) are unchanged — the compact envelope is
-	// Packet C. The meeting brief is the MOST index-dependent surface (Finding 1),
-	// so a dirty/failed index must reach its banner.
+	// SourceHealth for the aggregate banner. UNEXPORTED — the CLI render path
+	// (renderMeetingBrief) reads it directly; the MCP/HTTP payload gets the
+	// bounded projection via Health below instead of this raw arm.
 	idxHealth indexHealth
+	// Health is the BOUNDED envelope (Packet C1) — meeting_prep returns this
+	// struct directly (no digestMCPPayload-style wrapper to inject into), so the
+	// compact state/banner is a field on the struct itself, computed once at
+	// build time from the SAME SourceHealth/idxHealth snapshot above.
+	Health compactHealth `json:"health"`
 }
 
 func (b MeetingBrief) validate() error {
@@ -309,12 +313,15 @@ func buildEventMeetingBrief(ctx context.Context, cfg Config, eventID string, at 
 }
 
 func buildNextMeetingBrief(ctx context.Context, cfg Config, at time.Time, attendeeFilterIDs map[string]bool, maxTokens, perAttendee int) (MeetingBrief, error) {
+	srcHealth := sourceHealthAll(cfg, at)
+	idxH := indexHealthOf(cfg, at)
 	empty := MeetingBrief{
 		AsOf:         at.UTC().Format(time.RFC3339),
 		Sections:     []MeetingBriefSection{},
 		EgressCalls:  0,
-		SourceHealth: sourceHealthAll(cfg, at),
-		idxHealth:    indexHealthOf(cfg, at),
+		SourceHealth: srcHealth,
+		idxHealth:    idxH,
+		Health:       compactHealthFrom(healthFromParts(srcHealth, idxH)),
 	}
 	mems, err := meetingBriefMemories(cfg)
 	if err != nil {
@@ -366,13 +373,16 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		Attendees: attendeeDisplays(attendees),
 		Citation:  eventCitation,
 	}
+	srcHealth := sourceHealthAll(cfg, at)
+	idxH := indexHealthOf(cfg, at)
 	brief := MeetingBrief{
 		AsOf:         at.UTC().Format(time.RFC3339),
 		Event:        event,
 		Sections:     []MeetingBriefSection{},
 		EgressCalls:  0,
-		SourceHealth: sourceHealthAll(cfg, at),
-		idxHealth:    indexHealthOf(cfg, at),
+		SourceHealth: srcHealth,
+		idxHealth:    idxH,
+		Health:       compactHealthFrom(healthFromParts(srcHealth, idxH)),
 	}
 	// Refuse-to-GAP, not refuse-to-error. If Mora cannot pick the user out of the
 	// invitee list, then ANY invitee could BE the user, so it must not attribute a

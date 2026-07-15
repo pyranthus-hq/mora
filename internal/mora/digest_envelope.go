@@ -33,6 +33,7 @@ type DigestEnvelope struct {
 	Freshness       map[string]string `json:"freshness,omitempty"`
 	StaleTasks      []string          `json:"stale_tasks,omitempty"`
 	SourceHealth    []sourceHealth    `json:"source_health,omitempty"`
+	Health          compactHealth     `json:"health"`
 	SynthesisPrompt string            `json:"synthesis_prompt"`
 }
 
@@ -182,6 +183,7 @@ func budgetEnvelopePayload(cfg Config, d Digest, budgetChars int) DigestEnvelope
 	states, _ := payload["source_states"].([]sourceState)
 	urgent, _ := payload["urgent"].([]DigestItem)
 	health, _ := payload["source_health"].([]sourceHealth)
+	compact, _ := payload["health"].(compactHealth)
 	prompt := digestSynthesisPrompt(urgent, sections, states)
 
 	return DigestEnvelope{
@@ -194,6 +196,7 @@ func budgetEnvelopePayload(cfg Config, d Digest, budgetChars int) DigestEnvelope
 		Freshness:       asStringMap(payload["freshness"]),
 		StaleTasks:      asStringSlice(payload["stale_tasks"]),
 		SourceHealth:    health,
+		Health:          compact,
 		SynthesisPrompt: prompt,
 	}
 }
