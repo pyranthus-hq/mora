@@ -60,6 +60,7 @@ Ingest uses a **crash-recoverable journal** instead of one pathless op, because 
 
 1. `index.db` absent → **never**
 2. cannot open / schema mismatch / any query error → **failed**
+2b. `index_meta` wiped of its committed provenance (no `vault_dir` row — a truncated db, a hand `DELETE FROM index_meta`, a torn restore) → **failed**. Every committed rebuild stamps `vault_dir` and never deletes it, so its absence is an uncomputable state, not a legacy index. (The absent-is-not-dirty tolerance is only for the *new* keys — embedder provenance and the content manifest — never the binding rows that prove a rebuild committed.)
 3. a rebuild block record present → **failed** (`Blocked`)
 4. any pending op **or** non-empty ingest journal → **dirty**
 5. recorded embedder ≠ configured embedder → **degraded** (HEALTH-12)
@@ -98,5 +99,6 @@ The producer arm (HEALTH-11) is Packet E / PR 4. Until that ledger exists, `heal
 ## Open questions / unverified
 
 - **Projection-lag threshold** (`indexProjectionLagThreshold`, 6h) is a judgment call: long enough that a fresh write does not immediately redden the product, short enough that a genuinely-owed rebuild surfaces within a few missed hourly cycles. Not tuned against live telemetry.
-- **Ingest journal path lines are best-effort** (only the header is fsync-durable). This is sound because the recovery rebuild lists every file on disk regardless of journaling — the header's durability is the only load-bearing barrier — but a concurrent unrelated rebuild can briefly delete an active run's journal between page appends. That window can only ever produce a false-*dirty* on the next appended line, never a false-clean of an unindexed memory.
+- **Ingest journal path lines are best-effort** (only the header is fsync-durable). This is sound because the recovery rebuild lists every file on disk regardless of journaling — the header's durability is the only load-bearing barrier. A concurrent committed rebuild must NOT retire an active run's header, though: a file that lands *after* that rebuild listed (then a crash before its path line appends) would otherwise be a false-clean. So an in-flight run holds a **live lease** (a pid-keyed marker beside its journal, A3 rule d) and a rebuild only fully retires a header when no live lease is held. A SIGKILLed run leaves a stale lease naming a dead pid, which the next rebuild reclaims — so a crash never pins the index dirty forever, and killed-ingest recovery still fires.
+- **A present-but-empty journal is dirty, not absent.** `appendJournalDurable` creates/opens `journal.log` before writing and syncing the header, so a crash in that window leaves a zero-byte file. A committed rebuild *removes* a fully-covered journal, so any lingering `journal.log` — zero-byte, header-less, or truncated — means an uncovered run and reads **dirty** (fail-closed); only an actually-missing file is treated as "no run."
 - **`indexMatchesVault` recompute cost** is O(vault) and runs on every `mora doctor` (not `--pulse`, not MCP). At ~10⁴ memories that is one full hash walk; acceptable where a walk is already paid, but a very large vault pays it on each manual doctor run.
