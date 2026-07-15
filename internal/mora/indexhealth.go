@@ -134,6 +134,21 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		h.LastError = merr.Error()
 		return h
 	}
+	// Rule 2b (fail-closed floor): a schema-valid index whose provenance rows have
+	// been wiped is NOT computable and must never read fresh. Every committed rebuild
+	// — legacy (main) and current — stamps vault_dir into index_meta and never deletes
+	// it (only the vault_manifest_* keys are ever cleared, by indexUpsert). So an
+	// absent vault_dir means index_meta was truncated by a crash mid-rebuild, a hand
+	// `DELETE FROM index_meta`, or a restore of a torn db — an uncomputable state.
+	// Fail closed to `failed` (mirrors rule 2's query-error handling); a genuine
+	// legacy v2 index still carries vault_dir, so this never reddens an upgrade. The
+	// absent-is-not-dirty tolerance is for the NEW keys only (embedder provenance /
+	// content manifest), never for the binding rows that prove a rebuild committed.
+	if meta["vault_dir"] == "" {
+		h.State = idxFailed
+		h.LastError = "index_meta missing committed provenance (vault_dir); index cannot be verified"
+		return h
+	}
 	h.IndexedAt = meta["indexed_at"]
 	h.LastAttemptAt = meta["index_last_attempt_at"]
 	if h.LastError == "" {
