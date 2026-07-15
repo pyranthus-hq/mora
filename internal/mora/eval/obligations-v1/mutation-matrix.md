@@ -130,8 +130,8 @@ the registered mutant itself is then executed by `TestScorerRedTeam`.
 | `canonicalizePersons` RULE 3 is neutered | CLOSED — `TestExamCorrectionFlywheel` goes red |
 | Pre arm is already merged/correct | CLOSED — `TestExamCorrectionFlywheel` goes red with `EVAL_BROKEN` |
 | Scorer uses post graph output for both states | CLOSED — red-team row `t_graph_state_insensitive` goes red |
-| Daily typed obligation lane | HOLE — issue #154, expires 2026-10-01 |
-| iMessage commitment outside final turn | HOLE — issue #156, expires 2026-10-01 |
+| Daily typed obligation lane | HOLE — issue #154, expires 2026-10-14 |
+| iMessage commitment outside final turn | HOLE — issue #156, expires 2026-10-14 |
 
 ### Ratchet and exit branches
 
