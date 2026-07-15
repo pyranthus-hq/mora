@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	examLedgerPath      = "../eval/obligations-v1/ledger.json"
-	sabotageLedgerPath  = "../eval/obligations-v1/sabotage-ledger.json"
-	realPredictionsPath = "testdata/real-predictions.json"
+	examLedgerPath          = "../eval/obligations-v1/ledger.json"
+	sabotageLedgerPath      = "../eval/obligations-v1/sabotage-ledger.json"
+	realPredictionsPath     = "testdata/real-predictions.json"
+	flywheelPredictionsPath = "testdata/flywheel-predictions.json"
 )
 
 func loadLedger(t *testing.T, path string) Ledger {
@@ -50,12 +51,36 @@ func realPredictions(t *testing.T, surface string) []Prediction {
 
 func redTeamInput(t *testing.T) RedTeamInput {
 	t.Helper()
+	flywheel := loadFlywheelPredictions(t)
 	return RedTeamInput{
-		Ledger:   loadLedger(t, examLedgerPath),
-		Sabotage: loadLedger(t, sabotageLedgerPath),
-		Meeting:  realPredictions(t, SurfaceMeeting),
-		Daily:    realPredictions(t, SurfaceDaily),
+		Ledger:       loadLedger(t, examLedgerPath),
+		Sabotage:     loadLedger(t, sabotageLedgerPath),
+		Meeting:      realPredictions(t, SurfaceMeeting),
+		Daily:        realPredictions(t, SurfaceDaily),
+		FlywheelPre:  flywheel.Pre,
+		FlywheelPost: flywheel.Post,
 	}
+}
+
+type flywheelPredictionFixture struct {
+	Pre  []Prediction `json:"pre"`
+	Post []Prediction `json:"post"`
+}
+
+func loadFlywheelPredictions(t *testing.T) flywheelPredictionFixture {
+	t.Helper()
+	body, err := os.ReadFile(filepath.FromSlash(flywheelPredictionsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture flywheelPredictionFixture
+	if err := json.Unmarshal(body, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Pre) == 0 || len(fixture.Post) == 0 {
+		t.Fatal("flywheel prediction fixture has an empty graph state")
+	}
+	return fixture
 }
 
 // TestScorerRedTeam iterates the MANIFEST, not the code. A manifested row with no
@@ -87,6 +112,24 @@ func TestScorerRedTeam(t *testing.T) {
 
 func assertRedTeamCase(t *testing.T, id RedTeamRowID, c RedTeamCase) {
 	t.Helper()
+	if c.GraphTransition != nil {
+		before, err := Score(c.Ledger, c.GraphTransition.Before, id.Surface)
+		if err != nil {
+			t.Fatalf("EVAL_BROKEN: row %s pre-merge score failed: %v", id.Name, err)
+		}
+		after, err := Score(c.Ledger, c.GraphTransition.After, id.Surface)
+		if err != nil {
+			t.Fatalf("EVAL_BROKEN: row %s post-merge score failed: %v", id.Name, err)
+		}
+		if reflect.DeepEqual(before, after) {
+			t.Fatalf("EVAL_BROKEN: row %s cannot distinguish pre-merge from post-merge graph state", id.Name)
+		}
+		got := after.Extraction.Recall - before.Extraction.Recall
+		if !(Check{Op: OpEq, Want: c.GraphTransition.RecallGain}).Holds(got) {
+			t.Fatalf("EVAL_BROKEN: row %s recall gain = %v, want exact pre-registered %v", id.Name, got, c.GraphTransition.RecallGain)
+		}
+		return
+	}
 	got, err := scoreRedTeamCase(c, id.Surface)
 	if c.Expect.HarnessError {
 		if err == nil || !errors.Is(err, ErrInvalidHarness) {
@@ -183,6 +226,20 @@ func TestEveryRegisteredSabotageMovesItsMetric(t *testing.T) {
 					}
 					for _, c := range build(in) {
 						if c.Expect.HarnessError || c.Expect.Identical != nil {
+							continue
+						}
+						if c.GraphTransition != nil {
+							base, err := Score(c.Ledger, c.GraphTransition.Before, id.Surface)
+							if err != nil {
+								t.Fatalf("EVAL_BROKEN: graph-state baseline for %s failed: %v", rowName, err)
+							}
+							got, err := Score(c.Ledger, c.GraphTransition.After, id.Surface)
+							if err != nil {
+								t.Fatalf("EVAL_BROKEN: graph-state result for %s failed: %v", rowName, err)
+							}
+							baseValue := reflect.ValueOf(base).FieldByName(spec.Field).Interface()
+							gotValue := reflect.ValueOf(got).FieldByName(spec.Field).Interface()
+							moved = moved || !reflect.DeepEqual(baseValue, gotValue)
 							continue
 						}
 						if spec.ID == MetricRecallUncapped && c.UncappedPredictions == nil {
@@ -670,7 +727,7 @@ func TestRedTeamManifestIsComplete(t *testing.T) {
 		RowSyntheticGibberish, RowEmptyBrief, RowEveryQuestion, RowCopyTheInput, RowIdentityFlip,
 		RowDirectionFlip, RowUnsupportedCitation, RowConstantClassifier, RowDailyEmpty, RowDailyCitation,
 		RowOracle, RowClosedAsOpen, RowGoldOwnerFlip, RowCitationSpanMove, RowAuthoredToQuoted,
-		RowRemovedSource, RowDuplicateNoise, RowInputOrder, RowGateDisableSweep,
+		RowRemovedSource, RowDuplicateNoise, RowInputOrder, RowGateDisableSweep, RowGraphStateInsensitive,
 	} {
 		if !names[want] {
 			t.Errorf("EVAL_BROKEN: red-team row %q vanished from the manifest", want)

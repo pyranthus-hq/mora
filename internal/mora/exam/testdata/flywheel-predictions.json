@@ -1,0 +1,234 @@
+{
+  "pre": [
+    {
+      "surface": "meeting",
+      "text": "~8 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
+      "attendee": "Sam Rivera",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-quoted-negative",
+      "section_kind": "open_loops",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "text": "~7 days ago · Sam Rivera — “Can you send the reviewer list?”",
+      "attendee": "Sam Rivera",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-closed-open",
+      "section_kind": "open_loops",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "text": "~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”",
+      "attendee": "Sam Rivera",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-reply-chain",
+      "section_kind": "unresolved_threads",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "text": "~1 day ago · dana@example.net — “The launch appendix still needs your initials.”",
+      "attendee": "dana@example.net",
+      "attendee_atom": "address:dana@example.net",
+      "memory_id": "gmail_thread/exam-statement",
+      "section_kind": "material_shared_context",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    }
+  ],
+  "post": [
+    {
+      "surface": "meeting",
+      "text": "~8 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
+      "attendee": "Sam Rivera",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-quoted-negative",
+      "section_kind": "open_loops",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "text": "~7 days ago · Sam Rivera — “Can you send the reviewer list?”",
+      "attendee": "Sam Rivera",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-closed-open",
+      "section_kind": "open_loops",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "text": "~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”",
+      "attendee": "Sam Rivera",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-reply-chain",
+      "section_kind": "unresolved_threads",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "text": "~1 day ago · +15550100137 — “I will bring the room key to the review.”",
+      "attendee": "+15550100137",
+      "attendee_atom": "address:dana@example.net",
+      "memory_id": "imessage_chat/exam-flywheel",
+      "section_kind": "material_shared_context",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "text": "~1 day ago · +15550100137 — “The launch appendix still needs your initials.”",
+      "attendee": "+15550100137",
+      "attendee_atom": "address:dana@example.net",
+      "memory_id": "gmail_thread/exam-statement",
+      "section_kind": "material_shared_context",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    }
+  ],
+  "pre_scorecard": {
+    "surface": "meeting",
+    "extraction": {
+      "precision": 0.5,
+      "recall": 0.5,
+      "defined": true
+    },
+    "recall_uncapped": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "citation_coverage": {
+      "precision": 1,
+      "recall": 1,
+      "defined": true
+    },
+    "citation_correct": {
+      "precision": 1,
+      "recall": 1,
+      "defined": true
+    },
+    "counterparty": {
+      "precision": 1,
+      "recall": 0.6666666666666666,
+      "defined": true
+    },
+    "dedup_cross_artifact": 0,
+    "third_party_leaks": 0,
+    "closed_leaks": 1,
+    "dup_leaks": 0,
+    "non_obligation_leaks": 1,
+    "critical_identity": 0,
+    "critical_direction": 0,
+    "direction_scorable": false,
+    "direction": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "due_time": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "lifecycle": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "closure_linkage": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "owner": "UNSCORABLE: no commitment-owner field exists on the meeting or daily brief payload",
+    "loose_matches": 0,
+    "unmatched": 0
+  },
+  "post_scorecard": {
+    "surface": "meeting",
+    "extraction": {
+      "precision": 0.6,
+      "recall": 0.75,
+      "defined": true
+    },
+    "recall_uncapped": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "citation_coverage": {
+      "precision": 1,
+      "recall": 1,
+      "defined": true
+    },
+    "citation_correct": {
+      "precision": 1,
+      "recall": 1,
+      "defined": true
+    },
+    "counterparty": {
+      "precision": 1,
+      "recall": 0.8333333333333333,
+      "defined": true
+    },
+    "dedup_cross_artifact": 0,
+    "third_party_leaks": 0,
+    "closed_leaks": 1,
+    "dup_leaks": 0,
+    "non_obligation_leaks": 1,
+    "critical_identity": 0,
+    "critical_direction": 0,
+    "direction_scorable": false,
+    "direction": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "due_time": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "lifecycle": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "closure_linkage": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "owner": "UNSCORABLE: no commitment-owner field exists on the meeting or daily brief payload",
+    "loose_matches": 0,
+    "unmatched": 0
+  },
+  "gold_count": 4,
+  "flywheel_recall_gain": 0.25
+}

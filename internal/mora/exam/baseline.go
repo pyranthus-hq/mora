@@ -68,7 +68,17 @@ type RedTeamCase struct {
 	Ledger              Ledger
 	Predictions         []Prediction
 	UncappedPredictions *[]Prediction
+	GraphTransition     *GraphTransition
 	Expect              Expectation
+}
+
+// GraphTransition is red-team row (t): the same gold corpus observed before and
+// after one confirmed identity merge. A scorer that produces the same scorecard
+// for both states cannot see attribution and is EVAL_BROKEN.
+type GraphTransition struct {
+	Before     []Prediction
+	After      []Prediction
+	RecallGain float64
 }
 
 // RedTeamInput carries everything a row may transform: the gold world, the synthetic
@@ -76,10 +86,12 @@ type RedTeamCase struct {
 // (e), (g), (j), (n), (q) and (r) mutate the real output, which makes them far
 // stronger than any standalone baseline.
 type RedTeamInput struct {
-	Ledger   Ledger
-	Sabotage Ledger
-	Meeting  []Prediction
-	Daily    []Prediction
+	Ledger       Ledger
+	Sabotage     Ledger
+	Meeting      []Prediction
+	Daily        []Prediction
+	FlywheelPre  []Prediction
+	FlywheelPost []Prediction
 }
 
 func (in RedTeamInput) real(surface string) []Prediction {
@@ -351,29 +363,30 @@ func sentences(text string) []string {
 // here is a named failure, so deleting a subtest cannot delete the failure.
 func RedTeamRows() map[RedTeamRowID]func(RedTeamInput) []RedTeamCase {
 	return map[RedTeamRowID]func(RedTeamInput) []RedTeamCase{
-		{SurfaceMeeting, RowSyntheticGibberish}:  rowSyntheticGibberish,
-		{SurfaceMeeting, RowEmptyBrief}:          rowEmpty(SurfaceMeeting),
-		{SurfaceMeeting, RowEveryQuestion}:       rowEveryQuestion,
-		{SurfaceMeeting, RowCopyTheInput}:        rowCopyTheInput,
-		{SurfaceMeeting, RowIdentityFlip}:        rowIdentityFlip,
-		{SurfaceMeeting, RowDirectionFlip}:       rowDirectionFlip,
-		{SurfaceMeeting, RowUnsupportedCitation}: rowUnsupportedCitation,
-		{SurfaceMeeting, RowConstantClassifier}:  rowConstantClassifier,
-		{SurfaceDaily, RowDailyEmpty}:            rowEmpty(SurfaceDaily),
-		{SurfaceDaily, RowDailyCitation}:         rowDailyCitation,
-		{SurfaceMeeting, RowOracle}:              rowOracle(SurfaceMeeting),
-		{SurfaceDaily, RowOracle}:                rowOracle(SurfaceDaily),
-		{SurfaceMeeting, RowClosedAsOpen}:        rowClosedAsOpen,
-		{SurfaceMeeting, RowGoldOwnerFlip}:       rowGoldOwnerFlip,
-		{SurfaceMeeting, RowCitationSpanMove}:    rowCitationSpanMove,
-		{SurfaceMeeting, RowAuthoredToQuoted}:    rowAuthoredToQuoted,
-		{SurfaceMeeting, RowRemovedSource}:       rowRemovedSource(SurfaceMeeting),
-		{SurfaceDaily, RowRemovedSource}:         rowRemovedSource(SurfaceDaily),
-		{SurfaceMeeting, RowDuplicateNoise}:      rowDuplicateNoise(SurfaceMeeting),
-		{SurfaceDaily, RowDuplicateNoise}:        rowDuplicateNoise(SurfaceDaily),
-		{SurfaceMeeting, RowInputOrder}:          rowInputOrder(SurfaceMeeting),
-		{SurfaceDaily, RowInputOrder}:            rowInputOrder(SurfaceDaily),
-		{SurfaceMeeting, RowGateDisableSweep}:    rowGateDisableSweep,
+		{SurfaceMeeting, RowSyntheticGibberish}:    rowSyntheticGibberish,
+		{SurfaceMeeting, RowEmptyBrief}:            rowEmpty(SurfaceMeeting),
+		{SurfaceMeeting, RowEveryQuestion}:         rowEveryQuestion,
+		{SurfaceMeeting, RowCopyTheInput}:          rowCopyTheInput,
+		{SurfaceMeeting, RowIdentityFlip}:          rowIdentityFlip,
+		{SurfaceMeeting, RowDirectionFlip}:         rowDirectionFlip,
+		{SurfaceMeeting, RowUnsupportedCitation}:   rowUnsupportedCitation,
+		{SurfaceMeeting, RowConstantClassifier}:    rowConstantClassifier,
+		{SurfaceDaily, RowDailyEmpty}:              rowEmpty(SurfaceDaily),
+		{SurfaceDaily, RowDailyCitation}:           rowDailyCitation,
+		{SurfaceMeeting, RowOracle}:                rowOracle(SurfaceMeeting),
+		{SurfaceDaily, RowOracle}:                  rowOracle(SurfaceDaily),
+		{SurfaceMeeting, RowClosedAsOpen}:          rowClosedAsOpen,
+		{SurfaceMeeting, RowGoldOwnerFlip}:         rowGoldOwnerFlip,
+		{SurfaceMeeting, RowCitationSpanMove}:      rowCitationSpanMove,
+		{SurfaceMeeting, RowAuthoredToQuoted}:      rowAuthoredToQuoted,
+		{SurfaceMeeting, RowRemovedSource}:         rowRemovedSource(SurfaceMeeting),
+		{SurfaceDaily, RowRemovedSource}:           rowRemovedSource(SurfaceDaily),
+		{SurfaceMeeting, RowDuplicateNoise}:        rowDuplicateNoise(SurfaceMeeting),
+		{SurfaceDaily, RowDuplicateNoise}:          rowDuplicateNoise(SurfaceDaily),
+		{SurfaceMeeting, RowInputOrder}:            rowInputOrder(SurfaceMeeting),
+		{SurfaceDaily, RowInputOrder}:              rowInputOrder(SurfaceDaily),
+		{SurfaceMeeting, RowGateDisableSweep}:      rowGateDisableSweep,
+		{SurfaceMeeting, RowGraphStateInsensitive}: rowGraphStateInsensitive,
 	}
 }
 
@@ -395,6 +408,21 @@ func goldCount(l Ledger, surface string) int {
 		return 0
 	}
 	return len(gold)
+}
+
+func rowGraphStateInsensitive(in RedTeamInput) []RedTeamCase {
+	gold := goldCount(in.Ledger, SurfaceMeeting)
+	if gold == 0 {
+		return nil
+	}
+	return []RedTeamCase{{
+		Ledger: in.Ledger,
+		GraphTransition: &GraphTransition{
+			Before:     clonePredictions(in.FlywheelPre),
+			After:      clonePredictions(in.FlywheelPost),
+			RecallGain: 1 / float64(gold),
+		},
+	}}
 }
 
 func rowSyntheticGibberish(in RedTeamInput) []RedTeamCase {
