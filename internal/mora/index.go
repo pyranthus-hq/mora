@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
@@ -35,9 +37,8 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	if err != nil {
 		return err
 	}
-	if err := writeWikiIndex(cfg, count); err != nil {
-		return err
-	}
+	// vault/index.md is refreshed inside rebuildIndexWithPolicy's commit path now
+	// (B5), so every rebuild caller keeps it honest — not just this CLI one.
 	fmt.Fprintf(stdout, "indexed %d memories\n", count)
 	return nil
 }
@@ -128,10 +129,26 @@ func checkIndexSchema(db *sql.DB) error {
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
 }
-func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolicy) (int, error) {
+func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolicy) (count int, err error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return 0, err
 	}
+	// A4 — the rebuild marks ITSELF before opening the writer tx. A rebuild that
+	// fails, is killed, or is blocked leaves this op, so the index reads dirty and
+	// every surface reddens, while the prior committed index is preserved (the
+	// deferred tx.Rollback below). Its own op is cleared by the covering commit
+	// (rule a: marked_at <= listing_started_at). A no-op on a cold-start index
+	// (indexReadyForUpsert==false): the state is already `never`, worse than dirty.
+	selfOp, _ := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild})
+	_ = selfOp
+	// On ANY failed return, best-effort stamp the reason in a separate tx (after the
+	// writer lock below is released — this defer is registered first, so LIFO runs
+	// it last). The pending op is deliberately NOT cleared on failure.
+	defer func() {
+		if err != nil {
+			stampIndexAttemptFailure(cfg, err)
+		}
+	}()
 	// _txlock=immediate acquires the write lock at BeginTx instead of lazily
 	// upgrading a deferred read lock mid-transaction — two concurrent rebuilds
 	// would otherwise both start, then one hits SQLITE_BUSY on the first write and
@@ -164,6 +181,10 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// until-next-rebuild staleness, not this race). Routed through listRebuildFiles
 	// so a test can assert the lock is held at listing time (allMemoryFiles is a
 	// pure filesystem walk — it takes no DB lock, so it cannot deadlock this tx).
+	// Snapshot the wall clock the instant BEFORE listing (A3): a pending op whose
+	// marked_at is at or before this instant is demonstrably covered by this
+	// rebuild's listing; one marked AFTER it raced in and is NOT cleared here.
+	listingStartedAt := indexClock()
 	files, err := listRebuildFiles(cfg)
 	if err != nil {
 		return 0, err
@@ -235,11 +256,20 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return 0, err
 	}
 	defer ftsStmt.Close()
-	count := 0
+	count = 0
 	var parsed []Memory // ALL memories (incl. tombstones) — feeds the graph
 	var live []Memory   // non-tombstoned only — the searchable corpus + vectors
+	// Content manifest (B1a): one sha256 line per readable file, from the SAME bytes
+	// the parse uses (parseMemoryBytes) — zero extra I/O. An unreadable file is
+	// skipped here and counts toward `unparseable` (listed − parsed) below.
+	var manifestLines []string
 	for _, path := range files {
-		m, err := parseMemory(path)
+		b, rerr := os.ReadFile(path)
+		if rerr != nil {
+			continue
+		}
+		manifestLines = append(manifestLines, manifestLine(cfg, path, sha256.Sum256(b)))
+		m, err := parseMemoryBytes(path, b)
 		if err != nil {
 			continue
 		}
@@ -276,8 +306,33 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 
 	// Materialize per-memory embedding vectors (I2 hybrid retrieval), same tx. Use
 	// the cfg-aware resolver so a config.toml `embedder = "ollama"` opt-in indexes
-	// semantic vectors that the query path (also cfg-aware) will match.
-	if err := writeVectors(ctx, tx, chooseEmbedderFor(cfg), live); err != nil {
+	// semantic vectors that the query path (also cfg-aware) will match. Hoisted so
+	// the embedder identity (ModelID/Dim — already resolved) is stamped as provenance.
+	emb := chooseEmbedderFor(cfg)
+	if err := writeVectors(ctx, tx, emb, live); err != nil {
+		return count, err
+	}
+
+	// Gate 2 stamps, all INSIDE this committing tx so they advance ONLY on a
+	// committed rebuild (never on a rolled-back one):
+	//   - the three projection timestamps (Finding 2): a full rebuild advances all
+	//     three; indexUpsert advances only fts_indexed_at, so their relation is the
+	//     honest graph-lag signal (B1 rule 6).
+	//   - MINIMAL embedder provenance (B1 rule 5 / HEALTH-12 mismatch arm): what
+	//     RAN, so doctor can flag it against what the config now ASKS for.
+	//   - the content manifest (B1a): the committed vault content identity an
+	//     out-of-band edit is detected against.
+	stampNow := indexClock().UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta(key,value) VALUES
+		 ('indexed_at',?),('fts_indexed_at',?),('graph_indexed_at',?),('vectors_indexed_at',?),
+		 ('embedder_model',?),('embedder_dim',?),
+		 ('vault_manifest_algo',?),('vault_manifest_digest',?),('vault_manifest_listed',?),('vault_manifest_unparseable',?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		stampNow, stampNow, stampNow, stampNow,
+		emb.ModelID(), fmt.Sprintf("%d", emb.Dim()),
+		indexManifestAlgo, manifestDigestOf(manifestLines),
+		fmt.Sprintf("%d", len(files)), fmt.Sprintf("%d", len(files)-len(parsed))); err != nil {
 		return count, err
 	}
 
@@ -337,6 +392,20 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// catch up — and must never fail a committed rebuild.
 	_, _ = db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 	_ = clearBlockRecord(cfg) // best-effort: a stale block record must not fail a good rebuild
+
+	// A3 — retire the pending ops this committed rebuild demonstrably covered, and
+	// truncate the ingest journal lines whose file it listed. Best-effort: a failed
+	// removal only leaves a false-dirty the next rebuild clears (never a false-clean).
+	clearCoveredPendingOps(cfg, listingStartedAt, files, memoryPaths(parsed))
+	recoverIngestJournals(cfg, files)
+
+	// B5 — refresh vault/index.md from the SAME stamp written into index_meta, so
+	// the page buildContext injects into every context payload cannot disagree with
+	// the index it describes. Best-effort: a cosmetic derived file must not undo a
+	// committed rebuild (and returning here would spuriously fire the failure stamp).
+	if werr := writeWikiIndex(cfg, count, stampNow); werr != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not refresh vault/index.md: %v\n", werr)
+	}
 	return count, nil
 }
 
