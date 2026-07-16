@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // indexUpsert incrementally reflects a single authored memory into the search
@@ -183,6 +184,24 @@ func indexUpsert(ctx context.Context, cfg Config, m Memory) error {
 		`INSERT INTO index_meta(key,value) VALUES('memory_count',?),('vault_id',?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
 		fmt.Sprintf("%d", newCount), effID); err != nil {
+		return err
+	}
+	// Gate 2 (Finding 2): the incremental path reflects this write into memories+FTS
+	// only, so it advances indexed_at + fts_indexed_at but NEVER
+	// graph_indexed_at/vectors_indexed_at — their relation is the honest graph-lag
+	// signal (B1 rule 6). Stamped inside this committing tx so it advances only on a
+	// committed upsert.
+	stampNow := indexClock().UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta(key,value) VALUES('indexed_at',?),('fts_indexed_at',?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, stampNow, stampNow); err != nil {
+		return err
+	}
+	// B1a: invalidate the content manifest. The incremental path must not pay an
+	// O(vault) hash walk (that is the whole point of skipping the full rebuild), so
+	// the manifest is ABSENT until the next full rebuild — doctor then reads
+	// "unverified", never a false CRITICAL after every `mora write`.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM index_meta WHERE key LIKE 'vault_manifest_%'`); err != nil {
 		return err
 	}
 

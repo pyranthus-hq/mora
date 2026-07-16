@@ -169,6 +169,17 @@ func healthStateRank(state string) int {
 // cfg/now (D-03: no time.Now() in a render path) — the struct already pins the
 // data as of when it was built.
 func healthBannerFromSources(sources []sourceHealth) string {
+	worst := worstSource(sources)
+	if worst == nil {
+		return ""
+	}
+	return healthBannerLine(*worst)
+}
+
+// worstSource picks the single worst non-fresh source (failed > never > stale, ties
+// by age desc), or nil when every source is fresh. Extracted so the aggregate
+// banner (healthBannerFrom) can rank the source arm against the index/producer arms.
+func worstSource(sources []sourceHealth) *sourceHealth {
 	var worst *sourceHealth
 	worstRank := 0
 	for i := range sources {
@@ -182,10 +193,7 @@ func healthBannerFromSources(sources []sourceHealth) string {
 			worstRank = rank
 		}
 	}
-	if worst == nil {
-		return ""
-	}
-	return healthBannerLine(*worst)
+	return worst
 }
 
 // healthBannerErrorCap bounds how much of a raw connector error rides into the

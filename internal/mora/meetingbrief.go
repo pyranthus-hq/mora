@@ -243,6 +243,12 @@ type MeetingBrief struct {
 	// that renders confidently over dead data is a WRONG brief; this is a
 	// correctness signal, not ops telemetry.
 	SourceHealth []sourceHealth `json:"source_health,omitempty"`
+	// idxHealth is the index arm snapshot (Gate 2), pinned at build time next to
+	// SourceHealth for the aggregate banner. UNEXPORTED so meeting_prep's payload
+	// (and its byte-determinism tests) are unchanged — the compact envelope is
+	// Packet C. The meeting brief is the MOST index-dependent surface (Finding 1),
+	// so a dirty/failed index must reach its banner.
+	idxHealth indexHealth
 }
 
 func (b MeetingBrief) validate() error {
@@ -308,6 +314,7 @@ func buildNextMeetingBrief(ctx context.Context, cfg Config, at time.Time, attend
 		Sections:     []MeetingBriefSection{},
 		EgressCalls:  0,
 		SourceHealth: sourceHealthAll(cfg, at),
+		idxHealth:    indexHealthOf(cfg, at),
 	}
 	mems, err := meetingBriefMemories(cfg)
 	if err != nil {
@@ -365,6 +372,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		Sections:     []MeetingBriefSection{},
 		EgressCalls:  0,
 		SourceHealth: sourceHealthAll(cfg, at),
+		idxHealth:    indexHealthOf(cfg, at),
 	}
 	// Refuse-to-GAP, not refuse-to-error. If Mora cannot pick the user out of the
 	// invitee list, then ANY invitee could BE the user, so it must not attribute a
@@ -1625,7 +1633,7 @@ func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
 	// is worth surfacing regardless of whether there happens to be an upcoming
 	// event. Pure over the pre-built brief.SourceHealth (no cfg/now at render
 	// time — D-03).
-	if banner := healthBannerFromSources(brief.SourceHealth); banner != "" {
+	if banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.idxHealth}); banner != "" {
 		fmt.Fprintln(w, banner)
 		fmt.Fprintln(w)
 	}

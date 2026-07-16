@@ -155,8 +155,11 @@ func graphListEntities(ctx context.Context, cfg Config) ([]Entity, error) {
 }
 
 // loadMemoriesByID reads memories from the index table by id (graph-backed, no
-// file rescan), newest first.
-func loadMemoriesByID(ctx context.Context, db *sql.DB, ids []string) ([]Memory, error) {
+// file rescan), newest first. It is the graph read chokepoint reached by
+// get_entity, list_entities AND the meeting brief, so a memory with a pending
+// delete op is suppressed here (B4) — miss this and meeting_prep keeps quoting a
+// deleted memory back at the user, the exact harm the pending ledger prevents.
+func loadMemoriesByID(ctx context.Context, cfg Config, db *sql.DB, ids []string) ([]Memory, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -199,7 +202,7 @@ func loadMemoriesByID(ctx context.Context, db *sql.DB, ids []string) ([]Memory, 
 		}
 		return out[i].ID < out[j].ID
 	})
-	return out, nil
+	return suppressPendingDeletes(cfg, out), nil
 }
 
 // coOccurringPeople returns the OTHER person entity ids that share at least one
@@ -339,7 +342,7 @@ func graphGetEntity(ctx context.Context, cfg Config, name string) (map[string]an
 		return map[string]any{"name": name, "found": false, "memories": []Memory{}}, nil
 	}
 
-	mems, err := loadMemoriesByID(ctx, db, evidence)
+	mems, err := loadMemoriesByID(ctx, cfg, db, evidence)
 	if err != nil {
 		return nil, err
 	}

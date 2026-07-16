@@ -97,6 +97,11 @@ type Digest struct {
 	// reads the SAME snapshot instead of re-deriving it against a possibly-later
 	// clock. The red banner (healthBannerFromSources) is a pure function of this.
 	SourceHealth []sourceHealth `json:"source_health,omitempty"`
+	// idxHealth is the index arm snapshot (Gate 2), captured at build time next to
+	// SourceHealth so the aggregate banner is a pure function of both. UNEXPORTED so
+	// it never enters the MCP digest payload (that compact envelope is Packet C) and
+	// the byte-determinism envelope tests stay untouched.
+	idxHealth indexHealth
 }
 
 // briefOpts is the buildDigest options seam. advance gates the watermark commit
@@ -389,6 +394,7 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 		Freshness:    sourceFreshness(cfg),
 		StaleTasks:   stale,
 		SourceHealth: sourceHealthAll(cfg, now),
+		idxHealth:    indexHealthOf(cfg, now),
 	}, nil
 }
 
@@ -480,6 +486,7 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 		Freshness:    sourceFreshness(cfg),
 		StaleTasks:   stale,
 		SourceHealth: sourceHealthAll(cfg, now),
+		idxHealth:    indexHealthOf(cfg, now),
 	}, plans, nil
 }
 
@@ -1153,7 +1160,10 @@ func renderDigestHeader(d Digest) string {
 // after the header, before "Fresh as of:" — "stale" must never again be a
 // heading string with no reader.
 func renderDigestHealthBanner(d Digest) string {
-	banner := healthBannerFromSources(d.SourceHealth)
+	// Gate 2: the banner is now the AGGREGATE worst arm across sources AND the index
+	// (producers arrive with PR 4). Both are pure snapshots pinned at build time, so
+	// the render stays clock-free. Still exactly ONE line.
+	banner := healthBannerFrom(Health{Sources: d.SourceHealth, Index: d.idxHealth})
 	if banner == "" {
 		return ""
 	}

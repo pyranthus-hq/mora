@@ -2,6 +2,7 @@ package mora
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -156,7 +157,7 @@ func TestCreateMemoryPersistsWithUniqueID(t *testing.T) {
 	cfg := Config{VaultDir: dir, DataDir: dir, StateDir: dir}
 
 	m := Memory{Scope: "global", Type: "insight", Title: "hi", Text: "hello world", Source: "manual", CreatedAt: "2020-01-01T00:00:00Z"}
-	got, err := createMemory(cfg, m)
+	got, _, err := createMemory(context.Background(), cfg, m)
 	if err != nil {
 		t.Fatalf("createMemory: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestCreateMemoryRetriesPastIDCollision(t *testing.T) {
 	}
 
 	m := Memory{Scope: "global", Type: "insight", Title: "new", Text: "fresh body", Source: "manual", CreatedAt: "2020-01-01T00:00:00Z"}
-	got, err := createMemory(cfg, m)
+	got, _, err := createMemory(context.Background(), cfg, m)
 	if err != nil {
 		t.Fatalf("createMemory: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestCreateMemoryExhaustsBoundedRetries(t *testing.T) {
 	newIDFn = func() string { calls++; return collidingID } // always collide
 
 	m := Memory{Scope: "global", Type: "insight", Title: "new", Text: "body", Source: "manual", CreatedAt: "2020-01-01T00:00:00Z"}
-	if _, err := createMemory(cfg, m); err == nil {
+	if _, _, err := createMemory(context.Background(), cfg, m); err == nil {
 		t.Fatalf("want error after exhausting retries, got nil")
 	}
 	if calls != maxCreateAttempts {
@@ -484,7 +485,7 @@ func TestCreateMemoryWorksWhenLinkUnsupported(t *testing.T) {
 	cfg := Config{VaultDir: dir, DataDir: dir, StateDir: dir}
 
 	m := Memory{Scope: "global", Type: "insight", Title: "t", Text: "no-hardlink body", Source: "manual", CreatedAt: "2020-01-01T00:00:00Z"}
-	got, err := createMemory(cfg, m)
+	got, _, err := createMemory(context.Background(), cfg, m)
 	if err != nil {
 		t.Fatalf("createMemory (fallback): %v", err)
 	}

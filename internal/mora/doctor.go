@@ -63,6 +63,11 @@ type doctorReport struct {
 	// deterministic non-null array — `[]` on a vault with no enabled sources,
 	// never `null` — so a JSON consumer never needs a nil-check.
 	Sources []sourceHealth `json:"sources"`
+	// Index and Producers are the Gate 2 typed arms (HEALTH-09/-10/-11/-12). Index
+	// is a value (always present); Producers is a deterministic non-null array
+	// (empty until PR 4 builds the producer ledger).
+	Index     indexHealth      `json:"index"`
+	Producers []producerHealth `json:"producers"`
 }
 
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
@@ -112,7 +117,10 @@ func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
 // checks); --pulse --strict is a no-op (--pulse already exits 2 on its own).
 func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) error {
 	srcHealth := sourceHealthAll(cfg, now)
-	banner := healthBannerFromSources(srcHealth)
+	// Gate 2: --pulse now covers sources AND the index arm (producers arrive with
+	// PR 4), so a dirty/failed/degraded index makes --pulse exit 2, not just a stale
+	// source. Still freshness-only in spirit: no O(vault) manifest walk here.
+	banner := healthBannerFrom(Health{Sources: srcHealth, Index: indexHealthOf(cfg, now)})
 
 	if jsonOut {
 		b, err := json.MarshalIndent(struct {
@@ -189,7 +197,12 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		{Name: "vault", OK: vErr == nil, Critical: true},
 		{Name: "index_db", OK: iErr == nil, Critical: true},
 		{Name: "token_dir", OK: tErr == nil && !strings.HasPrefix(tokenDir, cfg.VaultDir), Critical: false},
-		{Name: "sources_config", OK: len(sources) > 0, Critical: false},
+		// ▸R sources_config needs a PREDICATE, not just a count: loadSources returns
+		// DISABLED rows too, so `len(sources) > 0` stayed green after `mora sources
+		// disable gmail` while deleting every source_fresh:* check. Critical now, and
+		// green only if some source is enabled OR there is no connector corpus to
+		// have an alarm for (a freshly-seeded vault).
+		{Name: "sources_config", OK: enabledSourceCount(sources) > 0 || !vaultHasConnectorMemories(cfg), Critical: true},
 		{Name: "tokens_disjoint_from_vault", OK: disjointRealPaths(cfg.VaultDir, tokenDir), Critical: true},
 		// Only ciphertext belongs in a share staging repo; plaintext markdown
 		// there means something is wrong with the export path or the user
@@ -209,6 +222,28 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	for _, h := range srcHealth {
 		checks = append(checks, doctorCheck{Name: "source_fresh:" + h.Key, OK: h.State == healthFresh, Critical: true})
 	}
+
+	// Gate 2 index arm (HEALTH-03 completion / HEALTH-09/-12 exposure): the index is
+	// a derived corpus that can die silently while every source is fresh, so its
+	// state and embedder provenance are critical checks — a stale source timestamp
+	// can never mask an older/degraded index.
+	idxH := indexHealthOf(cfg, now)
+	checks = append(checks, doctorCheck{Name: "index_fresh", OK: idxH.State == idxFresh, Critical: true})
+	checks = append(checks, doctorCheck{Name: "index_embedder", OK: idxH.Embedder.Match, Critical: true})
+	// ▸R per source TYPE with a corpus but no ENABLED instance: the zero-sources
+	// case is the extreme; the realistic one is disabling ONE connector and silently
+	// losing its alarm while the others keep doctor green.
+	for _, typ := range disabledCorpusTypes(cfg, sources) {
+		checks = append(checks, doctorCheck{Name: "source_disabled_with_corpus:" + typ, OK: false, Critical: true})
+	}
+	// B1a content manifest — the O(vault) recompute runs only OUTSIDE --pulse (we
+	// already returned above for --pulse) and never on the MCP hot path. Absent =>
+	// unverified (non-critical, so a legacy index does not redden every first
+	// doctor); present+mismatch => the index provably does not reflect the vault
+	// (critical). PR 4's producer_live:* checks are absent here (fail-open contract).
+	mOK, mCritical := indexMatchesVault(cfg)
+	checks = append(checks, doctorCheck{Name: "index_matches_vault", OK: mOK, Critical: mCritical})
+
 	healthy := true
 	for _, c := range checks {
 		if c.Critical && !c.OK {
@@ -236,6 +271,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			Version:            BuildVersion,
 			Platform:           runtimeGOOS(),
 			Sources:            srcHealth,
+			Index:              idxH,
+			Producers:          []producerHealth{},
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec

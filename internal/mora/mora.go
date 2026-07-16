@@ -787,24 +787,39 @@ var newIDFn = newID
 // re-rendered onto its own stable path, where an idempotent overwrite is correct,
 // not a collision); createMemory's anti-clobber applies specifically to freshly
 // minted, non-deterministic ids.
-func createMemory(cfg Config, m Memory) (Memory, error) {
+// createMemory returns the created memory and the pending-op that marks it dirty
+// (Gate 2, A5 row 1). The order is restructured for the ID retry loop: mint ID →
+// compute path → markIndexDirty → atomicCreate → on EEXIST/error remove THIS
+// attempt's op and re-mint, on success return the op so the caller retires it after
+// the covering indexUpsert commits. Marking inside the loop is load-bearing: there
+// is no path to mark until the ID exists, and a collision changes it. The returned
+// op has an empty OpID when the index was not ready to be marked (cold start) — in
+// which case unmarkIndexDirty is a harmless no-op.
+func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp, error) {
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
 		m.ID = newIDFn()
 		body, err := renderMemory(m)
 		if err != nil {
-			return Memory{}, err
+			return Memory{}, pendingOp{}, err
 		}
 		path := memoryPath(cfg, m)
+		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path})
+		if merr != nil {
+			// errIndexUnmarkable: abort BEFORE a single vault byte changes, so a
+			// client retry cannot mint a duplicate (mcp.go's isError asymmetry).
+			return Memory{}, pendingOp{}, merr
+		}
 		if err := atomicCreate(path, body, 0o644); err != nil {
+			_ = unmarkIndexDirty(cfg, op.OpID) // this attempt's op is abandoned
 			if errors.Is(err, os.ErrExist) {
 				continue // id collision: re-mint and retry
 			}
-			return Memory{}, err
+			return Memory{}, pendingOp{}, err
 		}
 		m.Path = path
-		return m, nil
+		return m, op, nil
 	}
-	return Memory{}, fmt.Errorf("create memory: could not mint a unique id after %d attempts", maxCreateAttempts)
+	return Memory{}, pendingOp{}, fmt.Errorf("create memory: could not mint a unique id after %d attempts", maxCreateAttempts)
 }
 
 // indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
