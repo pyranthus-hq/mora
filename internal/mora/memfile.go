@@ -223,11 +223,23 @@ func findMemory(cfg Config, id string) (Memory, error) {
 	safeBase := memory.SafeFilename(id) + ".md"
 	osBase := osSafeBase(id) + ".md"
 	osSafe := osSafeBase(memory.SafeFilename(id)) + ".md"
+	// Keep the common provider/write-minted shapes fast, but never make the file
+	// name part of memory identity. Imported/materialized vaults may use an
+	// arbitrary human filename while frontmatter carries the stable id returned by
+	// list/search/graph. Defer those files to a second source-of-truth pass.
+	var fallback []string
 	for _, path := range files {
 		b := filepath.Base(path)
 		if b != base && b != safeBase && b != osBase && b != osSafe && !strings.Contains(b, id) {
+			fallback = append(fallback, path)
 			continue
 		}
+		m, err := parseMemory(path)
+		if err == nil && m.ID == id {
+			return m, nil
+		}
+	}
+	for _, path := range fallback {
 		m, err := parseMemory(path)
 		if err == nil && m.ID == id {
 			return m, nil
