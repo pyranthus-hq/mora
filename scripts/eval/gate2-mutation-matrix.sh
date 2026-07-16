@@ -39,13 +39,13 @@ missing=0
 while IFS="$(printf '\t')" read -r row test_name; do
   [ -n "$row" ] || continue
   case "$row" in \#*) continue ;; esac
-  matrix_matches=$(awk -F '|' -v want="$row" '
+  matrix_matches=$(awk -F '|' -v want="$row" -v witness="$test_name" '
     function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
-    trim($2) == want && trim($5) ~ /^CLOSED([[:space:]]|$)/ { n++ }
+    trim($2) == want && index($4, witness) > 0 && trim($5) ~ /^CLOSED([[:space:]]|$)/ { n++ }
     END { print n+0 }
   ' "$MATRIX")
   if [ "$matrix_matches" -ne 1 ]; then
-    echo "MATRIX row $row: found $matrix_matches CLOSED entries; want exactly one" >&2
+    echo "MATRIX row $row: found $matrix_matches CLOSED entries naming $test_name; want exactly one" >&2
     missing=$((missing + 1))
   elif ! grep -F '"Action":"pass"' "$JSON" | grep -Fq "\"Test\":\"$test_name\""; then
     echo "TEST row $row: $test_name did not pass" >&2
