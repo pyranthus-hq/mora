@@ -364,10 +364,6 @@ func buildShareGenerationFromEntries(ctx context.Context, cfg Config, name, gen 
 	return buildShareGenerationBounded(ctx, cfg, name, gen, entries, storage.checkAdditional, storage)
 }
 
-func buildShareGenerationAdmitted(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry, admit shareAdmitFn) (corpusDigest, indexDigest string, err error) {
-	return buildShareGenerationBounded(ctx, cfg, name, gen, entries, admit, nil)
-}
-
 func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry, admit shareAdmitFn, storage *shareStorageAdmission) (corpusDigest, indexDigest string, err error) {
 	corpusDir := shareGenCorpusDir(cfg, name, gen)
 	if err := os.MkdirAll(corpusDir, 0o700); err != nil {
