@@ -161,7 +161,7 @@ func withProducerStamp(cfg Config, name string, now time.Time, nonInteractive bo
 	if name == "" {
 		return runErr
 	}
-	stampErr := mutateProducers(cfg, now, func(m map[string]producerStatus) error {
+	stampErr := mutateProducers(cfg, func(m map[string]producerStatus) error {
 		ps := m[name]
 		ps.Name = name
 		ps.LastAttemptAt = now.UTC().Format(time.RFC3339)
@@ -390,8 +390,8 @@ func briefArtifactFresh(cfg Config, now time.Time) (ok bool, present bool) {
 // forgetProducerLedger retires a producer (`mora doctor --forget-producer <name>`):
 // it removes both the expectation and the evidence, so an adoption you regret — or a
 // job you truly stopped — is not a permanent red banner. Idempotent.
-func forgetProducerLedger(cfg Config, name string, now time.Time) error {
-	if err := mutateProducers(cfg, now, func(m map[string]producerStatus) error {
+func forgetProducerLedger(cfg Config, name string) error {
+	if err := mutateProducers(cfg, func(m map[string]producerStatus) error {
 		delete(m, name)
 		return nil
 	}); err != nil {

@@ -193,7 +193,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	now := doctorClock()
 
 	if *forgetProducer != "" {
-		if err := forgetProducerLedger(cfg, *forgetProducer, now); err != nil {
+		if err := forgetProducerLedger(cfg, *forgetProducer); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "retired producer %q (expectation + evidence removed)\n", *forgetProducer)

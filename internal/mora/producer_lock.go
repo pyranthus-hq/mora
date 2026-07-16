@@ -100,8 +100,18 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 // applies mutate to the freshly loaded map, and saves the result before releasing.
 // A mutate that returns an error aborts WITHOUT writing. Every producer status
 // write goes through here; a load->mutate->save added outside it reopens the race.
-func mutateProducers(cfg Config, now time.Time, mutate func(map[string]producerStatus) error) error {
-	release, err := acquireProducerLock(cfg, now)
+//
+// The lease is acquired with REAL wall-clock time — never a caller's injected
+// logical `now`. The two clocks are different things: the injected clock governs
+// stamp CONTENT (determinism), while the lease TTL is a liveness bound on a
+// physically-running process. Feeding a logical clock to the TTL is a genuine
+// lost-update bug: two concurrent holders whose injected `now` differ by more than
+// producerLockTTL each judge the other's LIVE lock abandoned, reap it mid-RMW, and
+// silently drop one another's write — precisely what the lease exists to prevent
+// (TestProducerLedgerNoLostUpdateAcrossProcesses caught exactly this). mutateSources
+// draws the same line (sources_lock.go:119 acquires with time.Now()).
+func mutateProducers(cfg Config, mutate func(map[string]producerStatus) error) error {
+	release, err := acquireProducerLock(cfg, time.Now())
 	if err != nil {
 		return err
 	}
