@@ -56,7 +56,8 @@ type ThinkResult struct {
 	Query           string            `json:"query"`
 	Evidence        []ThinkEvidence   `json:"evidence"`
 	Gaps            ThinkGaps         `json:"gaps"`
-	OpenLoops       []PersonOpenLoops `json:"open_loops,omitempty"` // C1: unfinished tasks tied to people named in the query
+	OpenLoops       []PersonOpenLoops `json:"open_loops,omitempty"`       // C1: unfinished tasks tied to people named in the query
+	SharesUnhealthy []shareUnhealth   `json:"shares_unhealthy,omitempty"` // Packet H5: degraded/failed/never subscriptions surfaced as an explicit gap
 	SynthesisPrompt string            `json:"synthesis_prompt"`
 }
 
@@ -115,6 +116,9 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 		return res, err
 	}
 	res.OpenLoops = loops
+	// Packet H5: surface any degraded/failed/never subscription as an explicit gap
+	// so a suppressed-or-degraded share is visible, never silently dropped.
+	res.SharesUnhealthy = sharesUnhealthy(cfg, now)
 	res.SynthesisPrompt = thinkPrompt(query, res.Evidence, gaps, loops)
 	return res, nil
 }

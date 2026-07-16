@@ -23,7 +23,9 @@ package mora
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -796,11 +798,18 @@ type shareImportStats struct {
 }
 
 func readShareManifest(repoDir string) (shareManifest, error) {
-	var man shareManifest
 	b, err := os.ReadFile(filepath.Join(repoDir, "share.json"))
 	if err != nil {
-		return man, fmt.Errorf("share repo has no readable share.json manifest: %w", err)
+		return shareManifest{}, fmt.Errorf("share repo has no readable share.json manifest: %w", err)
 	}
+	return parseShareManifestBytes(b)
+}
+
+// parseShareManifestBytes validates a share.json manifest from raw bytes (used
+// by the git-pin path, which reads it via `git cat-file blob <pin>:share.json`
+// rather than from a mutable working tree).
+func parseShareManifestBytes(b []byte) (shareManifest, error) {
+	var man shareManifest
 	if err := json.Unmarshal(b, &man); err != nil {
 		return man, fmt.Errorf("share.json: %w", err)
 	}
@@ -813,179 +822,27 @@ func readShareManifest(repoDir string) (shareManifest, error) {
 	return man, nil
 }
 
-// shareImport decrypts + validates + indexes the shared corpus from a materialized
-// v1-layout directory (memories/<id>.md.age + share.json) into the subscription's
-// corpus, and rebuilds its dedicated index. Everything it writes stays under the
-// share root; the subscriber's vault, personal index, and graph are never touched.
-// The git transport passes its clone dir; the bucket transport passes a throwaway
-// dir it fetched into — so the same untrusted-input validation (names, ids,
-// scopes, sizes) runs for every backend, aborting loudly on any violation.
-func shareImport(ctx context.Context, cfg Config, sub shareSubscription, repo string) (shareImportStats, error) {
-	var stats shareImportStats
-	identities, err := loadShareIdentities(cfg)
-	if err != nil {
-		return stats, err
-	}
-	man, err := readShareManifest(repo)
-	if err != nil {
-		return stats, err
-	}
-	stats.Owner, stats.Scope = man.Owner, man.Scope
-
-	corpus := shareCorpusDir(cfg, sub.Name)
-	if err := os.MkdirAll(corpus, 0o700); err != nil {
-		return stats, err
-	}
-	entries, err := os.ReadDir(filepath.Join(repo, "memories"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return stats, err
-	}
-	seen := map[string]bool{}
-	foldSeen := map[string]string{}
-	var mems []Memory
-	for _, e := range entries {
-		if !e.Type().IsRegular() {
-			return stats, fmt.Errorf("share repo entry memories/%s is not a regular file — refusing to import", e.Name())
-		}
-		if !strings.HasSuffix(e.Name(), ".md.age") {
-			continue
-		}
-		stem := strings.TrimSuffix(e.Name(), ".md.age")
-		if !shareExportIDRE.MatchString(stem) {
-			return stats, fmt.Errorf("share repo file memories/%s has an unsafe name — refusing to import", e.Name())
-		}
-		// Backstop to the publisher-side check: ids differing only by letter
-		// case would silently overwrite each other in this corpus on a case-
-		// insensitive filesystem — refuse rather than serve a half-share.
-		if prior, dup := foldSeen[strings.ToLower(stem)]; dup {
-			return stats, fmt.Errorf("share repo files %s and %s differ only by letter case and cannot coexist in the corpus — ask the publisher to rename one", prior, stem)
-		}
-		foldSeen[strings.ToLower(stem)] = stem
-		// Bound the CIPHERTEXT before reading it into memory — the plaintext
-		// LimitReader below cannot protect against a huge input file (codex
-		// review). age overhead is small, so the plaintext cap + 1 MiB is ample.
-		if fi, err := e.Info(); err != nil {
-			return stats, err
-		} else if fi.Size() > shareMaxMemoryBytes+(1<<20) {
-			return stats, fmt.Errorf("memories/%s exceeds the %d-byte per-memory cap — refusing to import", e.Name(), shareMaxMemoryBytes)
-		}
-		ct, err := os.ReadFile(filepath.Join(repo, "memories", e.Name()))
-		if err != nil {
-			return stats, err
-		}
-		r, err := age.Decrypt(bytes.NewReader(ct), identities...)
-		if err != nil {
-			return stats, fmt.Errorf("decrypting %s: %w (is your public key among this share's recipients?)", e.Name(), err)
-		}
-		plain, err := io.ReadAll(io.LimitReader(r, shareMaxMemoryBytes+1))
-		if err != nil {
-			return stats, err
-		}
-		if len(plain) > shareMaxMemoryBytes {
-			return stats, fmt.Errorf("memories/%s exceeds the %d-byte per-memory cap — refusing to import", e.Name(), shareMaxMemoryBytes)
-		}
-		dst := filepath.Join(corpus, stem+".md")
-		prev, prevErr := os.ReadFile(dst)
-		changed := prevErr != nil || !bytes.Equal(prev, plain)
-		if changed {
-			if err := atomicWrite(dst, plain, 0o644); err != nil {
-				return stats, err
-			}
-		}
-		m, perr := parseMemory(dst)
-		if perr != nil {
-			_ = os.Remove(dst)
-			return stats, fmt.Errorf("memories/%s does not parse as a memory: %v", e.Name(), perr)
-		}
-		if m.ID != stem {
-			_ = os.Remove(dst)
-			return stats, fmt.Errorf("memories/%s: frontmatter id %q does not match the file name — refusing spoofed ids", e.Name(), m.ID)
-		}
-		if m.Scope != man.Scope {
-			_ = os.Remove(dst)
-			return stats, fmt.Errorf("memories/%s: scope %q differs from the manifest scope %q", e.Name(), m.Scope, man.Scope)
-		}
-		if m.DeletedAt != "" {
-			_ = os.Remove(dst)
-			continue
-		}
-		seen[stem] = true
-		if changed {
-			stats.Imported++
-		}
-		mems = append(mems, m)
-	}
-	// Removal propagates: corpus files whose ciphertext left the repo are pruned.
-	corpusEntries, err := os.ReadDir(corpus)
-	if err != nil {
-		return stats, err
-	}
-	for _, e := range corpusEntries {
-		stem := strings.TrimSuffix(e.Name(), ".md")
-		if stem == e.Name() {
-			continue
-		}
-		if !seen[stem] {
-			if err := os.Remove(filepath.Join(corpus, e.Name())); err != nil {
-				return stats, err
-			}
-			stats.Removed++
-		}
-	}
-	stats.Total = len(mems)
-	if err := rebuildShareIndex(ctx, shareIndexPath(cfg, sub.Name), mems); err != nil {
-		return stats, err
-	}
-	return stats, nil
-}
-
-// rebuildShareIndex materializes one subscription's searchable index: the same
-// memories/memories_fts shape (and user_version stamp) as the personal index so
-// the query layer works unchanged, but nothing else — no vectors, no graph, no
-// entities. FTS-only is the v1 contract for shared corpora.
-func rebuildShareIndex(ctx context.Context, indexPath string, mems []Memory) error {
-	db, err := sql.Open("sqlite", indexPath+"?_txlock=immediate&_pragma=busy_timeout(15000)")
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, q := range []string{
-		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT)`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text)`,
-		`DELETE FROM memories`,
-		`DELETE FROM memories_fts`,
-		fmt.Sprintf(`PRAGMA user_version = %d`, indexSchemaVersion),
-	} {
-		if _, err := tx.ExecContext(ctx, q); err != nil {
-			return err
-		}
-	}
-	for _, m := range mems {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Scope, m.Type, m.Title, strings.Join(m.Tags, ","), m.Source, m.CreatedAt, m.Path, m.Text); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memories_fts VALUES (?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Scope, m.Title, strings.Join(m.Tags, ","), m.Source, m.Text); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// openShareIndexRO opens one subscription's index for querying — never through
-// openIndexRO, whose auto-heal would rebuild it from the WRONG (personal)
-// vault. query_only is enforced via pragma because modernc's mode=ro is not
-// binding on non-file: DSNs; the schema stamp is checked explicitly and the
-// actionable fix is a share pull, not a personal index rebuild.
-func openShareIndexRO(ctx context.Context, path string) (*sql.DB, error) {
+// openShareIndexRO opens a resolved generation's IMMUTABLE index.db for querying
+// — never through openIndexRO (whose auto-heal would rebuild it from the WRONG
+// personal vault). It keeps the shipped mode=ro spelling + query_only + the
+// user_version gate, and ADDS an integrity check binding the index.db to its
+// generation: sha256(file) must equal the committed index_digest, recomputed on
+// EVERY serve — a positive result is NEVER cached (a byte-flip need not change
+// the mtime, so any (gen,mtime)-keyed cache would mask exactly the post-commit
+// corruption this check exists to catch). A gen that fails to open or fails the
+// digest is excluded + surfaced; heal may re-cut it from the frozen corpus.
+func openShareIndexRO(ctx context.Context, path, committedDigest string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
+	}
+	if committedDigest != "" {
+		got, derr := fileDigestOf(path)
+		if derr != nil {
+			return nil, derr
+		}
+		if got != committedDigest {
+			return nil, fmt.Errorf("share index %s failed its integrity digest — the file was corrupted or substituted since it was committed", path)
+		}
 	}
 	db, err := sql.Open("sqlite", path+"?mode=ro&_pragma=busy_timeout(15000)&_pragma=query_only(1)")
 	if err != nil {
@@ -1087,14 +944,16 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 		if strings.TrimSpace(origin) != *remote {
 			return fmt.Errorf("existing clone at %s has origin %s, not the requested remote %s — delete it (or pick another subscription name) and re-subscribe", repo, redactCredentials(strings.TrimSpace(origin)), redactCredentials(*remote))
 		}
-		// Freshen before importing: an old clone must never be imported as if
-		// it were the remote's current state (review finding).
-		if _, err := run(ctx, repo, "git", "pull", "--ff-only", "origin"); err != nil {
-			return fmt.Errorf("git pull --ff-only: %w", err)
-		}
+		// No `git pull --ff-only` freshen: the run-private pin fetch (H1) brings the
+		// merge source into an immutable per-run ref and reads objects only from it.
 	}
 	sub := shareSubscription{Name: name, Remote: *remote, CreatedAt: time.Now().Format(time.RFC3339)}
-	stats, err := shareImport(ctx, cfg, sub, shareRepoDir(cfg, sub.Name))
+	var stats shareImportStats
+	err = shareBuildAndPublish(ctx, cfg, name, buildModeImport, func(runID string) (int, error) {
+		seq, st, ierr := gitShareImport(ctx, cfg, sub, runID, run)
+		stats = st
+		return seq, ierr
+	})
 	if err != nil {
 		// A fresh clone whose FIRST import failed (publisher hasn't pushed yet,
 		// key not among recipients, …) must not survive: the subscription was
@@ -1167,18 +1026,12 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 		if !isRepo {
 			return fmt.Errorf("subscription %q has no local clone — remove and re-subscribe", sub.Name)
 		}
-		origin, err := run(ctx, repo, "git", "remote", "get-url", "origin")
-		if err != nil {
-			return fmt.Errorf("subscription %q has no usable origin remote: %w", sub.Name, err)
-		}
-		if sub.Remote != "" && strings.TrimSpace(origin) != sub.Remote {
-			return fmt.Errorf("subscription %q: clone origin (%s) does not match the registered remote (%s) — refusing to pull", sub.Name, redactCredentials(strings.TrimSpace(origin)), redactCredentials(sub.Remote))
-		}
-		if _, err := run(ctx, repo, "git", "pull", "--ff-only", "origin"); err != nil {
-			return fmt.Errorf("git pull --ff-only failed for share %q — if the publisher rotated the share (history rewrite), remove and re-subscribe: %w", sub.Name, err)
-		}
-		stats, err := shareImport(ctx, cfg, sub, shareRepoDir(cfg, sub.Name))
-		if err != nil {
+		var stats shareImportStats
+		if err := shareBuildAndPublish(ctx, cfg, sub.Name, buildModeImport, func(runID string) (int, error) {
+			seq, st, ierr := gitShareImport(ctx, cfg, sub, runID, run)
+			stats = st
+			return seq, ierr
+		}); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "share %q: %d new/updated, %d removed, %d total.\n", sub.Name, stats.Imported, stats.Removed, stats.Total)
@@ -1186,38 +1039,76 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	return nil
 }
 
-// healShareIndex rebuilds one subscription's index from its decrypted corpus —
-// the local source of truth. Used when the index file is corrupt or stamped
-// with a different schema version (e.g. after a mora upgrade).
+// healShareIndex mints a REPAIR generation from the published generation's own
+// frozen corpus and commits it via the H2c claim (under the import lease taken by
+// the heal chokepoint). Its only meaning: the published generation's index.db
+// won't open or fails its integrity digest. It never reads unverified files, so
+// it cannot launder a stray/zombie/out-of-band file; if the published corpus is
+// itself unreadable it fails closed. It mints a NEW gen (never overwriting the
+// corrupt one), keeping it Windows-safe.
 func healShareIndex(ctx context.Context, cfg Config, name string) error {
-	indexPath := shareIndexPath(cfg, name)
-	for _, p := range []string{indexPath, indexPath + "-wal", indexPath + "-shm"} {
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+	return shareBuildAndPublish(ctx, cfg, name, buildModeHeal, func(runID string) (int, error) {
+		commit, ok, err := resolvePublishedCommit(cfg, name)
+		if err != nil {
+			return 0, err
 		}
+		if !ok {
+			return 0, fmt.Errorf("share %q: nothing committed to heal from", name)
+		}
+		srcCorpus := shareGenCorpusDir(cfg, name, commit.Gen)
+		// Verify the source corpus against its committed digest before re-cutting —
+		// heal must re-cut only from a verified frozen corpus.
+		if d, derr := corpusDigestOf(srcCorpus); derr != nil || d != commit.CorpusDigest {
+			return 0, fmt.Errorf("share %q: published corpus is unreadable/corrupt — cannot heal; run `mora share pull %s`", name, name)
+		}
+		entries, cerr := readFrozenCorpus(srcCorpus)
+		if cerr != nil {
+			return 0, cerr
+		}
+		gen := "gen-" + runID
+		corpusDigest, indexDigest, berr := buildShareGenerationFromEntries(ctx, cfg, name, gen, entries)
+		if berr != nil {
+			return 0, berr
+		}
+		return publishShareGeneration(cfg, shareCommitParams{
+			name: name, runID: runID, gen: gen, sourceRev: commit.SourceRev,
+			corpusDigest: corpusDigest, indexDigest: indexDigest, count: len(entries),
+			builtAt: time.Now(), parentFloor: commit.BucketFloor,
+		})
+	})
+}
+
+// readFrozenCorpus reads a generation's frozen corpus into blob entries for
+// re-cutting (heal). The corpus is already digest-verified by the caller.
+func readFrozenCorpus(corpusDir string) ([]shareBlobEntry, error) {
+	entries, err := os.ReadDir(corpusDir)
+	if err != nil {
+		return nil, err
 	}
-	entries, err := os.ReadDir(shareCorpusDir(cfg, name))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	var mems []Memory
+	var out []shareBlobEntry
 	for _, e := range entries {
 		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		m, perr := parseMemory(filepath.Join(shareCorpusDir(cfg, name), e.Name()))
-		if perr != nil {
-			return fmt.Errorf("corpus file %s does not parse: %v — run `mora share pull %s` to re-import", e.Name(), perr, name)
+		p := filepath.Join(corpusDir, e.Name())
+		body, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return nil, rerr
 		}
-		mems = append(mems, m)
+		m, perr := parseMemoryBytes(p, body)
+		if perr != nil {
+			return nil, fmt.Errorf("frozen corpus file %s does not parse: %v", e.Name(), perr)
+		}
+		out = append(out, shareBlobEntry{mem: m, body: body})
 	}
-	return rebuildShareIndex(ctx, indexPath, mems)
+	return out, nil
 }
 
-// findSharedMemory resolves an id against every subscription's corpus (files
-// are named <id>.md, so this is a direct lookup, no index needed). It backs the
-// READ-ONLY surfaces (`mora read`, MCP read_memory) so truncated shared search
-// snippets can be expanded to full text; delete paths never call it.
+// findSharedMemory resolves an id against every subscription's PUBLISHED
+// generation, serving from the frozen corpus and verifying integrity against the
+// committed corpus_digest — hashing and serving the SAME bytes it read
+// (read-once, no check-to-use re-read). On a digest mismatch, a bit-flip/synced-
+// conflict cannot be served: read returns not-found rather than altered bytes.
 func findSharedMemory(cfg Config, id string) (Memory, bool) {
 	if !shareExportIDRE.MatchString(id) {
 		return Memory{}, false
@@ -1227,19 +1118,60 @@ func findSharedMemory(cfg Config, id string) (Memory, bool) {
 		return Memory{}, false
 	}
 	for _, sub := range sf.Subscriptions {
-		path := filepath.Join(shareCorpusDir(cfg, sub.Name), id+".md")
-		fi, statErr := os.Lstat(path)
-		if statErr != nil || !fi.Mode().IsRegular() {
-			continue
+		commit, ok, cerr := resolvePublishedCommit(cfg, sub.Name)
+		if cerr != nil || !ok {
+			continue // no valid artifact to serve; surfaced by doctor/shares_unhealthy
 		}
-		m, perr := parseMemory(path)
-		if perr != nil || m.ID != id {
+		m, found, ierr := readSharedMemoryFromGen(shareGenCorpusDir(cfg, sub.Name, commit.Gen), id, commit.CorpusDigest)
+		if ierr != nil || !found {
 			continue
 		}
 		m.Owner = sub.Name
 		return m, true
 	}
 	return Memory{}, false
+}
+
+// readSharedMemoryFromGen reads EVERY corpus file in the resolved generation
+// exactly once, retains the target id's bytes in memory, recomputes the
+// corpus_digest, and — only if it equals the committed digest — parses and serves
+// those RETAINED bytes. Because the bytes hashed are the bytes served (never
+// re-read after the check), corruption after the hash cannot be served. Runs on
+// every serve with no positive-result cache.
+func readSharedMemoryFromGen(corpusDir, id, committedDigest string) (Memory, bool, error) {
+	entries, err := os.ReadDir(corpusDir)
+	if err != nil {
+		return Memory{}, false, err
+	}
+	var lines []string
+	var targetBytes []byte
+	found := false
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		b, rerr := os.ReadFile(filepath.Join(corpusDir, e.Name()))
+		if rerr != nil {
+			return Memory{}, false, rerr
+		}
+		sum := sha256.Sum256(b)
+		lines = append(lines, hex.EncodeToString(sum[:])+"  "+e.Name())
+		if e.Name() == id+".md" {
+			targetBytes = b
+			found = true
+		}
+	}
+	if committedDigest != "" && manifestDigestOf(lines) != committedDigest {
+		return Memory{}, false, nil // corruption: fail closed, never serve altered bytes
+	}
+	if !found {
+		return Memory{}, false, nil
+	}
+	m, perr := parseMemoryBytes(filepath.Join(corpusDir, id+".md"), targetBytes)
+	if perr != nil || m.ID != id {
+		return Memory{}, false, nil
+	}
+	return m, true, nil
 }
 
 // ---------- query-time union ----------
@@ -1314,28 +1246,32 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 	}
 	var out [][]Memory
 	for _, sub := range sf.Subscriptions {
-		path := shareIndexPath(cfg, sub.Name)
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			continue
+		commit, ok, rerr := resolvePublishedCommit(cfg, sub.Name)
+		if rerr != nil || !ok {
+			continue // no valid artifact to serve on THIS surface; surfaced by doctor
 		}
-		db, err := openShareIndexRO(ctx, path)
+		db, err := openShareIndexRO(ctx, shareGenIndexPath(cfg, sub.Name, commit.Gen), commit.IndexDigest)
 		if err != nil {
-			// The share index is a derived cache of the local corpus, exactly
-			// like the personal index is of the vault — so it self-heals: a
-			// corrupt or schema-stale file (e.g. after an indexSchemaVersion
-			// bump in an upgrade) is rebuilt from the decrypted corpus instead
-			// of bricking every search until a manual pull (review finding).
+			// The published index.db won't open / fails its integrity digest. Heal
+			// re-cuts a repair generation from the head's OWN frozen corpus (never
+			// unverified files) and commits it; then re-resolve and reopen. If heal
+			// cannot re-cut, exclude THIS subscription from search only (per-artifact
+			// suppression) — a corrupt share index never takes down local recall.
 			if healErr := healShareIndex(ctx, cfg, sub.Name); healErr != nil {
-				return nil, fmt.Errorf("share %q: index unusable (%v) and rebuild from corpus failed: %w", sub.Name, err, healErr)
+				continue
 			}
-			if db, err = openShareIndexRO(ctx, path); err != nil {
-				return nil, fmt.Errorf("share %q: %w", sub.Name, err)
+			commit, ok, rerr = resolvePublishedCommit(cfg, sub.Name)
+			if rerr != nil || !ok {
+				continue
+			}
+			if db, err = openShareIndexRO(ctx, shareGenIndexPath(cfg, sub.Name, commit.Gen), commit.IndexDigest); err != nil {
+				continue
 			}
 		}
 		res, qerr := searchShareIndex(ctx, db, sub.Name, query, scope, limit)
 		_ = db.Close()
 		if qerr != nil {
-			return nil, fmt.Errorf("share %q: %w", sub.Name, qerr)
+			continue
 		}
 		if len(res) > 0 {
 			out = append(out, res)
@@ -1462,15 +1398,11 @@ func shareList(cfg Config, args []string, stdout io.Writer) error {
 	subs := make([]subRow, 0, len(sf.Subscriptions))
 	for _, s := range sf.Subscriptions {
 		n := 0
-		if entries, err := os.ReadDir(shareCorpusDir(cfg, s.Name)); err == nil {
-			for _, e := range entries {
-				if strings.HasSuffix(e.Name(), ".md") {
-					n++
-				}
-			}
+		commit, ok, _ := resolvePublishedCommit(cfg, s.Name)
+		if ok {
+			n = commit.Count
 		}
-		_, statErr := os.Stat(shareIndexPath(cfg, s.Name))
-		subs = append(subs, subRow{Name: s.Name, Remote: redactCredentials(s.Remote), Memories: n, Pulled: statErr == nil})
+		subs = append(subs, subRow{Name: s.Name, Remote: redactCredentials(s.Remote), Memories: n, Pulled: ok})
 	}
 	if *jsonOut {
 		b, err := json.MarshalIndent(map[string]any{"publishes": pubs, "subscriptions": subs}, "", "  ")
@@ -1564,7 +1496,7 @@ func shareRemove(cfg Config, args []string, stdout io.Writer) error {
 	return fmt.Errorf("no share or subscription named %q — see `mora share list`", name)
 }
 
-const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | list [--json] | remove <name> --yes>"
+const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | gc [<name>] | storage-limit <bytes> | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
@@ -1601,6 +1533,10 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 		return shareList(cfg, args[1:], stdout)
 	case "remove":
 		return shareRemove(cfg, args[1:], stdout)
+	case "gc":
+		return cmdShareGC(cfg, args[1:], stdout, time.Now())
+	case "storage-limit":
+		return cmdShareStorageLimit(cfg, args[1:], stdout, time.Now())
 	default:
 		return errors.New(shareUsage)
 	}

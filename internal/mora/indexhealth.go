@@ -72,6 +72,11 @@ type indexHealth struct {
 	Blocked       bool               `json:"blocked"`
 	Embedder      embedderProvenance `json:"embedder"`
 	Projections   projectionHealth   `json:"projections"`
+	// Shares is the per-subscription index-health sub-arm (Packet H4): the
+	// aggregate is worst-of across the personal index AND every subscription.
+	// Populated only on the top-level Health.Index (healthOf); nested entries
+	// never carry their own Shares.
+	Shares []indexHealth `json:"shares,omitempty"`
 }
 
 type projectionHealth struct { // Finding 2: three projections, three stamps
@@ -417,6 +422,8 @@ func healthOf(cfg Config, now time.Time) Health {
 		Index:     indexHealthOf(cfg, now),
 		Producers: producerHealthAll(cfg, now), // PR 4: producer liveness (HEALTH-11)
 	}
+	// Packet H4: fold every subscription's index health into the aggregate arm.
+	h.Index.Shares = shareIndexHealthAll(cfg, now)
 	h.State = aggregateHealthState(h)
 	return h
 }
@@ -439,6 +446,15 @@ func aggregateHealthState(h Health) string {
 		unhealthy = true
 	case idxDegraded:
 		degraded = true
+	}
+	// Worst-of across every subscription's index arm (Packet H4).
+	for _, s := range h.Index.Shares {
+		switch s.State {
+		case idxFailed, idxNever, idxDirty:
+			unhealthy = true
+		case idxDegraded:
+			degraded = true
+		}
 	}
 	for _, p := range h.Producers {
 		switch p.State {

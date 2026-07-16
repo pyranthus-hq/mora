@@ -175,12 +175,15 @@ func shareSubscribeBucket(ctx context.Context, cfg Config, name string, bc bucke
 		return err
 	}
 	sub := shareSubscription{Name: name, Transport: &transportRef{Kind: "bucket", Bucket: &bc}, CreatedAt: time.Now().Format(time.RFC3339)}
-	dest := filepath.Join(shareSubRoot(cfg, name), "fetch")
-	_ = os.RemoveAll(dest)
-	if err := os.MkdirAll(dest, 0o700); err != nil {
+	// First-contact fingerprint confirmation runs against a throwaway probe fetch
+	// BEFORE any generation is built, so an unconfirmed pin never publishes.
+	probe := filepath.Join(shareSubRoot(cfg, name), "fetch-probe")
+	_ = os.RemoveAll(probe)
+	if err := os.MkdirAll(probe, 0o700); err != nil {
 		return err
 	}
-	pin, ver, err := bucketFetch(ctx, store, bc, sub, ids, dest)
+	pin, _, err := bucketFetch(ctx, store, bc, sub, ids, probe)
+	_ = os.RemoveAll(probe)
 	if err != nil {
 		_ = os.RemoveAll(shareSubRoot(cfg, name))
 		return fmt.Errorf("%w — nothing was registered; fix the cause (has the publisher pushed? is your key among the recipients?) and re-run `mora share subscribe`", err)
@@ -194,12 +197,19 @@ func shareSubscribeBucket(ctx context.Context, cfg Config, name string, bc bucke
 		_ = os.RemoveAll(shareSubRoot(cfg, name))
 		return fmt.Errorf("--confirm-pin %s does not match this share's publisher fingerprint %s — refusing (possible impostor)", confirmPin, fp)
 	}
-	sub.PinnedPubkey, sub.LastVersion = pin, ver
-	stats, err := shareImport(ctx, cfg, sub, dest)
+	var stats shareImportStats
+	var gotPin ed25519.PublicKey
+	var gotVer int
+	err = shareBuildAndPublish(ctx, cfg, name, buildModeImport, func(runID string) (int, error) {
+		seq, st, p, v, ierr := bucketShareImport(ctx, cfg, sub, bc, runID)
+		stats, gotPin, gotVer = st, p, v
+		return seq, ierr
+	})
 	if err != nil {
 		_ = os.RemoveAll(shareSubRoot(cfg, name))
 		return fmt.Errorf("%w — nothing was registered", err)
 	}
+	sub.PinnedPubkey, sub.LastVersion = gotPin, gotVer
 	sf.Subscriptions = append(sf.Subscriptions, sub)
 	if err := saveShares(cfg, sf); err != nil {
 		return err
@@ -215,27 +225,19 @@ func shareSubscribeBucket(ctx context.Context, cfg Config, name string, bc bucke
 
 // sharePullBucket re-fetches one bucket subscription, advancing its pinned version.
 func sharePullBucket(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, stdout io.Writer) error {
-	ids, err := loadShareIdentities(cfg)
-	if err != nil {
+	var stats shareImportStats
+	var pin ed25519.PublicKey
+	var ver int
+	if err := shareBuildAndPublish(ctx, cfg, sub.Name, buildModeImport, func(runID string) (int, error) {
+		seq, st, p, v, ierr := bucketShareImport(ctx, cfg, sub, bc, runID)
+		stats, pin, ver = st, p, v
+		return seq, ierr
+	}); err != nil {
 		return err
 	}
-	store, err := newObjectStore(bc)
-	if err != nil {
-		return err
-	}
-	dest := filepath.Join(shareSubRoot(cfg, sub.Name), "fetch")
-	_ = os.RemoveAll(dest)
-	if err := os.MkdirAll(dest, 0o700); err != nil {
-		return err
-	}
-	pin, ver, err := bucketFetch(ctx, store, bc, sub, ids, dest)
-	if err != nil {
-		return err
-	}
-	stats, err := shareImport(ctx, cfg, sub, dest)
-	if err != nil {
-		return err
-	}
+	// Reconcile LastVersion up to the durable committed floor (belt-and-suspenders
+	// after a crash could lose this update — the committed BucketFloor already
+	// fences replays).
 	if err := updateSubscriptionState(cfg, sub.Name, pin, ver); err != nil {
 		return err
 	}
