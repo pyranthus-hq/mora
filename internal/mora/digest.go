@@ -102,6 +102,11 @@ type Digest struct {
 	// it never enters the MCP digest payload (that compact envelope is Packet C) and
 	// the byte-determinism envelope tests stay untouched.
 	idxHealth indexHealth
+	// producerHealth is the producer-liveness arm snapshot (Gate 2 / HEALTH-11),
+	// pinned at build time so the aggregate banner surfaces a dead automation on the
+	// flagship brief surface too — a healthy source and clean index must not let the
+	// brief render green while nothing has produced it. UNEXPORTED, like idxHealth.
+	producerHealth []producerHealth
 }
 
 // briefOpts is the buildDigest options seam. advance gates the watermark commit
@@ -386,15 +391,16 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 	shelf, shelfMore := assembleUrgentShelf(urgentAll)
 	stale, _ := staleTasks(cfg, 3)
 	return Digest{
-		Generated:    now.UTC().Format(time.RFC3339),
-		SinceHours:   sinceHours,
-		Urgent:       shelf,
-		UrgentMore:   shelfMore,
-		Sections:     sections,
-		Freshness:    sourceFreshness(cfg),
-		StaleTasks:   stale,
-		SourceHealth: sourceHealthAll(cfg, now),
-		idxHealth:    indexHealthOf(cfg, now),
+		Generated:      now.UTC().Format(time.RFC3339),
+		SinceHours:     sinceHours,
+		Urgent:         shelf,
+		UrgentMore:     shelfMore,
+		Sections:       sections,
+		Freshness:      sourceFreshness(cfg),
+		StaleTasks:     stale,
+		SourceHealth:   sourceHealthAll(cfg, now),
+		idxHealth:      indexHealthOf(cfg, now),
+		producerHealth: producerHealthAll(cfg, now),
 	}, nil
 }
 
@@ -478,15 +484,16 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 	// NOT gated by the watermark (D-03 note).
 	stale, _ := staleTasks(cfg, 3)
 	return Digest{
-		Generated:    now.UTC().Format(time.RFC3339),
-		SinceHours:   0,
-		Urgent:       shelf,
-		UrgentMore:   shelfMore,
-		Sections:     sections,
-		Freshness:    sourceFreshness(cfg),
-		StaleTasks:   stale,
-		SourceHealth: sourceHealthAll(cfg, now),
-		idxHealth:    indexHealthOf(cfg, now),
+		Generated:      now.UTC().Format(time.RFC3339),
+		SinceHours:     0,
+		Urgent:         shelf,
+		UrgentMore:     shelfMore,
+		Sections:       sections,
+		Freshness:      sourceFreshness(cfg),
+		StaleTasks:     stale,
+		SourceHealth:   sourceHealthAll(cfg, now),
+		idxHealth:      indexHealthOf(cfg, now),
+		producerHealth: producerHealthAll(cfg, now),
 	}, plans, nil
 }
 
@@ -1163,7 +1170,7 @@ func renderDigestHealthBanner(d Digest) string {
 	// Gate 2: the banner is now the AGGREGATE worst arm across sources AND the index
 	// (producers arrive with PR 4). Both are pure snapshots pinned at build time, so
 	// the render stays clock-free. Still exactly ONE line.
-	banner := healthBannerFrom(Health{Sources: d.SourceHealth, Index: d.idxHealth})
+	banner := healthBannerFrom(Health{Sources: d.SourceHealth, Index: d.idxHealth, Producers: d.producerHealth})
 	if banner == "" {
 		return ""
 	}
@@ -1534,7 +1541,7 @@ func digestMCPPayload(cfg Config, d Digest, budgetChars int) map[string]any {
 		// one release); health.state/.index is what it never had — the aggregate
 		// worst-of-3 state and the index arm, which a stale-but-present source_health
 		// array cannot distinguish from a dirty/failed index.
-		"health": compactHealthFrom(healthFromParts(d.SourceHealth, d.idxHealth)),
+		"health": compactHealthFrom(healthFromParts(d.SourceHealth, d.idxHealth, d.producerHealth)),
 	}
 	frameBytes := jsonLen(base) + jsonLen([]DigestSection{}) // + an empty sections array key
 	remaining := budgetChars - frameBytes

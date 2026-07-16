@@ -12,11 +12,13 @@ import (
 	"time"
 )
 
-func cmdLint(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdLint(ctx context.Context, args []string, stdout io.Writer) (err error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	// lint-weekly producer chokepoint (HEALTH-11).
+	defer stampChokepoint(cfg, stdout, args, "lint-weekly", producerClock(), &err)
 	required := []string{"index.md", "priority-map.md", "live-tasks.md", "heartbeat.md", "auto-resolver.md", "meetings/ledger.md", "log.md"}
 	var issues []string
 	for _, rel := range required {
@@ -38,11 +40,13 @@ func cmdLint(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	return nil
 }
-func cmdBackup(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdBackup(ctx context.Context, args []string, stdout io.Writer) (err error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	// backup-daily producer chokepoint (HEALTH-11).
+	defer stampChokepoint(cfg, stdout, args, "backup-daily", producerClock(), &err)
 	// A drifted config that nests data_dir/config inside the vault would tar the
 	// age share identity and DECRYPTED share corpora (plus the index's decrypted
 	// text) straight into the backup archive. Refuse rather than leak — the same

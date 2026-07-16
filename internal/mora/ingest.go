@@ -53,7 +53,7 @@ func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (i
 	}
 	return total, nil
 }
-func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error) {
 	if len(args) == 0 || args[0] != "run" {
 		return errors.New("usage: mora ingest run --source <name>|--all")
 	}
@@ -61,12 +61,17 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) error {
 	fs.SetOutput(io.Discard)
 	sourceName := fs.String("source", "", "source")
 	all := fs.Bool("all", false, "all")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
+	if perr := fs.Parse(args[1:]); perr != nil {
+		return perr
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	// ingest-hourly producer chokepoint (HEALTH-11): only the scheduled `--all` run
+	// is the producer; a targeted `--source` run is an interactive one-off.
+	if *all {
+		defer stampChokepoint(cfg, stdout, args, "ingest-hourly", producerClock(), &err)
 	}
 	sources, err := loadSources(cfg)
 	if err != nil {
@@ -265,7 +270,10 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	// `mora sync git` — one-way, push-only, fail-loud off-device backup to a
 	// private git remote (opt-in; the vault otherwise never leaves the device).
 	if len(args) >= 1 && args[0] == "git" {
-		return syncGit(ctx, cfg, args[1:], stdout, realExec)
+		gerr := syncGit(ctx, cfg, args[1:], stdout, realExec)
+		// git-daily producer chokepoint (HEALTH-11).
+		stampChokepoint(cfg, stdout, args, "git-daily", producerClock(), &gerr)
+		return gerr
 	}
 	if len(args) >= 1 && args[0] == "status" {
 		dir := filepath.Join(cfg.StateDir, "sync")

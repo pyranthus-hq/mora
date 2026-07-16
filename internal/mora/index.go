@@ -15,12 +15,12 @@ import (
 	"time"
 )
 
-func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) (err error) {
 	fs := flag.NewFlagSet("index", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")
-	if err := fs.Parse(flagsFirst(args)); err != nil {
-		return err
+	if perr := fs.Parse(flagsFirst(args)); perr != nil {
+		return perr
 	}
 	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" {
 		return errors.New("usage: mora index rebuild [--force]")
@@ -29,6 +29,8 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	if err != nil {
 		return err
 	}
+	// index-hourly producer chokepoint (HEALTH-11): stamp the rebuild's own outcome.
+	defer stampChokepoint(cfg, stdout, args, "index-hourly", producerClock(), &err)
 	policy := policyEnforce
 	if *force {
 		policy = policyAllow
