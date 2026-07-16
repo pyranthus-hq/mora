@@ -9,6 +9,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 MANIFEST="$ROOT/scripts/eval/gate2-witnesses.tsv"
+MATRIX="$ROOT/mutation-matrix-gate2.md"
 JSON=$(mktemp "${TMPDIR:-/tmp}/mora-gate2-witnesses.XXXXXX")
 trap 'rm -f "$JSON"' EXIT HUP INT TERM
 
@@ -18,14 +19,36 @@ rows=$(awk 'NF && $1 !~ /^#/ { n++ } END { print n+0 }' "$MANIFEST")
   exit 1
 }
 
+matrix_rows=$(awk -F '|' '
+  function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+  {
+    row = trim($2)
+    status = trim($5)
+    if (row ~ /^[0-9]+[a-z]?$/ && status ~ /^CLOSED([[:space:]]|$)/) n++
+  }
+  END { print n+0 }
+' "$MATRIX")
+[ "$matrix_rows" -eq 93 ] || {
+  echo "Gate 2 mutation matrix has $matrix_rows CLOSED rows; want exactly 93" >&2
+  exit 1
+}
+
 (cd "$ROOT" && go test -json ./internal/mora -count=1) >"$JSON"
 
 missing=0
 while IFS="$(printf '\t')" read -r row test_name; do
   [ -n "$row" ] || continue
   case "$row" in \#*) continue ;; esac
-  if ! grep -Fq "\"Test\":\"$test_name\"" "$JSON"; then
-    echo "MISSING row $row: $test_name" >&2
+  matrix_matches=$(awk -F '|' -v want="$row" '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == want && trim($5) ~ /^CLOSED([[:space:]]|$)/ { n++ }
+    END { print n+0 }
+  ' "$MATRIX")
+  if [ "$matrix_matches" -ne 1 ]; then
+    echo "MATRIX row $row: found $matrix_matches CLOSED entries; want exactly one" >&2
+    missing=$((missing + 1))
+  elif ! grep -F '"Action":"pass"' "$JSON" | grep -Fq "\"Test\":\"$test_name\""; then
+    echo "TEST row $row: $test_name did not pass" >&2
     missing=$((missing + 1))
   fi
 done <"$MANIFEST"
