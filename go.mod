@@ -17,6 +17,7 @@ require (
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.45.0
+	golang.org/x/text v0.37.0
 	google.golang.org/api v0.282.0
 	modernc.org/sqlite v1.29.0
 	// test-only: the property tests. Nothing under cmd/ reaches it, and
@@ -93,7 +94,6 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68 // indirect
 	google.golang.org/grpc v1.81.1 // indirect

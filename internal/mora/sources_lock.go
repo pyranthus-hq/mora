@@ -77,7 +77,7 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 		published, perr := publishLockFile(lockPath, body)
 		switch {
 		case perr == nil && published:
-			return loopLockReleaser(lockPath), nil
+			return loopLockReleaser(lockPath, body), nil
 		case perr != nil && !sharingViolationRetryable(perr):
 			// A real, non-contention fs error: fail, never interleave a partial write.
 			return nil, perr

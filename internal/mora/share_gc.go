@@ -379,9 +379,6 @@ func productStorageBytes(cfg Config) (int64, error) {
 }
 
 func storagePathWithin(path, root string) bool {
-	if runtimeGOOS() == "darwin" || runtimeGOOS() == "windows" {
-		path, root = strings.ToLower(path), strings.ToLower(root)
-	}
 	sep := string(os.PathSeparator)
 	return path == root || strings.HasPrefix(path+sep, root+sep)
 }
@@ -391,6 +388,8 @@ func storagePathWithin(path, root string) bool {
 // cmdShareGC runs the same idempotent sweep out of band (no pull, no successful
 // publication prerequisite). It takes storage.lock, reclaims after readers close,
 // and reports before/after whole-product bytes.
+var testHookShareGCAfterStorageLease func()
+
 func cmdShareGC(cfg Config, args []string, stdout io.Writer, now time.Time) error {
 	name := ""
 	if len(args) > 0 {
@@ -403,30 +402,111 @@ func cmdShareGC(cfg Config, args []string, stdout io.Writer, now time.Time) erro
 	if err != nil {
 		return err
 	}
-	var subs []shareSubscription
-	if name != "" {
-		for _, s := range sf.Subscriptions {
-			if s.Name == name {
-				subs = append(subs, s)
+	registered := make(map[string]bool, len(sf.Subscriptions))
+	for _, s := range sf.Subscriptions {
+		registered[s.Name] = true
+	}
+	targets := map[string]bool{} // name -> unregistered local root
+	subsRoot := filepath.Join(cfg.DataDir, "share", "subs")
+	addLocalRoots := func() error {
+		entries, rerr := os.ReadDir(subsRoot)
+		if errors.Is(rerr, os.ErrNotExist) {
+			return nil
+		}
+		if rerr != nil {
+			return rerr
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && validShareName(entry.Name()) {
+				targets[entry.Name()] = !registered[entry.Name()]
 			}
 		}
-		if len(subs) == 0 {
-			return fmt.Errorf("no subscription named %q — see `mora share list`", name)
+		return nil
+	}
+	if name != "" {
+		if !validShareName(name) {
+			return fmt.Errorf("invalid subscription name %q", name)
+		}
+		if registered[name] {
+			targets[name] = false
+		} else {
+			info, serr := os.Lstat(shareSubRoot(cfg, name))
+			if serr != nil || !info.IsDir() {
+				return fmt.Errorf("no subscription or unregistered local share state named %q", name)
+			}
+			targets[name] = true
 		}
 	} else {
-		subs = sf.Subscriptions
+		for registeredName := range registered {
+			targets[registeredName] = false
+		}
+		if err := addLocalRoots(); err != nil {
+			return err
+		}
 	}
-	rel, err := acquireStorageLease(cfg, newRunID(now), now)
+	names := make([]string, 0, len(targets))
+	for target := range targets {
+		names = append(names, target)
+	}
+	sort.Strings(names)
+
+	runID := newRunID(now)
+	rel, err := acquireStorageLease(cfg, runID, now)
 	if err != nil {
 		return err
 	}
 	defer rel()
+	stopHeartbeat := startStorageHeartbeat(cfg, runID)
+	defer stopHeartbeat()
+	if testHookShareGCAfterStorageLease != nil {
+		testHookShareGCAfterStorageLease()
+	}
 	before, berr := productStorageBytes(cfg)
 	if berr != nil {
 		return fmt.Errorf("share gc: storage accounting failed: %w", berr)
 	}
-	for _, s := range subs {
-		if serr := shareGCSweep(cfg, s.Name, now); serr != nil {
+	for _, target := range names {
+		if !targets[target] {
+			if serr := shareGCSweep(cfg, target, now); serr != nil {
+				return serr
+			}
+			continue
+		}
+		// An unregistered first-subscribe crash has no shares.json row, but its
+		// repo/fetch/generation can be the largest product artifact. Take the
+		// per-name lease under storage.lock, re-check the registry, then remove the
+		// entire unreachable root. The import.lock itself is removed by release;
+		// storage.lock prevents a new subscriber entering before final RemoveAll.
+		importRel, ierr := acquireImportLease(cfg, target, runID, time.Now())
+		if ierr != nil {
+			return ierr
+		}
+		stopImport := startImportHeartbeat(cfg, target, runID)
+		latest, lerr := loadShares(cfg)
+		if lerr == nil {
+			lerr = validateSubscriptionNameAvailable(latest, target)
+		}
+		if lerr == nil {
+			entries, derr := os.ReadDir(shareSubRoot(cfg, target))
+			if derr != nil && !errors.Is(derr, os.ErrNotExist) {
+				lerr = derr
+			}
+			for _, entry := range entries {
+				if entry.Name() == filepath.Base(shareImportLockPath(cfg, target)) {
+					continue
+				}
+				if derr := deferrableRemoveAll(filepath.Join(shareSubRoot(cfg, target), entry.Name())); derr != nil {
+					lerr = derr
+					break
+				}
+			}
+		}
+		stopImport()
+		importRel()
+		if lerr != nil {
+			return fmt.Errorf("share gc: refusing unregistered root %q: %w", target, lerr)
+		}
+		if serr := deferrableRemoveAll(shareSubRoot(cfg, target)); serr != nil {
 			return serr
 		}
 	}
@@ -529,7 +609,15 @@ func (a *shareStorageAdmission) checkNeeded(needed int64) error {
 	if needed <= a.limit {
 		return nil
 	}
-	return fmt.Errorf("share %q needs at least %d whole-product bytes; configured limit is %d (doctor ceiling 15 GiB). Run 'mora share storage-limit %d' to opt in, free space/run 'mora share gc', or unsubscribe.", a.name, needed, a.limit, needed)
+	// The opt-in file itself is part of whole-product accounting. Reserve a page
+	// of headroom so replacing a short limit (for example 16) with the printed
+	// multi-digit value cannot make the immediate retry miss by a few bytes.
+	const decisionFileHeadroom = int64(4 << 10)
+	required := needed
+	if required <= math.MaxInt64-decisionFileHeadroom {
+		required += decisionFileHeadroom
+	}
+	return fmt.Errorf("share %q needs at least %d whole-product bytes; configured limit is %d (doctor ceiling 15 GiB). Run 'mora share storage-limit %d' to opt in, free space/run 'mora share gc', or unsubscribe.", a.name, required, a.limit, required)
 }
 
 // admitShareGeneration refuses a build whose whole-product footprint would cross
@@ -544,21 +632,37 @@ func admitShareGeneration(cfg Config, name string, entries []shareBlobEntry) err
 		}
 		genBytes += n
 	}
-	return admitShareGenerationBytes(cfg, name, genBytes)
+	return admitShareGenerationBytes(cfg, name, genBytes, len(entries))
 }
 
 // admitShareGenerationBytes is the metadata-only form used for the protocol's
 // legal 50,000 x 4 MiB upper-bound decision without allocating a 195 GiB slice.
 // Production's entry-based path delegates here after checked summation.
-func admitShareGenerationBytes(cfg Config, name string, corpusBytes int64) error {
-	if corpusBytes < 0 || corpusBytes > math.MaxInt64/2 {
+func admitShareGenerationBytes(cfg Config, name string, corpusBytes int64, entries int) error {
+	// The index stores each body in the ordinary table and again in FTS5's
+	// content/index structures. A corpus-sized guess is not a sufficient retry
+	// decision. Reserve a deliberately conservative bounded expansion plus fixed
+	// SQLite/page and per-row overhead so the printed storage-limit value admits
+	// the same input instead of leading to a second SQLITE_FULL refusal.
+	const (
+		generationExpansion = int64(8)        // corpus + content table + FTS/index headroom
+		generationBaseBytes = int64(64 << 10) // schema and minimum SQLite pages
+		generationRowBytes  = int64(4 << 10)  // row/page/term metadata headroom
+	)
+	if corpusBytes < 0 || entries < 0 || corpusBytes > (math.MaxInt64-generationBaseBytes)/generationExpansion {
 		return fmt.Errorf("share %q: generation reservation overflows int64", name)
 	}
+	entryCount := int64(entries)
+	reserve := corpusBytes*generationExpansion + generationBaseBytes
+	if entryCount > (math.MaxInt64-reserve)/generationRowBytes {
+		return fmt.Errorf("share %q: generation reservation overflows int64", name)
+	}
+	reserve += entryCount * generationRowBytes
 	a, err := newShareStorageAdmission(cfg, name)
 	if err != nil {
 		return err
 	}
-	return a.checkAdditional(corpusBytes * 2) // frozen corpus + worst-case index reservation
+	return a.checkAdditional(reserve)
 }
 
 // parseByteSize accepts a plain byte count or a binary-unit suffix (KiB/MiB/GiB/

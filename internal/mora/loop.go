@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -14,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -349,7 +347,7 @@ func acquireLoopLock(cfg Config, id, runID string, now time.Time) (release func(
 			return nil, perr // real fs error: do NOT interleave (acquireBriefLock rule)
 		}
 		if published {
-			return loopLockReleaser(lockPath), nil
+			return loopLockReleaser(lockPath, body), nil
 		}
 		reaped, rerr := reapStaleLock(lockPath, now)
 		if rerr != nil {
@@ -370,6 +368,18 @@ func acquireLoopLock(cfg Config, id, runID string, now time.Time) (release func(
 // already held (EEXIST), or (false,err) on a real fs error. The temp is always
 // cleaned up — on success its extra name is dropped, leaving only lockPath.
 func publishLockFile(lockPath string, body []byte) (bool, error) {
+	var published bool
+	err := withLeaseFileGuard(lockPath, func() error {
+		var err error
+		published, err = publishLockFileGuarded(lockPath, body)
+		return err
+	})
+	return published, err
+}
+
+// publishLockFileGuarded is publishLockFile's inner operation. The caller must
+// hold lockPath's lease-file guard.
+func publishLockFileGuarded(lockPath string, body []byte) (bool, error) {
 	dir := filepath.Dir(lockPath)
 	tmp, err := os.CreateTemp(dir, ".lock-*.tmp")
 	if err != nil {
@@ -393,14 +403,14 @@ func publishLockFile(lockPath string, body []byte) (bool, error) {
 	return true, nil
 }
 
-func loopLockReleaser(lockPath string) func() {
+func loopLockReleaser(lockPath string, observed []byte) func() {
 	released := false
 	return func() {
 		if released {
 			return
 		}
 		released = true
-		removeLeaseFile(lockPath)
+		_, _ = breakLock(lockPath, observed)
 	}
 }
 
@@ -422,19 +432,22 @@ func loopLockReleaser(lockPath string) func() {
 // and a genuine non-contention error is terminal. Off Windows
 // sharingViolationRetryable is always false, so this collapses to exactly one
 // os.Remove — behavior there is unchanged.
-func removeLeaseFile(lockPath string) {
+func removeLeaseFileGuarded(lockPath string) error {
+	var lastErr error
 	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
 		err := os.Remove(lockPath)
 		if err == nil || errors.Is(err, os.ErrNotExist) {
-			return
+			return nil
 		}
 		if !sharingViolationRetryable(err) {
-			return // a real, non-contention fs error: nothing safe left to do
+			return err
 		}
+		lastErr = err
 		if attempt < maxSourcesAcquireAttempts-1 {
 			time.Sleep(sourcesAcquireBackoff(attempt))
 		}
 	}
+	return lastErr
 }
 
 // reapStaleLock removes an ABANDONED loop lease and reports whether it did,
@@ -480,35 +493,31 @@ func reapStaleLockTTL(lockPath string, now time.Time, ttl time.Duration) (bool, 
 	return breakLock(lockPath, data)
 }
 
-// breakLock atomically removes a lock judged stale, only if it is still that
-// exact lock. It rename-CLAIMS the path first (os.Rename is the atomic move of
-// the current inode — exactly one concurrent reaper's rename of a given inode
-// succeeds), THEN verifies the claimed bytes match what was judged stale. If a
-// fresh holder republished in the window between the stale judgement and the
-// claim, the claimed bytes differ and we RESTORE the lock via os.Link (which
-// fails benignly if a newer lock already exists) instead of deleting it — closing
-// the A-deletes-B's-fresh-lock race for good. The genuine acquirer is still
-// whoever's subsequent publish (os.Link in acquireLoopLock) succeeds.
+// breakLock removes a lock judged stale only if it still contains the exact
+// observed bytes. Every publisher and reaper takes the persistent OS-backed
+// guard first, so compare+remove is one serialized transition and there is no
+// absent-path restore window for a third process to enter.
 func breakLock(lockPath string, observed []byte) (bool, error) {
-	tmp := lockPath + ".reap-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	if err := os.Rename(lockPath, tmp); err != nil {
+	reaped := false
+	err := withLeaseFileGuard(lockPath, func() error {
+		cur, err := os.ReadFile(lockPath)
 		if errors.Is(err, os.ErrNotExist) {
-			return true, nil // already reaped by someone else => path is free
+			reaped = true
+			return nil
 		}
-		return false, err
-	}
-	// We now exclusively hold whatever inode was at lockPath. Verify it's the
-	// stale lock we judged — not a fresh one published in the race window.
-	if cur, rerr := os.ReadFile(tmp); rerr == nil && !bytes.Equal(cur, observed) {
-		// Claimed a freshly-republished lock. Put it back WITHOUT clobbering: Link
-		// recreates lockPath from our inode only if the path is still free; if a
-		// newer lock already sits there, Link fails and we just drop our copy.
-		_ = os.Link(tmp, lockPath)
-		_ = os.Remove(tmp)
-		return false, nil
-	}
-	_ = os.Remove(tmp)
-	return true, nil
+		if err != nil {
+			return err
+		}
+		if string(cur) != string(observed) {
+			return nil
+		}
+		if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		reaped = true
+		return nil
+	})
+	return reaped, err
 }
 
 // ---------------------------------------------------------------------------
@@ -797,15 +806,17 @@ func releaseLoopLockFor(cfg Config, id, owner string) {
 // this against subs/<name>/import.lock, so a reaped holder's late release can
 // NEVER remove its successor's lease (the blind-release-drops-B's-lease hole).
 func releaseLockFileFor(lockPath, owner string) {
-	data, err := os.ReadFile(lockPath)
-	if err != nil {
-		return // absent/unreadable: nothing to release
-	}
-	var body loopLockBody
-	if json.Unmarshal(data, &body) == nil && body.RunID != "" && body.RunID != owner {
-		return // a different run owns the lease now; leave it
-	}
-	_, _ = breakLock(lockPath, data) // atomic: deletes only if still these exact bytes
+	_ = withLeaseFileGuard(lockPath, func() error {
+		data, err := os.ReadFile(lockPath)
+		if err != nil {
+			return nil
+		}
+		var body loopLockBody
+		if json.Unmarshal(data, &body) == nil && body.RunID != "" && body.RunID != owner {
+			return nil
+		}
+		return removeLeaseFileGuarded(lockPath)
+	})
 }
 
 // heartbeatLockFileFor is the CAS re-stamp (Packet H): it re-publishes
@@ -816,24 +827,28 @@ func releaseLockFileFor(lockPath, owner string) {
 // impossible. It re-uses breakLock's atomic rename-claim to replace only the
 // bytes it just read, restoring a racing newer lease untouched.
 func heartbeatLockFileFor(lockPath, owner string, now time.Time) bool {
-	data, err := os.ReadFile(lockPath)
-	if err != nil {
-		return false
-	}
-	var body loopLockBody
-	if json.Unmarshal(data, &body) != nil || body.RunID != owner {
-		return false // reaped/replaced: ownership lost
-	}
-	next, _ := json.Marshal(loopLockBody{RunID: owner, PID: body.PID, AcquiredAt: now.UTC().Format(time.RFC3339)})
-	// Atomically remove the exact bytes we read, then publish the re-stamped body.
-	// If a successor republished in the window, breakLock restores it and the
-	// re-publish EEXISTs — ownership is (correctly) reported lost.
-	claimed, _ := breakLock(lockPath, data)
-	if !claimed {
-		return false
-	}
-	published, perr := publishLockFile(lockPath, next)
-	return perr == nil && published
+	owned := false
+	err := withLeaseFileGuard(lockPath, func() error {
+		data, err := os.ReadFile(lockPath)
+		if err != nil {
+			return err
+		}
+		var body loopLockBody
+		if json.Unmarshal(data, &body) != nil || body.RunID != owner {
+			return nil
+		}
+		body.AcquiredAt = now.UTC().Format(time.RFC3339Nano)
+		next, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		if err := atomicWrite(lockPath, next, 0o600); err != nil {
+			return err
+		}
+		owned = true
+		return nil
+	})
+	return err == nil && owned
 }
 
 // ---------------------------------------------------------------------------

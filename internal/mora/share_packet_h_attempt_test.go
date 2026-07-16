@@ -7,6 +7,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"os"
 	"path/filepath"
@@ -244,25 +245,78 @@ func TestEmptyCommitsWithLatchFailsClosed(t *testing.T) {
 	packetHAssertNoOwnerEvidence(t, thought, name)
 }
 
-// row 51a: the callback represents the transport's first write. It must observe
-// the durable active record already in place.
+// row 51a: every transport's first write must observe the durable active record.
+// The initial-clone subtest drives the real subscribe dispatcher because clone
+// used to sit outside shareBuildAndPublish while helper-only tests stayed green.
 func TestShareAttemptStartPrecedesFetch(t *testing.T) {
-	withTempHome(t)
-	cfg := mustConfig(t)
-	name := "neil"
-	sawActive := false
-	fetchErr := errors.New("injected fetch failure")
-	err := shareBuildAndPublish(context.Background(), cfg, name, buildModeImport, func(runID string) (int, error) {
-		a, ok, err := loadShareAttempt(cfg, name)
-		sawActive = err == nil && ok && a.RunID == runID && a.State == "active"
-		return 0, fetchErr
+	t.Run("chokepoint callback", func(t *testing.T) {
+		withTempHome(t)
+		cfg := mustConfig(t)
+		name := "neil"
+		sawActive := false
+		fetchErr := errors.New("injected fetch failure")
+		err := shareBuildAndPublish(context.Background(), cfg, name, buildModeImport, func(runID string) (int, error) {
+			a, ok, err := loadShareAttempt(cfg, name)
+			sawActive = err == nil && ok && a.RunID == runID && a.State == "active"
+			return 0, fetchErr
+		})
+		if !sawActive {
+			t.Fatal("fetch began before the active attempt record was published")
+		}
+		if !errors.Is(err, fetchErr) {
+			t.Fatalf("fetch failure = %v; want original error", err)
+		}
 	})
-	if !sawActive {
-		t.Fatal("fetch began before the active attempt record was published")
-	}
-	if !errors.Is(err, fetchErr) {
-		t.Fatalf("fetch failure = %v; want original error", err)
-	}
+
+	t.Run("initial git clone", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		writeTestIdentity(t, cfg)
+		name := "neil"
+		cloneErr := errors.New("injected clone stop")
+		sawActive := false
+		exec := func(ctx context.Context, dir, command string, args ...string) (string, error) {
+			if command == "git" && len(args) > 0 && args[0] == "clone" {
+				a, ok, err := loadShareAttempt(cfg, name)
+				sawActive = err == nil && ok && a.State == "active" && a.RunID != ""
+				return "", cloneErr
+			}
+			return realExec(ctx, dir, command, args...)
+		}
+		var out bytes.Buffer
+		err := shareSubscribe(context.Background(), cfg,
+			[]string{name, "--remote", "https://example.invalid/share.git"}, &out, exec)
+		if !sawActive {
+			t.Fatal("initial git clone began before the durable active attempt record")
+		}
+		if !errors.Is(err, cloneErr) {
+			t.Fatalf("subscribe clone failure = %v; want injected error", err)
+		}
+	})
+
+	t.Run("initial bucket probe", func(t *testing.T) {
+		f := newBucketFixture(t)
+		if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
+			t.Fatal(err)
+		}
+		sawActive := false
+		observed := &getObservingStore{
+			objectStore: f.store,
+			beforeFirstGet: func() {
+				a, ok, err := loadShareAttempt(f.cfg, "acme")
+				sawActive = err == nil && ok && a.State == "active" && a.RunID != ""
+			},
+		}
+		confirm := signPubFingerprint(f.priv.Public().(ed25519.PublicKey))
+		var out bytes.Buffer
+		if err := shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, observed); err != nil {
+			t.Fatalf("bucket subscribe: %v\n%s", err, out.String())
+		}
+		if !sawActive {
+			t.Fatal("initial bucket probe wrote before the durable active attempt record")
+		}
+	})
 }
 
 // row 51b: attempt start's file data reaches its sync barrier before fetch.

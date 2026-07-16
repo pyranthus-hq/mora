@@ -140,6 +140,20 @@ func saveShares(cfg Config, sf shareFile) error {
 	return atomicWrite(sharesPath(cfg), append(b, '\n'), 0o600)
 }
 
+func validateSubscriptionNameAvailable(sf shareFile, name string) error {
+	for _, existing := range sf.Subscriptions {
+		if existing.Name == name {
+			return fmt.Errorf("subscription %q already exists — `mora share pull %s` updates it", name, name)
+		}
+	}
+	for _, existing := range sf.Publishes {
+		if existing.Name == name {
+			return fmt.Errorf("%q already names a share you publish — share and subscription names share one namespace", name)
+		}
+	}
+	return nil
+}
+
 // The subscriber's age identity. Lives beside the OAuth tokens in ConfigDir —
 // a secret, 0600, never inside the vault and never inside any share repo.
 func shareIdentityPath(cfg Config) string {
@@ -904,69 +918,79 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 	if err != nil {
 		return err
 	}
-	for _, s := range sf.Subscriptions {
-		if s.Name == name {
-			return fmt.Errorf("subscription %q already exists — `mora share pull %s` updates it", name, name)
-		}
-	}
-	for _, p := range sf.Publishes {
-		if p.Name == name {
-			return fmt.Errorf("%q already names a share you publish — share and subscription names share one namespace", name)
-		}
+	if err := validateSubscriptionNameAvailable(sf, name); err != nil {
+		return err
 	}
 
 	repo := shareRepoDir(cfg, name)
-	isRepo, repoErr := vaultRepoState(filepath.Join(repo, ".git"))
-	if repoErr != nil {
-		return repoErr
-	}
-	freshClone := false
-	if !isRepo {
-		if _, err := run(ctx, "", "git", "--version"); err != nil {
-			return fmt.Errorf("git is required for sharing but was not found: %w", err)
-		}
-		if err := os.MkdirAll(filepath.Dir(repo), 0o700); err != nil {
-			return err
-		}
-		if _, err := run(ctx, "", "git", "clone", *remote, repo); err != nil {
-			return fmt.Errorf("git clone: %w", err)
-		}
-		freshClone = true
-	} else {
-		// A leftover clone under this name must actually point at the remote
-		// being subscribed to — importing a stale repo from somewhere else
-		// would poison search/think under a trusted attribution label
-		// (codex review).
-		origin, err := run(ctx, repo, "git", "remote", "get-url", "origin")
-		if err != nil {
-			return fmt.Errorf("existing clone at %s has no usable origin (%v) — delete it and re-subscribe", repo, err)
-		}
-		if strings.TrimSpace(origin) != *remote {
-			return fmt.Errorf("existing clone at %s has origin %s, not the requested remote %s — delete it (or pick another subscription name) and re-subscribe", repo, redactCredentials(strings.TrimSpace(origin)), redactCredentials(*remote))
-		}
-		// No `git pull --ff-only` freshen: the run-private pin fetch (H1) brings the
-		// merge source into an immutable per-run ref and reads objects only from it.
-	}
 	sub := shareSubscription{Name: name, Remote: *remote, CreatedAt: time.Now().Format(time.RFC3339)}
 	var stats shareImportStats
-	err = shareBuildAndPublish(ctx, cfg, name, buildModeImport, func(runID string) (int, error) {
+	createdByThisRun := false
+	err = shareBuildAndPublishPrepared(ctx, cfg, name, buildModeImport, func() error {
+		// Revalidate both the registry and repo only after taking the same-name
+		// lease. Two first subscribers may both pass the optimistic checks above;
+		// neither may act on a stale "missing repo" decision.
+		lockedShares, lerr := loadShares(cfg)
+		if lerr != nil {
+			return lerr
+		}
+		return validateSubscriptionNameAvailable(lockedShares, name)
+	}, func(runID string) (int, error) {
+
+		isRepo, repoErr := vaultRepoState(filepath.Join(repo, ".git"))
+		if repoErr != nil {
+			return 0, repoErr
+		}
+		// The initial clone is a transport/repo write just like a direct-ref
+		// fetch. It must happen only after storage.lock, import.lock, and the
+		// durable active attempt record are all published by the chokepoint.
+		if !isRepo {
+			if _, err := run(ctx, "", "git", "--version"); err != nil {
+				return 0, fmt.Errorf("git is required for sharing but was not found: %w", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(repo), 0o700); err != nil {
+				return 0, err
+			}
+			if _, err := run(ctx, "", "git", "clone", *remote, repo); err != nil {
+				cleanupErr := os.RemoveAll(repo)
+				return 0, errors.Join(fmt.Errorf("git clone: %w", err), cleanupErr)
+			}
+			createdByThisRun = true
+		} else {
+			// A leftover clone under this name must actually point at the remote
+			// being subscribed to — importing a stale repo from somewhere else
+			// would poison search/think under a trusted attribution label.
+			origin, err := run(ctx, repo, "git", "remote", "get-url", "origin")
+			if err != nil {
+				return 0, fmt.Errorf("existing clone at %s has no usable origin (%v) — delete it and re-subscribe", repo, err)
+			}
+			if strings.TrimSpace(origin) != *remote {
+				return 0, fmt.Errorf("existing clone at %s has origin %s, not the requested remote %s — delete it (or pick another subscription name) and re-subscribe", repo, redactCredentials(strings.TrimSpace(origin)), redactCredentials(*remote))
+			}
+			// No `git pull --ff-only` freshen: the run-private pin fetch (H1) brings
+			// the merge source into an immutable per-run ref and reads only that pin.
+		}
 		seq, st, ierr := gitShareImport(ctx, cfg, sub, runID, run)
 		stats = st
+		if ierr != nil && createdByThisRun {
+			ierr = errors.Join(ierr, os.RemoveAll(repo))
+		}
 		return seq, ierr
+	}, func() error {
+		// Registration is the successful subscribe commit. Reload under the same
+		// lease so a waiting first-subscriber cannot overwrite or duplicate it.
+		lockedShares, lerr := loadShares(cfg)
+		if lerr != nil {
+			return lerr
+		}
+		if err := validateSubscriptionNameAvailable(lockedShares, name); err != nil {
+			return err
+		}
+		lockedShares.Subscriptions = append(lockedShares.Subscriptions, sub)
+		return saveShares(cfg, lockedShares)
 	})
 	if err != nil {
-		// A fresh clone whose FIRST import failed (publisher hasn't pushed yet,
-		// key not among recipients, …) must not survive: the subscription was
-		// never registered, so no CLI verb could ever clean or retry it
-		// (review finding). Remove it so re-subscribing starts clean.
-		if freshClone {
-			_ = os.RemoveAll(shareSubRoot(cfg, name))
-		}
 		return fmt.Errorf("%w — nothing was registered; fix the cause (has the publisher pushed? is your key among the recipients?) and re-run `mora share subscribe`", err)
-	}
-	sf.Subscriptions = append(sf.Subscriptions, sub)
-	if err := saveShares(cfg, sf); err != nil {
-		return err
 	}
 	owner := stats.Owner
 	if owner == "" {

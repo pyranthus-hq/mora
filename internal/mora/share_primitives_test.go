@@ -218,13 +218,10 @@ func TestReplayedOlderBucketEnvelopeRejected(t *testing.T) {
 	if err := os.WriteFile(shareCommitPath(cfg, name, 1), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rel, err := acquireImportLease(cfg, name, "runX", time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rel := acquirePublishLeases(t, cfg, name, "runX")
 	defer rel()
 	// A replayed envelope at version 4 (< committed floor 5) must be rejected.
-	_, err = publishShareGeneration(cfg, shareCommitParams{
+	_, err := publishShareGeneration(cfg, shareCommitParams{
 		name: name, runID: "runX", gen: "gen-replay", isBucket: true, fetched: 4,
 		subVersion: 0, parentFloor: -1, builtAt: time.Now(), corpusDigest: "d", indexDigest: "d", count: 1,
 	})
@@ -241,10 +238,7 @@ func TestHealInheritsBucketFloor(t *testing.T) {
 	if err := os.MkdirAll(shareSubRoot(cfg, name), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	rel, err := acquireImportLease(cfg, name, "runX", time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rel := acquirePublishLeases(t, cfg, name, "runX")
 	defer rel()
 	seq, err := publishShareGeneration(cfg, shareCommitParams{
 		name: name, runID: "runX", gen: "gen-heal", parentFloor: 7,
@@ -362,11 +356,22 @@ func TestLegalLargeShareHasExplicitOversubscriptionPath(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "storage-limit") {
 		t.Fatalf("oversubscription refusal = %v; want a storage-limit decision path", err)
 	}
-	// Raising the limit admits the same share.
-	if err := cmdShareStorageLimit(cfg, []string{"15GiB"}, &buf, time.Now()); err != nil {
+	// The exact printed decision must admit the same share. Jumping to an
+	// unrelated large value would not prove that <required> is actionable.
+	const marker = "storage-limit "
+	i := strings.Index(err.Error(), marker)
+	if i < 0 {
+		t.Fatalf("refusal did not print required storage-limit bytes: %v", err)
+	}
+	fields := strings.Fields(err.Error()[i+len(marker):])
+	if len(fields) == 0 {
+		t.Fatalf("refusal did not print required storage-limit bytes: %v", err)
+	}
+	required := strings.Trim(fields[0], "'\"")
+	if err := cmdShareStorageLimit(cfg, []string{required}, &buf, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := importFixtureGeneration(context.Background(), cfg, shareSubscription{Name: "neil", Remote: "r"}, shareRepoDir(cfg, "neil")); err != nil {
-		t.Fatalf("raised-limit import still refused: %v", err)
+		t.Fatalf("printed storage-limit %s did not admit the same input: %v", required, err)
 	}
 }

@@ -1055,9 +1055,79 @@ func TestShareSubscribeClonesWhenMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("subscribe succeeded despite a repo with no share.json; want manifest error")
 	}
-	// The failed fresh subscription leaves no registered state behind.
-	if _, ierr := os.Stat(shareSubRoot(cfg, "neil")); !os.IsNotExist(ierr) {
-		t.Fatal("failed fresh subscribe left share state behind")
+	// The failed fresh subscription leaves no registered clone behind. The
+	// durable failed attempt remains for doctor/retry visibility.
+	if _, ierr := os.Stat(shareRepoDir(cfg, "neil")); !os.IsNotExist(ierr) {
+		t.Fatal("failed fresh subscribe left its clone behind")
+	}
+	sf, lerr := loadShares(cfg)
+	if lerr != nil || len(sf.Subscriptions) != 0 {
+		t.Fatalf("failed fresh subscribe registered state: %+v %v", sf, lerr)
+	}
+	attempt, ok, aerr := loadShareAttempt(cfg, "neil")
+	if aerr != nil || !ok || attempt.State != "failed" {
+		t.Fatalf("failed fresh subscribe lost durable failure evidence: %+v ok=%v err=%v", attempt, ok, aerr)
+	}
+}
+
+func TestConcurrentFirstSubscribersSerializeCloneAndRegistration(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	mem := fixtureMemory("mem_20260601_000000_aaaaaaaa", "Shared", "content")
+	remote := realGitShareRemote(t, id.Recipient(), []Memory{mem})
+
+	// Hold the global chokepoint until both callers have performed their
+	// optimistic preflight. The eventual winner must clone+register while locked;
+	// the waiter must re-read that state instead of acting on stale isRepo=false.
+	holdRelease, err := acquireStorageLease(cfg, "test-holder", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		err error
+		out string
+	}
+	started := make(chan struct{}, 2)
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			started <- struct{}{}
+			var out bytes.Buffer
+			err := shareSubscribe(context.Background(), cfg, []string{"neil", "--remote", remote}, &out, realExec)
+			results <- result{err: err, out: out.String()}
+		}()
+	}
+	<-started
+	<-started
+	time.Sleep(100 * time.Millisecond)
+	holdRelease()
+	r1, r2 := <-results, <-results
+
+	successes := 0
+	conflicts := 0
+	for _, got := range []result{r1, r2} {
+		if got.err == nil {
+			successes++
+		} else if strings.Contains(got.err.Error(), "already exists") {
+			conflicts++
+		} else {
+			t.Fatalf("concurrent subscribe failed unexpectedly: %v\n%s", got.err, got.out)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent outcomes: successes=%d conflicts=%d; want one each", successes, conflicts)
+	}
+	sf, err := loadShares(cfg)
+	if err != nil || len(sf.Subscriptions) != 1 || sf.Subscriptions[0].Name != "neil" {
+		t.Fatalf("serialized registration = %+v, %v; want one neil", sf, err)
+	}
+	if _, ok := findSharedMemory(cfg, mem.ID); !ok {
+		t.Fatal("losing first-subscriber removed the winner's committed generation")
+	}
+	if h := shareHealthOne(cfg, "neil", time.Now()); h.State != healthFresh {
+		t.Fatalf("losing first-subscriber poisoned winner health: %+v", h)
 	}
 }
 
@@ -1594,8 +1664,8 @@ func TestCollectShareMemoriesRejectsCaseFoldDuplicateIDs(t *testing.T) {
 }
 
 // A failed FIRST import (e.g. subscribing before the publisher's first push)
-// must clean up the fresh clone so retrying works — otherwise the name is
-// permanently wedged with no CLI recovery (review finding, live-repro).
+// must clean up the fresh clone so retrying works. The root itself deliberately
+// remains because attempt.json is the durable failure evidence.
 func TestShareSubscribeCleansUpFreshCloneOnImportFailure(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -1608,7 +1678,7 @@ func TestShareSubscribeCleansUpFreshCloneOnImportFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty clone import unexpectedly succeeded")
 	}
-	if _, statErr := os.Stat(shareSubRoot(cfg, "neil")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(shareRepoDir(cfg, "neil")); !os.IsNotExist(statErr) {
 		t.Fatal("failed fresh subscribe left an orphan clone that blocks retries")
 	}
 	// Retry attempts a fresh clone rather than reusing a stale dir.

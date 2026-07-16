@@ -498,7 +498,13 @@ func publishShareGeneration(cfg Config, p shareCommitParams) (int, error) {
 		testHookPreCommitClaim()
 	}
 	for attempt := 0; attempt < shareCommitMaxAttempts; attempt++ {
-		// Ownership re-verify: a reaped holder must abort before linking.
+		// Ownership re-verify: a reaped holder must abort before linking. The
+		// aggregate storage lease is a second fence: without it, a long build whose
+		// reservation was reaped could publish after another subscription admitted
+		// against the same headroom.
+		if err := verifyStorageLeaseOwner(cfg, p.runID, time.Now()); err != nil {
+			return 0, err
+		}
 		if err := verifyImportLeaseOwner(cfg, p.name, p.runID, time.Now()); err != nil {
 			return 0, err
 		}

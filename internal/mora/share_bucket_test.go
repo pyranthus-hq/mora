@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 )
@@ -21,6 +24,52 @@ import (
 type memStore struct {
 	mu   sync.Mutex
 	objs map[string][]byte
+}
+
+type getObservingStore struct {
+	objectStore
+	once           sync.Once
+	beforeFirstGet func()
+}
+
+func (s *getObservingStore) getObject(ctx context.Context, key string) ([]byte, error) {
+	s.once.Do(s.beforeFirstGet)
+	return s.objectStore.getObject(ctx, key)
+}
+
+// switchingGetStore serves one complete probe snapshot, then a different store
+// starting at the second manifest read. It deterministically models a bucket
+// changing between first-contact confirmation and the import refetch.
+type switchingGetStore struct {
+	first, second objectStore
+	manifestKey   string
+	mu            sync.Mutex
+	manifestReads int
+}
+
+func (s *switchingGetStore) getObject(ctx context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	if key == s.manifestKey {
+		s.manifestReads++
+	}
+	useSecond := s.manifestReads >= 2
+	s.mu.Unlock()
+	if useSecond {
+		return s.second.getObject(ctx, key)
+	}
+	return s.first.getObject(ctx, key)
+}
+
+func (s *switchingGetStore) putObject(ctx context.Context, key string, data []byte) error {
+	return s.first.putObject(ctx, key, data)
+}
+
+func (s *switchingGetStore) listKeys(ctx context.Context, prefix string) ([]string, error) {
+	return s.first.listKeys(ctx, prefix)
+}
+
+func (s *switchingGetStore) deleteObject(ctx context.Context, key string) error {
+	return s.first.deleteObject(ctx, key)
 }
 
 func newMemStore() *memStore { return &memStore{objs: map[string][]byte{}} }
@@ -336,6 +385,148 @@ func TestShareInitBucketRequiresBucketName(t *testing.T) {
 		"--recipient", id.Recipient().String(), "--via", "r2"}, &out, &out, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "bucket") {
 		t.Fatalf("expected a --bucket-required error, got: %v", err)
+	}
+}
+
+func TestConcurrentFirstBucketSubscribersSerializeFetchAndRegistration(t *testing.T) {
+	f := newBucketFixture(t)
+	if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
+		t.Fatal(err)
+	}
+	pin := f.priv.Public().(ed25519.PublicKey)
+	confirm := signPubFingerprint(pin)
+	holdRelease, err := acquireStorageLease(f.cfg, "test-holder", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		err error
+		out string
+	}
+	started := make(chan struct{}, 2)
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			started <- struct{}{}
+			var out bytes.Buffer
+			err := shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, f.store)
+			results <- result{err: err, out: out.String()}
+		}()
+	}
+	<-started
+	<-started
+	time.Sleep(100 * time.Millisecond)
+	holdRelease()
+	r1, r2 := <-results, <-results
+
+	successes, conflicts := 0, 0
+	for _, got := range []result{r1, r2} {
+		if got.err == nil {
+			successes++
+		} else if strings.Contains(got.err.Error(), "already exists") {
+			conflicts++
+		} else {
+			t.Fatalf("concurrent bucket subscribe failed unexpectedly: %v\n%s", got.err, got.out)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent outcomes: successes=%d conflicts=%d; want one each", successes, conflicts)
+	}
+	sf, err := loadShares(f.cfg)
+	if err != nil || len(sf.Subscriptions) != 1 || sf.Subscriptions[0].Name != "acme" {
+		t.Fatalf("serialized bucket registration = %+v, %v; want one acme", sf, err)
+	}
+	if _, ok := findSharedMemory(f.cfg, f.mems[0].ID); !ok {
+		t.Fatal("losing bucket subscriber removed the winner's generation")
+	}
+	if h := shareHealthOne(f.cfg, "acme", time.Now()); h.State != healthFresh {
+		t.Fatalf("losing bucket subscriber poisoned winner health: %+v", h)
+	}
+}
+
+func TestFirstBucketSubscribeBindsProbeSignerAndVersion(t *testing.T) {
+	t.Run("signer swap", func(t *testing.T) {
+		f := newBucketFixture(t)
+		if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
+			t.Fatal(err)
+		}
+		other := newMemStore()
+		_, otherPriv, err := ed25519.GenerateKey(cryptorand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bucketPublish(f.ctx, other, f.bc, f.pub, f.mems, otherPriv, f.recips()); err != nil {
+			t.Fatal(err)
+		}
+		switcher := &switchingGetStore{first: f.store, second: other, manifestKey: f.bc.objectPrefix() + shareManifestObject}
+		confirm := signPubFingerprint(f.priv.Public().(ed25519.PublicKey))
+		var out bytes.Buffer
+		err = shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, switcher)
+		if !errors.Is(err, errShareKeyRotated) {
+			t.Fatalf("signer changed after confirmed probe = %v; want key-rotation refusal", err)
+		}
+	})
+
+	t.Run("version rollback", func(t *testing.T) {
+		f := newBucketFixture(t)
+		if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
+			t.Fatal(err)
+		}
+		if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
+			t.Fatal(err)
+		}
+		older := newMemStore()
+		if err := bucketPublish(f.ctx, older, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
+			t.Fatal(err)
+		}
+		switcher := &switchingGetStore{first: f.store, second: older, manifestKey: f.bc.objectPrefix() + shareManifestObject}
+		confirm := signPubFingerprint(f.priv.Public().(ed25519.PublicKey))
+		var out bytes.Buffer
+		err := shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, switcher)
+		if err == nil || !strings.Contains(err.Error(), "rollback") {
+			t.Fatalf("version rolled back after confirmed probe = %v; want refusal", err)
+		}
+	})
+}
+
+func TestBucketStorageLimitRetryUsesPrintedExactDecision(t *testing.T) {
+	f := newBucketFixture(t)
+	if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := cmdShareStorageLimit(f.cfg, []string{"16"}, &out, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	confirm := signPubFingerprint(f.priv.Public().(ed25519.PublicKey))
+	err := shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, f.store)
+	if err == nil || !strings.Contains(err.Error(), "storage-limit") {
+		t.Fatalf("tiny-limit bucket subscribe = %v; want explicit decision", err)
+	}
+	const marker = "storage-limit "
+	i := strings.Index(err.Error(), marker)
+	if i < 0 {
+		t.Fatalf("refusal omitted required limit: %v", err)
+	}
+	fields := strings.Fields(err.Error()[i+len(marker):])
+	if len(fields) == 0 {
+		t.Fatalf("refusal omitted required limit: %v", err)
+	}
+	required := strings.Trim(fields[0], "'\"")
+	entries, readErr := os.ReadDir(shareSubRoot(f.cfg, "acme"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "fetch-") {
+			t.Fatalf("normal admission refusal retained bucket staging %q", entry.Name())
+		}
+	}
+	if err := cmdShareStorageLimit(f.cfg, []string{required}, &out, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, f.store); err != nil {
+		t.Fatalf("printed storage-limit %s did not admit immediate bucket retry: %v", required, err)
 	}
 }
 

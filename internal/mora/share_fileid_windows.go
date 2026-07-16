@@ -15,10 +15,14 @@ type fileIDKey struct {
 	index  uint64
 }
 
-func fileIdentity(path string, _ os.FileInfo) (fileIDKey, error) {
+func fileIdentity(path string, fileInfo os.FileInfo) (fileIDKey, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return fileIDKey{}, fmt.Errorf("storage accounting: file identity %s: %w", path, err)
+	}
+	flags := uint32(windows.FILE_ATTRIBUTE_NORMAL)
+	if fileInfo.IsDir() {
+		flags = windows.FILE_FLAG_BACKUP_SEMANTICS
 	}
 	h, err := windows.CreateFile(
 		p,
@@ -26,7 +30,7 @@ func fileIdentity(path string, _ os.FileInfo) (fileIDKey, error) {
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL,
+		flags,
 		0,
 	)
 	if err != nil {

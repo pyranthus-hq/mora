@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -438,6 +439,16 @@ func TestShareStorageLimitIncludesAllProductRoots(t *testing.T) {
 			t.Fatalf("nested roots/hard link charged %d bytes; want one 31-byte identity", got)
 		}
 	})
+
+	t.Run("case-distinct roots are never collapsed by GOOS", func(t *testing.T) {
+		origGOOS := runtimeGOOS
+		runtimeGOOS = func() string { return "darwin" }
+		t.Cleanup(func() { runtimeGOOS = origGOOS })
+		if storagePathWithin(filepath.Join("tmp", "A"), filepath.Join("tmp", "a")) ||
+			storagePathWithin(filepath.Join("tmp", "a"), filepath.Join("tmp", "A")) {
+			t.Fatal("case-distinct roots collapsed solely because GOOS=darwin")
+		}
+	})
 }
 
 // row 53c
@@ -547,6 +558,9 @@ func testShareStoragePostBuildReaccount(t *testing.T) {
 // row 53f
 func TestConcurrentSubscriptionsShareOneStorageReservation(t *testing.T) {
 	cfg := packetHConfig(t)
+	origTTL := shareImportTTL
+	shareImportTTL = 60 * time.Millisecond
+	t.Cleanup(func() { shareImportTTL = origTTL })
 	packetHSetLimitHeadroom(t, cfg, 8<<10)
 	const reservation = int64(5 << 10)
 	enteredA := make(chan struct{})
@@ -575,6 +589,10 @@ func TestConcurrentSubscriptionsShareOneStorageReservation(t *testing.T) {
 		results <- result{name: "alpha", err: err}
 	}()
 	<-enteredA
+	// Start B only after A's original storage lease timestamp is past TTL. The
+	// storage heartbeat must keep that lease live for the whole build; without
+	// it, B reaps A and double-spends the aggregate reservation.
+	time.Sleep(3 * shareImportTTL)
 	go func() {
 		err := shareBuildAndPublish(context.Background(), cfg, "beta", buildModeHeal, func(string) (int, error) {
 			enteredB <- struct{}{}
@@ -606,6 +624,89 @@ func TestConcurrentSubscriptionsShareOneStorageReservation(t *testing.T) {
 	}
 }
 
+func TestManualGCKeepsStorageLeaseAlivePastTTL(t *testing.T) {
+	cfg := packetHConfig(t)
+	origTTL := shareImportTTL
+	shareImportTTL = 60 * time.Millisecond
+	t.Cleanup(func() { shareImportTTL = origTTL })
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	testHookShareGCAfterStorageLease = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { testHookShareGCAfterStorageLease = nil })
+	gcDone := make(chan error, 1)
+	go func() {
+		gcDone <- cmdShareGC(cfg, nil, io.Discard, time.Now())
+	}()
+	<-entered
+	time.Sleep(3 * shareImportTTL)
+
+	contenderEntered := make(chan struct{}, 1)
+	contenderDone := make(chan error, 1)
+	go func() {
+		rel, err := acquireStorageLease(cfg, "gc-contender", time.Now())
+		if err == nil {
+			contenderEntered <- struct{}{}
+			rel()
+		}
+		contenderDone <- err
+	}()
+	select {
+	case <-contenderEntered:
+		close(release)
+		t.Fatal("manual GC's live storage lease was reaped after TTL")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-gcDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-contenderDone; err != nil {
+		t.Fatalf("contender did not acquire after GC released: %v", err)
+	}
+}
+
+func TestManualGCReclaimsUnregisteredFirstSubscribeCrash(t *testing.T) {
+	cfg := packetHConfig(t)
+	const name = "orphan"
+	var fetchDir, genDir string
+	injected := errors.New("first subscribe crashed after local writes")
+	err := shareBuildAndPublish(context.Background(), cfg, name, buildModeImport, func(runID string) (int, error) {
+		fetchDir = shareFetchDir(cfg, name, runID)
+		genDir = shareGenDir(cfg, name, "gen-"+runID)
+		for _, dir := range []string{fetchDir, genDir, filepath.Join(shareRepoDir(cfg, name), ".git", "objects", "pack")} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return 0, err
+			}
+		}
+		if err := os.WriteFile(filepath.Join(fetchDir, "blob"), []byte("fetch debris"), 0o600); err != nil {
+			return 0, err
+		}
+		if err := os.WriteFile(filepath.Join(genDir, "index.db"), []byte("generation debris"), 0o600); err != nil {
+			return 0, err
+		}
+		if err := os.WriteFile(filepath.Join(shareRepoDir(cfg, name), ".git", "objects", "pack", "orphan.pack"), []byte("repo pack debris"), 0o600); err != nil {
+			return 0, err
+		}
+		return 0, injected
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("failed first subscribe = %v; want injected crash", err)
+	}
+	if sf, err := loadShares(cfg); err != nil || len(sf.Subscriptions) != 0 {
+		t.Fatalf("crashed first subscribe unexpectedly registered: %+v %v", sf, err)
+	}
+	var out bytes.Buffer
+	if err := cmdShareGC(cfg, []string{name}, &out, time.Now()); err != nil {
+		t.Fatalf("manual GC could not reclaim unregistered state: %v", err)
+	}
+	if _, err := os.Stat(shareSubRoot(cfg, name)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unregistered repo/fetch/generation root survived GC: %v", err)
+	}
+}
+
 // row 54a
 func TestLegalLargeShareIsNotHardCappedAt4GiB(t *testing.T) {
 	cfg := packetHConfig(t)
@@ -613,12 +714,14 @@ func TestLegalLargeShareIsNotHardCappedAt4GiB(t *testing.T) {
 	if legalCorpusBytes <= 4<<30 {
 		t.Fatalf("fixture is not larger than the retired 4 GiB cap: %d", legalCorpusBytes)
 	}
-	limit := legalCorpusBytes*2 + (1 << 20)
+	// The opt-in remains proportional to the protocol-legal corpus, not a fixed
+	// product cap. Nine corpus-widths exceed the conservative 8x index reserve.
+	limit := legalCorpusBytes * 9
 	body, _ := json.Marshal(shareStorageLimit{Bytes: limit, UpdatedAt: "2026-07-16T00:00:00Z"})
 	if err := atomicWriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := admitShareGenerationBytes(cfg, "legal", legalCorpusBytes); err != nil {
+	if err := admitShareGenerationBytes(cfg, "legal", legalCorpusBytes, shareMaxShareEntries); err != nil {
 		t.Fatalf("protocol-legal 50k x 4 MiB share was hard-capped: %v", err)
 	}
 }

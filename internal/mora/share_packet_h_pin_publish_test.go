@@ -208,12 +208,9 @@ func TestReplayedOlderBucketEnvelopeRejectedAfterCommitCrash(t *testing.T) {
 	if err := os.WriteFile(shareCommitPath(cfg, name, 1), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	release, err := acquireImportLease(cfg, name, "replay", time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	release := acquirePublishLeases(t, cfg, name, "replay")
 	defer release()
-	_, err = publishShareGeneration(cfg, shareCommitParams{name: name, runID: "replay", gen: "gen-v4", isBucket: true, fetched: 4, parentFloor: -1, builtAt: time.Now(), corpusDigest: "d", indexDigest: "d"})
+	_, err := publishShareGeneration(cfg, shareCommitParams{name: name, runID: "replay", gen: "gen-v4", isBucket: true, fetched: 4, parentFloor: -1, builtAt: time.Now(), corpusDigest: "d", indexDigest: "d"})
 	if !errors.Is(err, errRollback) {
 		t.Fatalf("older envelope after registry crash = %v; want rollback refusal", err)
 	}
@@ -223,10 +220,7 @@ func TestBucketFloorIsPublishedInCommitRecord(t *testing.T) {
 	withTempHome(t)
 	cfg := mustConfig(t)
 	name := "neil"
-	release, err := acquireImportLease(cfg, name, "v7", time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	release := acquirePublishLeases(t, cfg, name, "v7")
 	defer release()
 	seq, err := publishShareGeneration(cfg, shareCommitParams{name: name, runID: "v7", gen: "gen-v7", isBucket: true, fetched: 7, parentFloor: -1, builtAt: time.Now(), corpusDigest: "d", indexDigest: "d"})
 	if err != nil {
@@ -234,6 +228,45 @@ func TestBucketFloorIsPublishedInCommitRecord(t *testing.T) {
 	}
 	if got := commitAtSeq(t, cfg, name, seq).BucketFloor; got != 7 {
 		t.Fatalf("linked commit floor=%d; want 7", got)
+	}
+}
+
+func TestReapedStorageOwnerCannotPublish(t *testing.T) {
+	withTempHome(t)
+	cfg := mustConfig(t)
+	const (
+		name = "neil"
+		runA = "storage-owner-a"
+		runB = "storage-owner-b"
+	)
+	storageReleaseA, err := acquireStorageLease(cfg, runA, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReleaseA, err := acquireImportLease(cfg, name, runA, time.Now())
+	if err != nil {
+		storageReleaseA()
+		t.Fatal(err)
+	}
+	defer importReleaseA()
+
+	// A loses only the aggregate lease while retaining its live import lease.
+	// A successor then owns storage.lock, so A's publish fence must reject it.
+	storageReleaseA()
+	storageReleaseB, err := acquireStorageLease(cfg, runB, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storageReleaseB()
+	_, err = publishShareGeneration(cfg, shareCommitParams{
+		name: name, runID: runA, gen: "gen-a", parentFloor: -1,
+		builtAt: time.Now(), corpusDigest: "d", indexDigest: "d",
+	})
+	if err == nil || !strings.Contains(err.Error(), "storage") {
+		t.Fatalf("reaped storage owner published with a live import lease: %v", err)
+	}
+	if commit, ok, rerr := resolvePublishedCommit(cfg, name); rerr != nil || ok {
+		t.Fatalf("reaped storage owner linked a commit: %+v ok=%v err=%v", commit, ok, rerr)
 	}
 }
 
@@ -261,12 +294,9 @@ func TestBucketFloorSurvivesHealGCAndReplay(t *testing.T) {
 	if _, err := os.Stat(shareCommitPath(cfg, "neil", 1)); !os.IsNotExist(err) {
 		t.Fatalf("old floor record was not reclaimed; test cannot prove heal inheritance: %v", err)
 	}
-	release, err := acquireImportLease(cfg, "neil", "replay-v6", time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	release := acquirePublishLeases(t, cfg, "neil", "replay-v6")
 	defer release()
-	_, err = publishShareGeneration(cfg, shareCommitParams{name: "neil", runID: "replay-v6", gen: "gen-v6", isBucket: true, fetched: 6, parentFloor: -1, builtAt: time.Now(), corpusDigest: "d", indexDigest: "d"})
+	_, err := publishShareGeneration(cfg, shareCommitParams{name: "neil", runID: "replay-v6", gen: "gen-v6", isBucket: true, fetched: 6, parentFloor: -1, builtAt: time.Now(), corpusDigest: "d", indexDigest: "d"})
 	if !errors.Is(err, errRollback) {
 		t.Fatalf("replay after heal+GC = %v; want rollback refusal", err)
 	}

@@ -354,11 +354,15 @@ func gitShareImport(ctx context.Context, cfg Config, sub shareSubscription, runI
 // staging dir, decrypts, builds a generation, and commits it with the inherited
 // monotonic bucket floor. Returns the pin + version to persist on success.
 func bucketShareImport(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string) (int, shareImportStats, ed25519.PublicKey, int, error) {
-	ids, err := loadShareIdentities(cfg)
+	store, err := newObjectStore(bc)
 	if err != nil {
 		return 0, shareImportStats{}, nil, 0, err
 	}
-	store, err := newObjectStore(bc)
+	return bucketShareImportWithStore(ctx, cfg, sub, bc, runID, store)
+}
+
+func bucketShareImportWithStore(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string, store objectStore) (int, shareImportStats, ed25519.PublicKey, int, error) {
+	ids, err := loadShareIdentities(cfg)
 	if err != nil {
 		return 0, shareImportStats{}, nil, 0, err
 	}
@@ -367,6 +371,10 @@ func bucketShareImport(ctx context.Context, cfg Config, sub shareSubscription, b
 	if err := os.MkdirAll(dest, 0o700); err != nil {
 		return 0, shareImportStats{}, nil, 0, err
 	}
+	// Normal returns never retain run-private network staging. A SIGKILL can
+	// still strand it for manual GC, but an admission refusal followed by the
+	// printed storage-limit retry must not accumulate fetch-N, fetch-N+1, ... .
+	defer os.RemoveAll(dest)
 	pin, ver, err := bucketFetch(ctx, store, bc, sub, ids, dest)
 	if err != nil {
 		return 0, shareImportStats{}, nil, 0, err

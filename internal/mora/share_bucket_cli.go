@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -151,6 +150,14 @@ func sharePushBucket(ctx context.Context, cfg Config, pub sharePublish, mems []M
 // requires the out-of-band --confirm-pin to match the publisher's fingerprint
 // (a pasted bucket URL is a MITM-able first-contact channel), then imports.
 func shareSubscribeBucket(ctx context.Context, cfg Config, name string, bc bucketConfig, confirmPin string, stdout io.Writer) error {
+	store, err := newObjectStore(bc)
+	if err != nil {
+		return err
+	}
+	return shareSubscribeBucketWithStore(ctx, cfg, name, bc, confirmPin, stdout, store)
+}
+
+func shareSubscribeBucketWithStore(ctx context.Context, cfg Config, name string, bc bucketConfig, confirmPin string, stdout io.Writer, store objectStore) error {
 	confirmPin = strings.TrimSpace(confirmPin)
 	ids, err := loadShareIdentities(cfg)
 	if err != nil {
@@ -160,59 +167,62 @@ func shareSubscribeBucket(ctx context.Context, cfg Config, name string, bc bucke
 	if err != nil {
 		return err
 	}
-	for _, s := range sf.Subscriptions {
-		if s.Name == name {
-			return fmt.Errorf("subscription %q already exists — `mora share pull %s` updates it", name, name)
-		}
-	}
-	for _, p := range sf.Publishes {
-		if p.Name == name {
-			return fmt.Errorf("%q already names a share you publish — share and subscription names share one namespace", name)
-		}
-	}
-	store, err := newObjectStore(bc)
-	if err != nil {
+	if err := validateSubscriptionNameAvailable(sf, name); err != nil {
 		return err
 	}
 	sub := shareSubscription{Name: name, Transport: &transportRef{Kind: "bucket", Bucket: &bc}, CreatedAt: time.Now().Format(time.RFC3339)}
-	// First-contact fingerprint confirmation runs against a throwaway probe fetch
-	// BEFORE any generation is built, so an unconfirmed pin never publishes.
-	probe := filepath.Join(shareSubRoot(cfg, name), "fetch-probe")
-	_ = os.RemoveAll(probe)
-	if err := os.MkdirAll(probe, 0o700); err != nil {
-		return err
-	}
-	pin, _, err := bucketFetch(ctx, store, bc, sub, ids, probe)
-	_ = os.RemoveAll(probe)
-	if err != nil {
-		_ = os.RemoveAll(shareSubRoot(cfg, name))
-		return fmt.Errorf("%w — nothing was registered; fix the cause (has the publisher pushed? is your key among the recipients?) and re-run `mora share subscribe`", err)
-	}
-	fp := signPubFingerprint(pin)
-	if confirmPin == "" {
-		_ = os.RemoveAll(shareSubRoot(cfg, name))
-		return fmt.Errorf("first contact: confirm the publisher fingerprint out of band, then re-run with --confirm-pin %s", fp)
-	}
-	if confirmPin != fp {
-		_ = os.RemoveAll(shareSubRoot(cfg, name))
-		return fmt.Errorf("--confirm-pin %s does not match this share's publisher fingerprint %s — refusing (possible impostor)", confirmPin, fp)
-	}
 	var stats shareImportStats
 	var gotPin ed25519.PublicKey
 	var gotVer int
-	err = shareBuildAndPublish(ctx, cfg, name, buildModeImport, func(runID string) (int, error) {
-		seq, st, p, v, ierr := bucketShareImport(ctx, cfg, sub, bc, runID)
+	err = shareBuildAndPublishPrepared(ctx, cfg, name, buildModeImport, func() error {
+		lockedShares, lerr := loadShares(cfg)
+		if lerr != nil {
+			return lerr
+		}
+		return validateSubscriptionNameAvailable(lockedShares, name)
+	}, func(runID string) (int, error) {
+
+		// First-contact is a transport write too: publish attempt.json before a
+		// run-private probe fetch, and keep both the probe and full import inside
+		// the same-name lease. An unconfirmed pin can never publish a generation.
+		probe := shareFetchDir(cfg, name, runID) + "-probe"
+		_ = os.RemoveAll(probe)
+		if err := os.MkdirAll(probe, 0o700); err != nil {
+			return 0, err
+		}
+		defer os.RemoveAll(probe)
+		pin, probeVer, err := bucketFetch(ctx, store, bc, sub, ids, probe)
+		if err != nil {
+			return 0, err
+		}
+		fp := signPubFingerprint(pin)
+		if confirmPin == "" {
+			return 0, fmt.Errorf("first contact: confirm the publisher fingerprint out of band, then re-run with --confirm-pin %s", fp)
+		}
+		if confirmPin != fp {
+			return 0, fmt.Errorf("--confirm-pin %s does not match this share's publisher fingerprint %s — refusing (possible impostor)", confirmPin, fp)
+		}
+
+		verifiedSub := sub
+		verifiedSub.PinnedPubkey = append(ed25519.PublicKey(nil), pin...)
+		verifiedSub.LastVersion = probeVer
+		seq, st, p, v, ierr := bucketShareImportWithStore(ctx, cfg, verifiedSub, bc, runID, store)
 		stats, gotPin, gotVer = st, p, v
 		return seq, ierr
+	}, func() error {
+		lockedShares, lerr := loadShares(cfg)
+		if lerr != nil {
+			return lerr
+		}
+		if err := validateSubscriptionNameAvailable(lockedShares, name); err != nil {
+			return err
+		}
+		sub.PinnedPubkey, sub.LastVersion = gotPin, gotVer
+		lockedShares.Subscriptions = append(lockedShares.Subscriptions, sub)
+		return saveShares(cfg, lockedShares)
 	})
 	if err != nil {
-		_ = os.RemoveAll(shareSubRoot(cfg, name))
-		return fmt.Errorf("%w — nothing was registered", err)
-	}
-	sub.PinnedPubkey, sub.LastVersion = gotPin, gotVer
-	sf.Subscriptions = append(sf.Subscriptions, sub)
-	if err := saveShares(cfg, sf); err != nil {
-		return err
+		return fmt.Errorf("%w — nothing was registered; fix the cause (has the publisher pushed? is your key among the recipients?) and re-run `mora share subscribe`", err)
 	}
 	owner := stats.Owner
 	if owner == "" {
