@@ -149,6 +149,18 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 			stampIndexAttemptFailure(cfg, err)
 		}
 	}()
+	// HEALTH-12 / Packet D2 — the ONE fail-closed embedder gate, for ALL 18 rebuild
+	// triggers (they every one funnel through here, index.go's rebuildIndexWithPolicy;
+	// a gate in cmdIndex alone would close none of them). Resolve BEFORE BeginTx so a
+	// doomed rebuild never takes the writer lock — a latency choice, not a second
+	// correctness gate. An unreachable configured `ollama` embedder returns
+	// errEmbedderUnavailable and this HARD-FAILS: the self-op above stays (index reads
+	// dirty), the previous vectors are untouched (no tx was ever opened), and NOTHING
+	// is silently re-embedded with the static fallback (the recorded incident).
+	emb, err := chooseEmbedderFor(cfg)
+	if err != nil {
+		return 0, err
+	}
 	// _txlock=immediate acquires the write lock at BeginTx instead of lazily
 	// upgrading a deferred read lock mid-transaction — two concurrent rebuilds
 	// would otherwise both start, then one hits SQLITE_BUSY on the first write and
@@ -304,11 +316,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return count, err
 	}
 
-	// Materialize per-memory embedding vectors (I2 hybrid retrieval), same tx. Use
-	// the cfg-aware resolver so a config.toml `embedder = "ollama"` opt-in indexes
-	// semantic vectors that the query path (also cfg-aware) will match. Hoisted so
-	// the embedder identity (ModelID/Dim — already resolved) is stamped as provenance.
-	emb := chooseEmbedderFor(cfg)
+	// Materialize per-memory embedding vectors (I2 hybrid retrieval), same tx. `emb`
+	// was resolved (and fail-closed-checked) BEFORE BeginTx above, so a config.toml
+	// `embedder = "ollama"` opt-in indexes semantic vectors the query path will match,
+	// and a mid-rebuild daemon death now surfaces as a real error from Embed (rolling
+	// this whole tx back) instead of committing zero vectors.
 	if err := writeVectors(ctx, tx, emb, live); err != nil {
 		return count, err
 	}
@@ -322,15 +334,19 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	//     RAN, so doctor can flag it against what the config now ASKS for.
 	//   - the content manifest (B1a): the committed vault content identity an
 	//     out-of-band edit is detected against.
+	//   - the SEMANTIC embedder_digest (D3): the resolved Ollama model digest, "" for
+	//     the static floor. embedder_model/embedder_dim are the MINIMAL provenance PR 1
+	//     already writes; this adds the digest column so a later `ollama pull` that
+	//     re-resolves the same model NAME to new weights is a detectable mismatch.
 	stampNow := indexClock().UTC().Format(time.RFC3339)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO index_meta(key,value) VALUES
 		 ('indexed_at',?),('fts_indexed_at',?),('graph_indexed_at',?),('vectors_indexed_at',?),
-		 ('embedder_model',?),('embedder_dim',?),
+		 ('embedder_model',?),('embedder_dim',?),('embedder_digest',?),
 		 ('vault_manifest_algo',?),('vault_manifest_digest',?),('vault_manifest_listed',?),('vault_manifest_unparseable',?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
 		stampNow, stampNow, stampNow, stampNow,
-		emb.ModelID(), fmt.Sprintf("%d", emb.Dim()),
+		emb.ModelID(), fmt.Sprintf("%d", emb.Dim()), embedderDigestOf(emb),
 		indexManifestAlgo, manifestDigestOf(manifestLines),
 		fmt.Sprintf("%d", len(files)), fmt.Sprintf("%d", len(files)-len(parsed))); err != nil {
 		return count, err
@@ -482,10 +498,27 @@ func writeVectors(ctx context.Context, tx *sql.Tx, emb Embedder, mems []Memory) 
 	}
 	defer stmt.Close()
 	for _, m := range mems {
-		vec := emb.Embed(m.Title + "\n" + m.Text)
+		// A failed Embed aborts the rebuild (rolled back by the caller's deferred
+		// tx.Rollback). It NEVER falls through to persist a zero/substitute vector —
+		// HEALTH-12: a daemon that dies mid-rebuild must not commit degraded vectors
+		// stamped with the real model id while the rebuild exits 0.
+		vec, err := emb.Embed(m.Title + "\n" + m.Text)
+		if err != nil {
+			return err
+		}
 		if _, err := stmt.ExecContext(ctx, m.ID, emb.Dim(), emb.ModelID(), encodeVec(vec)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// embedderDigestOf extracts the semantic model digest an embedder carries (D3),
+// via an optional Digest() method so the Embedder interface stays minimal. The
+// static floor has no digest and returns "".
+func embedderDigestOf(emb Embedder) string {
+	if d, ok := emb.(interface{ Digest() string }); ok {
+		return d.Digest()
+	}
+	return ""
 }

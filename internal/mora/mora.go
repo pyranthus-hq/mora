@@ -839,7 +839,20 @@ const indexSchemaVersion = 2
 // it entirely). False under a semantic embedder: a full re-embed takes minutes
 // and must not stall an innocent MCP tool call — those users get the
 // actionable error instead. Package var so tests can pin both branches.
-var indexAutoHeal = func(cfg Config) bool { return !embedderIsSemantic(chooseEmbedderFor(cfg)) }
+//
+// HEALTH-12 / Packet D2 door (b): this is the schema-stale auto-heal door. When the
+// configured `ollama` embedder is UNREACHABLE, chooseEmbedderFor errs and this
+// returns FALSE — a read against a schema-stale index then refuses with the
+// actionable schema error instead of auto-healing via a silently-degraded static
+// re-embed of the whole vault (the recorded incident: Ollama down flipped the old
+// `!embedderIsSemantic` test ON because the substituted embedder read as static).
+var indexAutoHeal = func(cfg Config) bool {
+	emb, err := chooseEmbedderFor(cfg)
+	if err != nil {
+		return false
+	}
+	return !embedderIsSemantic(emb)
+}
 
 type rebuildPolicy int
 

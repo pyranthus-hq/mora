@@ -187,8 +187,18 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		h.DirtySince = oldestPendingStamp(ops, journalOldest)
 		return h
 	}
-	// Rule 5: recorded embedder != configured embedder -> degraded (HEALTH-12).
-	if !h.Embedder.Match {
+	// Rule 5: recorded embedder != configured embedder -> degraded (HEALTH-12). D3
+	// adds a cheap corroboration ON TOP, over columns that already exist: more than
+	// one DISTINCT mem_vectors.model, or a stored model ≠ the recorded provenance, is
+	// a MIXED-PROVENANCE index (a partially-completed re-embed the single meta row
+	// cannot catch) ⇒ also degraded. A fresh indexed_at can never mask this.
+	mixed, mperr := mixedVectorProvenance(db, h.Embedder.Model)
+	if mperr != nil {
+		h.State = idxFailed
+		h.LastError = mperr.Error()
+		return h
+	}
+	if !h.Embedder.Match || mixed {
 		h.State = idxDegraded
 		return h
 	}
@@ -273,6 +283,99 @@ func embedderModelsMatch(recorded, configured string) bool {
 		return strings.HasPrefix(recorded, configured)
 	}
 	return recorded == configured
+}
+
+// resolvedEmbedderLine describes the ACTIVE embedder for `mora config` (D3) — never
+// the raw cfg.Embedder, which "answers 'what embedder am I on?' and lies most
+// confidently" exactly when it is wrong. It RESOLVES the configured embedder (this
+// probes Ollama, acceptable on an interactive command) and, when an opted-in
+// `ollama` daemon is unreachable, discloses UNREACHABLE plus what the index was
+// ACTUALLY built with, so the surface stops lying.
+func resolvedEmbedderLine(cfg Config) string {
+	// Mirror chooseEmbedderFor's precedence (MORA_EMBEDDER env when set, else the
+	// durable config key) so the label names what actually drove resolution.
+	pref, ok := os.LookupEnv("MORA_EMBEDDER")
+	if !ok {
+		pref = cfg.Embedder
+	}
+	configured := pref
+	if configured == "" {
+		configured = "static"
+	}
+	emb, err := chooseEmbedderFor(cfg)
+	if err != nil {
+		built := indexRecordedEmbedder(cfg)
+		if built == "" {
+			return configured + " (UNREACHABLE — no semantic index built yet)"
+		}
+		return configured + " (UNREACHABLE — index built with " + built + ")"
+	}
+	if configured == "static" {
+		return "static"
+	}
+	// A resolved ollama embedder: show the active model id, and flag a stored index
+	// built by a different embedder (a mismatch the user should rebuild to clear).
+	line := configured + " (" + emb.ModelID() + ")"
+	if built := indexRecordedEmbedder(cfg); built != "" && !embedderModelsMatch(built, emb.ModelID()) {
+		line += " — index built with " + built + "; run `mora index rebuild`"
+	}
+	return line
+}
+
+// indexRecordedEmbedder reads the embedder_model provenance the last committed
+// rebuild stamped ("" when no index exists or it predates the provenance column).
+func indexRecordedEmbedder(cfg Config) string {
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	meta, err := readIndexMeta(db)
+	if err != nil {
+		return ""
+	}
+	return meta["embedder_model"]
+}
+
+// mixedVectorProvenance reports whether the stored per-vector models disagree with a
+// single recorded provenance (D3). It queries the DISTINCT models actually present in
+// mem_vectors: more than one distinct model — or a lone model that differs from the
+// recorded embedder_model — means a re-embed committed vectors from two embedding
+// spaces into one index. An empty table (a pre-I2 or vector-less index) is not mixed,
+// and an absent recorded provenance (legacy index) does not redden on the ≠ arm,
+// mirroring embedderModelsMatch's absent-is-not-degraded rule. A missing mem_vectors
+// table (older schema) is not mixed — the schema check already fenced version drift.
+func mixedVectorProvenance(db *sql.DB, recorded string) (bool, error) {
+	var hasTable int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mem_vectors'`).Scan(&hasTable); err != nil {
+		return false, err
+	}
+	if hasTable == 0 {
+		return false, nil
+	}
+	rows, err := db.Query(`SELECT DISTINCT model FROM mem_vectors`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	var models []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return false, err
+		}
+		models = append(models, m)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(models) > 1 {
+		return true, nil // two embedding spaces in one index
+	}
+	if len(models) == 1 && recorded != "" && models[0] != recorded {
+		return true, nil // the vectors disagree with the recorded provenance
+	}
+	return false, nil
 }
 
 // projectionLagHours is the honest graph-lag signal: fts_indexed_at −

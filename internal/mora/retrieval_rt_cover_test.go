@@ -70,9 +70,9 @@ type rtEmbedder struct {
 	model string
 }
 
-func (e rtEmbedder) Embed(string) []float32 { return e.vec }
-func (e rtEmbedder) Dim() int               { return len(e.vec) }
-func (e rtEmbedder) ModelID() string        { return e.model }
+func (e rtEmbedder) Embed(string) ([]float32, error) { return e.vec, nil }
+func (e rtEmbedder) Dim() int                        { return len(e.vec) }
+func (e rtEmbedder) ModelID() string                 { return e.model }
 
 // ---- vectorSearchIDs ----
 
@@ -528,8 +528,9 @@ func TestRt_DefaultSearchSemanticRoutesToHybrid(t *testing.T) {
 	ctx := context.Background()
 
 	// Sanity: the chosen embedder really is semantic (drives defaultSearch's branch).
-	if !embedderIsSemantic(chooseEmbedderFor(cfg)) {
-		t.Fatal("fakeOllama should yield a semantic embedder")
+	emb, embErr := chooseEmbedderFor(cfg)
+	if embErr != nil || !embedderIsSemantic(emb) {
+		t.Fatalf("fakeOllama should yield a semantic embedder (err=%v)", embErr)
 	}
 
 	// Neil's memory shares NO words with the query below; reachable only via the graph arm.

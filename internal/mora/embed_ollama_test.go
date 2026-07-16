@@ -2,6 +2,7 @@ package mora
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,10 @@ func TestOllamaEmbedderNormalizes(t *testing.T) {
 	if !e.reachable() {
 		t.Fatal("fake daemon should be reachable")
 	}
-	v := e.Embed("hello")
+	v, err := e.Embed("hello")
+	if err != nil {
+		t.Fatalf("reachable daemon should not error: %v", err)
+	}
 	var ss float64
 	for _, x := range v {
 		ss += float64(x) * float64(x)
@@ -43,26 +47,34 @@ func TestOllamaEmbedderNormalizes(t *testing.T) {
 	}
 }
 
-func TestOllamaEmbedderDegradesWhenDown(t *testing.T) {
-	// Unreachable daemon: Embed returns a defined zero vector, never panics.
+// TestOllamaEmbedderFailsClosedWhenDown pins the D1 contract: an unreachable daemon
+// makes Embed return errEmbedderUnavailable and NO vector — it never fabricates a
+// zero/substitute vector (the pre-D1 behavior that let a mid-rebuild daemon death
+// commit degraded vectors while the rebuild exited 0, the recorded incident).
+func TestOllamaEmbedderFailsClosedWhenDown(t *testing.T) {
 	e := ollamaEmbedder{baseURL: "http://127.0.0.1:1", model: "m", dim: 4, client: &http.Client{Timeout: 200 * time.Millisecond}}
 	if e.reachable() {
 		t.Fatal("nothing should be listening on port 1")
 	}
-	v := e.Embed("anything")
-	if len(v) != 4 {
-		t.Fatalf("degraded embed should return a dim-length zero vector, got %d", len(v))
+	v, err := e.Embed("anything")
+	if err == nil {
+		t.Fatal("a down daemon must return an error, never a fabricated vector")
 	}
-	for _, x := range v {
-		if x != 0 {
-			t.Fatal("degraded embed should be the zero vector")
-		}
+	if !errors.Is(err, errEmbedderUnavailable) {
+		t.Fatalf("error must wrap errEmbedderUnavailable, got %v", err)
+	}
+	if v != nil {
+		t.Fatalf("failed embed must return a nil vector, got %v", v)
 	}
 }
 
 func TestChooseEmbedderDefaultsToStatic(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "")
-	if id := chooseEmbedder().ModelID(); id != "static-hash-v1" {
+	e, err := chooseEmbedder()
+	if err != nil {
+		t.Fatalf("static default must not error: %v", err)
+	}
+	if id := e.ModelID(); id != "static-hash-v1" {
 		t.Fatalf("default embedder = %q, want static", id)
 	}
 }
@@ -73,27 +85,46 @@ func TestChooseEmbedderOllamaWhenOptedInAndReachable(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "ollama")
 	t.Setenv("MORA_OLLAMA_URL", srv.URL)
 	t.Setenv("MORA_OLLAMA_MODEL", "nomic-embed-text")
-	if id := chooseEmbedder().ModelID(); id != "ollama:nomic-embed-text" {
+	e, err := chooseEmbedder()
+	if err != nil {
+		t.Fatalf("reachable ollama must not error: %v", err)
+	}
+	if id := e.ModelID(); id != "ollama:nomic-embed-text" {
 		t.Fatalf("opted-in embedder = %q, want ollama", id)
 	}
 }
 
-func TestChooseEmbedderFallsBackWhenUnreachable(t *testing.T) {
+// TestChooseEmbedderRefusesWhenUnreachable: an explicit ollama opt-in whose daemon is
+// down FAILS CLOSED (errEmbedderUnavailable) — it never silently substitutes static
+// (D2, mutation row 17). Was TestChooseEmbedderFallsBackWhenUnreachable.
+func TestChooseEmbedderRefusesWhenUnreachable(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "ollama")
 	t.Setenv("MORA_OLLAMA_URL", "http://127.0.0.1:1")
-	if id := chooseEmbedder().ModelID(); id != "static-hash-v1" {
-		t.Fatalf("unreachable ollama should fall back to static, got %q", id)
+	e, err := chooseEmbedder()
+	if err == nil {
+		t.Fatalf("unreachable ollama must fail closed, got embedder %q", e.ModelID())
+	}
+	if !errors.Is(err, errEmbedderUnavailable) {
+		t.Fatalf("error must wrap errEmbedderUnavailable, got %v", err)
+	}
+	if e != nil {
+		t.Fatalf("failed resolution must return a nil embedder, got %q", e.ModelID())
 	}
 }
 
 // TestChooseEmbedderRefusesNonLoopback is the zero-egress guard (codex I2): a
-// remote MORA_OLLAMA_URL must never receive memory text — fall back to static.
+// remote MORA_OLLAMA_URL must never receive memory text. D2: this now fails closed
+// (errEmbedderUnavailable) rather than silently substituting the static embedder.
 func TestChooseEmbedderRefusesNonLoopback(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "ollama")
 	for _, bad := range []string{"http://example.com:11434", "http://10.0.0.5:11434", "https://api.openai.com"} {
 		t.Setenv("MORA_OLLAMA_URL", bad)
-		if id := chooseEmbedder().ModelID(); id != "static-hash-v1" {
-			t.Fatalf("non-loopback %q must fall back to static, got %q", bad, id)
+		e, err := chooseEmbedder()
+		if err == nil {
+			t.Fatalf("non-loopback %q must fail closed, got embedder %q", bad, e.ModelID())
+		}
+		if !errors.Is(err, errEmbedderUnavailable) {
+			t.Fatalf("non-loopback %q error must wrap errEmbedderUnavailable, got %v", bad, err)
 		}
 	}
 }
@@ -156,8 +187,16 @@ func TestChooseEmbedderStampsDigest(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "ollama")
 	t.Setenv("MORA_OLLAMA_URL", srv.URL)
 	t.Setenv("MORA_OLLAMA_MODEL", "nomic-embed-text")
-	if id, want := chooseEmbedder().ModelID(), "ollama:nomic-embed-text@sha256:deadbeef"; id != want {
+	e, err := chooseEmbedder()
+	if err != nil {
+		t.Fatalf("reachable ollama must not error: %v", err)
+	}
+	if id, want := e.ModelID(), "ollama:nomic-embed-text@sha256:deadbeef"; id != want {
 		t.Fatalf("digest-stamped embedder id = %q, want %q", id, want)
+	}
+	// D3: the digest is also exposed via Digest() for provenance stamping.
+	if d, want := embedderDigestOf(e), "sha256:deadbeef"; d != want {
+		t.Fatalf("embedderDigestOf = %q, want %q", d, want)
 	}
 }
 
