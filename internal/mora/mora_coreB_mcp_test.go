@@ -356,9 +356,16 @@ func TestCoreB_McpCallWriteMemoryHappy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write_memory: %v", err)
 	}
-	m, ok := got.(Memory)
+	obj, ok := got.(map[string]any)
 	if !ok {
-		t.Fatalf("write_memory returned %T, want Memory", got)
+		t.Fatalf("write_memory returned %T, want map[string]any{memory,health}", got)
+	}
+	m, ok := obj["memory"].(Memory)
+	if !ok {
+		t.Fatalf("write_memory[memory] = %T, want Memory", obj["memory"])
+	}
+	if _, ok := obj["health"].(compactHealth); !ok {
+		t.Fatalf("write_memory[health] = %T, want compactHealth", obj["health"])
 	}
 	if m.ID == "" {
 		t.Fatalf("write_memory must mint an id, got empty")
@@ -374,8 +381,12 @@ func TestCoreB_McpCallWriteMemoryHappy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read_memory after write: %v", err)
 	}
-	if back.(Memory).Text != "coreB body" {
-		t.Fatalf("read_memory returned wrong body: %+v", back)
+	backObj, ok := back.(map[string]any)
+	if !ok {
+		t.Fatalf("read_memory returned %T, want map[string]any{memory,health}", back)
+	}
+	if backObj["memory"].(Memory).Text != "coreB body" {
+		t.Fatalf("read_memory returned wrong body: %+v", backObj["memory"])
 	}
 }
 
@@ -487,7 +498,11 @@ func TestCoreB_McpCallGetEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get_entity: %v", err)
 	}
-	res := got.(map[string]any)
+	wrapped := got.(map[string]any)
+	if _, ok := wrapped["health"].(compactHealth); !ok {
+		t.Fatalf("get_entity[health] = %T, want compactHealth", wrapped["health"])
+	}
+	res := wrapped["entity"].(map[string]any)
 	if evidence, hasTyped := res["evidence"].([]EntityEvidence); hasTyped {
 		found := false
 		for _, e := range evidence {
@@ -570,9 +585,16 @@ func TestCoreB_McpCallThink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("think: %v", err)
 	}
-	res, ok := got.(ThinkResult)
+	wrapped, ok := got.(map[string]any)
 	if !ok {
-		t.Fatalf("think returned %T, want ThinkResult", got)
+		t.Fatalf("think returned %T, want map[string]any{think,health}", got)
+	}
+	if _, ok := wrapped["health"].(compactHealth); !ok {
+		t.Fatalf("think[health] = %T, want compactHealth", wrapped["health"])
+	}
+	res, ok := wrapped["think"].(ThinkResult)
+	if !ok {
+		t.Fatalf("think[think] = %T, want ThinkResult", wrapped["think"])
 	}
 	if res.Query != "Zephyr launch" {
 		t.Fatalf("think echoed query %q", res.Query)
@@ -605,9 +627,16 @@ func TestCoreB_McpCallListEntities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list_entities: %v", err)
 	}
-	ents, ok := got.([]Entity)
+	wrapped, ok := got.(map[string]any)
 	if !ok {
-		t.Fatalf("list_entities returned %T, want []Entity", got)
+		t.Fatalf("list_entities returned %T, want map[string]any{entities,health}", got)
+	}
+	if _, ok := wrapped["health"].(compactHealth); !ok {
+		t.Fatalf("list_entities[health] = %T, want compactHealth", wrapped["health"])
+	}
+	ents, ok := wrapped["entities"].([]Entity)
+	if !ok {
+		t.Fatalf("list_entities[entities] = %T, want []Entity", wrapped["entities"])
 	}
 	var haveScope, haveLink bool
 	for _, e := range ents {
@@ -637,7 +666,7 @@ func TestCoreB_McpCallListEntitiesKindFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list_entities(kind=link): %v", err)
 	}
-	ents := got.([]Entity)
+	ents := got.(map[string]any)["entities"].([]Entity)
 	if len(ents) == 0 {
 		t.Fatalf("expected at least one link entity")
 	}
@@ -885,7 +914,7 @@ func TestCoreB_McpCallDeleteMemoryHappy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed write_memory: %v", err)
 	}
-	id := written.(Memory).ID
+	id := written.(map[string]any)["memory"].(Memory).ID
 	got, err := callMCPTool(context.Background(), "delete_memory", map[string]any{"id": id})
 	if err != nil {
 		t.Fatalf("delete_memory: %v", err)
@@ -936,7 +965,7 @@ func TestCoreB_McpCallListMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list_memory: %v", err)
 	}
-	mems := got.([]Memory)
+	mems := got.(map[string]any)["memories"].([]Memory)
 	if len(mems) != 1 || mems[0].Title != "One" {
 		t.Fatalf("scoped list_memory should return only 'One', got %+v", mems)
 	}

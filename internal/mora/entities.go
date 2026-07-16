@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Entity is a thing the vault refers to repeatedly — a scope (project/namespace),
@@ -138,6 +139,7 @@ func cmdEntities(ctx context.Context, args []string, stdout io.Writer) error {
 	if jsonOut {
 		return emit(stdout, entities, true)
 	}
+	printHealthBannerLine(stdout, cfg, time.Now())
 	if len(entities) == 0 {
 		fmt.Fprintln(stdout, "No entities found yet. Ingest some memories first (mora ingest run --all).")
 		return nil
@@ -183,6 +185,7 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 		if jsonOut {
 			return emit(w, map[string]any{"name": name, "found": false, "memories": []Memory{}}, true)
 		}
+		printHealthBannerLine(w, cfg, time.Now())
 		fmt.Fprintf(w, "No entity named %q.\n", name)
 		return nil
 	}
@@ -198,6 +201,7 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 	if jsonOut {
 		return emit(w, map[string]any{"name": match.Name, "kind": match.Kind, "count": match.Count, "found": true, "memories": refs}, true)
 	}
+	printHealthBannerLine(w, cfg, time.Now())
 	fmt.Fprintf(w, "%s (%s) — %d memories\n", match.Name, match.Kind, match.Count)
 	for _, m := range refs {
 		fmt.Fprintf(w, "  [%s] %s\n", m.ID, m.Title)

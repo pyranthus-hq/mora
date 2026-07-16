@@ -490,7 +490,12 @@ func TestCoreA_CmdSync(t *testing.T) {
 	if out := run(t, "sync", "status"); !strings.Contains(out, "no sources synced yet") {
 		t.Fatalf("sync status (empty); got:\n%s", out)
 	}
-	// status with a healthy + a stale/error entry.
+	// status with a healthy + a failed + a stale (no-error) entry. C3 ▸R2:
+	// `mora sync status` now classifies through the SAME worst-first
+	// precedence as sourceHealthFor (never > failed > stale > fresh), so an
+	// old success WITH an error reads FAILED (an active error outranks mere
+	// age) and only an old success with NO error reads STALE — the old flat-
+	// 48h/LastSynced check collapsed both into one undifferentiated "STALE".
 	seedSyncStatus(t, cfg, "gmail", time.Now().Add(-1*time.Hour))
 	old := time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)
 	seedSyncStatusFull(t, cfg, "imessage", &memory.SyncStatus{
@@ -501,12 +506,22 @@ func TestCoreA_CmdSync(t *testing.T) {
 		ItemCount:     4,
 		ErrorCount:    2,
 	})
+	seedSyncStatusFull(t, cfg, "filesystem", &memory.SyncStatus{
+		Source:        "filesystem",
+		LastSynced:    old,
+		LastAttemptAt: old,
+		LastSuccessAt: old,
+		ItemCount:     1,
+	})
 	out := run(t, "sync", "status")
-	if !strings.Contains(out, "gmail") || !strings.Contains(out, "imessage") {
-		t.Fatalf("sync status should list both sources; got:\n%s", out)
+	if !strings.Contains(out, "gmail") || !strings.Contains(out, "imessage") || !strings.Contains(out, "filesystem") {
+		t.Fatalf("sync status should list all three sources; got:\n%s", out)
 	}
-	if !strings.Contains(out, "STALE") {
-		t.Fatalf("sync status should mark the >48h source STALE; got:\n%s", out)
+	if !strings.Contains(out, "(FAILED)") {
+		t.Fatalf("sync status should mark the errored >48h source FAILED (not merely STALE); got:\n%s", out)
+	}
+	if !strings.Contains(out, "(STALE)") {
+		t.Fatalf("sync status should mark the error-free >48h source STALE; got:\n%s", out)
 	}
 
 	// google + imessage backfills with no enabled sources => 0 items, no error.

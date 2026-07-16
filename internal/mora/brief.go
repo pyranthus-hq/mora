@@ -390,7 +390,7 @@ func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, erro
 			if err != nil {
 				return "", false, err
 			}
-			return string(body), false, nil
+			return reconcileCachedBriefHealth(cfg, now, string(body)), false, nil
 		}
 	}
 
@@ -399,6 +399,53 @@ func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, erro
 		return "", false, err
 	}
 	return renderDigest(d, cfg.contextDefaultTokens()*charsPerToken), true, nil
+}
+
+// healthBannerLinePrefix is the fixed prefix healthBannerLine/healthBannerFrom
+// always emit — the marker reconcileCachedBriefHealth uses to find (and
+// remove) an EMBEDDED banner line without re-parsing the whole render.
+const healthBannerLinePrefix = "🔴 MORA HEALTH:"
+
+// reconcileCachedBriefHealth closes the cached-brief hole (Packet C2, the live
+// HEALTH-02 failure): resolveBrief's cache-read path returns a persisted file
+// VERBATIM, but the file may be hours or days old — a source that died AFTER
+// it was written must still redden THIS session's brief, and a source that
+// RECOVERED since must not keep showing yesterday's red line forever. Fixed at
+// the READ path, never the write path (the persisted file itself stays
+// byte-stable — the "printed-verbatim trust boundary" is deliberate): re-derive
+// the CURRENT banner from cfg/now and prepend or strip it on top of the cached
+// body's existing (possibly stale, possibly absent) banner line.
+//
+// A no-op (returns body unchanged) whenever the current banner and the
+// embedded one already agree — including the common "both empty" case — so a
+// healthy fixture's cached brief stays byte-identical (the T0 budget fixture
+// and every existing byte-stability test depend on this).
+func reconcileCachedBriefHealth(cfg Config, now time.Time, body string) string {
+	banner := healthBannerFrom(healthOf(cfg, now))
+
+	header := body
+	remainder := ""
+	if idx := strings.IndexByte(body, '\n'); idx >= 0 {
+		header, remainder = body[:idx], body[idx+1:]
+	}
+
+	embedded := ""
+	rest := remainder
+	if strings.HasPrefix(remainder, healthBannerLinePrefix) {
+		if idx := strings.IndexByte(remainder, '\n'); idx >= 0 {
+			embedded, rest = remainder[:idx], remainder[idx+1:]
+		} else {
+			embedded, rest = remainder, ""
+		}
+	}
+
+	if banner == embedded {
+		return body // already current — including the common healthy/no-banner case.
+	}
+	if banner == "" {
+		return header + "\n" + rest // health recovered since the file was written: strip it.
+	}
+	return header + "\n" + banner + "\n" + rest
 }
 
 // filteredBriefDigest factors resolveBrief's generate path: a DELTA preview with a

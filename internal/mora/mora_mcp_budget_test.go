@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // MCP output-size regression gate ("T0").
@@ -210,6 +212,30 @@ func seedBudgetFixture(t *testing.T) Config {
 
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
+	}
+	return cfg
+}
+
+// seedUnhealthyBudgetFixture extends seedBudgetFixture with a MAXIMALLY
+// unhealthy source (▸R, C1): seedBudgetFixture's own fixture is always
+// healthy, so "the ceilings still pass" would be a vacuous acceptance for the
+// compact health envelope this packet adds — it is never measured on the
+// worst-case payload the gate actually introduces. This overwrites gmail's
+// sync status with a long, unsanitized error so the aggregate banner renders
+// at (or near) its own healthBannerLineCap, proving the cap holds under the
+// worst case rather than merely "usually being short."
+func seedUnhealthyBudgetFixture(t *testing.T) Config {
+	t.Helper()
+	cfg := seedBudgetFixture(t)
+	path := syncStatusPathFor(cfg, Source{Name: "gmail", Type: "gmail"})
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatalf("LoadStatus(%s): %v", path, err)
+	}
+	st.LastError = strings.Repeat("connection reset by peer while dialing imap.gmail.com:993 ", 10)
+	st.ErrorCount++
+	if err := memory.SaveStatus(path, st); err != nil {
+		t.Fatalf("SaveStatus(%s): %v", path, err)
 	}
 	return cfg
 }
@@ -447,6 +473,54 @@ func TestMCPBudgetCeilings(t *testing.T) {
 			tok := (b + charsPerToken - 1) / charsPerToken // ceil: ceilings are hard lines
 			assertBudget(t, c, tok, b)
 		})
+	}
+}
+
+// unhealthyBudgetCases (C1) re-measures the two TIGHTEST MCP ceilings —
+// write_memory's degraded-success shape and delete_memory — over the
+// unhealthy fixture, so the ceiling is proven on the worst-case payload this
+// packet actually introduces (the compact health envelope), not just the
+// always-healthy fixture where `health.banner` is forever "".
+func unhealthyBudgetCases() []budgetCase {
+	return []budgetCase{
+		{tool: "write_memory_unhealthy", line: budgetCall("write_memory", `{"title":"x","text":"`+strings.Repeat("y", 2000)+`"}`), ceil: 1500, mutates: true},
+		{tool: "delete_memory_unhealthy", line: budgetCall("delete_memory", `{"id":"delete-target"}`), ceil: 500, mutates: true},
+	}
+}
+
+// TestMCPBudgetCeilingsUnhealthy runs the tightest write/delete ceilings
+// against seedUnhealthyBudgetFixture — the C1 unhealthy fixture variant.
+func TestMCPBudgetCeilingsUnhealthy(t *testing.T) {
+	seedUnhealthyBudgetFixture(t)
+
+	for _, c := range unhealthyBudgetCases() {
+		c := c
+		t.Run(c.tool, func(t *testing.T) {
+			b := measureEnvelope(t, c.line)
+			tok := (b + charsPerToken - 1) / charsPerToken
+			assertBudget(t, c, tok, b)
+		})
+	}
+}
+
+// TestUnhealthyBannerFitsTightestMCPBudget is mutation-matrix row 32: uncap
+// the banner line (drop healthBannerLineCap at its production render site,
+// capBannerLine in health_banner.go) and a MAX-length unhealthy banner blows
+// past the tightest MCP ceilings — write_memory's 1500 and delete_memory's
+// 500, both double-counted via toCallToolResult's text+structuredContent
+// mirror. This is the standalone, explicitly-named certificate for that cap;
+// TestMCPBudgetCeilingsUnhealthy above additionally wires it into the regular
+// budgetCases-style regression gate.
+func TestUnhealthyBannerFitsTightestMCPBudget(t *testing.T) {
+	seedUnhealthyBudgetFixture(t)
+
+	wBytes := measureEnvelope(t, budgetCall("write_memory", `{"title":"x","text":"`+strings.Repeat("y", 2000)+`"}`))
+	if wTok := (wBytes + charsPerToken - 1) / charsPerToken; wTok > 1500 {
+		t.Fatalf("write_memory with a MAX-length unhealthy banner = %d tok (%d B) > 1500 ceiling", wTok, wBytes)
+	}
+	dBytes := measureEnvelope(t, budgetCall("delete_memory", `{"id":"delete-target"}`))
+	if dTok := (dBytes + charsPerToken - 1) / charsPerToken; dTok > 500 {
+		t.Fatalf("delete_memory with a MAX-length unhealthy banner = %d tok (%d B) > 500 ceiling", dTok, dBytes)
 	}
 }
 

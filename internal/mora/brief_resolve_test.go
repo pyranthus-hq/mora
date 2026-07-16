@@ -195,8 +195,16 @@ func TestResolveBriefReadsFreshVerbatim(t *testing.T) {
 	if generated {
 		t.Fatalf("resolveBrief generated=true on a fresh persisted brief, want false (verbatim read)")
 	}
-	if body != sentinel {
-		t.Fatalf("resolveBrief did not return the file verbatim\n--- got ---\n%q\n--- want ---\n%q", body, sentinel)
+	// C2: resolveBrief now re-evaluates health at read time. resolveCfg's bare
+	// Config has no index built (DataDir==""), which is genuinely idxNever
+	// under the Health kernel, so the cache-read path correctly prepends the
+	// current banner rather than serving the sentinel health-blind. Everything
+	// AFTER the banner is still the file's bytes, untouched — the verbatim
+	// mechanism this test exists to pin.
+	banner := healthBannerFrom(healthOf(cfg, resolveFixedNow))
+	want := "# SENTINEL BRIEF\n" + banner + "\n\nthis exact body must be returned verbatim, not re-rendered.\n"
+	if body != want {
+		t.Fatalf("resolveBrief did not return the file verbatim (plus the current health banner)\n--- got ---\n%q\n--- want ---\n%q", body, want)
 	}
 }
 
@@ -214,8 +222,11 @@ func TestResolveBriefReadsYesterdayVerbatim(t *testing.T) {
 	if generated {
 		t.Fatalf("resolveBrief generated=true on a yesterday persisted brief, want false")
 	}
-	if body != sentinel {
-		t.Fatalf("resolveBrief did not return yesterday's file verbatim:\n%q", body)
+	// C2: same reconciliation as TestResolveBriefReadsFreshVerbatim.
+	banner := healthBannerFrom(healthOf(cfg, resolveFixedNow))
+	want := "# YESTERDAY BRIEF\n" + banner + "\nstill fresh across the UTC boundary.\n"
+	if body != want {
+		t.Fatalf("resolveBrief did not return yesterday's file verbatim (plus the current health banner):\n%q\nwant:\n%q", body, want)
 	}
 }
 
@@ -399,6 +410,57 @@ func TestResolveBriefDoesNotAdvanceWatermark(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatalf("resolveBrief mutated the watermark snapshot (read-only invariant broken)\n--- before ---\n%s\n--- after ---\n%s", before, after)
+	}
+}
+
+// TestCachedBriefCarriesCurrentBanner is mutation-matrix row 15: resolveBrief
+// must not serve the cached body without re-checking health (C2, the live
+// HEALTH-02 failure). A brief persisted while the vault was clean must still
+// surface a source that died AFTER it was written; symmetrically, a brief
+// persisted while unhealthy must drop yesterday's banner once the source has
+// recovered — otherwise a fixed source keeps showing a red line for a day.
+func TestCachedBriefCarriesCurrentBanner(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Now()
+	today := now.UTC().Format("2006-01-02")
+
+	// Direction 1: clean at write time, unhealthy by read time.
+	const cleanCache = "# Mora digest — clean at write time\n\nnothing new.\n"
+	seedBriefFile(t, cfg, today, cleanCache)
+	enableSources(t, cfg, "gmail")
+	seedSyncStatus(t, cfg, "gmail", now.Add(-30*time.Hour)) // stale (>24h threshold)
+
+	body, generated, err := resolveBrief(cfg, now, briefOpts{})
+	if err != nil {
+		t.Fatalf("resolveBrief: %v", err)
+	}
+	if generated {
+		t.Fatalf("resolveBrief should still be a cache read (generated=false), got true")
+	}
+	if !strings.HasPrefix(body, "# Mora digest — clean at write time\n🔴 MORA HEALTH:") {
+		t.Fatalf("a brief cached while healthy must carry the CURRENT (now unhealthy) banner, got:\n%q", body)
+	}
+	if !strings.Contains(body, "nothing new.") {
+		t.Fatalf("the cached body's own content must survive reconciliation, got:\n%q", body)
+	}
+
+	// Direction 2 (symmetric): unhealthy at write time, recovered by read time —
+	// the stale embedded banner must be stripped, not just left stale for a day.
+	const redCache = "# Mora digest — was unhealthy at write time\n🔴 MORA HEALTH: gmail — no successful sync for 40h. Run: mora doctor\n\nold content.\n"
+	seedBriefFile(t, cfg, today, redCache)
+	seedSyncStatus(t, cfg, "gmail", now.Add(-1*time.Hour)) // recovered: fresh now
+
+	body2, _, err := resolveBrief(cfg, now, briefOpts{})
+	if err != nil {
+		t.Fatalf("resolveBrief (recovered): %v", err)
+	}
+	if strings.Contains(body2, "🔴 MORA HEALTH:") {
+		t.Fatalf("a recovered vault must not keep serving yesterday's embedded banner, got:\n%q", body2)
+	}
+	if !strings.Contains(body2, "old content.") {
+		t.Fatalf("the cached body's own content must survive reconciliation, got:\n%q", body2)
 	}
 }
 

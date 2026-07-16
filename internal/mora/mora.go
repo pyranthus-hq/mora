@@ -864,6 +864,16 @@ const (
 	// the old top-5 window. Safe only because the MCP path now snippets bodies
 	// (snippetMemories) — 8 full bodies would blow the MCP token budget.
 	mcpSearchDefaultLimit = 8
+	// mcpListEntitiesDefaultLimit is list_entities' default row count. Trimmed
+	// 200→150 by Packet C's MCP envelope break (C4): list_entities used to
+	// return a BARE array, which toCallToolResult never mirrors into
+	// structuredContent (only object-shaped values are — mcp.go's text[0]=='{'
+	// check); wrapped as {entities, health} it now IS object-shaped, so the
+	// full array is counted TWICE in the T0 budget gate. 150 keeps the wrapped,
+	// doubled envelope under the unchanged 8000-token list_entities ceiling on
+	// the T0 fixture (mora_mcp_budget_test.go) with headroom — the ceiling
+	// itself is NOT raised (Packet C acceptance).
+	mcpListEntitiesDefaultLimit = 150
 	// searchSnippetLen caps each search_memory result body for the token-budgeted
 	// MCP surface (full bodies blew the T0 ceiling). Agents fetch full text via
 	// read_memory by id. Matches think's thinkSnippetLen.
