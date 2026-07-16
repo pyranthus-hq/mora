@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -179,6 +180,11 @@ func uninstallSchedule(stdout io.Writer, cfg Config, job string) error {
 			return err
 		}
 		label := "com.mora." + job
+		// Removing a plist does not stop a job already loaded into launchd. Boot
+		// out the service first; "not loaded" is benign because uninstall is
+		// idempotent and the plist still needs to be removed.
+		uid := strconv.Itoa(os.Getuid())
+		_, _ = runScheduleCommand("launchctl", "bootout", "gui/"+uid+"/"+label)
 		if err := os.Remove(filepath.Join(home, "Library", "LaunchAgents", label+".plist")); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
