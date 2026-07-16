@@ -31,7 +31,7 @@ terminal bookkeeping did not:
 - **Exit 10**, body `{"skip":"already-succeeded"}` → today's brief already ran and succeeded. Do **NOT** sync, do **NOT** pulse, do **NOT** call the MCP `brief` tool, do **NOT** advance anything. Print today's existing dated artifact verbatim and STOP. Read it from the vault (`mora brief --json` returns the freshest persisted brief; or read `briefs/<today-UTC>-brief.md` directly) and present it with a one-line note: "Already ran today — this is the saved brief." Then end the turn. **Re-running after a skip to "fill gaps" is a contract violation: the dated artifact is the source of truth.**
 - **Exit 10**, body `{"skip":"effect-already-committed"}` → the advancing transaction completed, but the prior process did not finish presentation or `loop done`. Apply the exact same no-op rule: read and present the saved dated artifact, then STOP. Never issue another `--advance`.
 - **Exit 0** → the gate is open. The JSON body includes a `"run_id"` — **note it now**; you pass it back to `loop done` in Step 4 (`--run <run_id>`) so a late or duplicate close can never clobber a newer run. Proceed to Step 2.
-- **Any other non-zero exit** → the loop could not open (lock held, config error). Report the error verbatim and STOP. Do not improvise around a closed gate.
+- **Any other non-zero exit** → the loop could not open (lock held, config error, or an `effect_started_at` record with no commit checkpoint). Report the error verbatim and STOP. An uncertain effect may already have advanced some or all watermarks; inspect read-only status/artifacts if useful, but never issue another same-day `--advance`.
 
 > Guardrail: there is exactly ONE entry point. Never skip `loop begin` and jump straight to `pulse`/sync/`brief` — the begin gate is what makes the day idempotent and what owns the lock. If you did not see exit 0 from `loop begin` in THIS run, you have no authority to sync or advance.
 
@@ -98,11 +98,12 @@ Then **offer** `write_memory` to close the loop durably (do not force it): a one
 |---|---|---|
 | Start of the loop | `mora loop begin daily-brief --json` | anything before it |
 | begin → exit 10 `already-succeeded` or `effect-already-committed` | print today's `briefs/<today>-brief.md` (via `mora brief`), STOP | sync, `pulse`, MCP `brief`, any `--advance` |
+| begin → non-zero `outcome is uncertain` | report it; inspect `mora loop status daily-brief` / the saved artifact read-only; STOP | any same-day `--advance` or automatic retry |
 | begin → exit 0 | `mora loop heartbeat daily-brief --run <run_id>`, then one fenced `mora pulse --digest --sync --advance --brief-file --write --loop daily-brief --loop-run <run_id>` | an unfenced or second `--advance`; split sync+pulse |
 | Reading back / follow-up question after pulse | `mora brief` or MCP `brief` (read-only) | any `pulse --advance` |
 | Sync warning during pulse | continue, surface it in the "does NOT know" line | aborting the loop |
 | After presenting the brief | `mora loop done daily-brief --ok --run <run_id>` | `--ok` before presenting |
-| Pulse errored / can't present | `mora loop done daily-brief --fail "<reason>" --run <run_id>` | leaving the loop open; `--ok` |
+| Pulse errored / can't present | `mora loop done daily-brief --fail "<reason>" --run <run_id>`; if the effect had started, same-day automatic retry remains blocked | leaving the loop open; `--ok`; retrying `--advance` |
 | User wants today remembered | offer `write_memory` | inventing memories; forcing the write |
 
 ## Silent-violation checklist (the contract this skill enforces)

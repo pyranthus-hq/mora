@@ -29,10 +29,10 @@ import (
 //     atomicWrite (temp+rename), NEVER in index.db — the DB is a gitignored,
 //     rebuilt-from-scratch cache (dbPath, mora.go), so a run table there would be
 //     silently wiped on `index rebuild`.
-//   - Self-heal, never fatal. Any read/unmarshal/version/identity problem on a
-//     run record reads as ABSENT (cold-start-equivalent), exactly like
-//     loadBriefSnapshot — a corrupt journal never blanks the loop, it just
-//     re-runs the period (which the idempotency gate makes safe).
+//   - Tolerant reads, fail-closed mutation. Read/status helpers map an invalid
+//     run record to absent, but `loop begin` distinguishes a missing path from an
+//     existing corrupt/unreadable/future-schema record and refuses to overwrite
+//     it. Losing idempotency evidence must never silently reopen an effect.
 //   - Injected now. Every date/TTL decision flows from an injected now (never a
 //     fresh time.Now() inside a helper) so tests are deterministic and the UTC
 //     scheme matches saveBriefSnapshot/briefArtifactPath.
@@ -147,6 +147,11 @@ type loopRunRecord struct {
 	UpdatedAt   string `json:"updated_at"`
 	FinishedAt  string `json:"finished_at,omitempty"`
 	HeartbeatAt string `json:"heartbeat_at,omitempty"`
+	// EffectStartedAt is the durable fail-closed intent written before entering a
+	// non-idempotent effect. If it exists without EffectCommittedAt, the outcome is
+	// uncertain (the process may have died or partially committed) and automatic
+	// same-period retry is forbidden.
+	EffectStartedAt string `json:"effect_started_at,omitempty"`
 	// EffectCommittedAt is the durable at-most-once fence for a completed
 	// non-idempotent effect. It may be present while Status is still running or
 	// failed (for example, the process committed a brief and then crashed before
@@ -189,7 +194,7 @@ func (r loopRegistration) scheduleJob() string {
 // registry — generic, no brief coupling.
 type loopHealth struct {
 	LoopID    string `json:"loop_id"`
-	State     string `json:"state"` // never-run | running | stale | failed | ok
+	State     string `json:"state"` // never-run | running | uncertain | stale | failed | ok
 	Scheduled bool   `json:"scheduled"`
 	Period    string `json:"period,omitempty"`
 	Attempt   int    `json:"attempt,omitempty"`
@@ -246,8 +251,8 @@ func newRunID(now time.Time) string {
 // loadRunRecord reads <id>/latest.json. ANY problem — missing, read error,
 // corrupt JSON, schema-version mismatch, a body whose loop_id disagrees with the
 // directory, or an unknown status — reads as (zero, false): cold-start-
-// equivalent, never a fatal that would blank the loop. The corrupt file is left
-// on disk untouched (a future save overwrites it atomically).
+// equivalent for tolerant read/status callers. The invalid file is left intact
+// for diagnosis; loadRunRecordForBegin adds the fail-closed mutation boundary.
 func loadRunRecord(cfg Config, loopID string) (loopRunRecord, bool) {
 	b, err := os.ReadFile(loopLatestPath(cfg, loopID))
 	if err != nil {
@@ -269,6 +274,24 @@ func loadRunRecord(cfg Config, loopID string) (loopRunRecord, bool) {
 	return rec, true
 }
 
+// loadRunRecordForBegin distinguishes a genuinely absent record from one that
+// exists but cannot be trusted. Read/status callers retain the historical
+// self-heal-to-absent behavior, but the non-idempotent begin gate must fail
+// closed: overwriting corrupt, unreadable, or future-schema evidence could turn
+// a previously committed same-period effect into a second advance.
+func loadRunRecordForBegin(cfg Config, loopID string) (loopRunRecord, bool, error) {
+	if rec, ok := loadRunRecord(cfg, loopID); ok {
+		return rec, true, nil
+	}
+	path := loopLatestPath(cfg, loopID)
+	if _, err := os.Stat(path); err == nil {
+		return loopRunRecord{}, false, fmt.Errorf("loop %q has an existing but invalid run record at %s; refusing to overwrite idempotency evidence", loopID, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return loopRunRecord{}, false, fmt.Errorf("inspect loop %q run record at %s: %w", loopID, path, err)
+	}
+	return loopRunRecord{}, false, nil
+}
+
 // saveRunRecord persists latest.json, stamping schema_version + updated_at=now
 // (UTC RFC3339). Written 0600 via atomicWrite (temp+rename) because it carries a
 // cursor token and command/error text.
@@ -280,6 +303,29 @@ func saveRunRecord(cfg Config, r loopRunRecord, now time.Time) error {
 		return err
 	}
 	return atomicWrite(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
+}
+
+// saveRunRecordDurable is reserved for the two non-idempotent effect
+// transitions. Its file + directory barriers make "started" durable before the
+// effect can run and "committed" durable before the guard can be released.
+func saveRunRecordDurable(cfg Config, r loopRunRecord, now time.Time) error {
+	r.SchemaVersion = loopRunSchemaVersion
+	r.UpdatedAt = now.UTC().Format(time.RFC3339)
+	body, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteDurable(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
+}
+
+// saveRunRecordPreservingEffect keeps durability monotonic after a durable
+// effect intent exists. A later heartbeat or terminal transition must not replace
+// fsynced idempotency evidence with a merely atomic (page-cache-only) rename.
+func saveRunRecordPreservingEffect(cfg Config, r loopRunRecord, now time.Time) error {
+	if r.EffectStartedAt != "" || r.EffectCommittedAt != "" {
+		return saveRunRecordDurable(cfg, r, now)
+	}
+	return saveRunRecord(cfg, r, now)
 }
 
 // sanitizeJournalNote keeps a journal note single-line and bounded — the
@@ -673,13 +719,23 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 			fmt.Sprintf("loop %q %s for %s — nothing to do", id, humanReason, period))
 		return exitCodeError{code: loopSkipExitCode} // empty msg => no stderr noise, exit 10
 	}
+	uncertainEffect := func(rec loopRunRecord) error {
+		return fmt.Errorf("loop %q run %s started a non-idempotent effect at %s but has no commit checkpoint; outcome is uncertain and automatic retry for %s is blocked; do not run --advance again", id, rec.RunID, rec.EffectStartedAt, period)
+	}
 
 	// FAST-PATH gate (pre-acquire): already succeeded this period => skip without
 	// taking the lease. Also covers a success whose lock leaked (done crashed
 	// mid-release), where acquire would otherwise wrongly report "already running".
 	// A committed effect is equally final for at-most-once purposes even when the
 	// process crashed before terminal presentation bookkeeping.
-	if prev, ok := loadRunRecord(cfg, id); ok && prev.Period == period {
+	prev, hasPrev, err := loadRunRecordForBegin(cfg, id)
+	if err != nil {
+		return err
+	}
+	if hasPrev && prev.Period == period {
+		if prev.EffectStartedAt != "" && prev.EffectCommittedAt == "" && prev.Status != loopRunRunning {
+			return uncertainEffect(prev)
+		}
 		if prev.Status == loopRunSucceeded {
 			return emitSkip("already-succeeded")
 		}
@@ -700,7 +756,15 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 	// AUTHORITATIVE gate (post-acquire, under the lease): RE-LOAD so a run that
 	// succeeded DURING our acquire is observed — closes the read-before-acquire
 	// TOCTOU that would otherwise let a duplicate run bypass the gate.
-	prev, hasPrev := loadRunRecord(cfg, id)
+	prev, hasPrev, err = loadRunRecordForBegin(cfg, id)
+	if err != nil {
+		release()
+		return err
+	}
+	if hasPrev && prev.Period == period && prev.EffectStartedAt != "" && prev.EffectCommittedAt == "" {
+		release()
+		return uncertainEffect(prev)
+	}
 	if hasPrev && prev.Period == period && prev.Status == loopRunSucceeded {
 		release()
 		return emitSkip("already-succeeded")
@@ -774,6 +838,9 @@ func loopDone(cfg Config, id, runID string, ok bool, failReason string, now time
 		if rec.Status != loopRunRunning {
 			return fmt.Errorf("loop %q run %s is already terminal (%s); not closing again", id, rec.RunID, rec.Status)
 		}
+		if ok && rec.EffectStartedAt != "" && rec.EffectCommittedAt == "" {
+			return fmt.Errorf("loop %q run %s has an uncertain non-idempotent effect; refusing successful close without a commit checkpoint", id, rec.RunID)
+		}
 
 		// The lock can reflect a newer run before latest.json does. Validate the
 		// owner while the same guard excludes publish/reap/heartbeat, then keep the
@@ -803,7 +870,7 @@ func loopDone(cfg Config, id, runID string, ok bool, failReason string, now time
 			rec.LastError = strings.TrimSpace(failReason)
 			note = "fail: " + rec.LastError
 		}
-		if err := saveRunRecord(cfg, rec, now); err != nil {
+		if err := saveRunRecordPreservingEffect(cfg, rec, now); err != nil {
 			return err
 		}
 		var terminalErr error
@@ -881,16 +948,30 @@ func heartbeatLoopRunGuarded(cfg Config, id, runID string, now time.Time) error 
 		return err
 	}
 	rec.HeartbeatAt = stamp
-	return saveRunRecord(cfg, rec, now)
+	return saveRunRecordPreservingEffect(cfg, rec, now)
 }
 
+// testHookLoopEffectAfterRun injects a failure after fn returns but before its
+// commit checkpoint. It deterministically models the otherwise process-kill-only
+// crash boundary. Nil in production.
+var testHookLoopEffectAfterRun func() error
+
 // withLoopRunEffect executes a non-idempotent effect while holding the same
-// persistent OS guard that publish/reap use. It validates + heartbeats before
-// entering fn and persists the successful effect checkpoint before unlocking.
-// A process suspended after its fence therefore keeps reapers blocked for the
-// whole effect; a process already reaped while waiting fails validation and
-// never enters fn.
+// persistent OS guard that publish/reap use. It validates ownership and durably
+// records effect_started_at before entering fn, then records effect_committed_at
+// on proven success. A started-without-committed record is deliberately left
+// uncertain on any error or crash, so automatic same-period retry fails closed.
+// A process suspended inside fn keeps reapers blocked; a process already reaped
+// while waiting fails validation and never enters fn.
 func withLoopRunEffect(cfg Config, id, runID string, fn func() error) error {
+	return withLoopRunEffectAt(cfg, id, runID, loopClock(), fn)
+}
+
+// withLoopRunEffectAt binds the authorized run period to the effect's own
+// logical timestamp. Scheduled/manual callers pass the same `now` used for the
+// brief artifact and watermark, so a run opened before a cadence boundary can
+// never commit the next period's effect and then be followed by a second run.
+func withLoopRunEffectAt(cfg Config, id, runID string, effectNow time.Time, fn func() error) error {
 	if !validLoopID(id) {
 		return fmt.Errorf("invalid loop id %q", id)
 	}
@@ -905,24 +986,72 @@ func withLoopRunEffect(cfg Config, id, runID string, fn func() error) error {
 		if !found {
 			return fmt.Errorf("loop %q has no active run", id)
 		}
+		effectPeriod := periodFor(cadenceFor(cfg, id), effectNow)
+		if rec.Period != effectPeriod {
+			return fmt.Errorf("loop %q run %s authorizes period %s, but the effect belongs to %s; refusing cross-period advance", id, runID, rec.Period, effectPeriod)
+		}
 		if rec.EffectCommittedAt != "" {
 			return fmt.Errorf("loop %q run %s already committed its effect", id, runID)
 		}
-		effectErr := fn()
-		var reconcileErr error
-		if effectErr == nil {
-			reconcileErr = markLoopRunEffectCommittedGuarded(cfg, id, runID, loopClock())
-			if reconcileErr != nil {
-				reconcileErr = fmt.Errorf("persist post-effect loop checkpoint: %w", reconcileErr)
-			}
-		} else {
-			reconcileErr = heartbeatLoopRunGuarded(cfg, id, runID, loopClock())
-			if reconcileErr != nil {
-				reconcileErr = fmt.Errorf("post-effect loop heartbeat: %w", reconcileErr)
-			}
+		if rec.EffectStartedAt != "" {
+			return fmt.Errorf("loop %q run %s already started its effect but has no commit checkpoint; outcome is uncertain", id, runID)
 		}
-		return errors.Join(effectErr, reconcileErr)
+		if err := markLoopRunEffectStartedGuarded(cfg, id, runID, loopClock()); err != nil {
+			return fmt.Errorf("persist pre-effect loop intent: %w", err)
+		}
+		effectErr := fn()
+		if testHookLoopEffectAfterRun != nil {
+			effectErr = errors.Join(effectErr, testHookLoopEffectAfterRun())
+		}
+		if effectErr != nil {
+			return fmt.Errorf("loop effect outcome may be partial; automatic retry is blocked: %w", effectErr)
+		}
+		if err := markLoopRunEffectCommittedGuarded(cfg, id, runID, loopClock()); err != nil {
+			return fmt.Errorf("persist post-effect loop checkpoint; automatic retry is blocked: %w", err)
+		}
+		return nil
 	})
+}
+
+// markLoopRunEffectStartedGuarded writes the fail-closed intent before a
+// non-idempotent effect can run. The caller holds this loop's lease-file guard.
+// Saving the record before refreshing the lease is intentional: if the latter
+// fails, no effect runs and the false-positive uncertainty is safer than a retry
+// after an unrecorded partial effect.
+func markLoopRunEffectStartedGuarded(cfg Config, id, runID string, now time.Time) error {
+	rec, found := loadRunRecord(cfg, id)
+	if !found {
+		return fmt.Errorf("loop %q has no active run", id)
+	}
+	if rec.RunID != runID {
+		return fmt.Errorf("loop %q run %s is no longer current (superseded by %s)", id, runID, rec.RunID)
+	}
+	if rec.Status != loopRunRunning {
+		return fmt.Errorf("loop %q run %s is already terminal (%s)", id, runID, rec.Status)
+	}
+	if rec.EffectStartedAt != "" || rec.EffectCommittedAt != "" {
+		return fmt.Errorf("loop %q run %s already has an effect checkpoint", id, runID)
+	}
+	data, err := os.ReadFile(loopLockPath(cfg, id))
+	if err != nil {
+		return fmt.Errorf("loop %q run %s no longer holds a lease", id, runID)
+	}
+	var body loopLockBody
+	if json.Unmarshal(data, &body) != nil || body.RunID != runID {
+		return fmt.Errorf("loop %q run %s no longer holds the lease", id, runID)
+	}
+	stamp := now.UTC().Format(time.RFC3339)
+	rec.HeartbeatAt = stamp
+	rec.EffectStartedAt = stamp
+	if err := saveRunRecordDurable(cfg, rec, now); err != nil {
+		return err
+	}
+	body.AcquiredAt = stamp
+	next, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(loopLockPath(cfg, id), next, 0o600)
 }
 
 // markLoopRunEffectCommittedGuarded durably records a successful non-idempotent
@@ -940,6 +1069,9 @@ func markLoopRunEffectCommittedGuarded(cfg Config, id, runID string, now time.Ti
 	if rec.Status != loopRunRunning {
 		return fmt.Errorf("loop %q run %s is already terminal (%s)", id, runID, rec.Status)
 	}
+	if rec.EffectStartedAt == "" {
+		return fmt.Errorf("loop %q run %s has no durable effect intent", id, runID)
+	}
 	data, err := os.ReadFile(loopLockPath(cfg, id))
 	if err != nil {
 		return fmt.Errorf("loop %q run %s no longer holds a lease", id, runID)
@@ -951,7 +1083,7 @@ func markLoopRunEffectCommittedGuarded(cfg Config, id, runID string, now time.Ti
 	stamp := now.UTC().Format(time.RFC3339)
 	rec.HeartbeatAt = stamp
 	rec.EffectCommittedAt = stamp
-	if err := saveRunRecord(cfg, rec, now); err != nil {
+	if err := saveRunRecordDurable(cfg, rec, now); err != nil {
 		return err
 	}
 	body.AcquiredAt = stamp
@@ -1108,6 +1240,7 @@ func loopScheduled(job string) bool {
 //
 //	never-run  no run record at all
 //	running    status==running AND heartbeat within runningStaleAfter
+//	uncertain  a non-idempotent effect started without a commit checkpoint
 //	stale      status==running but abandoned (heartbeat too old), OR a success
 //	           older than the cadence allows  (stale beats a dead 'running')
 //	failed     last run failed
@@ -1138,10 +1271,16 @@ func classifyLoopHealth(reg loopRegistration, rec loopRunRecord, recOK bool, now
 		if !hb.IsZero() && now.UTC().Sub(hb) <= runningStaleAfter {
 			h.State = "running"
 			h.Message = fmt.Sprintf("run %s in progress (period %s, attempt %d)", rec.RunID, rec.Period, rec.Attempt)
+		} else if rec.EffectStartedAt != "" && rec.EffectCommittedAt == "" {
+			h.State = "uncertain"
+			h.Message = fmt.Sprintf("run %s started a non-idempotent effect at %s without a commit checkpoint — automatic same-period retry is blocked", rec.RunID, rec.EffectStartedAt)
 		} else {
 			h.State = "stale"
 			h.Message = fmt.Sprintf("run %s appears abandoned — started %s, never completed", rec.RunID, firstNonEmpty(rec.StartedAt, rec.HeartbeatAt))
 		}
+	case rec.EffectStartedAt != "" && rec.EffectCommittedAt == "":
+		h.State = "uncertain"
+		h.Message = fmt.Sprintf("run %s started a non-idempotent effect at %s without a commit checkpoint — automatic same-period retry is blocked", rec.RunID, rec.EffectStartedAt)
 	case rec.Status == loopRunFailed:
 		h.State = "failed"
 		h.Message = "last run failed"

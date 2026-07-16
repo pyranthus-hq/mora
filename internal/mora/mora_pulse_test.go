@@ -408,19 +408,47 @@ func TestScheduledPulseDailyDurableLifecycle(t *testing.T) {
 
 	origLoopClock, origBriefClock := loopClock, briefClock
 	origG, origI, origNotify := backfillGoogleFn, backfillIMessageFn, notifyBriefFn
+	origMarkerSync, origDirSync := markerSyncFn, syncDirFn
 	t.Cleanup(func() {
 		loopClock, briefClock = origLoopClock, origBriefClock
 		backfillGoogleFn, backfillIMessageFn, notifyBriefFn = origG, origI, origNotify
+		markerSyncFn, syncDirFn = origMarkerSync, origDirSync
 	})
 	loopClock = func() time.Time { return now }
 	briefClock = func() time.Time { return now }
 	backfillGoogleFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
 	backfillIMessageFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
 	notifyBriefFn = func(string, *urgentNote) error { return nil }
+	var durabilityTrace []string
+	classifyDurableDir := func(dir string) string {
+		dir = filepath.Clean(dir)
+		switch {
+		case strings.HasPrefix(dir, filepath.Join(cfg.StateDir, "loops")+string(filepath.Separator)):
+			return "loop"
+		case dir == filepath.Join(cfg.VaultDir, "briefs"):
+			return "artifact"
+		case dir == filepath.Join(cfg.StateDir, "brief"):
+			return "watermark"
+		default:
+			return "other"
+		}
+	}
+	markerSyncFn = func(f *os.File) error {
+		durabilityTrace = append(durabilityTrace, classifyDurableDir(filepath.Dir(f.Name()))+":fsync")
+		return origMarkerSync(f)
+	}
+	syncDirFn = func(dir string) error {
+		durabilityTrace = append(durabilityTrace, classifyDurableDir(dir)+":dirsync")
+		return origDirSync(dir)
+	}
 
 	var first bytes.Buffer
 	if err := runScheduledPulseDaily(context.Background(), cfg, &first); err != nil {
 		t.Fatalf("first scheduled run: %v\n%s", err, first.String())
+	}
+	wantDurability := "loop:fsync,loop:dirsync,artifact:fsync,artifact:dirsync,watermark:fsync,watermark:dirsync,loop:fsync,loop:dirsync,loop:fsync,loop:dirsync"
+	if got := strings.Join(durabilityTrace, ","); got != wantDurability {
+		t.Fatalf("scheduled durability trace = %q\nwant %q (intent -> artifact -> watermark -> commit -> terminal)", got, wantDurability)
 	}
 	rec, ok := loadRunRecord(cfg, "daily-brief")
 	if !ok || rec.Status != loopRunSucceeded {
@@ -480,5 +508,40 @@ func TestAdvancingPulseRefusesWrongLoopOwner(t *testing.T) {
 	}
 	if briefSnapshotExists(cfg, "gmail") {
 		t.Fatal("stale fenced pulse advanced the watermark")
+	}
+}
+
+func TestAdvancingPulseRefusesRunFromPreviousPeriod(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	beforeMidnight := time.Date(2026, 7, 16, 23, 59, 59, 0, time.UTC)
+	afterMidnight := beforeMidnight.Add(2 * time.Second)
+	seedSyncStatus(t, cfg, "gmail", beforeMidnight.Add(-time.Hour))
+	digestSeed(t, cfg, "gmail", "Must stay for the new period", time.Hour, beforeMidnight)
+	var begin bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, beforeMidnight, &begin); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	origBriefClock, origLoopClock := briefClock, loopClock
+	t.Cleanup(func() { briefClock, loopClock = origBriefClock, origLoopClock })
+	briefClock = func() time.Time { return afterMidnight }
+	loopClock = func() time.Time { return afterMidnight }
+
+	_, err := runErr(t, "pulse", "--digest", "--advance", "--brief-file", "--loop", "daily-brief", "--loop-run", rec.RunID)
+	if err == nil || !strings.Contains(err.Error(), "refusing cross-period advance") {
+		t.Fatalf("cross-period fenced pulse = %v, want refusal", err)
+	}
+	if briefSnapshotExists(cfg, "gmail") {
+		t.Fatal("cross-period fenced pulse advanced the watermark")
+	}
+	if _, statErr := os.Stat(briefArtifactPath(cfg, afterMidnight)); !os.IsNotExist(statErr) {
+		t.Fatalf("cross-period fenced pulse wrote new-period artifact: %v", statErr)
+	}
+	after, _ := loadRunRecord(cfg, "daily-brief")
+	if after.EffectStartedAt != "" || after.EffectCommittedAt != "" {
+		t.Fatalf("cross-period refusal wrote effect evidence: %+v", after)
 	}
 }

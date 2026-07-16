@@ -724,7 +724,7 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 				// Hold the loop's OS guard across the ENTIRE non-idempotent
 				// build/persist/watermark transaction. A suspended holder cannot be
 				// reaped between an owner check and the effect it authorized.
-				aerr = withLoopRunEffect(cfg, *loopID, *loopRunID, advance)
+				aerr = withLoopRunEffectAt(cfg, *loopID, *loopRunID, now, advance)
 			} else {
 				aerr = advance()
 			}

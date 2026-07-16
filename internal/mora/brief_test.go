@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -362,7 +363,7 @@ func TestLoadBriefSnapshotSchemaMismatchRecovers(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// COMMIT LOCK — O_EXCL contention
+// COMMIT LOCK — fail-fast OS-guard contention
 // ---------------------------------------------------------------------------
 
 // TestAcquireBriefLockExclusion asserts that while one holder owns the lock, a
@@ -432,6 +433,76 @@ func TestAcquireBriefLockSerializesWriters(t *testing.T) {
 	if contended == 0 {
 		t.Fatalf("no contention observed across 8 racing acquires; lock may not be exclusive")
 	}
+}
+
+// TestBriefLockCrashHelper is a subprocess-only holder used by
+// TestAcquireBriefLockReleasedByProcessDeath. A persistent guard file remains,
+// but killing this process must release the kernel lock on its open handle.
+func TestBriefLockCrashHelper(t *testing.T) {
+	if os.Getenv("MORA_TEST_BRIEF_LOCK_HELPER") != "1" {
+		return
+	}
+	cfg := Config{StateDir: os.Getenv("MORA_TEST_BRIEF_LOCK_STATE")}
+	release, err := acquireBriefLock(cfg)
+	if err != nil {
+		t.Fatalf("helper acquire brief lock: %v", err)
+	}
+	defer release()
+	if err := os.WriteFile(os.Getenv("MORA_TEST_BRIEF_LOCK_READY"), []byte("ready\n"), 0o600); err != nil {
+		t.Fatalf("helper ready marker: %v", err)
+	}
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+func TestAcquireBriefLockReleasedByProcessDeath(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	ready := filepath.Join(root, "ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBriefLockCrashHelper$")
+	cmd.Env = append(os.Environ(),
+		"MORA_TEST_BRIEF_LOCK_HELPER=1",
+		"MORA_TEST_BRIEF_LOCK_STATE="+stateDir,
+		"MORA_TEST_BRIEF_LOCK_READY="+ready,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start brief-lock helper: %v", err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			killed = true
+			t.Fatal("brief-lock helper did not acquire in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := acquireBriefLock(Config{StateDir: stateDir}); err == nil {
+		t.Fatal("parent acquired brief lock while helper was alive")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill brief-lock helper: %v", err)
+	}
+	_ = cmd.Wait()
+	killed = true
+
+	release, err := acquireBriefLock(Config{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("brief lock remained stranded after process death: %v", err)
+	}
+	release()
 }
 
 // mapsEqual is a tiny test helper for map[string]string equality.

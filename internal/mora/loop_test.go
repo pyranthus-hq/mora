@@ -102,6 +102,37 @@ func TestLoadRunRecord_PathIdentityMismatchIsAbsent(t *testing.T) {
 	}
 }
 
+func TestLoopBeginInvalidExistingRecordFailsClosed(t *testing.T) {
+	cases := map[string][]byte{
+		"corrupt": []byte("{not-json"),
+		"future-schema": func() []byte {
+			rec := loopRunRecord{SchemaVersion: loopRunSchemaVersion + 1, LoopID: "daily-brief", RunID: "run_done", Period: periodFor("daily", loopNow), Status: loopRunSucceeded, Attempt: 1}
+			body, _ := json.Marshal(rec)
+			return body
+		}(),
+		"wrong-identity": func() []byte {
+			rec := loopRunRecord{SchemaVersion: loopRunSchemaVersion, LoopID: "other", RunID: "run_done", Period: periodFor("daily", loopNow), Status: loopRunSucceeded, Attempt: 1}
+			body, _ := json.Marshal(rec)
+			return body
+		}(),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := loopTestCfg(t)
+			writeRawFile(t, loopLatestPath(cfg, "daily-brief"), body)
+			var out bytes.Buffer
+			err := loopBegin(cfg, "daily-brief", true, loopNow, &out)
+			if err == nil || !strings.Contains(err.Error(), "refusing to overwrite idempotency evidence") {
+				t.Fatalf("begin over invalid existing record = %v, want fail-closed refusal", err)
+			}
+			after, readErr := os.ReadFile(loopLatestPath(cfg, "daily-brief"))
+			if readErr != nil || !bytes.Equal(after, body) {
+				t.Fatalf("begin overwrote invalid evidence: body=%q err=%v", after, readErr)
+			}
+		})
+	}
+}
+
 // TestValidLoopID guards the filepath.Join traversal boundary: only
 // [A-Za-z0-9._-]+, and never "", ".", "..", or anything with a separator.
 func TestValidLoopID(t *testing.T) {
@@ -857,6 +888,9 @@ func TestLoopEffectCheckpointStopsPostEffectTTLReclaim(t *testing.T) {
 		t.Fatalf("first effect: %v", err)
 	}
 	committed, _ := loadRunRecord(cfg, "daily-brief")
+	if committed.EffectStartedAt != effectAt.Format(time.RFC3339) {
+		t.Fatalf("effect_started_at = %q, want %q", committed.EffectStartedAt, effectAt.Format(time.RFC3339))
+	}
 	if committed.EffectCommittedAt != effectAt.Format(time.RFC3339) {
 		t.Fatalf("effect_committed_at = %q, want %q", committed.EffectCommittedAt, effectAt.Format(time.RFC3339))
 	}
@@ -881,6 +915,366 @@ func TestLoopEffectCheckpointStopsPostEffectTTLReclaim(t *testing.T) {
 	current, _ := loadRunRecord(cfg, "daily-brief")
 	if current.RunID != rec.RunID || current.Attempt != 1 {
 		t.Fatalf("post-effect begin opened another attempt: %+v", current)
+	}
+}
+
+// TestLoopEffectIntentClosesPostEffectCrashWindow plants the exact kill point
+// after the non-idempotent function returns but before effect_committed_at can
+// be saved. The durable pre-effect intent must make both a leaked-running lease
+// and a wrapper-recorded failure refuse automatic same-period retry.
+func TestLoopEffectIntentClosesPostEffectCrashWindow(t *testing.T) {
+	effectAt := loopNow.Add(time.Minute)
+	origClock, origHook := loopClock, testHookLoopEffectAfterRun
+	t.Cleanup(func() {
+		loopClock = origClock
+		testHookLoopEffectAfterRun = origHook
+	})
+	loopClock = func() time.Time { return effectAt }
+	testHookLoopEffectAfterRun = func() error { return errors.New("simulated death before checkpoint") }
+
+	t.Run("hard crash leaves running intent", func(t *testing.T) {
+		cfg := loopTestCfg(t)
+		var out bytes.Buffer
+		if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		rec, _ := loadRunRecord(cfg, "daily-brief")
+		effects := 0
+		err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error {
+			effects++
+			return nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "automatic retry is blocked") {
+			t.Fatalf("post-effect checkpoint interruption = %v, want fail-closed error", err)
+		}
+		uncertain, _ := loadRunRecord(cfg, "daily-brief")
+		if uncertain.EffectStartedAt != effectAt.Format(time.RFC3339) || uncertain.EffectCommittedAt != "" {
+			t.Fatalf("interrupted effect record = %+v, want started without committed", uncertain)
+		}
+		out.Reset()
+		err = loopBegin(cfg, "daily-brief", true, loopNow.Add(20*time.Minute), &out)
+		if err == nil || !strings.Contains(err.Error(), "outcome is uncertain") {
+			t.Fatalf("same-period begin after simulated crash = %v, want uncertainty refusal", err)
+		}
+		if _, ok := ExitCodeFor(err); ok {
+			t.Fatalf("uncertain effect must be an explicit error, not a successful skip: %v", err)
+		}
+		if current, _ := loadRunRecord(cfg, "daily-brief"); current.RunID != rec.RunID || current.Attempt != 1 || effects != 1 {
+			t.Fatalf("crash recovery replayed or replaced effect: effects=%d record=%+v", effects, current)
+		}
+	})
+
+	t.Run("wrapper records failure but intent remains", func(t *testing.T) {
+		cfg := loopTestCfg(t)
+		var out bytes.Buffer
+		if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		rec, _ := loadRunRecord(cfg, "daily-brief")
+		if err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error { return nil }); err == nil {
+			t.Fatal("checkpoint interruption unexpectedly succeeded")
+		}
+		if err := loopDone(cfg, "daily-brief", rec.RunID, false, "checkpoint interrupted", effectAt, &out); err != nil {
+			t.Fatalf("record failed wrapper outcome: %v", err)
+		}
+		out.Reset()
+		err := loopBegin(cfg, "daily-brief", true, loopNow.Add(2*time.Minute), &out)
+		if err == nil || !strings.Contains(err.Error(), "outcome is uncertain") {
+			t.Fatalf("same-period begin after failed close = %v, want uncertainty refusal", err)
+		}
+		failedUncertain, _ := loadRunRecord(cfg, "daily-brief")
+		h := classifyLoopHealth(loopRegistration{LoopID: "daily-brief", Cadence: "daily"}, failedUncertain, true, loopNow.Add(2*time.Minute))
+		if h.State != "uncertain" {
+			t.Fatalf("health state = %q, want uncertain", h.State)
+		}
+	})
+}
+
+// TestLoopEffectErrorKeepsIntentFailClosed covers advanceBrief's partial-write
+// shape: an error after an artifact or earlier source snapshot may already have
+// persisted cannot be treated as proof that no effect happened.
+func TestLoopEffectErrorKeepsIntentFailClosed(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	origClock := loopClock
+	t.Cleanup(func() { loopClock = origClock })
+	loopClock = func() time.Time { return loopNow.Add(time.Minute) }
+
+	err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error {
+		return errors.New("later snapshot write failed")
+	})
+	if err == nil || !strings.Contains(err.Error(), "outcome may be partial") {
+		t.Fatalf("partial effect error = %v, want uncertainty", err)
+	}
+	got, _ := loadRunRecord(cfg, "daily-brief")
+	if got.EffectStartedAt == "" || got.EffectCommittedAt != "" {
+		t.Fatalf("partial effect record = %+v, want started without committed", got)
+	}
+	out.Reset()
+	if err := loopBegin(cfg, "daily-brief", true, loopNow.Add(20*time.Minute), &out); err == nil || !strings.Contains(err.Error(), "outcome is uncertain") {
+		t.Fatalf("retry after partial effect = %v, want uncertainty refusal", err)
+	}
+}
+
+func TestLoopEffectDurableIntentPrecedesFunction(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	origClock := loopClock
+	t.Cleanup(func() { loopClock = origClock })
+	loopClock = func() time.Time { return loopNow.Add(time.Minute) }
+	trace := withMarkerTrace(t)
+
+	if err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error {
+		*trace = append(*trace, "effect")
+		inside, _ := loadRunRecord(cfg, "daily-brief")
+		if inside.EffectStartedAt == "" || inside.EffectCommittedAt != "" {
+			t.Fatalf("record at first effect instruction = %+v, want durable started intent", inside)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("guarded effect: %v", err)
+	}
+	if got := strings.Join(*trace, ","); got != "fsync,dirsync,effect,fsync,dirsync" {
+		t.Fatalf("effect durability trace = %q, want intent barriers before effect and commit barriers after", got)
+	}
+}
+
+func TestLoopEffectEvidenceStaysDurableThroughHeartbeatAndDone(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	origClock := loopClock
+	t.Cleanup(func() { loopClock = origClock })
+	loopClock = func() time.Time { return loopNow.Add(time.Minute) }
+	trace := withMarkerTrace(t)
+	if err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error { return nil }); err != nil {
+		t.Fatalf("effect: %v", err)
+	}
+
+	*trace = nil
+	if err := heartbeatLoopRun(cfg, "daily-brief", rec.RunID, loopNow.Add(2*time.Minute)); err != nil {
+		t.Fatalf("post-effect heartbeat: %v", err)
+	}
+	if got := strings.Join(*trace, ","); got != "fsync,dirsync" {
+		t.Fatalf("post-effect heartbeat durability trace = %q, want fsync,dirsync", got)
+	}
+
+	*trace = nil
+	if err := loopDone(cfg, "daily-brief", rec.RunID, true, "", loopNow.Add(3*time.Minute), &out); err != nil {
+		t.Fatalf("post-effect done: %v", err)
+	}
+	if got := strings.Join(*trace, ","); got != "fsync,dirsync" {
+		t.Fatalf("post-effect done durability trace = %q, want fsync,dirsync", got)
+	}
+}
+
+func TestLoopEffectIntentDurabilityFailurePreventsFunction(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	origSync, origClock := markerSyncFn, loopClock
+	markerSyncFn = func(*os.File) error { return errors.New("fsync unavailable") }
+	loopClock = func() time.Time { return loopNow.Add(time.Minute) }
+	t.Cleanup(func() {
+		markerSyncFn = origSync
+		loopClock = origClock
+	})
+
+	effects := 0
+	err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error {
+		effects++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "persist pre-effect loop intent") {
+		t.Fatalf("intent durability failure = %v, want pre-effect refusal", err)
+	}
+	if effects != 0 {
+		t.Fatalf("effect ran %d times despite failed durable intent", effects)
+	}
+	got, _ := loadRunRecord(cfg, "daily-brief")
+	if got.EffectStartedAt != "" || got.EffectCommittedAt != "" {
+		t.Fatalf("failed durable intent changed authoritative record: %+v", got)
+	}
+}
+
+func TestLoopEffectRefusesCrossPeriodAdvance(t *testing.T) {
+	cfg := loopTestCfg(t)
+	beforeMidnight := time.Date(2026, 6, 24, 23, 59, 59, 0, time.UTC)
+	afterMidnight := beforeMidnight.Add(2 * time.Second)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, beforeMidnight, &out); err != nil {
+		t.Fatalf("begin before boundary: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	effects := 0
+	err := withLoopRunEffectAt(cfg, "daily-brief", rec.RunID, afterMidnight, func() error {
+		effects++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing cross-period advance") {
+		t.Fatalf("cross-period effect = %v, want refusal", err)
+	}
+	if effects != 0 {
+		t.Fatalf("cross-period effect ran %d times", effects)
+	}
+	after, _ := loadRunRecord(cfg, "daily-brief")
+	if after.EffectStartedAt != "" || after.EffectCommittedAt != "" {
+		t.Fatalf("cross-period refusal wrote effect intent: %+v", after)
+	}
+}
+
+// TestLoopEffectKillHelper is subprocess-only. It durably enters the effect,
+// writes one observable side effect, and then pauses at the post-effect /
+// pre-commit boundary until the parent kills it.
+func TestLoopEffectKillHelper(t *testing.T) {
+	if os.Getenv("MORA_TEST_LOOP_EFFECT_HELPER") != "1" {
+		return
+	}
+	cfg := Config{StateDir: os.Getenv("MORA_TEST_LOOP_EFFECT_STATE")}
+	runID := os.Getenv("MORA_TEST_LOOP_EFFECT_RUN")
+	ready := os.Getenv("MORA_TEST_LOOP_EFFECT_READY")
+	sideEffect := os.Getenv("MORA_TEST_LOOP_EFFECT_SENTINEL")
+	testHookLoopEffectAfterRun = func() error {
+		if err := os.WriteFile(ready, []byte("ready\n"), 0o600); err != nil {
+			return err
+		}
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+	if err := withLoopRunEffect(cfg, "daily-brief", runID, func() error {
+		return os.WriteFile(sideEffect, []byte("effect\n"), 0o600)
+	}); err != nil {
+		t.Fatalf("helper effect: %v", err)
+	}
+}
+
+func TestLoopEffectProcessKillCannotReplaySamePeriod(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{StateDir: filepath.Join(root, "state")}
+	now := time.Now().UTC().Truncate(time.Second)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, now, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	ready := filepath.Join(root, "ready")
+	sentinel := filepath.Join(root, "effect")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLoopEffectKillHelper$")
+	cmd.Env = append(os.Environ(),
+		"MORA_TEST_LOOP_EFFECT_HELPER=1",
+		"MORA_TEST_LOOP_EFFECT_STATE="+cfg.StateDir,
+		"MORA_TEST_LOOP_EFFECT_RUN="+rec.RunID,
+		"MORA_TEST_LOOP_EFFECT_READY="+ready,
+		"MORA_TEST_LOOP_EFFECT_SENTINEL="+sentinel,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start loop-effect helper: %v", err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			killed = true
+			t.Fatal("loop-effect helper did not reach post-effect boundary")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill loop-effect helper: %v", err)
+	}
+	_ = cmd.Wait()
+	killed = true
+
+	uncertain, _ := loadRunRecord(cfg, "daily-brief")
+	startedAt, err := time.Parse(time.RFC3339, uncertain.EffectStartedAt)
+	if err != nil || uncertain.EffectCommittedAt != "" {
+		t.Fatalf("killed effect record = %+v, started parse err=%v", uncertain, err)
+	}
+	out.Reset()
+	err = loopBegin(cfg, "daily-brief", true, startedAt.Add(loopLockTTL+time.Minute), &out)
+	if err == nil || !strings.Contains(err.Error(), "outcome is uncertain") {
+		t.Fatalf("post-kill same-period begin = %v, want uncertainty refusal", err)
+	}
+	after, _ := loadRunRecord(cfg, "daily-brief")
+	if after.RunID != rec.RunID || after.Attempt != 1 {
+		t.Fatalf("post-kill begin replaced run: before=%+v after=%+v", rec, after)
+	}
+	body, err := os.ReadFile(sentinel)
+	if err != nil || string(body) != "effect\n" {
+		t.Fatalf("side effect sentinel = %q, %v; want exactly one effect", body, err)
+	}
+	out.Reset()
+	nextPeriod := startedAt.Add(24 * time.Hour)
+	if err := loopBegin(cfg, "daily-brief", true, nextPeriod, &out); err != nil {
+		t.Fatalf("next-period begin remained blocked by prior uncertainty: %v", err)
+	}
+	next, _ := loadRunRecord(cfg, "daily-brief")
+	if next.Period == uncertain.Period || next.RunID == uncertain.RunID {
+		t.Fatalf("next-period begin did not open a fresh period: old=%+v new=%+v", uncertain, next)
+	}
+}
+
+func TestLoopBeginStartedOnlyAlwaysBlocksSamePeriod(t *testing.T) {
+	for _, status := range []loopRunStatus{loopRunRunning, loopRunFailed, loopRunSucceeded} {
+		t.Run(string(status), func(t *testing.T) {
+			cfg := loopTestCfg(t)
+			rec := loopRunRecord{
+				LoopID: "daily-brief", RunID: "run_uncertain", Period: periodFor("daily", loopNow),
+				Status: status, Attempt: 1, StartedAt: loopNow.Format(time.RFC3339),
+				HeartbeatAt: loopNow.Format(time.RFC3339), EffectStartedAt: loopNow.Format(time.RFC3339),
+			}
+			if err := saveRunRecord(cfg, rec, loopNow); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			err := loopBegin(cfg, "daily-brief", true, loopNow.Add(time.Minute), &out)
+			if err == nil || !strings.Contains(err.Error(), "outcome is uncertain") {
+				t.Fatalf("begin over %s started-only record = %v, want uncertainty", status, err)
+			}
+		})
+	}
+}
+
+func TestLoopDoneOKRejectsUncommittedStartedEffect(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	rec.EffectStartedAt = loopNow.Add(time.Minute).Format(time.RFC3339)
+	if err := saveRunRecord(cfg, rec, loopNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	err := loopDone(cfg, "daily-brief", rec.RunID, true, "", loopNow.Add(2*time.Minute), &out)
+	if err == nil || !strings.Contains(err.Error(), "uncertain non-idempotent effect") {
+		t.Fatalf("done --ok over started-only effect = %v, want refusal", err)
 	}
 }
 
