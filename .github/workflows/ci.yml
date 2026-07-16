@@ -61,9 +61,11 @@ jobs:
       - name: go test (race + cover)
         # The race detector needs CGO. Enable it ONLY for the test run —
         # every build/release step stays CGO_ENABLED=0 (the product's thesis).
+        # Explicit 20m timeout: Gate 2 multi-process storm tests can otherwise
+        # push the default 10m package limit on a loaded runner (landmine 7).
         env:
           CGO_ENABLED: "1"
-        run: go test -race -count=1 -covermode=atomic ./...
+        run: go test -race -count=1 -timeout=20m -covermode=atomic ./...
 
   # Windows portability gate (#56 Phase 2 exit criterion): the FULL `go test ./...`
   # now runs on a real windows-latest runner, not just build+vet. The Phase 2
@@ -92,7 +94,7 @@ jobs:
       - name: go test
         env:
           CGO_ENABLED: "0"
-        run: go test -count=1 ./...
+        run: go test -count=1 -timeout=20m ./...
 
   lint:
     runs-on: ubuntu-latest

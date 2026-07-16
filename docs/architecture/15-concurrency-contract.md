@@ -257,6 +257,18 @@ contended writer/reader waits out the short window instead of erroring, and
 spurious rebuild. `humanizeIndexBusy` gives an actionable message only if a caller
 genuinely outlasts 15 s. Guarded by `TestIndexIsWAL` / `TestIndexUpsertKeepsWAL`.
 
+**Multi-process proof (Gate 2 / HEALTH-06).** The goroutine-only storms in
+`concurrency_contract_test.go` / `index_busy_test.go` / `index_wal_test.go` are
+necessary but not sufficient — #108's own lesson was *"test separate PROCESSES."*
+`TestNoUserVisibleSQLITEBUSY` (`concurrency_multiproc_test.go`) re-execs the test
+binary as 4 writers + 4 readers (CLI `search` + MCP `search_memory`) + 1 rebuild +
+1 filesystem sync against one shared HOME and asserts: zero raw or humanized
+`SQLITE_BUSY` in any process output; the index is never observed empty while clean;
+and for every parseable write, at every observation the memory is in the index **or**
+the index is dirty — never "clean and missing." Personal `index.db` only; share
+DSNs are Packet H / PR 5. Cost of mark-dirty: `BenchmarkIndexUpsertWithMarking1k`
+beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
+
 > modernc caveat (now load-bearing, not just intent): with `modernc.org/sqlite`,
 > `mode=ro` on a non-`file:` DSN is parsed but **not enforced** — connections open
 > read-write. That is *why* a "read-only" open can still create the `-wal`/`-shm`
@@ -280,8 +292,12 @@ genuinely outlasts 15 s. Guarded by `TestIndexIsWAL` / `TestIndexUpsertKeepsWAL`
 
 ## Verification
 
-- `internal/mora/concurrency_contract_test.go` — the integration storm: N
-  writers through the real `cmdWrite` and MCP `write_memory` paths, concurrent
+- `internal/mora/concurrency_multiproc_test.go` — **HEALTH-06** multi-*process*
+  storm (`TestNoUserVisibleSQLITEBUSY`): re-exec'd writers/readers/rebuild/sync
+  against one HOME; zeros raw and humanized `SQLITE_BUSY`; never "clean and
+  missing."
+- `internal/mora/concurrency_contract_test.go` — the in-process integration storm:
+  N writers through the real `cmdWrite` and MCP `write_memory` paths, concurrent
   `search`/`read` readers, and concurrent full `rebuildIndex`, asserting G1–G4
   (every memory in vault AND index after reconciliation, zero surfaced
   `database is locked`, zero torn files via `parseMemory`). The heavy variant is
@@ -289,10 +305,12 @@ genuinely outlasts 15 s. Guarded by `TestIndexIsWAL` / `TestIndexUpsertKeepsWAL`
   Run it under `-race`.
 - Unit pins: `createexclusive_test.go` (G1/G2), `index_upsert_test.go` (G3/G4
   write path), `index_busy_test.go` (G3 read path), `mora_rebuild_atomic_test.go`
-  (G4 serialized rebuild), `sources_lock_test.go` (§5 lease).
+  (G4 serialized rebuild), `sources_lock_test.go` (§5 lease) +
+  `TestSourcesRMWNoLostUpdateAcrossProcesses` (cross-process sources.json RMW).
 
 See also: [data model & storage](./01-data-model-and-storage.md) (memory file
 anatomy, `atomicWrite`, the vault-identity guard), [MCP server](./06-mcp-server.md)
-(the write_memory/read/search tool surface), and [sync &
+(the write_memory/read/search tool surface), [index health](./20-index-health.md)
+(Gate 2 pending-ops ledger), and [sync &
 freshness](./11-sync-and-freshness.md) (honest-snapshot sync, the scheduled
 jobs).

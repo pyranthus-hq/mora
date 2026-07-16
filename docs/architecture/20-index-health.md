@@ -109,6 +109,29 @@ Identity is **argv-derived** at each chokepoint (`pulse --advance` ⇒ pulse-dai
 - [concurrency-contract](./15-concurrency-contract.md) — `_txlock=immediate`, the writer-lock discipline the file-based ledger avoids contending on.
 - [meeting-brief-assembly](./19-meeting-brief-assembly.md) — the most index-dependent surface; where its banner now carries the index arm.
 
+## Upgrade + permission loss (HEALTH-08)
+
+A binary swap must leave every durable artifact parseable — `config.toml`, the vault,
+`index.db` (+ WAL sidecars), `sources.json`, per-source status files, the governance
+ledger, the usage db, the vault marker, brief snapshot, loops state, OAuth tokens,
+installed plists. `indexSchemaVersion` is a package **var** (same seam pattern as
+`indexAutoHeal`) so a schema bump can be simulated in-process: a stale index either
+auto-heals via rebuild or `openIndexRO` refuses loudly — in both branches
+`indexHealthOf` is non-`fresh` until a rebuild commits. Guarded by
+`TestUpgradePreservesState`.
+
+Full Disk Access loss on iMessage must fail **loud** and never advance
+`LastSuccessAt`. `ingestIMessage` is gated through the injectable `runtimeGOOS`
+seam and `newIMessageFetcher` (so Linux/Windows CI can drive the denial path —
+macOS is not in CI). A denied open stamps failure via `stampSyncAttemptFailure`; a
+legitimate zero-row sync still stamps success. Guarded by
+`TestFDALossNeverStampsSuccess`.
+
+**Signing clause quarantine.** Mora ships unsigned/unnotarized (`install.sh`
+ad-hoc-signs at install time), so "preserve macOS permission identity across a
+signed swap" is unmeetable today. Tracked as a dated HOLE in
+`mutation-matrix-gate2.md` until a signing issue closes it.
+
 ## Open questions / unverified
 
 - **Projection-lag threshold** (`indexProjectionLagThreshold`, 6h) is a judgment call: long enough that a fresh write does not immediately redden the product, short enough that a genuinely-owed rebuild surfaces within a few missed hourly cycles. Not tuned against live telemetry.

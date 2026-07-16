@@ -58,6 +58,32 @@ func BenchmarkIndexUpsert1k(b *testing.B) {
 	}
 }
 
+// BenchmarkIndexUpsertWithMarking1k measures the Gate 2 hot path cost: one
+// markIndexDirty (the second tiny immediate-tx / fsync per write) plus the
+// incremental upsert. Packet F's flip-condition: if this exceeds 2×
+// BenchmarkIndexUpsert1k, revisit mark-before-visible placement.
+func BenchmarkIndexUpsertWithMarking1k(b *testing.B) {
+	cfg := benchSeedIndexedVault(b, 1000)
+	ctx := context.Background()
+	m := coreBIdxmem("mem_bench_00000", "global", "insight", "Bench 00000",
+		"updated body referencing [[Topic 0]] and [[Shared Topic]]")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		op, err := markIndexDirty(ctx, cfg, pendingOp{
+			Kind:     opKindWrite,
+			Path:     memoryPath(cfg, m),
+			MemoryID: m.ID,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := indexUpsert(ctx, cfg, m); err != nil {
+			b.Fatal(err)
+		}
+		_ = unmarkIndexDirty(cfg, op.OpID)
+	}
+}
+
 // BenchmarkRebuildIndex1k measures the cost of the OLD write path: a full
 // DELETE-then-reinsert rebuild of the whole ~1k-memory vault (memories + FTS + entity
 // graph + vectors) — the work every `mora write` used to trigger. Compare against
