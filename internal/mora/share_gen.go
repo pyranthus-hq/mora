@@ -216,6 +216,17 @@ func fileDigestOf(path string) (string, error) {
 // commit and the previous generation keeps serving.
 var rebuildShareIndexFn = buildShareGenIndex
 
+type shareIndexBudgetContextKey struct{}
+
+func withShareIndexBudget(ctx context.Context, maxBytes int64) context.Context {
+	return context.WithValue(ctx, shareIndexBudgetContextKey{}, maxBytes)
+}
+
+func shareIndexBudget(ctx context.Context) (int64, bool) {
+	maxBytes, ok := ctx.Value(shareIndexBudgetContextKey{}).(int64)
+	return maxBytes, ok && maxBytes >= 0
+}
+
 // buildShareGenIndex materializes one generation's immutable index.db in WAL
 // mode, checkpoints (TRUNCATE) so no -wal/-shm sidecar holds uncommitted rows,
 // closes, and fsyncs the file — the build-before-publish durability the commit
@@ -224,6 +235,38 @@ func buildShareGenIndex(ctx context.Context, indexPath string, mems []Memory) er
 	db, err := sql.Open("sqlite", indexPath+"?_txlock=immediate&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return err
+	}
+	if maxBytes, bounded := shareIndexBudget(ctx); bounded {
+		var pageSize, currentMax int64
+		if err := db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if err := db.QueryRowContext(ctx, `PRAGMA max_page_count`).Scan(&currentMax); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if pageSize <= 0 {
+			_ = db.Close()
+			return errors.New("share index: SQLite reported an invalid page size")
+		}
+		maxPages := maxBytes / pageSize
+		if maxPages <= 0 {
+			_ = db.Close()
+			return fmt.Errorf("share index needs at least one %d-byte SQLite page; only %d storage bytes remain", pageSize, maxBytes)
+		}
+		if maxPages < currentMax {
+			var applied int64
+			q := fmt.Sprintf(`PRAGMA max_page_count = %d`, maxPages)
+			if err := db.QueryRowContext(ctx, q).Scan(&applied); err != nil {
+				_ = db.Close()
+				return err
+			}
+			if applied > maxPages {
+				_ = db.Close()
+				return fmt.Errorf("share index already needs %d SQLite pages; storage budget permits %d", applied, maxPages)
+			}
+		}
 	}
 	if err := func() error {
 		tx, terr := db.BeginTx(ctx, nil)
@@ -298,9 +341,15 @@ var testHookPostFirstGenCorpusWrite func()
 // Nil in production.
 var testHookPreCommitClaim func()
 
+// shareCommitSyncDirFn is the durability barrier for the winning commit link.
+// Tests wrap it to prove that attempt.json cannot transition to succeeded until
+// the commits directory entry is durable. Production always uses syncDir; the
+// row-51d mutation is deleting the call at the publish site, not replacing this
+// seam.
+var shareCommitSyncDirFn = syncDir
+
 // shareAdmitFn is an optional per-write byte admitter: it rejects a corpus write
-// that would push the whole-product footprint over the configured limit. nil ⇒
-// no admission (heal re-cut, tests).
+// that would push the whole-product footprint over the configured limit.
 type shareAdmitFn func(nextBytes int64) error
 
 // buildShareGenerationFromEntries writes a new immutable generation (durable
@@ -308,10 +357,18 @@ type shareAdmitFn func(nextBytes int64) error
 // validated entry set and returns the frozen digests. It never touches a
 // published generation; nothing observes the generation until the commit link.
 func buildShareGenerationFromEntries(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry) (corpusDigest, indexDigest string, err error) {
-	return buildShareGenerationAdmitted(ctx, cfg, name, gen, entries, nil)
+	storage, err := newShareStorageAdmission(cfg, name)
+	if err != nil {
+		return "", "", err
+	}
+	return buildShareGenerationBounded(ctx, cfg, name, gen, entries, storage.checkAdditional, storage)
 }
 
 func buildShareGenerationAdmitted(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry, admit shareAdmitFn) (corpusDigest, indexDigest string, err error) {
+	return buildShareGenerationBounded(ctx, cfg, name, gen, entries, admit, nil)
+}
+
+func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry, admit shareAdmitFn, storage *shareStorageAdmission) (corpusDigest, indexDigest string, err error) {
 	corpusDir := shareGenCorpusDir(cfg, name, gen)
 	if err := os.MkdirAll(corpusDir, 0o700); err != nil {
 		return "", "", err
@@ -336,8 +393,25 @@ func buildShareGenerationAdmitted(ctx context.Context, cfg Config, name, gen str
 		}
 	}
 	indexPath := shareGenIndexPath(cfg, name, gen)
-	if err := rebuildShareIndexFn(ctx, indexPath, mems); err != nil {
+	indexCtx := ctx
+	if storage != nil {
+		remaining, rerr := storage.remaining()
+		if rerr != nil {
+			return "", "", rerr
+		}
+		indexCtx = withShareIndexBudget(ctx, remaining)
+	}
+	if err := rebuildShareIndexFn(indexCtx, indexPath, mems); err != nil {
 		return "", "", err
+	}
+	// SQLite is closed/checkpointed at this point. Re-count its actual bytes (and
+	// every other configured root) before any commit link can make the generation
+	// visible. The PRAGMA cap bounds normal growth; this final check also catches
+	// WAL/temp overhead and an injected or filesystem-level overshoot.
+	if storage != nil {
+		if aerr := storage.checkCurrent(); aerr != nil {
+			return "", "", aerr
+		}
 	}
 	if indexDigest, err = fileDigestOf(indexPath); err != nil {
 		return "", "", err
@@ -452,8 +526,15 @@ func publishShareGeneration(cfg Config, p shareCommitParams) (int, error) {
 			return 0, errRollback
 		}
 		nextFloor := priorFloor
-		if p.parentFloor >= 0 && p.parentFloor > nextFloor {
-			// Heal/repair inherits the parent head's floor explicitly (never zero).
+		if p.parentFloor >= 0 {
+			// A repair must name the exact floor of the published parent it read.
+			// Do not silently recover a missing/zeroed call-site value from older
+			// records: that would make heal's inheritance contract redundant and a
+			// later GC could erase the only durable replay floor. Fail closed if the
+			// caller tries to publish below any floor already on record.
+			if p.parentFloor < priorFloor {
+				return 0, fmt.Errorf("share %q: repair floor %d is below committed floor %d", p.name, p.parentFloor, priorFloor)
+			}
 			nextFloor = p.parentFloor
 		}
 		if p.isBucket && p.fetched > nextFloor {
@@ -476,7 +557,7 @@ func publishShareGeneration(cfg Config, p shareCommitParams) (int, error) {
 		claimErr := claimExclusiveDurable(temp, shareCommitPath(cfg, p.name, seq))
 		if claimErr == nil {
 			_ = os.Remove(temp)
-			if err := syncDir(commitsDir); err != nil {
+			if err := shareCommitSyncDirFn(commitsDir); err != nil {
 				return 0, err
 			}
 			return seq, nil // WON

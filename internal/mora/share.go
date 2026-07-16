@@ -1167,12 +1167,23 @@ func readSharedMemoryFromGen(corpusDir, id, committedDigest string) (Memory, boo
 	if !found {
 		return Memory{}, false, nil
 	}
+	// Test-only TOCTOU seam: production keeps serving targetBytes retained above.
+	// A verify-then-re-read mutation would observe any replacement made here and
+	// is therefore caught by TestReadServesTheBytesItHashed.
+	if testHookSharedReadAfterHash != nil {
+		testHookSharedReadAfterHash(filepath.Join(corpusDir, id+".md"))
+	}
 	m, perr := parseMemoryBytes(filepath.Join(corpusDir, id+".md"), targetBytes)
 	if perr != nil || m.ID != id {
 		return Memory{}, false, nil
 	}
 	return m, true, nil
 }
+
+// testHookSharedReadAfterHash is nil in production. Tests use it to replace the
+// target file after its bytes have been hashed but before parsing, proving that
+// the read path serves the exact retained bytes rather than re-reading a path.
+var testHookSharedReadAfterHash func(path string)
 
 // ---------- query-time union ----------
 

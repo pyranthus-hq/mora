@@ -111,8 +111,8 @@ func TestStaleCompleterCannotMaskSuccessorAttempt(t *testing.T) {
 	if err == nil {
 		t.Fatal("stale completer A succeeded in writing over B")
 	}
-	got, ok := loadShareAttempt(cfg, name)
-	if !ok || got.RunID != "runB" || got.State != "active" {
+	got, ok, loadErr := loadShareAttempt(cfg, name)
+	if loadErr != nil || !ok || got.RunID != "runB" || got.State != "active" {
 		t.Fatalf("successor B's active record was masked: %+v", got)
 	}
 }

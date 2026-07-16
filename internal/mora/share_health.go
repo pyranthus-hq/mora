@@ -59,21 +59,28 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 	// The durable attempt record: a terminal-failed or active-but-abandoned latest
 	// attempt is failed; a currently-owned active attempt is stale ("refresh in
 	// progress"); `fresh` requires a matching durable succeeded record.
-	attempt, haveAttempt := loadShareAttempt(cfg, name)
+	attempt, haveAttempt, attemptErr := loadShareAttempt(cfg, name)
+	if attemptErr != nil {
+		return shareHealth{Name: name, State: healthFailed, LastError: attemptErr.Error(), BuiltAt: commit.BuiltAt}
+	}
+	if !haveAttempt {
+		// A generation-format commit proves this subscription has crossed the
+		// migration boundary. From then on an absent attempt record is unknown
+		// latest-attempt state, never a reason to infer stale/fresh from built_at.
+		return shareHealth{Name: name, State: healthFailed, LastError: "attempt record missing after migration — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
+	}
 	freshOK := false
-	if haveAttempt {
-		switch attempt.State {
-		case "failed":
-			return shareHealth{Name: name, State: healthFailed, LastError: attempt.LastError, BuiltAt: commit.BuiltAt}
-		case "active":
-			if liveImportOwner(cfg, name, now) == attempt.RunID {
-				return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
-			}
-			// Active but abandoned/interrupted (its lease is gone/expired).
-			return shareHealth{Name: name, State: healthFailed, LastError: "import interrupted — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
-		case "succeeded":
-			freshOK = attempt.Seq == commit.Seq && attempt.RunID == commit.RunID
+	switch attempt.State {
+	case "failed":
+		return shareHealth{Name: name, State: healthFailed, LastError: attempt.LastError, BuiltAt: commit.BuiltAt}
+	case "active":
+		if liveImportOwner(cfg, name, now) == attempt.RunID {
+			return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
 		}
+		// Active but abandoned/interrupted (its lease is gone/expired).
+		return shareHealth{Name: name, State: healthFailed, LastError: "import interrupted — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
+	case "succeeded":
+		freshOK = attempt.Seq == commit.Seq && attempt.RunID == commit.RunID
 	}
 
 	// Staleness of the committed head's built_at.

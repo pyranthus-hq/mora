@@ -10,6 +10,7 @@ package mora
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -177,6 +178,9 @@ func shareBuildAndPublish(ctx context.Context, cfg Config, name string, mode sha
 	if serr := shareGCSweep(cfg, name, time.Now()); serr != nil {
 		return serr
 	}
+	if rerr := recoverShareAttemptClaims(cfg, name); rerr != nil {
+		return rerr
+	}
 
 	if mode == buildModeImport {
 		if serr := startShareAttempt(cfg, name, runID, time.Now()); serr != nil {
@@ -185,14 +189,18 @@ func shareBuildAndPublish(ctx context.Context, cfg Config, name string, mode sha
 	}
 	seq, ferr := fn(runID)
 	if mode == buildModeImport {
+		var terminalErr error
 		if ferr != nil {
-			_ = finishShareAttempt(cfg, name, runID, shareAttempt{
+			terminalErr = finishShareAttempt(cfg, name, runID, shareAttempt{
 				RunID: runID, State: "failed", LastError: sanitizeHealthError(ferr.Error()),
 			})
 		} else {
-			_ = finishShareAttempt(cfg, name, runID, shareAttempt{
+			terminalErr = finishShareAttempt(cfg, name, runID, shareAttempt{
 				RunID: runID, State: "succeeded", Seq: seq,
 			})
+		}
+		if terminalErr != nil {
+			return errors.Join(ferr, fmt.Errorf("share %q: durable attempt transition failed: %w", name, terminalErr))
 		}
 	}
 	return ferr
