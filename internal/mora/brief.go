@@ -135,9 +135,10 @@ func loadBriefSnapshot(cfg Config, key string) briefSnapshot {
 //     seconds), so the same logical snapshot + the same injected now produce a
 //     byte-identical file.
 //
-// Written 0600 via atomicWrite (MkdirAll 0700 + tmp + rename) because the file
-// stores sensitive stableIDs at rest (T-12-06). The trailing newline mirrors
-// memory.SaveStatus.
+// Written 0600 via atomicWriteDurable (MkdirAll 0700 + synced temp + rename +
+// parent-directory sync) because the file stores sensitive stableIDs at rest
+// (T-12-06) and a loop commit checkpoint may only follow durable watermarks. The
+// trailing newline mirrors memory.SaveStatus.
 func saveBriefSnapshot(cfg Config, snap briefSnapshot, now time.Time) error {
 	out := briefSnapshot{
 		Key:               snap.Key,
@@ -152,7 +153,7 @@ func saveBriefSnapshot(cfg Config, snap briefSnapshot, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(briefPath(cfg, snap.Key), append(body, '\n'), 0o600)
+	return atomicWriteDurable(briefPath(cfg, snap.Key), append(body, '\n'), 0o600)
 }
 
 // classify is the PURE delta engine: it takes a loaded snapshot, the parsed
@@ -235,28 +236,29 @@ func classify(snap briefSnapshot, mems []Memory, now time.Time) briefDelta {
 	return d
 }
 
-// acquireBriefLock takes an exclusive O_EXCL lockfile at <StateDir>/brief/.lock so
-// the --advance commit's read-modify-write (load -> classify -> write) cannot
-// interleave with a concurrent commit (T-12-07): a hand-run --advance racing the
-// cron fire no-ops/blocks rather than corrupting the snapshot. The default path
-// is FAIL-FAST: a second acquire while the first holds returns an error (the
-// caller no-ops). It returns a release func that removes the lockfile.
-//
-// Stale-lock failure mode (documented, accepted per the spec's "stale-lock
-// handling is acceptable"): a hard crash/SIGKILL before release leaks the
-// lockfile, after which the next commit errors until it is removed. The default
-// path's non-interleave guarantee is what matters here; Plan 04 owns the wiring
-// and may layer stale-lock reaping on top.
+// acquireBriefLock takes a fail-fast OS lock on the persistent guard selected for
+// <StateDir>/brief/.lock, so the --advance read-modify-write (load -> classify ->
+// write) cannot interleave with another commit (T-12-07). A hand-run --advance
+// racing the scheduled job fails instead of corrupting the snapshot. The guard
+// file is persistent but ownership is only the kernel lock on this open handle,
+// so SIGKILL/power-loss releases it automatically and cannot strand the brief
+// subsystem behind an O_EXCL file.
 func acquireBriefLock(cfg Config) (release func(), err error) {
 	dir := filepath.Join(cfg.StateDir, "brief")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	lockPath := filepath.Join(dir, ".lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		// EEXIST (another holder) or any other error: do NOT interleave.
+	guardPath := leaseGuardPath(lockPath)
+	if err := os.MkdirAll(filepath.Dir(guardPath), 0o700); err != nil {
 		return nil, err
+	}
+	f, err := os.OpenFile(guardPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := tryLockLeaseGuard(f); err != nil {
+		return nil, errors.Join(err, f.Close())
 	}
 	released := false
 	return func() {
@@ -264,8 +266,8 @@ func acquireBriefLock(cfg Config) (release func(), err error) {
 			return
 		}
 		released = true
+		_ = unlockLeaseGuard(f)
 		_ = f.Close()
-		_ = os.Remove(lockPath)
 	}, nil
 }
 

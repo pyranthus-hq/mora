@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -28,10 +29,10 @@ import (
 //     atomicWrite (temp+rename), NEVER in index.db — the DB is a gitignored,
 //     rebuilt-from-scratch cache (dbPath, mora.go), so a run table there would be
 //     silently wiped on `index rebuild`.
-//   - Self-heal, never fatal. Any read/unmarshal/version/identity problem on a
-//     run record reads as ABSENT (cold-start-equivalent), exactly like
-//     loadBriefSnapshot — a corrupt journal never blanks the loop, it just
-//     re-runs the period (which the idempotency gate makes safe).
+//   - Tolerant reads, fail-closed mutation. Read/status helpers map an invalid
+//     run record to absent, but `loop begin` distinguishes a missing path from an
+//     existing corrupt/unreadable/future-schema record and refuses to overwrite
+//     it. Losing idempotency evidence must never silently reopen an effect.
 //   - Injected now. Every date/TTL decision flows from an injected now (never a
 //     fresh time.Now() inside a helper) so tests are deterministic and the UTC
 //     scheme matches saveBriefSnapshot/briefArtifactPath.
@@ -42,19 +43,18 @@ import (
 //
 // CONCURRENCY & DURABILITY BOUNDS (the deliberate scope of this tier):
 // This is a SINGLE-HOST, SINGLE-USER local lease, not a distributed lock.
-// Mutual exclusion is EXACT for a fresh lease: a concurrent begin within the TTL
-// gets errLoopLockHeld and no-ops (the os.Link publish is atomic; the run record
-// is re-checked under the lease). Crash recovery is the TTL: an abandoned lease
-// is reclaimed once acquired_at exceeds loopLockTTL. Run-id ownership on BOTH the
-// record (the supersede guard) and the lock (lockOwner / breakLock's atomic
-// claim) prevents one run from stealing another's lease.
-// The residual: begin's gate, done's commit, and the lease are separate files
-// mutated across separate short-lived processes without a held critical section,
-// so a micro-window TOCTOU remains — but it can only open when a run's lease has
-// ALREADY EXPIRED (>TTL), i.e. a process stalled >15m then resumes to commit
-// while a fresh run starts. That does not occur for an interactive agent loop
-// (a turn is seconds), and the harm is bounded: never lock theft (run-id guards),
-// at worst a redundant IDEMPOTENT run or a stale record the next begin reconciles.
+// Mutual exclusion is exact for a fresh lease: a concurrent begin within the TTL
+// gets errLoopLockHeld and no-ops. Crash recovery is the TTL: an abandoned lease
+// is reclaimed once acquired_at exceeds loopLockTTL. Every publish/reap/release/
+// heartbeat transition is serialized by a persistent OS-backed guard, and both
+// heartbeat and done validate the run record + lock owner under that same guard.
+// Long advancing work refreshes the lease every TTL/3 and owner-fences again
+// immediately before the non-idempotent commit. A process already reaped or
+// superseded therefore cannot revive its lease, advance, or close a newer run.
+// The record, lease, journal, and brief watermark remain separate local files,
+// not one ACID/distributed transaction; the OS guard is the exact single-host
+// exclusion boundary around the commit, and the active heartbeat covers work
+// before that boundary that legitimately runs longer than one TTL.
 // A money-touching or multi-host loop must GRADUATE to a real durable-execution
 // runtime (Temporal) for exactly-once across hosts — this file lease is the local
 // tier and is intentionally not a substitute for it.
@@ -67,14 +67,10 @@ const (
 	// loopLockTTL is the hard ceiling on a leaked lock's lifetime: a SIGKILL'd
 	// run leaves its .lock behind, and the next begin force-reaps it once
 	// acquired_at is older than this — regardless of pid liveness — which bounds
-	// the pid-reuse hazard to <=TTL (see reapStaleLock). loopLockMaxRunHint is the
-	// budget a single period MUST finish under; with no heartbeat refresh, a run
-	// exceeding TTL would be (wrongly) reaped, so the daily-brief period (seconds)
-	// stays far under it. If a future loop's period can exceed TTL, add a lock
-	// heartbeat before relaxing the TTL-OR-dead rule.
+	// the pid-reuse hazard to <=TTL (see reapStaleLock). Active advancing work
+	// refreshes both the lease and latest.json every loopLockTTL/3, and fences the
+	// non-idempotent commit with one final owner heartbeat immediately beforehand.
 	loopLockTTL        = 15 * time.Minute
-	loopLockMaxRunHint = 10 * time.Minute
-	loopAcquireBudget  = 3 * time.Second
 	loopAcquireBackoff = 100 * time.Millisecond
 
 	// loopSkipExitCode is the process exit code `loop begin` returns when the
@@ -89,6 +85,11 @@ const (
 // owns the lease — the caller no-ops and re-runs next period (the idempotency
 // gate makes the skip safe).
 var errLoopLockHeld = errors.New("loop lock held by a live run")
+
+// loopClock is the real liveness clock for begin/done/heartbeat and the
+// scheduled wrapper. It is a seam only so end-to-end scheduler tests can pin a
+// logical day without sleeping or depending on the host date.
+var loopClock = time.Now
 
 // exitCodeError carries a specific process exit code up to main(), which honors
 // any error implementing ExitCode() (see cmd/mora/main.go). The skip path emits
@@ -146,6 +147,16 @@ type loopRunRecord struct {
 	UpdatedAt   string `json:"updated_at"`
 	FinishedAt  string `json:"finished_at,omitempty"`
 	HeartbeatAt string `json:"heartbeat_at,omitempty"`
+	// EffectStartedAt is the durable fail-closed intent written before entering a
+	// non-idempotent effect. If it exists without EffectCommittedAt, the outcome is
+	// uncertain (the process may have died or partially committed) and automatic
+	// same-period retry is forbidden.
+	EffectStartedAt string `json:"effect_started_at,omitempty"`
+	// EffectCommittedAt is the durable at-most-once fence for a completed
+	// non-idempotent effect. It may be present while Status is still running or
+	// failed (for example, the process committed a brief and then crashed before
+	// presentation/done). Same-period begin must skip whenever it is present.
+	EffectCommittedAt string `json:"effect_committed_at,omitempty"`
 
 	IdempotencyKey string `json:"idempotency_key"`        // stable per (loop_id+period)
 	CursorToken    string `json:"cursor_token,omitempty"` // committed resume point; carried across attempts
@@ -183,7 +194,7 @@ func (r loopRegistration) scheduleJob() string {
 // registry — generic, no brief coupling.
 type loopHealth struct {
 	LoopID    string `json:"loop_id"`
-	State     string `json:"state"` // never-run | running | stale | failed | ok
+	State     string `json:"state"` // never-run | running | uncertain | stale | failed | ok
 	Scheduled bool   `json:"scheduled"`
 	Period    string `json:"period,omitempty"`
 	Attempt   int    `json:"attempt,omitempty"`
@@ -240,8 +251,8 @@ func newRunID(now time.Time) string {
 // loadRunRecord reads <id>/latest.json. ANY problem — missing, read error,
 // corrupt JSON, schema-version mismatch, a body whose loop_id disagrees with the
 // directory, or an unknown status — reads as (zero, false): cold-start-
-// equivalent, never a fatal that would blank the loop. The corrupt file is left
-// on disk untouched (a future save overwrites it atomically).
+// equivalent for tolerant read/status callers. The invalid file is left intact
+// for diagnosis; loadRunRecordForBegin adds the fail-closed mutation boundary.
 func loadRunRecord(cfg Config, loopID string) (loopRunRecord, bool) {
 	b, err := os.ReadFile(loopLatestPath(cfg, loopID))
 	if err != nil {
@@ -263,6 +274,24 @@ func loadRunRecord(cfg Config, loopID string) (loopRunRecord, bool) {
 	return rec, true
 }
 
+// loadRunRecordForBegin distinguishes a genuinely absent record from one that
+// exists but cannot be trusted. Read/status callers retain the historical
+// self-heal-to-absent behavior, but the non-idempotent begin gate must fail
+// closed: overwriting corrupt, unreadable, or future-schema evidence could turn
+// a previously committed same-period effect into a second advance.
+func loadRunRecordForBegin(cfg Config, loopID string) (loopRunRecord, bool, error) {
+	if rec, ok := loadRunRecord(cfg, loopID); ok {
+		return rec, true, nil
+	}
+	path := loopLatestPath(cfg, loopID)
+	if _, err := os.Stat(path); err == nil {
+		return loopRunRecord{}, false, fmt.Errorf("loop %q has an existing but invalid run record at %s; refusing to overwrite idempotency evidence", loopID, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return loopRunRecord{}, false, fmt.Errorf("inspect loop %q run record at %s: %w", loopID, path, err)
+	}
+	return loopRunRecord{}, false, nil
+}
+
 // saveRunRecord persists latest.json, stamping schema_version + updated_at=now
 // (UTC RFC3339). Written 0600 via atomicWrite (temp+rename) because it carries a
 // cursor token and command/error text.
@@ -274,6 +303,29 @@ func saveRunRecord(cfg Config, r loopRunRecord, now time.Time) error {
 		return err
 	}
 	return atomicWrite(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
+}
+
+// saveRunRecordDurable is reserved for the two non-idempotent effect
+// transitions. Its file + directory barriers make "started" durable before the
+// effect can run and "committed" durable before the guard can be released.
+func saveRunRecordDurable(cfg Config, r loopRunRecord, now time.Time) error {
+	r.SchemaVersion = loopRunSchemaVersion
+	r.UpdatedAt = now.UTC().Format(time.RFC3339)
+	body, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteDurable(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
+}
+
+// saveRunRecordPreservingEffect keeps durability monotonic after a durable
+// effect intent exists. A later heartbeat or terminal transition must not replace
+// fsynced idempotency evidence with a merely atomic (page-cache-only) rename.
+func saveRunRecordPreservingEffect(cfg Config, r loopRunRecord, now time.Time) error {
+	if r.EffectStartedAt != "" || r.EffectCommittedAt != "" {
+		return saveRunRecordDurable(cfg, r, now)
+	}
+	return saveRunRecord(cfg, r, now)
 }
 
 // sanitizeJournalNote keeps a journal note single-line and bounded — the
@@ -414,8 +466,9 @@ func loopLockReleaser(lockPath string, observed []byte) func() {
 	}
 }
 
-// removeLeaseFile frees a held lease by deleting its lock file, and the release
-// MUST actually succeed. On Windows os.Remove can transiently fail with
+// removeLeaseFileGuarded frees a held lease while its cross-process guard is
+// held, and the release MUST actually succeed. On Windows os.Remove can
+// transiently fail with
 // ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED when a concurrent acquirer is
 // touching the same path in the same instant — reading the body in
 // reapStaleLockTTL, or os.Link-ing its own temp into place in publishLockFile.
@@ -431,7 +484,8 @@ func loopLockReleaser(lockPath string, observed []byte) func() {
 // (release therefore can never hang): a lock already gone (IsNotExist) is success,
 // and a genuine non-contention error is terminal. Off Windows
 // sharingViolationRetryable is always false, so this collapses to exactly one
-// os.Remove — behavior there is unchanged.
+// os.Remove — behavior there is unchanged. It surfaces a permanent error to the
+// lifecycle caller instead of silently leaking a terminal run's lease.
 func removeLeaseFileGuarded(lockPath string) error {
 	var lastErr error
 	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
@@ -493,10 +547,16 @@ func reapStaleLockTTL(lockPath string, now time.Time, ttl time.Duration) (bool, 
 	return breakLock(lockPath, data)
 }
 
+// testHookBreakLockBeforeRemove is a deterministic witness that fires while the
+// cross-process guard is held and the exact observed bytes still occupy
+// lockPath. Nil in production.
+var testHookBreakLockBeforeRemove func()
+
 // breakLock removes a lock judged stale only if it still contains the exact
-// observed bytes. Every publisher and reaper takes the persistent OS-backed
-// guard first, so compare+remove is one serialized transition and there is no
-// absent-path restore window for a third process to enter.
+// observed bytes. Every Mora publisher and reaper takes the persistent OS-backed
+// guard first, so the compare+remove is one serialized transition: lockPath is
+// never renamed away and therefore never has a restore window in which a third
+// process can acquire and then be dropped.
 func breakLock(lockPath string, observed []byte) (bool, error) {
 	reaped := false
 	err := withLeaseFileGuard(lockPath, func() error {
@@ -508,10 +568,17 @@ func breakLock(lockPath string, observed []byte) (bool, error) {
 		if err != nil {
 			return err
 		}
-		if string(cur) != string(observed) {
-			return nil
+		if !bytes.Equal(cur, observed) {
+			return nil // a newer holder won before we acquired the guard
 		}
-		if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if testHookBreakLockBeforeRemove != nil {
+			testHookBreakLockBeforeRemove()
+		}
+		// Windows can transiently deny removal even while Mora holds the lease
+		// guard (for example, an antivirus handle briefly opened without sharing).
+		// A one-shot remove leaks the fresh lease because loopLockReleaser has no
+		// error channel; use the same bounded retry path as owner-CAS release.
+		if err := removeLeaseFileGuarded(lockPath); err != nil {
 			return err
 		}
 		reaped = true
@@ -632,12 +699,13 @@ func loopEmit(stdout io.Writer, jsonOut bool, payload any, humanLine string) err
 // ---------------------------------------------------------------------------
 
 // loopBegin is the once-per-period gate. If the current period already
-// SUCCEEDED, it emits {"skip":"already-succeeded"} and returns the exit-10
-// sentinel (the SKILL prints the saved artifact and stops). Otherwise it takes
-// the lease (reaping a stale one), reclaims a crashed/failed same-period attempt
-// (attempt++ carrying the committed cursor forward, recording a synthetic failed
-// terminal for an abandoned run), writes a fresh running record, and returns nil.
-// On success it intentionally does NOT release the lease — loopDone removes it.
+// SUCCEEDED, or its non-idempotent effect is durably committed even though
+// terminal bookkeeping did not finish, it emits an exit-10 skip (the SKILL
+// prints the saved artifact and stops). Otherwise it takes the lease (reaping a
+// stale one), reclaims a crashed/failed same-period attempt (attempt++ carrying
+// the committed cursor forward, recording a synthetic failed terminal for an
+// abandoned run), writes a fresh running record, and returns nil. On success it
+// intentionally does NOT release the lease — loopDone removes it.
 func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Writer) error {
 	if !validLoopID(id) {
 		return fmt.Errorf("invalid loop id %q", id)
@@ -645,18 +713,39 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 	cadence := cadenceFor(cfg, id)
 	period := periodFor(cadence, now)
 
-	emitSkip := func() error {
-		payload := map[string]string{"skip": "already-succeeded", "loop_id": id, "period": period}
+	emitSkip := func(reason string) error {
+		payload := map[string]string{"skip": reason, "loop_id": id, "period": period}
+		humanReason := "already succeeded"
+		if reason == "effect-already-committed" {
+			humanReason = "already committed its effect"
+		}
 		_ = loopEmit(stdout, jsonOut, payload,
-			fmt.Sprintf("loop %q already succeeded for %s — nothing to do", id, period))
+			fmt.Sprintf("loop %q %s for %s — nothing to do", id, humanReason, period))
 		return exitCodeError{code: loopSkipExitCode} // empty msg => no stderr noise, exit 10
+	}
+	uncertainEffect := func(rec loopRunRecord) error {
+		return fmt.Errorf("loop %q run %s started a non-idempotent effect at %s but has no commit checkpoint; outcome is uncertain and automatic retry for %s is blocked; do not run --advance again", id, rec.RunID, rec.EffectStartedAt, period)
 	}
 
 	// FAST-PATH gate (pre-acquire): already succeeded this period => skip without
 	// taking the lease. Also covers a success whose lock leaked (done crashed
 	// mid-release), where acquire would otherwise wrongly report "already running".
-	if prev, ok := loadRunRecord(cfg, id); ok && prev.Period == period && prev.Status == loopRunSucceeded {
-		return emitSkip()
+	// A committed effect is equally final for at-most-once purposes even when the
+	// process crashed before terminal presentation bookkeeping.
+	prev, hasPrev, err := loadRunRecordForBegin(cfg, id)
+	if err != nil {
+		return err
+	}
+	if hasPrev && prev.Period == period {
+		if prev.EffectStartedAt != "" && prev.EffectCommittedAt == "" && prev.Status != loopRunRunning {
+			return uncertainEffect(prev)
+		}
+		if prev.Status == loopRunSucceeded {
+			return emitSkip("already-succeeded")
+		}
+		if prev.EffectCommittedAt != "" {
+			return emitSkip("effect-already-committed")
+		}
 	}
 
 	runID := newRunID(now) // identifies this attempt; stamped into both lock + record
@@ -671,10 +760,22 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 	// AUTHORITATIVE gate (post-acquire, under the lease): RE-LOAD so a run that
 	// succeeded DURING our acquire is observed — closes the read-before-acquire
 	// TOCTOU that would otherwise let a duplicate run bypass the gate.
-	prev, hasPrev := loadRunRecord(cfg, id)
+	prev, hasPrev, err = loadRunRecordForBegin(cfg, id)
+	if err != nil {
+		release()
+		return err
+	}
+	if hasPrev && prev.Period == period && prev.EffectStartedAt != "" && prev.EffectCommittedAt == "" {
+		release()
+		return uncertainEffect(prev)
+	}
 	if hasPrev && prev.Period == period && prev.Status == loopRunSucceeded {
 		release()
-		return emitSkip()
+		return emitSkip("already-succeeded")
+	}
+	if hasPrev && prev.Period == period && prev.EffectCommittedAt != "" {
+		release()
+		return emitSkip("effect-already-committed")
 	}
 
 	attempt := 1
@@ -717,7 +818,7 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 // done — terminal commit + lease release
 // ---------------------------------------------------------------------------
 
-// loopDone closes a run: flips status to succeeded/failed, stamps finished_at,
+// loopDone closes a RUNNING run: flips status to succeeded/failed, stamps finished_at,
 // clears the heartbeat, appends ONE terminal journal line, archives an immutable
 // runs/ copy on success, and releases the lease BY OWNERSHIP (the lock was
 // acquired in a separate begin process). If runID is non-empty it must match the
@@ -729,76 +830,328 @@ func loopDone(cfg Config, id, runID string, ok bool, failReason string, now time
 	if !validLoopID(id) {
 		return fmt.Errorf("invalid loop id %q", id)
 	}
-	rec, found := loadRunRecord(cfg, id)
-	if !found {
-		return fmt.Errorf("loop %q has no run to close (call `loop begin` first)", id)
-	}
-	if runID != "" && rec.RunID != runID {
-		return fmt.Errorf("loop %q run %s is no longer current (superseded by %s); not closing", id, runID, rec.RunID)
-	}
-	// Lease-ownership guard: the lock reflects a newer run EARLIER than latest.json
-	// does (begin publishes the lock before saving the record), so checking it
-	// closes the window where a late done passes the record check while a fresher
-	// run already holds the lease.
-	if runID != "" {
-		if owner, present := lockOwner(cfg, id); present && owner != "" && owner != runID {
-			return fmt.Errorf("loop %q run %s no longer holds the lease (held by %s); not closing", id, runID, owner)
+	var completed loopRunRecord
+	err := withLeaseFileGuard(loopLockPath(cfg, id), func() error {
+		rec, found := loadRunRecord(cfg, id)
+		if !found {
+			return fmt.Errorf("loop %q has no run to close (call `loop begin` first)", id)
 		}
-	}
+		if runID != "" && rec.RunID != runID {
+			return fmt.Errorf("loop %q run %s is no longer current (superseded by %s); not closing", id, runID, rec.RunID)
+		}
+		if rec.Status != loopRunRunning {
+			return fmt.Errorf("loop %q run %s is already terminal (%s); not closing again", id, rec.RunID, rec.Status)
+		}
+		if ok && rec.EffectStartedAt != "" && rec.EffectCommittedAt == "" {
+			return fmt.Errorf("loop %q run %s has an uncertain non-idempotent effect; refusing successful close without a commit checkpoint", id, rec.RunID)
+		}
 
-	stamp := now.UTC().Format(time.RFC3339)
-	rec.FinishedAt = stamp
-	rec.HeartbeatAt = ""
-	note := "ok"
-	if ok {
-		rec.Status = loopRunSucceeded
-		rec.LastError = ""
-	} else {
-		rec.Status = loopRunFailed
-		rec.LastError = strings.TrimSpace(failReason)
-		note = "fail: " + rec.LastError
-	}
-	if err := saveRunRecord(cfg, rec, now); err != nil {
+		// The lock can reflect a newer run before latest.json does. Validate the
+		// owner while the same guard excludes publish/reap/heartbeat, then keep the
+		// guard through the terminal record and lease removal so heartbeat cannot
+		// race a succeeded record back to running metadata.
+		lockData, lerr := os.ReadFile(loopLockPath(cfg, id))
+		if lerr != nil {
+			if runID != "" || !errors.Is(lerr, os.ErrNotExist) {
+				return fmt.Errorf("loop %q run %s no longer holds a lease; not closing", id, runID)
+			}
+		} else {
+			var body loopLockBody
+			if json.Unmarshal(lockData, &body) != nil || (body.RunID != "" && body.RunID != rec.RunID) {
+				return fmt.Errorf("loop %q run %s no longer holds the lease; not closing", id, rec.RunID)
+			}
+		}
+
+		stamp := now.UTC().Format(time.RFC3339)
+		rec.FinishedAt = stamp
+		rec.HeartbeatAt = ""
+		note := "ok"
+		if ok {
+			rec.Status = loopRunSucceeded
+			rec.LastError = ""
+		} else {
+			rec.Status = loopRunFailed
+			rec.LastError = strings.TrimSpace(failReason)
+			note = "fail: " + rec.LastError
+		}
+		if err := saveRunRecordPreservingEffect(cfg, rec, now); err != nil {
+			return err
+		}
+		var terminalErr error
+		if err := appendLoopJournal(cfg, rec, now, note); err != nil {
+			terminalErr = fmt.Errorf("append loop journal: %w", err)
+		}
+		if ok {
+			// Immutable audit copy; ignore only a benign audit-copy write failure;
+			// latest.json + journal remain the authoritative terminal pair.
+			if body, merr := json.MarshalIndent(rec, "", "  "); merr == nil {
+				_ = atomicWrite(loopRunArchivePath(cfg, id, rec.Period, rec.RunID), append(body, '\n'), 0o600)
+			}
+		}
+		if lerr == nil {
+			if err := removeLeaseFileGuarded(loopLockPath(cfg, id)); err != nil {
+				terminalErr = errors.Join(terminalErr, fmt.Errorf("release loop lease: %w", err))
+			}
+		}
+		completed = rec
+		return terminalErr
+	})
+	if err != nil {
 		return err
 	}
-	if err := appendLoopJournal(cfg, rec, now, note); err != nil {
-		return err
-	}
-	if ok {
-		// Immutable audit copy; ignore a benign re-write of the same terminal.
-		if body, merr := json.MarshalIndent(rec, "", "  "); merr == nil {
-			_ = atomicWrite(loopRunArchivePath(cfg, id, rec.Period, rec.RunID), append(body, '\n'), 0o600)
-		}
-	}
-	// Release the lease BY OWNERSHIP — only if the lock still belongs to this run.
-	releaseLoopLockFor(cfg, id, rec.RunID)
 
-	fmt.Fprintf(stdout, "loop %q done: %s (run %s)\n", id, rec.Status, rec.RunID)
+	fmt.Fprintf(stdout, "loop %q done: %s (run %s)\n", id, completed.Status, completed.RunID)
 	return nil
 }
 
-// lockOwner returns the run_id currently holding the lease. present=false when
-// no lock exists; present=true with an empty owner when the lock is corrupt.
-func lockOwner(cfg Config, id string) (owner string, present bool) {
+// heartbeatLoopRun refreshes one active run's durable liveness evidence. The
+// record check, owner-CAS lease re-stamp, and latest.json heartbeat happen under
+// the same cross-process guard as done, so a terminal transition can never be
+// overwritten by an in-flight heartbeat and a superseded holder can never revive.
+func heartbeatLoopRun(cfg Config, id, runID string, now time.Time) error {
+	if !validLoopID(id) {
+		return fmt.Errorf("invalid loop id %q", id)
+	}
+	if strings.TrimSpace(runID) == "" {
+		return errors.New("loop heartbeat requires --run <run_id>")
+	}
+	return withLeaseFileGuard(loopLockPath(cfg, id), func() error {
+		return heartbeatLoopRunGuarded(cfg, id, runID, now)
+	})
+}
+
+// heartbeatLoopRunGuarded is heartbeatLoopRun's owner-CAS body. The caller must
+// hold this loop's lease-file guard.
+func heartbeatLoopRunGuarded(cfg Config, id, runID string, now time.Time) error {
+	rec, found := loadRunRecord(cfg, id)
+	if !found {
+		return fmt.Errorf("loop %q has no active run", id)
+	}
+	if rec.RunID != runID {
+		return fmt.Errorf("loop %q run %s is no longer current (superseded by %s)", id, runID, rec.RunID)
+	}
+	if rec.Status != loopRunRunning {
+		return fmt.Errorf("loop %q run %s is already terminal (%s)", id, runID, rec.Status)
+	}
+
 	data, err := os.ReadFile(loopLockPath(cfg, id))
 	if err != nil {
-		return "", false
+		return fmt.Errorf("loop %q run %s no longer holds a lease", id, runID)
 	}
 	var body loopLockBody
-	if json.Unmarshal(data, &body) != nil {
-		return "", true
+	if json.Unmarshal(data, &body) != nil || body.RunID != runID {
+		return fmt.Errorf("loop %q run %s no longer holds the lease", id, runID)
 	}
-	return body.RunID, true
+	stamp := now.UTC().Format(time.RFC3339)
+	body.AcquiredAt = stamp
+	next, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	if err := atomicWrite(loopLockPath(cfg, id), next, 0o600); err != nil {
+		return err
+	}
+	rec.HeartbeatAt = stamp
+	return saveRunRecordPreservingEffect(cfg, rec, now)
+}
+
+// testHookLoopEffectAfterRun injects a failure after fn returns but before its
+// commit checkpoint. It deterministically models the otherwise process-kill-only
+// crash boundary. Nil in production.
+var testHookLoopEffectAfterRun func() error
+
+// withLoopRunEffect executes a non-idempotent effect while holding the same
+// persistent OS guard that publish/reap use. It validates ownership and durably
+// records effect_started_at before entering fn, then records effect_committed_at
+// on proven success. A started-without-committed record is deliberately left
+// uncertain on any error or crash, so automatic same-period retry fails closed.
+// A process suspended inside fn keeps reapers blocked; a process already reaped
+// while waiting fails validation and never enters fn.
+func withLoopRunEffect(cfg Config, id, runID string, fn func() error) error {
+	return withLoopRunEffectAt(cfg, id, runID, loopClock(), fn)
+}
+
+// withLoopRunEffectAt binds the authorized run period to the effect's own
+// logical timestamp. Scheduled/manual callers pass the same `now` used for the
+// brief artifact and watermark, so a run opened before a cadence boundary can
+// never commit the next period's effect and then be followed by a second run.
+func withLoopRunEffectAt(cfg Config, id, runID string, effectNow time.Time, fn func() error) error {
+	if !validLoopID(id) {
+		return fmt.Errorf("invalid loop id %q", id)
+	}
+	if strings.TrimSpace(runID) == "" {
+		return errors.New("loop effect requires a run id")
+	}
+	return withLeaseFileGuard(loopLockPath(cfg, id), func() error {
+		if err := heartbeatLoopRunGuarded(cfg, id, runID, loopClock()); err != nil {
+			return err
+		}
+		rec, found := loadRunRecord(cfg, id)
+		if !found {
+			return fmt.Errorf("loop %q has no active run", id)
+		}
+		effectPeriod := periodFor(cadenceFor(cfg, id), effectNow)
+		if rec.Period != effectPeriod {
+			return fmt.Errorf("loop %q run %s authorizes period %s, but the effect belongs to %s; refusing cross-period advance", id, runID, rec.Period, effectPeriod)
+		}
+		if rec.EffectCommittedAt != "" {
+			return fmt.Errorf("loop %q run %s already committed its effect", id, runID)
+		}
+		if rec.EffectStartedAt != "" {
+			return fmt.Errorf("loop %q run %s already started its effect but has no commit checkpoint; outcome is uncertain", id, runID)
+		}
+		if err := markLoopRunEffectStartedGuarded(cfg, id, runID, loopClock()); err != nil {
+			return fmt.Errorf("persist pre-effect loop intent: %w", err)
+		}
+		effectErr := fn()
+		if testHookLoopEffectAfterRun != nil {
+			effectErr = errors.Join(effectErr, testHookLoopEffectAfterRun())
+		}
+		if effectErr != nil {
+			return fmt.Errorf("loop effect outcome may be partial; automatic retry is blocked: %w", effectErr)
+		}
+		if err := markLoopRunEffectCommittedGuarded(cfg, id, runID, loopClock()); err != nil {
+			return fmt.Errorf("persist post-effect loop checkpoint; automatic retry is blocked: %w", err)
+		}
+		return nil
+	})
+}
+
+// markLoopRunEffectStartedGuarded writes the fail-closed intent before a
+// non-idempotent effect can run. The caller holds this loop's lease-file guard.
+// Saving the record before refreshing the lease is intentional: if the latter
+// fails, no effect runs and the false-positive uncertainty is safer than a retry
+// after an unrecorded partial effect.
+func markLoopRunEffectStartedGuarded(cfg Config, id, runID string, now time.Time) error {
+	rec, found := loadRunRecord(cfg, id)
+	if !found {
+		return fmt.Errorf("loop %q has no active run", id)
+	}
+	if rec.RunID != runID {
+		return fmt.Errorf("loop %q run %s is no longer current (superseded by %s)", id, runID, rec.RunID)
+	}
+	if rec.Status != loopRunRunning {
+		return fmt.Errorf("loop %q run %s is already terminal (%s)", id, runID, rec.Status)
+	}
+	if rec.EffectStartedAt != "" || rec.EffectCommittedAt != "" {
+		return fmt.Errorf("loop %q run %s already has an effect checkpoint", id, runID)
+	}
+	data, err := os.ReadFile(loopLockPath(cfg, id))
+	if err != nil {
+		return fmt.Errorf("loop %q run %s no longer holds a lease", id, runID)
+	}
+	var body loopLockBody
+	if json.Unmarshal(data, &body) != nil || body.RunID != runID {
+		return fmt.Errorf("loop %q run %s no longer holds the lease", id, runID)
+	}
+	stamp := now.UTC().Format(time.RFC3339)
+	rec.HeartbeatAt = stamp
+	rec.EffectStartedAt = stamp
+	if err := saveRunRecordDurable(cfg, rec, now); err != nil {
+		return err
+	}
+	body.AcquiredAt = stamp
+	next, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(loopLockPath(cfg, id), next, 0o600)
+}
+
+// markLoopRunEffectCommittedGuarded durably records a successful non-idempotent
+// effect before releasing its OS guard. Save the run record first: once the
+// effect returned success, a durable committed marker is the fail-closed source
+// of truth even if the subsequent lease heartbeat itself cannot be written.
+func markLoopRunEffectCommittedGuarded(cfg Config, id, runID string, now time.Time) error {
+	rec, found := loadRunRecord(cfg, id)
+	if !found {
+		return fmt.Errorf("loop %q has no active run", id)
+	}
+	if rec.RunID != runID {
+		return fmt.Errorf("loop %q run %s is no longer current (superseded by %s)", id, runID, rec.RunID)
+	}
+	if rec.Status != loopRunRunning {
+		return fmt.Errorf("loop %q run %s is already terminal (%s)", id, runID, rec.Status)
+	}
+	if rec.EffectStartedAt == "" {
+		return fmt.Errorf("loop %q run %s has no durable effect intent", id, runID)
+	}
+	data, err := os.ReadFile(loopLockPath(cfg, id))
+	if err != nil {
+		return fmt.Errorf("loop %q run %s no longer holds a lease", id, runID)
+	}
+	var body loopLockBody
+	if json.Unmarshal(data, &body) != nil || body.RunID != runID {
+		return fmt.Errorf("loop %q run %s no longer holds the lease", id, runID)
+	}
+	stamp := now.UTC().Format(time.RFC3339)
+	rec.HeartbeatAt = stamp
+	rec.EffectCommittedAt = stamp
+	if err := saveRunRecordDurable(cfg, rec, now); err != nil {
+		return err
+	}
+	body.AcquiredAt = stamp
+	next, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(loopLockPath(cfg, id), next, 0o600)
+}
+
+// loopHeartbeat is the CLI-facing heartbeat, with the same JSON/human output
+// convention as begin/status. Long-running in-process callers use
+// heartbeatLoopRun directly and discard no failures at their commit fence.
+func loopHeartbeat(cfg Config, id, runID string, jsonOut bool, now time.Time, stdout io.Writer) error {
+	if err := heartbeatLoopRun(cfg, id, runID, now); err != nil {
+		return err
+	}
+	payload := map[string]string{
+		"loop_id": id, "run_id": runID, "status": string(loopRunRunning),
+		"heartbeat_at": now.UTC().Format(time.RFC3339),
+	}
+	return loopEmit(stdout, jsonOut, payload,
+		fmt.Sprintf("loop %q heartbeat: run %s", id, runID))
+}
+
+// startLoopHeartbeat keeps a long in-process advancing pulse live. Ownership
+// loss stops the ticker; cmdPulse performs its own synchronous heartbeat at the
+// non-idempotent commit fence and therefore surfaces that loss before advancing.
+func startLoopHeartbeat(cfg Config, id, runID string) func() {
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(loopLockTTL / 3)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := heartbeatLoopRun(cfg, id, runID, loopClock()); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 // releaseLoopLockFor removes the lease only if it still belongs to owner (or is
-// absent / unreadable / legacy with no run_id). The delete routes through
-// breakLock's atomic content compare-and-claim, so if a newer run republishes
-// the lock in the read->remove window, the new lock is RESTORED, never deleted —
-// the fix for a late done stealing a live lease.
+// absent / unreadable / legacy with no run_id). Owner check and removal share
+// the same guard as publish/reap/heartbeat, so neither a newer owner nor a
+// same-owner heartbeat can race the release into deleting or leaking a lease.
 func releaseLoopLockFor(cfg Config, id, owner string) {
 	releaseLockFileFor(loopLockPath(cfg, id), owner)
 }
+
+// testHookReleaseLockAfterRead is a deterministic concurrency witness. It fires
+// after release has read the current owner but while the lease guard is still
+// held. Nil in production.
+var testHookReleaseLockAfterRead func()
 
 // releaseLockFileFor is the PATH-based extract of releaseLoopLockFor (Packet H):
 // it releases the lease at lockPath only if it still belongs to owner (or is
@@ -809,23 +1162,26 @@ func releaseLockFileFor(lockPath, owner string) {
 	_ = withLeaseFileGuard(lockPath, func() error {
 		data, err := os.ReadFile(lockPath)
 		if err != nil {
-			return nil
+			return nil // absent/unreadable: nothing to release
+		}
+		if testHookReleaseLockAfterRead != nil {
+			testHookReleaseLockAfterRead()
 		}
 		var body loopLockBody
 		if json.Unmarshal(data, &body) == nil && body.RunID != "" && body.RunID != owner {
-			return nil
+			return nil // a different run owns the lease now; leave it
 		}
+		// Read, owner check, and delete are one guarded transition. In particular,
+		// a same-owner heartbeat cannot replace the bytes between this check and
+		// removal and turn release into a silent leaked lease.
 		return removeLeaseFileGuarded(lockPath)
 	})
 }
 
-// heartbeatLockFileFor is the CAS re-stamp (Packet H): it re-publishes
-// acquired_at=now ONLY if the on-disk run_id is still owner. If it changed
-// (reaped), it returns false and the caller must treat ownership as lost. A
-// blind re-stamp could RESURRECT a reaped holder's lease over its successor and
-// let the reaped holder's commit fence pass falsely — the CAS makes that
-// impossible. It re-uses breakLock's atomic rename-claim to replace only the
-// bytes it just read, restoring a racing newer lease untouched.
+// heartbeatLockFileFor is the owner-CAS re-stamp: it updates acquired_at only if
+// the guarded on-disk run_id is still owner. The replacement happens while the
+// same cross-process guard excludes publish/reap, so no absent-path window can
+// resurrect a reaped holder over its successor.
 func heartbeatLockFileFor(lockPath, owner string, now time.Time) bool {
 	owned := false
 	err := withLeaseFileGuard(lockPath, func() error {
@@ -835,7 +1191,7 @@ func heartbeatLockFileFor(lockPath, owner string, now time.Time) bool {
 		}
 		var body loopLockBody
 		if json.Unmarshal(data, &body) != nil || body.RunID != owner {
-			return nil
+			return nil // reaped/replaced: ownership lost
 		}
 		body.AcquiredAt = now.UTC().Format(time.RFC3339Nano)
 		next, err := json.Marshal(body)
@@ -888,6 +1244,7 @@ func loopScheduled(job string) bool {
 //
 //	never-run  no run record at all
 //	running    status==running AND heartbeat within runningStaleAfter
+//	uncertain  a non-idempotent effect started without a commit checkpoint
 //	stale      status==running but abandoned (heartbeat too old), OR a success
 //	           older than the cadence allows  (stale beats a dead 'running')
 //	failed     last run failed
@@ -918,10 +1275,16 @@ func classifyLoopHealth(reg loopRegistration, rec loopRunRecord, recOK bool, now
 		if !hb.IsZero() && now.UTC().Sub(hb) <= runningStaleAfter {
 			h.State = "running"
 			h.Message = fmt.Sprintf("run %s in progress (period %s, attempt %d)", rec.RunID, rec.Period, rec.Attempt)
+		} else if rec.EffectStartedAt != "" && rec.EffectCommittedAt == "" {
+			h.State = "uncertain"
+			h.Message = fmt.Sprintf("run %s started a non-idempotent effect at %s without a commit checkpoint — automatic same-period retry is blocked", rec.RunID, rec.EffectStartedAt)
 		} else {
 			h.State = "stale"
 			h.Message = fmt.Sprintf("run %s appears abandoned — started %s, never completed", rec.RunID, firstNonEmpty(rec.StartedAt, rec.HeartbeatAt))
 		}
+	case rec.EffectStartedAt != "" && rec.EffectCommittedAt == "":
+		h.State = "uncertain"
+		h.Message = fmt.Sprintf("run %s started a non-idempotent effect at %s without a commit checkpoint — automatic same-period retry is blocked", rec.RunID, rec.EffectStartedAt)
 	case rec.Status == loopRunFailed:
 		h.State = "failed"
 		h.Message = "last run failed"
@@ -1019,7 +1382,7 @@ func loopList(cfg Config, jsonOut bool, now time.Time, stdout io.Writer) error {
 // command dispatch
 // ---------------------------------------------------------------------------
 
-// cmdLoop dispatches `mora loop begin|done|status|register|list`. The id is the
+// cmdLoop dispatches `mora loop begin|heartbeat|done|status|register|list`. The id is the
 // first positional arg (so the documented `loop begin <id> --json` form works
 // regardless of flag ordering); list takes no id. Mirrors cmdSchedule/cmdPulse
 // (flag.ContinueOnError + io.Discard). now is the real wall clock (the only
@@ -1027,13 +1390,13 @@ func loopList(cfg Config, jsonOut bool, now time.Time, stdout io.Writer) error {
 func cmdLoop(ctx context.Context, args []string, stdout io.Writer) error {
 	_ = ctx
 	if len(args) == 0 {
-		return errors.New("usage: mora loop begin|done|status|register|list <id> [flags]")
+		return errors.New("usage: mora loop begin|heartbeat|done|status|register|list <id> [flags]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	now := time.Now()
+	now := loopClock()
 	sub, rest := args[0], args[1:]
 
 	newFS := func(name string) *flag.FlagSet {
@@ -1054,6 +1417,19 @@ func cmdLoop(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		return loopBegin(cfg, id, *jsonOut, now, stdout)
+
+	case "heartbeat":
+		if len(rest) == 0 {
+			return errors.New("usage: mora loop heartbeat <id> --run <run_id> [--json]")
+		}
+		id, flagArgs := rest[0], rest[1:]
+		fs := newFS("heartbeat")
+		runID := fs.String("run", "", "the active run id from `loop begin`")
+		jsonOut := fs.Bool("json", false, "json output")
+		if err := fs.Parse(flagArgs); err != nil {
+			return err
+		}
+		return loopHeartbeat(cfg, id, *runID, *jsonOut, now, stdout)
 
 	case "done":
 		if len(rest) == 0 {
@@ -1110,6 +1486,6 @@ func cmdLoop(ctx context.Context, args []string, stdout io.Writer) error {
 		return loopList(cfg, *jsonOut, now, stdout)
 
 	default:
-		return fmt.Errorf("unknown loop subcommand %q (want begin|done|status|register|list)", sub)
+		return fmt.Errorf("unknown loop subcommand %q (want begin|heartbeat|done|status|register|list)", sub)
 	}
 }

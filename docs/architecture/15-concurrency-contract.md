@@ -195,10 +195,20 @@ clobbered. Every `load → mutate → save` on `sources.json` MUST go through it
 
 The lease reuses `loop.go`'s proven primitives — `publishLockFile`'s
 `os.Link`-atomic publish, TTL/corrupt reap (`sourcesLockTTL` = 30 s, far longer
-than any legitimate microsecond hold), rename-claim `breakLock`, and a jittered,
-capped acquire backoff (same #74 rationale as §1: fixed backoff makes rivals
-retry in lockstep on Windows). It is a single-host, single-user lease — which is
-exactly the concurrency model. Pinned by `sources_lock_test.go`.
+than any legitimate microsecond hold), guarded compare/remove `breakLock`, and a
+jittered, capped acquire backoff (same #74 rationale as §1: fixed backoff makes
+rivals retry in lockstep on Windows). It is a single-host, single-user lease —
+which is exactly the concurrency model. Pinned by `sources_lock_test.go`.
+
+Every lease transition is additionally serialized by a persistent OS-locked
+guard keyed by the lease's physical filesystem identity. Mora resolves the
+deepest existing ancestor, normalizes the missing tail, and folds identity case
+on Darwin/Windows, so symlink and Unicode aliases converge without rewriting the
+physical path spelling. Guards stay within the writable Mora root. For explicitly
+removable import and loop roots, the guard anchors in their stable parent so
+deletion cannot split one logical guard into two live inodes; other guards stay
+under the lease's containing root. Guard filenames end in `.lock`, so vault Git
+ignores them. Failure to create the one deterministic guard fails closed.
 
 > Scope note: `shares.json` (the share grant registry) has the same RMW shape
 > and is not yet routed through a lease; it is out of scope here and gated by the

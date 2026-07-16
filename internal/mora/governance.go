@@ -162,10 +162,9 @@ func saveGovernance(cfg Config, g governance) error {
 	return atomicWrite(governancePath(cfg), append(b, '\n'), 0o600)
 }
 
-// governanceLockPath is the ledger's cross-process lease file, co-located with
-// the ledger so breakLock's os.Rename stays atomic (same filesystem). It is a
-// `*.lock` file, excluded by the vault .gitignore, so a leftover lease never
-// rides `mora sync git`.
+// governanceLockPath is the ledger's cross-process lease file. Both it and the
+// persistent OS guard selected by leaseGuardPath end in `*.lock`, so vault Git
+// excludes them from `mora sync git`.
 func governanceLockPath(cfg Config) string { return governancePath(cfg) + ".lock" }
 
 // acquireGovernanceLock serializes a read-modify-write of the governance ledger

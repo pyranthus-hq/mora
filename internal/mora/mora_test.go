@@ -14,7 +14,7 @@ import (
 // mora_test.go — Plan 12-05 user-facing surface wiring:
 //   - pulse --since-hours (SC#2: explicit ad-hoc window, NEVER advances)
 //   - pulse --advance (D-02/SC#4: default-off; the ONLY committing path)
-//   - installSchedule pulse-daily (--advance, no RunAtLoad — settled engineering)
+//   - installSchedule pulse-daily (durable wrapper, no RunAtLoad)
 //   - sourceFreshness (key off SyncStatus.Source; include never-synced — SC#3 gap)
 
 // briefSnapshotExists reports whether a watermark file was committed for an
@@ -126,20 +126,22 @@ func TestPulseSinceHoursWithAdvanceStillNeverAdvances(t *testing.T) {
 	}
 }
 
-// TestPulseDailyScheduleUsesAdvanceNoRunAtLoad (settled engineering): the
-// scheduled pulse-daily command is the only --advance caller, and its plist
-// drops RunAtLoad so a reboot/login does not re-consume the morning delta.
-func TestPulseDailyScheduleUsesAdvanceNoRunAtLoad(t *testing.T) {
+// TestPulseDailyScheduleUsesDurableWrapperNoRunAtLoad: the installed job enters
+// through `schedule run pulse-daily`, never invokes --advance directly, and
+// still drops RunAtLoad so a login cannot trigger an extra daily attempt.
+func TestPulseDailyScheduleUsesDurableWrapperNoRunAtLoad(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
 
 	plist := pulseDailyPlist(t, cfg)
-	if !strings.Contains(plist, "<string>--advance</string>") {
-		t.Fatalf("pulse-daily must invoke --advance (the only committing caller); plist:\n%s", plist)
+	for _, token := range []string{"schedule", "run", "pulse-daily"} {
+		if !strings.Contains(plist, "<string>"+token+"</string>") {
+			t.Fatalf("pulse-daily must invoke durable wrapper token %q; plist:\n%s", token, plist)
+		}
 	}
-	if !strings.Contains(plist, "<string>--write</string>") || !strings.Contains(plist, "<string>--digest</string>") {
-		t.Fatalf("pulse-daily must still pass --write --digest; plist:\n%s", plist)
+	if strings.Contains(plist, "<string>--advance</string>") {
+		t.Fatalf("pulse-daily plist must not bypass loop begin/done with direct --advance; plist:\n%s", plist)
 	}
 	if strings.Contains(plist, "<key>RunAtLoad</key>") {
 		t.Fatalf("pulse-daily must NOT set RunAtLoad (reboot/login would re-consume the morning delta); plist:\n%s", plist)

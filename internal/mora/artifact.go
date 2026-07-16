@@ -27,10 +27,10 @@ func briefArtifactPath(cfg Config, now time.Time) string {
 //
 // The body is EXACTLY renderDigest(d, cfg.contextDefaultTokens()*charsPerToken) — the
 // same Markdown the human brief and MCP digest emit, so there is one source of
-// truth for brief rendering. The write goes through atomicWrite (temp +
-// os.Rename, MkdirAll(briefs, 0700)) so a crash mid-write never leaves a torn
-// brief (T-13-01) and a same-day re-run OVERWRITES that day's file — one file per
-// day, no proliferation (SC#4).
+// truth for brief rendering. The write goes through atomicWriteDurable (synced
+// temp + rename + parent-directory sync) so a crash mid-write never leaves a
+// torn or post-checkpoint-missing brief (T-13-01), and a same-day re-run
+// OVERWRITES that day's file — one file per day, no proliferation (SC#4).
 //
 // Mode 0644: the artifact is human-readable vault content (like memories under
 // sources/), NOT secret like the 0600 watermark.
@@ -51,7 +51,7 @@ func writeBriefArtifact(cfg Config, d Digest, now time.Time) (string, error) {
 func writeBriefArtifactAt(cfg Config, d Digest, now time.Time, budgetChars int) (string, error) {
 	path := briefArtifactPath(cfg, now)
 	body := renderDigest(d, budgetChars)
-	if err := atomicWrite(path, []byte(body), 0o644); err != nil {
+	if err := atomicWriteDurable(path, []byte(body), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
