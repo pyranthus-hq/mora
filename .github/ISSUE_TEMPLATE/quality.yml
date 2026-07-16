@@ -1,0 +1,77 @@
+name: Product-quality report
+description: Report a cited meeting or memory result that was useful, unsupported, stale, or wrong.
+title: "[Quality]: "
+labels:
+  - product
+  - quality-gate
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Product-quality examples are valuable, but this is a public issue. Describe the pattern and use synthetic or heavily redacted evidence. Never paste message text, names, addresses, phone numbers, credentials, or vault files.
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - Useful and supported
+        - Unsupported by the cited evidence
+        - Wrong person
+        - Wrong direction (who owes whom)
+        - Already closed
+        - Stale source or freshness warning missing
+        - Duplicate
+        - Relevant item was missing
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - mora brief
+        - mora brief --event-id
+        - MCP meeting_prep
+        - mora think or search
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: pattern
+    attributes:
+      label: What pattern failed or worked?
+      description: Explain with placeholders such as PERSON_A and THREAD_1.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected classification or missing item
+      description: State owner, counterparty, direction, state, and freshness when relevant.
+    validations:
+      required: true
+  - type: dropdown
+    id: action
+    attributes:
+      label: Did the result cause an action?
+      options:
+        - Yes, I followed up or corrected an expectation
+        - Yes, I closed or updated something
+        - No, it was already tracked
+        - No, I did not trust it
+        - No action was appropriate
+  - type: textarea
+    id: freshness
+    attributes:
+      label: Redacted source freshness
+      description: Source type plus last-success age is enough; omit account names.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy and consent
+      options:
+        - label: I removed all real content and personal identifiers from this public report.
+          required: true
+        - label: I understand that public examples are not automatically added to Mora's evaluation corpus.
+          required: true

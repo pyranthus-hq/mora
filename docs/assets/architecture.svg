@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 376" width="760"
      font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
      role="img"
-     aria-label="Mora architecture: your sources flow into one local vault of Markdown plus a SQLite index, served over MCP to every agent (Claude Code, Codex, Gemini CLI), with an opt-in git sync to another machine.">
+     aria-label="Mora architecture: read-only sources flow into one local vault of Markdown plus a SQLite index, served over MCP to local clients, with opt-in network paths for backup and sharing.">
   <defs>
     <marker id="aF" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 1 L9 5 L0 9 z" fill="rgba(255,255,255,0.28)"/>
@@ -62,11 +62,11 @@
 
   <line x1="588" y1="178" x2="622" y2="236" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#aB)"/>
   <rect x="622" y="216" width="118" height="40" fill="rgba(255,255,255,0.035)" stroke="rgba(255,255,255,0.14)"/>
-  <text x="681" y="240" text-anchor="middle" font-size="11" fill="#ededed">Gemini CLI</text>
+  <text x="681" y="240" text-anchor="middle" font-size="11" fill="#ededed">Other MCP</text>
 
-  <!-- off-device: memory follows you across machines -->
+  <!-- off-device: explicit one-way private backup -->
   <line x1="392" y1="252" x2="392" y2="300" stroke="#3b82f6" stroke-width="1.25" stroke-dasharray="4 5" opacity="0.75" marker-end="url(#aB)"/>
   <rect x="287" y="300" width="210" height="40" fill="rgba(255,255,255,0.035)" stroke="rgba(255,255,255,0.14)" stroke-dasharray="4 4"/>
-  <text x="392" y="324" text-anchor="middle" font-size="11" fill="rgba(255,255,255,0.62)">another machine · same vault</text>
-  <text x="392" y="362" text-anchor="middle" font-size="10.5" fill="rgba(255,255,255,0.55)">git sync (opt-in) · memory follows you</text>
+  <text x="392" y="324" text-anchor="middle" font-size="11" fill="rgba(255,255,255,0.62)">private backup remote (opt-in)</text>
+  <text x="392" y="362" text-anchor="middle" font-size="10.5" fill="rgba(255,255,255,0.55)">one-way git push · restore is manual</text>
 </svg>

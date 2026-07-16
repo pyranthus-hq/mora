@@ -73,23 +73,18 @@ else
 		gh release download "v$VERSION" --repo "$REPO" --pattern checksums.txt --dir "$TMP" >/dev/null 2>&1 || true
 	fi
 	[ -f "$TMP/checksums.txt" ] || curl -fsSL -o "$TMP/checksums.txt" \
-		"https://github.com/$REPO/releases/download/v$VERSION/checksums.txt" >/dev/null 2>&1 || true
-	if [ -f "$TMP/checksums.txt" ]; then
-		# tr -d '\r' guards against a CRLF checksums.txt (awk would otherwise see the
-		# filename as "name\r" and never match).
-		WANT="$(tr -d '\r' < "$TMP/checksums.txt" | awk -v f="$ASSET" '$2 == f {print $1}')"
-		[ -n "$WANT" ] || die "checksums.txt has no entry for $ASSET — refusing to install an unverifiable download"
-		if GOT="$(sha256_of "$TMP/$ASSET")"; then
-			[ "$GOT" = "$WANT" ] || die "CHECKSUM MISMATCH for $ASSET (expected $WANT, got $GOT) — refusing to install a tampered or corrupt download"
-			say "✓ verified $ASSET against the release checksums"
-		else
-			say "note: no sha256 tool (sha256sum/shasum) found — could not verify the download;"
-			say "      verify by hand against https://github.com/$REPO/releases/download/v$VERSION/checksums.txt"
-		fi
-	else
-		say "note: could not fetch checksums.txt — skipping verification;"
-		say "      verify by hand at https://github.com/$REPO/releases (checksums.txt is cosign-signed)"
-	fi
+		"https://github.com/$REPO/releases/download/v$VERSION/checksums.txt" >/dev/null 2>&1 || \
+		die "could not fetch checksums.txt — refusing to install an unverifiable download"
+	[ -f "$TMP/checksums.txt" ] || \
+		die "could not fetch checksums.txt — refusing to install an unverifiable download"
+	# tr -d '\r' guards against a CRLF checksums.txt (awk would otherwise see the
+	# filename as "name\r" and never match).
+	WANT="$(tr -d '\r' < "$TMP/checksums.txt" | awk -v f="$ASSET" '$2 == f {print $1}')"
+	[ -n "$WANT" ] || die "checksums.txt has no entry for $ASSET — refusing to install an unverifiable download"
+	GOT="$(sha256_of "$TMP/$ASSET")" || \
+		die "no SHA-256 tool found — install sha256sum or shasum and retry"
+	[ "$GOT" = "$WANT" ] || die "CHECKSUM MISMATCH for $ASSET (expected $WANT, got $GOT) — refusing to install a tampered or corrupt download"
+	say "✓ verified $ASSET against the release checksums"
 
 	tar -xzf "$TMP/$ASSET" -C "$TMP"
 	# Locate the binary regardless of tarball layout (top-level OR nested in a versioned dir).

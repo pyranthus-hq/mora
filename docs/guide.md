@@ -225,7 +225,7 @@ codex  mcp add mora -- mora mcp serve             # Codex
 Or use the example configs: `examples/claude-code-mcp.json` (copy to your project's
 `.claude/mcp.json`) and `examples/codex-mcp.json`.
 
-`mora mcp serve` exposes 12 tools over JSON-RPC: `write_memory`, `read_memory`, `search_memory`, `list_memory`, `delete_memory`, `context_memory`, `think`, `list_entities`, `get_entity`, `digest`, `brief`, and `meeting_prep`. `brief` is the session-start what-changed/what-matters briefing; `brief --event-id <id>` and `meeting_prep` assemble the same fully-cited pre-meeting view of the user's open obligations, unresolved threads, staleness guards, and material shared context. These actionable candidates are forgettability-ranked across all attendees, and every evidence line is rendered as dated historical context rather than current truth. `meeting_prep` accepts `event_id` plus an optional RFC3339 `at` seam, or selects the next event when `event_id` is omitted. `digest` and the session-start `brief` also accept `entity`/`scope`/`since_days` to narrow to one person, namespace, or window. Every `search_memory` / `context_memory` answer also carries a per-source `last_synced` map, so your agent can qualify answers with their data age.
+`mora mcp serve` exposes 12 tools over JSON-RPC: `write_memory`, `read_memory`, `search_memory`, `list_memory`, `delete_memory`, `context_memory`, `think`, `list_entities`, `get_entity`, `digest`, `brief`, and `meeting_prep`. `brief` is the session-start what-changed/what-matters briefing; `brief --event-id <id>` and `meeting_prep` assemble the same cited pre-meeting view of historical candidate lines, unresolved threads, current staleness metadata, and material shared context. These candidates are heuristically ranked across attendees and rendered as dated evidence, not current truth or a verified commitment ledger. Mora does not yet establish obligation owner, direction, or closure reliably; inspect each citation and any red source-health warning before acting. `meeting_prep` accepts `event_id` plus an optional RFC3339 `at` seam, or selects the next event when `event_id` is omitted. `digest` and the session-start `brief` also accept `entity`/`scope`/`since_days` to narrow to one person, namespace, or window. Every `search_memory` / `context_memory` answer also carries a per-source `last_synced` map, so your agent can qualify answers with their data age.
 
 ## Use Mora from the shell
 
@@ -615,30 +615,24 @@ So `mora think "what did we decide with Sam about pricing?"` retrieves the relev
 
 ## Why not just use a cloud connector?
 
-Most "AI + your email/calendar" tools work the same way: when you ask a question, the assistant makes a **live API call to a cloud service**, pulls down whatever it needs for that one query, and reasons over it on a remote server. That's fine for "what's on my calendar tomorrow." It's the wrong shape for a *memory*: a durable, cross-source picture of who you talk to, what you've committed to, and what's been said over months. Mora maintains a **persistent local corpus** instead, and nothing is fetched per-query from a cloud. The landscape, as of mid-2026:
+The architectural tradeoff is persistence and ownership, not a claim that Mora is
+the only local or cross-source product. Live connectors are often easier to set up
+and can act on source systems. Mora instead builds a durable corpus on your machine
+that several agents can inspect, cite, grep, diff, back up, or rebuild.
 
-- **Claude Desktop / Claude.ai Google connectors**: Connect Gmail, Calendar, and Drive; Claude calls the relevant tool live when a question needs it. Data retrieved during a session is **stored on Anthropic's servers** alongside the chat (deleted when you delete the chat). Anthropic states it doesn't train on connector data, and access mirrors your existing Google permissions. There is **no iMessage**, no persistent local index, and no cross-source graph you own. Each chat starts from API fetches.
-- **ChatGPT / Codex connectors + Memory**: Connecting a Google app, per OpenAI's own docs, **"may create an indexed copy and sync the content"** to ChatGPT's servers; with Memory enabled, information accessed from connected apps can be **saved into your ChatGPT Memory**. Convenient, but the index and the memory both live in OpenAI's cloud and are opaque. You can't grep them, diff them, or hold them offline. No iMessage.
-- **Generic MCP Gmail servers** (GongRzhe, navbuildz, Google's own `gmailmcp.googleapis.com`, etc.): These translate a request into **real-time Gmail API calls** and explicitly do **not** keep a local corpus. Great for live read/write actions; useless as a memory. No calendar+email+messages fusion, no entity graph, no offline searchable history.
-- **Personal-memory apps (Rewind / Limitless)**: Rewind began local-first, but Limitless pivoted to a **"Confidential Cloud"** (data encrypted but processed off-device), and **Meta acquired Limitless in December 2025**, disabling Rewind's Mac capture on Dec 19, 2025.
+That boundary is narrower than "nothing leaves this computer":
 
-| Capability | **Mora** | Claude Desktop connectors | Codex + ChatGPT | Generic MCP Gmail |
-|---|---|---|---|---|
-| Where your data lives | Local Markdown + SQLite on your machine | Anthropic cloud (per-chat) | OpenAI cloud (indexed copy + Memory) | Nowhere — live API fetch only |
-| Egress / telemetry | **Zero egress, zero telemetry** | Data sent to + stored on Anthropic | Data synced to + indexed by OpenAI | Each query hits Google's API |
-| Persistent corpus you can grep | **Yes** (human-readable files) | No | Opaque, cloud-only | No |
-| Gmail / Calendar (read-only) | **Yes** (thread-level Gmail) | Yes | Yes | Gmail, often Calendar |
-| **iMessage** | **Yes** (local `chat.db`, read-only) | **No** | **No** | **No** |
-| Cross-source entity graph (people resolved across sources) | **Yes** (atomic, deterministic) | No | No | No |
-| Hybrid retrieval (BM25 + vectors + graph, RRF) | **Yes** | N/A (live search) | N/A | N/A |
-| Works offline | **Yes** | No | No | No |
-| Agent-agnostic | **Yes** (any MCP client) | Claude only | ChatGPT/Codex only | Any MCP client |
-| Cost / account | **$0, single binary, no account** | Subscription + Google auth | Subscription + Google auth | Free, but Google auth |
-| Zero-setup web UI | No (CLI) | **Yes** | **Yes** | No |
+- Mora reaches enabled source APIs to synchronize data, GitHub for updates, and
+  explicitly configured backup or sharing destinations.
+- Mora does not operate a hosted corpus or telemetry service. Its optional usage
+  log is local, omits query text by default, and can be disabled.
+- Optional Ollama inference is restricted to loopback.
+- Once an MCP client retrieves context, that client's model and data policy apply.
+  A cloud-hosted agent may transmit the retrieved snippets to its provider.
 
-*(To be fair: the cloud tools win on zero-setup and a polished web UI, and they can take write actions like sending mail or creating events, which Mora deliberately does not. Mora is read-only by design.)*
-
-Sources: [Claude Google Workspace connectors](https://support.claude.com/en/articles/10166901-use-google-workspace-connectors), [ChatGPT Google data controls FAQ](https://help.openai.com/en/articles/10408842-google-app-for-chatgpt-data-controls-faq), [Apps/connectors in ChatGPT](https://help.openai.com/en/articles/11487775-connectors-in-chatgpt), [GongRzhe Gmail-MCP-Server](https://github.com/GongRzhe/Gmail-MCP-Server), [Google Gmail MCP reference](https://developers.google.com/workspace/gmail/api/reference/mcp), [Meta acquires Limitless / Rewind sunset](https://winbuzzer.com/2025/12/05/meta-acquires-ai-wearables-startup-limitless-kills-pendant-sales-and-sunsets-rewind-app-xcxwbn/), [Limitless privacy / Confidential Cloud](https://www.limitless.ai/privacy)
+Choose Mora when a human-readable local corpus and read-only source posture are
+worth the extra installation, permissions, storage, and operational responsibility.
+Choose a hosted connector when zero-setup access and source actions matter more.
 
 ## Notes
 

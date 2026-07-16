@@ -125,7 +125,10 @@ fi
 grep -q 'checksums.txt' "$MORA_REPO/install.sh" \
   && grep -q 'CHECKSUM MISMATCH' "$MORA_REPO/install.sh" \
   || die "install.sh no longer verifies the download against checksums.txt (supply-chain regression)"
-pass "install.sh verifies remote downloads against checksums.txt"
+grep -q 'refusing to install an unverifiable download' "$MORA_REPO/install.sh" \
+  && grep -q 'no SHA-256 tool found' "$MORA_REPO/install.sh" \
+  || die "install.sh no longer fails closed when checksum verification is unavailable"
+pass "install.sh verifies remote downloads and fails closed when verification is unavailable"
 
 # =============================================================================
 section "Tier 1b — seed a synthetic vault + smoke every command"
