@@ -64,8 +64,10 @@ type doctorReport struct {
 	// never `null` — so a JSON consumer never needs a nil-check.
 	Sources []sourceHealth `json:"sources"`
 	// Index and Producers are the Gate 2 typed arms (HEALTH-09/-10/-11/-12). Index
-	// is a value (always present); Producers is a deterministic non-null array
-	// (empty until PR 4 builds the producer ledger).
+	// is a value (always present); Producers is a deterministic non-null array —
+	// `[]` when nothing is expected (a user who scheduled nothing is never nagged),
+	// and otherwise one record per expected producer, matching the producer_live:*
+	// checks exactly.
 	Index     indexHealth      `json:"index"`
 	Producers []producerHealth `json:"producers"`
 }
@@ -273,7 +275,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// nagged; once a producer is declared/scheduled/adopted, a silence past 2× its
 	// interval fails this critical check — a healthy vault and clean index can no
 	// longer report green while nothing has consumed them.
-	for _, p := range producerHealthAll(cfg, now) {
+	prodHealth := producerHealthAll(cfg, now)
+	for _, p := range prodHealth {
 		checks = append(checks, doctorCheck{Name: "producer_live:" + p.Name, OK: p.State == prodFresh, Critical: true})
 	}
 	// E3 consumer-side detector: if the user demonstrably uses the brief surface (a
@@ -331,7 +334,12 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			Platform:           runtimeGOOS(),
 			Sources:            srcHealth,
 			Index:              idxH,
-			Producers:          []producerHealth{},
+			// The typed producer arm, not PR 1's empty placeholder: with it hardcoded
+			// empty, `doctor --json` reported "producers": [] while its own
+			// producer_live:* checks were failing — the report contradicted the checks
+			// computed three lines above it, and the documented live proof
+			// (`doctor --json | jq '.producers[]'`) could never show anything.
+			Producers: prodHealth,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec

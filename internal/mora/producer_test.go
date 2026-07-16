@@ -35,6 +35,28 @@ func setDoctorClock(t *testing.T, now time.Time) {
 	t.Cleanup(func() { doctorClock = orig })
 }
 
+// stubHealthNotify captures the health toast instead of posting a REAL one. Any
+// test that drives `doctor --pulse` MUST call this: cmdDoctorPulse's alarm path is
+// wired to the live osascript runner and the live runtime.GOOS, so on a developer's
+// macOS an unstubbed test fires a genuine desktop notification carrying the test's
+// own fixture text ("gmail — no successful sync for 72h …"). That is real-world
+// spam from a test suite, and it also makes the toast assertion untestable. The
+// returned pointer holds the captured argv of the last toast (nil if none).
+func stubHealthNotify(t *testing.T) *[]string {
+	t.Helper()
+	origGOOS := runtimeGOOS
+	runtimeGOOS = func() string { return "darwin" } // exercise the alarm path deterministically
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
+	origRunner := doctorNotifyRunner
+	t.Cleanup(func() { doctorNotifyRunner = origRunner })
+	var captured []string
+	doctorNotifyRunner = func(args ...string) error {
+		captured = append([]string(nil), args...)
+		return nil
+	}
+	return &captured
+}
+
 func mustSeedExpected(t *testing.T, cfg Config, exps ...expectedProducer) {
 	t.Helper()
 	m := map[string]expectedProducer{}
@@ -149,6 +171,13 @@ func TestDeadProducerFailsDoctor(t *testing.T) {
 		t.Fatalf("doctor --json missing producer_live:pulse-daily:\n%s", jsonOut)
 	}
 
+	// The typed report must AGREE with its own checks: a producers array hardcoded
+	// empty while producer_live:* fails is a report that contradicts itself (and the
+	// documented `doctor --json | jq '.producers[]'` proof shows nothing).
+	if len(rep.Producers) != 1 || rep.Producers[0].Name != "pulse-daily" || rep.Producers[0].State != prodStale {
+		t.Fatalf("doctor --json .producers must carry the typed arm matching its checks, got %+v", rep.Producers)
+	}
+
 	var strictOut bytes.Buffer
 	if err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
 		t.Fatalf("doctor --strict must error with a dead producer:\n%s", strictOut.String())
@@ -246,13 +275,7 @@ func TestDeadProducerSurfacesWithin24h(t *testing.T) {
 	}
 
 	setDoctorClock(t, now)
-	origGOOS := runtimeGOOS
-	runtimeGOOS = func() string { return "darwin" }
-	t.Cleanup(func() { runtimeGOOS = origGOOS })
-	origRunner := doctorNotifyRunner
-	t.Cleanup(func() { doctorNotifyRunner = origRunner })
-	var toastArgs []string
-	doctorNotifyRunner = func(args ...string) error { toastArgs = append([]string(nil), args...); return nil }
+	toast := stubHealthNotify(t)
 
 	// (2) doctor --json: producer_live:pulse-daily fails; brief_artifact_fresh fails.
 	var rep doctorReport
@@ -277,8 +300,8 @@ func TestDeadProducerSurfacesWithin24h(t *testing.T) {
 	if code, ok := ExitCodeFor(pulseErr); !ok || code != 2 {
 		t.Fatalf("doctor --pulse err = %v, want exit 2\n%s", pulseErr, pulseOut.String())
 	}
-	if len(toastArgs) != 2 || !strings.Contains(toastArgs[1], "pulse-daily") {
-		t.Fatalf("doctor --pulse must toast the dead producer, got argv=%#v", toastArgs)
+	if len(*toast) != 2 || !strings.Contains((*toast)[1], "pulse-daily") {
+		t.Fatalf("doctor --pulse must toast the dead producer, got argv=%#v", *toast)
 	}
 
 	// (5) The daily brief's first content line is the red banner.
@@ -329,6 +352,7 @@ func TestPulseSelfRecoversInOneCadence(t *testing.T) {
 	mustSeedStatus(t, cfg, producerStatus{Name: "doctor-pulse", LastSuccessAt: stale, LastAttemptAt: stale, SuccessTimes: []string{stale}})
 
 	setDoctorClock(t, now)
+	stubHealthNotify(t) // never post a REAL desktop toast from a test
 
 	// Run N: the stale watchman is reported (exit 2), then stamped on the exit-2 path.
 	var out1 bytes.Buffer
@@ -381,6 +405,7 @@ func TestPulseExecStampNeverMasksASickSource(t *testing.T) {
 	mustSeedStatus(t, cfg, producerStatus{Name: "doctor-pulse", LastSuccessAt: fresh, LastAttemptAt: fresh, SuccessTimes: []string{fresh}})
 
 	setDoctorClock(t, now)
+	stubHealthNotify(t) // never post a REAL desktop toast from a test
 
 	for i, label := range []string{"run N", "run N+1"} {
 		var out bytes.Buffer
