@@ -574,7 +574,11 @@ func breakLock(lockPath string, observed []byte) (bool, error) {
 		if testHookBreakLockBeforeRemove != nil {
 			testHookBreakLockBeforeRemove()
 		}
-		if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Windows can transiently deny removal even while Mora holds the lease
+		// guard (for example, an antivirus handle briefly opened without sharing).
+		// A one-shot remove leaks the fresh lease because loopLockReleaser has no
+		// error channel; use the same bounded retry path as owner-CAS release.
+		if err := removeLeaseFileGuarded(lockPath); err != nil {
 			return err
 		}
 		reaped = true
