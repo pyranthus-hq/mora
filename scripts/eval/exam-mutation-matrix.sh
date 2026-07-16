@@ -141,7 +141,11 @@ kill_mutant "production/stripURLs" \
   'text = unwrapHardWraps(text)' \
   ./internal/mora '^TestSabotageGibberishNeverRenders$'
 
-printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/unwrapHardWraps"
+kill_mutant "production/unwrapHardWraps" \
+  internal/mora/meetingbrief.go \
+  $'func unwrapHardWraps(text string) string {\n\tlines := strings.Split(text, "\\n")\n\tvar out strings.Builder\n\tfor i, line := range lines {\n\t\tout.WriteString(line)\n\t\tif i == len(lines)-1 {\n\t\t\tbreak\n\t\t}\n\t\ttrimmed := strings.TrimRight(line, " \\t")\n\t\tnext := strings.TrimLeft(lines[i+1], " \\t")\n\t\tif continuesSentence(trimmed, next) {\n\t\t\tout.WriteByte(\' \')\n\t\t\tcontinue\n\t\t}\n\t\tout.WriteByte(\'\\n\')\n\t}\n\treturn out.String()\n}' \
+  $'func unwrapHardWraps(text string) string {\n\treturn text\n}' \
+  ./internal/mora '^TestExamHardWrapJoinsBeforeSegmenting$'
 
 kill_mutant "production/senderAuthoredBody" \
   internal/mora/meetingbrief.go \
@@ -155,8 +159,17 @@ kill_mutant "production/stripSpeakerPrefix" \
   $'func stripSpeakerPrefix(segment string) string {\n\treturn segment\n}' \
   ./internal/mora '^TestExamIMessageSpeakerPrefixIsNotProductText$'
 
-printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/isForwardedSubject"
-printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/isLeadInFragment"
+kill_mutant "production/isForwardedSubject" \
+  internal/mora/meetingbrief.go \
+  $'func isForwardedSubject(title string) bool {\n\tlower := strings.ToLower(strings.TrimSpace(title))\n\treturn strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")\n}' \
+  $'func isForwardedSubject(title string) bool {\n\treturn false\n}' \
+  ./internal/mora '^TestExamForwardedSubjectNeverBecomesEvidence$'
+
+kill_mutant "production/isLeadInFragment" \
+  internal/mora/meetingbrief.go \
+  $'func isLeadInFragment(text string) bool {\n\tt := strings.TrimSpace(text)\n\tif t == "" {\n\t\treturn true\n\t}\n\tif strings.HasSuffix(t, ":") {\n\t\treturn true\n\t}\n\t// A "sentence" of one or two words is a header, not a statement.\n\treturn len(strings.Fields(t)) < 3\n}' \
+  $'func isLeadInFragment(text string) bool {\n\treturn false\n}' \
+  ./internal/mora '^TestExamLeadInFragmentNeverBecomesEvidence$'
 
 kill_mutant "production/stripNoiseTokens" \
   internal/mora/meetingbrief.go \
@@ -164,7 +177,11 @@ kill_mutant "production/stripNoiseTokens" \
   'segment := strings.TrimSpace(rawSegment)' \
   ./internal/mora '^TestExamCorrectionFlywheel$'
 
-printf 'MUTANT %-43s HOLE issue #139 expires 2026-07-21\n' "production/gmailActionableAsk"
+kill_mutant "production/gmailActionableAsk" \
+  internal/mora/meetingbrief.go \
+  $'func gmailActionableAsk(text string) bool {\n\tif !actionableQuestion(text) {\n\t\treturn false\n\t}\n\tlower := strings.ToLower(text)\n\treturn containsAnyPhrase(lower, interrogativeOpeners) || containsAnyPhrase(lower, directRequestPhrases)\n}' \
+  $'func gmailActionableAsk(text string) bool {\n\treturn actionableQuestion(text)\n}' \
+  ./internal/mora '^TestExamGmailBareQuestionNeedsRealInterrogative$'
 
 kill_mutant "production/containsPhrase" \
   internal/mora/meetingbrief.go \

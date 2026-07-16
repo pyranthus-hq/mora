@@ -27,13 +27,13 @@ coverage.
 | `relationalEvidenceIDs` | CLOSED — `TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation` goes red |
 | `meetingBriefResolveAttribution` | CLOSED — `TestMeetingBriefDropsAmbiguousOutboundGroupAttribution` goes red |
 | `stripURLs` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
-| `unwrapHardWraps` | HOLE — issue #139, expires 2026-07-21 |
+| `unwrapHardWraps` | CLOSED — `TestExamHardWrapJoinsBeforeSegmenting` goes red |
 | `senderAuthoredBody` | CLOSED — `TestExamAuthoredToQuotedDisappearsFromTheRealBrief` goes red |
 | `stripSpeakerPrefix` | CLOSED — `TestExamIMessageSpeakerPrefixIsNotProductText` goes red |
-| `isForwardedSubject` | HOLE — issue #139, expires 2026-07-21 |
-| `isLeadInFragment` | HOLE — issue #139, expires 2026-07-21 |
+| `isForwardedSubject` | CLOSED — `TestExamForwardedSubjectNeverBecomesEvidence` goes red |
+| `isLeadInFragment` | CLOSED — `TestExamLeadInFragmentNeverBecomesEvidence` goes red |
 | `stripNoiseTokens` | CLOSED — `TestExamCorrectionFlywheel` goes red |
-| `gmailActionableAsk` | HOLE — issue #139, expires 2026-07-21 |
+| `gmailActionableAsk` | CLOSED — `TestExamGmailBareQuestionNeedsRealInterrogative` goes red |
 | `containsPhrase` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
 
 ## Matrix 2 — exam machinery
