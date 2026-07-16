@@ -192,9 +192,9 @@ kill_mutant "production/containsPhrase" \
 kill_mutant "surface/direct-wall-clock" \
   internal/mora/mora.go \
   'now := briefClock()
-	added, err := syncTasks' \
+	// pulse-daily producer chokepoint' \
   'now := time.Now()
-	added, err := syncTasks' \
+	// pulse-daily producer chokepoint' \
   ./internal/mora '^TestExamSurfaceClockGuard$'
 
 kill_mutant "surface/daily-cap-drift" \
