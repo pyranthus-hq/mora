@@ -26,9 +26,10 @@ and selected files into human-readable Markdown plus a rebuildable SQLite index
 on your machine. It exposes that corpus to MCP clients and the shell, so several
 agents can retrieve the same history with citations.
 
-Mora does not upload or centrally host your corpus. A connected cloud agent may
-send retrieved snippets to its model provider; that behavior is governed by the
-agent and its organization policy.
+Mora does not upload your corpus by default or centrally host it. Explicit
+backup and sharing commands can send selected data to destinations you control.
+A connected cloud agent may also send retrieved snippets to its model provider;
+that behavior is governed by the agent and its organization policy.
 
 <p align="center">
   <img src="docs/assets/architecture.svg" width="760" alt="Read-only sources flow into a local Markdown vault and SQLite index, then into any MCP client. Backup and sharing are optional network paths."/>
