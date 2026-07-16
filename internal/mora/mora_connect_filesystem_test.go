@@ -61,9 +61,9 @@ func TestConnectFilesystemOneShot(t *testing.T) {
 }
 
 // TestConnectFilesystemMissingPathErrors — a typo'd / nonexistent path must fail
-// loudly at connect time rather than silently registering a source that indexes
-// zero files (the filesystem walk swallows a missing-root error to stay resumable,
-// so the existence check belongs here).
+// loudly at connect time rather than registering a broken source. The ingest walk
+// also fails closed if a previously valid root later disappears; this check keeps
+// the invalid source out of the registry in the first place.
 func TestConnectFilesystemMissingPathErrors(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")

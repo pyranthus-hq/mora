@@ -53,6 +53,39 @@ func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (i
 	}
 	return total, nil
 }
+
+// backfillEnabledFilesystem re-walks every enabled filesystem source, then
+// rebuilds the derived index once so the refreshed files are immediately
+// searchable. A failure in one source does not starve the remaining sources or
+// skip the rebuild, but it is still returned at the end: a partial snapshot must
+// never be reported as wholly fresh.
+func backfillEnabledFilesystem(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
+	sources, err := loadSources(cfg)
+	if err != nil {
+		return 0, fmt.Errorf("load sources: %w", err)
+	}
+	total := 0
+	failures := 0
+	for _, s := range sources {
+		if s.Type != "filesystem" || !s.IsEnabled() {
+			continue
+		}
+		n, ingestErr := ingestSource(cfg, s, stdout)
+		total += n
+		if ingestErr != nil {
+			failures++
+			warnf(stdout, "%s sync incomplete: %v", s.Name, ingestErr)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		return total, err
+	}
+	if failures > 0 {
+		return total, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
+	}
+	return total, nil
+}
+
 func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error) {
 	if len(args) == 0 || args[0] != "run" {
 		return errors.New("usage: mora ingest run --source <name>|--all")
@@ -254,14 +287,17 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 }
 func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) >= 1 && isHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora sync [status|google|imessage|git]")
+		fmt.Fprintln(stdout, "usage: mora sync <status|google|filesystem|imessage|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
+		fmt.Fprintln(stdout, "  filesystem re-index enabled filesystem sources")
 		fmt.Fprintln(stdout, "  imessage  re-run the iMessage backfill")
 		fmt.Fprintln(stdout, "  git       back up the vault to a private git remote (off-device)")
 		fmt.Fprintln(stdout, "            --init [--remote URL | --github [--name repo]] [-m msg]")
-		fmt.Fprintln(stdout, "  (no arg)  re-run the Google backfill")
 		return nil
+	}
+	if len(args) == 0 {
+		return errors.New("usage: mora sync <status|google|filesystem|imessage|git>")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -269,13 +305,13 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	// `mora sync git` — one-way, push-only, fail-loud off-device backup to a
 	// private git remote (opt-in; the vault otherwise never leaves the device).
-	if len(args) >= 1 && args[0] == "git" {
+	if args[0] == "git" {
 		gerr := syncGit(ctx, cfg, args[1:], stdout, realExec)
 		// git-daily producer chokepoint (HEALTH-11).
 		stampChokepoint(cfg, stdout, args, "git-daily", producerClock(), &gerr)
 		return gerr
 	}
-	if len(args) >= 1 && args[0] == "status" {
+	if args[0] == "status" {
 		dir := filepath.Join(cfg.StateDir, "sync")
 		entries, _ := os.ReadDir(dir)
 		if len(entries) == 0 {
@@ -313,16 +349,26 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		return nil
 	}
+	// `mora sync filesystem` — re-walk only the enabled filesystem sources.
+	// Routing is explicit so a typo can never fall through to a networked Google
+	// backfill, and the helper performs one final index rebuild after the walks.
+	if args[0] == "filesystem" {
+		total, err := backfillEnabledFilesystem(ctx, cfg, stdout)
+		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		return err
+	}
 	// `mora sync imessage` — re-run the gated iMessage backfill (shared seam).
-	if len(args) >= 1 && args[0] == "imessage" {
+	if args[0] == "imessage" {
 		total, err := backfillEnabledIMessage(ctx, cfg, stdout)
 		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
 		return err
 	}
-	// `mora sync google` (or bare `mora sync`) — re-run the gated google backfill.
-	total, err := backfillEnabledGoogle(ctx, cfg, stdout)
-	fmt.Fprintf(stdout, "synced %d item(s)\n", total)
-	return err
+	if args[0] == "google" {
+		total, err := backfillEnabledGoogle(ctx, cfg, stdout)
+		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		return err
+	}
+	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|filesystem|imessage|git>)", args[0])
 }
 
 // syncStatusFileThreshold infers the freshness threshold for a raw sync/
@@ -913,9 +959,9 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 		return fmt.Errorf("cannot resolve %q: %w", path, err)
 	}
 	path = abs
-	// Fail loudly on a typo'd path, and require a directory: the filesystem walk
-	// swallows a missing-root error to stay resumable, so without these checks a bad
-	// or non-directory path would register an enabled source that indexes nothing.
+	// Fail loudly on a typo'd path, and require a directory. The ingest walk also
+	// fails closed if a previously valid root later disappears, but connect must not
+	// register a broken source in the first place.
 	fi, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("cannot read %q: %w", path, err)
@@ -1089,9 +1135,13 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	// carries no participant identity, so `forget --handle/--email` never targets it.
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
-	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
+	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// WalkDir reports a missing root and unreadable directories through the
+			// callback. Returning nil here used to convert both into a clean empty
+			// walk, which then stamped LastSuccessAt and made a stale source look
+			// healthy. Abort this source; the caller continues with the next source.
+			return fmt.Errorf("walking filesystem source %q at %q: %w", s.Name, path, walkErr)
 		}
 		if d.IsDir() {
 			if ignore[d.Name()] {
@@ -1121,7 +1171,10 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 			text = t
 		} else {
 			b, rerr := os.ReadFile(path)
-			if rerr != nil || len(b) == 0 {
+			if rerr != nil {
+				return fmt.Errorf("reading filesystem source %q file %q: %w", s.Name, path, rerr)
+			}
+			if len(b) == 0 {
 				return nil
 			}
 			text = string(b)
@@ -1160,12 +1213,27 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	// Record freshness so the brief/digest classifies this source by its real sync
 	// health (new/no-changes/stale) instead of "unavailable (sync error)". Filesystem
 	// has no fetcher Status of its own, so the walk persists one here — mirroring what
-	// the gmail/calendar/imessage sync paths write via memory.SaveStatus.
+	// the gmail/calendar/imessage sync paths write via memory.SaveStatus. Preserve the
+	// previous success timestamps across a failed attempt: LastAttemptAt advances and
+	// LastError is recorded, but LastSynced/LastSuccessAt advance only after a complete
+	// walk (the same honest-snapshot contract memory.Ingest enforces).
 	if p := syncStatusPathFor(cfg, s); p != "" {
+		st, loadErr := memory.LoadStatus(p)
+		if loadErr != nil || st == nil {
+			// The prior implementation overwrote this status on every walk. Keep that
+			// recovery behavior for a malformed legacy file rather than letting status
+			// bookkeeping mask the walk outcome.
+			st = &memory.SyncStatus{}
+		}
 		now := time.Now().UTC().Format(time.RFC3339)
-		st := &memory.SyncStatus{Source: s.Name, ItemCount: count, LastSynced: now, LastAttemptAt: now}
+		st.Source = s.Name
+		st.LastAttemptAt = now
 		if err == nil {
+			st.ItemCount = count
+			st.LastSynced = now
 			st.LastSuccessAt = now
+			st.ErrorCount = 0
+			st.LastError = ""
 		} else {
 			st.ErrorCount = 1
 			st.LastError = err.Error()

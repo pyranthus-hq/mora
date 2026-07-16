@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -566,19 +568,90 @@ func TestCoreB_IngestFilesystem(t *testing.T) {
 func TestCoreB_IngestFilesystemMissingPath(t *testing.T) {
 	cfg := coreBIngestInitCfg(t)
 	var out bytes.Buffer
-	// A missing root: WalkDir surfaces the error to the callback, which swallows
-	// it to stay resumable => (0, nil), and a zero-count status is still written.
+	// A missing root is a failed snapshot, not a clean zero-item walk. The error
+	// must return and the status must record an attempt without claiming success.
 	src := Source{Type: "filesystem", Name: "gone", Path: filepath.Join(t.TempDir(), "does-not-exist"), Scope: "personal"}
 	n, err := ingestFilesystem(cfg, src, &out)
-	if err != nil {
-		t.Fatalf("missing-path ingest err = %v, want nil", err)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-path ingest err = %v, want not-exist", err)
 	}
 	if n != 0 {
 		t.Fatalf("missing-path count = %d, want 0", n)
 	}
+	st, loadErr := memory.LoadStatus(syncStatusPathFor(cfg, src))
+	if loadErr != nil {
+		t.Fatalf("load missing-path status: %v", loadErr)
+	}
+	if st.ItemCount != 0 || st.LastAttemptAt == "" || st.LastError == "" || st.ErrorCount != 1 {
+		t.Fatalf("missing-path failure status = %+v", st)
+	}
+	if st.LastSynced != "" || st.LastSuccessAt != "" {
+		t.Fatalf("missing-path failure claimed a successful snapshot: %+v", st)
+	}
+}
+
+func TestCoreB_IngestFilesystemWalkError(t *testing.T) {
+	skipOnWindows(t, "chmod 0000 does not block WalkDir on Windows; the directory walk error cannot be provoked")
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions; walk error unreachable")
+	}
+	cfg := coreBIngestInitCfg(t)
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	coreBIngestWriteFile(t, filepath.Join(locked, "hidden.md"), "must not be silently skipped")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	src := Source{Type: "filesystem", Name: "locked", Path: root, Scope: "personal"}
+	if _, err := ingestFilesystem(cfg, src, io.Discard); err == nil || !strings.Contains(err.Error(), "walking filesystem source") {
+		t.Fatalf("unreadable directory walk must fail loud, got %v", err)
+	}
 	st, err := memory.LoadStatus(syncStatusPathFor(cfg, src))
-	if err != nil || st.ItemCount != 0 {
-		t.Fatalf("missing-path status = %+v (err %v)", st, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LastError == "" || st.LastAttemptAt == "" || st.LastSuccessAt != "" || st.LastSynced != "" {
+		t.Fatalf("unreadable directory wrote a dishonest status: %+v", st)
+	}
+}
+
+func TestCoreB_IngestFilesystemFailurePreservesPriorSuccess(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	parent := t.TempDir()
+	root := filepath.Join(parent, "source")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	coreBIngestWriteFile(t, filepath.Join(root, "note.md"), "last known good snapshot")
+	src := Source{Type: "filesystem", Name: "docs", Path: root, Scope: "personal"}
+	if _, err := ingestFilesystem(cfg, src, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	before, err := memory.LoadStatus(syncStatusPathFor(cfg, src))
+	if err != nil || before.LastSuccessAt == "" || before.LastSynced == "" {
+		t.Fatalf("initial success status = %+v, err %v", before, err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ingestFilesystem(cfg, src, io.Discard); err == nil {
+		t.Fatal("missing source after a prior success must fail")
+	}
+	after, err := memory.LoadStatus(syncStatusPathFor(cfg, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.LastSuccessAt != before.LastSuccessAt || after.LastSynced != before.LastSynced {
+		t.Fatalf("failed attempt advanced the prior success: before=%+v after=%+v", before, after)
+	}
+	if after.LastAttemptAt == "" || after.LastError == "" || after.ErrorCount != 1 {
+		t.Fatalf("failed attempt was not recorded honestly: %+v", after)
 	}
 }
 
