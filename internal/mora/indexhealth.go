@@ -415,7 +415,7 @@ func healthOf(cfg Config, now time.Time) Health {
 	h := Health{
 		Sources:   sourceHealthAll(cfg, now),
 		Index:     indexHealthOf(cfg, now),
-		Producers: []producerHealth{}, // PR 1: producer ledger not built (fail-open contract)
+		Producers: producerHealthAll(cfg, now), // PR 4: producer liveness (HEALTH-11)
 	}
 	h.State = aggregateHealthState(h)
 	return h

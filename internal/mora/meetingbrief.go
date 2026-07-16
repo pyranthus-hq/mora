@@ -248,10 +248,13 @@ type MeetingBrief struct {
 	// (renderMeetingBrief) reads it directly; the MCP/HTTP payload gets the
 	// bounded projection via Health below instead of this raw arm.
 	idxHealth indexHealth
+	// producerHealth is the producer-liveness arm snapshot (Gate 2 / HEALTH-11),
+	// pinned at build time so a dead automation reaches the meeting brief's banner.
+	producerHealth []producerHealth
 	// Health is the BOUNDED envelope (Packet C1) — meeting_prep returns this
 	// struct directly (no digestMCPPayload-style wrapper to inject into), so the
 	// compact state/banner is a field on the struct itself, computed once at
-	// build time from the SAME SourceHealth/idxHealth snapshot above.
+	// build time from the SAME SourceHealth/idxHealth/producerHealth snapshot above.
 	Health compactHealth `json:"health"`
 }
 
@@ -315,13 +318,15 @@ func buildEventMeetingBrief(ctx context.Context, cfg Config, eventID string, at 
 func buildNextMeetingBrief(ctx context.Context, cfg Config, at time.Time, attendeeFilterIDs map[string]bool, maxTokens, perAttendee int) (MeetingBrief, error) {
 	srcHealth := sourceHealthAll(cfg, at)
 	idxH := indexHealthOf(cfg, at)
+	prodH := producerHealthAll(cfg, at)
 	empty := MeetingBrief{
-		AsOf:         at.UTC().Format(time.RFC3339),
-		Sections:     []MeetingBriefSection{},
-		EgressCalls:  0,
-		SourceHealth: srcHealth,
-		idxHealth:    idxH,
-		Health:       compactHealthFrom(healthFromParts(srcHealth, idxH)),
+		AsOf:           at.UTC().Format(time.RFC3339),
+		Sections:       []MeetingBriefSection{},
+		EgressCalls:    0,
+		SourceHealth:   srcHealth,
+		idxHealth:      idxH,
+		producerHealth: prodH,
+		Health:         compactHealthFrom(healthFromParts(srcHealth, idxH, prodH)),
 	}
 	mems, err := meetingBriefMemories(cfg)
 	if err != nil {
@@ -375,14 +380,16 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 	}
 	srcHealth := sourceHealthAll(cfg, at)
 	idxH := indexHealthOf(cfg, at)
+	prodH := producerHealthAll(cfg, at)
 	brief := MeetingBrief{
-		AsOf:         at.UTC().Format(time.RFC3339),
-		Event:        event,
-		Sections:     []MeetingBriefSection{},
-		EgressCalls:  0,
-		SourceHealth: srcHealth,
-		idxHealth:    idxH,
-		Health:       compactHealthFrom(healthFromParts(srcHealth, idxH)),
+		AsOf:           at.UTC().Format(time.RFC3339),
+		Event:          event,
+		Sections:       []MeetingBriefSection{},
+		EgressCalls:    0,
+		SourceHealth:   srcHealth,
+		idxHealth:      idxH,
+		producerHealth: prodH,
+		Health:         compactHealthFrom(healthFromParts(srcHealth, idxH, prodH)),
 	}
 	// Refuse-to-GAP, not refuse-to-error. If Mora cannot pick the user out of the
 	// invitee list, then ANY invitee could BE the user, so it must not attribute a
@@ -1643,7 +1650,7 @@ func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
 	// is worth surfacing regardless of whether there happens to be an upcoming
 	// event. Pure over the pre-built brief.SourceHealth (no cfg/now at render
 	// time — D-03).
-	if banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.idxHealth}); banner != "" {
+	if banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.idxHealth, Producers: brief.producerHealth}); banner != "" {
 		fmt.Fprintln(w, banner)
 		fmt.Fprintln(w)
 	}

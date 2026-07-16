@@ -116,11 +116,26 @@ func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
 // --pulse --json emits ONLY the sources array (no banner text, no other
 // checks); --pulse --strict is a no-op (--pulse already exits 2 on its own).
 func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) error {
+	// Phase 1 (evaluate): classify the PRIOR ledger — INCLUDING the watchman's own
+	// prior doctor-pulse stamp — before writing anything, so a genuinely-missed
+	// cadence is honestly reported (E4). --pulse now covers sources, the index arm
+	// AND producer liveness; still freshness-only in spirit (no O(vault) walk).
 	srcHealth := sourceHealthAll(cfg, now)
-	// Gate 2: --pulse now covers sources AND the index arm (producers arrive with
-	// PR 4), so a dirty/failed/degraded index makes --pulse exit 2, not just a stale
-	// source. Still freshness-only in spirit: no O(vault) manifest walk here.
-	banner := healthBannerFrom(Health{Sources: srcHealth, Index: indexHealthOf(cfg, now)})
+	banner := healthBannerFrom(Health{
+		Sources:   srcHealth,
+		Index:     indexHealthOf(cfg, now),
+		Producers: producerHealthAll(cfg, now),
+	})
+
+	// Phase 2 (stamp): AFTER evaluation, record that THIS pulse ran to COMPLETION —
+	// unconditionally on the completion path, including the exit-2 path (E4). A dead
+	// watchman must be an alarm, not silence: "doctor-pulse succeeded" means the pulse
+	// executed, NOT that everything is healthy, so a legitimately-failing source can
+	// never rot the watchman arm to stale. Best-effort (never turns exit-2 into exit-1
+	// or masks the verdict). Only the scheduled --pulse path stamps — a plain
+	// `mora doctor` never advances it, so a dev running doctor once cannot silence the
+	// watchman for a cadence. nonInteractive from the writer gates ADOPTION only.
+	defer func() { _ = withProducerStamp(cfg, "doctor-pulse", now, !writerIsTTY(stdout), nil) }()
 
 	if jsonOut {
 		b, err := json.MarshalIndent(struct {
@@ -166,6 +181,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report (with --pulse: only the sources array)")
 	strict := fs.Bool("strict", false, "exit non-zero if a critical health check fails (a no-op alongside --pulse, which already exits 2 on any unhealthy source)")
 	pulse := fs.Bool("pulse", false, "run ONLY the per-source freshness checks; post a native toast and exit 2 when any source is unhealthy, exit 0 when all are fresh")
+	forgetProducer := fs.String("forget-producer", "", "retire a producer by name: remove its expectation and evidence so a stopped or wrongly-adopted job stops reddening health")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -175,6 +191,14 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	now := doctorClock()
+
+	if *forgetProducer != "" {
+		if err := forgetProducerLedger(cfg, *forgetProducer, now); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "retired producer %q (expectation + evidence removed)\n", *forgetProducer)
+		return nil
+	}
 
 	if *pulse {
 		return cmdDoctorPulse(cfg, now, *jsonOut, stdout)
@@ -243,6 +267,21 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// (critical). PR 4's producer_live:* checks are absent here (fail-open contract).
 	mOK, mCritical := indexMatchesVault(cfg)
 	checks = append(checks, doctorCheck{Name: "index_matches_vault", OK: mOK, Critical: mCritical})
+
+	// PR 4 (HEALTH-11): producer liveness flips PR 1's fail-open contract. With no
+	// expectation present the slice is empty, so a user who scheduled nothing is not
+	// nagged; once a producer is declared/scheduled/adopted, a silence past 2× its
+	// interval fails this critical check — a healthy vault and clean index can no
+	// longer report green while nothing has consumed them.
+	for _, p := range producerHealthAll(cfg, now) {
+		checks = append(checks, doctorCheck{Name: "producer_live:" + p.Name, OK: p.State == prodFresh, Critical: true})
+	}
+	// E3 consumer-side detector: if the user demonstrably uses the brief surface (a
+	// dated artifact exists) but the newest is older than 2× the daily cadence, the
+	// surface is stale even if no producer was ever registered.
+	if aOK, present := briefArtifactFresh(cfg, now); present {
+		checks = append(checks, doctorCheck{Name: "brief_artifact_fresh", OK: aOK, Critical: true})
+	}
 
 	healthy := true
 	for _, c := range checks {

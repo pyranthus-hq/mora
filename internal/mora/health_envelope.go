@@ -44,13 +44,18 @@ func compactHealthFrom(h Health) compactHealth {
 }
 
 // healthFromParts assembles a Health from arms a caller already computed at
-// build time (digest/meetingbrief pin Sources/Index once, at buildDigest/
+// build time (digest/meetingbrief pin Sources/Index/Producers once, at buildDigest/
 // buildMeetingBriefFromEvent time) and derives State the SAME way healthOf
 // does — aggregateHealthState, never hand-set — so a caller that skips this
 // and builds a bare Health{Sources:…, Index:…} literal doesn't silently ship
 // an empty .State (compactHealthFrom trusts .State is already aggregated).
-func healthFromParts(sources []sourceHealth, idx indexHealth) Health {
-	h := Health{Sources: sources, Index: idx, Producers: []producerHealth{}}
+//
+// PR 4 threads the producer arm through: with it hardcoded empty, the compact
+// envelope every MCP/meeting_prep caller reads would be blind to a dead producer
+// while the CLI banner (which reads the arms directly) reported it — the two
+// surfaces would disagree about the same vault.
+func healthFromParts(sources []sourceHealth, idx indexHealth, producers []producerHealth) Health {
+	h := Health{Sources: sources, Index: idx, Producers: producers}
 	h.State = aggregateHealthState(h)
 	return h
 }

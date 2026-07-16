@@ -432,6 +432,11 @@ func briefDigest(cfg Config, now time.Time, perSourceCap int) (Digest, error) {
 // Production never reassigns it; the resolver itself already takes now as a param.
 var briefClock = time.Now
 
+// producerClock is the injectable now for producer chokepoint stamps (Packet E /
+// HEALTH-11). Kept out of producer.go so that file never references time.Now
+// (Landmine 5 / the determinism grep). Production never reassigns it; tests do.
+var producerClock = time.Now
+
 // cmdBrief is the `mora brief` session-start command (SC#1): it prints the LOCAL
 // latest-or-generated brief via resolveBrief (D16-1) — zero network, never
 // advances the watermark (D16-2/SC#4). Flags mirror the other surfaces: --json
@@ -540,7 +545,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
-func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) {
 	fs := flag.NewFlagSet("pulse", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	write := fs.Bool("write", false, "write")
@@ -597,6 +602,12 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) error {
 	// persist/notify step (Task 2) so the digest, the dated artifact path, and any
 	// watermark all agree on the logical day (D13-3, determinism).
 	now := briefClock()
+	// pulse-daily producer chokepoint (HEALTH-11): --advance is the scheduled job's
+	// unique watermark-commit surface (D-02) and thus the reliable pulse-daily proxy
+	// (E2b). An ad-hoc preview pulse never advances, so it never stamps this producer.
+	if *advance {
+		defer stampChokepoint(cfg, stdout, args, "pulse-daily", now, &err)
+	}
 	added, err := syncTasks(cfg, *write)
 	if err != nil {
 		return err
