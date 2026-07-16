@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -137,5 +138,55 @@ func TestSyncFilesystemContinuesAfterSourceWalkError(t *testing.T) {
 	}
 	if healthyStatus.LastSuccessAt == "" || healthyStatus.LastError != "" {
 		t.Fatalf("healthy source did not complete after prior failure: %+v", healthyStatus)
+	}
+}
+
+func TestSyncFilesystemUnreadableSelectedFilePreservesLastSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("broken symlink fixture requires POSIX symlink semantics")
+	}
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "selected.md")
+	if err := os.WriteFile(path, []byte("priorreadablemarker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := Source{Name: "docs", Type: "filesystem", Path: root, Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()}
+	if err := saveSources(cfg, []Source{source}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, "sync", "filesystem")
+	statusPath := syncStatusPathFor(cfg, source)
+	before, err := memory.LoadStatus(statusPath)
+	if err != nil || before.LastSuccessAt == "" {
+		t.Fatalf("initial successful status: %+v err=%v", before, err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing-target"), path); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runErr(t, "sync", "filesystem")
+	if err == nil || !strings.Contains(err.Error(), "failed to sync") || !strings.Contains(out, "reading filesystem source") {
+		t.Fatalf("unreadable selected file was reported fresh: err=%v\n%s", err, out)
+	}
+	after, err := memory.LoadStatus(statusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.LastSuccessAt != before.LastSuccessAt || after.LastSynced != before.LastSynced {
+		t.Fatalf("failed file read advanced success: before=%+v after=%+v", before, after)
+	}
+	if after.LastError == "" || after.ErrorCount == 0 || after.LastAttemptAt == "" {
+		t.Fatalf("failed file read was not surfaced in status: %+v", after)
+	}
+
+	var got []Memory
+	if err := json.Unmarshal([]byte(run(t, "search", "priorreadablemarker", "--json")), &got); err != nil || len(got) != 1 {
+		t.Fatalf("last-good memory should remain searchable under failed health: got=%+v err=%v", got, err)
 	}
 }

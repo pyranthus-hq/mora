@@ -1171,7 +1171,10 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 			text = t
 		} else {
 			b, rerr := os.ReadFile(path)
-			if rerr != nil || len(b) == 0 {
+			if rerr != nil {
+				return fmt.Errorf("reading filesystem source %q file %q: %w", s.Name, path, rerr)
+			}
+			if len(b) == 0 {
 				return nil
 			}
 			text = string(b)
