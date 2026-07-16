@@ -1004,20 +1004,6 @@ func startLoopHeartbeat(cfg Config, id, runID string) func() {
 	}
 }
 
-// lockOwner returns the run_id currently holding the lease. present=false when
-// no lock exists; present=true with an empty owner when the lock is corrupt.
-func lockOwner(cfg Config, id string) (owner string, present bool) {
-	data, err := os.ReadFile(loopLockPath(cfg, id))
-	if err != nil {
-		return "", false
-	}
-	var body loopLockBody
-	if json.Unmarshal(data, &body) != nil {
-		return "", true
-	}
-	return body.RunID, true
-}
-
 // releaseLoopLockFor removes the lease only if it still belongs to owner (or is
 // absent / unreadable / legacy with no run_id). Owner check and removal share
 // the same guard as publish/reap/heartbeat, so neither a newer owner nor a
