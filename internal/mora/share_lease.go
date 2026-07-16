@@ -132,7 +132,8 @@ const shareHeartbeatDivisor = 3
 // startImportHeartbeat runs a background CAS re-stamp every shareImportTTL/3 for
 // the whole hold. If the re-stamp finds the lease is no longer ours (reaped), it
 // stops; the commit fence's own re-verify then aborts the run. The returned stop
-// func halts the ticker.
+// func halts the ticker and waits for an in-flight heartbeat to leave the lease
+// guard before the caller performs its final release.
 func startImportHeartbeat(cfg Config, name, runID string) (stop func()) {
 	return startShareLeaseHeartbeat(shareImportLockPath(cfg, name), runID)
 }

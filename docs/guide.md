@@ -271,6 +271,8 @@ mora brief                          # read side: print today's brief (generates 
 mora brief --fresh                  # regenerate today's brief even if one already exists
 ```
 
+`pulse-daily` enters through Mora's durable `daily-brief` loop: a duplicate same-day scheduler fire is a no-op, and the advancing pulse actively renews its lease and holds its owner fence through the complete watermark transaction. A successful transaction records a durable effect checkpoint before releasing that fence, so a crash before final `loop done` bookkeeping still cannot advance twice. Existing schedules installed by older Mora versions are runtime-routed through the same gate; reinstalling updates their stored command but is not required for safety.
+
 **Claude Code** runs `SessionStart` hooks and injects their stdout as context. Add to
 `~/.claude/settings.json` (alongside any existing hooks):
 

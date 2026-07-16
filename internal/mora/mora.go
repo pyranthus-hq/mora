@@ -546,6 +546,25 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
+// legacyPulseDailyInvocation recognizes the exact command line written by Mora
+// versions that installed pulse-daily before the durable schedule wrapper. An
+// upgraded binary can therefore repair already-installed launchd, cron, and
+// Task Scheduler entries at runtime; users do not need to reinstall before the
+// once-per-day gate becomes effective. The wrapper's inner pulse includes
+// --loop/--loop-run and cannot recurse through this compatibility bridge.
+func legacyPulseDailyInvocation(args []string) bool {
+	want := [...]string{"--write", "--digest", "--advance", "--sync", "--brief-file", "--notify"}
+	if len(args) != len(want) {
+		return false
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) {
 	fs := flag.NewFlagSet("pulse", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -559,6 +578,13 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 	// ONLY when this is passed — the scheduled pulse-daily job is the sole caller.
 	// An explicit --since-hours run never advances regardless.
 	advance := fs.Bool("advance", false, "commit the delta watermark (the only surface that advances it; default preview)")
+	// --loop/--loop-run bind an advancing pulse to the durable run that authorized
+	// it. Official advancing callers (the daily-brief skill and pulse-daily
+	// scheduler wrapper) always pass both. The pair starts an active heartbeat and
+	// is owner-fenced again immediately before the watermark commit, so a reaped or
+	// superseded process cannot continue its non-idempotent effect.
+	loopID := fs.String("loop", "", "durable loop id authorizing this advancing pulse")
+	loopRunID := fs.String("loop-run", "", "durable loop run id authorizing this advancing pulse")
 	// --sync (D13-4): refresh enabled sources BEFORE building the digest, so the
 	// brief reflects current data. Default OFF — ad-hoc pulse never touches the
 	// network; the scheduled pulse-daily job is the sole caller that opts in. A sync
@@ -594,15 +620,31 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if (*loopID == "") != (*loopRunID == "") {
+		return errors.New("mora pulse: --loop and --loop-run must be passed together")
+	}
+	if *loopID != "" && (!*advance || *sinceHours > 0) {
+		return errors.New("mora pulse: --loop/--loop-run are only valid for a delta --advance run")
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	if legacyPulseDailyInvocation(args) {
+		return runScheduledPulseDaily(ctx, cfg, stdout)
 	}
 	// One clock: compute now ONCE through the shared brief-surface seam and thread
 	// the SAME value into buildDigest and the
 	// persist/notify step (Task 2) so the digest, the dated artifact path, and any
 	// watermark all agree on the logical day (D13-3, determinism).
 	now := briefClock()
+	if *loopID != "" {
+		if err := heartbeatLoopRun(cfg, *loopID, *loopRunID, loopClock()); err != nil {
+			return fmt.Errorf("advancing pulse loop fence: %w", err)
+		}
+		stopHeartbeat := startLoopHeartbeat(cfg, *loopID, *loopRunID)
+		defer stopHeartbeat()
+	}
 	// pulse-daily producer chokepoint (HEALTH-11): --advance is the scheduled job's
 	// unique watermark-commit surface (D-02) and thus the reliable pulse-daily proxy
 	// (E2b). An ad-hoc preview pulse never advances, so it never stamps this producer.
@@ -670,7 +712,22 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 			// Budget stdout, the artifact, and the commit at the SAME persist budget so
 			// all three agree on exactly which items were shown.
 			budgetChars := cfg.contextDefaultTokens() * charsPerToken
-			bd, path, aerr := advanceBrief(cfg, now, opts, budgetChars, *briefFile)
+			var bd Digest
+			var path string
+			advance := func() error {
+				var aerr error
+				bd, path, aerr = advanceBrief(cfg, now, opts, budgetChars, *briefFile)
+				return aerr
+			}
+			var aerr error
+			if *loopID != "" {
+				// Hold the loop's OS guard across the ENTIRE non-idempotent
+				// build/persist/watermark transaction. A suspended holder cannot be
+				// reaped between an owner check and the effect it authorized.
+				aerr = withLoopRunEffect(cfg, *loopID, *loopRunID, advance)
+			} else {
+				aerr = advance()
+			}
 			if aerr != nil {
 				return aerr
 			}
@@ -994,10 +1051,11 @@ const mcpDigestMaxItems = 500
 
 // scheduleCommands maps each scheduled job to its `mora <args>` command line.
 //
-// pulse-daily is the ONLY caller that passes --advance (D-02/SC#4): it is the
-// single surface that commits the delta watermark. The 08:00 calendar interval
-// (launchdSchedule) plus the dropped RunAtLoad (see schedulePlistFor) make it a
-// once-daily commit — a reboot/login no longer re-consumes the morning delta.
+// pulse-daily enters through `schedule run pulse-daily`, whose durable wrapper
+// opens the daily-brief loop gate and passes its run identity to the advancing
+// pulse. The 08:00 calendar interval (launchdSchedule) plus the dropped RunAtLoad
+// (see schedulePlistFor) make it a once-daily commit — and the loop gate makes a
+// duplicate scheduler fire a durable no-op rather than a second advance.
 //
 // Phase 13 (D13-5) makes pulse-daily the sole caller that opts into the
 // sync-first + persist + notify trio: --sync refreshes enabled sources before the
@@ -1005,7 +1063,7 @@ const mcpDigestMaxItems = 500
 // and --notify posts the gated macOS toast. --write/--digest/--advance are
 // preserved verbatim; --advance remains the ONLY watermark-commit surface (D-02).
 var scheduleCommands = map[string]string{
-	"pulse-daily":   "pulse --write --digest --advance --sync --brief-file --notify",
+	"pulse-daily":   "schedule run pulse-daily",
 	"index-hourly":  "index rebuild",
 	"backup-daily":  "backup",
 	"lint-weekly":   "lint",

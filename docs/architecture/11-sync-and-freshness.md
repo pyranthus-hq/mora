@@ -74,15 +74,15 @@ This is the load-bearing nuance that keeps sync-first honest. The two backfill e
 
 Aborting the whole brief on a single source's sync error would defeat the point: **a partial honest brief beats no brief** (T-13-12). So a Gmail auth-expiry on the 7am cron still produces a brief — with iMessage current and Gmail honestly flagged `unavailable` — rather than a silent no-show. This is the same "never swallow a sync error — surface it" invariant the rest of this doc enforces, now extended to the scheduled job: the error changes how the source is *labelled*, not whether the brief *exists*.
 
-### The updated `pulse-daily` command string
+### The durable `pulse-daily` wrapper
 
-Phase 13 makes `pulse-daily` the sole caller of the sync-first + persist + notify trio, by APPENDING three flags to the Phase-12 string (`scheduleCommands`, `internal/mora/mora.go:3282`):
+The OS scheduler does not invoke the non-idempotent pulse directly. Its stable command enters the durable loop wrapper (`scheduleCommands`, `internal/mora/mora.go`):
 
 ```
-scheduleCommands["pulse-daily"] = "pulse --write --digest --advance --sync --brief-file --notify"
+scheduleCommands["pulse-daily"] = "schedule run pulse-daily"
 ```
 
-`--write`/`--digest`/`--advance` are preserved verbatim. `--sync` is the sync-first refresh above; `--brief-file` persists the dated vault artifact and `--notify` posts the macOS toast (both in [synthesis-think-digest](./07-synthesis-think-digest.md)). Critically, **`--advance` remains the SOLE watermark-commit surface** (D-02): sync-first refreshes the *snapshot* (`sync/`), `--advance` advances the *delta watermark* (`brief/`), and `--brief-file` writes the *artifact* (`briefs/`) — three independent stores, only `--advance` commits the delta. The `RunAtLoad` drop (gotcha below) still applies, so a reboot does not re-fire this once-daily commit.
+`runScheduledPulseDaily` opens `loop begin daily-brief`, treats an already-succeeded day as a successful no-op, and only then calls `cmdPulse` with `--write --digest --advance --sync --brief-file --notify --loop daily-brief --loop-run <run_id>`. The pulse heartbeats the active lease, then holds that loop's persistent OS guard across the complete `advanceBrief` build/persist/watermark transaction; a holder suspended after validation cannot be TTL-reaped midway through its effect, while a holder reaped before acquiring the guard fails validation and never enters it. Before releasing the guard after success, Mora persists `effect_committed_at` in the run record. That checkpoint is an at-most-once terminal fence for the effect even while the human-facing run remains `running`/`failed`: a process suspended or killed after watermark commit but before `loop done` cannot cause a same-period replacement to advance again. The wrapper records exactly one `loop done` success/failure before returning. `--sync` is the sync-first refresh above; `--brief-file` persists the dated vault artifact and `--notify` posts the macOS toast (both in [synthesis-think-digest](./07-synthesis-think-digest.md)). Critically, **`--advance` remains the SOLE watermark-commit surface** (D-02): sync-first refreshes the *snapshot* (`sync/`), `--advance` advances the *delta watermark* (`brief/`), and `--brief-file` writes the *artifact* (`briefs/`) — three independent stores, only `--advance` commits the delta. The exact command line written by pre-wrapper Mora versions (`pulse --write --digest --advance --sync --brief-file --notify`) is recognized by the upgraded binary and routed through this same durable wrapper, so an existing launchd/cron/Task Scheduler entry is protected before reinstall. The `RunAtLoad` drop still applies as defense in depth; duplicate fires are now rejected by durable same-period state as well.
 
 ## `SyncStatus`: per-source persisted state
 
@@ -363,7 +363,7 @@ Mora's otherwise-zero-egress posture, so the design is opt-in and loud by constr
 - [synthesis-think-digest](./07-synthesis-think-digest.md) — how `digest`/`context_memory` embed `sourceFreshness` into agent-facing results, the `brief/` watermark store, and the digest three-state that reads the M-3 health fields.
 - [meeting-brief-assembly](./19-meeting-brief-assembly.md) — where `MeetingBrief.SourceHealth` is populated and the banner is rendered ahead of the cited sections.
 - [cli-and-ux](./08-cli-and-ux.md) — `mora sync` subcommands, the lipgloss styler, byte-clean non-TTY output.
-- [distribution-and-ops](./10-distribution-and-ops.md) — `mora schedule install` launchd jobs, the periodic `ingest run --all` re-pull, state-dir layout. Note the `pulse-daily` job (Phase 13: `pulse --write --digest --advance --sync --brief-file --notify`) drops `RunAtLoad` (`scheduleRunAtLoad`, `internal/mora/schedule.go`) so a reboot/login no longer re-fires the once-daily watermark commit and consumes the morning delta.
+- [distribution-and-ops](./10-distribution-and-ops.md) — `mora schedule install` launchd jobs, the periodic `ingest run --all` re-pull, state-dir layout. Note the `pulse-daily` job enters through `schedule run pulse-daily` and drops `RunAtLoad` (`scheduleRunAtLoad`, `internal/mora/schedule.go`); the wrapper's daily loop gate makes duplicate same-day fires no-ops.
 
 ## Open questions / unverified
 

@@ -23,9 +23,13 @@ Run exactly:
 mora loop begin daily-brief --json
 ```
 
-Branch on the result — do nothing else until you have:
+Branch on the result — do nothing else until you have. Both
+`already-succeeded` and `effect-already-committed` are exit-10 no-op results;
+the latter means the watermark transaction completed but later presentation or
+terminal bookkeeping did not:
 
 - **Exit 10**, body `{"skip":"already-succeeded"}` → today's brief already ran and succeeded. Do **NOT** sync, do **NOT** pulse, do **NOT** call the MCP `brief` tool, do **NOT** advance anything. Print today's existing dated artifact verbatim and STOP. Read it from the vault (`mora brief --json` returns the freshest persisted brief; or read `briefs/<today-UTC>-brief.md` directly) and present it with a one-line note: "Already ran today — this is the saved brief." Then end the turn. **Re-running after a skip to "fill gaps" is a contract violation: the dated artifact is the source of truth.**
+- **Exit 10**, body `{"skip":"effect-already-committed"}` → the advancing transaction completed, but the prior process did not finish presentation or `loop done`. Apply the exact same no-op rule: read and present the saved dated artifact, then STOP. Never issue another `--advance`.
 - **Exit 0** → the gate is open. The JSON body includes a `"run_id"` — **note it now**; you pass it back to `loop done` in Step 4 (`--run <run_id>`) so a late or duplicate close can never clobber a newer run. Proceed to Step 2.
 - **Any other non-zero exit** → the loop could not open (lock held, config error). Report the error verbatim and STOP. Do not improvise around a closed gate.
 
@@ -33,10 +37,18 @@ Branch on the result — do nothing else until you have:
 
 ### Step 2 — Run the single advancing pulse (checkpoint each stage)
 
-The day's work is **one** command that does sync → build → advance → persist atomically:
+Refresh the lease once before starting work:
 
 ```
-mora pulse --digest --sync --advance --brief-file --write
+mora loop heartbeat daily-brief --run <run_id>
+```
+
+If heartbeat says the run is superseded, terminal, or no longer owns the lease, STOP. Do not pulse and do not try to reclaim the run in-place.
+
+Then the day's work is **one** command that does sync → build → advance → persist atomically while actively heartbeating the same durable run:
+
+```
+mora pulse --digest --sync --advance --brief-file --write --loop daily-brief --loop-run <run_id>
 ```
 
 What each flag means and why it must be exactly this set:
@@ -45,6 +57,7 @@ What each flag means and why it must be exactly this set:
 - `--advance` — commits the delta watermark. **This is the ONLY surface in all of Mora that advances the watermark, and it must run AT MOST ONCE per logical day.** Advancing twice double-consumes the delta, so the second run's brief looks empty and the day's real changes are silently lost.
 - `--brief-file` — persists the dated artifact `briefs/<UTC-date>-brief.md` (same-day re-write overwrites; one file per day).
 - `--write` — records the run in the local log.
+- `--loop daily-brief --loop-run <run_id>` — binds the non-idempotent advance to the run opened in Step 1. Mora heartbeats it while sync/build runs and owner-fences it again immediately before committing the watermark. A stalled process that has already been reaped cannot continue advancing.
 
 > Guardrail (the single most dangerous failure): in one run you execute **at most one** command that contains both `mora pulse` and `--advance`. If that command has already executed in this run — even if you are unsure whether it succeeded — **do NOT run it again**. To check what happened, READ the brief artifact (`mora brief --json`) or call `mora loop done daily-brief --fail "<reason>"`; never re-issue the advancing pulse to "retry." A re-issued `--advance` is an un-undoable watermark double-advance.
 
@@ -84,8 +97,8 @@ Then **offer** `write_memory` to close the loop durably (do not force it): a one
 | Situation | What you run | What you must NOT run |
 |---|---|---|
 | Start of the loop | `mora loop begin daily-brief --json` | anything before it |
-| begin → exit 10 `already-succeeded` | print today's `briefs/<today>-brief.md` (via `mora brief`), STOP | sync, `pulse`, MCP `brief`, any `--advance` |
-| begin → exit 0 | one `mora pulse --digest --sync --advance --brief-file --write` | a second `--advance`; split sync+pulse |
+| begin → exit 10 `already-succeeded` or `effect-already-committed` | print today's `briefs/<today>-brief.md` (via `mora brief`), STOP | sync, `pulse`, MCP `brief`, any `--advance` |
+| begin → exit 0 | `mora loop heartbeat daily-brief --run <run_id>`, then one fenced `mora pulse --digest --sync --advance --brief-file --write --loop daily-brief --loop-run <run_id>` | an unfenced or second `--advance`; split sync+pulse |
 | Reading back / follow-up question after pulse | `mora brief` or MCP `brief` (read-only) | any `pulse --advance` |
 | Sync warning during pulse | continue, surface it in the "does NOT know" line | aborting the loop |
 | After presenting the brief | `mora loop done daily-brief --ok --run <run_id>` | `--ok` before presenting |
@@ -95,7 +108,7 @@ Then **offer** `write_memory` to close the loop durably (do not force it): a one
 ## Silent-violation checklist (the contract this skill enforces)
 
 1. **Skipping the begin gate** → always run `mora loop begin daily-brief --json` first; no sync/pulse/brief without seeing its exit code in this run.
-2. **Ignoring the exit-10 skip** → on `{"skip":"already-succeeded"}`, print the existing dated brief and STOP; never proceed to a real run.
+2. **Ignoring the exit-10 skip** → on `already-succeeded` or `effect-already-committed`, print the existing dated brief and STOP; never proceed to a real run.
 3. **Double-advance** → at most ONE `pulse … --advance` per run; never re-issue it, even under uncertainty.
 4. **Retry-by-re-advancing** → to recover from doubt, READ the artifact or `loop done --fail`; never rerun the advancing pulse.
 5. **Using the read-only `brief` as the real run** → MCP `brief`/`mora brief` are preview-only; they never replace the gated `pulse --advance`.
@@ -103,7 +116,8 @@ Then **offer** `write_memory` to close the loop durably (do not force it): a one
 7. **Any send/notify** → NO-SEND invariant: never email, reply, draft, post, DM, message, create events/tickets, or notify outbound.
 8. **`done --ok` before presenting** → only mark success after the human has seen the brief.
 9. **Leaving the loop open** → every `begin` (exit 0) is closed by `done` (`--ok` or `--fail`) in the same run.
-10. **Re-running after a skip to "fill gaps"** → after `already-succeeded`, the dated artifact is the single source of truth; run nothing else.
+10. **Re-running after a skip to "fill gaps"** → after either exit-10 skip, the dated artifact is the single source of truth; run nothing else.
+11. **Advancing without an active owner fence** → heartbeat the run, then pass its exact id through `--loop daily-brief --loop-run <run_id>`; never strip those flags from the advancing pulse.
 
 ## Privacy
 

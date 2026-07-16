@@ -233,10 +233,9 @@ func TestReapStaleLock_CorruptIsStale(t *testing.T) {
 	}
 }
 
-// TestBreakLock_ContentChangedRestores: if the lock no longer holds the bytes we
-// judged stale (a fresh holder republished), breakLock must NOT delete it — it
-// claims, sees the mismatch, and restores the fresh lock.
-func TestBreakLock_ContentChangedRestores(t *testing.T) {
+// TestBreakLock_ContentChangedPreserves: if the lock no longer holds the bytes
+// we judged stale, breakLock must leave the newer holder untouched.
+func TestBreakLock_ContentChangedPreserves(t *testing.T) {
 	cfg := loopTestCfg(t)
 	writeRawFile(t, loopLockPath(cfg, "L"), []byte("AAA-fresh-holder"))
 	reaped, err := breakLock(loopLockPath(cfg, "L"), []byte("BBB-what-we-observed"))
@@ -245,7 +244,168 @@ func TestBreakLock_ContentChangedRestores(t *testing.T) {
 	}
 	got, rerr := os.ReadFile(loopLockPath(cfg, "L"))
 	if rerr != nil || string(got) != "AAA-fresh-holder" {
-		t.Fatalf("a fresh holder's lock must be restored intact; got %q err=%v", got, rerr)
+		t.Fatalf("a fresh holder's lock must remain intact; got %q err=%v", got, rerr)
+	}
+}
+
+// TestBreakLockSerializesRemoveBeforeFreshPublish is the issue-58 race witness:
+// a publisher arriving at breakLock's remove boundary must wait until the stale
+// inode is removed, then publish successfully. The old rename-away/restore
+// sequence exposed a free path and could drop this fresh inode on restore EEXIST.
+func TestBreakLockSerializesRemoveBeforeFreshPublish(t *testing.T) {
+	cfg := loopTestCfg(t)
+	path := loopLockPath(cfg, "L")
+	stale := []byte("stale-holder")
+	fresh := []byte("fresh-holder")
+	writeRawFile(t, path, stale)
+
+	type publishResult struct {
+		published bool
+		err       error
+	}
+	started := make(chan struct{})
+	result := make(chan publishResult, 1)
+	testHookBreakLockBeforeRemove = func() {
+		go func() {
+			close(started)
+			published, err := publishLockFile(path, fresh)
+			result <- publishResult{published: published, err: err}
+		}()
+		<-started
+		select {
+		case got := <-result:
+			t.Fatalf("fresh publisher completed inside breakLock's guarded remove: %+v", got)
+		case <-time.After(50 * time.Millisecond):
+			// Expected: publisher is blocked on the persistent OS guard.
+		}
+	}
+	t.Cleanup(func() { testHookBreakLockBeforeRemove = nil })
+
+	reaped, err := breakLock(path, stale)
+	if err != nil || !reaped {
+		t.Fatalf("breakLock(stale) = (%v,%v), want (true,nil)", reaped, err)
+	}
+	got := <-result
+	if got.err != nil || !got.published {
+		t.Fatalf("fresh publisher after serialized remove = %+v, want published", got)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(body, fresh) {
+		t.Fatalf("fresh lock was dropped after break: body=%q err=%v", body, err)
+	}
+}
+
+// TestLeaseGuardPlacementSafety pins both guard-path safety properties: stable
+// guards remain within Mora-controlled writable roots, while a share-import
+// guard stays outside the removable subscription root it serializes.
+func TestLeaseGuardPlacementSafety(t *testing.T) {
+	base := t.TempDir()
+	cfg := Config{
+		VaultDir: filepath.Join(base, "vault"),
+		DataDir:  filepath.Join(base, "data"),
+	}
+	inside := func(root, path string) bool {
+		root = resolveRealDeep(root)
+		path = resolveRealDeep(path)
+		rel, err := filepath.Rel(root, path)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+
+	govGuard := leaseGuardPath(governanceLockPath(cfg))
+	if !inside(cfg.VaultDir, govGuard) {
+		t.Fatalf("governance guard %q escaped writable vault root %q", govGuard, cfg.VaultDir)
+	}
+	if !strings.HasSuffix(govGuard, ".lock") {
+		t.Fatalf("guard %q must retain a .lock ignore suffix", govGuard)
+	}
+
+	shareRoot := shareSubRoot(cfg, "neil")
+	shareGuard := leaseGuardPath(shareImportLockPath(cfg, "neil"))
+	if inside(shareRoot, shareGuard) {
+		t.Fatalf("share guard %q must live outside removable root %q", shareGuard, shareRoot)
+	}
+}
+
+// TestLeaseGuardCanonicalizesSymlinkAliases pins guard identity to the real
+// filesystem path, not its spelling. This is the same shape as macOS
+// /tmp -> /private/tmp and a symlinked MORA_CONFIG_DIR captured differently by
+// a scheduler and an interactive shell.
+func TestLeaseGuardCanonicalizesSymlinkAliases(t *testing.T) {
+	realRoot := t.TempDir()
+	aliasParent := t.TempDir()
+	aliasRoot := filepath.Join(aliasParent, "config-alias")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	realLock := filepath.Join(realRoot, "nested", "sources.json.lock")
+	aliasLock := filepath.Join(aliasRoot, "nested", "sources.json.lock")
+	if got, want := leaseGuardPath(aliasLock), leaseGuardPath(realLock); got != want {
+		t.Fatalf("one lease through symlink aliases produced different guards:\n alias: %s\n  real: %s", got, want)
+	}
+}
+
+// TestLeaseGuardSurvivesShareRootRemoval is the inode-split regression: deleting
+// and recreating subs/<name> while one process holds its import guard must not
+// let another process open a different guard inode and enter concurrently.
+func TestLeaseGuardSurvivesShareRootRemoval(t *testing.T) {
+	cfg := Config{DataDir: t.TempDir()}
+	root := shareSubRoot(cfg, "neil")
+	lockPath := shareImportLockPath(cfg, "neil")
+
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- withLeaseFileGuard(lockPath, func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+
+	if err := os.RemoveAll(root); err != nil {
+		close(releaseFirst)
+		<-firstDone
+		t.Fatalf("remove share root: %v", err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		close(releaseFirst)
+		<-firstDone
+		t.Fatalf("recreate share root: %v", err)
+	}
+
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- withLeaseFileGuard(lockPath, func() error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+	premature := false
+	select {
+	case <-secondEntered:
+		premature = true
+	case <-time.After(50 * time.Millisecond):
+		// Expected: both opens target the persistent guard outside shareRoot.
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first guard: %v", err)
+	}
+	if !premature {
+		select {
+		case <-secondEntered:
+		case <-time.After(time.Second):
+			t.Fatal("second guard did not enter after first released")
+		}
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second guard: %v", err)
+	}
+	if premature {
+		t.Fatal("share-root removal split one logical guard into two concurrently held inodes")
 	}
 }
 
@@ -540,6 +700,212 @@ func TestLoopDone_FailKeepsRetryable(t *testing.T) {
 	}
 }
 
+// TestLoopDoneRejectsDuplicateTerminalTransition pins issue #58's terminal
+// guard: a duplicate done cannot rewrite succeeded -> failed, append a second
+// journal line, or reopen the same-day begin gate.
+func TestLoopDoneRejectsDuplicateTerminalTransition(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	if err := loopDone(cfg, "daily-brief", rec.RunID, true, "", loopNow, &out); err != nil {
+		t.Fatalf("first done: %v", err)
+	}
+	journalBefore := readJournal(t, cfg, "daily-brief")
+
+	err := loopDone(cfg, "daily-brief", rec.RunID, false, "late failure", loopNow.Add(time.Minute), &out)
+	if err == nil || !strings.Contains(err.Error(), "already terminal") {
+		t.Fatalf("duplicate done error = %v, want already-terminal refusal", err)
+	}
+	after, _ := loadRunRecord(cfg, "daily-brief")
+	if after.Status != loopRunSucceeded || after.LastError != "" {
+		t.Fatalf("duplicate done rewrote terminal record: %+v", after)
+	}
+	if journalAfter := readJournal(t, cfg, "daily-brief"); len(journalAfter) != len(journalBefore) {
+		t.Fatalf("duplicate done appended journal: before=%v after=%v", journalBefore, journalAfter)
+	}
+	out.Reset()
+	err = loopBegin(cfg, "daily-brief", true, loopNow.Add(2*time.Minute), &out)
+	if code, ok := ExitCodeFor(err); !ok || code != loopSkipExitCode {
+		t.Fatalf("same-day begin after duplicate done = %v, want exit %d", err, loopSkipExitCode)
+	}
+}
+
+// TestLoopHeartbeatKeepsLongRunUnreapable proves an active run can cross the
+// original 15-minute lease age without a second begin reclaiming it. Heartbeat
+// refreshes both lock acquired_at and latest.json heartbeat_at owner-CAS.
+func TestLoopHeartbeatKeepsLongRunUnreapable(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	heartbeatAt := loopNow.Add(14 * time.Minute)
+	if err := heartbeatLoopRun(cfg, "daily-brief", rec.RunID, heartbeatAt); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	refreshed, _ := loadRunRecord(cfg, "daily-brief")
+	if refreshed.HeartbeatAt != heartbeatAt.Format(time.RFC3339) {
+		t.Fatalf("record heartbeat_at = %q, want %q", refreshed.HeartbeatAt, heartbeatAt.Format(time.RFC3339))
+	}
+	data, err := os.ReadFile(loopLockPath(cfg, "daily-brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body loopLockBody
+	if json.Unmarshal(data, &body) != nil || body.RunID != rec.RunID || body.AcquiredAt != heartbeatAt.Format(time.RFC3339) {
+		t.Fatalf("heartbeated lease = %+v; body=%s", body, data)
+	}
+
+	out.Reset()
+	err = loopBegin(cfg, "daily-brief", true, loopNow.Add(20*time.Minute), &out)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second begin after active heartbeat = %v, want held-lease refusal", err)
+	}
+	current, _ := loadRunRecord(cfg, "daily-brief")
+	if current.RunID != rec.RunID || current.Attempt != 1 {
+		t.Fatalf("active run was reclaimed despite heartbeat: %+v", current)
+	}
+}
+
+// TestLoopEffectGuardBlocksTTLReclaim forces the issue-58 post-fence stall:
+// run A passes its owner fence and then pauses inside the non-idempotent effect
+// past the old TTL while run B attempts reclaim. B must remain blocked until A
+// finishes, then observe A's post-effect heartbeat and refuse to start.
+func TestLoopEffectGuardBlocksTTLReclaim(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin A: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	later := loopNow.Add(20 * time.Minute)
+	origClock := loopClock
+	t.Cleanup(func() { loopClock = origClock })
+	loopClock = func() time.Time { return later }
+
+	entered := make(chan struct{})
+	releaseEffect := make(chan struct{})
+	effectDone := make(chan error, 1)
+	effects := 0
+	go func() {
+		effectDone <- withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error {
+			effects++
+			close(entered)
+			<-releaseEffect
+			return nil
+		})
+	}()
+	<-entered
+
+	beginDone := make(chan error, 1)
+	go func() {
+		var beginOut bytes.Buffer
+		beginDone <- loopBegin(cfg, "daily-brief", true, later, &beginOut)
+	}()
+	premature := false
+	var beginErr error
+	select {
+	case beginErr = <-beginDone:
+		premature = true
+	case <-time.After(50 * time.Millisecond):
+		// Expected: reclaim is blocked on the same OS guard as the effect.
+	}
+	close(releaseEffect)
+	if err := <-effectDone; err != nil {
+		t.Fatalf("guarded effect: %v", err)
+	}
+	if premature {
+		t.Fatal("run B reclaimed while run A was inside its fenced effect")
+	}
+	if !premature {
+		beginErr = <-beginDone
+	}
+	if beginErr == nil || !strings.Contains(beginErr.Error(), "already running") {
+		t.Fatalf("begin B after A post-heartbeat = %v, want held-lease refusal", beginErr)
+	}
+	current, _ := loadRunRecord(cfg, "daily-brief")
+	if effects != 1 || current.RunID != rec.RunID || current.Attempt != 1 {
+		t.Fatalf("effect/reclaim state = effects:%d record:%+v, want one effect and original attempt", effects, current)
+	}
+}
+
+// TestLoopEffectCheckpointStopsPostEffectTTLReclaim covers the other side of
+// the effect boundary: if A commits and is then suspended before loopDone, its
+// durable effect marker must make a >TTL same-period begin skip, not run a
+// second advance. The same run also cannot invoke the effect twice directly.
+func TestLoopEffectCheckpointStopsPostEffectTTLReclaim(t *testing.T) {
+	cfg := loopTestCfg(t)
+	var out bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, loopNow, &out); err != nil {
+		t.Fatalf("begin A: %v", err)
+	}
+	rec, _ := loadRunRecord(cfg, "daily-brief")
+	effectAt := loopNow.Add(time.Minute)
+	origClock := loopClock
+	t.Cleanup(func() { loopClock = origClock })
+	loopClock = func() time.Time { return effectAt }
+
+	effects := 0
+	if err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error {
+		effects++
+		return nil
+	}); err != nil {
+		t.Fatalf("first effect: %v", err)
+	}
+	committed, _ := loadRunRecord(cfg, "daily-brief")
+	if committed.EffectCommittedAt != effectAt.Format(time.RFC3339) {
+		t.Fatalf("effect_committed_at = %q, want %q", committed.EffectCommittedAt, effectAt.Format(time.RFC3339))
+	}
+	if err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error {
+		effects++
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "already committed") {
+		t.Fatalf("duplicate same-run effect = %v, want committed refusal", err)
+	}
+	if effects != 1 {
+		t.Fatalf("effect executions = %d, want exactly one", effects)
+	}
+
+	out.Reset()
+	err := loopBegin(cfg, "daily-brief", true, loopNow.Add(20*time.Minute), &out)
+	if code, ok := ExitCodeFor(err); !ok || code != loopSkipExitCode {
+		t.Fatalf("post-effect >TTL begin = %v, want exit %d skip", err, loopSkipExitCode)
+	}
+	if !strings.Contains(out.String(), "effect-already-committed") {
+		t.Fatalf("post-effect skip did not expose committed reconciliation: %q", out.String())
+	}
+	current, _ := loadRunRecord(cfg, "daily-brief")
+	if current.RunID != rec.RunID || current.Attempt != 1 {
+		t.Fatalf("post-effect begin opened another attempt: %+v", current)
+	}
+}
+
+// TestLoopHeartbeatRefusesSupersededOwner pins the owner-CAS half: an old run
+// cannot restamp a successor's lease or latest.json heartbeat.
+func TestLoopHeartbeatRefusesSupersededOwner(t *testing.T) {
+	cfg := loopTestCfg(t)
+	seedRecord(t, cfg, loopRunRecord{
+		LoopID: "daily-brief", RunID: "run_B", Period: "2026-06-24",
+		Status: loopRunRunning, Attempt: 2, HeartbeatAt: loopNow.Format(time.RFC3339),
+		IdempotencyKey: "daily-brief@2026-06-24",
+	})
+	plantLock(t, cfg, "daily-brief", "run_B", os.Getpid(), loopNow)
+	err := heartbeatLoopRun(cfg, "daily-brief", "run_A", loopNow.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "superseded") {
+		t.Fatalf("stale heartbeat error = %v, want superseded refusal", err)
+	}
+	data, _ := os.ReadFile(loopLockPath(cfg, "daily-brief"))
+	var body loopLockBody
+	_ = json.Unmarshal(data, &body)
+	if body.RunID != "run_B" || body.AcquiredAt != loopNow.Format(time.RFC3339) {
+		t.Fatalf("stale heartbeat mutated successor lease: %+v", body)
+	}
+}
+
 // TestLoopDone_OkArchivesImmutableRunCopy: done --ok writes an immutable
 // runs/<period>_<run_id>.json audit copy.
 func TestLoopDone_OkArchivesImmutableRunCopy(t *testing.T) {
@@ -616,6 +982,47 @@ func TestReleaseLoopLockForOnlyOwnRun(t *testing.T) {
 	releaseLoopLockFor(cfg, "daily-brief", "run_R2")
 	if _, err := os.Stat(loopLockPath(cfg, "daily-brief")); !os.IsNotExist(err) {
 		t.Fatalf("the owning run's release should remove the lock; stat err=%v", err)
+	}
+}
+
+// TestReleaseSerializesAgainstSameOwnerHeartbeat closes the release leak: once
+// release has read its owner, a heartbeat must wait. Release removes the lease;
+// the delayed heartbeat then observes absence and cannot silently leave a fresh
+// same-owner lock behind.
+func TestReleaseSerializesAgainstSameOwnerHeartbeat(t *testing.T) {
+	cfg := loopTestCfg(t)
+	path := loopLockPath(cfg, "daily-brief")
+	plantLock(t, cfg, "daily-brief", "run_A", os.Getpid(), loopNow)
+
+	heartbeatStarted := make(chan struct{})
+	heartbeatDone := make(chan bool, 1)
+	heartbeatFinishedEarly := false
+	heartbeatOwned := false
+	testHookReleaseLockAfterRead = func() {
+		go func() {
+			close(heartbeatStarted)
+			heartbeatDone <- heartbeatLockFileFor(path, "run_A", loopNow.Add(time.Minute))
+		}()
+		<-heartbeatStarted
+		select {
+		case heartbeatOwned = <-heartbeatDone:
+			heartbeatFinishedEarly = true
+		case <-time.After(50 * time.Millisecond):
+			// Expected: heartbeat waits for release's read/check/remove transition.
+		}
+	}
+	t.Cleanup(func() { testHookReleaseLockAfterRead = nil })
+
+	releaseLockFileFor(path, "run_A")
+	if heartbeatFinishedEarly {
+		t.Fatalf("heartbeat completed inside guarded release (owned=%v)", heartbeatOwned)
+	}
+	heartbeatOwned = <-heartbeatDone
+	if heartbeatOwned {
+		t.Fatal("heartbeat resurrected a lease after the same owner's release")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("release/heartbeat race leaked lease; stat err=%v", err)
 	}
 }
 
@@ -776,5 +1183,48 @@ func TestLoopStatus_Integration(t *testing.T) {
 	}
 	if h.State != "running" {
 		t.Fatalf("status state = %q, want running", h.State)
+	}
+}
+
+// TestLoopHeartbeatCommandDispatch pins the public CLI route used by the daily
+// brief skill; it must parse --run, emit JSON, and update the durable heartbeat.
+func TestLoopHeartbeatCommandDispatch(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	origClock := loopClock
+	t.Cleanup(func() { loopClock = origClock })
+	loopClock = func() time.Time { return loopNow }
+
+	beginOut, err := runErr(t, "loop", "begin", "daily-brief", "--json")
+	if err != nil {
+		t.Fatalf("loop begin: %v\n%s", err, beginOut)
+	}
+	var begun map[string]any
+	if err := json.Unmarshal([]byte(beginOut), &begun); err != nil {
+		t.Fatalf("begin JSON: %v\n%s", err, beginOut)
+	}
+	runID, _ := begun["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("begin JSON missing run_id: %s", beginOut)
+	}
+
+	heartbeatAt := loopNow.Add(time.Minute)
+	loopClock = func() time.Time { return heartbeatAt }
+	heartbeatOut, err := runErr(t, "loop", "heartbeat", "daily-brief", "--run", runID, "--json")
+	if err != nil {
+		t.Fatalf("loop heartbeat: %v\n%s", err, heartbeatOut)
+	}
+	var heartbeat map[string]string
+	if err := json.Unmarshal([]byte(heartbeatOut), &heartbeat); err != nil {
+		t.Fatalf("heartbeat JSON: %v\n%s", err, heartbeatOut)
+	}
+	if heartbeat["run_id"] != runID || heartbeat["heartbeat_at"] != heartbeatAt.Format(time.RFC3339) {
+		t.Fatalf("heartbeat JSON = %+v", heartbeat)
+	}
+
+	cfg := mustConfig(t)
+	rec, ok := loadRunRecord(cfg, "daily-brief")
+	if !ok || rec.HeartbeatAt != heartbeatAt.Format(time.RFC3339) {
+		t.Fatalf("durable heartbeat record = %+v", rec)
 	}
 }

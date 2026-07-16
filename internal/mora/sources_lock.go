@@ -21,7 +21,7 @@ import (
 //
 // The lease reuses the crash-safe file-lock primitives proven in loop.go
 // (publishLockFile's os.Link-atomic publish, reapStaleLockTTL's TTL/corrupt
-// reap, breakLock's rename-claim, loopLockReleaser) — the same mechanism that
+// reap, breakLock's guarded compare/remove, loopLockReleaser) — the same mechanism that
 // ships green on the Windows CI suite. It is a SINGLE-HOST, SINGLE-USER lease,
 // which is exactly the concurrency model here: one machine's mora processes,
 // e.g. a manual command racing a scheduled sync/ingest.
@@ -52,9 +52,8 @@ func sourcesAcquireBackoff(attempt int) time.Duration {
 	return time.Duration(1+mrand.IntN(capMs)) * time.Millisecond
 }
 
-// sourcesLockPath is the lease file, co-located with sources.json so the
-// os.Rename inside breakLock stays atomic (same filesystem) and the lock lives
-// beside the file it guards.
+// sourcesLockPath is the lease file co-located with sources.json. Its persistent
+// OS guard is selected deterministically by leaseGuardPath under ConfigDir.
 func sourcesLockPath(cfg Config) string {
 	return filepath.Join(cfg.ConfigDir, "sources.json.lock")
 }

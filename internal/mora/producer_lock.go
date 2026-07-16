@@ -49,9 +49,8 @@ func producerExpectedPath(cfg Config) string {
 	return filepath.Join(producersDir(cfg), "expected.json")
 }
 
-// producerLockPath is the lease file, co-located with status.json so the
-// os.Rename inside breakLock stays atomic (same filesystem) and the lock lives
-// beside the file it guards.
+// producerLockPath is the lease file co-located with status.json. Its persistent
+// OS guard is selected deterministically by leaseGuardPath under StateDir.
 func producerLockPath(cfg Config) string {
 	return producerStatusPath(cfg) + ".lock"
 }

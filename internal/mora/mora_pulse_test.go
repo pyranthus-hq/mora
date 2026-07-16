@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -18,7 +19,7 @@ import (
 //     NON-aborting errors that surface via the existing three-state)
 //   - pulse --brief-file (D13-5: persist the dated vault artifact, off by default)
 //   - pulse --notify (D13-5: post the gated toast, off by default)
-//   - scheduleCommands["pulse-daily"] string update (sync-first + persist + notify)
+//   - scheduleCommands["pulse-daily"] durable wrapper routing
 //
 // The two backfills (backfillGoogleFn / backfillIMessageFn) are package-level func
 // vars so a test can swap them with t.Cleanup-restore — NO real network, NO
@@ -278,20 +279,35 @@ func TestPulseDefaultsOffNoPersistNoNotify(t *testing.T) {
 	}
 }
 
-// TestScheduleCommandPulseDailyUpdatedString (D13-5 / T-13-10): the pulse-daily
-// command string is exactly the sync-first+persist+notify value, plistArgs renders
-// each flag as its own <string>, and NO other scheduled job string changed.
-func TestScheduleCommandPulseDailyUpdatedString(t *testing.T) {
-	const want = "pulse --write --digest --advance --sync --brief-file --notify"
+// TestScheduleCommandPulseDailyUsesDurableWrapper (issue #58): the OS scheduler
+// invokes the loop-aware wrapper, never pulse --advance directly. The wrapper
+// owns the exact advancing flags in-process after it has a durable run id.
+func TestScheduleCommandPulseDailyUsesDurableWrapper(t *testing.T) {
+	const want = "schedule run pulse-daily"
 	if got := scheduleCommands["pulse-daily"]; got != want {
 		t.Fatalf("pulse-daily command string\n got: %q\nwant: %q", got, want)
 	}
-	// Each flag renders as its own <string> arg in the plist.
+	// Each wrapper token renders as its own <string> arg in the plist.
 	args := plistArgs(want)
-	for _, flag := range []string{"pulse", "--write", "--digest", "--advance", "--sync", "--brief-file", "--notify"} {
-		if !strings.Contains(args, "<string>"+flag+"</string>") {
-			t.Fatalf("plistArgs must render %q as its own <string>; got:\n%s", flag, args)
+	for _, token := range []string{"schedule", "run", "pulse-daily"} {
+		if !strings.Contains(args, "<string>"+token+"</string>") {
+			t.Fatalf("plistArgs must render %q as its own <string>; got:\n%s", token, args)
 		}
+	}
+	if strings.Contains(args, "--advance") {
+		t.Fatalf("OS schedule must not bypass the durable wrapper with direct --advance: %s", args)
+	}
+	legacy := []string{"--write", "--digest", "--advance", "--sync", "--brief-file", "--notify"}
+	if !legacyPulseDailyInvocation(legacy) {
+		t.Fatal("the exact pre-wrapper pulse-daily argv must route through the compatibility bridge")
+	}
+	if legacyPulseDailyInvocation(append(append([]string{}, legacy...), "--envelope")) {
+		t.Fatal("an ad-hoc pulse with extra flags must not be mistaken for an installed legacy schedule")
+	}
+	reordered := append([]string{}, legacy...)
+	reordered[0], reordered[1] = reordered[1], reordered[0]
+	if legacyPulseDailyInvocation(reordered) {
+		t.Fatal("only the exact historical scheduler argv should activate compatibility routing")
 	}
 	// No OTHER scheduled job string changed (pin them).
 	others := map[string]string{
@@ -304,5 +320,165 @@ func TestScheduleCommandPulseDailyUpdatedString(t *testing.T) {
 		if got := scheduleCommands[job]; got != exp {
 			t.Fatalf("scheduled job %q must be unchanged; got %q want %q", job, got, exp)
 		}
+	}
+}
+
+// TestInstalledLegacyPulseDailyRoutesThroughDurableGate proves an existing
+// pre-upgrade scheduler entry is repaired by the upgraded binary itself. Its
+// exact old pulse argv enters the wrapper, succeeds once, and a same-day second
+// fire skips before consuming a newly-arrived item or rewriting the artifact.
+func TestInstalledLegacyPulseDailyRoutesThroughDurableGate(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	now := time.Now().UTC().Truncate(time.Second)
+	seedSyncStatus(t, cfg, "gmail", now.Add(-time.Hour))
+	digestSeed(t, cfg, "gmail", "Legacy scheduled first item", time.Hour, now)
+
+	origLoopClock, origBriefClock := loopClock, briefClock
+	origG, origI, origNotify := backfillGoogleFn, backfillIMessageFn, notifyBriefFn
+	t.Cleanup(func() {
+		loopClock, briefClock = origLoopClock, origBriefClock
+		backfillGoogleFn, backfillIMessageFn, notifyBriefFn = origG, origI, origNotify
+	})
+	loopClock = func() time.Time { return now }
+	briefClock = func() time.Time { return now }
+	backfillGoogleFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
+	backfillIMessageFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
+	notifyBriefFn = func(string, *urgentNote) error { return nil }
+
+	legacyArgs := []string{"pulse", "--write", "--digest", "--advance", "--sync", "--brief-file", "--notify"}
+	firstOut, err := runErr(t, legacyArgs...)
+	if err != nil {
+		t.Fatalf("first installed legacy fire: %v\n%s", err, firstOut)
+	}
+	rec, ok := loadRunRecord(cfg, "daily-brief")
+	if !ok || rec.Status != loopRunSucceeded || rec.Attempt != 1 {
+		t.Fatalf("legacy fire record = %+v, want first-attempt success", rec)
+	}
+	artifact := filepath.Join(briefsDir(cfg), now.Format("2006-01-02")+"-brief.md")
+	firstArtifact, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatalf("legacy fire did not persist artifact: %v", err)
+	}
+	journalBefore := readJournal(t, cfg, "daily-brief")
+	if len(journalBefore) != 1 {
+		t.Fatalf("legacy fire journal = %v, want one terminal", journalBefore)
+	}
+
+	// If the second invocation bypassed the wrapper, this fresh delta would be
+	// consumed and today's artifact would change. The durable gate must stop it.
+	digestSeed(t, cfg, "gmail", "Must remain unread after duplicate fire", 30*time.Minute, now)
+	secondOut, err := runErr(t, legacyArgs...)
+	if err != nil {
+		t.Fatalf("duplicate installed legacy fire: %v\n%s", err, secondOut)
+	}
+	secondArtifact, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(secondArtifact, firstArtifact) {
+		t.Fatal("duplicate legacy scheduler fire bypassed the gate and rewrote today's artifact")
+	}
+	if got := readJournal(t, cfg, "daily-brief"); len(got) != len(journalBefore) {
+		t.Fatalf("duplicate legacy fire appended a terminal: before=%v after=%v", journalBefore, got)
+	}
+	current, _ := loadRunRecord(cfg, "daily-brief")
+	if current.RunID != rec.RunID || current.Attempt != 1 {
+		t.Fatalf("duplicate legacy fire opened another attempt: before=%+v after=%+v", rec, current)
+	}
+	if !strings.Contains(secondOut, "already succeeded") {
+		t.Fatalf("duplicate legacy fire did not report durable skip: %q", secondOut)
+	}
+}
+
+// TestScheduledPulseDailyDurableLifecycle is the end-to-end issue-58 witness:
+// the first scheduler fire begins, advances, persists, and closes succeeded;
+// a duplicate same-day fire exits successfully at the loop gate without a
+// second pulse, artifact rewrite, watermark consumption, or journal terminal.
+func TestScheduledPulseDailyDurableLifecycle(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	now := time.Now().UTC().Truncate(time.Second)
+	seedSyncStatus(t, cfg, "gmail", now.Add(-time.Hour))
+	digestSeed(t, cfg, "gmail", "Durable scheduler item", time.Hour, now)
+
+	origLoopClock, origBriefClock := loopClock, briefClock
+	origG, origI, origNotify := backfillGoogleFn, backfillIMessageFn, notifyBriefFn
+	t.Cleanup(func() {
+		loopClock, briefClock = origLoopClock, origBriefClock
+		backfillGoogleFn, backfillIMessageFn, notifyBriefFn = origG, origI, origNotify
+	})
+	loopClock = func() time.Time { return now }
+	briefClock = func() time.Time { return now }
+	backfillGoogleFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
+	backfillIMessageFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
+	notifyBriefFn = func(string, *urgentNote) error { return nil }
+
+	var first bytes.Buffer
+	if err := runScheduledPulseDaily(context.Background(), cfg, &first); err != nil {
+		t.Fatalf("first scheduled run: %v\n%s", err, first.String())
+	}
+	rec, ok := loadRunRecord(cfg, "daily-brief")
+	if !ok || rec.Status != loopRunSucceeded {
+		t.Fatalf("scheduled run record = %+v, want succeeded", rec)
+	}
+	if !briefSnapshotExists(cfg, "gmail") {
+		t.Fatal("scheduled wrapper did not advance the watermark")
+	}
+	artifact := filepath.Join(briefsDir(cfg), now.Format("2006-01-02")+"-brief.md")
+	firstArtifact, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatalf("scheduled wrapper did not persist artifact: %v", err)
+	}
+	journalBefore := readJournal(t, cfg, "daily-brief")
+	if len(journalBefore) != 1 {
+		t.Fatalf("first scheduled run journal = %v, want one terminal", journalBefore)
+	}
+
+	var second bytes.Buffer
+	if err := runScheduledPulseDaily(context.Background(), cfg, &second); err != nil {
+		t.Fatalf("duplicate scheduled run: %v\n%s", err, second.String())
+	}
+	secondArtifact, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(secondArtifact, firstArtifact) {
+		t.Fatal("duplicate scheduled fire rewrote today's artifact")
+	}
+	if got := readJournal(t, cfg, "daily-brief"); len(got) != len(journalBefore) {
+		t.Fatalf("duplicate scheduled fire added a terminal: before=%v after=%v", journalBefore, got)
+	}
+	if !strings.Contains(second.String(), "already succeeded") {
+		t.Fatalf("duplicate scheduled fire did not report durable skip: %q", second.String())
+	}
+}
+
+// TestAdvancingPulseRefusesWrongLoopOwner proves the pulse-level commit fence is
+// load-bearing independently of scheduler wiring: a stale run id is rejected
+// before any watermark snapshot can be written.
+func TestAdvancingPulseRefusesWrongLoopOwner(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	now := time.Now().UTC().Truncate(time.Second)
+	seedSyncStatus(t, cfg, "gmail", now.Add(-time.Hour))
+	digestSeed(t, cfg, "gmail", "Must not advance", time.Hour, now)
+	var begin bytes.Buffer
+	if err := loopBegin(cfg, "daily-brief", true, now, &begin); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runErr(t, "pulse", "--digest", "--advance", "--loop", "daily-brief", "--loop-run", "run_stale")
+	if err == nil || !strings.Contains(err.Error(), "superseded") {
+		t.Fatalf("stale fenced pulse error = %v, want superseded refusal", err)
+	}
+	if briefSnapshotExists(cfg, "gmail") {
+		t.Fatal("stale fenced pulse advanced the watermark")
 	}
 }
