@@ -292,25 +292,40 @@ func buildAndCommitGeneration(ctx context.Context, cfg Config, sub shareSubscrip
 	// Migration + legacy retirement: the durable one-way `migrated` latch is
 	// written AFTER the commit (crash before commit ⇒ still fail-closed; crash
 	// after commit before latch ⇒ commits/ is authoritative and wins).
-	writeMigratedLatch(cfg, sub.Name)
+	if err := writeMigratedLatch(cfg, sub.Name); err != nil {
+		// The generation is already committed and therefore safe to serve, but
+		// the migration cannot be reported successful until the one-way latch is
+		// durable. The outer attempt lifecycle records this as a failed refresh.
+		return seq, shareImportStats{}, err
+	}
 	return seq, shareImportStats{Imported: len(entries), Total: len(entries)}, nil
 }
 
 // writeMigratedLatch installs the durable one-way migrated latch (present ⇒
 // legacy fallback permanently OFF) and best-effort retires the legacy flat
 // layout. Idempotent.
-func writeMigratedLatch(cfg Config, name string) {
-	if _, err := os.Stat(shareMigratedLatchPath(cfg, name)); err == nil {
-		return
+func writeMigratedLatch(cfg Config, name string) error {
+	_, statErr := os.Stat(shareMigratedLatchPath(cfg, name))
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("share %q: checking migrated latch: %w", name, statErr)
 	}
-	if err := atomicWriteDurable(shareMigratedLatchPath(cfg, name), []byte("1\n"), 0o644); err != nil {
-		return
+	if errors.Is(statErr, os.ErrNotExist) {
+		if err := atomicWriteDurable(shareMigratedLatchPath(cfg, name), []byte("1\n"), 0o644); err != nil {
+			return fmt.Errorf("share %q: persisting migrated latch: %w", name, err)
+		}
+	} else if err := syncDir(filepath.Dir(shareMigratedLatchPath(cfg, name))); err != nil {
+		// A prior call may have synced the latch bytes and renamed it, then failed
+		// its directory barrier. Retry that last barrier before retiring legacy.
+		return fmt.Errorf("share %q: making existing migrated latch durable: %w", name, err)
 	}
 	// Retire the untrusted legacy flat corpus/index only after the latch is durable.
+	// Repeat this best-effort cleanup when the latch already exists so a crash
+	// between latch publication and retirement is self-healing on the next pull.
 	_ = os.RemoveAll(shareCorpusDir(cfg, name))
 	for _, p := range []string{shareIndexPath(cfg, name), shareIndexPath(cfg, name) + "-wal", shareIndexPath(cfg, name) + "-shm"} {
 		_ = os.Remove(p)
 	}
+	return nil
 }
 
 // gitShareImport pins the merge source into a run-private ref, decrypts from that
@@ -339,11 +354,15 @@ func gitShareImport(ctx context.Context, cfg Config, sub shareSubscription, runI
 // staging dir, decrypts, builds a generation, and commits it with the inherited
 // monotonic bucket floor. Returns the pin + version to persist on success.
 func bucketShareImport(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string) (int, shareImportStats, ed25519.PublicKey, int, error) {
-	ids, err := loadShareIdentities(cfg)
+	store, err := newObjectStore(bc)
 	if err != nil {
 		return 0, shareImportStats{}, nil, 0, err
 	}
-	store, err := newObjectStore(bc)
+	return bucketShareImportWithStore(ctx, cfg, sub, bc, runID, store)
+}
+
+func bucketShareImportWithStore(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string, store objectStore) (int, shareImportStats, ed25519.PublicKey, int, error) {
+	ids, err := loadShareIdentities(cfg)
 	if err != nil {
 		return 0, shareImportStats{}, nil, 0, err
 	}
@@ -352,6 +371,10 @@ func bucketShareImport(ctx context.Context, cfg Config, sub shareSubscription, b
 	if err := os.MkdirAll(dest, 0o700); err != nil {
 		return 0, shareImportStats{}, nil, 0, err
 	}
+	// Normal returns never retain run-private network staging. A SIGKILL can
+	// still strand it for manual GC, but an admission refusal followed by the
+	// printed storage-limit retry must not accumulate fetch-N, fetch-N+1, ... .
+	defer os.RemoveAll(dest)
 	pin, ver, err := bucketFetch(ctx, store, bc, sub, ids, dest)
 	if err != nil {
 		return 0, shareImportStats{}, nil, 0, err

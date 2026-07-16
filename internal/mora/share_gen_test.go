@@ -31,6 +31,25 @@ func publishGen(t *testing.T, cfg Config, name string, id *age.X25519Identity, m
 	return st
 }
 
+// acquirePublishLeases mirrors shareBuildAndPublish's one legal lock order for
+// focused tests that drive publishShareGeneration directly.
+func acquirePublishLeases(t *testing.T, cfg Config, name, runID string) func() {
+	t.Helper()
+	storageRelease, err := acquireStorageLease(cfg, runID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	importRelease, err := acquireImportLease(cfg, name, runID, time.Now())
+	if err != nil {
+		storageRelease()
+		t.Fatal(err)
+	}
+	return func() {
+		importRelease()
+		storageRelease()
+	}
+}
+
 // registerSub adds a subscription row so the serving surfaces see it.
 func registerSub(t *testing.T, cfg Config, name string) {
 	t.Helper()
@@ -179,6 +198,10 @@ func TestUncommittedGenerationNeverServed(t *testing.T) {
 // T13 (row 47a): corpus corruption fails read closed (never altered bytes) while
 // search keeps serving its intact index; a positive digest is never cached.
 func TestCorruptedPublishedCorpusFailsClosedOnRead(t *testing.T) {
+	t.Run("no_check", testCorruptedPublishedCorpusFailsClosedOnRead)
+}
+
+func testCorruptedPublishedCorpusFailsClosedOnRead(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)

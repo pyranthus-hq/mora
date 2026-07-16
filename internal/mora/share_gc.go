@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,7 +47,7 @@ func shareStorageLimitBytes(cfg Config) (int64, error) {
 		return 0, fmt.Errorf("%s is corrupt: %w", shareStorageLimitPath(cfg), err)
 	}
 	if lim.Bytes <= 0 {
-		return storageCeilingBytes, nil
+		return 0, fmt.Errorf("%s is corrupt: bytes must be positive", shareStorageLimitPath(cfg))
 	}
 	return lim.Bytes, nil
 }
@@ -158,7 +159,9 @@ func shareGCSweep(cfg Config, name string, now time.Time) error {
 			}
 			if seq, committed := genSeqOf(gen); committed {
 				if ok && seq < published.Seq {
-					deferrableRemoveAll(shareGenDir(cfg, name, gen))
+					if rerr := deferrableRemoveAll(shareGenDir(cfg, name, gen)); rerr != nil {
+						return rerr
+					}
 				}
 				continue
 			}
@@ -167,11 +170,19 @@ func shareGCSweep(cfg Config, name string, now time.Time) error {
 			if genRunID(gen) == owner {
 				continue
 			}
-			if info, ierr := e.Info(); ierr == nil && now.Sub(info.ModTime()) < shareImportTTL {
+			info, ierr := e.Info()
+			if ierr != nil {
+				return ierr
+			}
+			if now.Sub(info.ModTime()) < shareImportTTL {
 				continue
 			}
-			deferrableRemoveAll(shareGenDir(cfg, name, gen))
+			if rerr := deferrableRemoveAll(shareGenDir(cfg, name, gen)); rerr != nil {
+				return rerr
+			}
 		}
+	} else if !errors.Is(gerr, os.ErrNotExist) {
+		return gerr
 	}
 
 	// Stale bucket staging: fetch-* dirs older than TTL not owned by the live lease.
@@ -183,11 +194,19 @@ func shareGCSweep(cfg Config, name string, now time.Time) error {
 			if strings.TrimPrefix(e.Name(), "fetch-") == owner {
 				continue
 			}
-			if info, ierr := e.Info(); ierr == nil && now.Sub(info.ModTime()) < shareImportTTL {
+			info, ierr := e.Info()
+			if ierr != nil {
+				return ierr
+			}
+			if now.Sub(info.ModTime()) < shareImportTTL {
 				continue
 			}
-			deferrableRemoveAll(filepath.Join(root, e.Name()))
+			if rerr := deferrableRemoveAll(filepath.Join(root, e.Name())); rerr != nil {
+				return rerr
+			}
 		}
+	} else {
+		return serr
 	}
 
 	// Orphaned git import refs (best-effort; touches only the named private ref).
@@ -197,7 +216,9 @@ func shareGCSweep(cfg Config, name string, now time.Time) error {
 	if ok {
 		for _, r := range records {
 			if r.Seq < published.Seq && !retainSeq[r.Seq] {
-				deferrableRemove(shareCommitPath(cfg, name, r.Seq))
+				if rerr := deferrableRemove(shareCommitPath(cfg, name, r.Seq)); rerr != nil {
+					return rerr
+				}
 			}
 		}
 	}
@@ -207,6 +228,8 @@ func shareGCSweep(cfg Config, name string, now time.Time) error {
 // reapOrphanedGitPins enumerates refs/mora/import/ and removes a private pin whose
 // run-id owns neither the live lease nor a retained generation, via the exact
 // read-only for-each-ref + CAS update-ref -d invocation. Best-effort.
+var shareGCGitExecFn execFunc = realExec
+
 func reapOrphanedGitPins(cfg Config, name, owner string, retainGen map[string]bool) {
 	repo := shareRepoDir(cfg, name)
 	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
@@ -214,7 +237,7 @@ func reapOrphanedGitPins(cfg Config, name, owner string, retainGen map[string]bo
 			return
 		}
 	}
-	out, err := realExec(context.Background(), repo, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/mora/import/")
+	out, err := shareGCGitExecFn(context.Background(), repo, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/mora/import/")
 	if err != nil {
 		return
 	}
@@ -228,27 +251,39 @@ func reapOrphanedGitPins(cfg Config, name, owner string, retainGen map[string]bo
 		if runID == owner || retainGen["gen-"+runID] {
 			continue
 		}
-		_, _ = realExec(context.Background(), repo, "git", "update-ref", "-d", ref, sha)
+		_, _ = shareGCGitExecFn(context.Background(), repo, "git", "update-ref", "-d", ref, sha)
 	}
 }
 
-// deferrableRemove/deferrableRemoveAll delete a path but silently defer a Windows
+// The seams make the Windows sharing-violation branch deterministic on every
+// test host. Production always uses the operating-system implementations.
+var (
+	shareGCRemoveFn           = os.Remove
+	shareGCRemoveAllFn        = os.RemoveAll
+	shareGCRemovalRetryableFn = sharingViolationRetryable
+)
+
+// deferrableRemove/deferrableRemoveAll delete a path but defer only a Windows
 // sharing violation / open-handle failure to the next sweep (mirroring
-// removeLeaseFile's non-forcing policy) — never abort, force, or loop.
-func deferrableRemove(path string) {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) && !sharingViolationRetryable(err) {
-		// A non-contention error: still best-effort at the sweep level.
-		_ = err
+// removeLeaseFile's non-forcing policy). Other filesystem failures are loud:
+// silently swallowing EACCES/EIO would claim reclamation that never happened.
+func deferrableRemove(path string) error {
+	err := shareGCRemoveFn(path)
+	if err == nil || errors.Is(err, os.ErrNotExist) || shareGCRemovalRetryableFn(err) {
+		return nil
 	}
+	return err
 }
-func deferrableRemoveAll(path string) {
-	if err := os.RemoveAll(path); err != nil && !sharingViolationRetryable(err) {
-		_ = err
+
+func deferrableRemoveAll(path string) error {
+	err := shareGCRemoveAllFn(path)
+	if err == nil || errors.Is(err, os.ErrNotExist) || shareGCRemovalRetryableFn(err) {
+		return nil
 	}
+	return err
 }
 
 // ---- whole-product byte accountant ----
-
 // productStorageBytes is the strict whole-product accountant: the union of all
 // regular-file bytes under the four configured product roots (VaultDir,
 // ConfigDir, DataDir, StateDir), canonical-root-overlap-deduped and hard-link
@@ -256,24 +291,38 @@ func deferrableRemoveAll(path string) {
 // walk/stat/identity failure rather than treating unreadable bytes as zero.
 func productStorageBytes(cfg Config) (int64, error) {
 	rawRoots := []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir}
-	// Canonicalize and drop any root nested under another already-counted root.
+	// Canonicalize first, then sort shortest-first before dropping nested roots.
+	// Doing this in config-field order is wrong when (for example) VaultDir is
+	// nested under a later DataDir: both roots would be walked on Windows, where
+	// path-level dedup must work even before file identity is consulted.
 	var roots []string
 	for _, r := range rawRoots {
 		if r == "" {
 			continue
 		}
-		cr := resolveReal(r)
+		cr := resolveRealDeep(r)
+		roots = append(roots, cr)
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		if len(roots[i]) == len(roots[j]) {
+			return roots[i] < roots[j]
+		}
+		return len(roots[i]) < len(roots[j])
+	})
+	canonical := roots[:0]
+	for _, cr := range roots {
 		nested := false
-		for _, seen := range roots {
-			if cr == seen || strings.HasPrefix(cr+string(os.PathSeparator), seen+string(os.PathSeparator)) {
+		for _, seen := range canonical {
+			if storagePathWithin(cr, seen) {
 				nested = true
 				break
 			}
 		}
 		if !nested {
-			roots = append(roots, cr)
+			canonical = append(canonical, cr)
 		}
 	}
+	roots = canonical
 	var total int64
 	seen := map[fileIDKey]bool{}
 	for _, root := range roots {
@@ -285,6 +334,13 @@ func productStorageBytes(cfg Config) (int64, error) {
 		}
 		werr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
+				// SQLite read-only handles may retire a transient -shm/-wal entry
+				// between its parent directory listing and this callback. A path
+				// that no longer exists contributes zero bytes; permission, I/O,
+				// and every other walk failure remain fail-closed below.
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
 				return err
 			}
 			if d.IsDir() || !d.Type().IsRegular() {
@@ -292,16 +348,24 @@ func productStorageBytes(cfg Config) (int64, error) {
 			}
 			info, ierr := d.Info()
 			if ierr != nil {
+				if errors.Is(ierr, os.ErrNotExist) {
+					return nil
+				}
 				return ierr
 			}
-			if key, ok := fileIdentity(info); ok {
-				if seen[key] {
-					return nil // hard link already counted
+			key, ierr := fileIdentity(path, info)
+			if ierr != nil {
+				if errors.Is(ierr, os.ErrNotExist) {
+					return nil
 				}
-				seen[key] = true
+				return ierr
 			}
+			if seen[key] {
+				return nil // hard link already counted
+			}
+			seen[key] = true
 			sz := info.Size()
-			if sz < 0 || total > (1<<62)-sz {
+			if sz < 0 || total > math.MaxInt64-sz {
 				return fmt.Errorf("storage accounting overflow at %s", path)
 			}
 			total += sz
@@ -314,11 +378,18 @@ func productStorageBytes(cfg Config) (int64, error) {
 	return total, nil
 }
 
+func storagePathWithin(path, root string) bool {
+	sep := string(os.PathSeparator)
+	return path == root || strings.HasPrefix(path+sep, root+sep)
+}
+
 // ---- CLI: mora share gc / mora share storage-limit ----
 
 // cmdShareGC runs the same idempotent sweep out of band (no pull, no successful
 // publication prerequisite). It takes storage.lock, reclaims after readers close,
 // and reports before/after whole-product bytes.
+var testHookShareGCAfterStorageLease func()
+
 func cmdShareGC(cfg Config, args []string, stdout io.Writer, now time.Time) error {
 	name := ""
 	if len(args) > 0 {
@@ -331,30 +402,111 @@ func cmdShareGC(cfg Config, args []string, stdout io.Writer, now time.Time) erro
 	if err != nil {
 		return err
 	}
-	var subs []shareSubscription
-	if name != "" {
-		for _, s := range sf.Subscriptions {
-			if s.Name == name {
-				subs = append(subs, s)
+	registered := make(map[string]bool, len(sf.Subscriptions))
+	for _, s := range sf.Subscriptions {
+		registered[s.Name] = true
+	}
+	targets := map[string]bool{} // name -> unregistered local root
+	subsRoot := filepath.Join(cfg.DataDir, "share", "subs")
+	addLocalRoots := func() error {
+		entries, rerr := os.ReadDir(subsRoot)
+		if errors.Is(rerr, os.ErrNotExist) {
+			return nil
+		}
+		if rerr != nil {
+			return rerr
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && validShareName(entry.Name()) {
+				targets[entry.Name()] = !registered[entry.Name()]
 			}
 		}
-		if len(subs) == 0 {
-			return fmt.Errorf("no subscription named %q — see `mora share list`", name)
+		return nil
+	}
+	if name != "" {
+		if !validShareName(name) {
+			return fmt.Errorf("invalid subscription name %q", name)
+		}
+		if registered[name] {
+			targets[name] = false
+		} else {
+			info, serr := os.Lstat(shareSubRoot(cfg, name))
+			if serr != nil || !info.IsDir() {
+				return fmt.Errorf("no subscription or unregistered local share state named %q", name)
+			}
+			targets[name] = true
 		}
 	} else {
-		subs = sf.Subscriptions
+		for registeredName := range registered {
+			targets[registeredName] = false
+		}
+		if err := addLocalRoots(); err != nil {
+			return err
+		}
 	}
-	rel, err := acquireStorageLease(cfg, newRunID(now), now)
+	names := make([]string, 0, len(targets))
+	for target := range targets {
+		names = append(names, target)
+	}
+	sort.Strings(names)
+
+	runID := newRunID(now)
+	rel, err := acquireStorageLease(cfg, runID, now)
 	if err != nil {
 		return err
 	}
 	defer rel()
+	stopHeartbeat := startStorageHeartbeat(cfg, runID)
+	defer stopHeartbeat()
+	if testHookShareGCAfterStorageLease != nil {
+		testHookShareGCAfterStorageLease()
+	}
 	before, berr := productStorageBytes(cfg)
 	if berr != nil {
 		return fmt.Errorf("share gc: storage accounting failed: %w", berr)
 	}
-	for _, s := range subs {
-		if serr := shareGCSweep(cfg, s.Name, now); serr != nil {
+	for _, target := range names {
+		if !targets[target] {
+			if serr := shareGCSweep(cfg, target, now); serr != nil {
+				return serr
+			}
+			continue
+		}
+		// An unregistered first-subscribe crash has no shares.json row, but its
+		// repo/fetch/generation can be the largest product artifact. Take the
+		// per-name lease under storage.lock, re-check the registry, then remove the
+		// entire unreachable root. The import.lock itself is removed by release;
+		// storage.lock prevents a new subscriber entering before final RemoveAll.
+		importRel, ierr := acquireImportLease(cfg, target, runID, time.Now())
+		if ierr != nil {
+			return ierr
+		}
+		stopImport := startImportHeartbeat(cfg, target, runID)
+		latest, lerr := loadShares(cfg)
+		if lerr == nil {
+			lerr = validateSubscriptionNameAvailable(latest, target)
+		}
+		if lerr == nil {
+			entries, derr := os.ReadDir(shareSubRoot(cfg, target))
+			if derr != nil && !errors.Is(derr, os.ErrNotExist) {
+				lerr = derr
+			}
+			for _, entry := range entries {
+				if entry.Name() == filepath.Base(shareImportLockPath(cfg, target)) {
+					continue
+				}
+				if derr := deferrableRemoveAll(filepath.Join(shareSubRoot(cfg, target), entry.Name())); derr != nil {
+					lerr = derr
+					break
+				}
+			}
+		}
+		stopImport()
+		importRel()
+		if lerr != nil {
+			return fmt.Errorf("share gc: refusing unregistered root %q: %w", target, lerr)
+		}
+		if serr := deferrableRemoveAll(shareSubRoot(cfg, target)); serr != nil {
 			return serr
 		}
 	}
@@ -398,28 +550,119 @@ func cmdShareStorageLimit(cfg Config, args []string, stdout io.Writer, now time.
 	return nil
 }
 
+// shareStorageAdmission holds the one stable limit read while storage.lock is
+// held. Every check re-accounts the actual product footprint, so prior corpus
+// writes, transport staging, SQLite sidecars, and every other subscription are
+// included rather than tracked by a lossy local counter.
+type shareStorageAdmission struct {
+	cfg   Config
+	name  string
+	limit int64
+}
+
+func newShareStorageAdmission(cfg Config, name string) (*shareStorageAdmission, error) {
+	limit, err := shareStorageLimitBytes(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &shareStorageAdmission{cfg: cfg, name: name, limit: limit}, nil
+}
+
+func (a *shareStorageAdmission) used() (int64, error) {
+	used, uerr := productStorageBytes(a.cfg)
+	if uerr != nil {
+		return 0, fmt.Errorf("share %q: storage accounting failed (fail-closed): %w", a.name, uerr)
+	}
+	return used, nil
+}
+
+func (a *shareStorageAdmission) checkAdditional(next int64) error {
+	if next < 0 {
+		return fmt.Errorf("share %q: invalid negative storage reservation %d", a.name, next)
+	}
+	used, err := a.used()
+	if err != nil {
+		return err
+	}
+	if used > math.MaxInt64-next {
+		return fmt.Errorf("share %q: storage reservation overflows int64", a.name)
+	}
+	return a.checkNeeded(used + next)
+}
+
+func (a *shareStorageAdmission) checkCurrent() error {
+	return a.checkAdditional(0)
+}
+
+func (a *shareStorageAdmission) remaining() (int64, error) {
+	used, err := a.used()
+	if err != nil {
+		return 0, err
+	}
+	if err := a.checkNeeded(used); err != nil {
+		return 0, err
+	}
+	return a.limit - used, nil
+}
+
+func (a *shareStorageAdmission) checkNeeded(needed int64) error {
+	if needed <= a.limit {
+		return nil
+	}
+	// The opt-in file itself is part of whole-product accounting. Reserve a page
+	// of headroom so replacing a short limit (for example 16) with the printed
+	// multi-digit value cannot make the immediate retry miss by a few bytes.
+	const decisionFileHeadroom = int64(4 << 10)
+	required := needed
+	if required <= math.MaxInt64-decisionFileHeadroom {
+		required += decisionFileHeadroom
+	}
+	return fmt.Errorf("share %q needs at least %d whole-product bytes; configured limit is %d (doctor ceiling 15 GiB). Run 'mora share storage-limit %d' to opt in, free space/run 'mora share gc', or unsubscribe.", a.name, required, a.limit, required)
+}
+
 // admitShareGeneration refuses a build whose whole-product footprint would cross
 // the configured limit. The refusal is an explicit oversubscription DECISION
 // (never a dead end): it names the required bytes and the storage-limit command.
 func admitShareGeneration(cfg Config, name string, entries []shareBlobEntry) error {
-	limit, err := shareStorageLimitBytes(cfg)
+	var genBytes int64
+	for _, e := range entries {
+		n := int64(len(e.body))
+		if genBytes > math.MaxInt64-n {
+			return fmt.Errorf("share %q: generation size overflows int64", name)
+		}
+		genBytes += n
+	}
+	return admitShareGenerationBytes(cfg, name, genBytes, len(entries))
+}
+
+// admitShareGenerationBytes is the metadata-only form used for the protocol's
+// legal 50,000 x 4 MiB upper-bound decision without allocating a 195 GiB slice.
+// Production's entry-based path delegates here after checked summation.
+func admitShareGenerationBytes(cfg Config, name string, corpusBytes int64, entries int) error {
+	// The index stores each body in the ordinary table and again in FTS5's
+	// content/index structures. A corpus-sized guess is not a sufficient retry
+	// decision. Reserve a deliberately conservative bounded expansion plus fixed
+	// SQLite/page and per-row overhead so the printed storage-limit value admits
+	// the same input instead of leading to a second SQLITE_FULL refusal.
+	const (
+		generationExpansion = int64(8)        // corpus + content table + FTS/index headroom
+		generationBaseBytes = int64(64 << 10) // schema and minimum SQLite pages
+		generationRowBytes  = int64(4 << 10)  // row/page/term metadata headroom
+	)
+	if corpusBytes < 0 || entries < 0 || corpusBytes > (math.MaxInt64-generationBaseBytes)/generationExpansion {
+		return fmt.Errorf("share %q: generation reservation overflows int64", name)
+	}
+	entryCount := int64(entries)
+	reserve := corpusBytes*generationExpansion + generationBaseBytes
+	if entryCount > (math.MaxInt64-reserve)/generationRowBytes {
+		return fmt.Errorf("share %q: generation reservation overflows int64", name)
+	}
+	reserve += entryCount * generationRowBytes
+	a, err := newShareStorageAdmission(cfg, name)
 	if err != nil {
 		return err
 	}
-	used, uerr := productStorageBytes(cfg)
-	if uerr != nil {
-		return fmt.Errorf("share %q: storage accounting failed (fail-closed): %w", name, uerr)
-	}
-	var genBytes int64
-	for _, e := range entries {
-		genBytes += int64(len(e.body))
-	}
-	reserve := genBytes * 2 // frozen corpus + its index reservation
-	needed := used + reserve
-	if needed > limit {
-		return fmt.Errorf("share %q needs at least %d whole-product bytes; configured limit is %d (doctor ceiling 15 GiB). Run 'mora share storage-limit %d' to opt in, free space/run 'mora share gc', or unsubscribe.", name, needed, limit, needed)
-	}
-	return nil
+	return a.checkAdditional(reserve)
 }
 
 // parseByteSize accepts a plain byte count or a binary-unit suffix (KiB/MiB/GiB/
@@ -443,6 +686,9 @@ func parseByteSize(s string) (int64, error) {
 	n, err := strconv.ParseInt(up, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid size %q — use a byte count or a binary unit like 15GiB", s)
+	}
+	if n < 0 || (mult != 0 && n > math.MaxInt64/mult) {
+		return 0, fmt.Errorf("invalid size %q — value is out of range", s)
 	}
 	return n * mult, nil
 }

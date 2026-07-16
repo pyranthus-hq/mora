@@ -3,6 +3,7 @@
 package mora
 
 import (
+	"fmt"
 	"os"
 	"syscall"
 )
@@ -14,10 +15,10 @@ type fileIDKey struct {
 	ino uint64
 }
 
-func fileIdentity(info os.FileInfo) (fileIDKey, bool) {
+func fileIdentity(path string, info os.FileInfo) (fileIDKey, error) {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fileIDKey{}, false
+		return fileIDKey{}, fmt.Errorf("storage accounting: cannot read file identity for %s", path)
 	}
-	return fileIDKey{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true
+	return fileIDKey{dev: uint64(st.Dev), ino: uint64(st.Ino)}, nil
 }

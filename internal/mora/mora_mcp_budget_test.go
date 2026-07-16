@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // MCP output-size regression gate ("T0").
@@ -217,25 +215,37 @@ func seedBudgetFixture(t *testing.T) Config {
 }
 
 // seedUnhealthyBudgetFixture extends seedBudgetFixture with a MAXIMALLY
-// unhealthy source (▸R, C1): seedBudgetFixture's own fixture is always
+// unhealthy producer (▸R, C1): seedBudgetFixture's own fixture is always
 // healthy, so "the ceilings still pass" would be a vacuous acceptance for the
-// compact health envelope this packet adds — it is never measured on the
-// worst-case payload the gate actually introduces. This overwrites gmail's
-// sync status with a long, unsanitized error so the aggregate banner renders
-// at (or near) its own healthBannerLineCap, proving the cap holds under the
-// worst case rather than merely "usually being short."
+// compact health envelope this packet adds. The producer identity is durable
+// user/state input and deliberately has no upstream display cap. That makes
+// healthBannerLineCap independently load-bearing: removing capBannerLine alone
+// exposes the full identity and crosses the tightest MCP envelope ceiling.
+//
+// Do not use LastError as the long input here. sanitizeHealthError bounds that
+// field before the aggregate banner sees it, which made the old fixture stay
+// green when capBannerLine was removed and therefore did not prove row 32.
 func seedUnhealthyBudgetFixture(t *testing.T) Config {
 	t.Helper()
 	cfg := seedBudgetFixture(t)
-	path := syncStatusPathFor(cfg, Source{Name: "gmail", Type: "gmail"})
-	st, err := memory.LoadStatus(path)
-	if err != nil {
-		t.Fatalf("LoadStatus(%s): %v", path, err)
+	name := strings.Repeat("scheduled-pulse-producer-with-a-user-defined-identity-", 80)
+	now := time.Now().UTC()
+	succeeded := now.Add(-time.Hour)
+	attempted := now.Add(-30 * time.Minute)
+	if err := saveExpectedProducers(cfg, map[string]expectedProducer{
+		name: {Name: name, IntervalSeconds: 86400, Source: producerSourceScheduled},
+	}); err != nil {
+		t.Fatalf("saveExpectedProducers: %v", err)
 	}
-	st.LastError = strings.Repeat("connection reset by peer while dialing imap.gmail.com:993 ", 10)
-	st.ErrorCount++
-	if err := memory.SaveStatus(path, st); err != nil {
-		t.Fatalf("SaveStatus(%s): %v", path, err)
+	if err := saveProducerStatus(cfg, map[string]producerStatus{
+		name: {
+			Name: name, LastSuccessAt: succeeded.Format(time.RFC3339),
+			LastAttemptAt: attempted.Format(time.RFC3339), LastError: "scheduled command failed",
+			SuccessTimes:    []string{succeeded.Format(time.RFC3339)},
+			IntervalSeconds: 86400, Source: producerSourceScheduled,
+		},
+	}); err != nil {
+		t.Fatalf("saveProducerStatus: %v", err)
 	}
 	return cfg
 }

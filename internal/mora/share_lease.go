@@ -10,6 +10,7 @@ package mora
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,7 +36,7 @@ func acquireImportLease(cfg Config, name, runID string, now time.Time) (release 
 		return nil, err
 	}
 	lockPath := shareImportLockPath(cfg, name)
-	body, _ := json.Marshal(loopLockBody{RunID: runID, PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
+	body, _ := json.Marshal(loopLockBody{RunID: runID, PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339Nano)})
 	for attempt := 0; attempt < shareImportAcquireAttempts; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
 		switch {
@@ -67,7 +68,7 @@ func acquireStorageLease(cfg Config, runID string, now time.Time) (release func(
 		return nil, err
 	}
 	lockPath := shareStorageLockPath(cfg)
-	body, _ := json.Marshal(loopLockBody{RunID: runID, PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
+	body, _ := json.Marshal(loopLockBody{RunID: runID, PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339Nano)})
 	for attempt := 0; attempt < shareImportAcquireAttempts; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
 		switch {
@@ -96,19 +97,30 @@ func acquireStorageLease(cfg Config, runID string, now time.Time) (release func(
 // A reaped holder (lease is a successor's or absent) fails here and ABORTS before
 // linking a commit.
 func verifyImportLeaseOwner(cfg Config, name, runID string, now time.Time) error {
-	data, err := os.ReadFile(shareImportLockPath(cfg, name))
+	return verifyShareLeaseOwner(shareImportLockPath(cfg, name), fmt.Sprintf("share %q: import", name), runID, now)
+}
+
+// verifyStorageLeaseOwner is the aggregate-admission fence. A build may run
+// longer than shareImportTTL; if its storage lease was reaped, it must not
+// publish after another subscription has admitted against the same headroom.
+func verifyStorageLeaseOwner(cfg Config, runID string, now time.Time) error {
+	return verifyShareLeaseOwner(shareStorageLockPath(cfg), "share storage", runID, now)
+}
+
+func verifyShareLeaseOwner(lockPath, label, runID string, now time.Time) error {
+	data, err := os.ReadFile(lockPath)
 	if err != nil {
-		return fmt.Errorf("share %q: import lease is gone — this run was reaped; aborting commit", name)
+		return fmt.Errorf("%s lease is gone — this run was reaped; aborting commit", label)
 	}
 	var body loopLockBody
 	if json.Unmarshal(data, &body) != nil {
-		return fmt.Errorf("share %q: import lease unreadable; aborting commit", name)
+		return fmt.Errorf("%s lease unreadable; aborting commit", label)
 	}
 	if body.RunID != runID {
-		return fmt.Errorf("share %q: import lease now belongs to %q, not this run %q — reaped; aborting commit", name, body.RunID, runID)
+		return fmt.Errorf("%s lease now belongs to %q, not this run %q — reaped; aborting commit", label, body.RunID, runID)
 	}
 	if t, perr := time.Parse(time.RFC3339, body.AcquiredAt); perr != nil || now.UTC().Sub(t.UTC()) >= shareImportTTL {
-		return fmt.Errorf("share %q: import lease is past its TTL; aborting commit", name)
+		return fmt.Errorf("%s lease is past its TTL; aborting commit", label)
 	}
 	return nil
 }
@@ -122,12 +134,22 @@ const shareHeartbeatDivisor = 3
 // stops; the commit fence's own re-verify then aborts the run. The returned stop
 // func halts the ticker.
 func startImportHeartbeat(cfg Config, name, runID string) (stop func()) {
+	return startShareLeaseHeartbeat(shareImportLockPath(cfg, name), runID)
+}
+
+func startStorageHeartbeat(cfg Config, runID string) (stop func()) {
+	return startShareLeaseHeartbeat(shareStorageLockPath(cfg), runID)
+}
+
+func startShareLeaseHeartbeat(lockPath, runID string) (stop func()) {
 	interval := shareImportTTL / shareHeartbeatDivisor
 	if interval <= 0 {
 		interval = time.Millisecond
 	}
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -135,13 +157,16 @@ func startImportHeartbeat(cfg Config, name, runID string) (stop func()) {
 			case <-done:
 				return
 			case <-t.C:
-				if !heartbeatLockFileFor(shareImportLockPath(cfg, name), runID, time.Now()) {
+				if !heartbeatLockFileFor(lockPath, runID, time.Now()) {
 					return // reaped: stop; the fence re-verify will abort the commit
 				}
 			}
 		}
 	}()
-	return func() { close(done) }
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 // shareBuildMode selects the chokepoint's attempt-record behavior.
@@ -159,12 +184,23 @@ const (
 // its terminal state via the owner-CAS after fn returns. fn receives the fresh
 // run_id and returns the committed seq (0 if it committed nothing).
 func shareBuildAndPublish(ctx context.Context, cfg Config, name string, mode shareBuildMode, fn func(runID string) (int, error)) error {
+	return shareBuildAndPublishPrepared(ctx, cfg, name, mode, nil, fn, nil)
+}
+
+// shareBuildAndPublishPrepared is the subscribe form of the chokepoint. prepare
+// runs after both leases and recovery but before an attempt is started; a
+// waiting duplicate therefore cannot overwrite the winner's succeeded attempt
+// with a synthetic failed one. finalize runs only after the attempt reaches its
+// successful terminal state, while both leases are still held.
+func shareBuildAndPublishPrepared(ctx context.Context, cfg Config, name string, mode shareBuildMode, prepare func() error, fn func(runID string) (int, error), finalize func() error) error {
 	runID := newRunID(time.Now())
 	storeRel, err := acquireStorageLease(cfg, runID, time.Now())
 	if err != nil {
 		return err
 	}
 	defer storeRel()
+	stopStorage := startStorageHeartbeat(cfg, runID)
+	defer stopStorage()
 	leaseRel, err := acquireImportLease(cfg, name, runID, time.Now())
 	if err != nil {
 		return err
@@ -177,6 +213,14 @@ func shareBuildAndPublish(ctx context.Context, cfg Config, name string, mode sha
 	if serr := shareGCSweep(cfg, name, time.Now()); serr != nil {
 		return serr
 	}
+	if rerr := recoverShareAttemptClaims(cfg, name); rerr != nil {
+		return rerr
+	}
+	if prepare != nil {
+		if perr := prepare(); perr != nil {
+			return perr
+		}
+	}
 
 	if mode == buildModeImport {
 		if serr := startShareAttempt(cfg, name, runID, time.Now()); serr != nil {
@@ -185,15 +229,22 @@ func shareBuildAndPublish(ctx context.Context, cfg Config, name string, mode sha
 	}
 	seq, ferr := fn(runID)
 	if mode == buildModeImport {
+		var terminalErr error
 		if ferr != nil {
-			_ = finishShareAttempt(cfg, name, runID, shareAttempt{
+			terminalErr = finishShareAttempt(cfg, name, runID, shareAttempt{
 				RunID: runID, State: "failed", LastError: sanitizeHealthError(ferr.Error()),
 			})
 		} else {
-			_ = finishShareAttempt(cfg, name, runID, shareAttempt{
+			terminalErr = finishShareAttempt(cfg, name, runID, shareAttempt{
 				RunID: runID, State: "succeeded", Seq: seq,
 			})
 		}
+		if terminalErr != nil {
+			return errors.Join(ferr, fmt.Errorf("share %q: durable attempt transition failed: %w", name, terminalErr))
+		}
+	}
+	if ferr == nil && finalize != nil {
+		return finalize()
 	}
 	return ferr
 }

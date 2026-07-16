@@ -74,7 +74,7 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 		published, perr := publishLockFile(lockPath, body)
 		switch {
 		case perr == nil && published:
-			return loopLockReleaser(lockPath), nil
+			return loopLockReleaser(lockPath, body), nil
 		case perr != nil && !sharingViolationRetryable(perr):
 			return nil, perr // a real, non-contention fs error: never interleave
 		case perr == nil:
