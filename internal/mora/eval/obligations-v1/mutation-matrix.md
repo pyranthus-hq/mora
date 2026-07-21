@@ -1,6 +1,11 @@
-# Obligation exam mutation matrix — 2026-07-14
+# Obligation exam mutation matrix — 2026-07-20
 
 Command: `scripts/eval/exam-mutation-matrix.sh`
+
+Re-run 2026-07-20 after the auditor-facing leak fix (neutral subjects, date
+interleave, in-world supersession evidence): all 23 planted mutants KILLED and
+all audit groups CLOSED against the re-cut corpus. The fix changed no mutant and
+no gate; it only removed gold-label tells from auditor-visible fields.
 
 `CLOSED` means the named permanent mutant or planted disposable-copy source
 mutation makes the cited test red. `HOLE` means there is no load-bearing gate
