@@ -42,6 +42,74 @@ func LintCorpus(files map[string][]byte) error {
 	return nil
 }
 
+// labelLeakVocab are meta terms from the exam's own label language (verdict,
+// lifecycle, and non-obligation class names). They describe how a record is
+// SCORED, not what a real person would write, so their presence in an
+// auditor-visible field hands the blinded auditor the answer. Kept to
+// unambiguous jargon so benign in-world prose does not trip it.
+var labelLeakVocab = []string{
+	"superseded", "bystander", "non-obligation", "false positive",
+	"true positive", "gold miss", "gold_miss", "third-party attendee",
+	"duplicate copy", "test purpose", "verdict",
+}
+
+// LintLeakage rejects a ledger whose auditor-visible fields (artifact subjects
+// and rendered block text) restate the gold label. It catches the two channels
+// that invalidated the obligations-v1 human sitting: a subject byte-equal to a
+// commitment summary, and body prose that narrates its own verdict. The
+// transition-evidence quote is intentionally NOT checked against the body it
+// cites — that span equality is required by design, not a leak.
+func LintLeakage(l Ledger) error {
+	summaries := map[string]string{} // normalized summary -> commitment id
+	for _, c := range l.Commitments {
+		if s := normalizeLeak(c.Summary); s != "" {
+			summaries[s] = c.ID
+		}
+	}
+	whys := make([]string, 0, len(l.NonObligations))
+	for _, n := range l.NonObligations {
+		if w := normalizeLeak(n.Why); w != "" {
+			whys = append(whys, w)
+		}
+	}
+	for _, a := range l.Artifacts {
+		visible := []struct{ field, text string }{{"subject", a.Subject}}
+		for _, m := range a.Messages {
+			for _, b := range m.Body {
+				visible = append(visible, struct{ field, text string }{"block " + b.ID, b.Text})
+			}
+		}
+		for _, v := range visible {
+			norm := normalizeLeak(v.text)
+			if norm == "" {
+				continue
+			}
+			if cid, ok := summaries[norm]; ok {
+				return fmt.Errorf("ERR_%s [%s]: artifact %q %s restates commitment %q gold summary verbatim", strings.ToUpper(LintLabelLeak), LintLabelLeak, a.ID, v.field, cid)
+			}
+			for _, term := range labelLeakVocab {
+				if strings.Contains(norm, term) {
+					return fmt.Errorf("ERR_%s [%s]: artifact %q %s contains label-language %q", strings.ToUpper(LintLabelLeak), LintLabelLeak, a.ID, v.field, term)
+				}
+			}
+			for _, w := range whys {
+				if strings.Contains(norm, w) {
+					return fmt.Errorf("ERR_%s [%s]: artifact %q %s restates a non-obligation rationale", strings.ToUpper(LintLabelLeak), LintLabelLeak, a.ID, v.field)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+var leakSpace = regexp.MustCompile(`\s+`)
+
+func normalizeLeak(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = leakSpace.ReplaceAllString(s, " ")
+	return strings.Trim(s, " .;:,!?")
+}
+
 func lintBytes(rule, path string, b []byte) error {
 	s := strings.ToLower(string(b))
 	for _, forbidden := range []string{"karode", "neil patel", "pyranthus", "halcyon", "northwind"} {

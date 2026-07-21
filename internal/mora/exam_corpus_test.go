@@ -266,6 +266,19 @@ func TestExamCorpusNoRealIdentities(t *testing.T) {
 	}
 }
 
+// TestExamCorpusNoLabelLeak guards the auditor-facing surface against the
+// regression that invalidated the first human sitting: subjects or body prose
+// that restate the gold verdict, handing a blinded auditor the answer.
+func TestExamCorpusNoLabelLeak(t *testing.T) {
+	l, err := exam.Load(filepath.Join(examFixtureRoot, "ledger.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exam.LintLeakage(l); err != nil {
+		t.Fatalf("committed ledger leaks the gold label into an auditor-visible field: %v", err)
+	}
+}
+
 func TestExamFlywheelArtifactsShareNoIdentityBytes(t *testing.T) {
 	l := loadExamLedger(t)
 	rendered, err := exam.Render(l)

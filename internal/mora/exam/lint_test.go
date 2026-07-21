@@ -55,3 +55,34 @@ func TestLoadRejectsUnknownLedgerFields(t *testing.T) {
 		})
 	}
 }
+
+func TestLintLeakageCatchesLabelRestatement(t *testing.T) {
+	// Subject byte-equal to a commitment's gold summary -> leak.
+	subjEqSummary := Ledger{
+		Artifacts: []Artifact{{ID: "a/x", Subject: "Copied sample-label promise",
+			Messages: []Message{{Body: []Block{{ID: "b1", Text: "Marcus will send the labels."}}}}}},
+		Commitments: []Commitment{{ID: "c/x", Summary: "Copied sample-label promise"}},
+	}
+	if err := LintLeakage(subjEqSummary); !hasNamedError(err, LintLabelLeak) {
+		t.Fatalf("subject==summary: err = %v, want %s", err, LintLabelLeak)
+	}
+
+	// Body prose that narrates its own verdict -> leak.
+	bodyNarratesVerdict := Ledger{
+		Artifacts: []Artifact{{ID: "a/y", Subject: "Sample labels",
+			Messages: []Message{{Body: []Block{{ID: "b2", Text: "The copied reminder was superseded by the source thread."}}}}}},
+	}
+	if err := LintLeakage(bodyNarratesVerdict); !hasNamedError(err, LintLabelLeak) {
+		t.Fatalf("verdict-narrating body: err = %v, want %s", err, LintLabelLeak)
+	}
+
+	// Neutral in-world text -> clean.
+	clean := Ledger{
+		Artifacts: []Artifact{{ID: "a/z", Subject: "Sample labels reminder",
+			Messages: []Message{{Body: []Block{{ID: "b1", Text: "Already tracked on Marcus's own thread so this copy can be ignored."}}}}}},
+		Commitments: []Commitment{{ID: "c/z", Summary: "Send sample labels"}},
+	}
+	if err := LintLeakage(clean); err != nil {
+		t.Fatalf("neutral corpus rejected: %v", err)
+	}
+}

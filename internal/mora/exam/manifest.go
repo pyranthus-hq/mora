@@ -16,6 +16,7 @@ const (
 
 	LintRealIdentity = "real_identity_ledger"
 	LintCorpusBytes  = "real_identity_corpus"
+	LintLabelLeak    = "label_leak"
 )
 
 var RequiredValidatorRules = []string{
