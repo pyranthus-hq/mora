@@ -188,14 +188,14 @@
       "id": "a/gmail-third-party",
       "memory_id": "gmail_thread/exam-third-party",
       "channel": "gmail",
-      "subject": "Omar's action item",
-      "occurred_at": "2026-07-09T16:00:00Z",
+      "subject": "Venue map",
+      "occurred_at": "2026-07-13T09:00:00Z",
       "messages": [{
         "id": "m1",
         "from": "p/nina",
         "to": ["p/self"],
         "cc": ["p/omar"],
-        "at": "2026-07-09T16:00:00Z",
+        "at": "2026-07-13T09:00:00Z",
         "body": [{"id": "b1", "kind": "authored", "text": "Omar, please send me the venue map."}]
       }]
     },
@@ -218,7 +218,7 @@
       "id": "a/note-duplicate-copy",
       "memory_id": "exam-note-duplicate-copy",
       "channel": "notes",
-      "subject": "Copied sample-label promise",
+      "subject": "Sample labels reminder",
       "occurred_at": "2026-07-08T15:00:00Z",
       "messages": [{
         "id": "m1",
@@ -226,7 +226,7 @@
         "to": [],
         "cc": [],
         "at": "2026-07-08T15:00:00Z",
-        "body": [{"id": "b1", "kind": "authored", "text": "Marcus will send the sample labels this week."}, {"id": "b2", "kind": "authored", "text": "The copied reminder was superseded by the source thread."}]
+        "body": [{"id": "b1", "kind": "authored", "text": "Marcus will send the sample labels this week."}, {"id": "b2", "kind": "authored", "text": "Already tracked on Marcus's own thread so this copy can be ignored."}]
       }]
     },
     {
@@ -234,13 +234,13 @@
       "memory_id": "gmail_thread/exam-closed-open",
       "channel": "gmail",
       "subject": "Reviewer list",
-      "occurred_at": "2026-07-07T12:00:00Z",
+      "occurred_at": "2026-07-11T12:00:00Z",
       "messages": [{
         "id": "m1",
         "from": "p/sam",
         "to": ["p/self"],
         "cc": [],
-        "at": "2026-07-07T12:00:00Z",
+        "at": "2026-07-11T12:00:00Z",
         "body": [{"id": "b1", "kind": "authored", "text": "Can you send the reviewer list?"}]
       }]
     },
@@ -249,13 +249,13 @@
       "memory_id": "exam-note-closure",
       "channel": "notes",
       "subject": "Reviewer list delivered",
-      "occurred_at": "2026-07-08T12:00:00Z",
+      "occurred_at": "2026-07-12T12:00:00Z",
       "messages": [{
         "id": "m1",
         "from": "p/self",
         "to": [],
         "cc": [],
-        "at": "2026-07-08T12:00:00Z",
+        "at": "2026-07-12T12:00:00Z",
         "body": [{"id": "b1", "kind": "authored", "text": "The reviewer list was delivered to Sam."}]
       }]
     },
@@ -263,7 +263,7 @@
       "id": "a/note-sam-mention",
       "memory_id": "exam-note-sam-mention",
       "channel": "notes",
-      "subject": "Third-party attendee mention",
+      "subject": "Pilot contract follow-up",
       "occurred_at": "2026-07-08T13:00:00Z",
       "messages": [{
         "id": "m1",
@@ -278,14 +278,14 @@
       "id": "a/gmail-quoted-negative",
       "memory_id": "gmail_thread/exam-quoted-negative",
       "channel": "gmail",
-      "subject": "Old request context",
-      "occurred_at": "2026-07-06T10:00:00Z",
+      "subject": "Worksheet",
+      "occurred_at": "2026-07-12T09:00:00Z",
       "messages": [{
         "id": "m1",
         "from": "p/sam",
         "to": ["p/self"],
         "cc": [],
-        "at": "2026-07-06T10:00:00Z",
+        "at": "2026-07-12T09:00:00Z",
         "body": [{"id": "b1", "kind": "quoted_reply", "text": "Earlier request from the archive:\nCan you resend the retired worksheet?"}]
       }]
     },
@@ -293,14 +293,14 @@
       "id": "a/gmail-forwarded-negative",
       "memory_id": "gmail_thread/exam-forwarded-negative",
       "channel": "gmail",
-      "subject": "Fwd: generic offer",
-      "occurred_at": "2026-07-06T11:00:00Z",
+      "subject": "Fwd: product tour",
+      "occurred_at": "2026-07-12T11:00:00Z",
       "messages": [{
         "id": "m1",
         "from": "p/sam",
         "to": ["p/self"],
         "cc": [],
-        "at": "2026-07-06T11:00:00Z",
+        "at": "2026-07-12T11:00:00Z",
         "body": [{"id": "b1", "kind": "forwarded", "text": "-----Original Message-----\nBook a generic product tour today."}]
       }]
     },
@@ -309,13 +309,13 @@
       "memory_id": "gmail_thread/exam-footer-negative",
       "channel": "gmail",
       "subject": "Delivery note",
-      "occurred_at": "2026-07-06T12:00:00Z",
+      "occurred_at": "2026-07-13T08:00:00Z",
       "messages": [{
         "id": "m1",
         "from": "p/service",
         "to": ["p/self"],
         "cc": [],
-        "at": "2026-07-06T12:00:00Z",
+        "at": "2026-07-13T08:00:00Z",
         "body": [{"id": "b1", "kind": "footer", "text": "Please consider the environment before printing this automated notice."}]
       }]
     }
@@ -455,7 +455,7 @@
       "opened_by": {"artifact_id": "a/note-duplicate-copy", "message_id": "m1", "block_id": "b1", "quote": "Marcus will send the sample labels this week."},
       "due_kind": "relative",
       "state": "superseded",
-      "transitions": [{"to": "superseded", "at": "2026-07-08T15:00:00Z", "evidence": {"artifact_id": "a/note-duplicate-copy", "message_id": "m1", "block_id": "b2", "quote": "The copied reminder was superseded by the source thread."}}],
+      "transitions": [{"to": "superseded", "at": "2026-07-08T15:00:00Z", "evidence": {"artifact_id": "a/note-duplicate-copy", "message_id": "m1", "block_id": "b2", "quote": "Already tracked on Marcus's own thread so this copy can be ignored."}}],
       "duplicate_of": "c/duplicate-canonical",
       "expected_in": []
     },
@@ -468,7 +468,7 @@
       "opened_by": {"artifact_id": "a/gmail-closed-open", "message_id": "m1", "block_id": "b1", "quote": "Can you send the reviewer list?"},
       "due_kind": "none",
       "state": "closed",
-      "transitions": [{"to": "closed", "at": "2026-07-08T12:00:00Z", "evidence": {"artifact_id": "a/note-closure", "message_id": "m1", "block_id": "b1", "quote": "The reviewer list was delivered to Sam."}}],
+      "transitions": [{"to": "closed", "at": "2026-07-12T12:00:00Z", "evidence": {"artifact_id": "a/note-closure", "message_id": "m1", "block_id": "b1", "quote": "The reviewer list was delivered to Sam."}}],
       "expected_in": []
     }
   ],

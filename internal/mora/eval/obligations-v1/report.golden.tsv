@@ -3,18 +3,18 @@ daily	false_positive		calendar_event/exam-review	- Rendered output review — Wh
 daily	false_positive		gmail_thread/exam-closed-open	- Reviewer list — From: Sam Rivera <sam@example.org> Can you send the reviewer list? (id: gmail_thread/exam-closed-open)
 daily	false_positive		gmail_thread/exam-duplicate-canonical	- Sample labels — From: Marcus Vance <marcus@example.net> I will send the sample labels this week. (id: gmail_thread/exam-duplicate-canonical)
 daily	false_positive		gmail_thread/exam-footer-negative	- Delivery note — From: Example Updates <updates@example.invalid> Please consider the environment before printing this automated notice. (id: gmail_thread/exam-footer-negative)
-daily	false_positive		gmail_thread/exam-forwarded-negative	- Fwd: generic offer — From: Sam Rivera <sam@example.org> -----Original Message----- Book a generic product tour today. (id: gmail_thread/exam-forwarded-negative)
+daily	false_positive		gmail_thread/exam-forwarded-negative	- Fwd: product tour — From: Sam Rivera <sam@example.org> -----Original Message----- Book a generic product tour today. (id: gmail_thread/exam-forwarded-negative)
 daily	false_positive		gmail_thread/exam-nina-summary	- Summary table — From: Nina Ellis <nina@example.org> I will send you the summary table next week. (id: gmail_thread/exam-nina-summary)
-daily	false_positive		gmail_thread/exam-quoted-negative	- Old request context — From: Sam Rivera <sam@example.org> Earlier request from the archive: Can you resend the retired worksheet? (id: gmail_thread/exam-quoted-negative)
+daily	false_positive		gmail_thread/exam-quoted-negative	- Worksheet — From: Sam Rivera <sam@example.org> Earlier request from the archive: Can you resend the retired worksheet? (id: gmail_thread/exam-quoted-negative)
 daily	false_positive		gmail_thread/exam-statement	- Launch appendix — From: dana@example.net The launch appendix still needs your initials. (id: gmail_thread/exam-statement)
 daily	false_positive		gmail_thread/exam-subject-checklist	- Please bring the signed checklist — From: dana@example.net The room packet is attached for reference. (id: gmail_thread/exam-subject-checklist)
-daily	false_positive		gmail_thread/exam-third-party	- Omar's action item — From: Nina Ellis <nina@example.org> Omar, please send me the venue map. (id: gmail_thread/exam-third-party)
+daily	false_positive		gmail_thread/exam-third-party	- Venue map — From: Nina Ellis <nina@example.org> Omar, please send me the venue map. (id: gmail_thread/exam-third-party)
 daily	false_positive		imessage_chat/exam-flywheel	- +15550100137 — ## 2026-07-13 Me: Thanks, I will meet you there. +15550100137: I will bring the room key to the review. (id: imessage_chat/exam-flywheel)
 daily	true_positive	c/sam-outline	gmail_thread/exam-reply-chain	- Signed outline — From: Sam Rivera <sam@example.org> Can you send the signed outline by July 14? --- I will send the signed outline today. (id: gmail_thread/exam-reply-chain)
 daily	true_positive	c/marcus-confirm	imessage_chat/exam-marcus	- Marcus Vance — ## 2026-07-13 Me: Could you confirm the sample count tomorrow? Marcus Vance: I will confirm the sample count tomorrow. (id: imessage_chat/exam-marcus)
 meeting	gold_miss	c/subject-checklist	gmail_thread/exam-subject-checklist	Please bring the signed checklist
 meeting	gold_miss	c/flywheel	imessage_chat/exam-flywheel	I will bring the room key to the review.
-meeting	leak_closed	c/closed-reviewers	gmail_thread/exam-closed-open	~7 days ago · Sam Rivera — “Can you send the reviewer list?”
-meeting	leak_non_obligation	n/quoted	gmail_thread/exam-quoted-negative	~8 days ago · Sam Rivera — “Can you resend the retired worksheet?”
+meeting	leak_closed	c/closed-reviewers	gmail_thread/exam-closed-open	~3 days ago · Sam Rivera — “Can you send the reviewer list?”
+meeting	leak_non_obligation	n/quoted	gmail_thread/exam-quoted-negative	~2 days ago · Sam Rivera — “Can you resend the retired worksheet?”
 meeting	true_positive	c/sam-outline	gmail_thread/exam-reply-chain	~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”
 meeting	true_positive	c/dana-statement	gmail_thread/exam-statement	~1 day ago · dana@example.net — “The launch appendix still needs your initials.”

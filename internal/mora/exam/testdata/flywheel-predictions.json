@@ -2,7 +2,7 @@
   "pre": [
     {
       "surface": "meeting",
-      "text": "~8 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
+      "text": "~2 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
       "memory_id": "gmail_thread/exam-quoted-negative",
@@ -14,7 +14,7 @@
     },
     {
       "surface": "meeting",
-      "text": "~7 days ago · Sam Rivera — “Can you send the reviewer list?”",
+      "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
       "memory_id": "gmail_thread/exam-closed-open",
@@ -52,7 +52,7 @@
   "post": [
     {
       "surface": "meeting",
-      "text": "~8 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
+      "text": "~2 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
       "memory_id": "gmail_thread/exam-quoted-negative",
@@ -64,7 +64,7 @@
     },
     {
       "surface": "meeting",
-      "text": "~7 days ago · Sam Rivera — “Can you send the reviewer list?”",
+      "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
       "memory_id": "gmail_thread/exam-closed-open",

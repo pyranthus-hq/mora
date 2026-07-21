@@ -2,7 +2,7 @@
 id: exam-note-sam-mention
 scope: exam
 type: note
-title: Third-party attendee mention
+title: Pilot contract follow-up
 tags: []
 source: manual
 created_at: 2026-07-08T13:00:00Z

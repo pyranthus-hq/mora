@@ -47,6 +47,24 @@
     },
     {
       "surface": "daily",
+      "text": "- Venue map — From: Nina Ellis \u003cnina@example.org\u003e Omar, please send me the venue map. (id: gmail_thread/exam-third-party)\n",
+      "memory_id": "gmail_thread/exam-third-party",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "daily",
+      "text": "- Delivery note — From: Example Updates \u003cupdates@example.invalid\u003e Please consider the environment before printing this automated notice. (id: gmail_thread/exam-footer-negative)\n",
+      "memory_id": "gmail_thread/exam-footer-negative",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "daily",
       "text": "- Signed outline — From: Sam Rivera \u003csam@example.org\u003e Can you send the signed outline by July 14? --- I will send the signed outline today. (id: gmail_thread/exam-reply-chain)\n",
       "memory_id": "gmail_thread/exam-reply-chain",
       "direction": "unknown",
@@ -56,8 +74,26 @@
     },
     {
       "surface": "daily",
-      "text": "- Omar's action item — From: Nina Ellis \u003cnina@example.org\u003e Omar, please send me the venue map. (id: gmail_thread/exam-third-party)\n",
-      "memory_id": "gmail_thread/exam-third-party",
+      "text": "- Fwd: product tour — From: Sam Rivera \u003csam@example.org\u003e -----Original Message----- Book a generic product tour today. (id: gmail_thread/exam-forwarded-negative)\n",
+      "memory_id": "gmail_thread/exam-forwarded-negative",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "daily",
+      "text": "- Worksheet — From: Sam Rivera \u003csam@example.org\u003e Earlier request from the archive: Can you resend the retired worksheet? (id: gmail_thread/exam-quoted-negative)\n",
+      "memory_id": "gmail_thread/exam-quoted-negative",
+      "direction": "unknown",
+      "due": "",
+      "lifecycle": "unknown",
+      "closure_ref": ""
+    },
+    {
+      "surface": "daily",
+      "text": "- Reviewer list — From: Sam Rivera \u003csam@example.org\u003e Can you send the reviewer list? (id: gmail_thread/exam-closed-open)\n",
+      "memory_id": "gmail_thread/exam-closed-open",
       "direction": "unknown",
       "due": "",
       "lifecycle": "unknown",
@@ -80,48 +116,12 @@
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Reviewer list — From: Sam Rivera \u003csam@example.org\u003e Can you send the reviewer list? (id: gmail_thread/exam-closed-open)\n",
-      "memory_id": "gmail_thread/exam-closed-open",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Delivery note — From: Example Updates \u003cupdates@example.invalid\u003e Please consider the environment before printing this automated notice. (id: gmail_thread/exam-footer-negative)\n",
-      "memory_id": "gmail_thread/exam-footer-negative",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Fwd: generic offer — From: Sam Rivera \u003csam@example.org\u003e -----Original Message----- Book a generic product tour today. (id: gmail_thread/exam-forwarded-negative)\n",
-      "memory_id": "gmail_thread/exam-forwarded-negative",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Old request context — From: Sam Rivera \u003csam@example.org\u003e Earlier request from the archive: Can you resend the retired worksheet? (id: gmail_thread/exam-quoted-negative)\n",
-      "memory_id": "gmail_thread/exam-quoted-negative",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
     }
   ],
   "meeting": [
     {
       "surface": "meeting",
-      "text": "~8 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
+      "text": "~2 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
       "memory_id": "gmail_thread/exam-quoted-negative",
@@ -133,7 +133,7 @@
     },
     {
       "surface": "meeting",
-      "text": "~7 days ago · Sam Rivera — “Can you send the reviewer list?”",
+      "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
       "memory_id": "gmail_thread/exam-closed-open",
