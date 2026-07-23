@@ -406,7 +406,19 @@ func TestScoreRejectsMissingCitedSourceArtifact(t *testing.T) {
 // oracle emits is scored per class.
 func TestOwnerIsDirectAndFailClosed(t *testing.T) {
 	l := loadLedger(t, examLedgerPath)
-	silent, err := Score(l, realPredictions(t, SurfaceMeeting), SurfaceMeeting)
+	real := realPredictions(t, SurfaceMeeting)
+	product, err := Score(l, real, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !product.Owner.Defined || product.Owner.Precision != 1 {
+		t.Fatalf("typed product Owner = %+v, want direct precise measurement", product.Owner)
+	}
+	silentPredictions := clonePredictions(real)
+	for i := range silentPredictions {
+		silentPredictions[i].Owner = ""
+	}
+	silent, err := Score(l, silentPredictions, SurfaceMeeting)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,19 +585,22 @@ func TestRealEngineIsGroundedInTheLedger(t *testing.T) {
 	}
 }
 
-// TestRealEngineBornRedRowsAreRed proves the born-red rows are red BY MEASUREMENT,
-// not by a hard-coded zero. The oracle (row k) proves the same rows can go green.
+// TestRealEngineBornRedRowsAreRed preserves the monotonic typed ratchet: Owner and
+// Direction are now real measured fields, while the later due/lifecycle/closure
+// rows remain visibly red until their product PRs land.
 func TestRealEngineBornRedRowsAreRed(t *testing.T) {
 	l := loadLedger(t, examLedgerPath)
 	sc, err := Score(l, realPredictions(t, SurfaceMeeting), SurfaceMeeting)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sc.DirectionScorable {
-		t.Error("DirectionScorable = true, but no production payload carries a direction (Finding R3)")
+	if !sc.DirectionScorable || !sc.Direction.Defined || sc.Direction.Precision != 1 {
+		t.Errorf("Direction = %+v scorable=%v, want a precise typed product field", sc.Direction, sc.DirectionScorable)
+	}
+	if !sc.Owner.Defined || sc.Owner.Precision != 1 {
+		t.Errorf("Owner = %+v, want a precise typed product field", sc.Owner)
 	}
 	born := map[string]PR{
-		MetricDirection:      sc.Direction,
 		MetricDueTime:        sc.DueTime,
 		MetricLifecycle:      sc.Lifecycle,
 		MetricClosureLinkage: sc.ClosureLinkage,

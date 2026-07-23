@@ -231,6 +231,18 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		`CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind)`,
 		// Hybrid retrieval (I2): one static-embedding vector per memory, rebuildable.
 		`CREATE TABLE IF NOT EXISTS mem_vectors (memory_id TEXT PRIMARY KEY, dim INT, model TEXT, vec BLOB)`,
+		// Typed commitments (Gate 3): a whole-vault, generation-stamped projection.
+		// row_key is the CommitmentID whenever immutable opening refs exist. Legacy
+		// pre-PR1 memories retain an internal row key but never receive a fabricated
+		// commitment_id.
+		`CREATE TABLE IF NOT EXISTS commitments (
+			generation TEXT NOT NULL,
+			row_key TEXT PRIMARY KEY,
+			commitment_id TEXT UNIQUE,
+			memory_id TEXT NOT NULL,
+			payload TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_commitments_generation_memory ON commitments(generation, memory_id)`,
 		// index_meta: vault-binding key/value store. Rows are rewritten by upsert on
 		// each rebuild; deliberately NOT in the DELETE list so vault_id persists
 		// across rebuilds and the guard can compare it.
@@ -241,6 +253,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		`DELETE FROM edges`,
 		`DELETE FROM person_merges`,
 		`DELETE FROM mem_vectors`,
+		`DELETE FROM commitments`,
 		// Stamp the schema this binary writes (read paths refuse a mismatch).
 		// Inside the same tx as everything else: a rolled-back rebuild must not
 		// leave a fresh stamp on a stale index.
@@ -327,6 +340,14 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return count, err
 	}
 
+	// Commitments are derived over the exact same whole-vault snapshot as the graph
+	// and vectors. The manifest digest is the generation identity: it changes iff
+	// the indexed vault bytes change, and the rows plus stamp commit atomically.
+	commitmentGeneration := manifestDigestOf(manifestLines)
+	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg); err != nil {
+		return count, err
+	}
+
 	// Gate 2 stamps, all INSIDE this committing tx so they advance ONLY on a
 	// committed rebuild (never on a rolled-back one):
 	//   - the three projection timestamps (Finding 2): a full rebuild advances all
@@ -344,10 +365,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO index_meta(key,value) VALUES
 		 ('indexed_at',?),('fts_indexed_at',?),('graph_indexed_at',?),('vectors_indexed_at',?),
+		 ('commitments_generation',?),
 		 ('embedder_model',?),('embedder_dim',?),('embedder_digest',?),
 		 ('vault_manifest_algo',?),('vault_manifest_digest',?),('vault_manifest_listed',?),('vault_manifest_unparseable',?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-		stampNow, stampNow, stampNow, stampNow,
+		stampNow, stampNow, stampNow, stampNow, commitmentGeneration,
 		emb.ModelID(), fmt.Sprintf("%d", emb.Dim()), embedderDigestOf(emb),
 		indexManifestAlgo, manifestDigestOf(manifestLines),
 		fmt.Sprintf("%d", len(files)), fmt.Sprintf("%d", len(files)-len(parsed))); err != nil {

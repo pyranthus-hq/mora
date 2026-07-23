@@ -104,7 +104,7 @@ func TestCoreB_IdxCheckIndexSchemaMatchAndMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("wrong version must error")
 	}
-	for _, want := range []string{"different mora version", "index schema v99", "expects v2", "mora index rebuild"} {
+	for _, want := range []string{"different mora version", "index schema v99", "expects v" + coreBIdxItoa(indexSchemaVersion), "mora index rebuild"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("schema error %q missing %q", err.Error(), want)
 		}

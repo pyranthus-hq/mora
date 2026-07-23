@@ -303,9 +303,9 @@ func buildShareGenIndex(ctx context.Context, indexPath string, mems []Memory) er
 	return f.Close()
 }
 
-// writeShareIndexRows runs the shared v2 DDL + row inserts inside a caller's
-// transaction (used by both the generation builder and heal's re-cut). Same
-// memories/memories_fts shape + user_version stamp as the personal index.
+// writeShareIndexRows runs the current share-search DDL + row inserts inside a
+// caller's transaction (used by both the generation builder and heal's re-cut).
+// Shares expose the memories/FTS subset and carry the common user_version stamp.
 func writeShareIndexRows(ctx context.Context, tx *sql.Tx, mems []Memory) error {
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT)`,
