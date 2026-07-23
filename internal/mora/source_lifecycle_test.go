@@ -144,6 +144,32 @@ func TestSourcesAddInheritsTypeConsent(t *testing.T) {
 	}
 }
 
+// (c) `ingest run --source <name>` with a name that matches NO configured
+// source must error (exit 1) naming the typo and pointing at `mora sources
+// list` — not print "ingested 0 item(s)" and exit 0, which made a typo look
+// like a successful (empty) run.
+func TestIngestUnknownSourceErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	out, err := runErr(t, "ingest", "run", "--source", "nonexistent")
+	if err == nil {
+		t.Fatalf("ingest run --source nonexistent must error; got:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), `"nonexistent"`) || !strings.Contains(err.Error(), "mora sources list") {
+		t.Fatalf("unknown-source error should name the source and point at `mora sources list`; got: %v", err)
+	}
+	if strings.Contains(out, "ingested 0 item(s)") {
+		t.Fatalf("a typo'd source must not report a successful empty run; got:\n%s", out)
+	}
+
+	// Neither --source nor --all is a usage error, not a silent empty run.
+	out, err = runErr(t, "ingest", "run")
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("ingest run with no --source/--all should be a usage error; got err=%v out:\n%s", err, out)
+	}
+}
+
 // (a) A legacy install may already carry a pathless filesystem row (fabricated
 // by an older binary). Ingesting it must fail with an error that names the
 // source and the fix — never the bare `lstat : no such file or directory`.

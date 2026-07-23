@@ -97,6 +97,12 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 	if perr := fs.Parse(args[1:]); perr != nil {
 		return perr
 	}
+	// One of the two selectors is required: a bare `ingest run` used to walk the
+	// loop with sourceName=="", match nothing, and print a successful-looking
+	// "ingested 0 item(s)".
+	if !*all && *sourceName == "" {
+		return errors.New("usage: mora ingest run --source <name>|--all")
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -112,6 +118,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 	}
 	count := 0
 	failures := 0
+	named := false
 	var namedErr error
 	for _, s := range sources {
 		// Enabled gate (D-07): a named disabled source ERRORS before the skip so
@@ -121,6 +128,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 			if s.Name != *sourceName {
 				continue
 			}
+			named = true
 			if !s.IsEnabled() {
 				return fmt.Errorf("%s is disabled — run `mora connectors enable %s` first", s.Name, s.Type)
 			}
@@ -146,6 +154,12 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 			failures++
 			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
 		}
+	}
+	// A named source that matched NOTHING is a typo, not a successful empty run:
+	// error (exit 1) before the rebuild — no ingest happened, so there is nothing
+	// to make searchable.
+	if !*all && !named {
+		return fmt.Errorf("no source named %q — run `mora sources list` to see configured sources", *sourceName)
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		if namedErr != nil {
