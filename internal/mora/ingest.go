@@ -1133,6 +1133,12 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	// committing mid-walk was missed and the stale walker resurrected the atom
 	// (#113). Only stable_id (item) forgets can match a filesystem memory: it
 	// carries no participant identity, so `forget --handle/--email` never targets it.
+	// Legacy installs may carry a pathless filesystem row (older binaries minted
+	// one on `connectors enable filesystem`). Walking "" yields the useless
+	// `lstat : no such file or directory` — name the real problem and the fix.
+	if s.Path == "" {
+		return 0, fmt.Errorf("filesystem source %q has no path — re-add it with `mora connect filesystem <path>` (or remove the row from sources.json)", s.Name)
+	}
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {

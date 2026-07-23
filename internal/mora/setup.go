@@ -122,6 +122,27 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 			return err
 		}
 	}
+	if ctype == "filesystem" {
+		// A filesystem source is meaningless without a folder, so enable must
+		// never mint the pathless {Name:"filesystem", Path:""} row setSourceEnabled
+		// would create for a row-less type: every later `ingest run --all`/
+		// `reingest` fails walking "" and a permanent red "never synced" health
+		// banner appears on an otherwise healthy vault. With no configured folder
+		// there is nothing to consent to yet — print the two ways to add one and
+		// stop (guidance, not an error: the setup menu enables selected connectors
+		// in a loop, and a hard error would abort the remaining connectors).
+		sources, err := loadSources(cfg)
+		if err != nil {
+			return err
+		}
+		if !hasSourceOfType(sources, "filesystem") {
+			fmt.Fprintln(stdout, "filesystem needs a folder before it can be enabled — no filesystem sources are configured yet.")
+			fmt.Fprintln(stdout, "Add one and index it now:  mora connect filesystem <path>")
+			fmt.Fprintln(stdout, "Or stage it for later:     mora sources add filesystem --name <name> --path <path>")
+			fmt.Fprintln(stdout, "then re-run `mora connectors enable filesystem`.")
+			return nil
+		}
+	}
 	if err := setSourceEnabled(cfg, ctype, true); err != nil {
 		return err
 	}

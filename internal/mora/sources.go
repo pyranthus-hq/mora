@@ -147,6 +147,18 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 	})
 }
 
+// hasSourceOfType reports whether any source row of the given connector type
+// exists (enabled or not). Used by the per-source connector types (filesystem)
+// whose enable path must never mint a config-less row.
+func hasSourceOfType(sources []Source, ctype string) bool {
+	for _, s := range sources {
+		if s.Type == ctype {
+			return true
+		}
+	}
+	return false
+}
+
 // containsType reports whether types contains t.
 func containsType(types []string, t string) bool {
 	for _, x := range types {

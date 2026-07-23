@@ -273,6 +273,11 @@ func TestWindowsKeepsCrossPlatformConnectorEnableFunctional(t *testing.T) {
 			withTempHome(t)
 			withRuntimeGOOS(t, "windows")
 			run(t, "init")
+			if ctype == "filesystem" {
+				// filesystem needs a configured folder — enable flips rows, it
+				// never mints a pathless one.
+				run(t, "sources", "add", "filesystem", "--name", "docs", "--path", t.TempDir())
+			}
 
 			out, err := runErr(t, "connectors", "enable", ctype)
 			if err != nil {
@@ -344,6 +349,14 @@ func TestConnectorEnableGatesIngest(t *testing.T) {
 func TestEnableNoBackfill(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+
+	// Register a real folder (with a file in it) so enable has a row to flip —
+	// and something it WOULD ingest if it (wrongly) backfilled.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.md"), []byte("backfill canary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, "sources", "add", "filesystem", "--name", "docs", "--path", dir)
 
 	if _, err := runErr(t, "connectors", "enable", "filesystem"); err != nil {
 		t.Fatalf("connectors enable filesystem should succeed (RED until Plan 02): %v", err)
@@ -453,6 +466,9 @@ func TestSetupBackfillDefaultsNo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
+
+	// filesystem needs a configured folder for enable to have a row to flip.
+	run(t, "sources", "add", "filesystem", "--name", "docs", "--path", t.TempDir())
 
 	var buf bytes.Buffer
 	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, false, &buf, strings.NewReader("")); err != nil {
