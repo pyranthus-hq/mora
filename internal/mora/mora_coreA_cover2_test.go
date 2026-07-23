@@ -388,9 +388,10 @@ func TestCoreA_CmdSchedule(t *testing.T) {
 	if _, err := runErr(t, "schedule", "install", "not-a-job"); err == nil {
 		t.Fatal("schedule install of an unknown job must error")
 	}
-	// install a known job. On darwin this only writes a plist under the temp HOME's
-	// LaunchAgents dir (no launchctl); off darwin it prints cron guidance. Either
-	// way it must not error.
+	// install a known job. On darwin this writes a plist under the temp HOME's
+	// LaunchAgents dir and bootstraps it via the (stubbed) launchctl runner; off
+	// darwin it prints cron guidance. Either way it must not error.
+	withScheduleRunner(t, nil)
 	if _, err := runErr(t, "schedule", "install", "pulse-daily"); err != nil {
 		t.Fatalf("schedule install pulse-daily should not error: %v", err)
 	}

@@ -155,10 +155,22 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 		dir := filepath.Join(home, "Library", "LaunchAgents")
 		label := "com.mora." + job
 		plist, _ := schedulePlistFor(cfg, job)
-		if err := atomicWrite(filepath.Join(dir, label+".plist"), []byte(plist), 0o644); err != nil {
+		plistPath := filepath.Join(dir, label+".plist")
+		if err := atomicWrite(plistPath, []byte(plist), 0o644); err != nil {
 			return err
 		}
-		okf(stdout, "installed launchd job %s", label)
+		// Writing the plist does NOT load it: without an explicit bootstrap the
+		// job stays inert until the next login — a silently-dead automation (this
+		// exact gap left the daily brief dead for a week). Boot out any loaded
+		// copy first so a reinstall picks up the NEW plist ("not loaded" is
+		// benign, mirroring installServeHTTP), then bootstrap into the gui domain.
+		uid := strconv.Itoa(os.Getuid())
+		_, _ = runScheduleCommand("launchctl", "bootout", "gui/"+uid+"/"+label)
+		if out, err := runScheduleCommand("launchctl", "bootstrap", "gui/"+uid, plistPath); err != nil {
+			return fmt.Errorf("installed %s but launchctl bootstrap failed: %w: %s\nThe job will not run until you start it (or log out and back in):\n  launchctl bootstrap gui/%s %s",
+				label, err, strings.TrimSpace(string(out)), uid, plistPath)
+		}
+		okf(stdout, "installed + loaded launchd job %s (schedule active — no re-login needed)", label)
 		return nil
 	}
 	// Linux / WSL2: launchd unavailable. cron also won't inherit the shell env,
