@@ -29,6 +29,16 @@ The production code they couple to (`hybrid.go`, `mora.go`, `embed.go`, `digest.
 
 All fixture identities use RFC-2606 domains and the designated fictional handle range. No framework is imported by production, no exam test needs network, and no corpus, output, or score is sent to an LLM judge.
 
+### Ledger schema v2: the realism track
+
+Schema version 1 deliberately banned the shapes real mail carries — connector-style quote syntax, wrapped bodies, and artifacts that mix a live obligation with boilerplate — and the human-audit round proved the cost: negatives whose rationale is extractor mechanics cannot be validated by people. Schema v2 (`Ledger.Version == 2`) unlocks exactly those shapes while leaving every version-1 byte frozen (the pinned `CORPUS.sha256` depends on the v1 renderer, named by `RendererVersionFor`):
+
+- **Structural quoting.** `Block.Attr` carries the attribution line of a `quoted_reply` or `forwarded` block, and the v2 renderer emits real client syntax (`On … wrote:`, `> ` prefixes, forward headers, `-- ` signature separators). Authored text may still never fake a quote — quoting stays label-attributable to its block.
+- **Wrapped bodies.** `Message.Wrap` (gmail only, 40–100 columns) hard-wraps authored text the way 72-column clients do, making the #136 segmentation shape representable.
+- **Composite artifacts.** The one-defect-per-artifact rule relaxes: an artifact may carry a commitment and non-obligations together (footer-on-real-ask), but no two defect labels may share a block and no defect may sit on the block that opens a commitment.
+- **Required realism shapes.** A v2 ledger that never uses a composite artifact, a wrapped body, and an attributed quote is refused — a v2 corpus must exercise what v2 exists for.
+- **Fingerprint lints.** `LintDateFingerprint` and `LintTitleFingerprint` refuse any ledger whose artifact dates or subject tokens alone separate open-commitment artifacts from the rest — the two metadata channels that leaked the gold label out of the first human sitting are now gated in CI for every corpus.
+
 ---
 
 ## The obligation scorer, and why it refuses things

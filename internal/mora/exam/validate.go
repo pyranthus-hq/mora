@@ -48,8 +48,8 @@ func Validate(l Ledger) error {
 }
 
 func validateIdentity(l Ledger) (map[string]Identity, error) {
-	if l.Version != 1 || strings.TrimSpace(l.Self.ID) == "" {
-		return nil, ruleError(RuleIdentity, "version 1 and a declared self identity are required")
+	if (l.Version != SchemaV1 && l.Version != SchemaV2) || strings.TrimSpace(l.Self.ID) == "" {
+		return nil, ruleError(RuleIdentity, "schema version 1 or 2 and a declared self identity are required")
 	}
 	ids := map[string]Identity{l.Self.ID: l.Self}
 	for _, p := range l.People {
@@ -379,6 +379,50 @@ func validateRequiredShapes(l Ledger) error {
 	if !hasReply || !hasQuoted || !hasForwarded || !hasFooter || !hasIMessage {
 		return ruleError(RuleReplyChainQuotes, "required reply/quoted/forwarded/footer/multi-speaker shape is missing")
 	}
+	if l.Version == SchemaV2 {
+		return validateRealismShapes(l)
+	}
+	return nil
+}
+
+// validateRealismShapes is the schema-v2 counterpart of the required-shape
+// rule: a v2 corpus that never exercises the features v2 exists for (composite
+// artifacts, wrapped bodies, attributed quotes) is a v1 corpus wearing a
+// version number. Each shape closes a hole the obligations-v1 human sitting
+// proved: composite = footer-on-real-ask, wrap = the #136 wrapped-mail shape,
+// attributed quote = a quote a reader can see is a quote.
+func validateRealismShapes(l Ledger) error {
+	defectArtifacts := map[string]bool{}
+	for _, n := range l.NonObligations {
+		defectArtifacts[n.Span.ArtifactID] = true
+	}
+	// The composite shape must pair a defect with a LIVE canonical obligation —
+	// boilerplate under a closed or duplicate commitment is just noise near
+	// noise, not the footer-on-real-ask fixture the human sitting demanded.
+	hasComposite := false
+	for _, c := range l.Commitments {
+		if c.State == "open" && c.DuplicateOf == "" && defectArtifacts[c.OpenedBy.ArtifactID] {
+			hasComposite = true
+		}
+	}
+	hasWrap, hasAttrQuote := false, false
+	for _, a := range l.Artifacts {
+		for _, m := range a.Messages {
+			if m.Wrap > 0 {
+				// Wrap only reshapes authored text; a wrapped message with no
+				// authored block satisfies nothing.
+				for _, b := range m.Body {
+					hasWrap = hasWrap || b.Kind == "authored"
+				}
+			}
+			for _, b := range m.Body {
+				hasAttrQuote = hasAttrQuote || (b.Kind == "quoted_reply" && b.Attr != "")
+			}
+		}
+	}
+	if !hasComposite || !hasWrap || !hasAttrQuote {
+		return ruleError(RuleReplyChainQuotes, "schema v2 requires a composite artifact, a wrapped body, and an attributed quote (have composite=%v wrap=%v attr_quote=%v)", hasComposite, hasWrap, hasAttrQuote)
+	}
 	return nil
 }
 
@@ -414,15 +458,35 @@ func validateDefectIsolation(l Ledger) error {
 	byArtifact, commitments := map[string]int{}, map[string]bool{}
 	nonObligationIDs := map[string]bool{}
 	validClass := map[string]bool{"footer": true, "marketing": true, "notification": true, "url_shard": true, "self_spoken": true, "lead_in": true, "bystander": true, "trivia": true}
+	spanKey := func(s Span) string { return s.ArtifactID + "\x00" + s.MessageID + "\x00" + s.BlockID }
+	defectBlocks, commitmentBlocks := map[string]string{}, map[string]string{}
+	for _, c := range l.Commitments {
+		commitments[c.OpenedBy.ArtifactID] = true
+		commitmentBlocks[spanKey(c.OpenedBy)] = c.ID
+	}
 	for _, n := range l.NonObligations {
 		if n.ID == "" || nonObligationIDs[n.ID] || !validClass[n.Class] || strings.TrimSpace(n.Why) == "" {
 			return ruleError(RuleOneDefectArtifact, "non-obligation %q has duplicate id, invalid class, or empty reason", n.ID)
 		}
 		nonObligationIDs[n.ID] = true
 		byArtifact[n.Span.ArtifactID]++
+		if l.Version == SchemaV2 {
+			// Composite artifacts are the point of schema v2, but every label
+			// must stay attributable to its own block: two defects may not
+			// share a block, and a defect may not sit on the very block that
+			// opens a commitment.
+			key := spanKey(n.Span)
+			if prior, dup := defectBlocks[key]; dup {
+				return ruleError(RuleOneDefectArtifact, "non-obligations %q and %q share one block span", prior, n.ID)
+			}
+			defectBlocks[key] = n.ID
+			if cid, clash := commitmentBlocks[key]; clash {
+				return ruleError(RuleOneDefectArtifact, "non-obligation %q sits on the block that opens commitment %q", n.ID, cid)
+			}
+		}
 	}
-	for _, c := range l.Commitments {
-		commitments[c.OpenedBy.ArtifactID] = true
+	if l.Version == SchemaV2 {
+		return nil
 	}
 	for artifact, count := range byArtifact {
 		if count > 1 || commitments[artifact] {
@@ -491,14 +555,37 @@ func fictionalHandle(raw string) bool {
 
 func validateChannelGrain(l Ledger) error {
 	validBlockKind := map[string]bool{"authored": true, "quoted_reply": true, "forwarded": true, "signature": true, "footer": true, "disclaimer": true, "url_only": true, "notification": true}
+	attrKind := map[string]bool{"quoted_reply": true, "forwarded": true}
 	for _, a := range l.Artifacts {
 		for _, m := range a.Messages {
 			if len(m.Body) == 0 {
 				return ruleError(RuleChannelGrain, "message %q has no body blocks", m.ID)
 			}
+			if m.Wrap != 0 {
+				if l.Version == SchemaV1 {
+					return ruleError(RuleChannelGrain, "message %q sets wrap, which schema v1 does not carry", m.ID)
+				}
+				if a.Channel != "gmail" || m.Wrap < 40 || m.Wrap > 100 {
+					return ruleError(RuleChannelGrain, "message %q wrap must be 40-100 columns on a gmail message", m.ID)
+				}
+			}
 			for _, b := range m.Body {
 				if !validBlockKind[b.Kind] || strings.TrimSpace(b.Text) == "" {
 					return ruleError(RuleChannelGrain, "block %q has invalid kind or empty text", b.ID)
+				}
+				if b.Attr != "" {
+					if l.Version == SchemaV1 {
+						return ruleError(RuleChannelGrain, "block %q sets attr, which schema v1 does not carry", b.ID)
+					}
+					if !attrKind[b.Kind] {
+						return ruleError(RuleChannelGrain, "block %q sets attr on kind %q; attr belongs to quoted_reply/forwarded", b.ID, b.Kind)
+					}
+					// A blank attr would satisfy the required shape without
+					// attributing anything; a multi-line attr would smuggle
+					// unquoted text past the renderer's quote prefixing.
+					if strings.TrimSpace(b.Attr) == "" || strings.ContainsAny(b.Attr, "\r\n") {
+						return ruleError(RuleChannelGrain, "block %q attr must be one non-blank line", b.ID)
+					}
 				}
 			}
 		}
@@ -512,6 +599,13 @@ func validateChannelGrain(l Ledger) error {
 					return ruleError(RuleChannelGrain, "gmail message %q has no To", m.ID)
 				}
 				for _, b := range m.Body {
+					// Under schema v2 quoting is structural: quoted_reply and
+					// forwarded blocks legally carry quote syntax (and the
+					// renderer generates more). Authored text may still never
+					// fake a quote — that is how quoting stays label-attributable.
+					if l.Version == SchemaV2 && attrKind[b.Kind] {
+						continue
+					}
 					for _, line := range strings.Split(b.Text, "\n") {
 						trim := strings.TrimSpace(line)
 						if strings.HasPrefix(trim, ">") || (strings.HasPrefix(trim, "On ") && strings.HasSuffix(trim, "wrote:")) {

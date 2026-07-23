@@ -17,6 +17,17 @@ const (
 	LintRealIdentity = "real_identity_ledger"
 	LintCorpusBytes  = "real_identity_corpus"
 	LintLabelLeak    = "label_leak"
+	LintDateLeak     = "date_fingerprint"
+	LintTitleLeak    = "title_fingerprint"
+)
+
+// Ledger schema versions. Version 1 is the obligations-v1 contract and its
+// rendering is frozen — the pinned corpus hashes depend on it. Version 2
+// unlocks the realism features (structural quoting, wrapped bodies, composite
+// artifacts) that version 1 deliberately banned.
+const (
+	SchemaV1 = 1
+	SchemaV2 = 2
 )
 
 var RequiredValidatorRules = []string{
