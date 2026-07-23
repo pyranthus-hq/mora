@@ -1,0 +1,955 @@
+{
+  "version": 3,
+  "as_of": "2026-07-23T18:00:00Z",
+  "self": {
+    "id": "person/mira",
+    "display": "Mira Sen",
+    "emails": ["mira.sen@example.com"],
+    "handles": ["+15550100100"],
+    "service": false
+  },
+  "people": [
+    {
+      "id": "person/theo",
+      "display": "Theo Maren",
+      "emails": ["theo.maren@example.org"],
+      "handles": ["+15550100101"],
+      "service": false
+    },
+    {
+      "id": "person/anya",
+      "display": "Anya Cho",
+      "emails": ["anya.cho@example.net"],
+      "handles": ["+15550100102"],
+      "service": false
+    },
+    {
+      "id": "person/dev",
+      "display": "Dev Calder",
+      "emails": ["dev.calder@example.com"],
+      "handles": ["+15550100103"],
+      "service": false
+    },
+    {
+      "id": "person/lucia",
+      "display": "Lucia Wynn",
+      "emails": ["lucia.wynn@example.org"],
+      "handles": ["+15550100104"],
+      "service": false
+    },
+    {
+      "id": "person/paolo",
+      "display": "Paolo Neri",
+      "emails": ["paolo.neri@example.net"],
+      "handles": ["+15550100105"],
+      "service": false
+    },
+    {
+      "id": "person/dana",
+      "display": "Dana Ives",
+      "emails": ["dana.ives@example.com"],
+      "handles": ["+15550100106"],
+      "service": false
+    },
+    {
+      "id": "service/dispatch",
+      "display": "Example Dispatch",
+      "emails": ["notices@example.invalid"],
+      "handles": [],
+      "service": true
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "a/atrium-handoff",
+      "memory_id": "calendar_event/v3-atrium-handoff",
+      "channel": "calendar",
+      "subject": "Atrium handoff session",
+      "occurred_at": "2026-07-21T15:00:00Z",
+      "messages": [
+        {
+          "id": "m/atrium-agenda",
+          "from": "person/theo",
+          "to": ["person/mira", "person/dev"],
+          "cc": [],
+          "at": "2026-07-21T15:00:00Z",
+          "body": [
+            {
+              "id": "b/atrium-agenda",
+              "kind": "notification",
+              "text": "Agenda: entry flow, neighborhood diagram, supply shelves, and questions from the floor."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/route-cards",
+      "memory_id": "gmail_thread/v3-route-cards",
+      "channel": "gmail",
+      "subject": "Route cards for the west press",
+      "occurred_at": "2026-07-22T17:30:00Z",
+      "messages": [
+        {
+          "id": "m/route-ask",
+          "from": "person/mira",
+          "to": ["person/theo"],
+          "cc": [],
+          "at": "2026-07-22T17:00:00Z",
+          "body": [
+            {
+              "id": "b/route-ask",
+              "kind": "authored",
+              "text": "Could you reserve the west press slot for the route-card run?"
+            }
+          ]
+        },
+        {
+          "id": "m/route-reply",
+          "from": "person/theo",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-22T17:30:00Z",
+          "body": [
+            {
+              "id": "b/route-reply",
+              "kind": "authored",
+              "text": "I will hold the west press slot. Please send me the route cards with the trim marks before breakfast."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/access-window",
+      "memory_id": "gmail_thread/v3-access-window",
+      "channel": "gmail",
+      "subject": "Side-door access window",
+      "occurred_at": "2026-07-15T16:00:00Z",
+      "messages": [
+        {
+          "id": "m/access-roster",
+          "from": "person/anya",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-15T15:40:00Z",
+          "body": [
+            {
+              "id": "b/access-roster",
+              "kind": "authored",
+              "text": "I will upload the side-door access roster after lunch."
+            }
+          ]
+        },
+        {
+          "id": "m/access-names",
+          "from": "person/mira",
+          "to": ["person/anya"],
+          "cc": [],
+          "at": "2026-07-15T16:00:00Z",
+          "body": [
+            {
+              "id": "b/access-names",
+              "kind": "authored",
+              "text": "I will send you the three visitor names first."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/kiln-schedule",
+      "memory_id": "gmail_thread/v3-kiln-schedule",
+      "channel": "gmail",
+      "subject": "Kiln schedule notes",
+      "occurred_at": "2026-07-20T11:30:00Z",
+      "messages": [
+        {
+          "id": "m/kiln-request",
+          "from": "person/dev",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-20T11:00:00Z",
+          "wrap": 68,
+          "body": [
+            {
+              "id": "b/kiln-request",
+              "kind": "authored",
+              "text": "Could you log the cooling readings in the blue notebook before the evening changeover so the next crew has a clean starting point?"
+            },
+            {
+              "id": "b/kiln-footer",
+              "kind": "footer",
+              "text": "Manage workshop notices or update your delivery preferences."
+            }
+          ]
+        },
+        {
+          "id": "m/kiln-reply",
+          "from": "person/mira",
+          "to": ["person/dev"],
+          "cc": [],
+          "at": "2026-07-20T11:30:00Z",
+          "body": [
+            {
+              "id": "b/kiln-reply",
+              "kind": "authored",
+              "text": "Understood. I have the blue notebook open beside the gauge."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/archive-captions",
+      "memory_id": "gmail_thread/v3-archive-captions",
+      "channel": "gmail",
+      "subject": "Archive caption sequence",
+      "occurred_at": "2026-07-19T14:20:00Z",
+      "messages": [
+        {
+          "id": "m/caption-ask",
+          "from": "person/mira",
+          "to": ["person/lucia"],
+          "cc": [],
+          "at": "2026-07-19T14:00:00Z",
+          "body": [
+            {
+              "id": "b/caption-ask",
+              "kind": "authored",
+              "text": "Please add the archive captions to the sequence sheet before the walk-through."
+            }
+          ]
+        },
+        {
+          "id": "m/caption-accept",
+          "from": "person/lucia",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-19T14:20:00Z",
+          "body": [
+            {
+              "id": "b/caption-accept",
+              "kind": "authored",
+              "text": "I can take that; I will post the captioned sequence before the walk-through."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/courier-memo",
+      "memory_id": "gmail_thread/v3-courier-memo",
+      "channel": "gmail",
+      "subject": "Courier memo relay",
+      "occurred_at": "2026-07-15T19:00:00Z",
+      "messages": [
+        {
+          "id": "m/courier-report",
+          "from": "person/paolo",
+          "to": ["person/mira"],
+          "cc": ["person/dana"],
+          "at": "2026-07-15T19:00:00Z",
+          "body": [
+            {
+              "id": "b/courier-report",
+              "kind": "authored",
+              "text": "Dana said, “I will bring Mira the sealed courier memo before the walk-through.” She asked me to pass that along."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/film-night-bare",
+      "memory_id": "gmail_thread/v3-film-night-bare",
+      "channel": "gmail",
+      "subject": "Fwd: rooftop film night",
+      "occurred_at": "2026-07-22T08:00:00Z",
+      "messages": [
+        {
+          "id": "m/film-night-bare",
+          "from": "person/paolo",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-22T08:00:00Z",
+          "body": [
+            {
+              "id": "b/film-night-bare",
+              "kind": "forwarded",
+              "attr": "---------- Forwarded message ---------",
+              "text": "Rooftop film night returns Saturday. Browse the program, choose a screening, and reserve a seat at https://tickets.example.invalid/roof."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/film-night-personal",
+      "memory_id": "gmail_thread/v3-film-night-personal",
+      "channel": "gmail",
+      "subject": "Fwd: rooftop film night options",
+      "occurred_at": "2026-07-14T18:00:00Z",
+      "messages": [
+        {
+          "id": "m/film-night-personal",
+          "from": "person/theo",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-14T18:00:00Z",
+          "body": [
+            {
+              "id": "b/film-night-personal",
+              "kind": "authored",
+              "text": "Could you compare the two load-in windows and send me your choice?"
+            },
+            {
+              "id": "b/film-night-forward",
+              "kind": "forwarded",
+              "attr": "---------- Forwarded message ---------",
+              "text": "Rooftop film night returns Saturday. Browse the program, choose a screening, and reserve a seat at https://tickets.example.invalid/roof."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/floor-plan-reply",
+      "memory_id": "gmail_thread/v3-floor-plan-reply",
+      "channel": "gmail",
+      "subject": "Re: stamped floor plan",
+      "occurred_at": "2026-07-18T16:00:00Z",
+      "messages": [
+        {
+          "id": "m/floor-plan-reply",
+          "from": "person/mira",
+          "to": ["person/lucia"],
+          "cc": [],
+          "at": "2026-07-18T16:00:00Z",
+          "body": [
+            {
+              "id": "b/floor-plan-sent",
+              "kind": "authored",
+              "text": "I attached the stamped floor plan in this reply."
+            },
+            {
+              "id": "b/floor-plan-quote",
+              "kind": "quoted_reply",
+              "attr": "On Fri, Jul 18, Lucia Wynn wrote:",
+              "text": "Could you send me the stamped floor plan before noon?"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/parcel-notice",
+      "memory_id": "gmail_thread/v3-parcel-notice",
+      "channel": "gmail",
+      "subject": "Parcel status update",
+      "occurred_at": "2026-07-20T09:00:00Z",
+      "messages": [
+        {
+          "id": "m/parcel-notice",
+          "from": "service/dispatch",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-20T09:00:00Z",
+          "body": [
+            {
+              "id": "b/parcel-notice",
+              "kind": "notification",
+              "text": "Your parcel crossed the sorting depot. Review tracking details if you need the latest scan."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/neighborhood-diagram",
+      "memory_id": "gmail_thread/v3-neighborhood-diagram",
+      "channel": "gmail",
+      "subject": "Neighborhood diagram layers",
+      "occurred_at": "2026-07-13T17:00:00Z",
+      "messages": [
+        {
+          "id": "m/diagram-request",
+          "from": "person/dev",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-13T17:00:00Z",
+          "body": [
+            {
+              "id": "b/diagram-request",
+              "kind": "authored",
+              "text": "For the Atrium handoff session, please bring the neighborhood diagram with the service lanes on their own layer."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/tool-locker",
+      "memory_id": "imessage_chat/v3-tool-locker",
+      "channel": "imessage",
+      "subject": "Tool locker card",
+      "occurred_at": "2026-07-21T22:10:00Z",
+      "participants": ["person/mira", "person/lucia"],
+      "messages": [
+        {
+          "id": "m/locker-ask",
+          "from": "person/mira",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-21T22:00:00Z",
+          "body": [
+            {
+              "id": "b/locker-ask",
+              "kind": "authored",
+              "text": "Would you send me the tool-locker card number?"
+            }
+          ]
+        },
+        {
+          "id": "m/locker-promise",
+          "from": "person/lucia",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-21T22:10:00Z",
+          "body": [
+            {
+              "id": "b/locker-promise",
+              "kind": "authored",
+              "text": "Yes, I will text the card number when I reach the desk."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/bench-label-ack",
+      "memory_id": "imessage_chat/v3-bench-label-ack",
+      "channel": "imessage",
+      "subject": "Bench label acknowledgment",
+      "occurred_at": "2026-07-18T12:20:00Z",
+      "participants": ["person/mira", "person/theo"],
+      "messages": [
+        {
+          "id": "m/bench-sent",
+          "from": "person/mira",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-18T12:10:00Z",
+          "body": [
+            {
+              "id": "b/bench-sent",
+              "kind": "authored",
+              "text": "I sent the bench-label proof to your inbox just now."
+            }
+          ]
+        },
+        {
+          "id": "m/bench-ack",
+          "from": "person/theo",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-18T12:20:00Z",
+          "body": [
+            {
+              "id": "b/bench-ack",
+              "kind": "authored",
+              "text": "Got it. The proof opens correctly here."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/bench-label-request",
+      "memory_id": "gmail_thread/v3-bench-label-request",
+      "channel": "gmail",
+      "subject": "Bench label proof",
+      "occurred_at": "2026-07-17T12:00:00Z",
+      "messages": [
+        {
+          "id": "m/bench-request",
+          "from": "person/theo",
+          "to": ["person/mira"],
+          "cc": [],
+          "at": "2026-07-17T12:00:00Z",
+          "body": [
+            {
+              "id": "b/bench-request",
+              "kind": "authored",
+              "text": "Could you send me the bench-label proof before I leave for the depot?"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/harbor-inventory",
+      "memory_id": "imessage_chat/v3-harbor-inventory",
+      "channel": "imessage",
+      "subject": "Harbor inventory count",
+      "occurred_at": "2026-07-17T20:30:00Z",
+      "participants": ["person/mira", "person/anya"],
+      "messages": [
+        {
+          "id": "m/harbor-ask",
+          "from": "person/anya",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-17T20:20:00Z",
+          "body": [
+            {
+              "id": "b/harbor-ask",
+              "kind": "authored",
+              "text": "Can you count the blue crates before tomorrow's pickup?"
+            }
+          ]
+        },
+        {
+          "id": "m/harbor-promise",
+          "from": "person/mira",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-17T20:30:00Z",
+          "body": [
+            {
+              "id": "b/harbor-promise",
+              "kind": "authored",
+              "text": "I will count the blue crates before the pickup."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/studio-errands",
+      "memory_id": "v3-note-studio-errands",
+      "channel": "notes",
+      "subject": "Studio errands",
+      "occurred_at": "2026-07-12T16:00:00Z",
+      "messages": [
+        {
+          "id": "m/studio-errands",
+          "from": "person/mira",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-12T16:00:00Z",
+          "body": [
+            {
+              "id": "b/studio-promise",
+              "kind": "authored",
+              "text": "I told Paolo I would return the brass key after the inventory check."
+            },
+            {
+              "id": "b/studio-trivia",
+              "kind": "authored",
+              "text": "The north window catches a green reflection near four o'clock."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/planning-fragments",
+      "memory_id": "v3-note-planning-fragments",
+      "channel": "notes",
+      "subject": "Planning fragments",
+      "occurred_at": "2026-07-23T10:00:00Z",
+      "messages": [
+        {
+          "id": "m/planning-fragments",
+          "from": "person/mira",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-23T10:00:00Z",
+          "body": [
+            {
+              "id": "b/planning-fragments",
+              "kind": "authored",
+              "text": "Maybe the next room arrangement could feel quieter and leave more space around the long table."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/workshop-agenda",
+      "memory_id": "calendar_event/v3-workshop-agenda",
+      "channel": "calendar",
+      "subject": "Workshop floor review",
+      "occurred_at": "2026-07-14T15:00:00Z",
+      "messages": [
+        {
+          "id": "m/workshop-agenda",
+          "from": "person/paolo",
+          "to": ["person/mira", "person/anya"],
+          "cc": [],
+          "at": "2026-07-14T15:00:00Z",
+          "body": [
+            {
+              "id": "b/workshop-agenda",
+              "kind": "notification",
+              "text": "Topics: floor markings, fan noise, storage order, and the afternoon visitor route."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "commitments": [
+    {
+      "id": "c/route-slot",
+      "owner": "person/theo",
+      "counterparty": "person/mira",
+      "direction": "owed_by_counterparty",
+      "summary": "Theo reserves the west press slot for Mira",
+      "opened_by": {
+        "artifact_id": "a/route-cards",
+        "message_id": "m/route-ask",
+        "block_id": "b/route-ask",
+        "quote": "reserve the west press slot"
+      },
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/route-cards",
+      "owner": "person/mira",
+      "counterparty": "person/theo",
+      "direction": "owed_by_self",
+      "summary": "Mira sends Theo the marked route cards",
+      "opened_by": {
+        "artifact_id": "a/route-cards",
+        "message_id": "m/route-reply",
+        "block_id": "b/route-reply",
+        "quote": "send me the route cards with the trim marks"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/access-roster",
+      "owner": "person/anya",
+      "counterparty": "person/mira",
+      "direction": "owed_by_counterparty",
+      "summary": "Anya uploads the side-door access roster",
+      "opened_by": {
+        "artifact_id": "a/access-window",
+        "message_id": "m/access-roster",
+        "block_id": "b/access-roster",
+        "quote": "upload the side-door access roster"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/visitor-names",
+      "owner": "person/mira",
+      "counterparty": "person/anya",
+      "direction": "owed_by_self",
+      "summary": "Mira sends Anya the visitor names",
+      "opened_by": {
+        "artifact_id": "a/access-window",
+        "message_id": "m/access-names",
+        "block_id": "b/access-names",
+        "quote": "send you the three visitor names"
+      },
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/cooling-readings",
+      "owner": "person/mira",
+      "counterparty": "person/dev",
+      "direction": "owed_by_self",
+      "summary": "Mira logs the cooling readings",
+      "opened_by": {
+        "artifact_id": "a/kiln-schedule",
+        "message_id": "m/kiln-request",
+        "block_id": "b/kiln-request",
+        "quote": "log the cooling readings in the blue notebook"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/archive-captions",
+      "owner": "person/lucia",
+      "counterparty": "person/mira",
+      "direction": "owed_by_counterparty",
+      "summary": "Lucia adds the archive captions",
+      "opened_by": {
+        "artifact_id": "a/archive-captions",
+        "message_id": "m/caption-ask",
+        "block_id": "b/caption-ask",
+        "quote": "add the archive captions to the sequence sheet"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/courier-memo",
+      "owner": "person/dana",
+      "counterparty": "person/mira",
+      "direction": "owed_by_counterparty",
+      "summary": "Dana brings Mira the sealed courier memo",
+      "opened_by": {
+        "artifact_id": "a/courier-memo",
+        "message_id": "m/courier-report",
+        "block_id": "b/courier-report",
+        "quote": "I will bring Mira the sealed courier memo"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/load-in-choice",
+      "owner": "person/mira",
+      "counterparty": "person/theo",
+      "direction": "owed_by_self",
+      "summary": "Mira sends Theo a load-in choice",
+      "opened_by": {
+        "artifact_id": "a/film-night-personal",
+        "message_id": "m/film-night-personal",
+        "block_id": "b/film-night-personal",
+        "quote": "compare the two load-in windows and send me your choice"
+      },
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/neighborhood-diagram",
+      "owner": "person/mira",
+      "counterparty": "person/dev",
+      "direction": "owed_by_self",
+      "summary": "Mira brings the layered neighborhood diagram",
+      "opened_by": {
+        "artifact_id": "a/neighborhood-diagram",
+        "message_id": "m/diagram-request",
+        "block_id": "b/diagram-request",
+        "quote": "bring the neighborhood diagram with the service lanes"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["meeting:calendar_event/v3-atrium-handoff"]
+    },
+    {
+      "id": "c/tool-locker-card",
+      "owner": "person/lucia",
+      "counterparty": "person/mira",
+      "direction": "owed_by_counterparty",
+      "summary": "Lucia sends Mira the tool-locker card number",
+      "opened_by": {
+        "artifact_id": "a/tool-locker",
+        "message_id": "m/locker-promise",
+        "block_id": "b/locker-promise",
+        "quote": "text the card number"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/harbor-count",
+      "owner": "person/mira",
+      "counterparty": "person/anya",
+      "direction": "owed_by_self",
+      "summary": "Mira counts the blue crates",
+      "opened_by": {
+        "artifact_id": "a/harbor-inventory",
+        "message_id": "m/harbor-promise",
+        "block_id": "b/harbor-promise",
+        "quote": "count the blue crates before the pickup"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/brass-key",
+      "owner": "person/mira",
+      "counterparty": "person/paolo",
+      "direction": "owed_by_self",
+      "summary": "Mira returns Paolo's brass key",
+      "opened_by": {
+        "artifact_id": "a/studio-errands",
+        "message_id": "m/studio-errands",
+        "block_id": "b/studio-promise",
+        "quote": "return the brass key after the inventory check"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/floor-plan",
+      "owner": "person/mira",
+      "counterparty": "person/lucia",
+      "direction": "owed_by_self",
+      "summary": "Mira sends Lucia the stamped floor plan",
+      "opened_by": {
+        "artifact_id": "a/floor-plan-reply",
+        "message_id": "m/floor-plan-reply",
+        "block_id": "b/floor-plan-quote",
+        "quote": "send me the stamped floor plan"
+      },
+      "due_kind": "relative",
+      "state": "closed",
+      "transitions": [
+        {
+          "to": "closed",
+          "at": "2026-07-18T16:00:00Z",
+          "evidence": {
+            "artifact_id": "a/floor-plan-reply",
+            "message_id": "m/floor-plan-reply",
+            "block_id": "b/floor-plan-sent",
+            "quote": "attached the stamped floor plan"
+          }
+        }
+      ],
+      "expected_in": []
+    },
+    {
+      "id": "c/bench-label-proof",
+      "owner": "person/mira",
+      "counterparty": "person/theo",
+      "direction": "owed_by_self",
+      "summary": "Mira sends Theo the bench-label proof",
+      "opened_by": {
+        "artifact_id": "a/bench-label-request",
+        "message_id": "m/bench-request",
+        "block_id": "b/bench-request",
+        "quote": "send me the bench-label proof"
+      },
+      "due_kind": "relative",
+      "state": "closed",
+      "transitions": [
+        {
+          "to": "closed",
+          "at": "2026-07-18T12:10:00Z",
+          "evidence": {
+            "artifact_id": "a/bench-label-ack",
+            "message_id": "m/bench-sent",
+            "block_id": "b/bench-sent",
+            "quote": "sent the bench-label proof"
+          }
+        }
+      ],
+      "expected_in": []
+    }
+  ],
+  "non_obligations": [
+    {
+      "id": "n/atrium-agenda",
+      "span": {
+        "artifact_id": "a/atrium-handoff",
+        "message_id": "m/atrium-agenda",
+        "block_id": "b/atrium-agenda",
+        "quote": "Agenda: entry flow"
+      },
+      "class": "notification",
+      "why": "agenda topics without a personal assignment"
+    },
+    {
+      "id": "n/kiln-footer",
+      "span": {
+        "artifact_id": "a/kiln-schedule",
+        "message_id": "m/kiln-request",
+        "block_id": "b/kiln-footer",
+        "quote": "Manage workshop notices"
+      },
+      "class": "footer",
+      "why": "preference footer rather than personal work"
+    },
+    {
+      "id": "n/film-night-bare",
+      "span": {
+        "artifact_id": "a/film-night-bare",
+        "message_id": "m/film-night-bare",
+        "block_id": "b/film-night-bare",
+        "quote": "Browse the program"
+      },
+      "class": "marketing",
+      "why": "advertisement forwarded without a personal request"
+    },
+    {
+      "id": "n/film-night-forward",
+      "span": {
+        "artifact_id": "a/film-night-personal",
+        "message_id": "m/film-night-personal",
+        "block_id": "b/film-night-forward",
+        "quote": "reserve a seat"
+      },
+      "class": "marketing",
+      "why": "advertisement remains separate from the personal request"
+    },
+    {
+      "id": "n/parcel-notice",
+      "span": {
+        "artifact_id": "a/parcel-notice",
+        "message_id": "m/parcel-notice",
+        "block_id": "b/parcel-notice",
+        "quote": "Review tracking details"
+      },
+      "class": "notification",
+      "why": "automated parcel status language"
+    },
+    {
+      "id": "n/studio-trivia",
+      "span": {
+        "artifact_id": "a/studio-errands",
+        "message_id": "m/studio-errands",
+        "block_id": "b/studio-trivia",
+        "quote": "north window catches a green reflection"
+      },
+      "class": "trivia",
+      "why": "observation without accountable future action"
+    },
+    {
+      "id": "n/planning-fragments",
+      "span": {
+        "artifact_id": "a/planning-fragments",
+        "message_id": "m/planning-fragments",
+        "block_id": "b/planning-fragments",
+        "quote": "Maybe the next room arrangement"
+      },
+      "class": "self_spoken",
+      "why": "vague possibility without a promise or requester"
+    },
+    {
+      "id": "n/workshop-agenda",
+      "span": {
+        "artifact_id": "a/workshop-agenda",
+        "message_id": "m/workshop-agenda",
+        "block_id": "b/workshop-agenda",
+        "quote": "Topics: floor markings"
+      },
+      "class": "notification",
+      "why": "meeting topics without a named assignment"
+    }
+  ]
+}

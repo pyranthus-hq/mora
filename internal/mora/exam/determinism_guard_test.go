@@ -44,6 +44,7 @@ func guardedFiles(t *testing.T) []string {
 	for _, name := range []string{
 		"exam_corpus_test.go",
 		"exam_corpus_v2_test.go",
+		"exam_corpus_v3_test.go",
 		"exam_integrity_exit_test.go",
 		"exam_product_target_test.go",
 		"exam_score_test.go",
