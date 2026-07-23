@@ -1,0 +1,908 @@
+{
+  "version": 2,
+  "as_of": "2026-07-21T18:00:00Z",
+  "self": {
+    "id": "p/self",
+    "display": "Rowan Blake",
+    "emails": ["rowan@example.com"],
+    "handles": ["+15550100111"],
+    "service": false
+  },
+  "people": [
+    {
+      "id": "p/casey",
+      "display": "Casey Liao",
+      "emails": ["casey@example.org"],
+      "handles": ["+15550100112"],
+      "service": false
+    },
+    {
+      "id": "p/tessa",
+      "display": "Tessa Vale",
+      "emails": ["tessa@example.net"],
+      "handles": ["+15550100113"],
+      "service": false
+    },
+    {
+      "id": "p/milo",
+      "display": "Milo Hart",
+      "emails": ["milo@example.com"],
+      "handles": ["+15550100114"],
+      "service": false
+    },
+    {
+      "id": "p/imani",
+      "display": "Imani Frost",
+      "emails": ["imani@example.org"],
+      "handles": ["+15550100115"],
+      "service": false
+    },
+    {
+      "id": "p/jules",
+      "display": "Jules Rowan",
+      "emails": ["jules@example.net"],
+      "handles": ["+15550100116"],
+      "service": false
+    },
+    {
+      "id": "p/service",
+      "display": "Example Field Notes",
+      "emails": ["dispatch@bulletin.example"],
+      "handles": [],
+      "service": true
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "a/calendar-cedar-review",
+      "memory_id": "calendar_event/v2-cedar-studio-review",
+      "channel": "calendar",
+      "subject": "Cedar studio review",
+      "occurred_at": "2026-07-21T17:30:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": ["p/self", "p/casey", "p/imani"],
+          "cc": [],
+          "at": "2026-07-21T17:30:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "notification",
+              "text": "Agenda: caption pacing, the print samples, lobby lighting, and ten minutes for anything we missed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-caption-footer",
+      "memory_id": "gmail_thread/v2-caption-footer",
+      "channel": "gmail",
+      "subject": "Caption pass before review",
+      "occurred_at": "2026-07-21T08:12:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-21T08:12:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Morning Rowan — the longer captions are still crowding the last two slides. Could you put the shorter versions into the Cedar deck before this afternoon's review? No need to touch the image order."
+            },
+            {
+              "id": "b2",
+              "kind": "footer",
+              "text": "This message may contain confidential information intended only for the named recipient. Please delete it if it reached you by mistake."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-wrapped-mockups",
+      "memory_id": "gmail_thread/v2-wrapped-mockups",
+      "channel": "gmail",
+      "subject": "Margin note on the mockups",
+      "occurred_at": "2026-07-13T14:26:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/tessa",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-13T14:26:00Z",
+          "wrap": 72,
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "I finally looked at these on the small office printer, and the pale notes disappear into the crop marks. When you have a minute, could you make the margin annotations one shade darker and send me the refreshed mockups? The actual artwork color is fine; it is only the little production notes around the edge."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-forward-bare",
+      "memory_id": "gmail_thread/v2-forward-bare",
+      "channel": "gmail",
+      "subject": "Fwd: neighborhood print fair",
+      "occurred_at": "2026-07-15T10:03:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-15T10:03:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "forwarded",
+              "attr": "---------- Forwarded message ---------",
+              "text": "From: Example Print Fair <hello@fair.example>\nSubject: Meet twelve local printers this weekend\n\nReserve a free visitor pass and compare papers, inks, and finishing samples under one roof. Doors open at ten."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-forward-personal",
+      "memory_id": "gmail_thread/v2-forward-personal",
+      "channel": "gmail",
+      "subject": "Fwd: neighborhood print fair",
+      "occurred_at": "2026-07-17T09:41:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-17T09:41:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "This is the fair I mentioned over coffee. Could you see whether any of these printers can handle the Cedar cards and send me your pick?"
+            },
+            {
+              "id": "b2",
+              "kind": "forwarded",
+              "attr": "---------- Forwarded message ---------",
+              "text": "From: Example Print Fair <hello@fair.example>\nSubject: Meet twelve local printers this weekend\n\nReserve a free visitor pass and compare papers, inks, and finishing samples under one roof. Doors open at ten."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-quoted-fulfilled",
+      "memory_id": "gmail_thread/v2-quoted-fulfilled",
+      "channel": "gmail",
+      "subject": "Re: badge files",
+      "occurred_at": "2026-07-20T16:02:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/self",
+          "to": ["p/casey"],
+          "cc": [],
+          "at": "2026-07-20T16:02:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Sent the print-ready badge files just now — all six names are in the shared folder, including the corrected spelling for Jules."
+            },
+            {
+              "id": "b2",
+              "kind": "quoted_reply",
+              "attr": "On Mon, Jul 13, 2026 at 9:18 AM Casey Liao <casey@example.org> wrote:",
+              "text": "Could you export the six badge files before next Monday? Jules's surname is fixed in the sheet."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-receipt-thread",
+      "memory_id": "gmail_thread/v2-receipt-thread",
+      "channel": "gmail",
+      "subject": "Expense receipt",
+      "occurred_at": "2026-07-14T11:07:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-14T09:04:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Could you send me the paper-store receipt? Finance bounced the photo I took because the total is clipped."
+            }
+          ]
+        },
+        {
+          "id": "m2",
+          "from": "p/self",
+          "to": ["p/casey"],
+          "cc": [],
+          "at": "2026-07-14T11:07:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Attached a clean scan with the full total and card digits visible. It should be usable now."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/imessage-receipt-ack",
+      "memory_id": "imessage_chat/v2-receipt-ack",
+      "channel": "imessage",
+      "subject": "Casey Liao",
+      "occurred_at": "2026-07-21T17:02:00Z",
+      "participants": ["p/casey"],
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-21T17:02:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Perfect, I found the clean receipt in the thread. Thanks."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/imessage-sample-table",
+      "memory_id": "imessage_chat/v2-sample-table",
+      "channel": "imessage",
+      "subject": "Tomorrow's sample table",
+      "occurred_at": "2026-07-12T19:18:00Z",
+      "participants": ["p/casey"],
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-12T19:12:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Tiny thing before tomorrow:"
+            },
+            {
+              "id": "b2",
+              "kind": "authored",
+              "text": "Can you bring the blue paper sample to the table in the morning? I left mine at the studio."
+            }
+          ]
+        },
+        {
+          "id": "m2",
+          "from": "p/self",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-12T19:18:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Yep, it's already beside my bag so I don't forget it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/note-rehearsal",
+      "memory_id": "v2-note-rehearsal",
+      "channel": "notes",
+      "subject": "Loose ends after rehearsal",
+      "occurred_at": "2026-07-20T15:48:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/self",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-20T15:48:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "I told Casey I'd leave the spare display clips at the front desk before the studio opens tomorrow. They're in the canvas pouch by the door."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-cost-grid",
+      "memory_id": "gmail_thread/v2-cost-grid",
+      "channel": "gmail",
+      "subject": "Cost grid",
+      "occurred_at": "2026-07-09T13:33:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/tessa",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-09T13:33:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "The paper quotes finally came back. I'll send you the comparison grid once I've normalized the sheet sizes; the vendors somehow used three different units."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/imessage-photo-selects",
+      "memory_id": "imessage_chat/v2-photo-selects",
+      "channel": "imessage",
+      "subject": "Photo selects",
+      "occurred_at": "2026-07-19T18:24:00Z",
+      "participants": ["p/milo"],
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/self",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-19T18:19:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Any chance I can see the window shots before lunch tomorrow? I only need the wide ones."
+            }
+          ]
+        },
+        {
+          "id": "m2",
+          "from": "p/milo",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-19T18:24:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Yes — I'll upload the wide window selects for you before lunch tomorrow. There are probably eight worth keeping."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-vendor-callback",
+      "memory_id": "gmail_thread/v2-vendor-callback",
+      "channel": "gmail",
+      "subject": "Vendor callback",
+      "occurred_at": "2026-07-08T16:45:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/casey",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-08T16:45:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "I got the voicemail from the frame shop. I'll call them back for you by the end of the week and ask whether the walnut profile is actually in stock."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-lighting-measurements",
+      "memory_id": "gmail_thread/v2-lighting-measurements",
+      "channel": "gmail",
+      "subject": "Lighting measurements",
+      "occurred_at": "2026-07-16T12:10:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/imani",
+          "to": ["p/self"],
+          "cc": ["p/casey"],
+          "at": "2026-07-16T12:10:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "I can take the lobby readings Monday morning. I'll bring you the lux measurements and two fixture options for Tuesday's Cedar studio review."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/imessage-room-confirmation",
+      "memory_id": "imessage_chat/v2-room-confirmation",
+      "channel": "imessage",
+      "subject": "Room confirmation",
+      "occurred_at": "2026-07-10T17:31:00Z",
+      "participants": ["p/jules"],
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/jules",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-10T17:31:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "I'll confirm the back room with the building manager and send you the access window. They were checking another booking first."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/note-photo-copy",
+      "memory_id": "v2-note-photo-copy",
+      "channel": "notes",
+      "subject": "Milo's upload note",
+      "occurred_at": "2026-07-11T08:15:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/self",
+          "to": [],
+          "cc": [],
+          "at": "2026-07-11T08:15:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Milo said he'll upload the wide window selects for me before lunch tomorrow. Keeping that here with the crop notes."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-lobby-bystander",
+      "memory_id": "gmail_thread/v2-lobby-bystander",
+      "channel": "gmail",
+      "subject": "Lobby measurements",
+      "occurred_at": "2026-07-06T15:20:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/tessa",
+          "to": ["p/milo"],
+          "cc": ["p/self"],
+          "at": "2026-07-06T15:20:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "Rowan, looping you in because this affects the hanging plan."
+            },
+            {
+              "id": "b2",
+              "kind": "authored",
+              "text": "Milo, could you measure the two lobby walls and send the dimensions to Imani? She needs them for the lighting sketch."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a/gmail-field-notes",
+      "memory_id": "gmail_thread/v2-field-notes",
+      "channel": "gmail",
+      "subject": "Field notes: July edition",
+      "occurred_at": "2026-07-16T14:40:00Z",
+      "messages": [
+        {
+          "id": "m1",
+          "from": "p/service",
+          "to": ["p/self"],
+          "cc": [],
+          "at": "2026-07-16T14:40:00Z",
+          "body": [
+            {
+              "id": "b1",
+              "kind": "authored",
+              "text": "See five small studios that turned awkward corners into useful display space. Join the free July walkthrough and save your favorite layouts."
+            },
+            {
+              "id": "b2",
+              "kind": "url_only",
+              "text": "https://bulletin.example/july/walkthrough?source=field-notes"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "commitments": [
+    {
+      "id": "c/captions",
+      "owner": "p/self",
+      "counterparty": "p/casey",
+      "direction": "owed_by_self",
+      "summary": "Revise the Cedar deck captions before the review",
+      "opened_by": {
+        "artifact_id": "a/gmail-caption-footer",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Could you put the shorter versions into the Cedar deck before this afternoon's review?"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily", "meeting:calendar_event/v2-cedar-studio-review"]
+    },
+    {
+      "id": "c/mockup-notes",
+      "owner": "p/self",
+      "counterparty": "p/tessa",
+      "direction": "owed_by_self",
+      "summary": "Darken the mockup margin annotations and return the files",
+      "opened_by": {
+        "artifact_id": "a/gmail-wrapped-mockups",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "could you make the margin annotations one shade darker and send me the refreshed mockups?"
+      },
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/printer-pick",
+      "owner": "p/self",
+      "counterparty": "p/casey",
+      "direction": "owed_by_self",
+      "summary": "Choose a printer for the Cedar cards",
+      "opened_by": {
+        "artifact_id": "a/gmail-forward-personal",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Could you see whether any of these printers can handle the Cedar cards and send me your pick?"
+      },
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/blue-sample",
+      "owner": "p/self",
+      "counterparty": "p/casey",
+      "direction": "owed_by_self",
+      "summary": "Bring Casey the blue paper sample",
+      "opened_by": {
+        "artifact_id": "a/imessage-sample-table",
+        "message_id": "m1",
+        "block_id": "b2",
+        "quote": "Can you bring the blue paper sample to the table in the morning?"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/display-clips",
+      "owner": "p/self",
+      "counterparty": "p/casey",
+      "direction": "owed_by_self",
+      "summary": "Leave the spare display clips at the front desk",
+      "opened_by": {
+        "artifact_id": "a/note-rehearsal",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "I told Casey I'd leave the spare display clips at the front desk before the studio opens tomorrow."
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/cost-grid",
+      "owner": "p/tessa",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Tessa will deliver the normalized paper-cost grid",
+      "opened_by": {
+        "artifact_id": "a/gmail-cost-grid",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "I'll send you the comparison grid once I've normalized the sheet sizes"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/photo-selects",
+      "owner": "p/milo",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Milo will upload the wide window photo selects",
+      "opened_by": {
+        "artifact_id": "a/imessage-photo-selects",
+        "message_id": "m2",
+        "block_id": "b1",
+        "quote": "I'll upload the wide window selects for you before lunch tomorrow."
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily"]
+    },
+    {
+      "id": "c/vendor-call",
+      "owner": "p/casey",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Casey will call the frame shop about walnut stock",
+      "opened_by": {
+        "artifact_id": "a/gmail-vendor-callback",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "I'll call them back for you by the end of the week"
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/lighting-readings",
+      "owner": "p/imani",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Imani will bring lobby measurements and fixture options",
+      "opened_by": {
+        "artifact_id": "a/gmail-lighting-measurements",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "I'll bring you the lux measurements and two fixture options for Tuesday's Cedar studio review."
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "expected_in": ["daily", "meeting:calendar_event/v2-cedar-studio-review"]
+    },
+    {
+      "id": "c/room-window",
+      "owner": "p/jules",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Jules will confirm the back-room access window",
+      "opened_by": {
+        "artifact_id": "a/imessage-room-confirmation",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "I'll confirm the back room with the building manager and send you the access window."
+      },
+      "due_kind": "none",
+      "state": "open",
+      "transitions": [],
+      "expected_in": []
+    },
+    {
+      "id": "c/badge-files",
+      "owner": "p/self",
+      "counterparty": "p/casey",
+      "direction": "owed_by_self",
+      "summary": "Export the six corrected badge files",
+      "opened_by": {
+        "artifact_id": "a/gmail-quoted-fulfilled",
+        "message_id": "m1",
+        "block_id": "b2",
+        "quote": "Could you export the six badge files before next Monday?"
+      },
+      "due_kind": "relative",
+      "state": "closed",
+      "transitions": [
+        {
+          "to": "closed",
+          "at": "2026-07-20T16:02:00Z",
+          "evidence": {
+            "artifact_id": "a/gmail-quoted-fulfilled",
+            "message_id": "m1",
+            "block_id": "b1",
+            "quote": "Sent the print-ready badge files just now"
+          }
+        }
+      ],
+      "expected_in": []
+    },
+    {
+      "id": "c/paper-receipt",
+      "owner": "p/self",
+      "counterparty": "p/casey",
+      "direction": "owed_by_self",
+      "summary": "Send Casey a complete scan of the paper-store receipt",
+      "opened_by": {
+        "artifact_id": "a/gmail-receipt-thread",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Could you send me the paper-store receipt?"
+      },
+      "due_kind": "none",
+      "state": "closed",
+      "transitions": [
+        {
+          "to": "closed",
+          "at": "2026-07-14T11:07:00Z",
+          "evidence": {
+            "artifact_id": "a/gmail-receipt-thread",
+            "message_id": "m2",
+            "block_id": "b1",
+            "quote": "Attached a clean scan with the full total and card digits visible."
+          }
+        },
+        {
+          "to": "closed",
+          "at": "2026-07-21T17:02:00Z",
+          "evidence": {
+            "artifact_id": "a/imessage-receipt-ack",
+            "message_id": "m1",
+            "block_id": "b1",
+            "quote": "I found the clean receipt in the thread."
+          }
+        }
+      ],
+      "expected_in": []
+    },
+    {
+      "id": "c/photo-selects-copy",
+      "owner": "p/milo",
+      "counterparty": "p/self",
+      "direction": "owed_by_counterparty",
+      "summary": "Copied note about Milo's window-photo upload",
+      "opened_by": {
+        "artifact_id": "a/note-photo-copy",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Milo said he'll upload the wide window selects for me before lunch tomorrow."
+      },
+      "due_kind": "relative",
+      "state": "open",
+      "transitions": [],
+      "duplicate_of": "c/photo-selects",
+      "expected_in": []
+    }
+  ],
+  "non_obligations": [
+    {
+      "id": "n/calendar-agenda",
+      "span": {
+        "artifact_id": "a/calendar-cedar-review",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Agenda: caption pacing, the print samples, lobby lighting"
+      },
+      "class": "notification",
+      "why": "An agenda names discussion topics without assigning an attendee an action."
+    },
+    {
+      "id": "n/confidential-footer",
+      "span": {
+        "artifact_id": "a/gmail-caption-footer",
+        "message_id": "m1",
+        "block_id": "b2",
+        "quote": "Please delete it if it reached you by mistake."
+      },
+      "class": "footer",
+      "why": "Standard confidentiality boilerplate is not a personal request from the sender."
+    },
+    {
+      "id": "n/bare-forward-ad",
+      "span": {
+        "artifact_id": "a/gmail-forward-bare",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Reserve a free visitor pass and compare papers, inks, and finishing samples"
+      },
+      "class": "marketing",
+      "why": "The forward contains only a general promotion and no authored personal request."
+    },
+    {
+      "id": "n/personal-forward-ad",
+      "span": {
+        "artifact_id": "a/gmail-forward-personal",
+        "message_id": "m1",
+        "block_id": "b2",
+        "quote": "Reserve a free visitor pass and compare papers, inks, and finishing samples"
+      },
+      "class": "marketing",
+      "why": "The promotional copy remains advertising even though a separate authored block asks for work."
+    },
+    {
+      "id": "n/sample-lead-in",
+      "span": {
+        "artifact_id": "a/imessage-sample-table",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Tiny thing before tomorrow:"
+      },
+      "class": "lead_in",
+      "why": "This fragment introduces the following request but specifies no action itself."
+    },
+    {
+      "id": "n/receipt-thanks",
+      "span": {
+        "artifact_id": "a/imessage-receipt-ack",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Perfect, I found the clean receipt in the thread. Thanks."
+      },
+      "class": "trivia",
+      "why": "The acknowledgment confirms past delivery and creates no future action."
+    },
+    {
+      "id": "n/lobby-bystander",
+      "span": {
+        "artifact_id": "a/gmail-lobby-bystander",
+        "message_id": "m1",
+        "block_id": "b2",
+        "quote": "Milo, could you measure the two lobby walls and send the dimensions to Imani?"
+      },
+      "class": "bystander",
+      "why": "The copied user is neither the owner nor the beneficiary of this assignment."
+    },
+    {
+      "id": "n/newsletter-promo",
+      "span": {
+        "artifact_id": "a/gmail-field-notes",
+        "message_id": "m1",
+        "block_id": "b1",
+        "quote": "Join the free July walkthrough and save your favorite layouts."
+      },
+      "class": "marketing",
+      "why": "A newsletter invitation is a general call to action rather than a personal assignment."
+    },
+    {
+      "id": "n/newsletter-url",
+      "span": {
+        "artifact_id": "a/gmail-field-notes",
+        "message_id": "m1",
+        "block_id": "b2",
+        "quote": "https://bulletin.example/july/walkthrough?source=field-notes"
+      },
+      "class": "url_shard",
+      "why": "A bare tracking link states no accountable human action."
+    }
+  ]
+}
