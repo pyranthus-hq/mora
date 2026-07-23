@@ -7,7 +7,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -68,6 +67,9 @@ func TestExamIntegrityExit(t *testing.T) {
 
 	if err := exam.ValidateMetricManifest(); err != nil {
 		t.Fatalf("red-team manifest trust leg broke; Gate 1 cannot close unless every scorecard metric names a registered sabotage case: %v", err)
+	}
+	if err := exam.ValidateMetricRegistryCoverage(); err != nil {
+		t.Fatalf("scorecard registry trust leg broke; Gate 1 cannot close while a scorecard field can exist without a sabotage-backed metric: %v", err)
 	}
 	if err := determinismGuardCovers("exam_corpus_v2_test.go"); err != nil {
 		t.Fatalf("determinism trust leg broke; Gate 1 cannot close while the v2 scoring adapter can escape the structural guard: %v", err)
@@ -169,6 +171,15 @@ func validateMutationAnchors() error {
 		if !found {
 			return fmt.Errorf("%s test anchor %q does not occur in %s", anchor.name, testName, anchor.pkg)
 		}
+		for _, part := range strings.Split(strings.Trim(anchor.testPattern, "^$"), "/")[1:] {
+			found, err := packageContainsText(testDir, part)
+			if err != nil {
+				return fmt.Errorf("%s subtest target %s: %w", anchor.name, anchor.pkg, err)
+			}
+			if !found {
+				return fmt.Errorf("%s subtest anchor %q does not occur in %s", anchor.name, part, anchor.pkg)
+			}
+		}
 	}
 	return nil
 }
@@ -180,27 +191,127 @@ func parseMutationAnchors(script []byte) ([]mutationAnchor, error) {
 		if !strings.HasPrefix(block, "kill_mutant ") {
 			continue
 		}
-		command := "kill_mutant() { printf '%s\\0' \"$@\"; }\n" + block
-		out, err := exec.Command("bash", "-c", command).Output()
+		parts, err := parseShellWords(block)
 		if err != nil {
 			return nil, fmt.Errorf("parse mutation command %q: %w", firstLine(strings.Split(block, "\n")), err)
 		}
-		parts := bytes.Split(out, []byte{0})
-		if len(parts) > 0 && len(parts[len(parts)-1]) == 0 {
-			parts = parts[:len(parts)-1]
-		}
-		if len(parts) != 6 {
-			return nil, fmt.Errorf("mutation command %q has %d arguments, want 6", firstLine(strings.Split(block, "\n")), len(parts))
+		if len(parts) != 7 || parts[0] != "kill_mutant" {
+			return nil, fmt.Errorf("mutation command %q has %d words, want kill_mutant plus 6 arguments", firstLine(strings.Split(block, "\n")), len(parts))
 		}
 		anchors = append(anchors, mutationAnchor{
-			name:        string(parts[0]),
-			file:        string(parts[1]),
-			old:         string(parts[2]),
-			pkg:         string(parts[4]),
-			testPattern: string(parts[5]),
+			name:        parts[1],
+			file:        parts[2],
+			old:         parts[3],
+			pkg:         parts[5],
+			testPattern: parts[6],
 		})
 	}
 	return anchors, nil
+}
+
+func parseShellWords(input string) ([]string, error) {
+	const (
+		shellBare = iota
+		shellSingle
+		shellDouble
+		shellANSI
+	)
+	state := shellBare
+	active := false
+	var word strings.Builder
+	var words []string
+	flush := func() {
+		if active {
+			words = append(words, word.String())
+			word.Reset()
+			active = false
+		}
+	}
+	for i := 0; i < len(input); i++ {
+		ch := input[i]
+		switch state {
+		case shellBare:
+			switch {
+			case ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+				flush()
+			case ch == '\\':
+				if i+1 >= len(input) {
+					return nil, fmt.Errorf("trailing backslash")
+				}
+				i++
+				if input[i] != '\n' {
+					active = true
+					word.WriteByte(input[i])
+				}
+			case ch == '\'':
+				active = true
+				state = shellSingle
+			case ch == '"':
+				active = true
+				state = shellDouble
+			case ch == '$' && i+1 < len(input) && input[i+1] == '\'':
+				active = true
+				state = shellANSI
+				i++
+			default:
+				active = true
+				word.WriteByte(ch)
+			}
+		case shellSingle:
+			if ch == '\'' {
+				state = shellBare
+			} else {
+				word.WriteByte(ch)
+			}
+		case shellDouble:
+			if ch == '"' {
+				state = shellBare
+				continue
+			}
+			if ch == '\\' {
+				if i+1 >= len(input) {
+					return nil, fmt.Errorf("trailing backslash in double-quoted word")
+				}
+				i++
+				if input[i] == '\n' {
+					continue
+				}
+				word.WriteByte(input[i])
+				continue
+			}
+			word.WriteByte(ch)
+		case shellANSI:
+			if ch == '\'' {
+				state = shellBare
+				continue
+			}
+			if ch != '\\' {
+				word.WriteByte(ch)
+				continue
+			}
+			if i+1 >= len(input) {
+				return nil, fmt.Errorf("trailing backslash in ANSI-C word")
+			}
+			i++
+			switch input[i] {
+			case 'n':
+				word.WriteByte('\n')
+			case 'r':
+				word.WriteByte('\r')
+			case 't':
+				word.WriteByte('\t')
+			case '\\', '\'', '"':
+				word.WriteByte(input[i])
+			default:
+				return nil, fmt.Errorf("unsupported ANSI-C escape \\%c", input[i])
+			}
+		}
+	}
+	if state != shellBare {
+		return nil, fmt.Errorf("unterminated quoted word")
+	}
+	flush()
+	return words, nil
 }
 
 func packageHasTest(dir, want string) (bool, error) {
@@ -222,6 +333,26 @@ func packageHasTest(dir, want string) (bool, error) {
 			if ok && fn.Name.Name == want {
 				return true, nil
 			}
+		}
+	}
+	return false, nil
+}
+
+func packageContainsText(dir, want string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return false, err
+		}
+		if bytes.Contains(body, []byte(want)) {
+			return true, nil
 		}
 	}
 	return false, nil

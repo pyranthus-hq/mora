@@ -313,40 +313,9 @@ func duplicateAllPredictions(preds []Prediction) []Prediction {
 // a new scorecard number cannot be added without a MetricSpec, and therefore
 // cannot be added without a sabotage case.
 func TestMetricRegistryCoversEveryScorecardField(t *testing.T) {
-	registered := map[string]bool{}
-	for _, spec := range RequiredMetrics {
-		if registered[spec.Field] {
-			t.Errorf("two metrics claim scorecard field %q", spec.Field)
-		}
-		registered[spec.Field] = true
+	if err := ValidateMetricRegistryCoverage(); err != nil {
+		t.Fatal(err)
 	}
-	scorecard := reflect.TypeOf(Scorecard{})
-	for i := 0; i < scorecard.NumField(); i++ {
-		name := scorecard.Field(i).Name
-		if nonMetricScorecardFields[name] {
-			continue
-		}
-		if !registered[name] {
-			t.Errorf("EVAL_BROKEN: scorecard field %q has no MetricSpec, so nothing proves it can move", name)
-		}
-	}
-	for field := range registered {
-		if _, ok := scorecard.FieldByName(field); !ok {
-			t.Errorf("metric registry names %q, which is not a scorecard field", field)
-		}
-	}
-	for field := range nonMetricScorecardFields {
-		if _, ok := scorecard.FieldByName(field); !ok {
-			t.Errorf("the non-metric exclusion list names %q, which is not a scorecard field", field)
-		}
-	}
-}
-
-// nonMetricScorecardFields is the pinned exclusion list. It is deliberately tiny:
-// every other field is a number that must prove it moves.
-var nonMetricScorecardFields = map[string]bool{
-	"Surface": true,
-	"Owner":   true,
 }
 
 // TestScoreRefusesEveryInvalidLedgerClass drives all twelve validator rules through
