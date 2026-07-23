@@ -20,7 +20,10 @@ import (
 	"github.com/pyranthus-hq/mora/internal/mora/exam"
 )
 
-const examSurfaceScorecardsPath = "exam/testdata/surface-scorecards.golden.json"
+const (
+	examSurfaceScorecardsPath   = "exam/testdata/surface-scorecards.golden.json"
+	examSurfaceScorecardsV2Path = "exam/testdata/surface-scorecards-v2.golden.json"
+)
 
 type examSurfaceScorecards struct {
 	DailyCLI  exam.Scorecard `json:"daily_cli"`
@@ -110,9 +113,23 @@ func scoreExamSurface(t *testing.T, ledger exam.Ledger, preds []exam.Prediction,
 // real dispatcher. Home is deliberately not a row: it does not exist yet
 // (HOME-09/#141), and HTTP is a transport over the already-counted MCP engine.
 func TestExamSurfaces(t *testing.T) {
-	_, event, at := seedExamHome(t)
+	scorecards := runExamSurfaces(t, examFixtureRoot)
+	assertExamSurfaceScorecardsGolden(t, scorecards, examSurfaceScorecardsPath, *update)
+}
+
+// TestExamSurfacesV2 makes the human-validated realism corpus a measured
+// product baseline. The golden comparison is the regression ratchet: product
+// changes may move it only after the scorecard delta has been inspected.
+func TestExamSurfacesV2(t *testing.T) {
+	scorecards := runExamSurfaces(t, examFixtureV2Root)
+	assertExamSurfaceScorecardsGolden(t, scorecards, examSurfaceScorecardsV2Path, *updateV2)
+}
+
+func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
+	t.Helper()
+	_, event, at := seedExamHomeFromRoot(t, corpusRoot)
 	pinExamSurfaceClocks(t, at)
-	ledger := loadExamLedger(t)
+	ledger := loadExamLedgerFromRoot(t, corpusRoot)
 
 	dailyCLIOutput := runExamCLI(t, "pulse", "--digest", "--since-hours", "720")
 	dailyCLI := examDailyCLIPredictions(t, dailyCLIOutput)
@@ -167,7 +184,6 @@ func TestExamSurfaces(t *testing.T) {
 	if !reflect.DeepEqual(scorecards.EventCLI, scorecards.EventMCP) {
 		t.Fatalf("event CLI and MCP scorecards differ:\n CLI=%+v\n MCP=%+v", scorecards.EventCLI, scorecards.EventMCP)
 	}
-	assertExamSurfaceScorecardsGolden(t, scorecards)
 
 	// Extra transport check, explicitly not a fourth product surface. Sending the
 	// same non-nil arg map proves POST /meeting-prep maps to meeting_prep with the
@@ -194,17 +210,18 @@ func TestExamSurfaces(t *testing.T) {
 	if !bytes.Equal(eventMCPJSON, eventHTTPJSON) {
 		t.Fatalf("HTTP transport changed the MCP payload:\n MCP=%s\nHTTP=%s", eventMCPJSON, eventHTTPJSON)
 	}
+	return scorecards
 }
 
-func assertExamSurfaceScorecardsGolden(t *testing.T, got examSurfaceScorecards) {
+func assertExamSurfaceScorecardsGolden(t *testing.T, got examSurfaceScorecards, goldenPath string, updateGolden bool) {
 	t.Helper()
 	want, err := json.MarshalIndent(got, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want = append(want, '\n')
-	path := filepath.FromSlash(examSurfaceScorecardsPath)
-	if *update {
+	path := filepath.FromSlash(goldenPath)
+	if updateGolden {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -215,10 +232,10 @@ func assertExamSurfaceScorecardsGolden(t *testing.T, got examSurfaceScorecards) 
 	}
 	committed, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read current-surface scorecard golden: %v", err)
+		t.Fatalf("read current-surface scorecard golden %s: %v", goldenPath, err)
 	}
 	if !bytes.Equal(committed, want) {
-		t.Fatalf("current-surface scorecards drifted; inspect the product change, then run go test ./internal/mora -run TestExamSurfaces -update\n got:\n%s\nwant:\n%s", committed, want)
+		t.Fatalf("current-surface scorecards drifted at %s; inspect the product change before updating the golden\n got:\n%s\nwant:\n%s", goldenPath, committed, want)
 	}
 }
 
