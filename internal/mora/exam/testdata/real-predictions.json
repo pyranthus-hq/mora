@@ -133,19 +133,6 @@
     },
     {
       "surface": "meeting",
-      "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
-      "attendee": "Sam Rivera",
-      "attendee_atom": "address:sam@example.org",
-      "owner": "address:alex@example.com",
-      "memory_id": "gmail_thread/exam-closed-open",
-      "section_kind": "open_loops",
-      "direction": "owed_by_self",
-      "due": "none",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "meeting",
       "text": "~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
@@ -154,8 +141,8 @@
       "section_kind": "unresolved_threads",
       "direction": "owed_by_self",
       "due": "2026-07-14",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "meeting",
@@ -167,8 +154,8 @@
       "section_kind": "material_shared_context",
       "direction": "owed_by_self",
       "due": "none",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "lifecycle": "open",
+      "closure_ref": "none"
     }
   ]
 }

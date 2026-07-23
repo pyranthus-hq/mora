@@ -18,7 +18,7 @@ import (
 // structurally cannot reach meetingbrief.go's cleaners and therefore cannot score
 // the implementation against itself.
 
-func examMeetingPredictions(b MeetingBrief) []exam.Prediction {
+func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Prediction {
 	var out []exam.Prediction
 	for _, section := range b.Sections {
 		for _, line := range section.Lines {
@@ -26,6 +26,10 @@ func examMeetingPredictions(b MeetingBrief) []exam.Prediction {
 			direction := line.Direction
 			if direction == "" {
 				direction = exam.Unknown
+			}
+			lifecycle := line.Lifecycle
+			if lifecycle == "" {
+				lifecycle = exam.Unknown
 			}
 			owner := ""
 			if line.Direction != "" {
@@ -40,14 +44,34 @@ func examMeetingPredictions(b MeetingBrief) []exam.Prediction {
 				MemoryID:     line.Citation.MemoryID(),
 				SectionKind:  section.Kind,
 				CommitmentID: line.CommitmentID,
-				// Owner, direction, due, and evidence identity are direct field
-				// copies. Lifecycle/closure remain explicitly unknown until their
-				// own product PR materializes those dimensions.
-				Direction: direction,
-				Due:       line.DueAt,
-				Lifecycle: exam.Unknown,
+				// Typed commitment fields and evidence identity are direct copies
+				// from the product surface.
+				Direction:  direction,
+				Due:        line.DueAt,
+				Lifecycle:  lifecycle,
+				ClosureRef: line.ClosureRef,
 			})
 		}
+	}
+	for _, commitment := range inventory {
+		// Legacy memories deliberately have no fabricated commitment id. They
+		// cannot be joined to scorer gold as inventory rows, so keep them out
+		// rather than turning honest "unknown" identity into lifecycle false
+		// precision. Visible legacy lines are still scored above by their quote.
+		if commitment.ID == "" {
+			continue
+		}
+		out = append(out, exam.Prediction{
+			Surface:      exam.SurfaceMeeting,
+			Origin:       exam.PredictionOriginInventory,
+			Owner:        commitment.Owner.Kind + ":" + commitment.Owner.Value,
+			MemoryID:     commitment.OpenedBy.MemoryID,
+			CommitmentID: commitment.ID,
+			DuplicateOf:  commitment.DuplicateOf,
+			Direction:    commitment.Direction,
+			Lifecycle:    commitment.State,
+			ClosureRef:   commitment.ClosureRef,
+		})
 	}
 	return out
 }
@@ -95,6 +119,10 @@ const examRealPredictionsPath = "exam/testdata/real-predictions.json"
 func examSurfaces(t *testing.T) map[string][]exam.Prediction {
 	t.Helper()
 	cfg, event, at := seedExamHome(t)
+	snapshot, err := readCommitmentSnapshot(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	brief, err := buildEventMeetingBrief(context.Background(), cfg, event.EventID, at, 0, meetingBriefDefaultPerGuest)
 	if err != nil {
 		t.Fatal(err)
@@ -108,9 +136,9 @@ func examSurfaces(t *testing.T) map[string][]exam.Prediction {
 		t.Fatal(err)
 	}
 	return map[string][]exam.Prediction{
-		exam.SurfaceMeeting: examMeetingPredictions(brief),
+		exam.SurfaceMeeting: examMeetingPredictions(brief, snapshot.Commitments...),
 		exam.SurfaceDaily:   examDailyPredictions(digest),
-		"meeting_uncapped":  examMeetingPredictions(uncapped),
+		"meeting_uncapped":  examMeetingPredictions(uncapped, snapshot.Commitments...),
 	}
 }
 
@@ -198,14 +226,24 @@ func TestExamRealEngineScorecard(t *testing.T) {
 		t.Errorf("meeting run state = %q; a clean first score is a defect report against the ledger, not a win",
 			exam.RunStateOf(meeting, nil))
 	}
-	// The two live defects the corpus catches today. They are ASSERTED, not merely
-	// reported: if a change makes them disappear without anyone flipping these
-	// expectations, the corpus has stopped exercising the engine.
+	// The remaining live non-obligation defect stays asserted. PR4 closes the
+	// lifecycle defect: closed work must no longer leak, and the two typed rows must
+	// be expressed precisely even though legacy corpora cannot recover immutable ids
+	// for every hidden inventory item.
 	if meeting.NonObligationLeaks == 0 {
 		t.Error("the engine used to surface a labelled non-obligation as an open loop; if it no longer does, flip this expectation and raise the floor")
 	}
-	if meeting.ClosedLeaks == 0 {
-		t.Error("the engine used to surface a CLOSED obligation as an open loop; if it no longer does, flip this expectation and raise the floor")
+	if meeting.ClosedLeaks != 0 {
+		t.Errorf("ClosedLeaks = %d, want 0 after lifecycle materialization", meeting.ClosedLeaks)
+	}
+	if !meeting.Lifecycle.Defined || meeting.Lifecycle.Precision != 1 {
+		t.Errorf("Lifecycle = %+v, want a precise typed meeting lifecycle row", meeting.Lifecycle)
+	}
+	if !meeting.ClosureLinkage.Defined || meeting.ClosureLinkage.Precision != 1 {
+		t.Errorf("ClosureLinkage = %+v, want a precise typed meeting closure row", meeting.ClosureLinkage)
+	}
+	if meeting.DupLeaks != 0 || meeting.DedupCrossArtifact != 0 {
+		t.Errorf("dedup regressions: DupLeaks=%d DedupCrossArtifact=%d", meeting.DupLeaks, meeting.DedupCrossArtifact)
 	}
 	if meeting.CriticalIdentity != 0 {
 		t.Errorf("CriticalIdentity = %d, want 0 — Mora GAPS, it does not misattribute (#135)", meeting.CriticalIdentity)
@@ -346,7 +384,10 @@ func TestObligationScoreReport(t *testing.T) {
 	}
 	report := "surface\tverdict\tledger_case\tmemory_id\ttext\n" + strings.Join(rows, "\n") + "\n"
 
-	path := filepath.Join(examFixtureRoot, "report.golden.tsv")
+	// Product-output ratchets live outside the frozen corpus directory. The
+	// obligations-v1 ledger/render/report bytes are sealed evidence and must not be
+	// rewritten when a product fix changes the real surface.
+	path := filepath.FromSlash("exam/testdata/report.golden.tsv")
 	if *update {
 		if err := os.WriteFile(path, []byte(report), 0o644); err != nil {
 			t.Fatal(err)

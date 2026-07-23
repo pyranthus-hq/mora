@@ -14,19 +14,6 @@
     },
     {
       "surface": "meeting",
-      "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
-      "attendee": "Sam Rivera",
-      "attendee_atom": "address:sam@example.org",
-      "owner": "address:alex@example.com",
-      "memory_id": "gmail_thread/exam-closed-open",
-      "section_kind": "open_loops",
-      "direction": "owed_by_self",
-      "due": "none",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "meeting",
       "text": "~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
@@ -35,8 +22,8 @@
       "section_kind": "unresolved_threads",
       "direction": "owed_by_self",
       "due": "2026-07-14",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "meeting",
@@ -48,8 +35,8 @@
       "section_kind": "material_shared_context",
       "direction": "owed_by_self",
       "due": "none",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "lifecycle": "open",
+      "closure_ref": "none"
     }
   ],
   "post": [
@@ -67,19 +54,6 @@
     },
     {
       "surface": "meeting",
-      "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
-      "attendee": "Sam Rivera",
-      "attendee_atom": "address:sam@example.org",
-      "owner": "address:alex@example.com",
-      "memory_id": "gmail_thread/exam-closed-open",
-      "section_kind": "open_loops",
-      "direction": "owed_by_self",
-      "due": "none",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "meeting",
       "text": "~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
@@ -88,8 +62,8 @@
       "section_kind": "unresolved_threads",
       "direction": "owed_by_self",
       "due": "2026-07-14",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "meeting",
@@ -101,8 +75,8 @@
       "section_kind": "material_shared_context",
       "direction": "owed_by_counterparty",
       "due": "none",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "meeting",
@@ -114,15 +88,15 @@
       "section_kind": "material_shared_context",
       "direction": "owed_by_self",
       "due": "none",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "lifecycle": "open",
+      "closure_ref": "none"
     }
   ],
   "pre_scorecard": {
     "scorer_version": 2,
     "surface": "meeting",
     "extraction": {
-      "precision": 0.5,
+      "precision": 0.6666666666666666,
       "recall": 0.5,
       "defined": true
     },
@@ -152,7 +126,7 @@
     },
     "dedup_cross_artifact": 0,
     "third_party_leaks": 0,
-    "closed_leaks": 1,
+    "closed_leaks": 0,
     "dup_leaks": 0,
     "non_obligation_leaks": 1,
     "critical_identity": 0,
@@ -186,19 +160,19 @@
       }
     },
     "lifecycle": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.16666666666666666,
+      "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0,
+        "open": 0.2,
         "superseded": 0
       }
     },
     "closure_linkage": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false
+      "precision": 1,
+      "recall": 0.16666666666666666,
+      "defined": true
     },
     "commitment_identity": {
       "precision": 0,
@@ -227,7 +201,7 @@
     "scorer_version": 2,
     "surface": "meeting",
     "extraction": {
-      "precision": 0.6,
+      "precision": 0.75,
       "recall": 0.75,
       "defined": true
     },
@@ -257,7 +231,7 @@
     },
     "dedup_cross_artifact": 0,
     "third_party_leaks": 0,
-    "closed_leaks": 1,
+    "closed_leaks": 0,
     "dup_leaks": 0,
     "non_obligation_leaks": 1,
     "critical_identity": 0,
@@ -291,19 +265,19 @@
       }
     },
     "lifecycle": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.25,
+      "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0,
+        "open": 0.3,
         "superseded": 0
       }
     },
     "closure_linkage": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false
+      "precision": 1,
+      "recall": 0.25,
+      "defined": true
     },
     "commitment_identity": {
       "precision": 0,

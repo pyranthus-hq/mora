@@ -341,10 +341,12 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 
 	// Commitments are derived over the exact same whole-vault snapshot as the graph
-	// and vectors. The manifest digest is the generation identity: it changes iff
-	// the indexed vault bytes change, and the rows plus stamp commit atomically.
-	commitmentGeneration := manifestDigestOf(manifestLines)
-	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg); err != nil {
+	// and vectors. Their generation also binds the injected rebuild instant and
+	// source-health snapshot because state_uncertain is a material input: two
+	// different health snapshots must never share one generation id.
+	stampNow := indexClock().UTC()
+	commitmentGeneration := commitmentGenerationOf(manifestLines, cfg, stampNow)
+	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg, stampNow); err != nil {
 		return count, err
 	}
 
@@ -361,7 +363,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	//     the static floor. embedder_model/embedder_dim are the MINIMAL provenance PR 1
 	//     already writes; this adds the digest column so a later `ollama pull` that
 	//     re-resolves the same model NAME to new weights is a detectable mismatch.
-	stampNow := indexClock().UTC().Format(time.RFC3339)
+	stampNowText := stampNow.Format(time.RFC3339)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO index_meta(key,value) VALUES
 		 ('indexed_at',?),('fts_indexed_at',?),('graph_indexed_at',?),('vectors_indexed_at',?),
@@ -369,7 +371,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		 ('embedder_model',?),('embedder_dim',?),('embedder_digest',?),
 		 ('vault_manifest_algo',?),('vault_manifest_digest',?),('vault_manifest_listed',?),('vault_manifest_unparseable',?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-		stampNow, stampNow, stampNow, stampNow, commitmentGeneration,
+		stampNowText, stampNowText, stampNowText, stampNowText, commitmentGeneration,
 		emb.ModelID(), fmt.Sprintf("%d", emb.Dim()), embedderDigestOf(emb),
 		indexManifestAlgo, manifestDigestOf(manifestLines),
 		fmt.Sprintf("%d", len(files)), fmt.Sprintf("%d", len(files)-len(parsed))); err != nil {
@@ -443,7 +445,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// the page buildContext injects into every context payload cannot disagree with
 	// the index it describes. Best-effort: a cosmetic derived file must not undo a
 	// committed rebuild (and returning here would spuriously fire the failure stamp).
-	if werr := writeWikiIndex(cfg, count, stampNow); werr != nil {
+	if werr := writeWikiIndex(cfg, count, stampNowText); werr != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not refresh vault/index.md: %v\n", werr)
 	}
 	return count, nil
