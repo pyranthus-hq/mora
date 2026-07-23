@@ -1,6 +1,8 @@
 package mora
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +92,55 @@ func TestEnableFilesystemFlipsConfiguredSources(t *testing.T) {
 	}
 	if !docsEnabled {
 		t.Fatalf("docs source should be enabled after `connectors enable filesystem`; got %+v", sources)
+	}
+}
+
+// (b) `sources add` inherits the connector type's consent state. Before this,
+// a source added AFTER `connectors enable filesystem` landed disabled, and
+// `ingest run --source <name>` dead-ended on "run `mora connectors enable
+// filesystem` first" — which had ALREADY been run, and there is no
+// `sources enable` command. Consent is granted per TYPE (D-02: `connectors
+// enable` flips every row of the type), so a row added under an
+// already-consented type starts enabled; on a never-enabled type it still
+// defaults disabled (D-11 unchanged).
+func TestSourcesAddInheritsTypeConsent(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	// Grant type-level consent via the documented flow: add, then enable.
+	run(t, "sources", "add", "filesystem", "--name", "docs", "--path", t.TempDir())
+	run(t, "connectors", "enable", "filesystem")
+
+	// A source added while the type is enabled must start enabled.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.md"), []byte("hello notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, "sources", "add", "filesystem", "--name", "notes", "--path", dir)
+
+	sources, err := loadSources(cfg)
+	if err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+	byName := map[string]Source{}
+	for _, s := range sources {
+		byName[s.Name] = s
+	}
+	if !byName["notes"].IsEnabled() {
+		t.Fatalf("source added under an enabled type must inherit enabled; got %+v", byName["notes"])
+	}
+	if !byName["docs"].IsEnabled() {
+		t.Fatalf("existing enabled source must stay enabled; got %+v", byName["docs"])
+	}
+
+	// The add → ingest flow now completes with no dead end.
+	out, err := runErr(t, "ingest", "run", "--source", "notes")
+	if err != nil {
+		t.Fatalf("ingest run --source notes should work right after add: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ingested 1 item(s)") {
+		t.Fatalf("expected the notes file to ingest; got:\n%s", out)
 	}
 }
 
