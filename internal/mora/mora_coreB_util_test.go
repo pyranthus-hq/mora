@@ -595,6 +595,9 @@ func TestCoreB_UtilInstallAndListSchedule(t *testing.T) {
 	}
 	withTempHome(t)
 	cfg := testCfg(t)
+	// Install now bootstraps the job via launchctl on darwin; stub the runner so
+	// the test never loads a real launchd job pointing at the test binary.
+	withScheduleRunner(t, nil)
 
 	// Unknown job → error (any OS).
 	var errBuf bytes.Buffer
@@ -613,7 +616,7 @@ func TestCoreB_UtilInstallAndListSchedule(t *testing.T) {
 		}
 		return
 	}
-	if !strings.Contains(out.String(), "installed launchd job com.mora.index-hourly") {
+	if !strings.Contains(out.String(), "installed + loaded launchd job com.mora.index-hourly") {
 		t.Fatalf("missing confirmation message, got %q", out.String())
 	}
 	plistPath := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", "com.mora.index-hourly.plist")

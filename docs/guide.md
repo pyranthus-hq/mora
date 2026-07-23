@@ -331,6 +331,8 @@ mora schedule list                    # show which jobs are installed
 
 The full set of jobs is `ingest-hourly`, `index-hourly`, `pulse-daily`, `doctor-pulse`, `backup-daily`, `git-daily`, and `lint-weekly`.
 
+On macOS, `schedule install` both writes the launchd plist and loads it immediately (`launchctl bootstrap`), so the schedule is active right away — no logout/login required. If the bootstrap step fails, the command exits non-zero and prints the exact `launchctl` command to load the job manually.
+
 **Check sync freshness:**
 
 ```bash
