@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -101,6 +102,125 @@ func LintLeakage(l Ledger) error {
 	}
 	return nil
 }
+
+// leakClasses splits artifacts into the classes a blinded reader is asked to
+// separate: positives open at least one canonical still-open commitment,
+// negatives are everything else. Both fingerprint gates below ask the same
+// question about a different metadata channel: can this channel ALONE predict
+// the class? If it can, the corpus grades pattern-matching, not reading — the
+// exact defect that invalidated the obligations-v1 human sitting.
+func leakClasses(l Ledger) (pos, neg []Artifact) {
+	positive := map[string]bool{}
+	for _, c := range l.Commitments {
+		if c.State == "open" && c.DuplicateOf == "" {
+			positive[c.OpenedBy.ArtifactID] = true
+		}
+	}
+	for _, a := range l.Artifacts {
+		if positive[a.ID] {
+			pos = append(pos, a)
+		} else {
+			neg = append(neg, a)
+		}
+	}
+	return pos, neg
+}
+
+// LintDateFingerprint rejects a ledger whose artifact dates separate the
+// classes: if every positive is newer (or older) than every negative, the date
+// column is the answer key. Ranges must overlap.
+func LintDateFingerprint(l Ledger) error {
+	pos, neg := leakClasses(l)
+	if len(pos) == 0 || len(neg) == 0 {
+		return nil
+	}
+	// Full-timestamp granularity on purpose: all-positives-before-noon on a
+	// shared day is as much a fingerprint as a disjoint week. RFC3339 with a
+	// fixed offset compares lexically; the validator enforces the format, and
+	// a malformed timestamp here fails loud rather than sliding by.
+	bounds := func(as []Artifact) (min, max string, err error) {
+		for i, a := range as {
+			at := a.OccurredAt
+			if _, perr := time.Parse(time.RFC3339, at); perr != nil {
+				return "", "", fmt.Errorf("ERR_%s [%s]: artifact %q occurred_at %q is not RFC3339", strings.ToUpper(LintDateLeak), LintDateLeak, a.ID, at)
+			}
+			if i == 0 || at < min {
+				min = at
+			}
+			if i == 0 || at > max {
+				max = at
+			}
+		}
+		return min, max, nil
+	}
+	posMin, posMax, err := bounds(pos)
+	if err != nil {
+		return err
+	}
+	negMin, negMax, err := bounds(neg)
+	if err != nil {
+		return err
+	}
+	if posMin > negMax || negMin > posMax {
+		return fmt.Errorf("ERR_%s [%s]: artifact dates alone separate the classes (positives %s..%s, negatives %s..%s)", strings.ToUpper(LintDateLeak), LintDateLeak, posMin, posMax, negMin, negMax)
+	}
+	return nil
+}
+
+// LintTitleFingerprint rejects a ledger where a single subject token acts as a
+// class label: present in every positive subject and no negative subject (or
+// the reverse). Needs at least two artifacts per class to mean anything.
+func LintTitleFingerprint(l Ledger) error {
+	pos, neg := leakClasses(l)
+	if len(pos) < 2 || len(neg) < 2 {
+		return nil
+	}
+	tokens := func(as []Artifact) []map[string]bool {
+		out := make([]map[string]bool, 0, len(as))
+		for _, a := range as {
+			set := map[string]bool{}
+			for _, t := range titleToken.FindAllString(strings.ToLower(a.Subject), -1) {
+				// Two-rune floor: even "due" or "ask" as a perfect class
+				// marker is a leak; only single characters are too noisy to
+				// mean anything.
+				if len([]rune(t)) >= 2 {
+					set[t] = true
+				}
+			}
+			out = append(out, set)
+		}
+		return out
+	}
+	separates := func(covered, empty []map[string]bool) string {
+		for t := range covered[0] {
+			all := true
+			for _, set := range covered[1:] {
+				all = all && set[t]
+			}
+			if !all {
+				continue
+			}
+			none := true
+			for _, set := range empty {
+				none = none && !set[t]
+			}
+			if none {
+				return t
+			}
+		}
+		return ""
+	}
+	posTokens, negTokens := tokens(pos), tokens(neg)
+	if t := separates(posTokens, negTokens); t != "" {
+		return fmt.Errorf("ERR_%s [%s]: subject token %q marks every positive and no negative", strings.ToUpper(LintTitleLeak), LintTitleLeak, t)
+	}
+	if t := separates(negTokens, posTokens); t != "" {
+		return fmt.Errorf("ERR_%s [%s]: subject token %q marks every negative and no positive", strings.ToUpper(LintTitleLeak), LintTitleLeak, t)
+	}
+	return nil
+}
+
+var titleToken = regexp.MustCompile(`[\p{L}\p{N}]+`)
 
 var leakSpace = regexp.MustCompile(`\s+`)
 

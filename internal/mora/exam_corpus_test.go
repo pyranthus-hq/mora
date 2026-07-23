@@ -277,6 +277,12 @@ func TestExamCorpusNoLabelLeak(t *testing.T) {
 	if err := exam.LintLeakage(l); err != nil {
 		t.Fatalf("committed ledger leaks the gold label into an auditor-visible field: %v", err)
 	}
+	if err := exam.LintDateFingerprint(l); err != nil {
+		t.Fatalf("committed ledger's dates alone predict the gold label: %v", err)
+	}
+	if err := exam.LintTitleFingerprint(l); err != nil {
+		t.Fatalf("committed ledger's subjects alone predict the gold label: %v", err)
+	}
 }
 
 func TestExamFlywheelArtifactsShareNoIdentityBytes(t *testing.T) {
@@ -592,7 +598,7 @@ func writeTestExamHashManifest(t *testing.T, root string, schema int, files map[
 	}
 	sort.Strings(paths)
 	var out strings.Builder
-	fmt.Fprintf(&out, "# renderer_version=%s ledger_schema=%d\n", exam.RendererVersion, schema)
+	fmt.Fprintf(&out, "# renderer_version=%s ledger_schema=%d\n", exam.RendererVersionFor(schema), schema)
 	for _, path := range paths {
 		fmt.Fprintf(&out, "%s  %s\n", hashBytes(files[path]), path)
 	}
@@ -624,7 +630,7 @@ func writeExamHashes(t *testing.T, l exam.Ledger, rendered map[string][]byte) {
 	}
 	sort.Strings(paths)
 	var out strings.Builder
-	fmt.Fprintf(&out, "# renderer_version=%s ledger_schema=%d\n", exam.RendererVersion, l.Version)
+	fmt.Fprintf(&out, "# renderer_version=%s ledger_schema=%d\n", exam.RendererVersionFor(l.Version), l.Version)
 	for _, path := range paths {
 		fmt.Fprintf(&out, "%s  %s\n", hashBytes(entries[path]), path)
 	}
@@ -648,7 +654,7 @@ func examSourceArtifactNames(root string) ([]string, error) {
 
 func parseExamHashes(b []byte, schema int) (map[string]string, error) {
 	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-	wantHeader := fmt.Sprintf("# renderer_version=%s ledger_schema=%d", exam.RendererVersion, schema)
+	wantHeader := fmt.Sprintf("# renderer_version=%s ledger_schema=%d", exam.RendererVersionFor(schema), schema)
 	if len(lines) < 2 || lines[0] != wantHeader {
 		return nil, fmt.Errorf("ERR_CORPUS_HASH_VERSION: header = %q, want %q", lines[0], wantHeader)
 	}

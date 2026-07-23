@@ -12,6 +12,16 @@ import (
 
 const RendererVersion = "exam-render-v1"
 
+// RendererVersionFor names the renderer that a ledger schema binds to. The v1
+// string (and the v1 byte stream it stands for) is frozen: the obligations-v1
+// corpus hashes are pinned against it.
+func RendererVersionFor(schema int) string {
+	if schema >= SchemaV2 {
+		return "exam-render-v2"
+	}
+	return RendererVersion
+}
+
 var renderLocation = time.FixedZone("exam-render", 0)
 
 type renderedMemory struct {
@@ -31,7 +41,7 @@ func Render(l Ledger) (map[string][]byte, error) {
 	}
 	out := make(map[string][]byte, len(l.Artifacts))
 	for _, a := range l.Artifacts {
-		m, path, err := renderArtifact(a, ids, l.Self.ID)
+		m, path, err := renderArtifact(a, ids, l.Self.ID, l.Version)
 		if err != nil {
 			return nil, err
 		}
@@ -47,7 +57,7 @@ func Render(l Ledger) (map[string][]byte, error) {
 	return out, nil
 }
 
-func renderArtifact(a Artifact, ids map[string]Identity, selfID string) (renderedMemory, string, error) {
+func renderArtifact(a Artifact, ids map[string]Identity, selfID string, schema int) (renderedMemory, string, error) {
 	providerID := a.MemoryID
 	if _, tail, ok := strings.Cut(a.MemoryID, "/"); ok {
 		providerID = tail
@@ -56,26 +66,26 @@ func renderArtifact(a Artifact, ids map[string]Identity, selfID string) (rendere
 	switch a.Channel {
 	case "gmail":
 		m.typ, m.tags, m.provider, m.providerID, m.source = "email", "gmail", "gmail", providerID, providerID
-		m.body, m.meta = renderGmail(a, ids)
+		m.body, m.meta = renderGmail(a, ids, schema)
 		return m, "vault/sources/gmail/" + memory.SafeFilename(a.MemoryID) + ".md", nil
 	case "imessage":
 		m.typ, m.tags, m.provider, m.providerID, m.source = "imessage", "imessage", "imessage", providerID, providerID
-		m.body, m.meta = renderIMessage(a, ids, selfID)
+		m.body, m.meta = renderIMessage(a, ids, selfID, schema)
 		return m, "vault/sources/imessage/" + memory.SafeFilename(a.MemoryID) + ".md", nil
 	case "calendar":
 		m.typ, m.tags, m.provider, m.providerID, m.source = "event", "calendar", "calendar", providerID, providerID
-		m.body, m.meta = renderCalendar(a, ids, selfID)
+		m.body, m.meta = renderCalendar(a, ids, selfID, schema)
 		return m, "vault/sources/calendar/" + memory.SafeFilename(a.MemoryID) + ".md", nil
 	case "notes":
 		m.typ, m.source = "note", "manual"
-		m.body = renderBlocks(a.Messages[0].Body)
+		m.body = renderMessageBody(a.Messages[0], schema)
 		return m, "vault/memories/exam/" + memory.SafeFilename(a.MemoryID) + ".md", nil
 	default:
 		return renderedMemory{}, "", fmt.Errorf("unknown channel %q", a.Channel)
 	}
 }
 
-func renderGmail(a Artifact, ids map[string]Identity) (string, map[string]any) {
+func renderGmail(a Artifact, ids map[string]Identity, schema int) (string, map[string]any) {
 	from, to, cc, names := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]string{}
 	parts := make([]string, 0, len(a.Messages))
 	for _, msg := range a.Messages {
@@ -83,7 +93,7 @@ func renderGmail(a Artifact, ids map[string]Identity) (string, map[string]any) {
 		addEmails(to, msg.To, ids)
 		addEmails(cc, msg.Cc, ids)
 		addNames(names, append(append([]string{msg.From}, msg.To...), msg.Cc...), ids)
-		parts = append(parts, renderBlocks(msg.Body))
+		parts = append(parts, renderMessageBody(msg, schema))
 	}
 	meta := map[string]any{"message_count": strconv.Itoa(len(a.Messages)), "occurred_at": newestMessage(a.Messages).UTC().Format(time.RFC3339)}
 	putSorted(meta, "from", from)
@@ -96,7 +106,7 @@ func renderGmail(a Artifact, ids map[string]Identity) (string, map[string]any) {
 	return "From: " + identityHeader(ids[first.From]) + "\n\n" + strings.Join(parts, "\n\n---\n\n"), meta
 }
 
-func renderIMessage(a Artifact, ids map[string]Identity, selfID string) (string, map[string]any) {
+func renderIMessage(a Artifact, ids map[string]Identity, selfID string, schema int) (string, map[string]any) {
 	var b strings.Builder
 	lastDay := ""
 	for _, msg := range a.Messages {
@@ -113,7 +123,7 @@ func renderIMessage(a Artifact, ids map[string]Identity, selfID string) (string,
 		if msg.From != selfID {
 			label = identityIMessageLabel(ids[msg.From])
 		}
-		b.WriteString(label + ": " + renderBlocks(msg.Body) + "\n")
+		b.WriteString(label + ": " + renderMessageBody(msg, schema) + "\n")
 	}
 	pairs := make([]map[string]string, 0, len(a.Participants))
 	for _, id := range a.Participants {
@@ -124,7 +134,7 @@ func renderIMessage(a Artifact, ids map[string]Identity, selfID string) (string,
 	return strings.TrimRight(b.String(), "\n"), meta
 }
 
-func renderCalendar(a Artifact, ids map[string]Identity, selfID string) (string, map[string]any) {
+func renderCalendar(a Artifact, ids map[string]Identity, selfID string, schema int) (string, map[string]any) {
 	m := a.Messages[0]
 	at, _ := time.Parse(time.RFC3339, a.OccurredAt)
 	attendees := make([]string, 0, len(m.To))
@@ -142,7 +152,7 @@ func renderCalendar(a Artifact, ids map[string]Identity, selfID string) (string,
 	if len(attendees) > 0 {
 		b.WriteString("Attendees: " + strings.Join(attendees, ", ") + "\n")
 	}
-	body := renderBlocks(m.Body)
+	body := renderMessageBody(m, schema)
 	if body != "" {
 		b.WriteString("\n" + body + "\n")
 	}
@@ -165,6 +175,74 @@ func renderBlocks(blocks []Block) string {
 		parts = append(parts, block.Text)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// renderMessageBody renders one message's blocks. Schema v1 keeps its frozen
+// flat join. Schema v2 makes block kind VISIBLE in the byte stream — the whole
+// point of the realism track: what the extractor (and a human reader) sees is
+// what real connectors emit, so quote-stripping, footer handling, and wrapped
+// mail are finally exercisable by the corpus.
+func renderMessageBody(m Message, schema int) string {
+	if schema < SchemaV2 {
+		return renderBlocks(m.Body)
+	}
+	parts := make([]string, 0, len(m.Body))
+	for _, b := range m.Body {
+		text := b.Text
+		if m.Wrap > 0 && b.Kind == "authored" {
+			text = wrapText(text, m.Wrap)
+		}
+		switch b.Kind {
+		case "quoted_reply":
+			lines := strings.Split(text, "\n")
+			for i, line := range lines {
+				lines[i] = "> " + line
+			}
+			quoted := strings.Join(lines, "\n")
+			if b.Attr != "" {
+				quoted = b.Attr + "\n" + quoted
+			}
+			parts = append(parts, quoted)
+		case "forwarded":
+			attr := b.Attr
+			if attr == "" {
+				attr = "---------- Forwarded message ---------"
+			}
+			parts = append(parts, attr+"\n"+text)
+		case "signature":
+			parts = append(parts, "-- \n"+text)
+		default:
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// wrapText greedily hard-wraps each line at width columns (counted in runes),
+// the way 72-column mail clients do. Lines that already fit pass through
+// verbatim — wrapping must never rewrite text it did not need to touch. Words
+// longer than the width are left unbroken — a URL that got split across lines
+// is a corpus defect (#136's shape), not a renderer's job to manufacture.
+func wrapText(text string, width int) string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if len([]rune(line)) <= width {
+			out = append(out, line)
+			continue
+		}
+		words := strings.Fields(line)
+		current := words[0]
+		for _, word := range words[1:] {
+			if len([]rune(current))+1+len([]rune(word)) > width {
+				out = append(out, current)
+				current = word
+				continue
+			}
+			current += " " + word
+		}
+		out = append(out, current)
+	}
+	return strings.Join(out, "\n")
 }
 
 func renderFrontmatter(m renderedMemory) ([]byte, error) {

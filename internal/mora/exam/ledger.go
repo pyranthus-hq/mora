@@ -42,12 +42,14 @@ type Message struct {
 	To   []string `json:"to"`
 	Cc   []string `json:"cc"`
 	At   string   `json:"at"`
+	Wrap int      `json:"wrap,omitempty"`
 	Body []Block  `json:"body"`
 }
 
 type Block struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
+	Attr string `json:"attr,omitempty"`
 	Text string `json:"text"`
 }
 
