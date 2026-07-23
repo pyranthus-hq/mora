@@ -70,10 +70,14 @@ const (
 	MetricCriticalIdentity   = "critical_identity"
 	MetricCriticalDirection  = "critical_direction"
 	MetricDirectionScorable  = "direction_scorable"
+	MetricOwner              = "owner"
 	MetricDirection          = "direction"
 	MetricDueTime            = "due_time"
 	MetricLifecycle          = "lifecycle"
 	MetricClosureLinkage     = "closure_linkage"
+	MetricCommitmentIdentity = "commitment_identity"
+	MetricDedup              = "dedup"
+	MetricCitationRoles      = "citation_roles"
 	MetricLooseMatches       = "loose_matches"
 	MetricUnmatched          = "unmatched"
 )
@@ -145,6 +149,9 @@ func ValidateMetricManifest() error {
 	}
 	var problems []error
 	for _, spec := range RequiredMetrics {
+		if spec.Version < 1 || spec.Version > ScorerVersion {
+			problems = append(problems, fmt.Errorf("metric %q version = %d, want 1..scorer version %d", spec.ID, spec.Version, ScorerVersion))
+		}
 		if len(spec.SabotageCases) == 0 {
 			problems = append(problems, fmt.Errorf("EVAL_BROKEN: metric %q declares no sabotage case", spec.ID))
 			continue
@@ -178,7 +185,7 @@ func ValidateMetricRegistryCoverage() error {
 		}
 		registered[spec.Field] = true
 	}
-	nonMetrics := map[string]bool{"Surface": true, "Owner": true}
+	nonMetrics := map[string]bool{"ScorerVersion": true, "Surface": true}
 	scorecard := reflect.TypeOf(Scorecard{})
 	for i := 0; i < scorecard.NumField(); i++ {
 		name := scorecard.Field(i).Name
@@ -217,21 +224,21 @@ var RequiredMetrics = []MetricSpec{
 		SabotageCases: []string{RowEmptyBrief},
 	},
 	{
-		ID: MetricCitationCoverage, Field: "CitationCoverage", Version: 1,
+		ID: MetricCitationCoverage, Field: "CitationCoverage", Version: 2,
 		Description: "surfaced lines carrying a citation that resolves in the corpus",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
 		SabotageCases: []string{RowDailyCitation},
 	},
 	{
-		ID: MetricCitationCorrect, Field: "CitationCorrect", Version: 1,
+		ID: MetricCitationCorrect, Field: "CitationCorrect", Version: 2,
 		Description: "the cited memory is the memory that carries the gold evidence — SEPARATE from coverage",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
 		SabotageCases: []string{RowUnsupportedCitation, RowDailyCitation},
 	},
 	{
-		ID: MetricCounterparty, Field: "Counterparty", Version: 1,
+		ID: MetricCounterparty, Field: "Counterparty", Version: 2,
 		Description: "per-class recall over the person each line is attributed to — never accuracy",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationPerClass,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
@@ -256,7 +263,7 @@ var RequiredMetrics = []MetricSpec{
 		Description: "a gold-CLOSED obligation presented as current — the consequential open/closed failure",
 		Direction:   DirectionLowerBetter, Unit: UnitCount, Aggregation: AggregationAbsolute,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
-		SabotageCases: []string{RowClosedAsOpen, RowGateDisableSweep},
+		SabotageCases: []string{RowClosedAsOpen, RowInventoryOriginEscape, RowGateDisableSweep},
 	},
 	{
 		ID: MetricDupLeaks, Field: "DupLeaks", Version: 1,
@@ -294,6 +301,13 @@ var RequiredMetrics = []MetricSpec{
 		SabotageCases: []string{RowOracle},
 	},
 	{
+		ID: MetricOwner, Field: "Owner", Version: 2,
+		Description: "BORN-RED: direct predicted owner, scored per class against commitment ownership",
+		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationPerClass,
+		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
+		SabotageCases: []string{RowOwnerPredictionFlip},
+	},
+	{
 		ID: MetricDirection, Field: "Direction", Version: 1,
 		Description: "BORN-RED: per-class direction recall; the real adapters can only emit \"unknown\"",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationPerClass,
@@ -308,18 +322,39 @@ var RequiredMetrics = []MetricSpec{
 		SabotageCases: []string{RowOracle, RowClosedAsOpen},
 	},
 	{
-		ID: MetricLifecycle, Field: "Lifecycle", Version: 1,
-		Description: "BORN-RED: open | closed | superseded; no production surface carries one",
+		ID: MetricLifecycle, Field: "Lifecycle", Version: 2,
+		Description: "BORN-RED: open | closed | superseded over the complete commitment inventory",
+		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
+		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
+		SabotageCases: []string{RowClosedAsOpen, RowInventoryLifecycleFlip, RowOracle},
+	},
+	{
+		ID: MetricClosureLinkage, Field: "ClosureLinkage", Version: 2,
+		Description: "BORN-RED: the memory that closed each commitment in the complete inventory",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
 		SabotageCases: []string{RowClosedAsOpen, RowOracle},
 	},
 	{
-		ID: MetricClosureLinkage, Field: "ClosureLinkage", Version: 1,
-		Description: "BORN-RED: the memory that closed the obligation; no production surface carries one",
+		ID: MetricCommitmentIdentity, Field: "CommitmentIdentity", Version: 2,
+		Description: "BORN-RED: immutable commitment identity anchored to opening evidence",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
-		SabotageCases: []string{RowClosedAsOpen, RowOracle},
+		SabotageCases: []string{RowCommitmentIdentityFlip},
+	},
+	{
+		ID: MetricDedup, Field: "Dedup", Version: 2,
+		Description: "BORN-RED: DuplicateOf points from each labelled copy to its canonical commitment",
+		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
+		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
+		SabotageCases: []string{RowDuplicatePointerFlip},
+	},
+	{
+		ID: MetricCitationRoles, Field: "CitationRoles", Version: 2,
+		Description: "BORN-RED: opener, closure, and supporting-copy citations retain their typed roles",
+		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationPerClass,
+		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
+		SabotageCases: []string{RowCitationRoleFlip},
 	},
 	{
 		ID: MetricLooseMatches, Field: "LooseMatches", Version: 1,
@@ -339,26 +374,32 @@ var RequiredMetrics = []MetricSpec{
 
 // Red-team row ids.
 const (
-	RowSyntheticGibberish    = "a_synthetic_gibberish"
-	RowEmptyBrief            = "b_empty_brief"
-	RowEveryQuestion         = "c_every_question"
-	RowCopyTheInput          = "d_copy_the_input"
-	RowIdentityFlip          = "e_identity_flip"
-	RowDirectionFlip         = "f_direction_flip"
-	RowUnsupportedCitation   = "g_unsupported_citation"
-	RowConstantClassifier    = "h_constant_classifier"
-	RowDailyEmpty            = "i_daily_empty"
-	RowDailyCitation         = "j_daily_citation"
-	RowOracle                = "k_oracle"
-	RowClosedAsOpen          = "l_closed_as_open"
-	RowGoldOwnerFlip         = "m_gold_owner_flip"
-	RowCitationSpanMove      = "n_citation_span_move"
-	RowAuthoredToQuoted      = "o_authored_to_quoted"
-	RowRemovedSource         = "p_removed_source"
-	RowDuplicateNoise        = "q_duplicate_noise"
-	RowInputOrder            = "r_input_order"
-	RowGateDisableSweep      = "s_gate_disable_sweep"
-	RowGraphStateInsensitive = "t_graph_state_insensitive"
+	RowSyntheticGibberish     = "a_synthetic_gibberish"
+	RowEmptyBrief             = "b_empty_brief"
+	RowEveryQuestion          = "c_every_question"
+	RowCopyTheInput           = "d_copy_the_input"
+	RowIdentityFlip           = "e_identity_flip"
+	RowDirectionFlip          = "f_direction_flip"
+	RowUnsupportedCitation    = "g_unsupported_citation"
+	RowConstantClassifier     = "h_constant_classifier"
+	RowDailyEmpty             = "i_daily_empty"
+	RowDailyCitation          = "j_daily_citation"
+	RowOracle                 = "k_oracle"
+	RowClosedAsOpen           = "l_closed_as_open"
+	RowGoldOwnerFlip          = "m_gold_owner_flip"
+	RowCitationSpanMove       = "n_citation_span_move"
+	RowAuthoredToQuoted       = "o_authored_to_quoted"
+	RowRemovedSource          = "p_removed_source"
+	RowDuplicateNoise         = "q_duplicate_noise"
+	RowInputOrder             = "r_input_order"
+	RowGateDisableSweep       = "s_gate_disable_sweep"
+	RowGraphStateInsensitive  = "t_graph_state_insensitive"
+	RowOwnerPredictionFlip    = "u_owner_prediction_flip"
+	RowCommitmentIdentityFlip = "v_commitment_identity_flip"
+	RowDuplicatePointerFlip   = "w_duplicate_pointer_flip"
+	RowCitationRoleFlip       = "x_citation_role_flip"
+	RowInventoryLifecycleFlip = "y_inventory_lifecycle_flip"
+	RowInventoryOriginEscape  = "z_inventory_origin_escape"
 )
 
 // RedTeamRowID is version-pinned by (surface, name). TestScorerRedTeam iterates THIS
@@ -393,6 +434,12 @@ var RequiredRedTeamRows = []RedTeamRowID{
 	{SurfaceDaily, RowInputOrder},
 	{SurfaceMeeting, RowGateDisableSweep},
 	{SurfaceMeeting, RowGraphStateInsensitive},
+	{SurfaceMeeting, RowOwnerPredictionFlip},
+	{SurfaceMeeting, RowCommitmentIdentityFlip},
+	{SurfaceMeeting, RowDuplicatePointerFlip},
+	{SurfaceMeeting, RowCitationRoleFlip},
+	{SurfaceMeeting, RowInventoryLifecycleFlip},
+	{SurfaceMeeting, RowInventoryOriginEscape},
 }
 
 // ProductionExclusionGates are the seventeen gates reachable from

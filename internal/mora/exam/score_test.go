@@ -276,6 +276,7 @@ func TestDuplicatePredictionsCannotInflateAnyCountedMetric(t *testing.T) {
 		attack  func([]Prediction) []Prediction
 	}{
 		{name: "meeting true positives", surface: SurfaceMeeting, preds: append(Oracle(l, SurfaceMeeting), Prediction{Surface: SurfaceMeeting, Text: "not in the ledger", MemoryID: Oracle(l, SurfaceMeeting)[0].MemoryID, Direction: Unknown, Lifecycle: Unknown}), attack: duplicateFirstPrediction},
+		{name: "meeting citation-order duplicate", surface: SurfaceMeeting, preds: Oracle(l, SurfaceMeeting), attack: duplicateWithReorderedCitations},
 		{name: "meeting loose matches and leaks", surface: SurfaceMeeting, preds: CopyTheInputPredictions(l, SurfaceMeeting), attack: duplicateAllPredictions},
 		{name: "daily true positives", surface: SurfaceDaily, preds: append(Oracle(l, SurfaceDaily), Prediction{Surface: SurfaceDaily, Text: "not in the ledger", MemoryID: "missing", Direction: Unknown, Lifecycle: Unknown}), attack: duplicateFirstPrediction},
 	}
@@ -307,6 +308,22 @@ func duplicateFirstPrediction(preds []Prediction) []Prediction {
 
 func duplicateAllPredictions(preds []Prediction) []Prediction {
 	return append(clonePredictions(preds), clonePredictions(preds)...)
+}
+
+func duplicateWithReorderedCitations(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for _, p := range preds {
+		if len(p.Citations) < 2 {
+			continue
+		}
+		duplicate := p
+		duplicate.Citations = append([]PredictionCitation(nil), p.Citations...)
+		for i, j := 0, len(duplicate.Citations)-1; i < j; i, j = i+1, j-1 {
+			duplicate.Citations[i], duplicate.Citations[j] = duplicate.Citations[j], duplicate.Citations[i]
+		}
+		return append(out, duplicate)
+	}
+	return out
 }
 
 // TestMetricRegistryCoversEveryScorecardField is the other half of the contract:
@@ -384,17 +401,155 @@ func TestScoreRejectsMissingCitedSourceArtifact(t *testing.T) {
 	}
 }
 
-// TestOwnerIsReportedUnscorable pins the refusal. Deriving an owner from
-// SectionKind == "open_loops" restates extraction precision on one section; it does
-// not measure ownership, and pretending otherwise is how an exam lies.
-func TestOwnerIsReportedUnscorable(t *testing.T) {
+// TestOwnerIsDirectAndFailClosed pins both halves of the v2 contract: a product
+// payload with no Owner cannot earn credit, while the same direct typed field the
+// oracle emits is scored per class.
+func TestOwnerIsDirectAndFailClosed(t *testing.T) {
 	l := loadLedger(t, examLedgerPath)
-	sc, err := Score(l, Oracle(l, SurfaceMeeting), SurfaceMeeting)
+	silent, err := Score(l, realPredictions(t, SurfaceMeeting), SurfaceMeeting)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sc.Owner != OwnerUnscorable {
-		t.Fatalf("Owner = %q, want the UNSCORABLE refusal", sc.Owner)
+	if silent.Owner.Defined || silent.Owner.Recall != 0 {
+		t.Fatalf("Owner without product substrate = %+v, want fail-closed", silent.Owner)
+	}
+	direct, err := Score(l, Oracle(l, SurfaceMeeting), SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !direct.Owner.Defined || direct.Owner.Precision != 1 || direct.Owner.Recall != 1 {
+		t.Fatalf("direct Owner = %+v, want perfect typed measurement", direct.Owner)
+	}
+	for class, recall := range direct.Owner.RecallByClass {
+		if recall != 1 {
+			t.Errorf("Owner class %q recall = %v, want 1", class, recall)
+		}
+	}
+}
+
+func TestScorerVersionAndInventoryPartition(t *testing.T) {
+	l := loadLedger(t, examLedgerPath)
+	oracle := Oracle(l, SurfaceMeeting)
+	sc, err := Score(l, oracle, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.ScorerVersion != ScorerVersion || ScorerVersion != 2 {
+		t.Fatalf("scorer version = %d, want frozen v2", sc.ScorerVersion)
+	}
+	if sc.Lifecycle.Recall != 1 || len(sc.Lifecycle.RecallByClass) < 2 {
+		t.Fatalf("inventory lifecycle = %+v, want complete multi-class inventory scoring", sc.Lifecycle)
+	}
+
+	visible := surfacePredictions(oracle)
+	withoutInventory, err := Score(l, visible, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutInventory.Lifecycle.Recall >= sc.Lifecycle.Recall {
+		t.Fatalf("surface-only lifecycle recall = %v, inventory recall = %v; hidden states were not scored",
+			withoutInventory.Lifecycle.Recall, sc.Lifecycle.Recall)
+	}
+
+	escaped := SurfaceClosedAsOpen(l, oracle, SurfaceMeeting)
+	escaped[len(escaped)-1].Origin = PredictionOriginInventory
+	got, err := Score(l, escaped, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClosedLeaks != 1 {
+		t.Fatalf("text-bearing origin=inventory row escaped surface leak scoring: ClosedLeaks=%d", got.ClosedLeaks)
+	}
+}
+
+func TestDedupObservesVisibleCopyByCommitmentIdentity(t *testing.T) {
+	l := loadLedger(t, examLedgerPath)
+	oracle := Oracle(l, SurfaceMeeting)
+	base, err := Score(l, oracle, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := indexLedger(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stableIDs := commitmentStableIDs(l)
+	var surfaced Prediction
+	for _, c := range l.Commitments {
+		if c.DuplicateOf == "" {
+			continue
+		}
+		memoryID, _, _, err := idx.resolveSpanText(c.OpenedBy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attendee := counterpartOf(c, idx.self)
+		surfaced = Prediction{
+			Surface:      SurfaceMeeting,
+			Origin:       PredictionOriginSurface,
+			Text:         "· " + idx.displayOf(attendee) + " — “" + c.OpenedBy.Quote + "”",
+			Attendee:     idx.displayOf(attendee),
+			AttendeeAtom: idx.atomOf(attendee),
+			Owner:        c.Owner,
+			MemoryID:     memoryID,
+			SectionKind:  meetingOpenLoops,
+			CommitmentID: stableIDs[c.ID],
+			DuplicateOf:  stableIDs[c.DuplicateOf],
+			Direction:    c.Direction,
+			Due:          goldDue(c),
+			Lifecycle:    c.State,
+			ClosureRef:   ClosureNone,
+			Citations:    oracleCitations(l, idx, stableIDs[c.ID]),
+		}
+		break
+	}
+	if surfaced.CommitmentID == "" {
+		t.Fatal("fixture has no duplicate commitment")
+	}
+	got, err := Score(l, append(oracle, surfaced), SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Dedup.Precision >= base.Dedup.Precision {
+		t.Fatalf("visible copy did not cost dedup precision: base=%+v got=%+v", base.Dedup, got.Dedup)
+	}
+	if got.DupLeaks == 0 {
+		t.Fatal("visible copy did not fire the surface duplicate leak counter")
+	}
+}
+
+func TestCommitmentIdentityIsVersionedEvidenceOnly(t *testing.T) {
+	l := loadLedger(t, examLedgerPath)
+	base := commitmentStableIDs(l)
+	if len(base) != len(l.Commitments) {
+		t.Fatalf("stable ids = %d, commitments = %d", len(base), len(l.Commitments))
+	}
+	seen := map[string]bool{}
+	for label, id := range base {
+		if !strings.HasPrefix(id, "commit:v1:") {
+			t.Errorf("%s id = %q, want commit:v1 prefix", label, id)
+		}
+		if seen[id] {
+			t.Errorf("stable id collision at %q", id)
+		}
+		seen[id] = true
+	}
+
+	mutated := cloneLedgerValue(l)
+	for i := range mutated.Commitments {
+		mutated.Commitments[i].Owner = "p/identity-redirected"
+		mutated.Commitments[i].Counterparty = "p/identity-merged"
+	}
+	for i, j := 0, len(mutated.Commitments)-1; i < j; i, j = i+1, j-1 {
+		mutated.Commitments[i], mutated.Commitments[j] = mutated.Commitments[j], mutated.Commitments[i]
+	}
+	if got := commitmentStableIDs(mutated); !reflect.DeepEqual(got, base) {
+		t.Fatalf("person identity or ledger order churned commitment ids:\nbase=%v\n got=%v", base, got)
+	}
+
+	const wantAnchor = "commit:v1:10b7c665ae18290d686f4947d1afcf69240905e84a21df6eba0c5d36be2409c8"
+	if got := stableCommitmentID("memory#message", "block", 0); got != wantAnchor {
+		t.Fatalf("stable-id encoding drifted: got %q, want %q", got, wantAnchor)
 	}
 }
 
@@ -675,6 +830,8 @@ func TestRedTeamManifestIsComplete(t *testing.T) {
 		RowDirectionFlip, RowUnsupportedCitation, RowConstantClassifier, RowDailyEmpty, RowDailyCitation,
 		RowOracle, RowClosedAsOpen, RowGoldOwnerFlip, RowCitationSpanMove, RowAuthoredToQuoted,
 		RowRemovedSource, RowDuplicateNoise, RowInputOrder, RowGateDisableSweep, RowGraphStateInsensitive,
+		RowOwnerPredictionFlip, RowCommitmentIdentityFlip, RowDuplicatePointerFlip,
+		RowCitationRoleFlip, RowInventoryLifecycleFlip, RowInventoryOriginEscape,
 	} {
 		if !names[want] {
 			t.Errorf("EVAL_BROKEN: red-team row %q vanished from the manifest", want)

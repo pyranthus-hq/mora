@@ -37,7 +37,11 @@ func cloneLedgerValue(l Ledger) Ledger {
 }
 
 func clonePredictions(preds []Prediction) []Prediction {
-	return append([]Prediction(nil), preds...)
+	out := append([]Prediction(nil), preds...)
+	for i := range out {
+		out[i].Citations = append([]PredictionCitation(nil), preds[i].Citations...)
+	}
+	return out
 }
 
 // firstGoldIndex is the deterministic choice of victim: the lowest ledger id among
@@ -298,6 +302,76 @@ func ConstantDirection(preds []Prediction, direction string) []Prediction {
 	out := clonePredictions(preds)
 	for i := range out {
 		out[i].Direction = direction
+	}
+	return out
+}
+
+func FlipOneOwner(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for i, p := range out {
+		if isInventoryPrediction(p) || p.Owner == "" || p.Owner == Unknown {
+			continue
+		}
+		out[i].Owner = "p/not-the-owner"
+		return out
+	}
+	return out
+}
+
+func FlipOneCommitmentIdentity(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for i, p := range out {
+		if !isInventoryPrediction(p) || p.CommitmentID == "" {
+			continue
+		}
+		out[i].CommitmentID = "commit:wrong"
+		return out
+	}
+	return out
+}
+
+func FlipOneDuplicatePointer(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for i, p := range out {
+		if !isInventoryPrediction(p) || p.DuplicateOf == "" {
+			continue
+		}
+		out[i].DuplicateOf = "commit:wrong"
+		return out
+	}
+	return out
+}
+
+func FlipOneCitationRole(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for i, p := range out {
+		if !isInventoryPrediction(p) {
+			continue
+		}
+		for j, citation := range p.Citations {
+			if citation.Role == CitationRoleOpener {
+				out[i].Citations[j].Role = CitationRoleClosure
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func FlipOneInventoryLifecycle(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for i, p := range out {
+		if !isInventoryPrediction(p) {
+			continue
+		}
+		switch p.Lifecycle {
+		case LifecycleOpen:
+			out[i].Lifecycle = LifecycleClosed
+			return out
+		case LifecycleClosed, LifecycleSuperseded:
+			out[i].Lifecycle = LifecycleOpen
+			return out
+		}
 	}
 	return out
 }

@@ -1,11 +1,21 @@
 package exam
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+// ScorerVersion freezes the meaning and shape of every scorecard emitted by this
+// package. Version 2 adds direct commitment observability while retaining every
+// version-1 metric's value for predictions that carry no commitment substrate.
+const ScorerVersion = 2
 
 // The two surfaces the exam scores. One Scorecard per surface; they are NEVER
 // merged into a single number, because averaging a quote-grain meeting brief with
@@ -45,6 +55,30 @@ const (
 	LifecycleSuperseded = "superseded"
 )
 
+type PredictionOrigin string
+
+const (
+	PredictionOriginSurface   PredictionOrigin = "surface"
+	PredictionOriginInventory PredictionOrigin = "inventory"
+)
+
+type CitationRole string
+
+const (
+	CitationRoleOpener     CitationRole = "opener"
+	CitationRoleClosure    CitationRole = "closure"
+	CitationRoleSupporting CitationRole = "supporting"
+)
+
+// PredictionCitation keeps the evidence role and the commitment it supports
+// explicit. CommitmentID is required for supporting citations so two labelled
+// commitments in one memory remain independently observable.
+type PredictionCitation struct {
+	MemoryID     string       `json:"memory_id"`
+	CommitmentID string       `json:"commitment_id"`
+	Role         CitationRole `json:"role"`
+}
+
 // meetingOpenLoops is the user-owed lane. A gold commitment owed by a THIRD PARTY
 // surfacing here presents someone else's obligation as yours.
 const meetingOpenLoops = "open_loops"
@@ -66,42 +100,44 @@ const (
 // a harness fault is never a low score.
 var ErrInvalidHarness = errors.New("INVALID_HARNESS")
 
-// OwnerUnscorable is the refusal the Owner row reports, verbatim. Deriving an owner
-// from SectionKind == "open_loops" would restate extraction precision on one
-// section; it would not measure ownership.
-const OwnerUnscorable = "UNSCORABLE: no commitment-owner field exists on the meeting or daily brief payload"
-
 // Prediction is the scorer's typed input. The adapters that build it do no cleaning
 // and no interpretation: every transformation belongs to Score, which lives in a
 // package that structurally cannot reach the product's cleaners.
 type Prediction struct {
-	Surface      string `json:"surface"`
-	Text         string `json:"text"`
-	Attendee     string `json:"attendee,omitempty"`
-	AttendeeAtom string `json:"attendee_atom,omitempty"`
-	MemoryID     string `json:"memory_id"`
-	SectionKind  string `json:"section_kind,omitempty"`
-	Direction    string `json:"direction"`
-	Due          string `json:"due"`
-	Lifecycle    string `json:"lifecycle"`
-	ClosureRef   string `json:"closure_ref"`
+	Surface      string               `json:"surface"`
+	Origin       PredictionOrigin     `json:"origin,omitempty"`
+	Text         string               `json:"text"`
+	Attendee     string               `json:"attendee,omitempty"`
+	AttendeeAtom string               `json:"attendee_atom,omitempty"`
+	Owner        string               `json:"owner,omitempty"`
+	MemoryID     string               `json:"memory_id"`
+	SectionKind  string               `json:"section_kind,omitempty"`
+	CommitmentID string               `json:"commitment_id,omitempty"`
+	DuplicateOf  string               `json:"duplicate_of,omitempty"`
+	Direction    string               `json:"direction"`
+	Due          string               `json:"due"`
+	Lifecycle    string               `json:"lifecycle"`
+	ClosureRef   string               `json:"closure_ref"`
+	Citations    []PredictionCitation `json:"citations,omitempty"`
 }
 
 // PR carries Defined so an empty prediction set reports N/A, never a flattering
 // 1.0. Every gate treats !Defined as failure.
 type PR struct {
-	Precision float64 `json:"precision"`
-	Recall    float64 `json:"recall"`
-	Defined   bool    `json:"defined"`
+	Precision     float64            `json:"precision"`
+	Recall        float64            `json:"recall"`
+	Defined       bool               `json:"defined"`
+	RecallByClass map[string]float64 `json:"recall_by_class,omitempty"`
 }
 
-// Scorecard is one surface's honest scoreboard: live rows, leak absolutes, four
-// born-red rows, one refused row, and the health of the scorer itself. Every
+// Scorecard is one surface's honest scoreboard: live rows, leak absolutes, eight
+// born-red typed rows, and the health of the scorer itself. Every
 // numeric field here is registered in RequiredMetrics with at least one sabotage
 // case that proves it can move — a field that cannot fail is decoration, and the
 // registry meta-test makes adding one a named failure.
 type Scorecard struct {
-	Surface string `json:"surface"`
+	ScorerVersion int    `json:"scorer_version"`
+	Surface       string `json:"surface"`
 
 	// LIVE
 	Extraction         PR  `json:"extraction"`
@@ -111,8 +147,8 @@ type Scorecard struct {
 	Counterparty       PR  `json:"counterparty"`
 	DedupCrossArtifact int `json:"dedup_cross_artifact"`
 
-	// LEAK / CRITICAL ABSOLUTES — how owner, lifecycle and dedup get measured with
-	// no typed product field to read.
+	// LEAK / CRITICAL ABSOLUTES — visible-surface display discipline, kept
+	// separately from the typed inventory dimensions below.
 	ThirdPartyLeaks    int  `json:"third_party_leaks"`
 	ClosedLeaks        int  `json:"closed_leaks"`
 	DupLeaks           int  `json:"dup_leaks"`
@@ -121,15 +157,15 @@ type Scorecard struct {
 	CriticalDirection  int  `json:"critical_direction"`
 	DirectionScorable  bool `json:"direction_scorable"`
 
-	// BORN-RED: typed-or-unknown. Never averaged into a headline number; they FAIL
-	// the build the day they start passing.
-	Direction      PR `json:"direction"`
-	DueTime        PR `json:"due_time"`
-	Lifecycle      PR `json:"lifecycle"`
-	ClosureLinkage PR `json:"closure_linkage"`
-
-	// REFUSED, and reported as such.
-	Owner string `json:"owner"`
+	// BORN-RED: typed-or-unknown. Never averaged into a headline number.
+	Owner              PR `json:"owner"`
+	Direction          PR `json:"direction"`
+	DueTime            PR `json:"due_time"`
+	Lifecycle          PR `json:"lifecycle"`
+	ClosureLinkage     PR `json:"closure_linkage"`
+	CommitmentIdentity PR `json:"commitment_identity"`
+	Dedup              PR `json:"dedup"`
+	CitationRoles      PR `json:"citation_roles"`
 
 	// HEALTH OF THE SCORER ITSELF
 	LooseMatches int `json:"loose_matches"`
@@ -141,11 +177,14 @@ func harnessError(format string, args ...any) error {
 }
 
 // RunStateOf is the only place the three states are decided. PASS means the product
-// got EVERYTHING right on this surface — including the four born-red rows, so a
+// got EVERYTHING right on this surface — including every born-red row, so a
 // surface that can only emit "unknown" can never vacuously pass.
 func RunStateOf(sc Scorecard, err error) RunState {
 	if err != nil {
 		return StateInvalidHarness
+	}
+	if sc.ScorerVersion != ScorerVersion {
+		return StateScoredFailure
 	}
 	counts := []int{
 		sc.DedupCrossArtifact, sc.ThirdPartyLeaks, sc.ClosedLeaks, sc.DupLeaks,
@@ -157,7 +196,19 @@ func RunStateOf(sc Scorecard, err error) RunState {
 			return StateScoredFailure
 		}
 	}
-	rows := []PR{sc.Extraction, sc.CitationCoverage, sc.CitationCorrect, sc.Direction, sc.DueTime, sc.Lifecycle, sc.ClosureLinkage}
+	rows := []PR{
+		sc.Extraction,
+		sc.CitationCoverage,
+		sc.CitationCorrect,
+		sc.Owner,
+		sc.Direction,
+		sc.DueTime,
+		sc.Lifecycle,
+		sc.ClosureLinkage,
+		sc.CommitmentIdentity,
+		sc.Dedup,
+		sc.CitationRoles,
+	}
 	if sc.Surface == SurfaceMeeting {
 		rows = append(rows, sc.Counterparty)
 	}
@@ -207,6 +258,9 @@ func score(l Ledger, preds []Prediction, surface string, only sliceAny) (Scoreca
 		if p.Surface != grain {
 			return Scorecard{}, harnessError("prediction %d declares surface %q, want %q", i, p.Surface, grain)
 		}
+		if p.Origin != "" && p.Origin != PredictionOriginSurface && p.Origin != PredictionOriginInventory {
+			return Scorecard{}, harnessError("prediction %d declares origin %q", i, p.Origin)
+		}
 	}
 	preds = uniquePredictions(preds)
 	idx, err := indexLedger(l)
@@ -217,24 +271,69 @@ func score(l Ledger, preds []Prediction, surface string, only sliceAny) (Scoreca
 	if err != nil {
 		return Scorecard{}, err
 	}
-	if grain == SurfaceDaily {
-		return scoreDaily(l, idx, gold, preds), nil
+	inventoryGold, err := inventoryGoldFor(l, idx, only)
+	if err != nil {
+		return Scorecard{}, err
 	}
-	return scoreMeeting(l, idx, gold, preds), nil
+	if grain == SurfaceDaily {
+		return scoreDaily(l, idx, gold, inventoryGold, preds), nil
+	}
+	return scoreMeeting(l, idx, gold, inventoryGold, preds), nil
 }
 
 // uniquePredictions makes the prediction list set-like before any metric consumes
 // it. Repeating an identical claim cannot create more truth, improve a ratio, or
 // multiply an absolute leak/health counter.
 func uniquePredictions(preds []Prediction) []Prediction {
-	seen := make(map[Prediction]struct{}, len(preds))
+	seen := make(map[string]struct{}, len(preds))
 	out := make([]Prediction, 0, len(preds))
 	for _, p := range preds {
-		if _, ok := seen[p]; ok {
+		keyPrediction := p
+		keyPrediction.Citations = append([]PredictionCitation(nil), p.Citations...)
+		sort.Slice(keyPrediction.Citations, func(i, j int) bool {
+			a, b := keyPrediction.Citations[i], keyPrediction.Citations[j]
+			if a.CommitmentID != b.CommitmentID {
+				return a.CommitmentID < b.CommitmentID
+			}
+			if a.Role != b.Role {
+				return a.Role < b.Role
+			}
+			return a.MemoryID < b.MemoryID
+		})
+		encoded, _ := json.Marshal(keyPrediction)
+		key := string(encoded)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[p] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, p)
+	}
+	return out
+}
+
+// A genuine inventory row has no rendered text or section. A visible line cannot
+// relabel itself as inventory to escape extraction or leak scoring: a text-bearing
+// row is always scored as surface output regardless of its declared origin.
+func isInventoryPrediction(p Prediction) bool {
+	return p.Origin == PredictionOriginInventory && strings.TrimSpace(p.Text) == "" && p.SectionKind == ""
+}
+
+func surfacePredictions(preds []Prediction) []Prediction {
+	out := make([]Prediction, 0, len(preds))
+	for _, p := range preds {
+		if !isInventoryPrediction(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func inventoryPredictions(preds []Prediction) []Prediction {
+	out := make([]Prediction, 0, len(preds))
+	for _, p := range preds {
+		if isInventoryPrediction(p) {
+			out = append(out, p)
+		}
 	}
 	return out
 }
@@ -260,19 +359,99 @@ func surfaceCovers(surface, expected string) bool {
 
 // goldItem is one labelled obligation, resolved against the corpus it addresses.
 type goldItem struct {
-	ID         string
-	MemoryID   string
-	Quote      string
-	Attendee   string // identity id of the party who is NOT the user
-	Owner      string
-	Direction  string
-	Due        string
-	Lifecycle  string
-	Closure    string
-	Channel    string
-	BlockKind  string
-	State      string
-	Transition string
+	ID           string // human-readable ledger label
+	CommitmentID string // evidence-derived product identity
+	MemoryID     string
+	Quote        string
+	Attendee     string // identity id of the party who is NOT the user
+	Owner        string
+	Direction    string
+	Due          string
+	Lifecycle    string
+	Closure      string
+	Channel      string
+	BlockKind    string
+	State        string
+	Transition   string
+	DuplicateOf  string
+}
+
+// commitmentStableIDs is the scorer-side oracle for the versioned product ID.
+// Identity uses only immutable opening evidence. Person identity is deliberately
+// absent, so an alias correction or graph merge cannot churn commitment IDs.
+func commitmentStableIDs(l Ledger) map[string]string {
+	type located struct {
+		label   string
+		message string
+		block   string
+		offset  int
+	}
+	groups := map[string][]located{}
+	for _, c := range l.Commitments {
+		a, ok := artifactByID(l, c.OpenedBy.ArtifactID)
+		if !ok {
+			continue
+		}
+		messageRef := a.MemoryID + "#subject"
+		blockRef := "subject"
+		offset := strings.Index(a.Subject, c.OpenedBy.Quote)
+		if c.OpenedBy.MessageID != "" {
+			messageRef = a.MemoryID + "#" + c.OpenedBy.MessageID
+			blockRef = c.OpenedBy.BlockID
+			offset = openingOffset(a, c.OpenedBy)
+		}
+		group := messageRef + "\x00" + blockRef
+		groups[group] = append(groups[group], located{
+			label: c.ID, message: messageRef, block: blockRef, offset: offset,
+		})
+	}
+	out := make(map[string]string, len(l.Commitments))
+	for _, commitments := range groups {
+		sort.Slice(commitments, func(i, j int) bool {
+			if commitments[i].offset != commitments[j].offset {
+				return commitments[i].offset < commitments[j].offset
+			}
+			return commitments[i].label < commitments[j].label
+		})
+		for slot, commitment := range commitments {
+			out[commitment.label] = stableCommitmentID(commitment.message, commitment.block, slot)
+		}
+	}
+	return out
+}
+
+func artifactByID(l Ledger, id string) (Artifact, bool) {
+	for _, a := range l.Artifacts {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return Artifact{}, false
+}
+
+func openingOffset(a Artifact, span Span) int {
+	for _, message := range a.Messages {
+		if message.ID != span.MessageID {
+			continue
+		}
+		for _, block := range message.Body {
+			if block.ID == span.BlockID {
+				return strings.Index(block.Text, span.Quote)
+			}
+		}
+	}
+	return -1
+}
+
+func stableCommitmentID(messageRef, blockRef string, slot int) string {
+	hash := sha256.New()
+	for _, component := range []string{messageRef, blockRef, strconv.Itoa(slot)} {
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(len(component)))
+		_, _ = hash.Write(size[:])
+		_, _ = hash.Write([]byte(component))
+	}
+	return "commit:v1:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func (g goldItem) slices() map[string]string {
@@ -287,8 +466,7 @@ func (g goldItem) slices() map[string]string {
 }
 
 // negativeItem is a labelled span that must NOT reach the user's brief. Surfacing
-// one is a false positive AND is separately reported under its archetype — which is
-// how owner, lifecycle and dedup get measured without inventing a product field.
+// one is a false positive AND is separately reported under its archetype.
 type negativeItem struct {
 	CaseID          string
 	MemoryID        string
@@ -354,6 +532,7 @@ func (idx ledgerIndex) resolveSpanText(s Span) (memoryID, blockKind, channel str
 
 func goldFor(l Ledger, idx ledgerIndex, surface string, only sliceAny) ([]goldItem, error) {
 	var gold []goldItem
+	stableIDs := commitmentStableIDs(l)
 	for _, c := range l.Commitments {
 		expected := false
 		for _, in := range c.ExpectedIn {
@@ -367,19 +546,21 @@ func goldFor(l Ledger, idx ledgerIndex, surface string, only sliceAny) ([]goldIt
 			return nil, err
 		}
 		item := goldItem{
-			ID:         c.ID,
-			MemoryID:   memoryID,
-			Quote:      c.OpenedBy.Quote,
-			Attendee:   counterpartOf(c, idx.self),
-			Owner:      c.Owner,
-			Direction:  c.Direction,
-			Due:        goldDue(c),
-			Lifecycle:  c.State,
-			Closure:    ClosureNone,
-			Channel:    channel,
-			BlockKind:  blockKind,
-			State:      c.State,
-			Transition: "none",
+			ID:           c.ID,
+			CommitmentID: stableIDs[c.ID],
+			MemoryID:     memoryID,
+			Quote:        c.OpenedBy.Quote,
+			Attendee:     counterpartOf(c, idx.self),
+			Owner:        c.Owner,
+			Direction:    c.Direction,
+			Due:          goldDue(c),
+			Lifecycle:    c.State,
+			Closure:      ClosureNone,
+			Channel:      channel,
+			BlockKind:    blockKind,
+			State:        c.State,
+			Transition:   "none",
+			DuplicateOf:  stableIDs[c.DuplicateOf],
 		}
 		if len(c.Transitions) > 0 {
 			last := c.Transitions[len(c.Transitions)-1]
@@ -396,6 +577,56 @@ func goldFor(l Ledger, idx ledgerIndex, surface string, only sliceAny) ([]goldIt
 	}
 	if len(gold) == 0 {
 		return nil, harnessError("zero required samples on surface %q", surface)
+	}
+	sort.Slice(gold, func(i, j int) bool { return gold[i].ID < gold[j].ID })
+	return gold, nil
+}
+
+// inventoryGoldFor returns the complete commitment inventory, including closed,
+// superseded, duplicate, and otherwise non-rendered commitments. Visible surface
+// scoring asks "what may be shown?"; inventory scoring asks "what does the product
+// know?". Keeping those contracts separate prevents both false closure and leak
+// laundering.
+func inventoryGoldFor(l Ledger, idx ledgerIndex, only sliceAny) ([]goldItem, error) {
+	var gold []goldItem
+	stableIDs := commitmentStableIDs(l)
+	for _, c := range l.Commitments {
+		memoryID, blockKind, channel, err := idx.resolveSpanText(c.OpenedBy)
+		if err != nil {
+			return nil, err
+		}
+		item := goldItem{
+			ID:           c.ID,
+			CommitmentID: stableIDs[c.ID],
+			MemoryID:     memoryID,
+			Quote:        c.OpenedBy.Quote,
+			Attendee:     counterpartOf(c, idx.self),
+			Owner:        c.Owner,
+			Direction:    c.Direction,
+			Due:          goldDue(c),
+			Lifecycle:    c.State,
+			Closure:      ClosureNone,
+			Channel:      channel,
+			BlockKind:    blockKind,
+			State:        c.State,
+			Transition:   "none",
+			DuplicateOf:  stableIDs[c.DuplicateOf],
+		}
+		if len(c.Transitions) > 0 {
+			last := c.Transitions[len(c.Transitions)-1]
+			closureMemory, _, _, err := idx.resolveSpanText(last.Evidence)
+			if err != nil {
+				return nil, err
+			}
+			item.Closure = closureMemory
+			item.Transition = last.To
+		}
+		if only.keeps(item) {
+			gold = append(gold, item)
+		}
+	}
+	if len(gold) == 0 {
+		return nil, harnessError("zero commitment-inventory samples")
 	}
 	sort.Slice(gold, func(i, j int) bool { return gold[i].ID < gold[j].ID })
 	return gold, nil
@@ -556,22 +787,26 @@ func matchMeeting(p Prediction, gold []goldItem, negatives []negativeItem, unive
 	return out
 }
 
-func scoreMeeting(l Ledger, idx ledgerIndex, gold []goldItem, preds []Prediction) Scorecard {
+func scoreMeeting(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, preds []Prediction) Scorecard {
 	negatives, err := negativesFor(l, idx, SurfaceMeeting)
 	if err != nil {
 		// Unreachable: Validate has already resolved every span. The scorer still
 		// refuses to invent a number it cannot compute.
-		return Scorecard{Surface: SurfaceMeeting, Owner: OwnerUnscorable}
+		return Scorecard{ScorerVersion: ScorerVersion, Surface: SurfaceMeeting}
 	}
+	visible := surfacePredictions(preds)
+	inventory := inventoryPredictions(preds)
 	universe := spanUniverse(l)
-	sc := Scorecard{Surface: SurfaceMeeting, Owner: OwnerUnscorable}
+	sc := Scorecard{ScorerVersion: ScorerVersion, Surface: SurfaceMeeting}
 
 	goldHit := make([]bool, len(gold))
 	goldAttributed := make([]bool, len(gold))
 	exactPreds := 0
 	acc := newTypedAccumulator(gold)
+	commitments := newCommitmentAccumulator(l, idx, inventoryGold)
 
-	for _, p := range preds {
+	for _, p := range visible {
+		commitments.observeVisibleClaim(p)
 		if p.Direction != "" && p.Direction != Unknown {
 			sc.DirectionScorable = true
 		}
@@ -595,6 +830,7 @@ func scoreMeeting(l Ledger, idx ledgerIndex, gold []goldItem, preds []Prediction
 				sc.CriticalDirection++
 			}
 			acc.observeGold(p, g, m.gold)
+			commitments.observeSurface(p, g)
 			continue
 		}
 		if m.negative >= 0 {
@@ -613,18 +849,30 @@ func scoreMeeting(l Ledger, idx ledgerIndex, gold []goldItem, preds []Prediction
 				sc.CriticalDirection++
 			}
 			acc.observeNegative(p, l, idx)
+			commitments.observeNegative(p, l, idx)
 		}
 	}
+	for _, p := range inventory {
+		commitments.observeInventory(p)
+	}
 
-	sc.Extraction = ratio(exactPreds, len(preds), countTrue(goldHit), len(gold))
+	sc.Extraction = ratio(exactPreds, len(visible), countTrue(goldHit), len(gold))
 	sc.CitationCoverage = coverage(preds, idx)
-	sc.CitationCorrect = citationCorrectness(preds, gold, idx)
-	sc.Counterparty = perClassPR(gold, goldHit, goldAttributed, preds, idx)
-	sc.DedupCrossArtifact = dedupCrossArtifact(l, idx, preds)
+	sc.CitationCorrect = citationCorrectness(l, preds, gold, idx)
+	if len(inventory) > 0 {
+		sc.Counterparty = inventoryCounterparty(inventoryGold, inventory, idx)
+	} else {
+		sc.Counterparty = perClassPR(gold, goldHit, goldAttributed, visible, idx)
+	}
+	sc.DedupCrossArtifact = dedupCrossArtifact(l, idx, visible)
+	sc.Owner = acc.owner()
 	sc.Direction = acc.direction()
 	sc.DueTime = acc.due()
-	sc.Lifecycle = acc.lifecycle()
-	sc.ClosureLinkage = acc.closure()
+	sc.Lifecycle = commitments.lifecycle()
+	sc.ClosureLinkage = commitments.closure()
+	sc.CommitmentIdentity = commitments.identity()
+	sc.Dedup = commitments.dedup()
+	sc.CitationRoles = commitments.citationRoles()
 	return sc
 }
 
@@ -645,8 +893,10 @@ func (idx ledgerIndex) resolveAttendee(p Prediction) string {
 	return idx.displays[key]
 }
 
-func scoreDaily(l Ledger, idx ledgerIndex, gold []goldItem, preds []Prediction) Scorecard {
-	sc := Scorecard{Surface: SurfaceDaily, Owner: OwnerUnscorable}
+func scoreDaily(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, preds []Prediction) Scorecard {
+	visible := surfacePredictions(preds)
+	inventory := inventoryPredictions(preds)
+	sc := Scorecard{ScorerVersion: ScorerVersion, Surface: SurfaceDaily}
 	goldMemories := map[string]int{}
 	for i, g := range gold {
 		goldMemories[g.MemoryID] = i
@@ -654,7 +904,9 @@ func scoreDaily(l Ledger, idx ledgerIndex, gold []goldItem, preds []Prediction) 
 	goldHit := make([]bool, len(gold))
 	exactPreds := 0
 	acc := newTypedAccumulator(gold)
-	for _, p := range preds {
+	commitments := newCommitmentAccumulator(l, idx, inventoryGold)
+	for _, p := range visible {
+		commitments.observeVisibleClaim(p)
 		if p.Direction != "" && p.Direction != Unknown {
 			sc.DirectionScorable = true
 		}
@@ -669,15 +921,26 @@ func scoreDaily(l Ledger, idx ledgerIndex, gold []goldItem, preds []Prediction) 
 		exactPreds++
 		goldHit[i] = true
 		acc.observeGold(p, gold[i], i)
+		commitments.observeSurface(p, gold[i])
 	}
-	sc.Extraction = ratio(exactPreds, len(preds), countTrue(goldHit), len(gold))
+	for _, p := range inventory {
+		commitments.observeInventory(p)
+	}
+	sc.Extraction = ratio(exactPreds, len(visible), countTrue(goldHit), len(gold))
 	sc.CitationCoverage = coverage(preds, idx)
-	sc.CitationCorrect = dailyCitationCorrectness(preds, idx)
-	sc.DedupCrossArtifact = dedupCrossArtifact(l, idx, preds)
+	sc.CitationCorrect = dailyCitationCorrectness(l, preds, idx)
+	sc.DedupCrossArtifact = dedupCrossArtifact(l, idx, visible)
+	sc.Owner = acc.owner()
 	sc.Direction = acc.direction()
 	sc.DueTime = acc.due()
-	sc.Lifecycle = acc.lifecycle()
-	sc.ClosureLinkage = acc.closure()
+	sc.Lifecycle = commitments.lifecycle()
+	sc.ClosureLinkage = commitments.closure()
+	sc.CommitmentIdentity = commitments.identity()
+	sc.Dedup = commitments.dedup()
+	sc.CitationRoles = commitments.citationRoles()
+	if len(inventory) > 0 {
+		sc.Counterparty = inventoryCounterparty(inventoryGold, inventory, idx)
+	}
 	// Counterparty is N/A on the daily surface: DigestItem carries no attendee. It
 	// is REPORTED as undefined, never folded into another row.
 	// Leak absolutes are meeting-only for a structural reason: a leak is an
@@ -700,8 +963,22 @@ func ratio(exactPreds, totalPreds, goldHit, totalGold int) PR {
 }
 
 func coverage(preds []Prediction, idx ledgerIndex) PR {
-	covered := 0
+	covered, total := 0, 0
 	for _, p := range preds {
+		if isInventoryPrediction(p) {
+			if len(p.Citations) == 0 {
+				total++
+				continue
+			}
+			for _, citation := range p.Citations {
+				total++
+				if _, ok := idx.byMemory[citation.MemoryID]; ok {
+					covered++
+				}
+			}
+			continue
+		}
+		total++
 		if p.MemoryID == "" {
 			continue
 		}
@@ -712,7 +989,7 @@ func coverage(preds []Prediction, idx ledgerIndex) PR {
 	// Coverage has ONE denominator — the surfaced set — so both halves of the PR
 	// carry it. The gates read a single number ("coverage == 1.0") and the ratchet
 	// treats every row uniformly.
-	return sameSidedPR(covered, len(preds))
+	return sameSidedPR(covered, total)
 }
 
 func sameSidedPR(numerator, denominator int) PR {
@@ -727,9 +1004,25 @@ func sameSidedPR(numerator, denominator int) PR {
 // at the right memory. It deliberately does not reuse the extraction match, whose
 // memory id is a hard gate: if it did, repointing a citation would silently become
 // an extraction miss and the grounding row could never fail on its own.
-func citationCorrectness(preds []Prediction, gold []goldItem, idx ledgerIndex) PR {
+func citationCorrectness(l Ledger, preds []Prediction, gold []goldItem, idx ledgerIndex) PR {
 	correct, cited := 0, 0
 	for _, p := range preds {
+		if isInventoryPrediction(p) {
+			required := requiredCitationSet(l, idx, p.CommitmentID)
+			for _, citation := range p.Citations {
+				cited++
+				// Citation correctness answers whether the cited memory carries
+				// evidence for the commitment. Role correctness is deliberately a
+				// separate row.
+				for key := range required {
+					if key.MemoryID == citation.MemoryID && key.CommitmentID == citation.CommitmentID {
+						correct++
+						break
+					}
+				}
+			}
+			continue
+		}
 		text := normalize(UnwrapEmitted(p.Text))
 		best := -1
 		for i, g := range gold {
@@ -754,9 +1047,22 @@ func citationCorrectness(preds []Prediction, gold []goldItem, idx ledgerIndex) P
 // dailyCitationCorrectness works at ARTIFACT grain: a DigestItem is a title+snippet
 // projection of a memory, so the citation is correct exactly when the memory it
 // names is the memory the item is about.
-func dailyCitationCorrectness(preds []Prediction, idx ledgerIndex) PR {
+func dailyCitationCorrectness(l Ledger, preds []Prediction, idx ledgerIndex) PR {
 	correct, cited := 0, 0
 	for _, p := range preds {
+		if isInventoryPrediction(p) {
+			required := requiredCitationSet(l, idx, p.CommitmentID)
+			for _, citation := range p.Citations {
+				cited++
+				for key := range required {
+					if key.MemoryID == citation.MemoryID && key.CommitmentID == citation.CommitmentID {
+						correct++
+						break
+					}
+				}
+			}
+			continue
+		}
 		a, ok := idx.byMemory[p.MemoryID]
 		if !ok {
 			continue
@@ -802,10 +1108,53 @@ func perClassPR(gold []goldItem, hit, attributed []bool, preds []Prediction, idx
 		return PR{}
 	}
 	return PR{
-		Precision: macroMean(correctByClass, predByClass),
-		Recall:    macroMean(hitByClass, goldByClass),
-		Defined:   true,
+		Precision:     macroMean(correctByClass, predByClass),
+		Recall:        macroMean(hitByClass, goldByClass),
+		Defined:       true,
+		RecallByClass: classRecall(hitByClass, goldByClass),
 	}
+}
+
+func inventoryCounterparty(gold []goldItem, preds []Prediction, idx ledgerIndex) PR {
+	goldByClass, hitByClass := map[string]int{}, map[string]int{}
+	predByClass, correctByClass := map[string]int{}, map[string]int{}
+	byID := map[string]goldItem{}
+	for _, g := range gold {
+		goldByClass[g.Attendee]++
+		byID[g.CommitmentID] = g
+	}
+	for _, p := range preds {
+		g, ok := byID[p.CommitmentID]
+		if !ok {
+			continue
+		}
+		class := idx.resolveAttendee(p)
+		predByClass[class]++
+		if class == g.Attendee {
+			correctByClass[class]++
+			hitByClass[g.Attendee]++
+		}
+	}
+	if len(predByClass) == 0 || len(goldByClass) == 0 {
+		return PR{}
+	}
+	return PR{
+		Precision:     macroMean(correctByClass, predByClass),
+		Recall:        macroMean(hitByClass, goldByClass),
+		Defined:       true,
+		RecallByClass: classRecall(hitByClass, goldByClass),
+	}
+}
+
+func classRecall(numerators, denominators map[string]int) map[string]float64 {
+	if len(denominators) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(denominators))
+	for class, denominator := range denominators {
+		out[class] = float64(numerators[class]) / float64(denominator)
+	}
+	return out
 }
 
 func macroMean(numerators, denominators map[string]int) float64 {
@@ -867,37 +1216,293 @@ func countTrue(flags []bool) int {
 	return n
 }
 
-// typedAccumulator scores the four born-red rows. Recall runs over the gold set;
+type citationKey struct {
+	MemoryID     string
+	CommitmentID string
+	Role         CitationRole
+}
+
+func requiredCitationSet(l Ledger, idx ledgerIndex, commitmentID string) map[citationKey]bool {
+	out := map[citationKey]bool{}
+	stableIDs := commitmentStableIDs(l)
+	for _, c := range l.Commitments {
+		if stableIDs[c.ID] != commitmentID {
+			continue
+		}
+		memoryID, _, _, err := idx.resolveSpanText(c.OpenedBy)
+		if err == nil {
+			out[citationKey{MemoryID: memoryID, CommitmentID: stableIDs[c.ID], Role: CitationRoleOpener}] = true
+		}
+		for _, transition := range c.Transitions {
+			closureMemory, _, _, err := idx.resolveSpanText(transition.Evidence)
+			if err == nil {
+				out[citationKey{MemoryID: closureMemory, CommitmentID: stableIDs[c.ID], Role: CitationRoleClosure}] = true
+			}
+		}
+		for _, copy := range l.Commitments {
+			if copy.DuplicateOf != c.ID {
+				continue
+			}
+			copyMemory, _, _, err := idx.resolveSpanText(copy.OpenedBy)
+			if err == nil {
+				out[citationKey{MemoryID: copyMemory, CommitmentID: stableIDs[copy.ID], Role: CitationRoleSupporting}] = true
+			}
+		}
+		break
+	}
+	return out
+}
+
+// commitmentAccumulator scores the complete, materialized commitment inventory.
+// Inventory rows measure product knowledge; visible rows measure display
+// discipline. A closed visible row can therefore hurt lifecycle precision and a
+// leak counter, but only a genuine origin=inventory row can complete inventory
+// recall.
+type commitmentAccumulator struct {
+	l    Ledger
+	idx  ledgerIndex
+	gold []goldItem
+	byID map[string]goldItem
+
+	identityExpressed, identityCorrect int
+	identityHit                        map[string]bool
+
+	lifecycleExpressed, lifecycleCorrect int
+	lifecycleHit                         map[string]bool
+
+	closureExpressed, closureCorrect int
+	closureHit                       map[string]bool
+
+	dedupExpressed, dedupCorrect int
+	dedupHit                     map[string]bool
+	surfaceByCommitment          map[string]int
+
+	citationExpressed, citationCorrect int
+	citationHit                        map[citationKey]bool
+	requiredCitations                  map[citationKey]bool
+}
+
+func newCommitmentAccumulator(l Ledger, idx ledgerIndex, gold []goldItem) *commitmentAccumulator {
+	a := &commitmentAccumulator{
+		l:                   l,
+		idx:                 idx,
+		gold:                gold,
+		byID:                map[string]goldItem{},
+		identityHit:         map[string]bool{},
+		lifecycleHit:        map[string]bool{},
+		closureHit:          map[string]bool{},
+		dedupHit:            map[string]bool{},
+		surfaceByCommitment: map[string]int{},
+		citationHit:         map[citationKey]bool{},
+		requiredCitations:   map[citationKey]bool{},
+	}
+	for _, g := range gold {
+		a.byID[g.CommitmentID] = g
+		for key := range requiredCitationSet(l, idx, g.CommitmentID) {
+			a.requiredCitations[key] = true
+		}
+	}
+	return a
+}
+
+func (a *commitmentAccumulator) observeSurface(p Prediction, g goldItem) {
+	a.observe(p, g, true)
+}
+
+func (a *commitmentAccumulator) observeVisibleClaim(p Prediction) {
+	if p.CommitmentID != "" {
+		a.surfaceByCommitment[p.CommitmentID]++
+		declared, known := a.byID[p.CommitmentID]
+		if (known && declared.DuplicateOf != "") || a.surfaceByCommitment[p.CommitmentID] > 1 {
+			// A copy or a second canonical claim surfaced as another visible
+			// obligation. This is wrong even when it shares one memory with the
+			// canonical and the quote matcher would otherwise credit both.
+			a.dedupExpressed++
+		}
+	}
+}
+
+func (a *commitmentAccumulator) observeInventory(p Prediction) {
+	g, ok := a.byID[p.CommitmentID]
+	a.observe(p, g, ok)
+}
+
+func (a *commitmentAccumulator) observeNegative(p Prediction, l Ledger, idx ledgerIndex) {
+	stableIDs := commitmentStableIDs(l)
+	for _, c := range l.Commitments {
+		memoryID, blockKind, channel, err := idx.resolveSpanText(c.OpenedBy)
+		if err != nil || memoryID != p.MemoryID || normalize(c.OpenedBy.Quote) != normalize(UnwrapEmitted(p.Text)) {
+			continue
+		}
+		g := goldItem{
+			ID:           c.ID,
+			CommitmentID: stableIDs[c.ID],
+			MemoryID:     memoryID,
+			Quote:        c.OpenedBy.Quote,
+			Attendee:     counterpartOf(c, idx.self),
+			Owner:        c.Owner,
+			Direction:    c.Direction,
+			Due:          goldDue(c),
+			Lifecycle:    c.State,
+			Closure:      ClosureNone,
+			Channel:      channel,
+			BlockKind:    blockKind,
+			State:        c.State,
+			DuplicateOf:  stableIDs[c.DuplicateOf],
+		}
+		if len(c.Transitions) > 0 {
+			g.Closure, _, _, _ = idx.resolveSpanText(c.Transitions[len(c.Transitions)-1].Evidence)
+		}
+		a.observe(p, g, false)
+		return
+	}
+}
+
+func (a *commitmentAccumulator) observe(p Prediction, g goldItem, allowRecall bool) {
+	if p.CommitmentID != "" {
+		a.identityExpressed++
+		if p.CommitmentID == g.CommitmentID && g.ID != "" {
+			a.identityCorrect++
+			if allowRecall {
+				a.identityHit[g.ID] = true
+			}
+		}
+	}
+	if p.Lifecycle != "" && p.Lifecycle != Unknown {
+		a.lifecycleExpressed++
+		if p.Lifecycle == g.Lifecycle && g.ID != "" {
+			a.lifecycleCorrect++
+			if allowRecall {
+				a.lifecycleHit[g.ID] = true
+			}
+		}
+	}
+	if p.ClosureRef != "" {
+		a.closureExpressed++
+		if p.ClosureRef == g.Closure && g.ID != "" {
+			a.closureCorrect++
+			if allowRecall {
+				a.closureHit[g.ID] = true
+			}
+		}
+	}
+	if p.DuplicateOf != "" {
+		a.dedupExpressed++
+		if p.DuplicateOf == g.DuplicateOf && g.DuplicateOf != "" {
+			a.dedupCorrect++
+			if allowRecall {
+				a.dedupHit[g.ID] = true
+			}
+		}
+	}
+	required := requiredCitationSet(a.l, a.idx, g.CommitmentID)
+	for _, citation := range p.Citations {
+		a.citationExpressed++
+		key := citationKey(citation)
+		if required[key] {
+			a.citationCorrect++
+			if allowRecall {
+				a.citationHit[key] = true
+			}
+		}
+	}
+}
+
+func (a *commitmentAccumulator) identity() PR {
+	return typedPR(len(a.identityHit), len(a.gold), a.identityCorrect, a.identityExpressed)
+}
+
+func (a *commitmentAccumulator) lifecycle() PR {
+	out := typedPR(len(a.lifecycleHit), len(a.gold), a.lifecycleCorrect, a.lifecycleExpressed)
+	goldByClass, hitByClass := map[string]int{}, map[string]int{}
+	for _, g := range a.gold {
+		goldByClass[g.Lifecycle]++
+		if a.lifecycleHit[g.ID] {
+			hitByClass[g.Lifecycle]++
+		}
+	}
+	out.RecallByClass = classRecall(hitByClass, goldByClass)
+	return out
+}
+
+func (a *commitmentAccumulator) closure() PR {
+	return typedPR(len(a.closureHit), len(a.gold), a.closureCorrect, a.closureExpressed)
+}
+
+func (a *commitmentAccumulator) dedup() PR {
+	total := 0
+	for _, g := range a.gold {
+		if g.DuplicateOf != "" {
+			total++
+		}
+	}
+	return typedPR(len(a.dedupHit), total, a.dedupCorrect, a.dedupExpressed)
+}
+
+func (a *commitmentAccumulator) citationRoles() PR {
+	out := typedPR(len(a.citationHit), len(a.requiredCitations), a.citationCorrect, a.citationExpressed)
+	goldByClass, hitByClass := map[string]int{}, map[string]int{}
+	for key := range a.requiredCitations {
+		role := string(key.Role)
+		goldByClass[role]++
+		if a.citationHit[key] {
+			hitByClass[role]++
+		}
+	}
+	out.RecallByClass = classRecall(hitByClass, goldByClass)
+	return out
+}
+
+// typedAccumulator scores the visible-surface typed rows. Recall runs over the gold set;
 // precision runs over the predictions that ACTUALLY EXPRESSED a value, so a surface
 // emitting only "unknown" reports N/A — a failure — instead of a vacuous 1.0.
 type typedAccumulator struct {
 	gold []goldItem
+
+	ownerHit  map[string]int
+	ownerGold map[string]int
+	ownerOK   map[string]int
+	ownerPred map[string]int
 
 	directionHit  map[string]int
 	directionGold map[string]int
 	directionOK   map[string]int
 	directionPred map[string]int
 
-	dueHit, dueCorrect, duePred                   int
-	lifecycleHit, lifecycleCorrect, lifecyclePred int
-	closureHit, closureCorrect, closurePred       int
+	dueHit, dueCorrect, duePred   int
+	dueHitByClass, dueGoldByClass map[string]int
 }
 
 func newTypedAccumulator(gold []goldItem) *typedAccumulator {
 	acc := &typedAccumulator{
-		gold:          gold,
-		directionHit:  map[string]int{},
-		directionGold: map[string]int{},
-		directionOK:   map[string]int{},
-		directionPred: map[string]int{},
+		gold:           gold,
+		ownerHit:       map[string]int{},
+		ownerGold:      map[string]int{},
+		ownerOK:        map[string]int{},
+		ownerPred:      map[string]int{},
+		directionHit:   map[string]int{},
+		directionGold:  map[string]int{},
+		directionOK:    map[string]int{},
+		directionPred:  map[string]int{},
+		dueHitByClass:  map[string]int{},
+		dueGoldByClass: map[string]int{},
 	}
 	for _, g := range gold {
+		acc.ownerGold[g.Owner]++
 		acc.directionGold[g.Direction]++
+		acc.dueGoldByClass[g.Due]++
 	}
 	return acc
 }
 
 func (a *typedAccumulator) observeGold(p Prediction, g goldItem, index int) {
+	if p.Owner != "" && p.Owner != Unknown {
+		a.ownerPred[p.Owner]++
+		if p.Owner == g.Owner {
+			a.ownerOK[p.Owner]++
+			a.ownerHit[g.Owner]++
+		}
+	}
 	if p.Direction != "" && p.Direction != Unknown {
 		a.directionPred[p.Direction]++
 		if p.Direction == g.Direction {
@@ -910,20 +1515,7 @@ func (a *typedAccumulator) observeGold(p Prediction, g goldItem, index int) {
 		if p.Due == g.Due {
 			a.dueCorrect++
 			a.dueHit++
-		}
-	}
-	if p.Lifecycle != "" && p.Lifecycle != Unknown {
-		a.lifecyclePred++
-		if p.Lifecycle == g.Lifecycle {
-			a.lifecycleCorrect++
-			a.lifecycleHit++
-		}
-	}
-	if p.ClosureRef != "" {
-		a.closurePred++
-		if p.ClosureRef == g.Closure {
-			a.closureCorrect++
-			a.closureHit++
+			a.dueHitByClass[g.Due]++
 		}
 	}
 }
@@ -950,28 +1542,27 @@ func (a *typedAccumulator) observeNegative(p Prediction, l Ledger, idx ledgerInd
 				a.dueCorrect++
 			}
 		}
-		if p.Lifecycle != "" && p.Lifecycle != Unknown {
-			a.lifecyclePred++
-			if p.Lifecycle == c.State {
-				a.lifecycleCorrect++
-			}
-		}
-		if p.ClosureRef != "" {
-			a.closurePred++
-			want := ClosureNone
-			if len(c.Transitions) > 0 {
-				want, _, _, _ = idx.resolveSpanText(c.Transitions[len(c.Transitions)-1].Evidence)
-			}
-			if p.ClosureRef == want {
-				a.closureCorrect++
-			}
-		}
 		return
 	}
 }
 
+func (a *typedAccumulator) owner() PR {
+	out := PR{
+		Recall:        macroMean(a.ownerHit, a.ownerGold),
+		RecallByClass: classRecall(a.ownerHit, a.ownerGold),
+	}
+	if len(a.ownerPred) > 0 {
+		out.Precision = macroMean(a.ownerOK, a.ownerPred)
+		out.Defined = true
+	}
+	return out
+}
+
 func (a *typedAccumulator) direction() PR {
-	out := PR{Recall: macroMean(a.directionHit, a.directionGold)}
+	out := PR{
+		Recall:        macroMean(a.directionHit, a.directionGold),
+		RecallByClass: classRecall(a.directionHit, a.directionGold),
+	}
 	if len(a.directionPred) > 0 {
 		out.Precision = macroMean(a.directionOK, a.directionPred)
 		out.Defined = true
@@ -979,14 +1570,10 @@ func (a *typedAccumulator) direction() PR {
 	return out
 }
 
-func (a *typedAccumulator) due() PR { return typedPR(a.dueHit, len(a.gold), a.dueCorrect, a.duePred) }
-
-func (a *typedAccumulator) lifecycle() PR {
-	return typedPR(a.lifecycleHit, len(a.gold), a.lifecycleCorrect, a.lifecyclePred)
-}
-
-func (a *typedAccumulator) closure() PR {
-	return typedPR(a.closureHit, len(a.gold), a.closureCorrect, a.closurePred)
+func (a *typedAccumulator) due() PR {
+	out := typedPR(a.dueHit, len(a.gold), a.dueCorrect, a.duePred)
+	out.RecallByClass = classRecall(a.dueHitByClass, a.dueGoldByClass)
+	return out
 }
 
 func typedPR(hit, gold, correct, expressed int) PR {
@@ -1047,7 +1634,7 @@ func Classify(l Ledger, preds []Prediction, surface string) ([]Verdict, error) {
 	universe := spanUniverse(l)
 	hit := make([]bool, len(gold))
 	var out []Verdict
-	for _, p := range preds {
+	for _, p := range surfacePredictions(preds) {
 		v := Verdict{Surface: grain, MemoryID: p.MemoryID, Text: oneLineText(p.Text)}
 		if grain == SurfaceDaily {
 			// A daily item that is not gold is a plain FALSE POSITIVE, never a

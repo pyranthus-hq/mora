@@ -161,12 +161,17 @@ func Oracle(l Ledger, surface string) []Prediction {
 			continue
 		}
 		p := Prediction{
-			Surface:    grain,
-			MemoryID:   g.MemoryID,
-			Direction:  g.Direction,
-			Due:        g.Due,
-			Lifecycle:  g.Lifecycle,
-			ClosureRef: g.Closure,
+			Surface:      grain,
+			Origin:       PredictionOriginSurface,
+			MemoryID:     g.MemoryID,
+			Owner:        g.Owner,
+			CommitmentID: g.CommitmentID,
+			DuplicateOf:  g.DuplicateOf,
+			Direction:    g.Direction,
+			Due:          g.Due,
+			Lifecycle:    g.Lifecycle,
+			ClosureRef:   g.Closure,
+			Citations:    oracleCitations(l, idx, g.CommitmentID),
 		}
 		if grain == SurfaceMeeting {
 			p.Text = emitMeetingLine(idx, g)
@@ -178,6 +183,44 @@ func Oracle(l Ledger, surface string) []Prediction {
 		}
 		out = append(out, p)
 	}
+	inventory, err := inventoryGoldFor(l, idx, sliceAny{})
+	if err != nil {
+		return nil
+	}
+	for _, g := range inventory {
+		out = append(out, Prediction{
+			Surface:      grain,
+			Origin:       PredictionOriginInventory,
+			Attendee:     idx.displayOf(g.Attendee),
+			AttendeeAtom: idx.atomOf(g.Attendee),
+			Owner:        g.Owner,
+			CommitmentID: g.CommitmentID,
+			DuplicateOf:  g.DuplicateOf,
+			Direction:    g.Direction,
+			Due:          g.Due,
+			Lifecycle:    g.Lifecycle,
+			ClosureRef:   g.Closure,
+			Citations:    oracleCitations(l, idx, g.CommitmentID),
+		})
+	}
+	return out
+}
+
+func oracleCitations(l Ledger, idx ledgerIndex, commitmentID string) []PredictionCitation {
+	required := requiredCitationSet(l, idx, commitmentID)
+	out := make([]PredictionCitation, 0, len(required))
+	for key := range required {
+		out = append(out, PredictionCitation(key))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CommitmentID != out[j].CommitmentID {
+			return out[i].CommitmentID < out[j].CommitmentID
+		}
+		if out[i].Role != out[j].Role {
+			return out[i].Role < out[j].Role
+		}
+		return out[i].MemoryID < out[j].MemoryID
+	})
 	return out
 }
 
@@ -363,30 +406,36 @@ func sentences(text string) []string {
 // here is a named failure, so deleting a subtest cannot delete the failure.
 func RedTeamRows() map[RedTeamRowID]func(RedTeamInput) []RedTeamCase {
 	return map[RedTeamRowID]func(RedTeamInput) []RedTeamCase{
-		{SurfaceMeeting, RowSyntheticGibberish}:    rowSyntheticGibberish,
-		{SurfaceMeeting, RowEmptyBrief}:            rowEmpty(SurfaceMeeting),
-		{SurfaceMeeting, RowEveryQuestion}:         rowEveryQuestion,
-		{SurfaceMeeting, RowCopyTheInput}:          rowCopyTheInput,
-		{SurfaceMeeting, RowIdentityFlip}:          rowIdentityFlip,
-		{SurfaceMeeting, RowDirectionFlip}:         rowDirectionFlip,
-		{SurfaceMeeting, RowUnsupportedCitation}:   rowUnsupportedCitation,
-		{SurfaceMeeting, RowConstantClassifier}:    rowConstantClassifier,
-		{SurfaceDaily, RowDailyEmpty}:              rowEmpty(SurfaceDaily),
-		{SurfaceDaily, RowDailyCitation}:           rowDailyCitation,
-		{SurfaceMeeting, RowOracle}:                rowOracle(SurfaceMeeting),
-		{SurfaceDaily, RowOracle}:                  rowOracle(SurfaceDaily),
-		{SurfaceMeeting, RowClosedAsOpen}:          rowClosedAsOpen,
-		{SurfaceMeeting, RowGoldOwnerFlip}:         rowGoldOwnerFlip,
-		{SurfaceMeeting, RowCitationSpanMove}:      rowCitationSpanMove,
-		{SurfaceMeeting, RowAuthoredToQuoted}:      rowAuthoredToQuoted,
-		{SurfaceMeeting, RowRemovedSource}:         rowRemovedSource(SurfaceMeeting),
-		{SurfaceDaily, RowRemovedSource}:           rowRemovedSource(SurfaceDaily),
-		{SurfaceMeeting, RowDuplicateNoise}:        rowDuplicateNoise(SurfaceMeeting),
-		{SurfaceDaily, RowDuplicateNoise}:          rowDuplicateNoise(SurfaceDaily),
-		{SurfaceMeeting, RowInputOrder}:            rowInputOrder(SurfaceMeeting),
-		{SurfaceDaily, RowInputOrder}:              rowInputOrder(SurfaceDaily),
-		{SurfaceMeeting, RowGateDisableSweep}:      rowGateDisableSweep,
-		{SurfaceMeeting, RowGraphStateInsensitive}: rowGraphStateInsensitive,
+		{SurfaceMeeting, RowSyntheticGibberish}:     rowSyntheticGibberish,
+		{SurfaceMeeting, RowEmptyBrief}:             rowEmpty(SurfaceMeeting),
+		{SurfaceMeeting, RowEveryQuestion}:          rowEveryQuestion,
+		{SurfaceMeeting, RowCopyTheInput}:           rowCopyTheInput,
+		{SurfaceMeeting, RowIdentityFlip}:           rowIdentityFlip,
+		{SurfaceMeeting, RowDirectionFlip}:          rowDirectionFlip,
+		{SurfaceMeeting, RowUnsupportedCitation}:    rowUnsupportedCitation,
+		{SurfaceMeeting, RowConstantClassifier}:     rowConstantClassifier,
+		{SurfaceDaily, RowDailyEmpty}:               rowEmpty(SurfaceDaily),
+		{SurfaceDaily, RowDailyCitation}:            rowDailyCitation,
+		{SurfaceMeeting, RowOracle}:                 rowOracle(SurfaceMeeting),
+		{SurfaceDaily, RowOracle}:                   rowOracle(SurfaceDaily),
+		{SurfaceMeeting, RowClosedAsOpen}:           rowClosedAsOpen,
+		{SurfaceMeeting, RowGoldOwnerFlip}:          rowGoldOwnerFlip,
+		{SurfaceMeeting, RowCitationSpanMove}:       rowCitationSpanMove,
+		{SurfaceMeeting, RowAuthoredToQuoted}:       rowAuthoredToQuoted,
+		{SurfaceMeeting, RowRemovedSource}:          rowRemovedSource(SurfaceMeeting),
+		{SurfaceDaily, RowRemovedSource}:            rowRemovedSource(SurfaceDaily),
+		{SurfaceMeeting, RowDuplicateNoise}:         rowDuplicateNoise(SurfaceMeeting),
+		{SurfaceDaily, RowDuplicateNoise}:           rowDuplicateNoise(SurfaceDaily),
+		{SurfaceMeeting, RowInputOrder}:             rowInputOrder(SurfaceMeeting),
+		{SurfaceDaily, RowInputOrder}:               rowInputOrder(SurfaceDaily),
+		{SurfaceMeeting, RowGateDisableSweep}:       rowGateDisableSweep,
+		{SurfaceMeeting, RowGraphStateInsensitive}:  rowGraphStateInsensitive,
+		{SurfaceMeeting, RowOwnerPredictionFlip}:    rowOwnerPredictionFlip,
+		{SurfaceMeeting, RowCommitmentIdentityFlip}: rowCommitmentIdentityFlip,
+		{SurfaceMeeting, RowDuplicatePointerFlip}:   rowDuplicatePointerFlip,
+		{SurfaceMeeting, RowCitationRoleFlip}:       rowCitationRoleFlip,
+		{SurfaceMeeting, RowInventoryLifecycleFlip}: rowInventoryLifecycleFlip,
+		{SurfaceMeeting, RowInventoryOriginEscape}:  rowInventoryOriginEscape,
 	}
 }
 
@@ -533,6 +582,105 @@ func rowDirectionFlip(in RedTeamInput) []RedTeamCase {
 	}}
 }
 
+func rowOwnerPredictionFlip(in RedTeamInput) []RedTeamCase {
+	oracle := Oracle(in.Ledger, SurfaceMeeting)
+	base := mustScore(in.Ledger, oracle, SurfaceMeeting)
+	return []RedTeamCase{{
+		Ledger:      in.Ledger,
+		Predictions: FlipOneOwner(oracle),
+		Expect: Expectation{
+			State: StateScoredFailure,
+			Checks: []Check{{
+				MetricOwner + ".recall", OpLT, base.Owner.Recall,
+				"a wrong direct owner must cost per-class recall",
+			}},
+		},
+	}}
+}
+
+func rowCommitmentIdentityFlip(in RedTeamInput) []RedTeamCase {
+	oracle := Oracle(in.Ledger, SurfaceMeeting)
+	base := mustScore(in.Ledger, oracle, SurfaceMeeting)
+	return []RedTeamCase{{
+		Ledger:      in.Ledger,
+		Predictions: FlipOneCommitmentIdentity(oracle),
+		Expect: Expectation{
+			State: StateScoredFailure,
+			Checks: []Check{{
+				MetricCommitmentIdentity + ".recall", OpLT, base.CommitmentIdentity.Recall,
+				"a wrong immutable commitment id must miss one inventory item",
+			}},
+		},
+	}}
+}
+
+func rowDuplicatePointerFlip(in RedTeamInput) []RedTeamCase {
+	oracle := Oracle(in.Ledger, SurfaceMeeting)
+	base := mustScore(in.Ledger, oracle, SurfaceMeeting)
+	return []RedTeamCase{{
+		Ledger:      in.Ledger,
+		Predictions: FlipOneDuplicatePointer(oracle),
+		Expect: Expectation{
+			State: StateScoredFailure,
+			Checks: []Check{{
+				MetricDedup + ".recall", OpLT, base.Dedup.Recall,
+				"a wrong DuplicateOf pointer must miss one labelled copy",
+			}},
+		},
+	}}
+}
+
+func rowCitationRoleFlip(in RedTeamInput) []RedTeamCase {
+	oracle := Oracle(in.Ledger, SurfaceMeeting)
+	base := mustScore(in.Ledger, oracle, SurfaceMeeting)
+	return []RedTeamCase{{
+		Ledger:      in.Ledger,
+		Predictions: FlipOneCitationRole(oracle),
+		Expect: Expectation{
+			State: StateScoredFailure,
+			Checks: []Check{{
+				MetricCitationRoles + ".recall", OpLT, base.CitationRoles.Recall,
+				"a mis-typed opener/closure/supporting citation must miss its role",
+			}},
+		},
+	}}
+}
+
+func rowInventoryLifecycleFlip(in RedTeamInput) []RedTeamCase {
+	oracle := Oracle(in.Ledger, SurfaceMeeting)
+	base := mustScore(in.Ledger, oracle, SurfaceMeeting)
+	return []RedTeamCase{{
+		Ledger:      in.Ledger,
+		Predictions: FlipOneInventoryLifecycle(oracle),
+		Expect: Expectation{
+			State: StateScoredFailure,
+			Checks: []Check{{
+				MetricLifecycle + ".recall", OpLT, base.Lifecycle.Recall,
+				"complete-inventory lifecycle must see a wrong hidden state",
+			}},
+		},
+	}}
+}
+
+func rowInventoryOriginEscape(in RedTeamInput) []RedTeamCase {
+	oracle := Oracle(in.Ledger, SurfaceMeeting)
+	preds := SurfaceClosedAsOpen(in.Ledger, oracle, SurfaceMeeting)
+	if len(preds) > len(oracle) {
+		preds[len(preds)-1].Origin = PredictionOriginInventory
+	}
+	return []RedTeamCase{{
+		Ledger:      in.Ledger,
+		Predictions: preds,
+		Expect: Expectation{
+			State: StateScoredFailure,
+			Checks: []Check{{
+				MetricClosedLeaks, OpEq, 1,
+				"a rendered closed line cannot relabel itself inventory to escape the visible leak gate",
+			}},
+		},
+	}}
+}
+
 func rowUnsupportedCitation(in RedTeamInput) []RedTeamCase {
 	real := in.real(SurfaceMeeting)
 	base := mustScore(in.Ledger, real, SurfaceMeeting)
@@ -587,10 +735,14 @@ func rowOracle(surface string) func(RedTeamInput) []RedTeamCase {
 			{MetricExtraction + ".recall", OpEq, 1, ""},
 			{MetricCitationCoverage + ".precision", OpEq, 1, ""},
 			{MetricCitationCorrect + ".precision", OpEq, 1, ""},
+			{MetricOwner + ".recall", OpEq, 1, "direct owner must be reachable from typed substrate"},
 			{MetricDirection + ".recall", OpEq, 1, "BORN-RED rows must be able to go GREEN when the substrate exists"},
 			{MetricDueTime + ".recall", OpEq, 1, ""},
 			{MetricLifecycle + ".recall", OpEq, 1, ""},
 			{MetricClosureLinkage + ".recall", OpEq, 1, ""},
+			{MetricCommitmentIdentity + ".recall", OpEq, 1, ""},
+			{MetricDedup + ".recall", OpEq, 1, ""},
+			{MetricCitationRoles + ".recall", OpEq, 1, ""},
 			{MetricDirectionScorable, OpEq, 1, ""},
 			{MetricThirdPartyLeaks, OpEq, 0, ""},
 			{MetricClosedLeaks, OpEq, 0, ""},
@@ -763,15 +915,19 @@ func rowGateDisableSweep(in RedTeamInput) []RedTeamCase {
 // names an unknown metric is a named failure, not a silently skipped assertion.
 func MetricValue(sc Scorecard, key string) (float64, bool) {
 	prs := map[string]PR{
-		MetricExtraction:       sc.Extraction,
-		MetricRecallUncapped:   sc.RecallUncapped,
-		MetricCitationCoverage: sc.CitationCoverage,
-		MetricCitationCorrect:  sc.CitationCorrect,
-		MetricCounterparty:     sc.Counterparty,
-		MetricDirection:        sc.Direction,
-		MetricDueTime:          sc.DueTime,
-		MetricLifecycle:        sc.Lifecycle,
-		MetricClosureLinkage:   sc.ClosureLinkage,
+		MetricExtraction:         sc.Extraction,
+		MetricRecallUncapped:     sc.RecallUncapped,
+		MetricCitationCoverage:   sc.CitationCoverage,
+		MetricCitationCorrect:    sc.CitationCorrect,
+		MetricCounterparty:       sc.Counterparty,
+		MetricOwner:              sc.Owner,
+		MetricDirection:          sc.Direction,
+		MetricDueTime:            sc.DueTime,
+		MetricLifecycle:          sc.Lifecycle,
+		MetricClosureLinkage:     sc.ClosureLinkage,
+		MetricCommitmentIdentity: sc.CommitmentIdentity,
+		MetricDedup:              sc.Dedup,
+		MetricCitationRoles:      sc.CitationRoles,
 	}
 	if id, part, ok := strings.Cut(key, "."); ok {
 		row, known := prs[id]
