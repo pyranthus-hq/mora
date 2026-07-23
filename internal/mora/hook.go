@@ -500,9 +500,30 @@ func claudeSettingsPath() (string, error) {
 func loadClaudeSettings(path string) (map[string]any, map[string][]claudeHookGroup, error) {
 	settings := map[string]any{}
 	body, err := os.ReadFile(path)
-	if err == nil {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// A dangling symlink also reads as ErrNotExist, but something IS at
+		// the path — writing would silently replace the user's symlink (e.g.
+		// into a dotfiles repo) with a mora-only regular file. Refuse. Only a
+		// confirmed-absent path falls through to the create-fresh case; any
+		// other Lstat failure means absence is unproven, so fail closed.
+		if _, lerr := os.Lstat(path); lerr == nil {
+			return nil, nil, fmt.Errorf("refusing to modify %s: it is a broken symlink: fix or remove it first", path)
+		} else if !errors.Is(lerr, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("reading Claude settings %s: %w", path, lerr)
+		}
+		// No settings file yet: callers create a fresh one.
+	case err != nil:
+		// Fail closed: install/uninstall write back the full settings map, so
+		// proceeding from an unread file would replace it with mora-only content.
+		return nil, nil, fmt.Errorf("reading Claude settings %s: %w", path, err)
+	default:
 		if err := json.Unmarshal(body, &settings); err != nil {
-			settings = map[string]any{}
+			// Fail closed here too: a file that exists but does not parse as
+			// strict JSON (JSONC comments, a trailing comma) must never be
+			// silently treated as empty — writing back would wipe every
+			// non-mora setting in it.
+			return nil, nil, fmt.Errorf("refusing to modify %s: not valid JSON (%v): fix it or back it up first", path, err)
 		}
 	}
 	hooks := map[string][]claudeHookGroup{}

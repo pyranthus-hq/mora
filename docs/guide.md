@@ -291,8 +291,10 @@ mora brief --fresh                  # regenerate today's brief even if one alrea
 optional `max_tokens` (default ~6000) and `envelope: true` (adds a grounded,
 cite-by-id synthesis prompt; Mora itself runs no model and holds no API key).
 
-This wiring is **docs-only**: Mora never edits your agent config. You paste the
-snippet, and removing it is the whole opt-out. `mora brief` and the `brief` tool make
+This wiring is **docs-only**: pasting the snippet is the whole opt-in, and removing
+it is the whole opt-out. (The optional `mora hook install` command is the one
+exception — it merges Mora's hooks into `~/.claude/settings.json` alongside yours,
+and refuses to touch a settings file it cannot parse.) `mora brief` and the `brief` tool make
 **no network call**; they read or generate from memories already on disk. The only
 thing that touches the network is the scheduled sync, over your already-enabled,
 read-only sources.

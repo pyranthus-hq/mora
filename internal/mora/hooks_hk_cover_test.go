@@ -411,17 +411,14 @@ func TestHk_HookStatusMalformedHooks(t *testing.T) {
 	}
 }
 
-// TestHk_LoadClaudeSettingsMalformedTopLevel asserts a settings.json that is not
-// a JSON object at all is treated as empty settings (top-level unmarshal
-// resets), so status still reports cleanly instead of erroring.
+// TestHk_LoadClaudeSettingsMalformedTopLevel asserts a settings.json that is
+// not valid JSON at all surfaces a parse error instead of being silently
+// treated as empty settings. (Treating it as empty is exactly the wipe hazard:
+// install would then rewrite the file with only mora hooks.)
 func TestHk_LoadClaudeSettingsMalformedTopLevel(t *testing.T) {
 	tmp := withTempHookHome(t)
 	writeClaudeSettingsFixture(t, tmp, "not json at all\n")
-	var out bytes.Buffer
-	if err := hookStatus(&out); err != nil {
-		t.Fatalf("a non-object settings file must be treated as empty, got: %v", err)
-	}
-	if !strings.Contains(out.String(), "SessionStart: not installed") {
-		t.Fatalf("status over reset settings should report not installed, got:\n%s", out.String())
+	if err := hookStatus(io.Discard); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Fatalf("status must surface an unparseable settings file, got: %v", err)
 	}
 }
