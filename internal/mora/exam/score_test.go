@@ -180,29 +180,8 @@ func scoreRedTeamCase(c RedTeamCase, surface string) (Scorecard, error) {
 // TestEveryMetricHasASabotageCase is the sensitivity contract: a metric with no
 // declared, registered sabotage case is not a metric, it is decoration.
 func TestEveryMetricHasASabotageCase(t *testing.T) {
-	registered := map[string]bool{}
-	for _, id := range RequiredRedTeamRows {
-		registered[id.Name] = true
-	}
-	for _, spec := range RequiredMetrics {
-		if len(spec.SabotageCases) == 0 {
-			t.Errorf("EVAL_BROKEN: metric %q declares no sabotage case", spec.ID)
-			continue
-		}
-		for _, row := range spec.SabotageCases {
-			if !registered[row] {
-				t.Errorf("EVAL_BROKEN: metric %q names sabotage row %q, which has no registered baseline", spec.ID, row)
-			}
-		}
-		if spec.ZeroDenominatorPolicy != PolicyNAIsFailure {
-			t.Errorf("metric %q zero-denominator policy = %q, want %q", spec.ID, spec.ZeroDenominatorPolicy, PolicyNAIsFailure)
-		}
-		if spec.InvalidRunPolicy != PolicyHardFail {
-			t.Errorf("metric %q invalid-run policy = %q, want %q", spec.ID, spec.InvalidRunPolicy, PolicyHardFail)
-		}
-		if len(spec.RequiredSlices) == 0 {
-			t.Errorf("metric %q declares no required slices; a global average must never hide a collapsed slice", spec.ID)
-		}
+	if err := ValidateMetricManifest(); err != nil {
+		t.Fatal(err)
 	}
 }
 
