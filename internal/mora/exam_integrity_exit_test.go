@@ -28,6 +28,7 @@ func TestExamIntegrityExit(t *testing.T) {
 	}{
 		{name: "obligations-v1", root: examFixtureRoot, schema: exam.SchemaV1},
 		{name: "obligations-v2", root: examFixtureV2Root, schema: exam.SchemaV2},
+		{name: "obligations-v3", root: examFixtureV3Root, schema: exam.SchemaV3},
 	}
 	for _, corpus := range corpora {
 		t.Run(corpus.name, func(t *testing.T) {
@@ -73,6 +74,9 @@ func TestExamIntegrityExit(t *testing.T) {
 	}
 	if err := determinismGuardCovers("exam_corpus_v2_test.go"); err != nil {
 		t.Fatalf("determinism trust leg broke; Gate 1 cannot close while the v2 scoring adapter can escape the structural guard: %v", err)
+	}
+	if err := determinismGuardCovers("exam_corpus_v3_test.go"); err != nil {
+		t.Fatalf("determinism trust leg broke; the v3 corpus adapter cannot escape the structural guard: %v", err)
 	}
 	if err := validateExamV2HumanRecord(); err != nil {
 		t.Fatalf("human-validation trust leg broke; Gate 1 cannot close without the parsed VALIDATED record for obligations-v2: %v", err)
