@@ -153,15 +153,6 @@ func firstPersonCommitment(lower string) bool {
 	})
 }
 
-func reportedCommitment(lower string) bool {
-	return strings.Contains(lower, " said he'll ") ||
-		strings.Contains(lower, " said she'll ") ||
-		strings.Contains(lower, " said they'll ") ||
-		strings.Contains(lower, " said he will ") ||
-		strings.Contains(lower, " said she will ") ||
-		strings.Contains(lower, " said they will ")
-}
-
 func reportedActorFor(m Memory, text string, counterparty govAtom) *govAtom {
 	lower := strings.ToLower(oneLine(text))
 	var names []string
