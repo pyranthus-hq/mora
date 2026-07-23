@@ -44,9 +44,10 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 				MemoryID:     line.Citation.MemoryID(),
 				SectionKind:  section.Kind,
 				CommitmentID: line.CommitmentID,
-				// Owner, direction, and evidence identity are direct field copies.
-				// Due remains explicitly unknown until its own product PR.
+				// Typed commitment fields and evidence identity are direct copies
+				// from the product surface.
 				Direction:  direction,
+				Due:        line.DueAt,
 				Lifecycle:  lifecycle,
 				ClosureRef: line.ClosureRef,
 			})
@@ -73,6 +74,16 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 		})
 	}
 	return out
+}
+
+func TestExamMeetingAdapterReadsTypedDue(t *testing.T) {
+	brief := MeetingBrief{Sections: []MeetingBriefSection{{
+		Lines: []CitedBriefLine{{DueAt: commitDueRelative}},
+	}}}
+	preds := examMeetingPredictions(brief)
+	if len(preds) != 1 || preds[0].Due != exam.DueRelative {
+		t.Fatalf("predictions = %+v, want direct relative due copy", preds)
+	}
 }
 
 // digestAllItems walks the urgent shelf first and then every section, in render
@@ -204,6 +215,9 @@ func TestExamRealEngineScorecard(t *testing.T) {
 	}
 	if !meeting.Direction.Defined || meeting.Direction.Precision != 1 || !meeting.DirectionScorable {
 		t.Errorf("Direction = %+v scorable=%v, want a direct, precise typed direction", meeting.Direction, meeting.DirectionScorable)
+	}
+	if !meeting.DueTime.Defined || meeting.DueTime.Precision != 1 {
+		t.Errorf("DueTime = %+v, want a direct, precise typed due value on every surfaced commitment", meeting.DueTime)
 	}
 	if meeting.CriticalDirection != 0 {
 		t.Errorf("CriticalDirection = %d, want 0", meeting.CriticalDirection)

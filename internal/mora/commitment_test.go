@@ -6,6 +6,53 @@ import (
 	"testing"
 )
 
+func TestCommitmentDueClassification(t *testing.T) {
+	tests := []struct {
+		name       string
+		text       string
+		occurredAt string
+		want       commitDue
+	}{
+		{
+			name:       "explicit calendar date",
+			text:       "Can you send the signed outline by July 14?",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueExplicitDate, At: "2026-07-14"},
+		},
+		{
+			name:       "explicit calendar date never infers a clock",
+			text:       "Can you send the signed outline by July 14 at 3:30 pm?",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueExplicitDate, At: "2026-07-14"},
+		},
+		{
+			name:       "relative deadline",
+			text:       "I will confirm the sample count tomorrow.",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueRelative},
+		},
+		{
+			name:       "anchored relative deadline",
+			text:       "Please send the route cards before the review.",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueRelative},
+		},
+		{
+			name:       "urgency does not invent a deadline",
+			text:       "Please send the receipt urgently.",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueNone},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyCommitmentDue(tt.text, tt.occurredAt); got != tt.want {
+				t.Fatalf("due = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCommitmentDirectionTable(t *testing.T) {
 	self := govAtom{Kind: atomAddress, Value: "self@example.com"}
 	other := govAtom{Kind: atomAddress, Value: "other@example.com"}
@@ -135,5 +182,8 @@ func TestCommitmentsMaterializedByIndexGeneration(t *testing.T) {
 	}
 	if got[0].Direction != commitOwedBySelf || !atomEqual(got[0].Owner, canonicalSelfAtom(cfg, "self@example.com")) {
 		t.Fatalf("typed commitment = %+v", got[0])
+	}
+	if got[0].Due != (commitDue{Kind: commitDueNone}) {
+		t.Fatalf("due = %+v, want none", got[0].Due)
 	}
 }

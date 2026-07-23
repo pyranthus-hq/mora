@@ -260,12 +260,12 @@
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.5,
+      "defined": true,
       "recall_by_class": {
-        "2026-07-14T11:00:00Z": 0,
-        "none": 0
+        "2026-07-14T11:00:00Z": 1,
+        "none": 0.3333333333333333
       }
     },
     "lifecycle": {
@@ -365,12 +365,12 @@
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.5,
+      "defined": true,
       "recall_by_class": {
-        "2026-07-14T11:00:00Z": 0,
-        "none": 0
+        "2026-07-14T11:00:00Z": 1,
+        "none": 0.3333333333333333
       }
     },
     "lifecycle": {

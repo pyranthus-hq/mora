@@ -436,6 +436,7 @@ func RedTeamRows() map[RedTeamRowID]func(RedTeamInput) []RedTeamCase {
 		{SurfaceMeeting, RowCitationRoleFlip}:       rowCitationRoleFlip,
 		{SurfaceMeeting, RowInventoryLifecycleFlip}: rowInventoryLifecycleFlip,
 		{SurfaceMeeting, RowInventoryOriginEscape}:  rowInventoryOriginEscape,
+		{SurfaceMeeting, RowDuePredictionFlip}:      rowDuePredictionFlip,
 	}
 }
 
@@ -578,6 +579,22 @@ func rowDirectionFlip(in RedTeamInput) []RedTeamCase {
 				{MetricDirection + ".recall", OpLT, base.Direction.Recall, "a wrong TYPED direction must cost per-class recall"},
 				{MetricCriticalDirection, OpGT, 0, "and must be counted as a critical failure"},
 			},
+		},
+	}}
+}
+
+func rowDuePredictionFlip(in RedTeamInput) []RedTeamCase {
+	oracle := Oracle(in.Ledger, SurfaceMeeting)
+	base := mustScore(in.Ledger, oracle, SurfaceMeeting)
+	return []RedTeamCase{{
+		Ledger:      in.Ledger,
+		Predictions: FlipOneDue(oracle),
+		Expect: Expectation{
+			State: StateScoredFailure,
+			Checks: []Check{{
+				MetricDueTime + ".recall", OpLT, base.DueTime.Recall,
+				"a wrong typed due value must cost due-time recall",
+			}},
 		},
 	}}
 }

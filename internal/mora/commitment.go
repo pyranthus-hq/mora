@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,6 +68,69 @@ type commitSpan struct {
 type commitDue struct {
 	Kind string `json:"kind"`
 	At   string `json:"at,omitempty"`
+}
+
+var (
+	commitMonthDateRE = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+([0-9]{1,2})(?:st|nd|rd|th)?(?:,\s*([0-9]{4}))?\b`)
+	commitISODateRE   = regexp.MustCompile(`\b([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})\b`)
+	commitRelativeRE  = regexp.MustCompile(`(?i)\b(today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|week|month)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|once|until|by\s+the\s+end|in\s+the\s+(?:morning|afternoon|evening)|before\s+(?:breakfast|lunch|dinner)|in\s+[0-9]+\s+(?:minutes?|hours?|days?|weeks?))\b`)
+)
+
+func classifyCommitmentDue(text, occurredAt string) commitDue {
+	text = oneLine(text)
+	if text == "" {
+		return commitDue{Kind: commitDueNone}
+	}
+	anchor, err := time.Parse(time.RFC3339, strings.TrimSpace(occurredAt))
+	if err == nil {
+		if date, ok := explicitCommitmentDue(text, anchor.UTC()); ok {
+			return commitDue{Kind: commitDueExplicitDate, At: date}
+		}
+	}
+	if commitRelativeRE.MatchString(text) {
+		return commitDue{Kind: commitDueRelative}
+	}
+	return commitDue{Kind: commitDueNone}
+}
+
+func explicitCommitmentDue(text string, anchor time.Time) (string, bool) {
+	year, month, day := 0, time.Month(0), 0
+	if match := commitISODateRE.FindStringSubmatch(text); len(match) != 0 {
+		year, _ = strconv.Atoi(match[1])
+		monthValue, _ := strconv.Atoi(match[2])
+		month = time.Month(monthValue)
+		day, _ = strconv.Atoi(match[3])
+	} else if match := commitMonthDateRE.FindStringSubmatch(text); len(match) != 0 {
+		monthTime, err := time.Parse("January", strings.ToUpper(match[1][:1])+strings.ToLower(match[1][1:]))
+		if err != nil {
+			return "", false
+		}
+		month = monthTime.Month()
+		day, _ = strconv.Atoi(match[2])
+		year = anchor.Year()
+		if match[3] != "" {
+			year, _ = strconv.Atoi(match[3])
+		}
+	}
+	if year == 0 || month == 0 || day == 0 {
+		return "", false
+	}
+
+	// The opener supplies a calendar date, not an instant. Preserve exactly that
+	// expressiveness; clock-level due extraction requires a separately typed,
+	// event-linked capability.
+	date := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	if date.Year() != year || date.Month() != month || date.Day() != day {
+		return "", false
+	}
+	return date.Format("2006-01-02"), true
+}
+
+func commitDueValue(due commitDue) string {
+	if due.Kind == commitDueExplicitDate {
+		return due.At
+	}
+	return due.Kind
 }
 
 type commitmentMessageEvidence struct {
@@ -435,6 +499,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	}
 	selfAtom := canonicalSelfAtom(cfg, "")
 	newCommitment := func(summary, messageRef, blockRef, occurredAt string, ancestorRefs []string, slot int, owner govAtom, direction string) Commitment {
+		due := classifyCommitmentDue(summary, occurredAt)
 		id := commitmentID(messageRef, blockRef, slot)
 		return Commitment{
 			ID:               id,
@@ -448,7 +513,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				AncestorRefs: append([]string(nil), ancestorRefs...),
 				Quote:        oneLine(summary), OccurredAt: occurredAt,
 			},
-			Due:         commitDue{Kind: commitDueNone},
+			Due:         due,
 			State:       commitOpen,
 			ClosureRef:  commitClosureNone,
 			Citations:   commitmentCitation(m, id),
@@ -1153,6 +1218,7 @@ func attachCommitment(line *CitedBriefLine, commitment Commitment) {
 	line.Owner = commitment.Owner
 	line.Counterparty = commitment.Counterparty
 	line.CommitmentID = commitment.ID
+	line.DueAt = commitDueValue(commitment.Due)
 	line.Lifecycle = commitment.State
 	line.ClosureRef = commitment.ClosureRef
 	line.DuplicateOf = commitment.DuplicateOf

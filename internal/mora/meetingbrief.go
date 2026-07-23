@@ -174,6 +174,7 @@ type CitedBriefLine struct {
 	DuplicateOf         string               `json:"duplicate_of,omitempty"`
 	StateUncertain      bool                 `json:"state_uncertain,omitempty"`
 	CommitmentCitations []CommitmentCitation `json:"commitment_citations,omitempty"`
+	DueAt               string               `json:"due_at,omitempty"`
 }
 
 func newCitedBriefLine(text, attendee string, citation BriefCitation, correction BriefLineCorrection, asOf time.Time) (CitedBriefLine, error) {
@@ -217,6 +218,15 @@ func (l CitedBriefLine) validate() error {
 	}
 	if (l.Direction == commitOwedByCounterparty) != atomEqual(l.Owner, l.Counterparty) {
 		return errors.New("commitment owner and direction disagree")
+	}
+	switch l.DueAt {
+	case commitDueNone, commitDueRelative:
+	case "":
+		return errors.New("typed commitment line is missing due classification")
+	default:
+		if _, err := time.Parse("2006-01-02", l.DueAt); err != nil {
+			return fmt.Errorf("invalid commitment due value %q", l.DueAt)
+		}
 	}
 	return nil
 }
