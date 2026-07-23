@@ -45,6 +45,7 @@ func guardedFiles(t *testing.T) []string {
 		"exam_corpus_test.go",
 		"exam_corpus_v2_test.go",
 		"exam_integrity_exit_test.go",
+		"exam_product_target_test.go",
 		"exam_score_test.go",
 		"exam_surfaces_test.go",
 		"exam_gate_test.go",
