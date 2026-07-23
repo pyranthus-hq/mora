@@ -142,6 +142,10 @@ func validateMutationAnchors() error {
 	if err != nil {
 		return err
 	}
+	// Anchors are LF-byte contracts; a Windows checkout with core.autocrlf
+	// rewrites the script and the Go sources to CRLF, so normalize both
+	// sides before matching.
+	body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
 	anchors, err := parseMutationAnchors(body)
 	if err != nil {
 		return err
@@ -156,6 +160,7 @@ func validateMutationAnchors() error {
 		if err != nil {
 			return fmt.Errorf("%s source target %s: %w", anchor.name, anchor.file, err)
 		}
+		source = bytes.ReplaceAll(source, []byte("\r\n"), []byte("\n"))
 		if count := bytes.Count(source, []byte(anchor.old)); count != 1 {
 			return fmt.Errorf("%s source anchor occurs %d times in %s, want exactly 1", anchor.name, count, anchor.file)
 		}
