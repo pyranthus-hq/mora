@@ -1398,11 +1398,7 @@ func (a *commitmentAccumulator) observe(p Prediction, g goldItem, allowRecall bo
 	required := requiredCitationSet(a.l, a.idx, g.CommitmentID)
 	for _, citation := range p.Citations {
 		a.citationExpressed++
-		key := citationKey{
-			MemoryID:     citation.MemoryID,
-			CommitmentID: citation.CommitmentID,
-			Role:         citation.Role,
-		}
+		key := citationKey(citation)
 		if required[key] {
 			a.citationCorrect++
 			if allowRecall {

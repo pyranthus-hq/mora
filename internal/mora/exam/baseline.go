@@ -210,11 +210,7 @@ func oracleCitations(l Ledger, idx ledgerIndex, commitmentID string) []Predictio
 	required := requiredCitationSet(l, idx, commitmentID)
 	out := make([]PredictionCitation, 0, len(required))
 	for key := range required {
-		out = append(out, PredictionCitation{
-			MemoryID:     key.MemoryID,
-			CommitmentID: key.CommitmentID,
-			Role:         key.Role,
-		})
+		out = append(out, PredictionCitation(key))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CommitmentID != out[j].CommitmentID {
