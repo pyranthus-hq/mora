@@ -192,9 +192,9 @@ kill_mutant "production/containsPhrase" \
 kill_mutant "surface/direct-wall-clock" \
   internal/mora/mora.go \
   'now := briefClock()
-	// pulse-daily producer chokepoint' \
+	if *loopID != "" {' \
   'now := time.Now()
-	// pulse-daily producer chokepoint' \
+	if *loopID != "" {' \
   ./internal/mora '^TestExamSurfaceClockGuard$'
 
 kill_mutant "surface/daily-cap-drift" \
