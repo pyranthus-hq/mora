@@ -39,6 +39,12 @@ Schema version 1 deliberately banned the shapes real mail carries — connector-
 - **Required realism shapes.** A v2 ledger that never uses a composite artifact, a wrapped body, and an attributed quote is refused — a v2 corpus must exercise what v2 exists for.
 - **Fingerprint lints.** `LintDateFingerprint` and `LintTitleFingerprint` refuse any ledger whose artifact dates or subject tokens alone separate open-commitment artifacts from the rest — the two metadata channels that leaked the gold label out of the first human sitting are now gated in CI for every corpus.
 
+`TestExamSurfacesV2` sends the validated v2 corpus through the same shared driver as v1: daily CLI, daily MCP, event CLI, and event MCP, with loopback HTTP required to remain byte-identical to event MCP. Both product clocks are pinned to the ledger's `as_of`. The resulting `surface-scorecards-v2.golden.json` is a measured product baseline, not a passing grade. Golden comparison is the regression ratchet: any product change that moves a scorecard requires an explicit, reviewed baseline update, while unchanged deficiencies remain visible as typed values.
+
+`TestExamIntegrityExit` is the Gate 1 trust certificate. For both schema versions it requires validator and all five lint families to pass, rendered and checked-out bytes to match `CORPUS.sha256`, every scorecard metric to retain a registered sabotage case, and the determinism guard to cover the v2 adapter. It also requires the v2 human-validation record to retain its literal `VALIDATED` status and parses every mutation-matrix source and test anchor so a dead anchor cannot silently turn a dated audit green.
+
+`TestExamProductTarget` recomputes the real scorecards for both corpora rather than trusting the goldens. The strict target requires extraction precision and recall of at least 0.90; perfect citation coverage and correctness; zero identity, direction, third-party, closed, duplicate, and non-obligation leaks; scorable direction, due time, lifecycle, and closure linkage at or above 0.90; and a scorable owner result. The default CI row is an honest, dated known-red pin tied to #138 and #154. The strict form, enabled with `MORA_EXAM_PRODUCT_TARGET=1`, stays visibly red in the manual mutation audit until the typed product contract exists and the measured target is actually met. Gate 1 therefore certifies that the exam is trustworthy; it does not claim that the product passes the exam.
+
 ---
 
 ## The obligation scorer, and why it refuses things

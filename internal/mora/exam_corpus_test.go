@@ -30,7 +30,12 @@ type examEventFixture struct {
 
 func loadExamLedger(t *testing.T) exam.Ledger {
 	t.Helper()
-	l, err := exam.Load(filepath.Join(examFixtureRoot, "ledger.json"))
+	return loadExamLedgerFromRoot(t, examFixtureRoot)
+}
+
+func loadExamLedgerFromRoot(t *testing.T, root string) exam.Ledger {
+	t.Helper()
+	l, err := exam.Load(filepath.Join(root, "ledger.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +44,12 @@ func loadExamLedger(t *testing.T) exam.Ledger {
 
 func loadExamEvent(t *testing.T) (examEventFixture, time.Time) {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(examFixtureRoot, "events.json"))
+	return loadExamEventFromRoot(t, examFixtureRoot)
+}
+
+func loadExamEventFromRoot(t *testing.T, root string) (examEventFixture, time.Time) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "events.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,14 +335,23 @@ func TestExamFlywheelArtifactsShareNoIdentityBytes(t *testing.T) {
 
 func seedExamHome(t *testing.T) (Config, examEventFixture, time.Time) {
 	t.Helper()
+	return seedExamHomeFromRoot(t, examFixtureRoot)
+}
+
+func seedExamHomeFromRoot(t *testing.T, root string) (Config, examEventFixture, time.Time) {
+	t.Helper()
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	event, at := loadExamEvent(t)
-	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Email: "alex@example.com", Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z"}}); err != nil {
+	event, at := loadExamEventFromRoot(t, root)
+	ledger := loadExamLedgerFromRoot(t, root)
+	if len(ledger.Self.Emails) == 0 {
+		t.Fatal("exam ledger self identity has no email")
+	}
+	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Email: ledger.Self.Emails[0], Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z"}}); err != nil {
 		t.Fatal(err)
 	}
-	src := filepath.Join(examFixtureRoot, "vault")
+	src := filepath.Join(root, "vault")
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr

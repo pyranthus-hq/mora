@@ -180,29 +180,8 @@ func scoreRedTeamCase(c RedTeamCase, surface string) (Scorecard, error) {
 // TestEveryMetricHasASabotageCase is the sensitivity contract: a metric with no
 // declared, registered sabotage case is not a metric, it is decoration.
 func TestEveryMetricHasASabotageCase(t *testing.T) {
-	registered := map[string]bool{}
-	for _, id := range RequiredRedTeamRows {
-		registered[id.Name] = true
-	}
-	for _, spec := range RequiredMetrics {
-		if len(spec.SabotageCases) == 0 {
-			t.Errorf("EVAL_BROKEN: metric %q declares no sabotage case", spec.ID)
-			continue
-		}
-		for _, row := range spec.SabotageCases {
-			if !registered[row] {
-				t.Errorf("EVAL_BROKEN: metric %q names sabotage row %q, which has no registered baseline", spec.ID, row)
-			}
-		}
-		if spec.ZeroDenominatorPolicy != PolicyNAIsFailure {
-			t.Errorf("metric %q zero-denominator policy = %q, want %q", spec.ID, spec.ZeroDenominatorPolicy, PolicyNAIsFailure)
-		}
-		if spec.InvalidRunPolicy != PolicyHardFail {
-			t.Errorf("metric %q invalid-run policy = %q, want %q", spec.ID, spec.InvalidRunPolicy, PolicyHardFail)
-		}
-		if len(spec.RequiredSlices) == 0 {
-			t.Errorf("metric %q declares no required slices; a global average must never hide a collapsed slice", spec.ID)
-		}
+	if err := ValidateMetricManifest(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -334,40 +313,9 @@ func duplicateAllPredictions(preds []Prediction) []Prediction {
 // a new scorecard number cannot be added without a MetricSpec, and therefore
 // cannot be added without a sabotage case.
 func TestMetricRegistryCoversEveryScorecardField(t *testing.T) {
-	registered := map[string]bool{}
-	for _, spec := range RequiredMetrics {
-		if registered[spec.Field] {
-			t.Errorf("two metrics claim scorecard field %q", spec.Field)
-		}
-		registered[spec.Field] = true
+	if err := ValidateMetricRegistryCoverage(); err != nil {
+		t.Fatal(err)
 	}
-	scorecard := reflect.TypeOf(Scorecard{})
-	for i := 0; i < scorecard.NumField(); i++ {
-		name := scorecard.Field(i).Name
-		if nonMetricScorecardFields[name] {
-			continue
-		}
-		if !registered[name] {
-			t.Errorf("EVAL_BROKEN: scorecard field %q has no MetricSpec, so nothing proves it can move", name)
-		}
-	}
-	for field := range registered {
-		if _, ok := scorecard.FieldByName(field); !ok {
-			t.Errorf("metric registry names %q, which is not a scorecard field", field)
-		}
-	}
-	for field := range nonMetricScorecardFields {
-		if _, ok := scorecard.FieldByName(field); !ok {
-			t.Errorf("the non-metric exclusion list names %q, which is not a scorecard field", field)
-		}
-	}
-}
-
-// nonMetricScorecardFields is the pinned exclusion list. It is deliberately tiny:
-// every other field is a number that must prove it moves.
-var nonMetricScorecardFields = map[string]bool{
-	"Surface": true,
-	"Owner":   true,
 }
 
 // TestScoreRefusesEveryInvalidLedgerClass drives all twelve validator rules through

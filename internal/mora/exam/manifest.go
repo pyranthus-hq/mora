@@ -1,5 +1,11 @@
 package exam
 
+import (
+	"errors"
+	"fmt"
+	"reflect"
+)
+
 const (
 	RuleIdentity          = "identity"
 	RuleTimestamp         = "timestamp"
@@ -127,6 +133,70 @@ type MetricSpec struct {
 	InvalidRunPolicy      string
 	RequiredSlices        []string
 	SabotageCases         []string
+}
+
+// ValidateMetricManifest is shared by the package-level sensitivity test and
+// the Gate 1 integrity exit. Keeping the registry contract here prevents those
+// two trust checks from drifting into subtly different definitions.
+func ValidateMetricManifest() error {
+	registered := map[string]bool{}
+	for _, id := range RequiredRedTeamRows {
+		registered[id.Name] = true
+	}
+	var problems []error
+	for _, spec := range RequiredMetrics {
+		if len(spec.SabotageCases) == 0 {
+			problems = append(problems, fmt.Errorf("EVAL_BROKEN: metric %q declares no sabotage case", spec.ID))
+			continue
+		}
+		for _, row := range spec.SabotageCases {
+			if !registered[row] {
+				problems = append(problems, fmt.Errorf("EVAL_BROKEN: metric %q names sabotage row %q, which has no registered baseline", spec.ID, row))
+			}
+		}
+		if spec.ZeroDenominatorPolicy != PolicyNAIsFailure {
+			problems = append(problems, fmt.Errorf("metric %q zero-denominator policy = %q, want %q", spec.ID, spec.ZeroDenominatorPolicy, PolicyNAIsFailure))
+		}
+		if spec.InvalidRunPolicy != PolicyHardFail {
+			problems = append(problems, fmt.Errorf("metric %q invalid-run policy = %q, want %q", spec.ID, spec.InvalidRunPolicy, PolicyHardFail))
+		}
+		if len(spec.RequiredSlices) == 0 {
+			problems = append(problems, fmt.Errorf("metric %q declares no required slices; a global average must never hide a collapsed slice", spec.ID))
+		}
+	}
+	return errors.Join(problems...)
+}
+
+// ValidateMetricRegistryCoverage proves that every numeric Scorecard field is
+// registered before ValidateMetricManifest proves what sabotages it.
+func ValidateMetricRegistryCoverage() error {
+	registered := map[string]bool{}
+	var problems []error
+	for _, spec := range RequiredMetrics {
+		if registered[spec.Field] {
+			problems = append(problems, fmt.Errorf("two metrics claim scorecard field %q", spec.Field))
+		}
+		registered[spec.Field] = true
+	}
+	nonMetrics := map[string]bool{"Surface": true, "Owner": true}
+	scorecard := reflect.TypeOf(Scorecard{})
+	for i := 0; i < scorecard.NumField(); i++ {
+		name := scorecard.Field(i).Name
+		if !nonMetrics[name] && !registered[name] {
+			problems = append(problems, fmt.Errorf("EVAL_BROKEN: scorecard field %q has no MetricSpec, so nothing proves it can move", name))
+		}
+	}
+	for field := range registered {
+		if _, ok := scorecard.FieldByName(field); !ok {
+			problems = append(problems, fmt.Errorf("metric registry names %q, which is not a scorecard field", field))
+		}
+	}
+	for field := range nonMetrics {
+		if _, ok := scorecard.FieldByName(field); !ok {
+			problems = append(problems, fmt.Errorf("the non-metric exclusion list names %q, which is not a scorecard field", field))
+		}
+	}
+	return errors.Join(problems...)
 }
 
 var everySlice = []string{SliceChannel, SliceBlockKind, SliceOwner, SliceDirection, SliceState, SliceTransition}
