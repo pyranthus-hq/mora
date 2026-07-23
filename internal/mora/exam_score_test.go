@@ -23,19 +23,27 @@ func examMeetingPredictions(b MeetingBrief) []exam.Prediction {
 	for _, section := range b.Sections {
 		for _, line := range section.Lines {
 			atom := line.Correction.AttendeeAtom
+			direction := line.Direction
+			if direction == "" {
+				direction = exam.Unknown
+			}
+			owner := ""
+			if line.Direction != "" {
+				owner = line.Owner.Kind + ":" + line.Owner.Value
+			}
 			out = append(out, exam.Prediction{
 				Surface:      exam.SurfaceMeeting,
 				Text:         line.Text,
 				Attendee:     line.Attendee,
 				AttendeeAtom: atom.Kind + ":" + atom.Value,
+				Owner:        owner,
 				MemoryID:     line.Citation.MemoryID(),
 				SectionKind:  section.Kind,
-				// Nothing on the meeting payload carries a direction, a due time, a
-				// lifecycle state or a closure link. The adapter says so in the type
-				// rather than guessing from the section a line landed in — the brief
-				// collapses self-authored commitments and inbound requests into the
-				// same lane, so placement is not direction.
-				Direction: exam.Unknown,
+				CommitmentID: line.CommitmentID,
+				// Owner, direction, and evidence identity are direct field copies.
+				// Due/lifecycle/closure remain explicitly unknown until their own
+				// product PRs materialize those dimensions.
+				Direction: direction,
 				Lifecycle: exam.Unknown,
 			})
 		}
@@ -163,8 +171,14 @@ func TestExamRealEngineScorecard(t *testing.T) {
 		t.Fatalf("EVAL_BROKEN: meeting LooseMatches=%d Unmatched=%d, want 0/0 — the ledger or the match predicate is wrong, and the audit does not start",
 			meeting.LooseMatches, meeting.Unmatched)
 	}
-	if meeting.Owner.Defined || meeting.Owner.Recall != 0 {
-		t.Errorf("Owner = %+v, want fail-closed until the product payload carries a direct owner", meeting.Owner)
+	if !meeting.Owner.Defined || meeting.Owner.Precision != 1 {
+		t.Errorf("Owner = %+v, want a direct, precise typed owner on every surfaced commitment", meeting.Owner)
+	}
+	if !meeting.Direction.Defined || meeting.Direction.Precision != 1 || !meeting.DirectionScorable {
+		t.Errorf("Direction = %+v scorable=%v, want a direct, precise typed direction", meeting.Direction, meeting.DirectionScorable)
+	}
+	if meeting.CriticalDirection != 0 {
+		t.Errorf("CriticalDirection = %d, want 0", meeting.CriticalDirection)
 	}
 	if exam.RunStateOf(meeting, nil) != exam.StateScoredFailure {
 		t.Errorf("meeting run state = %q; a clean first score is a defect report against the ledger, not a win",

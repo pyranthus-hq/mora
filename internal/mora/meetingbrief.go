@@ -161,10 +161,14 @@ func (c BriefLineCorrection) validate() error {
 // CitedBriefLine is the only renderable evidence atom. Text is a compact extract
 // from the cited memory, never an inferred conclusion.
 type CitedBriefLine struct {
-	Text       string              `json:"text"`
-	Attendee   string              `json:"attendee,omitempty"`
-	Citation   BriefCitation       `json:"citation"`
-	Correction BriefLineCorrection `json:"correction"`
+	Text         string              `json:"text"`
+	Attendee     string              `json:"attendee,omitempty"`
+	Citation     BriefCitation       `json:"citation"`
+	Correction   BriefLineCorrection `json:"correction"`
+	Direction    string              `json:"direction,omitempty"`
+	Owner        govAtom             `json:"owner,omitzero"`
+	Counterparty govAtom             `json:"counterparty,omitzero"`
+	CommitmentID string              `json:"commitment_id,omitempty"`
 }
 
 func newCitedBriefLine(text, attendee string, citation BriefCitation, correction BriefLineCorrection, asOf time.Time) (CitedBriefLine, error) {
@@ -194,7 +198,22 @@ func (l CitedBriefLine) validate() error {
 	if err := l.Citation.validate(); err != nil {
 		return err
 	}
-	return l.Correction.validate()
+	if err := l.Correction.validate(); err != nil {
+		return err
+	}
+	if l.Direction == "" {
+		return nil
+	}
+	if l.Direction != commitOwedBySelf && l.Direction != commitOwedByCounterparty {
+		return fmt.Errorf("invalid commitment direction %q", l.Direction)
+	}
+	if !atomPresent(l.Owner) || !atomPresent(l.Counterparty) {
+		return errors.New("typed commitment line is missing owner or counterparty")
+	}
+	if (l.Direction == commitOwedByCounterparty) != atomEqual(l.Owner, l.Counterparty) {
+		return errors.New("commitment owner and direction disagree")
+	}
+	return nil
 }
 
 // CitedMeetingEvent carries one event memory citation covering all event fields,
@@ -428,6 +447,10 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		return MeetingBrief{}, err
 	}
 	lineDecisions := governanceLedger.briefLineDecisions()
+	commitmentsByMemory, err := readCommitmentInventory(ctx, cfg)
+	if err != nil {
+		return MeetingBrief{}, err
+	}
 	for _, attendee := range attendees {
 		dossier, derr := graphGetEntity(ctx, cfg, attendee.identity)
 		if derr != nil {
@@ -442,6 +465,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		}
 		personKind, _ := dossier["kind"].(string)
 		mentionCount, _ := dossier["count"].(int)
+		aliases, _ := dossier["aliases"].([]string)
 		evidence, _ := dossier["memories"].([]Memory)
 		related := relationalEvidenceIDs(dossier)
 		personLastSeen := latestMeetingBriefEvidenceDate(evidence, at)
@@ -465,9 +489,6 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 				continue
 			}
 			kind := classifyMeetingBriefEvidence(m, cfg, at)
-			if kind == "" {
-				continue
-			}
 			// A Gmail message is unfinished business WITH this attendee only when the
 			// user or the attendee actually wrote it. Inbound third-party mail the
 			// attendee was merely co-copied on (a vendor emailing you both, a marketing
@@ -482,11 +503,23 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			if isGmailMemory(m) && !meetingBriefIsTwoPartyExchange(m, self, roster...) {
 				continue
 			}
-			source := evidenceSource(m)
-			excerpt := meetingBriefActionableEvidenceText(m, cfg, at, kind)
-			if excerpt == "" {
+			attendeeAtom, atomErr := attendeeAtomForIdentity(attendee.identity)
+			if atomErr != nil {
+				return MeetingBrief{}, fmt.Errorf("event %s attendee %s atom: %w", eventMemory.ID, attendee.identity, atomErr)
+			}
+			excerpt := ""
+			if kind != "" {
+				excerpt = meetingBriefActionableEvidenceText(m, cfg, at, kind)
+			}
+			commitment, typed := meetingCommitmentFor(commitmentsByMemory[m.ID], attendeeAtom, aliases, excerpt)
+			if excerpt == "" && typed && isIMessageMemory(m) {
+				kind = meetingBriefOpenLoops
+				excerpt = commitment.Summary
+			}
+			if kind == "" || excerpt == "" {
 				continue
 			}
+			source := evidenceSource(m)
 			citation, cerr := citationForMemory(m, source, occurredAt)
 			if cerr != nil {
 				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s citation: %w", eventMemory.ID, attendee.identity, m.ID, cerr)
@@ -504,6 +537,9 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			)
 			if lerr != nil {
 				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s: %w", eventMemory.ID, attendee.identity, m.ID, lerr)
+			}
+			if typed {
+				attachCommitment(&line, commitment)
 			}
 			bulkAuthored := memoryIsServiceOnly(m)
 			messageCount := metaMessageCount(m)

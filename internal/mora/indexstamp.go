@@ -16,9 +16,9 @@ import (
 // are rows in the existing index_meta key/value table, already excluded from the
 // rebuild DELETE list.
 
-// indexManifestAlgo IS the manifest format version — a schema bump is forbidden
-// (indexSchemaVersion=2 is shared with every subscriber's share index), so the
-// format is versioned by this key's value instead. sha256 over "<64-hex>  <relpath>"
+// indexManifestAlgo IS the manifest format version. The DB schema stamp is shared
+// with every subscriber's share index, so this independently evolving manifest
+// format is versioned by the key's value instead. sha256 over "<64-hex>  <relpath>"
 // lines, full sha256 (not the 64-bit ContentHash) because this is an integrity
 // manifest, keyed by a slash-normalized relative path so the digest is stable
 // across a vault move and on Windows.

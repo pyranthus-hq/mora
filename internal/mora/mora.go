@@ -902,7 +902,7 @@ func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp,
 // Package var (not const) so TestUpgradePreservesState can bump it in-process
 // and exercise checkIndexSchema's refusal / auto-heal path against a newer
 // binary — the same seam pattern as indexAutoHeal.
-var indexSchemaVersion = 2
+var indexSchemaVersion = 3
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
 // read time. True on the static-hash floor, where a rebuild is seconds — the

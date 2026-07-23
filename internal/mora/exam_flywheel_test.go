@@ -134,6 +134,12 @@ func TestExamCorrectionFlywheel(t *testing.T) {
 	if postScorecard.CriticalIdentity != 0 || postScorecard.CitationCorrect.Precision != 1 {
 		t.Fatalf("post-merge attribution/grounding = CriticalIdentity %d, CitationCorrect %+v", postScorecard.CriticalIdentity, postScorecard.CitationCorrect)
 	}
+	if postScorecard.Owner.Precision != 1 ||
+		postScorecard.Direction.Precision != 1 ||
+		!postScorecard.DirectionScorable || postScorecard.CriticalDirection != 0 {
+		t.Fatalf("post-merge owner/direction = Owner %+v Direction %+v scorable=%v CriticalDirection=%d, want typed precision 1.0, true, 0",
+			postScorecard.Owner, postScorecard.Direction, postScorecard.DirectionScorable, postScorecard.CriticalDirection)
+	}
 
 	wantGain := 1 / float64(gold)
 	gotGain := postScorecard.Extraction.Recall - preScorecard.Extraction.Recall
@@ -152,12 +158,12 @@ func TestExamCorrectionFlywheel(t *testing.T) {
 	assertExamFlywheelFixture(t, fixture)
 }
 
-// TestExamConversationCommitmentNotLastIsKnownRed preserves the limitation that
-// D2 had to isolate away: an earlier iMessage commitment is currently ignored
-// when a later self-authored acknowledgement is the conversation's final turn.
+// TestExamConversationCommitmentNotLastIsKnownRed keeps #156's former known-red
+// scenario as a permanent regression contract: every turn is classified under
+// its own speaker even when a later acknowledgement ends the conversation.
 func TestExamConversationCommitmentNotLastIsKnownRed(t *testing.T) {
 	const (
-		wantRED = true
+		wantRED = false
 		issue   = "https://github.com/pyranthus-hq/mora/issues/156"
 		expires = "2026-10-14"
 	)
@@ -205,6 +211,16 @@ func TestExamConversationCommitmentNotLastIsKnownRed(t *testing.T) {
 	}
 	if !passes {
 		t.Fatalf("earlier-turn commitment verdict = %q, want true_positive", verdict.Kind)
+	}
+	var typed exam.Prediction
+	for _, prediction := range preds {
+		if prediction.MemoryID == "imessage_chat/exam-flywheel" {
+			typed = prediction
+			break
+		}
+	}
+	if typed.Direction != exam.DirectionOwedByCounterparty || typed.Owner != "address:dana@example.net" {
+		t.Fatalf("earlier-turn owner/direction = %q/%q, want counterparty Dana", typed.Owner, typed.Direction)
 	}
 }
 

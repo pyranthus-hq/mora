@@ -180,6 +180,13 @@ erDiagram
         TEXT model
         BLOB vec "LE float32"
     }
+    commitments {
+        TEXT generation
+        TEXT row_key PK
+        TEXT commitment_id UK
+        TEXT memory_id
+        TEXT payload "typed JSON"
+    }
     entities {
         TEXT id PK
         TEXT kind "person|service|topic"
@@ -201,6 +208,7 @@ erDiagram
     }
     memories ||--|| memories_fts : "joined on id"
     memories ||--|| mem_vectors : "memory_id"
+    memories ||--o{ commitments : "memory_id"
     memories ||--o{ edges : "evidence_id"
     entities ||--o{ edges : "src / dst"
 ```
@@ -209,6 +217,7 @@ DDL is at `mora.go:2036-2051`:
 - **`memories`** — the row-store keyed by frontmatter `id`. `tags` stored CSV (`strings.Join(m.Tags, ",")`, `mora.go:2076`). Holds the full `text` and the vault `path` so search can return bodies and read can locate the file.
 - **`memories_fts`** — an FTS5 virtual table over `id, scope, title, tags, source, text`. Note **`type`, `created_at`, and `path` are deliberately NOT in FTS** (they're metadata, not searchable prose); search joins back to `memories` on `id` to recover them (`searchMemories`, `search.go`).
 - **`mem_vectors`** — one static-hash (or Ollama) embedding per memory, written by `writeVectors` (`index.go`) over `m.Title + "\n" + m.Text`; `vec` is little-endian float32 bytes (`encodeVec`, `embed.go:96-102`). `model` is stored per-row (`emb.ModelID()` at `mora.go:2156`; static floor is `static-hash-v1`, `embed.go:31`) so the embedder behind each vector is attributable. Every rebuild re-embeds all memories unconditionally (`INSERT OR REPLACE`, `mora.go:2149`); the retrieval path is what consults the stored `model`. See [retrieval](./02-retrieval-search.md).
+- **`commitments`** — the typed obligation inventory derived by `writeCommitments` from the whole honest vault snapshot. `generation` is the committed vault-manifest digest and is also stamped as `index_meta.commitments_generation`; readers select only that generation. `row_key` equals the evidence-derived `CommitmentID` when immutable message/block refs exist. A legacy pre-PR1 memory may be classified for owner/direction but receives an internal `legacy:` row key and a NULL `commitment_id` rather than a fabricated identity. The JSON payload carries owner, counterparty, direction, opening span, due/lifecycle placeholders, and citations. No commitment field is added to Markdown.
 - **`entities` / `edges`** — the deterministically-derived person graph. `edges` PK is the composite `(src, rel, dst, evidence_id)` so duplicate edges are idempotent; empty bi-temporal timestamps persist as SQL NULL via `nullStr` (`graph.go:50-57`). Inserted `OR IGNORE`. See [entity-graph](./03-entity-graph.md).
 
 ### `rebuildIndex` pipeline
@@ -218,17 +227,18 @@ flowchart TD
     START["rebuildIndex(ctx, cfg)"] --> OPEN["sql.Open(index.db?_txlock=immediate<br/>&_pragma=busy_timeout(15000))"]
     OPEN --> TX["BeginTx — BEGIN IMMEDIATE<br/>ONE transaction, takes the write lock"]
     TX --> WALK["allMemoryFiles: WalkDir<br/>memories/ + sources/<br/>collect *.md, sort<br/>(inside the write lock)"]
-    WALK --> DDL["CREATE IF NOT EXISTS (all tables)<br/>then DELETE FROM all 5"]
+    WALK --> DDL["CREATE IF NOT EXISTS (all tables)<br/>then DELETE FROM derived projections"]
     DDL --> LOOP["for each file: parseMemory"]
     LOOP -->|"parse err"| SKIPF["skip file (continue)"]
     LOOP --> INS["INSERT OR REPLACE memories<br/>+ INSERT memories_fts<br/>append to parsed[]"]
     INS --> GRAPH["writeGraph(tx, parsed)<br/>buildGraph → entities + edges"]
     GRAPH --> VEC["writeVectors(tx, chooseEmbedder, parsed)<br/>embed title+text → mem_vectors"]
-    VEC --> COMMIT["tx.Commit"]
+    VEC --> OBL["writeCommitments(tx, manifest generation, parsed)<br/>speech-act direction → commitments"]
+    OBL --> COMMIT["tx.Commit"]
     COMMIT --> N["return count"]
 ```
 
-The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/vector write — runs inside **one transaction** (`rebuildIndexWithPolicy`, `index.go`). A mid-rebuild failure rolls back to the prior committed index rather than leaving a half-empty one; this is why a graph or embedder error returns through `writeGraph`/`writeVectors` before `Commit`. The DSN sets `_txlock=immediate`, so `BeginTx` issues `BEGIN IMMEDIATE` and takes the SQLite writer lock up front (the `busy_timeout` lets a contending rebuild wait rather than fail fast). The vault directory listing (`allMemoryFiles`) therefore runs **after** `BeginTx`, inside the write lock — never before it. Snapshotting the directory before the lock allowed two concurrent rebuilds to interleave: rebuild A lists, rebuild B (fired by a newer write) lists + commits, then A commits *last* carrying its *older* list, silently omitting the just-written memory until a later rebuild. Because the immediate lock serializes rebuilds, whichever commits later necessarily listed later, so a committed index can no longer be clobbered by an older rebuild's stale snapshot (a memory written *after* the surviving rebuild's listing is ordinary until-next-rebuild staleness, not this race). The vault-identity guard (`assessRebuild`) still runs after the listing, so its block-on-empty/foreign semantics are unchanged. `allMemoryFiles` is a pure filesystem walk (it takes no DB lock), so holding the write lock across it cannot deadlock. A file that fails to `parseMemory` is skipped, not fatal. `searchMemories` lazily triggers a rebuild if `index.db` is missing. The same transaction stamps `PRAGMA user_version = indexSchemaVersion`; every read-open goes through `openIndexRO` (`index.go`), which **refuses a mismatched index** with an actionable "run `mora index rebuild`" error rather than serving a stale schema silently (the pre-stamp failure: a swapped binary read zeroed salience off a pre-column index). On the static-hash floor a stale index **self-heals inline** (`indexAutoHeal` — a rebuild is seconds, same philosophy as rebuild-on-missing, and it covers every user's first upgrade across the stamp's introduction); under a semantic embedder the read errors instead — a re-embed takes minutes and must not stall an MCP call; `mora upgrade` runs that rebuild at the consented moment.
+The whole rebuild — schema, the destructive `DELETE`s, every memory/FTS/graph/vector/commitment write, and the commitment-generation stamp — runs inside **one transaction** (`rebuildIndexWithPolicy`, `index.go`). A mid-rebuild failure rolls back to the prior committed index rather than leaving a half-empty one; this is why a graph, embedder, or commitment-materialization error returns before `Commit`. The DSN sets `_txlock=immediate`, so `BeginTx` issues `BEGIN IMMEDIATE` and takes the SQLite writer lock up front (the `busy_timeout` lets a contending rebuild wait rather than fail fast). The vault directory listing (`allMemoryFiles`) therefore runs **after** `BeginTx`, inside the write lock — never before it. Snapshotting the directory before the lock allowed two concurrent rebuilds to interleave: rebuild A lists, rebuild B (fired by a newer write) lists + commits, then A commits *last* carrying its *older* list, silently omitting the just-written memory until a later rebuild. Because the immediate lock serializes rebuilds, whichever commits later necessarily listed later, so a committed index can no longer be clobbered by an older rebuild's stale snapshot (a memory written *after* the surviving rebuild's listing is ordinary until-next-rebuild staleness, not this race). The vault-identity guard (`assessRebuild`) still runs after the listing, so its block-on-empty/foreign semantics are unchanged. `allMemoryFiles` is a pure filesystem walk (it takes no DB lock), so holding the write lock across it cannot deadlock. A file that fails to `parseMemory` is skipped, not fatal. `searchMemories` lazily triggers a rebuild if `index.db` is missing. The same transaction stamps `PRAGMA user_version = indexSchemaVersion`; every read-open goes through `openIndexRO` (`index.go`), which **refuses a mismatched index** with an actionable "run `mora index rebuild`" error rather than serving a stale schema silently (the pre-stamp failure: a swapped binary read zeroed salience off a pre-column index). On the static-hash floor a stale index **self-heals inline** (`indexAutoHeal` — a rebuild is seconds, same philosophy as rebuild-on-missing, and it covers every user's first upgrade across the stamp's introduction); under a semantic embedder the read errors instead — a re-embed takes minutes and must not stall an MCP call; `mora upgrade` runs that rebuild at the consented moment.
 
 ### Incremental upsert on the user-write path (`indexUpsert`)
 
@@ -236,12 +246,12 @@ An authored write (`mora write` / `cmdWrite`, MCP `write_memory`) does **not** r
 
 WHY: every user write previously triggered a full `DELETE`-and-reinsert of the entire vault. N concurrent agent writers therefore serialized `O(N × vault)` work, thrashed the writer lock, and overran `busy_timeout` — surfacing as degraded-success `index_stale` warnings. `indexUpsert` reprocesses only the one written memory (no whole-vault re-parse, graph rebuild, or re-embed), a large **constant-factor** win — ≈ **1.7 ms vs ≈ 98 ms** for a full rebuild at ~1k memories on an Apple M1 Pro (~59×; see `BenchmarkIndexUpsert1k` / `BenchmarkRebuildIndex1k`), dominated by the fsync/commit. It is **not** asymptotically `O(1)`: the per-write `DELETE FROM memories_fts WHERE id=?` is a full FTS vtable SCAN and the `COUNT(*)` walks the PK index (both EXPLAIN QUERY PLAN-verified), so the cost still grows linearly with vault size — just with a tiny constant, so the win over a full rebuild *widens* as the vault grows.
 
-Deliberate scope — `indexUpsert` touches memories + FTS only, **not** the entity graph (`entities`/`edges`) or `mem_vectors`:
+Deliberate scope — `indexUpsert` touches memories + FTS only, **not** the entity graph (`entities`/`edges`), `mem_vectors`, or `commitments`:
 
 - The entity graph is a whole-corpus product: `buildGraph` derives structural entities (scope / tag / `[[wikilink]]` / category, plus a per-memory hub) from **every** memory *Meta-independently*, and `canonicalizePersons` merges person identities *across* memories while `writeGraph`'s `INSERT OR REPLACE` recomputes an entity's `mention_count` from the rows it sees. So an authored write genuinely adds graph nodes (at minimum its `scope:` entity and hub) — but a *correct* single-memory graph delta is not a local operation, and rebuilding the graph per write is the `O(vault)` cost this change avoids.
 - Vectors feed only the **hybrid** retrieval path, which `defaultSearch` enables **only** when a semantic embedder (Ollama) is configured; under the default static-hash embedder search is FTS-only, so a missing vector has no effect there. Under a semantic embedder the new memory is a **real but bounded, self-healing recall gap** on the hybrid arm — fully searchable via FTS immediately, and it gains its vector at the next full rebuild.
 
-Consequence: after an authored write, FTS **search is immediately fresh**, but the entity graph (`list_entities`, `get_entity`, `mora graph`) and `mem_vectors` (hybrid recall under a semantic embedder) reflect the new memory only after the **next full rebuild** — the scheduled `index-hourly` job, `mora index rebuild`, a connector sync, or a delete. The lag is therefore **bounded by the rebuild cadence** (hourly by default), not indefinite; the vault stays the source of truth, and the index is a derived, eventually-consistent cache.
+Consequence: after an authored write, FTS **search is immediately fresh**, but the entity graph (`list_entities`, `get_entity`, `mora graph`), `mem_vectors` (hybrid recall under a semantic embedder), and typed commitment inventory reflect the new memory only after the **next full rebuild** — the scheduled `index-hourly` job, `mora index rebuild`, a connector sync, or a delete. Meeting and future daily obligation surfaces therefore read one common last-good commitment generation rather than recomputing different windowed views. The lag is **bounded by the rebuild cadence** (hourly by default), not indefinite; the vault stays the source of truth, and the index is a derived, eventually-consistent cache.
 
 Identity safety is preserved end-to-end. `indexUpsert` applies the **same** vault-identity guard as `rebuildIndex` (`assessRebuild` in `vaultid.go`): a write against a vault whose `.mora-vault.json` marker does not match the index rolls back and returns `errRebuildBlocked` **without touching the index**, so `cmdWrite`/`write_memory` keep today's degraded-success handling (CLI: warn + exit 0; MCP: `index_stale:true` + warning, never `isError`). Cold-start and legacy/unbound states (no index yet, stale schema version, or an index that never recorded a `vault_id`) **delegate to the full `rebuildIndex`**, which creates the complete schema and binds identity — the readiness check runs on a read connection so the delegated rebuild's own immediate transaction is never blocked. The full `rebuildIndex` remains the path for `mora index rebuild`, connector sync, and delete.
 

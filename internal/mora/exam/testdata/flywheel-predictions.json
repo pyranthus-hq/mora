@@ -17,9 +17,10 @@
       "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-closed-open",
       "section_kind": "open_loops",
-      "direction": "unknown",
+      "direction": "owed_by_self",
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
@@ -29,9 +30,10 @@
       "text": "~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-reply-chain",
       "section_kind": "unresolved_threads",
-      "direction": "unknown",
+      "direction": "owed_by_self",
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
@@ -41,9 +43,10 @@
       "text": "~1 day ago · dana@example.net — “The launch appendix still needs your initials.”",
       "attendee": "dana@example.net",
       "attendee_atom": "address:dana@example.net",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-statement",
       "section_kind": "material_shared_context",
-      "direction": "unknown",
+      "direction": "owed_by_self",
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
@@ -67,9 +70,10 @@
       "text": "~3 days ago · Sam Rivera — “Can you send the reviewer list?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-closed-open",
       "section_kind": "open_loops",
-      "direction": "unknown",
+      "direction": "owed_by_self",
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
@@ -79,9 +83,10 @@
       "text": "~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”",
       "attendee": "Sam Rivera",
       "attendee_atom": "address:sam@example.org",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-reply-chain",
       "section_kind": "unresolved_threads",
-      "direction": "unknown",
+      "direction": "owed_by_self",
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
@@ -91,9 +96,10 @@
       "text": "~1 day ago · +15550100137 — “I will bring the room key to the review.”",
       "attendee": "+15550100137",
       "attendee_atom": "address:dana@example.net",
+      "owner": "address:dana@example.net",
       "memory_id": "imessage_chat/exam-flywheel",
       "section_kind": "material_shared_context",
-      "direction": "unknown",
+      "direction": "owed_by_counterparty",
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
@@ -103,9 +109,10 @@
       "text": "~1 day ago · +15550100137 — “The launch appendix still needs your initials.”",
       "attendee": "+15550100137",
       "attendee_atom": "address:dana@example.net",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-statement",
       "section_kind": "material_shared_context",
-      "direction": "unknown",
+      "direction": "owed_by_self",
       "due": "",
       "lifecycle": "unknown",
       "closure_ref": ""
@@ -150,23 +157,23 @@
     "non_obligation_leaks": 1,
     "critical_identity": 0,
     "critical_direction": 0,
-    "direction_scorable": false,
+    "direction_scorable": true,
     "owner": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.3333333333333333,
+      "defined": true,
       "recall_by_class": {
         "p/dana": 0,
-        "p/self": 0
+        "p/self": 0.6666666666666666
       }
     },
     "direction": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.3333333333333333,
+      "defined": true,
       "recall_by_class": {
         "owed_by_counterparty": 0,
-        "owed_by_self": 0
+        "owed_by_self": 0.6666666666666666
       }
     },
     "due_time": {
@@ -255,23 +262,23 @@
     "non_obligation_leaks": 1,
     "critical_identity": 0,
     "critical_direction": 0,
-    "direction_scorable": false,
+    "direction_scorable": true,
     "owner": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8333333333333333,
+      "defined": true,
       "recall_by_class": {
-        "p/dana": 0,
-        "p/self": 0
+        "p/dana": 1,
+        "p/self": 0.6666666666666666
       }
     },
     "direction": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8333333333333333,
+      "defined": true,
       "recall_by_class": {
-        "owed_by_counterparty": 0,
-        "owed_by_self": 0
+        "owed_by_counterparty": 1,
+        "owed_by_self": 0.6666666666666666
       }
     },
     "due_time": {

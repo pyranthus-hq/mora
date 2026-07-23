@@ -802,7 +802,7 @@ func scoreMeeting(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, pre
 	goldHit := make([]bool, len(gold))
 	goldAttributed := make([]bool, len(gold))
 	exactPreds := 0
-	acc := newTypedAccumulator(gold)
+	acc := newTypedAccumulator(gold, idx)
 	commitments := newCommitmentAccumulator(l, idx, inventoryGold)
 
 	for _, p := range visible {
@@ -903,7 +903,7 @@ func scoreDaily(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, preds
 	}
 	goldHit := make([]bool, len(gold))
 	exactPreds := 0
-	acc := newTypedAccumulator(gold)
+	acc := newTypedAccumulator(gold, idx)
 	commitments := newCommitmentAccumulator(l, idx, inventoryGold)
 	for _, p := range visible {
 		commitments.observeVisibleClaim(p)
@@ -1458,6 +1458,7 @@ func (a *commitmentAccumulator) citationRoles() PR {
 // emitting only "unknown" reports N/A — a failure — instead of a vacuous 1.0.
 type typedAccumulator struct {
 	gold []goldItem
+	idx  ledgerIndex
 
 	ownerHit  map[string]int
 	ownerGold map[string]int
@@ -1473,9 +1474,10 @@ type typedAccumulator struct {
 	dueHitByClass, dueGoldByClass map[string]int
 }
 
-func newTypedAccumulator(gold []goldItem) *typedAccumulator {
+func newTypedAccumulator(gold []goldItem, idx ledgerIndex) *typedAccumulator {
 	acc := &typedAccumulator{
 		gold:           gold,
+		idx:            idx,
 		ownerHit:       map[string]int{},
 		ownerGold:      map[string]int{},
 		ownerOK:        map[string]int{},
@@ -1497,9 +1499,10 @@ func newTypedAccumulator(gold []goldItem) *typedAccumulator {
 
 func (a *typedAccumulator) observeGold(p Prediction, g goldItem, index int) {
 	if p.Owner != "" && p.Owner != Unknown {
-		a.ownerPred[p.Owner]++
-		if p.Owner == g.Owner {
-			a.ownerOK[p.Owner]++
+		owner := a.resolveOwner(p.Owner)
+		a.ownerPred[owner]++
+		if owner == g.Owner {
+			a.ownerOK[owner]++
 			a.ownerHit[g.Owner]++
 		}
 	}
@@ -1518,6 +1521,19 @@ func (a *typedAccumulator) observeGold(p Prediction, g goldItem, index int) {
 			a.dueHitByClass[g.Due]++
 		}
 	}
+}
+
+func (a *typedAccumulator) resolveOwner(owner string) string {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	if owner == "self:self" {
+		return a.idx.self
+	}
+	if _, value, ok := strings.Cut(owner, ":"); ok {
+		if identity, found := a.idx.atoms[strings.ToLower(strings.TrimSpace(value))]; found {
+			return identity
+		}
+	}
+	return owner
 }
 
 // observeNegative scores the typed rows over a prediction that hit a labelled span

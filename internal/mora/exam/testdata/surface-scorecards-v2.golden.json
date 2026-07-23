@@ -240,23 +240,23 @@
     "non_obligation_leaks": 0,
     "critical_identity": 0,
     "critical_direction": 0,
-    "direction_scorable": false,
+    "direction_scorable": true,
     "owner": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 1,
+      "defined": true,
       "recall_by_class": {
-        "p/imani": 0,
-        "p/self": 0
+        "p/imani": 1,
+        "p/self": 1
       }
     },
     "direction": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 1,
+      "defined": true,
       "recall_by_class": {
-        "owed_by_counterparty": 0,
-        "owed_by_self": 0
+        "owed_by_counterparty": 1,
+        "owed_by_self": 1
       }
     },
     "due_time": {
@@ -343,23 +343,23 @@
     "non_obligation_leaks": 0,
     "critical_identity": 0,
     "critical_direction": 0,
-    "direction_scorable": false,
+    "direction_scorable": true,
     "owner": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 1,
+      "defined": true,
       "recall_by_class": {
-        "p/imani": 0,
-        "p/self": 0
+        "p/imani": 1,
+        "p/self": 1
       }
     },
     "direction": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 1,
+      "defined": true,
       "recall_by_class": {
-        "owed_by_counterparty": 0,
-        "owed_by_self": 0
+        "owed_by_counterparty": 1,
+        "owed_by_self": 1
       }
     },
     "due_time": {
