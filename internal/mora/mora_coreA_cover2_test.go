@@ -97,13 +97,27 @@ func TestCoreA_SetSourceEnabledCreatesRow(t *testing.T) {
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// No source row yet => setSourceEnabled must mint one carrying the consent bit.
-	if err := setSourceEnabled(cfg, "filesystem", true); err != nil {
+	// No source row yet => setSourceEnabled mints one carrying the consent bit
+	// for types whose bare row is meaningful (implicit local store).
+	if err := setSourceEnabled(cfg, "imessage", true); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := loadSources(cfg)
-	if len(got) != 1 || got[0].Type != "filesystem" || !got[0].IsEnabled() {
-		t.Fatalf("setSourceEnabled should create an enabled filesystem row, got %+v", got)
+	if len(got) != 1 || got[0].Type != "imessage" || !got[0].IsEnabled() {
+		t.Fatalf("setSourceEnabled should create an enabled imessage row, got %+v", got)
+	}
+	// filesystem is the exception: a row without a path can never ingest, so
+	// setSourceEnabled must NOT mint one (and disable never mints for any type —
+	// absence already means disabled).
+	if err := setSourceEnabled(cfg, "filesystem", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := setSourceEnabled(cfg, "gmail", false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = loadSources(cfg)
+	if len(got) != 1 {
+		t.Fatalf("no phantom rows should be minted (filesystem enable / gmail disable), got %+v", got)
 	}
 }
 
@@ -192,7 +206,19 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 		t.Fatal("enableConnector must reject an unknown type")
 	}
 
-	// filesystem: no auth, generic success line.
+	// filesystem with NO configured folder: guidance, no phantom row, no error.
+	out.Reset()
+	if err := enableConnector(context.Background(), cfg, "filesystem", &out, stdin); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "mora connect filesystem") {
+		t.Fatalf("enable filesystem without a folder should guide to `mora connect filesystem`; got:\n%s", out.String())
+	}
+
+	// filesystem with a configured folder: flips the row, success line.
+	if err := addSource(cfg, []string{"filesystem", "--name", "docs", "--path", t.TempDir()}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	out.Reset()
 	if err := enableConnector(context.Background(), cfg, "filesystem", &out, stdin); err != nil {
 		t.Fatal(err)
@@ -281,6 +307,11 @@ func TestCoreA_ApplySetupSelection(t *testing.T) {
 	var out bytes.Buffer
 	stdin := strings.NewReader("")
 
+	// filesystem needs a configured folder for enable to have a row to flip.
+	if err := addSource(cfg, []string{"filesystem", "--name", "docs", "--path", t.TempDir()}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
 	// doBackfill=false: enable only, ZERO ingest.
 	if err := applySetupSelection(context.Background(), cfg, []string{"imessage", "filesystem"}, false, &out, stdin); err != nil {
 		t.Fatal(err)
@@ -360,7 +391,9 @@ func TestCoreA_CmdConnectors(t *testing.T) {
 	if _, err := runErr(t, "connectors", "disable"); err == nil {
 		t.Fatal("connectors disable with no type must error")
 	}
-	// enable then disable a no-auth connector.
+	// enable then disable a no-auth connector (needs a configured folder first —
+	// a folderless `enable filesystem` is a guided no-op, never a phantom row).
+	run(t, "sources", "add", "filesystem", "--name", "docs", "--path", t.TempDir())
 	if out := run(t, "connectors", "enable", "filesystem"); !strings.Contains(out, "enabled filesystem") {
 		t.Fatalf("connectors enable filesystem; got:\n%s", out)
 	}

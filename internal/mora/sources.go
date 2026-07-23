@@ -126,15 +126,27 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
 		found := false
 		for i := range sources {
-			if sources[i].Type == ctype {
-				sources[i].Enabled = ptr(enabled)
-				found = true
+			if sources[i].Type != ctype {
+				continue
 			}
+			if ctype == "filesystem" && sources[i].Path == "" && enabled {
+				// Never (re)activate a pathless filesystem row: it cannot ingest
+				// anything and only fails the walk (a legacy phantom minted by
+				// older binaries). Disabling one is still allowed.
+				continue
+			}
+			sources[i].Enabled = ptr(enabled)
+			found = true
 		}
-		if !found {
-			// No source row yet (e.g. filesystem before any `sources add`). Create a
-			// minimal row carrying the consent bit; an explicit Enabled avoids the
-			// load-time grandfather flipping a nil to true (D-11).
+		if !found && enabled && ctype != "filesystem" {
+			// No source row yet (e.g. imessage/applecalendar before any explicit
+			// add — their implicit local store makes a bare row meaningful). Create
+			// a minimal row carrying the consent bit; an explicit Enabled avoids
+			// the load-time grandfather flipping a nil to true (D-11). NOT minted
+			// on disable (absence already means disabled — a minted disabled row
+			// would later be "found" and resurrected by enable) and NOT for
+			// filesystem (a row without a path can never ingest; enableConnector
+			// guides the user to configure a folder instead).
 			sources = append(sources, Source{
 				Name:      ctype,
 				Type:      ctype,
@@ -145,6 +157,20 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 		}
 		return sources, nil
 	})
+}
+
+// hasConfiguredFilesystemSource reports whether any filesystem source row is
+// actually configured — i.e. carries a non-empty Path. A pathless row (a legacy
+// phantom minted by older binaries on `connectors enable filesystem`) does not
+// count: it can never ingest, so enable must guide the user to configure a
+// folder rather than flip it.
+func hasConfiguredFilesystemSource(sources []Source) bool {
+	for _, s := range sources {
+		if s.Type == "filesystem" && s.Path != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // containsType reports whether types contains t.
@@ -319,11 +345,17 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	// New sources are consent-gated: default-disabled (D-11). Enabled is set
-	// explicitly to false so the grandfather migration in loadSources (which
+	// New sources are consent-gated per TYPE: a row added under a type the user
+	// never enabled defaults disabled (D-11), while a row added under an
+	// already-enabled type inherits that consent and starts enabled — consent is
+	// granted at type granularity (D-02: `connectors enable` flips every row of
+	// the type), so re-running enable would flip the new row anyway, and landing
+	// it disabled only produced the "run `mora connectors enable <type>` first"
+	// dead end for a command the user had ALREADY run. Enabled is always set
+	// explicitly (never nil) so the grandfather migration in loadSources (which
 	// normalizes nil => true for pre-Enabled legacy sources) cannot silently
 	// auto-enable a freshly added source on the next load.
-	s := Source{Name: *name, Type: stype, Scope: *scope, Path: expandHome(*path), Label: *label, Calendar: *cal, FolderID: *folder, Enabled: ptr(false), CreatedAt: time.Now().Format(time.RFC3339)}
+	s := Source{Name: *name, Type: stype, Scope: *scope, Path: expandHome(*path), Label: *label, Calendar: *cal, FolderID: *folder, CreatedAt: time.Now().Format(time.RFC3339)}
 	if s.Type == "filesystem" && s.Path == "" {
 		return errors.New("filesystem source requires --path")
 	}
@@ -331,13 +363,20 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	// so a concurrent writer's change is not clobbered. Unlike the old swallowed
 	// load error, a corrupt registry now fails loudly instead of being replaced by
 	// only this new source (matching connectFilesystem's long-standing guard).
+	// The consent-inheritance check reads the SAME freshly loaded snapshot, so it
+	// cannot race a concurrent enable/disable.
 	if err := mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		typeEnabled := false
 		var next []Source
 		for _, existing := range sources {
+			if existing.Type == s.Type && existing.IsEnabled() {
+				typeEnabled = true
+			}
 			if existing.Name != s.Name {
 				next = append(next, existing)
 			}
 		}
+		s.Enabled = ptr(typeEnabled)
 		next = append(next, s)
 		return next, nil
 	}); err != nil {

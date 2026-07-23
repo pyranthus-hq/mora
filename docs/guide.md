@@ -187,6 +187,12 @@ mora connectors enable filesystem
 mora ingest run --source myproject
 ```
 
+The order is forgiving: `sources add` inherits the type's consent, so a source
+added while filesystem is already enabled starts enabled and can be ingested
+immediately (no re-enable needed). Running `mora connectors enable filesystem`
+before any folder is configured enables nothing — a filesystem source is
+meaningless without a path — and instead points you at the two commands above.
+
 Mora ingests curated files only: `.md`, `.json`, `.yaml`, `.toml`, `.txt`, `.csv`, `README`, `go.mod`, `CLAUDE.md`, `AGENTS.md`, and similar metadata files, plus **`.docx`** (Word documents) and **`.pdf`**, both text-extracted with pure-Go libraries (no CGO). Mora only indexes text it can actually read: a scanned, image-only PDF yields nothing rather than garbage (there is no OCR). Other binaries and build artifacts are skipped.
 
 ## Manage connectors
@@ -209,7 +215,7 @@ mora connectors disable imessage    # stop syncing a source
 Backfill one source or everything that is enabled:
 
 ```bash
-mora ingest run --source docs       # one named source
+mora ingest run --source docs       # one named source (a name that matches nothing is an error, not an empty run)
 mora ingest run --all               # every enabled source (what the hourly schedule runs; disabled sources are skipped)
 ```
 

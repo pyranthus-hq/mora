@@ -97,6 +97,12 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 	if perr := fs.Parse(args[1:]); perr != nil {
 		return perr
 	}
+	// One of the two selectors is required: a bare `ingest run` used to walk the
+	// loop with sourceName=="", match nothing, and print a successful-looking
+	// "ingested 0 item(s)".
+	if !*all && *sourceName == "" {
+		return errors.New("usage: mora ingest run --source <name>|--all")
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -112,6 +118,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 	}
 	count := 0
 	failures := 0
+	named := false
 	var namedErr error
 	for _, s := range sources {
 		// Enabled gate (D-07): a named disabled source ERRORS before the skip so
@@ -121,6 +128,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 			if s.Name != *sourceName {
 				continue
 			}
+			named = true
 			if !s.IsEnabled() {
 				return fmt.Errorf("%s is disabled — run `mora connectors enable %s` first", s.Name, s.Type)
 			}
@@ -146,6 +154,12 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 			failures++
 			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
 		}
+	}
+	// A named source that matched NOTHING is a typo, not a successful empty run:
+	// error (exit 1) before the rebuild — no ingest happened, so there is nothing
+	// to make searchable.
+	if !*all && !named {
+		return fmt.Errorf("no source named %q — run `mora sources list` to see configured sources", *sourceName)
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		if namedErr != nil {
@@ -1006,6 +1020,18 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 		}
 		var next []Source
 		for _, existing := range sources {
+			if existing.Type == "filesystem" && existing.Path == "" {
+				// Registry repair: older binaries minted a pathless filesystem row on
+				// `connectors enable filesystem`. It can never ingest — it only fails
+				// the hourly walk and raises a red "never synced" banner — and this
+				// command is exactly the repair the ingest error recommends, so drop
+				// it here while adding the healthy row.
+				fmt.Fprintf(stdout, "removed legacy filesystem source %q (it had no path and could never sync)\n", existing.Name)
+				if p := syncStatusPathFor(cfg, existing); p != "" {
+					_ = os.Remove(p) // drop its failed-sync status so `sync status` stops listing it
+				}
+				continue
+			}
 			if existing.Name == s.Name {
 				// Same name + same folder => a deliberate re-connect: refresh in place
 				// and preserve the original add time. Same name + a DIFFERENT folder
@@ -1133,6 +1159,12 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	// committing mid-walk was missed and the stale walker resurrected the atom
 	// (#113). Only stable_id (item) forgets can match a filesystem memory: it
 	// carries no participant identity, so `forget --handle/--email` never targets it.
+	// Legacy installs may carry a pathless filesystem row (older binaries minted
+	// one on `connectors enable filesystem`). Walking "" yields the useless
+	// `lstat : no such file or directory` — name the real problem and the fix.
+	if s.Path == "" {
+		return 0, fmt.Errorf("filesystem source %q has no path — re-add it with `mora connect filesystem <path>` (or remove the row from sources.json)", s.Name)
+	}
 	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {
