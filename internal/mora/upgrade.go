@@ -205,8 +205,11 @@ func decideUpgrade(current, latestVersion string) (verdict upgradeVerdict, isLoc
 }
 
 // gitDescribeSuffixRe matches the "-<commits-ahead>-g<sha>" suffix that
-// `git describe --tags` appends when HEAD is past the nearest tag.
-var gitDescribeSuffixRe = regexp.MustCompile(`-\d+-g[0-9a-f]{4,40}$`)
+// `git describe --tags` appends when HEAD is past the nearest tag. The sha
+// spans git's minimum abbreviation (4) up to a full SHA-256 (64) so an
+// unmatched long hash can never fall through to prerelease comparison and
+// resurrect the downgrade bug.
+var gitDescribeSuffixRe = regexp.MustCompile(`-\d+-g[0-9a-f]{4,64}$`)
 
 // localBuildBase extracts the release tag a git-describe build version was cut
 // from: "v0.10.0-60-g2d08334", "v0.10.0-60-g2d08334-dirty", and "v0.10.0-dirty"

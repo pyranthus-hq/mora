@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/creativeprojects/go-selfupdate"
@@ -46,6 +47,7 @@ func TestLocalBuildBase(t *testing.T) {
 		{"git-describe dirty", "v0.10.0-60-g2d08334-dirty", "v0.10.0", true},
 		{"dirty on exact tag", "v0.10.0-dirty", "v0.10.0", true},
 		{"long sha", "v0.9.1-5-g2d083341c2a94b7e9d3f5a6b7c8d9e0f1a2b3c4d", "v0.9.1", true},
+		{"full sha-256", "v0.9.1-5-g" + strings.Repeat("2d08fe1c", 8), "v0.9.1", true},
 		{"clean release", "v0.10.0", "", false},
 		{"clean release without v", "0.9.1", "", false},
 		{"prerelease tag is not a local build", "v0.10.0-rc1", "", false},
