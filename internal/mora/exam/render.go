@@ -16,6 +16,9 @@ const RendererVersion = "exam-render-v1"
 // string (and the v1 byte stream it stands for) is frozen: the obligations-v1
 // corpus hashes are pinned against it.
 func RendererVersionFor(schema int) string {
+	if schema >= SchemaV3 {
+		return "exam-render-v3"
+	}
 	if schema >= SchemaV2 {
 		return "exam-render-v2"
 	}
@@ -29,6 +32,15 @@ type renderedMemory struct {
 	tags, provider, providerID, contentHash  string
 	meta                                     map[string]any
 	body                                     string
+}
+
+type gmailMessageEvidence struct {
+	MessageRef string   `json:"message_ref"`
+	Sender     string   `json:"sender,omitempty"`
+	To         []string `json:"to,omitempty"`
+	Cc         []string `json:"cc,omitempty"`
+	At         string   `json:"at,omitempty"`
+	BlockRefs  []string `json:"block_refs,omitempty"`
 }
 
 func Render(l Ledger) (map[string][]byte, error) {
@@ -88,12 +100,28 @@ func renderArtifact(a Artifact, ids map[string]Identity, selfID string, schema i
 func renderGmail(a Artifact, ids map[string]Identity, schema int) (string, map[string]any) {
 	from, to, cc, names := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]string{}
 	parts := make([]string, 0, len(a.Messages))
+	messages := make([]gmailMessageEvidence, 0, len(a.Messages))
 	for _, msg := range a.Messages {
 		from[identityEmail(ids[msg.From])] = true
 		addEmails(to, msg.To, ids)
 		addEmails(cc, msg.Cc, ids)
 		addNames(names, append(append([]string{msg.From}, msg.To...), msg.Cc...), ids)
 		parts = append(parts, renderMessageBody(msg, schema))
+		if schema >= SchemaV3 {
+			blockRefs := make([]string, 0, len(msg.Body))
+			for _, block := range msg.Body {
+				blockRefs = append(blockRefs, block.ID)
+			}
+			at, _ := time.Parse(time.RFC3339, msg.At)
+			messages = append(messages, gmailMessageEvidence{
+				MessageRef: a.MemoryID + "#" + msg.ID,
+				Sender:     identityEmail(ids[msg.From]),
+				To:         sortedEmails(msg.To, ids),
+				Cc:         sortedEmails(msg.Cc, ids),
+				At:         at.UTC().Format(time.RFC3339),
+				BlockRefs:  blockRefs,
+			})
+		}
 	}
 	meta := map[string]any{"message_count": strconv.Itoa(len(a.Messages)), "occurred_at": newestMessage(a.Messages).UTC().Format(time.RFC3339)}
 	putSorted(meta, "from", from)
@@ -101,6 +129,10 @@ func renderGmail(a Artifact, ids map[string]Identity, schema int) (string, map[s
 	putSorted(meta, "cc", cc)
 	if len(names) > 0 {
 		meta["names"] = names
+	}
+	if schema >= SchemaV3 && len(messages) > 0 {
+		meta["messages"] = messages
+		meta["last_sender"] = messages[len(messages)-1].Sender
 	}
 	first := a.Messages[0]
 	return "From: " + identityHeader(ids[first.From]) + "\n\n" + strings.Join(parts, "\n\n---\n\n"), meta
@@ -320,6 +352,17 @@ func addEmails(dst map[string]bool, refs []string, ids map[string]Identity) {
 			dst[email] = true
 		}
 	}
+}
+
+func sortedEmails(refs []string, ids map[string]Identity) []string {
+	values := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if email := identityEmail(ids[ref]); email != "" {
+			values = append(values, email)
+		}
+	}
+	sort.Strings(values)
+	return values
 }
 
 func addNames(dst map[string]string, refs []string, ids map[string]Identity) {

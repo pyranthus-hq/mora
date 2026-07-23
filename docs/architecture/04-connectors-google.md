@@ -8,7 +8,7 @@ Read-only Gmail (thread-level) and Calendar (event) ingestion: an installed-app 
 |---|---|---|
 | `internal/google/oauth.go` | 235 | OAuth config resolution (BYO vs embedded placeholder), loopback consent flow, token store (0600), revoke, WSL detection |
 | `internal/google/client.go` | 69 | `LiveFetcher` (gmail+calendar services from a token), `FetchPage` dispatch, `AuthedLabels`, base64url body decode |
-| `internal/google/gmail.go` | 156 | One page of threads → `Item` (thread-level union), MIME body walk, quote stripping, attachment metadata, sender/recipient address capture |
+| `internal/google/gmail.go` | — | One page of threads → `Item` (thread-grained), MIME body walk, quote stripping, attachment metadata, and thread-level plus ordered per-message sender/recipient evidence |
 | `internal/google/calendar.go` | 117 | One page of events (recurrence-expanded) → `Item`, attendee/organizer capture, cancelled→tombstone |
 | `internal/google/identity.go` | 131 | `addrSet`: RFC 5322 address-list parsing, lowercase/dedup, display-name aliases, deterministic sorted Meta output |
 | `internal/google/client.json` | 1 | Committed **NON-SECRET** placeholder so `//go:embed` compiles on a fresh clone |
@@ -98,9 +98,11 @@ sequenceDiagram
 
 `fetchGmailPage` (`internal/google/gmail.go:15`) lists threads (`Users.Threads.List("me")`, page size **50**) with a built-in query that excludes `category:promotions` and `category:social`, plus an `after:` date filter and any user query/label IDs (`buildGmailQuery`, `:41`). For each listed thread it fetches the **full** thread and maps it. A per-thread `Get` failure is *skipped*, not fatal (`:33`).
 
-`gmailThreadToItem` (`internal/google/gmail.go:52`) collapses a whole thread into **one** `Item` (capture stays thread-grained — per-message edges are not modeled):
+`gmailThreadToItem` (`internal/google/gmail.go`) collapses a whole thread into **one** `Item` (capture stays thread-grained) while retaining both the legacy thread union and ordered per-message evidence:
 - Subject = the first non-empty `Subject` header in thread order; `OccurredAt` = the latest message `InternalDate`.
 - Body = `From: …` + each message's `text/plain` part, quote-stripped, joined with `---`.
+- `Meta["messages"]` is an ordered array carrying each message's immutable `message_ref`, normalized `sender`/`to`/`cc`, RFC3339 `at`, and connector-visible `block_refs`; `Meta["last_sender"]` is the final message's normalized sender. The one-memory-per-thread storage contract does not change.
+- The existing sorted `from`/`to`/`cc` union remains present for graph and backward compatibility. It must not be used to infer direction inside a two-way thread; direction consumes the ordered message entry that owns the authored evidence.
 - `decodeGmailBody` (`:113`) recursively walks the MIME tree for the first `text/plain` part; `decodeBase64URL` (`internal/google/client.go:59`) handles both padded and unpadded base64url.
 - `stripQuoted` (`:142`) drops `>`-prefixed lines and truncates at an `On … wrote:` attribution — a cheap heuristic to keep bodies lean.
 - Attachment **metadata only** (filename/mime/size), never bytes (`gmailAttachments`, `:128`).
@@ -159,7 +161,7 @@ flowchart TD
 - **Content-hash skip preserves `created_at`.** An unchanged thread is not rewritten, and rewrites keep the original creation time. The hash folds in Meta only when non-empty, so pre-Meta files don't spuriously rewrite. **Volatile state keys (Gmail `labels`, issue #62) are stripped before hashing** (`hashMeta`) so a read/star toggle never rewrites the file or churns the delta. (`internal/mora/ingest.go`, `internal/memory/mapped.go`)
 - **Ingest is resumable, not live.** The checkpoint advances per page and survives a crash; cursors are stored in `SyncStatus` (`internal/memory/status.go:13`) but the `GmailHistory`/`CalSyncToken` incremental fields are **unused in v1** — sync is an honest full re-snapshot. See [sync & freshness](./11-sync-and-freshness.md).
 - **Never swallow sync errors.** Page-fetch errors stop the run but preserve resume state; per-item write errors are counted and skipped. Failures are surfaced to the user so a stale snapshot is always distinguishable from a fresh one. (`internal/memory/ingest.go:43`, `internal/mora/ingest.go`)
-- **Gmail capture is thread-grained.** One thread → one `Item` → one memory; per-message edges are intentionally not modeled. Subject/From take the first message; `OccurredAt` is the latest message. (`internal/google/gmail.go:52`)
+- **Gmail storage is thread-grained; evidence is message-grained.** One thread → one `Item` → one memory, but `Meta["messages"]` preserves Gmail order and each message's sender/recipients/time/evidence refs, with `last_sender` pinned separately. The sorted thread union remains backward-compatible identity data and is never a substitute for message direction. (`internal/google/gmail.go`)
 - **Identity Meta must be byte-stable.** Addresses are sorted and lowercased; empty lists/names maps are omitted. This is load-bearing for the deterministic [entity graph](./03-entity-graph.md) — do not introduce map-iteration-order output. (`internal/google/identity.go:99`, `:111`)
 - **Attachments are metadata-only.** v1 never ingests attachment bodies. (`internal/google/gmail.go:128`)
 - **The `kindRegistry` already hardcodes gmail/calendar.** Unlike the iMessage connector (which calls `RegisterKind` in an `init`), the gmail/calendar (type, provider) mappings are baked into `internal/memory/mapped.go:69`, so the google adapter does not register them. (`internal/memory/mapped.go:69`)

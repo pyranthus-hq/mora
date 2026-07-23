@@ -3,6 +3,7 @@ package google
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +11,23 @@ import (
 )
 
 const gmailPageSize = 50
+
+// gmailMessageEvidence is the ordered, per-message substrate retained alongside
+// the legacy thread-level identity union. The array order is Gmail thread order;
+// recipient lists are normalized and sorted for deterministic frontmatter.
+//
+// MessageRef and BlockRefs are evidence identity, not content. A Gmail message
+// has one connector-visible authored block after quote stripping, named "body".
+// The exam renderer uses the same shape with ledger message/block ids so a future
+// commitment can anchor to immutable opening evidence without parsing prose.
+type gmailMessageEvidence struct {
+	MessageRef string   `json:"message_ref"`
+	Sender     string   `json:"sender,omitempty"`
+	To         []string `json:"to,omitempty"`
+	Cc         []string `json:"cc,omitempty"`
+	At         string   `json:"at,omitempty"`
+	BlockRefs  []string `json:"block_refs,omitempty"`
+}
 
 // fetchGmailPage lists one page of threads, fetches each thread, and maps it to
 // a single Item (thread-level). Quote-stripping keeps bodies lean.
@@ -55,12 +73,13 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 	var occurred time.Time
 	var bodies []string
 	var atts []Attachment
-	// Structured identity for the entity graph (S3): every sender (From) and every
-	// recipient (To/Cc) across the thread, parsed with net/mail so quoted names and
-	// lists don't mint bogus people. Thread-level union; per-message edges are not
-	// modeled (capture stays thread-grained, matching the rest of Gmail ingest).
+	var messages []gmailMessageEvidence
+	// Structured identity for the entity graph (S3): retain the backward-compatible
+	// thread-level union while also preserving ordered per-message edges for typed
+	// obligation direction and stable evidence identity.
 	senders, recipientsTo, recipientsCc := newAddrSet(), newAddrSet(), newAddrSet()
-	for _, msg := range th.Messages {
+	for i, msg := range th.Messages {
+		messageSenders, messageTo, messageCc := newAddrSet(), newAddrSet(), newAddrSet()
 		for _, h := range msg.Payload.Headers {
 			switch h.Name {
 			case "Subject":
@@ -72,19 +91,34 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 					from = h.Value
 				}
 				senders.addHeader(h.Value)
+				messageSenders.addHeader(h.Value)
 			case "To":
 				recipientsTo.addHeader(h.Value)
+				messageTo.addHeader(h.Value)
 			case "Cc":
 				recipientsCc.addHeader(h.Value)
+				messageCc.addHeader(h.Value)
 			}
+		}
+		body := stripQuoted(decodeGmailBody(msg.Payload))
+		evidence := gmailMessageEvidence{
+			MessageRef: gmailMessageRef(th.Id, msg.Id, i),
+			Sender:     singleAddress(messageSenders),
+			To:         messageTo.list(),
+			Cc:         messageCc.list(),
 		}
 		if msg.InternalDate > 0 {
 			t := time.UnixMilli(msg.InternalDate)
+			evidence.At = t.UTC().Format(time.RFC3339)
 			if t.After(occurred) {
 				occurred = t
 			}
 		}
-		bodies = append(bodies, stripQuoted(decodeGmailBody(msg.Payload)))
+		if body != "" {
+			evidence.BlockRefs = []string{"body"}
+		}
+		messages = append(messages, evidence)
+		bodies = append(bodies, body)
 		atts = append(atts, gmailAttachments(msg.Payload)...)
 	}
 	if subject == "" {
@@ -95,6 +129,12 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 	putAddrList(meta, "to", recipientsTo)
 	putAddrList(meta, "cc", recipientsCc)
 	mergeNames(meta, senders, recipientsTo, recipientsCc)
+	if len(messages) > 0 {
+		meta["messages"] = messages
+		if last := messages[len(messages)-1].Sender; last != "" {
+			meta["last_sender"] = last
+		}
+	}
 	if !occurred.IsZero() {
 		meta["occurred_at"] = occurred.UTC().Format(time.RFC3339)
 	}
@@ -115,6 +155,24 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 		Attachments: atts,
 		Meta:        meta,
 	}
+}
+
+func gmailMessageRef(threadID, messageID string, index int) string {
+	if messageID == "" {
+		// Live Gmail messages always carry an id. The positional fallback keeps
+		// malformed/test inputs deterministic without pretending it is provider
+		// identity.
+		messageID = "message-" + strconv.Itoa(index)
+	}
+	return "gmail_thread/" + threadID + "#" + messageID
+}
+
+func singleAddress(set *addrSet) string {
+	values := set.list()
+	if len(values) != 1 {
+		return ""
+	}
+	return values[0]
 }
 
 // gmailUrgencyLabels collects the actionability labels (UNREAD / IMPORTANT / STARRED)
