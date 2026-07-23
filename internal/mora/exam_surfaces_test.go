@@ -114,6 +114,7 @@ func scoreExamSurface(t *testing.T, ledger exam.Ledger, preds []exam.Prediction,
 // (HOME-09/#141), and HTTP is a transport over the already-counted MCP engine.
 func TestExamSurfaces(t *testing.T) {
 	scorecards := runExamSurfaces(t, examFixtureRoot)
+	assertGate3MeetingRatchet(t, scorecards)
 	assertExamSurfaceScorecardsGolden(t, scorecards, examSurfaceScorecardsPath, *update)
 }
 
@@ -122,14 +123,37 @@ func TestExamSurfaces(t *testing.T) {
 // changes may move it only after the scorecard delta has been inspected.
 func TestExamSurfacesV2(t *testing.T) {
 	scorecards := runExamSurfaces(t, examFixtureV2Root)
+	assertGate3MeetingRatchet(t, scorecards)
 	assertExamSurfaceScorecardsGolden(t, scorecards, examSurfaceScorecardsV2Path, *updateV2)
+}
+
+func assertGate3MeetingRatchet(t *testing.T, scorecards examSurfaceScorecards) {
+	t.Helper()
+	for name, card := range map[string]exam.Scorecard{
+		"event_cli": scorecards.EventCLI, "event_mcp": scorecards.EventMCP,
+	} {
+		if !card.Lifecycle.Defined || card.Lifecycle.Precision != 1 || card.Lifecycle.Recall == 0 {
+			t.Errorf("%s Lifecycle = %+v, want precise non-vacuous typed state", name, card.Lifecycle)
+		}
+		if !card.ClosureLinkage.Defined || card.ClosureLinkage.Precision != 1 || card.ClosureLinkage.Recall == 0 {
+			t.Errorf("%s ClosureLinkage = %+v, want precise non-vacuous typed linkage", name, card.ClosureLinkage)
+		}
+		if card.ClosedLeaks != 0 || card.DupLeaks != 0 || card.DedupCrossArtifact != 0 {
+			t.Errorf("%s lifecycle/dedup leaks: ClosedLeaks=%d DupLeaks=%d DedupCrossArtifact=%d",
+				name, card.ClosedLeaks, card.DupLeaks, card.DedupCrossArtifact)
+		}
+	}
 }
 
 func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 	t.Helper()
-	_, event, at := seedExamHomeFromRoot(t, corpusRoot)
+	cfg, event, at := seedExamHomeFromRoot(t, corpusRoot)
 	pinExamSurfaceClocks(t, at)
 	ledger := loadExamLedgerFromRoot(t, corpusRoot)
+	snapshot, err := readCommitmentSnapshot(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	dailyCLIOutput := runExamCLI(t, "pulse", "--digest", "--since-hours", "720")
 	dailyCLI := examDailyCLIPredictions(t, dailyCLIOutput)
@@ -177,8 +201,8 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 	scorecards := examSurfaceScorecards{
 		DailyCLI:  scoreExamSurface(t, ledger, dailyCLI, exam.SurfaceDaily),
 		DailyMCP:  scoreExamSurface(t, ledger, dailyMCP, exam.SurfaceDaily),
-		EventCLI:  scoreExamSurface(t, ledger, examMeetingPredictions(eventCLI), exam.SurfaceMeeting),
-		EventMCP:  scoreExamSurface(t, ledger, examMeetingPredictions(eventMCP), exam.SurfaceMeeting),
+		EventCLI:  scoreExamSurface(t, ledger, examMeetingPredictions(eventCLI, snapshot.Commitments...), exam.SurfaceMeeting),
+		EventMCP:  scoreExamSurface(t, ledger, examMeetingPredictions(eventMCP, snapshot.Commitments...), exam.SurfaceMeeting),
 		HomeState: "MISSING — non-gating until HOME-09/#141",
 	}
 	if !reflect.DeepEqual(scorecards.EventCLI, scorecards.EventMCP) {

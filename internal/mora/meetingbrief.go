@@ -161,14 +161,19 @@ func (c BriefLineCorrection) validate() error {
 // CitedBriefLine is the only renderable evidence atom. Text is a compact extract
 // from the cited memory, never an inferred conclusion.
 type CitedBriefLine struct {
-	Text         string              `json:"text"`
-	Attendee     string              `json:"attendee,omitempty"`
-	Citation     BriefCitation       `json:"citation"`
-	Correction   BriefLineCorrection `json:"correction"`
-	Direction    string              `json:"direction,omitempty"`
-	Owner        govAtom             `json:"owner,omitzero"`
-	Counterparty govAtom             `json:"counterparty,omitzero"`
-	CommitmentID string              `json:"commitment_id,omitempty"`
+	Text                string               `json:"text"`
+	Attendee            string               `json:"attendee,omitempty"`
+	Citation            BriefCitation        `json:"citation"`
+	Correction          BriefLineCorrection  `json:"correction"`
+	Direction           string               `json:"direction,omitempty"`
+	Owner               govAtom              `json:"owner,omitzero"`
+	Counterparty        govAtom              `json:"counterparty,omitzero"`
+	CommitmentID        string               `json:"commitment_id,omitempty"`
+	Lifecycle           string               `json:"lifecycle,omitempty"`
+	ClosureRef          string               `json:"closure_ref,omitempty"`
+	DuplicateOf         string               `json:"duplicate_of,omitempty"`
+	StateUncertain      bool                 `json:"state_uncertain,omitempty"`
+	CommitmentCitations []CommitmentCitation `json:"commitment_citations,omitempty"`
 }
 
 func newCitedBriefLine(text, attendee string, citation BriefCitation, correction BriefLineCorrection, asOf time.Time) (CitedBriefLine, error) {
@@ -512,6 +517,12 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 				excerpt = meetingBriefActionableEvidenceText(m, cfg, at, kind)
 			}
 			commitment, typed := meetingCommitmentFor(commitmentsByMemory[m.ID], attendeeAtom, aliases, excerpt)
+			if typed && (commitment.State != commitOpen || commitment.DuplicateOf != "") {
+				// Lifecycle/dedup are inventory knowledge, not display claims. A
+				// closed, superseded, or duplicate obligation remains queryable in
+				// the materialization but cannot leak back into the open-loop brief.
+				continue
+			}
 			if excerpt == "" && typed && isIMessageMemory(m) {
 				kind = meetingBriefOpenLoops
 				excerpt = commitment.Summary
