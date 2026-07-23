@@ -166,6 +166,14 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		}
 		return nil
 	}
+	// Connector-appropriate pull hint: only gmail/calendar (NeedsAuth) and
+	// filesystem reach this generic tail — imessage/applecalendar returned above
+	// with their own guidance, unknown types were rejected up front. The old
+	// hardcoded `mora sync google` sent filesystem users to a Google command.
+	if ctype == "filesystem" {
+		okf(stdout, "enabled filesystem. Pull data with `mora sync filesystem` (or `mora ingest run --source <name>`).")
+		return nil
+	}
 	okf(stdout, "enabled %s. Pull data with `mora sync google` (or `mora ingest run --all`).", ctype)
 	return nil
 }

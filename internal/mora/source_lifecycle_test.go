@@ -144,6 +144,31 @@ func TestSourcesAddInheritsTypeConsent(t *testing.T) {
 	}
 }
 
+// (d) The post-enable hint must fit the connector type. Enabling filesystem
+// used to print the hardcoded "Pull data with `mora sync google`" — a Google
+// command for a folder connector. filesystem now hints its own pull commands;
+// gmail/calendar keep the google hint (which was correct for them all along).
+func TestEnableHintMatchesConnectorType(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "sources", "add", "filesystem", "--name", "docs", "--path", t.TempDir())
+
+	out := run(t, "connectors", "enable", "filesystem")
+	if strings.Contains(out, "mora sync google") {
+		t.Fatalf("enabling filesystem must not hint the google sync; got:\n%s", out)
+	}
+	if !strings.Contains(out, "mora sync filesystem") {
+		t.Fatalf("enabling filesystem should hint `mora sync filesystem`; got:\n%s", out)
+	}
+
+	// gmail (non-TTY, no token: flips the bit + auth note) keeps the google hint.
+	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
+	out = run(t, "connectors", "enable", "gmail")
+	if !strings.Contains(out, "mora sync google") {
+		t.Fatalf("enabling gmail should hint `mora sync google`; got:\n%s", out)
+	}
+}
+
 // (c) `ingest run --source <name>` with a name that matches NO configured
 // source must error (exit 1) naming the typo and pointing at `mora sources
 // list` — not print "ingested 0 item(s)" and exit 0, which made a typo look
