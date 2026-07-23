@@ -3,7 +3,7 @@ package mora
 import (
 	"fmt"
 	"os"
-	"strings"
+	"sort"
 	"testing"
 
 	"github.com/pyranthus-hq/mora/internal/mora/exam"
@@ -77,6 +77,9 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 	for _, row := range rows {
 		label := row.corpus + " " + row.surface
 		card := row.card
+		if card.ScorerVersion != exam.ScorerVersion {
+			failures = append(failures, fmt.Sprintf("%s scorer version = %d, want %d", label, card.ScorerVersion, exam.ScorerVersion))
+		}
 		failures = append(failures, ratioAtLeastFailures(label+" extraction", card.Extraction, 0.90)...)
 		failures = append(failures, ratioEqualFailures(label+" citation coverage", card.CitationCoverage, 1.0)...)
 		failures = append(failures, ratioEqualFailures(label+" citation correctness", card.CitationCorrect, 1.0)...)
@@ -89,7 +92,10 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 			{name: "third-party leaks", count: card.ThirdPartyLeaks},
 			{name: "closed leaks", count: card.ClosedLeaks},
 			{name: "duplicate leaks", count: card.DupLeaks},
+			{name: "cross-artifact duplicates", count: card.DedupCrossArtifact},
 			{name: "non-obligation leaks", count: card.NonObligationLeaks},
+			{name: "loose matches", count: card.LooseMatches},
+			{name: "unmatched", count: card.Unmatched},
 		} {
 			if absolute.count != 0 {
 				failures = append(failures, fmt.Sprintf("%s %s = %d, want 0", label, absolute.name, absolute.count))
@@ -102,8 +108,44 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 		failures = append(failures, ratioAtLeastFailures(label+" due time", card.DueTime, 0.90)...)
 		failures = append(failures, ratioAtLeastFailures(label+" lifecycle", card.Lifecycle, 0.90)...)
 		failures = append(failures, ratioAtLeastFailures(label+" closure linkage", card.ClosureLinkage, 0.90)...)
-		if card.Owner == "" || card.Owner == exam.OwnerUnscorable {
-			failures = append(failures, fmt.Sprintf("%s owner = %q, want a scorable owner result", label, card.Owner))
+		failures = append(failures, ratioAtLeastFailures(label+" owner", card.Owner, 0.90)...)
+		failures = append(failures, ratioAtLeastFailures(label+" commitment identity", card.CommitmentIdentity, 0.90)...)
+		failures = append(failures, ratioAtLeastFailures(label+" dedup", card.Dedup, 0.90)...)
+		failures = append(failures, ratioAtLeastFailures(label+" citation roles", card.CitationRoles, 0.90)...)
+		for _, dimension := range []struct {
+			name string
+			row  exam.PR
+		}{
+			{name: "owner", row: card.Owner},
+			{name: "direction", row: card.Direction},
+			{name: "due time", row: card.DueTime},
+			{name: "lifecycle", row: card.Lifecycle},
+			{name: "citation roles", row: card.CitationRoles},
+		} {
+			failures = append(failures, classRecallAtLeastFailures(label+" "+dimension.name, dimension.row, 0.90)...)
+		}
+		if card.Surface == exam.SurfaceMeeting {
+			failures = append(failures, ratioAtLeastFailures(label+" counterparty", card.Counterparty, 0.90)...)
+			failures = append(failures, classRecallAtLeastFailures(label+" counterparty", card.Counterparty, 0.90)...)
+		}
+	}
+	return failures
+}
+
+func classRecallAtLeastFailures(label string, got exam.PR, want float64) []string {
+	if len(got.RecallByClass) == 0 {
+		return []string{label + " has no per-class recall, want explicit class floors"}
+	}
+	var failures []string
+	classes := make([]string, 0, len(got.RecallByClass))
+	for class := range got.RecallByClass {
+		classes = append(classes, class)
+	}
+	sort.Strings(classes)
+	for _, class := range classes {
+		recall := got.RecallByClass[class]
+		if recall < want {
+			failures = append(failures, fmt.Sprintf("%s class %q recall = %.6f, want >= %.2f", label, class, recall, want))
 		}
 	}
 	return failures
@@ -145,8 +187,10 @@ func hasTypedProductDeficiency(rows []namedExamScorecard) bool {
 			!card.DueTime.Defined ||
 			!card.Lifecycle.Defined ||
 			!card.ClosureLinkage.Defined ||
-			strings.TrimSpace(card.Owner) == "" ||
-			card.Owner == exam.OwnerUnscorable {
+			!card.Owner.Defined ||
+			!card.CommitmentIdentity.Defined ||
+			!card.Dedup.Defined ||
+			!card.CitationRoles.Defined {
 			return true
 		}
 	}

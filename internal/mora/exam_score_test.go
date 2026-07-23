@@ -163,8 +163,8 @@ func TestExamRealEngineScorecard(t *testing.T) {
 		t.Fatalf("EVAL_BROKEN: meeting LooseMatches=%d Unmatched=%d, want 0/0 — the ledger or the match predicate is wrong, and the audit does not start",
 			meeting.LooseMatches, meeting.Unmatched)
 	}
-	if meeting.Owner != exam.OwnerUnscorable {
-		t.Errorf("Owner = %q, want the UNSCORABLE refusal", meeting.Owner)
+	if meeting.Owner.Defined || meeting.Owner.Recall != 0 {
+		t.Errorf("Owner = %+v, want fail-closed until the product payload carries a direct owner", meeting.Owner)
 	}
 	if exam.RunStateOf(meeting, nil) != exam.StateScoredFailure {
 		t.Errorf("meeting run state = %q; a clean first score is a defect report against the ledger, not a win",

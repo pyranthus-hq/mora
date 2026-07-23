@@ -112,6 +112,7 @@
     }
   ],
   "pre_scorecard": {
+    "scorer_version": 2,
     "surface": "meeting",
     "extraction": {
       "precision": 0.5,
@@ -136,7 +137,11 @@
     "counterparty": {
       "precision": 1,
       "recall": 0.6666666666666666,
-      "defined": true
+      "defined": true,
+      "recall_by_class": {
+        "p/dana": 0.3333333333333333,
+        "p/sam": 1
+      }
     },
     "dedup_cross_artifact": 0,
     "third_party_leaks": 0,
@@ -146,31 +151,73 @@
     "critical_identity": 0,
     "critical_direction": 0,
     "direction_scorable": false,
+    "owner": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false,
+      "recall_by_class": {
+        "p/dana": 0,
+        "p/self": 0
+      }
+    },
     "direction": {
       "precision": 0,
       "recall": 0,
-      "defined": false
+      "defined": false,
+      "recall_by_class": {
+        "owed_by_counterparty": 0,
+        "owed_by_self": 0
+      }
     },
     "due_time": {
       "precision": 0,
       "recall": 0,
-      "defined": false
+      "defined": false,
+      "recall_by_class": {
+        "2026-07-14T11:00:00Z": 0,
+        "none": 0
+      }
     },
     "lifecycle": {
       "precision": 0,
       "recall": 0,
-      "defined": false
+      "defined": false,
+      "recall_by_class": {
+        "closed": 0,
+        "open": 0,
+        "superseded": 0
+      }
     },
     "closure_linkage": {
       "precision": 0,
       "recall": 0,
       "defined": false
     },
-    "owner": "UNSCORABLE: no commitment-owner field exists on the meeting or daily brief payload",
+    "commitment_identity": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "dedup": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "citation_roles": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false,
+      "recall_by_class": {
+        "closure": 0,
+        "opener": 0,
+        "supporting": 0
+      }
+    },
     "loose_matches": 0,
     "unmatched": 0
   },
   "post_scorecard": {
+    "scorer_version": 2,
     "surface": "meeting",
     "extraction": {
       "precision": 0.6,
@@ -195,7 +242,11 @@
     "counterparty": {
       "precision": 1,
       "recall": 0.8333333333333333,
-      "defined": true
+      "defined": true,
+      "recall_by_class": {
+        "p/dana": 0.6666666666666666,
+        "p/sam": 1
+      }
     },
     "dedup_cross_artifact": 0,
     "third_party_leaks": 0,
@@ -205,27 +256,68 @@
     "critical_identity": 0,
     "critical_direction": 0,
     "direction_scorable": false,
+    "owner": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false,
+      "recall_by_class": {
+        "p/dana": 0,
+        "p/self": 0
+      }
+    },
     "direction": {
       "precision": 0,
       "recall": 0,
-      "defined": false
+      "defined": false,
+      "recall_by_class": {
+        "owed_by_counterparty": 0,
+        "owed_by_self": 0
+      }
     },
     "due_time": {
       "precision": 0,
       "recall": 0,
-      "defined": false
+      "defined": false,
+      "recall_by_class": {
+        "2026-07-14T11:00:00Z": 0,
+        "none": 0
+      }
     },
     "lifecycle": {
       "precision": 0,
       "recall": 0,
-      "defined": false
+      "defined": false,
+      "recall_by_class": {
+        "closed": 0,
+        "open": 0,
+        "superseded": 0
+      }
     },
     "closure_linkage": {
       "precision": 0,
       "recall": 0,
       "defined": false
     },
-    "owner": "UNSCORABLE: no commitment-owner field exists on the meeting or daily brief payload",
+    "commitment_identity": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "dedup": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false
+    },
+    "citation_roles": {
+      "precision": 0,
+      "recall": 0,
+      "defined": false,
+      "recall_by_class": {
+        "closure": 0,
+        "opener": 0,
+        "supporting": 0
+      }
+    },
     "loose_matches": 0,
     "unmatched": 0
   },
