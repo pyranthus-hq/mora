@@ -29,11 +29,13 @@ const (
 
 // Ledger schema versions. Version 1 is the obligations-v1 contract and its
 // rendering is frozen — the pinned corpus hashes depend on it. Version 2
-// unlocks the realism features (structural quoting, wrapped bodies, composite
-// artifacts) that version 1 deliberately banned.
+// unlocks realism features (structural quoting, wrapped bodies, composite
+// artifacts). Version 3 preserves ordered Gmail per-message evidence. Each
+// validated corpus stays bound to exactly one schema and renderer version.
 const (
 	SchemaV1 = 1
 	SchemaV2 = 2
+	SchemaV3 = 3
 )
 
 var RequiredValidatorRules = []string{

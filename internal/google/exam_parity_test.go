@@ -79,9 +79,31 @@ func gmailThreadFromLedger(t *testing.T, a exam.Artifact, ids map[string]exam.Id
 			headers = append(headers, &gmail.MessagePartHeader{Name: "Cc", Value: examAddressList(msg.Cc, ids)})
 		}
 		body := base64.RawURLEncoding.EncodeToString([]byte(examBlockText(msg.Body)))
-		th.Messages = append(th.Messages, &gmail.Message{InternalDate: at.UnixMilli(), Payload: &gmail.MessagePart{MimeType: "text/plain", Headers: headers, Body: &gmail.MessagePartBody{Data: body}}})
+		th.Messages = append(th.Messages, &gmail.Message{Id: msg.ID, InternalDate: at.UnixMilli(), Payload: &gmail.MessagePart{MimeType: "text/plain", Headers: headers, Body: &gmail.MessagePartBody{Data: body}}})
 	}
 	return th
+}
+
+func examGmailMessageEvidence(a exam.Artifact, ids map[string]exam.Identity) []gmailMessageEvidence {
+	messages := make([]gmailMessageEvidence, 0, len(a.Messages))
+	for _, msg := range a.Messages {
+		at, _ := time.Parse(time.RFC3339, msg.At)
+		to, cc := newAddrSet(), newAddrSet()
+		to.addHeader(examAddressList(msg.To, ids))
+		cc.addHeader(examAddressList(msg.Cc, ids))
+		evidence := gmailMessageEvidence{
+			MessageRef: a.MemoryID + "#" + msg.ID,
+			Sender:     strings.ToLower(examEmail(ids[msg.From])),
+			To:         to.list(),
+			Cc:         cc.list(),
+			At:         at.UTC().Format(time.RFC3339),
+		}
+		if stripQuoted(examBlockText(msg.Body)) != "" {
+			evidence.BlockRefs = []string{"body"}
+		}
+		messages = append(messages, evidence)
+	}
+	return messages
 }
 
 func readExamGmailMemory(t *testing.T, memoryID string) (string, map[string]any) {
@@ -130,6 +152,14 @@ func TestExamGmailMetaMatchesMapperContract(t *testing.T) {
 		body, meta := readExamGmailMemory(t, a.MemoryID)
 		if item.Body != body {
 			t.Errorf("%s body differs from gmailThreadToItem\ngot: %q\nwant: %q", a.ID, body, item.Body)
+		}
+		// The committed obligations-v1 bytes stay frozen. Add the new evidence
+		// keys in-memory so this parity test continues to compare the complete
+		// current connector contract without rewriting the validated corpus.
+		messages := examGmailMessageEvidence(a, ids)
+		meta["messages"] = messages
+		if len(messages) > 0 && messages[len(messages)-1].Sender != "" {
+			meta["last_sender"] = messages[len(messages)-1].Sender
 		}
 		gotMeta, err := json.Marshal(meta)
 		if err != nil {

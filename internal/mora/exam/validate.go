@@ -48,8 +48,8 @@ func Validate(l Ledger) error {
 }
 
 func validateIdentity(l Ledger) (map[string]Identity, error) {
-	if (l.Version != SchemaV1 && l.Version != SchemaV2) || strings.TrimSpace(l.Self.ID) == "" {
-		return nil, ruleError(RuleIdentity, "schema version 1 or 2 and a declared self identity are required")
+	if (l.Version != SchemaV1 && l.Version != SchemaV2 && l.Version != SchemaV3) || strings.TrimSpace(l.Self.ID) == "" {
+		return nil, ruleError(RuleIdentity, "schema version 1, 2, or 3 and a declared self identity are required")
 	}
 	ids := map[string]Identity{l.Self.ID: l.Self}
 	for _, p := range l.People {
@@ -379,10 +379,35 @@ func validateRequiredShapes(l Ledger) error {
 	if !hasReply || !hasQuoted || !hasForwarded || !hasFooter || !hasIMessage {
 		return ruleError(RuleReplyChainQuotes, "required reply/quoted/forwarded/footer/multi-speaker shape is missing")
 	}
-	if l.Version == SchemaV2 {
-		return validateRealismShapes(l)
+	if l.Version >= SchemaV2 {
+		if err := validateRealismShapes(l); err != nil {
+			return err
+		}
+	}
+	if l.Version == SchemaV3 {
+		return validateGmailEvidenceShape(l)
 	}
 	return nil
+}
+
+// validateGmailEvidenceShape makes schema v3 earn its version: at least one
+// Gmail thread must contain an actual two-way exchange. Message/block ids and
+// monotonic order are already hard-gated by evidence-span and timestamp rules;
+// the renderer turns those fields into the per-message substrate.
+func validateGmailEvidenceShape(l Ledger) error {
+	for _, a := range l.Artifacts {
+		if a.Channel != "gmail" || len(a.Messages) < 2 {
+			continue
+		}
+		senders := map[string]bool{}
+		for _, message := range a.Messages {
+			senders[message.From] = true
+		}
+		if len(senders) >= 2 {
+			return nil
+		}
+	}
+	return ruleError(RuleReplyChainQuotes, "schema v3 requires a two-way Gmail thread to exercise ordered per-message evidence")
 }
 
 // validateRealismShapes is the schema-v2 counterpart of the required-shape
@@ -470,7 +495,7 @@ func validateDefectIsolation(l Ledger) error {
 		}
 		nonObligationIDs[n.ID] = true
 		byArtifact[n.Span.ArtifactID]++
-		if l.Version == SchemaV2 {
+		if l.Version >= SchemaV2 {
 			// Composite artifacts are the point of schema v2, but every label
 			// must stay attributable to its own block: two defects may not
 			// share a block, and a defect may not sit on the very block that
@@ -485,7 +510,7 @@ func validateDefectIsolation(l Ledger) error {
 			}
 		}
 	}
-	if l.Version == SchemaV2 {
+	if l.Version >= SchemaV2 {
 		return nil
 	}
 	for artifact, count := range byArtifact {
@@ -603,7 +628,7 @@ func validateChannelGrain(l Ledger) error {
 					// forwarded blocks legally carry quote syntax (and the
 					// renderer generates more). Authored text may still never
 					// fake a quote — that is how quoting stays label-attributable.
-					if l.Version == SchemaV2 && attrKind[b.Kind] {
+					if l.Version >= SchemaV2 && attrKind[b.Kind] {
 						continue
 					}
 					for _, line := range strings.Split(b.Text, "\n") {
