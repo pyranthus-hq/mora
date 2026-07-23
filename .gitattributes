@@ -11,7 +11,4 @@ internal/mora/eval/** text eol=lf
 
 # The real-output pin is also compared as raw bytes against json.MarshalIndent,
 # which emits LF on every platform. Keep Windows checkout conversion out of it.
-internal/mora/exam/testdata/real-predictions.json text eol=lf
-internal/mora/exam/testdata/surface-scorecards.golden.json text eol=lf
-internal/mora/exam/testdata/surface-scorecards-v2.golden.json text eol=lf
-internal/mora/exam/testdata/flywheel-predictions.json text eol=lf
+internal/mora/exam/testdata/** text eol=lf
