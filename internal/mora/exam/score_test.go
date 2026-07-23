@@ -585,10 +585,10 @@ func TestRealEngineIsGroundedInTheLedger(t *testing.T) {
 	}
 }
 
-// TestRealEngineBornRedRowsAreRed preserves the monotonic typed ratchet: Owner and
-// Direction are now real measured fields, while the later due/lifecycle/closure
-// rows remain visibly red until their product PRs land.
-func TestRealEngineBornRedRowsAreRed(t *testing.T) {
+// TestRealEngineTypedRatchet preserves the monotonic typed ratchet: Owner,
+// Direction, Lifecycle, and ClosureLinkage are real measured fields. Due remains
+// visibly red until its product PR lands.
+func TestRealEngineTypedRatchet(t *testing.T) {
 	l := loadLedger(t, examLedgerPath)
 	sc, err := Score(l, realPredictions(t, SurfaceMeeting), SurfaceMeeting)
 	if err != nil {
@@ -600,18 +600,19 @@ func TestRealEngineBornRedRowsAreRed(t *testing.T) {
 	if !sc.Owner.Defined || sc.Owner.Precision != 1 {
 		t.Errorf("Owner = %+v, want a precise typed product field", sc.Owner)
 	}
-	born := map[string]PR{
-		MetricDueTime:        sc.DueTime,
-		MetricLifecycle:      sc.Lifecycle,
-		MetricClosureLinkage: sc.ClosureLinkage,
+	for name, row := range map[string]PR{
+		MetricLifecycle: sc.Lifecycle, MetricClosureLinkage: sc.ClosureLinkage,
+	} {
+		if !row.Defined || row.Precision != 1 || row.Recall == 0 {
+			t.Errorf("%s = %+v, want a precise, non-vacuous typed product field", name, row)
+		}
 	}
-	for name, row := range born {
-		if row.Recall != 0 {
-			t.Errorf("%s recall = %v, want 0 — the engine cannot express it, so it must be visibly red", name, row.Recall)
-		}
-		if row.Defined {
-			t.Errorf("%s precision is Defined, but the engine emits only %q", name, Unknown)
-		}
+	if sc.DueTime.Recall != 0 || sc.DueTime.Defined {
+		t.Errorf("%s = %+v, want born-red until the product can express due time", MetricDueTime, sc.DueTime)
+	}
+	if sc.ClosedLeaks != 0 || sc.DupLeaks != 0 || sc.DedupCrossArtifact != 0 {
+		t.Errorf("lifecycle/dedup leaks: closed=%d dup=%d cross_artifact=%d",
+			sc.ClosedLeaks, sc.DupLeaks, sc.DedupCrossArtifact)
 	}
 }
 
