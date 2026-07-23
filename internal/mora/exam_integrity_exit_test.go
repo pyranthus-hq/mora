@@ -16,7 +16,10 @@ import (
 	"github.com/pyranthus-hq/mora/internal/mora/exam"
 )
 
-const examV2ValidationStatus = "# obligations-v2 validation round — CLOSED: VALIDATED (one documented deviation)"
+const (
+	examV2ValidationStatus = "# obligations-v2 validation round — CLOSED: VALIDATED (one documented deviation)"
+	examV3ValidationStatus = "# obligations-v3 validation round — CLOSED: VALIDATED (two documented instrument findings)"
+)
 
 // TestExamIntegrityExit codifies the independent trust legs required to close
 // Gate 1. A product score is actionable only while every leg stays green.
@@ -78,8 +81,11 @@ func TestExamIntegrityExit(t *testing.T) {
 	if err := determinismGuardCovers("exam_corpus_v3_test.go"); err != nil {
 		t.Fatalf("determinism trust leg broke; the v3 corpus adapter cannot escape the structural guard: %v", err)
 	}
-	if err := validateExamV2HumanRecord(); err != nil {
+	if err := validateExamHumanRecord(examFixtureV2Root, examV2ValidationStatus); err != nil {
 		t.Fatalf("human-validation trust leg broke; Gate 1 cannot close without the parsed VALIDATED record for obligations-v2: %v", err)
+	}
+	if err := validateExamHumanRecord(examFixtureV3Root, examV3ValidationStatus); err != nil {
+		t.Fatalf("human-validation trust leg broke; the v3 corpus cannot back product claims without its parsed VALIDATED record: %v", err)
 	}
 	if err := validateMutationAnchors(); err != nil {
 		t.Fatalf("mutation-anchor trust leg broke; Gate 1 cannot close while a dated audit can silently target dead source or test anchors: %v", err)
@@ -111,15 +117,15 @@ func determinismGuardCovers(want string) error {
 	return nil
 }
 
-func validateExamV2HumanRecord() error {
-	path := filepath.Join(examFixtureV2Root, "VALIDATION-2026-07-23.md")
+func validateExamHumanRecord(root, status string) error {
+	path := filepath.Join(root, "VALIDATION-2026-07-23.md")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	lines := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
-	if len(lines) == 0 || lines[0] != examV2ValidationStatus {
-		return fmt.Errorf("status line = %q, want literal %q", firstLine(lines), examV2ValidationStatus)
+	if len(lines) == 0 || lines[0] != status {
+		return fmt.Errorf("status line = %q, want literal %q", firstLine(lines), status)
 	}
 	return nil
 }
