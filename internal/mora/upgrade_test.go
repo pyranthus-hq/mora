@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/creativeprojects/go-selfupdate"
@@ -30,6 +31,76 @@ func TestIsHomebrewManaged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isHomebrewManaged(tc.path); got != tc.want {
 				t.Fatalf("isHomebrewManaged(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLocalBuildBase(t *testing.T) {
+	cases := []struct {
+		name     string
+		version  string
+		wantBase string
+		wantOK   bool
+	}{
+		{"git-describe ahead of tag", "v0.10.0-60-g2d08334", "v0.10.0", true},
+		{"git-describe dirty", "v0.10.0-60-g2d08334-dirty", "v0.10.0", true},
+		{"dirty on exact tag", "v0.10.0-dirty", "v0.10.0", true},
+		{"long sha", "v0.9.1-5-g2d083341c2a94b7e9d3f5a6b7c8d9e0f1a2b3c4d", "v0.9.1", true},
+		{"full sha-256", "v0.9.1-5-g" + strings.Repeat("2d08fe1c", 8), "v0.9.1", true},
+		{"clean release", "v0.10.0", "", false},
+		{"clean release without v", "0.9.1", "", false},
+		{"prerelease tag is not a local build", "v0.10.0-rc1", "", false},
+		{"literal dev", "dev", "", false},
+		{"empty", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, ok := localBuildBase(tc.version)
+			if base != tc.wantBase || ok != tc.wantOK {
+				t.Fatalf("localBuildBase(%q) = (%q, %v), want (%q, %v)", tc.version, base, ok, tc.wantBase, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestDecideUpgrade(t *testing.T) {
+	cases := []struct {
+		name        string
+		current     string
+		latest      string
+		wantVerdict upgradeVerdict
+		wantLocal   bool
+		wantErr     bool
+	}{
+		// The live bug: a local build 60 commits past the v0.10.0 tag must
+		// NOT be offered the older v0.10.0 release as an "update".
+		{"local build ahead of equal base tag", "v0.10.0-60-g2d08334", "0.10.0", verdictLocalAhead, true, false},
+		{"local build ahead, dirty", "v0.10.0-60-g2d08334-dirty", "0.10.0", verdictLocalAhead, true, false},
+		{"dirty exact tag", "v0.10.0-dirty", "0.10.0", verdictLocalAhead, true, false},
+		{"local build with base past latest", "v0.11.0-2-gabc1234", "0.10.0", verdictLocalAhead, true, false},
+		{"local build behind latest", "v0.9.1-5-gabc1234", "0.10.0", verdictUpgrade, true, false},
+		{"clean release behind latest", "0.9.1", "0.10.0", verdictUpgrade, false, false},
+		{"clean release current", "0.10.0", "0.10.0", verdictUpToDate, false, false},
+		{"clean release ahead of latest", "0.11.0", "0.10.0", verdictUpToDate, false, false},
+		// "dev" never reaches decideUpgrade (cmdUpgrade refuses it first) —
+		// if it somehow did, fail loudly instead of comparing garbage.
+		{"literal dev fails parse", "dev", "0.10.0", 0, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict, isLocal, err := decideUpgrade(tc.current, tc.latest)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("decideUpgrade(%q, %q) expected an error, got (%v, %v)", tc.current, tc.latest, verdict, isLocal)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decideUpgrade(%q, %q): %v", tc.current, tc.latest, err)
+			}
+			if verdict != tc.wantVerdict || isLocal != tc.wantLocal {
+				t.Fatalf("decideUpgrade(%q, %q) = (%v, %v), want (%v, %v)", tc.current, tc.latest, verdict, isLocal, tc.wantVerdict, tc.wantLocal)
 			}
 		})
 	}

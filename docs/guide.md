@@ -49,7 +49,7 @@ go install github.com/pyranthus-hq/mora/cmd/mora@latest
 go build -o mora ./cmd/mora && mv mora /usr/local/bin/mora
 ```
 
-Source builds report version `dev` and refuse self-update. Rebuild to upgrade. They also use a placeholder Google OAuth client, so `mora connect google` needs your own credentials (BYO credentials, below); the release binary ships with a working client.
+Source builds report version `dev` (or a git tag like `v0.10.0-60-g2d08334`) and refuse self-update unless a genuinely newer release exists — `mora upgrade` never swaps a local build for an older release. Rebuild to upgrade. They also use a placeholder Google OAuth client, so `mora connect google` needs your own credentials (BYO credentials, below); the release binary ships with a working client.
 
 **macOS Gatekeeper note:** if you skipped the installer, the first run of a downloaded
 binary may be blocked. Right-click `mora` in Finder and choose **Open**, or clear the
@@ -458,7 +458,10 @@ rebuilds one automatically at first read; with the Ollama embedder, where a re-i
 minutes, it asks with a clear "run `mora index rebuild`" instead of degrading silently.)
 Direct-binary installs self-update from the public GitHub releases, with no token or auth needed.
 Homebrew-managed installs are detected and deferred to `brew upgrade`; source/`go build` builds
-report `dev` and refuse self-update. Rebuild with `git pull && go build`.
+report `dev` and refuse self-update. Rebuild with `git pull && go build`. Local git builds
+(versions like `v0.10.0-60-g2d08334`, `-dirty` included) at or ahead of the latest release are
+refused too — upgrading only proceeds, with a note, when the release is newer than the tag the
+build was cut from.
 
 ## Back up the vault off-device (opt-in)
 

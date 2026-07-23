@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/creativeprojects/go-selfupdate"
 )
 
@@ -49,7 +51,8 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 		return nil
 	}
 
-	// A token lets self-update read the (currently private) repo's releases.
+	// The repo is public, so no token is required; an optional token raises
+	// GitHub API rate limits.
 	token := firstNonEmpty(os.Getenv("MORA_GITHUB_TOKEN"), os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"))
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{APIToken: token})
 	if err != nil {
@@ -75,23 +78,30 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	repo := selfupdate.NewRepositorySlug(upgradeRepoOwner, upgradeRepoName)
 	latest, found, err := updater.DetectLatest(ctx, repo)
 	if err != nil {
-		hint := ""
-		if token == "" {
-			hint = " (the repo is private — set GITHUB_TOKEN, e.g. `export GITHUB_TOKEN=$(gh auth token)`)"
-		}
-		return fmt.Errorf("checking for updates failed: %w%s", err, hint)
+		return fmt.Errorf("checking for updates failed: %w", err)
 	}
 	if !found {
 		fmt.Fprintln(stdout, "no published releases found")
 		return nil
 	}
 
-	if latest.LessOrEqual(current) {
+	verdict, isLocalBuild, err := decideUpgrade(current, latest.Version())
+	if err != nil {
+		return err
+	}
+	switch verdict {
+	case verdictLocalAhead:
+		fmt.Fprintf(stdout, "you are running a local build ahead of the latest release (%s > %s) — nothing to upgrade\n", current, latest.Version())
+		return nil
+	case verdictUpToDate:
 		fmt.Fprintf(stdout, "mora is up to date (%s)\n", current)
 		return nil
 	}
 
 	fmt.Fprintf(stdout, "update available: %s → %s\n", current, latest.Version())
+	if isLocalBuild {
+		fmt.Fprintf(stdout, "note: this replaces your local source build (%s) with the released binary\n", current)
+	}
 	if *checkOnly {
 		fmt.Fprintln(stdout, "run `mora upgrade` to install it")
 		return nil
@@ -144,6 +154,77 @@ func upgradeOldSavePath(exe string) string {
 	// so the contract-visible backup is mora.exe.old instead of the library's
 	// default hidden .mora.exe.old path.
 	return filepath.Join(filepath.Dir(exe), filepath.Base(exe)+".old")
+}
+
+// upgradeVerdict classifies what `mora upgrade` should do given the running
+// version and the latest published release.
+type upgradeVerdict int
+
+const (
+	// verdictUpgrade: the latest release is genuinely newer — offer/install it.
+	verdictUpgrade upgradeVerdict = iota
+	// verdictUpToDate: the running binary already is (or is past) the latest release.
+	verdictUpToDate
+	// verdictLocalAhead: the running binary is a local git build at or ahead of
+	// the latest release's tag — "upgrading" would be a downgrade; refuse.
+	verdictLocalAhead
+)
+
+// decideUpgrade compares the running version against the latest release.
+//
+// A git-describe version like "v0.10.0-60-g2d08334" parses as a PRERELEASE of
+// 0.10.0 under semver, so naive comparison sorts it BELOW the v0.10.0 release
+// and `mora upgrade` used to offer that release as a downgrade. Instead, local
+// builds are compared by the tag they were built past: at-or-ahead of the
+// latest release refuses; genuinely behind upgrades as usual. isLocal reports
+// that current is such a local build so callers can flag the binary swap.
+func decideUpgrade(current, latestVersion string) (verdict upgradeVerdict, isLocal bool, err error) {
+	latest, err := semver.NewVersion(latestVersion)
+	if err != nil {
+		return 0, false, fmt.Errorf("parsing the latest release version %q: %w", latestVersion, err)
+	}
+	base, isLocal := localBuildBase(current)
+	if isLocal {
+		baseVersion, err := semver.NewVersion(base)
+		if err != nil {
+			return 0, true, fmt.Errorf("parsing the base tag %q of local build %q: %w", base, current, err)
+		}
+		if latest.Compare(baseVersion) <= 0 {
+			return verdictLocalAhead, true, nil
+		}
+		return verdictUpgrade, true, nil
+	}
+	currentVersion, err := semver.NewVersion(current)
+	if err != nil {
+		return 0, false, fmt.Errorf("parsing the current version %q: %w", current, err)
+	}
+	if latest.Compare(currentVersion) <= 0 {
+		return verdictUpToDate, false, nil
+	}
+	return verdictUpgrade, false, nil
+}
+
+// gitDescribeSuffixRe matches the "-<commits-ahead>-g<sha>" suffix that
+// `git describe --tags` appends when HEAD is past the nearest tag. The sha
+// spans git's minimum abbreviation (4) up to a full SHA-256 (64) so an
+// unmatched long hash can never fall through to prerelease comparison and
+// resurrect the downgrade bug.
+var gitDescribeSuffixRe = regexp.MustCompile(`-\d+-g[0-9a-f]{4,64}$`)
+
+// localBuildBase extracts the release tag a git-describe build version was cut
+// from: "v0.10.0-60-g2d08334", "v0.10.0-60-g2d08334-dirty", and "v0.10.0-dirty"
+// all yield ("v0.10.0", true). Clean release versions (including prerelease
+// tags like "v0.10.0-rc1") yield ("", false).
+func localBuildBase(version string) (base string, ok bool) {
+	trimmed := strings.TrimSuffix(version, "-dirty")
+	dirty := trimmed != version
+	if loc := gitDescribeSuffixRe.FindStringIndex(trimmed); loc != nil {
+		return trimmed[:loc[0]], true
+	}
+	if dirty && trimmed != "" {
+		return trimmed, true
+	}
+	return "", false
 }
 
 func firstNonEmpty(vals ...string) string {
