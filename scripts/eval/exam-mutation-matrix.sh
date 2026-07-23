@@ -15,6 +15,16 @@ run() {
   printf 'CLOSED\n'
 }
 
+run_red() {
+  printf 'AUDIT %-44s ' "$1"
+  shift
+  if (cd "$ROOT" && "$@" >/dev/null 2>&1); then
+    printf 'UNEXPECTEDLY GREEN\n'
+    return 1
+  fi
+  printf 'RED\n'
+}
+
 production_gates=(
   classifyMeetingBriefEvidence
   isMeetingNotification
@@ -50,8 +60,13 @@ run "exam/determinism" "$GO" test ./internal/mora/exam \
   -run '^(TestExamDeterminismGuard|TestManifestCompleteness|TestValidatorRuleWalkRejectsErrorWrapperIndirection)$' -count=1
 run "exam/identity-lint-and-hash" "$GO" test ./internal/mora \
   -run '^(TestExamCorpusNoRealIdentities|TestExamCorpusHashesMatch|TestExamCorpusHashesRequireEverySourceArtifact)$' -count=1
+run "exam/integrity-exit" "$GO" test ./internal/mora \
+  -run '^TestExamIntegrityExit$' -count=1
 run "exam/current-surfaces" "$GO" test ./internal/mora \
-  -run '^(TestExamSurfaces|TestExamSurfaceClockGuard|TestDailyBriefHasNoObligationContract)$' -count=1
+  -run '^(TestExamSurfaces|TestExamSurfacesV2|TestExamSurfaceClockGuard|TestDailyBriefHasNoObligationContract)$' -count=1
+# Known RED through 2026-10-14: the strict target is tracked by #138/#154.
+run_red "exam/product-target-strict (#138)" env MORA_EXAM_PRODUCT_TARGET=1 "$GO" test ./internal/mora \
+  -run '^TestExamProductTarget$' -count=1
 run "exam/correction-flywheel" "$GO" test ./internal/mora \
   -run '^TestExamCorrectionFlywheel$' -count=1
 
