@@ -51,7 +51,8 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 		return nil
 	}
 
-	// A token lets self-update read the (currently private) repo's releases.
+	// The repo is public, so no token is required; an optional token raises
+	// GitHub API rate limits.
 	token := firstNonEmpty(os.Getenv("MORA_GITHUB_TOKEN"), os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"))
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{APIToken: token})
 	if err != nil {
@@ -77,11 +78,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	repo := selfupdate.NewRepositorySlug(upgradeRepoOwner, upgradeRepoName)
 	latest, found, err := updater.DetectLatest(ctx, repo)
 	if err != nil {
-		hint := ""
-		if token == "" {
-			hint = " (the repo is private — set GITHUB_TOKEN, e.g. `export GITHUB_TOKEN=$(gh auth token)`)"
-		}
-		return fmt.Errorf("checking for updates failed: %w%s", err, hint)
+		return fmt.Errorf("checking for updates failed: %w", err)
 	}
 	if !found {
 		fmt.Fprintln(stdout, "no published releases found")
