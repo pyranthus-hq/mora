@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ScorerVersion freezes the meaning and shape of every scorecard emitted by this
@@ -651,6 +652,31 @@ func goldDue(c Commitment) string {
 	default:
 		return DueNone
 	}
+}
+
+func explicitDueDay(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if date, err := time.Parse("2006-01-02", raw); err == nil {
+		return date.Format("2006-01-02"), true
+	}
+	if instant, err := time.Parse(time.RFC3339, raw); err == nil {
+		return instant.Format("2006-01-02"), true
+	}
+	return "", false
+}
+
+func dueForComparison(raw string) string {
+	if raw == DueNone || raw == DueRelative {
+		return raw
+	}
+	// A dated phrase can support its calendar day but not the ledger's
+	// annotation-time clock. Compare explicit dates at day granularity; clock-level
+	// scoring waits for an event-linked due extractor that carries time as a
+	// distinct typed capability.
+	if day, ok := explicitDueDay(raw); ok {
+		return day
+	}
+	return raw
 }
 
 func negativesFor(l Ledger, idx ledgerIndex, surface string) ([]negativeItem, error) {
@@ -1515,7 +1541,7 @@ func (a *typedAccumulator) observeGold(p Prediction, g goldItem, index int) {
 	}
 	if p.Due != "" {
 		a.duePred++
-		if p.Due == g.Due {
+		if dueForComparison(p.Due) == dueForComparison(g.Due) {
 			a.dueCorrect++
 			a.dueHit++
 			a.dueHitByClass[g.Due]++
@@ -1554,7 +1580,7 @@ func (a *typedAccumulator) observeNegative(p Prediction, l Ledger, idx ledgerInd
 		}
 		if p.Due != "" {
 			a.duePred++
-			if p.Due == goldDue(c) {
+			if dueForComparison(p.Due) == dueForComparison(goldDue(c)) {
 				a.dueCorrect++
 			}
 		}

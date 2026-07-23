@@ -298,6 +298,32 @@ func FlipOneDirection(preds []Prediction) []Prediction {
 	return out
 }
 
+// FlipOneDue changes one typed due value without changing its evidence, owner, or
+// lifecycle. This keeps DueTime independently falsifiable.
+func FlipOneDue(preds []Prediction) []Prediction {
+	out := clonePredictions(preds)
+	for i, p := range out {
+		day, ok := explicitDueDay(p.Due)
+		if !ok {
+			continue
+		}
+		if day == "1900-01-01" {
+			out[i].Due = "1900-01-02"
+		} else {
+			out[i].Due = "1900-01-01"
+		}
+		return out
+	}
+	for i, p := range out {
+		switch p.Due {
+		case DueNone, DueRelative:
+			out[i].Due = "1900-01-01"
+			return out
+		}
+	}
+	return out
+}
+
 func ConstantDirection(preds []Prediction, direction string) []Prediction {
 	out := clonePredictions(preds)
 	for i := range out {

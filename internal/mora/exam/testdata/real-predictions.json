@@ -140,7 +140,7 @@
       "memory_id": "gmail_thread/exam-closed-open",
       "section_kind": "open_loops",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "none",
       "lifecycle": "unknown",
       "closure_ref": ""
     },
@@ -153,7 +153,7 @@
       "memory_id": "gmail_thread/exam-reply-chain",
       "section_kind": "unresolved_threads",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "2026-07-14",
       "lifecycle": "unknown",
       "closure_ref": ""
     },
@@ -166,7 +166,7 @@
       "memory_id": "gmail_thread/exam-statement",
       "section_kind": "material_shared_context",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "none",
       "lifecycle": "unknown",
       "closure_ref": ""
     }

@@ -585,10 +585,10 @@ func TestRealEngineIsGroundedInTheLedger(t *testing.T) {
 	}
 }
 
-// TestRealEngineBornRedRowsAreRed preserves the monotonic typed ratchet: Owner and
-// Direction are now real measured fields, while the later due/lifecycle/closure
-// rows remain visibly red until their product PRs land.
-func TestRealEngineBornRedRowsAreRed(t *testing.T) {
+// TestRealEngineTypedRatchet preserves the monotonic typed ratchet: Owner,
+// Direction, and DueTime are now real measured fields, while the later
+// lifecycle/closure rows remain visibly red until their product PRs land.
+func TestRealEngineTypedRatchet(t *testing.T) {
 	l := loadLedger(t, examLedgerPath)
 	sc, err := Score(l, realPredictions(t, SurfaceMeeting), SurfaceMeeting)
 	if err != nil {
@@ -600,8 +600,10 @@ func TestRealEngineBornRedRowsAreRed(t *testing.T) {
 	if !sc.Owner.Defined || sc.Owner.Precision != 1 {
 		t.Errorf("Owner = %+v, want a precise typed product field", sc.Owner)
 	}
+	if !sc.DueTime.Defined || sc.DueTime.Precision != 1 {
+		t.Errorf("DueTime = %+v, want a precise typed product field", sc.DueTime)
+	}
 	born := map[string]PR{
-		MetricDueTime:        sc.DueTime,
 		MetricLifecycle:      sc.Lifecycle,
 		MetricClosureLinkage: sc.ClosureLinkage,
 	}
@@ -718,6 +720,55 @@ func TestUnknownNeverScoresCorrect(t *testing.T) {
 	}
 	if typed.DueTime.Recall != 1 || typed.ClosureLinkage.Recall != 1 {
 		t.Fatalf("the oracle could not pass the typed rows: due=%+v closure=%+v", typed.DueTime, typed.ClosureLinkage)
+	}
+}
+
+func TestExplicitDueScoresAtDayGranularityAndFlipMovesDay(t *testing.T) {
+	l := loadLedger(t, examLedgerPath)
+	sameDay := Oracle(l, SurfaceMeeting)
+	explicitCount := 0
+	for i := range sameDay {
+		if sameDay[i].Due == DueNone || sameDay[i].Due == DueRelative || sameDay[i].Due == "" {
+			continue
+		}
+		explicitCount++
+		sameDay[i].Due = strings.SplitN(sameDay[i].Due, "T", 2)[0]
+	}
+	if explicitCount == 0 {
+		t.Fatal("fixture has no explicit-date due")
+	}
+	sc, err := Score(l, sameDay, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.DueTime.Precision != 1 || sc.DueTime.Recall != 1 {
+		t.Fatalf("same-day explicit dues = %+v, want perfect day-granularity scoring", sc.DueTime)
+	}
+
+	wrongDay := FlipOneDue(sameDay)
+	changed := -1
+	for i := range wrongDay {
+		if wrongDay[i].Due != sameDay[i].Due {
+			if changed >= 0 {
+				t.Fatal("due flip changed more than one prediction")
+			}
+			changed = i
+		}
+	}
+	if changed < 0 ||
+		sameDay[changed].Due == DueNone ||
+		sameDay[changed].Due == DueRelative ||
+		wrongDay[changed].Due == DueNone ||
+		wrongDay[changed].Due == DueRelative ||
+		strings.Contains(wrongDay[changed].Due, "T") {
+		t.Fatalf("due flip = %+v, want exactly one different calendar day", wrongDay)
+	}
+	sc, err = Score(l, wrongDay, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.DueTime.Recall >= 1 {
+		t.Fatalf("wrong-day due = %+v, want recall below perfect", sc.DueTime)
 	}
 }
 

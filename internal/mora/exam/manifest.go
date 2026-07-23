@@ -318,10 +318,10 @@ var RequiredMetrics = []MetricSpec{
 	},
 	{
 		ID: MetricDueTime, Field: "DueTime", Version: 1,
-		Description: "BORN-RED: the typed due value; no production surface carries one",
+		Description: "the typed due value: none, relative, or an explicit ISO calendar date",
 		Direction:   DirectionHigherBetter, Unit: UnitRatio, Aggregation: AggregationMicro,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
-		SabotageCases: []string{RowOracle, RowClosedAsOpen},
+		SabotageCases: []string{RowOracle, RowClosedAsOpen, RowDuePredictionFlip},
 	},
 	{
 		ID: MetricLifecycle, Field: "Lifecycle", Version: 2,
@@ -402,6 +402,7 @@ const (
 	RowCitationRoleFlip       = "x_citation_role_flip"
 	RowInventoryLifecycleFlip = "y_inventory_lifecycle_flip"
 	RowInventoryOriginEscape  = "z_inventory_origin_escape"
+	RowDuePredictionFlip      = "aa_due_prediction_flip"
 )
 
 // RedTeamRowID is version-pinned by (surface, name). TestScorerRedTeam iterates THIS
@@ -442,6 +443,7 @@ var RequiredRedTeamRows = []RedTeamRowID{
 	{SurfaceMeeting, RowCitationRoleFlip},
 	{SurfaceMeeting, RowInventoryLifecycleFlip},
 	{SurfaceMeeting, RowInventoryOriginEscape},
+	{SurfaceMeeting, RowDuePredictionFlip},
 }
 
 // ProductionExclusionGates are the seventeen gates reachable from

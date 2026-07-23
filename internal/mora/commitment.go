@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -56,6 +58,69 @@ type commitSpan struct {
 type commitDue struct {
 	Kind string `json:"kind"`
 	At   string `json:"at,omitempty"`
+}
+
+var (
+	commitMonthDateRE = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+([0-9]{1,2})(?:st|nd|rd|th)?(?:,\s*([0-9]{4}))?\b`)
+	commitISODateRE   = regexp.MustCompile(`\b([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})\b`)
+	commitRelativeRE  = regexp.MustCompile(`(?i)\b(today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|week|month)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|once|until|by\s+the\s+end|in\s+the\s+(?:morning|afternoon|evening)|before\s+(?:breakfast|lunch|dinner)|in\s+[0-9]+\s+(?:minutes?|hours?|days?|weeks?))\b`)
+)
+
+func classifyCommitmentDue(text, occurredAt string) commitDue {
+	text = oneLine(text)
+	if text == "" {
+		return commitDue{Kind: commitDueNone}
+	}
+	anchor, err := time.Parse(time.RFC3339, strings.TrimSpace(occurredAt))
+	if err == nil {
+		if date, ok := explicitCommitmentDue(text, anchor.UTC()); ok {
+			return commitDue{Kind: commitDueExplicitDate, At: date}
+		}
+	}
+	if commitRelativeRE.MatchString(text) {
+		return commitDue{Kind: commitDueRelative}
+	}
+	return commitDue{Kind: commitDueNone}
+}
+
+func explicitCommitmentDue(text string, anchor time.Time) (string, bool) {
+	year, month, day := 0, time.Month(0), 0
+	if match := commitISODateRE.FindStringSubmatch(text); len(match) != 0 {
+		year, _ = strconv.Atoi(match[1])
+		monthValue, _ := strconv.Atoi(match[2])
+		month = time.Month(monthValue)
+		day, _ = strconv.Atoi(match[3])
+	} else if match := commitMonthDateRE.FindStringSubmatch(text); len(match) != 0 {
+		monthTime, err := time.Parse("January", strings.ToUpper(match[1][:1])+strings.ToLower(match[1][1:]))
+		if err != nil {
+			return "", false
+		}
+		month = monthTime.Month()
+		day, _ = strconv.Atoi(match[2])
+		year = anchor.Year()
+		if match[3] != "" {
+			year, _ = strconv.Atoi(match[3])
+		}
+	}
+	if year == 0 || month == 0 || day == 0 {
+		return "", false
+	}
+
+	// The opener supplies a calendar date, not an instant. Preserve exactly that
+	// expressiveness; clock-level due extraction requires a separately typed,
+	// event-linked capability.
+	date := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	if date.Year() != year || date.Month() != month || date.Day() != day {
+		return "", false
+	}
+	return date.Format("2006-01-02"), true
+}
+
+func commitDueValue(due commitDue) string {
+	if due.Kind == commitDueExplicitDate {
+		return due.At
+	}
+	return due.Kind
 }
 
 type commitmentMessageEvidence struct {
@@ -343,6 +408,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	selfAtom := canonicalSelfAtom(cfg, "")
 	citations := commitmentCitation(m)
 	newCommitment := func(summary, messageRef, blockRef, occurredAt string, slot int, owner govAtom, direction string) Commitment {
+		due := classifyCommitmentDue(summary, occurredAt)
 		return Commitment{
 			ID:           commitmentID(messageRef, blockRef, slot),
 			Owner:        owner,
@@ -353,7 +419,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				MemoryID: m.ID, MessageRef: messageRef, BlockRef: blockRef,
 				Quote: oneLine(summary), OccurredAt: occurredAt,
 			},
-			Due:         commitDue{Kind: commitDueNone},
+			Due:         due,
 			State:       commitOpen,
 			ClosureRef:  commitClosureNone,
 			Citations:   citations,
@@ -378,7 +444,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 			// The connector currently preserves ordered turns but not provider
 			// message ids in Meta. Refuse to fabricate a CommitmentID; direction and
 			// ownership remain typed, while identity stays explicitly unavailable.
-			out = append(out, newCommitment(turn.Body, "", "", "", 0, owner, direction))
+			out = append(out, newCommitment(turn.Body, "", "", validFromOf(m), 0, owner, direction))
 		}
 		return out
 	}
@@ -434,7 +500,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 					ReportedActor: reportedActorFor(m, segment, counterparty),
 				})
 				if found {
-					out = append(out, newCommitment(segment, "", "", "", 0, owner, direction))
+					out = append(out, newCommitment(segment, "", "", validFromOf(m), 0, owner, direction))
 				}
 			}
 		}
@@ -568,6 +634,7 @@ func attachCommitment(line *CitedBriefLine, commitment Commitment) {
 	line.Owner = commitment.Owner
 	line.Counterparty = commitment.Counterparty
 	line.CommitmentID = commitment.ID
+	line.DueAt = commitDueValue(commitment.Due)
 }
 
 func writeCommitments(ctx context.Context, tx *sql.Tx, generation string, mems []Memory, cfg Config) error {

@@ -260,11 +260,11 @@
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 1,
+      "defined": true,
       "recall_by_class": {
-        "relative": 0
+        "relative": 1
       }
     },
     "lifecycle": {
@@ -363,11 +363,11 @@
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 1,
+      "defined": true,
       "recall_by_class": {
-        "relative": 0
+        "relative": 1
       }
     },
     "lifecycle": {

@@ -21,7 +21,7 @@
       "memory_id": "gmail_thread/exam-closed-open",
       "section_kind": "open_loops",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "none",
       "lifecycle": "unknown",
       "closure_ref": ""
     },
@@ -34,7 +34,7 @@
       "memory_id": "gmail_thread/exam-reply-chain",
       "section_kind": "unresolved_threads",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "2026-07-14",
       "lifecycle": "unknown",
       "closure_ref": ""
     },
@@ -47,7 +47,7 @@
       "memory_id": "gmail_thread/exam-statement",
       "section_kind": "material_shared_context",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "none",
       "lifecycle": "unknown",
       "closure_ref": ""
     }
@@ -74,7 +74,7 @@
       "memory_id": "gmail_thread/exam-closed-open",
       "section_kind": "open_loops",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "none",
       "lifecycle": "unknown",
       "closure_ref": ""
     },
@@ -87,7 +87,7 @@
       "memory_id": "gmail_thread/exam-reply-chain",
       "section_kind": "unresolved_threads",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "2026-07-14",
       "lifecycle": "unknown",
       "closure_ref": ""
     },
@@ -100,7 +100,7 @@
       "memory_id": "imessage_chat/exam-flywheel",
       "section_kind": "material_shared_context",
       "direction": "owed_by_counterparty",
-      "due": "",
+      "due": "none",
       "lifecycle": "unknown",
       "closure_ref": ""
     },
@@ -113,7 +113,7 @@
       "memory_id": "gmail_thread/exam-statement",
       "section_kind": "material_shared_context",
       "direction": "owed_by_self",
-      "due": "",
+      "due": "none",
       "lifecycle": "unknown",
       "closure_ref": ""
     }
@@ -177,12 +177,12 @@
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.5,
+      "defined": true,
       "recall_by_class": {
-        "2026-07-14T11:00:00Z": 0,
-        "none": 0
+        "2026-07-14T11:00:00Z": 1,
+        "none": 0.3333333333333333
       }
     },
     "lifecycle": {
@@ -282,12 +282,12 @@
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.75,
+      "defined": true,
       "recall_by_class": {
-        "2026-07-14T11:00:00Z": 0,
-        "none": 0
+        "2026-07-14T11:00:00Z": 1,
+        "none": 0.6666666666666666
       }
     },
     "lifecycle": {
