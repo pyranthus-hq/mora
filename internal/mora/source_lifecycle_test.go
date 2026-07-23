@@ -95,6 +95,92 @@ func TestEnableFilesystemFlipsConfiguredSources(t *testing.T) {
 	}
 }
 
+// (a, review finding 1) `connectors disable filesystem` on a row-less registry
+// must not mint a disabled pathless row — a later `connectors enable
+// filesystem` would see that row and resurrect the phantom (enable it with no
+// path), putting the hourly `ingest run --all` right back into the failure the
+// enable-side guard exists to prevent. And enable must never activate a
+// pathless legacy row even when one is present.
+func TestDisableThenEnableFilesystemDoesNotResurrectPhantom(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	run(t, "connectors", "disable", "filesystem")
+	sources, err := loadSources(cfg)
+	if err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+	for _, s := range sources {
+		if s.Type == "filesystem" {
+			t.Fatalf("disable of an absent type must not mint a row: %+v", s)
+		}
+	}
+
+	out, err := runErr(t, "connectors", "enable", "filesystem")
+	if err != nil {
+		t.Fatalf("enable after disable should guide, not error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "mora connect filesystem") {
+		t.Fatalf("enable after disable should still guide to `mora connect filesystem`; got:\n%s", out)
+	}
+	sources, _ = loadSources(cfg)
+	for _, s := range sources {
+		if s.Type == "filesystem" {
+			t.Fatalf("disable→enable resurrected a phantom row: %+v", s)
+		}
+	}
+
+	// A legacy pathless row (older binaries minted one) must never be
+	// (re)activated by enable — it can only fail the walk.
+	if err := saveSources(cfg, []Source{{Name: "filesystem", Type: "filesystem", Scope: "personal", Enabled: ptr(false), CreatedAt: time.Now().Format(time.RFC3339)}}); err != nil {
+		t.Fatal(err)
+	}
+	out = run(t, "connectors", "enable", "filesystem")
+	if !strings.Contains(out, "mora connect filesystem") {
+		t.Fatalf("enable with only a pathless legacy row should guide; got:\n%s", out)
+	}
+	sources, _ = loadSources(cfg)
+	for _, s := range sources {
+		if s.Type == "filesystem" && s.IsEnabled() {
+			t.Fatalf("enable activated a pathless legacy row: %+v", s)
+		}
+	}
+}
+
+// (a, review finding 2) `mora connect filesystem <path>` — the repair command
+// the pathless-source error recommends — must actually repair the registry:
+// legacy pathless filesystem rows are dropped while the healthy row is added,
+// so the hourly `ingest run --all` comes back clean.
+func TestConnectFilesystemRemovesLegacyPathlessRow(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "filesystem") // enabled pathless legacy phantom
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.md"), []byte("repair me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, "connect", "filesystem", dir, "--name", "docs")
+	if !strings.Contains(out, "Enabled filesystem") {
+		t.Fatalf("connect filesystem should succeed; got:\n%s", out)
+	}
+
+	sources, err := loadSources(cfg)
+	if err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+	for _, s := range sources {
+		if s.Type == "filesystem" && s.Path == "" {
+			t.Fatalf("legacy pathless row survived connect: %+v", s)
+		}
+	}
+	if out, err := runErr(t, "ingest", "run", "--all"); err != nil {
+		t.Fatalf("ingest --all must be clean after the connect repair: %v\n%s", err, out)
+	}
+}
+
 // (b) `sources add` inherits the connector type's consent state. Before this,
 // a source added AFTER `connectors enable filesystem` landed disabled, and
 // `ingest run --source <name>` dead-ended on "run `mora connectors enable

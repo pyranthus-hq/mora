@@ -135,7 +135,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		if err != nil {
 			return err
 		}
-		if !hasSourceOfType(sources, "filesystem") {
+		if !hasConfiguredFilesystemSource(sources) {
 			fmt.Fprintln(stdout, "filesystem needs a folder before it can be enabled — no filesystem sources are configured yet.")
 			fmt.Fprintln(stdout, "Add one and index it now:  mora connect filesystem <path>")
 			fmt.Fprintln(stdout, "Or stage it for later:     mora sources add filesystem --name <name> --path <path>")

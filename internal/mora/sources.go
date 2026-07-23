@@ -126,15 +126,27 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
 		found := false
 		for i := range sources {
-			if sources[i].Type == ctype {
-				sources[i].Enabled = ptr(enabled)
-				found = true
+			if sources[i].Type != ctype {
+				continue
 			}
+			if ctype == "filesystem" && sources[i].Path == "" && enabled {
+				// Never (re)activate a pathless filesystem row: it cannot ingest
+				// anything and only fails the walk (a legacy phantom minted by
+				// older binaries). Disabling one is still allowed.
+				continue
+			}
+			sources[i].Enabled = ptr(enabled)
+			found = true
 		}
-		if !found {
-			// No source row yet (e.g. filesystem before any `sources add`). Create a
-			// minimal row carrying the consent bit; an explicit Enabled avoids the
-			// load-time grandfather flipping a nil to true (D-11).
+		if !found && enabled && ctype != "filesystem" {
+			// No source row yet (e.g. imessage/applecalendar before any explicit
+			// add — their implicit local store makes a bare row meaningful). Create
+			// a minimal row carrying the consent bit; an explicit Enabled avoids
+			// the load-time grandfather flipping a nil to true (D-11). NOT minted
+			// on disable (absence already means disabled — a minted disabled row
+			// would later be "found" and resurrected by enable) and NOT for
+			// filesystem (a row without a path can never ingest; enableConnector
+			// guides the user to configure a folder instead).
 			sources = append(sources, Source{
 				Name:      ctype,
 				Type:      ctype,
@@ -147,12 +159,14 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 	})
 }
 
-// hasSourceOfType reports whether any source row of the given connector type
-// exists (enabled or not). Used by the per-source connector types (filesystem)
-// whose enable path must never mint a config-less row.
-func hasSourceOfType(sources []Source, ctype string) bool {
+// hasConfiguredFilesystemSource reports whether any filesystem source row is
+// actually configured — i.e. carries a non-empty Path. A pathless row (a legacy
+// phantom minted by older binaries on `connectors enable filesystem`) does not
+// count: it can never ingest, so enable must guide the user to configure a
+// folder rather than flip it.
+func hasConfiguredFilesystemSource(sources []Source) bool {
 	for _, s := range sources {
-		if s.Type == ctype {
+		if s.Type == "filesystem" && s.Path != "" {
 			return true
 		}
 	}

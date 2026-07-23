@@ -97,13 +97,27 @@ func TestCoreA_SetSourceEnabledCreatesRow(t *testing.T) {
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// No source row yet => setSourceEnabled must mint one carrying the consent bit.
-	if err := setSourceEnabled(cfg, "filesystem", true); err != nil {
+	// No source row yet => setSourceEnabled mints one carrying the consent bit
+	// for types whose bare row is meaningful (implicit local store).
+	if err := setSourceEnabled(cfg, "imessage", true); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := loadSources(cfg)
-	if len(got) != 1 || got[0].Type != "filesystem" || !got[0].IsEnabled() {
-		t.Fatalf("setSourceEnabled should create an enabled filesystem row, got %+v", got)
+	if len(got) != 1 || got[0].Type != "imessage" || !got[0].IsEnabled() {
+		t.Fatalf("setSourceEnabled should create an enabled imessage row, got %+v", got)
+	}
+	// filesystem is the exception: a row without a path can never ingest, so
+	// setSourceEnabled must NOT mint one (and disable never mints for any type —
+	// absence already means disabled).
+	if err := setSourceEnabled(cfg, "filesystem", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := setSourceEnabled(cfg, "gmail", false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = loadSources(cfg)
+	if len(got) != 1 {
+		t.Fatalf("no phantom rows should be minted (filesystem enable / gmail disable), got %+v", got)
 	}
 }
 

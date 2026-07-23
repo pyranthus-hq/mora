@@ -1020,6 +1020,18 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 		}
 		var next []Source
 		for _, existing := range sources {
+			if existing.Type == "filesystem" && existing.Path == "" {
+				// Registry repair: older binaries minted a pathless filesystem row on
+				// `connectors enable filesystem`. It can never ingest — it only fails
+				// the hourly walk and raises a red "never synced" banner — and this
+				// command is exactly the repair the ingest error recommends, so drop
+				// it here while adding the healthy row.
+				fmt.Fprintf(stdout, "removed legacy filesystem source %q (it had no path and could never sync)\n", existing.Name)
+				if p := syncStatusPathFor(cfg, existing); p != "" {
+					_ = os.Remove(p) // drop its failed-sync status so `sync status` stops listing it
+				}
+				continue
+			}
 			if existing.Name == s.Name {
 				// Same name + same folder => a deliberate re-connect: refresh in place
 				// and preserve the original add time. Same name + a DIFFERENT folder
