@@ -110,6 +110,94 @@
       "due": "none",
       "lifecycle": "open",
       "closure_ref": "none"
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-closed-open",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "address:marcus@example.net",
+      "memory_id": "gmail_thread/exam-duplicate-canonical",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "address:nina@example.org",
+      "memory_id": "gmail_thread/exam-nina-summary",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "address:sam@example.org",
+      "memory_id": "gmail_thread/exam-reply-chain",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "address:dana@example.net",
+      "memory_id": "gmail_thread/exam-statement",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "address:dana@example.net",
+      "memory_id": "gmail_thread/exam-subject-checklist",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "handle:+15550100137",
+      "memory_id": "imessage_chat/exam-flywheel",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
+    },
+    {
+      "surface": "meeting",
+      "origin": "inventory",
+      "text": "",
+      "attendee_atom": "handle:+15550100103",
+      "memory_id": "imessage_chat/exam-marcus",
+      "direction": "",
+      "due": "",
+      "lifecycle": "",
+      "closure_ref": ""
     }
   ]
 }

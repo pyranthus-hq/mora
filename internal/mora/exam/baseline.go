@@ -819,7 +819,7 @@ func rowCitationSpanMove(in RedTeamInput) []RedTeamCase {
 	real := in.real(SurfaceMeeting)
 	base := mustScore(in.Ledger, real, SurfaceMeeting)
 	moved := MoveGoldSpan(in.Ledger, real, SurfaceMeeting)
-	want := base.Extraction.Precision - 1/float64(len(real))
+	want := base.Extraction.Precision - 1/float64(len(surfacePredictions(real)))
 	return []RedTeamCase{{
 		Ledger:      moved,
 		Predictions: real,

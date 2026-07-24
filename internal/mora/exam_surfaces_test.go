@@ -72,8 +72,8 @@ func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 			if artifactID == "" || artifactPrediction < 0 {
 				t.Fatalf("daily CLI emitted an identified obligation before a cited artifact: %q", line)
 			}
-			fields := strings.SplitN(strings.TrimPrefix(trimmed, "obligation: "), " · ", 7)
-			if len(fields) != 7 {
+			fields := strings.SplitN(strings.TrimPrefix(trimmed, "obligation: "), " · ", 8)
+			if len(fields) != 7 && len(fields) != 8 {
 				t.Fatalf("daily CLI emitted malformed identified obligation: %q", line)
 			}
 			values := map[string]string{}
@@ -97,15 +97,16 @@ func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 				identifiedSubrows = true
 			}
 			out = append(out, exam.Prediction{
-				Surface:      exam.SurfaceDaily,
-				Text:         artifactLine + line + "\n",
-				Owner:        values["owner"],
-				MemoryID:     artifactID,
-				CommitmentID: values["commitment_id"],
-				Direction:    values["direction"],
-				Due:          values["due"],
-				Lifecycle:    values["lifecycle"],
-				ClosureRef:   values["closure"],
+				Surface:           exam.SurfaceDaily,
+				Text:              artifactLine + line + "\n",
+				Owner:             values["owner"],
+				MemoryID:          artifactID,
+				CommitmentID:      values["commitment_id"],
+				CounterpartyLabel: values["counterparty"],
+				Direction:         values["direction"],
+				Due:               values["due"],
+				Lifecycle:         values["lifecycle"],
+				ClosureRef:        values["closure"],
 			})
 			currentSubrow = len(out) - 1
 			continue
@@ -143,7 +144,7 @@ func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 				t.Fatalf("daily CLI emitted obligation metadata before a cited item: %q", line)
 			}
 			fields := strings.Split(strings.TrimPrefix(trimmed, "obligation: "), " · ")
-			if len(fields) != 5 {
+			if len(fields) != 5 && len(fields) != 6 {
 				t.Fatalf("daily CLI emitted malformed obligation metadata: %q", line)
 			}
 			values := map[string]string{}
@@ -163,6 +164,7 @@ func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 			pred.Text += line + "\n"
 			pred.Owner = values["owner"]
 			pred.Direction = values["direction"]
+			pred.CounterpartyLabel = values["counterparty"]
 			pred.Due = values["due"]
 			pred.Lifecycle = values["lifecycle"]
 			pred.ClosureRef = values["closure"]

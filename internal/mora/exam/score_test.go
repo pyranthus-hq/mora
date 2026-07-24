@@ -111,6 +111,35 @@ func TestScorerRedTeam(t *testing.T) {
 	}
 }
 
+func TestCitationSpanMoveExtractionDenominatorIgnoresInventory(t *testing.T) {
+	in := redTeamInput(t)
+	visible := surfacePredictions(in.Meeting)
+	if len(visible) == len(in.Meeting) {
+		t.Fatal("real meeting fixture has no inventory row for denominator sabotage")
+	}
+	expectExtraction := func(cases []RedTeamCase) float64 {
+		t.Helper()
+		if len(cases) != 1 {
+			t.Fatalf("citation span move cases = %d, want 1", len(cases))
+		}
+		for _, check := range cases[0].Expect.Checks {
+			if check.Metric == MetricExtraction+".precision" {
+				return check.Want
+			}
+		}
+		t.Fatal("citation span move case has no extraction precision check")
+		return 0
+	}
+
+	withoutInventory := in
+	withoutInventory.Meeting = visible
+	want := expectExtraction(rowCitationSpanMove(withoutInventory))
+	got := expectExtraction(rowCitationSpanMove(in))
+	if got != want {
+		t.Fatalf("inventory changed citation-span extraction denominator: got %v, want %v", got, want)
+	}
+}
+
 func assertRedTeamCase(t *testing.T, id RedTeamRowID, c RedTeamCase) {
 	t.Helper()
 	if c.GraphTransition != nil {

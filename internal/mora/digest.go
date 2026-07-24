@@ -65,11 +65,14 @@ type DigestItem struct {
 	// The scalar lane is retained for legacy, ID-less commitment generations.
 	// Identified generations use Obligations so one artifact can expose every
 	// independently materialized commitment without guessing which one represents it.
-	Owner      govAtom   `json:"owner,omitzero"`
-	Direction  Direction `json:"direction,omitempty"`
-	DueAt      string    `json:"due_at,omitempty"`
-	Lifecycle  string    `json:"lifecycle,omitempty"`
-	ClosureRef string    `json:"closure_ref,omitempty"`
+	Owner     govAtom   `json:"owner,omitzero"`
+	Direction Direction `json:"direction,omitempty"`
+	// CounterpartyLabel is name-grain display attribution only. It does not imply
+	// a provider identity or participate in entity merging.
+	CounterpartyLabel string `json:"counterparty_label,omitempty"`
+	DueAt             string `json:"due_at,omitempty"`
+	Lifecycle         string `json:"lifecycle,omitempty"`
+	ClosureRef        string `json:"closure_ref,omitempty"`
 	// LowSignal flags a SERVICE-ONLY item — every participant is an automated/service
 	// identity (receipts, newsletters, no-reply notices), per memoryIsServiceOnly. It
 	// drives the noise-collapse in section assembly so a window of pure-service items
@@ -82,14 +85,15 @@ type DigestItem struct {
 // DigestItem. The row copies only materialized product state. It never derives an ID
 // or citation from the artifact title/snippet.
 type DigestObligation struct {
-	CommitmentID string               `json:"commitment_id"`
-	Summary      string               `json:"summary"`
-	Owner        govAtom              `json:"owner"`
-	Direction    Direction            `json:"direction"`
-	DueAt        string               `json:"due_at"`
-	Lifecycle    string               `json:"lifecycle"`
-	ClosureRef   string               `json:"closure_ref"`
-	Citations    []CommitmentCitation `json:"citations"`
+	CommitmentID      string               `json:"commitment_id"`
+	Summary           string               `json:"summary"`
+	Owner             govAtom              `json:"owner"`
+	Direction         Direction            `json:"direction"`
+	CounterpartyLabel string               `json:"counterparty_label,omitempty"`
+	DueAt             string               `json:"due_at"`
+	Lifecycle         string               `json:"lifecycle"`
+	ClosureRef        string               `json:"closure_ref"`
+	Citations         []CommitmentCitation `json:"citations"`
 }
 
 // DigestSection groups one instance's surfaced items, recency-ordered. State is
@@ -379,14 +383,15 @@ func identifiedDigestObligations(candidates []Commitment) (out []DigestObligatio
 			continue
 		}
 		out = append(out, DigestObligation{
-			CommitmentID: commitment.ID,
-			Summary:      summary,
-			Owner:        commitment.Owner,
-			Direction:    commitment.Direction,
-			DueAt:        commitDueValue(commitment.Due),
-			Lifecycle:    commitment.State,
-			ClosureRef:   commitment.ClosureRef,
-			Citations:    citations,
+			CommitmentID:      commitment.ID,
+			Summary:           summary,
+			Owner:             commitment.Owner,
+			Direction:         commitment.Direction,
+			CounterpartyLabel: commitment.CounterpartyLabel,
+			DueAt:             commitDueValue(commitment.Due),
+			Lifecycle:         commitment.State,
+			ClosureRef:        commitment.ClosureRef,
+			Citations:         citations,
 		})
 	}
 	return out, identified
@@ -408,6 +413,7 @@ func attachDigestCommitments(d *Digest, byMemory map[string][]Commitment) {
 		}
 		item.Owner = commitment.Owner
 		item.Direction = commitment.Direction
+		item.CounterpartyLabel = commitment.CounterpartyLabel
 		item.DueAt = commitDueValue(commitment.Due)
 		item.Lifecycle = commitment.State
 		item.ClosureRef = commitment.ClosureRef
@@ -1459,8 +1465,9 @@ func renderDigestArtifactLine(it DigestItem) string {
 
 func renderDigestObligationRow(obligation DigestObligation) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "  obligation: commitment_id=%s · owner=%s:%s · direction=%s · due=%s · lifecycle=%s · closure=%s · summary=%s\n",
+	fmt.Fprintf(&b, "  obligation: commitment_id=%s · owner=%s:%s · direction=%s%s · due=%s · lifecycle=%s · closure=%s · summary=%s\n",
 		obligation.CommitmentID, obligation.Owner.Kind, obligation.Owner.Value, obligation.Direction,
+		renderCounterpartyLabel(obligation.CounterpartyLabel),
 		obligation.DueAt, obligation.Lifecycle, obligation.ClosureRef, oneLine(obligation.Summary))
 	for _, citation := range obligation.Citations {
 		fmt.Fprintf(&b, "    citation: role=%s · memory_id=%s · commitment_id=%s\n",
@@ -1484,8 +1491,16 @@ func renderDigestItemLine(it DigestItem) string {
 	if it.Direction == "" {
 		return line
 	}
-	return line + fmt.Sprintf("  obligation: owner=%s:%s · direction=%s · due=%s · lifecycle=%s · closure=%s\n",
-		it.Owner.Kind, it.Owner.Value, it.Direction, it.DueAt, it.Lifecycle, it.ClosureRef)
+	return line + fmt.Sprintf("  obligation: owner=%s:%s · direction=%s%s · due=%s · lifecycle=%s · closure=%s\n",
+		it.Owner.Kind, it.Owner.Value, it.Direction, renderCounterpartyLabel(it.CounterpartyLabel),
+		it.DueAt, it.Lifecycle, it.ClosureRef)
+}
+
+func renderCounterpartyLabel(label string) string {
+	if label = strings.TrimSpace(label); label != "" {
+		return " · counterparty=" + label
+	}
+	return ""
 }
 
 // renderDigestMoreLine renders the "+N more since last brief" guard line.
