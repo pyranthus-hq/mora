@@ -23,6 +23,8 @@ const (
 	examProductMetricLegacyUnscorable         examProductMetricRequirement = "LEGACY_UNSCORABLE"
 	examProductMetricNoGoldSamplesUnscorable  examProductMetricRequirement = "NO_GOLD_SAMPLES_UNSCORABLE"
 	examProductLegacyUnscorableEvidence                                    = "frozen schema-v1/v2 vaults lack immutable message/block refs; commitmentID must not fabricate them"
+	examProductLegacyInventoryRecallEvidence                               = "frozen schema-v1/v2 vaults lack immutable message/block refs; empty-ID commitments cannot safely join inventory lifecycle/closure gold"
+	examProductV1DailySelectionEvidence                                    = "schema-v1 OBLIGATIONS.md defines no daily surface-relevance rule; gold placement is ledger-explicit"
 	examProductNoDuplicateGoldSamplesEvidence                              = "corpus has zero duplicate_of gold samples; ratio is undefined and absolute duplicate leak counts remain enforced"
 )
 
@@ -31,15 +33,19 @@ type examProductMetricState struct {
 	reason      string
 }
 
-// examProductScorecardState makes corpus capability part of every strict row.
-// The three evidence-joined ratios are required once schema v3 supplies immutable
-// message/block refs. Frozen v1/v2 vaults cannot support those joins, and
-// commitmentID must never fabricate refs merely to make an undefined ratio green.
+// examProductScorecardState makes corpus and surface capability part of every
+// strict row. Component states keep the measurable half of a ratio required while
+// classifying only the structurally impossible half as legacy-unscorable. Evidence-
+// joined ratios become required once the corpus supplies immutable message/block
+// refs; commitmentID must never fabricate refs merely to make a ratio green.
 type examProductScorecardState struct {
-	schemaVersion      int
-	commitmentIdentity examProductMetricState
-	dedup              examProductMetricState
-	citationRoles      examProductMetricState
+	schemaVersion       int
+	extractionPrecision examProductMetricState
+	lifecycleRecall     examProductMetricState
+	closureRecall       examProductMetricState
+	commitmentIdentity  examProductMetricState
+	dedup               examProductMetricState
+	citationRoles       examProductMetricState
 }
 
 // TestExamProductTarget keeps the dimensioned product contract executable over
@@ -90,13 +96,12 @@ func recomputeExamProductScorecards(t *testing.T) []namedExamScorecard {
 		{name: "obligations-v3", root: examFixtureV3Root},
 	} {
 		ledger := loadExamLedgerFromRoot(t, corpus.root)
-		state := examProductScorecardStateForLedger(ledger)
 		scorecards := runExamSurfaces(t, corpus.root)
 		rows = append(rows,
-			namedExamScorecard{corpus: corpus.name, surface: "daily CLI", state: state, card: scorecards.DailyCLI},
-			namedExamScorecard{corpus: corpus.name, surface: "daily MCP", state: state, card: scorecards.DailyMCP},
-			namedExamScorecard{corpus: corpus.name, surface: "event CLI", state: state, card: scorecards.EventCLI},
-			namedExamScorecard{corpus: corpus.name, surface: "event MCP", state: state, card: scorecards.EventMCP},
+			namedExamScorecard{corpus: corpus.name, surface: "daily CLI", state: examProductScorecardStateForLedger(ledger, exam.SurfaceDaily), card: scorecards.DailyCLI},
+			namedExamScorecard{corpus: corpus.name, surface: "daily MCP", state: examProductScorecardStateForLedger(ledger, exam.SurfaceDaily), card: scorecards.DailyMCP},
+			namedExamScorecard{corpus: corpus.name, surface: "event CLI", state: examProductScorecardStateForLedger(ledger, exam.SurfaceMeeting), card: scorecards.EventCLI},
+			namedExamScorecard{corpus: corpus.name, surface: "event MCP", state: examProductScorecardStateForLedger(ledger, exam.SurfaceMeeting), card: scorecards.EventMCP},
 		)
 	}
 	return rows
@@ -117,6 +122,32 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 			{name: "commitment identity", state: row.state.commitmentIdentity},
 			{name: "dedup", state: row.state.dedup},
 			{name: "citation roles", state: row.state.citationRoles},
+		}
+		wantExtractionPrecision := examProductMetricState{requirement: examProductMetricRequired}
+		if row.state.schemaVersion == exam.SchemaV1 && row.card.Surface == exam.SurfaceDaily {
+			wantExtractionPrecision = examProductMetricState{
+				requirement: examProductMetricLegacyUnscorable,
+				reason:      examProductV1DailySelectionEvidence,
+			}
+		}
+		if row.state.extractionPrecision != wantExtractionPrecision {
+			t.Errorf("%s %s extraction precision state = %+v, want %+v",
+				row.corpus, row.surface, row.state.extractionPrecision, wantExtractionPrecision)
+		}
+		wantInventoryRecall := examProductMetricState{requirement: examProductMetricRequired}
+		if row.state.schemaVersion < exam.SchemaV3 {
+			wantInventoryRecall = examProductMetricState{
+				requirement: examProductMetricLegacyUnscorable,
+				reason:      examProductLegacyInventoryRecallEvidence,
+			}
+		}
+		if row.state.lifecycleRecall != wantInventoryRecall {
+			t.Errorf("%s %s lifecycle recall state = %+v, want %+v",
+				row.corpus, row.surface, row.state.lifecycleRecall, wantInventoryRecall)
+		}
+		if row.state.closureRecall != wantInventoryRecall {
+			t.Errorf("%s %s closure recall state = %+v, want %+v",
+				row.corpus, row.surface, row.state.closureRecall, wantInventoryRecall)
 		}
 		switch row.state.schemaVersion {
 		case exam.SchemaV1, exam.SchemaV2:
@@ -165,7 +196,8 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 	}
 }
 
-func examProductScorecardStateForLedger(ledger exam.Ledger) examProductScorecardState {
+func examProductScorecardStateForLedger(ledger exam.Ledger, surface string) examProductScorecardState {
+	required := examProductMetricState{requirement: examProductMetricRequired}
 	var evidence examProductMetricState
 	switch ledger.Version {
 	case exam.SchemaV1, exam.SchemaV2:
@@ -194,11 +226,28 @@ func examProductScorecardStateForLedger(ledger exam.Ledger) examProductScorecard
 			}
 		}
 	}
+	extractionPrecision := required
+	if ledger.Version == exam.SchemaV1 && surface == exam.SurfaceDaily {
+		extractionPrecision = examProductMetricState{
+			requirement: examProductMetricLegacyUnscorable,
+			reason:      examProductV1DailySelectionEvidence,
+		}
+	}
+	inventoryRecall := required
+	if ledger.Version < exam.SchemaV3 {
+		inventoryRecall = examProductMetricState{
+			requirement: examProductMetricLegacyUnscorable,
+			reason:      examProductLegacyInventoryRecallEvidence,
+		}
+	}
 	return examProductScorecardState{
-		schemaVersion:      ledger.Version,
-		commitmentIdentity: evidence,
-		dedup:              dedup,
-		citationRoles:      evidence,
+		schemaVersion:       ledger.Version,
+		extractionPrecision: extractionPrecision,
+		lifecycleRecall:     inventoryRecall,
+		closureRecall:       inventoryRecall,
+		commitmentIdentity:  evidence,
+		dedup:               dedup,
+		citationRoles:       evidence,
 	}
 }
 
@@ -210,7 +259,11 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 		if card.ScorerVersion != exam.ScorerVersion {
 			failures = append(failures, fmt.Sprintf("%s scorer version = %d, want %d", label, card.ScorerVersion, exam.ScorerVersion))
 		}
-		failures = append(failures, ratioAtLeastFailures(label+" extraction", card.Extraction, 0.90)...)
+		failures = append(failures, ratioComponentsAtLeastFailures(
+			label+" extraction", card.Extraction, 0.90,
+			row.state.extractionPrecision,
+			examProductMetricState{requirement: examProductMetricRequired},
+		)...)
 		failures = append(failures, ratioEqualFailures(label+" citation coverage", card.CitationCoverage, 1.0)...)
 		failures = append(failures, ratioEqualFailures(label+" citation correctness", card.CitationCorrect, 1.0)...)
 		for _, absolute := range []struct {
@@ -236,8 +289,16 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 		}
 		failures = append(failures, ratioAtLeastFailures(label+" direction", card.Direction, 0.90)...)
 		failures = append(failures, ratioAtLeastFailures(label+" due time", card.DueTime, 0.90)...)
-		failures = append(failures, ratioAtLeastFailures(label+" lifecycle", card.Lifecycle, 0.90)...)
-		failures = append(failures, ratioAtLeastFailures(label+" closure linkage", card.ClosureLinkage, 0.90)...)
+		failures = append(failures, ratioComponentsAtLeastFailures(
+			label+" lifecycle", card.Lifecycle, 0.90,
+			examProductMetricState{requirement: examProductMetricRequired},
+			row.state.lifecycleRecall,
+		)...)
+		failures = append(failures, ratioComponentsAtLeastFailures(
+			label+" closure linkage", card.ClosureLinkage, 0.90,
+			examProductMetricState{requirement: examProductMetricRequired},
+			row.state.closureRecall,
+		)...)
 		failures = append(failures, ratioAtLeastFailures(label+" owner", card.Owner, 0.90)...)
 		failures = append(failures, scopedRatioAtLeastFailures(
 			label+" commitment identity", row.state.schemaVersion, row.state.commitmentIdentity, card.CommitmentIdentity, 0.90,
@@ -255,9 +316,11 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 			{name: "owner", row: card.Owner},
 			{name: "direction", row: card.Direction},
 			{name: "due time", row: card.DueTime},
-			{name: "lifecycle", row: card.Lifecycle},
 		} {
 			failures = append(failures, classRecallAtLeastFailures(label+" "+dimension.name, dimension.row, 0.90)...)
+		}
+		if row.state.lifecycleRecall.requirement == examProductMetricRequired {
+			failures = append(failures, classRecallAtLeastFailures(label+" lifecycle", card.Lifecycle, 0.90)...)
 		}
 		if row.state.citationRoles.requirement == examProductMetricRequired {
 			failures = append(failures, classRecallAtLeastFailures(label+" citation roles", card.CitationRoles, 0.90)...)
@@ -267,6 +330,42 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 			failures = append(failures, classRecallAtLeastFailures(label+" counterparty", card.Counterparty, 0.90)...)
 		}
 	}
+	return failures
+}
+
+func ratioComponentsAtLeastFailures(
+	label string,
+	got exam.PR,
+	want float64,
+	precisionState, recallState examProductMetricState,
+) []string {
+	var failures []string
+	check := func(component string, state examProductMetricState, value float64) {
+		switch state.requirement {
+		case examProductMetricRequired:
+			if state.reason != "" {
+				failures = append(failures, fmt.Sprintf("%s %s required state carries stale unscorable reason %q",
+					label, component, state.reason))
+				return
+			}
+			if !got.Defined {
+				failures = append(failures, fmt.Sprintf("%s %s is unscorable, want a defined ratio", label, component))
+				return
+			}
+			if value < want {
+				failures = append(failures, fmt.Sprintf("%s %s = %.6f, want >= %.2f", label, component, value, want))
+			}
+		case examProductMetricLegacyUnscorable:
+			if state.reason == "" {
+				failures = append(failures, fmt.Sprintf("%s %s legacy-unscorable state has no reason", label, component))
+			}
+		default:
+			failures = append(failures, fmt.Sprintf("%s %s has unsupported component state %q",
+				label, component, state.requirement))
+		}
+	}
+	check("precision", precisionState, got.Precision)
+	check("recall", recallState, got.Recall)
 	return failures
 }
 
