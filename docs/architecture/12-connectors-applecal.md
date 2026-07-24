@@ -1,6 +1,9 @@
 # 12 — Apple Calendar Connector
 
-> Read-only reader of the local macOS Calendar store — one memory per event, mirroring the iMessage connector's constraints (pure Go, no net, no `internal/mora` import, FDA-gated). Added 2026-06-10.
+> This connector reads the local macOS Calendar store. It writes one memory for
+> each event. Like the iMessage connector, it uses pure Go and no network. It
+> does not import `internal/mora`, and Full Disk Access gates it. Added
+> 2026-06-10.
 
 ## Files
 
@@ -23,7 +26,7 @@ flowchart LR
 - **Store location**: the modern path is the calendar group container (`~/Library/Group Containers/group.com.apple.calendar/Calendar.sqlitedb`); `appleCalDBPath` probes it first, then the legacy `~/Library/Calendars/` location. Opened `mode=ro&immutable=1` — Calendar.app may hold the write lock, and immutable guarantees we can never mutate Apple's store.
 - **Core Data epoch**: all store timestamps are seconds since 2001-01-01T00:00:00Z (`appleEpoch`/`appleTime`).
 - **Events only**: `entity_type = 2` selects events (reminders/tasks use other values); `hidden = 0` skips recurrence phantoms.
-- **Forward bound (flood guard)**: `windowForAppleCal` always sets `Until = now + 180d`. Apple Calendar stores subscribed-holiday/sports events YEARS out; an unbounded Until floods the vault and the digest's upcoming-events framing. `SinceDays` keeps the iMessage semantics (0 ⇒ 90d back, negative ⇒ all-time past).
+- **Forward bound (flood guard)**: `windowForAppleCal` always sets `Until = now + 180d`. Apple Calendar stores subscribed-holiday/sports events YEARS out. An unbounded Until floods the vault and the digest's upcoming-events framing. `SinceDays` keeps the iMessage semantics (0 ⇒ 90d back, negative ⇒ all-time past).
 - **Schema probe at open** (the imessage Pitfall-9 lesson): required tables/columns are verified via `PRAGMA table_info` so an OS schema change errors as `unsupported Calendar.sqlitedb schema: …` at connect time, not cryptically mid-query.
 - **Meta mirrors Google Calendar conventions** (`attendees` sorted+normalized emails, `organizer` from Participant role 1, `self_email` from `Participant.is_self`, `occurred_at`) so the entity graph's connector-capture path reads both calendars identically. Participant lookups are best-effort — a failure drops the edge, never the event.
 - **`self_email` records which invitee is the local user** (`Participant.is_self = 1`), the Apple counterpart of Google's `Attendee.Self`. Without it the [meeting brief](./19-meeting-brief-assembly.md) cannot recognize the user among their own meeting's invitees — the local store lists them under whichever alias the invite used (an iCloud/me.com address the connected Google mailbox has never seen) — so it would admit them as an attendee of their own meeting and cite their own records back as the counterparty's unfinished business (wrong-person attribution, severity-1). The column is read defensively: a store without `is_self` keeps working, simply without the signal.

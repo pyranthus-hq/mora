@@ -1,6 +1,10 @@
 # Google Connector (Gmail + Calendar)
 
-Read-only Gmail (thread-level) and Calendar (event) ingestion: an installed-app OAuth consent flow, a `Fetcher` test seam vs a `LiveFetcher` over `gmail/v1` + `calendar/v3`, and a resumable, checkpointed backfill that maps provider objects to plain `MappedMemory` structs which `internal/mora` converts at one wiring boundary.
+This connector reads Gmail threads and Calendar events. It uses an installed-app
+OAuth consent flow. Tests use the `Fetcher` seam. Live runs use `LiveFetcher`
+over `gmail/v1` and `calendar/v3`. A saved checkpoint lets backfill resume.
+Backfill maps provider objects to plain `MappedMemory` structs.
+`internal/mora` converts them at one wiring boundary.
 
 ## Files
 
@@ -48,7 +52,7 @@ flowchart LR
 
 ## OAuth: installed-app loopback consent
 
-`Scopes` is two read-only scopes only — `gmail.readonly` and `calendar.readonly` (`internal/google/oauth.go:32`). Mora can never send, delete, or modify; nothing egresses. The consent preamble states this verbatim to the user (`internal/mora/mora.go:1175`).
+`Scopes` is two read-only scopes only — `gmail.readonly` and `calendar.readonly` (`internal/google/oauth.go:32`). Mora can never send, delete, or modify. Nothing egresses. The consent preamble states this verbatim to the user (`internal/mora/mora.go:1175`).
 
 ### Credential resolution (BYO over embedded)
 
@@ -58,7 +62,7 @@ flowchart LR
 
 ### The loopback flow
 
-`StartLoopbackAuth` (`internal/google/oauth.go:165`) listens on `127.0.0.1:0` (a random free port), sets `RedirectURL` to `http://127.0.0.1:<port>/callback` for that one run, and builds the auth URL with `AccessTypeOffline` + `prompt=consent` so Google issues (and re-issues on re-consent) a **refresh token** (`internal/google/oauth.go:174`). A CSRF `state` is generated via `ContentHash(now, redirectURL)` and verified on the callback (`:184`); a state mismatch or an `error=` query param aborts. The browser is auto-opened (`open`/`xdg-open`) except under WSL, where the URL is printed for manual paste (`IsWSL` reads `/proc/version` for "microsoft", `:143`). The handler waits up to **5 minutes** then exchanges the code; if the exchange returns no refresh token it errors with "re-run with --reauth" (`:219`).
+`StartLoopbackAuth` (`internal/google/oauth.go:165`) listens on `127.0.0.1:0` (a random free port), sets `RedirectURL` to `http://127.0.0.1:<port>/callback` for that one run, and builds the auth URL with `AccessTypeOffline` + `prompt=consent` so Google issues (and re-issues on re-consent) a **refresh token** (`internal/google/oauth.go:174`). A CSRF `state` is generated via `ContentHash(now, redirectURL)` and verified on the callback (`:184`). A state mismatch or an `error=` query param aborts. The browser is auto-opened (`open`/`xdg-open`) except under WSL, where the URL is printed for manual paste (`IsWSL` reads `/proc/version` for "microsoft", `:143`). The handler waits up to **5 minutes** then exchanges the code. If the exchange returns no refresh token it errors with "re-run with --reauth" (`:219`).
 
 ```mermaid
 sequenceDiagram
@@ -84,7 +88,7 @@ sequenceDiagram
 
 ### Token storage and refresh durability
 
-`SaveToken` (`internal/google/oauth.go:100`) writes `~/.config/mora/tokens/google.json` via a `.tmp`+rename atomic write at **0600** (dir 0700); the 0600 mode is asserted by `TestTokenStoreRoundtrip` (`internal/google/oauth_test.go:60`). At fetch time, `NewLiveFetcher` wraps the stored token in `cfg.TokenSource(ctx, tok)` (`internal/google/client.go:23`), so the `oauth2` library auto-refreshes access tokens from the refresh token — there is no manual refresh code.
+`SaveToken` (`internal/google/oauth.go:100`) writes `~/.config/mora/tokens/google.json` via a `.tmp`+rename atomic write at **0600** (dir 0700). The 0600 mode is asserted by `TestTokenStoreRoundtrip` (`internal/google/oauth_test.go:60`). At fetch time, `NewLiveFetcher` wraps the stored token in `cfg.TokenSource(ctx, tok)` (`internal/google/client.go:23`), so the `oauth2` library auto-refreshes access tokens from the refresh token — there is no manual refresh code.
 
 **Production-vs-Testing durability gotcha:** the refresh token survives indefinitely only if the OAuth app is in **Production** mode. Google's **Testing** mode expires refresh tokens after ~7 days, after which every sync fails with an auth error. `isGoogleAuthError` (`internal/mora/setup.go`) pattern-matches `oauth`/`token`/`invalid_grant`/`unauthorized`/`401`/`expired`/`refresh` (`internal/mora/setup.go`) and the sync path then prints the specific recovery: re-run `connect google`, and if it recurs every ~7 days, switch the app to Production (`internal/mora/ingest.go`).
 
@@ -92,7 +96,7 @@ sequenceDiagram
 
 ## Fetcher (test seam) vs LiveFetcher
 
-`Fetcher` is a one-method interface — `FetchPage(kind, window, cursor) (Page, error)` (`internal/memory/types.go:61`). It is the unit-test seam: the generic `Ingest` loop drives *any* `Fetcher`, so tests substitute a fake that returns canned pages (no network). `LiveFetcher` (`internal/google/client.go:15`) is the real implementation, holding a `*gmail.Service` and `*calendar.Service`. Its `FetchPage` dispatches on kind to `fetchGmailPage` / `fetchCalendarPage` (`internal/google/client.go:35`); an unknown kind errors.
+`Fetcher` is a one-method interface — `FetchPage(kind, window, cursor) (Page, error)` (`internal/memory/types.go:61`). It is the unit-test seam: the generic `Ingest` loop drives *any* `Fetcher`, so tests substitute a fake that returns canned pages (no network). `LiveFetcher` (`internal/google/client.go:15`) is the real implementation, holding a `*gmail.Service` and `*calendar.Service`. Its `FetchPage` dispatches on kind to `fetchGmailPage` / `fetchCalendarPage` (`internal/google/client.go:35`). An unknown kind errors.
 
 ### Gmail: thread-level
 
@@ -102,11 +106,11 @@ sequenceDiagram
 - Subject = the first non-empty `Subject` header in thread order; `OccurredAt` = the latest message `InternalDate`.
 - Body = `From: …` + each message's `text/plain` part, quote-stripped, joined with `---`.
 - `Meta["messages"]` is an ordered array carrying each message's immutable `message_ref`, normalized `sender`/`to`/`cc`, RFC3339 `at`, and connector-visible `block_refs`; `Meta["last_sender"]` is the final message's normalized sender. The one-memory-per-thread storage contract does not change.
-- The existing sorted `from`/`to`/`cc` union remains present for graph and backward compatibility. It must not be used to infer direction inside a two-way thread; direction consumes the ordered message entry that owns the authored evidence.
+- The existing sorted `from`/`to`/`cc` union remains present for graph and backward compatibility. It must not be used to infer direction inside a two-way thread. Direction consumes the ordered message entry that owns the authored evidence.
 - `decodeGmailBody` (`:113`) recursively walks the MIME tree for the first `text/plain` part; `decodeBase64URL` (`internal/google/client.go:59`) handles both padded and unpadded base64url.
 - `stripQuoted` (`:142`) drops `>`-prefixed lines and truncates at an `On … wrote:` attribution — a cheap heuristic to keep bodies lean.
 - Attachment **metadata only** (filename/mime/size), never bytes (`gmailAttachments`, `:128`).
-- **Actionability labels (issue #62).** `gmailUrgencyLabels` captures the union of `UNREAD`/`IMPORTANT`/`STARRED` across the thread's messages into `Meta["labels"]` (routing labels like `INBOX` are ignored), giving the brief's [urgent lane](./07-synthesis-think-digest.md) a first-class signal. These are **volatile state** — a read/star toggle flips them — so `memory.MapItem` strips them BEFORE the content hash (`hashMeta`, `internal/memory/mapped.go`) while still persisting them; a toggle therefore never churns the delta, and a pre-#62 ingest (no labels) keeps its exact legacy hash. Populating existing vaults needs a Gmail re-ingest; until then the deadline-phrase gate is unchanged.
+- **Actionability labels (issue #62).** `gmailUrgencyLabels` captures the union of `UNREAD`/`IMPORTANT`/`STARRED` across the thread's messages into `Meta["labels"]` (routing labels like `INBOX` are ignored), giving the brief's [urgent lane](./07-synthesis-think-digest.md) a first-class signal. These are **volatile state** — a read/star toggle flips them — so `memory.MapItem` strips them BEFORE the content hash (`hashMeta`, `internal/memory/mapped.go`) while still persisting them. A toggle therefore never churns the delta, and a pre-#62 ingest (no labels) keeps its exact legacy hash. Populating existing vaults needs a Gmail re-ingest. Until then the deadline-phrase gate is unchanged.
 
 ### Calendar: events
 
@@ -114,7 +118,7 @@ sequenceDiagram
 
 ### Identity capture (feeds the entity graph)
 
-Both adapters populate `Item.Meta` with structured identity for the [entity graph](./03-entity-graph.md). Gmail parses `From`/`To`/`Cc` headers with `addrSet.addHeader` (`internal/google/identity.go:26`), which uses `net/mail.ParseAddressList` and — because that parser is all-or-nothing — falls back to a quote/angle-bracket-aware comma split (`splitAddrList`, `:50`) so one malformed address never drops the rest. Calendar attendees/organizer arrive pre-parsed and are added directly (`internal/google/calendar.go:69`). Calendar also records **`self_email`** from the authenticated user's own `Attendee.Self` entry — the authoritative answer to "which of these invitees is the user", and frequently *not* the mailbox OAuth was granted on (a Workspace alias, a custom domain). The [meeting brief](./19-meeting-brief-assembly.md) needs it to exclude the user from their own meeting; without it an unrecognized alias is admitted as a counterparty and the user's own records are cited back as that person's unfinished business (wrong-person attribution, severity-1). Addresses are lowercased and deduped; display names are kept per address as graph aliases. **All output lists are sorted** (`addrSet.list`, `:99`) so Meta bytes are byte-stable across runs — a determinism requirement for the graph. `mergeNames` folds aliases into a `names` map, omitted when empty (`:119`).
+Both adapters populate `Item.Meta` with structured identity for the [entity graph](./03-entity-graph.md). Gmail parses `From`/`To`/`Cc` headers with `addrSet.addHeader` (`internal/google/identity.go:26`), which uses `net/mail.ParseAddressList` and — because that parser is all-or-nothing — falls back to a quote/angle-bracket-aware comma split (`splitAddrList`, `:50`) so one malformed address never drops the rest. Calendar attendees/organizer arrive pre-parsed and are added directly (`internal/google/calendar.go:69`). Calendar also records **`self_email`** from the authenticated user's own `Attendee.Self` entry — the authoritative answer to "which of these invitees is the user", and frequently *not* the mailbox OAuth was granted on (a Workspace alias, a custom domain). The [meeting brief](./19-meeting-brief-assembly.md) needs it to exclude the user from their own meeting. Without it an unrecognized alias is admitted as a counterparty and the user's own records are cited back as that person's unfinished business (wrong-person attribution, severity-1). Addresses are lowercased and deduped. Display names are kept per address as graph aliases. **All output lists are sorted** (`addrSet.list`, `:99`) so Meta bytes are byte-stable across runs — a determinism requirement for the graph. `mergeNames` folds aliases into a `names` map, omitted when empty (`:119`).
 
 ## The resumable Ingest loop
 
@@ -152,17 +156,17 @@ flowchart TD
 
 ## Invariants & gotchas
 
-- **`internal/google` MUST NOT import `internal/mora`.** mora imports google; the reverse cycles. The adapter returns plain `MappedMemory`; conversion happens only in `writeMappedMemory`. (`internal/google/types.go:2`)
+- **`internal/google` MUST NOT import `internal/mora`.** mora imports google. The reverse cycles. The adapter returns plain `MappedMemory`. Conversion happens only in `writeMappedMemory`. (`internal/google/types.go:2`)
 - **Read-only scopes, zero egress.** Only `gmail.readonly` + `calendar.readonly` (`internal/google/oauth.go:32`). Never widen scopes without an explicit decision — write access changes the product's threat model and the consent preamble's promise.
 - **The embedded `client.json` is a non-secret placeholder.** It must exist for `//go:embed` to compile, must never hold real creds, and `configFromInstalledJSON` fails fast on the `DEV_PLACEHOLDER` ID so users get setup guidance, not a 401. (`internal/google/oauth.go:77`)
 - **Token file is 0600 (dir 0700), atomic write.** It holds a refresh token = standing read access to the user's mail. (`internal/google/oauth.go:100`, asserted by `oauth_test.go:60`)
-- **Refresh-token durability needs Production mode.** Testing mode expires refresh tokens in ~7 days; recurring auth failures every week mean the app is in Testing. Surface this, don't swallow it. (`internal/mora/ingest.go`)
+- **Refresh-token durability needs Production mode.** Testing mode expires refresh tokens in ~7 days. Recurring auth failures every week mean the app is in Testing. Surface this, don't swallow it. (`internal/mora/ingest.go`)
 - **`StableID` is provider identity only**, never content (`<kind>/<providerID>`). Files are named with `SafeFilename` (`/`,`:`,` `→`_`), so any later ID lookup must match the SafeFilename form. (`internal/memory/ids.go:11`)
 - **Content-hash skip preserves `created_at`.** An unchanged thread is not rewritten, and rewrites keep the original creation time. The hash folds in Meta only when non-empty, so pre-Meta files don't spuriously rewrite. **Volatile state keys (Gmail `labels`, issue #62) are stripped before hashing** (`hashMeta`) so a read/star toggle never rewrites the file or churns the delta. (`internal/mora/ingest.go`, `internal/memory/mapped.go`)
-- **Ingest is resumable, not live.** The checkpoint advances per page and survives a crash; cursors are stored in `SyncStatus` (`internal/memory/status.go:13`) but the `GmailHistory`/`CalSyncToken` incremental fields are **unused in v1** — sync is an honest full re-snapshot. See [sync & freshness](./11-sync-and-freshness.md).
-- **Never swallow sync errors.** Page-fetch errors stop the run but preserve resume state; per-item write errors are counted and skipped. Failures are surfaced to the user so a stale snapshot is always distinguishable from a fresh one. (`internal/memory/ingest.go:43`, `internal/mora/ingest.go`)
-- **Gmail storage is thread-grained; evidence is message-grained.** One thread → one `Item` → one memory, but `Meta["messages"]` preserves Gmail order and each message's sender/recipients/time/evidence refs, with `last_sender` pinned separately. The sorted thread union remains backward-compatible identity data and is never a substitute for message direction. (`internal/google/gmail.go`)
-- **Identity Meta must be byte-stable.** Addresses are sorted and lowercased; empty lists/names maps are omitted. This is load-bearing for the deterministic [entity graph](./03-entity-graph.md) — do not introduce map-iteration-order output. (`internal/google/identity.go:99`, `:111`)
+- **Ingest is resumable, not live.** The checkpoint advances per page and survives a crash. Cursors are stored in `SyncStatus` (`internal/memory/status.go:13`) but the `GmailHistory`/`CalSyncToken` incremental fields are **unused in v1** — sync is an honest full re-snapshot. See [sync & freshness](./11-sync-and-freshness.md).
+- **Never swallow sync errors.** Page-fetch errors stop the run but preserve resume state. Per-item write errors are counted and skipped. Failures are surfaced to the user so a stale snapshot is always distinguishable from a fresh one. (`internal/memory/ingest.go:43`, `internal/mora/ingest.go`)
+- **Gmail storage is thread-grained. Evidence is message-grained.** One thread → one `Item` → one memory, but `Meta["messages"]` preserves Gmail order and each message's sender/recipients/time/evidence refs, with `last_sender` pinned separately. The sorted thread union remains backward-compatible identity data and is never a substitute for message direction. (`internal/google/gmail.go`)
+- **Identity Meta must be byte-stable.** Addresses are sorted and lowercased. Empty lists/names maps are omitted. This is load-bearing for the deterministic [entity graph](./03-entity-graph.md) — do not introduce map-iteration-order output. (`internal/google/identity.go:99`, `:111`)
 - **Attachments are metadata-only.** v1 never ingests attachment bodies. (`internal/google/gmail.go:128`)
 - **The `kindRegistry` already hardcodes gmail/calendar.** Unlike the iMessage connector (which calls `RegisterKind` in an `init`), the gmail/calendar (type, provider) mappings are baked into `internal/memory/mapped.go:69`, so the google adapter does not register them. (`internal/memory/mapped.go:69`)
 

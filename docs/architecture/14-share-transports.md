@@ -1,35 +1,34 @@
 # 14 — Share transports
 
-`mora share` (see [13-sharing.md](13-sharing.md)) originally moved memories over
-exactly one transport: a private git remote. This document describes the seam
-that lets a share travel over a **user-owned S3/R2 bucket** as well, and how the
-same confidentiality/authenticity/freshness guarantees are provided on a backend
-that — unlike a private git repo — has no write-ACL and whose locator is a
-read-all bearer token.
+`mora share` first moved memories through one transport: a private git remote.
+See [13-sharing.md](13-sharing.md). A transport seam now also supports a
+**user-owned S3/R2 bucket**. This document explains how both paths give the same
+privacy, identity, and age guarantees. Unlike a private git repo, this backend
+has no write ACL. Its locator is a read-all bearer token.
 
 ## The one idea
 
-A share is `scope + recipients + a transport locator`. The neutral core —
-collect a scope, diff, age-encrypt, decrypt, validate, index, fuse — never names
-a backend. Every transport obeys one rule:
+A share is `scope + recipients + a transport locator`. The shared core does not
+name a backend. It collects a scope, finds changes, encrypts with age, decrypts,
+checks, indexes, and joins results. Each transport follows one rule:
 
 > **Write content-addressed ciphertext blobs, then flip ONE signed manifest that
 > names the current set. A reader resolves the set via the manifest, verifies it
 > before touching a byte, and hash-checks every blob.**
 
-This is a strict generalization of what git already did (`commit` + `share.json`).
-Once it holds, the publish and pull loops are identical across backends.
+This rule extends what git already did with `commit` + `share.json`. With this
+rule, all backends use the same publish and pull loops.
 
 ## The two axes
 
-v1 entangled two independent concerns; they are now split.
+v1 entangled two independent concerns. They are now split.
 
 | Axis | When | git | bucket |
 |---|---|---|---|
 | **Coordination / bootstrap** | once | clone / grant repo read | paste locator + confirm fingerprint out of band |
 | **Transport** | recurring | commit + push / pull `--ff-only` | put/get objects + flip manifest |
 
-All *trust* lives in coordination (TOFU-pinning the publisher key); transport just
+All *trust* lives in coordination (TOFU-pinning the publisher key). Transport just
 moves ciphertext and knows nothing about who is trusted.
 
 ## Where each guarantee comes from
@@ -52,7 +51,7 @@ shares with the same key.
 
 `bucketPublish` (`internal/mora/share_bucket.go`):
 
-1. Encrypt each memory in scope; the blob's storage key is `sha256(ciphertext)`
+1. Encrypt each memory in scope. The blob's storage key is `sha256(ciphertext)`
    (`blobKey`). v1 re-encrypts the full set each push (authored notes are small);
    dedup is a later optimization.
 2. Build `shareManifestV2` (id → blob → size), version = *remote version + 1* so a
@@ -63,7 +62,7 @@ shares with the same key.
    put the manifest (the single linearization point) → delete now-orphaned blobs.
 
 A reader mid-publish sees either the old manifest (its blobs still present) or the
-new one (its blobs uploaded before the flip); orphan deletion only removes blobs
+new one (its blobs uploaded before the flip). Orphan deletion only removes blobs
 no manifest references.
 
 ## Fetch (bucket)
@@ -76,7 +75,7 @@ existing `shareImport` validates and indexes that dir unchanged — so id-spoof,
 scope-mismatch, size, and case-fold checks run for **every** backend via that
 shared backstop. (`bucketFetch` additionally pre-checks the signed manifest's
 entries before download, as defense in depth on a distinct artifact.) A mid-fetch
-failure discards the throwaway dir; the real corpus is never partially written.
+failure discards the throwaway dir. The real corpus is never partially written.
 
 ## Ledger
 
@@ -89,7 +88,7 @@ env-var prefix (`MORA_SHARE_*`, falling back to `AWS_*`).
 ## CLI
 
 git stays the default; `--via r2|s3|b2|bucket` opts into a bucket. `push`/`pull`/`list`
-are identical regardless of transport; only bootstrap differs:
+are identical regardless of transport. Only bootstrap differs:
 
 ```
 mora share init  acme --scope project:acme --recipient age1… --via r2 --bucket b --endpoint <url> --prefix shares/acme
@@ -108,7 +107,7 @@ whatever key first contact served.
 - **Pure Go / CGO=0.** The S3 adapter uses `aws-sdk-go-v2` (pure Go); CI's
   `CGO_ENABLED=0 go build ./...` gate keeps the static-binary thesis honest.
 - **git path unchanged.** `bucketOf(nil) == nil`, so every git verb runs its
-  original code; the existing share suite is the equivalence oracle.
+  original code. The existing share suite is the equivalence oracle.
 - **No live-vault fusion.** All bucket state lives under `<DataDir>/share/subs/<name>/`,
   exactly as the git clone did.
 

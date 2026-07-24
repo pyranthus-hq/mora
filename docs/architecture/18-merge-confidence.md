@@ -1,6 +1,14 @@
 # 18 — Merge confidence (`mora merge`)
 
-Mora unifies the many source-native identities of one human — a Gmail address, a Calendar invitee, an iMessage phone handle — into a single canonical person in the [entity graph](./03-entity-graph.md). Because **a wrong-person merge is a severity-1 error** (it silently attributes one person's context to another), identity clustering runs in **three confidence tiers**, ordered by how *provable* the "same human" claim is. When the evidence is not provable, Mora **refuses to gap**: it leaves the identities unmerged rather than guessing.
+Mora joins one human's source identities into one standard person in the
+[entity graph](./03-entity-graph.md). These identities can be a Gmail address,
+a Calendar invitee, or an iMessage phone handle.
+
+**A wrong-person merge is a severity-1 error.** It can silently assign one
+person's context to another. Thus, identity grouping uses **three confidence
+tiers**. The order follows how well evidence proves the "same human" claim.
+When evidence cannot prove it, Mora **refuses to gap**. It keeps the identities
+separate and does not guess.
 
 ## The three tiers
 
@@ -19,11 +27,11 @@ Across channels there is **no byte-provable shared token**: a phone handle carri
 1. **address-book corroboration** — a phone handle carries a distinctive (multi-token) **trusted contact name**, resolved from the user's own macOS AddressBook, that an email PERSON also self-presents. The name bridges the two channels.
 2. **shared-signature** — the email address's local part echoes ≥1 token of that name (`echoTokens`), so the address structurally corroborates the identity rather than relying on a spoofable display name.
 
-Anything short of both is REFUSE, not a low-confidence merge: a name borne by more than `maxNameMergeClusters` identities is too common; a single-token name is not distinctive; an address with no echo corroborates nothing.
+Anything short of both is REFUSE, not a low-confidence merge: a name borne by more than `maxNameMergeClusters` identities is too common. A single-token name is not distinctive. An address with no echo corroborates nothing.
 
 > The Phase-12 iMessage mention-edge is a **future enhancement** this consumes as an additional signal *when built* — it is **not** a prerequisite. The address-book + signature path stands alone.
 
-A candidate is only ever a **proposal**. A wrong candidate is queue noise the user rejects; it is never a merge.
+A candidate is only ever a **proposal**. A wrong candidate is queue noise the user rejects. It is never a merge.
 
 ## The confirm-queue (keyed on source atoms)
 
@@ -45,5 +53,5 @@ Every applied fusion is recorded in the `person_merges` index table — `(member
 ## Invariants
 
 - **Precision-first.** `canonicalizePersons` RULE 1/2 are byte-identical to before P13. Ambiguous → refuse-to-gap. The only cross-channel path is an explicit human confirm.
-- **Zero-egress, deterministic.** All of the above is pure Go over local Meta + the vault ledger; no model, no network. The graph build (including confirmed merges and provenance) is byte-identical across rebuilds for a fixed vault + ledger — the ledger is part of vault state.
+- **Zero-egress, deterministic.** All of the above is pure Go over local Meta + the vault ledger. No model, no network. The graph build (including confirmed merges and provenance) is byte-identical across rebuilds for a fixed vault + ledger — the ledger is part of vault state.
 - **#52-safe.** Confirm/reject decisions and provenance are keyed on source atoms, so they survive re-sync.
