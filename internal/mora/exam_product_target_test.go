@@ -78,7 +78,7 @@ func TestExamProductTarget(t *testing.T) {
 		t.Fatalf("FIXED: all three corpora now meet the strict product target; flip wantRED:false and close %s", targetIssue)
 	}
 	if !hasTypedProductDeficiency(rows) {
-		t.Fatalf("known-RED pin drifted: typed obligation rows are now scorable even though another target dimension remains red; inspect and update the dated pin for %s", targetIssue)
+		t.Fatalf("known-RED pin drifted: typed obligation rows now meet their required floors even though another target dimension remains red; inspect and update the dated pin for %s", targetIssue)
 	}
 	t.Logf("known RED through %s: %d strict product-target assertions fail across all three corpora; tracked by %s and daily contract %s",
 		knownRedEnds, len(failures), targetIssue, dailyIssue)
@@ -463,20 +463,30 @@ func hasTypedProductDeficiency(rows []namedExamScorecard) bool {
 	for _, row := range rows {
 		card := row.card
 		if !card.DirectionScorable ||
-			!card.Direction.Defined ||
-			!card.DueTime.Defined ||
-			!card.Lifecycle.Defined ||
-			!card.ClosureLinkage.Defined ||
-			!card.Owner.Defined ||
-			requiredMetricUndefined(row.state.commitmentIdentity, card.CommitmentIdentity) ||
-			requiredMetricUndefined(row.state.dedup, card.Dedup) ||
-			requiredMetricUndefined(row.state.citationRoles, card.CitationRoles) {
+			ratioBelowProductTarget(card.Direction) ||
+			ratioBelowProductTarget(card.DueTime) ||
+			ratioComponentBelowProductTarget(card.Lifecycle, row.state.lifecycleRecall) ||
+			ratioComponentBelowProductTarget(card.ClosureLinkage, row.state.closureRecall) ||
+			ratioBelowProductTarget(card.Owner) ||
+			requiredMetricBelowProductTarget(row.state.commitmentIdentity, card.CommitmentIdentity) ||
+			requiredMetricBelowProductTarget(row.state.dedup, card.Dedup) ||
+			requiredMetricBelowProductTarget(row.state.citationRoles, card.CitationRoles) {
 			return true
 		}
 	}
 	return false
 }
 
-func requiredMetricUndefined(state examProductMetricState, row exam.PR) bool {
-	return state.requirement == examProductMetricRequired && !row.Defined
+func ratioBelowProductTarget(row exam.PR) bool {
+	return !row.Defined || row.Precision < 0.90 || row.Recall < 0.90
+}
+
+func ratioComponentBelowProductTarget(row exam.PR, recallState examProductMetricState) bool {
+	return !row.Defined ||
+		row.Precision < 0.90 ||
+		recallState.requirement == examProductMetricRequired && row.Recall < 0.90
+}
+
+func requiredMetricBelowProductTarget(state examProductMetricState, row exam.PR) bool {
+	return state.requirement == examProductMetricRequired && ratioBelowProductTarget(row)
 }

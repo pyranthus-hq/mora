@@ -377,6 +377,11 @@ type goldItem struct {
 	DuplicateOf  string
 }
 
+type commitmentMemoryKey struct {
+	CommitmentID string
+	MemoryID     string
+}
+
 // commitmentStableIDs is the scorer-side oracle for the versioned product ID.
 // Identity uses only immutable opening evidence. Person identity is deliberately
 // absent, so an alias correction or graph merge cannot churn commitment IDs.
@@ -813,6 +818,30 @@ func matchMeeting(p Prediction, gold []goldItem, negatives []negativeItem, unive
 	return out
 }
 
+// predictionGroundedInRenderedMemory independently checks the identity join
+// against the bytes the corpus renderer gives the product. Presentation is
+// unwrapped first; normalized containment then tolerates only whitespace and case.
+func predictionGroundedInRenderedMemory(l Ledger, idx ledgerIndex, p Prediction) bool {
+	text := normalize(UnwrapEmitted(p.Text))
+	a, ok := idx.byMemory[p.MemoryID]
+	if text == "" || !ok {
+		return false
+	}
+	ids := map[string]Identity{l.Self.ID: l.Self}
+	for _, person := range l.People {
+		ids[person.ID] = person
+	}
+	rendered, _, err := renderArtifact(a, ids, l.Self.ID, l.Version)
+	if err != nil {
+		return false
+	}
+	memoryBytes, err := renderFrontmatter(rendered)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(normalize(string(memoryBytes)), text)
+}
+
 func scoreMeeting(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, preds []Prediction) Scorecard {
 	negatives, err := negativesFor(l, idx, SurfaceMeeting)
 	if err != nil {
@@ -830,6 +859,12 @@ func scoreMeeting(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, pre
 	exactPreds := 0
 	acc := newTypedAccumulator(gold, idx)
 	commitments := newCommitmentAccumulator(l, idx, inventoryGold)
+	identityGold := make(map[commitmentMemoryKey]int, len(gold))
+	if l.Version >= SchemaV3 {
+		for i, g := range gold {
+			identityGold[commitmentMemoryKey{CommitmentID: g.CommitmentID, MemoryID: g.MemoryID}] = i
+		}
+	}
 
 	for _, p := range visible {
 		commitments.observeVisibleClaim(p)
@@ -837,25 +872,33 @@ func scoreMeeting(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, pre
 			sc.DirectionScorable = true
 		}
 		m := matchMeeting(p, gold, negatives, universe)
-		if m.loose && m.gold < 0 {
+		matchedGold := m.gold
+		if l.Version >= SchemaV3 {
+			matchedGold = -1
+			i, ok := identityGold[commitmentMemoryKey{CommitmentID: p.CommitmentID, MemoryID: p.MemoryID}]
+			if ok && !goldHit[i] && predictionGroundedInRenderedMemory(l, idx, p) {
+				matchedGold = i
+			}
+		}
+		if m.loose && matchedGold < 0 {
 			sc.LooseMatches++
 		}
-		if !m.grounded && !m.loose {
+		if !m.grounded && !m.loose && matchedGold < 0 {
 			sc.Unmatched++
 		}
-		if m.gold >= 0 {
+		if matchedGold >= 0 {
 			exactPreds++
-			g := gold[m.gold]
-			goldHit[m.gold] = true
+			g := gold[matchedGold]
+			goldHit[matchedGold] = true
 			if idx.resolveAttendee(p) == g.Attendee {
-				goldAttributed[m.gold] = true
+				goldAttributed[matchedGold] = true
 			} else {
 				sc.CriticalIdentity++
 			}
 			if p.Direction != "" && p.Direction != Unknown && p.Direction != g.Direction {
 				sc.CriticalDirection++
 			}
-			acc.observeGold(p, g, m.gold)
+			acc.observeGold(p, g, matchedGold)
 			commitments.observeSurface(p, g)
 			continue
 		}
@@ -924,8 +967,14 @@ func scoreDaily(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, preds
 	inventory := inventoryPredictions(preds)
 	sc := Scorecard{ScorerVersion: ScorerVersion, Surface: SurfaceDaily}
 	goldMemories := map[string]int{}
+	identityGold := make(map[commitmentMemoryKey]int, len(gold))
+	goldByMemory := make(map[string][]int, len(gold))
 	for i, g := range gold {
 		goldMemories[g.MemoryID] = i
+		if l.Version >= SchemaV3 {
+			identityGold[commitmentMemoryKey{CommitmentID: g.CommitmentID, MemoryID: g.MemoryID}] = i
+			goldByMemory[g.MemoryID] = append(goldByMemory[g.MemoryID], i)
+		}
 	}
 	goldHit := make([]bool, len(gold))
 	exactPreds := 0
@@ -940,8 +989,23 @@ func scoreDaily(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, preds
 			sc.Unmatched++
 			continue
 		}
-		i, ok := goldMemories[p.MemoryID]
-		if !ok {
+		i := -1
+		if l.Version >= SchemaV3 {
+			if p.CommitmentID != "" {
+				candidate, ok := identityGold[commitmentMemoryKey{CommitmentID: p.CommitmentID, MemoryID: p.MemoryID}]
+				if ok && !goldHit[candidate] {
+					i = candidate
+				}
+			} else if candidates := goldByMemory[p.MemoryID]; len(candidates) == 1 && !goldHit[candidates[0]] {
+				// The current daily adapter has no commitment ID. Preserve its
+				// unambiguous artifact-grain behavior, but refuse to choose among
+				// multiple commitments in one memory.
+				i = candidates[0]
+			}
+		} else if candidate, ok := goldMemories[p.MemoryID]; ok {
+			i = candidate
+		}
+		if i < 0 {
 			continue
 		}
 		exactPreds++

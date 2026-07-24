@@ -13,6 +13,7 @@ import (
 const (
 	examLedgerPath          = "../eval/obligations-v1/ledger.json"
 	sabotageLedgerPath      = "../eval/obligations-v1/sabotage-ledger.json"
+	v3LedgerPath            = "../eval/obligations-v3/ledger.json"
 	realPredictionsPath     = "testdata/real-predictions.json"
 	flywheelPredictionsPath = "testdata/flywheel-predictions.json"
 )
@@ -324,6 +325,206 @@ func duplicateWithReorderedCitations(preds []Prediction) []Prediction {
 		return append(out, duplicate)
 	}
 	return out
+}
+
+func TestV3MeetingExtractionRequiresIdentityMemoryAndGrounding(t *testing.T) {
+	l := loadLedger(t, v3LedgerPath)
+	visible := surfacePredictions(Oracle(l, SurfaceMeeting))
+	if len(visible) != 1 {
+		t.Fatalf("v3 meeting oracle rows = %d, want one focused identity-grain fixture", len(visible))
+	}
+	correct := visible[0]
+
+	base, err := Score(l, []Prediction{correct}, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Extraction.Precision != 1 || base.Extraction.Recall != 1 {
+		t.Fatalf("identity-grounded v3 meeting row = %+v, want perfect extraction", base.Extraction)
+	}
+
+	idx, err := indexLedger(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dailyGold, err := goldFor(l, idx, SurfaceDaily, sliceAny{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongMemory := correct
+	for _, candidate := range dailyGold {
+		if candidate.MemoryID == correct.MemoryID {
+			continue
+		}
+		// Keep the text independently grounded in the newly cited memory. Only
+		// the correct commitment ID on the wrong memory is under attack.
+		wrongMemory.MemoryID = candidate.MemoryID
+		wrongMemory.Text = emitMeetingLine(idx, candidate)
+		break
+	}
+	if wrongMemory.MemoryID == correct.MemoryID {
+		t.Fatal("v3 fixture has no second memory for the wrong-memory attack")
+	}
+	got, err := Score(l, []Prediction{wrongMemory}, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Precision != 0 || got.Extraction.Recall != 0 {
+		t.Fatalf("right commitment ID on wrong memory earned extraction credit: %+v", got.Extraction)
+	}
+
+	ungrounded := correct
+	ungrounded.Text = "· — “this sentence does not occur in the cited rendered memory”"
+	got, err = Score(l, []Prediction{ungrounded}, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Precision != 0 || got.Extraction.Recall != 0 {
+		t.Fatalf("ungrounded surfaced text earned extraction credit: %+v", got.Extraction)
+	}
+	if got.Unmatched != 1 {
+		t.Fatalf("ungrounded surfaced text unmatched = %d, want one rejected line", got.Unmatched)
+	}
+
+	duplicate := correct
+	duplicate.Text = strings.Replace(correct.Text, "“", "“  ", 1)
+	got, err = Score(l, []Prediction{correct, duplicate}, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Recall != base.Extraction.Recall {
+		t.Fatalf("duplicate v3 meeting row raised recall: base=%+v duplicate=%+v", base.Extraction, got.Extraction)
+	}
+	if got.Extraction.Precision >= base.Extraction.Precision {
+		t.Fatalf("distinct duplicate v3 meeting row escaped the bijective precision cost: base=%+v duplicate=%+v", base.Extraction, got.Extraction)
+	}
+
+	var inventory Prediction
+	for _, p := range Oracle(l, SurfaceMeeting) {
+		if isInventoryPrediction(p) {
+			inventory = p
+			break
+		}
+	}
+	if inventory.CommitmentID == "" {
+		t.Fatal("v3 oracle has no identified inventory row")
+	}
+	got, err = Score(l, []Prediction{inventory}, SurfaceMeeting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Defined || got.Extraction.Precision != 0 || got.Extraction.Recall != 0 {
+		t.Fatalf("inventory row earned visible meeting extraction credit: %+v", got.Extraction)
+	}
+}
+
+func TestV3DailyExtractionIsCommitmentGrainedAndBijective(t *testing.T) {
+	l := loadLedger(t, v3LedgerPath)
+	visible := surfacePredictions(Oracle(l, SurfaceDaily))
+	idx, err := indexLedger(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gold, err := goldFor(l, idx, SurfaceDaily, sliceAny{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != len(gold) {
+		t.Fatalf("v3 daily oracle rows = %d, gold = %d", len(visible), len(gold))
+	}
+
+	base, err := Score(l, visible, SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Extraction.Precision != 1 || base.Extraction.Recall != 1 {
+		t.Fatalf("identified v3 daily oracle = %+v, want perfect extraction", base.Extraction)
+	}
+
+	byMemory := map[string][]Prediction{}
+	for _, p := range visible {
+		byMemory[p.MemoryID] = append(byMemory[p.MemoryID], p)
+	}
+	var shared []Prediction
+	var unique Prediction
+	for _, rows := range byMemory {
+		if len(rows) > 1 {
+			shared = rows
+		}
+		if len(rows) == 1 && unique.CommitmentID == "" {
+			unique = rows[0]
+		}
+	}
+	if len(shared) != 2 || unique.CommitmentID == "" {
+		t.Fatalf("v3 daily fixture grain changed: shared=%d unique=%+v", len(shared), unique)
+	}
+
+	single, err := Score(l, []Prediction{shared[0]}, SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSingleRecall := 1 / float64(len(gold))
+	if single.Extraction.Recall != wantSingleRecall {
+		t.Fatalf("one identified row credited more than one gold commitment: got=%+v want recall=%v", single.Extraction, wantSingleRecall)
+	}
+
+	idlessAmbiguous := shared[0]
+	idlessAmbiguous.CommitmentID = ""
+	got, err := Score(l, []Prediction{idlessAmbiguous}, SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Precision != 0 || got.Extraction.Recall != 0 {
+		t.Fatalf("ID-less row chose among same-memory commitments: %+v", got.Extraction)
+	}
+
+	idlessUnique := unique
+	idlessUnique.CommitmentID = ""
+	got, err = Score(l, []Prediction{idlessUnique}, SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Precision != 1 || got.Extraction.Recall != wantSingleRecall {
+		t.Fatalf("unambiguous ID-less daily row did not preserve safe artifact behavior: %+v", got.Extraction)
+	}
+
+	wrongMemory := unique
+	wrongMemory.MemoryID = shared[0].MemoryID
+	got, err = Score(l, []Prediction{wrongMemory}, SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Precision != 0 || got.Extraction.Recall != 0 {
+		t.Fatalf("right commitment ID on wrong daily memory earned credit: %+v", got.Extraction)
+	}
+
+	duplicate := shared[0]
+	duplicate.Text += " "
+	got, err = Score(l, []Prediction{shared[0], duplicate}, SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Recall != single.Extraction.Recall {
+		t.Fatalf("duplicate daily row raised recall: single=%+v duplicate=%+v", single.Extraction, got.Extraction)
+	}
+	if got.Extraction.Precision >= single.Extraction.Precision {
+		t.Fatalf("distinct duplicate daily row escaped the bijective precision cost: single=%+v duplicate=%+v", single.Extraction, got.Extraction)
+	}
+
+	var inventory Prediction
+	for _, p := range Oracle(l, SurfaceDaily) {
+		if isInventoryPrediction(p) {
+			inventory = p
+			break
+		}
+	}
+	got, err = Score(l, []Prediction{inventory}, SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extraction.Defined || got.Extraction.Precision != 0 || got.Extraction.Recall != 0 {
+		t.Fatalf("inventory row earned visible daily extraction credit: %+v", got.Extraction)
+	}
 }
 
 // TestMetricRegistryCoversEveryScorecardField is the other half of the contract:
