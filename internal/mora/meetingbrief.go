@@ -165,7 +165,7 @@ type CitedBriefLine struct {
 	Attendee            string               `json:"attendee,omitempty"`
 	Citation            BriefCitation        `json:"citation"`
 	Correction          BriefLineCorrection  `json:"correction"`
-	Direction           string               `json:"direction,omitempty"`
+	Direction           Direction            `json:"direction,omitempty"`
 	Owner               govAtom              `json:"owner,omitzero"`
 	Counterparty        govAtom              `json:"counterparty,omitzero"`
 	CommitmentID        string               `json:"commitment_id,omitempty"`

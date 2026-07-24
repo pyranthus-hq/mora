@@ -16,9 +16,15 @@ import (
 	"unicode"
 )
 
+// Direction is the shared obligation-direction vocabulary used by every
+// product lane. A named type prevents task-ledger and evidence-derived loops
+// from drifting into independently invented string values.
+type Direction string
+
 const (
-	commitOwedBySelf         = "owed_by_self"
-	commitOwedByCounterparty = "owed_by_counterparty"
+	commitDirectionUnknown   Direction = "unknown"
+	commitOwedBySelf         Direction = "owed_by_self"
+	commitOwedByCounterparty Direction = "owed_by_counterparty"
 
 	commitOpen       = "open"
 	commitClosed     = "closed"
@@ -43,7 +49,7 @@ type Commitment struct {
 	Owner            govAtom              `json:"owner"`
 	Counterparty     govAtom              `json:"counterparty"`
 	CounterpartyKeys []string             `json:"counterparty_keys,omitempty"`
-	Direction        string               `json:"direction"`
+	Direction        Direction            `json:"direction"`
 	Summary          string               `json:"summary"`
 	OpenedBy         commitSpan           `json:"opened_by"`
 	Due              commitDue            `json:"due"`
@@ -213,7 +219,7 @@ func atomPresent(a govAtom) bool {
 	return strings.TrimSpace(a.Kind) != "" && strings.TrimSpace(a.Value) != ""
 }
 
-func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (owner govAtom, direction string, ok bool) {
+func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (owner govAtom, direction Direction, ok bool) {
 	text = oneLine(text)
 	lower := strings.ToLower(text)
 	if text == "" || !atomPresent(speech.Self) || !atomPresent(speech.Counterparty) {
@@ -498,7 +504,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 		return nil
 	}
 	selfAtom := canonicalSelfAtom(cfg, "")
-	newCommitment := func(summary, messageRef, blockRef, occurredAt string, ancestorRefs []string, slot int, owner govAtom, direction string) Commitment {
+	newCommitment := func(summary, messageRef, blockRef, occurredAt string, ancestorRefs []string, slot int, owner govAtom, direction Direction) Commitment {
 		due := classifyCommitmentDue(summary, occurredAt)
 		id := commitmentID(messageRef, blockRef, slot)
 		return Commitment{

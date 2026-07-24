@@ -23,7 +23,7 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 	for _, section := range b.Sections {
 		for _, line := range section.Lines {
 			atom := line.Correction.AttendeeAtom
-			direction := line.Direction
+			direction := string(line.Direction)
 			if direction == "" {
 				direction = exam.Unknown
 			}
@@ -68,7 +68,7 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 			MemoryID:     commitment.OpenedBy.MemoryID,
 			CommitmentID: commitment.ID,
 			DuplicateOf:  commitment.DuplicateOf,
-			Direction:    commitment.Direction,
+			Direction:    string(commitment.Direction),
 			Lifecycle:    commitment.State,
 			ClosureRef:   commitment.ClosureRef,
 		})
@@ -103,7 +103,7 @@ func digestAllItems(d Digest) []DigestItem {
 func examDailyPredictions(d Digest) []exam.Prediction {
 	var out []exam.Prediction
 	for _, item := range digestAllItems(d) {
-		direction := item.Direction
+		direction := string(item.Direction)
 		if direction == "" {
 			direction = exam.Unknown
 		}

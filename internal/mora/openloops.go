@@ -14,17 +14,33 @@ import (
 // Loops beyond the cap are reported as a More count, never silently dropped.
 const openLoopsPerPersonCap = 8
 
-// C1 "Open-Loops": the task ledger (live-tasks.md) joined into think / meeting_prep
-// as an ADDITIVE, labels-only block — "what's still open with Sam". It never
-// reorders, filters, or removes any existing evidence/attendee output; it only
-// appends a person-keyed list of unfinished tasks the agent can weave in.
+// C1 "Open-Loops": two provenance-labelled, non-merging lanes joined into think:
+// the live-tasks.md task ledger and the materialized message-evidence inventory.
+// Meeting preparation has its own cited commitment surface; this block is only
+// the additive "what's still open with Sam" context for think.
 
-// OpenLoop is one unfinished task tied to a person.
+type OpenLoopLane string
+
+const (
+	openLoopLaneTaskLedger OpenLoopLane = "task-ledger"
+	openLoopLaneEvidence   OpenLoopLane = "evidence"
+)
+
+// OpenLoop is the shared typed shape emitted by both engines. Status preserves
+// the task ledger's raw workflow label; Lifecycle and Direction are the common
+// obligation contract. When exact provenance proves that both lanes describe
+// one obligation, the evidence row is authoritative and task-ledger appears
+// only in SupportingLanes.
 type OpenLoop struct {
-	Task    string `json:"task"`
-	Status  string `json:"status"`
-	Pri     string `json:"pri,omitempty"`
-	Horizon string `json:"horizon,omitempty"`
+	Task            string         `json:"task"`
+	Status          string         `json:"status,omitempty"`
+	Pri             string         `json:"pri,omitempty"`
+	Horizon         string         `json:"horizon,omitempty"`
+	Direction       Direction      `json:"direction"`
+	Lifecycle       string         `json:"lifecycle"`
+	Lane            OpenLoopLane   `json:"lane"`
+	SupportingLanes []OpenLoopLane `json:"supporting_lanes,omitempty"`
+	CommitmentID    string         `json:"commitment_id,omitempty"`
 }
 
 // PersonOpenLoops groups one person's open loops for the additive block. More is
@@ -55,6 +71,23 @@ var closedTaskStatuses = map[string]bool{
 
 func taskIsOpen(status string) bool {
 	return !closedTaskStatuses[strings.ToLower(strings.TrimSpace(status))]
+}
+
+func taskLedgerDirection(owner string, cfg Config) Direction {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	switch owner {
+	case "":
+		return commitDirectionUnknown
+	case "you", "me", "self", "user":
+		return commitOwedBySelf
+	}
+	for address := range selfEmails(cfg) {
+		address = strings.ToLower(strings.TrimSpace(address))
+		if owner == address || owner == strings.SplitN(address, "@", 2)[0] {
+			return commitOwedBySelf
+		}
+	}
+	return commitOwedByCounterparty
 }
 
 // openLoopsByPerson groups every OPEN task to the canonical person ids it
@@ -98,12 +131,94 @@ func openLoopsByPerson(ctx context.Context, cfg Config, db *sql.DB) (map[string]
 		if len(ids) == 0 {
 			continue
 		}
-		loop := OpenLoop{Task: lt.Task, Status: lt.Status, Pri: lt.Pri, Horizon: lt.Horizon}
+		loop := OpenLoop{
+			Task: lt.Task, Status: lt.Status, Pri: lt.Pri, Horizon: lt.Horizon,
+			Direction: taskLedgerDirection(lt.Owner, cfg),
+			Lifecycle: commitOpen,
+			Lane:      openLoopLaneTaskLedger,
+		}
 		for id := range ids {
 			out[id] = append(out[id], loop)
 		}
 	}
 	return out, nil
+}
+
+// evidenceLoopsByPerson adapts the authoritative, whole-snapshot commitment
+// inventory into the shared OpenLoop shape. It includes terminal commitments so
+// reconciliation can suppress a stale open ledger row; only open canonical rows
+// are ultimately rendered.
+func evidenceLoopsByPerson(ctx context.Context, cfg Config) (map[string][]OpenLoop, error) {
+	snapshot, err := readCommitmentSnapshot(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]OpenLoop{}
+	for _, commitment := range snapshot.Commitments {
+		if commitment.DuplicateOf != "" {
+			continue
+		}
+		pid, _, ok, ambiguous, err := resolveEntityID(ctx, cfg, commitment.Counterparty.Value)
+		if err != nil {
+			return nil, err
+		}
+		// Precision first: an absent or ambiguous graph identity cannot safely be
+		// attached to a person's open-loop block.
+		if !ok || len(ambiguous) != 0 {
+			continue
+		}
+		out[pid] = append(out[pid], OpenLoop{
+			Task:         commitment.Summary,
+			Direction:    commitment.Direction,
+			Lifecycle:    commitment.State,
+			Lane:         openLoopLaneEvidence,
+			CommitmentID: commitment.ID,
+		})
+	}
+	return out, nil
+}
+
+func openLoopIdentity(task string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(task)), " "))
+}
+
+// reconcileOpenLoopLanes keeps the engines separate unless an exact normalized
+// summary gives one unambiguous evidence match. In that one case evidence owns
+// state and direction, and the task ledger is retained only as provenance.
+func reconcileOpenLoopLanes(ledger, evidence []OpenLoop) []OpenLoop {
+	evidenceMatches := map[string][]int{}
+	for i := range evidence {
+		key := openLoopIdentity(evidence[i].Task)
+		if key != "" {
+			evidenceMatches[key] = append(evidenceMatches[key], i)
+		}
+	}
+	supported := map[int]bool{}
+	ledgerMatched := make([]bool, len(ledger))
+	for i := range ledger {
+		matches := evidenceMatches[openLoopIdentity(ledger[i].Task)]
+		if len(matches) != 1 {
+			continue
+		}
+		supported[matches[0]] = true
+		ledgerMatched[i] = true
+	}
+
+	out := make([]OpenLoop, 0, len(ledger)+len(evidence))
+	for i, loop := range evidence {
+		if supported[i] {
+			loop.SupportingLanes = []OpenLoopLane{openLoopLaneTaskLedger}
+		}
+		if loop.Lifecycle == commitOpen {
+			out = append(out, loop)
+		}
+	}
+	for i, loop := range ledger {
+		if !ledgerMatched[i] {
+			out = append(out, loop)
+		}
+	}
+	return out
 }
 
 // openLoopsForQuery returns the open-loop blocks for the people NAMED IN THE QUERY
@@ -116,7 +231,11 @@ func openLoopsForQuery(ctx context.Context, cfg Config, query string) ([]PersonO
 	}
 	defer db.Close()
 	byPerson, err := openLoopsByPerson(ctx, cfg, db)
-	if err != nil || len(byPerson) == 0 {
+	if err != nil {
+		return nil, err
+	}
+	evidenceByPerson, err := evidenceLoopsByPerson(ctx, cfg)
+	if err != nil {
 		return nil, err
 	}
 	gaz, _, err := loadPersonGazetteer(ctx, db)
@@ -125,7 +244,7 @@ func openLoopsForQuery(ctx context.Context, cfg Config, query string) ([]PersonO
 	}
 	var out []PersonOpenLoops
 	for _, pid := range gazetteerScan(gaz, query) {
-		loops := byPerson[pid]
+		loops := reconcileOpenLoopLanes(byPerson[pid], evidenceByPerson[pid])
 		if len(loops) == 0 {
 			continue
 		}
@@ -146,7 +265,8 @@ func entityDisplayName(ctx context.Context, db *sql.DB, pid string) string {
 }
 
 // renderOpenLoops appends the additive OPEN LOOPS block to a synthesis prompt
-// builder. Labels only (person — task [status]); never invents or reorders.
+// builder. Every line names its lane and typed state/direction so task-ledger
+// support can never masquerade as evidence-derived authority.
 func renderOpenLoops(b *strings.Builder, loops []PersonOpenLoops) {
 	if len(loops) == 0 {
 		return
@@ -154,7 +274,11 @@ func renderOpenLoops(b *strings.Builder, loops []PersonOpenLoops) {
 	b.WriteString("\nOPEN LOOPS (unfinished tasks involving people named above — weave in any still relevant; do NOT invent status or new tasks):\n")
 	for _, pl := range loops {
 		for _, l := range pl.Loops {
-			b.WriteString("- " + pl.Person + " — " + l.Task + " [" + l.Status + "]")
+			b.WriteString("- " + pl.Person + " — " + l.Task + " [" + l.Lifecycle + "; " + string(l.Direction) + "; " + string(l.Lane))
+			for _, supporting := range l.SupportingLanes {
+				b.WriteString("+" + string(supporting))
+			}
+			b.WriteString("]")
 			if l.Pri != "" {
 				b.WriteString(" (" + l.Pri + ")")
 			}

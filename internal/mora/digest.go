@@ -50,17 +50,17 @@ const (
 // Delta seam (M-5): "new" | "updated" in DELTA mode, "" in the plain-window path.
 // renderDigest AND the MCP projection (Plan 05) both read this one struct.
 type DigestItem struct {
-	ID         string  `json:"id"`
-	Title      string  `json:"title"`
-	Source     string  `json:"source"`
-	CreatedAt  string  `json:"created_at"`
-	Snippet    string  `json:"snippet"`
-	Change     string  `json:"change,omitempty"` // new | updated (M-5)
-	Owner      govAtom `json:"owner,omitzero"`
-	Direction  string  `json:"direction,omitempty"`
-	DueAt      string  `json:"due_at,omitempty"`
-	Lifecycle  string  `json:"lifecycle,omitempty"`
-	ClosureRef string  `json:"closure_ref,omitempty"`
+	ID         string    `json:"id"`
+	Title      string    `json:"title"`
+	Source     string    `json:"source"`
+	CreatedAt  string    `json:"created_at"`
+	Snippet    string    `json:"snippet"`
+	Change     string    `json:"change,omitempty"` // new | updated (M-5)
+	Owner      govAtom   `json:"owner,omitzero"`
+	Direction  Direction `json:"direction,omitempty"`
+	DueAt      string    `json:"due_at,omitempty"`
+	Lifecycle  string    `json:"lifecycle,omitempty"`
+	ClosureRef string    `json:"closure_ref,omitempty"`
 	// LowSignal flags a SERVICE-ONLY item — every participant is an automated/service
 	// identity (receipts, newsletters, no-reply notices), per memoryIsServiceOnly. It
 	// drives the noise-collapse in section assembly so a window of pure-service items
