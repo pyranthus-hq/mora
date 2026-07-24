@@ -48,17 +48,23 @@ const (
 	stateColdStart   = "baseline" // cold start: first run, 7d courtesy window displayed
 )
 
-// DigestItem is one cited entry — title + snippet + the memory id so the agent
-// (or the user) can pull the full memory with read_memory. Change is the typed
-// Delta seam (M-5): "new" | "updated" in DELTA mode, "" in the plain-window path.
-// renderDigest AND the MCP projection (Plan 05) both read this one struct.
+// DigestItem is one cited artifact — title + snippet + the memory id so the agent
+// (or the user) can pull the full memory with read_memory. Identified obligations
+// stay nested beneath that artifact so ranking, caps, budgets, and watermarks remain
+// artifact-grain. Change is the typed Delta seam (M-5): "new" | "updated" in DELTA
+// mode, "" in the plain-window path. renderDigest AND the MCP projection (Plan 05)
+// both read this one struct.
 type DigestItem struct {
-	ID         string    `json:"id"`
-	Title      string    `json:"title"`
-	Source     string    `json:"source"`
-	CreatedAt  string    `json:"created_at"`
-	Snippet    string    `json:"snippet"`
-	Change     string    `json:"change,omitempty"` // new | updated (M-5)
+	ID          string             `json:"id"`
+	Title       string             `json:"title"`
+	Source      string             `json:"source"`
+	CreatedAt   string             `json:"created_at"`
+	Snippet     string             `json:"snippet"`
+	Change      string             `json:"change,omitempty"` // new | updated (M-5)
+	Obligations []DigestObligation `json:"obligations,omitempty"`
+	// The scalar lane is retained for legacy, ID-less commitment generations.
+	// Identified generations use Obligations so one artifact can expose every
+	// independently materialized commitment without guessing which one represents it.
 	Owner      govAtom   `json:"owner,omitzero"`
 	Direction  Direction `json:"direction,omitempty"`
 	DueAt      string    `json:"due_at,omitempty"`
@@ -70,6 +76,20 @@ type DigestItem struct {
 	// doesn't crowd out signal. It is internal (json:"-") so it never changes the MCP
 	// payload shape or budget.
 	LowSignal bool `json:"-"`
+}
+
+// DigestObligation is one identified, evidence-cited commitment nested beneath a
+// DigestItem. The row copies only materialized product state. It never derives an ID
+// or citation from the artifact title/snippet.
+type DigestObligation struct {
+	CommitmentID string               `json:"commitment_id"`
+	Summary      string               `json:"summary"`
+	Owner        govAtom              `json:"owner"`
+	Direction    Direction            `json:"direction"`
+	DueAt        string               `json:"due_at"`
+	Lifecycle    string               `json:"lifecycle"`
+	ClosureRef   string               `json:"closure_ref"`
+	Citations    []CommitmentCitation `json:"citations"`
 }
 
 // DigestSection groups one instance's surfaced items, recency-ordered. State is
@@ -315,10 +335,73 @@ func digestCommitmentFor(item DigestItem, candidates []Commitment) (Commitment, 
 	return eligible[0], true
 }
 
-// attachDigestCommitments copies the selected typed obligation lane from the same
-// snapshot that gated assembly.
+func identifiedDigestObligations(candidates []Commitment) (out []DigestObligation, identified bool) {
+	var eligible []Commitment
+	for _, commitment := range candidates {
+		if !commitmentSurfaceEligible(commitment) || commitment.ID == "" {
+			continue
+		}
+		identified = true
+		eligible = append(eligible, commitment)
+	}
+	sort.SliceStable(eligible, func(i, j int) bool {
+		return commitmentEvidenceLess(eligible[i], eligible[j])
+	})
+	for _, commitment := range eligible {
+		var citations []CommitmentCitation
+		hasOpener := false
+		for _, citation := range commitment.Citations {
+			if citation.CommitmentID != commitment.ID || citation.Citation.MemoryID() == "" {
+				continue
+			}
+			switch citation.Role {
+			case commitCitationOpener:
+				if citation.Citation.MemoryID() != commitment.OpenedBy.MemoryID {
+					continue
+				}
+				hasOpener = true
+			case commitCitationClosure, commitCitationSupporting:
+			default:
+				continue
+			}
+			citations = append(citations, citation)
+		}
+		// An identified row without its own opening evidence would be an uncited
+		// claim. Drop it instead of borrowing the parent artifact citation.
+		if !hasOpener {
+			continue
+		}
+		summary := oneLine(commitment.Summary)
+		if summary == "" {
+			summary = oneLine(commitment.OpenedBy.Quote)
+		}
+		if summary == "" {
+			continue
+		}
+		out = append(out, DigestObligation{
+			CommitmentID: commitment.ID,
+			Summary:      summary,
+			Owner:        commitment.Owner,
+			Direction:    commitment.Direction,
+			DueAt:        commitDueValue(commitment.Due),
+			Lifecycle:    commitment.State,
+			ClosureRef:   commitment.ClosureRef,
+			Citations:    citations,
+		})
+	}
+	return out, identified
+}
+
+// attachDigestCommitments copies typed obligation rows from the same snapshot that
+// gated assembly. Identified generations emit every eligible commitment as a nested
+// subrow. Legacy generations keep their existing scalar, single-selection lane.
 func attachDigestCommitments(d *Digest, byMemory map[string][]Commitment) {
 	attach := func(item *DigestItem) {
+		obligations, identified := identifiedDigestObligations(byMemory[item.ID])
+		if identified {
+			item.Obligations = obligations
+			return
+		}
 		commitment, ok := digestCommitmentFor(*item, byMemory[item.ID])
 		if !ok {
 			return
@@ -1362,10 +1445,34 @@ func renderDigestSectionHeading(s DigestSection) string {
 	return "\n## " + sectionHeading(s) + "\n"
 }
 
-// renderDigestItemLine renders one item's Markdown line. The budgeter costs items in
-// these exact bytes.
+func renderDigestArtifactLine(it DigestItem) string {
+	return fmt.Sprintf("- %s%s — %s (id: %s)\n", changePrefix(it.Change), it.Title, it.Snippet, it.ID)
+}
+
+func renderDigestObligationRow(obligation DigestObligation) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  obligation: commitment_id=%s · owner=%s:%s · direction=%s · due=%s · lifecycle=%s · closure=%s · summary=%s\n",
+		obligation.CommitmentID, obligation.Owner.Kind, obligation.Owner.Value, obligation.Direction,
+		obligation.DueAt, obligation.Lifecycle, obligation.ClosureRef, oneLine(obligation.Summary))
+	for _, citation := range obligation.Citations {
+		fmt.Fprintf(&b, "    citation: role=%s · memory_id=%s · commitment_id=%s\n",
+			citation.Role, citation.Citation.MemoryID(), citation.CommitmentID)
+	}
+	return b.String()
+}
+
+// renderDigestItemLine renders one artifact and all of its nested commitment rows.
+// The budgeter treats the complete block as one indivisible artifact-grain item.
 func renderDigestItemLine(it DigestItem) string {
-	line := fmt.Sprintf("- %s%s — %s (id: %s)\n", changePrefix(it.Change), it.Title, it.Snippet, it.ID)
+	line := renderDigestArtifactLine(it)
+	if len(it.Obligations) > 0 {
+		var b strings.Builder
+		b.WriteString(line)
+		for _, obligation := range it.Obligations {
+			b.WriteString(renderDigestObligationRow(obligation))
+		}
+		return b.String()
+	}
 	if it.Direction == "" {
 		return line
 	}

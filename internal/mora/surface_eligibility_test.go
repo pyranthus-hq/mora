@@ -48,6 +48,82 @@ func TestDigestCommitmentForMultipleOpeningsUsesVisibleEvidence(t *testing.T) {
 	}
 }
 
+func TestAttachDigestCommitmentsNestsEveryIdentifiedOpening(t *testing.T) {
+	first := Commitment{
+		ID:        "commit:v1:first",
+		Owner:     govAtom{Kind: "person", Value: "self@example.com"},
+		Direction: commitOwedBySelf,
+		Summary:   "send the route cards",
+		OpenedBy: commitSpan{
+			MemoryID: "gmail_thread/route-cards", Quote: "I will send the route cards.",
+			OccurredAt: "2026-07-22T17:00:00Z",
+		},
+		Due:        commitDue{Kind: commitDueRelative},
+		State:      commitOpen,
+		ClosureRef: commitClosureNone,
+	}
+	first.Citations = []CommitmentCitation{{
+		Citation:     mustLifecycleCitation(first.OpenedBy.MemoryID, first.OpenedBy.OccurredAt),
+		CommitmentID: first.ID,
+		Role:         commitCitationOpener,
+	}}
+	second := Commitment{
+		ID:        "commit:v1:second",
+		Owner:     govAtom{Kind: "person", Value: "theo@example.org"},
+		Direction: commitOwedByCounterparty,
+		Summary:   "reserve the west press slot",
+		OpenedBy: commitSpan{
+			MemoryID: "gmail_thread/route-cards", Quote: "I will reserve the west press slot.",
+			OccurredAt: "2026-07-22T17:30:00Z",
+		},
+		Due:        commitDue{Kind: commitDueNone},
+		State:      commitOpen,
+		ClosureRef: commitClosureNone,
+	}
+	second.Citations = []CommitmentCitation{{
+		Citation:     mustLifecycleCitation(second.OpenedBy.MemoryID, second.OpenedBy.OccurredAt),
+		CommitmentID: second.ID,
+		Role:         commitCitationOpener,
+	}}
+	uncited := second
+	uncited.ID = "commit:v1:uncited"
+	uncited.Citations = nil
+	legacy := second
+	legacy.ID = ""
+	legacy.Citations = nil
+
+	digest := Digest{Sections: []DigestSection{{
+		Source: "gmail",
+		Items:  []DigestItem{{ID: "gmail_thread/route-cards", Title: "Route cards"}},
+	}}}
+	attachDigestCommitments(&digest, map[string][]Commitment{
+		"gmail_thread/route-cards": {legacy, uncited, second, first},
+	})
+
+	if len(digest.Sections) != 1 || len(digest.Sections[0].Items) != 1 {
+		t.Fatalf("commitment attachment changed artifact selection: %+v", digest.Sections)
+	}
+	item := digest.Sections[0].Items[0]
+	if item.Direction != "" {
+		t.Fatalf("identified artifact also received the legacy scalar lane: %+v", item)
+	}
+	if len(item.Obligations) != 2 {
+		t.Fatalf("identified obligation rows = %+v, want the two cited commitments only", item.Obligations)
+	}
+	if item.Obligations[0].CommitmentID != first.ID ||
+		item.Obligations[1].CommitmentID != second.ID {
+		t.Fatalf("obligation evidence order = %+v", item.Obligations)
+	}
+	for _, obligation := range item.Obligations {
+		if len(obligation.Citations) != 1 ||
+			obligation.Citations[0].Role != commitCitationOpener ||
+			obligation.Citations[0].CommitmentID != obligation.CommitmentID ||
+			obligation.Citations[0].Citation.MemoryID() != item.ID {
+			t.Fatalf("obligation lost its own typed opening citation: %+v", obligation)
+		}
+	}
+}
+
 func TestDigestCommitmentForRejectsClosedAndDuplicateOnlyArtifact(t *testing.T) {
 	item := DigestItem{ID: "thread"}
 	_, ok := digestCommitmentFor(item, []Commitment{
