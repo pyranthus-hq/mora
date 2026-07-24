@@ -34,48 +34,48 @@
     "non_obligation_leaks": 0,
     "critical_identity": 0,
     "critical_direction": 0,
-    "direction_scorable": false,
+    "direction_scorable": true,
     "owner": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8888888888888888,
+      "defined": true,
       "recall_by_class": {
-        "p/imani": 0,
-        "p/milo": 0,
-        "p/self": 0
+        "p/imani": 1,
+        "p/milo": 1,
+        "p/self": 0.6666666666666666
       }
     },
     "direction": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8333333333333333,
+      "defined": true,
       "recall_by_class": {
-        "owed_by_counterparty": 0,
-        "owed_by_self": 0
+        "owed_by_counterparty": 1,
+        "owed_by_self": 0.6666666666666666
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8,
+      "defined": true,
       "recall_by_class": {
-        "none": 0,
-        "relative": 0
+        "none": 1,
+        "relative": 0.75
       }
     },
     "lifecycle": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.3076923076923077,
+      "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0
+        "open": 0.36363636363636365
       }
     },
     "closure_linkage": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false
+      "precision": 1,
+      "recall": 0.3076923076923077,
+      "defined": true
     },
     "commitment_identity": {
       "precision": 0,
@@ -135,48 +135,48 @@
     "non_obligation_leaks": 0,
     "critical_identity": 0,
     "critical_direction": 0,
-    "direction_scorable": false,
+    "direction_scorable": true,
     "owner": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8888888888888888,
+      "defined": true,
       "recall_by_class": {
-        "p/imani": 0,
-        "p/milo": 0,
-        "p/self": 0
+        "p/imani": 1,
+        "p/milo": 1,
+        "p/self": 0.6666666666666666
       }
     },
     "direction": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8333333333333333,
+      "defined": true,
       "recall_by_class": {
-        "owed_by_counterparty": 0,
-        "owed_by_self": 0
+        "owed_by_counterparty": 1,
+        "owed_by_self": 0.6666666666666666
       }
     },
     "due_time": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.8,
+      "defined": true,
       "recall_by_class": {
-        "none": 0,
-        "relative": 0
+        "none": 1,
+        "relative": 0.75
       }
     },
     "lifecycle": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false,
+      "precision": 1,
+      "recall": 0.3076923076923077,
+      "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0
+        "open": 0.36363636363636365
       }
     },
     "closure_linkage": {
-      "precision": 0,
-      "recall": 0,
-      "defined": false
+      "precision": 1,
+      "recall": 0.3076923076923077,
+      "defined": true
     },
     "commitment_identity": {
       "precision": 0,

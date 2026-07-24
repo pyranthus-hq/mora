@@ -300,7 +300,7 @@ var RequiredMetrics = []MetricSpec{
 		Description: "false while every prediction is \"unknown\" — blocks a vacuous zero from reading as a measurement",
 		Direction:   DirectionHigherBetter, Unit: UnitFlag, Aggregation: AggregationAbsolute,
 		ZeroDenominatorPolicy: PolicyNAIsFailure, InvalidRunPolicy: PolicyHardFail, RequiredSlices: everySlice,
-		SabotageCases: []string{RowOracle},
+		SabotageCases: []string{RowDailyEmpty},
 	},
 	{
 		ID: MetricOwner, Field: "Owner", Version: 2,

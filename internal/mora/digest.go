@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -49,12 +50,17 @@ const (
 // Delta seam (M-5): "new" | "updated" in DELTA mode, "" in the plain-window path.
 // renderDigest AND the MCP projection (Plan 05) both read this one struct.
 type DigestItem struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Source    string `json:"source"`
-	CreatedAt string `json:"created_at"`
-	Snippet   string `json:"snippet"`
-	Change    string `json:"change,omitempty"` // new | updated (M-5)
+	ID         string  `json:"id"`
+	Title      string  `json:"title"`
+	Source     string  `json:"source"`
+	CreatedAt  string  `json:"created_at"`
+	Snippet    string  `json:"snippet"`
+	Change     string  `json:"change,omitempty"` // new | updated (M-5)
+	Owner      govAtom `json:"owner,omitzero"`
+	Direction  string  `json:"direction,omitempty"`
+	DueAt      string  `json:"due_at,omitempty"`
+	Lifecycle  string  `json:"lifecycle,omitempty"`
+	ClosureRef string  `json:"closure_ref,omitempty"`
 	// LowSignal flags a SERVICE-ONLY item — every participant is an automated/service
 	// identity (receipts, newsletters, no-reply notices), per memoryIsServiceOnly. It
 	// drives the noise-collapse in section assembly so a window of pure-service items
@@ -174,15 +180,68 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	if err != nil {
 		return Digest{}, err
 	}
+	var d Digest
 	if opts.sinceHours > 0 {
-		return buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source)
+		d, err = buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source)
+	} else {
+		// buildDigest NEVER commits the watermark — it is the pure build (used by every
+		// preview/read surface). The scheduled --advance transaction lives in advanceBrief,
+		// which reruns the delta build to capture the per-instance commit plans and
+		// commits ONLY over what survives the Markdown budget (issue #62 defect 1).
+		d, _, err = buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
 	}
-	// buildDigest NEVER commits the watermark — it is the pure build (used by every
-	// preview/read surface). The scheduled --advance transaction lives in advanceBrief,
-	// which reruns the delta build to capture the per-instance commit plans and
-	// commits ONLY over what survives the Markdown budget (issue #62 defect 1).
-	d, _, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
-	return d, err
+	if err != nil {
+		return Digest{}, err
+	}
+	if err := attachDigestCommitments(cfg, &d); err != nil {
+		return Digest{}, err
+	}
+	return d, nil
+}
+
+// attachDigestCommitments copies the typed obligation lane from the same
+// generation-stamped, whole-vault materialization used by meeting briefs. It never
+// reclassifies a clipped digest snippet. Artifact-grain DigestItem can express one
+// obligation; when an artifact has multiple independently anchored commitments,
+// leave the lane empty rather than guessing which one the item represents.
+func attachDigestCommitments(cfg Config, d *Digest) error {
+	// Pure resolver tests may intentionally construct only VaultDir/StateDir and
+	// have no index location. A real loaded Config always has DataDir; do not turn
+	// an otherwise valid empty/filtered brief into an attempt to create "index.db"
+	// in the process working directory.
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		return nil
+	}
+	snapshot, err := readCommitmentSnapshot(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+	byMemory := make(map[string][]Commitment, len(snapshot.Commitments))
+	for _, commitment := range snapshot.Commitments {
+		memoryID := commitment.OpenedBy.MemoryID
+		byMemory[memoryID] = append(byMemory[memoryID], commitment)
+	}
+	attach := func(item *DigestItem) {
+		commitments := byMemory[item.ID]
+		if len(commitments) != 1 {
+			return
+		}
+		commitment := commitments[0]
+		item.Owner = commitment.Owner
+		item.Direction = commitment.Direction
+		item.DueAt = commitDueValue(commitment.Due)
+		item.Lifecycle = commitment.State
+		item.ClosureRef = commitment.ClosureRef
+	}
+	for i := range d.Urgent {
+		attach(&d.Urgent[i])
+	}
+	for i := range d.Sections {
+		for j := range d.Sections[i].Items {
+			attach(&d.Sections[i].Items[j])
+		}
+	}
+	return nil
 }
 
 // digestInputs factors the shared preprocessing behind both the window and delta
@@ -563,6 +622,9 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 	}
 	d, plans, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
 	if err != nil {
+		return Digest{}, "", err
+	}
+	if err := attachDigestCommitments(cfg, &d); err != nil {
 		return Digest{}, "", err
 	}
 
@@ -1202,7 +1264,12 @@ func renderDigestSectionHeading(s DigestSection) string {
 // renderDigestItemLine renders one item's Markdown line. The budgeter costs items in
 // these exact bytes.
 func renderDigestItemLine(it DigestItem) string {
-	return fmt.Sprintf("- %s%s — %s (id: %s)\n", changePrefix(it.Change), it.Title, it.Snippet, it.ID)
+	line := fmt.Sprintf("- %s%s — %s (id: %s)\n", changePrefix(it.Change), it.Title, it.Snippet, it.ID)
+	if it.Direction == "" {
+		return line
+	}
+	return line + fmt.Sprintf("  obligation: owner=%s:%s · direction=%s · due=%s · lifecycle=%s · closure=%s\n",
+		it.Owner.Kind, it.Owner.Value, it.Direction, it.DueAt, it.Lifecycle, it.ClosureRef)
 }
 
 // renderDigestMoreLine renders the "+N more since last brief" guard line.
