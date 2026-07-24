@@ -3,7 +3,7 @@
     "scorer_version": 2,
     "surface": "daily",
     "extraction": {
-      "precision": 0.3076923076923077,
+      "precision": 0.5,
       "recall": 0.8,
       "defined": true
     },
@@ -104,7 +104,7 @@
     "scorer_version": 2,
     "surface": "daily",
     "extraction": {
-      "precision": 0.25,
+      "precision": 0.5,
       "recall": 0.8,
       "defined": true
     },

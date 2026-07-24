@@ -527,13 +527,19 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 				excerpt = meetingBriefActionableEvidenceText(m, cfg, at, kind)
 			}
 			commitment, typed := meetingCommitmentFor(commitmentsByMemory[m.ID], attendeeAtom, aliases, excerpt)
-			if typed && (commitment.State != commitOpen || commitment.DuplicateOf != "") {
+			if !typed {
+				// Legacy line heuristics may nominate context, questions, or quoted
+				// text. The materialized inventory is the eligibility authority:
+				// without an exact typed commitment this is not an obligation line.
+				continue
+			}
+			if commitment.State != commitOpen || commitment.DuplicateOf != "" {
 				// Lifecycle/dedup are inventory knowledge, not display claims. A
 				// closed, superseded, or duplicate obligation remains queryable in
 				// the materialization but cannot leak back into the open-loop brief.
 				continue
 			}
-			if excerpt == "" && typed && isIMessageMemory(m) {
+			if excerpt == "" && isIMessageMemory(m) {
 				kind = meetingBriefOpenLoops
 				excerpt = commitment.Summary
 			}
@@ -559,9 +565,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			if lerr != nil {
 				return MeetingBrief{}, fmt.Errorf("event %s attendee %s evidence %s: %w", eventMemory.ID, attendee.identity, m.ID, lerr)
 			}
-			if typed {
-				attachCommitment(&line, commitment)
-			}
+			attachCommitment(&line, commitment)
 			bulkAuthored := memoryIsServiceOnly(m)
 			messageCount := metaMessageCount(m)
 			candidate := meetingBriefCandidate{
@@ -1367,6 +1371,7 @@ var firstPersonCommitmentPhrases = []string{
 var directRequestPhrases = []string{
 	"can you ", "could you ", "would you ", "please send", "please share",
 	"please review", "please confirm", "please sign", "please introduce",
+	"please add",
 	"need your approval", "needs your approval", "need your sign-off",
 	"waiting for your", "get back to me", "when can you", "do you mind",
 }
