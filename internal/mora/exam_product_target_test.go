@@ -2,18 +2,23 @@ package mora
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pyranthus-hq/mora/internal/mora/exam"
 )
 
 type namedExamScorecard struct {
-	corpus  string
-	surface string
-	state   examProductScorecardState
-	card    exam.Scorecard
+	corpus         string
+	surface        string
+	state          examProductScorecardState
+	card           exam.Scorecard
+	refBearingCard exam.Scorecard
+	refBearingGold examProductRefBearingGold
 }
 
 type examProductMetricRequirement string
@@ -21,9 +26,12 @@ type examProductMetricRequirement string
 const (
 	examProductMetricRequired                 examProductMetricRequirement = "REQUIRED"
 	examProductMetricLegacyUnscorable         examProductMetricRequirement = "LEGACY_UNSCORABLE"
+	examProductMetricRefLessUnscorable        examProductMetricRequirement = "REF_LESS_UNSCORABLE"
 	examProductMetricNoGoldSamplesUnscorable  examProductMetricRequirement = "NO_GOLD_SAMPLES_UNSCORABLE"
 	examProductLegacyUnscorableEvidence                                    = "frozen schema-v1/v2 vaults lack immutable message/block refs; commitmentID must not fabricate them"
 	examProductLegacyInventoryRecallEvidence                               = "frozen schema-v1/v2 vaults lack immutable message/block refs; empty-ID commitments cannot safely join inventory lifecycle/closure gold"
+	examProductRefLessUnscorableEvidence                                   = "schema-v3 notes, iMessage, and calendar renderers emit no immutable message/block refs; commitmentID and citation roles must not fabricate them"
+	examProductRefLessInventoryRecallEvidence                              = "schema-v3 notes, iMessage, and calendar renderers emit no immutable message/block refs; empty-ID commitments cannot safely join inventory lifecycle/closure gold"
 	examProductV1DailySelectionEvidence                                    = "schema-v1 OBLIGATIONS.md defines no daily surface-relevance rule; gold placement is ledger-explicit"
 	examProductNoDuplicateGoldSamplesEvidence                              = "corpus has zero duplicate_of gold samples; ratio is undefined and absolute duplicate leak counts remain enforced"
 )
@@ -39,13 +47,24 @@ type examProductMetricState struct {
 // joined ratios become required once the corpus supplies immutable message/block
 // refs; commitmentID must never fabricate refs merely to make a ratio green.
 type examProductScorecardState struct {
-	schemaVersion       int
-	extractionPrecision examProductMetricState
-	lifecycleRecall     examProductMetricState
-	closureRecall       examProductMetricState
-	commitmentIdentity  examProductMetricState
-	dedup               examProductMetricState
-	citationRoles       examProductMetricState
+	schemaVersion             int
+	extractionPrecision       examProductMetricState
+	lifecycleRecall           examProductMetricState
+	closureRecall             examProductMetricState
+	commitmentIdentity        examProductMetricState
+	dedup                     examProductMetricState
+	citationRoles             examProductMetricState
+	refLessLifecycleRecall    examProductMetricState
+	refLessClosureRecall      examProductMetricState
+	refLessCommitmentIdentity examProductMetricState
+	refLessCitationRoles      examProductMetricState
+}
+
+type examProductRefBearingGold struct {
+	commitmentIdentity int
+	lifecycle          int
+	closureLinkage     int
+	citationRoles      int
 }
 
 // TestExamProductTarget keeps the dimensioned product contract executable over
@@ -98,13 +117,78 @@ func recomputeExamProductScorecards(t *testing.T) []namedExamScorecard {
 		ledger := loadExamLedgerFromRoot(t, corpus.root)
 		scorecards := runExamSurfaces(t, corpus.root)
 		rows = append(rows,
-			namedExamScorecard{corpus: corpus.name, surface: "daily CLI", state: examProductScorecardStateForLedger(ledger, exam.SurfaceDaily), card: scorecards.DailyCLI},
-			namedExamScorecard{corpus: corpus.name, surface: "daily MCP", state: examProductScorecardStateForLedger(ledger, exam.SurfaceDaily), card: scorecards.DailyMCP},
-			namedExamScorecard{corpus: corpus.name, surface: "event CLI", state: examProductScorecardStateForLedger(ledger, exam.SurfaceMeeting), card: scorecards.EventCLI},
-			namedExamScorecard{corpus: corpus.name, surface: "event MCP", state: examProductScorecardStateForLedger(ledger, exam.SurfaceMeeting), card: scorecards.EventMCP},
+			newNamedExamScorecard(t, corpus.name, "daily CLI", ledger, exam.SurfaceDaily, scorecards.DailyCLI, scorecards.dailyCLIPredictions),
+			newNamedExamScorecard(t, corpus.name, "daily MCP", ledger, exam.SurfaceDaily, scorecards.DailyMCP, scorecards.dailyMCPPredictions),
+			newNamedExamScorecard(t, corpus.name, "event CLI", ledger, exam.SurfaceMeeting, scorecards.EventCLI, scorecards.eventCLIPredictions),
+			newNamedExamScorecard(t, corpus.name, "event MCP", ledger, exam.SurfaceMeeting, scorecards.EventMCP, scorecards.eventMCPPredictions),
 		)
 	}
 	return rows
+}
+
+func newNamedExamScorecard(
+	t *testing.T,
+	corpus, transport string,
+	ledger exam.Ledger,
+	surface string,
+	card exam.Scorecard,
+	predictions []exam.Prediction,
+) namedExamScorecard {
+	t.Helper()
+	row := namedExamScorecard{
+		corpus:  corpus,
+		surface: transport,
+		state:   examProductScorecardStateForLedger(ledger, surface),
+		card:    card,
+	}
+	if ledger.Version < exam.SchemaV3 {
+		return row
+	}
+	refBearingPredictions := filterExamPredictionsByChannel(ledger, predictions, "gmail")
+	scoped, err := exam.ScoreSlice(ledger, refBearingPredictions, surface, exam.SliceChannel, "gmail")
+	if err != nil {
+		t.Fatalf("%s %s score ref-bearing slice: %v", corpus, transport, err)
+	}
+	row.refBearingCard = scoped
+	row.refBearingGold = examProductRefBearingGoldForLedger(ledger)
+	return row
+}
+
+func filterExamPredictionsByChannel(ledger exam.Ledger, predictions []exam.Prediction, channel string) []exam.Prediction {
+	channelByMemoryID := make(map[string]string, len(ledger.Artifacts))
+	for _, artifact := range ledger.Artifacts {
+		channelByMemoryID[artifact.MemoryID] = artifact.Channel
+	}
+	filtered := make([]exam.Prediction, 0, len(predictions))
+	for _, prediction := range predictions {
+		if channelByMemoryID[prediction.MemoryID] == channel {
+			filtered = append(filtered, prediction)
+		}
+	}
+	return filtered
+}
+
+func examProductRefBearingGoldForLedger(ledger exam.Ledger) examProductRefBearingGold {
+	channelByArtifactID := make(map[string]string, len(ledger.Artifacts))
+	for _, artifact := range ledger.Artifacts {
+		channelByArtifactID[artifact.ID] = artifact.Channel
+	}
+	var gold examProductRefBearingGold
+	for _, commitment := range ledger.Commitments {
+		if channelByArtifactID[commitment.OpenedBy.ArtifactID] != "gmail" {
+			continue
+		}
+		gold.commitmentIdentity++
+		gold.lifecycle++
+		gold.closureLinkage++
+		gold.citationRoles += 1 + len(commitment.Transitions)
+		for _, candidate := range ledger.Commitments {
+			if candidate.DuplicateOf == commitment.ID {
+				gold.citationRoles++
+			}
+		}
+	}
+	return gold
 }
 
 func TestExamProductTargetCorpusScope(t *testing.T) {
@@ -158,6 +242,17 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 						row.corpus, row.surface, metric.name, metric.state)
 				}
 			}
+			for name, state := range map[string]examProductMetricState{
+				"ref-less lifecycle recall":    row.state.refLessLifecycleRecall,
+				"ref-less closure recall":      row.state.refLessClosureRecall,
+				"ref-less commitment identity": row.state.refLessCommitmentIdentity,
+				"ref-less citation roles":      row.state.refLessCitationRoles,
+			} {
+				if state != (examProductMetricState{}) {
+					t.Errorf("%s %s %s state = %+v, want absent before schema v3",
+						row.corpus, row.surface, name, state)
+				}
+			}
 		case exam.SchemaV3:
 			for _, metric := range metrics {
 				if metric.name == "dedup" {
@@ -185,6 +280,32 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 				t.Errorf("%s %s commitment identity = %+v, want defined on schema v3",
 					row.corpus, row.surface, row.card.CommitmentIdentity)
 			}
+			for name, state := range map[string]examProductMetricState{
+				"ref-less lifecycle recall": row.state.refLessLifecycleRecall,
+				"ref-less closure recall":   row.state.refLessClosureRecall,
+			} {
+				want := examProductMetricState{
+					requirement: examProductMetricRefLessUnscorable,
+					reason:      examProductRefLessInventoryRecallEvidence,
+				}
+				if state != want {
+					t.Errorf("%s %s %s state = %+v, want %+v",
+						row.corpus, row.surface, name, state, want)
+				}
+			}
+			for name, state := range map[string]examProductMetricState{
+				"ref-less commitment identity": row.state.refLessCommitmentIdentity,
+				"ref-less citation roles":      row.state.refLessCitationRoles,
+			} {
+				want := examProductMetricState{
+					requirement: examProductMetricRefLessUnscorable,
+					reason:      examProductRefLessUnscorableEvidence,
+				}
+				if state != want {
+					t.Errorf("%s %s %s state = %+v, want %+v",
+						row.corpus, row.surface, name, state, want)
+				}
+			}
 		default:
 			t.Errorf("%s %s schema version = %d, want 1, 2, or 3", row.corpus, row.surface, row.state.schemaVersion)
 		}
@@ -194,6 +315,108 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 			t.Errorf("%s scorecard rows = %d, want four shipped surfaces", corpus, seen[corpus])
 		}
 	}
+}
+
+func TestExamProductTargetRefBearingCapabilityMatrix(t *testing.T) {
+	ledger := loadExamLedgerFromRoot(t, examFixtureV3Root)
+	rendered, err := exam.Render(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures := examProductRefBearingCapabilityFailures(ledger, rendered); len(failures) != 0 {
+		t.Fatalf("renderer capability matrix failed:\n%s", strings.Join(failures, "\n"))
+	}
+
+	withoutGmailIDs := make(map[string][]byte, len(rendered))
+	for path, payload := range rendered {
+		withoutGmailIDs[path] = append([]byte(nil), payload...)
+	}
+	for _, artifact := range ledger.Artifacts {
+		if artifact.Channel != "gmail" {
+			continue
+		}
+		for path, payload := range withoutGmailIDs {
+			if !strings.Contains(string(payload), "id: "+artifact.MemoryID+"\n") {
+				continue
+			}
+			mutated := string(payload)
+			for _, message := range artifact.Messages {
+				mutated = strings.ReplaceAll(mutated, artifact.MemoryID+"#"+message.ID, "")
+				for _, block := range message.Body {
+					mutated = strings.ReplaceAll(mutated, strconv.Quote(block.ID), `""`)
+				}
+			}
+			withoutGmailIDs[path] = []byte(mutated)
+		}
+	}
+	if failures := examProductRefBearingCapabilityFailures(ledger, withoutGmailIDs); len(failures) == 0 {
+		t.Fatal("deleting Gmail message/block IDs did not fail the declared ref-bearing capability matrix")
+	}
+}
+
+func examProductRefBearingCapabilityFailures(ledger exam.Ledger, rendered map[string][]byte) []string {
+	declared := map[string]bool{
+		"gmail":    true,
+		"imessage": false,
+		"calendar": false,
+		"notes":    false,
+	}
+	var failures []string
+	seen := make(map[string]bool, len(declared))
+	for _, artifact := range ledger.Artifacts {
+		wantRefs, declaredChannel := declared[artifact.Channel]
+		if !declaredChannel {
+			failures = append(failures, fmt.Sprintf("renderer capability matrix has no declaration for channel %q", artifact.Channel))
+			continue
+		}
+		seen[artifact.Channel] = true
+		var payload []byte
+		idLine := "id: " + artifact.MemoryID + "\n"
+		for _, candidate := range rendered {
+			if strings.Contains(string(candidate), idLine) {
+				if payload != nil {
+					failures = append(failures, fmt.Sprintf("renderer emitted more than one memory for %q", artifact.MemoryID))
+				}
+				payload = candidate
+			}
+		}
+		if payload == nil {
+			failures = append(failures, fmt.Sprintf("renderer emitted no memory for %q", artifact.MemoryID))
+			continue
+		}
+		text := string(payload)
+		hasMessageRefs := strings.Contains(text, `"message_ref":`)
+		hasBlockRefs := strings.Contains(text, `"block_refs":`)
+		if hasMessageRefs != hasBlockRefs {
+			failures = append(failures, fmt.Sprintf("%s renderer emitted a partial immutable-ref contract: message_ref=%t block_refs=%t",
+				artifact.Channel, hasMessageRefs, hasBlockRefs))
+		}
+		gotRefs := hasMessageRefs && hasBlockRefs
+		if gotRefs != wantRefs {
+			failures = append(failures, fmt.Sprintf("%s renderer immutable refs = %t, want declared capability %t",
+				artifact.Channel, gotRefs, wantRefs))
+		}
+		if !wantRefs {
+			continue
+		}
+		for _, message := range artifact.Messages {
+			messageRef := artifact.MemoryID + "#" + message.ID
+			if !strings.Contains(text, `"message_ref":`+strconv.Quote(messageRef)) {
+				failures = append(failures, fmt.Sprintf("%s renderer omitted declared message ref %q", artifact.MemoryID, messageRef))
+			}
+			for _, block := range message.Body {
+				if !strings.Contains(text, strconv.Quote(block.ID)) {
+					failures = append(failures, fmt.Sprintf("%s renderer omitted declared block ref %q", artifact.MemoryID, block.ID))
+				}
+			}
+		}
+	}
+	for channel := range declared {
+		if !seen[channel] {
+			failures = append(failures, fmt.Sprintf("renderer capability matrix channel %q has no frozen-corpus artifact", channel))
+		}
+	}
+	return failures
 }
 
 func examProductScorecardStateForLedger(ledger exam.Ledger, surface string) examProductScorecardState {
@@ -234,20 +457,34 @@ func examProductScorecardStateForLedger(ledger exam.Ledger, surface string) exam
 		}
 	}
 	inventoryRecall := required
+	var refLessInventoryRecall, refLessEvidence examProductMetricState
 	if ledger.Version < exam.SchemaV3 {
 		inventoryRecall = examProductMetricState{
 			requirement: examProductMetricLegacyUnscorable,
 			reason:      examProductLegacyInventoryRecallEvidence,
 		}
+	} else {
+		refLessInventoryRecall = examProductMetricState{
+			requirement: examProductMetricRefLessUnscorable,
+			reason:      examProductRefLessInventoryRecallEvidence,
+		}
+		refLessEvidence = examProductMetricState{
+			requirement: examProductMetricRefLessUnscorable,
+			reason:      examProductRefLessUnscorableEvidence,
+		}
 	}
 	return examProductScorecardState{
-		schemaVersion:       ledger.Version,
-		extractionPrecision: extractionPrecision,
-		lifecycleRecall:     inventoryRecall,
-		closureRecall:       inventoryRecall,
-		commitmentIdentity:  evidence,
-		dedup:               dedup,
-		citationRoles:       evidence,
+		schemaVersion:             ledger.Version,
+		extractionPrecision:       extractionPrecision,
+		lifecycleRecall:           inventoryRecall,
+		closureRecall:             inventoryRecall,
+		commitmentIdentity:        evidence,
+		dedup:                     dedup,
+		citationRoles:             evidence,
+		refLessLifecycleRecall:    refLessInventoryRecall,
+		refLessClosureRecall:      refLessInventoryRecall,
+		refLessCommitmentIdentity: refLessEvidence,
+		refLessCitationRoles:      refLessEvidence,
 	}
 }
 
@@ -256,6 +493,20 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 	for _, row := range rows {
 		label := row.corpus + " " + row.surface
 		card := row.card
+		lifecycle := card.Lifecycle
+		closureLinkage := card.ClosureLinkage
+		commitmentIdentity := card.CommitmentIdentity
+		citationRoles := card.CitationRoles
+		if row.state.schemaVersion >= exam.SchemaV3 {
+			lifecycle.Recall = row.refBearingCard.Lifecycle.Recall
+			lifecycle.Defined = lifecycle.Defined && row.refBearingCard.Lifecycle.Defined
+			lifecycle.RecallByClass = row.refBearingCard.Lifecycle.RecallByClass
+			closureLinkage.Recall = row.refBearingCard.ClosureLinkage.Recall
+			closureLinkage.Defined = closureLinkage.Defined && row.refBearingCard.ClosureLinkage.Defined
+			commitmentIdentity = row.refBearingCard.CommitmentIdentity
+			citationRoles = row.refBearingCard.CitationRoles
+			failures = append(failures, refBearingGoldMissFailures(label, row.refBearingCard, row.refBearingGold)...)
+		}
 		if card.ScorerVersion != exam.ScorerVersion {
 			failures = append(failures, fmt.Sprintf("%s scorer version = %d, want %d", label, card.ScorerVersion, exam.ScorerVersion))
 		}
@@ -290,24 +541,24 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 		failures = append(failures, ratioAtLeastFailures(label+" direction", card.Direction, 0.90)...)
 		failures = append(failures, ratioAtLeastFailures(label+" due time", card.DueTime, 0.90)...)
 		failures = append(failures, ratioComponentsAtLeastFailures(
-			label+" lifecycle", card.Lifecycle, 0.90,
+			label+" lifecycle", lifecycle, 0.90,
 			examProductMetricState{requirement: examProductMetricRequired},
 			row.state.lifecycleRecall,
 		)...)
 		failures = append(failures, ratioComponentsAtLeastFailures(
-			label+" closure linkage", card.ClosureLinkage, 0.90,
+			label+" closure linkage", closureLinkage, 0.90,
 			examProductMetricState{requirement: examProductMetricRequired},
 			row.state.closureRecall,
 		)...)
 		failures = append(failures, ratioAtLeastFailures(label+" owner", card.Owner, 0.90)...)
 		failures = append(failures, scopedRatioAtLeastFailures(
-			label+" commitment identity", row.state.schemaVersion, row.state.commitmentIdentity, card.CommitmentIdentity, 0.90,
+			label+" commitment identity", row.state.schemaVersion, row.state.commitmentIdentity, commitmentIdentity, 0.90,
 		)...)
 		failures = append(failures, scopedRatioAtLeastFailures(
 			label+" dedup", row.state.schemaVersion, row.state.dedup, card.Dedup, 0.90,
 		)...)
 		failures = append(failures, scopedRatioAtLeastFailures(
-			label+" citation roles", row.state.schemaVersion, row.state.citationRoles, card.CitationRoles, 0.90,
+			label+" citation roles", row.state.schemaVersion, row.state.citationRoles, citationRoles, 0.90,
 		)...)
 		for _, dimension := range []struct {
 			name string
@@ -320,14 +571,45 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 			failures = append(failures, classRecallAtLeastFailures(label+" "+dimension.name, dimension.row, 0.90)...)
 		}
 		if row.state.lifecycleRecall.requirement == examProductMetricRequired {
-			failures = append(failures, classRecallAtLeastFailures(label+" lifecycle", card.Lifecycle, 0.90)...)
+			failures = append(failures, classRecallAtLeastFailures(label+" lifecycle", lifecycle, 0.90)...)
 		}
 		if row.state.citationRoles.requirement == examProductMetricRequired {
-			failures = append(failures, classRecallAtLeastFailures(label+" citation roles", card.CitationRoles, 0.90)...)
+			failures = append(failures, classRecallAtLeastFailures(label+" citation roles", citationRoles, 0.90)...)
 		}
 		if card.Surface == exam.SurfaceMeeting {
 			failures = append(failures, ratioAtLeastFailures(label+" counterparty", card.Counterparty, 0.90)...)
 			failures = append(failures, classRecallAtLeastFailures(label+" counterparty", card.Counterparty, 0.90)...)
+		}
+	}
+	return failures
+}
+
+func refBearingGoldMissFailures(label string, card exam.Scorecard, gold examProductRefBearingGold) []string {
+	var failures []string
+	for _, metric := range []struct {
+		name     string
+		row      exam.PR
+		required int
+	}{
+		{name: "commitment identity", row: card.CommitmentIdentity, required: gold.commitmentIdentity},
+		{name: "lifecycle", row: card.Lifecycle, required: gold.lifecycle},
+		{name: "closure linkage", row: card.ClosureLinkage, required: gold.closureLinkage},
+		{name: "citation roles", row: card.CitationRoles, required: gold.citationRoles},
+	} {
+		if metric.required == 0 {
+			failures = append(failures, fmt.Sprintf("%s ref-bearing %s gold samples = 0, want a non-empty required set",
+				label, metric.name))
+			continue
+		}
+		if !metric.row.Defined {
+			failures = append(failures, fmt.Sprintf("%s ref-bearing %s gold misses are unscorable, want absolute 0",
+				label, metric.name))
+			continue
+		}
+		hits := int(math.Round(metric.row.Recall * float64(metric.required)))
+		if misses := metric.required - hits; misses != 0 {
+			failures = append(failures, fmt.Sprintf("%s ref-bearing %s gold misses = %d, want 0",
+				label, metric.name, misses))
 		}
 	}
 	return failures
@@ -462,15 +744,27 @@ func ratioEqualFailures(label string, got exam.PR, want float64) []string {
 func hasTypedProductDeficiency(rows []namedExamScorecard) bool {
 	for _, row := range rows {
 		card := row.card
+		lifecycle := card.Lifecycle
+		closureLinkage := card.ClosureLinkage
+		commitmentIdentity := card.CommitmentIdentity
+		citationRoles := card.CitationRoles
+		if row.state.schemaVersion >= exam.SchemaV3 {
+			lifecycle.Recall = row.refBearingCard.Lifecycle.Recall
+			lifecycle.Defined = lifecycle.Defined && row.refBearingCard.Lifecycle.Defined
+			closureLinkage.Recall = row.refBearingCard.ClosureLinkage.Recall
+			closureLinkage.Defined = closureLinkage.Defined && row.refBearingCard.ClosureLinkage.Defined
+			commitmentIdentity = row.refBearingCard.CommitmentIdentity
+			citationRoles = row.refBearingCard.CitationRoles
+		}
 		if !card.DirectionScorable ||
 			ratioBelowProductTarget(card.Direction) ||
 			ratioBelowProductTarget(card.DueTime) ||
-			ratioComponentBelowProductTarget(card.Lifecycle, row.state.lifecycleRecall) ||
-			ratioComponentBelowProductTarget(card.ClosureLinkage, row.state.closureRecall) ||
+			ratioComponentBelowProductTarget(lifecycle, row.state.lifecycleRecall) ||
+			ratioComponentBelowProductTarget(closureLinkage, row.state.closureRecall) ||
 			ratioBelowProductTarget(card.Owner) ||
-			requiredMetricBelowProductTarget(row.state.commitmentIdentity, card.CommitmentIdentity) ||
+			requiredMetricBelowProductTarget(row.state.commitmentIdentity, commitmentIdentity) ||
 			requiredMetricBelowProductTarget(row.state.dedup, card.Dedup) ||
-			requiredMetricBelowProductTarget(row.state.citationRoles, card.CitationRoles) {
+			requiredMetricBelowProductTarget(row.state.citationRoles, citationRoles) {
 			return true
 		}
 	}
