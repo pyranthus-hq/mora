@@ -19,9 +19,11 @@ type namedExamScorecard struct {
 type examProductMetricRequirement string
 
 const (
-	examProductMetricRequired           examProductMetricRequirement = "REQUIRED"
-	examProductMetricLegacyUnscorable   examProductMetricRequirement = "LEGACY_UNSCORABLE"
-	examProductLegacyUnscorableEvidence                              = "frozen schema-v1/v2 vaults lack immutable message/block refs; commitmentID must not fabricate them"
+	examProductMetricRequired                 examProductMetricRequirement = "REQUIRED"
+	examProductMetricLegacyUnscorable         examProductMetricRequirement = "LEGACY_UNSCORABLE"
+	examProductMetricNoGoldSamplesUnscorable  examProductMetricRequirement = "NO_GOLD_SAMPLES_UNSCORABLE"
+	examProductLegacyUnscorableEvidence                                    = "frozen schema-v1/v2 vaults lack immutable message/block refs; commitmentID must not fabricate them"
+	examProductNoDuplicateGoldSamplesEvidence                              = "corpus has zero duplicate_of gold samples; ratio is undefined and absolute duplicate leak counts remain enforced"
 )
 
 type examProductMetricState struct {
@@ -88,7 +90,7 @@ func recomputeExamProductScorecards(t *testing.T) []namedExamScorecard {
 		{name: "obligations-v3", root: examFixtureV3Root},
 	} {
 		ledger := loadExamLedgerFromRoot(t, corpus.root)
-		state := examProductScorecardStateForSchema(ledger.Version)
+		state := examProductScorecardStateForLedger(ledger)
 		scorecards := runExamSurfaces(t, corpus.root)
 		rows = append(rows,
 			namedExamScorecard{corpus: corpus.name, surface: "daily CLI", state: state, card: scorecards.DailyCLI},
@@ -127,10 +129,26 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 			}
 		case exam.SchemaV3:
 			for _, metric := range metrics {
+				if metric.name == "dedup" {
+					continue
+				}
 				if metric.state.requirement != examProductMetricRequired || metric.state.reason != "" {
 					t.Errorf("%s %s %s state = %+v, want required with no exemption",
 						row.corpus, row.surface, metric.name, metric.state)
 				}
+			}
+			if row.state.dedup.requirement != examProductMetricNoGoldSamplesUnscorable ||
+				row.state.dedup.reason != examProductNoDuplicateGoldSamplesEvidence {
+				t.Errorf("%s %s dedup state = %+v, want explicit zero-gold-samples classification",
+					row.corpus, row.surface, row.state.dedup)
+			}
+			if row.card.Dedup.Defined {
+				t.Errorf("%s %s dedup = %+v, want undefined with zero duplicate_of gold samples",
+					row.corpus, row.surface, row.card.Dedup)
+			}
+			if row.card.DupLeaks != 0 || row.card.DedupCrossArtifact != 0 {
+				t.Errorf("%s %s duplicate leak absolutes = DupLeaks:%d DedupCrossArtifact:%d, want 0/0",
+					row.corpus, row.surface, row.card.DupLeaks, row.card.DedupCrossArtifact)
 			}
 			if !row.card.CommitmentIdentity.Defined {
 				t.Errorf("%s %s commitment identity = %+v, want defined on schema v3",
@@ -147,23 +165,39 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 	}
 }
 
-func examProductScorecardStateForSchema(schemaVersion int) examProductScorecardState {
+func examProductScorecardStateForLedger(ledger exam.Ledger) examProductScorecardState {
 	var evidence examProductMetricState
-	switch schemaVersion {
+	switch ledger.Version {
 	case exam.SchemaV1, exam.SchemaV2:
 		evidence = examProductMetricState{
 			requirement: examProductMetricLegacyUnscorable,
 			reason:      examProductLegacyUnscorableEvidence,
 		}
 	default:
-		if schemaVersion >= exam.SchemaV3 {
+		if ledger.Version >= exam.SchemaV3 {
 			evidence = examProductMetricState{requirement: examProductMetricRequired}
 		}
 	}
+	dedup := evidence
+	if ledger.Version >= exam.SchemaV3 {
+		hasDuplicateGold := false
+		for _, commitment := range ledger.Commitments {
+			if commitment.DuplicateOf != "" {
+				hasDuplicateGold = true
+				break
+			}
+		}
+		if !hasDuplicateGold {
+			dedup = examProductMetricState{
+				requirement: examProductMetricNoGoldSamplesUnscorable,
+				reason:      examProductNoDuplicateGoldSamplesEvidence,
+			}
+		}
+	}
 	return examProductScorecardState{
-		schemaVersion:      schemaVersion,
+		schemaVersion:      ledger.Version,
 		commitmentIdentity: evidence,
-		dedup:              evidence,
+		dedup:              dedup,
 		citationRoles:      evidence,
 	}
 }
@@ -258,6 +292,19 @@ func scopedRatioAtLeastFailures(label string, schemaVersion int, state examProdu
 		}
 		if got.Defined {
 			return []string{label + " is defined on a legacy corpus without immutable refs; commitmentID evidence must not be fabricated"}
+		}
+		return nil
+	case examProductMetricNoGoldSamplesUnscorable:
+		if schemaVersion < exam.SchemaV3 {
+			return []string{fmt.Sprintf("%s state = %s at schema %d, want %s with the immutable-ref reason",
+				label, state.requirement, schemaVersion, examProductMetricLegacyUnscorable)}
+		}
+		if state.reason != examProductNoDuplicateGoldSamplesEvidence {
+			return []string{fmt.Sprintf("%s zero-gold-samples reason = %q, want %q",
+				label, state.reason, examProductNoDuplicateGoldSamplesEvidence)}
+		}
+		if got.Defined {
+			return []string{label + " is defined with zero duplicate_of gold samples; ratio must remain explicitly unscorable"}
 		}
 		return nil
 	default:
