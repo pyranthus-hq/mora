@@ -57,6 +57,37 @@ func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 	t.Helper()
 	var out []exam.Prediction
 	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "obligation: ") {
+			if len(out) == 0 {
+				t.Fatalf("daily CLI emitted obligation metadata before a cited item: %q", line)
+			}
+			fields := strings.Split(strings.TrimPrefix(trimmed, "obligation: "), " · ")
+			if len(fields) != 5 {
+				t.Fatalf("daily CLI emitted malformed obligation metadata: %q", line)
+			}
+			values := map[string]string{}
+			for _, field := range fields {
+				key, value, ok := strings.Cut(field, "=")
+				if !ok || key == "" || value == "" {
+					t.Fatalf("daily CLI emitted malformed obligation field %q", field)
+				}
+				values[key] = value
+			}
+			for _, key := range []string{"owner", "direction", "due", "lifecycle", "closure"} {
+				if values[key] == "" {
+					t.Fatalf("daily CLI obligation metadata omitted %q: %q", key, line)
+				}
+			}
+			pred := &out[len(out)-1]
+			pred.Text += line + "\n"
+			pred.Owner = values["owner"]
+			pred.Direction = values["direction"]
+			pred.Due = values["due"]
+			pred.Lifecycle = values["lifecycle"]
+			pred.ClosureRef = values["closure"]
+			continue
+		}
 		start := strings.LastIndex(line, "(id: ")
 		if start < 0 || !strings.HasSuffix(line, ")") {
 			continue
@@ -115,6 +146,7 @@ func scoreExamSurface(t *testing.T, ledger exam.Ledger, preds []exam.Prediction,
 func TestExamSurfaces(t *testing.T) {
 	scorecards := runExamSurfaces(t, examFixtureRoot)
 	assertGate3MeetingRatchet(t, scorecards)
+	assertGate3DailyRatchet(t, scorecards)
 	assertExamSurfaceScorecardsGolden(t, scorecards, examSurfaceScorecardsPath, *update)
 }
 
@@ -124,6 +156,7 @@ func TestExamSurfaces(t *testing.T) {
 func TestExamSurfacesV2(t *testing.T) {
 	scorecards := runExamSurfaces(t, examFixtureV2Root)
 	assertGate3MeetingRatchet(t, scorecards)
+	assertGate3DailyRatchet(t, scorecards)
 	assertExamSurfaceScorecardsGolden(t, scorecards, examSurfaceScorecardsV2Path, *updateV2)
 }
 
@@ -141,6 +174,32 @@ func assertGate3MeetingRatchet(t *testing.T, scorecards examSurfaceScorecards) {
 		if card.ClosedLeaks != 0 || card.DupLeaks != 0 || card.DedupCrossArtifact != 0 {
 			t.Errorf("%s lifecycle/dedup leaks: ClosedLeaks=%d DupLeaks=%d DedupCrossArtifact=%d",
 				name, card.ClosedLeaks, card.DupLeaks, card.DedupCrossArtifact)
+		}
+	}
+}
+
+func assertGate3DailyRatchet(t *testing.T, scorecards examSurfaceScorecards) {
+	t.Helper()
+	for name, card := range map[string]exam.Scorecard{
+		"daily_cli": scorecards.DailyCLI, "daily_mcp": scorecards.DailyMCP,
+	} {
+		for metric, row := range map[string]exam.PR{
+			"Direction":      card.Direction,
+			"DueTime":        card.DueTime,
+			"Lifecycle":      card.Lifecycle,
+			"ClosureLinkage": card.ClosureLinkage,
+		} {
+			if !row.Defined || row.Precision != 1 || row.Recall == 0 {
+				t.Errorf("%s %s = %+v, want precise non-vacuous typed daily obligation contract", name, metric, row)
+			}
+		}
+		if card.CitationCoverage.Precision != 1 || card.CitationCoverage.Recall != 1 ||
+			card.CitationCorrect.Precision != 1 || card.CitationCorrect.Recall != 1 {
+			t.Errorf("%s citation rows regressed: coverage=%+v correct=%+v",
+				name, card.CitationCoverage, card.CitationCorrect)
+		}
+		if card.Unmatched != 0 {
+			t.Errorf("%s Unmatched = %d, want 0", name, card.Unmatched)
 		}
 	}
 }
@@ -173,9 +232,14 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 			dailyMCPAtCLICap.Sections[i].Items = dailyMCPAtCLICap.Sections[i].Items[:digestDefaultCap]
 		}
 	}
-	if got, want := predictionIDs(dailyCLI), predictionIDs(examDailyPredictions(dailyMCPAtCLICap)); !reflect.DeepEqual(got, want) {
+	dailyMCPAtCLICapPredictions := examDailyPredictions(dailyMCPAtCLICap)
+	if got, want := predictionIDs(dailyCLI), predictionIDs(dailyMCPAtCLICapPredictions); !reflect.DeepEqual(got, want) {
 		t.Fatalf("daily CLI is not the exact cap-%d projection of MCP:\n CLI=%v\n MCP capped=%v\n MCP full=%v",
 			digestDefaultCap, got, want, predictionIDs(dailyMCP))
+	}
+	if !reflect.DeepEqual(dailyCLI, dailyMCPAtCLICapPredictions) {
+		t.Fatalf("daily CLI and cap-%d MCP obligation projections differ:\n CLI=%+v\n MCP=%+v",
+			digestDefaultCap, dailyCLI, dailyMCPAtCLICapPredictions)
 	}
 
 	asOf := at.Format(time.RFC3339)
@@ -263,12 +327,12 @@ func assertExamSurfaceScorecardsGolden(t *testing.T, got examSurfaceScorecards, 
 	}
 }
 
-// TestDailyBriefHasNoObligationContract is an honest known-red row, not a skip.
-// Daily citations are live and scored above; only the typed obligation lane is
-// absent. The day that lane lands, this test fails and forces the exam to score it.
+// TestDailyBriefHasNoObligationContract pins the typed obligation lane shared by
+// daily CLI and MCP. The historical name is kept so issue #154's known-red cannot
+// disappear from the ratchet by renaming the test.
 func TestDailyBriefHasNoObligationContract(t *testing.T) {
 	const (
-		wantRED = true
+		wantRED = false
 		issue   = "https://github.com/pyranthus-hq/mora/issues/154"
 		expires = "2026-10-14"
 	)

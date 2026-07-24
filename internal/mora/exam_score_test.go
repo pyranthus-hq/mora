@@ -103,12 +103,27 @@ func digestAllItems(d Digest) []DigestItem {
 func examDailyPredictions(d Digest) []exam.Prediction {
 	var out []exam.Prediction
 	for _, item := range digestAllItems(d) {
+		direction := item.Direction
+		if direction == "" {
+			direction = exam.Unknown
+		}
+		lifecycle := item.Lifecycle
+		if lifecycle == "" {
+			lifecycle = exam.Unknown
+		}
+		owner := ""
+		if item.Direction != "" {
+			owner = item.Owner.Kind + ":" + item.Owner.Value
+		}
 		out = append(out, exam.Prediction{
-			Surface:   exam.SurfaceDaily,
-			Text:      renderDigestItemLine(item),
-			MemoryID:  item.ID,
-			Direction: exam.Unknown,
-			Lifecycle: exam.Unknown,
+			Surface:    exam.SurfaceDaily,
+			Text:       renderDigestItemLine(item),
+			Owner:      owner,
+			MemoryID:   item.ID,
+			Direction:  direction,
+			Due:        item.DueAt,
+			Lifecycle:  lifecycle,
+			ClosureRef: item.ClosureRef,
 		})
 	}
 	return out
@@ -266,11 +281,12 @@ func TestExamRealEngineScorecard(t *testing.T) {
 		t.Error("Counterparty is scored on the daily surface, which carries no attendee — it must be reported N/A, never folded in")
 	}
 	for name, row := range map[string]exam.PR{
-		"direction": daily.Direction, "due_time": daily.DueTime,
-		"lifecycle": daily.Lifecycle, "closure_linkage": daily.ClosureLinkage,
+		"owner": daily.Owner, "direction": daily.Direction,
+		"due_time": daily.DueTime, "lifecycle": daily.Lifecycle,
+		"closure_linkage": daily.ClosureLinkage,
 	} {
-		if row.Recall != 0 || row.Defined {
-			t.Errorf("daily %s = %+v, want born-red — no obligation lane exists on the digest", name, row)
+		if !row.Defined || row.Precision != 1 || row.Recall == 0 {
+			t.Errorf("daily %s = %+v, want precise non-vacuous typed obligation data", name, row)
 		}
 	}
 }

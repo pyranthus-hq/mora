@@ -20,30 +20,33 @@
     },
     {
       "surface": "daily",
-      "text": "- +15550100137 — ## 2026-07-13 Me: Thanks, I will meet you there. +15550100137: I will bring the room key to the review. (id: imessage_chat/exam-flywheel)\n",
+      "text": "- +15550100137 — ## 2026-07-13 Me: Thanks, I will meet you there. +15550100137: I will bring the room key to the review. (id: imessage_chat/exam-flywheel)\n  obligation: owner=handle:+15550100137 · direction=owed_by_counterparty · due=none · lifecycle=open · closure=none\n",
+      "owner": "handle:+15550100137",
       "memory_id": "imessage_chat/exam-flywheel",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_counterparty",
+      "due": "none",
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "daily",
-      "text": "- Launch appendix — From: dana@example.net The launch appendix still needs your initials. (id: gmail_thread/exam-statement)\n",
+      "text": "- Launch appendix — From: dana@example.net The launch appendix still needs your initials. (id: gmail_thread/exam-statement)\n  obligation: owner=address:alex@example.com · direction=owed_by_self · due=none · lifecycle=open · closure=none\n",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-statement",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_self",
+      "due": "none",
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "daily",
-      "text": "- Please bring the signed checklist — From: dana@example.net The room packet is attached for reference. (id: gmail_thread/exam-subject-checklist)\n",
+      "text": "- Please bring the signed checklist — From: dana@example.net The room packet is attached for reference. (id: gmail_thread/exam-subject-checklist)\n  obligation: owner=address:alex@example.com · direction=owed_by_self · due=none · lifecycle=open · closure=none\n",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-subject-checklist",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_self",
+      "due": "none",
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "daily",
@@ -65,12 +68,13 @@
     },
     {
       "surface": "daily",
-      "text": "- Signed outline — From: Sam Rivera \u003csam@example.org\u003e Can you send the signed outline by July 14? --- I will send the signed outline today. (id: gmail_thread/exam-reply-chain)\n",
+      "text": "- Signed outline — From: Sam Rivera \u003csam@example.org\u003e Can you send the signed outline by July 14? --- I will send the signed outline today. (id: gmail_thread/exam-reply-chain)\n  obligation: owner=address:alex@example.com · direction=owed_by_self · due=2026-07-14 · lifecycle=open · closure=none\n",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-reply-chain",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_self",
+      "due": "2026-07-14",
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "daily",
@@ -92,30 +96,33 @@
     },
     {
       "surface": "daily",
-      "text": "- Reviewer list — From: Sam Rivera \u003csam@example.org\u003e Can you send the reviewer list? (id: gmail_thread/exam-closed-open)\n",
+      "text": "- Reviewer list — From: Sam Rivera \u003csam@example.org\u003e Can you send the reviewer list? (id: gmail_thread/exam-closed-open)\n  obligation: owner=address:alex@example.com · direction=owed_by_self · due=none · lifecycle=closed · closure=exam-note-closure\n",
+      "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-closed-open",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_self",
+      "due": "none",
+      "lifecycle": "closed",
+      "closure_ref": "exam-note-closure"
     },
     {
       "surface": "daily",
-      "text": "- Summary table — From: Nina Ellis \u003cnina@example.org\u003e I will send you the summary table next week. (id: gmail_thread/exam-nina-summary)\n",
+      "text": "- Summary table — From: Nina Ellis \u003cnina@example.org\u003e I will send you the summary table next week. (id: gmail_thread/exam-nina-summary)\n  obligation: owner=address:nina@example.org · direction=owed_by_counterparty · due=relative · lifecycle=open · closure=none\n",
+      "owner": "address:nina@example.org",
       "memory_id": "gmail_thread/exam-nina-summary",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_counterparty",
+      "due": "relative",
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "daily",
-      "text": "- Sample labels — From: Marcus Vance \u003cmarcus@example.net\u003e I will send the sample labels this week. (id: gmail_thread/exam-duplicate-canonical)\n",
+      "text": "- Sample labels — From: Marcus Vance \u003cmarcus@example.net\u003e I will send the sample labels this week. (id: gmail_thread/exam-duplicate-canonical)\n  obligation: owner=address:marcus@example.net · direction=owed_by_counterparty · due=relative · lifecycle=open · closure=none\n",
+      "owner": "address:marcus@example.net",
       "memory_id": "gmail_thread/exam-duplicate-canonical",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_counterparty",
+      "due": "relative",
+      "lifecycle": "open",
+      "closure_ref": "none"
     }
   ],
   "meeting": [

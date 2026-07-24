@@ -230,6 +230,48 @@ func TestCommitmentSnapshotCrossSurfaceDeterminism(t *testing.T) {
 	}
 }
 
+func TestDigestUsesMaterializedCommitmentGeneration(t *testing.T) {
+	cfg, _, at := seedExamHomeFromRoot(t, examFixtureV2Root)
+	snapshot, err := readCommitmentSnapshot(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := buildDigest(cfg, at, briefOpts{
+		sinceHours: examDailyWindowHours, perSourceCap: examDailyPerSourceCap,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byMemory := map[string][]Commitment{}
+	for _, commitment := range snapshot.Commitments {
+		byMemory[commitment.OpenedBy.MemoryID] = append(byMemory[commitment.OpenedBy.MemoryID], commitment)
+	}
+	typed := 0
+	for _, item := range digestAllItems(digest) {
+		commitments := byMemory[item.ID]
+		if len(commitments) != 1 {
+			if item.Direction != "" {
+				t.Fatalf("digest item %s guessed among %d materialized commitments: %+v", item.ID, len(commitments), item)
+			}
+			continue
+		}
+		typed++
+		commitment := commitments[0]
+		if !atomEqual(item.Owner, commitment.Owner) ||
+			item.Direction != commitment.Direction ||
+			item.DueAt != commitDueValue(commitment.Due) ||
+			item.Lifecycle != commitment.State ||
+			item.ClosureRef != commitment.ClosureRef {
+			t.Fatalf("digest item %s diverged from generation %s:\nitem=%+v\ncommitment=%+v",
+				item.ID, snapshot.Generation, item, commitment)
+		}
+	}
+	if typed == 0 {
+		t.Fatal("exam digest exposed no materialized commitment")
+	}
+}
+
 func TestMaterializedCommitmentLinksCrossSourceClosure(t *testing.T) {
 	cfg, _, _ := seedExamHomeFromRoot(t, examFixtureV2Root)
 	snapshot, err := readCommitmentSnapshot(t.Context(), cfg)
