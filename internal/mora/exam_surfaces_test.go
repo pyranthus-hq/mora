@@ -160,6 +160,37 @@ func TestExamSurfacesV2(t *testing.T) {
 	assertExamSurfaceScorecardsGolden(t, scorecards, examSurfaceScorecardsV2Path, *updateV2)
 }
 
+// TestExamInventoryAdapterV3AcrossProductSurfaces uses the first corpus whose
+// rendered vault preserves immutable message/block refs. It does not add v3 to
+// TestExamProductTarget (W1b owns that gate expansion); it proves this adapter-only
+// step makes the knowledge rows observable through daily/event x CLI/MCP now.
+func TestExamInventoryAdapterV3AcrossProductSurfaces(t *testing.T) {
+	scorecards := runExamSurfaces(t, examFixtureV3Root)
+	for name, card := range map[string]exam.Scorecard{
+		"daily_cli": scorecards.DailyCLI,
+		"daily_mcp": scorecards.DailyMCP,
+		"event_cli": scorecards.EventCLI,
+		"event_mcp": scorecards.EventMCP,
+	} {
+		for metric, row := range map[string]exam.PR{
+			"commitment_identity": card.CommitmentIdentity,
+			"lifecycle":           card.Lifecycle,
+			"closure_linkage":     card.ClosureLinkage,
+			"citation_roles":      card.CitationRoles,
+		} {
+			if !row.Defined || row.Recall == 0 {
+				t.Errorf("%s %s = %+v, want defined non-zero inventory recall", name, metric, row)
+			}
+		}
+		// obligations-v3 has immutable refs but no labelled duplicate pair, so
+		// Dedup correctly remains unscorable here. The unit adapter test above
+		// separately proves DuplicateOf is copied without reinterpretation.
+		if card.Dedup.Defined {
+			t.Errorf("%s dedup = %+v, want unscorable with zero v3 duplicate gold samples", name, card.Dedup)
+		}
+	}
+}
+
 func assertGate3MeetingRatchet(t *testing.T, scorecards examSurfaceScorecards) {
 	t.Helper()
 	for name, card := range map[string]exam.Scorecard{
@@ -216,12 +247,13 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 
 	dailyCLIOutput := runExamCLI(t, "pulse", "--digest", "--since-hours", "720")
 	dailyCLI := examDailyCLIPredictions(t, dailyCLIOutput)
+	dailyCLI = append(dailyCLI, examInventoryPredictions(exam.SurfaceDaily, snapshot.Commitments...)...)
 	dailyValue, err := callMCPTool(context.Background(), "digest", map[string]any{"since_hours": float64(examDailyWindowHours)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	dailyMCPPayload := decodeDigestPayload(t, dailyValue)
-	dailyMCP := examDailyPredictions(dailyMCPPayload)
+	dailyMCP := examDailyPredictions(dailyMCPPayload, snapshot.Commitments...)
 	// The shipped surfaces intentionally use different per-source caps: the human
 	// CLI uses digestDefaultCap while MCP exposes a generous set and lets its byte
 	// budget govern. Pin the relationship, not a false same-multiset premise:
@@ -232,7 +264,7 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 			dailyMCPAtCLICap.Sections[i].Items = dailyMCPAtCLICap.Sections[i].Items[:digestDefaultCap]
 		}
 	}
-	dailyMCPAtCLICapPredictions := examDailyPredictions(dailyMCPAtCLICap)
+	dailyMCPAtCLICapPredictions := examDailyPredictions(dailyMCPAtCLICap, snapshot.Commitments...)
 	if got, want := predictionIDs(dailyCLI), predictionIDs(dailyMCPAtCLICapPredictions); !reflect.DeepEqual(got, want) {
 		t.Fatalf("daily CLI is not the exact cap-%d projection of MCP:\n CLI=%v\n MCP capped=%v\n MCP full=%v",
 			digestDefaultCap, got, want, predictionIDs(dailyMCP))
