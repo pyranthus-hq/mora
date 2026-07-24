@@ -206,7 +206,7 @@
     "surface": "meeting",
     "extraction": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 0.75,
       "defined": true
     },
     "recall_uncapped": {
@@ -226,10 +226,10 @@
     },
     "counterparty": {
       "precision": 1,
-      "recall": 0.6666666666666666,
+      "recall": 0.8333333333333333,
       "defined": true,
       "recall_by_class": {
-        "p/dana": 0.3333333333333333,
+        "p/dana": 0.6666666666666666,
         "p/sam": 1
       }
     },
@@ -243,44 +243,44 @@
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "p/dana": 0,
-        "p/self": 0.6666666666666666
+        "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "owed_by_counterparty": 0,
-        "owed_by_self": 0.6666666666666666
+        "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 0.75,
       "defined": true,
       "recall_by_class": {
         "2026-07-14T11:00:00Z": 1,
-        "none": 0.3333333333333333
+        "none": 0.6666666666666666
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.2,
+        "open": 0.3,
         "superseded": 0
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true
     },
     "commitment_identity": {
@@ -311,7 +311,7 @@
     "surface": "meeting",
     "extraction": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 0.75,
       "defined": true
     },
     "recall_uncapped": {
@@ -331,10 +331,10 @@
     },
     "counterparty": {
       "precision": 1,
-      "recall": 0.6666666666666666,
+      "recall": 0.8333333333333333,
       "defined": true,
       "recall_by_class": {
-        "p/dana": 0.3333333333333333,
+        "p/dana": 0.6666666666666666,
         "p/sam": 1
       }
     },
@@ -348,44 +348,44 @@
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "p/dana": 0,
-        "p/self": 0.6666666666666666
+        "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "owed_by_counterparty": 0,
-        "owed_by_self": 0.6666666666666666
+        "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 0.75,
       "defined": true,
       "recall_by_class": {
         "2026-07-14T11:00:00Z": 1,
-        "none": 0.3333333333333333
+        "none": 0.6666666666666666
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.2,
+        "open": 0.3,
         "superseded": 0
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true
     },
     "commitment_identity": {

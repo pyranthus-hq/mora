@@ -24,6 +24,9 @@ const (
 	digestSnippetLen   = 200
 	digestDefaultHours = 24
 	digestDefaultCap   = 8
+	// commitmentDailyWindow is the DAILY obligation contract: the trailing seven
+	// 24-hour periods ending at the surface clock, inclusive at both endpoints.
+	commitmentDailyWindow = 7 * 24 * time.Hour
 	// digestColdStartDays is the courtesy display window on an instance's FIRST
 	// run (no watermark yet): we baseline ALL current hashes (so archived backfill
 	// becomes the starting line, not a flood) but DISPLAY only the last 7 days
@@ -185,6 +188,7 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 		return Digest{}, err
 	}
 	if gated {
+		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
 		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
 	}
 	var d Digest
@@ -225,6 +229,31 @@ func digestCommitmentInventory(cfg Config) (map[string][]Commitment, bool, error
 
 func commitmentSurfaceEligible(commitment Commitment) bool {
 	return commitment.State == commitOpen && commitment.DuplicateOf == ""
+}
+
+func commitmentDailyEligible(commitment Commitment, at time.Time) bool {
+	if !commitmentSurfaceEligible(commitment) {
+		return false
+	}
+	openedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(commitment.OpenedBy.OccurredAt))
+	if err != nil {
+		return false
+	}
+	at = at.UTC()
+	cutoff := at.Add(-commitmentDailyWindow)
+	return !openedAt.Before(cutoff) && !openedAt.After(at)
+}
+
+func dailyCommitmentInventory(inventory map[string][]Commitment, at time.Time) map[string][]Commitment {
+	out := make(map[string][]Commitment, len(inventory))
+	for memoryID, commitments := range inventory {
+		for _, commitment := range commitments {
+			if commitmentDailyEligible(commitment, at) {
+				out[memoryID] = append(out[memoryID], commitment)
+			}
+		}
+	}
+	return out
 }
 
 // filterDigestInstancesByCommitments applies the typed inventory as the eligibility
@@ -691,6 +720,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 		return Digest{}, "", err
 	}
 	if gated {
+		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
 		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
 	}
 	d, plans, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)

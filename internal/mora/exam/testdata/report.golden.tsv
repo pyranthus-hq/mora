@@ -6,7 +6,7 @@ daily	false_positive		gmail_thread/exam-subject-checklist	- Please bring the sig
 daily	false_positive		imessage_chat/exam-flywheel	- +15550100137 — ## 2026-07-13 Me: Thanks, I will meet you there. +15550100137: I will bring the room key to the review. (id: imessage_chat/exam-flywheel) obligation: owner=handle:+15550100137 · direction=owed_by_counterparty · due=none · lifecycle=open · closure=none
 daily	true_positive	c/sam-outline	gmail_thread/exam-reply-chain	- Signed outline — From: Sam Rivera <sam@example.org> Can you send the signed outline by July 14? --- I will send the signed outline today. (id: gmail_thread/exam-reply-chain) obligation: owner=address:alex@example.com · direction=owed_by_self · due=2026-07-14 · lifecycle=open · closure=none
 daily	true_positive	c/marcus-confirm	imessage_chat/exam-marcus	- Marcus Vance — ## 2026-07-13 Me: Could you confirm the sample count tomorrow? Marcus Vance: I will confirm the sample count tomorrow. (id: imessage_chat/exam-marcus) obligation: owner=handle:+15550100103 · direction=owed_by_counterparty · due=relative · lifecycle=open · closure=none
-meeting	gold_miss	c/subject-checklist	gmail_thread/exam-subject-checklist	Please bring the signed checklist
 meeting	gold_miss	c/flywheel	imessage_chat/exam-flywheel	I will bring the room key to the review.
 meeting	true_positive	c/sam-outline	gmail_thread/exam-reply-chain	~2 days ago · Sam Rivera — “Can you send the signed outline by July 14?”
 meeting	true_positive	c/dana-statement	gmail_thread/exam-statement	~1 day ago · dana@example.net — “The launch appendix still needs your initials.”
+meeting	true_positive	c/subject-checklist	gmail_thread/exam-subject-checklist	~1 day ago · dana@example.net — “Please bring the signed checklist”
