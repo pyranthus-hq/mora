@@ -1,10 +1,10 @@
 # 19 — Meeting brief assembly
 
-`mora brief --event-id <calendar-memory-id>` builds a local pre-meeting brief for
-one calendar event. The MCP `meeting_prep` tool returns the same `MeetingBrief`
-shape; without `event_id`, it selects the next or just-started event for backward
-compatibility. These two surfaces share the current gated assembly pipeline; there
-is no separate legacy CLI assembly path.
+`mora brief --event-id <calendar-memory-id>` builds a local brief for one
+meeting. The MCP `meeting_prep` tool returns the same `MeetingBrief` shape.
+Without `event_id`, it selects the next event or one that just started. This
+keeps earlier behavior. Both surfaces use the same gated assembly pipeline.
+They do not have separate CLI paths.
 
 ## Assembly pipeline
 
@@ -31,7 +31,7 @@ is no separate legacy CLI assembly path.
    does *not* error — an unattributed brief emits zero lines and is exactly as
    safe, whereas erroring would take the whole next-meeting brief down over one
    unresolvable event (`selectNextEvent` is provider-agnostic). Gapping
-   suppresses the *claim*; it never destroys the *artifact*.
+   suppresses the *claim*. It never destroys the *artifact*.
 3. For each exact attendee identity, read the same exact-identity graph
    projection used by `get_entity`, and keep only the evidence this person is a
    **party to** — reached by a relationship edge (`PARTICIPATED_IN`, `EMAILED`,
@@ -45,7 +45,7 @@ is no separate legacy CLI assembly path.
    only the relational slice. Attributing a mention is wrong-person attribution.
 
    Display-name fallback is deliberately forbidden, so two people with the same
-   name remain separate. Shared evidence prefers its sole attendee sender; if a
+   name remain separate. Shared evidence prefers its sole attendee sender. If a
    group record cannot be assigned to exactly one attendee, it is dropped rather
    than attributed arbitrarily.
 4. Select only evidence that describes the user's unfinished business:
@@ -58,9 +58,9 @@ is no separate legacy CLI assembly path.
    over the global cross-attendee pool. Selection is `value_micros` descending,
    then dated evidence and stable id, with a three-line per-attendee cap and a
    budget-bounded global cap. Candidates are greedily admitted by actual
-   serialized `MeetingBrief` size with the MCP envelope reserve; even the
+   serialized `MeetingBrief` size with the MCP envelope reserve. Even the
    mandatory event-only shape must fit or assembly fails loudly. Fixed section
-   order remains a presentation layer; within each section the selected lines
+   order remains a presentation layer. Within each section the selected lines
    retain value order.
 
 ## Citation invariant
@@ -101,10 +101,10 @@ an ops-only addition.
 
 ## Time, determinism, and egress
 
-`--at <RFC3339>` injects the assembly time; default is the process clock.
+`--at <RFC3339>` injects the assembly time. Default is the process clock.
 `meeting_prep` exposes the equivalent optional `at` argument. Future-dated
 non-event evidence is excluded. Relative-age rendering and ranking both use this
-injected instant; ordering has explicit tie-breaks, so a fixed vault/index and
+injected instant. Ordering has explicit tie-breaks, so a fixed vault/index and
 `--at` produce byte-identical JSON and human output.
 
 Assembly reads only the local vault and embedded index. It does not sync, call a

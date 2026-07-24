@@ -1,38 +1,34 @@
 # Mora — Concurrency contract
 
-Mora is a short-lived-process, single-host tool, but its processes and goroutines
-genuinely run **at the same time**: an interactive `mora write`, an MCP
-`write_memory` from an agent, a scheduled `index-hourly` rebuild, a scheduled
-`ingest-hourly` sync, and any number of concurrent `search`/`read` readers can
-all touch the same vault directory and the same `index.db` in one wall-clock
-instant. This document is the AS-BUILT contract for what stays correct when they
-collide, and the mechanisms that make it so.
+Mora runs short processes on one host. Its processes and goroutines can run
+**together**. An interactive `mora write` can overlap an MCP
+`write_memory`, an `index-hourly` rebuild, and an `ingest-hourly` sync. Many
+`search`/`read` calls can also run at once. All can touch one vault and one
+`index.db`. This AS-BUILT contract states what stays correct when they overlap.
+It also states which controls keep it correct.
 
-The guarantees below are the emergent whole-system properties; each is pinned in
-isolation by a focused unit test and end-to-end by
-`internal/mora/concurrency_contract_test.go` (an N-writer × concurrent-reader ×
-concurrent-full-rebuild storm that asserts all four at once, run under `-race`).
+The rules below apply to the full system. Focused unit tests pin each rule.
+`internal/mora/concurrency_contract_test.go` tests them together. It runs an
+N-writer, concurrent-reader, and full-rebuild storm under `-race`.
 
-Concurrency model, stated plainly: **single host, single user, many
-short-lived processes plus in-process goroutines.** Nothing here provides
-cross-host or multi-user coordination — that would require a real durable-
-execution runtime, which is a formally rejected direction (see
-[overview](./00-overview.md) and the do-not-build ledger). The primitives here
-are file-atomicity and a single-host file lease, sized for "one machine's mora
-processes racing each other."
+Concurrency follows one principle: **one host, one user, many short processes
+and in-process goroutines.** Cross-host and multi-user work belongs to a durable
+execution runtime, a formally rejected direction. See the
+[overview](./00-overview.md) and do-not-build ledger. Mora uses atomic files and
+a one-host file lease. These controls fit one machine's Mora processes.
 
 ## The four guarantees
 
 | # | Guarantee | Mechanism | Anchor |
 |---|---|---|---|
-| G1 | **No lost writes** — a write reported as saved is on disk exactly once; a same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicCreate` |
+| G1 | **No lost writes** — a write reported as saved is on disk exactly once. A same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicCreate` |
 | G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicWrite`, `atomicCreate` |
 | G3 | **No surfaced `database is locked`** — concurrent reader *processes* never block a writer, and a contended writer waits out its rival's commit instead of erroring | `journal_mode(WAL)` on the index (readers read a snapshot, never hold a lock a writer must wait for) + `busy_timeout(15000)` on every writer and read-only DSN + `_txlock=immediate` on writers | `rwIndexDSN`, `roIndexDSN`, `rebuildIndexWithPolicy`, `indexUpsert` |
-| G4 | **Bounded eventual consistency** — the vault is the source of truth; the index converges | Tiny synchronous upsert on the write path; serialized full rebuilds reconcile the rest | `indexUpsert`, `rebuildIndexWithPolicy` |
+| G4 | **Bounded eventual consistency** — the vault is the source of truth. The index converges | Tiny synchronous upsert on the write path. Serialized full rebuilds reconcile the rest | `indexUpsert`, `rebuildIndexWithPolicy` |
 
 ## 1. Per-memory atomic files
 
-The vault is the source of truth (invariant I1); every durable write goes
+The vault is the source of truth (invariant I1). Every durable write goes
 through one of two publish primitives in `internal/mora/mora.go`, and both are
 **content-atomic** — the target name only ever appears with the full body behind
 it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
@@ -49,7 +45,7 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
   - Windows wrinkle: `os.Rename` → `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`;
     concurrent writers racing onto the SAME target transiently fail with sharing
     violations, so the rename retries with **jittered**, capped backoff up to a
-    5 s deadline (`renameReplaceWithRetry`/`renameReplaceRetryable`; always a
+    5 s deadline (`renameReplaceWithRetry`/`renameReplaceRetryable`. Always a
     single attempt off Windows). Deterministic backoff made 16 goroutines retry
     in lockstep and keep colliding — the jitter is load-bearing (#73/#74).
 
@@ -58,7 +54,7 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
   stages a unique temp and `os.Link`s it onto the target. `os.Link` is both
   create-exclusive (fails `os.ErrExist` on a present target, never replaces) and
   content-atomic, so a racing second writer gets `EEXIST` — exactly one wins.
-  This mirrors `loop.go`'s proven `publishLockFile`; on Windows `os.Link` is
+  This mirrors `loop.go`'s proven `publishLockFile`. On Windows `os.Link` is
   `CreateHardLinkW`, which likewise fails on a present target (and needs no
   `MoveFileEx` retry because it never replaces).
   - Fallback: some filesystems (exFAT/FAT32, some SMB/NFS) refuse hard links
@@ -124,7 +120,7 @@ Why this matters for concurrency: the write path used to call the full
 writers therefore each serialized an O(N × vault) rebuild, thrashed the writer
 lock, and overran `busy_timeout` — surfacing as degraded `index_stale` warnings.
 The tiny upsert removes that whole-vault work from the write path (a large
-constant-factor win — ~59× at ~1k memories — not asymptotic; the per-write
+constant-factor win — ~59× at ~1k memories — not asymptotic. The per-write
 `DELETE FROM memories_fts WHERE id=?` is still a full FTS vtable scan).
 
 - **Cold-start / legacy gate.** `indexReadyForUpsert` probes on a **read**
@@ -206,17 +202,17 @@ deepest existing ancestor, normalizes the missing tail, and folds identity case
 on Darwin/Windows, so symlink and Unicode aliases converge without rewriting the
 physical path spelling. Guards stay within the writable Mora root. For explicitly
 removable import and loop roots, the guard anchors in their stable parent so
-deletion cannot split one logical guard into two live inodes; other guards stay
+deletion cannot split one logical guard into two live inodes. Other guards stay
 under the lease's containing root. Guard filenames end in `.lock`, so vault Git
 ignores them. Failure to create the one deterministic guard fails closed.
 
 > Scope note: `shares.json` (the share grant registry) has the same RMW shape
-> and is not yet routed through a lease; it is out of scope here and gated by the
+> and is not yet routed through a lease. It is out of scope here and gated by the
 > share subsystem's separate security review.
 
 ## 6. The eventual-consistency window of the index
 
-`index.db` is a **derived, eventually-consistent cache**; the vault Markdown is
+`index.db` is a **derived, eventually-consistent cache**. The vault Markdown is
 the source of truth (invariant I1). The write path keeps this window as tight as
 correctness allows and bounds the rest:
 
@@ -234,13 +230,13 @@ correctness allows and bounds the rest:
   - The vector gap has **no effect under the default static-hash embedder**,
     where `defaultSearch` is FTS-only (embedder-gated routing: `defaultSearch`
     enables hybrid only under a semantic embedder, because hybrid regresses recall
-    under static-hash — see [retrieval & search](./02-retrieval-search.md)); under a semantic (Ollama)
+    under static-hash — see [retrieval & search](./02-retrieval-search.md)). Under a semantic (Ollama)
     embedder it is a real but bounded, self-healing recall gap on the hybrid arm
     only — the memory is fully searchable via FTS immediately and gains its
     vector at the next full rebuild.
 
 So the honest statement of the contract is: **after a write, the memory is on
-disk (durable) and FTS-searchable (indexed) immediately; its graph edges and
+disk (durable) and FTS-searchable (indexed) immediately. Its graph edges and
 vector reconcile at the next full rebuild.** A reconciling full rebuild after any
 storm restores exact vault↔index correspondence — which is what the contract
 stress test asserts as G4.
@@ -273,9 +269,9 @@ necessary but not sufficient — #108's own lesson was *"test separate PROCESSES
 `TestNoUserVisibleSQLITEBUSY` (`concurrency_multiproc_test.go`) re-execs the test
 binary as 4 writers + 4 readers (CLI `search` + MCP `search_memory`) + 1 rebuild +
 1 filesystem sync against one shared HOME and asserts: zero raw or humanized
-`SQLITE_BUSY` in any process output; the index is never observed empty while clean;
+`SQLITE_BUSY` in any process output. The index is never observed empty while clean;
 and for every parseable write, at every observation the memory is in the index **or**
-the index is dirty — never "clean and missing." Personal `index.db` only; share
+the index is dirty — never "clean and missing." Personal `index.db` only. Share
 DSNs are Packet H / PR 5. Cost of mark-dirty: `BenchmarkIndexUpsertWithMarking1k`
 beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
 
@@ -283,7 +279,7 @@ beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
 > `mode=ro` on a non-`file:` DSN is parsed but **not enforced** — connections open
 > read-write. That is *why* a "read-only" open can still create the `-wal`/`-shm`
 > sidecars WAL needs, so there is no read-only-WAL breakage. The read-path contract
-> remains WAL + `busy_timeout` + the convention that read paths never write; do not
+> remains WAL + `busy_timeout` + the convention that read paths never write. Do not
 > rely on `mode=ro` for mutual exclusion.
 
 ## 7. What is deliberately NOT provided
@@ -291,12 +287,12 @@ beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
 - **No cross-host / multi-writer-machine coordination.** The lease and file
   atomicity are single-host. Two machines pointed at one shared vault over a
   network filesystem are out of contract.
-- **No long-held locks.** There is no resident daemon and no global mutex; the
+- **No long-held locks.** There is no resident daemon and no global mutex. The
   sources lease is held for microseconds and never across an ingest/rebuild. The
   design is short-lived processes + files-are-truth (the daemon/watchdog
   direction is formally rejected — see the do-not-build ledger).
 - **No transactional coupling between the vault and the index.** They are
-  separate stores by design (I1); a crash between the vault write and the index
+  separate stores by design (I1). A crash between the vault write and the index
   upsert leaves the memory durable on disk and reconciled at the next rebuild,
   never lost.
 
@@ -304,14 +300,14 @@ beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
 
 - `internal/mora/concurrency_multiproc_test.go` — **HEALTH-06** multi-*process*
   storm (`TestNoUserVisibleSQLITEBUSY`): re-exec'd writers/readers/rebuild/sync
-  against one HOME; zeros raw and humanized `SQLITE_BUSY`; never "clean and
+  against one HOME. Zeros raw and humanized `SQLITE_BUSY`. Never "clean and
   missing."
 - `internal/mora/concurrency_contract_test.go` — the in-process integration storm:
   N writers through the real `cmdWrite` and MCP `write_memory` paths, concurrent
   `search`/`read` readers, and concurrent full `rebuildIndex`, asserting G1–G4
   (every memory in vault AND index after reconciliation, zero surfaced
   `database is locked`, zero torn files via `parseMemory`). The heavy variant is
-  `-short`-gated; a smaller always-on variant keeps the signal under `-short`.
+  `-short`-gated. A smaller always-on variant keeps the signal under `-short`.
   Run it under `-race`.
 - Unit pins: `createexclusive_test.go` (G1/G2), `index_upsert_test.go` (G3/G4
   write path), `index_busy_test.go` (G3 read path), `mora_rebuild_atomic_test.go`

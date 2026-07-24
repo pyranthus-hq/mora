@@ -1,11 +1,12 @@
 # Forgettability Reranker
 
-`internal/mora/forgettability.go` is the pure Track C kernel used by the
-pre-meeting brief. It is deliberately **query-time only**: it reads no files,
-opens no database, performs no network calls, and writes nothing to the vault or
-index. `buildMeetingBriefFromEvent` hydrates its inputs from the exact-attendee
-graph projection, filters them through the unfinished-business gate, and ranks
-the resulting global pool before applying output budgets.
+`internal/mora/forgettability.go` is the pure Track C core for the pre-meeting
+brief. It runs **only at query time**. It reads no files, opens no database,
+uses no network, and writes no vault or index data.
+
+`buildMeetingBriefFromEvent` gets its inputs from the exact-attendee graph
+view. It sends them through the unfinished-business gate. It ranks the full
+result set, then applies output limits.
 
 ## Scoring Contract
 
@@ -34,7 +35,7 @@ lets the future wiring decide how to hydrate candidates.
 The hard gates are multiplicative and strict:
 
 - person kind must be `person`
-- attendee identity must be known; single-message candidates also require a
+- attendee identity must be known. Single-message candidates also require a
   corroborated identity link
 - self-authored/self attendee candidates are excluded
 - bulk-authored candidates are excluded
@@ -52,7 +53,7 @@ The scorer honors supersession in the three tiers from the FMB spec:
 - Intra-thread: `occurred_at` is the fact timestamp when present, so a revived
   thread has low age and does not rank as forgotten.
 - Cross-thread: newer same-person memories with overlapping distinctive tokens
-  dampen old items through `Freshness`; overlap at or above the hard threshold
+  dampen old items through `Freshness`. Overlap at or above the hard threshold
   drops the older item.
 - Presentation: this file does not render prose. `newCitedBriefLine` wraps every
   surfaced extract as a dated historical record. `MeetingBrief.validate` rejects
