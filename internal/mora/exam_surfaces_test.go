@@ -31,6 +31,11 @@ type examSurfaceScorecards struct {
 	EventCLI  exam.Scorecard `json:"event_cli"`
 	EventMCP  exam.Scorecard `json:"event_mcp"`
 	HomeState string         `json:"home_state"`
+
+	dailyCLIPredictions []exam.Prediction
+	dailyMCPPredictions []exam.Prediction
+	eventCLIPredictions []exam.Prediction
+	eventMCPPredictions []exam.Prediction
 }
 
 func pinExamSurfaceClocks(t *testing.T, at time.Time) {
@@ -294,12 +299,18 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 		t.Fatalf("event CLI and MCP MeetingBrief differ:\n CLI=%s\n MCP=%s", eventCLIJSON, eventMCPJSON)
 	}
 
+	eventCLIPredictions := examMeetingPredictions(eventCLI, snapshot.Commitments...)
+	eventMCPPredictions := examMeetingPredictions(eventMCP, snapshot.Commitments...)
 	scorecards := examSurfaceScorecards{
-		DailyCLI:  scoreExamSurface(t, ledger, dailyCLI, exam.SurfaceDaily),
-		DailyMCP:  scoreExamSurface(t, ledger, dailyMCP, exam.SurfaceDaily),
-		EventCLI:  scoreExamSurface(t, ledger, examMeetingPredictions(eventCLI, snapshot.Commitments...), exam.SurfaceMeeting),
-		EventMCP:  scoreExamSurface(t, ledger, examMeetingPredictions(eventMCP, snapshot.Commitments...), exam.SurfaceMeeting),
-		HomeState: "MISSING — non-gating until HOME-09/#141",
+		DailyCLI:            scoreExamSurface(t, ledger, dailyCLI, exam.SurfaceDaily),
+		DailyMCP:            scoreExamSurface(t, ledger, dailyMCP, exam.SurfaceDaily),
+		EventCLI:            scoreExamSurface(t, ledger, eventCLIPredictions, exam.SurfaceMeeting),
+		EventMCP:            scoreExamSurface(t, ledger, eventMCPPredictions, exam.SurfaceMeeting),
+		HomeState:           "MISSING — non-gating until HOME-09/#141",
+		dailyCLIPredictions: dailyCLI,
+		dailyMCPPredictions: dailyMCP,
+		eventCLIPredictions: eventCLIPredictions,
+		eventMCPPredictions: eventMCPPredictions,
 	}
 	if !reflect.DeepEqual(scorecards.EventCLI, scorecards.EventMCP) {
 		t.Fatalf("event CLI and MCP scorecards differ:\n CLI=%+v\n MCP=%+v", scorecards.EventCLI, scorecards.EventMCP)
