@@ -61,8 +61,83 @@ func runExamCLI(t *testing.T, args ...string) string {
 func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 	t.Helper()
 	var out []exam.Prediction
+	artifactID := ""
+	artifactLine := ""
+	artifactPrediction := -1
+	identifiedSubrows := false
+	currentSubrow := -1
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "obligation: commitment_id=") {
+			if artifactID == "" || artifactPrediction < 0 {
+				t.Fatalf("daily CLI emitted an identified obligation before a cited artifact: %q", line)
+			}
+			fields := strings.SplitN(strings.TrimPrefix(trimmed, "obligation: "), " · ", 7)
+			if len(fields) != 7 {
+				t.Fatalf("daily CLI emitted malformed identified obligation: %q", line)
+			}
+			values := map[string]string{}
+			for _, field := range fields {
+				key, value, ok := strings.Cut(field, "=")
+				if !ok || key == "" || value == "" {
+					t.Fatalf("daily CLI emitted malformed identified obligation field %q", field)
+				}
+				values[key] = value
+			}
+			for _, key := range []string{"commitment_id", "owner", "direction", "due", "lifecycle", "closure", "summary"} {
+				if values[key] == "" {
+					t.Fatalf("daily CLI identified obligation omitted %q: %q", key, line)
+				}
+			}
+			if !identifiedSubrows {
+				if artifactPrediction != len(out)-1 {
+					t.Fatalf("daily CLI obligation subrows detached from artifact %q", artifactID)
+				}
+				out = out[:artifactPrediction]
+				identifiedSubrows = true
+			}
+			out = append(out, exam.Prediction{
+				Surface:      exam.SurfaceDaily,
+				Text:         artifactLine + line + "\n",
+				Owner:        values["owner"],
+				MemoryID:     artifactID,
+				CommitmentID: values["commitment_id"],
+				Direction:    values["direction"],
+				Due:          values["due"],
+				Lifecycle:    values["lifecycle"],
+				ClosureRef:   values["closure"],
+			})
+			currentSubrow = len(out) - 1
+			continue
+		}
+		if strings.HasPrefix(trimmed, "citation: ") {
+			if currentSubrow < 0 {
+				t.Fatalf("daily CLI emitted a typed citation before an identified obligation: %q", line)
+			}
+			fields := strings.Split(strings.TrimPrefix(trimmed, "citation: "), " · ")
+			if len(fields) != 3 {
+				t.Fatalf("daily CLI emitted malformed typed citation: %q", line)
+			}
+			values := map[string]string{}
+			for _, field := range fields {
+				key, value, ok := strings.Cut(field, "=")
+				if !ok || key == "" || value == "" {
+					t.Fatalf("daily CLI emitted malformed typed citation field %q", field)
+				}
+				values[key] = value
+			}
+			if values["role"] == "" || values["memory_id"] == "" ||
+				values["commitment_id"] != out[currentSubrow].CommitmentID {
+				t.Fatalf("daily CLI typed citation diverged from its obligation: %q", line)
+			}
+			out[currentSubrow].Text += line + "\n"
+			out[currentSubrow].Citations = append(out[currentSubrow].Citations, exam.PredictionCitation{
+				MemoryID:     values["memory_id"],
+				CommitmentID: values["commitment_id"],
+				Role:         exam.CitationRole(values["role"]),
+			})
+			continue
+		}
 		if strings.HasPrefix(trimmed, "obligation: ") {
 			if len(out) == 0 {
 				t.Fatalf("daily CLI emitted obligation metadata before a cited item: %q", line)
@@ -101,13 +176,18 @@ func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 		if id == "" {
 			t.Fatalf("daily CLI emitted an empty citation id in %q", line)
 		}
+		artifactID = id
+		artifactLine = strings.TrimSpace(line) + "\n"
+		identifiedSubrows = false
+		currentSubrow = -1
 		out = append(out, exam.Prediction{
 			Surface:   exam.SurfaceDaily,
-			Text:      strings.TrimSpace(line) + "\n",
+			Text:      artifactLine,
 			MemoryID:  id,
 			Direction: exam.Unknown,
 			Lifecycle: exam.Unknown,
 		})
+		artifactPrediction = len(out) - 1
 	}
 	if len(out) == 0 {
 		t.Fatalf("daily CLI emitted no cited items:\n%s", output)

@@ -70,14 +70,6 @@ func examInventoryPredictions(surface string, inventory ...Commitment) []exam.Pr
 		if commitment.ID == "" {
 			continue
 		}
-		citations := make([]exam.PredictionCitation, 0, len(commitment.Citations))
-		for _, citation := range commitment.Citations {
-			citations = append(citations, exam.PredictionCitation{
-				MemoryID:     citation.Citation.MemoryID(),
-				CommitmentID: citation.CommitmentID,
-				Role:         exam.CitationRole(citation.Role),
-			})
-		}
 		out = append(out, exam.Prediction{
 			Surface:      surface,
 			Origin:       exam.PredictionOriginInventory,
@@ -89,7 +81,19 @@ func examInventoryPredictions(surface string, inventory ...Commitment) []exam.Pr
 			Due:          commitDueValue(commitment.Due),
 			Lifecycle:    commitment.State,
 			ClosureRef:   commitment.ClosureRef,
-			Citations:    citations,
+			Citations:    examPredictionCitations(commitment.Citations),
+		})
+	}
+	return out
+}
+
+func examPredictionCitations(citations []CommitmentCitation) []exam.PredictionCitation {
+	out := make([]exam.PredictionCitation, 0, len(citations))
+	for _, citation := range citations {
+		out = append(out, exam.PredictionCitation{
+			MemoryID:     citation.Citation.MemoryID(),
+			CommitmentID: citation.CommitmentID,
+			Role:         exam.CitationRole(citation.Role),
 		})
 	}
 	return out
@@ -164,6 +168,62 @@ func TestExamInventoryPredictionsCopyTypedSnapshot(t *testing.T) {
 	}
 }
 
+func TestExamDailyPredictionsFlattenIdentifiedObligationSubrows(t *testing.T) {
+	citation := mustLifecycleCitation("gmail_thread/route-cards", "2026-07-22T17:00:00Z")
+	digest := Digest{Sections: []DigestSection{{
+		Source: "gmail",
+		Items: []DigestItem{{
+			ID:      "gmail_thread/route-cards",
+			Title:   "Route cards",
+			Snippet: "Two independently anchored commitments.",
+			Obligations: []DigestObligation{
+				{
+					CommitmentID: "commit:v1:first",
+					Summary:      "send the route cards",
+					Owner:        govAtom{Kind: "person", Value: "self@example.com"},
+					Direction:    commitOwedBySelf,
+					DueAt:        commitDueRelative,
+					Lifecycle:    commitOpen,
+					ClosureRef:   commitClosureNone,
+					Citations: []CommitmentCitation{{
+						Citation:     citation,
+						CommitmentID: "commit:v1:first",
+						Role:         commitCitationOpener,
+					}},
+				},
+				{
+					CommitmentID: "commit:v1:second",
+					Summary:      "reserve the west press slot",
+					Owner:        govAtom{Kind: "person", Value: "theo@example.org"},
+					Direction:    commitOwedByCounterparty,
+					DueAt:        commitDueNone,
+					Lifecycle:    commitOpen,
+					ClosureRef:   commitClosureNone,
+					Citations: []CommitmentCitation{{
+						Citation:     citation,
+						CommitmentID: "commit:v1:second",
+						Role:         commitCitationOpener,
+					}},
+				},
+			},
+		}},
+	}}}
+
+	got := examDailyPredictions(digest)
+	if len(got) != 2 {
+		t.Fatalf("daily predictions = %+v, want one row per nested obligation", got)
+	}
+	for i, wantID := range []string{"commit:v1:first", "commit:v1:second"} {
+		if got[i].MemoryID != "gmail_thread/route-cards" ||
+			got[i].CommitmentID != wantID ||
+			len(got[i].Citations) != 1 ||
+			got[i].Citations[0].CommitmentID != wantID ||
+			!strings.Contains(got[i].Text, "Route cards") {
+			t.Fatalf("daily prediction %d = %+v", i, got[i])
+		}
+	}
+}
+
 // digestAllItems walks the urgent shelf first and then every section, in render
 // order. Urgent items are LIFTED OUT of their sections, so a scorer that only walked
 // Sections would silently miss the items the product considers most important.
@@ -175,12 +235,29 @@ func digestAllItems(d Digest) []DigestItem {
 	return items
 }
 
-// examDailyPredictions scores the daily surface at ARTIFACT grain: a DigestItem is a
-// title+snippet projection of a memory, not an evidence quote, and DigestItem.ID is
-// the documented citation.
+// examDailyPredictions keeps artifact selection at artifact grain, then flattens
+// each identified obligation subrow into one visible scorer row. Legacy items
+// without identified subrows retain their historical artifact-grain prediction.
 func examDailyPredictions(d Digest, inventory ...Commitment) []exam.Prediction {
 	var out []exam.Prediction
 	for _, item := range digestAllItems(d) {
+		if len(item.Obligations) > 0 {
+			for _, obligation := range item.Obligations {
+				out = append(out, exam.Prediction{
+					Surface:      exam.SurfaceDaily,
+					Text:         renderDigestArtifactLine(item) + renderDigestObligationRow(obligation),
+					Owner:        obligation.Owner.Kind + ":" + obligation.Owner.Value,
+					MemoryID:     item.ID,
+					CommitmentID: obligation.CommitmentID,
+					Direction:    string(obligation.Direction),
+					Due:          obligation.DueAt,
+					Lifecycle:    obligation.Lifecycle,
+					ClosureRef:   obligation.ClosureRef,
+					Citations:    examPredictionCitations(obligation.Citations),
+				})
+			}
+			continue
+		}
 		direction := string(item.Direction)
 		if direction == "" {
 			direction = exam.Unknown
