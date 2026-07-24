@@ -56,6 +56,11 @@ func TestOpenLoopsByPersonJoinIsSound(t *testing.T) {
 	if len(loops) != 1 || loops[0].Task != "Send Sam Rivera the contract" {
 		t.Fatalf("JOIN unsound: want only the full-name OPEN task, got %+v", loops)
 	}
+	if loops[0].Lane != openLoopLaneTaskLedger ||
+		loops[0].Direction != commitOwedBySelf ||
+		loops[0].Lifecycle != commitOpen {
+		t.Fatalf("task-ledger lane is not typed and labelled: %+v", loops[0])
+	}
 }
 
 // TestOpenLoopsMissingLedgerIsEmpty proves a vault that never created live-tasks.md
@@ -165,8 +170,122 @@ func TestThinkOpenLoops(t *testing.T) {
 		t.Fatalf("expected only the OPEN Neil task, got %+v", loops)
 	}
 	if !strings.Contains(res.SynthesisPrompt, "OPEN LOOPS") ||
-		!strings.Contains(res.SynthesisPrompt, "Send Neil Patel the pilot SOW") {
+		!strings.Contains(res.SynthesisPrompt, "Send Neil Patel the pilot SOW") ||
+		!strings.Contains(res.SynthesisPrompt, "[open; owed_by_self; task-ledger]") {
 		t.Fatalf("synthesis prompt missing the open-loops block:\n%s", res.SynthesisPrompt)
+	}
+}
+
+// TestOpenLoopLanesNeverContradict proves #155's reconciliation contract. An
+// evidence-derived commitment owns direction and lifecycle when an exact,
+// unambiguous task-ledger row describes the same obligation; the ledger survives
+// only as supporting provenance, never as a second contradictory state.
+func TestOpenLoopLanesNeverContradict(t *testing.T) {
+	ledger := []OpenLoop{{
+		Task: "Send Neil Patel the pilot SOW", Status: "active",
+		Direction: commitOwedBySelf, Lifecycle: commitOpen, Lane: openLoopLaneTaskLedger,
+	}}
+	evidence := []OpenLoop{{
+		Task: "Send Neil Patel the pilot SOW", CommitmentID: "commit:v1:authoritative",
+		Direction: commitOwedByCounterparty, Lifecycle: commitOpen, Lane: openLoopLaneEvidence,
+	}}
+
+	got := reconcileOpenLoopLanes(ledger, evidence)
+	if len(got) != 1 {
+		t.Fatalf("same obligation emitted %d states, want one authoritative row: %+v", len(got), got)
+	}
+	if got[0].Lane != openLoopLaneEvidence ||
+		got[0].Direction != commitOwedByCounterparty ||
+		got[0].Lifecycle != commitOpen ||
+		len(got[0].SupportingLanes) != 1 ||
+		got[0].SupportingLanes[0] != openLoopLaneTaskLedger {
+		t.Fatalf("evidence lane did not stay authoritative with ledger provenance: %+v", got[0])
+	}
+
+	// A closing evidence transition also wins: the stale active ledger row must
+	// not resurrect the obligation on an open-loops surface.
+	evidence[0].Lifecycle = commitClosed
+	if got := reconcileOpenLoopLanes(ledger, evidence); len(got) != 0 {
+		t.Fatalf("closed evidence contradicted by stale open ledger row: %+v", got)
+	}
+}
+
+func TestThinkOpenLoopsEvidenceIsAuthoritative(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	cfg.SelfEmails = []string{"self@example.com"}
+	ctx := context.Background()
+
+	// The inbound memory establishes Neil's trusted graph name. The outbound
+	// memory then contributes the immutable, evidence-derived obligation.
+	if err := writeMemory(cfg, Memory{
+		ID: "gmail_thread/neil-name", Scope: "personal", Type: "email", Title: "hello",
+		Provider: "gmail", ProviderID: "neil-name",
+		CreatedAt: "2026-06-01T00:00:00Z", Text: "Hello.",
+		Meta: map[string]any{
+			"from":  []string{"neil@example.com"},
+			"to":    []string{"self@example.com"},
+			"names": map[string]string{"neil@example.com": "Neil Patel"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task := "Could you send the pilot SOW, Neil Patel?"
+	if err := writeMemory(cfg, Memory{
+		ID: "gmail_thread/pilot-sow", Scope: "personal", Type: "email", Title: "Pilot",
+		Provider: "gmail", ProviderID: "pilot-sow",
+		CreatedAt: "2026-06-02T00:00:00Z", Text: task,
+		Meta: map[string]any{
+			"from": []string{"self@example.com"},
+			"to":   []string{"neil@example.com"},
+			"names": map[string]string{
+				"self@example.com": "Self",
+				"neil@example.com": "Neil Patel",
+			},
+			"messages": []commitmentMessageEvidence{{
+				MessageRef: "gmail_thread/pilot-sow#msg-1",
+				Sender:     "self@example.com",
+				To:         []string{"neil@example.com"},
+				At:         "2026-06-02T00:00:00Z",
+				BlockRefs:  []string{"body"},
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := readCommitmentSnapshot(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Commitments) != 1 {
+		t.Fatalf("fixture produced %d commitments, want one: %+v", len(snapshot.Commitments), snapshot.Commitments)
+	}
+	writeLiveTasks(t, cfg,
+		"| "+task+" | work | you | P1 | active | — | this week | 2026-06-02 |",
+	)
+
+	res, err := buildThink(ctx, cfg, "What is open with Neil Patel?", "", 5, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.OpenLoops) != 1 || len(res.OpenLoops[0].Loops) != 1 {
+		t.Fatalf("want one reconciled obligation, got %+v", res.OpenLoops)
+	}
+	loop := res.OpenLoops[0].Loops[0]
+	if loop.Lane != openLoopLaneEvidence ||
+		loop.Direction != commitOwedByCounterparty ||
+		loop.Lifecycle != commitOpen ||
+		loop.CommitmentID == "" ||
+		len(loop.SupportingLanes) != 1 ||
+		loop.SupportingLanes[0] != openLoopLaneTaskLedger {
+		t.Fatalf("think did not preserve evidence authority and ledger provenance: %+v", loop)
+	}
+	if !strings.Contains(res.SynthesisPrompt, "[open; owed_by_counterparty; evidence+task-ledger]") {
+		t.Fatalf("prompt omitted reconciled lane labels:\n%s", res.SynthesisPrompt)
 	}
 }
 

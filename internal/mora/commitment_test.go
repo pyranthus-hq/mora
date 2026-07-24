@@ -63,7 +63,7 @@ func TestCommitmentDirectionTable(t *testing.T) {
 		addressee  govAtom
 		reported   *govAtom
 		wantOwner  govAtom
-		wantDir    string
+		wantDir    Direction
 		wantExists bool
 	}{
 		{

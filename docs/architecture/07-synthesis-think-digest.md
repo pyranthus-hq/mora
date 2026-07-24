@@ -72,6 +72,12 @@ All three rules sort their inputs before iterating, so `buildThink` output is **
 
 `thinkPrompt` builds the instruction the caller's model runs. It is a fixed template: "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. If the evidence is insufficient, say so plainly rather than guessing." followed by the `QUESTION`, the `EVIDENCE` list (`- [stable_id] (scope, created_at) title — snippet`, or `(none found)`), and — only when gaps are non-empty — a `KNOWN GAPS` block instructing the model to surface them in a "What the vault does not know" section (`think.go:184-207`). The CLI's `printThink` (`commands_memory.go`) shows evidence and gaps for human reading but **omits** the prompt; you only get the runnable prompt via `--json` or the MCP `think` tool, which return the full `ThinkResult`.
 
+### Provenance-labelled open-loop lanes
+
+`think`'s additive open-loop block reconciles two intentionally separate engines: `live-tasks.md` workflow rows and the whole-snapshot evidence-derived commitment inventory. Both adapt to the shared `OpenLoop` shape and named `Direction` vocabulary, and every row carries an explicit `lane` of `task-ledger` or `evidence`. The engines are not generally merged: only an exact normalized summary with one unambiguous evidence match can relate a ledger row to a commitment.
+
+On that exact match, evidence is authoritative for direction and lifecycle. The result emits one evidence row with `task-ledger` in `supporting_lanes`; it never emits a second ledger state. A closed evidence commitment suppresses a stale active ledger row so the open-loop block cannot resurrect completed work. Ambiguous matches stay separate rather than guessing, duplicate commitments are excluded in favor of their canonical item, and counterparty-to-person attachment uses exact graph identity resolution. Meeting preparation remains a distinct cited commitment surface; the open-loop block is only additive context for `think`.
+
 ---
 
 ## `digest` — the daily cross-source brief (delta-aware as of Phase 12)
