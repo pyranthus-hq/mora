@@ -53,6 +53,15 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 			})
 		}
 	}
+	return append(out, examInventoryPredictions(exam.SurfaceMeeting, inventory...)...)
+}
+
+// examInventoryPredictions is the one snapshot-to-scorer adapter shared by every
+// shipped exam surface. It copies the typed materialization verbatim: product
+// commitment ids are evidence-derived upstream, citation roles retain their
+// product-assigned commitment ids, and no legacy identity is reconstructed here.
+func examInventoryPredictions(surface string, inventory ...Commitment) []exam.Prediction {
+	out := make([]exam.Prediction, 0, len(inventory))
 	for _, commitment := range inventory {
 		// Legacy memories deliberately have no fabricated commitment id. They
 		// cannot be joined to scorer gold as inventory rows, so keep them out
@@ -61,16 +70,26 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 		if commitment.ID == "" {
 			continue
 		}
+		citations := make([]exam.PredictionCitation, 0, len(commitment.Citations))
+		for _, citation := range commitment.Citations {
+			citations = append(citations, exam.PredictionCitation{
+				MemoryID:     citation.Citation.MemoryID(),
+				CommitmentID: citation.CommitmentID,
+				Role:         exam.CitationRole(citation.Role),
+			})
+		}
 		out = append(out, exam.Prediction{
-			Surface:      exam.SurfaceMeeting,
+			Surface:      surface,
 			Origin:       exam.PredictionOriginInventory,
 			Owner:        commitment.Owner.Kind + ":" + commitment.Owner.Value,
 			MemoryID:     commitment.OpenedBy.MemoryID,
 			CommitmentID: commitment.ID,
 			DuplicateOf:  commitment.DuplicateOf,
 			Direction:    string(commitment.Direction),
+			Due:          commitDueValue(commitment.Due),
 			Lifecycle:    commitment.State,
 			ClosureRef:   commitment.ClosureRef,
+			Citations:    citations,
 		})
 	}
 	return out
@@ -83,6 +102,65 @@ func TestExamMeetingAdapterReadsTypedDue(t *testing.T) {
 	preds := examMeetingPredictions(brief)
 	if len(preds) != 1 || preds[0].Due != exam.DueRelative {
 		t.Fatalf("predictions = %+v, want direct relative due copy", preds)
+	}
+}
+
+func TestExamInventoryPredictionsCopyTypedSnapshot(t *testing.T) {
+	commitment := lifecycleTestCommitment()
+	commitment.State = commitClosed
+	commitment.ClosureRef = "imessage_chat/closure"
+	commitment.DuplicateOf = "commit:v1:canonical"
+	commitment.Due = commitDue{Kind: commitDueExplicitDate, At: "2026-07-24"}
+	commitment.Citations = append(commitment.Citations,
+		CommitmentCitation{
+			Citation:     mustLifecycleCitation("imessage_chat/closure", "2026-07-20T11:00:00Z"),
+			CommitmentID: commitment.ID,
+			Role:         commitCitationClosure,
+		},
+		CommitmentCitation{
+			Citation:     mustLifecycleCitation("gmail_thread/copy", "2026-07-20T10:30:00Z"),
+			CommitmentID: commitment.ID,
+			Role:         commitCitationSupporting,
+		},
+	)
+
+	for _, surface := range []string{exam.SurfaceDaily, exam.SurfaceMeeting} {
+		got := examInventoryPredictions(surface, commitment)
+		if len(got) != 1 {
+			t.Fatalf("%s inventory rows = %d, want 1", surface, len(got))
+		}
+		pred := got[0]
+		if pred.Surface != surface ||
+			pred.Origin != exam.PredictionOriginInventory ||
+			pred.Text != "" ||
+			pred.CommitmentID != commitment.ID ||
+			pred.DuplicateOf != commitment.DuplicateOf ||
+			pred.Due != "2026-07-24" ||
+			pred.Lifecycle != commitClosed ||
+			pred.ClosureRef != commitment.ClosureRef {
+			t.Fatalf("%s inventory prediction = %+v", surface, pred)
+		}
+		wantRoles := []exam.CitationRole{
+			exam.CitationRoleOpener,
+			exam.CitationRoleClosure,
+			exam.CitationRoleSupporting,
+		}
+		if len(pred.Citations) != len(wantRoles) {
+			t.Fatalf("%s citations = %+v", surface, pred.Citations)
+		}
+		for i, wantRole := range wantRoles {
+			if pred.Citations[i].Role != wantRole ||
+				pred.Citations[i].CommitmentID != commitment.ID {
+				t.Fatalf("%s citation %d = %+v, want role %q and commitment %q",
+					surface, i, pred.Citations[i], wantRole, commitment.ID)
+			}
+		}
+	}
+
+	legacy := commitment
+	legacy.ID = ""
+	if got := examInventoryPredictions(exam.SurfaceDaily, legacy); len(got) != 0 {
+		t.Fatalf("legacy inventory fabricated a joinable row: %+v", got)
 	}
 }
 
@@ -100,7 +178,7 @@ func digestAllItems(d Digest) []DigestItem {
 // examDailyPredictions scores the daily surface at ARTIFACT grain: a DigestItem is a
 // title+snippet projection of a memory, not an evidence quote, and DigestItem.ID is
 // the documented citation.
-func examDailyPredictions(d Digest) []exam.Prediction {
+func examDailyPredictions(d Digest, inventory ...Commitment) []exam.Prediction {
 	var out []exam.Prediction
 	for _, item := range digestAllItems(d) {
 		direction := string(item.Direction)
@@ -126,7 +204,7 @@ func examDailyPredictions(d Digest) []exam.Prediction {
 			ClosureRef: item.ClosureRef,
 		})
 	}
-	return out
+	return append(out, examInventoryPredictions(exam.SurfaceDaily, inventory...)...)
 }
 
 const examRealPredictionsPath = "exam/testdata/real-predictions.json"
