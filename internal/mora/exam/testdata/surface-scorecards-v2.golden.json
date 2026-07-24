@@ -4,7 +4,7 @@
     "surface": "daily",
     "extraction": {
       "precision": 1,
-      "recall": 0.8,
+      "recall": 1,
       "defined": true
     },
     "recall_uncapped": {
@@ -37,44 +37,44 @@
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.8888888888888888,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "p/imani": 1,
         "p/milo": 1,
-        "p/self": 0.6666666666666666
+        "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.8333333333333333,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "owed_by_counterparty": 1,
-        "owed_by_self": 0.6666666666666666
+        "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.8,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "none": 1,
-        "relative": 0.75
+        "relative": 1
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.3076923076923077,
+      "recall": 0.38461538461538464,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.36363636363636365
+        "open": 0.45454545454545453
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.3076923076923077,
+      "recall": 0.38461538461538464,
       "defined": true
     },
     "commitment_identity": {
@@ -105,7 +105,7 @@
     "surface": "daily",
     "extraction": {
       "precision": 1,
-      "recall": 0.8,
+      "recall": 1,
       "defined": true
     },
     "recall_uncapped": {
@@ -138,44 +138,44 @@
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.8888888888888888,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "p/imani": 1,
         "p/milo": 1,
-        "p/self": 0.6666666666666666
+        "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.8333333333333333,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "owed_by_counterparty": 1,
-        "owed_by_self": 0.6666666666666666
+        "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.8,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "none": 1,
-        "relative": 0.75
+        "relative": 1
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.3076923076923077,
+      "recall": 0.38461538461538464,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.36363636363636365
+        "open": 0.45454545454545453
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.3076923076923077,
+      "recall": 0.38461538461538464,
       "defined": true
     },
     "commitment_identity": {

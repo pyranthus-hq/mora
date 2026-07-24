@@ -1407,7 +1407,7 @@ func classifyMeetingBriefEvidence(m Memory, cfg Config, at time.Time) string {
 }
 
 var firstPersonCommitmentPhrases = []string{
-	"i'll ", "i will ", "i owe ", "i need to ", "i should ", "i promised ",
+	"i'll ", "i'd ", "i will ", "i owe ", "i need to ", "i should ", "i promised ",
 	"let me ", "i can send", "i can share", "i can introduce", "i'll follow up",
 	"i will follow up", "i'll get back", "i will get back",
 }

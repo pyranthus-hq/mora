@@ -448,7 +448,15 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 		}
 		key, ok := sourceInstanceKey(m)
 		if !ok {
-			continue // empty-Provider (filesystem) — never a watermark instance (M-1).
+			// Explicit-window DAILY is not a watermark run. Include locally
+			// authored memories in a deterministic manual bucket so an open
+			// commitment in a note can satisfy the obligations-v2 uniform DAILY
+			// rule. Delta mode still rejects empty-Provider memories: they have no
+			// connector instance and must never mint a watermark key (M-1).
+			if opts.sinceHours <= 0 || (m.Source != "manual" && m.Source != "mcp") {
+				continue
+			}
+			key = "manual"
 		}
 		byInstance[key] = append(byInstance[key], m)
 	}
