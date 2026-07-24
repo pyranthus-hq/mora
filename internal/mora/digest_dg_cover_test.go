@@ -90,6 +90,7 @@ func TestDg_WindowDigestSkipsMalformedInputsAndCollapsesServiceSenders(t *testin
 	if err := writeMemory(cfg, service); err != nil {
 		t.Fatalf("write service memory: %v", err)
 	}
+	cfg = ungatedDigestConfig(cfg)
 
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 24, perSourceCap: 10})
 	if err != nil {

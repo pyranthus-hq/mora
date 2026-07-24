@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -185,6 +186,7 @@ func urgentGmailSeed(t *testing.T, cfg Config, title, from, body string, occurre
 		CreatedAt:   occurred.UTC().Format(time.RFC3339),
 		Meta: map[string]any{
 			"from":        []string{from},
+			"to":          []string{"me@example.com"},
 			"occurred_at": occurred.UTC().Format(time.RFC3339),
 		},
 	}
@@ -204,6 +206,13 @@ func TestUrgentShelfLeadsBriefAndSurvivesBudget(t *testing.T) {
 	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 
 	enableSources(t, cfg, "gmail", "calendar", "imessage")
+	if err := saveSources(cfg, []Source{
+		{Name: "gmail", Type: "gmail", Email: "me@example.com", Scope: "personal", Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339)},
+		{Name: "calendar", Type: "calendar", Calendar: "primary", Scope: "personal", Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339)},
+		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatalf("saveSources: %v", err)
+	}
 	seedSyncStatus(t, cfg, "gmail", now.Add(-1*time.Hour))
 	seedSyncStatus(t, cfg, "calendar", now.Add(-1*time.Hour))
 	seedSyncStatus(t, cfg, "imessage", now.Add(-1*time.Hour))
@@ -214,7 +223,10 @@ func TestUrgentShelfLeadsBriefAndSurvivesBudget(t *testing.T) {
 		digestSeed(t, cfg, "calendar", "Cal event "+itoa(i), -time.Duration(i+2)*time.Hour, now)
 		digestSeed(t, cfg, "imessage", "Group text "+itoa(i), time.Duration(i+1)*time.Hour, now)
 	}
-	urgentGmailSeed(t, cfg, "MSA sign-off", "sarah@client.com", "Please review and sign the MSA by end of day today.", now.Add(-1*time.Hour))
+	urgentGmailSeed(t, cfg, "MSA sign-off", "sarah@client.com", "Can you sign the MSA by end of day today?", now.Add(-1*time.Hour))
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
 
 	// Preview: the shelf carries the urgent item; the gmail section does NOT.
 	d, err := buildDigest(cfg, now, briefOpts{})

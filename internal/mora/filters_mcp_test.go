@@ -31,7 +31,7 @@ func TestMCPMeetingPrepRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeMemory(cfg, meetingBriefEmail(
-		"ask", "Deck follow-up", "Can you send the deck by tomorrow?",
+		"ask", "Deck follow-up", "Can you send the deck for the Acme sync by tomorrow?",
 		"riya@a.com", []string{"me@a.com"}, now.Add(-time.Hour),
 	)); err != nil {
 		t.Fatal(err)
@@ -152,6 +152,9 @@ func TestMCPDigestNegativeSinceDaysNoOp(t *testing.T) {
 	run(t, "init")
 	cfg := mustConfig(t)
 	if err := writeMemory(cfg, personMem("riya-mcp", "gmail", "riya@a.com", time.Now().Add(-2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	text, isErr := mcpToolText(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"digest","arguments":{"since_hours":24,"since_days":-7}}}`)

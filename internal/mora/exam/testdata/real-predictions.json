@@ -2,21 +2,13 @@
   "daily": [
     {
       "surface": "daily",
-      "text": "- Rendered output review — When: Tue, 14 Jul 2026 11:30:00 UTC Attendees: alex@example.com, dana@example.net, sam@example.org Review the signed outline, checklist, and launch appendix. (id: calendar_event/exam-review)\n",
-      "memory_id": "calendar_event/exam-review",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Marcus Vance — ## 2026-07-13 Me: Could you confirm the sample count tomorrow? Marcus Vance: I will confirm the sample count tomorrow. (id: imessage_chat/exam-marcus)\n",
+      "text": "- Marcus Vance — ## 2026-07-13 Me: Could you confirm the sample count tomorrow? Marcus Vance: I will confirm the sample count tomorrow. (id: imessage_chat/exam-marcus)\n  obligation: owner=handle:+15550100103 · direction=owed_by_counterparty · due=relative · lifecycle=open · closure=none\n",
+      "owner": "handle:+15550100103",
       "memory_id": "imessage_chat/exam-marcus",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_counterparty",
+      "due": "relative",
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "daily",
@@ -50,24 +42,6 @@
     },
     {
       "surface": "daily",
-      "text": "- Venue map — From: Nina Ellis \u003cnina@example.org\u003e Omar, please send me the venue map. (id: gmail_thread/exam-third-party)\n",
-      "memory_id": "gmail_thread/exam-third-party",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Delivery note — From: Example Updates \u003cupdates@example.invalid\u003e Please consider the environment before printing this automated notice. (id: gmail_thread/exam-footer-negative)\n",
-      "memory_id": "gmail_thread/exam-footer-negative",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
       "text": "- Signed outline — From: Sam Rivera \u003csam@example.org\u003e Can you send the signed outline by July 14? --- I will send the signed outline today. (id: gmail_thread/exam-reply-chain)\n  obligation: owner=address:alex@example.com · direction=owed_by_self · due=2026-07-14 · lifecycle=open · closure=none\n",
       "owner": "address:alex@example.com",
       "memory_id": "gmail_thread/exam-reply-chain",
@@ -75,34 +49,6 @@
       "due": "2026-07-14",
       "lifecycle": "open",
       "closure_ref": "none"
-    },
-    {
-      "surface": "daily",
-      "text": "- Fwd: product tour — From: Sam Rivera \u003csam@example.org\u003e -----Original Message----- Book a generic product tour today. (id: gmail_thread/exam-forwarded-negative)\n",
-      "memory_id": "gmail_thread/exam-forwarded-negative",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Worksheet — From: Sam Rivera \u003csam@example.org\u003e Earlier request from the archive: Can you resend the retired worksheet? (id: gmail_thread/exam-quoted-negative)\n",
-      "memory_id": "gmail_thread/exam-quoted-negative",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
-    },
-    {
-      "surface": "daily",
-      "text": "- Reviewer list — From: Sam Rivera \u003csam@example.org\u003e Can you send the reviewer list? (id: gmail_thread/exam-closed-open)\n  obligation: owner=address:alex@example.com · direction=owed_by_self · due=none · lifecycle=closed · closure=exam-note-closure\n",
-      "owner": "address:alex@example.com",
-      "memory_id": "gmail_thread/exam-closed-open",
-      "direction": "owed_by_self",
-      "due": "none",
-      "lifecycle": "closed",
-      "closure_ref": "exam-note-closure"
     },
     {
       "surface": "daily",
@@ -128,15 +74,16 @@
   "meeting": [
     {
       "surface": "meeting",
-      "text": "~2 days ago · Sam Rivera — “Can you resend the retired worksheet?”",
-      "attendee": "Sam Rivera",
-      "attendee_atom": "address:sam@example.org",
-      "memory_id": "gmail_thread/exam-quoted-negative",
+      "text": "~1 day ago · dana@example.net — “Please bring the signed checklist”",
+      "attendee": "dana@example.net",
+      "attendee_atom": "address:dana@example.net",
+      "owner": "address:alex@example.com",
+      "memory_id": "gmail_thread/exam-subject-checklist",
       "section_kind": "open_loops",
-      "direction": "unknown",
-      "due": "",
-      "lifecycle": "unknown",
-      "closure_ref": ""
+      "direction": "owed_by_self",
+      "due": "none",
+      "lifecycle": "open",
+      "closure_ref": "none"
     },
     {
       "surface": "meeting",

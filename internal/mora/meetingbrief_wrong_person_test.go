@@ -187,6 +187,7 @@ func TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation(t *testing.T) {
 	event.Source = "calendar_event/neil-sync"
 	event.Provider = "google"
 	event.ProviderID = "calendar_event/neil-sync"
+	event.Text += " Agenda: revised deck."
 	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
 	}

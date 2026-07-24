@@ -135,14 +135,12 @@ func TestMeetingBriefJunkInvariance(t *testing.T) {
 	}
 	cleanDigestBytes, _ := json.Marshal(cleanDigest)
 	withJunkDigestBytes, _ := json.Marshal(withJunkDigest)
-	if bytes.Equal(cleanDigestBytes, withJunkDigestBytes) {
-		t.Fatal("test setup is incomplete: injected email junk must be visible as new daily-digest delta")
+	if !bytes.Equal(cleanDigestBytes, withJunkDigestBytes) {
+		t.Fatalf("non-commitment junk changed the commitment-gated daily digest\nclean: %s\nwith junk: %s", cleanDigestBytes, withJunkDigestBytes)
 	}
 
-	// Digest scope honesty: a junk email is still a new email in the delta, so a
-	// full-digest byte-invariance claim is false by design. Only the protected
-	// urgent shelf, source staleness guards (Freshness), and open-task/open-loop
-	// lines (StaleTasks) must remain byte-identical while the delta may grow.
+	// The typed inventory now gates the whole digest, so non-commitment junk is
+	// byte-invariant across every lane, including the previously exposed delta.
 	if !reflect.DeepEqual(digestInvariantOf(cleanDigest), digestInvariantOf(withJunkDigest)) {
 		t.Fatalf("junk changed protected digest lanes\nclean: %+v\nwith junk: %+v", digestInvariantOf(cleanDigest), digestInvariantOf(withJunkDigest))
 	}

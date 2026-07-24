@@ -153,6 +153,7 @@ func TestAdvanceCollapsedSeriesCommitsAllMembers(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		seedCalEvent(t, cfg, "Standup "+itoa(i), now.Add(time.Duration(i*24)*time.Hour), "series-standup")
 	}
+	cfg = ungatedDigestConfig(cfg)
 
 	if _, _, err := advanceBrief(cfg, now, briefOpts{advance: true}, 1<<20, true); err != nil {
 		t.Fatalf("advanceBrief: %v", err)
@@ -186,6 +187,7 @@ func TestAdvanceClippedSeriesReSurfaces(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		seedCalEvent(t, cfg, "Standup "+itoa(i), now.Add(time.Duration(i*24)*time.Hour), "series-standup")
 	}
+	cfg = ungatedDigestConfig(cfg)
 
 	preview, err := buildDigest(cfg, now, briefOpts{})
 	if err != nil {
@@ -238,6 +240,7 @@ func TestAdvanceColdStartArchiveVsClipped(t *testing.T) {
 	digestSeed(t, cfg, "calendar", "Team standup", -2*time.Hour, now)
 	digestSeed(t, cfg, "imessage", "Lunch plans", 1*time.Hour, now)
 	digestSeed(t, cfg, "gmail", "UrgentApproval", 1*time.Hour, now)
+	cfg = ungatedDigestConfig(cfg)
 
 	// Full cold-start render, then clip the in-window gmail urgent line.
 	preview, err := buildDigest(cfg, now, briefOpts{})

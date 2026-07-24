@@ -577,6 +577,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	if isGmailMemory(m) {
 		messages := gmailCommitmentMessages(m)
 		parts := gmailBodyParts(m)
+		selfTokens := selfNameTokens(selfEmails(cfg))
 		if len(messages) > 0 && len(messages) == len(parts) {
 			for i, message := range messages {
 				sender := strings.ToLower(strings.TrimSpace(message.Sender))
@@ -594,6 +595,9 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				}
 				slot := 0
 				for _, segment := range commitmentSegments(parts[i]) {
+					if assignedToThirdParty(segment, selfTokens) {
+						continue
+					}
 					owner, direction, found := classifyCommitmentSpeech(segment, commitmentSpeechContext{
 						Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
 						ReportedActor: reportedActorFor(m, segment, counterparty),
@@ -620,6 +624,9 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				first = parts[0]
 			}
 			for _, segment := range commitmentSegments(first) {
+				if assignedToThirdParty(segment, selfTokens) {
+					continue
+				}
 				owner, direction, found := classifyCommitmentSpeech(segment, commitmentSpeechContext{
 					Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
 					ReportedActor: reportedActorFor(m, segment, counterparty),
@@ -631,7 +638,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 		}
 
 		// A sender-authored subject is its own immutable evidence block.
-		if !isForwardedSubject(m.Title) {
+		if !isForwardedSubject(m.Title) && !assignedToThirdParty(m.Title, selfTokens) {
 			sender := strings.ToLower(strings.TrimSpace(firstGmailSender(m)))
 			author := govAtom{}
 			if sender != "" {

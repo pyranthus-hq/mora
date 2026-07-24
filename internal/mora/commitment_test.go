@@ -216,3 +216,28 @@ func TestCommitmentsMaterializedByIndexGeneration(t *testing.T) {
 		t.Fatalf("due = %+v, want none", got[0].Due)
 	}
 }
+
+func TestCommitmentClassificationRejectsThirdPartyAssignment(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "self@example.com",
+		Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	m := Memory{
+		ID: "gmail_thread/third-party", Scope: "global", Type: "email",
+		Title: "Next steps", Source: "third-party", Provider: "gmail", ProviderID: "third-party",
+		CreatedAt: "2026-07-20T10:00:00Z",
+		Text:      "From: Other <other@example.com>\n\nAction item for Kim: Please share the findings before kickoff.",
+		Meta: map[string]any{
+			"from": []string{"other@example.com"},
+			"to":   []string{"self@example.com"},
+		},
+	}
+	if got := classifyCommitments(m, cfg); len(got) != 0 {
+		t.Fatalf("third-party assignment materialized as the user's commitment: %+v", got)
+	}
+}

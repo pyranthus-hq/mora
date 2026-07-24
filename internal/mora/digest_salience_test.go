@@ -297,6 +297,7 @@ func TestBuildDigestSalienceWindowOrdering(t *testing.T) {
 	if err := writeMemory(cfg, light); err != nil {
 		t.Fatalf("writeMemory light: %v", err)
 	}
+	cfg = ungatedDigestConfig(cfg)
 
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 24})
 	if err != nil {

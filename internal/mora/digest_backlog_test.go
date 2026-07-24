@@ -43,6 +43,7 @@ func TestWindowDigestForwardBoundsCalendar(t *testing.T) {
 
 	seedCalEvent(t, cfg, "Near meeting", now.Add(12*time.Hour), "")
 	seedCalEvent(t, cfg, "Hanukkah", now.Add(30*24*time.Hour), "")
+	cfg = ungatedDigestConfig(cfg)
 
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 48, perSourceCap: 10})
 	if err != nil {
@@ -92,6 +93,7 @@ func TestUpcomingSectionOrdersNearestFutureFirst(t *testing.T) {
 
 	seedCalEvent(t, cfg, "Later meeting", now.Add(36*time.Hour), "")
 	seedCalEvent(t, cfg, "Sooner meeting", now.Add(6*time.Hour), "")
+	cfg = ungatedDigestConfig(cfg)
 
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 48, perSourceCap: 10})
 	if err != nil {
@@ -115,6 +117,7 @@ func TestRecurringSeriesCollapsedInWindow(t *testing.T) {
 		seedCalEvent(t, cfg, "Sync up "+itoa(i), now.Add(time.Duration(i*6)*time.Hour), "series-sync")
 	}
 	seedCalEvent(t, cfg, "One-off review", now.Add(3*time.Hour), "")
+	cfg = ungatedDigestConfig(cfg)
 
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 72, perSourceCap: 10})
 	if err != nil {

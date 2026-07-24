@@ -72,6 +72,7 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	event.Source = "calendar_event/founder-sync"
 	event.Provider = "google"
 	event.ProviderID = "calendar_event/founder-sync"
+	event.Text += " Agenda: revised investor deck."
 	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
 	}
@@ -180,18 +181,11 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 			}
 		}
 	}
-	for _, want := range []string{
-		meetingBriefOpenLoops,
-		meetingBriefUnresolved,
-		meetingBriefStaleness,
-		meetingBriefSharedContext,
-	} {
-		if !kinds[want] {
-			t.Errorf("missing unfinished-business section %q: %+v", want, first.Sections)
-		}
+	if !kinds[meetingBriefOpenLoops] {
+		t.Errorf("missing commitment section %q: %+v", meetingBriefOpenLoops, first.Sections)
 	}
-	if lines != 4 {
-		t.Fatalf("surfaced %d evidence lines, want exactly four actionable cited lines: %s", lines, firstJSON)
+	if len(kinds) != 1 || lines != 1 {
+		t.Fatalf("surfaced %d sections / %d lines, want the one typed relevant commitment only: %s", len(kinds), lines, firstJSON)
 	}
 }
 
@@ -214,6 +208,7 @@ func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing
 		map[string]string{"dana@example.com": "Dana", "me@example.com": "Me"},
 		"me@example.com", "dana@example.com",
 	)
+	event.Text += " Agenda: portfolio introduction document."
 	oldGem := meetingBriefEmail(
 		"forgotten-gem",
 		"Portfolio introduction commitment",
@@ -255,7 +250,7 @@ func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing
 	}
 }
 
-func TestMeetingBriefSharedThreadUsesSenderAttribution(t *testing.T) {
+func TestMeetingBriefDropsAmbiguousSharedThread(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
@@ -269,7 +264,7 @@ func TestMeetingBriefSharedThreadUsesSenderAttribution(t *testing.T) {
 	}
 	event := eventMemFull(
 		"event-shared-thread",
-		"Contract review",
+		"Contract",
 		at.Add(time.Hour).Format(time.RFC3339),
 		map[string]string{
 			"alice@example.com": "Alice",
@@ -279,6 +274,7 @@ func TestMeetingBriefSharedThreadUsesSenderAttribution(t *testing.T) {
 		"me@example.com", "alice@example.com",
 		"bob@example.com",
 	)
+	event.Text += " Agenda: approve the contract."
 	shared := meetingBriefEmail(
 		"shared-request",
 		"Contract approval",
@@ -304,11 +300,8 @@ func TestMeetingBriefSharedThreadUsesSenderAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(brief.Sections) != 1 || len(brief.Sections[0].Lines) != 1 {
-		t.Fatalf("shared thread should render once: %+v", brief.Sections)
-	}
-	if got := brief.Sections[0].Lines[0].Attendee; got != "Bob" {
-		t.Fatalf("shared thread attributed to %q, want sender Bob", got)
+	if meetingBriefLineCount(brief) != 0 {
+		t.Fatalf("multi-addressee request was assigned to an arbitrary attendee: %+v", brief.Sections)
 	}
 }
 
@@ -386,6 +379,7 @@ func TestMeetingBriefRendersActionablePassageNotTriviaFromMixedThread(t *testing
 		map[string]string{"dana@example.com": "Dana", "me@example.com": "Me"},
 		"me@example.com", "dana@example.com",
 	)
+	event.Text += " Agenda: revised deck."
 	mixed := meetingBriefEmail(
 		"mixed-thread",
 		"Catch up",
@@ -519,16 +513,31 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 	if err := renderMeetingBrief(&rendered, brief); err != nil {
 		t.Fatal(err)
 	}
-	// The INVARIANT is the dated, attributed, quoted framing — a ten-month-old fact
-	// must never read as true now. The exact wording is presentation, not the rail.
-	if !strings.Contains(rendered.String(), "~10 months ago · Dana — “") {
-		t.Fatalf("stale fact was not rendered as dated historical evidence:\n%s", rendered.String())
-	}
-	if strings.Contains(rendered.String(), "- Dana: New role — Dana is now at Denver Labs") {
-		t.Fatalf("stale fact rendered as a present-tense attendee assertion:\n%s", rendered.String())
+	if meetingBriefLineCount(brief) != 0 {
+		t.Fatalf("non-commitment historical context crossed the event eligibility gate: %+v", brief.Sections)
 	}
 
-	brief.Sections[0].Lines[0].Text = "Dana is now at Denver Labs."
+	correction, err := newBriefLineCorrection(
+		govAtom{Kind: atomStableID, Value: stale.ID},
+		govAtom{Kind: atomAddress, Value: "dana@example.com"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := newCitedBriefLine(
+		"Dana is now at Denver Labs.", "Dana",
+		mustBriefCitationForTest(t, stale.ID, "gmail", stale.Source, stale.CreatedAt),
+		correction, at,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line.Text = "Dana is now at Denver Labs."
+	brief.Sections = []MeetingBriefSection{{
+		Kind:  meetingBriefStaleness,
+		Title: meetingBriefSectionTitles[meetingBriefStaleness],
+		Lines: []CitedBriefLine{line},
+	}}
 	rendered.Reset()
 	err = renderMeetingBrief(&rendered, brief)
 	if err == nil || !strings.Contains(err.Error(), "dated-historical rail") {
@@ -591,6 +600,7 @@ func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
 		"event-correction-actions", "Board prep", at.Add(time.Hour).Format(time.RFC3339),
 		map[string]string{"neil@example.com": "Neil Patel", "adit@example.com": "Me"}, "adit@example.com", "neil@example.com",
 	)
+	event.Text += " Agenda: board deck."
 	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
 	}
@@ -641,6 +651,7 @@ func TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed(t *testing.T
 		"event-correction-persist", "Founder sync", at.Add(time.Hour).Format(time.RFC3339),
 		map[string]string{"neil@example.com": "Neil Patel", "adit@example.com": "Me"}, "adit@example.com", "neil@example.com",
 	)
+	event.Text += " Agenda: revised deck."
 	ask := meetingBriefEmail(
 		"ask-correction-persist", "Deck follow-up", "Can you send the revised deck by tomorrow?",
 		"neil@example.com", []string{"adit@example.com"}, at.Add(-2*time.Hour),
@@ -799,9 +810,10 @@ func TestMeetingBriefUsesExactAttendeeIdentityNotSharedDisplayName(t *testing.T)
 	)
 	two.Meta["names"] = map[string]string{"two@example.com": "Jordan Lee"}
 	event := eventMemFull(
-		"event-jordan", "Jordan sync", at.Add(time.Hour).Format(time.RFC3339),
+		"event-jordan", "Contract", at.Add(time.Hour).Format(time.RFC3339),
 		map[string]string{"one@example.com": "Jordan Lee", "me@example.com": "Me"}, "me@example.com", "one@example.com",
 	)
+	event.Text += " Agenda: contract request."
 	for _, memory := range []Memory{one, two, event} {
 		if err := writeMemory(cfg, memory); err != nil {
 			t.Fatal(err)

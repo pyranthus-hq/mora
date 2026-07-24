@@ -319,12 +319,9 @@ func TestExamRealEngineScorecard(t *testing.T) {
 		t.Errorf("meeting run state = %q; a clean first score is a defect report against the ledger, not a win",
 			exam.RunStateOf(meeting, nil))
 	}
-	// The remaining live non-obligation defect stays asserted. PR4 closes the
-	// lifecycle defect: closed work must no longer leak, and the two typed rows must
-	// be expressed precisely even though legacy corpora cannot recover immutable ids
-	// for every hidden inventory item.
-	if meeting.NonObligationLeaks == 0 {
-		t.Error("the engine used to surface a labelled non-obligation as an open loop; if it no longer does, flip this expectation and raise the floor")
+	// Commitment eligibility closes the remaining live non-obligation defect.
+	if meeting.NonObligationLeaks != 0 {
+		t.Errorf("NonObligationLeaks = %d, want 0 after typed surface eligibility", meeting.NonObligationLeaks)
 	}
 	if meeting.ClosedLeaks != 0 {
 		t.Errorf("ClosedLeaks = %d, want 0 after lifecycle materialization", meeting.ClosedLeaks)

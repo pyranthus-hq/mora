@@ -431,9 +431,8 @@ func TestExamSurfaceClockGuard(t *testing.T) {
 	}
 }
 
-// TestExamServiceOnlyGateIsAssembled closes the historical helper-test hole for
-// memoryIsServiceOnly. The service sender is deliberately given a recent,
-// actionable message that the daily window would otherwise render in full.
+// TestExamServiceOnlyGateIsAssembled proves service-authored requests cannot cross
+// the materialized-commitment eligibility gate.
 func TestExamServiceOnlyGateIsAssembled(t *testing.T) {
 	cfg, _, at := seedExamHome(t)
 	pinExamSurfaceClocks(t, at)
@@ -469,19 +468,16 @@ func TestExamServiceOnlyGateIsAssembled(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := runExamCLI(t, "pulse", "--digest", "--since-hours", "720")
-	for _, id := range ids[:2] {
-		if !strings.Contains(output, "(id: "+id+")") {
-			t.Fatalf("service low-signal floor did not render %s; tripwire is vacuous:\n%s", id, output)
+	for _, id := range ids {
+		if strings.Contains(output, "(id: "+id+")") {
+			t.Fatalf("service-only request crossed the commitment eligibility gate (%s):\n%s", id, output)
 		}
-	}
-	if strings.Contains(output, "(id: "+ids[2]+")") {
-		t.Fatalf("service-only tail escaped into assembled daily brief:\n%s", output)
 	}
 }
 
-// TestExamIMessageSpeakerPrefixIsNotProductText drives the transcript cleaner
-// through graph retrieval and the real event CLI. Renderer scaffolding such as
-// "Dana:" must not become claimed evidence text.
+// TestExamIMessageNonCommitmentSpeakerLineIsSuppressed drives a named-speaker
+// decision statement through the real event CLI. It is context, not a materialized
+// commitment, and must not become an event obligation.
 func TestExamIMessageSpeakerPrefixIsNotProductText(t *testing.T) {
 	cfg, event, at := seedExamHome(t)
 	pinExamSurfaceClocks(t, at)
@@ -502,22 +498,11 @@ func TestExamIMessageSpeakerPrefixIsNotProductText(t *testing.T) {
 	}
 	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net")
 	brief := runExamEventCLI(t, event.EventID, at)
-	found := false
 	for _, section := range brief.Sections {
 		for _, line := range section.Lines {
-			if line.Citation.MemoryID() != "imessage_chat/exam-flywheel" {
-				continue
-			}
-			found = true
-			if !strings.Contains(line.Text, "The launch review decision is final.") {
-				t.Fatalf("named-speaker tripwire did not reach product text: %q", line.Text)
-			}
-			if strings.Contains(line.Text, "Dana Ellis:") || strings.Contains(line.Text, "Me:") {
-				t.Fatalf("iMessage speaker scaffolding escaped into product text: %q", line.Text)
+			if line.Citation.MemoryID() == "imessage_chat/exam-flywheel" {
+				t.Fatalf("non-commitment named-speaker line crossed event eligibility: %q", line.Text)
 			}
 		}
-	}
-	if !found {
-		t.Fatal("flywheel iMessage evidence did not reach the assembled brief")
 	}
 }
