@@ -263,12 +263,25 @@ func firstPersonCommitment(lower string) bool {
 	if !containsAnyPhrase(lower, firstPersonCommitmentPhrases) {
 		return false
 	}
+	// "I'd" is either "I would" (a commitment) or "I had" (a report about the
+	// past). A past-perfect modifier makes the latter explicit and must not turn a
+	// completed action into new future work.
+	if containsAnyPhrase(lower, []string{"i'd already ", "i'd previously ", "i'd just "}) {
+		return false
+	}
 	return containsAnyPhrase(lower, []string{
 		"send", "share", "review", "confirm", "sign", "bring", "upload", "deliver",
 		"call", "follow up", "get back", "organize", "archive", "initial", "choose",
 		"return", "introduce", "leave", "export", "provide", "finish", "prepare",
 		"add", "post", "text", "count", "hold", "reserve", "log",
 	})
+}
+
+var userAuthoredPromiseToAnotherRE = regexp.MustCompile(`(?i)\bi told\s+(?:[\p{L}\p{N}_.’'\-]+\s+){1,4}i['’]d\s+`)
+
+func userAuthoredPromiseToAnother(text string) bool {
+	lower := strings.ToLower(oneLine(text))
+	return userAuthoredPromiseToAnotherRE.MatchString(lower) && firstPersonCommitment(lower)
 }
 
 func reportedActorFor(m Memory, text string, counterparty govAtom) *govAtom {
@@ -514,22 +527,8 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	if m.DeletedAt != "" || isMeetingNotification(m) || memoryIsServiceOnly(m) {
 		return nil
 	}
-	counterparty, ok := commitmentCounterparty(m, cfg)
-	if !ok && isGmailMemory(m) {
-		// A non-self author is the counterparty for both their own commitment and
-		// their request to the user, even when another attendee was copied. This
-		// does not guess an addressee: the owner comes from the speech act below.
-		sender := strings.ToLower(strings.TrimSpace(firstGmailSender(m)))
-		if sender != "" && !selfEmails(cfg)[sender] {
-			counterparty = govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, sender)}
-			ok = true
-		}
-	}
-	if !ok {
-		return nil
-	}
 	selfAtom := canonicalSelfAtom(cfg, "")
-	newCommitment := func(summary, messageRef, blockRef, occurredAt string, ancestorRefs []string, slot int, owner govAtom, direction Direction) Commitment {
+	newCommitment := func(summary, messageRef, blockRef, occurredAt string, ancestorRefs []string, slot int, owner, counterparty govAtom, direction Direction) Commitment {
 		due := classifyCommitmentDue(summary, occurredAt)
 		id := commitmentID(messageRef, blockRef, slot)
 		return Commitment{
@@ -553,6 +552,37 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	}
 
 	var out []Commitment
+	if m.Provider == "" && (m.Source == "manual" || m.Source == "mcp") {
+		// obligations-v2: "the user's own clear promise to another person" is
+		// owed_by_self. A local authored note proves the owner and direction but
+		// carries no source-native counterparty atom, so preserve that field as an
+		// honest gap instead of inventing an address or handle from prose.
+		for slot, segment := range commitmentSegments(m.Text) {
+			if !userAuthoredPromiseToAnother(segment) {
+				continue
+			}
+			out = append(out, newCommitment(
+				segment, "", "", validFromOf(m), nil, slot,
+				selfAtom, govAtom{}, commitOwedBySelf,
+			))
+		}
+		return uniqueCommitments(out)
+	}
+
+	counterparty, ok := commitmentCounterparty(m, cfg)
+	if !ok && isGmailMemory(m) {
+		// A non-self author is the counterparty for both their own commitment and
+		// their request to the user, even when another attendee was copied. This
+		// does not guess an addressee: the owner comes from the speech act below.
+		sender := strings.ToLower(strings.TrimSpace(firstGmailSender(m)))
+		if sender != "" && !selfEmails(cfg)[sender] {
+			counterparty = govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, sender)}
+			ok = true
+		}
+	}
+	if !ok {
+		return nil
+	}
 	if isIMessageMemory(m) {
 		for _, turn := range conversationTurns(m.Text) {
 			author, addressee := counterparty, selfAtom
@@ -569,7 +599,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 			// The connector currently preserves ordered turns but not provider
 			// message ids in Meta. Refuse to fabricate a CommitmentID; direction and
 			// ownership remain typed, while identity stays explicitly unavailable.
-			out = append(out, newCommitment(turn.Body, "", "", validFromOf(m), nil, 0, owner, direction))
+			out = append(out, newCommitment(turn.Body, "", "", validFromOf(m), nil, 0, owner, counterparty, direction))
 		}
 		return out
 	}
@@ -605,7 +635,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 					if !found {
 						continue
 					}
-					out = append(out, newCommitment(segment, message.MessageRef, blockRef, message.At, message.AncestorRefs, slot, owner, direction))
+					out = append(out, newCommitment(segment, message.MessageRef, blockRef, message.At, message.AncestorRefs, slot, owner, counterparty, direction))
 					slot++
 				}
 			}
@@ -632,7 +662,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 					ReportedActor: reportedActorFor(m, segment, counterparty),
 				})
 				if found {
-					out = append(out, newCommitment(segment, "", "", validFromOf(m), nil, 0, owner, direction))
+					out = append(out, newCommitment(segment, "", "", validFromOf(m), nil, 0, owner, counterparty, direction))
 				}
 			}
 		}
@@ -653,7 +683,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				if len(messages) > 0 {
 					messageRef, blockRef = messages[0].MessageRef, "subject"
 				}
-				out = append(out, newCommitment(m.Title, messageRef, blockRef, validFromOf(m), nil, 0, owner, direction))
+				out = append(out, newCommitment(m.Title, messageRef, blockRef, validFromOf(m), nil, 0, owner, counterparty, direction))
 			}
 		}
 	}

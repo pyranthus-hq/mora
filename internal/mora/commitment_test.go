@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 )
 
 func TestCommitmentDueClassification(t *testing.T) {
@@ -107,6 +108,90 @@ func TestCommitmentDirectionTable(t *testing.T) {
 				t.Fatalf("owner/direction = %+v/%q, want %+v/%q", owner, direction, tt.wantOwner, tt.wantDir)
 			}
 		})
+	}
+}
+
+// obligations-v2 says the user's own clear promise to another person belongs in
+// owed_by_self. These invented notes exercise that rule without borrowing frozen
+// fixture wording, plus the "concrete future action" near-miss boundary.
+func TestManualAuthoredPromiseMaterialization(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	memory := Memory{
+		ID:        "invented-note-promise",
+		Type:      "note",
+		Source:    "manual",
+		CreatedAt: "2026-08-03T09:00:00Z",
+		Text:      "I told Jordan I'd return the borrowed lens before the workshop.",
+	}
+	got := classifyCommitments(memory, cfg)
+	if len(got) != 1 {
+		t.Fatalf("commitments = %+v, want one clear authored promise", got)
+	}
+	commitment := got[0]
+	if !atomEqual(commitment.Owner, canonicalSelfAtom(cfg, "")) ||
+		commitment.Direction != commitOwedBySelf ||
+		commitment.Due != (commitDue{Kind: commitDueRelative}) {
+		t.Fatalf("typed commitment = %+v, want self-owned relative promise", commitment)
+	}
+	if atomPresent(commitment.Counterparty) {
+		t.Fatalf("counterparty = %+v, want an honest gap without source-native identity metadata", commitment.Counterparty)
+	}
+	if commitment.ID != "" {
+		t.Fatalf("commitment id = %q, want no fabricated immutable evidence id", commitment.ID)
+	}
+
+	memory.ID = "invented-note-past-report"
+	memory.Text = "I told Jordan I'd already returned the borrowed lens before the workshop."
+	if got := classifyCommitments(memory, cfg); len(got) != 0 {
+		t.Fatalf("past-completion near miss became future work: %+v", got)
+	}
+}
+
+func TestWindowDigestSurfacesManualPromiseOnly(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	cfg.SelfEmails = []string{"self@example.com"}
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	for _, memory := range []Memory{
+		{
+			ID: "invented-note-promise", Scope: "global", Type: "note",
+			Title: "Borrowed equipment", Source: "manual",
+			CreatedAt: "2026-08-03T09:00:00Z",
+			Text:      "I told Jordan I'd return the borrowed lens before the workshop.",
+		},
+		{
+			ID: "invented-note-past-report", Scope: "global", Type: "note",
+			Title: "Equipment history", Source: "manual",
+			CreatedAt: "2026-08-03T09:05:00Z",
+			Text:      "I told Jordan I'd already returned the borrowed lens before the workshop.",
+		},
+	} {
+		if err := writeMemory(cfg, memory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := buildDigest(cfg, at, briefOpts{sinceHours: 24 * 7, perSourceCap: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var surfaced []string
+	for _, section := range digest.Sections {
+		for _, item := range section.Items {
+			surfaced = append(surfaced, item.ID)
+		}
+	}
+	if !containsStringFold(surfaced, "invented-note-promise") {
+		t.Fatalf("clear manual promise did not reach DAILY: %v", surfaced)
+	}
+	if containsStringFold(surfaced, "invented-note-past-report") {
+		t.Fatalf("past-completion near miss reached DAILY: %v", surfaced)
 	}
 }
 

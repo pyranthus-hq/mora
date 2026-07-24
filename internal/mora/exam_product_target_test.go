@@ -28,12 +28,14 @@ const (
 	examProductMetricLegacyUnscorable         examProductMetricRequirement = "LEGACY_UNSCORABLE"
 	examProductMetricRefLessUnscorable        examProductMetricRequirement = "REF_LESS_UNSCORABLE"
 	examProductMetricNoGoldSamplesUnscorable  examProductMetricRequirement = "NO_GOLD_SAMPLES_UNSCORABLE"
+	examProductMetricIdentityUnconfirmed      examProductMetricRequirement = "IDENTITY_UNCONFIRMED_UNSCORABLE"
 	examProductLegacyUnscorableEvidence                                    = "frozen schema-v1/v2 vaults lack immutable message/block refs; commitmentID must not fabricate them"
 	examProductLegacyInventoryRecallEvidence                               = "frozen schema-v1/v2 vaults lack immutable message/block refs; empty-ID commitments cannot safely join inventory lifecycle/closure gold"
 	examProductRefLessUnscorableEvidence                                   = "schema-v3 notes, iMessage, and calendar renderers emit no immutable message/block refs; commitmentID and citation roles must not fabricate them"
 	examProductRefLessInventoryRecallEvidence                              = "schema-v3 notes, iMessage, and calendar renderers emit no immutable message/block refs; empty-ID commitments cannot safely join inventory lifecycle/closure gold"
 	examProductV1DailySelectionEvidence                                    = "schema-v1 OBLIGATIONS.md defines no daily surface-relevance rule; gold placement is ledger-explicit"
 	examProductNoDuplicateGoldSamplesEvidence                              = "corpus has zero duplicate_of gold samples; ratio is undefined and absolute duplicate leak counts remain enforced"
+	examProductV1IdentityUnconfirmedEvidence                               = "frozen schema-v1 deliberately leaves c/flywheel's phone handle separate from Dana's event email before correction; TestExamCorrectionFlywheel proves post-merge true_positive recovery"
 )
 
 type examProductMetricState struct {
@@ -49,6 +51,11 @@ type examProductMetricState struct {
 type examProductScorecardState struct {
 	schemaVersion             int
 	extractionPrecision       examProductMetricState
+	extractionRecall          examProductMetricState
+	directionRecall           examProductMetricState
+	dueTimeRecall             examProductMetricState
+	ownerRecall               examProductMetricState
+	counterpartyRecall        examProductMetricState
 	lifecycleRecall           examProductMetricState
 	closureRecall             examProductMetricState
 	commitmentIdentity        examProductMetricState
@@ -217,6 +224,25 @@ func TestExamProductTargetCorpusScope(t *testing.T) {
 		if row.state.extractionPrecision != wantExtractionPrecision {
 			t.Errorf("%s %s extraction precision state = %+v, want %+v",
 				row.corpus, row.surface, row.state.extractionPrecision, wantExtractionPrecision)
+		}
+		wantVisibleRecall := examProductMetricState{requirement: examProductMetricRequired}
+		if row.state.schemaVersion == exam.SchemaV1 && row.card.Surface == exam.SurfaceMeeting {
+			wantVisibleRecall = examProductMetricState{
+				requirement: examProductMetricIdentityUnconfirmed,
+				reason:      examProductV1IdentityUnconfirmedEvidence,
+			}
+		}
+		for name, state := range map[string]examProductMetricState{
+			"extraction recall": row.state.extractionRecall,
+			"direction recall":  row.state.directionRecall,
+			"due time recall":   row.state.dueTimeRecall,
+			"owner recall":      row.state.ownerRecall,
+			"counterparty":      row.state.counterpartyRecall,
+		} {
+			if state != wantVisibleRecall {
+				t.Errorf("%s %s %s state = %+v, want %+v",
+					row.corpus, row.surface, name, state, wantVisibleRecall)
+			}
 		}
 		wantInventoryRecall := examProductMetricState{requirement: examProductMetricRequired}
 		if row.state.schemaVersion < exam.SchemaV3 {
@@ -457,6 +483,18 @@ func examProductScorecardStateForLedger(ledger exam.Ledger, surface string) exam
 		}
 	}
 	inventoryRecall := required
+	visibleRecall := required
+	if ledger.Version == exam.SchemaV1 && surface == exam.SurfaceMeeting {
+		// The frozen c/flywheel opening is already extracted and typed. It cannot
+		// enter this event's attendee dossier until the user confirms that its phone
+		// handle and Dana's event email are one person. TestExamCorrectionFlywheel
+		// pins the pre-correction miss and post-merge true_positive recovery, so this
+		// is a structural identity state rather than a product recall exemption.
+		visibleRecall = examProductMetricState{
+			requirement: examProductMetricIdentityUnconfirmed,
+			reason:      examProductV1IdentityUnconfirmedEvidence,
+		}
+	}
 	var refLessInventoryRecall, refLessEvidence examProductMetricState
 	if ledger.Version < exam.SchemaV3 {
 		inventoryRecall = examProductMetricState{
@@ -476,6 +514,11 @@ func examProductScorecardStateForLedger(ledger exam.Ledger, surface string) exam
 	return examProductScorecardState{
 		schemaVersion:             ledger.Version,
 		extractionPrecision:       extractionPrecision,
+		extractionRecall:          visibleRecall,
+		directionRecall:           visibleRecall,
+		dueTimeRecall:             visibleRecall,
+		ownerRecall:               visibleRecall,
+		counterpartyRecall:        visibleRecall,
 		lifecycleRecall:           inventoryRecall,
 		closureRecall:             inventoryRecall,
 		commitmentIdentity:        evidence,
@@ -513,7 +556,7 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 		failures = append(failures, ratioComponentsAtLeastFailures(
 			label+" extraction", card.Extraction, 0.90,
 			row.state.extractionPrecision,
-			examProductMetricState{requirement: examProductMetricRequired},
+			row.state.extractionRecall,
 		)...)
 		failures = append(failures, ratioEqualFailures(label+" citation coverage", card.CitationCoverage, 1.0)...)
 		failures = append(failures, ratioEqualFailures(label+" citation correctness", card.CitationCorrect, 1.0)...)
@@ -538,8 +581,16 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 		if !card.DirectionScorable {
 			failures = append(failures, label+" direction_scorable = false, want true")
 		}
-		failures = append(failures, ratioAtLeastFailures(label+" direction", card.Direction, 0.90)...)
-		failures = append(failures, ratioAtLeastFailures(label+" due time", card.DueTime, 0.90)...)
+		failures = append(failures, ratioComponentsAtLeastFailures(
+			label+" direction", card.Direction, 0.90,
+			examProductMetricState{requirement: examProductMetricRequired},
+			row.state.directionRecall,
+		)...)
+		failures = append(failures, ratioComponentsAtLeastFailures(
+			label+" due time", card.DueTime, 0.90,
+			examProductMetricState{requirement: examProductMetricRequired},
+			row.state.dueTimeRecall,
+		)...)
 		failures = append(failures, ratioComponentsAtLeastFailures(
 			label+" lifecycle", lifecycle, 0.90,
 			examProductMetricState{requirement: examProductMetricRequired},
@@ -550,7 +601,11 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 			examProductMetricState{requirement: examProductMetricRequired},
 			row.state.closureRecall,
 		)...)
-		failures = append(failures, ratioAtLeastFailures(label+" owner", card.Owner, 0.90)...)
+		failures = append(failures, ratioComponentsAtLeastFailures(
+			label+" owner", card.Owner, 0.90,
+			examProductMetricState{requirement: examProductMetricRequired},
+			row.state.ownerRecall,
+		)...)
 		failures = append(failures, scopedRatioAtLeastFailures(
 			label+" commitment identity", row.state.schemaVersion, row.state.commitmentIdentity, commitmentIdentity, 0.90,
 		)...)
@@ -561,14 +616,19 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 			label+" citation roles", row.state.schemaVersion, row.state.citationRoles, citationRoles, 0.90,
 		)...)
 		for _, dimension := range []struct {
-			name string
-			row  exam.PR
+			name           string
+			row            exam.PR
+			recallState    examProductMetricState
+			explainedClass string
 		}{
-			{name: "owner", row: card.Owner},
-			{name: "direction", row: card.Direction},
-			{name: "due time", row: card.DueTime},
+			{name: "owner", row: card.Owner, recallState: row.state.ownerRecall, explainedClass: "p/dana"},
+			{name: "direction", row: card.Direction, recallState: row.state.directionRecall, explainedClass: "owed_by_counterparty"},
+			{name: "due time", row: card.DueTime, recallState: row.state.dueTimeRecall, explainedClass: "none"},
 		} {
-			failures = append(failures, classRecallAtLeastFailures(label+" "+dimension.name, dimension.row, 0.90)...)
+			failures = append(failures, classRecallAtLeastFailuresWithIdentityGap(
+				label+" "+dimension.name, dimension.row, 0.90,
+				dimension.recallState, dimension.explainedClass,
+			)...)
 		}
 		if row.state.lifecycleRecall.requirement == examProductMetricRequired {
 			failures = append(failures, classRecallAtLeastFailures(label+" lifecycle", lifecycle, 0.90)...)
@@ -577,8 +637,15 @@ func examProductTargetFailures(rows []namedExamScorecard) []string {
 			failures = append(failures, classRecallAtLeastFailures(label+" citation roles", citationRoles, 0.90)...)
 		}
 		if card.Surface == exam.SurfaceMeeting {
-			failures = append(failures, ratioAtLeastFailures(label+" counterparty", card.Counterparty, 0.90)...)
-			failures = append(failures, classRecallAtLeastFailures(label+" counterparty", card.Counterparty, 0.90)...)
+			failures = append(failures, ratioComponentsAtLeastFailures(
+				label+" counterparty", card.Counterparty, 0.90,
+				examProductMetricState{requirement: examProductMetricRequired},
+				row.state.counterpartyRecall,
+			)...)
+			failures = append(failures, classRecallAtLeastFailuresWithIdentityGap(
+				label+" counterparty", card.Counterparty, 0.90,
+				row.state.counterpartyRecall, "p/dana",
+			)...)
 		}
 	}
 	return failures
@@ -641,6 +708,11 @@ func ratioComponentsAtLeastFailures(
 			if state.reason == "" {
 				failures = append(failures, fmt.Sprintf("%s %s legacy-unscorable state has no reason", label, component))
 			}
+		case examProductMetricIdentityUnconfirmed:
+			if state.reason != examProductV1IdentityUnconfirmedEvidence {
+				failures = append(failures, fmt.Sprintf("%s %s identity-unconfirmed reason = %q, want %q",
+					label, component, state.reason, examProductV1IdentityUnconfirmedEvidence))
+			}
 		default:
 			failures = append(failures, fmt.Sprintf("%s %s has unsupported component state %q",
 				label, component, state.requirement))
@@ -695,6 +767,19 @@ func scopedRatioAtLeastFailures(label string, schemaVersion int, state examProdu
 }
 
 func classRecallAtLeastFailures(label string, got exam.PR, want float64) []string {
+	return classRecallAtLeastFailuresWithIdentityGap(
+		label, got, want,
+		examProductMetricState{requirement: examProductMetricRequired}, "",
+	)
+}
+
+func classRecallAtLeastFailuresWithIdentityGap(
+	label string,
+	got exam.PR,
+	want float64,
+	recallState examProductMetricState,
+	explainedClass string,
+) []string {
 	if len(got.RecallByClass) == 0 {
 		return []string{label + " has no per-class recall, want explicit class floors"}
 	}
@@ -707,6 +792,13 @@ func classRecallAtLeastFailures(label string, got exam.PR, want float64) []strin
 	for _, class := range classes {
 		recall := got.RecallByClass[class]
 		if recall < want {
+			if recallState.requirement == examProductMetricIdentityUnconfirmed && class == explainedClass {
+				if recallState.reason != examProductV1IdentityUnconfirmedEvidence {
+					failures = append(failures, fmt.Sprintf("%s class %q identity-unconfirmed reason = %q, want %q",
+						label, class, recallState.reason, examProductV1IdentityUnconfirmedEvidence))
+				}
+				continue
+			}
 			failures = append(failures, fmt.Sprintf("%s class %q recall = %.6f, want >= %.2f", label, class, recall, want))
 		}
 	}
@@ -757,11 +849,11 @@ func hasTypedProductDeficiency(rows []namedExamScorecard) bool {
 			citationRoles = row.refBearingCard.CitationRoles
 		}
 		if !card.DirectionScorable ||
-			ratioBelowProductTarget(card.Direction) ||
-			ratioBelowProductTarget(card.DueTime) ||
+			ratioComponentBelowProductTarget(card.Direction, row.state.directionRecall) ||
+			ratioComponentBelowProductTarget(card.DueTime, row.state.dueTimeRecall) ||
 			ratioComponentBelowProductTarget(lifecycle, row.state.lifecycleRecall) ||
 			ratioComponentBelowProductTarget(closureLinkage, row.state.closureRecall) ||
-			ratioBelowProductTarget(card.Owner) ||
+			ratioComponentBelowProductTarget(card.Owner, row.state.ownerRecall) ||
 			requiredMetricBelowProductTarget(row.state.commitmentIdentity, commitmentIdentity) ||
 			requiredMetricBelowProductTarget(row.state.dedup, card.Dedup) ||
 			requiredMetricBelowProductTarget(row.state.citationRoles, citationRoles) {
