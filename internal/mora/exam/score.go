@@ -105,21 +105,24 @@ var ErrInvalidHarness = errors.New("INVALID_HARNESS")
 // and no interpretation: every transformation belongs to Score, which lives in a
 // package that structurally cannot reach the product's cleaners.
 type Prediction struct {
-	Surface      string               `json:"surface"`
-	Origin       PredictionOrigin     `json:"origin,omitempty"`
-	Text         string               `json:"text"`
-	Attendee     string               `json:"attendee,omitempty"`
-	AttendeeAtom string               `json:"attendee_atom,omitempty"`
-	Owner        string               `json:"owner,omitempty"`
-	MemoryID     string               `json:"memory_id"`
-	SectionKind  string               `json:"section_kind,omitempty"`
-	CommitmentID string               `json:"commitment_id,omitempty"`
-	DuplicateOf  string               `json:"duplicate_of,omitempty"`
-	Direction    string               `json:"direction"`
-	Due          string               `json:"due"`
-	Lifecycle    string               `json:"lifecycle"`
-	ClosureRef   string               `json:"closure_ref"`
-	Citations    []PredictionCitation `json:"citations,omitempty"`
+	Surface      string           `json:"surface"`
+	Origin       PredictionOrigin `json:"origin,omitempty"`
+	Text         string           `json:"text"`
+	Attendee     string           `json:"attendee,omitempty"`
+	AttendeeAtom string           `json:"attendee_atom,omitempty"`
+	// CounterpartyLabel is explicit name-grain attribution when the source has no
+	// provider identity atom. It never substitutes for a present atom.
+	CounterpartyLabel string               `json:"counterparty_label,omitempty"`
+	Owner             string               `json:"owner,omitempty"`
+	MemoryID          string               `json:"memory_id"`
+	SectionKind       string               `json:"section_kind,omitempty"`
+	CommitmentID      string               `json:"commitment_id,omitempty"`
+	DuplicateOf       string               `json:"duplicate_of,omitempty"`
+	Direction         string               `json:"direction"`
+	Due               string               `json:"due"`
+	Lifecycle         string               `json:"lifecycle"`
+	ClosureRef        string               `json:"closure_ref"`
+	Citations         []PredictionCitation `json:"citations,omitempty"`
 }
 
 // PR carries Defined so an empty prediction set reports N/A, never a flattering
@@ -289,6 +292,14 @@ func uniquePredictions(preds []Prediction) []Prediction {
 	seen := make(map[string]struct{}, len(preds))
 	out := make([]Prediction, 0, len(preds))
 	for _, p := range preds {
+		if isInventoryPrediction(p) && p.CommitmentID == "" {
+			// Ref-less counterparty rows have no immutable key that proves two
+			// identical-looking claims are the same product fact. Preserve each
+			// emitted row: only one may claim a matching gold row, while the rest
+			// must remain observable as counterparty precision cost.
+			out = append(out, p)
+			continue
+		}
 		keyPrediction := p
 		keyPrediction.Citations = append([]PredictionCitation(nil), p.Citations...)
 		sort.Slice(keyPrediction.Citations, func(i, j int) bool {
@@ -487,6 +498,7 @@ type ledgerIndex struct {
 	byMemory   map[string]Artifact
 	atoms      map[string]string // lowercased email or handle -> identity id
 	displays   map[string]string // lowercased display name -> identity id
+	labels     map[string]string // unique full/given display labels -> identity id
 	self       string
 }
 
@@ -496,18 +508,36 @@ func indexLedger(l Ledger) (ledgerIndex, error) {
 		byMemory:   map[string]Artifact{},
 		atoms:      map[string]string{},
 		displays:   map[string]string{},
+		labels:     map[string]string{},
 		self:       l.Self.ID,
 	}
 	for _, a := range l.Artifacts {
 		idx.byArtifact[a.ID] = a
 		idx.byMemory[a.MemoryID] = a
 	}
+	labelCandidates := map[string][]string{}
 	for _, p := range append([]Identity{l.Self}, l.People...) {
 		for _, raw := range append(append([]string(nil), p.Emails...), p.Handles...) {
 			idx.atoms[strings.ToLower(strings.TrimSpace(raw))] = p.ID
 		}
 		if p.Display != "" {
-			idx.displays[strings.ToLower(strings.TrimSpace(p.Display))] = p.ID
+			display := strings.ToLower(strings.TrimSpace(p.Display))
+			idx.displays[display] = p.ID
+			labelCandidates[display] = append(labelCandidates[display], p.ID)
+			if fields := strings.Fields(display); len(fields) > 0 {
+				labelCandidates[fields[0]] = append(labelCandidates[fields[0]], p.ID)
+			}
+		}
+	}
+	for label, ids := range labelCandidates {
+		unique := map[string]bool{}
+		for _, id := range ids {
+			unique[id] = true
+		}
+		if len(unique) == 1 {
+			for id := range unique {
+				idx.labels[label] = id
+			}
 		}
 	}
 	return idx, nil
@@ -928,7 +958,7 @@ func scoreMeeting(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, pre
 	sc.Extraction = ratio(exactPreds, len(visible), countTrue(goldHit), len(gold))
 	sc.CitationCoverage = coverage(preds, idx)
 	sc.CitationCorrect = citationCorrectness(l, preds, gold, idx)
-	if len(inventory) > 0 {
+	if l.Version >= SchemaV3 && len(inventory) > 0 {
 		sc.Counterparty = inventoryCounterparty(inventoryGold, inventory, idx)
 	} else {
 		sc.Counterparty = perClassPR(gold, goldHit, goldAttributed, visible, idx)
@@ -950,10 +980,18 @@ func scoreMeeting(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, pre
 // only a fallback, because the product renders a person with no display name as a
 // bare address.
 func (idx ledgerIndex) resolveAttendee(p Prediction) string {
-	if _, value, ok := strings.Cut(p.AttendeeAtom, ":"); ok {
+	if strings.TrimSpace(p.AttendeeAtom) != "" {
+		_, value, ok := strings.Cut(p.AttendeeAtom, ":")
+		if !ok {
+			return ""
+		}
 		if id, found := idx.atoms[strings.ToLower(strings.TrimSpace(value))]; found {
 			return id
 		}
+		return ""
+	}
+	if label := strings.ToLower(strings.TrimSpace(p.CounterpartyLabel)); label != "" {
+		return idx.labels[label]
 	}
 	key := strings.ToLower(strings.TrimSpace(p.Attendee))
 	if id, found := idx.atoms[key]; found {
@@ -1028,7 +1066,7 @@ func scoreDaily(l Ledger, idx ledgerIndex, gold, inventoryGold []goldItem, preds
 	sc.CommitmentIdentity = commitments.identity()
 	sc.Dedup = commitments.dedup()
 	sc.CitationRoles = commitments.citationRoles()
-	if len(inventory) > 0 {
+	if l.Version >= SchemaV3 && len(inventory) > 0 {
 		sc.Counterparty = inventoryCounterparty(inventoryGold, inventory, idx)
 	}
 	// Counterparty is N/A on the daily surface: DigestItem carries no attendee. It
@@ -1056,6 +1094,11 @@ func coverage(preds []Prediction, idx ledgerIndex) PR {
 	covered, total := 0, 0
 	for _, p := range preds {
 		if isInventoryPrediction(p) {
+			// ID-less inventory rows exist only for the globally-required,
+			// ref-independent counterparty metric. They make no citation claim.
+			if p.CommitmentID == "" {
+				continue
+			}
 			if len(p.Citations) == 0 {
 				total++
 				continue
@@ -1209,11 +1252,27 @@ func inventoryCounterparty(gold []goldItem, preds []Prediction, idx ledgerIndex)
 	goldByClass, hitByClass := map[string]int{}, map[string]int{}
 	predByClass, correctByClass := map[string]int{}, map[string]int{}
 	byID := map[string]goldItem{}
+	byMemory := map[string][]goldItem{}
 	for _, g := range gold {
 		goldByClass[g.Attendee]++
 		byID[g.CommitmentID] = g
+		byMemory[g.MemoryID] = append(byMemory[g.MemoryID], g)
+	}
+	// An ID-less row may never claim gold already addressed by an ID-bearing row,
+	// even when that row carries the wrong counterparty. Identity-bearing evidence
+	// keeps its existing authoritative join.
+	reserved := map[string]bool{}
+	for _, p := range preds {
+		if p.CommitmentID != "" {
+			if g, ok := byID[p.CommitmentID]; ok {
+				reserved[g.ID] = true
+			}
+		}
 	}
 	for _, p := range preds {
+		if p.CommitmentID == "" {
+			continue
+		}
 		g, ok := byID[p.CommitmentID]
 		if !ok {
 			continue
@@ -1224,6 +1283,40 @@ func inventoryCounterparty(gold []goldItem, preds []Prediction, idx ledgerIndex)
 			correctByClass[class]++
 			hitByClass[g.Attendee]++
 		}
+	}
+	hitGold := map[string]bool{}
+	for _, g := range gold {
+		if hitByClass[g.Attendee] > 0 {
+			// The per-class count alone cannot identify a gold row. Seed exact hits
+			// from the authoritative ID pass instead.
+			for _, p := range preds {
+				if p.CommitmentID == g.CommitmentID && idx.resolveAttendee(p) == g.Attendee {
+					hitGold[g.ID] = true
+					break
+				}
+			}
+		}
+	}
+	for _, p := range preds {
+		if p.CommitmentID != "" {
+			continue
+		}
+		class := idx.resolveAttendee(p)
+		predByClass[class]++
+		var candidates []goldItem
+		for _, g := range byMemory[p.MemoryID] {
+			if reserved[g.ID] || hitGold[g.ID] || g.Attendee != class {
+				continue
+			}
+			candidates = append(candidates, g)
+		}
+		if len(candidates) != 1 {
+			continue
+		}
+		g := candidates[0]
+		correctByClass[class]++
+		hitByClass[g.Attendee]++
+		hitGold[g.ID] = true
 	}
 	if len(predByClass) == 0 || len(goldByClass) == 0 {
 		return PR{}

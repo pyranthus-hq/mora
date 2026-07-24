@@ -45,21 +45,25 @@ const (
 // It is materialized with the whole-vault index generation and is never written
 // into a vault memory.
 type Commitment struct {
-	ID               string               `json:"id,omitempty"`
-	Owner            govAtom              `json:"owner"`
-	Counterparty     govAtom              `json:"counterparty"`
-	CounterpartyKeys []string             `json:"counterparty_keys,omitempty"`
-	Direction        Direction            `json:"direction"`
-	Summary          string               `json:"summary"`
-	OpenedBy         commitSpan           `json:"opened_by"`
-	Due              commitDue            `json:"due"`
-	State            string               `json:"state"`
-	ClosureRef       string               `json:"closure_ref"`
-	SupersededBy     string               `json:"superseded_by,omitempty"`
-	StateUncertain   bool                 `json:"state_uncertain,omitempty"`
-	Gap              string               `json:"gap,omitempty"`
-	Citations        []CommitmentCitation `json:"citations"`
-	DuplicateOf      string               `json:"duplicate_of,omitempty"`
+	ID           string  `json:"id,omitempty"`
+	Owner        govAtom `json:"owner"`
+	Counterparty govAtom `json:"counterparty"`
+	// CounterpartyLabel is explicit name-grain attribution, not identity. It is
+	// used only when authored text names an addressee but the source supplies no
+	// provider atom. It never enters the entity graph or merge machinery.
+	CounterpartyLabel string               `json:"counterparty_label,omitempty"`
+	CounterpartyKeys  []string             `json:"counterparty_keys,omitempty"`
+	Direction         Direction            `json:"direction"`
+	Summary           string               `json:"summary"`
+	OpenedBy          commitSpan           `json:"opened_by"`
+	Due               commitDue            `json:"due"`
+	State             string               `json:"state"`
+	ClosureRef        string               `json:"closure_ref"`
+	SupersededBy      string               `json:"superseded_by,omitempty"`
+	StateUncertain    bool                 `json:"state_uncertain,omitempty"`
+	Gap               string               `json:"gap,omitempty"`
+	Citations         []CommitmentCitation `json:"citations"`
+	DuplicateOf       string               `json:"duplicate_of,omitempty"`
 }
 
 type commitSpan struct {
@@ -79,7 +83,8 @@ type commitDue struct {
 var (
 	commitMonthDateRE = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+([0-9]{1,2})(?:st|nd|rd|th)?(?:,\s*([0-9]{4}))?\b`)
 	commitISODateRE   = regexp.MustCompile(`\b([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})\b`)
-	commitRelativeRE  = regexp.MustCompile(`(?i)\b(today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|week|month)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|once|until|by\s+the\s+end|in\s+the\s+(?:morning|afternoon|evening)|before\s+(?:breakfast|lunch|dinner)|in\s+[0-9]+\s+(?:minutes?|hours?|days?|weeks?))\b`)
+	commitRelativeRE  = regexp.MustCompile(`(?i)\b(today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|week|month)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|when|once|until|by\s+the\s+end|in\s+the\s+(?:morning|afternoon|evening)|before\s+(?:breakfast|lunch|dinner)|in\s+[0-9]+\s+(?:minutes?|hours?|days?|weeks?))\b`)
+	commitEventDueRE  = regexp.MustCompile(`(?i)\bfor\s+the\s+(?:[\p{L}\p{N}’'\-]+\s+){0,6}(?:meeting|session|review|walk-through)\b`)
 )
 
 func classifyCommitmentDue(text, occurredAt string) commitDue {
@@ -93,7 +98,7 @@ func classifyCommitmentDue(text, occurredAt string) commitDue {
 			return commitDue{Kind: commitDueExplicitDate, At: date}
 		}
 	}
-	if commitRelativeRE.MatchString(text) {
+	if commitRelativeRE.MatchString(text) || commitEventDueRE.MatchString(text) {
 		return commitDue{Kind: commitDueRelative}
 	}
 	return commitDue{Kind: commitDueNone}
@@ -277,45 +282,105 @@ func firstPersonCommitment(lower string) bool {
 	})
 }
 
-var userAuthoredPromiseToAnotherRE = regexp.MustCompile(`(?i)\bi told\s+(?:[\p{L}\p{N}_.’'\-]+\s+){1,4}i['’]d\s+`)
+var userAuthoredPromiseToAnotherRE = regexp.MustCompile(`(?i)\bi told\s+((?:[\p{L}\p{N}_.’'\-]+\s+){0,3}[\p{L}\p{N}_.’'\-]+)\s+i(?:['’]d|\s+would)\s+`)
 
 func userAuthoredPromiseToAnother(text string) bool {
 	lower := strings.ToLower(oneLine(text))
-	return userAuthoredPromiseToAnotherRE.MatchString(lower) && firstPersonCommitment(lower)
+	if !userAuthoredPromiseToAnotherRE.MatchString(lower) ||
+		containsAnyPhrase(lower, []string{" i would have ", " i would already ", " i would previously "}) {
+		return false
+	}
+	return firstPersonCommitment(strings.Replace(lower, " i would ", " i will ", 1))
 }
 
-func reportedActorFor(m Memory, text string, counterparty govAtom) *govAtom {
+func userAuthoredPromiseCounterpartyLabel(text string) string {
+	match := userAuthoredPromiseToAnotherRE.FindStringSubmatch(oneLine(text))
+	if len(match) != 2 {
+		return ""
+	}
+	return strings.Join(strings.Fields(match[1]), " ")
+}
+
+// reportedActorFor resolves attributed third-person speech only from stable source
+// identities. A participant other than the current thread counterparty may own an
+// obligation only when the report also names the user as its beneficiary; otherwise
+// the work is between third parties and must be dropped.
+func reportedActorFor(m Memory, text string, counterparty, self govAtom) (*govAtom, bool) {
 	lower := strings.ToLower(oneLine(text))
-	var names []string
+	type namedAtom struct {
+		atom govAtom
+		name string
+	}
+	var candidates []namedAtom
+	selfNames := []string{}
 	if isIMessageMemory(m) {
 		for _, pair := range participantPairs(m.Meta["participants"]) {
-			if atomEqual(counterparty, govAtom{Provider: "imessage", Kind: atomHandle, Value: normalizeIdentity(atomHandle, pair["handle"])}) {
-				names = append(names, pair["name"])
+			atom := govAtom{Provider: "imessage", Kind: atomHandle, Value: normalizeIdentity(atomHandle, pair["handle"])}
+			if atomEqual(counterparty, atom) {
+				candidates = append(candidates, namedAtom{atom: atom, name: pair["name"]})
 			}
 		}
 	}
 	if isGmailMemory(m) {
-		if raw, ok := m.Meta["names"].(map[string]any); ok {
-			if name, ok := raw[counterparty.Value].(string); ok {
-				names = append(names, name)
+		var names map[string]string
+		if body, err := json.Marshal(m.Meta["names"]); err == nil && json.Unmarshal(body, &names) == nil {
+			keys := make([]string, 0, len(names))
+			for raw := range names {
+				keys = append(keys, raw)
+			}
+			sort.Strings(keys)
+			for _, raw := range keys {
+				atom := govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, raw)}
+				if atomEqual(atom, self) {
+					selfNames = append(selfNames, names[raw])
+					continue
+				}
+				candidates = append(candidates, namedAtom{atom: atom, name: names[raw]})
 			}
 		}
 	}
+	var matched []namedAtom
+	for _, candidate := range candidates {
+		fields := strings.Fields(strings.ToLower(strings.TrimSpace(candidate.name)))
+		if len(fields) == 0 {
+			continue
+		}
+		for _, name := range []string{strings.Join(fields, " "), fields[0]} {
+			if strings.Contains(lower, name+" said ") ||
+				strings.Contains(lower, name+" said,") ||
+				strings.Contains(lower, name+" said:") ||
+				strings.Contains(lower, name+" will ") ||
+				strings.Contains(lower, name+"'ll ") {
+				matched = append(matched, candidate)
+				break
+			}
+		}
+	}
+	if len(matched) == 0 {
+		return nil, false
+	}
+	if len(matched) != 1 {
+		return nil, true
+	}
+	actor := matched[0].atom
+	if atomEqual(actor, counterparty) || textNamesPerson(lower, selfNames) {
+		return &actor, true
+	}
+	return nil, true
+}
+
+func textNamesPerson(lower string, names []string) bool {
 	for _, name := range names {
 		fields := strings.Fields(strings.ToLower(strings.TrimSpace(name)))
 		if len(fields) == 0 {
 			continue
 		}
-		for _, candidate := range []string{strings.Join(fields, " "), fields[0]} {
-			if strings.Contains(lower, candidate+" said ") ||
-				strings.Contains(lower, candidate+" will ") ||
-				strings.Contains(lower, candidate+"'ll ") {
-				actor := counterparty
-				return &actor
-			}
+		if strings.Contains(lower, strings.Join(fields, " ")) ||
+			(len(fields[0]) >= 3 && strings.Contains(lower, fields[0])) {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 func nonActionableAcknowledgement(lower string) bool {
@@ -484,6 +549,127 @@ func gmailBodyParts(m Memory) []string {
 	return strings.Split(body, "\n\n---\n\n")
 }
 
+// gmailAuthoredBlockRef binds a sender-authored prefix to the first ordered block
+// ref. The Gmail renderer preserves block order. When later footer, quoted, or
+// forwarded blocks exist, senderAuthoredBody removes them before classification;
+// therefore the first ref remains the only evidence-derived ref we can assign.
+// A message with no authored prefix stays ID-less.
+func gmailAuthoredBlockRef(message commitmentMessageEvidence, body string) string {
+	if len(message.BlockRefs) == 0 || strings.TrimSpace(senderAuthoredBody(body)) == "" {
+		return ""
+	}
+	return message.BlockRefs[0]
+}
+
+// gmailFulfilledQuotedRequest recognizes the contract's one exceptional quoted
+// opening: an authored delivery followed by the earlier request it fulfills. The
+// two ordered block refs are required so the opening and closure remain grounded;
+// a quote without authored fulfillment returns no obligation.
+func gmailFulfilledQuotedRequest(m Memory, message commitmentMessageEvidence, body string) (delivery, request string, quotedAuthor govAtom, blockRef string, ok bool) {
+	if len(message.BlockRefs) != 2 {
+		return "", "", govAtom{}, "", false
+	}
+	lines := strings.Split(body, "\n")
+	attribution := -1
+	for i, line := range lines {
+		if quotedReplyLine.MatchString(line) {
+			attribution = i
+			break
+		}
+	}
+	if attribution < 0 {
+		return "", "", govAtom{}, "", false
+	}
+	delivery = oneLine(senderAuthoredBody(strings.Join(lines[:attribution], "\n")))
+	transition, voice := commitmentTransition(delivery)
+	if transition != commitClosed || voice != commitmentVoiceDelivery {
+		return "", "", govAtom{}, "", false
+	}
+
+	attributionLine := strings.ToLower(strings.TrimSpace(lines[attribution]))
+	var names map[string]string
+	if body, err := json.Marshal(m.Meta["names"]); err != nil || json.Unmarshal(body, &names) != nil {
+		return "", "", govAtom{}, "", false
+	}
+	var authors []govAtom
+	keys := make([]string, 0, len(names))
+	for raw := range names {
+		keys = append(keys, raw)
+	}
+	sort.Strings(keys)
+	for _, raw := range keys {
+		name := strings.ToLower(strings.TrimSpace(names[raw]))
+		fields := strings.Fields(name)
+		if name == "" || (!strings.Contains(attributionLine, name) &&
+			(len(fields) == 0 || len(fields[0]) < 3 || !strings.Contains(attributionLine, fields[0]))) {
+			continue
+		}
+		authors = append(authors, govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, raw)})
+	}
+	if len(authors) != 1 {
+		return "", "", govAtom{}, "", false
+	}
+
+	var quotedLines []string
+	for _, line := range lines[attribution+1:] {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, ">") {
+			if trimmed != "" {
+				break
+			}
+			continue
+		}
+		quotedLines = append(quotedLines, strings.TrimSpace(strings.TrimPrefix(trimmed, ">")))
+	}
+	segments := commitmentSegments(strings.Join(quotedLines, "\n"))
+	if len(segments) != 1 || !directCommitmentRequest(strings.ToLower(oneLine(segments[0]))) {
+		return "", "", govAtom{}, "", false
+	}
+	return delivery, segments[0], authors[0], message.BlockRefs[1], true
+}
+
+// acceptanceRestatesRequest implements the contract rule that accepting an
+// existing request does not create extra work. It is intentionally narrower than
+// general dedup: same artifact, later message, same typed parties/direction/due,
+// a direct-request opener, and either strong object overlap or an explicit
+// anaphoric acceptance with corroborating object overlap.
+func acceptanceRestatesRequest(existing []Commitment, candidate Commitment) (int, bool) {
+	lower := strings.ToLower(oneLine(candidate.Summary))
+	if !firstPersonCommitment(lower) {
+		return -1, false
+	}
+	anaphoricAcceptance := containsAnyPhrase(lower, []string{
+		"i can take that", "i'll take that", "i will take that",
+		"i can handle that", "i'll handle that", "i will handle that",
+		"i can do that", "i'll do that", "i will do that",
+	})
+	for i := len(existing) - 1; i >= 0; i-- {
+		opener := existing[i]
+		orderedAfter := strictlyAfter(opener.OpenedBy.OccurredAt, candidate.OpenedBy.OccurredAt) ||
+			(opener.OpenedBy.MessageRef == "" && candidate.OpenedBy.MessageRef == "" &&
+				opener.OpenedBy.OccurredAt == candidate.OpenedBy.OccurredAt)
+		sameDueInstance := opener.Due == candidate.Due ||
+			(opener.Due.Kind == commitDueNone && candidate.Due.Kind != "")
+		if opener.OpenedBy.MemoryID != candidate.OpenedBy.MemoryID ||
+			(opener.OpenedBy.MessageRef != "" && opener.OpenedBy.MessageRef == candidate.OpenedBy.MessageRef) ||
+			!orderedAfter ||
+			!directCommitmentRequest(strings.ToLower(oneLine(opener.Summary))) ||
+			!sameDueInstance ||
+			!atomEqual(opener.Owner, candidate.Owner) ||
+			!atomEqual(opener.Counterparty, candidate.Counterparty) ||
+			opener.Direction != candidate.Direction ||
+			opener.State != candidate.State ||
+			opener.ClosureRef != candidate.ClosureRef {
+			continue
+		}
+		overlap := commitmentObjectOverlap(opener.Summary, candidate.Summary)
+		if commitmentDedupCandidate(opener, candidate) || (anaphoricAcceptance && overlap > 0) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
 func gmailAddressee(sender govAtom, to, cc []string, self, counterparty govAtom) govAtom {
 	recipients := append(append([]string(nil), to...), cc...)
 	seenOther := map[string]bool{}
@@ -565,6 +751,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				segment, "", "", validFromOf(m), nil, slot,
 				selfAtom, govAtom{}, commitOwedBySelf,
 			))
+			out[len(out)-1].CounterpartyLabel = userAuthoredPromiseCounterpartyLabel(segment)
 		}
 		return uniqueCommitments(out)
 	}
@@ -589,9 +776,17 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 			if turn.Self {
 				author, addressee = selfAtom, counterparty
 			}
+			reportedActor, attributed := reportedActorFor(m, turn.Body, counterparty, selfAtom)
+			if attributed && reportedActor == nil {
+				continue
+			}
+			speechCounterparty := counterparty
+			if reportedActor != nil {
+				speechCounterparty = *reportedActor
+			}
 			owner, direction, found := classifyCommitmentSpeech(turn.Body, commitmentSpeechContext{
-				Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
-				ReportedActor: reportedActorFor(m, turn.Body, counterparty),
+				Author: author, Addressee: addressee, Self: selfAtom, Counterparty: speechCounterparty,
+				ReportedActor: reportedActor,
 			})
 			if !found {
 				continue
@@ -599,7 +794,14 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 			// The connector currently preserves ordered turns but not provider
 			// message ids in Meta. Refuse to fabricate a CommitmentID; direction and
 			// ownership remain typed, while identity stays explicitly unavailable.
-			out = append(out, newCommitment(turn.Body, "", "", validFromOf(m), nil, 0, owner, counterparty, direction))
+			candidate := newCommitment(turn.Body, "", "", validFromOf(m), nil, 0, owner, speechCounterparty, direction)
+			if prior, accepted := acceptanceRestatesRequest(out, candidate); accepted {
+				if out[prior].Due.Kind == commitDueNone && candidate.Due.Kind != commitDueNone {
+					out[prior].Due = candidate.Due
+				}
+				continue
+			}
+			out = append(out, candidate)
 		}
 		return out
 	}
@@ -619,24 +821,60 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 					continue
 				}
 				addressee := gmailAddressee(author, message.To, message.Cc, selfAtom, counterparty)
-				blockRef := ""
-				if len(message.BlockRefs) == 1 {
-					blockRef = message.BlockRefs[0]
-				}
+				blockRef := gmailAuthoredBlockRef(message, parts[i])
 				slot := 0
 				for _, segment := range commitmentSegments(parts[i]) {
 					if assignedToThirdParty(segment, selfTokens) {
 						continue
 					}
+					reportedActor, attributed := reportedActorFor(m, segment, counterparty, selfAtom)
+					if attributed && reportedActor == nil {
+						continue
+					}
+					speechCounterparty := counterparty
+					if reportedActor != nil {
+						speechCounterparty = *reportedActor
+					}
 					owner, direction, found := classifyCommitmentSpeech(segment, commitmentSpeechContext{
-						Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
-						ReportedActor: reportedActorFor(m, segment, counterparty),
+						Author: author, Addressee: addressee, Self: selfAtom, Counterparty: speechCounterparty,
+						ReportedActor: reportedActor,
 					})
 					if !found {
 						continue
 					}
-					out = append(out, newCommitment(segment, message.MessageRef, blockRef, message.At, message.AncestorRefs, slot, owner, counterparty, direction))
+					candidate := newCommitment(segment, message.MessageRef, blockRef, message.At, message.AncestorRefs, slot, owner, speechCounterparty, direction)
+					if prior, accepted := acceptanceRestatesRequest(out, candidate); accepted {
+						if out[prior].Due.Kind == commitDueNone && candidate.Due.Kind != commitDueNone {
+							out[prior].Due = candidate.Due
+						}
+						continue
+					}
+					out = append(out, candidate)
 					slot++
+				}
+				delivery, request, quotedAuthor, quotedBlockRef, fulfilled := gmailFulfilledQuotedRequest(m, message, parts[i])
+				if fulfilled {
+					speechCounterparty := quotedAuthor
+					if atomEqual(quotedAuthor, selfAtom) {
+						speechCounterparty = author
+					}
+					owner, direction, found := classifyCommitmentSpeech(request, commitmentSpeechContext{
+						Author: quotedAuthor, Addressee: author, Self: selfAtom, Counterparty: speechCounterparty,
+					})
+					if found && atomEqual(owner, author) && commitmentObjectOverlap(request, delivery) > 0 {
+						candidate := newCommitment(
+							request, message.MessageRef, quotedBlockRef, message.At,
+							message.AncestorRefs, 0, owner, speechCounterparty, direction,
+						)
+						candidate.State = commitClosed
+						candidate.ClosureRef = m.ID
+						if citation, err := citationForMemory(m, evidenceSource(m), validFromOf(m)); err == nil {
+							candidate.Citations = mergeCommitmentCitations(candidate.Citations, []CommitmentCitation{{
+								Citation: citation, CommitmentID: candidate.ID, Role: commitCitationClosure,
+							}})
+						}
+						out = append(out, candidate)
+					}
 				}
 			}
 		} else {
@@ -657,12 +895,20 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				if assignedToThirdParty(segment, selfTokens) {
 					continue
 				}
+				reportedActor, attributed := reportedActorFor(m, segment, counterparty, selfAtom)
+				if attributed && reportedActor == nil {
+					continue
+				}
+				speechCounterparty := counterparty
+				if reportedActor != nil {
+					speechCounterparty = *reportedActor
+				}
 				owner, direction, found := classifyCommitmentSpeech(segment, commitmentSpeechContext{
-					Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
-					ReportedActor: reportedActorFor(m, segment, counterparty),
+					Author: author, Addressee: addressee, Self: selfAtom, Counterparty: speechCounterparty,
+					ReportedActor: reportedActor,
 				})
 				if found {
-					out = append(out, newCommitment(segment, "", "", validFromOf(m), nil, 0, owner, counterparty, direction))
+					out = append(out, newCommitment(segment, "", "", validFromOf(m), nil, 0, owner, speechCounterparty, direction))
 				}
 			}
 		}
@@ -675,15 +921,23 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				author = govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, sender)}
 			}
 			addressee := gmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), selfAtom, counterparty)
+			reportedActor, attributed := reportedActorFor(m, m.Title, counterparty, selfAtom)
+			if attributed && reportedActor == nil {
+				return uniqueCommitments(out)
+			}
+			speechCounterparty := counterparty
+			if reportedActor != nil {
+				speechCounterparty = *reportedActor
+			}
 			if owner, direction, found := classifyCommitmentSpeech(m.Title, commitmentSpeechContext{
-				Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
-				ReportedActor: reportedActorFor(m, m.Title, counterparty),
+				Author: author, Addressee: addressee, Self: selfAtom, Counterparty: speechCounterparty,
+				ReportedActor: reportedActor,
 			}); found {
 				messageRef, blockRef := "", ""
 				if len(messages) > 0 {
 					messageRef, blockRef = messages[0].MessageRef, "subject"
 				}
-				out = append(out, newCommitment(m.Title, messageRef, blockRef, validFromOf(m), nil, 0, owner, counterparty, direction))
+				out = append(out, newCommitment(m.Title, messageRef, blockRef, validFromOf(m), nil, 0, owner, speechCounterparty, direction))
 			}
 		}
 	}
@@ -815,10 +1069,7 @@ func commitmentEvidenceFromMemories(mems []Memory, cfg Config) []commitmentEvide
 					if party == commitmentPartyUnknown {
 						continue
 					}
-					blockRef := ""
-					if len(message.BlockRefs) == 1 {
-						blockRef = message.BlockRefs[0]
-					}
+					blockRef := gmailAuthoredBlockRef(message, parts[i])
 					appendEvidence(parts[i], message.MessageRef, blockRef, message.At, party)
 				}
 				continue
@@ -1285,6 +1536,7 @@ func attachCommitment(line *CitedBriefLine, commitment Commitment) {
 	line.Direction = commitment.Direction
 	line.Owner = commitment.Owner
 	line.Counterparty = commitment.Counterparty
+	line.CounterpartyLabel = commitment.CounterpartyLabel
 	line.CommitmentID = commitment.ID
 	line.DueAt = commitDueValue(commitment.Due)
 	line.Lifecycle = commitment.State

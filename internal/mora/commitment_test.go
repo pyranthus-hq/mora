@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,8 +40,26 @@ func TestCommitmentDueClassification(t *testing.T) {
 			want:       commitDue{Kind: commitDueRelative},
 		},
 		{
+			name:       "relative condition",
+			text:       "I will share the access code when I reach the desk.",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueRelative},
+		},
+		{
+			name:       "named session anchor",
+			text:       "For the north gallery handoff session, please bring the lighting plan.",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueRelative},
+		},
+		{
 			name:       "urgency does not invent a deadline",
 			text:       "Please send the receipt urgently.",
+			occurredAt: "2026-07-12T17:00:00Z",
+			want:       commitDue{Kind: commitDueNone},
+		},
+		{
+			name:       "purpose without an event anchor does not invent a deadline",
+			text:       "Please bring the lighting plan for the north gallery.",
 			occurredAt: "2026-07-12T17:00:00Z",
 			want:       commitDue{Kind: commitDueNone},
 		},
@@ -136,8 +155,19 @@ func TestManualAuthoredPromiseMaterialization(t *testing.T) {
 	if atomPresent(commitment.Counterparty) {
 		t.Fatalf("counterparty = %+v, want an honest gap without source-native identity metadata", commitment.Counterparty)
 	}
+	if commitment.CounterpartyLabel != "Jordan" {
+		t.Fatalf("counterparty label = %q, want source-authored addressee", commitment.CounterpartyLabel)
+	}
 	if commitment.ID != "" {
 		t.Fatalf("commitment id = %q, want no fabricated immutable evidence id", commitment.ID)
+	}
+
+	memory.ID = "invented-note-would-promise"
+	memory.Text = "I told Rowan Vale I would return the borrowed lens before the workshop."
+	got = classifyCommitments(memory, cfg)
+	if len(got) != 1 || got[0].CounterpartyLabel != "Rowan Vale" ||
+		atomPresent(got[0].Counterparty) {
+		t.Fatalf("explicit would-promise = %+v, want name-grain label without identity atom", got)
 	}
 
 	memory.ID = "invented-note-past-report"
@@ -182,9 +212,14 @@ func TestWindowDigestSurfacesManualPromiseOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var surfaced []string
+	var promiseItem *DigestItem
 	for _, section := range digest.Sections {
-		for _, item := range section.Items {
+		for i := range section.Items {
+			item := section.Items[i]
 			surfaced = append(surfaced, item.ID)
+			if item.ID == "invented-note-promise" {
+				promiseItem = &item
+			}
 		}
 	}
 	if !containsStringFold(surfaced, "invented-note-promise") {
@@ -192,6 +227,10 @@ func TestWindowDigestSurfacesManualPromiseOnly(t *testing.T) {
 	}
 	if containsStringFold(surfaced, "invented-note-past-report") {
 		t.Fatalf("past-completion near miss reached DAILY: %v", surfaced)
+	}
+	if promiseItem == nil || promiseItem.CounterpartyLabel != "Jordan" ||
+		!strings.Contains(renderDigestItemLine(*promiseItem), "counterparty=Jordan") {
+		t.Fatalf("manual promise label did not render as plain attribution: %+v", promiseItem)
 	}
 }
 
@@ -231,6 +270,235 @@ func TestCommitmentIDEvidenceOnly(t *testing.T) {
 	}
 	if got := commitmentID("", "block", 0); got != "" {
 		t.Fatalf("missing evidence minted id %q", got)
+	}
+}
+
+func TestGmailCommitmentUsesAuthoredPrefixBlockRef(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	for _, tt := range []struct {
+		name      string
+		body      string
+		blockRefs []string
+		want      int
+	}{
+		{
+			name: "footer after authored ask",
+			body: "Could you deliver the calibration sheet tomorrow?\n\n" +
+				"Manage workshop notices or update your preferences.",
+			blockRefs: []string{"authored-body", "footer"},
+			want:      1,
+		},
+		{
+			name: "forward after authored ask",
+			body: "Could you deliver the calibration sheet tomorrow?\n\n" +
+				"---------- Forwarded message ---------\nReserve a seat today.",
+			blockRefs: []string{"authored-body", "forward"},
+			want:      1,
+		},
+		{
+			name:      "bare forward is not authored evidence",
+			body:      "---------- Forwarded message ---------\nReserve a seat today.",
+			blockRefs: []string{"forward"},
+			want:      0,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			memory := Memory{
+				ID: "gmail_thread/invented-structured", Type: "email", Provider: "gmail",
+				Source: "invented-structured", CreatedAt: "2026-08-01T10:00:00Z",
+				Text: "From: Other <other@example.com>\n\n" + tt.body,
+				Meta: map[string]any{
+					"from": []string{"other@example.com"},
+					"to":   []string{"self@example.com"},
+					"messages": []commitmentMessageEvidence{{
+						MessageRef: "gmail_thread/invented-structured#message-1",
+						Sender:     "other@example.com",
+						To:         []string{"self@example.com"},
+						At:         "2026-08-01T10:00:00Z",
+						BlockRefs:  tt.blockRefs,
+					}},
+				},
+			}
+			got := classifyCommitments(memory, cfg)
+			if len(got) != tt.want {
+				t.Fatalf("commitments = %+v, want %d", got, tt.want)
+			}
+			if tt.want == 0 {
+				return
+			}
+			wantID := commitmentID("gmail_thread/invented-structured#message-1", "authored-body", 0)
+			if got[0].ID != wantID || got[0].OpenedBy.BlockRef != "authored-body" {
+				t.Fatalf("opening identity = %+v, want authored prefix %q", got[0].OpenedBy, wantID)
+			}
+		})
+	}
+}
+
+func TestAcceptedRequestDoesNotCreateExtraWork(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	memory := func(reply string) Memory {
+		return Memory{
+			ID: "gmail_thread/invented-acceptance", Type: "email", Provider: "gmail",
+			Source: "invented-acceptance", CreatedAt: "2026-08-01T10:30:00Z",
+			Text: "From: Self <self@example.com>\n\n" +
+				"Could you reserve the calibration bench for the sensor run?\n\n---\n\n" + reply,
+			Meta: map[string]any{
+				"from": []string{"self@example.com", "other@example.com"},
+				"to":   []string{"self@example.com", "other@example.com"},
+				"messages": []commitmentMessageEvidence{
+					{
+						MessageRef: "gmail_thread/invented-acceptance#ask",
+						Sender:     "self@example.com", To: []string{"other@example.com"},
+						At: "2026-08-01T10:00:00Z", BlockRefs: []string{"ask-body"},
+					},
+					{
+						MessageRef: "gmail_thread/invented-acceptance#reply",
+						Sender:     "other@example.com", To: []string{"self@example.com"},
+						At: "2026-08-01T10:30:00Z", BlockRefs: []string{"reply-body"},
+					},
+				},
+			},
+		}
+	}
+
+	got := classifyCommitments(memory(
+		"I will hold the calibration bench. Please send me the sensor checklist before the review.",
+	), cfg)
+	if len(got) != 2 {
+		t.Fatalf("accepted request produced extra work: %+v", got)
+	}
+	wantIDs := map[string]bool{
+		commitmentID("gmail_thread/invented-acceptance#ask", "ask-body", 0):     true,
+		commitmentID("gmail_thread/invented-acceptance#reply", "reply-body", 0): true,
+	}
+	for _, commitment := range got {
+		if !wantIDs[commitment.ID] {
+			t.Fatalf("commitment id %q shows an acceptance consumed a slot: %+v", commitment.ID, got)
+		}
+	}
+
+	nearMiss := classifyCommitments(memory(
+		"I will prepare the lighting budget. Please send me the sensor checklist before the review.",
+	), cfg)
+	if len(nearMiss) != 3 {
+		t.Fatalf("materially changed action collapsed into the earlier request: %+v", nearMiss)
+	}
+}
+
+func TestIMessageAcceptanceDoesNotCreateExtraWork(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	memory := func(reply string) Memory {
+		return Memory{
+			ID: "imessage_chat/invented-acceptance", Type: "imessage", Provider: "imessage",
+			Source: "invented-acceptance", CreatedAt: "2026-08-01T10:00:00Z",
+			Text: "Me: Would you send me the calibration code?\nLucia: " + reply,
+			Meta: map[string]any{"participants": []map[string]string{{
+				"handle": "+15550100104", "name": "Lucia Wynn",
+			}}},
+		}
+	}
+
+	got := classifyCommitments(memory("Yes, I will text you the calibration code when I reach the desk."), cfg)
+	if len(got) != 1 || got[0].Direction != commitOwedByCounterparty ||
+		got[0].Due != (commitDue{Kind: commitDueRelative}) ||
+		got[0].Counterparty.Value != "+15550100104" {
+		t.Fatalf("accepted iMessage request = %+v, want one due-enriched obligation", got)
+	}
+
+	if nearMiss := classifyCommitments(memory("I will prepare the lighting budget tomorrow."), cfg); len(nearMiss) != 2 {
+		t.Fatalf("materially changed iMessage action collapsed into the request: %+v", nearMiss)
+	}
+}
+
+func TestReportedThirdPartyPromiseRequiresNamedSelfBeneficiary(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"ava@example.com"}}
+	memory := func(beneficiary string) Memory {
+		body := "Rhea said, “I will bring " + beneficiary + " the sealed envelope before the review.”"
+		return Memory{
+			ID: "gmail_thread/invented-relay", Type: "email", Provider: "gmail",
+			Source: "invented-relay", CreatedAt: "2026-08-01T10:00:00Z",
+			Text: "From: Jordan <jordan@example.net>\n\n" + body,
+			Meta: map[string]any{
+				"from": []string{"jordan@example.net"},
+				"to":   []string{"ava@example.com"},
+				"cc":   []string{"rhea@example.org"},
+				"names": map[string]string{
+					"ava@example.com":    "Ava Stone",
+					"jordan@example.net": "Jordan Vale",
+					"rhea@example.org":   "Rhea North",
+				},
+				"messages": []commitmentMessageEvidence{{
+					MessageRef: "gmail_thread/invented-relay#message-1",
+					Sender:     "jordan@example.net",
+					To:         []string{"ava@example.com"},
+					Cc:         []string{"rhea@example.org"},
+					At:         "2026-08-01T10:00:00Z",
+					BlockRefs:  []string{"relay-body"},
+				}},
+			},
+		}
+	}
+
+	got := classifyCommitments(memory("Ava"), cfg)
+	wantActor := govAtom{Kind: atomAddress, Value: "rhea@example.org"}
+	if len(got) != 1 || !atomEqual(got[0].Owner, wantActor) ||
+		!atomEqual(got[0].Counterparty, wantActor) ||
+		got[0].Direction != commitOwedByCounterparty {
+		t.Fatalf("safe reported promise = %+v, want Rhea owing Ava", got)
+	}
+
+	if got := classifyCommitments(memory("Morgan"), cfg); len(got) != 0 {
+		t.Fatalf("third-party-only reported promise became the user's loop: %+v", got)
+	}
+}
+
+func TestAuthoredDeliveryMaterializesFulfilledQuotedRequest(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	memory := func(delivery string) Memory {
+		return Memory{
+			ID: "gmail_thread/invented-fulfilled-quote", Type: "email", Provider: "gmail",
+			Source: "invented-fulfilled-quote", CreatedAt: "2026-08-01T10:00:00Z",
+			Text: "From: Self <self@example.com>\n\n" + delivery +
+				"\n\nOn Fri, Aug 1, Rowan Vale wrote:\n> Could you send me the signed access sheet before noon?",
+			Meta: map[string]any{
+				"from": []string{"self@example.com"},
+				"to":   []string{"rowan@example.org"},
+				"names": map[string]string{
+					"self@example.com":  "Ava Stone",
+					"rowan@example.org": "Rowan Vale",
+				},
+				"messages": []commitmentMessageEvidence{{
+					MessageRef: "gmail_thread/invented-fulfilled-quote#reply",
+					Sender:     "self@example.com", To: []string{"rowan@example.org"},
+					At:        "2026-08-01T10:00:00Z",
+					BlockRefs: []string{"authored-delivery", "quoted-request"},
+				}},
+			},
+		}
+	}
+
+	got := classifyCommitments(memory("I attached the signed access sheet in this reply."), cfg)
+	if len(got) != 1 {
+		t.Fatalf("fulfilled quoted request = %+v, want one closed obligation", got)
+	}
+	commitment := got[0]
+	wantID := commitmentID("gmail_thread/invented-fulfilled-quote#reply", "quoted-request", 0)
+	if commitment.ID != wantID || commitment.State != commitClosed ||
+		commitment.ClosureRef != "gmail_thread/invented-fulfilled-quote" ||
+		commitment.Due != (commitDue{Kind: commitDueRelative}) ||
+		len(commitment.Citations) != 2 ||
+		commitment.Citations[0].Role != commitCitationOpener ||
+		commitment.Citations[1].Role != commitCitationClosure {
+		t.Fatalf("fulfilled quoted request = %+v", commitment)
+	}
+
+	for _, nearMiss := range []string{
+		"I will attach the signed access sheet tomorrow.",
+		"I attached the lighting budget in this reply.",
+	} {
+		if got := classifyCommitments(memory(nearMiss), cfg); len(got) != 0 {
+			t.Fatalf("quote without matching authored fulfillment materialized: %q -> %+v", nearMiss, got)
+		}
 	}
 }
 

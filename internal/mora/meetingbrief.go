@@ -168,6 +168,7 @@ type CitedBriefLine struct {
 	Direction           Direction            `json:"direction,omitempty"`
 	Owner               govAtom              `json:"owner,omitzero"`
 	Counterparty        govAtom              `json:"counterparty,omitzero"`
+	CounterpartyLabel   string               `json:"counterparty_label,omitempty"`
 	CommitmentID        string               `json:"commitment_id,omitempty"`
 	Lifecycle           string               `json:"lifecycle,omitempty"`
 	ClosureRef          string               `json:"closure_ref,omitempty"`

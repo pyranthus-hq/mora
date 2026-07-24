@@ -89,25 +89,22 @@ func TestExamProductTarget(t *testing.T) {
 	}
 
 	const (
-		wantRED      = true
-		targetIssue  = "https://github.com/pyranthus-hq/mora/issues/138"
-		dailyIssue   = "https://github.com/pyranthus-hq/mora/issues/154"
-		knownRedEnds = "2026-10-14"
+		// Flipped GREEN 2026-07-24: zero strict failures on all three corpora
+		// (148 -> 0 across PRs #199, #201, #202, #203, and this one). The gate
+		// now ratchets: any future strict failure fails this test directly.
+		wantRED     = false
+		targetIssue = "https://github.com/pyranthus-hq/mora/issues/138"
+		dailyIssue  = "https://github.com/pyranthus-hq/mora/issues/154"
 	)
-	if !wantRED {
-		for _, failure := range failures {
-			t.Error(failure)
-		}
-		return
+	if wantRED {
+		t.Fatalf("wantRED is retired: the strict product target went green on 2026-07-24; re-introduce a dated pin only through a reviewed decision for %s", targetIssue)
+	}
+	for _, failure := range failures {
+		t.Error(failure)
 	}
 	if len(failures) == 0 {
-		t.Fatalf("FIXED: all three corpora now meet the strict product target; flip wantRED:false and close %s", targetIssue)
+		t.Logf("strict product target GREEN: all three corpora meet every required floor; %s closed, daily contract %s", targetIssue, dailyIssue)
 	}
-	if !hasTypedProductDeficiency(rows) {
-		t.Fatalf("known-RED pin drifted: typed obligation rows now meet their required floors even though another target dimension remains red; inspect and update the dated pin for %s", targetIssue)
-	}
-	t.Logf("known RED through %s: %d strict product-target assertions fail across all three corpora; tracked by %s and daily contract %s",
-		knownRedEnds, len(failures), targetIssue, dailyIssue)
 }
 
 func recomputeExamProductScorecards(t *testing.T) []namedExamScorecard {
@@ -831,48 +828,4 @@ func ratioEqualFailures(label string, got exam.PR, want float64) []string {
 		failures = append(failures, fmt.Sprintf("%s recall = %.6f, want %.2f", label, got.Recall, want))
 	}
 	return failures
-}
-
-func hasTypedProductDeficiency(rows []namedExamScorecard) bool {
-	for _, row := range rows {
-		card := row.card
-		lifecycle := card.Lifecycle
-		closureLinkage := card.ClosureLinkage
-		commitmentIdentity := card.CommitmentIdentity
-		citationRoles := card.CitationRoles
-		if row.state.schemaVersion >= exam.SchemaV3 {
-			lifecycle.Recall = row.refBearingCard.Lifecycle.Recall
-			lifecycle.Defined = lifecycle.Defined && row.refBearingCard.Lifecycle.Defined
-			closureLinkage.Recall = row.refBearingCard.ClosureLinkage.Recall
-			closureLinkage.Defined = closureLinkage.Defined && row.refBearingCard.ClosureLinkage.Defined
-			commitmentIdentity = row.refBearingCard.CommitmentIdentity
-			citationRoles = row.refBearingCard.CitationRoles
-		}
-		if !card.DirectionScorable ||
-			ratioComponentBelowProductTarget(card.Direction, row.state.directionRecall) ||
-			ratioComponentBelowProductTarget(card.DueTime, row.state.dueTimeRecall) ||
-			ratioComponentBelowProductTarget(lifecycle, row.state.lifecycleRecall) ||
-			ratioComponentBelowProductTarget(closureLinkage, row.state.closureRecall) ||
-			ratioComponentBelowProductTarget(card.Owner, row.state.ownerRecall) ||
-			requiredMetricBelowProductTarget(row.state.commitmentIdentity, commitmentIdentity) ||
-			requiredMetricBelowProductTarget(row.state.dedup, card.Dedup) ||
-			requiredMetricBelowProductTarget(row.state.citationRoles, citationRoles) {
-			return true
-		}
-	}
-	return false
-}
-
-func ratioBelowProductTarget(row exam.PR) bool {
-	return !row.Defined || row.Precision < 0.90 || row.Recall < 0.90
-}
-
-func ratioComponentBelowProductTarget(row exam.PR, recallState examProductMetricState) bool {
-	return !row.Defined ||
-		row.Precision < 0.90 ||
-		recallState.requirement == examProductMetricRequired && row.Recall < 0.90
-}
-
-func requiredMetricBelowProductTarget(state examProductMetricState, row exam.PR) bool {
-	return state.requirement == examProductMetricRequired && ratioBelowProductTarget(row)
 }

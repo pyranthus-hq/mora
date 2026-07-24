@@ -36,14 +36,15 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 				owner = line.Owner.Kind + ":" + line.Owner.Value
 			}
 			out = append(out, exam.Prediction{
-				Surface:      exam.SurfaceMeeting,
-				Text:         line.Text,
-				Attendee:     line.Attendee,
-				AttendeeAtom: atom.Kind + ":" + atom.Value,
-				Owner:        owner,
-				MemoryID:     line.Citation.MemoryID(),
-				SectionKind:  section.Kind,
-				CommitmentID: line.CommitmentID,
+				Surface:           exam.SurfaceMeeting,
+				Text:              line.Text,
+				Attendee:          line.Attendee,
+				AttendeeAtom:      atom.Kind + ":" + atom.Value,
+				CounterpartyLabel: line.CounterpartyLabel,
+				Owner:             owner,
+				MemoryID:          line.Citation.MemoryID(),
+				SectionKind:       section.Kind,
+				CommitmentID:      line.CommitmentID,
 				// Typed commitment fields and evidence identity are direct copies
 				// from the product surface.
 				Direction:  direction,
@@ -63,25 +64,36 @@ func examMeetingPredictions(b MeetingBrief, inventory ...Commitment) []exam.Pred
 func examInventoryPredictions(surface string, inventory ...Commitment) []exam.Prediction {
 	out := make([]exam.Prediction, 0, len(inventory))
 	for _, commitment := range inventory {
-		// Legacy memories deliberately have no fabricated commitment id. They
-		// cannot be joined to scorer gold as inventory rows, so keep them out
-		// rather than turning honest "unknown" identity into lifecycle false
-		// precision. Visible legacy lines are still scored above by their quote.
+		attendeeAtom := ""
+		if atomPresent(commitment.Counterparty) {
+			attendeeAtom = commitment.Counterparty.Kind + ":" + commitment.Counterparty.Value
+		}
 		if commitment.ID == "" {
+			// Ref-less inventory rows express only counterparty attribution. They
+			// cannot safely join identity, lifecycle, closure, or citation gold.
+			out = append(out, exam.Prediction{
+				Surface:           surface,
+				Origin:            exam.PredictionOriginInventory,
+				AttendeeAtom:      attendeeAtom,
+				CounterpartyLabel: commitment.CounterpartyLabel,
+				MemoryID:          commitment.OpenedBy.MemoryID,
+			})
 			continue
 		}
 		out = append(out, exam.Prediction{
-			Surface:      surface,
-			Origin:       exam.PredictionOriginInventory,
-			Owner:        commitment.Owner.Kind + ":" + commitment.Owner.Value,
-			MemoryID:     commitment.OpenedBy.MemoryID,
-			CommitmentID: commitment.ID,
-			DuplicateOf:  commitment.DuplicateOf,
-			Direction:    string(commitment.Direction),
-			Due:          commitDueValue(commitment.Due),
-			Lifecycle:    commitment.State,
-			ClosureRef:   commitment.ClosureRef,
-			Citations:    examPredictionCitations(commitment.Citations),
+			Surface:           surface,
+			Origin:            exam.PredictionOriginInventory,
+			AttendeeAtom:      attendeeAtom,
+			CounterpartyLabel: commitment.CounterpartyLabel,
+			Owner:             commitment.Owner.Kind + ":" + commitment.Owner.Value,
+			MemoryID:          commitment.OpenedBy.MemoryID,
+			CommitmentID:      commitment.ID,
+			DuplicateOf:       commitment.DuplicateOf,
+			Direction:         string(commitment.Direction),
+			Due:               commitDueValue(commitment.Due),
+			Lifecycle:         commitment.State,
+			ClosureRef:        commitment.ClosureRef,
+			Citations:         examPredictionCitations(commitment.Citations),
 		})
 	}
 	return out
@@ -163,8 +175,166 @@ func TestExamInventoryPredictionsCopyTypedSnapshot(t *testing.T) {
 
 	legacy := commitment
 	legacy.ID = ""
-	if got := examInventoryPredictions(exam.SurfaceDaily, legacy); len(got) != 0 {
-		t.Fatalf("legacy inventory fabricated a joinable row: %+v", got)
+	if got := examInventoryPredictions(exam.SurfaceDaily, legacy); len(got) != 1 ||
+		got[0].CommitmentID != "" || got[0].Lifecycle != "" || got[0].AttendeeAtom == "" {
+		t.Fatalf("legacy inventory row expressed more than counterparty attribution: %+v", got)
+	}
+}
+
+func TestExamInventoryCounterpartyAdapterSabotage(t *testing.T) {
+	ledger := loadExamLedgerFromRoot(t, examFixtureV3Root)
+	artifactByID := make(map[string]exam.Artifact, len(ledger.Artifacts))
+	identityByID := make(map[string]exam.Identity, len(ledger.People)+1)
+	identityByID[ledger.Self.ID] = ledger.Self
+	for _, artifact := range ledger.Artifacts {
+		artifactByID[artifact.ID] = artifact
+	}
+	for _, identity := range ledger.People {
+		identityByID[identity.ID] = identity
+	}
+	blockUses := map[string]int{}
+	memoryUses := map[string]int{}
+	for _, commitment := range ledger.Commitments {
+		key := commitment.OpenedBy.ArtifactID + "\x00" + commitment.OpenedBy.MessageID + "\x00" + commitment.OpenedBy.BlockID
+		blockUses[key]++
+		memoryUses[artifactByID[commitment.OpenedBy.ArtifactID].MemoryID]++
+	}
+	var gold exam.Commitment
+	var artifact exam.Artifact
+	for _, candidate := range ledger.Commitments {
+		candidateArtifact := artifactByID[candidate.OpenedBy.ArtifactID]
+		key := candidate.OpenedBy.ArtifactID + "\x00" + candidate.OpenedBy.MessageID + "\x00" + candidate.OpenedBy.BlockID
+		if candidateArtifact.Channel == "gmail" && blockUses[key] == 1 &&
+			memoryUses[candidateArtifact.MemoryID] == 1 {
+			gold, artifact = candidate, candidateArtifact
+			break
+		}
+	}
+	if gold.ID == "" {
+		t.Fatal("v3 ledger has no uniquely anchored Gmail commitment")
+	}
+	otherID := gold.Owner
+	if otherID == ledger.Self.ID {
+		otherID = gold.Counterparty
+	}
+	other := identityByID[otherID]
+	if len(other.Emails) == 0 {
+		t.Fatalf("selected Gmail counterparty %q has no email", otherID)
+	}
+	ownerIdentity := identityByID[gold.Owner]
+	if len(ownerIdentity.Emails) == 0 {
+		t.Fatalf("selected Gmail owner %q has no email", gold.Owner)
+	}
+	product := Commitment{
+		ID: commitmentID(
+			artifact.MemoryID+"#"+gold.OpenedBy.MessageID,
+			gold.OpenedBy.BlockID,
+			0,
+		),
+		Owner:        govAtom{Kind: atomAddress, Value: ownerIdentity.Emails[0]},
+		Counterparty: govAtom{Kind: atomAddress, Value: other.Emails[0]},
+		Direction:    Direction(gold.Direction),
+		OpenedBy:     commitSpan{MemoryID: artifact.MemoryID},
+		Due:          commitDue{Kind: gold.DueKind, At: gold.DueAt},
+		State:        gold.State,
+		ClosureRef:   commitClosureNone,
+	}
+	scorePredictions := func(predictions []exam.Prediction) exam.Scorecard {
+		t.Helper()
+		card, err := exam.Score(ledger, predictions, exam.SurfaceMeeting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return card
+	}
+	score := func(commitment Commitment) exam.Scorecard {
+		t.Helper()
+		return scorePredictions(examInventoryPredictions(exam.SurfaceMeeting, commitment))
+	}
+
+	correct := score(product)
+	if !correct.Counterparty.Defined || correct.Counterparty.RecallByClass[otherID] == 0 {
+		t.Fatalf("faithful counterparty copy = %+v, want credit for %q", correct.Counterparty, otherID)
+	}
+
+	var wrongIdentity exam.Identity
+	for _, candidate := range ledger.People {
+		if candidate.ID != otherID && len(candidate.Emails) > 0 {
+			wrongIdentity = candidate
+			break
+		}
+	}
+	if wrongIdentity.ID == "" {
+		t.Fatal("v3 ledger has no wrong-person sabotage identity")
+	}
+	product.Counterparty = govAtom{Kind: atomAddress, Value: wrongIdentity.Emails[0]}
+	wrong := score(product)
+	if wrong.Counterparty.RecallByClass[otherID] != 0 {
+		t.Fatalf("wrong product counterparty earned credit: %+v", wrong.Counterparty)
+	}
+
+	product.Counterparty = govAtom{}
+	predictions := examInventoryPredictions(exam.SurfaceMeeting, product)
+	if len(predictions) != 1 || predictions[0].AttendeeAtom != "" {
+		t.Fatalf("empty product counterparty was derived or filled: %+v", predictions)
+	}
+	empty := score(product)
+	if empty.Counterparty.RecallByClass[otherID] != 0 {
+		t.Fatalf("empty product counterparty earned credit: %+v", empty.Counterparty)
+	}
+
+	refLess := product
+	refLess.ID = ""
+	refLess.Counterparty = govAtom{Kind: atomAddress, Value: other.Emails[0]}
+	singlePredictions := examInventoryPredictions(exam.SurfaceMeeting, refLess)
+	single := scorePredictions(singlePredictions)
+	if single.Counterparty.RecallByClass[otherID] == 0 {
+		t.Fatalf("unambiguous ref-less counterparty missed gold: %+v", single.Counterparty)
+	}
+	duplicate := scorePredictions(append(append([]exam.Prediction(nil), singlePredictions...), singlePredictions...))
+	if duplicate.Counterparty.Recall != single.Counterparty.Recall ||
+		duplicate.Counterparty.Precision >= single.Counterparty.Precision {
+		t.Fatalf("duplicate ref-less row = %+v, want unchanged recall and lower precision than %+v",
+			duplicate.Counterparty, single.Counterparty)
+	}
+
+	refLess.Counterparty = govAtom{Kind: atomAddress, Value: wrongIdentity.Emails[0]}
+	if got := score(refLess); got.Counterparty.RecallByClass[otherID] != 0 {
+		t.Fatalf("wrong ref-less atom on the right memory earned credit: %+v", got.Counterparty)
+	}
+	refLess.Counterparty = govAtom{}
+	if got := score(refLess); got.Counterparty.RecallByClass[otherID] != 0 {
+		t.Fatalf("empty ref-less atom earned credit: %+v", got.Counterparty)
+	}
+
+	refLess.CounterpartyLabel = other.Display
+	labelOnly := score(refLess)
+	if labelOnly.Counterparty.RecallByClass[otherID] == 0 {
+		t.Fatalf("unique source label missed counterparty gold: %+v", labelOnly.Counterparty)
+	}
+	refLess.CounterpartyLabel = wrongIdentity.Display
+	if got := score(refLess); got.Counterparty.RecallByClass[otherID] != 0 {
+		t.Fatalf("wrong source label earned credit: %+v", got.Counterparty)
+	}
+	refLess.CounterpartyLabel = ""
+	if got := score(refLess); got.Counterparty.RecallByClass[otherID] != 0 {
+		t.Fatalf("empty source label earned credit: %+v", got.Counterparty)
+	}
+
+	refLess.Counterparty = govAtom{Kind: atomAddress, Value: other.Emails[0]}
+	refLess.CounterpartyLabel = other.Display
+	atomAndLabel := score(refLess)
+	if atomAndLabel.Counterparty.Precision != single.Counterparty.Precision ||
+		atomAndLabel.Counterparty.Recall != single.Counterparty.Recall {
+		t.Fatalf("label agreeing with atom changed score: %+v, atom-only %+v",
+			atomAndLabel.Counterparty, single.Counterparty)
+	}
+	refLess.CounterpartyLabel = wrongIdentity.Display
+	atomWins := score(refLess)
+	if atomWins.Counterparty.Precision != single.Counterparty.Precision ||
+		atomWins.Counterparty.Recall != single.Counterparty.Recall {
+		t.Fatalf("label overrode present atom: %+v, atom-only %+v",
+			atomWins.Counterparty, single.Counterparty)
 	}
 }
 
@@ -244,16 +414,17 @@ func examDailyPredictions(d Digest, inventory ...Commitment) []exam.Prediction {
 		if len(item.Obligations) > 0 {
 			for _, obligation := range item.Obligations {
 				out = append(out, exam.Prediction{
-					Surface:      exam.SurfaceDaily,
-					Text:         renderDigestArtifactLine(item) + renderDigestObligationRow(obligation),
-					Owner:        obligation.Owner.Kind + ":" + obligation.Owner.Value,
-					MemoryID:     item.ID,
-					CommitmentID: obligation.CommitmentID,
-					Direction:    string(obligation.Direction),
-					Due:          obligation.DueAt,
-					Lifecycle:    obligation.Lifecycle,
-					ClosureRef:   obligation.ClosureRef,
-					Citations:    examPredictionCitations(obligation.Citations),
+					Surface:           exam.SurfaceDaily,
+					Text:              renderDigestArtifactLine(item) + renderDigestObligationRow(obligation),
+					Owner:             obligation.Owner.Kind + ":" + obligation.Owner.Value,
+					MemoryID:          item.ID,
+					CommitmentID:      obligation.CommitmentID,
+					CounterpartyLabel: obligation.CounterpartyLabel,
+					Direction:         string(obligation.Direction),
+					Due:               obligation.DueAt,
+					Lifecycle:         obligation.Lifecycle,
+					ClosureRef:        obligation.ClosureRef,
+					Citations:         examPredictionCitations(obligation.Citations),
 				})
 			}
 			continue
@@ -271,14 +442,15 @@ func examDailyPredictions(d Digest, inventory ...Commitment) []exam.Prediction {
 			owner = item.Owner.Kind + ":" + item.Owner.Value
 		}
 		out = append(out, exam.Prediction{
-			Surface:    exam.SurfaceDaily,
-			Text:       renderDigestItemLine(item),
-			Owner:      owner,
-			MemoryID:   item.ID,
-			Direction:  direction,
-			Due:        item.DueAt,
-			Lifecycle:  lifecycle,
-			ClosureRef: item.ClosureRef,
+			Surface:           exam.SurfaceDaily,
+			Text:              renderDigestItemLine(item),
+			Owner:             owner,
+			MemoryID:          item.ID,
+			CounterpartyLabel: item.CounterpartyLabel,
+			Direction:         direction,
+			Due:               item.DueAt,
+			Lifecycle:         lifecycle,
+			ClosureRef:        item.ClosureRef,
 		})
 	}
 	return append(out, examInventoryPredictions(exam.SurfaceDaily, inventory...)...)
@@ -602,6 +774,9 @@ func TestUnwrapEmittedHandlesTheRealPresentationLayer(t *testing.T) {
 		quotes[n.Span.Quote] = true
 	}
 	for _, p := range surfaces[exam.SurfaceMeeting] {
+		if p.Origin == exam.PredictionOriginInventory {
+			continue
+		}
 		if !strings.Contains(p.Text, "“") || !strings.HasSuffix(p.Text, "”") {
 			t.Fatalf("emitted line %q no longer carries the dated-historical rail the scorer unwraps", p.Text)
 		}
