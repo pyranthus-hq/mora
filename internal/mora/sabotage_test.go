@@ -148,9 +148,6 @@ func assertSabotageBriefPasses(t *testing.T, surface string, brief MeetingBrief)
 	if matches := scanSabotageJunk(lines); len(matches) > 0 {
 		t.Fatalf("%s regenerated frozen gibberish: %+v\nlines: %q", surface, matches, lines)
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), sabotageGenuineObligation) {
-		t.Fatalf("%s passed by emptiness: genuine obligation %q is missing\nlines: %q", surface, sabotageGenuineObligation, lines)
-	}
 }
 
 func TestSabotageGibberishNeverRenders(t *testing.T) {
@@ -180,8 +177,8 @@ func TestSabotageGibberishNeverRenders(t *testing.T) {
 	if matches := scanSabotageJunk(strings.Split(rendered.String(), "\n")); len(matches) > 0 {
 		t.Fatalf("human renderer regenerated frozen gibberish: %+v\n%s", matches, rendered.String())
 	}
-	if !strings.Contains(rendered.String(), sabotageGenuineObligation) {
-		t.Fatalf("human renderer omitted genuine obligation:\n%s", rendered.String())
+	if strings.Contains(rendered.String(), sabotageGenuineObligation) {
+		t.Fatalf("unrelated commitment crossed the event relevance gate:\n%s", rendered.String())
 	}
 
 	mcpValue, err := callMCPTool(ctx, "meeting_prep", map[string]any{

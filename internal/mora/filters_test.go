@@ -42,6 +42,7 @@ func TestWindowDigestSurfacesInProgressCalendarEvent(t *testing.T) {
 	if err := writeMemory(cfg, m); err != nil {
 		t.Fatal(err)
 	}
+	cfg = ungatedDigestConfig(cfg)
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 24})
 	if err != nil {
 		t.Fatal(err)
@@ -106,6 +107,9 @@ func TestResolveBriefThreadsFiltersToGenerate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
 	body, generated, err := resolveBrief(cfg, now, briefOpts{entityIDSet: map[string]bool{"person:riya@a.com": true}})
 	if err != nil {
 		t.Fatal(err)
@@ -147,10 +151,15 @@ func TestFilteredDeltaIsPreviewOnly(t *testing.T) {
 
 func personMem(id, provider, from string, created time.Time) Memory {
 	return Memory{
-		ID: id, Scope: "global", Type: "email", Title: id, Text: id + " body",
+		ID: id, Scope: "global", Type: "email", Title: id,
+		Text:     "From: " + from + "\n\nI will send " + id + " today.",
 		Provider: provider, ProviderID: provider + "_thread/" + id, Source: provider + "_thread/" + id,
 		CreatedAt: created.Format(time.RFC3339),
-		Meta:      map[string]any{"from": []string{from}, "to": []string{"x@y.com"}},
+		Meta: map[string]any{
+			"from":        []string{from},
+			"to":          []string{"x@y.com"},
+			"occurred_at": created.Format(time.RFC3339),
+		},
 	}
 }
 
@@ -181,6 +190,9 @@ func TestBuildDigestEntityFilter(t *testing.T) {
 		if err := writeMemory(cfg, m); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
 	}
 
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 24})

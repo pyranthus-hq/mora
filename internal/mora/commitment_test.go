@@ -110,6 +110,35 @@ func TestCommitmentDirectionTable(t *testing.T) {
 	}
 }
 
+func TestCommitmentCounterpartyExcludesExplicitSelfParticipant(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"mira.sen@example.com"}}
+	m := Memory{
+		Provider: "imessage",
+		Meta: map[string]any{"participants": []map[string]string{
+			{"handle": "+15550100100", "name": "Mira Sen"},
+			{"handle": "+15550100104", "name": "Lucia Wynn"},
+		}},
+	}
+	got, ok := commitmentCounterparty(m, cfg)
+	if !ok || got.Kind != atomHandle || got.Value != "+15550100104" {
+		t.Fatalf("counterparty = %+v, %v, want Lucia's handle", got, ok)
+	}
+}
+
+func TestCommitmentCounterpartyDoesNotExcludePartialSelfNameMatch(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"mira.sen@example.com"}}
+	m := Memory{
+		Provider: "imessage",
+		Meta: map[string]any{"participants": []map[string]string{
+			{"handle": "+15550100100", "name": "Mira Patel"},
+			{"handle": "+15550100104", "name": "Lucia Wynn"},
+		}},
+	}
+	if got, ok := commitmentCounterparty(m, cfg); ok {
+		t.Fatalf("ambiguous participants resolved to %+v; a partial self-name match must fail closed", got)
+	}
+}
+
 func TestCommitmentIDEvidenceOnly(t *testing.T) {
 	const want = "commit:v1:10b7c665ae18290d686f4947d1afcf69240905e84a21df6eba0c5d36be2409c8"
 	if got := commitmentID("memory#message", "block", 0); got != want {
@@ -185,5 +214,30 @@ func TestCommitmentsMaterializedByIndexGeneration(t *testing.T) {
 	}
 	if got[0].Due != (commitDue{Kind: commitDueNone}) {
 		t.Fatalf("due = %+v, want none", got[0].Due)
+	}
+}
+
+func TestCommitmentClassificationRejectsThirdPartyAssignment(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "self@example.com",
+		Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	m := Memory{
+		ID: "gmail_thread/third-party", Scope: "global", Type: "email",
+		Title: "Next steps", Source: "third-party", Provider: "gmail", ProviderID: "third-party",
+		CreatedAt: "2026-07-20T10:00:00Z",
+		Text:      "From: Other <other@example.com>\n\nAction item for Kim: Please share the findings before kickoff.",
+		Meta: map[string]any{
+			"from": []string{"other@example.com"},
+			"to":   []string{"self@example.com"},
+		},
+	}
+	if got := classifyCommitments(m, cfg); len(got) != 0 {
+		t.Fatalf("third-party assignment materialized as the user's commitment: %+v", got)
 	}
 }

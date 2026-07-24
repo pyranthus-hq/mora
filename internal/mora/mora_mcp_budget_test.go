@@ -141,11 +141,11 @@ func seedBudgetFixture(t *testing.T) Config {
 	// its items are FUTURE-dated. perSource is generous so the byte budget (not the
 	// per-source cap) governs how many items the MCP digest surfaces — the condition
 	// under which max_tokens visibly scales the payload (digest_default<digest_max).
-	const perSource = 40
+	const perSource = 60
 	recentProviders := []struct {
 		provider string
 		future   bool
-	}{{"gmail", false}, {"imessage", false}, {"calendar", true}}
+	}{{"gmail", false}, {"imessage", false}}
 	for _, rp := range recentProviders {
 		for j := 0; j < perSource; j++ {
 			created := recent.Add(-time.Duration(j) * time.Minute)
@@ -155,14 +155,26 @@ func seedBudgetFixture(t *testing.T) Config {
 			m := Memory{
 				ID:          fmt.Sprintf("%s_item/%02d", rp.provider, j),
 				Scope:       "personal",
-				Type:        "event",
+				Type:        "email",
 				Title:       fmt.Sprintf("%s item %02d standing weekly sync", rp.provider, j),
 				CreatedAt:   created.UTC().Format(time.RFC3339),
 				Source:      fmt.Sprintf("%s_item/%02d", rp.provider, j),
 				Provider:    rp.provider,
 				ProviderID:  fmt.Sprintf("%s_item/%02d", rp.provider, j),
 				ContentHash: fmt.Sprintf("h-%s-%02d", rp.provider, j),
-				Text:        fmt.Sprintf("recent in-window digest item %s-%d", rp.provider, j),
+				Text:        fmt.Sprintf("From: neil@example.com\n\nI will send the standing weekly sync item %s-%d today.", rp.provider, j),
+				Meta: map[string]any{
+					"from":        []string{"neil@example.com"},
+					"occurred_at": created.UTC().Format(time.RFC3339),
+				},
+			}
+			if rp.provider == "imessage" {
+				m.Type = "imessage"
+				m.Text = fmt.Sprintf("Neil Patel: I will send the standing weekly sync item %s-%d today.", rp.provider, j)
+				m.Meta = map[string]any{
+					"participants": []map[string]string{{"handle": "+15550101999", "name": "Neil Patel"}},
+					"occurred_at":  created.UTC().Format(time.RFC3339),
+				}
 			}
 			if err := writeMemory(cfg, m); err != nil {
 				t.Fatalf("seed recent %s-%d: %v", rp.provider, j, err)

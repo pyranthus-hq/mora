@@ -131,10 +131,14 @@ func TestMt_OpenLoopsForQueryNamedPersonNoLoops(t *testing.T) {
 	run(t, "init")
 	cfg := mustConfig(t)
 	ctx := context.Background()
-	if err := writeMemory(cfg, personMemNamed("s1", "gmail", "sam@a.com", "Sam Rivera", time.Now().Add(-48*time.Hour))); err != nil {
+	sam := personMemNamed("s1", "gmail", "sam@a.com", "Sam Rivera", time.Now().Add(-48*time.Hour))
+	sam.Text = "From: sam@a.com\n\nStatus update for the account."
+	if err := writeMemory(cfg, sam); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeMemory(cfg, personMemNamed("n1", "gmail", "neil@a.com", "Neil Patel", time.Now().Add(-48*time.Hour))); err != nil {
+	neil := personMemNamed("n1", "gmail", "neil@a.com", "Neil Patel", time.Now().Add(-48*time.Hour))
+	neil.Text = "From: neil@a.com\n\nStatus update for the account."
+	if err := writeMemory(cfg, neil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {

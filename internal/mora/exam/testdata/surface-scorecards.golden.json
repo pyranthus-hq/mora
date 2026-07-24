@@ -3,7 +3,7 @@
     "scorer_version": 2,
     "surface": "daily",
     "extraction": {
-      "precision": 0.18181818181818182,
+      "precision": 0.2857142857142857,
       "recall": 1,
       "defined": true
     },
@@ -37,44 +37,44 @@
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
-        "p/marcus": 0,
+        "p/marcus": 1,
         "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
-        "owed_by_counterparty": 0,
+        "owed_by_counterparty": 1,
         "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "2026-07-14T11:00:00Z": 1,
-        "relative": 0
+        "relative": 1
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.08333333333333333,
+      "recall": 0.16666666666666666,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.1,
+        "open": 0.2,
         "superseded": 0
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.08333333333333333,
+      "recall": 0.16666666666666666,
       "defined": true
     },
     "commitment_identity": {
@@ -104,7 +104,7 @@
     "scorer_version": 2,
     "surface": "daily",
     "extraction": {
-      "precision": 0.15384615384615385,
+      "precision": 0.2857142857142857,
       "recall": 1,
       "defined": true
     },
@@ -138,44 +138,44 @@
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
-        "p/marcus": 0,
+        "p/marcus": 1,
         "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
-        "owed_by_counterparty": 0,
+        "owed_by_counterparty": 1,
         "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 1,
       "defined": true,
       "recall_by_class": {
         "2026-07-14T11:00:00Z": 1,
-        "relative": 0
+        "relative": 1
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.08333333333333333,
+      "recall": 0.16666666666666666,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.1,
+        "open": 0.2,
         "superseded": 0
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.08333333333333333,
+      "recall": 0.16666666666666666,
       "defined": true
     },
     "commitment_identity": {
@@ -205,8 +205,8 @@
     "scorer_version": 2,
     "surface": "meeting",
     "extraction": {
-      "precision": 0.6666666666666666,
-      "recall": 0.5,
+      "precision": 1,
+      "recall": 0.75,
       "defined": true
     },
     "recall_uncapped": {
@@ -226,10 +226,10 @@
     },
     "counterparty": {
       "precision": 1,
-      "recall": 0.6666666666666666,
+      "recall": 0.8333333333333333,
       "defined": true,
       "recall_by_class": {
-        "p/dana": 0.3333333333333333,
+        "p/dana": 0.6666666666666666,
         "p/sam": 1
       }
     },
@@ -237,50 +237,50 @@
     "third_party_leaks": 0,
     "closed_leaks": 0,
     "dup_leaks": 0,
-    "non_obligation_leaks": 1,
+    "non_obligation_leaks": 0,
     "critical_identity": 0,
     "critical_direction": 0,
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "p/dana": 0,
-        "p/self": 0.6666666666666666
+        "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "owed_by_counterparty": 0,
-        "owed_by_self": 0.6666666666666666
+        "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 0.75,
       "defined": true,
       "recall_by_class": {
         "2026-07-14T11:00:00Z": 1,
-        "none": 0.3333333333333333
+        "none": 0.6666666666666666
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.2,
+        "open": 0.3,
         "superseded": 0
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true
     },
     "commitment_identity": {
@@ -310,8 +310,8 @@
     "scorer_version": 2,
     "surface": "meeting",
     "extraction": {
-      "precision": 0.6666666666666666,
-      "recall": 0.5,
+      "precision": 1,
+      "recall": 0.75,
       "defined": true
     },
     "recall_uncapped": {
@@ -331,10 +331,10 @@
     },
     "counterparty": {
       "precision": 1,
-      "recall": 0.6666666666666666,
+      "recall": 0.8333333333333333,
       "defined": true,
       "recall_by_class": {
-        "p/dana": 0.3333333333333333,
+        "p/dana": 0.6666666666666666,
         "p/sam": 1
       }
     },
@@ -342,50 +342,50 @@
     "third_party_leaks": 0,
     "closed_leaks": 0,
     "dup_leaks": 0,
-    "non_obligation_leaks": 1,
+    "non_obligation_leaks": 0,
     "critical_identity": 0,
     "critical_direction": 0,
     "direction_scorable": true,
     "owner": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "p/dana": 0,
-        "p/self": 0.6666666666666666
+        "p/self": 1
       }
     },
     "direction": {
       "precision": 1,
-      "recall": 0.3333333333333333,
+      "recall": 0.5,
       "defined": true,
       "recall_by_class": {
         "owed_by_counterparty": 0,
-        "owed_by_self": 0.6666666666666666
+        "owed_by_self": 1
       }
     },
     "due_time": {
       "precision": 1,
-      "recall": 0.5,
+      "recall": 0.75,
       "defined": true,
       "recall_by_class": {
         "2026-07-14T11:00:00Z": 1,
-        "none": 0.3333333333333333
+        "none": 0.6666666666666666
       }
     },
     "lifecycle": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true,
       "recall_by_class": {
         "closed": 0,
-        "open": 0.2,
+        "open": 0.3,
         "superseded": 0
       }
     },
     "closure_linkage": {
       "precision": 1,
-      "recall": 0.16666666666666666,
+      "recall": 0.25,
       "defined": true
     },
     "commitment_identity": {

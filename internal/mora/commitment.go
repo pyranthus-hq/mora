@@ -267,6 +267,7 @@ func firstPersonCommitment(lower string) bool {
 		"send", "share", "review", "confirm", "sign", "bring", "upload", "deliver",
 		"call", "follow up", "get back", "organize", "archive", "initial", "choose",
 		"return", "introduce", "leave", "export", "provide", "finish", "prepare",
+		"add", "post", "text", "count", "hold", "reserve", "log",
 	})
 }
 
@@ -347,7 +348,11 @@ func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
 			}
 		}
 	} else if isIMessageMemory(m) {
+		selfTokens := selfNameTokens(self)
 		for _, pair := range participantPairs(m.Meta["participants"]) {
+			if participantNameIsSelf(pair["name"], selfTokens) {
+				continue
+			}
 			if value := strings.TrimSpace(pair["handle"]); value != "" {
 				candidates = append(candidates, govAtom{Provider: "imessage", Kind: atomHandle, Value: normalizeIdentity(atomHandle, value)})
 			}
@@ -357,6 +362,26 @@ func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
 		return govAtom{}, false
 	}
 	return candidates[0], true
+}
+
+// participantNameIsSelf handles imported/transcoded iMessage records that list the
+// user alongside the other chat participants. The live connector already stores
+// only other-party handles. We exclude a listed participant only when every
+// meaningful display-name token is independently present in a configured self
+// mailbox local-part; a partial/common-name overlap is insufficient.
+func participantNameIsSelf(name string, selfTokens map[string]bool) bool {
+	fields := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(name)), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	if len(fields) == 0 {
+		return false
+	}
+	for _, field := range fields {
+		if len(field) < 2 || !selfTokens[field] {
+			return false
+		}
+	}
+	return true
 }
 
 func commitmentCounterpartyKeys(m Memory, counterparty govAtom) []string {
@@ -552,6 +577,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	if isGmailMemory(m) {
 		messages := gmailCommitmentMessages(m)
 		parts := gmailBodyParts(m)
+		selfTokens := selfNameTokens(selfEmails(cfg))
 		if len(messages) > 0 && len(messages) == len(parts) {
 			for i, message := range messages {
 				sender := strings.ToLower(strings.TrimSpace(message.Sender))
@@ -569,6 +595,9 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				}
 				slot := 0
 				for _, segment := range commitmentSegments(parts[i]) {
+					if assignedToThirdParty(segment, selfTokens) {
+						continue
+					}
 					owner, direction, found := classifyCommitmentSpeech(segment, commitmentSpeechContext{
 						Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
 						ReportedActor: reportedActorFor(m, segment, counterparty),
@@ -595,6 +624,9 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				first = parts[0]
 			}
 			for _, segment := range commitmentSegments(first) {
+				if assignedToThirdParty(segment, selfTokens) {
+					continue
+				}
 				owner, direction, found := classifyCommitmentSpeech(segment, commitmentSpeechContext{
 					Author: author, Addressee: addressee, Self: selfAtom, Counterparty: counterparty,
 					ReportedActor: reportedActorFor(m, segment, counterparty),
@@ -606,7 +638,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 		}
 
 		// A sender-authored subject is its own immutable evidence block.
-		if !isForwardedSubject(m.Title) {
+		if !isForwardedSubject(m.Title) && !assignedToThirdParty(m.Title, selfTokens) {
 			sender := strings.ToLower(strings.TrimSpace(firstGmailSender(m)))
 			author := govAtom{}
 			if sender != "" {

@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -27,19 +28,42 @@ func digestSeedHash(t *testing.T, cfg Config, provider, title string, ago time.D
 	m := Memory{
 		ID:          "id-" + title,
 		Scope:       "global",
-		Type:        "note",
+		Type:        "email",
 		Title:       title,
-		Text:        title + " — body text for the digest snippet",
+		Text:        "From: alice@example.com\n\nI will send " + title + " today.",
 		Source:      provider + "_thread/" + title, // per-item ProviderID, NOT the instance key
 		Provider:    provider,
 		ProviderID:  provider + "_thread/" + title,
 		ContentHash: hash,
 		CreatedAt:   now.Add(-ago).Format(time.RFC3339),
+		Meta: map[string]any{
+			"from":        []string{"alice@example.com"},
+			"occurred_at": now.Add(-ago).Format(time.RFC3339),
+		},
+	}
+	if provider == "imessage" {
+		m.Type = "imessage"
+		m.Text = "Digest Person: I will send " + title + " today."
+		m.Meta = map[string]any{
+			"participants": []map[string]string{{"handle": "+15550101999", "name": "Digest Person"}},
+			"occurred_at":  now.Add(-ago).Format(time.RFC3339),
+		}
 	}
 	if err := writeMemory(cfg, m); err != nil {
 		t.Fatalf("writeMemory: %v", err)
 	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
 	return m
+}
+
+// ungatedDigestConfig is the explicit seam for tests of pure digest mechanics
+// (ordering, recurrence collapse, and watermark accounting). Product-facing tests
+// keep the real DataDir and therefore exercise commitment eligibility.
+func ungatedDigestConfig(cfg Config) Config {
+	cfg.DataDir = ""
+	return cfg
 }
 
 // digestSections indexes a digest's sections by instance key for assertions.
@@ -188,6 +212,7 @@ func TestBuildDigestSortsByInstantAcrossTimezones(t *testing.T) {
 	}
 	mk("Older", "2026-06-05T15:00:00Z")
 	mk("Newer", "2026-06-05T10:30:00-05:00")
+	cfg = ungatedDigestConfig(cfg)
 
 	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 24, perSourceCap: 10})
 	if err != nil {
@@ -656,6 +681,7 @@ func TestM4CancelledEventDroppedFromSnapshotAndRecreationIsNew(t *testing.T) {
 	if err := writeMemory(cfg, ev); err != nil {
 		t.Fatalf("writeMemory: %v", err)
 	}
+	cfg = ungatedDigestConfig(cfg)
 	deltaCommit(t, cfg, now)
 	if _, ok := loadBriefSnapshot(cfg, "calendar").Items["id-Standup"]; !ok {
 		t.Fatalf("event must be baselined before cancellation")

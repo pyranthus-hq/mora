@@ -24,6 +24,9 @@ const (
 	digestSnippetLen   = 200
 	digestDefaultHours = 24
 	digestDefaultCap   = 8
+	// commitmentDailyWindow is the DAILY obligation contract: the trailing seven
+	// 24-hour periods ending at the surface clock, inclusive at both endpoints.
+	commitmentDailyWindow = 7 * 24 * time.Hour
 	// digestColdStartDays is the courtesy display window on an instance's FIRST
 	// run (no watermark yet): we baseline ALL current hashes (so archived backfill
 	// becomes the starting line, not a flood) but DISPLAY only the last 7 days
@@ -180,6 +183,14 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	if err != nil {
 		return Digest{}, err
 	}
+	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg)
+	if err != nil {
+		return Digest{}, err
+	}
+	if gated {
+		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
+		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
+	}
 	var d Digest
 	if opts.sinceHours > 0 {
 		d, err = buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source)
@@ -193,40 +204,125 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	if err != nil {
 		return Digest{}, err
 	}
-	if err := attachDigestCommitments(cfg, &d); err != nil {
-		return Digest{}, err
-	}
+	attachDigestCommitments(&d, commitmentsByMemory)
 	return d, nil
 }
 
-// attachDigestCommitments copies the typed obligation lane from the same
-// generation-stamped, whole-vault materialization used by meeting briefs. It never
-// reclassifies a clipped digest snippet. Artifact-grain DigestItem can express one
-// obligation; when an artifact has multiple independently anchored commitments,
-// leave the lane empty rather than guessing which one the item represents.
-func attachDigestCommitments(cfg Config, d *Digest) error {
+// digestCommitmentInventory loads the generation-stamped, whole-vault
+// materialization shared with meeting briefs. A missing DataDir is the explicit seam
+// used by pure digest assembly tests; a real loaded Config always gates on the typed
+// inventory.
+func digestCommitmentInventory(cfg Config) (map[string][]Commitment, bool, error) {
 	// Pure resolver tests may intentionally construct only VaultDir/StateDir and
 	// have no index location. A real loaded Config always has DataDir; do not turn
 	// an otherwise valid empty/filtered brief into an attempt to create "index.db"
 	// in the process working directory.
 	if strings.TrimSpace(cfg.DataDir) == "" {
-		return nil
+		return nil, false, nil
 	}
-	snapshot, err := readCommitmentSnapshot(context.Background(), cfg)
+	inventory, err := readCommitmentInventory(context.Background(), cfg)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
-	byMemory := make(map[string][]Commitment, len(snapshot.Commitments))
-	for _, commitment := range snapshot.Commitments {
-		memoryID := commitment.OpenedBy.MemoryID
-		byMemory[memoryID] = append(byMemory[memoryID], commitment)
+	return inventory, true, nil
+}
+
+func commitmentSurfaceEligible(commitment Commitment) bool {
+	return commitment.State == commitOpen && commitment.DuplicateOf == ""
+}
+
+func commitmentDailyEligible(commitment Commitment, at time.Time) bool {
+	if !commitmentSurfaceEligible(commitment) {
+		return false
 	}
+	openedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(commitment.OpenedBy.OccurredAt))
+	if err != nil {
+		return false
+	}
+	at = at.UTC()
+	cutoff := at.Add(-commitmentDailyWindow)
+	return !openedAt.Before(cutoff) && !openedAt.After(at)
+}
+
+func dailyCommitmentInventory(inventory map[string][]Commitment, at time.Time) map[string][]Commitment {
+	out := make(map[string][]Commitment, len(inventory))
+	for memoryID, commitments := range inventory {
+		for _, commitment := range commitments {
+			if commitmentDailyEligible(commitment, at) {
+				out[memoryID] = append(out[memoryID], commitment)
+			}
+		}
+	}
+	return out
+}
+
+// filterDigestInstancesByCommitments applies the typed inventory as the eligibility
+// gate before urgency, recurrence collapse, ranking, and caps. Filtering after
+// assembly would let non-obligation artifacts consume a scarce slot and suppress a
+// real commitment.
+func filterDigestInstancesByCommitments(byInstance map[string][]Memory, inventory map[string][]Commitment) map[string][]Memory {
+	out := make(map[string][]Memory, len(byInstance))
+	for key, memories := range byInstance {
+		for _, m := range memories {
+			eligible := false
+			for _, commitment := range inventory[m.ID] {
+				if commitmentSurfaceEligible(commitment) {
+					eligible = true
+					break
+				}
+			}
+			if eligible {
+				out[key] = append(out[key], m)
+			}
+		}
+	}
+	return out
+}
+
+// digestCommitmentFor chooses the typed lane represented by an artifact-grain item.
+// Prefer the independently anchored commitment whose evidence is actually visible
+// in the title/snippet projection; if clipping hides every opening, use the stable
+// materialization order. This removes the old exactly-one-per-artifact hole without
+// inventing a content-derived commitment or duplicating an artifact citation.
+func digestCommitmentFor(item DigestItem, candidates []Commitment) (Commitment, bool) {
+	var eligible []Commitment
+	for _, commitment := range candidates {
+		if commitmentSurfaceEligible(commitment) {
+			eligible = append(eligible, commitment)
+		}
+	}
+	if len(eligible) == 0 {
+		return Commitment{}, false
+	}
+	sort.SliceStable(eligible, func(i, j int) bool {
+		return commitmentEvidenceLess(eligible[i], eligible[j])
+	})
+	visible := strings.ToLower(oneLine(item.Title + " " + item.Snippet))
+	best := -1
+	bestPos := -1
+	for i, commitment := range eligible {
+		quote := strings.ToLower(oneLine(commitment.OpenedBy.Quote))
+		if quote == "" {
+			quote = strings.ToLower(oneLine(commitment.Summary))
+		}
+		if pos := strings.LastIndex(visible, quote); pos > bestPos {
+			best, bestPos = i, pos
+		}
+	}
+	if best >= 0 {
+		return eligible[best], true
+	}
+	return eligible[0], true
+}
+
+// attachDigestCommitments copies the selected typed obligation lane from the same
+// snapshot that gated assembly.
+func attachDigestCommitments(d *Digest, byMemory map[string][]Commitment) {
 	attach := func(item *DigestItem) {
-		commitments := byMemory[item.ID]
-		if len(commitments) != 1 {
+		commitment, ok := digestCommitmentFor(*item, byMemory[item.ID])
+		if !ok {
 			return
 		}
-		commitment := commitments[0]
 		item.Owner = commitment.Owner
 		item.Direction = commitment.Direction
 		item.DueAt = commitDueValue(commitment.Due)
@@ -241,7 +337,6 @@ func attachDigestCommitments(cfg Config, d *Digest) error {
 			attach(&d.Sections[i].Items[j])
 		}
 	}
-	return nil
 }
 
 // digestInputs factors the shared preprocessing behind both the window and delta
@@ -620,13 +715,19 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 	if err != nil {
 		return Digest{}, "", err
 	}
+	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg)
+	if err != nil {
+		return Digest{}, "", err
+	}
+	if gated {
+		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
+		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
+	}
 	d, plans, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
 	if err != nil {
 		return Digest{}, "", err
 	}
-	if err := attachDigestCommitments(cfg, &d); err != nil {
-		return Digest{}, "", err
-	}
+	attachDigestCommitments(&d, commitmentsByMemory)
 
 	budgeted, survived := budgetDigestForMarkdown(d, budgetChars)
 

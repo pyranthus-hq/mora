@@ -116,6 +116,9 @@ func TestCmdBriefNegativeSinceDaysClampedNotEmpty(t *testing.T) {
 	if err := writeMemory(cfg, personMem("riya-call", "gmail", "riya@a.com", now.Add(-2*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
 	out := runBrief(t, "--since-days", "-7")
 	if !strings.Contains(out, "riya-call") {
 		t.Fatalf("negative since-days should be a no-op (all-time), got empty:\n%s", out)

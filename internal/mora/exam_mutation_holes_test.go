@@ -247,6 +247,7 @@ func TestExamHardWrapJoinsBeforeSegmenting(t *testing.T) {
 	event.Source = "calendar_event/jordan-wrap"
 	event.Provider = "google"
 	event.ProviderID = "calendar_event/jordan-wrap"
+	event.Text += " Agenda: Ahrefs findings before the kickoff meeting."
 	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
 	}
