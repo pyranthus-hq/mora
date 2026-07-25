@@ -150,19 +150,34 @@ Each MCP tool also has a CLI command. An agent with shell access can use
 `mora search`, `mora think`, `mora brief`, and `mora write` without MCP. See
 the [wiring guide](docs/guide.md#wire-mora-into-your-agent-mcp).
 
-## Review identity proposals
+## Teach Mora
 
 Mora never joins an email identity to a phone number on its own. On macOS, it
-can use Address Book evidence to propose matches for review:
+can use Address Book evidence to propose matches for review. The queue explains
+the corroboration and lists the memories each merge would affect before you
+confirm it:
 
 ```bash
-mora merge list
-mora merge confirm --handle <phone> --email <address>
-mora merge reject --handle <phone> --email <address>
-mora merge undo <ledger-id>
+mora teach identity list
+mora teach identity confirm --handle <phone> --email <address> --yes
+mora teach identity reject --handle <phone> --email <address>
+mora teach identity undo <ledger-id>
 ```
 
-Each decision stays local. You can audit or undo it.
+You can also correct Mora's derived commitments and your own authored memories:
+
+```bash
+mora teach commitment wrong-direction --memory-id <id> --direction owed_by_self --yes
+mora teach commitment already-closed --memory-id <id> --yes
+mora teach memory correct --id <id> --title "Corrected title" --text "Corrected text" --yes
+mora teach memory retract --id <id> --yes
+mora teach history --memory-id <id>
+```
+
+Each decision stays local, preserves its evidence and history, and can be
+reversed with `mora teach undo <ledger-id>`. Connector evidence is immutable;
+memory correction applies only to authored memories. See
+[Teach and human correction](docs/architecture/21-teach.md).
 
 ## Data layout
 

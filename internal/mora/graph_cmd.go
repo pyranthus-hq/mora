@@ -117,13 +117,12 @@ func renderGraphOverview(w io.Writer, entities []Entity, top int) {
 	fmt.Fprintln(w, "\nExpand one:  mora graph \"<name>\"")
 }
 
-// renderPersonSection ranks + bars the People overview by salience (Phase 14, SC#2).
+// renderPersonSection ranks the People overview by salience (Phase 14, SC#2).
 // Sort key: Salience desc, then the EXISTING deterministic tie-break (Count desc,
 // then Name, then evidence-id join) so two renders are byte-identical even on equal
-// micros. The bar magnitude is salience (max = top person's Salience); the printed
-// numeric column shows the mention Count (the human-legible signal — raw micros are
-// an opaque internal sort key, not a readable number), while the SORT/bar use the
-// int64 micros.
+// micros. Bars and their printed numeric column both use Count. Salience remains
+// the rank key, but it is an opaque internal composite and is not printed; using it
+// for the bar while printing Count made a displayed 42 shorter than 25 (#70).
 func renderPersonSection(w io.Writer, label string, group []Entity, top int) {
 	sort.SliceStable(group, func(i, j int) bool {
 		if group[i].Salience != group[j].Salience {
@@ -141,10 +140,15 @@ func renderPersonSection(w io.Writer, label string, group []Entity, top int) {
 	if n > len(group) {
 		n = len(group)
 	}
-	max := group[0].Salience
+	max := 0
+	for _, e := range group[:n] {
+		if e.Count > max {
+			max = e.Count
+		}
+	}
 	fmt.Fprintf(w, "\n%s (top %d of %d)\n", label, n, len(group))
 	for _, e := range group[:n] {
-		fmt.Fprintf(w, "  %-28s %-20s %d\n", graphTrunc(e.Name, 28), graphBar(int(e.Salience), int(max), 20), e.Count)
+		fmt.Fprintf(w, "  %-28s %-20s %d\n", graphTrunc(e.Name, 28), graphBar(e.Count, max, 20), e.Count)
 	}
 }
 

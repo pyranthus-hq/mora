@@ -64,6 +64,7 @@ type Commitment struct {
 	Gap               string               `json:"gap,omitempty"`
 	Citations         []CommitmentCitation `json:"citations"`
 	DuplicateOf       string               `json:"duplicate_of,omitempty"`
+	ReviewedUseful    bool                 `json:"reviewed_useful,omitempty"`
 }
 
 type commitSpan struct {
@@ -1455,11 +1456,21 @@ func commitmentKeySetsOverlap(a, b []string) bool {
 }
 
 func materializeCommitments(mems []Memory, cfg Config, now time.Time) []Commitment {
-	var commitments []Commitment
+	// Decisions with incomplete or expired validity remain queryable as
+	// needs_review, but cannot open an obligation or supply lifecycle evidence
+	// that closes one. Filter both paths together so a stale decision cannot act
+	// as current law through either side of the lifecycle projection.
+	authority := make([]Memory, 0, len(mems))
 	for _, m := range mems {
+		if memoryMayGovernCommitments(m, now) {
+			authority = append(authority, m)
+		}
+	}
+	var commitments []Commitment
+	for _, m := range authority {
 		commitments = append(commitments, classifyCommitments(m, cfg)...)
 	}
-	commitments = applyCommitmentLifecycle(commitments, commitmentEvidenceFromMemories(mems, cfg))
+	commitments = applyCommitmentLifecycle(commitments, commitmentEvidenceFromMemories(authority, cfg))
 	commitments = deduplicateCommitments(commitments)
 	if commitmentSnapshotUncertain(cfg, now) {
 		for i := range commitments {
@@ -1554,7 +1565,12 @@ func writeCommitments(ctx context.Context, tx *sql.Tx, generation string, mems [
 		return err
 	}
 	defer stmt.Close()
-	for i, commitment := range materializeCommitments(mems, cfg, now) {
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return err
+	}
+	commitments := applyTeachCommitments(materializeCommitments(mems, cfg, now), governance, cfg)
+	for i, commitment := range commitments {
 		payload, err := json.Marshal(commitment)
 		if err != nil {
 			return err
@@ -1602,13 +1618,42 @@ func readCommitmentSnapshot(ctx context.Context, cfg Config) (commitmentSnapshot
 	return out, rows.Err()
 }
 
-func readCommitmentInventory(ctx context.Context, cfg Config) (map[string][]Commitment, error) {
+func readCommitmentInventory(ctx context.Context, cfg Config, at time.Time) (map[string][]Commitment, error) {
 	snapshot, err := readCommitmentSnapshot(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]bool, len(snapshot.Commitments))
+	for _, commitment := range snapshot.Commitments {
+		wanted[commitment.OpenedBy.MemoryID] = true
+	}
+	memories := make(map[string]Memory, len(wanted))
+	files, err := allMemoryFiles(cfg)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range files {
+		m, perr := parseMemory(path)
+		if perr == nil && wanted[m.ID] {
+			memories[m.ID] = m
+		}
+	}
 	out := map[string][]Commitment{}
 	for _, commitment := range snapshot.Commitments {
+		// The vault is truth and the index is derived. Refuse a stale row when its
+		// evidence is no longer current or no longer readable. Re-evaluating
+		// decision validity at the caller's surface clock also prevents a
+		// commitment built before review_by from remaining authoritative after it
+		// expires without another rebuild.
+		m, ok := memories[commitment.OpenedBy.MemoryID]
+		if !ok || !governance.memoryVisible(m.ID) ||
+			!memoryMayGovernCommitments(m, at) {
+			continue
+		}
 		out[commitment.OpenedBy.MemoryID] = append(out[commitment.OpenedBy.MemoryID], commitment)
 	}
 	return out, nil

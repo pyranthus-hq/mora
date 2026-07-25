@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -254,6 +255,125 @@ func TestGovernance_AttachmentInheritsParentSuppression(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("suppressed parent must write 0 attachment memories, wrote %d", n)
+	}
+}
+
+func TestGovernance_ForgetCascadesToDerivedAttachmentAndBlocksReingest(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "private.pdf")
+	writeMinimalPDF(t, pdfPath, "private attachment evidence")
+	parent := imsgMM("attachment-parent", "+14155550123")
+	parent.Attachments = []memory.Attachment{{
+		Path: pdfPath, MimeType: "application/pdf", Filename: "private.pdf",
+	}}
+	if n, err := writeAttachmentMemories(cfg, parent); err != nil || n != 1 {
+		t.Fatalf("seed attachment: n=%d err=%v", n, err)
+	}
+	attachmentID := "att_" + memory.ContentHash(parent.StableID+":"+pdfPath)
+	attachmentPath := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(attachmentID)+".md")
+	if _, err := os.Stat(attachmentPath); err != nil {
+		t.Fatalf("attachment was not seeded: %v", err)
+	}
+
+	run(t, "forget", "--chat", parent.StableID, "--yes")
+	if _, err := os.Stat(attachmentPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("parent forget left derived attachment on disk: %v", err)
+	}
+	if n, err := writeAttachmentMemories(cfg, parent); err != nil || n != 0 {
+		t.Fatalf("parent suppression did not block attachment reingest: n=%d err=%v", n, err)
+	}
+}
+
+func TestGovernance_ForgetCascadesToPreUpgradeAttachmentWithoutParentMeta(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		selector []string
+	}{
+		{name: "stable id", selector: []string{"--chat", "imessage_chat/legacy-parent"}},
+		{name: "sole handle", selector: []string{"--handle", "+14155550123"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := coreBIngestInitCfg(t)
+			parent := imsgMM("legacy-parent", "+14155550123")
+			if err := writeMappedMemory(cfg, parent); err != nil {
+				t.Fatal(err)
+			}
+			legacyPath := filepath.Join(t.TempDir(), "legacy.pdf")
+			attachmentID := "att_" + memory.ContentHash(parent.StableID+":"+legacyPath)
+			legacy := memory.MappedMemory{
+				StableID: attachmentID, Provider: "imessage", ProviderID: "legacy-attachment",
+				Type: "source", Title: "legacy.pdf", Body: "pre-upgrade attachment evidence",
+				Source: legacyPath, Scope: "personal", CreatedAt: "2026-01-01T00:00:00Z",
+				ContentHash: memory.ContentHash("legacy.pdf", "pre-upgrade attachment evidence"),
+				Meta:        nil, // exact pre-#115 shape: no parent provenance
+			}
+			if err := writeMappedMemory(cfg, legacy); err != nil {
+				t.Fatal(err)
+			}
+			parentPath := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(parent.StableID)+".md")
+			attachmentPath := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(attachmentID)+".md")
+
+			args := append([]string{"forget"}, tc.selector...)
+			args = append(args, "--yes")
+			run(t, args...)
+			for _, path := range []string{parentPath, attachmentPath} {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("legacy parent forget left %s on disk: %v", path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestGovernance_ParentForgetAfterAttachmentPrecheckBlocksDerivedWrite(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "race.pdf")
+	writeMinimalPDF(t, pdfPath, "attachment race evidence")
+	parent := imsgMM("attachment-race", "+14155550123")
+	parent.Attachments = []memory.Attachment{{
+		Path: pdfPath, MimeType: "application/pdf", Filename: "race.pdf",
+	}}
+	testHookAttachmentAfterParentCheck = func() {
+		testHookAttachmentAfterParentCheck = nil
+		run(t, "forget", "--chat", parent.StableID, "--yes")
+	}
+	t.Cleanup(func() { testHookAttachmentAfterParentCheck = nil })
+	if n, err := writeAttachmentMemories(cfg, parent); err != nil || n != 0 {
+		t.Fatalf("attachment wrote after parent forget committed: n=%d err=%v", n, err)
+	}
+	attachmentID := "att_" + memory.ContentHash(parent.StableID+":"+pdfPath)
+	attachmentPath := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(attachmentID)+".md")
+	if _, err := os.Stat(attachmentPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("racing parent forget left derived attachment: %v", err)
+	}
+}
+
+func TestGovernance_ForgetScanAndAppendAreAtomicAgainstWriter(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	mm := imsgMM("scan-append-race", "+14155550123")
+	writerStarted := make(chan struct{})
+	writerDone := make(chan error, 1)
+	testHookForgetAfterScan = func() {
+		if _, err := os.Stat(governanceLockPath(cfg)); err != nil {
+			t.Errorf("forget scan hook ran without the governance lease: %v", err)
+		}
+		go func() {
+			close(writerStarted)
+			writerDone <- writeMappedMemory(cfg, mm)
+		}()
+		<-writerStarted
+	}
+	t.Cleanup(func() { testHookForgetAfterScan = nil })
+
+	run(t, "forget", "--chat", mm.StableID, "--yes")
+	if err := <-writerDone; err != nil {
+		t.Fatalf("competing writer: %v", err)
+	}
+	path := filepath.Join(sourcesRoot(cfg), "imessage", memory.SafeFilename(mm.StableID)+".md")
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("scan→append race materialized forgotten content: %v", err)
 	}
 }
 

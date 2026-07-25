@@ -18,8 +18,9 @@ import (
 // 512 KiB index bound at every call site (over → the whole file is skipped,
 // exactly like the .docx and raw-read paths).
 var (
-	pdfMaxFileSize int64 = 20 << 20 // 20 MiB
-	pdfMaxPages          = 500
+	pdfMaxFileSize                     int64 = 20 << 20 // 20 MiB
+	pdfMaxPages                              = 500
+	testHookAttachmentAfterParentCheck func()
 )
 
 // extractPDFText returns the plain text of a PDF using the pinned, audited
@@ -93,15 +94,17 @@ func isPDFAttachment(a memory.Attachment) bool {
 // The stable ID hashes parent StableID + path, so re-syncs hit the content-hash
 // skip in writeMappedMemory and an unchanged PDF is a no-op.
 func writeAttachmentMemories(cfg Config, parent memory.MappedMemory) (int, error) {
-	// Derived attachment memories carry `att_<hash>` ids that DON'T inherit the
-	// parent's participant Meta, so the per-item guard in writeMappedMemory can't
-	// see they belong to a forgotten chat. Consult the parent's suppression here
-	// so a forgotten conversation's PDFs are not smuggled in through this 5th
-	// (derived) write path (#52).
+	// Fast-path an already-forgotten parent before PDF extraction. Correctness does
+	// not rely on this one-shot check: every derived write below carries the parent
+	// atoms and rechecks them under writeMappedMemory's governance lease, which
+	// closes a forget racing after this check (#115).
 	if sup, _, err := shouldSuppressWrite(cfg, parent); err != nil {
 		return 0, err
 	} else if sup {
 		return 0, nil
+	}
+	if testHookAttachmentAfterParentCheck != nil {
+		testHookAttachmentAfterParentCheck()
 	}
 	count := 0
 	for _, a := range parent.Attachments {
@@ -116,6 +119,20 @@ func writeAttachmentMemories(cfg Config, parent memory.MappedMemory) (int, error
 		if title == "" {
 			title = filepath.Base(a.Path)
 		}
+		parentAtoms := counterpartyAtoms(parent.Provider, parent.Meta)
+		atomRows := make([]map[string]string, 0, len(parentAtoms))
+		for _, atom := range parentAtoms {
+			atomRows = append(atomRows, map[string]string{"kind": atom.Kind, "value": atom.Value})
+		}
+		governanceMeta := map[string]any{
+			governanceParentStableIDKey: parent.StableID,
+			governanceParentProviderKey: parent.Provider,
+			governanceParentAtomsKey:    atomRows,
+		}
+		metaJSON, err := memory.CanonicalMeta(governanceMeta)
+		if err != nil {
+			return count, err
+		}
 		mm := memory.MappedMemory{
 			StableID:    "att_" + memory.ContentHash(parent.StableID+":"+a.Path),
 			Type:        "source",
@@ -128,12 +145,16 @@ func writeAttachmentMemories(cfg Config, parent memory.MappedMemory) (int, error
 			Account:     parent.Account,
 			Scope:       parent.Scope,
 			CreatedAt:   parent.CreatedAt,
-			ContentHash: memory.ContentHash(title, text),
+			ContentHash: memory.ContentHash(title, text, metaJSON),
+			Meta:        governanceMeta,
 		}
 		if err := writeMappedMemory(cfg, mm); err != nil {
 			return count, err
 		}
-		count++
+		out := filepath.Join(sourcesRoot(cfg), mm.Provider, osSafeBase(memory.SafeFilename(mm.StableID))+".md")
+		if _, err := os.Stat(out); err == nil {
+			count++
+		}
 	}
 	return count, nil
 }

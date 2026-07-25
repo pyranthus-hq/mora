@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -104,6 +105,10 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 			return nil, err
 		}
 		m.Tags = splitCSV(tags)
+		if full, ferr := parseMemory(m.Path); ferr == nil {
+			full.Score = m.Score
+			m = full
+		}
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -112,7 +117,8 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	// B4: a memory with a pending delete op is suppressed from the search chokepoint
 	// (the memories JOIN) while its rebuild is broken, so deleted content is never
 	// served even when the index still carries the row.
-	return suppressPendingDeletes(cfg, out), nil
+	out = suppressPendingDeletes(cfg, out)
+	return currentMemories(cfg, out, time.Now())
 }
 func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string {
 	if budget <= 0 {
@@ -126,6 +132,16 @@ func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string 
 	}
 	var its strings.Builder
 	for _, m := range items {
+		if m.Decision != nil {
+			fmt.Fprintf(&its, "\n# %s\nDecision status: %s\nAs of: %s\nDurability: %s\nFlip conditions: %s\n",
+				m.Title, m.DecisionStatus, m.Decision.AsOf, m.Decision.Durability,
+				strings.Join(m.Decision.FlipConditions, "; "))
+			if m.Decision.ReviewBy != "" {
+				fmt.Fprintf(&its, "Review by: %s\n", m.Decision.ReviewBy)
+			}
+			fmt.Fprintf(&its, "%s\n", m.Text)
+			continue
+		}
 		fmt.Fprintf(&its, "\n# %s\n%s\n", m.Title, m.Text)
 	}
 	// Ordering by intent: when there IS a query, the caller already filtered

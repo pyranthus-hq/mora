@@ -21,6 +21,10 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	text := fs.String("text", "", "text")
 	tags := fs.String("tags", "", "comma-separated tags")
 	source := fs.String("source", "manual", "source")
+	asOf := fs.String("as-of", "", "decision validity instant (RFC3339)")
+	durability := fs.String("durability", "", "decision durability: provisional|working|standing")
+	flip := fs.String("flip-conditions", "", "semicolon-separated conditions that reverse a decision")
+	reviewBy := fs.String("review-by", "", "optional decision review deadline (RFC3339)")
 	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -36,6 +40,11 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
+	if m.Type == "decision" {
+		m.Decision = decisionValidityFromFlags(m.CreatedAt, *asOf, *durability, *flip, *reviewBy)
+	} else if *asOf != "" || *durability != "" || *flip != "" || *reviewBy != "" {
+		return errors.New("decision validity flags require --type decision")
+	}
 	// Create-exclusive publish: a colliding newID can never clobber an existing
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
@@ -43,6 +52,7 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	m = decorateDecision(m, time.Now())
 	// The vault write already succeeded (vault is truth; the index is a derived
 	// cache). Reflect just this one memory into the index (O(1)) instead of a full
 	// vault rebuild, so concurrent agent writers don't serialize whole-vault

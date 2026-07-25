@@ -226,8 +226,12 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 	}
 	root := memoriesRoot(cfg)
 	realRoot := resolveReal(root)
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return nil, err
+	}
 	var out []Memory
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) && path == root {
 				return nil // empty vault: nothing to export, not an error
@@ -246,6 +250,9 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 		}
 		if m.Scope != scope || m.DeletedAt != "" || m.Provider != "" {
 			return nil
+		}
+		if !governance.memoryVisible(m.ID) {
+			return nil // historical Teach revision: retained for audit, never exported as current truth
 		}
 		// The id becomes a filename in the share repo and in every subscriber's
 		// corpus — a hand-edited id with separators or dot-tricks must never

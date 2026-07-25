@@ -286,6 +286,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	count = 0
 	var parsed []Memory // ALL memories (incl. tombstones) — feeds the graph
 	var live []Memory   // non-tombstoned only — the searchable corpus + vectors
+	parsedCount := 0    // includes governed historical revisions; only parse failures count as unparseable
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return 0, err
+	}
 	// Content manifest (B1a): one sha256 line per readable file, from the SAME bytes
 	// the parse uses (parseMemoryBytes) — zero extra I/O. An unreadable file is
 	// skipped here and counts toward `unparseable` (listed − parsed) below.
@@ -298,6 +303,13 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		manifestLines = append(manifestLines, manifestLine(cfg, path, sha256.Sum256(b)))
 		m, err := parseMemoryBytes(path, b)
 		if err != nil {
+			continue
+		}
+		parsedCount++
+		// Teach keeps superseded/retracted authored Markdown as auditable evidence
+		// while excluding it from the current index, graph, vectors, and
+		// commitments. Undo changes only the ledger; the next rebuild restores it.
+		if !governance.memoryVisible(m.ID) {
 			continue
 		}
 		parsed = append(parsed, m)
@@ -374,7 +386,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		stampNowText, stampNowText, stampNowText, stampNowText, commitmentGeneration,
 		emb.ModelID(), fmt.Sprintf("%d", emb.Dim()), embedderDigestOf(emb),
 		indexManifestAlgo, manifestDigestOf(manifestLines),
-		fmt.Sprintf("%d", len(files)), fmt.Sprintf("%d", len(files)-len(parsed))); err != nil {
+		fmt.Sprintf("%d", len(files)), fmt.Sprintf("%d", len(files)-parsedCount)); err != nil {
 		return count, err
 	}
 

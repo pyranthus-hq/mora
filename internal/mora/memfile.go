@@ -53,6 +53,13 @@ func renderMemory(m Memory) ([]byte, error) {
 	if m.DeletedAt != "" {
 		fmt.Fprintf(&b, "deleted_at: %s\n", m.DeletedAt)
 	}
+	if decision := normalizeDecisionValidity(m); decision != nil {
+		decisionJSON, err := json.Marshal(decision)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&b, "decision: %s\n", decisionJSON)
+	}
 	// Meta is one canonical JSON line. json.Marshal sorts keys and never emits a
 	// raw newline, so the value survives the line-split parser and the inner colons
 	// survive strings.Cut(line, ":") (which splits on the FIRST colon only).
@@ -114,6 +121,15 @@ func parseMemoryBytes(path string, b []byte) (Memory, error) {
 			}
 			continue
 		}
+		if key == "decision" {
+			_, raw, _ := strings.Cut(line, ":")
+			var decision DecisionValidity
+			if jerr := json.Unmarshal([]byte(strings.TrimSpace(raw)), &decision); jerr != nil {
+				return Memory{}, fmt.Errorf("decision frontmatter is corrupt: %w", jerr)
+			}
+			m.Decision = &decision
+			continue
+		}
 		val = strings.Trim(strings.TrimSpace(val), `"`)
 		switch key {
 		case "id":
@@ -148,6 +164,9 @@ func parseMemoryBytes(path string, b []byte) (Memory, error) {
 	}
 	if m.ID == "" {
 		return Memory{}, errors.New("missing id")
+	}
+	if m.Type == "decision" {
+		m.Decision = normalizeDecisionValidity(m)
 	}
 	return m, nil
 }
@@ -209,7 +228,7 @@ func allMemoryFiles(cfg Config) ([]string, error) {
 	sort.Strings(paths)
 	return paths, nil
 }
-func findMemory(cfg Config, id string) (Memory, error) {
+func findMemoryRaw(cfg Config, id string) (Memory, error) {
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
 		return Memory{}, err
@@ -247,12 +266,32 @@ func findMemory(cfg Config, id string) (Memory, error) {
 	}
 	return Memory{}, fmt.Errorf("memory not found: %s", id)
 }
+
+func findMemory(cfg Config, id string) (Memory, error) {
+	m, err := findMemoryRaw(cfg, id)
+	if err != nil {
+		return Memory{}, err
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		return Memory{}, err
+	}
+	if !g.memoryVisible(m.ID) {
+		return Memory{}, fmt.Errorf("memory is not current: %s (use `mora teach history --memory-id %s` to audit revisions)", id, id)
+	}
+	return decorateDecision(m, time.Now()), nil
+}
+
 func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
 		return nil, err
 	}
 	var out []Memory
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		return nil, err
+	}
 	for _, path := range files {
 		m, err := parseMemory(path)
 		if err != nil {
@@ -266,8 +305,11 @@ func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
 		if m.DeletedAt != "" {
 			continue
 		}
+		if !g.memoryVisible(m.ID) {
+			continue
+		}
 		if scope == "" || m.Scope == scope {
-			out = append(out, m)
+			out = append(out, decorateDecision(m, time.Now()))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })

@@ -299,7 +299,9 @@ terminal. The commands use the same search as the agent:
 
 ```bash
 mora search "OAuth status" --scope project:acme --json   # search the vault (the search_memory tool)
-mora write --scope project:acme --type decision --title "Chose OAuth" --text "..."   # save a fact
+mora write --scope project:acme --type decision --title "Chose OAuth" --text "..." \
+  --as-of 2026-07-25T12:00:00Z --durability working \
+  --flip-conditions "security review fails;provider terms change"   # save a decision with its validity
 mora read <id> --json                                    # one memory by id
 mora list --scope project:acme --json                    # browse memories in a scope
 mora delete <id> --yes                                   # remove one memory
@@ -308,9 +310,49 @@ mora think "what did Sam decide about pricing?" --json   # cited evidence + gap 
 ```
 
 `mora context` builds one character-limited block for a query. The default is
-2000 characters. Omit `--query` for a recent-data brief. `mora write` is the
-only command here that changes data. It writes only to the local vault, never
-to your connected accounts.
+2000 characters. Omit `--query` for a recent-data brief. Decision memories use
+`--as-of`, `--durability provisional|working|standing`,
+`--flip-conditions` (semicolon-separated), and optional `--review-by`.
+Incomplete, legacy, or expired decisions are marked `needs_review`.
+
+`mora write` writes only to the local vault, never to your connected accounts.
+
+### Teach Mora
+
+Teach records a local, reversible human correction in Mora's governance
+ledger, then deterministically rebuilds the derived view:
+
+```bash
+mora teach identity list
+mora teach identity confirm --handle <phone> --email <address> --yes
+
+mora teach commitment not-a-commitment --memory-id <id> --yes
+mora teach commitment wrong-person --memory-id <id> --person sam@example.com --yes
+mora teach commitment wrong-direction --memory-id <id> --direction owed_by_self --yes
+mora teach commitment already-closed --memory-id <id> --yes
+mora teach commitment duplicate --memory-id <id> --duplicate-of <commitment-id> --yes
+mora teach commitment useful --memory-id <id> --yes
+
+mora teach memory correct --id <id> --title "Corrected" --text "..." --yes
+mora teach memory supersede --id <id> --title "Replacement" --text "..." --yes
+mora teach memory retract --id <id> --yes
+mora teach history --memory-id <id>
+mora teach undo <ledger-id>
+```
+
+Identity proposals show their typed corroborating evidence and affected-memory
+list before confirmation. If one memory opens multiple commitments, pass
+`--commitment-id` to select one. Connector evidence is immutable; memory
+revision commands apply only to authored memories. Ordinary reads hide
+retracted and superseded revisions, while history and original files remain
+auditable.
+
+Human corrections are not evaluation data by default. `mora teach examples
+--json` refuses until a user runs `mora teach consent enable --yes`, and even
+then exports structural verdict fields and an ordinal reference, never raw
+memory text, timestamps, or identity-derived references. Teach mutations are
+intentionally absent from MCP. See
+[architecture: Teach and human correction](architecture/21-teach.md).
 
 ### Permanently forget a person or chat
 

@@ -116,7 +116,7 @@ func TestExamCorrectionFlywheel(t *testing.T) {
 		t.Fatalf("pre-merge CriticalIdentity = %d, want 0: Mora must gap rather than misattribute", preScorecard.CriticalIdentity)
 	}
 
-	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net")
+	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net", "--yes")
 
 	postPredictions := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))
 	postScorecard := scoreExamSurface(t, ledger, postPredictions, exam.SurfaceMeeting)
@@ -188,7 +188,7 @@ func TestExamConversationCommitmentNotLastIsKnownRed(t *testing.T) {
 	}
 	event, at := seedRenderedExamLedger(t, ledger)
 	pinExamSurfaceClocks(t, at)
-	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net")
+	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net", "--yes")
 	preds := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))
 	verdicts, err := exam.Classify(ledger, preds, exam.SurfaceMeeting)
 	if err != nil {

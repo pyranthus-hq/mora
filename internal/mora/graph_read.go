@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // legacyKindFromID recovers the legacy public kind (scope|tag|link|category) from
@@ -202,7 +203,8 @@ func loadMemoriesByID(ctx context.Context, cfg Config, db *sql.DB, ids []string)
 		}
 		return out[i].ID < out[j].ID
 	})
-	return suppressPendingDeletes(cfg, out), nil
+	out = suppressPendingDeletes(cfg, out)
+	return currentMemories(cfg, out, time.Now())
 }
 
 // coOccurringPeople returns the OTHER person entity ids that share at least one

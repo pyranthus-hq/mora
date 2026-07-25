@@ -219,6 +219,10 @@ var mcpToolRegistry = []mcpToolDef{
 			{"scope", "string", `Scope/namespace, e.g. "global" or "project:acme" (default "global")`, false},
 			{"type", "string", `Memory type: insight|fact|decision|task (default "insight")`, false},
 			{"source", "string", `Origin label (default "mcp")`, false},
+			{"as_of", "string", "Decision validity instant (RFC3339; decision memories only)", false},
+			{"durability", "string", "Decision durability: provisional|working|standing", false},
+			{"flip_conditions", "string", "Semicolon-separated conditions that would reverse the decision", false},
+			{"review_by", "string", "Optional decision review deadline (RFC3339)", false},
 		},
 		Handler: mcpWriteMemory,
 	},
@@ -360,6 +364,18 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	if m.Title == "" || m.Text == "" {
 		return nil, errors.New("title and text required")
 	}
+	if m.Type == "decision" {
+		m.Decision = decisionValidityFromFlags(
+			m.CreatedAt,
+			strArg(args, "as_of", ""),
+			strArg(args, "durability", ""),
+			strArg(args, "flip_conditions", ""),
+			strArg(args, "review_by", ""),
+		)
+	} else if strArg(args, "as_of", "") != "" || strArg(args, "durability", "") != "" ||
+		strArg(args, "flip_conditions", "") != "" || strArg(args, "review_by", "") != "" {
+		return nil, errors.New("decision validity fields require type=decision")
+	}
 	// Create-exclusive publish: concurrent write_memory calls that mint the
 	// same id never clobber each other (os.Link fails EEXIST → re-mint). This
 	// is the server's most concurrent write path — N agents writing at once.
@@ -369,6 +385,7 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	if m, op, err = createMemory(ctx, cfg, m); err != nil {
 		return nil, err
 	}
+	m = decorateDecision(m, time.Now())
 	// The vault write succeeded (vault is truth; the index is a derived
 	// cache). Reflect just this one memory into the index (O(1)) instead of a
 	// full vault rebuild, so concurrent write_memory calls don't serialize

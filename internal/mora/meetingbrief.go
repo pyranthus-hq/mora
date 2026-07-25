@@ -463,7 +463,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		return MeetingBrief{}, err
 	}
 	lineDecisions := governanceLedger.briefLineDecisions()
-	commitmentsByMemory, err := readCommitmentInventory(ctx, cfg)
+	commitmentsByMemory, err := readCommitmentInventory(ctx, cfg, at)
 	if err != nil {
 		return MeetingBrief{}, err
 	}
@@ -960,9 +960,16 @@ func meetingBriefMemories(cfg Config) ([]Memory, error) {
 		return nil, err
 	}
 	mems := make([]Memory, 0, len(files))
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return nil, err
+	}
 	for _, path := range files {
 		m, perr := parseMemory(path)
 		if perr != nil || m.DeletedAt != "" {
+			continue
+		}
+		if !governance.memoryVisible(m.ID) {
 			continue
 		}
 		mems = append(mems, m)

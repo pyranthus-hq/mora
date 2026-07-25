@@ -554,7 +554,7 @@ func TestCommitmentsMaterializedByIndexGeneration(t *testing.T) {
 		t.Fatalf("commitment id = %q, want %q", id, wantID)
 	}
 
-	inventory, err := readCommitmentInventory(context.Background(), cfg)
+	inventory, err := readCommitmentInventory(context.Background(), cfg, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

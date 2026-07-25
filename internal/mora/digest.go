@@ -207,7 +207,7 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	if err != nil {
 		return Digest{}, err
 	}
-	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg)
+	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg, now)
 	if err != nil {
 		return Digest{}, err
 	}
@@ -236,7 +236,7 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 // materialization shared with meeting briefs. A missing DataDir is the explicit seam
 // used by pure digest assembly tests; a real loaded Config always gates on the typed
 // inventory.
-func digestCommitmentInventory(cfg Config) (map[string][]Commitment, bool, error) {
+func digestCommitmentInventory(cfg Config, at time.Time) (map[string][]Commitment, bool, error) {
 	// Pure resolver tests may intentionally construct only VaultDir/StateDir and
 	// have no index location. A real loaded Config always has DataDir; do not turn
 	// an otherwise valid empty/filtered brief into an attempt to create "index.db"
@@ -244,7 +244,7 @@ func digestCommitmentInventory(cfg Config) (map[string][]Commitment, bool, error
 	if strings.TrimSpace(cfg.DataDir) == "" {
 		return nil, false, nil
 	}
-	inventory, err := readCommitmentInventory(context.Background(), cfg)
+	inventory, err := readCommitmentInventory(context.Background(), cfg, at)
 	if err != nil {
 		return nil, false, err
 	}
@@ -444,6 +444,10 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 	// Skip tombstones up front (M-4) so a cancelled calendar event (new content_hash)
 	// is never live [updated] nor in the cold-start 7d window.
 	byInstance = map[string][]Memory{}
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return 0, nil, nil, err
+	}
 	for _, path := range files {
 		m, perr := parseMemory(path)
 		if perr != nil {
@@ -451,6 +455,14 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 		}
 		if m.DeletedAt != "" {
 			continue // M-4: tombstone — mirror graph.go's skip.
+		}
+		if !governance.memoryVisible(m.ID) {
+			continue
+		}
+		m = decorateDecision(m, now)
+		if m.DecisionStatus == decisionNeedsReview {
+			m.Title = "[NEEDS REVIEW] " + m.Title
+			m.Text = "Decision validity is incomplete or expired. Review before relying on it.\n\n" + m.Text
 		}
 		key, ok := sourceInstanceKey(m)
 		if !ok {
@@ -812,7 +824,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 	if err != nil {
 		return Digest{}, "", err
 	}
-	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg)
+	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg, now)
 	if err != nil {
 		return Digest{}, "", err
 	}
