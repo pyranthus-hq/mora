@@ -3,6 +3,7 @@ package mora
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +26,18 @@ import (
 // full-vault rebuild is what actually re-indexes the files.
 
 func ingestJournalRoot(cfg Config) string { return filepath.Join(cfg.StateDir, "ingest") }
+
+// ingestStateRootErr guards the journal/lease WRITE seam. An empty or relative
+// StateDir would resolve the journal root against the process cwd and scatter
+// runtime files there — under `go test`, into the package source tree (#184;
+// PR #182 nearly committed such a lease file). Refuse loudly before the first
+// MkdirAll instead of publishing state to a location nobody will ever read.
+func ingestStateRootErr(cfg Config) error {
+	if cfg.StateDir == "" || !filepath.IsAbs(cfg.StateDir) {
+		return fmt.Errorf("ingest journal requires an absolute state_dir, got %q", cfg.StateDir)
+	}
+	return nil
+}
 
 // ingestSourceKey names one journal per connector instance. SafeFilename maps the
 // path-hostile characters an account label could carry.
@@ -60,6 +73,9 @@ func ingestLeasePath(cfg Config, sourceKey string) string {
 // header retire slightly sooner, never a false-clean (the journal header is the
 // durable dirty signal).
 func ensureIngestLease(cfg Config, sourceKey string) error {
+	if err := ingestStateRootErr(cfg); err != nil {
+		return err
+	}
 	lp := ingestLeasePath(cfg, sourceKey)
 	if b, err := os.ReadFile(lp); err == nil {
 		if pid, perr := strconv.Atoi(strings.TrimSpace(string(b))); perr == nil && pid == os.Getpid() {
@@ -160,6 +176,9 @@ func ensureIngestJournalHeader(cfg Config, sourceKey string) error {
 // rebuild lists every file on disk regardless — so a lost path line only costs a
 // covered file being re-listed, never a false-clean.
 func journalPublishedPath(cfg Config, sourceKey, path string) {
+	if ingestStateRootErr(cfg) != nil {
+		return // the durable header guard already failed loudly for this run
+	}
 	_ = appendFile(ingestJournalPath(cfg, sourceKey), cleanVaultPath(path)+"\n")
 }
 

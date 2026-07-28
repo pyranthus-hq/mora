@@ -450,7 +450,9 @@ func TestMc_ExtractPDFTextRecoversPanic(t *testing.T) {
 // TestMc_WriteAttachmentMemoriesTitleFallback: an attachment with an empty
 // Filename derives its title from the file's base name.
 func TestMc_WriteAttachmentMemoriesTitleFallback(t *testing.T) {
-	cfg := Config{VaultDir: t.TempDir()}
+	// StateDir must be set: the write path journals under it, and an empty
+	// StateDir now refuses loudly instead of scattering into the cwd (#184).
+	cfg := Config{VaultDir: t.TempDir(), StateDir: t.TempDir()}
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "unnamed-lease.pdf")
 	writeMinimalPDF(t, pdfPath, "escalation clause body")
@@ -490,7 +492,7 @@ func TestMc_WriteAttachmentMemoriesWriteError(t *testing.T) {
 	if err := os.WriteFile(vaultFile, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{VaultDir: vaultFile}
+	cfg := Config{VaultDir: vaultFile, StateDir: t.TempDir()}
 
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "doc.pdf")
