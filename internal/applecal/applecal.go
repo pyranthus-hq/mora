@@ -100,7 +100,7 @@ func probeSchema(db *sql.DB) error {
 		"Participant":  {"owner_id", "email", "role"},
 	}
 	for table, cols := range required {
-		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		rows, err := pragmaTableInfo(db, table)
 		if err != nil {
 			return fmt.Errorf("probe Calendar.sqlitedb schema: %w", err)
 		}

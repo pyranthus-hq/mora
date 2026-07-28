@@ -2,6 +2,15 @@
 
 Command: `scripts/eval/exam-mutation-matrix.sh`
 
+Re-anchored 2026-07-28 (#205, PR #208): the Gate 3 surface rework (#196) moved
+render authority to the materialized commitment inventory, so 15 rows' named
+witnesses decayed — their planted mutants survived the named test while every
+protection remained live. A broad-witness sweep proved all 23 mutants still die
+(zero real holes); each decayed row was then re-probed and re-anchored to the
+first named test that kills it, mostly `TestExamIntegrityExit` (the Gate 1
+trust-leg audit, which pins product scores across all three corpora). The
+2026-07-20 run below records the pre-#196 witnesses.
+
 Re-run 2026-07-20 after the auditor-facing leak fix (neutral subjects, date
 interleave, in-world supersession evidence): all 23 planted mutants KILLED and
 all audit groups CLOSED against the re-cut corpus. The fix changed no mutant and
@@ -23,23 +32,23 @@ coverage.
 
 | Production gate | Result |
 |---|---|
-| `classifyMeetingBriefEvidence` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
-| `isMeetingNotification` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
-| `assignedToThirdParty` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `classifyMeetingBriefEvidence` | CLOSED — `TestExamRealPredictionsPin` goes red |
+| `isMeetingNotification` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `assignedToThirdParty` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
 | `memoryIsServiceOnly` | CLOSED — `TestExamServiceOnlyGateIsAssembled` goes red |
-| `userOwnedOpenLoop` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
-| `meetingBriefIsTwoPartyExchange` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
-| `relationalEvidenceIDs` | CLOSED — `TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation` goes red |
-| `meetingBriefResolveAttribution` | CLOSED — `TestMeetingBriefDropsAmbiguousOutboundGroupAttribution` goes red |
-| `stripURLs` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `userOwnedOpenLoop` | CLOSED — `TestExamRealPredictionsPin` goes red |
+| `meetingBriefIsTwoPartyExchange` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `relationalEvidenceIDs` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `meetingBriefResolveAttribution` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `stripURLs` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
 | `unwrapHardWraps` | CLOSED — `TestExamHardWrapJoinsBeforeSegmenting` goes red |
-| `senderAuthoredBody` | CLOSED — `TestExamAuthoredToQuotedDisappearsFromTheRealBrief` goes red |
-| `stripSpeakerPrefix` | CLOSED — `TestExamIMessageSpeakerPrefixIsNotProductText` goes red |
-| `isForwardedSubject` | CLOSED — `TestExamForwardedSubjectNeverBecomesEvidence` goes red |
-| `isLeadInFragment` | CLOSED — `TestExamLeadInFragmentNeverBecomesEvidence` goes red |
+| `senderAuthoredBody` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `stripSpeakerPrefix` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `isForwardedSubject` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `isLeadInFragment` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
 | `stripNoiseTokens` | CLOSED — `TestExamCorrectionFlywheel` goes red |
-| `gmailActionableAsk` | CLOSED — `TestExamGmailBareQuestionNeedsRealInterrogative` goes red |
-| `containsPhrase` | CLOSED — `TestSabotageGibberishNeverRenders` goes red |
+| `gmailActionableAsk` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
+| `containsPhrase` | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
 
 ## Matrix 2 — exam machinery
 
@@ -130,7 +139,7 @@ the registered mutant itself is then executed by `TestScorerRedTeam`.
 | Gate/mutation | Result |
 |---|---|
 | `cmdPulse` bypasses `briefClock` | CLOSED — `TestExamSurfaceClockGuard` goes red |
-| CLI daily cap drifts from the pinned surface | CLOSED — `TestExamSurfaces` goes red |
+| CLI daily cap drifts from the pinned surface | CLOSED — `TestExamIntegrityExit` (Gate 1 trust legs) goes red |
 | Post arm omits `merge confirm` governance write | CLOSED — `TestExamCorrectionFlywheel` goes red |
 | `canonicalizePersons` RULE 3 is neutered | CLOSED — `TestExamCorrectionFlywheel` goes red |
 | Pre arm is already merged/correct | CLOSED — `TestExamCorrectionFlywheel` goes red with `EVAL_BROKEN` |
@@ -140,11 +149,11 @@ the registered mutant itself is then executed by `TestScorerRedTeam`.
 
 ### Ratchet and exit branches
 
-These branches land in exam PR 4, not this PR. They remain explicit rather
-than being falsely marked covered by PR 3.
+These branches landed with exam PR 4 (#139, closed 2026-07-24). The dated
+holes below are closed by named gates on main.
 
-| Future branch | Result |
+| Branch | Result |
 |---|---|
-| Measured-floor ratchet comparison | HOLE — issue #139, expires 2026-07-21 |
-| Integrity-exit audit-state branch | HOLE — issue #139, expires 2026-07-21 |
-| Product-target comparison and `wantRED` must-flip arm | HOLE — issue #139, expires 2026-07-21 |
+| Measured-floor ratchet comparison | CLOSED — `assertGate3MeetingRatchet`/`assertGate3DailyRatchet` (`exam_surfaces_test.go`) go red on any floor regression |
+| Integrity-exit audit-state branch | CLOSED — `TestExamIntegrityExit` goes red |
+| Product-target comparison and `wantRED` must-flip arm | RETIRED — the strict target went green on 2026-07-24 (#204); `TestExamProductTarget` pins `wantRED = false` and fails if a dated pin is re-introduced without a reviewed decision |

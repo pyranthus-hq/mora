@@ -102,7 +102,7 @@ func (f *LiveFetcher) Close() error {
 // "unsupported chat.db schema" error rather than letting the query fail cryptically
 // or return wrong rows (Pitfall 9).
 func probeMessageSchema(db *sql.DB) (map[string]bool, error) {
-	rows, err := db.Query("PRAGMA table_info(message)")
+	rows, err := pragmaTableInfo(db, "message")
 	if err != nil {
 		return nil, fmt.Errorf("probe chat.db schema: %w", err)
 	}
@@ -324,13 +324,15 @@ func (f *LiveFetcher) assembleConversation(guid string, display, identifier sql.
 // classifies system/retracted messages from the optional columns when present.
 func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]renderMessage, []Attachment, int64, error) {
 	// Optional columns become literal 0 when the live schema lacks them, keeping the
-	// SELECT arity fixed and the scan simple (schema-defensive).
+	// SELECT arity fixed and the scan simple (schema-defensive). The identifier
+	// check mirrors pragmaTableInfo: the names are package constants today, and the
+	// guard keeps this splice inert if they ever stop being (#176).
 	itemTypeExpr := "0"
-	if f.hasItemType {
+	if f.hasItemType && sqlIdentifier.MatchString(colItemType) {
 		itemTypeExpr = "m." + colItemType
 	}
 	retractedExpr := "0"
-	if f.hasRetracted {
+	if f.hasRetracted && sqlIdentifier.MatchString(colDateRetracted) {
 		retractedExpr = "m." + colDateRetracted
 	}
 	query := fmt.Sprintf(`SELECT m.ROWID, m.date, m.is_from_me, m.text, m.attributedBody,

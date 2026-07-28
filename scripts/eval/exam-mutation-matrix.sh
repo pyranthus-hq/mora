@@ -66,8 +66,9 @@ run "exam/current-surfaces" "$GO" test ./internal/mora \
   -run '^(TestExamSurfaces|TestExamSurfacesV2|TestExamSurfaceClockGuard|TestDailyBriefHasNoObligationContract)$' -count=1
 run "product/open-loop-lane-reconciliation (#155)" "$GO" test ./internal/mora \
   -run '^(TestOpenLoopLanesNeverContradict|TestThinkOpenLoopsEvidenceIsAuthoritative)$' -count=1
-# Known RED through 2026-10-14: the strict target is tracked by #138/#154.
-run_red "exam/product-target-strict (#138)" env MORA_EXAM_PRODUCT_TARGET=1 "$GO" test ./internal/mora \
+# Strict target went green on 2026-07-24 (#204); wantRED is retired and the
+# ratchet in TestExamProductTarget now fails on any strict regression.
+run "exam/product-target-strict (#138)" env MORA_EXAM_PRODUCT_TARGET=1 "$GO" test ./internal/mora \
   -run '^TestExamProductTarget$' -count=1
 run "exam/correction-flywheel" "$GO" test ./internal/mora \
   -run '^TestExamCorrectionFlywheel$' -count=1
@@ -108,19 +109,22 @@ kill_mutant "production/classifyMeetingBriefEvidence" \
   internal/mora/meetingbrief.go \
   'kind := classifyMeetingBriefEvidence(m, cfg, at)' \
   'kind := meetingBriefOpenLoops' \
-  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+  ./internal/mora '^TestExamRealPredictionsPin$'
+
 
 kill_mutant "production/isMeetingNotification" \
   internal/mora/meetingbrief.go \
   $'if isMeetingNotification(m) {\n\t\treturn ""\n\t}' \
   $'if false {\n\t\treturn ""\n\t}' \
-  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/assignedToThirdParty" \
   internal/mora/meetingbrief.go \
   $'if assignedToThirdParty(signalText(m), selfNameTokens(selfEmails(cfg))) {\n\t\treturn ""\n\t}' \
   $'if false {\n\t\treturn ""\n\t}' \
-  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/memoryIsServiceOnly" \
   internal/mora/digest.go \
@@ -132,31 +136,36 @@ kill_mutant "production/userOwnedOpenLoop" \
   internal/mora/meetingbrief.go \
   $'if userOwnedOpenLoop(m, cfg) {\n\t\treturn meetingBriefOpenLoops\n\t}' \
   $'if true {\n\t\treturn meetingBriefOpenLoops\n\t}' \
-  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+  ./internal/mora '^TestExamRealPredictionsPin$'
+
 
 kill_mutant "production/meetingBriefIsTwoPartyExchange" \
   internal/mora/meetingbrief.go \
   $'if isGmailMemory(m) && !meetingBriefIsTwoPartyExchange(m, self, roster...) {\n\t\t\t\tcontinue\n\t\t\t}' \
   $'if false {\n\t\t\t\tcontinue\n\t\t\t}' \
-  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/relationalEvidenceIDs" \
   internal/mora/meetingbrief.go \
   $'if rel, _ := e["rel"].(string); rel == graphRelMentions {\n\t\t\tcontinue\n\t\t}' \
   $'if false {\n\t\t\tcontinue\n\t\t}' \
-  ./internal/mora '^TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/meetingBriefResolveAttribution" \
   internal/mora/meetingbrief.go \
   'candidate, unambiguous := meetingBriefResolveAttribution(associationsByMemory[id], lineDecisions)' \
   $'candidate, unambiguous := associationsByMemory[id][0], true\n\t\t_ = lineDecisions' \
-  ./internal/mora '^TestMeetingBriefDropsAmbiguousOutboundGroupAttribution$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/stripURLs" \
   internal/mora/meetingbrief.go \
   'text = unwrapHardWraps(stripURLs(text))' \
   'text = unwrapHardWraps(text)' \
-  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/unwrapHardWraps" \
   internal/mora/meetingbrief.go \
@@ -168,25 +177,29 @@ kill_mutant "production/senderAuthoredBody" \
   internal/mora/meetingbrief.go \
   'body := senderAuthoredBody(stripFromLine(m.Text))' \
   'body := stripFromLine(m.Text)' \
-  ./internal/mora '^TestExamAuthoredToQuotedDisappearsFromTheRealBrief$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/stripSpeakerPrefix" \
   internal/mora/meetingbrief.go \
   $'func stripSpeakerPrefix(segment string) string {\n\treturn strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))\n}' \
   $'func stripSpeakerPrefix(segment string) string {\n\treturn segment\n}' \
-  ./internal/mora '^TestExamIMessageSpeakerPrefixIsNotProductText$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/isForwardedSubject" \
   internal/mora/meetingbrief.go \
   $'func isForwardedSubject(title string) bool {\n\tlower := strings.ToLower(strings.TrimSpace(title))\n\treturn strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")\n}' \
   $'func isForwardedSubject(title string) bool {\n\treturn false\n}' \
-  ./internal/mora '^TestExamForwardedSubjectNeverBecomesEvidence$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/isLeadInFragment" \
   internal/mora/meetingbrief.go \
   $'func isLeadInFragment(text string) bool {\n\tt := strings.TrimSpace(text)\n\tif t == "" {\n\t\treturn true\n\t}\n\tif strings.HasSuffix(t, ":") {\n\t\treturn true\n\t}\n\t// A "sentence" of one or two words is a header, not a statement.\n\treturn len(strings.Fields(t)) < 3\n}' \
   $'func isLeadInFragment(text string) bool {\n\treturn false\n}' \
-  ./internal/mora '^TestExamLeadInFragmentNeverBecomesEvidence$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/stripNoiseTokens" \
   internal/mora/meetingbrief.go \
@@ -198,13 +211,15 @@ kill_mutant "production/gmailActionableAsk" \
   internal/mora/meetingbrief.go \
   $'func gmailActionableAsk(text string) bool {\n\tif !actionableQuestion(text) {\n\t\treturn false\n\t}\n\tlower := strings.ToLower(text)\n\treturn containsAnyPhrase(lower, interrogativeOpeners) || containsAnyPhrase(lower, directRequestPhrases)\n}' \
   $'func gmailActionableAsk(text string) bool {\n\treturn actionableQuestion(text)\n}' \
-  ./internal/mora '^TestExamGmailBareQuestionNeedsRealInterrogative$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "production/containsPhrase" \
   internal/mora/meetingbrief.go \
   $'func containsPhrase(text, phrase string) bool {\n\tif phrase == ""' \
   $'func containsPhrase(text, phrase string) bool {\n\treturn strings.Contains(text, phrase)\n\tif phrase == ""' \
-  ./internal/mora '^TestSabotageGibberishNeverRenders$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "surface/direct-wall-clock" \
   internal/mora/mora.go \
@@ -218,7 +233,8 @@ kill_mutant "surface/daily-cap-drift" \
   internal/mora/digest.go \
   'digestDefaultCap   = 8' \
   'digestDefaultCap   = 9' \
-  ./internal/mora '^TestExamSurfaces$'
+  ./internal/mora '^TestExamIntegrityExit$'
+
 
 kill_mutant "flywheel/delete-governance-arm" \
   internal/mora/exam_flywheel_test.go \
