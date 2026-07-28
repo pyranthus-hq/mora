@@ -819,7 +819,29 @@ func TestGate4RenderedOutputFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(got)) != strings.TrimSpace(string(want)) {
-		t.Fatalf("Gate 4 rendered fixture drifted:\n%s", got)
+	// Git may check text fixtures out with CRLF on Windows. Compare the JSON
+	// document rather than its incidental whitespace, and force a CRLF version
+	// here so removing the semantic comparison fails on every development OS.
+	want = []byte(strings.ReplaceAll(
+		strings.ReplaceAll(string(want), "\r\n", "\n"),
+		"\n", "\r\n",
+	))
+	decodeFixture := func(label string, raw []byte) any {
+		t.Helper()
+		if !json.Valid(raw) {
+			t.Fatalf("%s Gate 4 fixture is invalid JSON", label)
+		}
+		dec := json.NewDecoder(strings.NewReader(string(raw)))
+		dec.UseNumber() // preserve large numeric identities exactly
+		var fixture any
+		if err := dec.Decode(&fixture); err != nil {
+			t.Fatalf("decode %s Gate 4 fixture: %v", label, err)
+		}
+		return fixture
+	}
+	gotFixture := decodeFixture("generated", got)
+	wantFixture := decodeFixture("golden", want)
+	if !reflect.DeepEqual(gotFixture, wantFixture) {
+		t.Fatalf("Gate 4 rendered fixture drifted:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }

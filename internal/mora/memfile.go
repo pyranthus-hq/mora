@@ -130,7 +130,21 @@ func parseMemoryBytes(path string, b []byte) (Memory, error) {
 			m.Decision = &decision
 			continue
 		}
-		val = strings.Trim(strings.TrimSpace(val), `"`)
+		switch key {
+		case "id", "scope", "type", "title", "tags", "source", "created_at",
+			"provider", "provider_id", "account", "content_hash", "last_synced",
+			"truncated", "deleted_at":
+			// Known scalar field; decode below.
+		default:
+			// Preserve forward compatibility: older Mora versions ignore fields
+			// they do not understand, including their value syntax.
+			continue
+		}
+		parsedVal, err := parseFrontmatterScalar(key, val)
+		if err != nil {
+			return Memory{}, err
+		}
+		val = parsedVal
 		switch key {
 		case "id":
 			m.ID = val
@@ -373,8 +387,32 @@ func ContentHash(s string) string {
 	return strconv.FormatUint(h, 16)
 }
 func quoteYAML(s string) string {
-	if strings.ContainsAny(s, ":#[]") {
+	// Keep the renderer and parseFrontmatterScalar symmetric. Backslashes and
+	// quotes are included even when this small frontmatter grammar could carry
+	// them unquoted: emitting one canonical quoted representation ensures paths
+	// and escaped characters round-trip identically on every OS.
+	if s == "" || strings.TrimSpace(s) != s || strings.ContainsAny(s, ":#[]\"\\\n\r\t") {
 		return strconv.Quote(s)
 	}
 	return s
+}
+
+// parseFrontmatterScalar decodes the exact quoted representation emitted by
+// quoteYAML. The previous parser only trimmed quote characters, leaving path
+// separators doubled in memory. That changed identity-bearing source paths
+// after a render/parse round trip.
+//
+// A value beginning with a quote is treated as quoted data and must be a valid,
+// complete strconv string. Failing closed here prevents malformed frontmatter
+// from silently producing a different path or provider identity.
+func parseFrontmatterScalar(key, raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if !strings.HasPrefix(value, `"`) {
+		return value, nil
+	}
+	decoded, err := strconv.Unquote(value)
+	if err != nil {
+		return "", fmt.Errorf("%s frontmatter value is corrupt: %w", key, err)
+	}
+	return decoded, nil
 }
