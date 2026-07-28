@@ -327,27 +327,29 @@ func TestBudgetHardBoundContextCLI(t *testing.T) {
 	charBudget := tokenBudget * charsPerToken
 	out := run(t, "context", "--query", "Huge", "--budget", fmt.Sprint(tokenBudget), "--json")
 	var env struct {
-		Context string   `json:"context"`
-		Items   []Memory `json:"items"`
+		Context string            `json:"context"`
+		Items   []contextItemJSON `json:"items"`
+		Budget  int               `json:"budget"`
+		Used    int               `json:"used"`
 	}
 	if err := json.Unmarshal([]byte(out), &env); err != nil {
 		t.Fatalf("decode: %v\n%s", err, out)
 	}
+	// #200 contract: receipts are budgeted FIRST, the blob gets the remainder.
+	// The hard bound (#69) is on the SUM — blob and receipts together may
+	// never exceed the char budget, so `used` never exceeds `budget`.
 	itemsJSON, _ := json.Marshal(env.Items)
-	if len(env.Context) > charBudget {
-		t.Fatalf("context %d chars exceeds %d-char budget for %d tokens", len(env.Context), charBudget, tokenBudget)
+	if len(env.Context)+len(itemsJSON) > charBudget {
+		t.Fatalf("context (%d) + items (%d) chars exceed %d-char budget for %d tokens",
+			len(env.Context), len(itemsJSON), charBudget, tokenBudget)
 	}
-	remaining := charBudget - len(env.Context)
-	if remaining < 0 {
-		remaining = 0
+	if env.Used > env.Budget {
+		t.Fatalf("used %d exceeds budget %d", env.Used, env.Budget)
 	}
-	if remaining == 0 {
-		if string(itemsJSON) != "[]" {
-			t.Fatalf("with no remaining budget, items must be []; got %s", itemsJSON)
-		}
-	} else if len(itemsJSON) > remaining {
-		t.Fatalf("items JSON %d chars exceeds remaining budget %d (context=%d, total=%d)",
-			len(itemsJSON), remaining, len(env.Context), charBudget)
+	// A 200-char budget fits at least the one packed memory's receipt: the
+	// provenance lane must not be starved by the blob.
+	if len(env.Items) != 1 {
+		t.Fatalf("items = %d receipts, want 1 for the single packed memory:\n%s", len(env.Items), out)
 	}
 }
 
@@ -404,23 +406,70 @@ func TestBudgetEntityEvidenceHardBound(t *testing.T) {
 	}
 }
 
-// TestBudgetContextItemsHardBound unit-tests the items capper.
-func TestBudgetContextItemsHardBound(t *testing.T) {
-	m := Memory{ID: "m1", Title: "Big", Text: strings.Repeat("t", 5000), CreatedAt: "2026-01-01T00:00:00Z"}
-	row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Text: m.Text}
-	fitted, ok := fitContextItemJSON(row, 116)
-	if !ok {
-		t.Fatalf("fitContextItemJSON failed for compact projection")
+// TestContextReceiptsHardBound unit-tests the receipts capper: receipts fit
+// the char budget by dropping whole rows from the tail, never by truncating a
+// row (#69 hard bound, #200 receipts shape).
+func TestContextReceiptsHardBound(t *testing.T) {
+	mems := make([]Memory, 10)
+	for i := range mems {
+		mems[i] = Memory{ID: fmt.Sprintf("mem_%02d", i), Title: "A title", CreatedAt: "2026-01-01T00:00:00Z"}
 	}
-	if jsonLen(fitted) > 116 {
-		t.Fatalf("fitted item %d bytes exceeds 116-byte cap", jsonLen(fitted))
+	one := jsonLen(contextItemJSON{ID: mems[0].ID, Title: mems[0].Title, CreatedAt: mems[0].CreatedAt})
+	budget := 2 + 3*(one+2) // room for exactly three rows
+	got := contextReceipts(mems, budget)
+	if len(got) != 3 {
+		t.Fatalf("receipts = %d rows, want 3 for budget %d", len(got), budget)
 	}
-	got := budgetContextItemsJSON([]Memory{m}, 0, 120, "Big")
-	if len(got) == 0 {
-		t.Fatal("expected a truncated item")
+	if got[0].ID != "mem_00" || got[2].ID != "mem_02" {
+		t.Fatalf("receipts must keep pack order from the head, got %+v", got)
 	}
 	payload, _ := json.Marshal(got)
-	if len(payload) > 120 {
-		t.Fatalf("items JSON %d bytes exceeds 120-byte budget", len(payload))
+	if len(payload) > budget {
+		t.Fatalf("receipts JSON %d bytes exceeds %d-byte budget", len(payload), budget)
+	}
+	if len(contextReceipts(mems, 3)) != 0 {
+		t.Fatal("a budget too small for one receipt must yield zero rows")
+	}
+	if len(contextReceipts(nil, 1000)) != 0 {
+		t.Fatal("no items must yield zero receipts")
+	}
+}
+
+// TestContextJSONItemsSurviveFullBlob is the #200 regression: when the vault
+// holds more content than the budget — every real vault — the blob used to
+// spend the entire char budget first and items[] came back [] with used >
+// budget. Receipts are reserved first now: items[] must name every packed
+// memory and used must respect the budget.
+func TestContextJSONItemsSurviveFullBlob(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	body := strings.Repeat("w ", 1500)
+	for i := 0; i < 4; i++ {
+		run(t, "write", "--scope", "global", "--title", fmt.Sprintf("Filler %d", i), "--text", body)
+	}
+
+	out := run(t, "context", "--budget", "500", "--json")
+	var env struct {
+		Context string            `json:"context"`
+		Items   []contextItemJSON `json:"items"`
+		Budget  int               `json:"budget"`
+		Used    int               `json:"used"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	if len(env.Context) < 1000 {
+		t.Fatalf("precondition failed: blob %d chars does not fill the ~2000-char budget", len(env.Context))
+	}
+	if len(env.Items) == 0 {
+		t.Fatalf("items[] empty while the blob filled the budget — the #200 regression:\n%s", out)
+	}
+	for _, it := range env.Items {
+		if it.ID == "" || it.CreatedAt == "" {
+			t.Fatalf("receipt missing id/created_at: %+v", it)
+		}
+	}
+	if env.Used > env.Budget {
+		t.Fatalf("used %d exceeds budget %d — the receipts' cost was not reserved from the blob", env.Used, env.Budget)
 	}
 }

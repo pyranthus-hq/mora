@@ -426,7 +426,7 @@ The public knob over MCP is `max_tokens` (agents speak tokens. The pilot asked f
 - request over `maxContextTokens = 20000` → clamped to 20000 (`mcp.go`),
 - then `× charsPerToken` → character budget.
 
-The clamp happens **before** the multiply (`mcp.go`) so an arbitrarily large `max_tokens` cannot overflow the int. The CLI `mora context --budget` now uses the **same token unit** via `resolveContextBudgetTokens` (`commands_memory.go`); `--json` stamps `budget_unit:"tokens"` and bounds the `items` array to the remaining char budget after `context` is built (#69).
+The clamp happens **before** the multiply (`mcp.go`) so an arbitrarily large `max_tokens` cannot overflow the int. The CLI `mora context --budget` now uses the **same token unit** via `resolveContextBudgetTokens` (`commands_memory.go`); `--json` stamps `budget_unit:"tokens"`. The `items` array is the **provenance lane**: one receipt (`id`, `title`, `created_at`, no body text) per memory the assembly packed, budgeted **before** the `context` blob so a full blob can never starve it to `[]` (#200; the old leftover order did exactly that on every real vault). The hard bound is on the sum — receipts plus blob never exceed the char budget (#69), so `used` never exceeds `budget`.
 
 ### The starvation guard (`buildContext`, `search.go`)
 

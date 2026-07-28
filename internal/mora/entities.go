@@ -461,60 +461,34 @@ func fitEntityEvidence(e EntityEvidence, maxBytes int) (EntityEvidence, bool) {
 	return out, jsonLen(out) <= maxBytes
 }
 
-// contextItemJSON is the compact items[] shape for `mora context --json` — only
-// the fields an agent reads, so empty Memory zero-values cannot consume budget.
+// contextItemJSON is the compact items[] shape for `mora context --json`: a
+// RECEIPT for one memory the assembly packed — id, title, created_at, no body
+// text. The `context` blob is the content lane; items[] is the provenance
+// lane, so a consumer can audit or re-fetch exactly what was chosen (#200).
 type contextItemJSON struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
 	CreatedAt string `json:"created_at"`
-	Text      string `json:"text,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
 }
 
-// budgetContextItemsJSON returns snippeted items that fit in the remaining char
-// budget after the context string is built (#69 hard bound).
-func budgetContextItemsJSON(items []Memory, contextLen, totalBudgetChars int, center string) []contextItemJSON {
-	remaining := totalBudgetChars - contextLen
-	if remaining <= 2 || len(items) == 0 {
-		return []contextItemJSON{}
-	}
-	snipped := snippetMemories(items, center)
-	kept := make([]contextItemJSON, 0, len(snipped))
-	used := 2
+// contextReceipts returns one receipt per packed memory, in pack order,
+// dropping from the tail if the whole set cannot fit inside budgetChars. The
+// caller reserves the receipts' JSON cost BEFORE building the blob — the old
+// leftover-budget order guaranteed an empty items[] on any vault big enough
+// to fill the blob, which was every real vault (#200; #69 owns the hard
+// bound this preserves).
+func contextReceipts(items []Memory, budgetChars int) []contextItemJSON {
+	kept := []contextItemJSON{}
+	used := 2 // enclosing "[]"
 	const jsonSep = 2
-	for _, m := range snipped {
-		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Text: m.Text, Truncated: m.Truncated}
+	for _, m := range items {
+		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt}
 		cost := jsonLen(row) + jsonSep
-		if used+cost > remaining {
-			if len(kept) > 0 {
-				break
-			}
-			fitted, ok := fitContextItemJSON(row, remaining-used-jsonSep)
-			if !ok {
-				break
-			}
-			row = fitted
-			cost = jsonLen(row) + jsonSep
-		}
-		if used+cost > remaining {
+		if used+cost > budgetChars {
 			break
 		}
 		kept = append(kept, row)
 		used += cost
 	}
 	return kept
-}
-
-func fitContextItemJSON(row contextItemJSON, maxBytes int) (contextItemJSON, bool) {
-	for jsonLen(row) > maxBytes && len(row.Text) > 0 {
-		row.Text = truncateRunes(row.Text, len(row.Text)-1)
-		row.Truncated = true
-	}
-	for jsonLen(row) > maxBytes && len(row.Title) > 0 {
-		row.Title = truncateRunes(row.Title, len(row.Title)-1)
-	}
-	for jsonLen(row) > maxBytes && len(row.ID) > 0 {
-		row.ID = truncateRunes(row.ID, len(row.ID)-1)
-	}
-	return row, jsonLen(row) <= maxBytes
 }
