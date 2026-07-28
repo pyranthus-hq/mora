@@ -138,13 +138,14 @@ func loadAddressBookSource(dbPath string, out map[string]string) {
 
 	// ZNICKNAME is part of the private, version-variable ZABCD schema (A4), so it is
 	// queried only when present — older AddressBooks select NULL and degrade to the
-	// first/last/org name exactly as before (never failing the whole source).
-	nickCol := "NULL"
+	// first/last/org name exactly as before (never failing the whole source). Two
+	// complete literal queries instead of splicing the column name in (#176).
+	recordQuery := `SELECT Z_PK, ZFIRSTNAME, ZLASTNAME, ZORGANIZATION, NULL FROM ZABCDRECORD`
 	if addressBookHasColumn(db, "ZABCDRECORD", "ZNICKNAME") {
-		nickCol = "ZNICKNAME"
+		recordQuery = `SELECT Z_PK, ZFIRSTNAME, ZLASTNAME, ZORGANIZATION, ZNICKNAME FROM ZABCDRECORD`
 	}
 	names := map[int64]string{}
-	if rows, err := db.Query(`SELECT Z_PK, ZFIRSTNAME, ZLASTNAME, ZORGANIZATION, ` + nickCol + ` FROM ZABCDRECORD`); err == nil {
+	if rows, err := db.Query(recordQuery); err == nil {
 		for rows.Next() {
 			var (
 				pk    int64
@@ -244,7 +245,7 @@ func composeName(first, last, org, nick sql.NullString) string {
 // table_info). Used to query the optional, version-variable ZNICKNAME column only
 // when it exists, so older AddressBook schemas degrade cleanly instead of failing.
 func addressBookHasColumn(db *sql.DB, table, col string) bool {
-	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	rows, err := pragmaTableInfo(db, table)
 	if err != nil {
 		return false
 	}
@@ -280,7 +281,7 @@ func addressBookColumnsPresent(db *sql.DB) bool {
 	}
 	for table, cols := range required {
 		have := map[string]bool{}
-		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		rows, err := pragmaTableInfo(db, table)
 		if err != nil {
 			return false
 		}
