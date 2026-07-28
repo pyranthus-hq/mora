@@ -147,6 +147,7 @@ These span subsystems. Each subsystem doc enforces its own. These are the rules 
 | [15 — Concurrency contract](./15-concurrency-contract.md) | What stays correct when writers (`cmdWrite`/`write_memory`), readers, a full `rebuildIndex`, and a sync collide on one host: per-memory atomic files, create-exclusive ids, tiny upsert txns, serialized rebuilds, the `sources.json` lease, `busy_timeout`, and the index's bounded eventual-consistency window. |
 | [17 — Governance ledger](./17-governance-ledger.md) | `mora forget`: the vault-resident, stable-atom-keyed suppression ledger consulted at `writeMappedMemory` so a deletion survives the hourly sync (#52). The 1:1-vs-group cut, fail-closed on corruption, and the reconciliation with the fetch-time iMessage deny-list. |
 | [18 — Merge confidence](./18-merge-confidence.md) | `mora merge`: tiered person unification (AUTO / one-tap-CONFIRM / REFUSE-to-gap) with provenance on every fusion. The email↔phone join via address-book corroboration + address signature, applied only on an explicit source-atom-keyed confirm (#52-safe). |
+| [21 — Teach and human correction](./21-teach.md) | The local human-review plane: typed identity proposals, reversible commitment verdicts, authored-memory revision history, decision validity, consent-gated examples, and deterministic governance rebuilds. |
 
 ## Glossary
 

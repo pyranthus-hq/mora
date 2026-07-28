@@ -15,12 +15,14 @@ import (
 // render→parse round-trip proves each frontmatter field survives.
 func coreBMemFullMemory() Memory {
 	return Memory{
-		ID:          "mem_full_1",
-		Scope:       "project:wink",
-		Type:        "decision",
-		Title:       "ns: value #tag [x]", // forces quoteYAML on ":", "#", "[", "]"
-		Tags:        []string{"t1", "t2"},
-		Source:      "src#1", // forces quoteYAML on "#"
+		ID:    "mem_full_1",
+		Scope: "project:wink",
+		Type:  "decision",
+		Title: "ns: value #tag [x]", // forces quoteYAML on ":", "#", "[", "]"
+		Tags:  []string{"t1", "t2"},
+		// Windows-shaped source path forces quoting and contains escape sequences.
+		// It must survive render/parse byte-for-byte for attachment identity hashes.
+		Source:      `C:\Users\Adit\Documents\source#1.pdf`,
 		CreatedAt:   "2026-06-30T10:00:00Z",
 		Provider:    "gmail",
 		Account:     "work",
@@ -142,17 +144,68 @@ func TestCoreB_MemParseMemoryErrors(t *testing.T) {
 		{"no frontmatter here\n", "missing frontmatter"},
 		{"---\nid: x\n", "invalid frontmatter"},        // opens but never closes
 		{"---\ntitle: X\n---\n\nbody\n", "missing id"}, // closes, but no id
+		{"---\nid: x\nsource: \"unterminated\n---\n\nbody\n", "source frontmatter value is corrupt: invalid syntax"},
 	}
 	for _, c := range cases {
 		_, err := parseMemory(coreBMemWriteFile(t, []byte(c.body)))
-		if err == nil || err.Error() != c.wantErr {
+		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 			t.Fatalf("body %q: want error %q, got %v", c.body, c.wantErr, err)
 		}
 	}
 }
 
+func TestCoreB_MemQuotedScalarDecodingIsExact(t *testing.T) {
+	// Mutation tripwire: replacing strconv.Unquote with quote trimming leaves
+	// doubled backslashes and the escaped quote in the parsed identity fields.
+	body := "---\n" +
+		"id: mem_windows\n" +
+		"title: \"A \\\"quoted\\\" title\"\n" +
+		"source: \"C:\\\\Users\\\\Adit\\\\legacy.pdf\"\n" +
+		"provider_id: \"imessage:legacy\\\\attachment\"\n" +
+		"---\n\nbody\n"
+	m, err := parseMemory(coreBMemWriteFile(t, []byte(body)))
+	if err != nil {
+		t.Fatalf("parseMemory: %v", err)
+	}
+	if m.Title != `A "quoted" title` {
+		t.Fatalf("quoted title decoded as %q", m.Title)
+	}
+	if m.Source != `C:\Users\Adit\legacy.pdf` {
+		t.Fatalf("Windows source decoded as %q", m.Source)
+	}
+	if m.ProviderID != `imessage:legacy\attachment` {
+		t.Fatalf("provider identity decoded as %q", m.ProviderID)
+	}
+}
+
+func TestCoreB_MemScalarCodecRoundTrips(t *testing.T) {
+	// The renderer and parser are a codec pair, not independent string helpers.
+	// Every value here must survive encode/decode exactly; deleting either the
+	// quote trigger or strconv.Unquote makes at least one row fail.
+	values := []string{
+		"plain",
+		"",
+		" leading",
+		"trailing ",
+		`C:\Users\Adit\relative\source.md`,
+		`a "quoted" value`,
+		"tab\tand\nnewline",
+		"Unicode café",
+	}
+	for _, want := range values {
+		encoded := quoteYAML(want)
+		got, err := parseFrontmatterScalar("source", encoded)
+		if err != nil {
+			t.Fatalf("decode %q from %q: %v", want, encoded, err)
+		}
+		if got != want {
+			t.Fatalf("scalar codec: %q -> %q -> %q", want, encoded, got)
+		}
+	}
+}
+
 func TestCoreB_MemParseMemoryNoColonLineIgnored(t *testing.T) {
-	body := "---\nid: mem_nc\nscope: global\njustacomment\ntitle: Hello\n---\n\nbody\n"
+	body := "---\nid: mem_nc\nscope: global\njustacomment\nfuture_field: \"syntax older Mora does not know\ntitle: Hello\n---\n\nbody\n"
 	m, err := parseMemory(coreBMemWriteFile(t, []byte(body)))
 	if err != nil {
 		t.Fatalf("parseMemory: %v", err)

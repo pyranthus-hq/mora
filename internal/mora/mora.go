@@ -92,6 +92,14 @@ type Memory struct {
 	LastSynced  string   `json:"last_synced,omitempty"`
 	Truncated   bool     `json:"truncated,omitempty"`
 	DeletedAt   string   `json:"deleted_at,omitempty"`
+	// Decision carries the validity contract for a decision memory. It is
+	// persisted in Markdown frontmatter and remains visible on local read
+	// surfaces. Legacy decisions are represented as incomplete/provisional
+	// rather than silently treated as current law.
+	Decision *DecisionValidity `json:"decision,omitempty"`
+	// DecisionStatus is derived at read time. It is not persisted: an expired
+	// review_by becomes needs_review as the clock advances without a vault write.
+	DecisionStatus string `json:"decision_status,omitempty"`
 	// Owner attributes a result from a SHARED corpus (`mora share subscribe`)
 	// with the subscriber-chosen subscription name. Never persisted to disk and
 	// always empty for the user's own memories — omitempty keeps local-only
@@ -240,6 +248,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdUnforget(ctx, args[1:], stdout)
 	case "merge":
 		return cmdMerge(ctx, args[1:], stdout)
+	case "teach":
+		return cmdTeach(ctx, args[1:], stdout)
 	case "context":
 		return cmdContext(ctx, args[1:], stdout)
 	case "index":
@@ -331,6 +341,11 @@ USAGE:
   mora brief correct --memory-id <id> --attendee <identity> --confirm
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
+  mora teach identity list         # review typed identity proposals and affected memories
+  mora teach commitment wrong-direction --memory-id <id> --direction owed_by_self --yes
+  mora teach memory correct --id <id> --title "Corrected" --text "..." --yes
+  mora teach history --memory-id <id>
+  mora teach undo <ledger-id>      # reverse a commitment or authored-memory decision
   mora index rebuild
   mora share init acme --scope project:acme --recipient age1... --remote <PRIVATE git URL>   # publish a scope, always encrypted
   mora share push acme             # preview exactly what leaves, then publish

@@ -39,8 +39,8 @@ Decisions ride the [governance ledger](./17-governance-ledger.md) as `merge_conf
 
 | Command | Effect |
 |---|---|
-| `mora merge list [--json]` | the pending queue: proposed candidates minus every already-decided pair |
-| `mora merge confirm --handle H --email A` | record a confirm, rebuild → the pair unifies |
+| `mora teach identity list [--json]` (`mora merge list`) | the pending queue with typed corroborating evidence and the stable ids of affected memories, minus every already-decided pair |
+| `mora teach identity confirm --handle H --email A --yes` | preview evidence and affected memories; with explicit confirmation, record a confirm and rebuild → the pair unifies |
 | `mora merge reject --handle H --email A` | record a reject → the pair stays apart, never re-proposed |
 | `mora merge undo <ledger-id>` | revoke a prior decision |
 

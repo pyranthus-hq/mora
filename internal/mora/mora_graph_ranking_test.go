@@ -174,6 +174,35 @@ func TestGraphPeopleRankingBySalience(t *testing.T) {
 	}
 }
 
+func TestGraphPeopleBarsAreMonotonicWithDisplayedCount(t *testing.T) {
+	ents := []Entity{
+		{Name: "Higher count", Kind: "person", Count: 42, Salience: 100000},
+		{Name: "Higher rank", Kind: "person", Count: 25, Salience: 900000},
+		{Name: "Tie A", Kind: "person", Count: 25, Salience: 800000},
+		{Name: "Zero", Kind: "person", Count: 0, Salience: 700000},
+	}
+	var buf bytes.Buffer
+	renderGraphOverview(&buf, ents, 12)
+	rows := strings.Split(buf.String(), "\n")
+	lengths := map[string]int{}
+	for _, row := range rows {
+		for _, name := range []string{"Higher count", "Higher rank", "Tie A", "Zero"} {
+			if strings.Contains(row, name) {
+				lengths[name] = strings.Count(row, "█")
+			}
+		}
+	}
+	if lengths["Higher count"] <= lengths["Higher rank"] {
+		t.Fatalf("displayed 42 must have a longer bar than 25: %v\n%s", lengths, buf.String())
+	}
+	if lengths["Higher rank"] != lengths["Tie A"] {
+		t.Fatalf("equal displayed counts must have equal bars: %v\n%s", lengths, buf.String())
+	}
+	if lengths["Zero"] != 0 {
+		t.Fatalf("zero displayed count must have no bar: %v\n%s", lengths, buf.String())
+	}
+}
+
 // TestGraphOverviewDeterministicAndClean proves two renders are byte-identical and
 // no ANSI escape leaks into the human overview (byte-clean invariant), including a
 // salience tie (equal micros) resolved by the existing Count→name tie-break.

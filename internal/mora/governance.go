@@ -36,6 +36,12 @@ const governanceSchema = 1
 // `.gitignore` (index.db/tokens/identity*/share/) so it survives `mora sync git`.
 const governanceFile = ".mora-governance.json"
 
+const (
+	governanceParentStableIDKey = "governance_parent_stable_id"
+	governanceParentProviderKey = "governance_parent_provider"
+	governanceParentAtomsKey    = "governance_parent_atoms"
+)
+
 // Atom kinds — the source-native identity the ledger keys on. "host" is reserved
 // for a future connector field (no source populates it yet), so it is accepted
 // in the schema but derived from no Meta.
@@ -51,12 +57,15 @@ const (
 // the rest are durable records later phases consume (redact = P16 graph-compile
 // participant filter; merge_confirm = P13 confirm-queue; archive reserved).
 const (
-	govKindForget       = "forget"
-	govKindPrune        = "prune"
-	govKindSourceScope  = "source_scope"
-	govKindRedact       = "redact"
-	govKindMergeConfirm = "merge_confirm"
-	govKindArchive      = "archive"
+	govKindForget          = "forget"
+	govKindPrune           = "prune"
+	govKindSourceScope     = "source_scope"
+	govKindRedact          = "redact"
+	govKindMergeConfirm    = "merge_confirm"
+	govKindArchive         = "archive"
+	govKindTeachCommitment = "teach_commitment"
+	govKindTeachMemory     = "teach_memory"
+	govKindEvalConsent     = "eval_consent"
 )
 
 // Actions — what an entry DOES at the write chokepoint. "suppress" skips the
@@ -95,11 +104,20 @@ type govEntry struct {
 	// Atom2/Decision carry a two-atom correction (merge_confirm): "these two
 	// source-native identities are (confirm) / are not (reject) the same person".
 	// Keyed by atoms, never a person: id — the #52 trap.
-	Atom2     *govAtom `json:"atom2,omitempty"`
-	Decision  string   `json:"decision,omitempty"`
-	CreatedAt string   `json:"created_at"`
-	CreatedBy string   `json:"created_by"`
-	RevokedAt string   `json:"revoked_at,omitempty"` // set by unforget/undo; a revoked entry is inert
+	Atom2    *govAtom `json:"atom2,omitempty"`
+	Decision string   `json:"decision,omitempty"`
+	// Teach decisions key product corrections on stable memory/commitment
+	// identity. ReplacementID links an authored-memory revision while retaining
+	// the original Markdown evidence.
+	TargetID           string    `json:"target_id,omitempty"`
+	CommitmentID       string    `json:"commitment_id,omitempty"`
+	ReplacementID      string    `json:"replacement_id,omitempty"`
+	CorrectedAtom      *govAtom  `json:"corrected_atom,omitempty"`
+	CorrectedDirection Direction `json:"corrected_direction,omitempty"`
+	DuplicateOf        string    `json:"duplicate_of,omitempty"`
+	CreatedAt          string    `json:"created_at"`
+	CreatedBy          string    `json:"created_by"`
+	RevokedAt          string    `json:"revoked_at,omitempty"` // set by unforget/undo; a revoked entry is inert
 }
 
 func (e govEntry) revoked() bool { return e.RevokedAt != "" }
@@ -227,6 +245,14 @@ func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
 		// an append — the lost-update the ConcurrentAppendsNoLostUpdate test forces.
 		testHookGovAppendPostLoad()
 	}
+	return appendGovernanceEntryLocked(cfg, g, e)
+}
+
+// appendGovernanceEntryLocked appends to a ledger already loaded while the caller
+// holds the governance lease. cmdForget uses it so its removal scan and suppression
+// append are one critical section; calling appendGovernanceEntry there would try
+// to reacquire the same cross-process lease.
+func appendGovernanceEntryLocked(cfg Config, g governance, e govEntry) (govEntry, error) {
 	if e.ID == "" {
 		e.ID = "gov_" + strings.TrimPrefix(newID(), "mem_")
 	}
@@ -356,6 +382,8 @@ func (g governance) decideSuppress(provider, stableID string, meta map[string]an
 	item := itemAtom(provider, stableID)
 	cps := counterpartyAtoms(provider, meta)
 	sole := len(cps) == 1
+	parentProvider, parentID, parentCps := governanceParentContext(meta)
+	parentSole := len(parentCps) == 1
 	for _, e := range g.activeSuppress() {
 		a := e.Atom
 		switch a.Kind {
@@ -363,13 +391,70 @@ func (g governance) decideSuppress(provider, stableID string, meta map[string]an
 			if providerMatches(a.Provider, provider) && a.Value == item.Value {
 				return true, e.ID
 			}
+			if parentID != "" && providerMatches(a.Provider, parentProvider) && a.Value == parentID {
+				return true, e.ID
+			}
 		case atomHandle, atomAddress:
 			if sole && cps[0].Kind == a.Kind && providerMatches(a.Provider, provider) && cps[0].Value == a.Value {
+				return true, e.ID
+			}
+			if parentSole && parentCps[0].Kind == a.Kind &&
+				providerMatches(a.Provider, parentProvider) && parentCps[0].Value == a.Value {
 				return true, e.ID
 			}
 		}
 	}
 	return false, ""
+}
+
+// governanceParentContext decodes the source-native parent identity stamped on a
+// derived attachment. These keys are intentionally separate from graph Meta so an
+// attachment does not double-count the parent's participants, but the governance
+// write/removal chokepoints can still cascade a parent forget.
+func governanceParentContext(meta map[string]any) (provider, stableID string, atoms []govAtom) {
+	if meta == nil {
+		return "", "", nil
+	}
+	provider, _ = meta[governanceParentProviderKey].(string)
+	stableID, _ = meta[governanceParentStableIDKey].(string)
+	add := func(kind, value string) {
+		value = normalizeIdentity(kind, value)
+		if (kind == atomHandle || kind == atomAddress) && value != "" {
+			atoms = append(atoms, govAtom{Provider: provider, Kind: kind, Value: value})
+		}
+	}
+	switch rows := meta[governanceParentAtomsKey].(type) {
+	case []map[string]string:
+		for _, row := range rows {
+			add(row["kind"], row["value"])
+		}
+	case []any:
+		for _, raw := range rows {
+			switch row := raw.(type) {
+			case map[string]any:
+				kind, _ := row["kind"].(string)
+				value, _ := row["value"].(string)
+				add(kind, value)
+			case map[string]string:
+				add(row["kind"], row["value"])
+			}
+		}
+	}
+	sort.Slice(atoms, func(i, j int) bool {
+		if atoms[i].Kind != atoms[j].Kind {
+			return atoms[i].Kind < atoms[j].Kind
+		}
+		return atoms[i].Value < atoms[j].Value
+	})
+	dedup := atoms[:0]
+	for _, atom := range atoms {
+		if len(dedup) > 0 && dedup[len(dedup)-1].Kind == atom.Kind &&
+			dedup[len(dedup)-1].Value == atom.Value {
+			continue
+		}
+		dedup = append(dedup, atom)
+	}
+	return provider, stableID, dedup
 }
 
 // suppresses is the MappedMemory-typed decision (the connector write path).
@@ -538,13 +623,10 @@ func governanceWriteLease(cfg Config) (governance, func(), error) {
 // could not give this — a forget committing after the snapshot but before the
 // write silently resurrected the atom (#113) — and releasing the lease before the
 // atomicWrite would reopen the same window. A write that lands just AHEAD of the
-// commit is a normal re-index that forget's removal pass reaps when its
-// (pre-append) scan observed the file; closing that last, pre-existing
-// forget-scan gap is out of scope here (it needs forget to compute its removal
-// set under the lease, not a walk-side change). Reports whether it wrote
-// (false ⇒ suppressed). Reloading + relocking per file costs an O_EXCL
-// create/remove per write; that is the deliberate price of the no-resurrection
-// invariant on a local, single-user tool.
+// commit is a normal re-index that forget's lease-held removal scan observes and
+// reaps. Reports whether it wrote (false ⇒ suppressed). Reloading + relocking per
+// file costs an O_EXCL create/remove per write; that is the deliberate price of
+// the no-resurrection invariant on a local, single-user tool.
 func writeUnlessForgotten(cfg Config, provider, id, dest string, body []byte, mode os.FileMode) (bool, error) {
 	g, release, err := governanceWriteLease(cfg)
 	if err != nil {

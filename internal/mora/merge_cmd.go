@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 // cmdMerge implements `mora merge` — the P13 one-tap confirm-queue for cross-channel
@@ -44,10 +45,17 @@ func cmdMerge(ctx context.Context, args []string, stdout io.Writer) error {
 
 // pendingMerge is one queue row for JSON/CLI rendering.
 type pendingMerge struct {
-	Name   string   `json:"name"`
-	Handle string   `json:"handle"`
-	Email  string   `json:"email"`
-	Echoed []string `json:"echoed_name_tokens"`
+	Name     string          `json:"name"`
+	Handle   string          `json:"handle"`
+	Email    string          `json:"email"`
+	Echoed   []string        `json:"echoed_name_tokens"`
+	Evidence []mergeEvidence `json:"corroborating_evidence"`
+	Affected []string        `json:"affected_items"`
+}
+
+type mergeEvidence struct {
+	Kind   string `json:"kind"`
+	Detail string `json:"detail"`
 }
 
 // mergeList prints the pending email<->phone candidates: proposed by
@@ -84,12 +92,7 @@ func mergeList(ctx context.Context, args []string, stdout io.Writer) error {
 		if decided[mergePairKey(c.PhoneID, c.EmailID)] {
 			continue // already confirmed (merged) or rejected (pinned apart)
 		}
-		pending = append(pending, pendingMerge{
-			Name:   c.Name,
-			Handle: personIdentity(c.PhoneID),
-			Email:  personIdentity(c.EmailID),
-			Echoed: c.Echoed,
-		})
+		pending = append(pending, pendingMergeOf(c, mems))
 	}
 	sort.Slice(pending, func(i, j int) bool {
 		if pending[i].Name != pending[j].Name {
@@ -113,7 +116,11 @@ func mergeList(ctx context.Context, args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "  %s\n", p.Name)
 		fmt.Fprintf(stdout, "    phone  %s  (imessage)\n", p.Handle)
 		fmt.Fprintf(stdout, "    email  %s\n", p.Email)
-		fmt.Fprintf(stdout, "    confirm: mora merge confirm --handle %s --email %s\n", p.Handle, p.Email)
+		for _, evidence := range p.Evidence {
+			fmt.Fprintf(stdout, "    evidence  %s: %s\n", evidence.Kind, evidence.Detail)
+		}
+		fmt.Fprintf(stdout, "    affected  %s\n", mergeAffectedLabel(p.Affected))
+		fmt.Fprintf(stdout, "    confirm: mora merge confirm --handle %s --email %s --yes\n", p.Handle, p.Email)
 	}
 	fmt.Fprintln(stdout, "\n(Mora never merges these automatically — a wrong merge is worse than a gap. Reject with `mora merge reject`.)")
 	return nil
@@ -127,6 +134,7 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 	fs.SetOutput(io.Discard)
 	handle := fs.String("handle", "", "iMessage phone handle (e.g. +14155550123)")
 	email := fs.String("email", "", "email address (e.g. person@example.com)")
+	yes := fs.Bool("yes", false, "confirm after reviewing evidence and affected items")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -147,6 +155,27 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	if decision == mergeDecisionConfirm {
+		// A confirm is the high-impact path. Always show the exact proposal
+		// evidence and affected memories before any ledger mutation, even when the
+		// caller supplied --yes directly.
+		mems, lerr := loadGraphMemories(cfg)
+		if lerr != nil {
+			return lerr
+		}
+		pending, perr := pendingMergeForPair(cfg, mems, phoneAtom, emailAtom)
+		if perr != nil {
+			return perr
+		}
+		fmt.Fprintf(stdout, "Review before confirming %s <-> %s:\n", pending.Handle, pending.Email)
+		for _, evidence := range pending.Evidence {
+			fmt.Fprintf(stdout, "  %s: %s\n", evidence.Kind, evidence.Detail)
+		}
+		fmt.Fprintf(stdout, "  affected items: %s\n", mergeAffectedLabel(pending.Affected))
+		if !*yes {
+			return errors.New("review required; rerun the same command with --yes")
+		}
 	}
 	// A5 row 8: mark the index dirty BEFORE appending to the governance ledger (an
 	// index input via writeGraph), not after. The append at :151 landed before the
@@ -223,12 +252,87 @@ func loadGraphMemories(cfg Config) ([]Memory, error) {
 		return nil, err
 	}
 	out := make([]Memory, 0, len(paths))
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return nil, err
+	}
 	for _, p := range paths {
 		m, err := parseMemory(p)
 		if err != nil {
 			continue
 		}
-		out = append(out, m)
+		if governance.memoryVisible(m.ID) {
+			out = append(out, m)
+		}
 	}
 	return out, nil
+}
+
+func pendingMergeOf(c mergeCandidate, mems []Memory) pendingMerge {
+	handle := personIdentity(c.PhoneID)
+	email := personIdentity(c.EmailID)
+	affected := mergeAffectedItems(mems, handle, email)
+	return pendingMerge{
+		Name:     c.Name,
+		Handle:   handle,
+		Email:    email,
+		Echoed:   append([]string(nil), c.Echoed...),
+		Affected: affected,
+		Evidence: []mergeEvidence{
+			{Kind: "address_book_name", Detail: fmt.Sprintf("%s is the trusted name for %s", c.Name, handle)},
+			{Kind: "email_name", Detail: fmt.Sprintf("%s self-presents as %s", email, c.Name)},
+			{Kind: "address_signature", Detail: fmt.Sprintf("email local-part corroborates token(s): %s", strings.Join(c.Echoed, ", "))},
+		},
+	}
+}
+
+func mergeAffectedItems(mems []Memory, handle, email string) []string {
+	seen := map[string]bool{}
+	for _, m := range mems {
+		for _, atom := range counterpartyAtoms(m.Provider, m.Meta) {
+			if (atom.Kind == atomHandle && atom.Value == normalizeIdentity(atomHandle, handle)) ||
+				(atom.Kind == atomAddress && atom.Value == normalizeIdentity(atomAddress, email)) {
+				seen[m.ID] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergeAffectedLabel(items []string) string {
+	if len(items) == 0 {
+		return "none"
+	}
+	return strings.Join(items, ", ")
+}
+
+func pendingMergeForPair(cfg Config, mems []Memory, phoneAtom, emailAtom govAtom) (pendingMerge, error) {
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		return pendingMerge{}, err
+	}
+	confirmed, decided := g.mergeDecisions()
+	res := buildGraphResult(mems, confirmed)
+	key := mergePairKey(atomPersonID(phoneAtom), atomPersonID(emailAtom))
+	if decided[key] {
+		return pendingMerge{}, errors.New("this identity pair already has an active decision")
+	}
+	for _, candidate := range res.candidates {
+		if mergePairKey(candidate.PhoneID, candidate.EmailID) == key {
+			return pendingMergeOf(candidate, mems), nil
+		}
+	}
+	// Manual escape hatch: the human may know a pair the precision-first proposer
+	// refused. There is no claimed corroboration; say so and still enumerate impact.
+	return pendingMerge{
+		Handle:   phoneAtom.Value,
+		Email:    emailAtom.Value,
+		Affected: mergeAffectedItems(mems, phoneAtom.Value, emailAtom.Value),
+		Evidence: []mergeEvidence{{Kind: "manual_override", Detail: "no active corroborated proposal; this confirmation relies on the human review"}},
+	}, nil
 }

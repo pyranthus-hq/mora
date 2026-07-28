@@ -9,6 +9,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // cmdForget implements `mora forget` — the durable, local, cross-connector
@@ -73,27 +76,60 @@ func cmdForget(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("refusing to forget without --yes (removes %d %s; use --dry-run to preview)", len(matches), memWord(len(matches)))
 	}
 
-	// Record the durable suppression FIRST, so a crash after removal can never
-	// leave files removed but re-ingestable (the resurrection window).
-	entry, err := appendGovernanceEntry(cfg, govEntry{
+	// Gap A (#115): take the SAME governance lease every connector write uses,
+	// rescan while holding it, mark every matched id fail-closed, then append the
+	// suppression before releasing. A writer can therefore land either before
+	// the scan (and be included) or after the append (and be suppressed), never
+	// in the old scan→append hole.
+	release, err := acquireGovernanceLock(cfg, time.Now())
+	if err != nil {
+		return err
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		release()
+		return err
+	}
+	matches, err = memoriesMatching(cfg, target)
+	if err != nil {
+		release()
+		return err
+	}
+	if testHookForgetAfterScan != nil {
+		testHookForgetAfterScan()
+	}
+	ops := make([]pendingOp, 0, len(matches))
+	for _, m := range matches {
+		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+		if merr != nil {
+			for _, prior := range ops {
+				_ = unmarkIndexDirty(cfg, prior.OpID)
+			}
+			release()
+			return merr
+		}
+		ops = append(ops, op)
+	}
+	entry, err := appendGovernanceEntryLocked(cfg, g, govEntry{
 		Kind: govKindForget, Action: govActionSuppress, Atom: target,
 		Reason: "mora forget " + label,
 	})
 	if err != nil {
+		for _, op := range ops {
+			_ = unmarkIndexDirty(cfg, op.OpID)
+		}
+		release()
 		return err
 	}
+	release()
+
 	removed := 0
-	for _, m := range matches {
-		// Mark-before-visible for the forget delete (A5 row 6): the file is about to
-		// vanish, so a rebuild failure below must leave the index dirty and suppress
-		// the removed id on reads, never keep serving forgotten content. The rebuild
-		// retires each op (rule c: path gone).
-		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
-		if merr != nil {
-			return merr
-		}
+	for i, m := range matches {
 		if err := os.Remove(m.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			_ = unmarkIndexDirty(cfg, op.OpID)
+			// This file remains present, so its pending-delete suppression would
+			// make the current read path lie. Retire only this op; the durable
+			// governance suppression remains and a later forget can retry cleanup.
+			_ = unmarkIndexDirty(cfg, ops[i].OpID)
 			return err
 		}
 		removed++
@@ -105,6 +141,11 @@ func cmdForget(ctx context.Context, args []string, stdout io.Writer) error {
 	fmt.Fprintln(stdout, "note: this stops Mora from holding and re-acquiring the content locally; it does NOT delete anything at Gmail/Apple. Reverse with `mora unforget "+entry.ID+"`.")
 	return nil
 }
+
+// testHookForgetAfterScan fires while cmdForget holds the governance lease after
+// its removal scan and before its suppression append. Tests start a real competing
+// connector write here and prove it cannot materialize after the forget commits.
+var testHookForgetAfterScan func()
 
 // cmdUnforget reverses a forget: it revokes the suppression so future syncs may
 // re-ingest the content again (subject to the connector's lookback window — an
@@ -186,6 +227,13 @@ func forgetTarget(chat, handle, email string) (govAtom, string, error) {
 // `target` would remove — computed with the SAME decision the write chokepoint
 // uses, so the removal set is exactly what will be suppressed on re-sync (never
 // more). Authored notes carry no connector identity and never match.
+//
+// Pre-#115 attachment memories lack the parent-provenance Meta stamped by the
+// current writer. Their stable id is nevertheless att_<hash(parent-id:path)> and
+// their Source retains path, so the scan can reconstruct that one-way relation
+// from a matching parent (or directly from a stable-id target). This migration
+// path removes already-written legacy children immediately after upgrade rather
+// than waiting for a re-ingest to rewrite them with current Meta.
 func memoriesMatching(cfg Config, target govAtom) ([]Memory, error) {
 	probe := governance{Schema: governanceSchema, Entries: []govEntry{{
 		Kind: govKindForget, Action: govActionSuppress, Atom: target,
@@ -194,13 +242,46 @@ func memoriesMatching(cfg Config, target govAtom) ([]Memory, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []Memory
+	var parsed []Memory
 	for _, p := range paths {
 		m, err := parseMemory(p)
 		if err != nil {
 			continue // unparseable files are skipped everywhere; don't act on them
 		}
+		parsed = append(parsed, m)
+	}
+
+	matched := map[string]bool{}
+	var matchingParents []Memory
+	for _, m := range parsed {
 		if sup, _ := probe.decideSuppress(m.Provider, m.ID, m.Meta); sup {
+			matched[m.ID] = true
+			if !strings.HasPrefix(m.ID, "att_") {
+				matchingParents = append(matchingParents, m)
+			}
+		}
+	}
+	for _, attachment := range parsed {
+		if matched[attachment.ID] || !strings.HasPrefix(attachment.ID, "att_") ||
+			attachment.Source == "" {
+			continue
+		}
+		if target.Kind == atomStableID &&
+			attachment.ID == "att_"+memory.ContentHash(target.Value+":"+attachment.Source) {
+			matched[attachment.ID] = true
+			continue
+		}
+		for _, parent := range matchingParents {
+			if attachment.ID == "att_"+memory.ContentHash(parent.ID+":"+attachment.Source) {
+				matched[attachment.ID] = true
+				break
+			}
+		}
+	}
+
+	out := make([]Memory, 0, len(matched))
+	for _, m := range parsed {
+		if matched[m.ID] {
 			out = append(out, m)
 		}
 	}

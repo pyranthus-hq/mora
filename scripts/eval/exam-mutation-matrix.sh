@@ -222,7 +222,7 @@ kill_mutant "surface/daily-cap-drift" \
 
 kill_mutant "flywheel/delete-governance-arm" \
   internal/mora/exam_flywheel_test.go \
-  $'\trunExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net")\n\n\tpostPredictions := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))' \
+  $'\trunExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net", "--yes")\n\n\tpostPredictions := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))' \
   $'\tpostPredictions := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))' \
   ./internal/mora '^TestExamCorrectionFlywheel$'
 
@@ -235,7 +235,7 @@ kill_mutant "flywheel/neuter-rule-3" \
 kill_mutant "flywheel/pre-merge-already-correct" \
   internal/mora/exam_flywheel_test.go \
   $'\tprePredictions := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))' \
-  $'\trunExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net")\n\tprePredictions := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))' \
+  $'\trunExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net", "--yes")\n\tprePredictions := examMeetingPredictions(runExamEventCLI(t, event.EventID, at))' \
   ./internal/mora '^TestExamCorrectionFlywheel$'
 
 kill_mutant "flywheel/graph-blind-scorer" \

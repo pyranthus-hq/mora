@@ -192,7 +192,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := mergeDecide(context.Background(), []string{"--handle", "+14155550123", "--email", "person@example.com"}, &buf, mergeDecisionConfirm); err != nil {
+		if err := mergeDecide(context.Background(), []string{"--handle", "+14155550123", "--email", "person@example.com", "--yes"}, &buf, mergeDecisionConfirm); err != nil {
 			t.Fatal(err)
 		}
 		if !ledgerUnchangedAtMark {

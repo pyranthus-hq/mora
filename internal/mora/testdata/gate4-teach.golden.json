@@ -1,0 +1,66 @@
+{
+  "expired_decision": {
+    "id": "mem_decision",
+    "scope": "",
+    "type": "decision",
+    "title": "",
+    "tags": null,
+    "source": "",
+    "created_at": "2026-07-01T00:00:00Z",
+    "path": "",
+    "decision": {
+      "as_of": "2026-07-01T00:00:00Z",
+      "durability": "standing",
+      "flip_conditions": [
+        "law changes"
+      ],
+      "review_by": "2026-07-24T00:00:00Z",
+      "complete": true
+    },
+    "decision_status": "needs_review"
+  },
+  "identity_proposal": {
+    "name": "riya sharma",
+    "handle": "+14155550123",
+    "email": "riya@acme.com",
+    "echoed_name_tokens": [
+      "riya"
+    ],
+    "corroborating_evidence": [
+      {
+        "kind": "address_book_name",
+        "detail": "riya sharma is the trusted name for +14155550123"
+      },
+      {
+        "kind": "email_name",
+        "detail": "riya@acme.com self-presents as riya sharma"
+      },
+      {
+        "kind": "address_signature",
+        "detail": "email local-part corroborates token(s): riya"
+      }
+    ],
+    "affected_items": [
+      "gmail_thread/t1",
+      "imessage_chat/solo"
+    ]
+  },
+  "memory_current_after_correction": {
+    "mem_new": true,
+    "mem_old": false
+  },
+  "memory_current_after_retraction": {
+    "mem_retracted": false
+  },
+  "memory_current_after_supersession": {
+    "mem_current": false,
+    "mem_successor": true
+  },
+  "memory_current_after_undo": {
+    "mem_new": false,
+    "mem_old": true
+  },
+  "rebuild_projection": [
+    "mem_new"
+  ]
+}

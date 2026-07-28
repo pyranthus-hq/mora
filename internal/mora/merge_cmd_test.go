@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -15,6 +16,58 @@ func imsgNamedMM(guid, handle, name string) memory.MappedMemory {
 		ProviderID: guid, Source: guid, Title: "Chat " + guid, Body: "hi",
 		ContentHash: "h_" + guid, Scope: "personal", CreatedAt: "2026-01-01T00:00:00Z",
 		Meta: map[string]any{"participants": []map[string]string{{"handle": handle, "name": name}}, "message_count": "1"},
+	}
+}
+
+func TestMergeDuplicateNameHandleVariantsStayReviewOnly(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	if err := writeMappedMemory(cfg, imsgNamedMM("riya-work", "+14155550123", "Riya Sharma")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMappedMemory(cfg, imsgNamedMM("riya-old", "+14155550999", "Riya Sharma")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMappedMemory(cfg, gmailNamedMM("riya-mail", "riya@acme.com", "Riya Sharma", "me@x.com")); err != nil {
+		t.Fatal(err)
+	}
+	raw := run(t, "teach", "identity", "list", "--json")
+	var pending []pendingMerge
+	if err := json.Unmarshal([]byte(raw), &pending); err != nil {
+		t.Fatalf("typed identity queue: %v\n%s", err, raw)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("duplicate handle variants should produce two review rows, not an auto-merge: %+v", pending)
+	}
+	for _, proposal := range pending {
+		if len(proposal.Evidence) != 3 || len(proposal.Affected) < 2 {
+			t.Fatalf("proposal omitted corroboration or affected items: %+v", proposal)
+		}
+	}
+	run(t, "teach", "identity", "confirm",
+		"--handle", "+14155550123", "--email", "riya@acme.com", "--yes")
+	if aliases := aliasesOf(t, cfg, "+14155550999"); contains(aliases, "riya@acme.com") {
+		t.Fatalf("reviewing one duplicate handle variant auto-merged the other: %v", aliases)
+	}
+	cliEntity := run(t, "entities", "Riya Sharma", "--json")
+	if !strings.Contains(cliEntity, "imessage_chat/riya-work") ||
+		!strings.Contains(cliEntity, "gmail_thread/riya-mail") ||
+		strings.Contains(cliEntity, "imessage_chat/riya-old") {
+		t.Fatalf("CLI entity surface did not preserve the reviewed merge boundary:\n%s", cliEntity)
+	}
+	mcpEntity, err := callMCPTool(context.Background(), "get_entity", map[string]any{"name": "riya@acme.com"})
+	if err != nil {
+		t.Fatalf("MCP get_entity after Teach confirm: %v", err)
+	}
+	mcpJSON, err := json.Marshal(mcpEntity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mcpJSON), "+14155550123") ||
+		strings.Contains(string(mcpJSON), "+14155550999") {
+		t.Fatalf("MCP entity surface did not preserve the reviewed merge boundary: %s", mcpJSON)
+	}
+	if out := run(t, "teach", "identity", "list"); !strings.Contains(out, "+14155550999") {
+		t.Fatalf("unreviewed duplicate handle disappeared from the queue:\n%s", out)
 	}
 }
 
@@ -60,8 +113,14 @@ func TestMergeConfirmUnifiesEmailPhone(t *testing.T) {
 		t.Fatalf("merge list should surface the email<->phone candidate; got:\n%s", out)
 	}
 
-	// One-tap confirm -> rebuild -> the two identities are now one person.
-	run(t, "merge", "confirm", "--handle", "+14155550123", "--email", "riya@acme.com")
+	// One-tap confirm renders the evidence first, then rebuilds the two
+	// identities into one person.
+	confirmed := run(t, "merge", "confirm", "--handle", "+14155550123", "--email", "riya@acme.com", "--yes")
+	if !strings.Contains(confirmed, "Review before confirming") ||
+		!strings.Contains(confirmed, "address_book_name") ||
+		!strings.Contains(confirmed, "affected items:") {
+		t.Fatalf("confirm did not render evidence and affected items first:\n%s", confirmed)
+	}
 
 	al := aliasesOf(t, cfg, "riya@acme.com")
 	if !contains(al, "+14155550123") || !contains(al, "riya@acme.com") {
@@ -159,7 +218,7 @@ func TestMergeConfirmPersistsProvenance(t *testing.T) {
 	if err := writeMappedMemory(cfg, gmailNamedMM("t1", "riya@acme.com", "Riya Sharma", "me@x.com")); err != nil {
 		t.Fatal(err)
 	}
-	run(t, "merge", "confirm", "--handle", "+14155550123", "--email", "riya@acme.com")
+	run(t, "merge", "confirm", "--handle", "+14155550123", "--email", "riya@acme.com", "--yes")
 
 	db, err := ensureIndexDB(context.Background(), cfg)
 	if err != nil {

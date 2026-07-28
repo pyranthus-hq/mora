@@ -589,7 +589,7 @@ func TestExamIMessageSpeakerPrefixIsNotProductText(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net")
+	runExamCLI(t, "merge", "confirm", "--handle", "+15550100137", "--email", "dana@example.net", "--yes")
 	brief := runExamEventCLI(t, event.EventID, at)
 	for _, section := range brief.Sections {
 		for _, line := range section.Lines {
