@@ -140,11 +140,11 @@ the registered mutant itself is then executed by `TestScorerRedTeam`.
 
 ### Ratchet and exit branches
 
-These branches land in exam PR 4, not this PR. They remain explicit rather
-than being falsely marked covered by PR 3.
+These branches landed with exam PR 4 (#139, closed 2026-07-24). The dated
+holes below are closed by named gates on main.
 
-| Future branch | Result |
+| Branch | Result |
 |---|---|
-| Measured-floor ratchet comparison | HOLE — issue #139, expires 2026-07-21 |
-| Integrity-exit audit-state branch | HOLE — issue #139, expires 2026-07-21 |
-| Product-target comparison and `wantRED` must-flip arm | HOLE — issue #139, expires 2026-07-21 |
+| Measured-floor ratchet comparison | CLOSED — `assertGate3MeetingRatchet`/`assertGate3DailyRatchet` (`exam_surfaces_test.go`) go red on any floor regression |
+| Integrity-exit audit-state branch | CLOSED — `TestExamIntegrityExit` goes red |
+| Product-target comparison and `wantRED` must-flip arm | RETIRED — the strict target went green on 2026-07-24 (#204); `TestExamProductTarget` pins `wantRED = false` and fails if a dated pin is re-introduced without a reviewed decision |

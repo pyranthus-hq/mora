@@ -66,8 +66,9 @@ run "exam/current-surfaces" "$GO" test ./internal/mora \
   -run '^(TestExamSurfaces|TestExamSurfacesV2|TestExamSurfaceClockGuard|TestDailyBriefHasNoObligationContract)$' -count=1
 run "product/open-loop-lane-reconciliation (#155)" "$GO" test ./internal/mora \
   -run '^(TestOpenLoopLanesNeverContradict|TestThinkOpenLoopsEvidenceIsAuthoritative)$' -count=1
-# Known RED through 2026-10-14: the strict target is tracked by #138/#154.
-run_red "exam/product-target-strict (#138)" env MORA_EXAM_PRODUCT_TARGET=1 "$GO" test ./internal/mora \
+# Strict target went green on 2026-07-24 (#204); wantRED is retired and the
+# ratchet in TestExamProductTarget now fails on any strict regression.
+run "exam/product-target-strict (#138)" env MORA_EXAM_PRODUCT_TARGET=1 "$GO" test ./internal/mora \
   -run '^TestExamProductTarget$' -count=1
 run "exam/correction-flywheel" "$GO" test ./internal/mora \
   -run '^TestExamCorrectionFlywheel$' -count=1
