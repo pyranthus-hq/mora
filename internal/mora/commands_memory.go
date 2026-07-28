@@ -216,20 +216,25 @@ func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	text := buildContext(cfg, items, charBudget, *query != "")
 	if *jsonOut {
-		bounded := budgetContextItemsJSON(items, len(text), charBudget, *query)
-		used := estimateTokensUsed(len(text) + jsonLen(bounded))
+		// Receipts are budgeted FIRST and the blob gets the remainder (#200).
+		// The old order let the blob spend the whole budget, so items[] came
+		// back empty on every vault big enough to fill it — and the receipts'
+		// own JSON pushed `used` past `budget`. Reserving them up front keeps
+		// the structured lane populated and used ≤ budget by construction.
+		receipts := contextReceipts(items, charBudget)
+		text := buildContext(cfg, items, charBudget-jsonLen(receipts), *query != "")
+		used := estimateTokensUsed(len(text) + jsonLen(receipts))
 		return emit(stdout, map[string]any{
 			"context":     text,
-			"items":       bounded,
+			"items":       receipts,
 			"budget_unit": budgetUnitTokens,
 			"budget":      tokenBudget,
 			"used":        used,
 		}, true)
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
-	fmt.Fprint(stdout, text)
+	fmt.Fprint(stdout, buildContext(cfg, items, charBudget, *query != ""))
 	return nil
 }
 
