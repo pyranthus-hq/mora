@@ -63,10 +63,11 @@ Most memory tools show a demo. Mora sits an exam.
   brief and daily brief runs on the corpus. A deterministic scorer grades
   extraction, citation coverage, counterparty identity, direction, due time,
   lifecycle, and closure.
-- **Humans sit the same exam.** We run preregistered validation rounds with
-  independent human readers. Each reader labels the same rendered corpus by
-  hand, under sealed roles and a written adjudication procedure. Their
-  agreement is the check on the gold key itself.
+- **Readers sit the same exam.** We run prospectively specified validation
+  rounds with human readers and sealed multi-model reader panels. Each reader
+  labels the same rendered corpus, key-blind, under a written adjudication
+  procedure. Their agreement is the check on the gold key itself. One round
+  found a bug in the key — the readers were right, and the key was fixed.
 - **Leakage is linted.** One early round leaked label hints into
   auditor-visible text. We voided that round, fixed the render, and added a CI
   lint that blocks gold-label leakage.
