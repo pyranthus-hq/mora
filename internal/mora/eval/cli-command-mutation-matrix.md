@@ -33,7 +33,7 @@ dispatch paths. Their validation remains covered by their subsystem tests.
 | Every registered path enters the real top-level dispatcher | `Run` plus the nested `cmd*` family dispatcher | `TestCLIRegistryRealRunDispatch/<path>` | CLOSED for 124/124 rows |
 | Production and registry cannot drift | each exact `case` or dispatch comparison token | `TestCLIRegistryMatchesProductionDispatch` | CLOSED for 124/124 rows |
 | Every row resolves all nine behavior dimensions | exact path set in `cli-command-evidence.json` | `TestCLIRegistryBehaviorEvidence` | CLOSED for 124/124 rows; N/A and platform seams require reasons |
-| Every dispatch token is load-bearing at runtime | one renamed production token per isolated recompile | `TestCLIRegistryRealRunDispatch/<path>` | CLOSED for the 123-row development snapshot below; `forget list` was added by the completion audit and awaits the final clean replay |
+| Every dispatch token is load-bearing at runtime | one renamed production token per isolated recompile | `TestCLIRegistryRealRunDispatch/<path>` | CLOSED for 124/124 rows from clean revision `bee15c4` |
 | Pipe output stays ANSI-free on every probe | real `Run` stdout/stderr buffers | `TestCLIRegistryRealRunDispatch/<path>` | CLOSED for 124/124 rows |
 | Representative JSON surfaces are byte-clean and parseable | `config --json`, `connectors list --json`, `loop list --json` | `TestCLIRegistryJSONSurfacesAreByteClean` | CLOSED |
 | Hook JSON I/O uses the real dispatcher | `Run` → `cmdHook` → session-start/recall | `TestCLIRegistryHookIOThroughRun` | CLOSED |
@@ -104,12 +104,20 @@ ONLY_PATH='serve http status'    ... cli-command-mutation-matrix.sh  # KILLED
 The auditor correctly refused both survivors before its anchors/fingerprints
 were repaired. The combined development evidence is 123/123 runtime kills for
 that registry snapshot with zero unexplained rows. The later completion audit
-added the previously omitted `forget list` path, so the final 124-row registry
-still needs one end-to-end clean replay. It is intentionally not immutable
-closeout evidence, and the final corrected script has not been replayed
-end-to-end as one clean run.
-Run it without `ALLOW_DIRTY=1` from the final clean revision; the script refuses
-a dirty checkout by default.
+added the previously omitted `forget list` path.
+
+The corrected driver was then replayed end-to-end from clean immutable revision
+`bee15c4`:
+
+```text
+GOCACHE=/tmp/mora-go-cache scripts/eval/cli-command-mutation-matrix.sh
+KILLED 1..124
+CLI dispatch mutation matrix: 124/124 selected production tokens KILLED; zero selected registry holes
+```
+
+This is the authoritative CLI mutation closeout. The development replay above
+is retained because its refused survivors explain why the final auditor's
+nested-token anchor and service-action fingerprints are load-bearing.
 
 ## Separate existing mutation campaigns
 
@@ -141,9 +149,8 @@ GOCACHE=/tmp/mora-go-cache golangci-lint run
 GOCACHE=/tmp/mora-go-cache CGO_ENABLED=0 go build ./...
 ```
 
-Close #205 only after the per-row behavior mapping, the clean mutation replay,
-and every final command above is green. A green ordinary test suite alone is
-not mutation evidence.
+A green ordinary test suite alone is not mutation evidence; the closeout also
+requires the behavior mapping and the clean mutation replay above.
 
 ## Development verification — 2026-07-29
 
@@ -153,7 +160,8 @@ clean-revision closeout:
 | Command | Result |
 |---|---|
 | `go test ./internal/mora -run '^TestCLIRegistry' -count=1` | GREEN |
-| segmented `ALLOW_DIRTY=1 scripts/eval/cli-command-mutation-matrix.sh` replay | GREEN after two auditor repairs — 123/123 runtime dispatch mutants killed for the earlier snapshot; `forget list` added later and pending final clean replay |
+| clean `scripts/eval/cli-command-mutation-matrix.sh` at `bee15c4` | GREEN — 124/124 runtime dispatch mutants killed; zero registry holes |
+| segmented `ALLOW_DIRTY=1 scripts/eval/cli-command-mutation-matrix.sh` development replay | GREEN after two auditor repairs — 123/123 runtime dispatch mutants killed for the earlier snapshot; retained as auditor-development history |
 | `scripts/eval/exam-mutation-matrix.sh` | GREEN — all audit groups closed and 23/23 planted mutants killed |
 | `scripts/eval/gate2-mutation-matrix.sh` | GREEN — all 93 authoritative named witnesses present and green; this is not a fresh replay of the historical production mutants |
 | `go test -count=1 ./...` | GREEN |
