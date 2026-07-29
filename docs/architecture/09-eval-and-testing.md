@@ -116,6 +116,26 @@ This measures the value of a human confirmation. It deliberately does not test w
 
 `scripts/eval/exam-mutation-matrix.sh` is the reproducible audit driver, and `eval/obligations-v1/mutation-matrix.md` records its dated result. Matrix 1 plants source-level mutants at all seventeen production exclusion gates reachable from meeting-brief assembly. All seventeen are closed by assembled-surface tests. Matrix 2 attacks the exam itself: validator refusal, scorer dimensions and sensitivity relations, red-team registration, determinism and identity guards, corpus hashes, current-surface clocks/caps, and both flywheel arms. A row is either `CLOSED` by a named red test or a dated, issue-linked `HOLE`. There are no silent or undated exceptions.
 
+The separate CLI-wide contract for issue #205 lives in
+`eval/cli-command-registry.json` and
+`eval/cli-command-evidence.json`, with its checked rollup in
+`eval/cli-command-mutation-matrix.md`.
+`TestCLIRegistryMatchesProductionDispatch` detects production/registry drift,
+and `TestCLIRegistryRealRunDispatch` enters every registered path through the
+real `Run` seam. `scripts/eval/cli-command-mutation-matrix.sh` renames each
+exact production dispatch token in isolation, recompiles the package, and
+requires that path's real-`Run` unknown-token comparison to turn red. The AST
+drift test is the fast CI guard; the manual recompile proves the runtime witness
+is load-bearing. This matrix does not claim that a generic CI host executed
+native macOS, Windows, Google, git, or bucket side effects; those rows name
+their tested platform seam explicitly.
+
+`TestCLIRegistryBehaviorEvidence` expands the behavior groups to the exact
+registry path set and requires success, usage, invalid-input, JSON, pipe,
+durable-state, error, refusal, and mutation evidence for every row. It rejects
+missing or duplicate paths, unresolved dimensions, stale named tests, and
+platform or N/A claims without an explicit reason.
+
 ### Determinism is structural, not a convention
 
 `determinism_guard_test.go` parses every file that can reach a score, a baseline, a mutant, an adapter or a gate, and fails on any `math/rand` import or any `time.Now`/`Since`/`Until` selector. It also enforces the inverse rule: `pgregory.net/rapid` may be imported **only** in a `*_prop_test.go` file, because a PRNG on a scoring path would quietly void every byte-stability promise the exam makes. `rapid` v1.3.0 is pinned, test-only, run with a fixed CI seed that is printed for replay; `TestExamTestOnlyDepsAreNotLinked` asserts `go list -deps ./cmd/mora` never reaches it.
