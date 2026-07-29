@@ -16,11 +16,11 @@
 
 > [!WARNING]
 > Mora is alpha software. Its connectors, local corpus, search, citations,
-> typed commitments, health checks, and human corrections work, and its
-> meeting and daily output passes a strict rendered-output exam on a frozen
-> synthetic corpus. It has not yet been validated on other people's real
-> data. Treat each surfaced item as cited evidence to check, not as a
-> verified current obligation.
+> typed commitments, health checks, and human corrections work. Its meeting
+> and daily output passes a strict rendered-output exam on a frozen synthetic
+> corpus. It is not yet validated on other people's real data. Treat each
+> surfaced item as cited evidence to check, not as a verified current
+> obligation.
 
 Mora syncs read-only copies of Gmail, Google Calendar, iMessage, Apple Calendar,
 and selected files. It stores them as readable Markdown and a rebuildable
@@ -38,22 +38,47 @@ control that action.
 
 ## What Mora does
 
-Before a meeting, Mora shows what you owe and what the other person owes you —
-each item typed with its owner, direction, due time, and lifecycle state, and
-each one cited to the exact message, text, or event it came from. The daily
-brief carries the same typed obligation lane. When a required source is stale
-or a connector fails, Mora says so instead of guessing: freshness is
-fail-closed, and a gap is reported as a gap, never papered over.
+Before a meeting, Mora shows what you owe and what the other person owes you.
+Each item is typed: owner, direction, due time, lifecycle state, closure. Each
+item cites the exact message, text, or event it came from. The daily brief
+carries the same typed obligation lane. When a required source is stale or a
+sync fails, Mora tells you. It does not guess, and it does not show a gap as
+an empty result.
 
-These claims are exam-backed, not aspirational. Every release must pass a
-frozen rendered-output exam that scores extraction, citation coverage,
-counterparty identity, direction, due time, lifecycle, and closure on the real
-assembly paths — plus a planted-mutation audit that proves each production
-gate has a test that turns red when it is disabled. The strict product target
-went from 148 failures to zero and is now a ratchet: any regression fails the
-build. See [evaluation and testing](docs/architecture/09-eval-and-testing.md).
-Validation on other people's real data has not happened yet; that boundary is
-stated here so nobody has to discover it.
+These claims are exam-backed. The section below explains the exam. Validation
+on other people's real data has not happened yet. We state that boundary here
+so nobody has to discover it.
+
+## How Mora is tested
+
+Most memory tools show a demo. Mora sits an exam.
+
+- **The answer key comes first.** We write a gold ledger of every commitment:
+  owner, direction, due time, lifecycle, closure. Then we render a synthetic
+  corpus of mail, messages, and calendar events from that ledger. Every label
+  is exact by construction. The corpus ships in this repo.
+- **The corpus is frozen.** A SHA-256 manifest pins every byte. A test fails
+  if one byte changes.
+- **The real product sits the exam.** The same code that builds your meeting
+  brief and daily brief runs on the corpus. A deterministic scorer grades
+  extraction, citation coverage, counterparty identity, direction, due time,
+  lifecycle, and closure.
+- **Humans sit the same exam.** We run preregistered validation rounds with
+  independent human readers. Each reader labels the same rendered corpus by
+  hand, under sealed roles and a written adjudication procedure. Their
+  agreement is the check on the gold key itself.
+- **Leakage is linted.** One early round leaked label hints into
+  auditor-visible text. We voided that round, fixed the render, and added a CI
+  lint that blocks gold-label leakage.
+- **Every gate has a tripwire.** A planted-mutation audit disables each
+  production gate in a scratch copy and requires a named test to turn red —
+  23 planted mutants, all killed.
+- **The score is a ratchet.** The strict product target went from 148 failures
+  to zero. Any regression now fails the build.
+
+The corpora, gold ledgers, and dated validation records live in
+[`internal/mora/eval/`](internal/mora/eval/). The methodology is in
+[evaluation and testing](docs/architecture/09-eval-and-testing.md).
 
 ## What works today
 
@@ -228,10 +253,9 @@ hypothesis. Read the [guide](docs/guide.md) before you enable either one.
 
 ## Project status and contributing
 
-Mora is developed against live daily use — the maintainers run it on their own
-mail, messages, and calendars every day, and what breaks or misleads in that
-use is what gets fixed next. Work lands through per-change issues and PRs with
-test evidence; there is no public roadmap. It has no ship or payment deadline.
+We run Mora every day on our own mail, messages, and calendars. What breaks in
+that use is what we fix first. Changes land as small issues and PRs with test
+evidence. There is no public roadmap, ship date, or payment deadline.
 
 - [Guide](docs/guide.md) — commands, connectors, and operational details.
 - [Architecture](docs/architecture/00-overview.md) — as-built subsystem spec.
