@@ -4,7 +4,7 @@
 
 # Mora
 
-**Experimental local-first memory and cited meeting context for AI agents.**
+**Local-first memory for AI agents: typed, cited commitments from your own mail, messages, and calendars.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -15,11 +15,12 @@
 </div>
 
 > [!WARNING]
-> Mora is early alpha software. Its connectors, local corpus, search,
-> citations, and identity review work. Its meeting output has not yet passed
-> a product-quality test with real data. Treat each item as past evidence to
-> check, not as a verified current obligation. Follow
-> the [quality-gated alpha plan](https://github.com/pyranthus-hq/mora/issues/137).
+> Mora is alpha software. Its connectors, local corpus, search, citations,
+> typed commitments, health checks, and human corrections work. Its meeting
+> and daily output passes a strict rendered-output exam on a frozen synthetic
+> corpus. It is not yet validated on other people's real data. Treat each
+> surfaced item as cited evidence to check, not as a verified current
+> obligation.
 
 Mora syncs read-only copies of Gmail, Google Calendar, iMessage, Apple Calendar,
 and selected files. It stores them as readable Markdown and a rebuildable
@@ -35,16 +36,49 @@ control that action.
   <img src="docs/assets/architecture.svg" width="760" alt="Read-only sources flow into a local Markdown vault and SQLite index, then into any MCP client. Backup and sharing are optional network paths."/>
 </p>
 
-## Current product hypothesis
+## What Mora does
 
-Before a client meeting, Mora should show what you owe and what they may owe.
-It should show what changed in Gmail, iMessage, and Calendar. It should give
-exact evidence and warn when a required source is stale.
+Before a meeting, Mora shows what you owe and what the other person owes you.
+Each item is typed: owner, direction, due time, lifecycle state, closure. Each
+item cites the exact message, text, or event it came from. The daily brief
+carries the same typed obligation lane. When a required source is stale or a
+sync fails, Mora tells you. It does not guess, and it does not show a gap as
+an empty result.
 
-This is the product hypothesis, not a proven claim. Mora now finds and cites
-past candidate lines. Work continues on typed direction and closure,
-fail-closed product health, and the narrow Before / Teach / Health experience.
-Real-user tests also continue through [seven ordered evidence gates](https://github.com/pyranthus-hq/mora/issues/137).
+These claims are exam-backed. The section below explains the exam. Validation
+on other people's real data has not happened yet. We state that boundary here
+so nobody has to discover it.
+
+## How Mora is tested
+
+Most memory tools show a demo. Mora sits an exam.
+
+- **The answer key comes first.** We write a gold ledger of every commitment:
+  owner, direction, due time, lifecycle, closure. Then we render a synthetic
+  corpus of mail, messages, and calendar events from that ledger. Every label
+  is exact by construction. The corpus ships in this repo.
+- **The corpus is frozen.** A SHA-256 manifest pins every byte. A test fails
+  if one byte changes.
+- **The real product sits the exam.** The same code that builds your meeting
+  brief and daily brief runs on the corpus. A deterministic scorer grades
+  extraction, citation coverage, counterparty identity, direction, due time,
+  lifecycle, and closure.
+- **Humans sit the same exam.** We run preregistered validation rounds with
+  independent human readers. Each reader labels the same rendered corpus by
+  hand, under sealed roles and a written adjudication procedure. Their
+  agreement is the check on the gold key itself.
+- **Leakage is linted.** One early round leaked label hints into
+  auditor-visible text. We voided that round, fixed the render, and added a CI
+  lint that blocks gold-label leakage.
+- **Every gate has a tripwire.** A planted-mutation audit disables each
+  production gate in a scratch copy and requires a named test to turn red —
+  23 planted mutants, all killed.
+- **The score is a ratchet.** The strict product target went from 148 failures
+  to zero. Any regression now fails the build.
+
+The corpora, gold ledgers, and dated validation records live in
+[`internal/mora/eval/`](internal/mora/eval/). The methodology is in
+[evaluation and testing](docs/architecture/09-eval-and-testing.md).
 
 ## What works today
 
@@ -55,9 +89,13 @@ Real-user tests also continue through [seven ordered evidence gates](https://git
   vectors, and the person graph are indexes that you can rebuild.
 - **Cited recall.** `search`, `think`, `brief`, and meeting-prep surfaces return
   stable IDs and dated evidence. Optional Ollama embeddings are loopback-only.
-- **Cited meeting context (experimental).** Meeting output shows past extracts
-  that can matter. It does not yet prove the obligation owner, direction, or
-  closure. Check each citation before you act.
+- **Typed, cited commitments.** Meeting and daily output surfaces obligations
+  with owner, direction, due time, lifecycle state, and closure linkage — every
+  line backed by a materialized commitment inventory and an exact citation.
+  Untyped candidates never render as obligations.
+- **Fail-closed health.** Stale sources, dirty indexes, and failed syncs
+  surface as loud warnings on every read path. Mora refuses to present a gap
+  as an empty result.
 - **Reviewable identity proposals.** Mora can propose email↔phone joins from
   Address Book evidence. Mora never applies these joins on its own. Confirm,
   reject, and undo actions stay local and leave an audit trail.
@@ -215,9 +253,9 @@ hypothesis. Read the [guide](docs/guide.md) before you enable either one.
 
 ## Project status and contributing
 
-The active product plan is the [Mora Home alpha epic](https://github.com/pyranthus-hq/mora/issues/137).
-It has no ship or payment deadline. Current work will close the rendered-output
-audit and run proof before commitment-quality work starts.
+We run Mora every day on our own mail, messages, and calendars. What breaks in
+that use is what we fix first. Changes land as small issues and PRs with test
+evidence. There is no public roadmap, ship date, or payment deadline.
 
 - [Guide](docs/guide.md) — commands, connectors, and operational details.
 - [Architecture](docs/architecture/00-overview.md) — as-built subsystem spec.
