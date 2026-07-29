@@ -1,0 +1,458 @@
+{
+  "schema_version": 1,
+  "issue": 205,
+  "dimensions": [
+    "success",
+    "usage",
+    "invalid",
+    "json",
+    "pipe",
+    "state",
+    "error",
+    "refusal",
+    "mutation"
+  ],
+  "defaults": {
+    "usage": {
+      "status": "test",
+      "tests": ["TestCLIRegistryRealRunDispatch"],
+      "reason": "Every row enters the real Run dispatcher with a parser-level probe and is compared with an unknown-token control."
+    },
+    "invalid": {
+      "status": "test",
+      "tests": ["TestCLIRegistryRealRunDispatch"],
+      "reason": "Every row receives an invalid probe through Run; family tests add semantic invalid-argument cases."
+    },
+    "pipe": {
+      "status": "test",
+      "tests": ["TestCLIRegistryRealRunDispatch"],
+      "reason": "Every row uses non-terminal buffers and fails on ANSI in stdout or stderr."
+    },
+    "mutation": {
+      "status": "test",
+      "tests": ["TestCLIRegistryRealRunDispatch"],
+      "reason": "The CLI mutation driver renames one exact production dispatch token per row and requires this row witness to turn red for the expected behavioral reason.",
+      "production_anchor": "exact production dispatch token selected by scripts/eval/cli-command-mutation-matrix.sh"
+    }
+  },
+  "groups": [
+    {
+      "name": "help and version aliases",
+      "paths": ["version", "--version", "-v", "help", "-h", "--help"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_RunDispatch"]},
+        "json": {"status": "not_supported", "reason": "Help and version output are documented text-only surfaces."},
+        "state": {"status": "not_applicable", "reason": "Help and version are read-only."},
+        "error": {"status": "not_applicable", "reason": "These fixed local renderers have no downstream operation whose error can propagate."},
+        "refusal": {"status": "not_applicable", "reason": "These commands do not cross a permission or destructive boundary."}
+      }
+    },
+    {
+      "name": "initialization",
+      "paths": ["init"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestSmokeInitWriteSearch"]},
+        "json": {"status": "not_supported", "reason": "init has no JSON mode."},
+        "state": {"status": "test", "tests": ["TestSmokeInitWriteSearch", "TestCoreA_CmdInitRepointConfirmed"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdInitErrors"]},
+        "refusal": {"status": "test", "tests": ["TestCoreA_CmdInitRepointDeclined", "TestCoreA_ConfirmVaultRepointNonInteractive"]}
+      }
+    },
+    {
+      "name": "memory write",
+      "paths": ["write"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdWriteVariants"]},
+        "json": {"status": "not_supported", "reason": "write confirms the new ID as text."},
+        "state": {"status": "test", "tests": ["TestSmokeInitWriteSearch", "TestCoreA_CmdWriteVariants"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdWriteVariants", "TestUnparseableMemoryKeepsIndexDirty"]},
+        "refusal": {"status": "not_applicable", "reason": "write is additive and has no destructive permission boundary."}
+      }
+    },
+    {
+      "name": "memory reads",
+      "paths": ["read", "list", "search"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdReadListSearchDelete"]},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdReadListSearchDelete", "TestSmokeInitWriteSearch"]},
+        "state": {"status": "not_applicable", "reason": "read, list, and search do not mutate durable product state."},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdReadListSearchDelete", "TestCoreA_CmdSearchArgErrors"]},
+        "refusal": {"status": "not_applicable", "reason": "These read-only commands have no permission prompt."}
+      }
+    },
+    {
+      "name": "memory delete",
+      "paths": ["delete"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdReadListSearchDelete"]},
+        "json": {"status": "not_supported", "reason": "delete confirmation is text-only."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdReadListSearchDelete", "TestPendingDeleteIsNeverServed"]},
+        "error": {"status": "test", "tests": ["TestMCPDeleteMemorySurfacesRebuildFailure"]},
+        "refusal": {"status": "test", "tests": ["TestDeleteMemoryLastViaAllow"]}
+      }
+    },
+    {
+      "name": "entities",
+      "paths": ["entities"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly", "TestHk_CmdEntitiesListText"]},
+        "json": {"status": "test", "tests": ["TestHk_CmdEntitiesListJSON", "TestHk_CmdEntitiesDetailJSON"]},
+        "state": {"status": "not_applicable", "reason": "entities is read-only."},
+        "error": {"status": "test", "tests": ["TestHk_CmdEntitiesLoadConfigError", "TestHk_CmdEntitiesGraphError"]},
+        "refusal": {"status": "not_applicable", "reason": "entities is read-only."}
+      }
+    },
+    {
+      "name": "graph",
+      "paths": ["graph"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCLIRegistryGraphThroughRun", "TestGr_CmdGraphOverviewJSONAndDetail"]},
+        "json": {"status": "test", "tests": ["TestCLIRegistryGraphThroughRun", "TestGr_CmdGraphOverviewJSONAndDetail"]},
+        "state": {"status": "not_applicable", "reason": "graph is read-only; self-heal behavior is separately tested."},
+        "error": {"status": "test", "tests": ["TestGr_CmdGraphEmptyAndConfigError"]},
+        "refusal": {"status": "not_applicable", "reason": "graph is read-only."}
+      }
+    },
+    {
+      "name": "forget governance",
+      "paths": ["forget", "forget list", "unforget"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestForget_ChatRemovesAndSuppressesResync", "TestForget_ListShowsActiveEntries", "TestUnforget_RevokesSuppression"]},
+        "json": {"status": "not_supported", "reason": "forget, forget list, and unforget are text-only."},
+        "state": {"status": "test", "tests": ["TestForget_ChatRemovesAndSuppressesResync", "TestUnforget_RevokesSuppression"]},
+        "error": {"status": "test", "tests": ["TestGovernance_ConcurrentSyncAndForgetNoResurrection"]},
+        "refusal": {"status": "test", "tests": ["TestForget_RefusesWithoutYes", "TestCLIRegistryPriorityGapsUseRealRun/unforget_refusal"]}
+      }
+    },
+    {
+      "name": "merge governance",
+      "paths": ["merge", "merge list", "merge confirm", "merge reject", "merge undo"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestMergeConfirmUnifiesEmailPhone", "TestMergeRejectKeepsSeparate", "TestMergeUndoRestoresQueue"]},
+        "json": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly"], "reason": "The queue supports JSON; decision commands render review text."},
+        "state": {"status": "test", "tests": ["TestMergeConfirmPersistsProvenance", "TestMergeUndoRestoresQueue"]},
+        "error": {"status": "test", "tests": ["TestMergeDecisionsResolvesAtoms"]},
+        "refusal": {"status": "test", "tests": ["TestMergeConfirmUnifiesEmailPhone"]}
+      }
+    },
+    {
+      "name": "teach identity",
+      "paths": ["teach identity", "teach identity list", "teach identity confirm", "teach identity reject", "teach identity undo"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly", "TestMergeRejectKeepsSeparate", "TestMergeUndoRestoresQueue"]},
+        "json": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly"], "reason": "Identity list supports JSON; decision commands render review text."},
+        "state": {"status": "test", "tests": ["TestMergeConfirmPersistsProvenance", "TestMergeUndoRestoresQueue"]},
+        "error": {"status": "test", "tests": ["TestMergeDecisionsResolvesAtoms"]},
+        "refusal": {"status": "test", "tests": ["TestMergeConfirmUnifiesEmailPhone"]}
+      }
+    },
+    {
+      "name": "teach decisions",
+      "paths": ["teach", "teach commitment", "teach memory", "teach undo", "teach history"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestGate4EveryCommitmentVerdictRoundTripsThroughCLIRebuildAndUndo", "TestGate4AuthoredMemoryCorrectSupersedeRetractUndo", "TestGate4AuthoredMemoryHistoryTraversesRevisionChainNewestFirst"]},
+        "json": {"status": "test", "tests": ["TestGate4AuthoredMemoryHistoryTraversesRevisionChainNewestFirst"], "reason": "teach history supports JSON; mutation commands render review-oriented text."},
+        "state": {"status": "test", "tests": ["TestGate4CommitmentDecisionRebuildAndUndo", "TestGate4AuthoredMemoryCorrectSupersedeRetractUndo"]},
+        "error": {"status": "test", "tests": ["TestGate4ConnectorEvidenceCannotBeRevisedAsAuthoredMemory"]},
+        "refusal": {"status": "test", "tests": ["TestGate4AgentAuthoredDecisionCannotAuthorizeItsOwnCorrection", "TestGate4ConnectorEvidenceCannotBeRevisedAsAuthoredMemory"]}
+      }
+    },
+    {
+      "name": "teach consent and export",
+      "paths": ["teach consent", "teach consent status", "teach consent enable", "teach consent disable", "teach examples"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestGate4EvalExamplesRequireConsentAndMinimizeContent"]},
+        "json": {"status": "test", "tests": ["TestGate4EvalExamplesRequireConsentAndMinimizeContent"], "reason": "teach examples supports JSON; consent commands are text-only."},
+        "state": {"status": "test", "tests": ["TestGate4EvalExamplesRequireConsentAndMinimizeContent"]},
+        "error": {"status": "test", "tests": ["TestGate4EvalExamplesRequireConsentAndMinimizeContent"]},
+        "refusal": {"status": "test", "tests": ["TestGate4EvalExamplesRequireConsentAndMinimizeContent"]}
+      }
+    },
+    {
+      "name": "context",
+      "paths": ["context"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdContext"]},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdContext"]},
+        "state": {"status": "not_applicable", "reason": "context is read-only."},
+        "error": {"status": "test", "tests": ["TestCoreA_FlagParseErrors"]},
+        "refusal": {"status": "not_applicable", "reason": "context is read-only."}
+      }
+    },
+    {
+      "name": "index",
+      "paths": ["index", "index rebuild"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdIndex"]},
+        "json": {"status": "not_supported", "reason": "index rebuild emits a text summary."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdIndex", "TestRebuildIsAtomicWhenGraphWriteFails"]},
+        "error": {"status": "test", "tests": ["TestRebuildIsAtomicWhenGraphWriteFails"]},
+        "refusal": {"status": "test", "tests": ["TestCoreA_CmdIndex"], "reason": "The non-interactive force boundary is exercised by the command test."}
+      }
+    },
+    {
+      "name": "tasks",
+      "paths": ["tasks", "tasks sync", "tasks add", "tasks list", "tasks done"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdTasks"]},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdTasks"], "reason": "tasks list supports JSON; mutating actions return text confirmations."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdTasks", "TestSyncDoesNotResurrectDoneTask"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdTasks"]},
+        "refusal": {"status": "not_applicable", "reason": "Task lifecycle mutations are explicit positional actions and do not use a destructive confirmation prompt."}
+      }
+    },
+    {
+      "name": "pulse",
+      "paths": ["pulse"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestPulseDigestRendersSections", "TestPulseAdvanceCommitsWatermark"]},
+        "json": {"status": "not_supported", "reason": "pulse itself is a text digest; the separate doctor --pulse health alarm owns its JSON surface."},
+        "state": {"status": "test", "tests": ["TestPulseAdvanceCommitsWatermark", "TestPulsePreviewWritesNoSnapshot"]},
+        "error": {"status": "test", "tests": ["TestPulseHonestErrorDoesNotAbortAndSurfacesUnavailable"]},
+        "refusal": {"status": "test", "tests": ["TestAdvancingPulseRefusesWrongLoopOwner", "TestAdvancingPulseRefusesRunFromPreviousPeriod"]}
+      }
+    },
+    {
+      "name": "lint",
+      "paths": ["lint"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdLint"]},
+        "json": {"status": "not_supported", "reason": "lint output is text-only."},
+        "state": {"status": "not_applicable", "reason": "lint is read-only."},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdLint"]},
+        "refusal": {"status": "not_applicable", "reason": "lint is read-only."}
+      }
+    },
+    {
+      "name": "backup",
+      "paths": ["backup"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdBackup"]},
+        "json": {"status": "not_supported", "reason": "backup returns the archive path as text."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdBackup"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdBackup"]},
+        "refusal": {"status": "not_applicable", "reason": "backup is additive."}
+      }
+    },
+    {
+      "name": "doctor",
+      "paths": ["doctor"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdDoctor", "TestDoctorJSONReportsHealthy"]},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdDoctor", "TestDoctorJSONReportsHealthy"]},
+        "state": {"status": "not_applicable", "reason": "doctor reports state but does not mutate it."},
+        "error": {"status": "test", "tests": ["TestDoctorStrictErrorsWhenUnhealthy", "TestDoctorStrictExitsOnStaleSource"]},
+        "refusal": {"status": "test", "tests": ["TestDoctorStrictErrorsWhenUnhealthy"], "reason": "Strict mode refuses to report success for an unhealthy snapshot."}
+      }
+    },
+    {
+      "name": "configuration",
+      "paths": ["config", "config context", "config embedder", "config mmr"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdConfigShowAndSet"]},
+        "json": {"status": "test", "tests": ["TestCLIRegistryJSONSurfacesAreByteClean/config/--json"], "reason": "config show supports JSON; setters return text."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdConfigShowAndSet", "TestCoreA_WriteConfigPreservesForeignLines"]},
+        "error": {"status": "test", "tests": ["TestCoreA_LoadConfigErrorPropagates", "TestCoreA_FlagParseErrors"]},
+        "refusal": {"status": "not_applicable", "reason": "Configuration setters validate values but have no separate permission prompt."}
+      }
+    },
+    {
+      "name": "scheduler",
+      "paths": ["schedule", "schedule list", "schedule install", "schedule uninstall", "schedule run"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSchedule", "TestDarwinScheduleInstallBootstrapsJob", "TestWindowsScheduleInstallUsesSchtasksAndConfigDir", "TestScheduledPulseDailyDurableLifecycle"], "reason": "Generic CI drives Run with injected runners; Darwin and Windows side effects are pinned by explicit OS seams."},
+        "json": {"status": "not_supported", "reason": "schedule commands are text-only."},
+        "state": {"status": "platform_seam", "tests": ["TestDarwinScheduleInstallBootstrapsJob", "TestWindowsScheduleInstallUsesSchtasksAndConfigDir", "TestWindowsScheduleUninstallDeletesTask"], "reason": "Native service state is tested through launchctl and schtasks seams."},
+        "error": {"status": "platform_seam", "tests": ["TestDarwinScheduleInstallBootstrapFailureIsLoud", "TestCoreA_CmdSchedule"], "reason": "Native runner failures are injected and must propagate."},
+        "refusal": {"status": "test", "tests": ["TestCoreA_CmdSchedule"]}
+      }
+    },
+    {
+      "name": "sources",
+      "paths": ["sources", "sources list", "sources add"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdSources", "TestSourcesAddInheritsTypeConsent"]},
+        "json": {"status": "not_supported", "reason": "sources currently renders text."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdSources", "TestSourcesAddInheritsTypeConsent"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CorruptSourcesCLIPaths"]},
+        "refusal": {"status": "test", "tests": ["TestEnableFilesystemDoesNotFabricatePathlessSource"]}
+      }
+    },
+    {
+      "name": "connectors",
+      "paths": ["connectors", "connectors list", "connectors enable", "connectors disable", "connectors setup"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectors", "TestConnectorsList", "TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources"], "reason": "Connector availability is driven through Run with an injectable runtime platform."},
+        "json": {"status": "test", "tests": ["TestConnectorsList", "TestCLIRegistryJSONSurfacesAreByteClean/connectors/list/--json"], "reason": "connectors list supports JSON; mutations return text."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdConnectors", "TestEnableFilesystemFlipsConfiguredSources"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CorruptSourcesCLIPaths", "TestCoreA_ApplySetupSelectionEnableError"]},
+        "refusal": {"status": "platform_seam", "tests": ["TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources"], "reason": "Windows must refuse macOS-only connector mutations without changing sources."}
+      }
+    },
+    {
+      "name": "ingest",
+      "paths": ["ingest", "ingest run"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdIngest", "TestIngestRunAllContinuesPastFailingSource"]},
+        "json": {"status": "not_supported", "reason": "ingest summaries are text-only."},
+        "state": {"status": "test", "tests": ["TestIngestRunAllContinuesPastFailingSource", "TestNamedSourceIngestRebuildsDespitePartialFailure"]},
+        "error": {"status": "test", "tests": ["TestIngestRunNamedSourceStillAborts", "TestNamedSourceIngestRebuildsDespitePartialFailure"]},
+        "refusal": {"status": "test", "tests": ["TestIngestUnknownSourceErrors", "TestIngestPathlessFilesystemSourceErrorsClearly"]}
+      }
+    },
+    {
+      "name": "connect",
+      "paths": ["connect", "connect google", "connect imessage", "connect filesystem"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays"], "reason": "Filesystem succeeds locally; Google and iMessage route through explicit credential/platform seams."},
+        "json": {"status": "not_supported", "reason": "connect flows render text."},
+        "state": {"status": "platform_seam", "tests": ["TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays"], "reason": "Source registration is persisted through hermetic filesystem and platform-seam tests."},
+        "error": {"status": "test", "tests": ["TestConnectFilesystemMissingPathErrors", "TestConnectFilesystemPreservesCorruptSources", "TestCLIRegistryPriorityGapsUseRealRun/connect_routes"]},
+        "refusal": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources"], "reason": "Credential and unsupported-platform refusal occurs before egress or state mutation."}
+      }
+    },
+    {
+      "name": "sync",
+      "paths": ["sync", "sync status", "sync google", "sync filesystem", "sync imessage", "sync git"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
+        "json": {"status": "not_supported", "reason": "sync commands are text status surfaces."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdSync", "TestFailedSyncNeverAdvancesWatermark", "TestSyncDoesNotResurrectDoneTask"]},
+        "error": {"status": "test", "tests": ["TestSyncFilesystemSurfacesCorruptSourceRegistry", "TestSyncGit_FailLoudOnPushError", "TestFailedSyncNeverAdvancesWatermark"]},
+        "refusal": {"status": "test", "tests": ["TestSyncRequiresExplicitKnownSource", "TestSyncGit_BlocksTrackedSensitiveFiles"]}
+      }
+    },
+    {
+      "name": "share",
+      "paths": ["share", "share keygen", "share init", "share preview", "share push", "share subscribe", "share pull", "share list", "share remove", "share gc", "share storage-limit"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestShareKeygenCreatesIdentityAndRefusesOverwrite", "TestShareInitCreatesStagingManifestAndRegistry", "TestSharePreviewShowsExactContentWithoutGit", "TestSharePushEncryptsScopeExactlyAndPushes", "TestShareSubscribeImportsExistingCloneAndSaves", "TestSharePullReimportsAfterPublisherUpdate", "TestShareListShowsPublishesAndSubscriptions", "TestManualShareGCDoesNotRequireSuccessfulPull", "TestShareStorageLimitIsWholeProduct"], "reason": "Git and bucket transports are replaced with explicit fakes while encryption, manifests, generations, and state remain production code."},
+        "json": {"status": "test", "tests": ["TestShareListShowsPublishesAndSubscriptions"], "reason": "share list supports JSON; all mutating share commands render human-auditable text."},
+        "state": {"status": "test", "tests": ["TestShareInitCreatesStagingManifestAndRegistry", "TestSharePushEncryptsScopeExactlyAndPushes", "TestSharePullReimportsAfterPublisherUpdate", "TestManualShareGCDoesNotRequireSuccessfulPull"]},
+        "error": {"status": "test", "tests": ["TestCorruptSharesRegistryIsActionable", "TestShareAttemptTerminalTransitionFailureIsReturned", "TestShareStorageAccountingFailsClosedOnUnreadablePath"]},
+        "refusal": {"status": "test", "tests": ["TestSharePushRefusesNonInteractiveWithoutYes", "TestShareRemoveRequiresYes", "TestSharePushHardStopsOnTrackedPlaintext"]}
+      }
+    },
+    {
+      "name": "reingest",
+      "paths": ["reingest"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdReingest"]},
+        "json": {"status": "not_supported", "reason": "reingest emits text summaries."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdReingest"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdReingest"]},
+        "refusal": {"status": "not_applicable", "reason": "reingest has explicit flags but no destructive confirmation prompt."}
+      }
+    },
+    {
+      "name": "think",
+      "paths": ["think"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdThink"]},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdThink"]},
+        "state": {"status": "not_applicable", "reason": "think is read-only."},
+        "error": {"status": "test", "tests": ["TestCoreA_FlagParseErrors"]},
+        "refusal": {"status": "not_applicable", "reason": "think is read-only."}
+      }
+    },
+    {
+      "name": "brief",
+      "paths": ["brief", "brief correct"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdBrief", "TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdBrief"], "reason": "brief supports JSON; brief correct is a text confirmation flow."},
+        "state": {"status": "test", "tests": ["TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]},
+        "error": {"status": "test", "tests": ["TestCmdBriefEntityAmbiguous", "TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]},
+        "refusal": {"status": "test", "tests": ["TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]}
+      }
+    },
+    {
+      "name": "removed prep alias",
+      "paths": ["prep"],
+      "evidence": {
+        "success": {"status": "not_applicable", "reason": "prep is an intentionally removed compatibility route and always returns migration guidance."},
+        "json": {"status": "not_supported", "reason": "prep only returns text migration guidance."},
+        "state": {"status": "not_applicable", "reason": "prep never mutates state."},
+        "error": {"status": "test", "tests": ["TestCmdPrepRemoved"]},
+        "refusal": {"status": "test", "tests": ["TestCmdPrepRemoved"], "reason": "The removed command refuses execution and points to brief."}
+      }
+    },
+    {
+      "name": "usage controls",
+      "paths": ["usage", "usage report", "usage off", "usage on", "usage queries", "usage queries on", "usage queries off"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdUsageAndReport"]},
+        "json": {"status": "not_supported", "reason": "usage controls and report are text-only."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdUsageAndReport", "TestUsageLoggedToStateNotVault"]},
+        "error": {"status": "test", "tests": ["TestCoreA_UsageReportSkipsMalformedLines"]},
+        "refusal": {"status": "test", "tests": ["TestUsageDisabledByDoNotTrack", "TestUsageDisabledByOffMarker"], "reason": "DO_NOT_TRACK and the off marker refuse all usage writes."}
+      }
+    },
+    {
+      "name": "disconnect",
+      "paths": ["disconnect", "disconnect google"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCoreA_CmdDisconnect"]},
+        "json": {"status": "not_supported", "reason": "disconnect renders text."},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdDisconnect"]},
+        "error": {"status": "test", "tests": ["TestCoreA_CmdDisconnect"]},
+        "refusal": {"status": "not_applicable", "reason": "disconnect removes Mora-local credentials only and has no external destructive side effect."}
+      }
+    },
+    {
+      "name": "mcp",
+      "paths": ["mcp", "mcp serve"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestMCPInitializeServesInstructions", "TestCoreB_McpServeSkipsNotificationAndMalformed"]},
+        "json": {"status": "test", "tests": ["TestMCPToolsCallReturnsCallToolResult"], "reason": "MCP serve is a JSON-RPC pipe."},
+        "state": {"status": "test", "tests": ["TestCoreB_McpCallWriteMemoryHappy", "TestCoreB_McpCallDeleteMemoryHappy"], "reason": "Tool calls may mutate Mora state; protocol initialization is read-only."},
+        "error": {"status": "test", "tests": ["TestCoreB_McpServeScannerError", "TestServeMCPOverHardCapErrorsLoudly"]},
+        "refusal": {"status": "test", "tests": ["TestCoreB_McpCallDeleteMemoryMissingID"]}
+      }
+    },
+    {
+      "name": "http service",
+      "paths": ["serve", "serve http", "serve http install", "serve http uninstall", "serve http status"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestCLIRegistryPriorityGapsUseRealRun/serve", "TestInstallServeHTTPLinuxWritesUnit", "TestInstallServeHTTPDarwin", "TestUninstallServeHTTPDarwinRemovesPlist"], "reason": "Run is driven with a loopback port guard; native service operations use injected systemd and launchctl seams."},
+        "json": {"status": "test", "tests": ["TestServeHTTPCallAllowlistShape"], "reason": "The HTTP API is JSON; service lifecycle commands are text."},
+        "state": {"status": "platform_seam", "tests": ["TestInstallServeHTTPLinuxWritesUnit", "TestInstallServeHTTPDarwin", "TestUninstallServeHTTPDarwinRemovesPlist"], "reason": "Native service files and runner calls are asserted at explicit OS seams."},
+        "error": {"status": "test", "tests": ["TestCLIRegistryPriorityGapsUseRealRun/serve", "TestInstallServeHTTPDarwinPortBusyAborts"]},
+        "refusal": {"status": "test", "tests": ["TestServeHTTPCallAllowlistBlocksDelete", "TestServeHTTPPortGuardRejectsZero"]}
+      }
+    },
+    {
+      "name": "claude hooks",
+      "paths": ["hook", "hook session-start", "hook recall", "hook install", "hook uninstall", "hook status"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookInstallFreshSettings", "TestHookStatusReportsInstalledHooks", "TestHookUninstallRemovesOnlyMoraHooks"], "reason": "Hook I/O and settings mutations run through Run in a hermetic HOME; executable discovery is injected."},
+        "json": {"status": "test", "tests": ["TestCLIRegistryHookIOThroughRun"], "reason": "session-start and recall emit Claude hook JSON; lifecycle commands emit text."},
+        "state": {"status": "test", "tests": ["TestHookInstallMergesAndIsIdempotent", "TestHookUninstallRemovesOnlyMoraHooks"]},
+        "error": {"status": "test", "tests": ["TestHk_HookSessionStartInvalidJSON", "TestHk_HookRecallSearchError", "TestHk_HookInstallWriteError"]},
+        "refusal": {"status": "test", "tests": ["TestHookInstallMalformedHooksDoesNotOverwrite", "TestHookInstallUnparseableSettingsFailsClosed"]}
+      }
+    },
+    {
+      "name": "durable loops",
+      "paths": ["loop", "loop begin", "loop heartbeat", "loop done", "loop status", "loop register", "loop list"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCLIRegistryLoopLifecycleThroughRun", "TestLoopHeartbeatCommandDispatch"]},
+        "json": {"status": "test", "tests": ["TestCLIRegistryLoopLifecycleThroughRun", "TestCLIRegistryJSONSurfacesAreByteClean/loop/list/--json"]},
+        "state": {"status": "test", "tests": ["TestCLIRegistryLoopLifecycleThroughRun", "TestLoopDone_OkWritesJournalAndFlipsStatus"]},
+        "error": {"status": "test", "tests": ["TestLoopDone_FailKeepsRetryable", "TestLoopBeginInvalidExistingRecordFailsClosed"]},
+        "refusal": {"status": "test", "tests": ["TestLoopBegin_DoubleBeginSameDaySucceededSkips", "TestLoopDone_RefusesWhenLeaseMovedToNewerRun"]}
+      }
+    },
+    {
+      "name": "self upgrade",
+      "paths": ["upgrade"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestDecideUpgrade", "TestPostUpgradeRebuildExecsNewBinary"], "reason": "A live binary replacement requires a signed release and network; decision, archive, replacement-path, and post-upgrade execution are tested at explicit seams."},
+        "json": {"status": "not_supported", "reason": "upgrade is text-only."},
+        "state": {"status": "platform_seam", "tests": ["TestUpgradePreservesState", "TestPostUpgradeRebuildExecsNewBinary"], "reason": "Upgrade filesystem effects are tested with isolated paths and a fake new binary."},
+        "error": {"status": "test", "tests": ["TestMc_CmdUpgradeFlagParseError", "TestCLIRegistryPriorityGapsUseRealRun/upgrade"]},
+        "refusal": {"status": "test", "tests": ["TestCLIRegistryPriorityGapsUseRealRun/upgrade"], "reason": "Source builds refuse self-update before network egress."}
+      }
+    }
+  ]
+}

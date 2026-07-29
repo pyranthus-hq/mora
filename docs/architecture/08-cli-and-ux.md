@@ -17,6 +17,19 @@ clean data to a machine or agent.
 
 `main.main()` (`cmd/mora/main.go:18`) is intentionally tiny: it copies the three release-injected vars (`version`, `commit`, `date`) into the package globals (`mora.BuildVersion` etc., declared at `internal/mora/mora.go:38`) and hands everything else to `mora.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Stdin)`. **The streams are passed as parameters, never read from `os.*` inside the package** — that is the seam that makes every command testable with a `bytes.Buffer` and is also the foundation of the byte-clean invariant (a buffer is not a `*os.File`, so styling auto-disables in tests). If `Run` returns an error, `main` prints it to stderr and exits 1. There is no other exit path.
 
+The machine-readable command contract is
+`internal/mora/eval/cli-command-registry.json`, with row behavior evidence in
+`internal/mora/eval/cli-command-evidence.json`. The registry covers canonical
+verbs, aliases, and nested subcommands.
+`TestCLIRegistryMatchesProductionDispatch` parses the production Go
+dispatchers and fails when an exact command token drifts without a registry
+row. `TestCLIRegistryBehaviorEvidence` requires each row to resolve the full
+success/usage/invalid/JSON/pipe/state/error/refusal/mutation contract to named
+tests or a reasoned platform/N/A classification.
+`TestCLIRegistryRealRunDispatch` then drives every row through `Run`; the
+mutation audit and checked-in rollup live beside the registry. Line coverage is
+not used as a proxy for this contract.
+
 `Run` (`internal/mora/mora.go:176`) is a flat `switch` over `args[0]`. No flags are parsed before the switch — each handler does its own parsing. Most handlers own a `flag.FlagSet` built with `flag.ContinueOnError` + `SetOutput(io.Discard)` (so flag errors surface as the handler's own returned error, not Go's default usage dump). A few hand-roll their flag loop instead (`search` via `parseSearchArgs` `search.go`, and `think`, `reingest`, and `brief` with inline `for`/`switch` scans — `brief` via `case "brief"` at `:250` → `cmdBrief` `:682`, which scans for `--json`/`--envelope`). An empty arg list or `help`/`-h`/`--help` prints `printUsage`. An unknown command returns `fmt.Errorf("unknown command %q", cmd)` (`:243`) rather than silently no-opping.
 
 ```mermaid
