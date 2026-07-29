@@ -4,7 +4,7 @@
 
 # Mora
 
-**Experimental local-first memory and cited meeting context for AI agents.**
+**Local-first memory for AI agents: typed, cited commitments from your own mail, messages, and calendars.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -15,11 +15,12 @@
 </div>
 
 > [!WARNING]
-> Mora is early alpha software. Its connectors, local corpus, search,
-> citations, and identity review work. Its meeting output has not yet passed
-> a product-quality test with real data. Treat each item as past evidence to
-> check, not as a verified current obligation. Follow
-> the [quality-gated alpha plan](https://github.com/pyranthus-hq/mora/issues/137).
+> Mora is alpha software. Its connectors, local corpus, search, citations,
+> typed commitments, health checks, and human corrections work, and its
+> meeting and daily output passes a strict rendered-output exam on a frozen
+> synthetic corpus. It has not yet been validated on other people's real
+> data. Treat each surfaced item as cited evidence to check, not as a
+> verified current obligation.
 
 Mora syncs read-only copies of Gmail, Google Calendar, iMessage, Apple Calendar,
 and selected files. It stores them as readable Markdown and a rebuildable
@@ -35,16 +36,24 @@ control that action.
   <img src="docs/assets/architecture.svg" width="760" alt="Read-only sources flow into a local Markdown vault and SQLite index, then into any MCP client. Backup and sharing are optional network paths."/>
 </p>
 
-## Current product hypothesis
+## What Mora does
 
-Before a client meeting, Mora should show what you owe and what they may owe.
-It should show what changed in Gmail, iMessage, and Calendar. It should give
-exact evidence and warn when a required source is stale.
+Before a meeting, Mora shows what you owe and what the other person owes you —
+each item typed with its owner, direction, due time, and lifecycle state, and
+each one cited to the exact message, text, or event it came from. The daily
+brief carries the same typed obligation lane. When a required source is stale
+or a connector fails, Mora says so instead of guessing: freshness is
+fail-closed, and a gap is reported as a gap, never papered over.
 
-This is the product hypothesis, not a proven claim. Mora now finds and cites
-past candidate lines. Work continues on typed direction and closure,
-fail-closed product health, and the narrow Before / Teach / Health experience.
-Real-user tests also continue through [seven ordered evidence gates](https://github.com/pyranthus-hq/mora/issues/137).
+These claims are exam-backed, not aspirational. Every release must pass a
+frozen rendered-output exam that scores extraction, citation coverage,
+counterparty identity, direction, due time, lifecycle, and closure on the real
+assembly paths — plus a planted-mutation audit that proves each production
+gate has a test that turns red when it is disabled. The strict product target
+went from 148 failures to zero and is now a ratchet: any regression fails the
+build. See [evaluation and testing](docs/architecture/09-eval-and-testing.md).
+Validation on other people's real data has not happened yet; that boundary is
+stated here so nobody has to discover it.
 
 ## What works today
 
@@ -55,9 +64,13 @@ Real-user tests also continue through [seven ordered evidence gates](https://git
   vectors, and the person graph are indexes that you can rebuild.
 - **Cited recall.** `search`, `think`, `brief`, and meeting-prep surfaces return
   stable IDs and dated evidence. Optional Ollama embeddings are loopback-only.
-- **Cited meeting context (experimental).** Meeting output shows past extracts
-  that can matter. It does not yet prove the obligation owner, direction, or
-  closure. Check each citation before you act.
+- **Typed, cited commitments.** Meeting and daily output surfaces obligations
+  with owner, direction, due time, lifecycle state, and closure linkage — every
+  line backed by a materialized commitment inventory and an exact citation.
+  Untyped candidates never render as obligations.
+- **Fail-closed health.** Stale sources, dirty indexes, and failed syncs
+  surface as loud warnings on every read path. Mora refuses to present a gap
+  as an empty result.
 - **Reviewable identity proposals.** Mora can propose email↔phone joins from
   Address Book evidence. Mora never applies these joins on its own. Confirm,
   reject, and undo actions stay local and leave an audit trail.
@@ -215,9 +228,10 @@ hypothesis. Read the [guide](docs/guide.md) before you enable either one.
 
 ## Project status and contributing
 
-The active product plan is the [Mora Home alpha epic](https://github.com/pyranthus-hq/mora/issues/137).
-It has no ship or payment deadline. Current work will close the rendered-output
-audit and run proof before commitment-quality work starts.
+Mora is developed against live daily use — the maintainers run it on their own
+mail, messages, and calendars every day, and what breaks or misleads in that
+use is what gets fixed next. Work lands through per-change issues and PRs with
+test evidence; there is no public roadmap. It has no ship or payment deadline.
 
 - [Guide](docs/guide.md) — commands, connectors, and operational details.
 - [Architecture](docs/architecture/00-overview.md) — as-built subsystem spec.

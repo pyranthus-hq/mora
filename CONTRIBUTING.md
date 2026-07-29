@@ -7,7 +7,7 @@ in the open.
 
 The active milestone is product quality before promotion or charging. The most
 useful reports are reproducible failures, redacted product-quality examples, and
-bounded changes tied to the [alpha gates](https://github.com/pyranthus-hq/mora/issues/137).
+bounded changes with test evidence.
 If something breaks, feels wrong, or surprises you, use the matching issue form.
 PRs are welcome too — this guide covers how to run the same checks as CI.
 
