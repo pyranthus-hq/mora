@@ -17,8 +17,11 @@ import (
 	"time"
 )
 
-// shareImportAcquireAttempts bounds the contention spin for the import lease.
-const shareImportAcquireAttempts = 100
+// shareLeaseAcquireTimeout bounds contention waits for the import and global
+// storage leases. The lease can cover a local clone plus index build, which is
+// routinely several seconds on Windows CI; a sub-second attempt budget made a
+// correctly serialized duplicate subscriber fail before the winner registered.
+const shareLeaseAcquireTimeout = 10 * time.Second
 
 // shareStorageLockPath is the ONE global admission lease serializing aggregate
 // byte accounting across every subscription.
@@ -37,7 +40,8 @@ func acquireImportLease(cfg Config, name, runID string, now time.Time) (release 
 	}
 	lockPath := shareImportLockPath(cfg, name)
 	body, _ := json.Marshal(loopLockBody{RunID: runID, PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339Nano)})
-	for attempt := 0; attempt < shareImportAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(shareLeaseAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
 		switch {
 		case perr == nil && published:
@@ -53,9 +57,10 @@ func acquireImportLease(cfg Config, name, runID string, now time.Time) (release 
 				continue
 			}
 		}
-		if attempt < shareImportAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !time.Now().Before(deadline) {
+			break
 		}
+		time.Sleep(sourcesAcquireBackoff(attempt))
 	}
 	return nil, fmt.Errorf("share %q is being imported by another mora process (%s); retry in a moment", name, lockPath)
 }
@@ -69,7 +74,8 @@ func acquireStorageLease(cfg Config, runID string, now time.Time) (release func(
 	}
 	lockPath := shareStorageLockPath(cfg)
 	body, _ := json.Marshal(loopLockBody{RunID: runID, PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339Nano)})
-	for attempt := 0; attempt < shareImportAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(shareLeaseAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
 		switch {
 		case perr == nil && published:
@@ -85,9 +91,10 @@ func acquireStorageLease(cfg Config, runID string, now time.Time) (release func(
 				continue
 			}
 		}
-		if attempt < shareImportAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !time.Now().Before(deadline) {
+			break
 		}
+		time.Sleep(sourcesAcquireBackoff(attempt))
 	}
 	return nil, fmt.Errorf("share storage is locked by another mora process (%s); retry in a moment", lockPath)
 }
