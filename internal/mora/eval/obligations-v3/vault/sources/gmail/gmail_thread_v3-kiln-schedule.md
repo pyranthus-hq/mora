@@ -21,4 +21,6 @@ Manage workshop notices or update your delivery preferences.
 
 ---
 
+From: Mira Sen <mira.sen@example.com>
+
 Understood. I have the blue notebook open beside the gauge.

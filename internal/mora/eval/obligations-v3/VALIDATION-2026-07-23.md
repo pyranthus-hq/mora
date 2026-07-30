@@ -71,3 +71,15 @@ the key, so the preregistered key-change Tier-1 trigger does not fire.
    Tier 1 rerun from scratch.
 
 Every claim derived from this round carries these qualifications.
+
+## Post-round corpus amendment — 2026-07-29
+
+Issue #190 corrects the documented render-visibility gap. Renderer
+`exam-render-v3.1` emits a visible `From:` header for every message in a Gmail
+thread, and `CORPUS.sha256` pins the amended bytes. The ledger and gold key are
+unchanged.
+
+The agreement values above remain the historical result of the original
+sitting. The affected expert row has not yet been re-administered on the
+corrected render. Do not claim that the instrument finding is resolved until
+that re-read is recorded.

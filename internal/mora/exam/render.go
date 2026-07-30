@@ -17,7 +17,7 @@ const RendererVersion = "exam-render-v1"
 // corpus hashes are pinned against it.
 func RendererVersionFor(schema int) string {
 	if schema >= SchemaV3 {
-		return "exam-render-v3"
+		return "exam-render-v3.1"
 	}
 	if schema >= SchemaV2 {
 		return "exam-render-v2"
@@ -106,7 +106,11 @@ func renderGmail(a Artifact, ids map[string]Identity, schema int) (string, map[s
 		addEmails(to, msg.To, ids)
 		addEmails(cc, msg.Cc, ids)
 		addNames(names, append(append([]string{msg.From}, msg.To...), msg.Cc...), ids)
-		parts = append(parts, renderMessageBody(msg, schema))
+		body := renderMessageBody(msg, schema)
+		if schema >= SchemaV3 {
+			body = "From: " + identityHeader(ids[msg.From]) + "\n\n" + body
+		}
+		parts = append(parts, body)
 		if schema >= SchemaV3 {
 			blockRefs := make([]string, 0, len(msg.Body))
 			for _, block := range msg.Body {
@@ -133,6 +137,7 @@ func renderGmail(a Artifact, ids map[string]Identity, schema int) (string, map[s
 	if schema >= SchemaV3 && len(messages) > 0 {
 		meta["messages"] = messages
 		meta["last_sender"] = messages[len(messages)-1].Sender
+		return strings.Join(parts, "\n\n---\n\n"), meta
 	}
 	first := a.Messages[0]
 	return "From: " + identityHeader(ids[first.From]) + "\n\n" + strings.Join(parts, "\n\n---\n\n"), meta
