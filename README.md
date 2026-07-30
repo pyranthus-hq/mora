@@ -229,7 +229,9 @@ Mora keeps data in four places. Only the vault cannot be rebuilt:
 | `state_dir` (`~/.local/state/mora`) | Sync watermarks and local usage log | Recreated on sync |
 | `config_dir` (`~/.config/mora`) | Settings and OAuth tokens | Reconfigure/re-authenticate |
 
-Run `mora config` to see the full paths. The vault is plain Markdown. Use
+Run `mora config` to see the full paths. Set `MORA_VAULT` to point one
+process at a different vault. The value must be an absolute path. It wins
+over `vault_dir` for that run only, and it is never written to `config.toml`. The vault is plain Markdown. Use
 full-disk encryption such as FileVault or BitLocker. You can also opt in to
 backup and encrypted sharing. These paths are outside the current product
 hypothesis. Read the [guide](docs/guide.md) before you enable either one.
