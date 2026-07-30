@@ -36,12 +36,13 @@ func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (i
 		total += n
 		if e != nil {
 			failures++
-			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, e)
 			if isGoogleAuthError(e) {
 				// CROSS-PHASE TOUCH (UI-SPEC §C): name the real cause + fix for the
 				// 7-day Testing-mode refresh-token trap instead of a bare resumable warn.
-				fmt.Fprintln(stdout, "Google sign-in expired — run `mora connect google` to sign in again.")
+				warnf(stdout, "%s sync incomplete: Google sign-in expired — run `mora connect google` to sign in again.", s.Name)
 				fmt.Fprintln(stdout, "(If this keeps happening every ~7 days, your Google app is in \"Testing\" mode; switch it to \"Production\" for durable access.)")
+			} else {
+				warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, e)
 			}
 		}
 	}
