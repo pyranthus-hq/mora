@@ -376,13 +376,7 @@ func budgetCases() []budgetCase {
 		// array on whole-Memory boundaries so `limit` can't blow the window.
 		{tool: "search_budget_cap", line: budgetCall("search_memory", `{"query":"lorem","limit":50}`), ceil: 8000,
 			note: "B2: aggregate byte budget trims a large limit on Memory boundaries to hold the search ceiling"},
-		// list_memory's bug (full bodies, no snippet cap) is body-SIZE driven, not
-		// count driven: on the live vault it is 27.7KB@limit=10 / 313KB@limit=50,
-		// but over this ~1KB-body fixture it stays ~3k tok. Forcing it would mean
-		// oversized bodies that couple search/read/get_entity, making the fixture
-		// fragile. Kept green here (regression guard for the default slice);
-		// the real blowup is caught by live mode + the per-row snippet fix.
-		{tool: "list_memory", line: budgetCall("list_memory", `{"limit":10}`), ceil: 10000},
+		{tool: "list_memory", line: budgetCall("list_memory", `{"limit":10}`), ceil: 10000, note: "FIXED: snippetMemories caps each row at searchSnippetLen=240, so even long bodies stay well under budget."},
 
 		// graph reads — the headline blowups
 		{tool: "list_entities", line: budgetCall("list_entities", `{}`), ceil: 8000,

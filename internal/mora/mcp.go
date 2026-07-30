@@ -472,7 +472,12 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"memories": res, "health": compactHealthOf(cfg, time.Now())}, nil
+	budgeted, dropped := budgetSearchResults(snippetMemories(res, ""), searchMemoryResultsBudgetBytes)
+	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, time.Now())}
+	if dropped > 0 {
+		out["memories_truncated"] = dropped
+	}
+	return out, nil
 }
 
 func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
