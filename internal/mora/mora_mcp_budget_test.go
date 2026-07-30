@@ -363,11 +363,10 @@ func budgetCases() []budgetCase {
 		// read-only point lookups
 		{tool: "read_memory", line: budgetCall("read_memory", `{"id":"read-target"}`), ceil: 4000},
 		// search default slice (small bodies) is the regression guard; search_big
-		// USED to pin the body-bloat bug (full Memory.Text per row, no cap) — now
-		// FIXED: the MCP path snippets each body (snippetMemories, searchSnippetLen).
+		// pins the body-bloat regression (ensures MCP path snippets each body via searchSnippetLen).
 		{tool: "search_memory", line: budgetCall("search_memory", `{"query":"lorem","limit":5}`), ceil: 8000},
 		{tool: "search_big", line: budgetCall("search_memory", `{"query":"bulktext","limit":5}`), ceil: 8000,
-			note: "FIXED: snippetMemories caps each row at searchSnippetLen=240, so even long bodies stay well under budget."},
+			note: "GREEN: snippetMemories caps each row at searchSnippetLen=240, so even long bodies stay well under budget."},
 		// The bumped default (limit=8, no arg) must also stay budget-safe over long
 		// bodies — proves snippeting, not the old limit=5, is what holds the line.
 		{tool: "search_default_limit", line: budgetCall("search_memory", `{"query":"bulktext"}`), ceil: 8000},
