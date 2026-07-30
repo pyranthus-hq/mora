@@ -51,15 +51,20 @@ func TestMoraVaultEnvAppliesWithoutConfigToml(t *testing.T) {
 	}
 }
 
-// readRawConfig returns the raw config.toml bytes for assertions about what is
-// PERSISTED, independent of the env override loadConfig applies.
-func readRawConfig(t *testing.T, cfg Config) string {
+// persistedVaultDir returns the PARSED persisted vault_dir while MORA_VAULT is
+// exported: loadConfig stashes the pre-override (defaults/config.toml) value,
+// and persistVaultDir surfaces it. Assertions about what config.toml persists
+// compare PARSED values, never raw file bytes: writeConfig emits %q, so on
+// Windows the raw TOML holds escaped backslashes (`C:\\Users\\...`) that a
+// substring match against a native path misses — the same parsed-round-trip
+// house pattern as TestConfigEmbedderRoundTrips.
+func persistedVaultDir(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(cfg.ConfigDir, "config.toml"))
+	cfg, err := loadConfig()
 	if err != nil {
-		t.Fatalf("read config.toml: %v", err)
+		t.Fatalf("loadConfig: %v", err)
 	}
-	return string(b)
+	return cfg.persistVaultDir()
 }
 
 // TestMoraVaultEnvNotPersistedByConfigWrite locks the runtime-only nature of the
@@ -76,12 +81,10 @@ func TestMoraVaultEnvNotPersistedByConfigWrite(t *testing.T) {
 	t.Setenv("MORA_VAULT", envVault)
 	run(t, "config", "context", "small")
 
-	raw := readRawConfig(t, mustConfig(t))
-	if strings.Contains(raw, envVault) {
-		t.Fatalf("MORA_VAULT leaked into config.toml via an unrelated config write:\n%s", raw)
-	}
-	if !strings.Contains(raw, persisted) {
-		t.Fatalf("config.toml lost its vault_dir %q:\n%s", persisted, raw)
+	if got := persistedVaultDir(t); got == envVault {
+		t.Fatalf("MORA_VAULT leaked into config.toml via an unrelated config write: persisted %q", got)
+	} else if got != persisted {
+		t.Fatalf("config.toml lost its vault_dir: got %q, want %q", got, persisted)
 	}
 }
 
@@ -97,12 +100,10 @@ func TestMoraVaultEnvNotPersistedByReInit(t *testing.T) {
 	t.Setenv("MORA_VAULT", envVault)
 	run(t, "init")
 
-	raw := readRawConfig(t, mustConfig(t))
-	if strings.Contains(raw, envVault) {
-		t.Fatalf("MORA_VAULT leaked into config.toml via re-init:\n%s", raw)
-	}
-	if !strings.Contains(raw, persisted) {
-		t.Fatalf("config.toml lost its vault_dir %q:\n%s", persisted, raw)
+	if got := persistedVaultDir(t); got == envVault {
+		t.Fatalf("MORA_VAULT leaked into config.toml via re-init: persisted %q", got)
+	} else if got != persisted {
+		t.Fatalf("config.toml lost its vault_dir: got %q, want %q", got, persisted)
 	}
 }
 
@@ -142,9 +143,8 @@ func TestInitExplicitVaultRepointGateUnderEnv(t *testing.T) {
 	if gotTo != want {
 		t.Fatalf("gate 'to' must be the --vault target %q, got %q", want, gotTo)
 	}
-	raw := readRawConfig(t, mustConfig(t))
-	if !strings.Contains(raw, want) {
-		t.Fatalf("explicit init --vault %q must persist even with MORA_VAULT set:\n%s", want, raw)
+	if got := persistedVaultDir(t); got != want {
+		t.Fatalf("explicit init --vault %q must persist even with MORA_VAULT set: persisted %q", want, got)
 	}
 }
 
@@ -166,9 +166,10 @@ func TestMoraVaultEnvNotPersistedWhenConfigVaultDirEmpty(t *testing.T) {
 	t.Setenv("MORA_VAULT", envVault)
 	run(t, "config", "context", "small")
 
-	raw := readRawConfig(t, mustConfig(t))
-	if strings.Contains(raw, envVault) {
-		t.Fatalf("MORA_VAULT leaked into config.toml when persisted vault_dir was empty:\n%s", raw)
+	// Parsed comparison here too: if the env vault leaked, the raw file would
+	// hold it %q-escaped on Windows, so a raw substring check would FALSE-PASS.
+	if got := persistedVaultDir(t); got == envVault {
+		t.Fatalf("MORA_VAULT leaked into config.toml when persisted vault_dir was empty: persisted %q", got)
 	}
 }
 
