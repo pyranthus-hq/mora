@@ -1734,9 +1734,9 @@ func sectionHeading(s DigestSection) string {
 	case stateUnavailable:
 		return label + " — unavailable (sync error)"
 	case stateColdStart:
-		return fmt.Sprintf("%s — baseline (%d)", label, len(s.Items))
+		return fmt.Sprintf("%s — baseline (%d)", label, len(s.Items)+s.MoreCount)
 	default: // stateDelta or plain-window
-		return fmt.Sprintf("%s (%d)", label, len(s.Items))
+		return fmt.Sprintf("%s (%d)", label, len(s.Items)+s.MoreCount)
 	}
 }
 
