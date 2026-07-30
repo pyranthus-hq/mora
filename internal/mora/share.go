@@ -721,7 +721,17 @@ func sharePush(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	// Bucket shares publish content-addressed blobs + a signed manifest; git keeps
 	// the staging-repo delta path below.
 	if bc := bucketOf(pub.Transport); bc != nil {
-		return sharePushBucket(ctx, cfg, pub, mems, recipients, *bc, stdout, stdin, *yes)
+		opts := sharePushBucketOpts{
+			cfg:    cfg,
+			pub:    pub,
+			mems:   mems,
+			recips: recipients,
+			bc:     *bc,
+			stdout: stdout,
+			stdin:  stdin,
+			yes:    *yes,
+		}
+		return sharePushBucket(ctx, opts)
 	}
 	ch, err := computeShareChanges(cfg, pub, mems)
 	if err != nil {

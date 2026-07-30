@@ -114,35 +114,46 @@ func shareInitBucket(cfg Config, name, scope string, recipients []string, owner 
 	return nil
 }
 
+type sharePushBucketOpts struct {
+	cfg    Config
+	pub    sharePublish
+	mems   []Memory
+	recips []age.Recipient
+	bc     bucketConfig
+	stdout io.Writer
+	stdin  io.Reader
+	yes    bool
+}
+
 // sharePushBucket previews the full set (P0: nothing leaves before the preview +
 // confirm), then publishes to the bucket.
-func sharePushBucket(ctx context.Context, cfg Config, pub sharePublish, mems []Memory, recips []age.Recipient, bc bucketConfig, stdout io.Writer, stdin io.Reader, yes bool) error {
-	fmt.Fprintf(stdout, "share %q — scope %s: %d memories → %s (age-encrypted to %d recipient key(s))\n",
-		pub.Name, pub.Scope, len(mems), redactCredentials(bc.display()), len(recips))
-	for _, m := range mems {
-		fmt.Fprintf(stdout, "  • %s\t%s\n", m.ID, m.Title)
+func sharePushBucket(ctx context.Context, opts sharePushBucketOpts) error {
+	fmt.Fprintf(opts.stdout, "share %q — scope %s: %d memories → %s (age-encrypted to %d recipient key(s))\n",
+		opts.pub.Name, opts.pub.Scope, len(opts.mems), redactCredentials(opts.bc.display()), len(opts.recips))
+	for _, m := range opts.mems {
+		fmt.Fprintf(opts.stdout, "  • %s\t%s\n", m.ID, m.Title)
 	}
-	if len(mems) == 0 {
-		fmt.Fprintln(stdout, "  (nothing in this scope to publish)")
+	if len(opts.mems) == 0 {
+		fmt.Fprintln(opts.stdout, "  (nothing in this scope to publish)")
 	}
-	fmt.Fprintf(stdout, "full content: `mora share preview %s`\n", pub.Name)
-	if !yes {
-		if err := confirmSharePushFn(stdin, stdout, pub.Name); err != nil {
+	fmt.Fprintf(opts.stdout, "full content: `mora share preview %s`\n", opts.pub.Name)
+	if !opts.yes {
+		if err := confirmSharePushFn(opts.stdin, opts.stdout, opts.pub.Name); err != nil {
 			return err
 		}
 	}
-	priv, err := shareSigningKey(cfg)
+	priv, err := shareSigningKey(opts.cfg)
 	if err != nil {
 		return err
 	}
-	store, err := newObjectStore(bc)
+	store, err := newObjectStore(opts.bc)
 	if err != nil {
 		return err
 	}
-	if err := bucketPublish(ctx, store, bc, pub, mems, priv, recips); err != nil {
+	if err := bucketPublish(ctx, store, opts.bc, opts.pub, opts.mems, priv, opts.recips); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "share %q published to bucket %s.\n", pub.Name, bc.Bucket)
+	fmt.Fprintf(opts.stdout, "share %q published to bucket %s.\n", opts.pub.Name, opts.bc.Bucket)
 	return nil
 }
 
