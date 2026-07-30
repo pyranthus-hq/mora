@@ -4,7 +4,7 @@
 
 # Mora
 
-**Local-first memory for AI agents: typed, cited commitments from your own mail, messages, and calendars.**
+**Local-first memory for AI agents: one cited corpus from your own mail, messages, and calendars, shared by every agent you wire to it.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -22,10 +22,24 @@
 > surfaced item as cited evidence to check, not as a verified current
 > obligation.
 
-Mora syncs read-only copies of Gmail, Google Calendar, iMessage, Apple Calendar,
-and selected files. It stores them as readable Markdown and a rebuildable
-SQLite index on your machine. MCP clients and the shell can use this corpus.
-Several agents can then find the same history with citations.
+Mora gives your AI agents one shared memory. It syncs read-only copies of
+Gmail, Google Calendar, iMessage, Apple Calendar, and selected files. It
+stores them as readable Markdown and a rebuildable SQLite index on your
+machine. Claude Code, Codex, and any other MCP client you wire to it can then
+search the same history and cite the same evidence. An agent with Mora does
+not start cold, and no one assistant owns your memory.
+
+Mora splits memory from thinking. It extracts commitments, types them, and
+cites their evidence. Your model does the reasoning on top. Mora refuses to
+guess: a stale source or a failed sync shows up as a loud warning, not a
+silent gap.
+
+Mora also learns from you. It builds a person graph from the identity
+evidence in your memories. On macOS it can propose that an email address and
+a phone number belong to the same person; you confirm or reject each join.
+You can correct a wrong commitment or retract a bad memory. Each correction
+is local, reversible, and audited. Each confirmed join makes the graph more
+complete, and the graph stays on your machine.
 
 Mora does not upload your corpus by default or host it for you. Backup and share
 commands can send selected data to places you control. A cloud agent can also
@@ -37,6 +51,10 @@ control that action.
 </p>
 
 ## What Mora does
+
+Ask a wired agent about a person, a project, or a promise. Mora hands it the
+matching history — stable memory IDs and dated citations, over MCP or the
+CLI — and the agent answers from that evidence.
 
 Before a meeting, Mora shows what you owe and what the other person owes you.
 Each item is typed: owner, direction, due time, lifecycle state, closure. Each
@@ -97,9 +115,11 @@ The corpora, gold ledgers, and dated validation records live in
 - **Fail-closed health.** Stale sources, dirty indexes, and failed syncs
   surface as loud warnings on every read path. Mora refuses to present a gap
   as an empty result.
-- **Reviewable identity proposals.** Mora can propose email↔phone joins from
-  Address Book evidence. Mora never applies these joins on its own. Confirm,
-  reject, and undo actions stay local and leave an audit trail.
+- **Human corrections.** On macOS, Mora can propose email↔phone identity joins
+  from Address Book evidence, and never applies a join on its own. You can also
+  correct a commitment's direction, close a stale obligation, or fix and
+  retract your own authored memories. Every correction stays local, keeps its
+  history, and can be undone.
 - **Agent-agnostic access.** Twelve MCP tools and equivalent CLI commands work
   with any client that can launch a local stdio MCP server.
 
