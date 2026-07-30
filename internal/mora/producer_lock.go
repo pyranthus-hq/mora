@@ -69,7 +69,8 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 	// run_id is unused (acquire and release live in the same scope); acquired_at
 	// drives the TTL. Same body shape as the sources/loop leases.
 	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
-	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(shareLeaseAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
 		switch {
 		case perr == nil && published:
@@ -86,9 +87,10 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 			}
 			// else: a live holder OR Windows sharing contention — back off and retry.
 		}
-		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !time.Now().Before(deadline) {
+			break
 		}
+		time.Sleep(sourcesAcquireBackoff(attempt))
 	}
 	return nil, fmt.Errorf("producer ledger is locked by another mora process (%s); retry in a moment", lockPath)
 }

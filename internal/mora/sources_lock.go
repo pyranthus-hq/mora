@@ -33,13 +33,7 @@ const (
 	// atomicWrite) and it is NEVER held across ingest/rebuild, so 30s is far
 	// longer than any legitimate hold — it only ever reaps an abandoned lease.
 	sourcesLockTTL = 30 * time.Second
-	// maxSourcesAcquireAttempts bounds the contention spin. Unlike the loop lease
-	// (which no-ops when a live run holds the lock), a sources RMW must WAIT for
-	// the current holder — which releases within microseconds — so the budget is
-	// generous. Each retry backs off with sourcesAcquireBackoff (jittered, capped),
-	// so ~100 attempts is well under a second of live-holder contention yet leaves
-	// ample margin for Windows sharing-violation retries.
-	maxSourcesAcquireAttempts = 100
+
 )
 
 // sourcesAcquireBackoff returns the pause before acquire retry `attempt`. It is
@@ -72,7 +66,8 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 	// run_id is unused for the sources lease (acquire and release live in the
 	// same scope, unlike loop's begin/done split); acquired_at drives the TTL.
 	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
-	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(shareLeaseAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
 		switch {
 		case perr == nil && published:
@@ -98,9 +93,10 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 		// fatal: back off and try again within the budget. On non-Windows,
 		// sharingViolationRetryable is always false, so only the live-holder path
 		// reaches here — behavior is unchanged off Windows.
-		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !time.Now().Before(deadline) {
+			break
 		}
+		time.Sleep(sourcesAcquireBackoff(attempt))
 	}
 	return nil, fmt.Errorf("sources.json is locked by another mora process (%s); retry in a moment", lockPath)
 }

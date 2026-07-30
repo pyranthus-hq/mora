@@ -488,7 +488,8 @@ func loopLockReleaser(lockPath string, observed []byte) func() {
 // lifecycle caller instead of silently leaking a terminal run's lease.
 func removeLeaseFileGuarded(lockPath string) error {
 	var lastErr error
-	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(shareLeaseAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		err := os.Remove(lockPath)
 		if err == nil || errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -497,9 +498,10 @@ func removeLeaseFileGuarded(lockPath string) error {
 			return err
 		}
 		lastErr = err
-		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !time.Now().Before(deadline) {
+			break
 		}
+		time.Sleep(sourcesAcquireBackoff(attempt))
 	}
 	return lastErr
 }
