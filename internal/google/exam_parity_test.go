@@ -150,8 +150,16 @@ func TestExamGmailMetaMatchesMapperContract(t *testing.T) {
 		}
 		item := gmailThreadToItem(gmailThreadFromLedger(t, a, ids))
 		body, meta := readExamGmailMemory(t, a.MemoryID)
-		if item.Body != body {
-			t.Errorf("%s body differs from gmailThreadToItem\ngot: %q\nwant: %q", a.ID, body, item.Body)
+		parts := strings.Split(body, "\n\n---\n\n")
+		if len(parts) != len(a.Messages) {
+			t.Fatalf("%s frozen body has %d message parts, want %d", a.ID, len(parts), len(a.Messages))
+		}
+		for i := 1; i < len(parts); i++ {
+			parts[i] = "From: " + examHeader(ids[a.Messages[i].From]) + "\n\n" + parts[i]
+		}
+		wantBody := strings.Join(parts, "\n\n---\n\n")
+		if item.Body != wantBody {
+			t.Errorf("%s body differs from gmailThreadToItem\ngot: %q\nwant: %q", a.ID, item.Body, wantBody)
 		}
 		// The committed obligations-v1 bytes stay frozen. Add the new evidence
 		// keys in-memory so this parity test continues to compare the complete

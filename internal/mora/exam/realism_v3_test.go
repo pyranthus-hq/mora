@@ -68,8 +68,15 @@ func TestSchemaV3GmailRenderPreservesPerMessageEvidence(t *testing.T) {
 
 	v2Body, v2Meta := renderGmail(thread, ids, SchemaV2)
 	v3Body, v3Meta := renderGmail(thread, ids, SchemaV3)
-	if v3Body != v2Body {
-		t.Fatal("schema v3 evidence metadata must not rewrite the human-readable Gmail body")
+	wantParts := make([]string, 0, len(thread.Messages))
+	for _, message := range thread.Messages {
+		wantParts = append(wantParts, "From: "+identityHeader(ids[message.From])+"\n\n"+renderMessageBody(message, SchemaV3))
+	}
+	if want := strings.Join(wantParts, "\n\n---\n\n"); v3Body != want {
+		t.Fatalf("schema v3 Gmail body does not expose every message sender:\ngot:\n%s\nwant:\n%s", v3Body, want)
+	}
+	if strings.Count(v2Body, "From: ") != 1 {
+		t.Fatalf("frozen schema v2 Gmail body has %d sender headers, want 1", strings.Count(v2Body, "From: "))
 	}
 	if _, ok := v2Meta["messages"]; ok {
 		t.Fatal("schema v2 is frozen and must not gain per-message metadata")
@@ -104,7 +111,7 @@ func TestSchemaV3GmailRenderPreservesPerMessageEvidence(t *testing.T) {
 }
 
 func TestRendererVersionForSchemaV3(t *testing.T) {
-	if got := RendererVersionFor(SchemaV3); got != "exam-render-v3" {
+	if got := RendererVersionFor(SchemaV3); got != "exam-render-v3.1" {
 		t.Fatalf("schema v3 renderer = %q", got)
 	}
 	if strings.TrimSpace(RendererVersionFor(SchemaV3)) == RendererVersionFor(SchemaV2) {

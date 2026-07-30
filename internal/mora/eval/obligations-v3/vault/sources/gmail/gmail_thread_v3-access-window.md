@@ -18,4 +18,6 @@ I will upload the side-door access roster after lunch.
 
 ---
 
+From: Mira Sen <mira.sen@example.com>
+
 I will send you the three visitor names first.

@@ -3,6 +3,7 @@ package google
 import (
 	"encoding/base64"
 	"reflect"
+	"strings"
 	"testing"
 
 	gmail "google.golang.org/api/gmail/v1"
@@ -85,6 +86,14 @@ func TestGmailPreservesPerMessageEvidence(t *testing.T) {
 	}
 	if cc := metaStrings(item.Meta["cc"]); !reflect.DeepEqual(cc, []string{"pat@example.net"}) {
 		t.Fatalf("thread-level cc union = %v", cc)
+	}
+	for _, want := range []string{
+		`From: "Casey Client" <CASEY@example.org>` + "\n\nCould you send the receipt?",
+		"From: Alex <alex@example.com>\n\nI will send it today.",
+	} {
+		if !strings.Contains(item.Body, want) {
+			t.Errorf("thread body does not preserve per-message sender header %q:\n%s", want, item.Body)
+		}
 	}
 }
 

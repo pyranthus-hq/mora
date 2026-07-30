@@ -18,4 +18,6 @@ Please add the archive captions to the sequence sheet before the walk-through.
 
 ---
 
+From: Lucia Wynn <lucia.wynn@example.org>
+
 I can take that; I will post the captioned sequence before the walk-through.

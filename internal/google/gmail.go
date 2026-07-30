@@ -69,7 +69,7 @@ func buildGmailQuery(w FetchWindow) string {
 }
 
 func gmailThreadToItem(th *gmail.Thread) Item {
-	var subject, from string
+	var subject string
 	var occurred time.Time
 	var bodies []string
 	var atts []Attachment
@@ -79,6 +79,7 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 	// obligation direction and stable evidence identity.
 	senders, recipientsTo, recipientsCc := newAddrSet(), newAddrSet(), newAddrSet()
 	for i, msg := range th.Messages {
+		messageFrom := ""
 		messageSenders, messageTo, messageCc := newAddrSet(), newAddrSet(), newAddrSet()
 		for _, h := range msg.Payload.Headers {
 			switch h.Name {
@@ -87,8 +88,8 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 					subject = h.Value
 				}
 			case "From":
-				if from == "" {
-					from = h.Value
+				if messageFrom == "" {
+					messageFrom = h.Value
 				}
 				senders.addHeader(h.Value)
 				messageSenders.addHeader(h.Value)
@@ -118,7 +119,7 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 			evidence.BlockRefs = []string{"body"}
 		}
 		messages = append(messages, evidence)
-		bodies = append(bodies, body)
+		bodies = append(bodies, fmt.Sprintf("From: %s\n\n%s", messageFrom, body))
 		atts = append(atts, gmailAttachments(msg.Payload)...)
 	}
 	if subject == "" {
@@ -149,7 +150,7 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 		Kind:        KindGmailThread,
 		ProviderID:  th.Id,
 		Title:       subject,
-		Body:        fmt.Sprintf("From: %s\n\n%s", from, strings.Join(bodies, "\n\n---\n\n")),
+		Body:        strings.Join(bodies, "\n\n---\n\n"),
 		OccurredAt:  occurred,
 		Tags:        []string{"gmail"},
 		Attachments: atts,
