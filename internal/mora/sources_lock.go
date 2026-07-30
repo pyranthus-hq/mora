@@ -33,7 +33,6 @@ const (
 	// atomicWrite) and it is NEVER held across ingest/rebuild, so 30s is far
 	// longer than any legitimate hold — it only ever reaps an abandoned lease.
 	sourcesLockTTL = 30 * time.Second
-
 )
 
 // sourcesAcquireBackoff returns the pause before acquire retry `attempt`. It is
