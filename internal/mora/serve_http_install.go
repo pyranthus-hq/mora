@@ -67,6 +67,11 @@ func serveHTTPEnvVars() (keys, vals []string) {
 	if v := os.Getenv("MORA_CONFIG_DIR"); v != "" {
 		keys, vals = append(keys, "MORA_CONFIG_DIR"), append(vals, v)
 	}
+	// MORA_VAULT is the runtime vault override (wins over config.toml, issue
+	// #66) — without the snapshot the daemon reverts to config.toml's vault.
+	if v := os.Getenv("MORA_VAULT"); v != "" {
+		keys, vals = append(keys, "MORA_VAULT"), append(vals, v)
+	}
 	if v := os.Getenv("MORA_PORT"); v != "" {
 		keys, vals = append(keys, "MORA_PORT"), append(vals, v)
 	}

@@ -110,12 +110,17 @@ func schedulePlistFor(cfg Config, job string) (string, bool) {
 	//     terminal syncs keep working — the vault goes stale with no visible error.
 	//   - MORA_CONFIG_DIR: without it a re-rooted (scratch/isolated) install's job
 	//     runs against the DEFAULT vault — syncing/advancing the wrong installation.
+	//   - MORA_VAULT: the runtime vault override (wins over config.toml, issue
+	//     #66); without it the job silently reverts to config.toml's vault.
 	var envVars []string
 	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
 		envVars = append(envVars, "<key>MORA_GOOGLE_CREDENTIALS</key><string>"+creds+"</string>")
 	}
 	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
 		envVars = append(envVars, "<key>MORA_CONFIG_DIR</key><string>"+cfgDir+"</string>")
+	}
+	if vault := os.Getenv("MORA_VAULT"); vault != "" {
+		envVars = append(envVars, "<key>MORA_VAULT</key><string>"+vault+"</string>")
 	}
 	envBlock := ""
 	if len(envVars) > 0 {

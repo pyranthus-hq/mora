@@ -72,6 +72,18 @@ type Config struct {
 	// a code/eval seam exactly like fusionOv, and the ONLY path that can set
 	// mmrParams.force (so the user MMR bool can never run MMR under static-hash).
 	mmrOv *mmrParams
+	// vaultDirCfg is the pre-MORA_VAULT vault_dir (defaults/config.toml), stashed
+	// by applyEnvOverrides when the env var repoints VaultDir for this process.
+	// It is what writeConfig persists: the env override is runtime-only, and a
+	// read-modify-write of an unrelated key (or a scripted re-init) must never
+	// silently repoint the durable vault — that orphans the configured one, the
+	// incident class cmdInit's repoint confirmation exists to prevent. A pointer,
+	// NOT an empty-string sentinel: a malformed-but-preserved `vault_dir = ""` in
+	// config.toml stashes as a valid (empty) persisted value, which a sentinel
+	// would misread as "no override" and persist the env vault. nil ⇒ no override
+	// active ⇒ persist VaultDir as-is. Unexported and NOT loaded from TOML, like
+	// fusionOv/mmrOv.
+	vaultDirCfg *string
 }
 
 type Memory struct {

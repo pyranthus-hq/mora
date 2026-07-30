@@ -54,9 +54,11 @@ func setTestHome(t *testing.T, dir string) {
 func withTempHome(t *testing.T) {
 	t.Helper()
 	setTestHome(t, t.TempDir())
-	// Hermeticity: a developer's exported MORA_CONFIG_DIR must not leak a real
-	// config into tests that assume the temp HOME's default location.
+	// Hermeticity: a developer's exported MORA_CONFIG_DIR / MORA_VAULT must not
+	// leak a real config or vault into tests that assume the temp HOME's
+	// default location.
 	t.Setenv("MORA_CONFIG_DIR", "")
+	t.Setenv("MORA_VAULT", "")
 }
 
 func run(t *testing.T, args ...string) string {
