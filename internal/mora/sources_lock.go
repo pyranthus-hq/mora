@@ -42,14 +42,15 @@ const (
 	maxSourcesAcquireAttempts = 100
 )
 
-// sourcesAcquireBackoff returns the pause before acquire retry `attempt`. It is
-// JITTERED and capped, mirroring atomicWrite's #74 Windows fix: a FIXED backoff
-// makes rival writers retry in lockstep and keep colliding on the same `.lock`
-// (repeated ERROR_SHARING_VIOLATION), whereas jitter de-correlates them so one
-// wins each round. The cap keeps the total spin inside the acquire budget.
+// sourcesAcquireBackoff implements a jittered, capped backoff for Windows
+// sharing violations. This mirrors atomicWrite's #74 fix: avoiding deterministic
+// backoff which makes rival writers retry in lockstep and repeatedly collide
+// on the same `.lock`. The cap keeps the total spin inside the acquire budget.
 func sourcesAcquireBackoff(attempt int) time.Duration {
 	capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
-	return time.Duration(1+mrand.IntN(capMs)) * time.Millisecond
+	// Add jitter using math/rand to avoid lockstep retries
+	jitterMs := mrand.IntN(capMs)
+	return time.Duration(1+jitterMs) * time.Millisecond
 }
 
 // sourcesLockPath is the lease file co-located with sources.json. Its persistent
