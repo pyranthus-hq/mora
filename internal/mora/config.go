@@ -105,13 +105,52 @@ func parseConfigValue(raw string) string {
 	}
 	return strings.TrimSpace(raw)
 }
+
+// applyEnvOverrides layers process-environment overrides on top of the
+// defaults+config.toml resolution, so they win regardless of which loadConfig
+// return path produced cfg. MORA_VAULT is the vault location install.sh
+// documents and passes to `init`; a user who exports it expects the running
+// binary to honor it too — reading config.toml's vault_dir instead silently
+// points every command at the wrong memories (issue #66).
+//
+// A set MORA_VAULT must be an absolute path (after ~/ expansion): a relative
+// value resolves against the process CWD, so the SAME exported value would
+// silently select different vaults for a terminal run vs an installed
+// service/schedule (which run from / or an arbitrary dir). Blank-after-trim is
+// a misconfiguration, not a selection. Both are refused loudly; the empty
+// string means unset, as usual for env vars.
+func applyEnvOverrides(cfg Config) (Config, error) {
+	if v := os.Getenv("MORA_VAULT"); v != "" {
+		if strings.TrimSpace(v) == "" {
+			return cfg, fmt.Errorf("MORA_VAULT is set but blank; unset it or set an absolute vault path")
+		}
+		p := expandHome(v)
+		if !filepath.IsAbs(p) {
+			return cfg, fmt.Errorf("MORA_VAULT=%q is not an absolute path; a relative vault depends on the process working directory (services and schedules run elsewhere), so it is refused", v)
+		}
+		persisted := cfg.VaultDir
+		cfg.vaultDirCfg = &persisted
+		cfg.VaultDir = p
+	}
+	return cfg, nil
+}
+
+// persistVaultDir is the vault_dir value writeConfig writes: the durable
+// (defaults/config.toml) location, never the MORA_VAULT runtime override.
+func (c Config) persistVaultDir() string {
+	if c.vaultDirCfg != nil {
+		return *c.vaultDirCfg
+	}
+	return c.VaultDir
+}
+
 func loadConfig() (Config, error) {
 	cfg := defaultConfig()
 	path := filepath.Join(cfg.ConfigDir, "config.toml")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
+			return applyEnvOverrides(cfg)
 		}
 		return cfg, err
 	}
@@ -147,7 +186,7 @@ func loadConfig() (Config, error) {
 			cfg.MMR = val == "true" || val == "1"
 		}
 	}
-	return cfg, nil
+	return applyEnvOverrides(cfg)
 }
 
 // cmdConfig is the durable-settings surface: `mora config` shows the resolved
@@ -275,7 +314,7 @@ func writeConfig(cfg Config) error {
 		mmrVal = "true"
 	}
 	owned := []struct{ key, val string }{
-		{"vault_dir", cfg.VaultDir},
+		{"vault_dir", cfg.persistVaultDir()},
 		{"data_dir", cfg.DataDir},
 		{"state_dir", cfg.StateDir},
 		{"embedder", cfg.Embedder},
@@ -360,13 +399,20 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		// init (two live incidents). Same-dir re-init stays idempotent, and
 		// the comparison cleans both sides so a trailing slash (shell tab
 		// completion, install.sh's MORA_VAULT) is not misread as a repoint.
-		if filepath.Clean(cfg.VaultDir) != filepath.Clean(want) && configFileExists(cfg) {
-			if err := confirmVaultRepointFn(stdin, stdout, cfg.VaultDir, want); err != nil {
+		// Compare against the PERSISTED vault (persistVaultDir), not the
+		// MORA_VAULT-effective one: the durable config.toml location is what a
+		// repoint orphans, and an exported MORA_VAULT equal to --vault must not
+		// let the confirmation gate be skipped.
+		if filepath.Clean(cfg.persistVaultDir()) != filepath.Clean(want) && configFileExists(cfg) {
+			if err := confirmVaultRepointFn(stdin, stdout, cfg.persistVaultDir(), want); err != nil {
 				return err
 			}
 			repointed = true
 		}
 		cfg.VaultDir = want
+		// An explicit --vault is the one sanctioned repoint path: drop the env
+		// stash so writeConfig persists the flag value even under MORA_VAULT.
+		cfg.vaultDirCfg = nil
 	}
 	for _, dir := range []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir, memoriesRoot(cfg), sourcesRoot(cfg), filepath.Join(cfg.ConfigDir, "tokens")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
