@@ -53,7 +53,7 @@ func cmdBackup(ctx context.Context, args []string, stdout io.Writer) (err error)
 	// containment the share verbs and doctor's share_disjoint_from_vault check
 	// enforce. Fix the layout (data_dir/config outside the vault), then re-run.
 	if err := shareGuardPaths(cfg); err != nil {
-		return fmt.Errorf("refusing to back up: %w", err)
+		return fmt.Errorf("refusing to back up: %w — Fix the layout (data_dir/config outside the vault), then re-run `mora backup`", err)
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "backups"), 0o700); err != nil {
 		return err
