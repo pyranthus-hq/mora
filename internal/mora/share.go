@@ -1350,12 +1350,20 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 // gate and every existing caller. Fusion keys are NUL-separated so a shared id
 // can never collide with a local id in the score map.
 func unionSharedResults(ctx context.Context, cfg Config, local []Memory, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	results, _, err := unionSharedResultsObserved(ctx, cfg, local, query, scope, limit, filters...)
+	return results, err
+}
+
+// unionSharedResultsObserved additionally reports whether the returned scores
+// were rewritten onto the cross-corpus RRF domain. MCP confidence consumes
+// that observation instead of inferring a scale from the local retrieval path.
+func unionSharedResultsObserved(ctx context.Context, cfg Config, local []Memory, query, scope string, limit int, filters ...searchFilters) ([]Memory, bool, error) {
 	shared, err := searchSharedCorpora(ctx, cfg, query, scope, limit, filters...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(shared) == 0 {
-		return local, nil
+		return local, false, nil
 	}
 	byKey := make(map[string]Memory, len(local))
 	lists := make([][]string, 0, 1+len(shared))
@@ -1398,7 +1406,7 @@ func unionSharedResults(ctx context.Context, cfg Config, local []Memory, query, 
 		m.Score = fused[k]
 		out = append(out, m)
 	}
-	return out, nil
+	return out, true, nil
 }
 
 // ---------- list / remove / doctor support ----------

@@ -114,7 +114,7 @@ func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder
 type mcpSearchResult struct {
 	Results      []Memory       // post-union — the actual RETURNED set, identical to defaultSearch's return
 	SemanticPath bool           // the SAME chooseEmbedderFor/embedderIsSemantic decision that routed retrieval
-	ScoreFused   bool           // actual local Memory.Score domain: semantic RRF or static segment RRF
+	ScoreFused   bool           // actual returned Memory.Score domain, including subscribed-share RRF
 	Local        []Memory       // pre-union local results
 	Trace        retrievalTrace // per-arm trace when ScoreFused is true
 }
@@ -160,7 +160,9 @@ func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, l
 	// Query-time union with subscribed share corpora (`mora share`): owner-
 	// attributed, rank-fused, and a no-op returning `local` unchanged when no
 	// subscriptions exist.
-	out.Results, err = unionSharedResults(ctx, cfg, local, query, scope, limit, filters...)
+	var sharedFused bool
+	out.Results, sharedFused, err = unionSharedResultsObserved(ctx, cfg, local, query, scope, limit, filters...)
+	out.ScoreFused = out.ScoreFused || sharedFused
 	return out, err
 }
 
