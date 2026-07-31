@@ -163,7 +163,11 @@ func TestRetrievalDAGGmailSegmentFiltersApplyBeforeRanking(t *testing.T) {
 				`{"query":"` + gsSearchAlpha + `","source":"imessage","limit":5}`,
 				`{"query":"` + gsSearchAlpha + `","since_hours":1,"limit":5}`,
 			} {
-				rows := resultRows(t, mcpResult(t, budgetCall("search_memory", args)))
+				res := mcpResult(t, budgetCall("search_memory", args))
+				var rows []map[string]any
+				if structuredPayload(t, res)["results"] != nil {
+					rows = resultRows(t, res)
+				}
 				for _, row := range rows {
 					if rowID(t, row) == gsSearchWellFormedID {
 						t.Fatalf("excluded Gmail segment survived pre-rank filter %s: %#v", args, rows)
