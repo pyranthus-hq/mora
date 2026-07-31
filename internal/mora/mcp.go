@@ -441,8 +441,10 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
 	query := strArg(args, "query", "")
-	res, err := defaultSearch(ctx, cfg, query, strArg(args, "scope", ""), intArg(args, "limit", mcpSearchDefaultLimit))
-	logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
+	scope := strArg(args, "scope", "")
+	limit := intArg(args, "limit", mcpSearchDefaultLimit)
+	res, err := defaultSearch(ctx, cfg, query, scope, limit)
+	logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +479,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
 	// — the actual RETURNED set — per the frozen contract.
 	if boolArg(args, "confidence", false) {
-		out["confidence"] = searchConfidence(budgeted, cfg, time.Now())
+		out["confidence"] = searchConfidence(ctx, cfg, budgeted, query, scope, limit, time.Now())
 	}
 	return out, nil
 }

@@ -1,6 +1,9 @@
 package mora
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // confidence.go — issue #238: a compact, opt-in "confidence" envelope for
 // search_memory and think, gated by a per-call boolean arg (mirroring the
@@ -9,17 +12,42 @@ import "time"
 // here is derived ONLY from data already computed at ranking time
 // (Memory.Score/CreatedAt, ThinkEvidence.Score/CreatedAt/Gaps, sourceHealthAll)
 // — this is not a new scoring system, just a rollup of existing signals.
+//
+// #238 fix: search_memory's Score is only a raw bm25 magnitude on the
+// FTS-only path. When a semantic embedder is active, defaultSearch routes to
+// hybridSearch (hybrid.go), which overwrites Score with the RRF-fused value
+// — positive, near-constant across match quality (empirically ~0.01-0.15;
+// see confidence_contract_test.go's "#238 AMENDMENT" doc comment for the
+// measured repro). Bucketing that value against the bm25 bounds always read
+// "weak", regardless of how strong or gap-free the match was. The fix keys
+// search_memory's strength derivation on the SAME embedderIsSemantic branch
+// defaultSearch already computes: bm25 bucketing stays put on the FTS-only
+// path; the semantic/hybrid path shares think's existing gap-based rule
+// (confidenceGapStrength) instead. The envelope also gains a "scale" field
+// ("bm25" | "rrf_fused") so callers can tell which number space max_score/
+// mean_score are actually in.
 
 // confidenceSearchStrongBound / confidenceSearchModerateBound are the frozen
 // search_memory bm25 bucket boundaries (contract's "STRENGTH BUCKETING"
-// section). search_memory's Score is raw SQLite bm25(): more negative is a
-// better match, unbounded magnitude (search.go). Named distinctly from the
-// contract test's own confidenceSearchStrongMax/confidenceSearchModerateMax
-// (test-local constants that assert against these same numbers) to avoid a
-// duplicate declaration in this package.
+// section) — FTS-only path only, post-#238. search_memory's Score there is
+// raw SQLite bm25(): more negative is a better match, unbounded magnitude
+// (search.go). Named distinctly from the contract test's own
+// confidenceSearchStrongMax/confidenceSearchModerateMax (test-local constants
+// that assert against these same numbers) to avoid a duplicate declaration in
+// this package.
 const (
 	confidenceSearchStrongBound   = -4.0
 	confidenceSearchModerateBound = -1.5
+)
+
+// confidenceScaleBM25 / confidenceScaleRRFFused are the frozen "scale" values
+// (contract's "FROZEN SHAPE" section, #238 amendment): they tell the caller
+// which already-computed number space max_score/mean_score live in, so a raw
+// bm25 negative and an RRF-fused positive are never misread as the same kind
+// of number.
+const (
+	confidenceScaleBM25     = "bm25"
+	confidenceScaleRRFFused = "rrf_fused"
 )
 
 // confidenceEnvelope is the FROZEN "confidence" object shape (contract's
@@ -27,6 +55,7 @@ const (
 // empty) slice so it marshals to `[]`, never `null`.
 type confidenceEnvelope struct {
 	Strength         string   `json:"strength"`
+	Scale            string   `json:"scale"`
 	MaxScore         float64  `json:"max_score"`
 	MeanScore        float64  `json:"mean_score"`
 	FreshestSourceAt string   `json:"freshest_source_at"`
@@ -37,8 +66,12 @@ type confidenceEnvelope struct {
 // searchConfidence builds the confidence envelope for search_memory. mems is
 // the post-budget slice actually being returned to the caller — the
 // contract's "RETURNED set" that max_score/mean_score/freshest_source_at are
-// scoped over.
-func searchConfidence(mems []Memory, cfg Config, now time.Time) confidenceEnvelope {
+// scoped over. ctx/query/scope/limit mirror the SAME defaultSearch call
+// mcpSearchMemory already made (see mora-mcp-contract's callMCPTool pattern);
+// they exist ONLY so the semantic path can recompute computeGaps' own
+// retrievalTrace, which hybridSearch's thin wrapper (called inside
+// defaultSearch) discards on the production hot path.
+func searchConfidence(ctx context.Context, cfg Config, mems []Memory, query, scope string, limit int, now time.Time) confidenceEnvelope {
 	scores := make([]float64, len(mems))
 	dates := make([]string, len(mems))
 	for i, m := range mems {
@@ -47,8 +80,22 @@ func searchConfidence(mems []Memory, cfg Config, now time.Time) confidenceEnvelo
 	}
 	best, mean := confidenceScoreStats(scores)
 	missing, impact := confidenceSourceGaps(cfg, now)
+
+	// Path-aware (#238): key off the SAME embedderIsSemantic branch
+	// defaultSearch already evaluates to choose FTS-only vs hybrid. A
+	// chooseEmbedderFor error (e.g. a one-second Ollama blip) degrades to the
+	// FTS-only bucketing, matching defaultSearch's own HEALTH-12 "degrade
+	// visibly, don't hard-fail" precedent (hybrid.go).
+	strength := confidenceSearchStrength(best)
+	scale := confidenceScaleBM25
+	if emb, embErr := chooseEmbedderFor(cfg); embErr == nil && embedderIsSemantic(emb) {
+		scale = confidenceScaleRRFFused
+		strength = confidenceSemanticSearchStrength(ctx, cfg, query, scope, limit, now)
+	}
+
 	return confidenceEnvelope{
-		Strength:         confidenceSearchStrength(best),
+		Strength:         strength,
+		Scale:            scale,
 		MaxScore:         best,
 		MeanScore:        mean,
 		FreshestSourceAt: confidenceFreshest(dates),
@@ -59,7 +106,10 @@ func searchConfidence(mems []Memory, cfg Config, now time.Time) confidenceEnvelo
 
 // thinkConfidence builds the confidence envelope for think, over res.Evidence
 // (already limit-bounded by buildThink — think has no separate byte-budget
-// truncation pass the way search_memory's budgetSearchResults does).
+// truncation pass the way search_memory's budgetSearchResults does). think's
+// scale is ALWAYS rrf_fused: buildThink routes through hybridSearchTrace
+// regardless of embedder (mora-retrieval-and-ranking's documented bypass), so
+// think's Score is never a raw bm25 magnitude.
 func thinkConfidence(res ThinkResult, cfg Config, now time.Time) confidenceEnvelope {
 	scores := make([]float64, len(res.Evidence))
 	dates := make([]string, len(res.Evidence))
@@ -71,6 +121,7 @@ func thinkConfidence(res ThinkResult, cfg Config, now time.Time) confidenceEnvel
 	missing, impact := confidenceSourceGaps(cfg, now)
 	return confidenceEnvelope{
 		Strength:         confidenceThinkStrength(res),
+		Scale:            confidenceScaleRRFFused,
 		MaxScore:         best,
 		MeanScore:        mean,
 		FreshestSourceAt: confidenceFreshest(dates),
@@ -80,8 +131,8 @@ func thinkConfidence(res ThinkResult, cfg Config, now time.Time) confidenceEnvel
 }
 
 // confidenceSearchStrength buckets search_memory's raw bm25 max_score per the
-// frozen thresholds above; more negative is a better match, so "strong" is
-// the LOW (most negative) end.
+// frozen thresholds above (FTS-only path only, post-#238); more negative is a
+// better match, so "strong" is the LOW (most negative) end.
 func confidenceSearchStrength(maxScore float64) string {
 	switch {
 	case maxScore <= confidenceSearchStrongBound:
@@ -93,20 +144,65 @@ func confidenceSearchStrength(maxScore float64) string {
 	}
 }
 
-// confidenceThinkStrength buckets think's strength off ThinkGaps — a
-// deterministic signal already computed by computeGaps at buildThink time
-// (contract's "STRENGTH BUCKETING" section) — rather than off raw Score,
-// which is a near-constant RRF rank artifact under this repo's
-// single-active-arm CI reality (no Ollama).
-func confidenceThinkStrength(res ThinkResult) string {
+// confidenceGapStrength is the shared gap-based strength rule (contract's
+// "STRENGTH BUCKETING" section): no results -> weak; results present and the
+// gap analysis is non-empty -> moderate; results present and gap-free ->
+// strong. Used wherever Score is an RRF-fused rank artifact rather than a
+// bucketable match-quality magnitude: think (always) and, since #238,
+// search_memory's semantic/hybrid path.
+func confidenceGapStrength(hasResults bool, gaps ThinkGaps) string {
 	switch {
-	case len(res.Evidence) == 0:
+	case !hasResults:
 		return "weak"
-	case !res.Gaps.empty():
+	case !gaps.empty():
 		return "moderate"
 	default:
 		return "strong"
 	}
+}
+
+// confidenceThinkStrength buckets think's strength off ThinkGaps — a
+// deterministic signal already computed by computeGaps at buildThink time
+// (contract's "STRENGTH BUCKETING" section) — rather than off raw Score,
+// which is a near-constant RRF rank artifact regardless of embedder (think
+// always routes through hybridSearchTrace).
+func confidenceThinkStrength(res ThinkResult) string {
+	return confidenceGapStrength(len(res.Evidence) > 0, res.Gaps)
+}
+
+// confidenceSemanticSearchStrength buckets search_memory's strength on the
+// semantic/hybrid path using the SAME gap-based rule think uses
+// (confidenceGapStrength), because under RRF fusion Memory.Score there is a
+// near-constant rank artifact (~0.01-0.15 regardless of match quality — see
+// confidence_contract_test.go's "#238 AMENDMENT" doc comment), not a
+// match-quality magnitude the bm25 thresholds can bucket.
+//
+// It re-runs hybridSearchTrace at the SAME query/scope/limit defaultSearch
+// already computed inside this call, purely to recover the retrievalTrace
+// hybridSearch's thin wrapper (called inside defaultSearch) discards — this
+// is not a new scoring system, it reuses computeGaps exactly as think does,
+// over the SAME kind of (mems, trace) pair. Deliberately mirrors think's
+// choice to compute gaps over LOCAL (pre-share-union) results only (buildThink
+// doc comment, think.go): a shared-corpus contribution is never compared
+// against the personal index's own retrieval trace or entity graph.
+//
+// A recompute error fails closed to "weak" — this is an opt-in, best-effort
+// signal derived from data the main search already fetched successfully;
+// it must never turn a working search_memory call into a hard failure, and
+// it must never overclaim confidence when the gap analysis can't be run.
+func confidenceSemanticSearchStrength(ctx context.Context, cfg Config, query, scope string, limit int, now time.Time) string {
+	mems, tr, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
+	if err != nil {
+		return "weak"
+	}
+	if len(mems) == 0 {
+		return "weak"
+	}
+	gaps, err := computeGaps(ctx, cfg, query, mems, tr, now)
+	if err != nil {
+		return "weak"
+	}
+	return confidenceGapStrength(true, gaps)
 }
 
 // confidenceScoreStats returns (max, mean) over scores — the literal numeric
