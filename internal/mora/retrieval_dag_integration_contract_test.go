@@ -326,6 +326,56 @@ func TestRetrievalDAGEvidenceRefUsageMeasuresFinalEnvelopeWithoutContent(t *test
 	}
 }
 
+func TestRetrievalDAGEvidenceRefLookupCountsAsRetrieval(t *testing.T) {
+	t.Setenv("DO_NOT_TRACK", "")
+	cfg := seedGmailSegmentsSearchFixture(t)
+
+	// Make only the gmail_segments SELECT deliberately expensive. findMemory
+	// reads the ordinary memories table before this lookup, while response
+	// shaping happens after it. The recursive view therefore gives the usage
+	// event an empirical, deterministic witness for the phase boundary without
+	// sleeping or adding a production-only test hook.
+	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE gmail_segments RENAME TO gmail_segments_timing_source`,
+		`CREATE VIEW gmail_segments AS
+			WITH RECURSIVE spin(n) AS (
+				VALUES(0) UNION ALL SELECT n + 1 FROM spin WHERE n < 500000
+			), delay AS (SELECT sum(n) AS total FROM spin)
+			SELECT s.evidence_ref, s.memory_id, s.sender, s.recipients, s.at, s.block_refs, s.text
+			FROM gmail_segments_timing_source AS s CROSS JOIN delay
+			WHERE delay.total >= 0`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			t.Fatalf("install delayed segment view: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	usageContractCall(t, "read_memory", map[string]any{
+		"id": gsSearchWellFormedID, "evidence_ref": gsSearchMsg1Ref,
+	})
+	events, _ := usageContractEvents(t, cfg)
+	if len(events) != 1 {
+		t.Fatalf("evidence_ref usage events=%d, want 1", len(events))
+	}
+	phases, ok := events[0]["phases"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage phases=%T, want object: %v", events[0]["phases"], events[0])
+	}
+	retrievalMillis := usageContractInt(t, phases, "retrieval_ms")
+	assemblyMillis := usageContractInt(t, phases, "assembly_ms")
+	if retrievalMillis < 20 || retrievalMillis <= assemblyMillis {
+		t.Fatalf("delayed evidence lookup timed outside retrieval: retrieval_ms=%d assembly_ms=%d", retrievalMillis, assemblyMillis)
+	}
+}
+
 func TestRetrievalDAGInstructionsExposeFiltersAndEvidenceRefs(t *testing.T) {
 	for _, phrase := range []string{"applied BEFORE ranking", "evidence_ref", "read ONLY that message"} {
 		if !strings.Contains(mcpInstructions, phrase) {
