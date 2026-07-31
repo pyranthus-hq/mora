@@ -257,7 +257,7 @@ func indexReadyForUpsert(ctx context.Context, cfg Config) (ready bool, indexID s
 	if uv != indexSchemaVersion {
 		return false, "", nil // stale/unstamped schema -> full rebuild re-stamps it
 	}
-	complete, err := indexRetrievalSchemaComplete(ctx, db)
+	complete, err := indexUpsertSchemaComplete(ctx, db)
 	if err != nil {
 		return false, "", err
 	}

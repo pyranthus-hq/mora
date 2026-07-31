@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -140,7 +139,7 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		return h
 	}
 	defer db.Close()
-	if serr := checkIndexForRead(context.Background(), db); serr != nil {
+	if serr := checkIndexSchema(db); serr != nil {
 		h.State = idxFailed
 		h.LastError = serr.Error()
 		return h

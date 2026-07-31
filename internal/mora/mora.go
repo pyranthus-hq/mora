@@ -975,8 +975,8 @@ func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp,
 // evidence_ref must not read it as if it did.
 //
 // v5 is the truthful combined schema. A v3 index or either physical v4 shape
-// mismatches this stamp and is rebuilt atomically from the vault; a same-stamp
-// partial v5 is also rejected by the shared physical-readiness probe.
+// mismatches this stamp and is rebuilt atomically from the vault; the
+// incremental-upsert boundary also rejects a same-stamp partial v5.
 var indexSchemaVersion = 5
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
