@@ -35,7 +35,13 @@ func renderMemory(m Memory) ([]byte, error) {
 	fmt.Fprintf(&b, "---\n")
 	fmt.Fprintf(&b, "id: %s\nscope: %s\ntype: %s\ntitle: %s\n", m.ID, m.Scope, m.Type, quoteYAML(m.Title))
 	fmt.Fprintf(&b, "tags: [%s]\nsource: %s\ncreated_at: %s\n", strings.Join(m.Tags, ", "), quoteYAML(m.Source), m.CreatedAt)
-	if m.Provider != "" {
+	// Issue #237: gate on EITHER field, not just Provider — a caller (or the
+	// cluster-contract test fixture) can legitimately set ProviderID alone, and
+	// dropping it silently would break Rule 1 (provider anchor equality), which
+	// depends on ProviderID surviving the round-trip. Every production connector
+	// already sets both together (memory.MapItem), so this only widens what
+	// persists, never narrows it.
+	if m.Provider != "" || m.ProviderID != "" {
 		fmt.Fprintf(&b, "provider: %s\nprovider_id: %s\n", m.Provider, quoteYAML(m.ProviderID))
 	}
 	if m.Account != "" {

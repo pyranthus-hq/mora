@@ -223,6 +223,12 @@ The MCP `search_memory` surface is token-budgeted. Three constants are coupled (
 
 ---
 
+## Corroborating-record clustering (issue #237)
+
+Both search paths run one more pass, post-fusion/pre-truncate, before the `limit`-sized result is handed back: `clusterAndTruncate` (`cluster.go`) collapses records that describe the same real-world event into one result slot. `searchMemories` widens its SQL `LIMIT` to a deeper candidate pool (`limit*5`, floor 50 — the same formula `hybridSearchTrace` already used for its arm pool) so a cluster's freed slots have real distinct candidates to backfill from, then clusters and truncates to `limit`; `hybridSearchTrace` clusters the fused, pre-truncate `ids` list at the exact point it used to just slice `ids[:limit]`. Two cheap, OR'd anchor rules decide a link: **Rule 1** (`clusterProviderLinked`) — identical non-empty `(Provider, ProviderID)`, e.g. the same Gmail thread or calendar event ingested twice — plain equality, so it composes transitively for free; **Rule 2** (`clusterPersonTimeLinked`) — both records carry an explicit `meta.occurred_at` (**never** a `CreatedAt` fallback — ingest time is not event time, and the old fallback collapsed a 200-thread same-sender fixture into one cluster), their `from`/`to`/`cc`/`attendees`/`organizer`/`participants` identity sets intersect, and the two instants are within a **strict** 24h window. Clusters form greedily in rank order — the best-ranked unclustered record seeds a head, and every later record that qualifies *pairwise with that head* (a star, not a transitive closure — a chain A↔B↔C with no direct A↔C link never merges A and C) joins it — and a candidate exceeding 5 total members is refused whole (all members stay independent), which is what keeps a same-instant fan-out (one sender, many recipients) from being misread as a single event. A query that touches no cluster is untouched: the walk degenerates to `ranked[:limit]`, byte-identical to pre-#237 output. See `internal/mora/cluster_contract_test.go` for the frozen contract.
+
+---
+
 ## Invariants & gotchas
 
 - **Retrieval determinism: every ranking is byte-identical across rebuilds.** Every arm has an explicit secondary sort by id (`ftsSearchIDs` `hybrid.go:222`; `vectorSearchIDs` `hybrid.go:265`. Graph arm `hybrid.go:311`), the fused sort tie-breaks on id (`hybrid.go:164-168`), and the multi-token gazetteer resolves ambiguous names by smallest-id (`hybrid.go:351`). **Why:** BM25 ties and Go map iteration are otherwise undefined-order and would jitter the pool boundary and the eval run-to-run.

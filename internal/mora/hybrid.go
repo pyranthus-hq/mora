@@ -261,10 +261,11 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		ids = mmrRerank(ids, fused, vecByID, *mp)
 	}
 
-	if len(ids) > limit {
-		ids = ids[:limit]
-	}
-
+	// Issue #237 — corroborating-record clustering runs HERE: post-fusion,
+	// pre-truncate. Hydrating the full fused ranking (not just the top `limit`)
+	// is what makes the freed-slot backfill possible — a cluster's non-head
+	// members give up their slots to the next-best DISTINCT candidates further
+	// down `ids`, which requires seeing them before truncating.
 	mems, err := loadMemoriesByID(ctx, cfg, db, ids)
 	if err != nil {
 		return nil, tr, err
@@ -275,14 +276,14 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	for _, m := range mems {
 		byID[m.ID] = m
 	}
-	out := make([]Memory, 0, len(ids))
+	ranked := make([]Memory, 0, len(ids))
 	for _, id := range ids {
 		if m, ok := byID[id]; ok {
 			m.Score = fused[id]
-			out = append(out, m)
+			ranked = append(ranked, m)
 		}
 	}
-	return out, tr, nil
+	return clusterAndTruncate(ranked, limit), tr, nil
 }
 
 // vectorsAvailable reports whether the mem_vectors table exists and is populated.
