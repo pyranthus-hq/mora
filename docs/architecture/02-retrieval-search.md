@@ -167,7 +167,7 @@ No matched people → nil arm (`hybrid.go:292`). This is what makes "what did Ne
 
 `gmailSegmentQueryArm` (`internal/mora/gmail_segments_search.go`) is a fourth candidate source, present in **both** `searchMemories` (FTS-only) and `hybridSearchTrace` (hybrid): it runs the SAME query against `gmail_segments_fts` (the per-*message* derived projection — see [data model](./01-data-model-and-storage.md)) and maps every hit to its **parent** thread memory id, before fusion/slot accounting. A thread with several matching messages still contributes exactly one candidate id — `memories`/`memories_fts` already key one row per thread, so "one slot per thread" holds structurally, not by extra bookkeeping. Ids are deduped to each parent's **strongest** matching segment (best `bm25(gmail_segments_fts)` score, then lowest `evidence_ref` lexicographically — the tie-break `attachGmailSegmentEvidence` also uses for the receipt below), which is what proves a rare term buried in one short message of a long, diluted thread can still win — parent-grain FTS scores the *whole* joined body, so a long thread loses BM25's length normalization to short single-occurrence decoys; the segment arm scores that one message's *own* short text instead.
 
-In `hybridSearchTrace`, the segment arm is simply a fourth list fed into the existing `rrfWeighted([...], weights, fp.k)` call, weighted `gmailSegmentArmWeight = 1.0` alongside `defaultFusion`'s `fts/vec/graph` weights. `searchMemories` has no fusion machinery of its own (`ORDER BY bm25(memories_fts)`), so `fuseGmailSegmentArm` runs a small two-arm RRF (`gmailSegmentParentWeight = 1.5` for the existing parent-grain order, `1.0` for the segment arm, `k = 10` — matching `defaultFusion.k`) **only when the segment arm is non-empty**; a query with zero segment matches is a complete no-op — same order, same `Score` values as before #243 — which is what keeps every non-Gmail (or Gmail-without-segments) query byte-identical.
+In `hybridSearchTrace`, the segment arm is simply a fourth list fed into the existing `rrfWeighted([...], weights, fp.k)` call, weighted `gmailSegmentArmWeight = 1.0` alongside `defaultFusion`'s `fts/vec/graph` weights. `searchMemories` has no fusion machinery of its own (`ORDER BY bm25(memories_fts)`), so it first uses `admitGmailSegmentCandidates` to hydrate the segment arm's top `pool` parents that parent-grain FTS ranked outside its own widened pool, then `fuseGmailSegmentArm` runs a small two-arm RRF (`gmailSegmentParentWeight = 1.5` for the **original** parent-grain order, `1.0` for the segment arm, `k = 10` — matching `defaultFusion.k`). The two lists stay separate: a segment-only candidate can enter the union but never receives a fabricated parent-arm rank. This runs **only when the segment arm is non-empty**; a query with zero segment matches is a complete no-op — same order, same `Score` values as before #243 — which is what keeps every non-Gmail (or Gmail-without-segments) query byte-identical.
 
 A parent row that survives to the final (post-cluster, post-truncate) result set and has at least one query-matching segment carries an additional `"evidence"` key: `{evidence_ref, sender, at, snippet}` — the parent's strongest matching segment's identity, with `snippet` drawn from **that segment's own text only** (`matchSnippet`, same helper/window as the ordinary search snippet) so it can never quote a sibling message. Attachment (`attachGmailSegmentEvidence`) is a pure function of "does this returned parent have a query-matching segment" — independent of *why* the parent was returned (parent-grain title match, segment match, or both) — so a parent that already matched at parent grain (e.g. its title) still carries the receipt when it also independently has a matching segment.
 
@@ -179,11 +179,11 @@ A parent row that survives to the final (post-cluster, post-truncate) result set
 
 `rrfWeighted` (`hybrid.go`) is **weighted rank-based Reciprocal Rank Fusion**: `score(id) = Σ wᵢ/(k + rank+1)` across the arm lists — three in the base case (FTS/vector/graph), four when the Gmail segment arm (issue #243, above) also has hits. Rank-based fusion is deliberate — it fuses BM25's unbounded scores and cosine's `[0,1]` **without normalization**. The weights + damping live in `defaultFusion = {fts:1.5, vec:1, graph:1, k:10}` (overridable per-`Config` via `fusionOv` for the `TestEvalWeightSweep` tuning grid). **The damping `k` is the load-bearing knob, not the weights:** the textbook `k=60` is far too flat for a ~50-doc pool — a rank-50 also-ran contributes `1/110`, nearly the `1/61` of a rank-0 hit — so weak cross-arm agreement demoted strong FTS hits. Dropping to `k=10` sharpens the head and migrated FUSION→HIT. A gentle `fts=1.5` anchors the exact-match arm (heavier FTS regressed — it buries the vector arm's vocabulary-mismatch rescues). `rrf` remains as the equal-weight wrapper. Tuned on the live golden set. See `docs/design/2026-06-10-retrieval-ranking.md`.
 
-**Pool sizing** (`hybrid.go:101-104`): each arm is queried at `pool = limit * 5`, floored at 50. The whole arm list is fed to RRF — never capped before fusion. The graph arm's per-person LIMIT is `pool`, but its deduped union across people may *exceed* pool and is fused whole. Capping it would change the fused ranking for multi-person queries and break byte-identity (`hybrid.go:106-110`).
+**Pool sizing** (`hybrid.go:101-104`): each established arm is queried at `pool = limit * 5`, floored at 50. The segment query retains its full ordered parent list so evidence can still attach to any returned parent with a matching message; only its top `pool` segment-only parents are newly hydrated into `searchMemories`' candidate union. The graph arm's per-person LIMIT is `pool`, but its deduped union across people may *exceed* pool and is fused whole. Capping it would change the fused ranking for multi-person queries and break byte-identity (`hybrid.go:106-110`).
 
 After fusion (`hybrid.go:158-173`): collect ids, sort by **fused score desc, then id asc** (stable tie-break), record the full ranking into `tr.Fused`, then truncate to `limit`. `loadMemoriesByID` (`graph_read.go:152`) hydrates full memories (it returns newest-first, so the result is **re-ordered back to the fused ranking** and each `m.Score` is stamped with its fused score, `hybrid.go:179-191`).
 
-If all three arms are empty, the function returns nil before fusion (`hybrid.go:154`).
+If all four arms are empty, the function returns nil before fusion.
 
 ```mermaid
 sequenceDiagram
@@ -192,7 +192,8 @@ sequenceDiagram
     participant FTS as ftsSearchIDs (BM25)
     participant V as vectorSearchIDs (cosine)
     participant G as graphExpandIDs (1-hop)
-    participant RRF as rrf (k=60)
+    participant S as gmailSegmentQueryArm (message FTS)
+    participant RRF as rrfWeighted (k=10)
     participant DB as loadMemoriesByID
 
     C->>H: query, limit (semantic embedder)
@@ -204,7 +205,9 @@ sequenceDiagram
     V-->>H: vecIDs (cosine rank, sim>0)
     H->>G: gazetteer + alias match, pool
     G-->>H: graphIDs (newest-first)
-    H->>RRF: [ftsIDs, vecIDs, graphIDs]
+    H->>S: ftsQuery(q) MATCH
+    S-->>H: segment parent ids + exact evidence receipts
+    H->>RRF: [ftsIDs, vecIDs, graphIDs, segmentIDs]
     RRF-->>H: fused score per id
     Note over H: sort score desc, id asc → truncate to limit
     H->>DB: loadMemoriesByID(top ids)

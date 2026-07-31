@@ -78,7 +78,7 @@ type gmailSegmentDiagnostic struct {
 
 // deriveGmailSegments computes the fail-closed evidence-segment projection
 // for one memory. It returns (nil, nil) when m is not a Gmail memory, or is
-// a legacy Gmail memory carrying no meta.messages at all (the pre-#243
+// a legacy Gmail memory carrying no meta.messages key at all (the pre-#243
 // shape) — neither case is a refusal, so neither gets a diagnostic row.
 // Otherwise it returns EITHER a non-empty, well-formed row set OR exactly
 // one diagnostic explaining the whole-memory refusal — never both, and
@@ -87,9 +87,10 @@ func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) 
 	if !isGmailMemory(m) {
 		return nil, nil
 	}
+	_, hasMessagesMeta := m.Meta["messages"]
 	messages := gmailCommitmentMessages(m) // reuses commitment.go's meta.messages parser
-	if len(messages) == 0 {
-		return nil, nil // legacy pre-#243 shape: no messages, no claim to fail closed on
+	if len(messages) == 0 && !hasMessagesMeta {
+		return nil, nil // legacy pre-#243 shape: key absent, no claim to fail closed on
 	}
 
 	bodyCount := len(gmailBodyParts(m))

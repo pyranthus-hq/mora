@@ -323,7 +323,10 @@ import (
 //	thread first winning at parent grain." =>
 //	  TestGmailSegmentsContractBuriedMessagePin (GREEN pin — the baseline
 //	  proof parent-grain alone fails),
-//	  TestGmailSegmentsContractBuriedMessageFindableViaSegment (RED).
+//	  TestGmailSegmentsContractBuriedMessageFindableViaSegment (RED),
+//	  TestGmailSegmentsContractSegmentCandidateOutsideParentPoolSurvives
+//	  (review amendment — the segment arm admits a parent even when the
+//	  widened parent-grain pool excludes it).
 //
 //	"A semantic-embedder run preserves the existing embedder gate and cannot
 //	lose the exact FTS evidence receipt." =>
@@ -332,6 +335,8 @@ import (
 //	"Malformed/truncated metadata fixtures drop/refuse rather than
 //	misattribute." =>
 //	  TestGmailSegmentsContractFailClosedCountMismatch (RED),
+//	  TestGmailSegmentsContractFailClosedExplicitEmptyMessages (review
+//	  amendment — key present but empty is malformed, not legacy),
 //	  TestGmailSegmentsContractFailClosedLiteralSeparatorInBody (RED),
 //	  TestGmailSegmentsContractFailClosedOrderingMismatch (RED),
 //	  TestGmailSegmentsContractFailClosedTruncatedBody (RED),

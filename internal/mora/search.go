@@ -128,16 +128,26 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	parentIDs := make([]string, len(out))
+	for i, m := range out {
+		parentIDs[i] = m.ID
+	}
 	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source,
 	// mapped to PARENT ids, before fusion/slot accounting (frozen interface
-	// #3). Best-effort: a segment-arm failure degrades retrieval (no
-	// promotion, no evidence) but must never fail search_memory outright.
+	// #3). Admit segment-ranked parents even when parent-grain FTS ranked
+	// them outside its widened pool; parentIDs stays separate so those rows do
+	// not receive a fabricated parent-arm contribution. Best-effort: a
+	// segment-arm/admission failure degrades retrieval but must never fail
+	// search_memory outright.
 	// Gated on a non-empty arm so a query with zero segment matches is a
 	// complete no-op — the byte-identity guarantee for non-participating
 	// memories (frozen interface #5).
 	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
 	if segErr == nil && len(segIDs) > 0 {
-		out = fuseGmailSegmentArm(out, segIDs)
+		if admitted, admitErr := admitGmailSegmentCandidates(ctx, db, out, segIDs, sqlLimit); admitErr == nil {
+			out = admitted
+		}
+		out = fuseGmailSegmentArm(out, parentIDs, segIDs)
 	}
 	// Legacy slot discipline (#237 round-2 P1 fix): capture the pre-filter rank
 	// order's ids BEFORE suppression/visibility filtering touches `out`, so

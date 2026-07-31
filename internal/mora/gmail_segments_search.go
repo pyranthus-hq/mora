@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"sort"
+	"strings"
 )
 
 // Issue #243 — segment-grain retrieval. This file owns the search-side half
@@ -107,22 +108,87 @@ func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string) 
 	return ids, evidence, nil
 }
 
+// admitGmailSegmentCandidates hydrates the top pool parents named by the
+// segment arm that parent-grain FTS did not admit to its own pool. The two
+// arms remain semantically distinct: this function only expands the candidate
+// set; fuseGmailSegmentArm receives the original parentIDs separately, so a
+// segment-only candidate earns no fabricated parent-arm RRF contribution.
+//
+// Rows are loaded from the same memories projection searchMemories already
+// queried, then hydrated from their vault paths in the same way. Visibility
+// filtering remains downstream in searchMemories, once, over the combined raw
+// candidate ranking.
+func admitGmailSegmentCandidates(ctx context.Context, db *sql.DB, candidates []Memory, segIDs []string, pool int) ([]Memory, error) {
+	if pool <= 0 || len(segIDs) == 0 {
+		return candidates, nil
+	}
+	if len(segIDs) > pool {
+		segIDs = segIDs[:pool]
+	}
+	existing := make(map[string]bool, len(candidates))
+	for _, m := range candidates {
+		existing[m.ID] = true
+	}
+	missing := make([]string, 0, len(segIDs))
+	for _, id := range segIDs {
+		if !existing[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return candidates, nil
+	}
+
+	ph := make([]string, len(missing))
+	args := make([]any, len(missing))
+	for i, id := range missing {
+		ph[i] = "?"
+		args[i] = id
+	}
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, scope, type, title, tags, source, created_at, path, text
+		 FROM memories WHERE id IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return candidates, err
+	}
+	defer rows.Close()
+	loaded := make(map[string]Memory, len(missing))
+	for rows.Next() {
+		var m Memory
+		var tags string
+		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text); err != nil {
+			return candidates, err
+		}
+		m.Tags = splitCSV(tags)
+		if full, ferr := parseMemory(m.Path); ferr == nil {
+			m = full
+		}
+		loaded[m.ID] = m
+	}
+	if err := rows.Err(); err != nil {
+		return candidates, err
+	}
+	out := append([]Memory(nil), candidates...)
+	for _, id := range missing {
+		if m, ok := loaded[id]; ok {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 // fuseGmailSegmentArm re-ranks candidates by RRF-fusing their existing
 // parent-grain order with the segment-grain arm (frozen interface #3: an
-// ADDITIONAL candidate source... before fusion/slot accounting). Membership
-// never changes — a segment-only hit that parent-grain FTS never matched at
-// all is dropped, never invented as a new row — but a parent's score/rank
-// can shift, which is exactly what lets a heavily-diluted thread (buried
-// under short decoys at parent grain) win a slot via its own short, sharply-
-// matching segment.
-func fuseGmailSegmentArm(candidates []Memory, segIDs []string) []Memory {
+// ADDITIONAL candidate source... before fusion/slot accounting). candidates
+// is the union hydrated by admitGmailSegmentCandidates; parentIDs is strictly
+// the original parent-grain arm. Keeping those inputs separate prevents a
+// segment-only candidate from receiving an invented parent-arm rank.
+func fuseGmailSegmentArm(candidates []Memory, parentIDs, segIDs []string) []Memory {
 	if len(candidates) == 0 {
 		return candidates // nothing to re-rank; preserve nil-vs-empty exactly
 	}
-	parentIDs := make([]string, len(candidates))
 	byID := make(map[string]Memory, len(candidates))
-	for i, m := range candidates {
-		parentIDs[i] = m.ID
+	for _, m := range candidates {
 		byID[m.ID] = m
 	}
 	fused := rrfWeighted([][]string{parentIDs, segIDs}, []float64{gmailSegmentParentWeight, gmailSegmentArmWeight}, gmailSegmentFusionK)
@@ -140,7 +206,7 @@ func fuseGmailSegmentArm(candidates []Memory, segIDs []string) []Memory {
 	for _, id := range ids {
 		m, ok := byID[id]
 		if !ok {
-			continue // segment arm named a parent parent-grain FTS never matched; never invent a row
+			continue // outside both bounded candidate pools
 		}
 		m.Score = fused[id]
 		out = append(out, m)
