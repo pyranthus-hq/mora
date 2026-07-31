@@ -216,6 +216,75 @@ jobs:
           set -euo pipefail
           bash scripts/notarize-darwin-release.sh dist
 
+      # Run the same secret-free sabotage gate as PR CI before the live Apple
+      # lane. This prevents a later workflow-only edit from bypassing the
+      # hostile-ZIP, identity, staple, or ordering contracts at tag time.
+      - name: Verify Mora.app release contract
+        run: |
+          set -euo pipefail
+          bash scripts/regress/app-bundle-contract.sh
+
+      # Branded Mora.app lane: assemble, whole-bundle sign, notarize, staple,
+      # validate, and package architecture-specific `_app.zip` assets from the
+      # SAME signed CLI binaries the raw archives ship. The `_app.zip` name is
+      # not a `<os><sep><arch><ext>` suffix, so the legacy go-selfupdate
+      # matcher in v0.11.4-and-earlier clients can never select it — the raw
+      # archives above stay their contract, byte-for-byte untouched. This step
+      # must run after GoReleaser (it consumes dist/), before credential
+      # cleanup (whole-bundle codesign needs the ephemeral keychain), and
+      # before publish (a failed app lane must leave only an unpublished
+      # draft).
+      - name: Build, sign, and notarize Mora.app bundles
+        timeout-minutes: 90
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: ADIT ABHIJIT KARODE (VS8M5VJBZ5)"
+          APPLE_NOTARY_KEY_PATH: ${{ runner.temp }}/mora-apple-credentials/AuthKey.p8
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_BUNDLE_ID: com.pyranthus.mora
+          APPLE_TEAM_ID: VS8M5VJBZ5
+        run: |
+          set -euo pipefail
+          bash scripts/appbundle-darwin-release.sh dist "${GITHUB_REF_NAME#v}"
+
+      # checksums-app.txt is the app updater's trust anchor, exactly as
+      # checksums.txt is for the raw archives — so it gets the same keyless
+      # cosign signature (same .cosign.sig/.cosign.pem naming GoReleaser
+      # emits for checksums.txt).
+      - name: Sign app checksums manifest
+        run: |
+          set -euo pipefail
+          test -f dist/app/checksums-app.txt || { echo "::error::dist/app/checksums-app.txt missing"; exit 1; }
+          cosign sign-blob \
+            --output-signature=dist/app/checksums-app.txt.cosign.sig \
+            --output-certificate=dist/app/checksums-app.txt.cosign.pem \
+            dist/app/checksums-app.txt \
+            --yes
+
+      # The app assets join the same DRAFT release the raw archives are on;
+      # nothing is visible to any updater until the explicit publish gate.
+      - name: Upload Mora.app assets to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          for asset in \
+            "dist/app/mora_${VER}_darwin_amd64_app.zip" \
+            "dist/app/mora_${VER}_darwin_arm64_app.zip" \
+            dist/app/checksums-app.txt \
+            dist/app/checksums-app.txt.cosign.sig \
+            dist/app/checksums-app.txt.cosign.pem; do
+            test -f "$asset" || { echo "::error::app release asset missing: $asset"; exit 1; }
+          done
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/app/mora_${VER}_darwin_amd64_app.zip" \
+            "dist/app/mora_${VER}_darwin_arm64_app.zip" \
+            dist/app/checksums-app.txt \
+            dist/app/checksums-app.txt.cosign.sig \
+            dist/app/checksums-app.txt.cosign.pem \
+            --repo "$GITHUB_REPOSITORY"
+
       # Verify what was actually built before anything becomes visible:
       #  1. the upgrade contract asset exists (checksums.txt — upgrade.go
       #     refuses a release without it; v0.6.0 shipped without one), and
