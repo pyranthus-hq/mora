@@ -886,7 +886,7 @@ func TestClusterContractWindowBoundary(t *testing.T) {
 	}
 
 	t.Run("ExactlyOnBoundary_24h_NotClustered", func(t *testing.T) {
-		seedPair(t, 24*time.Hour)
+		seedPair(t, time.Duration(clusterContractWindowHours)*time.Hour)
 		res := mcpResult(t, budgetCall("search_memory", `{"query":"Boundary Window Regression","limit":5}`))
 		rows := resultRows(t, res)
 		if len(rows) != 2 {
