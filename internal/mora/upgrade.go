@@ -54,6 +54,9 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	// The repo is public, so no token is required; an optional token raises
 	// GitHub API rate limits.
 	token := firstNonEmpty(os.Getenv("MORA_GITHUB_TOKEN"), os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"))
+	if appRoot, ok := moraAppRoot(exe); ok {
+		return cmdUpgradeApp(ctx, current, appRoot, *checkOnly, token, stdout)
+	}
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{APIToken: token})
 	if err != nil {
 		return fmt.Errorf("setting up the release source: %w", err)

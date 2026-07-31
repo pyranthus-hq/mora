@@ -204,12 +204,30 @@ produces two app assets** with this frozen contract:
 - **The raw archives are untouched:** same names, same root-level binary,
   same checksums — the v0.11.4-and-earlier install/upgrade path is unchanged.
 
-Installation puts the whole app in a stable location
-and exposes its CLI through a symlink. An app update stages, verifies, and
-atomically replaces the **whole bundle**. Replacing only
-`Contents/MacOS/mora` invalidates the bundle seal, so the raw self-updater cannot
-be reused inside the app unchanged. The installer, PATH symlink, and
-whole-bundle updater are Lane B of #257 and are **not** part of this lane.
+`install-app.sh` puts the whole app at `~/Applications/Mora.app` by default and
+exposes its CLI through a symlink. It preserves a prior standalone executable
+as `.standalone-backup`, refuses unrelated/Homebrew symlinks, and prints the
+planned FDA migration with the unproven-continuity warning. It verifies the checksum, canonical ZIP inventory,
+exact plist and Apple identity, both signatures, staple, notarized-code
+requirement, Gatekeeper verdict, architecture, and executable version before
+the atomic first-install rename. Post-rename verification runs in a rollback-
+capable subshell, so its fail-closed diagnostics cannot bypass removal of an
+incomplete first install. It never re-signs or removes quarantine.
+
+When the resolved running executable is
+`Mora.app/Contents/MacOS/mora`, `mora upgrade` selects the exact stable release
+asset `mora_<version>_darwin_<arch>_app.zip` and its unique
+`checksums-app.txt`. It bounds and checksum-verifies both downloads, rejects
+hostile ZIP paths/types/duplicates before `ditto` extraction, and applies the
+same pinned bundle verification. The staged bundle is below the installed
+app's parent on the same volume. Darwin `renameatx_np(RENAME_SWAP)` exchanges
+the two directories atomically; a failed post-swap verification performs the
+same swap to restore the old bundle. If that rollback fails, cleanup is disabled
+and the error reports the exact previous-app path inside the preserved private
+staging directory. Only after success does the new binary rebuild the index and
+the old bundle leave the private staging directory.
+Replacing only `Contents/MacOS/mora` is forbidden because it invalidates the
+bundle seal. A standalone install still follows the original raw updater.
 
 The permission transition is explicit:
 
@@ -217,8 +235,8 @@ The permission transition is explicit:
   the first Developer ID-signed bridge. The user can need to grant the signed
   executable once.
 - Moving from the raw executable to `Mora.app` changes the TCC target. Plan for
-  one final grant to the app and retain the old entry until app-launched
-  `mora doctor` plus an iMessage sync succeed.
+  an app grant and retain the old entry until app-launched `mora doctor` plus an
+  iMessage sync succeed. It is not yet proven to be the last grant.
 - Only a real version N to N+1 whole-app replacement that reads iMessage without
   a re-grant can close the continuity claim. The intended steady state is that
   routine app upgrades preserve the grant; the release pipeline alone is not
