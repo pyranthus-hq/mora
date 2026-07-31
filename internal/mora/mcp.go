@@ -359,8 +359,15 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 	return def.Handler(ctx, cfg, args)
 }
 
+// mcpWriteClock is the single logical clock for one write_memory call. Tests
+// pin it to prove byte/token ceilings against a deterministic real MCP
+// mutation; production leaves it as time.Now. Index bookkeeping retains its
+// separate indexClock because that clock owns durable pending/index stamps.
+var mcpWriteClock = time.Now
+
 func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
-	m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: time.Now().Format(time.RFC3339)}
+	now := mcpWriteClock()
+	m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
 	if m.Title == "" || m.Text == "" {
 		return nil, errors.New("title and text required")
 	}
@@ -385,7 +392,7 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	if m, op, err = createMemory(ctx, cfg, m); err != nil {
 		return nil, err
 	}
-	m = decorateDecision(m, time.Now())
+	m = decorateDecision(m, now)
 	// The vault write succeeded (vault is truth; the index is a derived
 	// cache). Reflect just this one memory into the index (O(1)) instead of a
 	// full vault rebuild, so concurrent write_memory calls don't serialize
@@ -408,11 +415,11 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 			"memory":      m,
 			"index_stale": true,
 			"warning":     fmt.Sprintf("memory %s saved, but the search index could not be updated: %v — run `mora index rebuild` (do NOT retry the write; it is saved)", m.ID, rerr),
-			"health":      compactHealthOf(cfg, time.Now()),
+			"health":      compactHealthOf(cfg, now),
 		}, nil
 	}
 	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
-	return map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}, nil
+	return map[string]any{"memory": m, "health": compactHealthOf(cfg, now)}, nil
 }
 
 func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {

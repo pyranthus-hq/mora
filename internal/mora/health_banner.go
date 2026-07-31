@@ -2,7 +2,9 @@ package mora
 
 import (
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // health_banner.go — the ONE-line aggregate banner (Gate 2, B3). Gate 1's banner
@@ -17,22 +19,50 @@ import (
 // payload keeps the raw, uncapped detail; only the rendered banner caps.
 const healthBannerLineCap = 240
 
-// bannerRank orders every arm's states into ONE worst-first ordering (B3):
-// failed > never > dirty > degraded > stale. Lower is worse.
-func bannerRank(state string) int {
+// sourceBannerRank orders source states into worst-first ordering.
+// Red alarms (source/index issues or corrupt producer ledger) outrank yellow producer warnings.
+// Lower is worse.
+func sourceBannerRank(state string) int {
 	switch state {
-	case healthFailed: // == idxFailed / prodFailed
+	case healthFailed:
 		return 0
-	case healthNever: // == idxNever / prodNever
+	case healthNever:
+		return 1
+	case healthStale:
+		return 4
+	default:
+		return 10
+	}
+}
+
+func indexBannerRank(state string) int {
+	switch state {
+	case idxFailed:
+		return 0
+	case idxNever:
 		return 1
 	case idxDirty:
 		return 2
 	case idxDegraded:
 		return 3
-	case healthStale: // == prodStale
-		return 4
 	default:
+		return 10
+	}
+}
+
+func producerBannerRank(p producerHealth) int {
+	if p.Subject == producerHealthSubjectLedger {
+		return 0 // corrupt producer ledger is an uncomputable RED state
+	}
+	switch p.State {
+	case prodFailed:
 		return 5
+	case prodNever:
+		return 6
+	case prodStale:
+		return 7
+	default:
+		return 10
 	}
 }
 
@@ -40,7 +70,7 @@ func bannerRank(state string) int {
 // producers as one capped line, or "" when everything is fresh. Pure over the
 // snapshotted Health (no cfg/now), so a render path never calls time.Now().
 func healthBannerFrom(h Health) string {
-	bestRank := 6
+	bestRank := 99
 	bestAge := -1
 	best := ""
 
@@ -54,16 +84,59 @@ func healthBannerFrom(h Health) string {
 	}
 
 	if w := worstSource(h.Sources); w != nil {
-		consider(bannerRank(w.State), w.AgeHours, healthBannerLine(*w))
+		consider(sourceBannerRank(w.State), w.AgeHours, healthBannerLine(*w))
 	}
 	if line := indexBannerLine(h.Index); line != "" {
-		consider(bannerRank(h.Index.State), h.Index.PendingOps, line)
+		consider(indexBannerRank(h.Index.State), h.Index.PendingOps, line)
+	}
+	if w := worstShareIndex(h.Index.Shares); w != nil {
+		consider(indexBannerRank(w.State), w.PendingOps, shareIndexBannerLine(*w))
 	}
 	if w := worstProducer(h.Producers); w != nil {
-		consider(bannerRank(w.State), w.AgeHours, producerBannerLine(*w))
+		consider(producerBannerRank(*w), w.AgeHours, producerBannerLine(*w))
 	}
 
 	return capBannerLine(best)
+}
+
+// worstShareIndex returns the worst non-fresh subscription index arm in h.Index.Shares.
+func worstShareIndex(shares []indexHealth) *indexHealth {
+	var worst *indexHealth
+	worstRank := 99
+	for i := range shares {
+		s := &shares[i]
+		if s.State == idxFresh {
+			continue
+		}
+		rank := indexBannerRank(s.State)
+		if worst == nil || rank < worstRank {
+			worst = s
+			worstRank = rank
+		}
+	}
+	return worst
+}
+
+// shareIndexBannerLine renders a subscription index alarm line.
+func shareIndexBannerLine(idx indexHealth) string {
+	switch idx.State {
+	case idxFresh, "":
+		return ""
+	case idxNever:
+		return "🔴 MORA HEALTH: subscription index has never been built. Run: mora doctor"
+	case idxFailed:
+		detail := "subscription index FAILED"
+		if idx.LastError != "" {
+			detail += " — " + sanitizeHealthError(idx.LastError)
+		}
+		return fmt.Sprintf("🔴 MORA HEALTH: %s. Run: mora doctor", detail)
+	case idxDegraded:
+		return "🔴 MORA HEALTH: subscription index is DEGRADED. Run: mora doctor"
+	case idxDirty:
+		return "🔴 MORA HEALTH: subscription index is DIRTY. Run: mora doctor"
+	default:
+		return fmt.Sprintf("🔴 MORA HEALTH: subscription index is %s. Run: mora doctor", idx.State)
+	}
 }
 
 // indexBannerLine renders the index arm's alarm line, or "" when fresh.
@@ -110,17 +183,16 @@ func bannerClockOf(dirtySince string) string {
 	return " since " + t.UTC().Format("15:04")
 }
 
-// worstProducer / producerBannerLine are the producer arm's half — always
-// empty in PR 1 (no producer ledger yet), populated by Packet E / PR 4.
+// worstProducer / producerBannerLine are the producer arm's half.
 func worstProducer(ps []producerHealth) *producerHealth {
 	var worst *producerHealth
-	worstRank := 0
+	worstRank := 99
 	for i := range ps {
 		p := &ps[i]
 		if p.State == prodFresh {
 			continue
 		}
-		rank := bannerRank(p.State)
+		rank := producerBannerRank(*p)
 		if worst == nil || rank < worstRank || (rank == worstRank && p.AgeHours > worst.AgeHours) {
 			worst = p
 			worstRank = rank
@@ -130,17 +202,46 @@ func worstProducer(ps []producerHealth) *producerHealth {
 }
 
 func producerBannerLine(p producerHealth) string {
-	if p.State == prodNever {
-		return fmt.Sprintf("🔴 MORA HEALTH: %s has never been produced. Run: mora doctor", p.Name)
+	if p.Subject == producerHealthSubjectLedger {
+		detail := "producer ledger unreadable"
+		if p.LastError != "" {
+			detail += " — " + sanitizeHealthError(p.LastError)
+		}
+		return fmt.Sprintf("🔴 MORA HEALTH: %s. Run: mora doctor", detail)
 	}
-	return fmt.Sprintf("🔴 MORA HEALTH: %s has not been produced for %dh. Run: mora doctor", p.Name, p.AgeHours)
+	if p.State == prodNever {
+		return fmt.Sprintf("🟡 MORA HEALTH: %s has never been produced. Run: mora doctor", p.Name)
+	}
+	return fmt.Sprintf("🟡 MORA HEALTH: %s has not been produced for %dh. Run: mora doctor", p.Name, p.AgeHours)
 }
 
 // capBannerLine enforces the one-line byte budget (a raw driver error or a long
-// path could otherwise blow the MCP ceiling / the digest budget frame).
+// path could otherwise blow the MCP ceiling / the digest budget frame). Output
+// is guaranteed to be valid UTF-8 and <= healthBannerLineCap bytes.
 func capBannerLine(s string) string {
-	if r := []rune(s); len(r) > healthBannerLineCap {
-		return string(r[:healthBannerLineCap-1]) + "…"
+	// Producer identities and driver errors are durable external input. Replace
+	// malformed byte sequences before applying the cap so even a short corrupt
+	// value cannot leak invalid UTF-8 onto MCP/JSON or terminal surfaces.
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t':
+			return ' '
+		default:
+			return r
+		}
+	}, strings.ToValidUTF8(s, "�"))
+	if len(s) <= healthBannerLineCap {
+		return s
 	}
-	return s
+	ellipsis := "…"
+	maxBytes := healthBannerLineCap - len(ellipsis)
+	end := 0
+	for end < len(s) {
+		_, size := utf8.DecodeRuneInString(s[end:])
+		if end+size > maxBytes {
+			break
+		}
+		end += size
+	}
+	return s[:end] + ellipsis
 }

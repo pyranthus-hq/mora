@@ -407,6 +407,11 @@ func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, erro
 // always emit — the marker reconcileCachedBriefHealth uses to find (and
 // remove) an EMBEDDED banner line without re-parsing the whole render.
 const healthBannerLinePrefix = "🔴 MORA HEALTH:"
+const healthBannerYellowLinePrefix = "🟡 MORA HEALTH:"
+
+func isHealthBannerLine(s string) bool {
+	return strings.HasPrefix(s, healthBannerLinePrefix) || strings.HasPrefix(s, healthBannerYellowLinePrefix)
+}
 
 // reconcileCachedBriefHealth closes the cached-brief hole (Packet C2, the live
 // HEALTH-02 failure): resolveBrief's cache-read path returns a persisted file
@@ -433,7 +438,7 @@ func reconcileCachedBriefHealth(cfg Config, now time.Time, body string) string {
 
 	embedded := ""
 	rest := remainder
-	if strings.HasPrefix(remainder, healthBannerLinePrefix) {
+	if isHealthBannerLine(remainder) {
 		if idx := strings.IndexByte(remainder, '\n'); idx >= 0 {
 			embedded, rest = remainder[:idx], remainder[idx+1:]
 		} else {

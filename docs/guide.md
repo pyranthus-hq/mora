@@ -512,10 +512,11 @@ case of this bug led to `doctor --pulse`. Gmail, Calendar, and Apple Calendar
 warn after 24h without a clean sync. iMessage and filesystem warn after 48h.
 Any stored sync error warns at once, even before that age.
 
-When a source is unhealthy, the same red banner starts `mora brief` and
-`mora brief --event-id`. The banner is
-`🔴 MORA HEALTH: <source> — no successful sync for <N>h (<error>). Run: mora doctor`.
-Thus, a stale or dead source cannot be absent from a brief without a warning.
+When a source or index is unhealthy, the red banner starts `mora brief` and
+`mora brief --event-id`: `🔴 MORA HEALTH: <source> — no successful sync for <N>h (<error>). Run: mora doctor`.
+Background producer liveness issues (ops attention) render as yellow warnings:
+`🟡 MORA HEALTH: <producer> has not been produced for <N>h. Run: mora doctor`.
+Thus, a stale or dead source cannot be absent from a brief without a warning, and producer liveness is distinguished from data staleness.
 Schedule `doctor-pulse` to get the native alert without a manual check.
 
 **Record open tasks so the brief can surface them:**
