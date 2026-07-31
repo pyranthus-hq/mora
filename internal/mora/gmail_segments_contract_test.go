@@ -711,7 +711,7 @@ const (
 	gsCrossOtherRef = gsCrossOtherID + "#msg-1"
 
 	// round 2 additions (audit corrections)
-	gsOrderingMismatch = "gmail_thread/th-ordering-mismatch"
+	gsOrderingMismatch  = "gmail_thread/th-ordering-mismatch"
 	gsTruncatedID       = "gmail_thread/th-truncated"
 	gsRecipientsID      = "gmail_thread/th-recipients-merge"
 	gsRecipientsRef     = gsRecipientsID + "#msg-1"
@@ -1935,23 +1935,49 @@ func TestGmailSegmentsContractSemanticPathPreservesSegmentEvidence(t *testing.T)
 // 12. The buried-message recall win — the contract's headline claim.
 // ---------------------------------------------------------------------------
 
-// TestGmailSegmentsContractBuriedMessagePin documents TODAY's baseline (PIN,
-// GREEN): under parent-grain-only FTS, the long diluted thread does not
-// survive the top-3 truncation against four short single-occurrence decoys
-// that outscore it on the identical rare term. This is the "miss" the
-// contract test below proves segment-grain retrieval must fix. If this test
-// ever goes RED on its own (the thread starts appearing at limit=3 without
-// any #243 change), the fixture's burial premise needs re-tuning before the
-// contract test below can be trusted.
+// TestGmailSegmentsContractBuriedMessagePin documents the PARENT-GRAIN-ONLY
+// baseline (PIN, GREEN): under plain parent-grain BM25 — hybrid.go's
+// ftsSearchIDs(ctx, db, query, scope, pool), the SAME memories_fts-only query
+// hybridSearchTrace's FTS arm runs, which predates issue #243 and never
+// calls the segment arm (gmailSegmentQueryArm/fuseGmailSegmentArm) — the
+// long diluted thread does not survive a pool of 3 against four short
+// single-occurrence decoys that outscore it on the identical rare term. This
+// is the "miss" the contract test below proves segment-grain retrieval must
+// fix.
+//
+// Supervisor-authorized amendment (round 2): the original version of this
+// test called the full public search_memory MCP path directly. Once #243
+// ships, search_memory itself ALWAYS composes the segment arm (gated only on
+// the arm being non-empty, never a flag), so the buried thread the very next
+// test (TestGmailSegmentsContractBuriedMessageFindableViaSegment) proves IS
+// findable via search_memory — on the SAME query/fixture/limit this test
+// used. A pin asserting search_memory's absence and a pin asserting
+// search_memory's presence for the identical call cannot both hold once the
+// feature is real, so this pin now targets ftsSearchIDs directly: a clean,
+// pre-existing, UNTOUCHED-by-#243 seam (it is hybrid.go's own FTS arm
+// builder, never modified by this issue — #243 only appends a fourth list to
+// the RRF fusion call downstream of it), preserving the ORIGINAL
+// parent-grain-alone-loses premise without a production bypass/flag and
+// without contradicting the augmented public surface's own pin. If this test
+// ever goes RED on its own (the thread starts appearing in ftsSearchIDs's
+// own top-3 without any #243 change to hybrid.go), the fixture's burial
+// premise needs re-tuning before the contract test below can be trusted.
 func TestGmailSegmentsContractBuriedMessagePin(t *testing.T) {
 	cfg := seedGmailSegmentsSearchFixture(t)
-	_ = cfg
 
-	res := mcpResult(t, budgetCall("search_memory", `{"query":"`+gsBuriedMarker+`","limit":3}`))
-	rows := resultRows(t, res)
-	for _, row := range rows {
-		if rowID(t, row) == gsBuriedID {
-			t.Fatalf("baseline premise broken: %s already appears in today's parent-grain top-3 (%v) — retune the burial fixture before trusting the contract test", gsBuriedID, rows)
+	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	defer db.Close()
+
+	ids, err := ftsSearchIDs(context.Background(), db, gsBuriedMarker, "", 3)
+	if err != nil {
+		t.Fatalf("ftsSearchIDs: %v", err)
+	}
+	for _, id := range ids {
+		if id == gsBuriedID {
+			t.Fatalf("baseline premise broken: %s already appears in today's parent-grain-only ftsSearchIDs top-3 (%v) — retune the burial fixture before trusting the contract test below", gsBuriedID, ids)
 		}
 	}
 }
