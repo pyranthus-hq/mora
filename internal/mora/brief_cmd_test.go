@@ -393,8 +393,9 @@ func TestMCPBriefHonorsMaxTokens(t *testing.T) {
 	enableSources(t, cfg, "gmail")
 	seedSyncStatus(t, cfg, "gmail", now.Add(-1*time.Hour))
 	for i := 0; i < 400; i++ {
-		digestSeed(t, cfg, "gmail", "Item"+string(rune('0'+i%10))+string(rune('A'+i/26%26))+string(rune('a'+i%26)), time.Duration(i+1)*time.Minute, now)
+		digestSeedUnindexed(t, cfg, "gmail", "Item"+string(rune('0'+i%10))+string(rune('A'+i/26%26))+string(rune('a'+i%26)), time.Duration(i+1)*time.Minute, now)
 	}
+	rebuildDigestIndex(t, cfg)
 
 	defaultBytes := briefPayloadBytes(t, `{}`)
 	maxBytes := briefPayloadBytes(t, `{"max_tokens":20000}`)

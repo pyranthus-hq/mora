@@ -141,8 +141,9 @@ func TestDigestMCPKnobAlive(t *testing.T) {
 	// Seed MANY items so the default budget must truncate but the max budget can
 	// surface more — only then does default<max hold (the knob is observable).
 	for i := 0; i < 400; i++ {
-		digestSeed(t, cfg, "gmail", "Item"+string(rune('0'+i%10))+string(rune('A'+i/26%26))+string(rune('a'+i%26)), time.Duration(i+1)*time.Minute, now)
+		digestSeedUnindexed(t, cfg, "gmail", "Item"+string(rune('0'+i%10))+string(rune('A'+i/26%26))+string(rune('a'+i%26)), time.Duration(i+1)*time.Minute, now)
 	}
+	rebuildDigestIndex(t, cfg)
 
 	defaultBytes := digestPayloadBytes(t, `{}`)
 	maxBytes := digestPayloadBytes(t, `{"max_tokens":20000}`)

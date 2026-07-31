@@ -44,7 +44,7 @@ jobs:
           echo "rapid replay seed: ${{ env.RAPID_SEED }}"
           go test ./internal/mora/exam ./internal/mora \
             -run 'TestExam(Render|Corpus)|TestLedgerQuotes|TestProp' \
-            -count=1 -rapid.seed=$RAPID_SEED -rapid.checks=200
+            -count=1 -rapid.seed="$RAPID_SEED" -rapid.checks=200
       - name: exam scorer self-tests and sabotage
         run: |
           go test ./internal/mora/exam \
@@ -63,9 +63,11 @@ jobs:
         # every build/release step stays CGO_ENABLED=0 (the product's thesis).
         # Explicit 20m timeout: Gate 2 multi-process storm tests can otherwise
         # push the default 10m package limit on a loaded runner (landmine 7).
+        # Vet already ran above. Keep it off here so the 1,500+ test package is
+        # not analyzed twice.
         env:
           CGO_ENABLED: "1"
-        run: go test -race -count=1 -timeout=20m -covermode=atomic ./...
+        run: go test -race -vet=off -count=1 -timeout=20m -covermode=atomic ./...
 
   # Windows portability gate (#56 Phase 2 exit criterion): the FULL `go test ./...`
   # now runs on a real windows-latest runner, not just build+vet. The Phase 2
@@ -94,7 +96,8 @@ jobs:
       - name: go test
         env:
           CGO_ENABLED: "0"
-        run: go test -count=1 -timeout=20m ./...
+        # This job already runs native Windows vet immediately above.
+        run: go test -vet=off -count=1 -timeout=20m ./...
 
   lint:
     runs-on: ubuntu-latest

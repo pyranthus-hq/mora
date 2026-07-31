@@ -178,7 +178,7 @@ flowchart LR
 
 | Job | Blocking? | What it enforces |
 |---|---|---|
-| `test` (`ci.yml:16-38`) | **yes** | `gofmt -l .` must be empty; `go vet ./...`; `go test -race -count=1 -covermode=atomic ./...` with `CGO_ENABLED=1` (the only cgo-on step). |
+| `test` (`ci.yml:22-72`) | **yes** | `gofmt -l .` must be empty; `go vet ./...`; `go test -race -vet=off -count=1 -covermode=atomic ./...` with `CGO_ENABLED=1` (the only cgo-on step). Vet stays explicit and is disabled only inside the subsequent test command to avoid duplicate analysis. |
 | `lint` (`ci.yml:40-56`) | **yes** | `golangci-lint` pinned to **`v2.12.2`** via `golangci-lint-action@v8`. The version pin is deliberate (`ci.yml:50-52`): the action `@v6` only installs golangci-lint v1, which cannot read the v2 `.golangci.yml` and builds against go1.24 < the go1.25 target; `@v8` installs v2. |
 | `build` (`ci.yml:85-108`) | **yes** | Cross-builds all five targets (incl. windows/amd64) with `CGO_ENABLED=0`; `fail-fast: false` so all targets report. |
 | `size` (`ci.yml:86-105`) | **no (advisory)** | PR-only binary-size diff vs `main` (`size-diff-action@v1`, `continue-on-error: true`). The comment is explicit: "a size hiccup must never block merge" — but size matters because "a single small static binary IS the product." |

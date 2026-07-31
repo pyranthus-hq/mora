@@ -43,9 +43,10 @@ gofmt -l .
 # 2. Vet
 go vet ./...
 
-# 3. Tests with the race detector. The race detector is the one place CGO is
-#    allowed: it's test-only and never touches the release build.
-CGO_ENABLED=1 go test -race -count=1 -covermode=atomic ./...
+# 3. Tests with the race detector. Vet already ran above, so do not repeat it.
+#    The race detector is the one place CGO is allowed: it's test-only and never
+#    touches the release build.
+CGO_ENABLED=1 go test -race -vet=off -count=1 -covermode=atomic ./...
 
 # 4. Lint. The .golangci.yml is v2 format, so you need golangci-lint v2
 #    (CI pins v2.12.2). v1 cannot read the config.
