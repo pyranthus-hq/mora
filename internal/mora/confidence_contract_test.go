@@ -37,6 +37,16 @@ import (
 //
 //	"confidence": {
 //	  "strength":           "strong" | "moderate" | "weak",
+//	  "scale":              "bm25" | "rrf_fused", // #238 amendment: which already-computed
+//	                                  //   number space max_score/mean_score live in, so a
+//	                                  //   raw bm25 negative and an RRF-fused positive are
+//	                                  //   never misread as the same kind of number. search_memory
+//	                                  //   reports "bm25" on the FTS-only path and "rrf_fused" on
+//	                                  //   the semantic/hybrid path (the SAME embedderIsSemantic
+//	                                  //   branch defaultSearch already computes); think reports
+//	                                  //   "rrf_fused" ALWAYS (buildThink always routes through
+//	                                  //   hybridSearchTrace regardless of embedder — see
+//	                                  //   mora-retrieval-and-ranking's documented bypass).
 //	  "max_score":          float64,  // best Memory.Score already computed at ranking time, over the RETURNED set
 //	  "mean_score":         float64,  // arithmetic mean Memory.Score over the RETURNED set
 //	  "freshest_source_at": string,   // RFC3339 max Memory.CreatedAt over the RETURNED set; "" when the set is empty
@@ -50,6 +60,40 @@ import (
 //	                                  //   contributed zero rows.
 //	  "health_impact":      "none" | "stale" | "failed" | "never", // worst state among missing_sources; "none" when empty
 //	}
+//
+// #238 AMENDMENT — search_memory's strength bucketing is now PATH-AWARE. The
+// original "STRENGTH BUCKETING" section below (still accurate for the FTS-only
+// path) bucketed search_memory's max_score against fixed bm25 bounds
+// unconditionally. That is provably wrong on the semantic/hybrid path: when a
+// semantic embedder is active, defaultSearch routes to hybridSearch
+// (hybrid.go), which overwrites Memory.Score with the RRF-fused value —
+// positive, near-constant across queries of wildly different match quality
+// (empirically ~0.01-0.15; a rank-0 FTS-only hit and a genuinely poor match
+// both land in this narrow band because RRF's fused score is dominated by
+// ARM RANK, not match magnitude). Bucketed against the bm25 bounds
+// (<=-4.0 strong, <=-1.5 moderate), EVERY positive RRF score falls in "weak"
+// — a strong, well-covered, gap-free hit is reported exactly as unconfident
+// as a genuinely poor one. Confirmed by measurement: the SAME dominant-term
+// fixture+query ("wexoform") that reports strength=strong/max_score=-6.571 on
+// the FTS-only path reports strength=weak/max_score=0.136 on the semantic
+// path with the pre-fix bucketing — the RRF fused score for a rank-0
+// single-arm hit (fts weight 1.5 / (k=10 + rank 1) = 1.5/11 ≈ 0.136).
+//
+// The fix: search_memory's strength now branches on the SAME
+// embedderIsSemantic(chooseEmbedderFor(cfg)) condition defaultSearch already
+// evaluates to choose FTS-only vs hybrid:
+//   - FTS-only path: unchanged bm25 threshold bucketing (below).
+//   - semantic/hybrid path: strength is derived from the SAME gap-based rule
+//     think already uses (no new scoring system — computeGaps is EXISTING
+//     machinery, re-run over the search's own results/trace):
+//       no results                       -> "weak"
+//       results present, Gaps NOT empty  -> "moderate"
+//       results present, Gaps empty      -> "strong"
+//     think's own strength is untouched — it already used this rule (see
+//     confidenceThinkStrength below) precisely because its Score is ALWAYS
+//     RRF-fused (buildThink always routes through hybridSearchTrace,
+//     independent of embedder). search_memory now shares that same rule, but
+//     ONLY on the path where its Score is also RRF-fused.
 //
 // health_impact severity mirrors this repo's EXISTING worst-first precedence
 // for unhealthy states (health.go's healthStateRank / worstSource doc comment:
@@ -73,18 +117,20 @@ import (
 // nothing) permanently invisible, which is exactly backwards for a field
 // whose job is to flag incomplete coverage.
 //
-// STRENGTH BUCKETING — two mechanisms, one per tool, because the two tools'
-// Score fields are on fundamentally different ALREADY-EXISTING scales (see
-// mora-retrieval-and-ranking / hybrid.go); this contract does not invent a
-// third scale, it buckets each tool's own already-computed number:
+// STRENGTH BUCKETING (#238-amended: search_memory is now PATH-AWARE; see the
+// AMENDMENT above) — the two tools' Score fields are on fundamentally
+// different ALREADY-EXISTING scales (see mora-retrieval-and-ranking /
+// hybrid.go); this contract does not invent a third scale, it buckets each
+// already-computed number per the SCALE actually in play for that call:
 //
-//   search_memory routes through defaultSearch, which is FTS-only
-//   (searchMemories, search.go) under the static-hash embedder — the ONLY path
-//   exercised in this repo's CI (no Ollama, no network egress). Memory.Score
-//   there is raw SQLite bm25(): more negative == a better match, unbounded
-//   magnitude (scales with per-query IDF / corpus size — see hook.go's
-//   hookRecallDefaultThreshold for the existing "lower is better" precedent).
-//   Bucketed on max_score:
+//   search_memory's FTS-ONLY PATH (scale=bm25) — the branch taken when
+//   defaultSearch routes to searchMemories (search.go) under a non-semantic
+//   (static-hash) embedder — is the ONLY path exercised by the OTHER tests in
+//   this file (no Ollama, no network egress) and the only one still bucketed
+//   on raw score magnitude. Memory.Score there is raw SQLite bm25(): more
+//   negative == a better match, unbounded magnitude (scales with per-query
+//   IDF / corpus size — see hook.go's hookRecallDefaultThreshold for the
+//   existing "lower is better" precedent). Bucketed on max_score:
 //     max_score <= confidenceSearchStrongMax   (-4.0)              -> "strong"
 //     confidenceSearchStrongMax < max_score
 //       <= confidenceSearchModerateMax (-1.5)                      -> "moderate"
@@ -97,30 +143,39 @@ import (
 //   -4.0 / -1.5 split. They are NOT claimed as a universal production
 //   calibration — see risk (1) below.
 //
-//   think ALWAYS routes through hybridSearchTrace (buildThink), which fuses
-//   arms by Reciprocal Rank Fusion (rrfWeighted) — a RANK-based score, not a
-//   match-quality magnitude. Under a single active arm (this repo's test/CI
-//   reality with no Ollama), RRF's fused score for the top hit is nearly
-//   CONSTANT regardless of how good the underlying match is (rank 0 always
-//   scores ~fts_weight/(k+1)); three isolated single-hit queries of clearly
-//   different match quality measured 0.136/0.125/0.115 — a rank-position
-//   artifact of near-simultaneous inserts, not a quality signal. Bucketing
-//   think's strength off raw Score magnitude the way search_memory does would
-//   therefore be noise. Instead this contract buckets think's strength off
-//   ThinkGaps — a deterministic signal ALREADY computed by computeGaps at
-//   buildThink time (still "no new scoring system": it re-labels existing gap
-//   output, it does not compute anything new):
-//     len(Evidence) == 0                    -> "weak"     (CoverageHoles fires)
-//     len(Evidence) > 0 AND !Gaps.empty()    -> "moderate" (Stale/ThinCoverage/
+//   think (ALWAYS, no path condition) and search_memory's SEMANTIC/HYBRID
+//   PATH (scale=rrf_fused — the branch taken when defaultSearch routes to
+//   hybridSearch under a semantic embedder) both route through
+//   hybridSearchTrace, which fuses arms by Reciprocal Rank Fusion
+//   (rrfWeighted) — a RANK-based score, not a match-quality magnitude. Under
+//   a single active arm (this repo's test/CI reality with no real Ollama
+//   daemon — the fakeOllama httptest seam stands in), RRF's fused score for
+//   the top hit is nearly CONSTANT regardless of how good the underlying
+//   match is (rank 0 always scores ~fts_weight/(k+1)); three isolated
+//   single-hit queries of clearly different match quality measured
+//   0.136/0.125/0.115 — a rank-position artifact of near-simultaneous
+//   inserts, not a quality signal. Bucketing this score off raw magnitude the
+//   way the bm25 path does would therefore be noise. Instead this contract
+//   buckets it off ThinkGaps — a deterministic signal ALREADY computed by
+//   computeGaps (still "no new scoring system": it re-labels existing gap
+//   output, it does not compute anything new; search_memory's semantic path
+//   re-runs the SAME computeGaps machinery over its own results/trace rather
+//   than inventing a second gap analyzer):
+//     no results (Evidence/mems empty)      -> "weak"     (CoverageHoles fires
+//                                                            for think; search_memory
+//                                                            has no results to bucket)
+//     results present AND !Gaps.empty()      -> "moderate" (Stale/ThinCoverage/
 //                                                            CoverageHoles/
 //                                                            RetrievalCaveats)
-//     len(Evidence) > 0 AND  Gaps.empty()    -> "strong"
+//     results present AND  Gaps.empty()      -> "strong"
 //
 // OPEN QUESTIONS / RISKS FOR THE INTEGRATOR (repeated in the final report):
-//  1. search_memory's absolute bm25 thresholds are fixture-calibrated, not
-//     corpus-invariant; a real vault's IDF stats could shift where "strong"
-//     actually lands. A percentile/relative-rank scheme may be more robust
-//     long-term than a fixed magnitude split — flagged, not resolved here.
+//  1. search_memory's absolute bm25 thresholds (FTS-only path only, post-#238)
+//     are fixture-calibrated, not corpus-invariant; a real vault's IDF stats
+//     could shift where "strong" actually lands. A percentile/relative-rank
+//     scheme may be more robust long-term than a fixed magnitude split —
+//     flagged, not resolved here. The semantic/hybrid path no longer has this
+//     risk (it doesn't bucket on score magnitude at all, post-#238).
 //  2. RESOLVED by the missing_sources amendment above: because missing_sources
 //     is now a CALL-SCOPED read of sourceHealthAll (every enabled instance's
 //     health state), not a per-evidence-row projection, neither tool needs to
@@ -130,11 +185,14 @@ import (
 //     holds — no longer applies for think either: both tools can derive
 //     missing_sources identically, straight from sourceHealthAll(cfg, now),
 //     with no ThinkEvidence schema change and no per-row Source plumbing.
-//  3. The two tools use structurally different strength derivations (score
-//     magnitude vs. gap presence). That asymmetry is a deliberate, documented
-//     choice given each tool's own scale — not an oversight — but the
-//     integrator may want a single shared derivation; this contract does not
-//     mandate one.
+//  3. RESOLVED by the #238 path-aware amendment above: search_memory's
+//     strength derivation is not a single fixed choice, it now MATCHES
+//     whichever scale that call's Score is actually on — bm25 magnitude on
+//     the FTS-only path, the SAME gap-based rule think uses on the
+//     semantic/hybrid path. Both tools now use score-magnitude bucketing
+//     exactly where Score is a magnitude, and gap-based bucketing exactly
+//     where Score is an RRF rank artifact — there is no longer a
+//     tool-identity-based asymmetry, only a scale-based one.
 
 // confidenceSearchStrongMax / confidenceSearchModerateMax are the FROZEN
 // search_memory bucket boundaries documented above. Test-local (not production
@@ -283,8 +341,9 @@ func mustConfidence(t *testing.T, sc map[string]any) map[string]any {
 
 // confidenceWantFields is the FROZEN exact field set (§ "FROZEN SHAPE" above).
 // Extra or missing keys both fail — the block must stay this compact.
+// #238 amendment: "scale" added alongside "strength" (path-aware fix).
 var confidenceWantFields = []string{
-	"strength", "max_score", "mean_score", "freshest_source_at", "missing_sources", "health_impact",
+	"strength", "scale", "max_score", "mean_score", "freshest_source_at", "missing_sources", "health_impact",
 }
 
 func assertConfidenceShape(t *testing.T, conf map[string]any) {
@@ -305,6 +364,14 @@ func assertConfidenceShape(t *testing.T, conf map[string]any) {
 	case "strong", "moderate", "weak":
 	default:
 		t.Fatalf("confidence.strength = %v, want one of strong|moderate|weak", conf["strength"])
+	}
+	if _, ok := conf["scale"].(string); !ok {
+		t.Fatalf("confidence.scale = %T, want string", conf["scale"])
+	}
+	switch conf["scale"] {
+	case "bm25", "rrf_fused":
+	default:
+		t.Fatalf("confidence.scale = %v, want one of bm25|rrf_fused", conf["scale"])
 	}
 	if _, ok := conf["max_score"].(float64); !ok {
 		t.Fatalf("confidence.max_score = %T, want number", conf["max_score"])
@@ -380,6 +447,12 @@ func TestConfidenceSearchMemoryStrongEvidenceHealthySource(t *testing.T) {
 	if conf["strength"] != "strong" {
 		t.Fatalf("strength = %v, want strong (healthy-baseline: fresh gmail source, dominant match); max_score=%v", conf["strength"], conf["max_score"])
 	}
+	// #238: this test runs under the default static-hash embedder (no
+	// MORA_EMBEDDER=ollama), so defaultSearch takes the FTS-only path and
+	// scale must read bm25.
+	if conf["scale"] != "bm25" {
+		t.Fatalf("scale = %v, want bm25 (FTS-only path, static embedder)", conf["scale"])
+	}
 	maxScore := conf["max_score"].(float64)
 	if maxScore > confidenceSearchStrongMax {
 		t.Fatalf("max_score = %v, want <= %v (the frozen strong boundary) for the healthy-baseline fixture", maxScore, confidenceSearchStrongMax)
@@ -414,6 +487,10 @@ func TestConfidenceSearchMemoryWeakEvidenceUnhealthySource(t *testing.T) {
 	if conf["strength"] != "weak" {
 		t.Fatalf("strength = %v, want weak (diluted single mention in a long doc); max_score=%v", conf["strength"], conf["max_score"])
 	}
+	// #238: FTS-only path (static embedder) -> scale=bm25.
+	if conf["scale"] != "bm25" {
+		t.Fatalf("scale = %v, want bm25 (FTS-only path, static embedder)", conf["scale"])
+	}
 	maxScore := conf["max_score"].(float64)
 	if maxScore <= confidenceSearchModerateMax {
 		t.Fatalf("max_score = %v, want > %v (the frozen moderate/weak boundary)", maxScore, confidenceSearchModerateMax)
@@ -447,6 +524,10 @@ func TestConfidenceSearchMemoryModerateEvidenceFreshestIsMax(t *testing.T) {
 
 	if conf["strength"] != "moderate" {
 		t.Fatalf("strength = %v, want moderate; max_score=%v", conf["strength"], conf["max_score"])
+	}
+	// #238: FTS-only path (static embedder) -> scale=bm25.
+	if conf["scale"] != "bm25" {
+		t.Fatalf("scale = %v, want bm25 (FTS-only path, static embedder)", conf["scale"])
 	}
 	maxScore := conf["max_score"].(float64)
 	if maxScore <= confidenceSearchStrongMax || maxScore > confidenceSearchModerateMax {
@@ -484,6 +565,10 @@ func TestConfidenceSearchMemoryNoResults(t *testing.T) {
 	if conf["strength"] != "weak" {
 		t.Fatalf("strength = %v, want weak for zero results", conf["strength"])
 	}
+	// #238: FTS-only path (static embedder) -> scale=bm25.
+	if conf["scale"] != "bm25" {
+		t.Fatalf("scale = %v, want bm25 (FTS-only path, static embedder)", conf["scale"])
+	}
 	if conf["max_score"] != float64(0) || conf["mean_score"] != float64(0) {
 		t.Fatalf("max_score/mean_score = %v/%v, want 0/0 for zero results", conf["max_score"], conf["mean_score"])
 	}
@@ -495,6 +580,90 @@ func TestConfidenceSearchMemoryNoResults(t *testing.T) {
 	}
 	if conf["health_impact"] != "stale" {
 		t.Fatalf("health_impact = %v, want stale for zero results (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
+	}
+}
+
+// --- search_memory: semantic/hybrid path (#238) -----------------------------
+//
+// The two tests below opt Ollama in via the SAME fakeOllama httptest seam
+// (embed_ollama_test.go) and env vars TestRt_DefaultSearchSemanticRoutesToHybrid
+// (retrieval_rt_cover_test.go) uses, so defaultSearch takes the hybrid branch
+// (embedderIsSemantic(chooseEmbedderFor(cfg)) == true) instead of FTS-only.
+// fakeOllama returns the SAME fixed vector for every embedding call regardless
+// of input text, so every memory in the fixture (background filler included)
+// gets an identical unit vector — cosine similarity is 1.0 across the board,
+// which makes the vector arm a pure tie (no discriminating signal) and leaves
+// the FTS arm as the only source of RANK differentiation. Both target memories
+// below are the ONLY row matching their rare query term, so each is the sole
+// FTS arm hit (rank 0) and therefore always the top-fused result: fused score
+// = fts_weight(1.5)/(k=10+rank(0)+1) = 1.5/11 ≈ 0.136 — the exact positive,
+// near-constant RRF artifact this packet's defect report measured (0.136 for
+// "wexoform"), confirming these tests reproduce the SAME empirical repro used
+// to diagnose #238, just now pinned as a passing contract instead of a bug.
+
+// TestConfidenceSearchMemorySemanticStrongEvidenceRRFFused pins the semantic-
+// path "strong" contract: the SAME dominant "wexoform" query/fixture as
+// TestConfidenceSearchMemoryStrongEvidenceHealthySource, but routed through
+// hybridSearch. Pre-fix, this bucketed to "weak" (max_score=0.136 is far
+// above the bm25 moderate bound of -1.5) even though the match is dominant
+// and gap-free — exactly the confirmed defect. Post-fix, strength is derived
+// from computeGaps (results present, no capitalized-name/thin-coverage/stale
+// signal fires for this fixture+query) -> "strong".
+func TestConfidenceSearchMemorySemanticStrongEvidenceRRFFused(t *testing.T) {
+	srv := fakeOllama(t, []float64{1, 0, 0, 0})
+	defer srv.Close()
+	t.Setenv("MORA_EMBEDDER", "ollama")
+	t.Setenv("MORA_OLLAMA_URL", srv.URL)
+	t.Setenv("MORA_OLLAMA_MODEL", "nomic-embed-text")
+
+	seedConfidenceFixture(t)
+	sc := searchStructured(t, `{"query":"wexoform","confidence":true}`)
+	conf := mustConfidence(t, sc)
+	assertConfidenceShape(t, conf)
+
+	if conf["scale"] != "rrf_fused" {
+		t.Fatalf("scale = %v, want rrf_fused (semantic/hybrid path, fakeOllama active)", conf["scale"])
+	}
+	if conf["strength"] != "strong" {
+		t.Fatalf("strength = %v, want strong (path-aware gap rule: results present, computeGaps empty for this fixture+query); max_score=%v", conf["strength"], conf["max_score"])
+	}
+	maxScore, ok := conf["max_score"].(float64)
+	if !ok || maxScore <= 0 {
+		t.Fatalf("max_score = %v, want a positive RRF-fused value on the semantic path (not a raw bm25 negative)", conf["max_score"])
+	}
+}
+
+// TestConfidenceSearchMemorySemanticModerateEvidenceStaleGap pins the semantic-
+// path "moderate" contract using a gap-inducing fixture: the SAME "brindolex"
+// query/fixture as TestConfidenceSearchMemoryWeakEvidenceUnhealthySource (the
+// only matching memory, weak-evidence, is dated 2026-06-10 — more than
+// thinkStaleDays (30) before the real run time), but routed through
+// hybridSearch. computeGaps' Stale signal fires on the freshest evidence in
+// the returned set regardless of embedder/path (it is a pure CreatedAt
+// computation, read directly off computeGaps — see think.go), so results
+// present + non-empty Gaps -> "moderate". Pre-fix, this bucketed to "weak" via
+// the same bm25-vs-RRF mismatch as the strong-path test above.
+func TestConfidenceSearchMemorySemanticModerateEvidenceStaleGap(t *testing.T) {
+	srv := fakeOllama(t, []float64{1, 0, 0, 0})
+	defer srv.Close()
+	t.Setenv("MORA_EMBEDDER", "ollama")
+	t.Setenv("MORA_OLLAMA_URL", srv.URL)
+	t.Setenv("MORA_OLLAMA_MODEL", "nomic-embed-text")
+
+	seedConfidenceFixture(t)
+	sc := searchStructured(t, `{"query":"brindolex","confidence":true}`)
+	conf := mustConfidence(t, sc)
+	assertConfidenceShape(t, conf)
+
+	if conf["scale"] != "rrf_fused" {
+		t.Fatalf("scale = %v, want rrf_fused (semantic/hybrid path, fakeOllama active)", conf["scale"])
+	}
+	if conf["strength"] != "moderate" {
+		t.Fatalf("strength = %v, want moderate (path-aware gap rule: results present, computeGaps.Stale fires — weak-evidence is from 2026-06-10, older than thinkStaleDays); max_score=%v", conf["strength"], conf["max_score"])
+	}
+	maxScore, ok := conf["max_score"].(float64)
+	if !ok || maxScore <= 0 {
+		t.Fatalf("max_score = %v, want a positive RRF-fused value on the semantic path (not a raw bm25 negative)", conf["max_score"])
 	}
 }
 
@@ -557,6 +726,11 @@ func TestConfidenceThinkStrongEvidenceNoGaps(t *testing.T) {
 	if conf["strength"] != "strong" {
 		t.Fatalf("strength = %v, want strong (non-empty evidence, no ThinkGaps)", conf["strength"])
 	}
+	// #238: think ALWAYS routes through hybridSearchTrace, regardless of
+	// embedder -> scale is always rrf_fused.
+	if conf["scale"] != "rrf_fused" {
+		t.Fatalf("scale = %v, want rrf_fused (think always routes through hybridSearchTrace)", conf["scale"])
+	}
 	if conf["freshest_source_at"] != "2026-07-30T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want the strong-evidence memory's CreatedAt", conf["freshest_source_at"])
 	}
@@ -587,6 +761,9 @@ func TestConfidenceThinkModerateEvidenceStaleGap(t *testing.T) {
 	if conf["strength"] != "moderate" {
 		t.Fatalf("strength = %v, want moderate (non-empty evidence, but ThinkGaps.Stale fires)", conf["strength"])
 	}
+	if conf["scale"] != "rrf_fused" {
+		t.Fatalf("scale = %v, want rrf_fused (think always routes through hybridSearchTrace)", conf["scale"])
+	}
 	if conf["freshest_source_at"] != "2026-06-10T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want the weak-evidence memory's CreatedAt", conf["freshest_source_at"])
 	}
@@ -615,6 +792,9 @@ func TestConfidenceThinkWeakEvidenceNoMatch(t *testing.T) {
 
 	if conf["strength"] != "weak" {
 		t.Fatalf("strength = %v, want weak for zero evidence", conf["strength"])
+	}
+	if conf["scale"] != "rrf_fused" {
+		t.Fatalf("scale = %v, want rrf_fused (think always routes through hybridSearchTrace)", conf["scale"])
 	}
 	if conf["max_score"] != float64(0) || conf["mean_score"] != float64(0) {
 		t.Fatalf("max_score/mean_score = %v/%v, want 0/0 for zero evidence", conf["max_score"], conf["mean_score"])
