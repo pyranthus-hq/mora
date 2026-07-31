@@ -86,9 +86,39 @@ code directory. Do not use `spctl --type install`; Apple defines that policy for
 installer packages. The release pipeline also launches a quarantined disposable
 copy of the native-architecture binary before it publishes the release.
 
-A later release will add a branded `Mora.app`. That is a whole application
-bundle, not a new skin for this executable. Its updater must replace the whole
-signed bundle so the seal, icon, and permission identity stay intact.
+**Branded macOS app** (v0.12.0+): install the stable Full Disk Access target at
+`~/Applications/Mora.app`. The installer verifies `checksums-app.txt`, safe ZIP
+paths, the exact bundle identifier and Apple team, both code signatures, the
+stapled notarization ticket, Gatekeeper acceptance, architecture, and version
+before one atomic rename. It keeps the prior standalone binary as
+`mora.standalone-backup` and replaces the active command with a symlink into the
+app; it never re-signs the app or clears quarantine.
+
+```bash
+curl -fsSLo /tmp/install-mora-app.sh https://raw.githubusercontent.com/pyranthus-hq/mora/main/install-app.sh
+sh /tmp/install-mora-app.sh
+```
+
+After installation, add `~/Applications/Mora.app` in **System Settings >
+Privacy & Security > Full Disk Access** and keep the old entry until both of
+these commands pass:
+
+```bash
+mora doctor
+mora sync imessage
+```
+
+This is the planned app migration grant. It is not yet proven to be the last:
+the repository does not call FDA continuity proven until a real signed version
+N upgrades to N+1 and protected reads still pass without a re-grant.
+
+For an app install, `mora upgrade` downloads the matching `_app.zip`, validates
+the checksum and full Apple trust contract, stages it on the same volume, and
+uses Darwin's atomic directory-swap operation. A failed post-swap verification
+uses the same operation to restore the old bundle. If that rollback operation
+also fails, Mora preserves the private staging directory and reports the exact
+path of the previous app for manual recovery. Standalone installs continue to
+use the original raw-archive updater.
 
 ## Windows
 
@@ -215,10 +245,12 @@ identifier so in-place upgrades have a stable designated requirement.
 
 The planned `Mora.app` migration changes the protected-data target from a raw
 executable to an application bundle. Plan for one final Full Disk Access grant
-to the app during that migration. Keep the old entry until `mora doctor` and an
-iMessage sync pass through the app. Routine app upgrades must replace the whole
-bundle, and Mora will not claim that they preserve access until a real version
-N to N+1 upgrade proves it without a re-grant.
+executable to an application bundle. Plan for an app Full Disk Access grant
+during that migration; it is not yet proven to be the last. Keep the old entry
+until `mora doctor` and an iMessage sync pass through the app. Routine app
+upgrades must replace the whole bundle, and Mora will not claim that they
+preserve access until a real version N to N+1 upgrade proves it without a
+re-grant.
 
 Contact names come from your address book. Thus, iMessage usually gives the
 cleanest name-to-handle map of any source.
