@@ -12,6 +12,7 @@ ASSEMBLE="$ROOT/scripts/assemble-darwin-app.sh"
 APP_RELEASE="$ROOT/scripts/appbundle-darwin-release.sh"
 VERIFY_ZIP="$ROOT/scripts/verify-app-zip.sh"
 WORKFLOW="$ROOT/.github/workflows/release.yml"
+RELEASE_NOTES="$ROOT/docs/release-v0.12.0.md"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/mora-app-bundle-contract.XXXXXX")"
 MOCK_BIN="$WORK/mock-bin"
 MOCK_LOG="$WORK/mock-calls.log"
@@ -622,6 +623,26 @@ assert_before "$WORKFLOW" 'name:[[:space:]]+Upload Mora\.app assets' 'name:[[:sp
 	"the app lane must finish before Apple credentials are removed"
 assert_before "$WORKFLOW" 'name:[[:space:]]+Upload Mora\.app assets' 'name:[[:space:]]+Publish release' \
 	"an unverified app asset must never reach a published release"
+require_text "$WORKFLOW" 'name:[[:space:]]+Add v0\.12\.0 macOS migration notes' \
+	"v0.12.0 workflow must install the FDA migration note"
+assert_before "$WORKFLOW" 'name:[[:space:]]+Add v0\.12\.0 macOS migration notes' 'name:[[:space:]]+Publish release' \
+	"the FDA migration note must be installed before publication"
+for migration_contract in \
+	'<!-- mora-v0\.12\.0-app-migration -->' \
+	'Full Disk Access' \
+	'mora doctor' \
+	'mora sync imessage' \
+	'uninstall-app\.sh' \
+	'standalone-backup' \
+	'v0\.12\.0 to v0\.12\.1'; do
+	require_text "$RELEASE_NOTES" "$migration_contract" \
+		"v0.12.0 release notes must preserve migration, validation, rollback, and continuity truth"
+done
+if grep -Eq 'ad-hoc signatures|quarantine removal and ad-hoc signing' "$ROOT/README.md"; then
+	die "README still advertises the retired ad-hoc macOS install path"
+fi
+require_text "$ROOT/README.md" 'install-app\.sh' \
+	"README must recommend the signed Mora.app installer"
 require_text "$WORKFLOW" '_app\.zip' "release workflow must upload the _app.zip assets"
 require_text "$WORKFLOW" 'cosign[[:space:]]+sign-blob' \
 	"release workflow must cosign the app checksums manifest"
@@ -629,7 +650,7 @@ require_text "$WORKFLOW" 'checksums-app\.txt\.cosign\.sig' \
 	"release workflow must upload the app manifest cosign signature"
 require_text "$WORKFLOW" 'checksums-app\.txt\.cosign\.pem' \
 	"release workflow must upload the app manifest cosign certificate"
-pass "workflow orders the app lane after GoReleaser, before credential cleanup and publish"
+pass "workflow orders the app lane and FDA migration note before publish"
 
 # The raw-CLI archives are a frozen contract; the app lane must not have
 # touched their GoReleaser name template or added an ad-hoc/quarantine bypass.

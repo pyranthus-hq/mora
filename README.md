@@ -125,21 +125,39 @@ The corpora, gold ledgers, and dated validation records live in
 
 ## Install — experimental
 
-Release files are test builds. macOS files have ad-hoc signatures, not
-Developer ID signatures or notarization. Windows files have no signatures.
-The remote installers check the selected archive against the release
-`checksums.txt`. They stop if they cannot do this check.
+macOS release files carry Mora's Developer ID signature and Apple notarization.
+Linux and macOS installers verify the selected archive against its published
+SHA-256 manifest and stop if they cannot. Windows files remain unsigned.
 
-### macOS / Linux release build
+### macOS — Mora.app (recommended)
+
+```bash
+(
+  set -e
+  mora_installer="$(mktemp -t mora-install)"
+  trap '/bin/rm -f "$mora_installer"' EXIT
+  curl -fsSLo "$mora_installer" https://raw.githubusercontent.com/pyranthus-hq/mora/main/install-app.sh
+  sh "$mora_installer"
+)
+```
+
+The installer verifies the signed, notarized, stapled app; installs it at
+`~/Applications/Mora.app`; and links the `mora` command to the app executable.
+It never clears quarantine or re-signs the release. For the planned app migration,
+add `Mora.app` to Full Disk Access and keep the old entry until `mora doctor`
+and `mora sync imessage` pass. This grant is not yet proven to survive an app
+update; that requires a real signed N→N+1 protected-read test without a re-grant.
+See the [macOS guide](docs/guide.md#install).
+
+### Linux or legacy standalone compatibility
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
-The installer downloads the current release and checks its SHA-256. It then
-extracts and installs `mora`, and starts `~/vault/mora`. On macOS, it also
-prints and runs the quarantine removal and ad-hoc signing steps. The current
-build needs these steps because it is not notarized.
+The standalone installer preserves the original root-level binary archive
+contract. New macOS installs should use `Mora.app` above so future updates swap
+the signed bundle as one unit.
 
 ### Build from source
 

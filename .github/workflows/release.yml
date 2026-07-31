@@ -330,8 +330,8 @@ jobs:
       # every command,
       # the MCP wire protocol, the filesystem/PDF/DOCX + git-sync connectors, the
       # doctor health gate, and an UPGRADE from the previous published release.
-      # RELEASE=1 also hard-fails if install.sh's hardcoded VERSION wasn't bumped
-      # to this tag. A failure here means the draft never publishes.
+      # RELEASE=1 also hard-fails unless both install.sh and install-app.sh
+      # default to this tag. A failure here means the draft never publishes.
       - name: Pre-publish regression (Tier 1)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -394,6 +394,32 @@ jobs:
             "$CREDENTIAL_DIR/AuthKey.p8" \
             "$ORIGINAL_KEYCHAINS"
           rmdir "$CREDENTIAL_DIR" 2>/dev/null || true
+
+      # GoReleaser owns the generated changelog. For the first Mora.app release,
+      # prepend the operational FDA migration contract before publication while
+      # preserving that generated body. The marker keeps workflow reruns
+      # idempotent. Failure leaves the release as a draft.
+      - name: Add v0.12.0 macOS migration notes
+        if: ${{ success() && github.ref_name == 'v0.12.0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          GENERATED_NOTES="$RUNNER_TEMP/mora-generated-release-notes.md"
+          FINAL_NOTES="$RUNNER_TEMP/mora-v0.12.0-release-notes.md"
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json body --jq .body > "$GENERATED_NOTES"
+          if grep -Fq '<!-- mora-v0.12.0-app-migration -->' "$GENERATED_NOTES"; then
+            echo "v0.12.0 migration note already present"
+            exit 0
+          fi
+          {
+            cat docs/release-v0.12.0.md
+            printf '\n\n'
+            cat "$GENERATED_NOTES"
+          } > "$FINAL_NOTES"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --notes-file "$FINAL_NOTES"
 
       # Default success() semantics are intentional: any earlier gate or the
       # credential cleanup failing leaves the release as an unpublished draft.
