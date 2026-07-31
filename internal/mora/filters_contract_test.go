@@ -62,14 +62,31 @@ import (
 //     a positive integer, is an explicit tool error (isError:true) — never a
 //     silent no-filter/no-match.
 //
-// CLOCK NOTE: since_hours is evaluated against the server's real time.Now() at
-// call time (there is no injectable clock through the MCP surface — mirroring
-// every other real-time MCP arg, e.g. sourceHealthAll's freshness checks). The
-// boundary test below therefore uses a several-second margin around the cutoff
-// rather than a literal single tick, so the pinned behavior (which side of the
-// cutoff is included, which timestamp field governs, RFC3339 instant parsing
-// rather than lexical comparison) is exercised deterministically without
-// flaking on scheduling jitter between fixture-write time and dispatch time.
+//   - Health/confidence both honor the exclusion: the ALWAYS-PRESENT "health"
+//     rollup (compactHealthOf) is scoped the SAME way as the opt-in confidence
+//     envelope — a source excluded by an active source filter must not drag
+//     the top-level health.state/health.sources banner into degraded/
+//     unhealthy either. Both are the SAME underlying signal
+//     (sourceHealthAll/worstSource) projected two ways; excluding a source
+//     from one without the other would be an inconsistent half-fix.
+//
+//   - source value space: the family:instance grammar is the SAME as
+//     digestSourceMatches — a KNOWN family with an instance suffix that
+//     matches no actual memory (e.g. "gmail:doesnotexist") is well-formed and
+//     simply yields zero matches (not a tool error): digestSourceMatches has
+//     no notion of "ambiguous" or "nonexistent" instances, only exact-key /
+//     family-prefix / no-match, and there is no enumerable universe of valid
+//     account labels to validate an instance suffix against (Account is a
+//     free-form per-token label, not a catalog value). Only the FAMILY
+//     component is validated against the connector catalog and fails closed.
+//
+// CLOCK NOTE: since_hours is evaluated against briefClock() — the SAME
+// package-level, test-injectable clock var digest/brief already use for their
+// own since-days/since-hours cutoffs (mora.go's `var briefClock = time.Now`,
+// consumed by buildDigest/filteredBriefDigest in mcp.go) — never a bare
+// time.Now() call inside the filter machinery. pinFiltersClock below freezes
+// it exactly like brief_cmd_test.go's pinBriefClock, so the boundary test pins
+// a LITERAL instant with no jitter margin, not an approximation.
 
 // filtersStructured drives tool `name` over the real MCP dispatch and returns
 // the decoded structuredContent map, failing (RED today for any filter-shaped
@@ -133,6 +150,24 @@ func containsID(ids []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// filtersFixedNow is a fixed UTC instant this file pins briefClock to for
+// deterministic since_hours boundary tests (mirrors brief_cmd_test.go's
+// briefFixedNow/pinBriefClock pattern exactly, kept file-local so this
+// contract does not depend on another test file's private fixture).
+var filtersFixedNow = time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+
+// pinFiltersClock freezes briefClock — the SAME clock var digest/brief's
+// since-days/since-hours cutoffs already use (mora.go) — to filtersFixedNow
+// for the duration of the test, restoring it on cleanup. #241's since_hours
+// MUST read this same var (not a bare time.Now()) so this pin actually
+// controls the cutoff the filter computes.
+func pinFiltersClock(t *testing.T) {
+	t.Helper()
+	old := briefClock
+	briefClock = func() time.Time { return filtersFixedNow }
+	t.Cleanup(func() { briefClock = old })
 }
 
 // --- search_memory (FTS-only arm, search.go's searchMemories) --------------
@@ -371,31 +406,60 @@ func TestFiltersSearchMemoryConfidenceExcludesFilteredSource(t *testing.T) {
 	}
 }
 
-// TestFiltersSearchMemorySinceHoursBoundary pins the deterministic boundary:
-// the governing instant is Memory.CreatedAt parsed as RFC3339 and compared
-// against now-since_hours, never a lexical string compare. A margin of a few
-// seconds around the cutoff absorbs scheduling jitter between fixture-write
-// time and dispatch time without weakening what is actually pinned (which side
-// of the cutoff is included).
+// TestFiltersSearchMemorySinceHoursBoundary pins the EXACT deterministic
+// boundary against a briefClock-pinned instant (no jitter margin needed): the
+// governing instant is Memory.CreatedAt parsed as RFC3339 and compared against
+// briefClock()-since_hours, never a lexical string compare. A memory dated
+// EXACTLY at the cutoff is INSIDE the window (inclusive); one dated a single
+// second before it is outside.
 func TestFiltersSearchMemorySinceHoursBoundary(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
+	pinFiltersClock(t)
 
 	const sinceHours = 1
-	cutoff := time.Now().Add(-sinceHours * time.Hour)
-	writeFilterMemory(t, cfg, "just-inside", "gmail", "", cutoff.Add(5*time.Second).Format(time.RFC3339), "boundarypin content inside")
-	writeFilterMemory(t, cfg, "just-outside", "gmail", "", cutoff.Add(-5*time.Second).Format(time.RFC3339), "boundarypin content outside")
+	cutoff := filtersFixedNow.Add(-sinceHours * time.Hour)
+	writeFilterMemory(t, cfg, "at-cutoff", "gmail", "", cutoff.Format(time.RFC3339), "boundarypin content at cutoff")
+	writeFilterMemory(t, cfg, "one-sec-outside", "gmail", "", cutoff.Add(-time.Second).Format(time.RFC3339), "boundarypin content outside")
+	writeFilterMemory(t, cfg, "one-sec-inside", "gmail", "", cutoff.Add(time.Second).Format(time.RFC3339), "boundarypin content inside")
 	mustRebuild(t, cfg)
 
 	sc := filtersStructured(t, "search_memory", fmt.Sprintf(`{"query":"boundarypin","since_hours":%d,"limit":10}`, sinceHours))
 	results, _ := sc["results"].([]any)
 	ids := filterResultIDs(t, results)
-	if !containsID(ids, "just-inside") {
-		t.Fatalf("a memory just inside the since_hours window must be included, got %v", ids)
+	if !containsID(ids, "at-cutoff") {
+		t.Fatalf("a memory dated EXACTLY at the cutoff must be included (inclusive boundary), got %v", ids)
 	}
-	if containsID(ids, "just-outside") {
-		t.Fatalf("a memory just outside the since_hours window must be excluded, got %v", ids)
+	if !containsID(ids, "one-sec-inside") {
+		t.Fatalf("a memory 1s inside the window must be included, got %v", ids)
+	}
+	if containsID(ids, "one-sec-outside") {
+		t.Fatalf("a memory 1s outside the window must be excluded, got %v", ids)
+	}
+}
+
+// TestFiltersContextMemorySinceHoursBoundary is the boundary pin's
+// context_memory analog, over the hybridSearch query path.
+func TestFiltersContextMemorySinceHoursBoundary(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	pinFiltersClock(t)
+
+	const sinceHours = 2
+	cutoff := filtersFixedNow.Add(-sinceHours * time.Hour)
+	writeFilterMemory(t, cfg, "ctx-at-cutoff", "gmail", "", cutoff.Format(time.RFC3339), "ctxboundarypin content at cutoff")
+	writeFilterMemory(t, cfg, "ctx-one-sec-outside", "gmail", "", cutoff.Add(-time.Second).Format(time.RFC3339), "ctxboundarypin content outside")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "context_memory", fmt.Sprintf(`{"query":"ctxboundarypin","since_hours":%d}`, sinceHours))
+	ctxText, _ := sc["context"].(string)
+	if !containsSub(ctxText, "at cutoff") {
+		t.Fatalf("a memory dated EXACTLY at the cutoff must be included (inclusive boundary); context: %s", ctxText)
+	}
+	if containsSub(ctxText, "outside") {
+		t.Fatalf("a memory 1s outside the window must be excluded; context: %s", ctxText)
 	}
 }
 
@@ -514,6 +578,223 @@ func TestFiltersHybridFTSArmPreRankProof(t *testing.T) {
 	ctxText, _ := sc["context"].(string)
 	if !containsSub(ctxText, "lone quorvenal mention") {
 		t.Fatalf("hybrid FTS-arm pre-rank filter: want the imessage row surfaced past 51 gmail decoys crowding the pool=50 floor; context: %s", ctxText)
+	}
+}
+
+// TestFiltersVectorArmPreRankProof isolates hybrid.go's vectorSearchIDs
+// SPECIFICALLY, under REAL semantic routing (fakeOllama, mirroring
+// TestRt_DefaultSearchSemanticRoutesToHybrid's env seam exactly — Ollama
+// opted in + a reachable fake daemon, sanity-checked via
+// chooseEmbedderFor/embedderIsSemantic before asserting).
+//
+// fakeOllama returns the SAME fixed vector for every embedding call regardless
+// of content, so every memory ties at cosine similarity 1.0 — the arm's ONLY
+// discriminator at that point is the id-ascending tie-break. 51 gmail decoys
+// are named to sort BEFORE the imessage target ("aaa-decoy-*" < "zzz-target"),
+// and the query term appears in NO memory's text and matches NO person (so the
+// FTS and graph arms both contribute ZERO candidates) — isolating success to
+// the vector arm alone. A naive "compute cosine for every row, sort, cut to
+// pool=50, filter after" implementation fills all 50 slots with gmail decoys
+// (51 > 50) and never even reaches the target; pre-rank semantics skip the
+// cosine computation for a filtered-out row entirely, so only the target ever
+// occupies a pool slot.
+func TestFiltersVectorArmPreRankProof(t *testing.T) {
+	srv := fakeOllama(t, []float64{1, 0, 0, 0})
+	defer srv.Close()
+	t.Setenv("MORA_EMBEDDER", "ollama")
+	t.Setenv("MORA_OLLAMA_URL", srv.URL)
+	t.Setenv("MORA_OLLAMA_MODEL", "nomic-embed-text")
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	// Sanity: the chosen embedder really is semantic (drives the hybrid route).
+	if emb, embErr := chooseEmbedderFor(cfg); embErr != nil || !embedderIsSemantic(emb) {
+		t.Fatalf("fakeOllama should yield a semantic embedder (err=%v)", embErr)
+	}
+
+	for i := 0; i < 51; i++ {
+		writeFilterMemory(t, cfg, fmt.Sprintf("aaa-decoy-%02d", i), "gmail", "",
+			fmt.Sprintf("2026-06-%02dT00:00:00Z", (i%28)+1),
+			"unrelated vector-arm filler content")
+	}
+	writeFilterMemory(t, cfg, "zzz-target", "imessage", "", "2026-07-05T00:00:00Z", "the vector arm target body")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"qzxvecarmprobe","source":"imessage","limit":10}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if !containsID(ids, "zzz-target") {
+		t.Fatalf("vector-arm pre-rank filter: want zzz-target surfaced past 51 id-earlier gmail decoys tied at cosine=1.0; got %v", ids)
+	}
+	for _, id := range ids {
+		if id != "zzz-target" {
+			t.Fatalf("source=imessage must never return a gmail decoy via the vector arm; got %v", ids)
+		}
+	}
+}
+
+// TestFiltersGraphArmPreRankProof isolates hybrid.go's graphExpandIDs
+// SPECIFICALLY, with NO Ollama configured (the default static embedder still
+// populates mem_vectors, so vecOK is true and the graph arm runs — but useVec
+// is false, so the vector arm contributes nothing). The query is a person's
+// display name, resolved via the entity gazetteer (built from Meta at index
+// time) — never appearing literally in any memory's Text — so the FTS arm
+// also contributes zero candidates. 51 gmail decoys and 1 imessage target all
+// share an edge to the SAME person, but the decoys are dated NEWER than the
+// target: a naive "ORDER BY created_at DESC LIMIT pool, filter after"
+// per-person query fills pool=50 with the 51 newer decoys and never reaches
+// the older target; pre-rank semantics drop the per-person SQL LIMIT and
+// Go-filter (by source) before the cut, so the target is found regardless of
+// how many newer non-matching rows exist for that person.
+func TestFiltersGraphArmPreRankProof(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	person := map[string]any{
+		"from":  []string{"zqvethran@example.com"},
+		"to":    []string{"adit@x.com"},
+		"names": map[string]string{"zqvethran@example.com": "Zqvethran Bolgo"},
+	}
+	for i := 0; i < 51; i++ {
+		m := Memory{
+			ID: fmt.Sprintf("graph-decoy-%02d", i), Scope: "global", Type: "email",
+			Title: fmt.Sprintf("graph-decoy-%02d", i), Provider: "gmail",
+			CreatedAt: fmt.Sprintf("2026-07-%02dT00:00:00Z", (i%27)+1),
+			Text:      "unrelated graph-arm filler content, no name here",
+			Meta:      person,
+		}
+		if err := writeMemory(cfg, m); err != nil {
+			t.Fatalf("seed graph-decoy-%02d: %v", i, err)
+		}
+	}
+	target := Memory{
+		ID: "graph-target", Scope: "global", Type: "imessage", Title: "graph-target",
+		Provider: "imessage", CreatedAt: "2026-05-01T00:00:00Z",
+		Text: "the graph arm target body, also no name here", Meta: person,
+	}
+	if err := writeMemory(cfg, target); err != nil {
+		t.Fatalf("seed graph-target: %v", err)
+	}
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "context_memory", `{"query":"Zqvethran Bolgo","source":"imessage"}`)
+	ctxText, _ := sc["context"].(string)
+	if !containsSub(ctxText, "graph arm target body") {
+		t.Fatalf("graph-arm pre-rank filter: want the imessage target surfaced past 51 newer gmail decoys sharing the same person edge; context: %s", ctxText)
+	}
+	if containsSub(ctxText, "graph-arm filler content") {
+		t.Fatalf("source=imessage must never surface a gmail decoy via the graph arm; context: %s", ctxText)
+	}
+}
+
+// TestFiltersContextMemoryFiltersReceiptShape mirrors the search_memory
+// receipt-shape pin for context_memory.
+func TestFiltersContextMemoryFiltersReceiptShape(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ctx-recv-1", "imessage", "", time.Now().Format(time.RFC3339), "ctxreceiptcheck content")
+	mustRebuild(t, cfg)
+
+	both := filtersStructured(t, "context_memory", `{"query":"ctxreceiptcheck","source":"imessage","since_hours":24}`)
+	f, ok := both["filters"].(map[string]any)
+	if !ok || len(f) != 2 || f["source"] != "imessage" || fmt.Sprint(f["since_hours"]) != "24" {
+		t.Fatalf("filters receipt = %v, want exactly {source:imessage, since_hours:24}", f)
+	}
+}
+
+// TestFiltersContextMemoryNonPositiveSinceHoursErrors mirrors the
+// search_memory fail-closed since_hours pin for context_memory.
+func TestFiltersContextMemoryNonPositiveSinceHoursErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ctx-any-2", "gmail", "", "2026-07-01T00:00:00Z", "ctxfeatherlox content")
+	mustRebuild(t, cfg)
+
+	for _, bad := range []string{`"since_hours":0`, `"since_hours":-5`, `"since_hours":1.5`} {
+		args := fmt.Sprintf(`{"query":"ctxfeatherlox",%s}`, bad)
+		text, isErr := filtersToolError(t, "context_memory", args)
+		if !isErr {
+			t.Fatalf("%s: non-positive/fractional since_hours must be a tool error; got isError=false, text=%s", args, text)
+		}
+	}
+}
+
+// TestFiltersSourceKnownFamilyUnknownInstanceIsWellFormedZeroMatch pins the
+// "SOURCE VALUE SPACE" edge: a KNOWN family with an instance suffix matching
+// no actual account ("gmail:doesnotexist") is well-formed (isError:false) and
+// simply matches nothing — it must NOT fall back to matching the bare/default
+// "gmail" instance (mirroring TestDigestSourceFilter's own pinned asymmetry:
+// digestSourceMatches("gmail", "gmail:work") is false) and must NOT be
+// rejected as if it were an unrecognized family.
+func TestFiltersSourceKnownFamilyUnknownInstanceIsWellFormedZeroMatch(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "instance-default", "gmail", "", "2026-07-01T00:00:00Z", "ghostaccount content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"ghostaccount","source":"gmail:doesnotexist"}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if len(ids) != 0 {
+		t.Fatalf("source=gmail:doesnotexist must match zero memories (must not fall back to the bare gmail instance), got %v", ids)
+	}
+}
+
+// TestFiltersSearchMemoryHealthExcludesFilteredSource pins the SAME
+// excluded-by-filter carve-out on the ALWAYS-PRESENT top-level "health" rollup
+// (compactHealthOf) that TestFiltersSearchMemoryConfidenceExcludesFilteredSource
+// pins for the opt-in confidence envelope — both project the SAME
+// sourceHealthAll/worstSource signal, so excluding a source from one without
+// the other would be an inconsistent half-fix. gmail is enabled+stale (would
+// normally degrade health.state/health.sources); imessage is enabled+fresh.
+// Filtering to source=imessage must report a HEALTHY banner.
+func TestFiltersSearchMemoryHealthExcludesFilteredSource(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail", "imessage")
+	seedSyncStatus(t, cfg, "gmail", time.Now().Add(-30*time.Hour))
+	seedSyncStatus(t, cfg, "imessage", time.Now().Add(-1*time.Hour))
+	writeFilterMemory(t, cfg, "health-1", "imessage", "", time.Now().Format(time.RFC3339), "healthgap content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"healthgap","source":"imessage"}`)
+	health, ok := sc["health"].(map[string]any)
+	if !ok {
+		t.Fatalf("search_memory must always carry a health object: %v", payloadKeys(sc))
+	}
+	if health["state"] != "healthy" {
+		t.Fatalf("health.state = %v, want healthy (gmail's staleness must not leak through an active source filter)", health["state"])
+	}
+	if health["sources"] != "fresh" {
+		t.Fatalf("health.sources = %v, want fresh (only imessage, itself fresh, is in scope under source=imessage)", health["sources"])
+	}
+}
+
+// TestFiltersContextMemoryHealthExcludesFilteredSource is the health-banner
+// pin's context_memory analog.
+func TestFiltersContextMemoryHealthExcludesFilteredSource(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail", "imessage")
+	seedSyncStatus(t, cfg, "gmail", time.Now().Add(-30*time.Hour))
+	seedSyncStatus(t, cfg, "imessage", time.Now().Add(-1*time.Hour))
+	writeFilterMemory(t, cfg, "ctx-health-1", "imessage", "", time.Now().Format(time.RFC3339), "ctxhealthgap content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "context_memory", `{"query":"ctxhealthgap","source":"imessage"}`)
+	health, ok := sc["health"].(map[string]any)
+	if !ok {
+		t.Fatalf("context_memory must always carry a health object: %v", payloadKeys(sc))
+	}
+	if health["state"] != "healthy" || health["sources"] != "fresh" {
+		t.Fatalf("health = %v, want state=healthy/sources=fresh (gmail's staleness excluded by the active source filter)", health)
 	}
 }
 
