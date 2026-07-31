@@ -132,6 +132,15 @@ type Memory struct {
 	// read_memory/list_memory — omitempty keeps every other read surface
 	// byte-identical.
 	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
+	// Evidence is the compact Gmail evidence-segment receipt (issue #243,
+	// DQ5 §2): the STRONGEST query-matching derived segment's identity +
+	// snippet, attached at search_memory result-assembly time
+	// (gmail_segments_search.go's attachGmailSegmentEvidence) when the row's
+	// underlying parent has at least one query-matching segment. Never
+	// persisted and never set on read_memory/list_memory — omitempty keeps
+	// every other read surface and every non-participating memory's search
+	// row byte-identical (frozen interface #5).
+	Evidence *GmailSegmentEvidence `json:"evidence,omitempty"`
 }
 
 // CorroboratingRef is the compact citation a cluster head's "corroborating"
@@ -952,7 +961,12 @@ func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp,
 // Package var (not const) so TestUpgradePreservesState can bump it in-process
 // and exercise checkIndexSchema's refusal / auto-heal path against a newer
 // binary — the same seam pattern as indexAutoHeal.
-var indexSchemaVersion = 3
+//
+// 4 (issue #243): adds gmail_segments / gmail_segments_fts /
+// gmail_segment_diagnostics, the disposable evidence-segment projection —
+// an old v3 index has none of these tables, so a binary that understands
+// evidence_ref must not read it as if it did.
+var indexSchemaVersion = 4
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
 // read time. True on the static-hash floor, where a rebuild is seconds — the
@@ -1063,7 +1077,7 @@ const mcpMaxRequestBytes = 4 << 20
 // it is how a fresh agent learns Mora exists and when to reach for it — without
 // it the tools sit unused and the agent keeps starting cold. Keep it tight and
 // imperative.
-const mcpInstructions = `Mora is the user's persistent, local memory across sessions — you do NOT start cold. Before answering anything about the user's past work, people, projects, meetings, decisions, or commitments, call search_memory (or context_memory at the start of a task) and answer from what you retrieve. "I don't have that context" is usually a bug: search first. Call brief at the START of a session for the latest what-changed / what-matters brief (the same daily cross-source briefing, resolved to the freshest available) before doing anything else. Use list_memory to browse recent memories, list_entities/get_entity to explore the people-and-topics graph, digest for a daily cross-source briefing (recent emails, texts, calendar, and open tasks), and think for a cited synthesis with an explicit "what the vault does NOT know" gap analysis. Write durable facts and decisions back with write_memory as they emerge — you do not need to ask permission. Always prefer the user's own memories over assumptions, cite what you recalled, surface stale or missing context honestly, and never invent a memory you did not retrieve.`
+const mcpInstructions = `Mora is the user's persistent, local memory across sessions — you do NOT start cold. Before answering anything about the user's past work, people, projects, meetings, decisions, or commitments, call search_memory (or context_memory at the start of a task) and answer from what you retrieve. "I don't have that context" is usually a bug: search first. Call brief at the START of a session for the latest what-changed / what-matters brief (the same daily cross-source briefing, resolved to the freshest available) before doing anything else. Use list_memory to browse recent memories, list_entities/get_entity to explore the people-and-topics graph, digest for a daily cross-source briefing (recent emails, texts, calendar, and open tasks), and think for a cited synthesis with an explicit "what the vault does NOT know" gap analysis. Write durable facts and decisions back with write_memory as they emerge — you do not need to ask permission. Always prefer the user's own memories over assumptions, cite what you recalled, surface stale or missing context honestly, and never invent a memory you did not retrieve. When a search_memory row carries an "evidence" object, that names the exact Gmail message inside the thread that matched — pass its evidence_ref to read_memory to read ONLY that message (bounded, with a sender/at receipt) instead of the whole thread.`
 
 // MCP context_memory budget. Agents speak tokens (Neil's pilot asked for a
 // ~20k-token per-call ceiling — the 2k-char default was too sparse to be useful

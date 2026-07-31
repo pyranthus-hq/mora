@@ -119,6 +119,14 @@ func indexUpsert(ctx context.Context, cfg Config, m Memory) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memories_fts WHERE id=?`, m.ID); err != nil {
 		return err
 	}
+	// Issue #243 parity — the incremental path carries no explicit contract
+	// pin, so this mirrors the full rebuild's own fail-closed rules exactly:
+	// clear this memory's prior segment/diagnostic rows before re-deriving
+	// (or a tombstone gets none, mirroring the memories/memories_fts skip
+	// below).
+	if err := clearGmailSegmentsFor(ctx, tx, m.ID); err != nil {
+		return err
+	}
 	if m.DeletedAt == "" {
 		path := memoryPath(cfg, m)
 		tags := strings.Join(m.Tags, ",")
@@ -131,6 +139,15 @@ func indexUpsert(ctx context.Context, cfg Config, m Memory) error {
 			`INSERT INTO memories_fts VALUES (?, ?, ?, ?, ?, ?)`,
 			m.ID, m.Scope, m.Title, tags, m.Source, m.Text); err != nil {
 			return err
+		}
+		gsegStmts, err := prepareGmailSegStmts(ctx, tx)
+		if err != nil {
+			return err
+		}
+		werr := writeGmailSegments(ctx, gsegStmts, m)
+		gsegStmts.Close()
+		if werr != nil {
+			return werr
 		}
 	}
 

@@ -225,12 +225,25 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		tr.FTS, tr.Vec, tr.Graph = ftsIDs, vecIDs, graphIDs
 	}
 
-	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 {
+	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source, mapped
+	// to PARENT ids, before fusion/slot accounting (frozen interface #3): one
+	// more arm in the SAME RRF fusion every other arm feeds. A query with no
+	// segment matches contributes an empty list, which is a complete no-op
+	// for every OTHER id's fused score — the byte-identity guarantee for
+	// non-participating memories holds automatically. Best-effort: a
+	// segment-arm failure just means an empty arm, never a failed search.
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
+	if segErr != nil {
+		segIDs, gsegEvidence = nil, nil
+	}
+
+	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 && len(segIDs) == 0 {
 		return nil, tr, nil
 	}
 
 	fp := cfg.fusion()
-	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs}, fp.weights(), fp.k)
+	fusionWeights := append(append([]float64{}, fp.weights()...), gmailSegmentArmWeight)
+	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
 	ids := make([]string, 0, len(fused))
 	for id := range fused {
 		ids = append(ids, id)
@@ -287,7 +300,12 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 			visible = append(visible, m)
 		}
 	}
-	return clusterAndTruncate(ids, visible, limit), tr, nil
+	result := clusterAndTruncate(ids, visible, limit)
+	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
+	// "does this SURVIVING row's parent have a query-matching segment" (DQ5),
+	// independent of which arm(s) actually ranked it in.
+	attachGmailSegmentEvidence(result, gsegEvidence)
+	return result, tr, nil
 }
 
 // vectorsAvailable reports whether the mem_vectors table exists and is populated.

@@ -128,6 +128,17 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source,
+	// mapped to PARENT ids, before fusion/slot accounting (frozen interface
+	// #3). Best-effort: a segment-arm failure degrades retrieval (no
+	// promotion, no evidence) but must never fail search_memory outright.
+	// Gated on a non-empty arm so a query with zero segment matches is a
+	// complete no-op — the byte-identity guarantee for non-participating
+	// memories (frozen interface #5).
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
+	if segErr == nil && len(segIDs) > 0 {
+		out = fuseGmailSegmentArm(out, segIDs)
+	}
 	// Legacy slot discipline (#237 round-2 P1 fix): capture the pre-filter rank
 	// order's ids BEFORE suppression/visibility filtering touches `out`, so
 	// clusterAndTruncate can tell a row visibility-filtered out of the legacy
@@ -146,11 +157,16 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 		return nil, err
 	}
 	if limit <= 0 {
+		attachGmailSegmentEvidence(filtered, gsegEvidence)
 		return filtered, nil // preserve pre-#237 SQL-LIMIT edge semantics; no clustering
 	}
 	// Issue #237 — cluster the (deeper-than-limit) candidate pool and truncate
 	// to `limit`, collapsing corroborating records into one slot per cluster.
-	return clusterAndTruncate(rawIDs, filtered, limit), nil
+	result := clusterAndTruncate(rawIDs, filtered, limit)
+	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
+	// "does this SURVIVING row's parent have a query-matching segment" (DQ5).
+	attachGmailSegmentEvidence(result, gsegEvidence)
+	return result, nil
 }
 func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string {
 	if budget <= 0 {

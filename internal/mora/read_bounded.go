@@ -24,6 +24,13 @@ type boundedReadReceipt struct {
 	Occurrence int    `json:"occurrence"`
 	Truncated  bool   `json:"truncated"`
 	Budget     int    `json:"budget"`
+	// EvidenceRef/Sender/At (issue #243, DQ6 §2) are stamped ONLY by the
+	// evidence_ref read path (gmail_segments_read.go) — omitempty keeps
+	// every #242 bounded-read caller byte-identical (composition, never a
+	// forced new shape).
+	EvidenceRef string `json:"evidence_ref,omitempty"`
+	Sender      string `json:"sender,omitempty"`
+	At          string `json:"at,omitempty"`
 }
 
 const (

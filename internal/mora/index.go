@@ -259,6 +259,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		// leave a fresh stamp on a stale index.
 		fmt.Sprintf(`PRAGMA user_version = %d`, indexSchemaVersion),
 	}
+	// Issue #243 — the disposable Gmail evidence-segment projection: created
+	// and cleared inside this SAME transaction as every other derived table
+	// (frozen interface #1).
+	stmts = append(stmts, gmailSegSchemaStmts...)
+	stmts = append(stmts, gmailSegDeleteStmts...)
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
 			return 0, err
@@ -283,6 +288,13 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return 0, err
 	}
 	defer ftsStmt.Close()
+	// Issue #243 — prepared once, reused for every live memory below, mirroring
+	// memStmt/ftsStmt's own prepare-once discipline.
+	gsegStmts, err := prepareGmailSegStmts(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	defer gsegStmts.Close()
 	count = 0
 	var parsed []Memory // ALL memories (incl. tombstones) — feeds the graph
 	var live []Memory   // non-tombstoned only — the searchable corpus + vectors
@@ -329,6 +341,12 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		}
 		if _, err := ftsStmt.ExecContext(ctx,
 			m.ID, m.Scope, m.Title, strings.Join(m.Tags, ","), m.Source, m.Text); err != nil {
+			return count, err
+		}
+		// Issue #243 — derive this memory's evidence-segment projection (or
+		// its fail-closed diagnostic) in the SAME transaction, over the SAME
+		// live corpus memories/memories_fts just indexed.
+		if err := writeGmailSegments(ctx, gsegStmts, m); err != nil {
 			return count, err
 		}
 		live = append(live, m)
