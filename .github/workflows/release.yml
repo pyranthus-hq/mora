@@ -228,8 +228,9 @@ jobs:
       # validate, and package architecture-specific `_app.zip` assets from the
       # SAME signed CLI binaries the raw archives ship. The `_app.zip` name is
       # not a `<os><sep><arch><ext>` suffix, so the legacy go-selfupdate
-      # matcher in v0.11.4-and-earlier clients can never select it — the raw
-      # archives above stay their contract, byte-for-byte untouched. This step
+      # matcher in v0.11.4-and-earlier clients can never select it. This step
+      # never rewrites those raw archives; their filename, root-binary, and
+      # checksum contract stays intact. It
       # must run after GoReleaser (it consumes dist/), before credential
       # cleanup (whole-bundle codesign needs the ephemeral keychain), and
       # before publish (a failed app lane must leave only an unpublished

@@ -95,8 +95,13 @@ before one atomic rename. It keeps the prior standalone binary as
 app; it never re-signs the app or clears quarantine.
 
 ```bash
-curl -fsSLo /tmp/install-mora-app.sh https://raw.githubusercontent.com/pyranthus-hq/mora/main/install-app.sh
-sh /tmp/install-mora-app.sh
+(
+  set -e
+  mora_installer="$(mktemp -t mora-install)"
+  trap '/bin/rm -f "$mora_installer"' EXIT
+  curl -fsSLo "$mora_installer" https://raw.githubusercontent.com/pyranthus-hq/mora/main/install-app.sh
+  sh "$mora_installer"
+)
 ```
 
 After installation, add `~/Applications/Mora.app` in **System Settings >
@@ -119,6 +124,24 @@ uses the same operation to restore the old bundle. If that rollback operation
 also fails, Mora preserves the private staging directory and reports the exact
 path of the previous app for manual recovery. Standalone installs continue to
 use the original raw-archive updater.
+
+Uninstall only the verified app bundle and its managed PATH symlink with:
+
+```bash
+(
+  set -e
+  mora_uninstaller="$(mktemp -t mora-uninstall)"
+  trap '/bin/rm -f "$mora_uninstaller"' EXIT
+  curl -fsSLo "$mora_uninstaller" https://raw.githubusercontent.com/pyranthus-hq/mora/main/uninstall-app.sh
+  sh "$mora_uninstaller"
+)
+```
+
+The uninstaller refuses the wrong bundle identifier, Apple team, executable,
+or a broken whole-bundle signature. It removes only symlinks whose target is
+the exact app executable. It preserves the vault, config, state, and any
+`mora.standalone-backup` migration file. Remove the stale Mora entry from Full
+Disk Access manually after you no longer need it.
 
 ## Windows
 
@@ -244,7 +267,6 @@ access once. Later standalone releases keep the same Developer ID team and
 identifier so in-place upgrades have a stable designated requirement.
 
 The planned `Mora.app` migration changes the protected-data target from a raw
-executable to an application bundle. Plan for one final Full Disk Access grant
 executable to an application bundle. Plan for an app Full Disk Access grant
 during that migration; it is not yet proven to be the last. Keep the old entry
 until `mora doctor` and an iMessage sync pass through the app. Routine app

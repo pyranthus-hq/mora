@@ -157,6 +157,62 @@ grep -q 'refusing to install an unverifiable download' "$MORA_REPO/install.sh" \
   || die "install.sh no longer fails closed when checksum verification is unavailable"
 pass "install.sh verifies remote downloads and fails closed when verification is unavailable"
 
+# The app installer is a distinct distribution contract. It must target the
+# same tag as the raw compatibility installer, use the non-colliding _app.zip
+# asset, and verify the separately signed post-staple checksum manifest.
+[ -x "$MORA_REPO/install-app.sh" ] || die "install-app.sh is missing or not executable"
+# shellcheck disable=SC2016 # match the literal VERSION shell expression
+APP_INSTALL_VERSION_MATCHES="$(sed -n 's/^VERSION="\${VERSION:-\([0-9.]*\)}"/\1/p' "$MORA_REPO/install-app.sh")"
+APP_INSTALL_VER_COUNT="$(printf '%s\n' "$APP_INSTALL_VERSION_MATCHES" | awk 'NF { count++ } END { print count + 0 }')"
+[ "$APP_INSTALL_VER_COUNT" -eq 1 ] || \
+  die "install-app.sh must contain exactly one VERSION default (found $APP_INSTALL_VER_COUNT)"
+APP_INSTALL_VER_ASSIGN_COUNT="$(awk '
+  /^[[:space:]]*#/ { next }
+  {
+    line = $0
+    sub(/^[[:space:]]*/, "", line)
+    if (line ~ /^(export[[:space:]]+|readonly[[:space:]]+)?VERSION[[:space:]]*=/) count++
+  }
+  END { print count + 0 }
+' "$MORA_REPO/install-app.sh")"
+[ "$APP_INSTALL_VER_ASSIGN_COUNT" -eq 1 ] || \
+  die "install-app.sh must contain exactly one VERSION assignment (found $APP_INSTALL_VER_ASSIGN_COUNT)"
+APP_INSTALL_VER="$APP_INSTALL_VERSION_MATCHES"
+if [ "$APP_INSTALL_VER" != "$EXPECTED_VER" ]; then
+  if [ "${RELEASE:-0}" = "1" ]; then
+    die "install-app.sh VERSION=$APP_INSTALL_VER != release EXPECTED_VER=$EXPECTED_VER (bump install-app.sh before tagging)"
+  fi
+  printf '  \033[33mnote\033[0m install-app.sh VERSION=%s != EXPECTED_VER=%s (expected in dev; MUST match at release — run RELEASE=1 to gate)\n' \
+    "$APP_INSTALL_VER" "$EXPECTED_VER"
+fi
+if ! grep -q 'checksums-app.txt' "$MORA_REPO/install-app.sh" \
+  || ! grep -q '_app.zip' "$MORA_REPO/install-app.sh" \
+  || ! grep -q 'CHECKSUM MISMATCH' "$MORA_REPO/install-app.sh" \
+  || ! grep -q 'stapler validate' "$MORA_REPO/install-app.sh"; then
+  die "install-app.sh no longer enforces the app checksum, asset-name, and stapled-ticket contracts"
+fi
+pass "install-app.sh version and whole-bundle trust contracts are pinned"
+
+# The app uninstaller is deliberately narrow: it identifies the exact signed
+# Mora bundle, removes only symlinks that target its inner executable, and
+# preserves vault/config/state plus the standalone migration backup.
+[ -x "$MORA_REPO/uninstall-app.sh" ] || die "uninstall-app.sh is missing or not executable"
+# shellcheck disable=SC2016 # match literal shell variables in the target script
+if ! grep -q 'APP_DEST="$APP_PARENT/Mora.app"' "$MORA_REPO/uninstall-app.sh" \
+  || ! grep -q 'TeamIdentifier=$MACOS_TEAM_ID' "$MORA_REPO/uninstall-app.sh" \
+  || ! grep -q 'codesign --verify --deep --strict' "$MORA_REPO/uninstall-app.sh" \
+  || ! grep -q 'readlink "$link"' "$MORA_REPO/uninstall-app.sh" \
+  || ! grep -q 'find "$DETACHED_APP" -depth -delete' "$MORA_REPO/uninstall-app.sh" \
+  || ! grep -q 'rollback_detach' "$MORA_REPO/uninstall-app.sh" \
+  || ! grep -q 'vault, config, state' "$MORA_REPO/uninstall-app.sh"; then
+  die "uninstall-app.sh no longer pins the narrow verified-removal contract"
+fi
+# shellcheck disable=SC2016 # match literal shell variables in the target script
+if grep -Eq 'rm -rf "\$HOME"|rm -rf "\$APP_PARENT"|xattr -d|codesign --force --sign' "$MORA_REPO/uninstall-app.sh"; then
+  die "uninstall-app.sh contains a broad deletion or trust mutation"
+fi
+pass "uninstall-app.sh verifies the exact app and preserves user data"
+
 # =============================================================================
 section "Tier 1b — seed a synthetic vault + smoke every command"
 run "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \

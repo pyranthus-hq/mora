@@ -64,6 +64,8 @@ archives:
       - README.md
       - docs/guide.md
       - install.sh
+      - install-app.sh
+      - uninstall-app.sh
       - examples/*
 
 checksum:

@@ -15,6 +15,7 @@ installed. The full pipeline keeps the pure-Go and zero-egress rules.
 | `scripts/appbundle-darwin-release.sh` | — | The Mora.app release lane: per-arch checksum-verified extraction of the signed CLI, bundle assembly, **whole-bundle** Developer ID signing (hardened runtime + timestamp), notarization, stapling, `stapler validate` + Gatekeeper acceptance, post-staple `_app.zip` packaging, path-safety + legacy-name guards (`--check-asset-name`), re-extraction and full trust validation of both final ZIPs, quarantined native launch, `checksums-app.txt`. Stable numeric `X.Y.Z` tags only; Apple-invalid prerelease bundle versions fail closed. |
 | `scripts/verify-app-zip.sh` | — | Fail-closed zip gate for app assets: refuses absolute/traversal/symlink/outside-`Mora.app/` entries and missing bundle members before any updater ever extracts the archive. |
 | `scripts/regress/app-bundle-contract.sh` | — | Secret-free adversarial contract for the app lane: icon determinism, frozen plist/layout, wrong identifier/team/arch/version, broken seal, silent no-op staple, Gatekeeper rejection, hostile zips, and release-workflow ordering (app lane after GoReleaser, before credential cleanup and publish). |
+| `install-app.sh` / `uninstall-app.sh` | — | macOS app migration scripts. Install verifies the app checksum, canonical archive, pinned Apple identity/notary/version/arch, atomically places `Mora.app`, preserves the standalone binary, and creates the PATH symlink. Uninstall verifies the exact signed Mora bundle, atomically detaches it, removes only symlinks targeting that bundle, and preserves vault/config/state/backups. |
 | `.github/workflows/claude.yml` | 63 | On-demand Claude reviewer (`@claude` mention or `claude-review` label). Read-only on contents, advisory only. |
 | `internal/mora/upgrade.go` | ~150 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds (both literal `dev` and git-describe local builds at/ahead of the latest release — never offers a downgrade). After a successful swap it execs the NEW binary's `index rebuild` (`postUpgradeRebuild`, warn-don't-fail) so a schema change never strands a stale index. |
 | `cmd/mora/main.go` | 28 | Entry point. Receives `-ldflags -X main.{version,commit,date}` and forwards into `mora.Build*`. |
@@ -201,8 +202,10 @@ produces two app assets** with this frozen contract:
   sealed signature, stapled ticket, exact identity, layout, architecture,
   notarized-code requirement, and Gatekeeper acceptance before checksumming;
   `scripts/verify-app-zip.sh` also refuses unsafe archive paths before upload.
-- **The raw archives are untouched:** same names, same root-level binary,
-  same checksums — the v0.11.4-and-earlier install/upgrade path is unchanged.
+- **The raw update contract is preserved:** the archive names, root-level
+  binary, and `checksums.txt` trust anchor are unchanged. Adding the app
+  migration scripts intentionally changes each archive's bytes and therefore
+  its checksum, but not legacy selection, extraction, or verification.
 
 `install-app.sh` puts the whole app at `~/Applications/Mora.app` by default and
 exposes its CLI through a symlink. It preserves a prior standalone executable
@@ -228,6 +231,15 @@ staging directory. Only after success does the new binary rebuild the index and
 the old bundle leave the private staging directory.
 Replacing only `Contents/MacOS/mora` is forbidden because it invalidates the
 bundle seal. A standalone install still follows the original raw updater.
+
+`uninstall-app.sh` is similarly fail-closed before destructive work. The target
+must be a real `Mora.app` at the configured app parent with bundle/signing
+identifier `com.pyranthus.mora`, Team ID `VS8M5VJBZ5`, executable `mora`, and a
+valid whole-bundle signature. It first proves every matching PATH directory is
+writable, atomically moves the app inside a same-parent private directory, then
+removes only symlinks whose exact target is the app executable. A PATH cleanup
+failure restores both the app and every link already removed. Vault, config,
+state, unrelated PATH entries, and `.standalone-backup` files remain untouched.
 
 The permission transition is explicit:
 
