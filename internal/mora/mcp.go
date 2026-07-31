@@ -435,6 +435,16 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		// returns shared ids with 240-rune snippets, so read_memory is the
 		// documented expansion path for them too.
 		if sm, ok := findSharedMemory(cfg, strArg(args, "id", "")); ok {
+			// Issue #243, P2-1 — evidence_ref is derived ONLY from the LOCAL
+			// vault's own gmail_segments index; a shared memory has no such
+			// projection to narrow into. Fail closed explicitly rather than
+			// silently ignoring evidence_ref and returning the shared
+			// memory's untouched full body (mcpReadMemoryResult only gates
+			// on #242's match/max_tokens/occurrence, never evidence_ref, so
+			// without this check the parameter would be a silent no-op).
+			if strArg(args, "evidence_ref", "") != "" {
+				return nil, fmt.Errorf("evidence_ref is not supported for memory %q resolved via the shared-corpus fallback — evidence segments are derived from the local vault's own index only", strArg(args, "id", ""))
+			}
 			return mcpReadMemoryResult(cfg, sm, args), nil
 		}
 		return nil, err

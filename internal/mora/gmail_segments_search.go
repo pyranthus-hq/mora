@@ -46,11 +46,22 @@ const (
 // query pass, so they can never disagree about which segment "won".
 //
 // Errors are returned to the caller, which treats the segment arm as
-// best-effort: a failure here degrades retrieval (no segment promotion, no
-// evidence) but must never fail search_memory outright — gmail_segments_fts
-// is guaranteed present on any index this binary's schema version accepts
-// (openIndexRO's schema gate forces a rebuild first), so a real error here
-// signals a genuine bug worth surfacing in logs, not a routine absence.
+// best-effort BY DESIGN — a deliberate policy, asymmetric with the FATAL
+// fts/vec/graph arms (a real error from ftsSearchIDs/vectorSearchIDs/
+// graphExpandIDs aborts the whole search): both searchMemories (search.go)
+// and hybridSearchTrace (hybrid.go) swallow a non-nil error from this
+// function and simply skip the arm — no segment promotion, no evidence —
+// degrading to plain parent-grain retrieval rather than failing
+// search_memory outright. This is intentional: gmail_segments_fts is
+// guaranteed present on any index this binary's schema version accepts
+// (openIndexRO's schema gate forces a rebuild first), so an error here is
+// exceptional rather than routine, and the enhancement it powers is judged
+// not worth failing a whole search over. No logging infrastructure exists
+// for this arm — unlike the fatal arms, whose errors already propagate as a
+// Go error the caller returns and can log — so today a swallowed error here
+// is silent beyond the missing evidence/promotion it causes; that gap is a
+// known, accepted tradeoff of the best-effort policy, not an oversight to
+// fix by adding a new logging path.
 func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string) ([]string, map[string]GmailSegmentEvidence, error) {
 	match := ftsQuery(query)
 	if match == "" {

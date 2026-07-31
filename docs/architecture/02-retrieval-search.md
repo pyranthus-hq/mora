@@ -171,6 +171,8 @@ In `hybridSearchTrace`, the segment arm is simply a fourth list fed into the exi
 
 A parent row that survives to the final (post-cluster, post-truncate) result set and has at least one query-matching segment carries an additional `"evidence"` key: `{evidence_ref, sender, at, snippet}` — the parent's strongest matching segment's identity, with `snippet` drawn from **that segment's own text only** (`matchSnippet`, same helper/window as the ordinary search snippet) so it can never quote a sibling message. Attachment (`attachGmailSegmentEvidence`) is a pure function of "does this returned parent have a query-matching segment" — independent of *why* the parent was returned (parent-grain title match, segment match, or both) — so a parent that already matched at parent grain (e.g. its title) still carries the receipt when it also independently has a matching segment.
 
+**The segment arm is best-effort BY DESIGN**, asymmetric with the FTS/vector/graph arms: an error from `gmailSegmentQueryArm` is swallowed by both callers and simply skips the arm (no segment promotion, no evidence, degrading to plain parent-grain retrieval) rather than failing `search_memory` outright — no logging exists for this specific failure, an accepted tradeoff of that policy, not an oversight.
+
 ---
 
 ## RRF fusion + pool sizing

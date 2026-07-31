@@ -43,6 +43,16 @@ const (
 	gmailSegDiagCountMismatch    = "count_mismatch"
 	gmailSegDiagOrderingMismatch = "ordering_mismatch"
 	gmailSegDiagMalformedRef     = "malformed_ref"
+	// gmailSegDiagDuplicateRef (P0 fix, reviewer-reproduced): two or more
+	// messages in the SAME memory declaring the IDENTICAL MessageRef would
+	// otherwise collide on gmail_segments' evidence_ref PRIMARY KEY — a real
+	// SQL UNIQUE-constraint error that, unless caught here before any INSERT
+	// runs, aborts the WHOLE rebuild transaction (not just this memory).
+	// Checked LAST, after every ref is already confirmed individually
+	// well-formed (malformed_ref) — "duplicate" is a property of the SET of
+	// refs, not any one ref, so it gets its own distinct reason rather than
+	// folding into malformed_ref.
+	gmailSegDiagDuplicateRef = "duplicate_ref"
 )
 
 // gmailSegmentRow is one derived evidence segment — the in-memory shape
@@ -121,6 +131,24 @@ func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) 
 		if !strings.HasPrefix(message.MessageRef, prefix) || message.MessageRef == prefix {
 			return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: gmailSegDiagMalformedRef, MetaCount: len(messages), BodyCount: bodyCount}
 		}
+	}
+
+	// P0 fix (reviewer-reproduced) — duplicate MessageRef: checked LAST,
+	// after every ref is already confirmed individually well-formed above.
+	// Two messages declaring the SAME MessageRef would otherwise collide on
+	// gmail_segments' evidence_ref PRIMARY KEY when writeGmailSegments
+	// inserts them — a real SQL UNIQUE-constraint error that MUST be caught
+	// here, before any row for this memory is ever inserted, so it fails
+	// closed for ONLY this memory (zero segments + duplicate_ref
+	// diagnostic) instead of aborting the whole rebuild/upsert transaction
+	// and taking every OTHER memory's segments (and its own indexing) down
+	// with it.
+	seenRefs := make(map[string]bool, len(messages))
+	for _, message := range messages {
+		if seenRefs[message.MessageRef] {
+			return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: gmailSegDiagDuplicateRef, MetaCount: len(messages), BodyCount: bodyCount}
+		}
+		seenRefs[message.MessageRef] = true
 	}
 
 	// Well-formed: derive one row per message. gmailBodyParts(m)[i] already
