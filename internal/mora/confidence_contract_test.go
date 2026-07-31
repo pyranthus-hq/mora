@@ -40,20 +40,38 @@ import (
 //	  "max_score":          float64,  // best Memory.Score already computed at ranking time, over the RETURNED set
 //	  "mean_score":         float64,  // arithmetic mean Memory.Score over the RETURNED set
 //	  "freshest_source_at": string,   // RFC3339 max Memory.CreatedAt over the RETURNED set; "" when the set is empty
-//	  "missing_sources":    []string, // sorted, [] (never null) — enabled connector instances that
-//	                                  //   (a) contributed at least one memory to the RETURNED set, AND
-//	                                  //   (b) read non-fresh (stale/failed/never) via sourceHealthAll
+//	  "missing_sources":    []string, // sorted, [] (never null) — EVERY enabled connector
+//	                                  //   instance that reads non-fresh (stale/failed/never)
+//	                                  //   via sourceHealthAll AT CALL TIME. Whether that source
+//	                                  //   contributed a memory to the RETURNED set is IRRELEVANT:
+//	                                  //   a fully-dark source (failed/never, contributed nothing)
+//	                                  //   is exactly the "incomplete coverage" case this field
+//	                                  //   exists to surface, and it must be listed even though it
+//	                                  //   contributed zero rows.
 //	  "health_impact":      "none" | "stale" | "failed" | "never", // worst state among missing_sources; "none" when empty
 //	}
+//
+// health_impact severity mirrors this repo's EXISTING worst-first precedence
+// for unhealthy states (health.go's healthStateRank / worstSource doc comment:
+// "failed (an active error) outranks never (no data point at all) outranks
+// stale (data exists, just aging)"): failed > never > stale. This contract
+// reuses that precedent rather than freezing a new one.
 //
 // Field choice ("the minimal honest set", per the issue): max_score/mean_score
 // are the raw already-ranked numbers every row already carries, just rolled up
 // once instead of asking the caller to rescan the result array. freshest_source_at
 // answers "how current is this evidence" without a second pass. missing_sources/
-// health_impact are a QUERY-SCOPED projection of the existing sourceHealth signal
+// health_impact are a CALL-SCOPED projection of the existing sourceHealth signal
 // this packet's predecessor (compactHealth) already carries on every response —
-// "which of the sources that actually produced THIS answer are unhealthy" is a
-// narrower, more actionable question than the aggregate banner.
+// "which of my enabled sources are unhealthy right now" (regardless of whether
+// this particular query happened to retrieve anything from them) is the
+// "incomplete coverage" question the issue asks for: a source that never
+// contributed because it is dark is the case that matters most, and a
+// contribution-gated definition can never surface it. AMENDED from an earlier
+// draft that gated missing_sources on "contributed a memory to the returned
+// set" — that reading made a fully-dark source (failed/never, contributed
+// nothing) permanently invisible, which is exactly backwards for a field
+// whose job is to flag incomplete coverage.
 //
 // STRENGTH BUCKETING — two mechanisms, one per tool, because the two tools'
 // Score fields are on fundamentally different ALREADY-EXISTING scales (see
@@ -103,10 +121,15 @@ import (
 //     corpus-invariant; a real vault's IDF stats could shift where "strong"
 //     actually lands. A percentile/relative-rank scheme may be more robust
 //     long-term than a fixed magnitude split — flagged, not resolved here.
-//  2. ThinkEvidence (think.go) carries no Source field, so missing_sources for
-//     think MUST be computed from the underlying []Memory buildThink already
-//     holds (Memory.Source), not from the serialized ThinkEvidence JSON — no
-//     ThinkEvidence schema change is implied by this contract.
+//  2. RESOLVED by the missing_sources amendment above: because missing_sources
+//     is now a CALL-SCOPED read of sourceHealthAll (every enabled instance's
+//     health state), not a per-evidence-row projection, neither tool needs to
+//     walk its returned rows' Source field to compute it. This also means the
+//     original concern here — that ThinkEvidence (think.go) carries no Source
+//     field, forcing a read from the underlying []Memory buildThink already
+//     holds — no longer applies for think either: both tools can derive
+//     missing_sources identically, straight from sourceHealthAll(cfg, now),
+//     with no ThinkEvidence schema change and no per-row Source plumbing.
 //  3. The two tools use structurally different strength derivations (score
 //     magnitude vs. gap presence). That asymmetry is a deliberate, documented
 //     choice given each tool's own scale — not an oversight — but the
@@ -131,7 +154,11 @@ const (
 //     produces bm25 magnitudes ~1e-6, which does not generalize).
 //   - two enabled connector instances: gmail (FRESH, synced 1h ago) and
 //     imessage (STALE, synced 96h ago — imessage's health threshold is 48h,
-//     health.go sourceHealthLocalThreshold).
+//     health.go sourceHealthLocalThreshold). Because missing_sources is
+//     call-scoped over sourceHealthAll (see the FROZEN SHAPE doc comment
+//     above), imessage being fixture-wide stale means EVERY confidence:true
+//     test below reports missing_sources=[imessage]/health_impact=stale,
+//     regardless of which source actually matched that test's query.
 //   - four target memories, each matched by its OWN unique rare query term so
 //     every scenario below is a clean, isolated single-hit query:
 //   - "quorlath"  -> strong-evidence  (gmail,    fresh,  recent -> strong)
@@ -360,11 +387,15 @@ func TestConfidenceSearchMemoryStrongEvidenceHealthySource(t *testing.T) {
 	if conf["freshest_source_at"] != "2026-07-29T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want the healthy-baseline memory's CreatedAt", conf["freshest_source_at"])
 	}
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{}) {
-		t.Fatalf("missing_sources = %v, want [] (gmail is fresh)", got)
+	// AMENDED: missing_sources is call-scoped over ALL enabled instances, not
+	// just this query's contributors. This fixture always has imessage enabled
+	// and stale (seedConfidenceFixture), so even a query whose only match is a
+	// healthy gmail row still surfaces imessage's incomplete coverage.
+	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
+		t.Fatalf("missing_sources = %v, want [imessage] (call-scoped: imessage is enabled+stale fixture-wide, regardless of whether this query's match came from gmail)", got)
 	}
-	if conf["health_impact"] != "none" {
-		t.Fatalf("health_impact = %v, want none", conf["health_impact"])
+	if conf["health_impact"] != "stale" {
+		t.Fatalf("health_impact = %v, want stale (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
 	}
 }
 
@@ -390,8 +421,12 @@ func TestConfidenceSearchMemoryWeakEvidenceUnhealthySource(t *testing.T) {
 	if conf["freshest_source_at"] != "2026-06-10T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want the weak-evidence memory's CreatedAt", conf["freshest_source_at"])
 	}
+	// Value unchanged from the pre-amendment contract (imessage was always
+	// this query's only contributor AND is fixture-wide stale), but the
+	// reasoning is now call-scoped, not contribution-scoped: imessage would
+	// appear here even if this query had matched nothing at all.
 	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
-		t.Fatalf("missing_sources = %v, want [imessage] (its only contributing source is stale)", got)
+		t.Fatalf("missing_sources = %v, want [imessage] (imessage is enabled+stale fixture-wide, call-scoped)", got)
 	}
 	if conf["health_impact"] != "stale" {
 		t.Fatalf("health_impact = %v, want stale (imessage's sourceHealth state)", conf["health_impact"])
@@ -420,17 +455,26 @@ func TestConfidenceSearchMemoryModerateEvidenceFreshestIsMax(t *testing.T) {
 	if conf["freshest_source_at"] != "2026-07-15T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want 2026-07-15T00:00:00Z (MAX CreatedAt across both vantrex rows, not the older vantrex-old row)", conf["freshest_source_at"])
 	}
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{}) {
-		t.Fatalf("missing_sources = %v, want [] (both vantrex rows are from the fresh gmail source)", got)
+	// AMENDED: both vantrex rows are from the fresh gmail source, but
+	// missing_sources is call-scoped over ALL enabled instances (see the
+	// FROZEN SHAPE doc comment), so the fixture-wide-stale imessage instance
+	// still surfaces here even though it contributed nothing to this query.
+	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
+		t.Fatalf("missing_sources = %v, want [imessage] (call-scoped: imessage is enabled+stale fixture-wide, regardless of the vantrex rows' own gmail source)", got)
 	}
-	if conf["health_impact"] != "none" {
-		t.Fatalf("health_impact = %v, want none", conf["health_impact"])
+	if conf["health_impact"] != "stale" {
+		t.Fatalf("health_impact = %v, want stale (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
 	}
 }
 
 // TestConfidenceSearchMemoryNoResults is the empty-result edge case: an
 // unmatched query must still carry a well-formed confidence block rather than
-// omitting it or erroring.
+// omitting it or erroring. AMENDED: missing_sources/health_impact are
+// call-scoped over sourceHealthAll, not derived from the (empty) returned
+// set, so a zero-result query still reports the fixture's stale imessage
+// instance — that is exactly the "incomplete coverage" story this field
+// exists to tell, not a signal that gets silenced just because nothing
+// matched.
 func TestConfidenceSearchMemoryNoResults(t *testing.T) {
 	seedConfidenceFixture(t)
 	sc := searchStructured(t, `{"query":"nonexistentzzzzterm","confidence":true}`)
@@ -446,11 +490,11 @@ func TestConfidenceSearchMemoryNoResults(t *testing.T) {
 	if conf["freshest_source_at"] != "" {
 		t.Fatalf("freshest_source_at = %v, want \"\" for zero results", conf["freshest_source_at"])
 	}
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{}) {
-		t.Fatalf("missing_sources = %v, want [] for zero results (nothing was retrieved to be missing)", got)
+	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
+		t.Fatalf("missing_sources = %v, want [imessage] for zero results (call-scoped over sourceHealthAll: imessage is enabled+stale fixture-wide even though nothing was retrieved)", got)
 	}
-	if conf["health_impact"] != "none" {
-		t.Fatalf("health_impact = %v, want none for zero results", conf["health_impact"])
+	if conf["health_impact"] != "stale" {
+		t.Fatalf("health_impact = %v, want stale for zero results (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
 	}
 }
 
@@ -516,11 +560,14 @@ func TestConfidenceThinkStrongEvidenceNoGaps(t *testing.T) {
 	if conf["freshest_source_at"] != "2026-07-30T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want the strong-evidence memory's CreatedAt", conf["freshest_source_at"])
 	}
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{}) {
-		t.Fatalf("missing_sources = %v, want [] (gmail is fresh)", got)
+	// AMENDED: call-scoped over sourceHealthAll, not this query's evidence
+	// sources — imessage is enabled+stale fixture-wide even though this
+	// query's only match came from the fresh gmail source.
+	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
+		t.Fatalf("missing_sources = %v, want [imessage] (call-scoped: imessage is enabled+stale fixture-wide)", got)
 	}
-	if conf["health_impact"] != "none" {
-		t.Fatalf("health_impact = %v, want none", conf["health_impact"])
+	if conf["health_impact"] != "stale" {
+		t.Fatalf("health_impact = %v, want stale (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
 	}
 }
 
@@ -543,8 +590,11 @@ func TestConfidenceThinkModerateEvidenceStaleGap(t *testing.T) {
 	if conf["freshest_source_at"] != "2026-06-10T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want the weak-evidence memory's CreatedAt", conf["freshest_source_at"])
 	}
+	// Value unchanged from the pre-amendment contract (imessage was already
+	// this query's only evidence source AND is fixture-wide stale), but the
+	// reasoning is now call-scoped, not contribution-scoped.
 	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
-		t.Fatalf("missing_sources = %v, want [imessage]", got)
+		t.Fatalf("missing_sources = %v, want [imessage] (call-scoped: imessage is enabled+stale fixture-wide)", got)
 	}
 	if conf["health_impact"] != "stale" {
 		t.Fatalf("health_impact = %v, want stale", conf["health_impact"])
@@ -554,6 +604,9 @@ func TestConfidenceThinkModerateEvidenceStaleGap(t *testing.T) {
 // TestConfidenceThinkWeakEvidenceNoMatch covers think's zero-evidence path:
 // computeGaps already emits CoverageHoles ("No memory matched this query.")
 // for an unmatched query, which this contract re-labels as strength=weak.
+// AMENDED: missing_sources/health_impact are call-scoped over sourceHealthAll,
+// not derived from the (empty) evidence set, so a zero-evidence query still
+// reports the fixture's stale imessage instance.
 func TestConfidenceThinkWeakEvidenceNoMatch(t *testing.T) {
 	seedConfidenceFixture(t)
 	sc := thinkStructured(t, `{"query":"nonexistentzzzzterm","confidence":true}`)
@@ -569,11 +622,11 @@ func TestConfidenceThinkWeakEvidenceNoMatch(t *testing.T) {
 	if conf["freshest_source_at"] != "" {
 		t.Fatalf("freshest_source_at = %v, want \"\" for zero evidence", conf["freshest_source_at"])
 	}
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{}) {
-		t.Fatalf("missing_sources = %v, want [] for zero evidence", got)
+	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
+		t.Fatalf("missing_sources = %v, want [imessage] for zero evidence (call-scoped over sourceHealthAll: imessage is enabled+stale fixture-wide even though nothing was retrieved)", got)
 	}
-	if conf["health_impact"] != "none" {
-		t.Fatalf("health_impact = %v, want none for zero evidence", conf["health_impact"])
+	if conf["health_impact"] != "stale" {
+		t.Fatalf("health_impact = %v, want stale for zero evidence (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
 	}
 }
 
