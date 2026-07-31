@@ -228,7 +228,12 @@ var mcpToolRegistry = []mcpToolDef{
 	},
 	{
 		Name: "read_memory", Description: "Read a single memory by its id",
-		Params:  []mcpParam{{"id", "string", "The memory id (as returned by search_memory/list_memory)", true}},
+		Params: []mcpParam{
+			{"id", "string", "The memory id (as returned by search_memory/list_memory)", true},
+			{"match", "string", "Optional literal phrase to center a bounded excerpt on (omit for the full body)", false},
+			{"max_tokens", "integer", "Optional excerpt budget in tokens for bounded reads (default ~800)", false},
+			{"occurrence", "integer", "Optional 1-indexed match occurrence to center the excerpt on (default 1)", false},
+		},
 		Handler: mcpReadMemory,
 	},
 	{
@@ -429,11 +434,26 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		// returns shared ids with 240-rune snippets, so read_memory is the
 		// documented expansion path for them too.
 		if sm, ok := findSharedMemory(cfg, strArg(args, "id", "")); ok {
-			return map[string]any{"memory": sm, "health": compactHealthOf(cfg, time.Now())}, nil
+			return mcpReadMemoryResult(cfg, sm, args), nil
 		}
 		return nil, err
 	}
-	return map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}, nil
+	return mcpReadMemoryResult(cfg, m, args), nil
+}
+
+// mcpReadMemoryResult shapes the read_memory response. The parameter-free
+// path (no match/max_tokens/occurrence) stays byte-identical to pre-#242
+// behavior: exactly {"memory","health"}, memory.text the full untouched
+// body. Any of the three #242 knobs being present opts into bounded mode
+// (read_bounded.go), which replaces memory.text with a centred excerpt and
+// adds the sibling "receipt" key — never a second "excerpt" field, so every
+// caller keeps reading the body from memory.text.
+func mcpReadMemoryResult(cfg Config, m Memory, args map[string]any) map[string]any {
+	if !boundedReadRequested(args) {
+		return map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}
+	}
+	shaped, receipt := applyBoundedRead(m, args)
+	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}
 }
 
 func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
