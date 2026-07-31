@@ -1259,6 +1259,50 @@ func TestGmailSegmentsContractFailClosedCountMismatch(t *testing.T) {
 	}
 }
 
+// TestGmailSegmentsContractFailClosedExplicitEmptyMessages — CONTRACT.
+// A legacy Gmail memory is identified by ABSENCE of meta.messages, not by an
+// explicitly present but empty/malformed value. Once the key is present, its
+// zero declared messages versus a rendered body block is a real alignment
+// failure and must receive the same content-free count_mismatch diagnostic as
+// every other count mismatch. Silently treating this shape as legacy would
+// hide the exact unscorable condition rebuild diagnostics exist to expose.
+func TestGmailSegmentsContractFailClosedExplicitEmptyMessages(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	const id = "gmail_thread/th-explicit-empty-messages"
+	if err := writeMemory(cfg, Memory{
+		ID: id, Scope: "personal", Type: "email", Source: "gmail",
+		Provider: "gmail", ProviderID: "thread/th-explicit-empty-messages",
+		Title: "Explicit empty messages", CreatedAt: "2026-06-02T10:00:00Z",
+		Text: "From: empty@example.com\n\nA rendered body exists despite an explicitly empty messages array.",
+		Meta: map[string]any{
+			"from":     []string{"empty@example.com"},
+			"messages": []commitmentMessageEvidence{},
+		},
+	}); err != nil {
+		t.Fatalf("seed explicit-empty-messages thread: %v", err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
+
+	if !memoryStillIndexed(t, cfg, id) {
+		t.Fatalf("parent memory %s must remain indexed when its segment metadata fails closed", id)
+	}
+	if rows := gmailSegRowsFor(t, cfg, id); len(rows) != 0 {
+		t.Fatalf("explicit-empty-messages thread produced %d segments, want 0", len(rows))
+	}
+	diag, ok := gmailSegDiagnosticFor(t, cfg, id)
+	if !ok {
+		t.Fatalf("no gmail_segment_diagnostics row for explicitly present empty meta.messages on %s", id)
+	}
+	if diag.Reason != "count_mismatch" || diag.MetaCount != 0 || diag.BodyCount != 1 {
+		t.Fatalf("diagnostic = %+v, want reason=count_mismatch meta_count=0 body_count=1", diag)
+	}
+}
+
 // TestGmailSegmentsContractFailClosedLiteralSeparatorInBody — CONTRACT, RED
 // today. The literal "---" line inside message 2's own body must not be
 // silently absorbed by a naive zip-by-index; the whole memory fails closed,
@@ -2182,6 +2226,81 @@ func TestGmailSegmentsContractBuriedMessageFindableViaSegment(t *testing.T) {
 	if at := requireStringField(t, ev, "at"); at != "2026-06-12T10:05:00Z" {
 		t.Errorf("evidence.at = %q, want the verbatim segment At %q", at, "2026-06-12T10:05:00Z")
 	}
+}
+
+// TestGmailSegmentsContractSegmentCandidateOutsideParentPoolSurvives —
+// CONTRACT. The segment projection is an ADDITIONAL candidate source, not
+// merely a reranker of parents already admitted by parent-grain FTS. A thread
+// whose long joined body falls beyond the widened parent pool must still enter
+// the result set when its short matching segment ranks first in the segment
+// arm. Otherwise recall silently depends on the parent winning admission
+// before the new candidate source is consulted, contradicting the headline
+// buried-message contract.
+func TestGmailSegmentsContractSegmentCandidateOutsideParentPoolSurvives(t *testing.T) {
+	cfg := seedGmailSegmentsSearchFixture(t)
+
+	// The fixture already has four short parent-grain decoys. Add enough more
+	// to push the long Gmail parent past searchMemories' floor-50 parent pool.
+	for i := 0; i < 60; i++ {
+		id := fmt.Sprintf("note/outside-parent-pool-decoy-%02d", i)
+		if err := writeMemory(cfg, Memory{
+			ID: id, Scope: "personal", Type: "note", Source: "filesystem",
+			Title: fmt.Sprintf("Outside-pool decoy %02d", i), CreatedAt: "2026-06-12T08:00:00Z",
+			Text: gsBuriedMarker + " compact decoy.",
+		}); err != nil {
+			t.Fatalf("seed outside-pool decoy %d: %v", i, err)
+		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex after outside-pool decoys: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath(cfg)+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	parentIDs, err := ftsSearchIDs(context.Background(), db, gsBuriedMarker, "", 50)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("ftsSearchIDs: %v", err)
+	}
+	for _, id := range parentIDs {
+		if id == gsBuriedID {
+			_ = db.Close()
+			t.Fatalf("fixture premise broken: buried parent unexpectedly survived the parent-grain top-50 pool: %v", parentIDs)
+		}
+	}
+	segmentIDs, _, err := gmailSegmentQueryArm(context.Background(), db, gsBuriedMarker, "")
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("gmailSegmentQueryArm: %v", err)
+	}
+	segmentFound := false
+	for _, id := range segmentIDs {
+		if id == gsBuriedID {
+			segmentFound = true
+			break
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close index: %v", err)
+	}
+	if !segmentFound {
+		t.Fatalf("fixture premise broken: segment arm did not rank buried parent %s: %v", gsBuriedID, segmentIDs)
+	}
+
+	res := mcpResult(t, budgetCall("search_memory", `{"query":"`+gsBuriedMarker+`","limit":3}`))
+	rows := resultRows(t, res)
+	for _, row := range rows {
+		if rowID(t, row) == gsBuriedID {
+			ev := evidenceObject(t, row)
+			if ref := requireStringField(t, ev, "evidence_ref"); ref != gsBuriedID+"#msg-2" {
+				t.Fatalf("outside-pool rescue evidence_ref = %q, want %q", ref, gsBuriedID+"#msg-2")
+			}
+			return
+		}
+	}
+	t.Fatalf("segment-ranked parent %s was dropped because it was absent from the parent-grain top-50 candidate pool: %v", gsBuriedID, rows)
 }
 
 // ---------------------------------------------------------------------------
