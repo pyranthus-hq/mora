@@ -798,6 +798,152 @@ func TestFiltersContextMemoryHealthExcludesFilteredSource(t *testing.T) {
 	}
 }
 
+// --- composite source grammar (malformed, not just unknown) ----------------
+
+// TestFiltersSourceEmptyInstanceErrors pins fail-closed behavior on
+// "gmail:" — a KNOWN family with an EMPTY instance after the colon. This is
+// structurally malformed (not a legitimate zero-match instance selector like
+// "gmail:doesnotexist" — see TestFiltersSourceKnownFamilyUnknownInstanceIsWellFormedZeroMatch)
+// and must never be silently accepted or silently degraded to a family-only
+// match.
+func TestFiltersSourceEmptyInstanceErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "grammar-1", "gmail", "", "2026-07-01T00:00:00Z", "grammarcheck content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "search_memory", `{"query":"grammarcheck","source":"gmail:"}`)
+	if !isErr {
+		t.Fatalf(`source="gmail:" (empty instance) must be a tool error (fail closed); got isError=false, text=%s`, text)
+	}
+}
+
+// TestFiltersSourceMultiColonErrors pins fail-closed behavior on
+// "gmail:work:extra" — the family:instance grammar is a SINGLE colon; a
+// multi-colon composite has no defined meaning and must never be silently
+// accepted (e.g. by ignoring everything after the second colon).
+func TestFiltersSourceMultiColonErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "grammar-2", "gmail", "work", "2026-07-01T00:00:00Z", "grammarcheck2 content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "search_memory", `{"query":"grammarcheck2","source":"gmail:work:extra"}`)
+	if !isErr {
+		t.Fatalf(`source="gmail:work:extra" (multi-colon) must be a tool error (fail closed); got isError=false, text=%s`, text)
+	}
+}
+
+// TestFiltersContextMemorySourceEmptyInstanceErrors /
+// MultiColonErrors mirror the two composite-grammar pins for context_memory.
+func TestFiltersContextMemorySourceEmptyInstanceErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ctx-grammar-1", "gmail", "", "2026-07-01T00:00:00Z", "ctxgrammarcheck content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "context_memory", `{"query":"ctxgrammarcheck","source":"gmail:"}`)
+	if !isErr {
+		t.Fatalf(`source="gmail:" (empty instance) must be a tool error (fail closed); got isError=false, text=%s`, text)
+	}
+}
+
+func TestFiltersContextMemorySourceMultiColonErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ctx-grammar-2", "gmail", "work", "2026-07-01T00:00:00Z", "ctxgrammarcheck2 content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "context_memory", `{"query":"ctxgrammarcheck2","source":"gmail:work:extra"}`)
+	if !isErr {
+		t.Fatalf(`source="gmail:work:extra" (multi-colon) must be a tool error (fail closed); got isError=false, text=%s`, text)
+	}
+}
+
+// --- subscribed shared corpus (share.go's union with local results) -------
+//
+// defaultSearchForMCP fuses LOCAL results with every subscribed share
+// corpus's own results (unionSharedResults -> searchSharedCorpora ->
+// searchShareIndex) BEFORE returning from search_memory/context_memory. The
+// frozen "source=imessage can never return gmail" / pre-rank pins apply to
+// this FINAL fused set, not just the local half — a subscribed corpus is
+// part of what the caller actually receives. These tests build a REAL
+// share subscription via the SAME fixture helpers share_gen_test.go/
+// share_test.go already establish (writeTestIdentity/registerSub/publishGen/
+// buildShareRepoFixture), matching this subsystem's own test convention of
+// calling searchSharedCorpora directly rather than only through MCP
+// dispatch — searchSharedCorpora itself is not an MCP tool.
+
+// TestFiltersSharedCorpusExcludesFilteredSource pins that a subscribed
+// corpus's own gmail memory is excluded by an active source=imessage filter,
+// exactly like a local one would be. The query term ("shforlanx") appears in
+// NO local memory (an empty vault, only the subscription is seeded), so the
+// local arm contributes nothing — any result MUST have come from the shared
+// arm, isolating its filter behavior.
+func TestFiltersSharedCorpusExcludesFilteredSource(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	registerSub(t, cfg, "sharefiltertest")
+
+	gmailShared := Memory{
+		ID: "share-gmail-1", Scope: "project:acme", Type: "email", Title: "share-gmail-1",
+		Provider: "gmail", CreatedAt: "2026-07-01T00:00:00Z", Text: "shforlanx shared gmail body",
+	}
+	publishGen(t, cfg, "sharefiltertest", id, []Memory{gmailShared})
+
+	sc := filtersStructured(t, "search_memory", `{"query":"shforlanx","source":"imessage"}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if containsID(ids, "share-gmail-1") {
+		t.Fatalf("source=imessage must exclude a subscribed corpus's gmail memory, got %v", ids)
+	}
+}
+
+// TestFiltersSharedCorpusPreRankCrowdingProof is the shared-arm analog of
+// TestFiltersHybridFTSArmPreRankProof: 51 gmail decoys in a SUBSCRIBED
+// corpus (nothing locally matches this query at all, so the local arm
+// contributes zero candidates — the ONLY way the target can surface is via
+// the shared arm's own pre-rank filtering) rank far above 1 weak imessage
+// match, also in the shared corpus. With limit=1, a naive "rank first inside
+// the shared index's own LIMIT, filter the returned page after"
+// implementation returns nothing once filtered; pre-rank semantics (the SQL
+// WHERE predicate inside searchShareIndex, share.go) still surface it.
+func TestFiltersSharedCorpusPreRankCrowdingProof(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	id := writeTestIdentity(t, cfg)
+	registerSub(t, cfg, "sharecrowdtest")
+
+	var mems []Memory
+	for i := 0; i < 51; i++ {
+		mems = append(mems, Memory{
+			ID: fmt.Sprintf("share-decoy-%02d", i), Scope: "project:acme", Type: "email",
+			Title: fmt.Sprintf("share-decoy-%02d", i), Provider: "gmail",
+			CreatedAt: fmt.Sprintf("2026-06-%02dT00:00:00Z", (i%28)+1),
+			Text:      "shquorlex shquorlex shquorlex decoy filler",
+		})
+	}
+	mems = append(mems, Memory{
+		ID: "share-target", Scope: "project:acme", Type: "imessage", Title: "share-target",
+		Provider: "imessage", CreatedAt: "2026-07-05T00:00:00Z", Text: "a lone shquorlex mention",
+	})
+	publishGen(t, cfg, "sharecrowdtest", id, mems)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"shquorlex","source":"imessage","limit":1}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if !containsID(ids, "share-target") {
+		t.Fatalf("shared-arm pre-rank filter: want share-target surfaced past 51 gmail decoys crowding the shared arm's limit=1; got %v", ids)
+	}
+}
+
 // mustRebuild is a t.Helper wrapper over rebuildIndex, matching this file's
 // (cfg-only, no context plumbing) test style.
 func mustRebuild(t *testing.T, cfg Config) {
