@@ -88,13 +88,16 @@ import (
 //     over (evidence_ref UNINDEXED, text) so a MATCH hit yields the
 //     evidence_ref directly.
 //   - DQ2 (diagnostics) — DECIDED (round 2, integrator: table shape ACCEPTED,
-//     reason taxonomy EXTENDED). A dedicated gmail_segment_diagnostics table
-//     (memory_id TEXT PRIMARY KEY, reason TEXT, meta_count INTEGER,
-//     body_count INTEGER) records the fail-closed reason, counts/ids ONLY —
-//     never memory text. The full refusal taxonomy is FOUR reasons, each with
-//     its own distinct fixture (§4 requirement 5), checked in this PRIORITY
-//     ORDER (first match wins, so a fixture built to trigger a later reason
-//     never gets mis-reported as an earlier one it happens to also satisfy):
+//     reason taxonomy EXTENDED; round 3, supervisor-authorized amendment:
+//     taxonomy EXTENDED AGAIN to FIVE reasons — see reason 5 below, a
+//     reviewer-reproduced P0 the original four never anticipated). A
+//     dedicated gmail_segment_diagnostics table (memory_id TEXT PRIMARY KEY,
+//     reason TEXT, meta_count INTEGER, body_count INTEGER) records the
+//     fail-closed reason, counts/ids ONLY — never memory text. The refusal
+//     taxonomy is FIVE reasons, each with its own distinct fixture (§4
+//     requirement 5), checked in this PRIORITY ORDER (first match wins, so a
+//     fixture built to trigger a later reason never gets mis-reported as an
+//     earlier one it happens to also satisfy):
 //       1. "truncated" — Memory.Truncated is true. Checked FIRST and
 //          independently of the count comparison: the issue's own fail-closed
 //          requirement ("Do not index metadata entries whose rendered text
@@ -130,6 +133,23 @@ import (
 //          legitimate provider quirk could trip.
 //       4. "malformed_ref" — counts and ordering are both fine, but at least
 //          one MessageRef fails the DQ3 well-formedness check.
+//       5. "duplicate_ref" — DECIDED (round 3, supervisor-authorized
+//          amendment, reviewer-reproduced P0). Every MessageRef is
+//          individually well-formed (DQ3), but two or more messages declare
+//          the IDENTICAL MessageRef — which would otherwise collide on
+//          gmail_segments' evidence_ref PRIMARY KEY, a real SQL
+//          UNIQUE-constraint error that, unless caught HERE before any
+//          INSERT runs, aborts the WHOLE rebuild transaction (not just this
+//          one memory), taking the entire vault's index down until the one
+//          offending file is hand-fixed — violating both the fail-closed
+//          invariant (one bad memory must never cost every OTHER memory its
+//          segments, or its own indexing) and the disposable-index
+//          invariant. A DISTINCT reason from malformed_ref (an integrator
+//          decision): a duplicated ref is not itself malformed — it fails on
+//          a SET property (uniqueness across the memory's own messages), not
+//          a per-ref one — so folding it into malformed_ref would blur two
+//          different failure modes under one diagnostic. Checked LAST, after
+//          every ref is already confirmed individually well-formed.
 //   - DQ3 (well-formed MessageRef) — DECIDED (round 2, integrator: ACCEPTED
 //     unchanged). A MessageRef is well-formed for parent memory m iff it has
 //     the exact prefix m.ID+"#" and a non-empty suffix after that "#". This
@@ -316,6 +336,14 @@ import (
 //	  TestGmailSegmentsContractFailClosedOrderingMismatch (RED),
 //	  TestGmailSegmentsContractFailClosedTruncatedBody (RED),
 //	  TestGmailSegmentsContractFailClosedMalformedRef (RED),
+//	  TestGmailSegmentsContractFailClosedDuplicateRef (round 3 addition,
+//	  RED — the reviewer-reproduced P0: a duplicate MessageRef must fail
+//	  closed for its OWN memory exactly like the other four reasons, never
+//	  abort the whole rebuild),
+//	  TestGmailSegmentsContractDuplicateRefBystanderSurvives (round 3
+//	  addition, RED — the P0's blast-radius proof: an innocent bystander
+//	  memory sharing a vault with a duplicate-ref offender must still be
+//	  fully indexed and searchable),
 //	  TestGmailSegmentsContractDiagnosticsSchemaHasNoContentColumns (RED —
 //	  pins the diagnostics table's SCHEMA itself carries no content column,
 //	  not merely that one wasn't selected).
@@ -332,6 +360,10 @@ import (
 //	  TestGmailSegmentsContractReadMemoryEvidenceRefUnknownFailsClosed (RED),
 //	  TestGmailSegmentsContractReadMemoryEvidenceRefOnFailClosedMemoryErrors
 //	  (RED),
+//	  TestGmailSegmentsContractReadMemoryEvidenceRefSharedFallbackFailsClosed
+//	  (round 3 addition, RED — P2-1: the findSharedMemory fallback path must
+//	  fail closed on evidence_ref exactly like the local path, never
+//	  silently return the full shared body),
 //	  TestGmailSegmentsContractToolsListExposesEvidenceRefParam (RED —
 //	  schema discoverability, not behavior).
 //
@@ -1383,6 +1415,141 @@ func TestGmailSegmentsContractRecipientsMergeDeterministicDedup(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 6b. Duplicate MessageRef (round 3, supervisor-authorized amendment —
+// reviewer-reproduced P0). A memory whose meta.messages repeats the SAME
+// MessageRef across two or more messages would otherwise collide on
+// gmail_segments' evidence_ref PRIMARY KEY: a real SQL UNIQUE-constraint
+// error that, unless caught BEFORE any INSERT runs, aborts the WHOLE
+// rebuild transaction — not just this one memory's segments. That is a
+// second, more severe failure mode than DQ2's original four reasons (which
+// never touch the database: they all return before any INSERT), so this
+// gets its OWN diagnostic reason, "duplicate_ref" (an integrator decision:
+// distinct reason, not folded into malformed_ref, since a duplicate ref can
+// be individually well-formed — it fails on a SET property, not a per-ref
+// one). This is a genuinely isolated fixture (its own vault), deliberately
+// NOT folded into seedGmailSegmentsFixture: until the #243 fix lands, a
+// duplicate ref aborts rebuildIndex outright, which would take down every
+// OTHER test sharing that fixture's single rebuild — not what this fixture
+// exists to prove.
+// ---------------------------------------------------------------------------
+
+const (
+	gsDuplicateRefID  = "gmail_thread/th-duplicate-ref"
+	gsDuplicateRefRef = gsDuplicateRefID + "#msg-1" // repeated across BOTH messages below
+	gsBystanderID     = "note/duplicate-ref-bystander"
+	gsBystanderMarker = "GMLSEGBYSTANDERMARKEREIGHT"
+)
+
+// seedGmailSegmentsDuplicateRefFixture seeds ONE offending Gmail thread
+// (both messages declare the identical MessageRef) alongside ONE innocent,
+// ordinary, non-Gmail bystander memory, in the same vault, then rebuilds.
+// Until the #243 duplicate-ref fail-closed fix lands, rebuildIndex itself
+// fails here (the UNIQUE-constraint error) — this t.Fatalf IS the RED
+// signal for every test below that calls this seed helper, exactly like
+// every other gmail_segment_* helper's missing-table RED signal (never a
+// t.Skip).
+func seedGmailSegmentsDuplicateRefFixture(t *testing.T) Config {
+	t.Helper()
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	dupBody := gmailSegJoinBody(
+		[2]string{"olga@example.com", "First message, correctly formed on its own."},
+		[2]string{"peter@example.com", "Second message, but declares the SAME MessageRef as the first."},
+	)
+	if err := writeMemory(cfg, Memory{
+		ID: gsDuplicateRefID, Scope: "personal", Type: "email", Source: "gmail",
+		Provider: "gmail", ProviderID: "thread/th-duplicate-ref",
+		Title: "Duplicate ref thread", CreatedAt: "2026-06-10T09:00:00Z", Text: dupBody,
+		Meta: map[string]any{
+			"from": []string{"olga@example.com", "peter@example.com"},
+			"messages": gmailSegMessages(
+				// Both messages declare gsDuplicateRefRef — the fixture's only defect.
+				commitmentMessageEvidence{MessageRef: gsDuplicateRefRef, Sender: "olga@example.com", At: "2026-06-10T09:00:00Z", BlockRefs: []string{"body"}},
+				commitmentMessageEvidence{MessageRef: gsDuplicateRefRef, Sender: "peter@example.com", At: "2026-06-10T09:05:00Z", BlockRefs: []string{"body"}},
+			),
+		},
+	}); err != nil {
+		t.Fatalf("seed duplicate-ref thread: %v", err)
+	}
+
+	// Innocent bystander — an ordinary, well-formed, non-Gmail memory sharing
+	// the SAME vault/rebuild as the offender, so the survival pin below can
+	// prove the offender's failure never touches anything else.
+	if err := writeMemory(cfg, Memory{
+		ID: gsBystanderID, Scope: "personal", Type: "note", Source: "filesystem",
+		Title: "Bystander note", CreatedAt: "2026-06-10T09:10:00Z",
+		Text: gsBystanderMarker + " an ordinary note sharing the vault with the offender.",
+	}); err != nil {
+		t.Fatalf("seed bystander note: %v", err)
+	}
+
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
+	return cfg
+}
+
+// TestGmailSegmentsContractFailClosedDuplicateRef — CONTRACT, RED today (the
+// seed helper's own rebuildIndex fails before any assertion below even
+// runs). Pins the diagnostic shape once the P0 fix lands: zero segments,
+// reason="duplicate_ref", counts (meta=2, body=2) — this is explicitly NOT a
+// count or ordering failure, only a duplicate-ref one.
+func TestGmailSegmentsContractFailClosedDuplicateRef(t *testing.T) {
+	cfg := seedGmailSegmentsDuplicateRefFixture(t)
+
+	if !memoryStillIndexed(t, cfg, gsDuplicateRefID) {
+		t.Errorf("parent memory %s must remain indexed normally even when segments fail closed", gsDuplicateRefID)
+	}
+
+	rows := gmailSegRowsFor(t, cfg, gsDuplicateRefID)
+	if len(rows) != 0 {
+		t.Fatalf("duplicate-ref thread produced %d segments, want 0 (both messages declare the SAME MessageRef)", len(rows))
+	}
+
+	diag, ok := gmailSegDiagnosticFor(t, cfg, gsDuplicateRefID)
+	if !ok {
+		t.Fatalf("no gmail_segment_diagnostics row for %s", gsDuplicateRefID)
+	}
+	if diag.Reason != "duplicate_ref" {
+		t.Errorf("diagnostic reason = %q, want %q (a distinct reason from malformed_ref — an integrator decision, since a duplicated ref can be individually well-formed)", diag.Reason, "duplicate_ref")
+	}
+	if diag.MetaCount != 2 || diag.BodyCount != 2 {
+		t.Errorf("diagnostic counts = (meta=%d, body=%d), want (meta=2, body=2) — this is NOT a count or ordering failure", diag.MetaCount, diag.BodyCount)
+	}
+}
+
+// TestGmailSegmentsContractDuplicateRefBystanderSurvives — CONTRACT, RED
+// today (the P0 itself: without the fix, seedGmailSegmentsDuplicateRefFixture's
+// own rebuildIndex call fails with the UNIQUE-constraint error, so the WHOLE
+// vault — offender AND bystander alike — never gets indexed at all). This is
+// the reviewer's scratch repro, promoted to a named contract pin: a
+// duplicate-ref offender sharing a vault with an ordinary memory must never
+// take the bystander down with it. rebuildIndex must SUCCEED, and the
+// bystander must be fully indexed and searchable via the real MCP
+// search_memory surface — not merely present in the memories table.
+func TestGmailSegmentsContractDuplicateRefBystanderSurvives(t *testing.T) {
+	cfg := seedGmailSegmentsDuplicateRefFixture(t)
+
+	if !memoryStillIndexed(t, cfg, gsBystanderID) {
+		t.Fatalf("bystander memory %s did not survive a rebuild sharing its vault with a duplicate-ref offender", gsBystanderID)
+	}
+
+	res := mcpResult(t, budgetCall("search_memory", `{"query":"`+gsBystanderMarker+`","limit":5}`))
+	rows := resultRows(t, res)
+	var found bool
+	for _, row := range rows {
+		if rowID(t, row) == gsBystanderID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bystander memory %s is not searchable via search_memory after a duplicate-ref offender shared its vault (rebuild must have partially or fully failed): %v", gsBystanderID, rows)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 7. Byte-identity: a memory with no segment participation is untouched.
 // ---------------------------------------------------------------------------
 
@@ -2276,5 +2443,42 @@ func TestGmailSegmentsContractReadMemoryEvidenceRefOnFailClosedMemoryErrors(t *t
 	isErr, _ := res["isError"].(bool)
 	if !isErr {
 		t.Fatalf("read_memory evidence_ref against a fail-closed (zero-segment) memory did not error via real MCP dispatch (isError=true), want an explicit rejection: %v", res)
+	}
+}
+
+// TestGmailSegmentsContractReadMemoryEvidenceRefSharedFallbackFailsClosed —
+// CONTRACT, RED today (round 3, supervisor-authorized amendment, P2-1).
+// mcpReadMemory falls back to findSharedMemory (a subscribed shared corpus)
+// when the local vault has no such id — the documented expansion path a
+// search_memory shared-corpus result uses (mcp.go's own comment: "search
+// returns shared ids with 240-rune snippets, so read_memory is the
+// documented expansion path for them too"). evidence_ref on THAT path must
+// fail closed exactly like the local path — never silently ignore
+// evidence_ref and return the full untouched shared body, which is what
+// mcpReadMemoryResult does today (it only gates on #242's
+// match/max_tokens/occurrence, never evidence_ref).
+//
+// Currently UNREACHABLE in production with a real evidence_ref (mora share
+// export excludes Provider!="" and slash-bearing ids, so a genuine Gmail
+// evidence_ref could never legitimately name a shared id today) — pinned
+// anyway so the docs' never-silent-fallback promise is enforced if export
+// invariants ever change, rather than silently rotting. Reuses
+// share_test.go's own setupSubscription/fixtureMemory seam — the SAME one
+// TestMCPReadMemorySharedFallbackParameterFreeUnchanged (#242,
+// read_memory_bounded_test.go) already exercises — rather than inventing a
+// second one; the shared memory itself need not be Gmail-shaped, since the
+// fix is unconditional on evidence_ref presence for ANY shared-fallback read.
+func TestGmailSegmentsContractReadMemoryEvidenceRefSharedFallbackFailsClosed(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil shared note", "some shared content, not gmail-shaped at all"),
+	})
+
+	res := mcpResult(t, budgetCall("read_memory", `{"id":"mem_20260601_000000_aaaaaaaa","evidence_ref":"anything#msg-1"}`))
+	isErr, _ := res["isError"].(bool)
+	if !isErr {
+		t.Fatalf("read_memory(evidence_ref=...) against a shared-fallback memory did not error via real MCP dispatch (isError=true), want an explicit fail-closed rejection — a shared memory must never silently ignore evidence_ref and return the full body: %v", res)
 	}
 }
