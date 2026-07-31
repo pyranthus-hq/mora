@@ -20,10 +20,25 @@ func digestSeed(t *testing.T, cfg Config, provider, title string, ago time.Durat
 	return digestSeedHash(t, cfg, provider, title, ago, now, "h-"+title)
 }
 
+// digestSeedUnindexed writes one digest fixture without rebuilding the derived
+// index. Bulk-fixture tests use this helper and rebuild once after all writes;
+// rebuilding after every insert turns an otherwise linear setup into O(n²).
+func digestSeedUnindexed(t *testing.T, cfg Config, provider, title string, ago time.Duration, now time.Time) Memory {
+	t.Helper()
+	return digestSeedHashUnindexed(t, cfg, provider, title, ago, now, "h-"+title)
+}
+
 // digestSeedHash is digestSeed with an explicit content_hash, so a test can write
 // the "same" memory twice with a CHANGED hash (the updated case) — the delta is
 // hash-driven, never created_at (which writeMappedMemory preserves on a change).
 func digestSeedHash(t *testing.T, cfg Config, provider, title string, ago time.Duration, now time.Time, hash string) Memory {
+	t.Helper()
+	m := digestSeedHashUnindexed(t, cfg, provider, title, ago, now, hash)
+	rebuildDigestIndex(t, cfg)
+	return m
+}
+
+func digestSeedHashUnindexed(t *testing.T, cfg Config, provider, title string, ago time.Duration, now time.Time, hash string) Memory {
 	t.Helper()
 	m := Memory{
 		ID:          "id-" + title,
@@ -52,10 +67,14 @@ func digestSeedHash(t *testing.T, cfg Config, provider, title string, ago time.D
 	if err := writeMemory(cfg, m); err != nil {
 		t.Fatalf("writeMemory: %v", err)
 	}
+	return m
+}
+
+func rebuildDigestIndex(t *testing.T, cfg Config) {
+	t.Helper()
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
-	return m
 }
 
 // ungatedDigestConfig is the explicit seam for tests of pure digest mechanics
