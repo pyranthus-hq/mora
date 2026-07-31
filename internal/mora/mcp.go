@@ -233,6 +233,7 @@ var mcpToolRegistry = []mcpToolDef{
 			{"match", "string", "Optional literal phrase to center a bounded excerpt on (omit for the full body)", false},
 			{"max_tokens", "integer", "Optional excerpt budget in tokens for bounded reads (default ~800)", false},
 			{"occurrence", "integer", "Optional 1-indexed match occurrence to center the excerpt on (default 1)", false},
+			{"evidence_ref", "string", "Optional Gmail evidence ref (from search_memory's evidence.evidence_ref) to read ONLY that message's derived segment, bounded, with a receipt naming its sender/at; a ref that does not belong to this memory id is rejected", false},
 		},
 		Handler: mcpReadMemory,
 	},
@@ -438,6 +439,17 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		// returns shared ids with 240-rune snippets, so read_memory is the
 		// documented expansion path for them too.
 		if sm, ok := findSharedMemory(cfg, strArg(args, "id", "")); ok {
+			// Issue #243, P2-1 — evidence_ref is derived ONLY from the LOCAL
+			// vault's own gmail_segments index; a shared memory has no such
+			// projection to narrow into. Fail closed explicitly rather than
+			// silently ignoring evidence_ref and returning the shared
+			// memory's untouched full body.
+			if strArg(args, "evidence_ref", "") != "" {
+				retrieval := time.Since(retrievalStarted)
+				recordMCPPhases(ctx, retrieval, 0)
+				recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+				return nil, fmt.Errorf("evidence_ref is not supported for memory %q resolved via the shared-corpus fallback — evidence segments are derived from the local vault's own index only", strArg(args, "id", ""))
+			}
 			retrieval := time.Since(retrievalStarted)
 			assemblyStarted := time.Now()
 			result := mcpReadMemoryResult(cfg, sm, args)
@@ -452,7 +464,22 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	}
 	retrieval := time.Since(retrievalStarted)
 	assemblyStarted := time.Now()
-	result := mcpReadMemoryResult(cfg, m, args)
+	var result map[string]any
+	// Issue #243 — evidence_ref narrows the read target to ONE derived Gmail
+	// segment (DQ6, section 2). Dispatch it before the ordinary path so plain
+	// and bounded reads stay unchanged, while #245 still measures the final
+	// evidence-ref envelope at the shared dispatcher boundary.
+	if evidenceRef := strArg(args, "evidence_ref", ""); evidenceRef != "" {
+		value, refErr := mcpReadMemoryEvidenceRef(ctx, cfg, m, evidenceRef, args)
+		if refErr != nil {
+			recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
+			recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+			return nil, refErr
+		}
+		result = value.(map[string]any)
+	} else {
+		result = mcpReadMemoryResult(cfg, m, args)
+	}
 	assembly := time.Since(assemblyStarted)
 	recordMCPPhases(ctx, retrieval, assembly)
 	recordMCPUsage(ctx, cfg, readUsageEvent(args, result, true))
@@ -652,6 +679,19 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 		if excl := excludedByFilterSources(cfg, now, filters); len(excl) > 0 {
 			out["excluded_by_filter"] = excl
 		}
+	}
+	// Issue #237, round-3 amendment: an OPTIONAL top-level "corroborating" array,
+	// a sibling of "context" — the SAME compact four-key ref shape search_memory
+	// and think use, collecting every cluster head's folded members across
+	// `items`. Present ONLY when clustering actually folded a member (not an
+	// always-there-possibly-empty key), so a zero-cluster query stays byte-
+	// identical to pre-#237 output — no "corroborating" key anywhere.
+	var corroborating []CorroboratingRef
+	for _, m := range items {
+		corroborating = append(corroborating, m.Corroborating...)
+	}
+	if len(corroborating) > 0 {
+		out["corroborating"] = corroborating
 	}
 	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil

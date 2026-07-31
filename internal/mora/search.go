@@ -98,6 +98,20 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 		// to zero results rather than crashing the search command.
 		return nil, nil
 	}
+	// Issue #237 — corroborating-record clustering needs to see PAST the raw
+	// `limit` so a cluster's freed slots can backfill from the next-best
+	// DISTINCT candidates: fetch a deeper pool (same limit*5-min-50 formula
+	// hybrid.go's arms use), cluster, then truncate to `limit` below. A
+	// non-positive limit keeps today's exact SQL LIMIT semantics (0 rows /
+	// SQLite's "no limit" for negative) and skips clustering entirely — no
+	// caller passes one, but this preserves the pre-#237 edge behavior.
+	sqlLimit := limit
+	if limit > 0 {
+		sqlLimit = limit * 5
+		if sqlLimit < 50 {
+			sqlLimit = 50
+		}
+	}
 	sqlq := `SELECT m.id, m.scope, m.type, m.title, m.tags, m.source, m.created_at, m.path, m.text, bm25(memories_fts) AS score
 		FROM memories_fts JOIN memories m ON m.id = memories_fts.id WHERE memories_fts MATCH ?`
 	args := []any{match}
@@ -110,7 +124,7 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 		args = append(args, pargs...)
 	}
 	sqlq += ` ORDER BY score, m.id LIMIT ?`
-	args = append(args, limit)
+	args = append(args, sqlLimit)
 	rows, err := db.QueryContext(ctx, sqlq, args...)
 	if err != nil {
 		return nil, err
@@ -133,11 +147,55 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	parentIDs := make([]string, len(out))
+	for i, m := range out {
+		parentIDs[i] = m.ID
+	}
+	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source,
+	// mapped to PARENT ids, before fusion/slot accounting (frozen interface
+	// #3). Admit segment-ranked parents even when parent-grain FTS ranked
+	// them outside its widened pool; parentIDs stays separate so those rows do
+	// not receive a fabricated parent-arm contribution. Best-effort: a
+	// segment-arm/admission failure degrades retrieval but must never fail
+	// search_memory outright.
+	// Gated on a non-empty arm so a query with zero segment matches is a
+	// complete no-op — the byte-identity guarantee for non-participating
+	// memories (frozen interface #5).
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
+	if segErr == nil && len(segIDs) > 0 {
+		if admitted, admitErr := admitGmailSegmentCandidates(ctx, db, out, segIDs, sqlLimit); admitErr == nil {
+			out = admitted
+		}
+		out = fuseGmailSegmentArm(out, parentIDs, segIDs)
+	}
+	// Legacy slot discipline (#237 round-2 P1 fix): capture the pre-filter rank
+	// order's ids BEFORE suppression/visibility filtering touches `out`, so
+	// clusterAndTruncate can tell a row visibility-filtered out of the legacy
+	// top-`limit` window (never backfilled) from a row folded into a cluster
+	// (backfilled) — see cluster.go's clusterAndTruncate doc comment.
+	rawIDs := make([]string, len(out))
+	for i, m := range out {
+		rawIDs[i] = m.ID
+	}
 	// B4: a memory with a pending delete op is suppressed from the search chokepoint
 	// (the memories JOIN) while its rebuild is broken, so deleted content is never
 	// served even when the index still carries the row.
 	out = suppressPendingDeletes(cfg, out)
-	return currentMemories(cfg, out, time.Now())
+	filtered, err := currentMemories(cfg, out, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		attachGmailSegmentEvidence(filtered, gsegEvidence)
+		return filtered, nil // preserve pre-#237 SQL-LIMIT edge semantics; no clustering
+	}
+	// Issue #237 — cluster the (deeper-than-limit) candidate pool and truncate
+	// to `limit`, collapsing corroborating records into one slot per cluster.
+	result := clusterAndTruncate(rawIDs, filtered, limit)
+	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
+	// "does this SURVIVING row's parent have a query-matching segment" (DQ5).
+	attachGmailSegmentEvidence(result, gsegEvidence)
+	return result, nil
 }
 func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string {
 	if budget <= 0 {

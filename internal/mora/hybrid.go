@@ -266,12 +266,25 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		tr.FTS, tr.Vec, tr.Graph = ftsIDs, vecIDs, graphIDs
 	}
 
-	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 {
+	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source, mapped
+	// to PARENT ids, before fusion/slot accounting (frozen interface #3): one
+	// more arm in the SAME RRF fusion every other arm feeds. A query with no
+	// segment matches contributes an empty list, which is a complete no-op
+	// for every OTHER id's fused score — the byte-identity guarantee for
+	// non-participating memories holds automatically. Best-effort: a
+	// segment-arm failure just means an empty arm, never a failed search.
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
+	if segErr != nil {
+		segIDs, gsegEvidence = nil, nil
+	}
+
+	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 && len(segIDs) == 0 {
 		return nil, tr, nil
 	}
 
 	fp := cfg.fusion()
-	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs}, fp.weights(), fp.k)
+	fusionWeights := append(append([]float64{}, fp.weights()...), gmailSegmentArmWeight)
+	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
 	ids := make([]string, 0, len(fused))
 	for id := range fused {
 		ids = append(ids, id)
@@ -302,28 +315,38 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		ids = mmrRerank(ids, fused, vecByID, *mp)
 	}
 
-	if len(ids) > limit {
-		ids = ids[:limit]
-	}
-
+	// Issue #237 — corroborating-record clustering runs HERE: post-fusion,
+	// pre-truncate. Hydrating the full fused ranking (not just the top `limit`)
+	// is what makes the freed-slot backfill possible — a cluster's non-head
+	// members give up their slots to the next-best DISTINCT candidates further
+	// down `ids`, which requires seeing them before truncating.
 	mems, err := loadMemoriesByID(ctx, cfg, db, ids)
 	if err != nil {
 		return nil, tr, err
 	}
-	// loadMemoriesByID returns newest-first; re-order to the fused ranking and stamp
-	// the fused score so callers/telemetry see the retrieval signal.
+	// loadMemoriesByID returns newest-first AND already visibility-filtered
+	// (suppressPendingDeletes/currentMemories, graph_read.go); re-order to the
+	// fused ranking and stamp the fused score so callers/telemetry see the
+	// retrieval signal. `ids` itself is the FULL fused order BEFORE that
+	// visibility filtering ran — the legacy slot discipline's rawIDs window
+	// (cluster.go's clusterAndTruncate doc comment).
 	byID := make(map[string]Memory, len(mems))
 	for _, m := range mems {
 		byID[m.ID] = m
 	}
-	out := make([]Memory, 0, len(ids))
+	visible := make([]Memory, 0, len(ids))
 	for _, id := range ids {
 		if m, ok := byID[id]; ok {
 			m.Score = fused[id]
-			out = append(out, m)
+			visible = append(visible, m)
 		}
 	}
-	return out, tr, nil
+	result := clusterAndTruncate(ids, visible, limit)
+	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
+	// "does this SURVIVING row's parent have a query-matching segment" (DQ5),
+	// independent of which arm(s) actually ranked it in.
+	attachGmailSegmentEvidence(result, gsegEvidence)
+	return result, tr, nil
 }
 
 // vectorsAvailable reports whether the mem_vectors table exists and is populated.

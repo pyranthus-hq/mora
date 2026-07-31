@@ -165,15 +165,27 @@ No matched people → nil arm (`hybrid.go:292`). This is what makes "what did Ne
 
 ---
 
+## Arm 4 — Gmail segment-grain FTS (issue #243)
+
+`gmailSegmentQueryArm` (`internal/mora/gmail_segments_search.go`) is a fourth candidate source, present in **both** `searchMemories` (FTS-only) and `hybridSearchTrace` (hybrid): it runs the SAME query against `gmail_segments_fts` (the per-*message* derived projection — see [data model](./01-data-model-and-storage.md)) and maps every hit to its **parent** thread memory id, before fusion/slot accounting. A thread with several matching messages still contributes exactly one candidate id — `memories`/`memories_fts` already key one row per thread, so "one slot per thread" holds structurally, not by extra bookkeeping. Ids are deduped to each parent's **strongest** matching segment (best `bm25(gmail_segments_fts)` score, then lowest `evidence_ref` lexicographically — the tie-break `attachGmailSegmentEvidence` also uses for the receipt below), which is what proves a rare term buried in one short message of a long, diluted thread can still win — parent-grain FTS scores the *whole* joined body, so a long thread loses BM25's length normalization to short single-occurrence decoys; the segment arm scores that one message's *own* short text instead.
+
+In `hybridSearchTrace`, the segment arm is simply a fourth list fed into the existing `rrfWeighted([...], weights, fp.k)` call, weighted `gmailSegmentArmWeight = 1.0` alongside `defaultFusion`'s `fts/vec/graph` weights. `searchMemories` has no fusion machinery of its own (`ORDER BY bm25(memories_fts)`), so it first uses `admitGmailSegmentCandidates` to hydrate the segment arm's top `pool` parents that parent-grain FTS ranked outside its own widened pool, then `fuseGmailSegmentArm` runs a small two-arm RRF (`gmailSegmentParentWeight = 1.5` for the **original** parent-grain order, `1.0` for the segment arm, `k = 10` — matching `defaultFusion.k`). The two lists stay separate: a segment-only candidate can enter the union but never receives a fabricated parent-arm rank. This runs **only when the segment arm is non-empty**; a query with zero segment matches is a complete no-op — same order, same `Score` values as before #243 — which is what keeps every non-Gmail (or Gmail-without-segments) query byte-identical.
+
+A parent row that survives to the final (post-cluster, post-truncate) result set and has at least one query-matching segment carries an additional `"evidence"` key: `{evidence_ref, sender, at, snippet}` — the parent's strongest matching segment's identity, with `snippet` drawn from **that segment's own text only** (`matchSnippet`, same helper/window as the ordinary search snippet) so it can never quote a sibling message. Attachment (`attachGmailSegmentEvidence`) is a pure function of "does this returned parent have a query-matching segment" — independent of *why* the parent was returned (parent-grain title match, segment match, or both) — so a parent that already matched at parent grain (e.g. its title) still carries the receipt when it also independently has a matching segment.
+
+**The segment arm is best-effort BY DESIGN**, asymmetric with the FTS/vector/graph arms: an error from `gmailSegmentQueryArm` is swallowed by both callers and simply skips the arm (no segment promotion, no evidence, degrading to plain parent-grain retrieval) rather than failing `search_memory` outright — no logging exists for this specific failure, an accepted tradeoff of that policy, not an oversight.
+
+---
+
 ## RRF fusion + pool sizing
 
-`rrfWeighted` (`hybrid.go`) is **weighted rank-based Reciprocal Rank Fusion**: `score(id) = Σ wᵢ/(k + rank+1)` across the three arm lists. Rank-based fusion is deliberate — it fuses BM25's unbounded scores and cosine's `[0,1]` **without normalization**. The weights + damping live in `defaultFusion = {fts:1.5, vec:1, graph:1, k:10}` (overridable per-`Config` via `fusionOv` for the `TestEvalWeightSweep` tuning grid). **The damping `k` is the load-bearing knob, not the weights:** the textbook `k=60` is far too flat for a ~50-doc pool — a rank-50 also-ran contributes `1/110`, nearly the `1/61` of a rank-0 hit — so weak cross-arm agreement demoted strong FTS hits. Dropping to `k=10` sharpens the head and migrated FUSION→HIT. A gentle `fts=1.5` anchors the exact-match arm (heavier FTS regressed — it buries the vector arm's vocabulary-mismatch rescues). `rrf` remains as the equal-weight wrapper. Tuned on the live golden set. See `docs/design/2026-06-10-retrieval-ranking.md`.
+`rrfWeighted` (`hybrid.go`) is **weighted rank-based Reciprocal Rank Fusion**: `score(id) = Σ wᵢ/(k + rank+1)` across the arm lists — three in the base case (FTS/vector/graph), four when the Gmail segment arm (issue #243, above) also has hits. Rank-based fusion is deliberate — it fuses BM25's unbounded scores and cosine's `[0,1]` **without normalization**. The weights + damping live in `defaultFusion = {fts:1.5, vec:1, graph:1, k:10}` (overridable per-`Config` via `fusionOv` for the `TestEvalWeightSweep` tuning grid). **The damping `k` is the load-bearing knob, not the weights:** the textbook `k=60` is far too flat for a ~50-doc pool — a rank-50 also-ran contributes `1/110`, nearly the `1/61` of a rank-0 hit — so weak cross-arm agreement demoted strong FTS hits. Dropping to `k=10` sharpens the head and migrated FUSION→HIT. A gentle `fts=1.5` anchors the exact-match arm (heavier FTS regressed — it buries the vector arm's vocabulary-mismatch rescues). `rrf` remains as the equal-weight wrapper. Tuned on the live golden set. See `docs/design/2026-06-10-retrieval-ranking.md`.
 
-**Pool sizing** (`hybrid.go:101-104`): each arm is queried at `pool = limit * 5`, floored at 50. The whole arm list is fed to RRF — never capped before fusion. The graph arm's per-person LIMIT is `pool`, but its deduped union across people may *exceed* pool and is fused whole. Capping it would change the fused ranking for multi-person queries and break byte-identity (`hybrid.go:106-110`).
+**Pool sizing** (`hybrid.go:101-104`): each established arm is queried at `pool = limit * 5`, floored at 50. The segment query retains its full ordered parent list so evidence can still attach to any returned parent with a matching message; only its top `pool` segment-only parents are newly hydrated into `searchMemories`' candidate union. The graph arm's per-person LIMIT is `pool`, but its deduped union across people may *exceed* pool and is fused whole. Capping it would change the fused ranking for multi-person queries and break byte-identity (`hybrid.go:106-110`).
 
 After fusion (`hybrid.go:158-173`): collect ids, sort by **fused score desc, then id asc** (stable tie-break), record the full ranking into `tr.Fused`, then truncate to `limit`. `loadMemoriesByID` (`graph_read.go:152`) hydrates full memories (it returns newest-first, so the result is **re-ordered back to the fused ranking** and each `m.Score` is stamped with its fused score, `hybrid.go:179-191`).
 
-If all three arms are empty, the function returns nil before fusion (`hybrid.go:154`).
+If all four arms are empty, the function returns nil before fusion.
 
 ```mermaid
 sequenceDiagram
@@ -182,7 +194,8 @@ sequenceDiagram
     participant FTS as ftsSearchIDs (BM25)
     participant V as vectorSearchIDs (cosine)
     participant G as graphExpandIDs (1-hop)
-    participant RRF as rrf (k=60)
+    participant S as gmailSegmentQueryArm (message FTS)
+    participant RRF as rrfWeighted (k=10)
     participant DB as loadMemoriesByID
 
     C->>H: query, limit (semantic embedder)
@@ -194,7 +207,9 @@ sequenceDiagram
     V-->>H: vecIDs (cosine rank, sim>0)
     H->>G: gazetteer + alias match, pool
     G-->>H: graphIDs (newest-first)
-    H->>RRF: [ftsIDs, vecIDs, graphIDs]
+    H->>S: ftsQuery(q) MATCH
+    S-->>H: segment parent ids + exact evidence receipts
+    H->>RRF: [ftsIDs, vecIDs, graphIDs, segmentIDs]
     RRF-->>H: fused score per id
     Note over H: sort score desc, id asc → truncate to limit
     H->>DB: loadMemoriesByID(top ids)
@@ -222,6 +237,16 @@ The MCP `search_memory` and `list_memory` surfaces are token-budgeted. Three con
 - **Only the MCP surface snippets.** The CLI `mora search` and `mora list` paths keep full bodies + meta. `mcpSearchMemory` applies `snippetMemories` after `defaultSearch`; `mcpListMemory` applies it after `listMemories`, then both handlers use `budgetSearchResults` to cap the aggregate on whole-memory boundaries.
 
 `searchSnippetLen` deliberately matches `think`'s `thinkSnippetLen` (`internal/mora/think.go`) so the two budgeted surfaces clip identically.
+
+---
+
+## Corroborating-record clustering (issue #237)
+
+Both search paths run one more pass, post-fusion/pre-truncate, before the `limit`-sized result is handed back: `clusterAndTruncate` (`cluster.go`) collapses records that describe the same real-world event into one result slot. `searchMemories` widens its SQL `LIMIT` to a deeper candidate pool (`limit*5`, floor 50 — the same formula `hybridSearchTrace` already used for its arm pool) so a cluster's freed slots have real distinct candidates to backfill from, then clusters and truncates to `limit`; `hybridSearchTrace` clusters the fused, pre-truncate `ids` list at the exact point it used to just slice `ids[:limit]`. Two cheap, OR'd anchor rules decide a link: **Rule 1** (`clusterProviderLinked`) — identical non-empty `(Provider, ProviderID)`, e.g. the same Gmail thread or calendar event ingested twice — plain equality, so it composes transitively for free; **Rule 2** (`clusterPersonTimeLinked`) — both records carry an explicit `meta.occurred_at` (**never** a `CreatedAt` fallback — ingest time is not event time, and the old fallback collapsed a 200-thread same-sender fixture into one cluster), their `from`/`to`/`cc`/`attendees`/`organizer`/`participants` identity sets intersect (filtered through `isStructuralNoise` — the same GitHub-notification-label filter `personRefs` applies, so a shared "push"/"author" field never counts as a shared identity), and the two instants are within a **strict** 24h window. Clusters form greedily in rank order — the best-ranked unclustered record seeds a head, and every later record that qualifies *pairwise with that head* (a star, not a transitive closure — a chain A↔B↔C with no direct A↔C link never merges A and C) joins it — and a candidate exceeding 5 total members is refused whole (all members stay independent), which is what keeps a same-instant fan-out (one sender, many recipients) from being misread as a single event. A query that touches no cluster is untouched: the walk degenerates to the top `limit` survivors in rank order, byte-identical to pre-#237 output. See `internal/mora/cluster_contract_test.go` for the frozen contract.
+
+**Legacy slot discipline.** Widening the candidate pool for clustering purposes must not change what a non-clustering query returns — in particular, a memory suppressed by the B4 pending-delete guard (`suppressPendingDeletes`) or by governance (`currentMemories`) must cost its slot exactly like it did before #237, never silently backfilled from the deeper pool. `clusterAndTruncate(rawIDs, visible, limit)` takes both the full candidate pool's ids in rank order **before** visibility filtering (`rawIDs`) and the same pool **after** filtering (`visible`, a rank-order-preserving subsequence). The first `limit` ids of `rawIDs` are the legacy window — exactly what a plain SQL-`LIMIT`-then-filter query would have fetched. A window id that visibility filtering removed entirely is simply absent from `visible` and costs its slot outright, with no replacement. A window id that survives but gets folded into a cluster head frees its slot — that head is provably also in-window, since the greedy walk only ever forms a head from an earlier-or-equal rank position than its members — and *that* freed slot is what backfills from `visible` rows beyond the window, in rank order, skipping any row that is itself suppressed or already absorbed into another cluster. Both callers thread this through: `searchMemories` (`search.go`) snapshots the SQL result's ids before calling `suppressPendingDeletes`/`currentMemories`; `hybridSearchTrace` (`hybrid.go`) uses the fused `ids` list itself as `rawIDs`, since `loadMemoriesByID` already applies the same visibility filtering internally before the fused ranking is rebuilt from it.
+
+**Propagation to think / context_memory / `mora context`.** Clustering runs inside the shared primitives (`searchMemories`/`hybridSearch`/`hybridSearchTrace`), so every caller through them inherits a cluster head's populated `Memory.Corroborating` field — but each surface's own output shape has to forward it, or a folded member becomes unrecoverable (not merely uncited) from that surface. `think` (`think.go`) copies a head's `Corroborating` onto its matching `ThinkEvidence` entry. MCP `context_memory` (`mcp.go`) gains an *optional* top-level `"corroborating"` array — a sibling of `"context"`, present only when at least one item in the result actually folded a member, absent (no key at all) on a zero-cluster query. CLI `mora context --json` (`entities.go`'s `contextItemJSON`) gains a *nested* `"corroborating"` array on the head's own receipt, mirroring `search_memory`/`think` rather than introducing a second shape. All three reuse the same compact four-key ref (`{id,title,source,created_at}`) `search_memory` itself carries.
 
 ---
 

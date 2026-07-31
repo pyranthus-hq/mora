@@ -495,6 +495,79 @@ func TestMCPBudgetCeilings(t *testing.T) {
 	}
 }
 
+// gmailSegmentBudgetMarker is planted in ONE derived Gmail message segment —
+// unique to this fixture so the search_memory_evidence row below cannot
+// coincidentally match any of seedBudgetFixture's own content.
+const gmailSegmentBudgetMarker = "GMLSEGBUDGETMARKERSEVEN"
+
+// seedGmailSegmentBudgetFixture (issue #243) is a dedicated, ISOLATED
+// fixture (its own temp HOME, not seedBudgetFixture) for the evidence_ref /
+// search-evidence T0 coverage rows below — deliberately separate so adding
+// this coverage can never perturb any EXISTING budgetCase's measured
+// envelope size (pure-insertion requirement). One well-formed, single-
+// message Gmail thread is enough to exercise both the read_memory
+// evidence_ref receipt and the search_memory evidence receipt.
+func seedGmailSegmentBudgetFixture(t *testing.T) Config {
+	t.Helper()
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	const id = "gmail_thread/budget-evidence"
+	if err := writeMemory(cfg, Memory{
+		ID: id, Scope: "personal", Type: "email", Source: "gmail",
+		Provider: "gmail", ProviderID: "thread/budget-evidence",
+		Title: "Budget evidence thread", CreatedAt: "2026-06-01T09:00:00Z",
+		Text: "From: alice@example.com\n\n" + gmailSegmentBudgetMarker + " first message body.",
+		Meta: map[string]any{
+			"from": []string{"alice@example.com"},
+			"messages": []commitmentMessageEvidence{
+				{MessageRef: id + "#msg-1", Sender: "alice@example.com", To: []string{"bob@example.com"}, At: "2026-06-01T09:00:00Z", BlockRefs: []string{"body"}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed gmail segment budget fixture: %v", err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
+	return cfg
+}
+
+// gmailSegmentBudgetCases (issue #243) pins the evidence_ref read_memory
+// receipt and the search_memory evidence-receipt envelope under the SAME
+// fixed ceilings TestMCPBudgetCeilings already holds their plain
+// counterparts to (read_memory: 4000, search_memory: 8000) — additive
+// coverage, own budgetCase rows, never touching budgetCases() itself.
+func gmailSegmentBudgetCases() []budgetCase {
+	return []budgetCase{
+		{tool: "read_memory_evidence_ref",
+			line: budgetCall("read_memory", `{"id":"gmail_thread/budget-evidence","evidence_ref":"gmail_thread/budget-evidence#msg-1"}`),
+			ceil: 4000,
+			note: "issue #243: evidence_ref-scoped bounded read (memory+health+receipt carrying evidence_ref/sender/at) must land under the SAME read_memory ceiling as a plain id read"},
+		{tool: "search_memory_evidence",
+			line: budgetCall("search_memory", `{"query":"`+gmailSegmentBudgetMarker+`","limit":5}`),
+			ceil: 8000,
+			note: "issue #243: a search_memory row carrying the evidence receipt {evidence_ref,sender,at,snippet} must land under the SAME search_memory ceiling as a plain result"},
+	}
+}
+
+// TestMCPBudgetCeilingsGmailSegments (issue #243) runs the two rows above
+// through the SAME assertBudget gate semantics TestMCPBudgetCeilings uses,
+// over the dedicated seedGmailSegmentBudgetFixture — additive coverage only;
+// TestMCPBudgetCeilings, budgetCases(), and seedBudgetFixture are untouched.
+func TestMCPBudgetCeilingsGmailSegments(t *testing.T) {
+	seedGmailSegmentBudgetFixture(t)
+
+	for _, c := range gmailSegmentBudgetCases() {
+		c := c
+		t.Run(c.tool, func(t *testing.T) {
+			b := measureEnvelope(t, c.line)
+			tok := (b + charsPerToken - 1) / charsPerToken
+			assertBudget(t, c, tok, b)
+		})
+	}
+}
+
 // unhealthyBudgetCases (C1) re-measures the two TIGHTEST MCP ceilings —
 // write_memory's degraded-success shape and delete_memory — over the
 // unhealthy fixture, so the ceiling is proven on the worst-case payload this
