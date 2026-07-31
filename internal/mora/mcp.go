@@ -505,14 +505,28 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	text := buildContext(cfg, items, charBudget, query != "")
 	logUsage(cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
 	used := estimateTokensUsed(len(text))
-	return map[string]any{
+	out := map[string]any{
 		"context":     text,
 		"freshness":   sourceFreshness(cfg),
 		"budget_unit": budgetUnitTokens,
 		"budget":      tokenBudget,
 		"used":        used,
 		"health":      compactHealthOf(cfg, time.Now()),
-	}, nil
+	}
+	// Issue #237, round-3 amendment: an OPTIONAL top-level "corroborating" array,
+	// a sibling of "context" — the SAME compact four-key ref shape search_memory
+	// and think use, collecting every cluster head's folded members across
+	// `items`. Present ONLY when clustering actually folded a member (not an
+	// always-there-possibly-empty key), so a zero-cluster query stays byte-
+	// identical to pre-#237 output — no "corroborating" key anywhere.
+	var corroborating []CorroboratingRef
+	for _, m := range items {
+		corroborating = append(corroborating, m.Corroborating...)
+	}
+	if len(corroborating) > 0 {
+		out["corroborating"] = corroborating
+	}
+	return out, nil
 }
 
 func mcpThink(ctx context.Context, cfg Config, args map[string]any) (any, error) {

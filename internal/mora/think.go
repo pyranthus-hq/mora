@@ -37,6 +37,13 @@ type ThinkEvidence struct {
 	// Empty for the user's own memories — omitempty keeps local-only envelopes
 	// byte-identical (MCP budget gate).
 	Owner string `json:"owner,omitempty"`
+	// Corroborating mirrors a cluster head's Memory.Corroborating (issue #237,
+	// round-2 P1 scoping fix): buildThink retrieves via hybridSearchTrace, the
+	// same shared primitive search_memory uses, so a head's folded members are
+	// already known here — without this field they would be UNRECOVERABLE from
+	// think's output (correctly absent as their own evidence rows, but never
+	// cited anywhere else either). Empty/absent for non-head evidence.
+	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
 }
 
 // ThinkGaps is the deterministic "what's missing" analysis (no model).
@@ -85,13 +92,14 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	}
 	for _, m := range mems {
 		res.Evidence = append(res.Evidence, ThinkEvidence{
-			StableID:  m.ID,
-			Title:     m.Title,
-			Scope:     m.Scope,
-			CreatedAt: m.CreatedAt,
-			Score:     m.Score,
-			Snippet:   matchSnippet(m.Text, query, thinkSnippetLen),
-			Owner:     m.Owner,
+			StableID:      m.ID,
+			Title:         m.Title,
+			Scope:         m.Scope,
+			CreatedAt:     m.CreatedAt,
+			Score:         m.Score,
+			Snippet:       matchSnippet(m.Text, query, thinkSnippetLen),
+			Owner:         m.Owner,
+			Corroborating: m.Corroborating,
 		})
 	}
 	gaps, err := computeGaps(ctx, cfg, query, local, tr, now)

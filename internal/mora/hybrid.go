@@ -270,20 +270,24 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	if err != nil {
 		return nil, tr, err
 	}
-	// loadMemoriesByID returns newest-first; re-order to the fused ranking and stamp
-	// the fused score so callers/telemetry see the retrieval signal.
+	// loadMemoriesByID returns newest-first AND already visibility-filtered
+	// (suppressPendingDeletes/currentMemories, graph_read.go); re-order to the
+	// fused ranking and stamp the fused score so callers/telemetry see the
+	// retrieval signal. `ids` itself is the FULL fused order BEFORE that
+	// visibility filtering ran — the legacy slot discipline's rawIDs window
+	// (cluster.go's clusterAndTruncate doc comment).
 	byID := make(map[string]Memory, len(mems))
 	for _, m := range mems {
 		byID[m.ID] = m
 	}
-	ranked := make([]Memory, 0, len(ids))
+	visible := make([]Memory, 0, len(ids))
 	for _, id := range ids {
 		if m, ok := byID[id]; ok {
 			m.Score = fused[id]
-			ranked = append(ranked, m)
+			visible = append(visible, m)
 		}
 	}
-	return clusterAndTruncate(ranked, limit), tr, nil
+	return clusterAndTruncate(ids, visible, limit), tr, nil
 }
 
 // vectorsAvailable reports whether the mem_vectors table exists and is populated.

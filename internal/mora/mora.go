@@ -123,9 +123,14 @@ type Memory struct {
 	Meta map[string]any `json:"meta,omitempty"`
 	// Corroborating holds compact refs to other memories the vault believes
 	// describe the SAME real-world event as this one (issue #237). Populated
-	// ONLY at search_memory result-assembly time (cluster.go), never persisted
-	// and never set on read_memory/list_memory — omitempty keeps every other
-	// read surface byte-identical.
+	// at result-assembly time by the shared retrieval primitives
+	// (clusterAndTruncate, cluster.go) — search_memory, think, context_memory,
+	// and CLI `mora context` all propagate it from there to their own output
+	// shapes (see think.go's ThinkEvidence.Corroborating, mcp.go's top-level
+	// context_memory "corroborating", and entities.go's
+	// contextItemJSON.Corroborating). Never persisted and never set on
+	// read_memory/list_memory — omitempty keeps every other read surface
+	// byte-identical.
 	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
 }
 

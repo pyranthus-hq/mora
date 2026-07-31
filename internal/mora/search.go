@@ -128,6 +128,15 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Legacy slot discipline (#237 round-2 P1 fix): capture the pre-filter rank
+	// order's ids BEFORE suppression/visibility filtering touches `out`, so
+	// clusterAndTruncate can tell a row visibility-filtered out of the legacy
+	// top-`limit` window (never backfilled) from a row folded into a cluster
+	// (backfilled) — see cluster.go's clusterAndTruncate doc comment.
+	rawIDs := make([]string, len(out))
+	for i, m := range out {
+		rawIDs[i] = m.ID
+	}
 	// B4: a memory with a pending delete op is suppressed from the search chokepoint
 	// (the memories JOIN) while its rebuild is broken, so deleted content is never
 	// served even when the index still carries the row.
@@ -141,7 +150,7 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	}
 	// Issue #237 — cluster the (deeper-than-limit) candidate pool and truncate
 	// to `limit`, collapsing corroborating records into one slot per cluster.
-	return clusterAndTruncate(filtered, limit), nil
+	return clusterAndTruncate(rawIDs, filtered, limit), nil
 }
 func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string {
 	if budget <= 0 {

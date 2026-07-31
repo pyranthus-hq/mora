@@ -60,9 +60,18 @@ func clusterIdentitySet(m Memory) map[string]bool {
 	}
 	add := func(s string) {
 		s = strings.ToLower(strings.TrimSpace(s))
-		if s != "" {
-			set[s] = true
+		if s == "" {
+			return
 		}
+		// Reuse personRefs' (graph.go) structural-noise filter rather than forking
+		// the list: a GitHub notification field label ("push"/"author"/…) is not a
+		// real participant identity, so an identity-set intersection that only
+		// coincides on a noise token must not count as Rule 2 overlap (round-2/P2
+		// hardening, TestClusterContractRule2IdentityNoiseNearMiss).
+		if isStructuralNoise(s) {
+			return
+		}
+		set[s] = true
 	}
 	for _, key := range []string{"from", "to", "cc", "attendees"} {
 		for _, s := range metaStrings(m.Meta[key]) {
@@ -123,12 +132,30 @@ func clusterPersonTimeLinked(aIdents, bIdents map[string]bool, aAt, bAt time.Tim
 	return diff < clusterWindow
 }
 
-// clusterAndTruncate collapses corroborating-record clusters in ranked (the
-// full post-fusion/bm25 ranking, best match first, ties already broken
-// deterministically by the caller) into one result slot per cluster, then
-// truncates to limit.
+// clusterAndTruncate collapses corroborating-record clusters into one result
+// slot per cluster, then applies the frozen LEGACY SLOT DISCIPLINE (round-2
+// backfill P1 fix, #237):
 //
-// GREEDY DETERMINISTIC FORMATION (per the frozen contract): walk ranked in
+//	rawIDs is the FULL candidate pool's ids in rank order, BEFORE visibility
+//	filtering (suppressPendingDeletes / currentMemories) removed anything —
+//	exactly what a plain SQL-LIMIT-then-filter legacy query would have
+//	fetched. Its first `limit` ids are THE WINDOW.
+//
+//	visible is rawIDs' pool AFTER visibility filtering, in the SAME relative
+//	rank order (a subsequence of rawIDs) — this is what gets clustered.
+//
+// A window id that visibility filtering removed entirely (absent from
+// visible) COSTS its slot outright — it is never backfilled, matching
+// legacy SQL-LIMIT-then-filter semantics exactly. A window id that survives
+// but gets folded into a cluster head — necessarily also a window id,
+// because the greedy walk below only ever forms a head from an EARLIER
+// (or equal) rank position than its members, so a member's head can never
+// rank later than the member itself — frees its slot, backfilled from
+// visible rows BEYOND the window, in rank order, skipping suppressed and
+// already-absorbed rows. A pool with no suppression and no clustering
+// degenerates to visible[:limit], byte-identical to pre-#237 output.
+//
+// GREEDY DETERMINISTIC FORMATION (per the frozen contract): walk visible in
 // rank order; the strongest unprocessed record seeds a new candidate cluster
 // as its head; scan the remaining unprocessed records in the same rank order
 // and collect every one that qualifies against THAT head alone (Rule 1 OR
@@ -139,21 +166,16 @@ func clusterPersonTimeLinked(aIdents, bIdents map[string]bool, aAt, bAt time.Tim
 // anyone else) — refusal is final, not merely "try a smaller subset next".
 // Otherwise the candidate is committed: the qualifying records become the
 // head's Corroborating refs (in rank order) and no longer occupy their own
-// slot, freeing it for the next-best DISTINCT record further down ranked.
-//
-// A ranked list touching no cluster at all is returned byte-identical to
-// ranked[:limit] (every group is a singleton, so the walk just takes the
-// first `limit` entries in order) — clustering is a pure no-op off its own
-// trigger condition.
-func clusterAndTruncate(ranked []Memory, limit int) []Memory {
-	if limit <= 0 || len(ranked) == 0 {
+// slot, freeing it per the window/backfill rule above.
+func clusterAndTruncate(rawIDs []string, visible []Memory, limit int) []Memory {
+	if limit <= 0 {
 		return nil
 	}
-	n := len(ranked)
+	n := len(visible)
 	idents := make([]map[string]bool, n)
 	occurred := make([]time.Time, n)
 	occurredOK := make([]bool, n)
-	for i, m := range ranked {
+	for i, m := range visible {
 		idents[i] = clusterIdentitySet(m)
 		occurred[i], occurredOK[i] = clusterOccurredAt(m)
 	}
@@ -174,7 +196,7 @@ func clusterAndTruncate(ranked []Memory, limit int) []Memory {
 			if processed[j] {
 				continue
 			}
-			if clusterProviderLinked(ranked[i], ranked[j]) ||
+			if clusterProviderLinked(visible[i], visible[j]) ||
 				clusterPersonTimeLinked(idents[i], idents[j], occurred[i], occurred[j], occurredOK[i], occurredOK[j]) {
 				candidates = append(candidates, j)
 			}
@@ -199,21 +221,72 @@ func clusterAndTruncate(ranked []Memory, limit int) []Memory {
 		}
 	}
 
-	out := make([]Memory, 0, limit)
-	for i := 0; i < n && len(out) < limit; i++ {
-		if memberOf[i] != -1 {
-			continue // folded into an earlier head's corroborating refs
-		}
-		head := ranked[i]
+	windowN := limit
+	if windowN > len(rawIDs) {
+		windowN = len(rawIDs)
+	}
+	inWindow := make(map[string]bool, windowN)
+	for _, id := range rawIDs[:windowN] {
+		inWindow[id] = true
+	}
+
+	buildRow := func(i int) Memory {
+		head := visible[i]
 		if members := membersOfHead[i]; len(members) > 0 {
 			corr := make([]CorroboratingRef, 0, len(members))
 			for _, mi := range members {
-				mm := ranked[mi]
+				mm := visible[mi]
 				corr = append(corr, CorroboratingRef{ID: mm.ID, Title: mm.Title, Source: mm.Source, CreatedAt: mm.CreatedAt})
 			}
 			head.Corroborating = corr
 		}
-		out = append(out, head)
+		return head
+	}
+
+	// direct = window rows that survive as their own top-level row (head or
+	// singleton), in rank order. backfillCandidates = beyond-window rows that
+	// survive as their own top-level row, in rank order — the only pool a freed
+	// window slot may draw from. backfillBudget counts window rows that were
+	// folded into a (necessarily in-window) head: exactly the number of slots
+	// legitimately freed for backfill. A window row removed by visibility
+	// filtering is simply absent from `visible` and contributes to neither —
+	// its slot is gone, full stop.
+	//
+	// direct is deliberately make()'d (non-nil) rather than a nil var: both
+	// callers' legacy (pre-#237) pipelines always ran their pool through
+	// currentMemories, whose filterCurrentMemories unconditionally builds a
+	// fresh `make([]Memory, 0, len(in))` slice — so a legacy zero-result
+	// answer (e.g. every window row visibility-filtered away) was always a
+	// non-nil empty slice, never nil, and marshals to JSON `[]`, never
+	// `null`. A nil `direct` would flip that byte for the in-window-all-
+	// suppressed case specifically; since append on a non-nil slice always
+	// stays non-nil (even appending zero elements), building on top of a
+	// make()'d slice here preserves that legacy byte exactly, without
+	// touching the untouched-by-clustering nil/null paths (e.g. an
+	// empty/punctuation-only query, which short-circuits before ever
+	// reaching this function).
+	direct := make([]Memory, 0, windowN)
+	var backfillCandidates []Memory
+	backfillBudget := 0
+	for i := 0; i < n; i++ {
+		if memberOf[i] != -1 {
+			if inWindow[visible[i].ID] {
+				backfillBudget++
+			}
+			continue // folded into a head's corroborating refs, never its own row
+		}
+		if inWindow[visible[i].ID] {
+			direct = append(direct, buildRow(i))
+		} else {
+			backfillCandidates = append(backfillCandidates, buildRow(i))
+		}
+	}
+	if backfillBudget > len(backfillCandidates) {
+		backfillBudget = len(backfillCandidates)
+	}
+	out := append(direct, backfillCandidates[:backfillBudget]...)
+	if len(out) > limit {
+		out = out[:limit] // safety net; direct+backfillBudget <= windowN <= limit by construction
 	}
 	return out
 }
