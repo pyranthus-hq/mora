@@ -214,12 +214,12 @@ One subtlety: when `vecOK`, the embedder is resolved **once** (`emb, embErr := c
 
 ## Snippet + limit + budget coupling
 
-The MCP `search_memory` surface is token-budgeted. Three constants are coupled (`mora.go:2163-2173`):
+The MCP `search_memory` and `list_memory` surfaces are token-budgeted. Three constants are coupled in `internal/mora/mora.go`:
 - `mcpSearchDefaultLimit = 8` — bumped from 5 because the T2 live eval showed gold docs landing at FTS ranks **#5–#7**, just outside the old top-5 window.
-- That bump is **safe only because** the MCP path now snippets bodies: `snippetMemories(mems, query)` (`search.go`) flattens each body to one line, clips to a `searchSnippetLen = 240`-rune window **centered on the earliest query-term match** (`matchSnippet`, `think.go` — a deep hit used to be found yet invisible in the head-clipped preview), sets `Truncated`, and **drops the `Meta` map** (unbounded entity-graph frontmatter — agents fetch it via `get_entity`/`read_memory`, not a search preview). 8 *full* bodies would blow the T0 MCP token ceiling (`search.go`).
-- **Only the MCP surface snippets.** The CLI (`mora search` → `emit`, `mora.go:501`) keeps full bodies + meta. `snippetMemories` is applied after `defaultSearch` only in the MCP handler (`mora.go:2984`).
+- That bump is **safe only because** the MCP path now snippets bodies: `snippetMemories` (`internal/mora/search.go`) flattens each body to one line, clips to a `searchSnippetLen = 240`-rune window **centered on the earliest query-term match** (`matchSnippet`, `internal/mora/think.go` — a deep hit used to be found yet invisible in the head-clipped preview), sets `Truncated`, and **drops the `Meta` map** (unbounded entity-graph frontmatter — agents fetch it via `get_entity`/`read_memory`, not an enumeration preview). `mcpListMemory` passes an empty query, so `matchSnippet` uses the same rune-safe head clip for recent-memory previews. Full bodies would blow the T0 MCP token ceilings.
+- **Only the MCP surface snippets.** The CLI `mora search` and `mora list` paths keep full bodies + meta. `mcpSearchMemory` applies `snippetMemories` after `defaultSearch`; `mcpListMemory` applies it after `listMemories`, then both handlers use `budgetSearchResults` to cap the aggregate on whole-memory boundaries.
 
-`searchSnippetLen` deliberately matches `think`'s `thinkSnippetLen` (`mora.go:2171`) so the two budgeted surfaces clip identically.
+`searchSnippetLen` deliberately matches `think`'s `thinkSnippetLen` (`internal/mora/think.go`) so the two budgeted surfaces clip identically.
 
 ---
 
@@ -242,7 +242,7 @@ The MCP `search_memory` surface is token-budgeted. Three constants are coupled (
 - [data model & storage](./01-data-model-and-storage.md) — the `memories`, `memories_fts`, `mem_vectors`, `entities`, `edges` schema and `rebuildIndex`
 - [entity graph](./03-entity-graph.md) — how `person:` entities, aliases, and `edges` (consumed by the graph arm + gazetteer) are derived
 - [synthesis: think & digest](./07-synthesis-think-digest.md) — the always-hybrid `context_memory`/`think` callers and `snippet`/`thinkSnippetLen`
-- [MCP server](./06-mcp-server.md) — the `search_memory` / `context_memory` tool handlers and `snippetMemories` token budgeting
+- [MCP server](./06-mcp-server.md) — the `search_memory` / `list_memory` / `context_memory` tool handlers and `snippetMemories` token budgeting
 - [CLI & UX](./08-cli-and-ux.md) — `cmdSearch`, `parseSearchArgs`, `emit`
 - [eval & testing](./09-eval-and-testing.md) — the T2 recall harness, `retrievalTrace` attribution, and the T0 token-budget gate
 
