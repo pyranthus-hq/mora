@@ -250,6 +250,50 @@ func TestRetrievalDAGStaticSegmentConfidenceUsesRRFFusedScale(t *testing.T) {
 	}
 }
 
+func TestRetrievalDAGStaticSharedFusionConfidenceUsesRRFFusedScale(t *testing.T) {
+	t.Setenv("MORA_EMBEDDER", "static")
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	const query = "sharerankfusionprobe"
+	local := Memory{
+		ID: "i5-local-share-score", Scope: "project:acme", Type: "insight",
+		Title: "Local share score", Source: "notes", CreatedAt: "2026-07-31T12:00:00Z",
+		Text: query + " local evidence",
+	}
+	if err := writeMemory(cfg, local); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	id := writeTestIdentity(t, cfg)
+	registerSub(t, cfg, "i5-score-domain")
+	publishGen(t, cfg, "i5-score-domain", id, []Memory{{
+		ID: "i5-shared-score", Scope: "project:acme", Type: "insight",
+		Title: "Shared score", Source: "notes", CreatedAt: "2026-07-31T12:00:00Z",
+		Text: query + " shared evidence",
+	}})
+
+	res := mcpResult(t, budgetCall("search_memory", `{"query":"`+query+`","confidence":true}`))
+	rows := resultRows(t, res)
+	if len(rows) < 2 {
+		t.Fatalf("fixture did not exercise local+shared fusion: rows=%v", rows)
+	}
+	for _, row := range rows {
+		score, ok := row["score"].(float64)
+		if !ok || score <= 0 {
+			t.Fatalf("fused row has non-RRF score: row=%v", row)
+		}
+	}
+	conf := mustConfidence(t, structuredPayload(t, res))
+	if conf["scale"] != confidenceScaleRRFFused {
+		t.Fatalf("confidence scale=%v for shared-corpus RRF scores, want %q", conf["scale"], confidenceScaleRRFFused)
+	}
+}
+
 func TestRetrievalDAGEvidenceRefUsageMeasuresFinalEnvelopeWithoutContent(t *testing.T) {
 	t.Setenv("DO_NOT_TRACK", "")
 	t.Setenv("MORA_LOG_QUERIES", "1")
