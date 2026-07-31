@@ -443,7 +443,13 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	query := strArg(args, "query", "")
 	scope := strArg(args, "scope", "")
 	limit := intArg(args, "limit", mcpSearchDefaultLimit)
-	res, err := defaultSearch(ctx, cfg, query, scope, limit)
+	// #238: defaultSearchForMCP (not the plain defaultSearch every other call
+	// site uses) so the confidence envelope below can consume the ACTUAL
+	// routing decision + retrieval trace this call already computed, instead
+	// of re-probing chooseEmbedderFor or re-running the whole hybrid pipeline
+	// a second time.
+	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit)
+	res := sr.Results
 	logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
 		return nil, err
@@ -479,7 +485,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
 	// — the actual RETURNED set — per the frozen contract.
 	if boolArg(args, "confidence", false) {
-		out["confidence"] = searchConfidence(ctx, cfg, budgeted, query, scope, limit, time.Now())
+		out["confidence"] = searchConfidence(ctx, cfg, budgeted, sr.SemanticPath, sr.Local, sr.Trace, query, time.Now())
 	}
 	return out, nil
 }

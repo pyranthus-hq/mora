@@ -20,12 +20,27 @@ import (
 // see confidence_contract_test.go's "#238 AMENDMENT" doc comment for the
 // measured repro). Bucketing that value against the bm25 bounds always read
 // "weak", regardless of how strong or gap-free the match was. The fix keys
-// search_memory's strength derivation on the SAME embedderIsSemantic branch
-// defaultSearch already computes: bm25 bucketing stays put on the FTS-only
-// path; the semantic/hybrid path shares think's existing gap-based rule
-// (confidenceGapStrength) instead. The envelope also gains a "scale" field
-// ("bm25" | "rrf_fused") so callers can tell which number space max_score/
-// mean_score are actually in.
+// search_memory's strength derivation on the SAME routing decision
+// defaultSearchForMCP already made for this call (hybrid.go): bm25 bucketing
+// stays put on the FTS-only path; the semantic/hybrid path shares think's
+// existing gap-based rule (confidenceGapStrength) instead, computed from the
+// SAME retrieval trace that call already produced. The envelope also gains a
+// "scale" field ("bm25" | "rrf_fused") so callers can tell which number space
+// max_score/mean_score are actually in.
+//
+// #238 P1/P2 AMENDMENT: the FIRST cut of this fix independently re-evaluated
+// chooseEmbedderFor/embedderIsSemantic here (a second, separately-timed HTTP
+// probe) and, on the semantic path, re-ran the ENTIRE hybridSearchTrace
+// pipeline (a second embedding round-trip + retrieval + fusion) just to
+// recover the trace mcpSearchMemory's own defaultSearch call already computed
+// and discarded. Two probes of live Ollama reachability that can disagree
+// with each other AND with the routing decision that actually scored the
+// results is a real defect (not just waste): if reachability flips between
+// the two, the envelope can label an FTS-scored result "rrf_fused" or vice
+// versa. The fix threads the ACTUAL routing decision (SemanticPath) and the
+// ACTUAL retrieval trace (Local/Trace) from mcpSearchMemory's own
+// defaultSearchForMCP call into searchConfidence — zero additional embedder
+// probes, zero additional retrieval passes, anywhere in the confidence path.
 
 // confidenceSearchStrongBound / confidenceSearchModerateBound are the frozen
 // search_memory bm25 bucket boundaries (contract's "STRENGTH BUCKETING"
@@ -66,12 +81,19 @@ type confidenceEnvelope struct {
 // searchConfidence builds the confidence envelope for search_memory. mems is
 // the post-budget slice actually being returned to the caller — the
 // contract's "RETURNED set" that max_score/mean_score/freshest_source_at are
-// scoped over. ctx/query/scope/limit mirror the SAME defaultSearch call
-// mcpSearchMemory already made (see mora-mcp-contract's callMCPTool pattern);
-// they exist ONLY so the semantic path can recompute computeGaps' own
-// retrievalTrace, which hybridSearch's thin wrapper (called inside
-// defaultSearch) discards on the production hot path.
-func searchConfidence(ctx context.Context, cfg Config, mems []Memory, query, scope string, limit int, now time.Time) confidenceEnvelope {
+// scoped over.
+//
+// semanticPath/localMems/trace are THREADED, not recomputed: they are the
+// SAME routing decision and retrieval trace mcpSearchMemory's own
+// defaultSearchForMCP call already produced for this request (hybrid.go).
+// This is the #238 P1/P2 fix — searchConfidence never independently probes
+// chooseEmbedderFor/embedderIsSemantic and never re-runs hybridSearchTrace;
+// it only reads what retrieval already decided and already computed.
+// localMems/trace are the PRE-share-union local results (zero value on the
+// FTS-only path), mirroring buildThink's documented LOCAL-only gap scope
+// (think.go) — query is passed through only as a plain string for
+// computeGaps' own gap analysis, not for any additional retrieval.
+func searchConfidence(ctx context.Context, cfg Config, mems []Memory, semanticPath bool, localMems []Memory, trace retrievalTrace, query string, now time.Time) confidenceEnvelope {
 	scores := make([]float64, len(mems))
 	dates := make([]string, len(mems))
 	for i, m := range mems {
@@ -81,16 +103,16 @@ func searchConfidence(ctx context.Context, cfg Config, mems []Memory, query, sco
 	best, mean := confidenceScoreStats(scores)
 	missing, impact := confidenceSourceGaps(cfg, now)
 
-	// Path-aware (#238): key off the SAME embedderIsSemantic branch
-	// defaultSearch already evaluates to choose FTS-only vs hybrid. A
-	// chooseEmbedderFor error (e.g. a one-second Ollama blip) degrades to the
-	// FTS-only bucketing, matching defaultSearch's own HEALTH-12 "degrade
-	// visibly, don't hard-fail" precedent (hybrid.go).
+	// Path-aware (#238): key off the SAME routing decision that actually
+	// scored this call's results (threaded in as semanticPath), never a
+	// second, independently-timed probe. defaultSearchForMCP already applied
+	// HEALTH-12's "degrade visibly, don't hard-fail" precedent (hybrid.go)
+	// when it made this decision; searchConfidence just reads it.
 	strength := confidenceSearchStrength(best)
 	scale := confidenceScaleBM25
-	if emb, embErr := chooseEmbedderFor(cfg); embErr == nil && embedderIsSemantic(emb) {
+	if semanticPath {
 		scale = confidenceScaleRRFFused
-		strength = confidenceSemanticSearchStrength(ctx, cfg, query, scope, limit, now)
+		strength = confidenceSemanticSearchStrength(ctx, cfg, query, localMems, trace, now)
 	}
 
 	return confidenceEnvelope{
@@ -177,24 +199,21 @@ func confidenceThinkStrength(res ThinkResult) string {
 // confidence_contract_test.go's "#238 AMENDMENT" doc comment), not a
 // match-quality magnitude the bm25 thresholds can bucket.
 //
-// It re-runs hybridSearchTrace at the SAME query/scope/limit defaultSearch
-// already computed inside this call, purely to recover the retrievalTrace
-// hybridSearch's thin wrapper (called inside defaultSearch) discards — this
-// is not a new scoring system, it reuses computeGaps exactly as think does,
-// over the SAME kind of (mems, trace) pair. Deliberately mirrors think's
-// choice to compute gaps over LOCAL (pre-share-union) results only (buildThink
-// doc comment, think.go): a shared-corpus contribution is never compared
-// against the personal index's own retrieval trace or entity graph.
+// mems/tr are THREADED from mcpSearchMemory's own defaultSearchForMCP call
+// (#238 P1/P2 fix) — this function no longer re-runs hybridSearchTrace to
+// recover them; it reuses computeGaps exactly as think does, over the SAME
+// (mems, trace) pair retrieval already produced. mems is deliberately the
+// PRE-share-union local set, mirroring think's choice to compute gaps over
+// LOCAL results only (buildThink doc comment, think.go): a shared-corpus
+// contribution is never compared against the personal index's own retrieval
+// trace or entity graph.
 //
-// A recompute error fails closed to "weak" — this is an opt-in, best-effort
-// signal derived from data the main search already fetched successfully;
-// it must never turn a working search_memory call into a hard failure, and
-// it must never overclaim confidence when the gap analysis can't be run.
-func confidenceSemanticSearchStrength(ctx context.Context, cfg Config, query, scope string, limit int, now time.Time) string {
-	mems, tr, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
-	if err != nil {
-		return "weak"
-	}
+// A computeGaps error still fails closed to "weak" — this is an opt-in,
+// best-effort signal, and it must never turn a working search_memory call
+// into a hard failure or overclaim confidence when the gap analysis can't be
+// run. There is no longer a recompute to fail; this guard covers computeGaps
+// itself (e.g. an index read error).
+func confidenceSemanticSearchStrength(ctx context.Context, cfg Config, query string, mems []Memory, tr retrievalTrace, now time.Time) string {
 	if len(mems) == 0 {
 		return "weak"
 	}

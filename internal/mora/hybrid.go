@@ -97,35 +97,75 @@ func hybridSearch(ctx context.Context, cfg Config, query, scope string, limit in
 // path gates on this.
 func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder().ModelID() }
 
-// defaultSearch backs search_memory + `mora search`. It routes to hybrid ONLY when
-// the ACTIVELY CHOSEN embedder is semantic (Ollama opted in AND the daemon
-// reachable); static-hash — including Ollama opted in but the daemon down — stays
-// pure FTS-only. We gate on chooseEmbedder() rather than just MORA_EMBEDDER because
-// a vector-empty hybrid is NOT equivalent to FTS-only: the graph arm still shifts
-// RRF ranking, so it would not match the measured FTS-only baseline (codex review).
-// Note: in the Ollama-up path this probes once here and again inside hybridSearch;
-// the second probe is a fast localhost check (threading the instance through
-// hybridSearchTrace would ripple into the eval signatures — deferred).
-func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
+// mcpSearchResult is defaultSearch's routing decision + retrieval trace,
+// exposed alongside its results for mcpSearchMemory's confidence envelope
+// (#238 P1/P2 fix). Confidence must key its "scale"/strength on the SAME
+// decision that actually routed and scored this call's results — never a
+// second, independently-timed chooseEmbedderFor probe (which can disagree
+// with the routing probe if Ollama reachability flips between the two) —
+// and must reuse the SAME hybridSearchTrace pass rather than re-running the
+// full embed+retrieve+fuse pipeline a second time just to recover the trace.
+//
+// Local/Trace are populated ONLY on the semantic path (zero value on
+// FTS-only), and are the PRE-union local results — mirroring buildThink's
+// documented choice (think.go) to compute gaps over LOCAL results only, so a
+// shared-corpus contribution is never compared against the personal index's
+// own retrieval trace.
+type mcpSearchResult struct {
+	Results      []Memory       // post-union — the actual RETURNED set, identical to defaultSearch's return
+	SemanticPath bool           // the SAME chooseEmbedderFor/embedderIsSemantic decision that routed retrieval
+	Local        []Memory       // pre-union local results, semantic path only (nil on FTS-only)
+	Trace        retrievalTrace // hybridSearchTrace's per-arm trace, semantic path only (zero value on FTS-only)
+}
+
+// defaultSearchForMCP is defaultSearch's routing + results, plus the ACTUAL
+// routing decision and retrieval trace this call computed, threaded out for
+// mcpSearchMemory's confidence envelope to consume (#238). defaultSearch
+// itself delegates here so its OTHER call sites (the `mora search` CLI) keep
+// their exact signature and behavior, unchanged and untouched.
+//
+// It routes to hybrid ONLY when the ACTIVELY CHOSEN embedder is semantic
+// (Ollama opted in AND the daemon reachable); static-hash — including Ollama
+// opted in but the daemon down — stays pure FTS-only. We gate on
+// chooseEmbedder() rather than just MORA_EMBEDDER because a vector-empty
+// hybrid is NOT equivalent to FTS-only: the graph arm still shifts RRF
+// ranking, so it would not match the measured FTS-only baseline (codex
+// review).
+//
+// HEALTH-12 / Packet D2 read path: DEGRADE VISIBLY. An unreachable configured
+// `ollama` embedder makes chooseEmbedderFor err — route to FTS-only rather
+// than hard-failing a search on a one-second daemon blip. The failure is
+// disclosed by the reddened index health banner (indexHealthOf → degraded),
+// not by a crash.
+func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, limit int) (mcpSearchResult, error) {
+	var out mcpSearchResult
 	var local []Memory
 	var err error
-	// HEALTH-12 / Packet D2 read path: DEGRADE VISIBLY. An unreachable configured
-	// `ollama` embedder makes chooseEmbedderFor err — route to FTS-only rather than
-	// hard-failing a search on a one-second daemon blip. The failure is disclosed by
-	// the reddened index health banner (indexHealthOf → degraded), not by a crash.
 	emb, embErr := chooseEmbedderFor(cfg)
-	if embErr == nil && embedderIsSemantic(emb) {
-		local, err = hybridSearch(ctx, cfg, query, scope, limit)
+	out.SemanticPath = embErr == nil && embedderIsSemantic(emb)
+	if out.SemanticPath {
+		local, out.Trace, err = hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
 	} else {
 		local, err = searchMemories(ctx, cfg, query, scope, limit)
 	}
 	if err != nil {
-		return nil, err
+		return out, err
 	}
+	out.Local = local
 	// Query-time union with subscribed share corpora (`mora share`): owner-
 	// attributed, rank-fused, and a no-op returning `local` unchanged when no
 	// subscriptions exist.
-	return unionSharedResults(ctx, cfg, local, query, scope, limit)
+	out.Results, err = unionSharedResults(ctx, cfg, local, query, scope, limit)
+	return out, err
+}
+
+// defaultSearch backs search_memory + `mora search`. See defaultSearchForMCP
+// for the routing rule; this is a thin wrapper that discards the routing
+// decision/trace so every OTHER call site keeps its exact pre-#238 signature
+// and behavior — one production code path, the extras dropped.
+func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
+	res, err := defaultSearchForMCP(ctx, cfg, query, scope, limit)
+	return res.Results, err
 }
 
 // hybridSearchTrace is hybridSearch with the per-arm ranked lists exposed for
