@@ -232,8 +232,8 @@ func indexUpsert(ctx context.Context, cfg Config, m Memory) error {
 
 // indexReadyForUpsert reports whether the on-disk index is usable for an
 // incremental single-row upsert — it exists, carries the schema version this binary
-// writes, has the three tables the upsert touches, and returns the bound vault_id
-// (empty if the index never recorded one). It opens a READ connection only, so it
+// writes, has the complete D+E retrieval shape the upsert touches, and returns
+// the bound vault_id (empty if the index never recorded one). It opens a READ connection only, so it
 // holds no write lock while the caller decides whether to delegate to a full
 // rebuild. Any "not ready" condition (including a missing db file) returns
 // ready=false with a nil error so the caller cleanly falls back to rebuildIndex.
@@ -257,13 +257,12 @@ func indexReadyForUpsert(ctx context.Context, cfg Config) (ready bool, indexID s
 	if uv != indexSchemaVersion {
 		return false, "", nil // stale/unstamped schema -> full rebuild re-stamps it
 	}
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('memories','memories_fts','index_meta')`).Scan(&n); err != nil {
+	complete, err := indexRetrievalSchemaComplete(ctx, db)
+	if err != nil {
 		return false, "", err
 	}
-	if n != 3 {
-		return false, "", nil // partial schema -> full rebuild creates the rest
+	if !complete {
+		return false, "", nil // partial D/E schema -> full rebuild creates the complete v5 union
 	}
 	var vid string
 	switch err := db.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key='vault_id'`).Scan(&vid); {

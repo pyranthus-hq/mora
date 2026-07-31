@@ -204,18 +204,22 @@ func computeGaps(ctx context.Context, cfg Config, query string, mems []Memory, t
 
 	// B3 retrieval caveat: when the query named a person (the graph arm fired) and
 	// EVERY returned memory came ONLY from people-graph association — present in the
-	// graph arm but in neither the FTS (lexical) nor vector (semantic) arm — the
+	// graph arm but in neither the FTS (lexical), vector (semantic), nor Gmail
+	// segment (direct message-text) arm — the
 	// evidence proves "these memories are connected to <person>", NOT "they answer
 	// the question". Flag it; do NOT drop — graph-only person expansion is the
 	// showcased GraphRAG-lite recall feature (TestHybridGraphExpansion). Lowest
 	// false-positive trigger: directly-supported count == 0 across ALL returned
-	// evidence (codex). tr.FTS/tr.Vec are the SAME call's production arms.
+	// evidence (codex). tr.FTS/tr.Vec/tr.Segment are the SAME call's production arms.
 	if len(mems) > 0 && len(tr.Graph) > 0 {
-		direct := make(map[string]bool, len(tr.FTS)+len(tr.Vec))
+		direct := make(map[string]bool, len(tr.FTS)+len(tr.Vec)+len(tr.Segment))
 		for _, id := range tr.FTS {
 			direct[id] = true
 		}
 		for _, id := range tr.Vec {
+			direct[id] = true
+		}
+		for _, id := range tr.Segment {
 			direct[id] = true
 		}
 		associationOnly := true

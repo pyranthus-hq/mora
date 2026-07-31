@@ -97,7 +97,7 @@ func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	verr := checkIndexSchema(db)
+	verr := checkIndexForRead(ctx, db)
 	if verr == nil {
 		return db, nil
 	}
@@ -112,7 +112,7 @@ func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkIndexSchema(db); err != nil {
+	if err := checkIndexForRead(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -128,6 +128,62 @@ func checkIndexSchema(db *sql.DB) error {
 	}
 	return nil
 }
+
+// checkIndexForRead verifies both the version stamp and the physical pieces
+// whose two predecessor-v4 histories diverged. A matching user_version alone
+// is not enough: D's v4 has the filter columns but no Gmail segment tables,
+// while E's v4 has the segment tables but a nine-column memories table. The
+// combined v5 must never serve either partial shape as current.
+func checkIndexForRead(ctx context.Context, db *sql.DB) error {
+	if err := checkIndexSchema(db); err != nil {
+		return err
+	}
+	complete, err := indexRetrievalSchemaComplete(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !complete {
+		return fmt.Errorf("the search index schema v%d is physically incomplete for this mora version — run `mora index rebuild`", indexSchemaVersion)
+	}
+	return nil
+}
+
+// indexRetrievalSchemaComplete is the shared physical readiness probe for
+// read-open and incremental upsert. It deliberately verifies the union of D
+// and E's schema changes, not every rebuildable table: the legacy readiness
+// contract already required memories, memories_fts, and index_meta; v5 adds
+// D's three memories columns and E's three segment tables.
+func indexRetrievalSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+		 ('memories','memories_fts','index_meta','gmail_segments','gmail_segments_fts','gmail_segment_diagnostics')`).Scan(&n); err != nil {
+		return false, err
+	}
+	if n != 6 {
+		return false, nil
+	}
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(memories)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return columns["provider"] && columns["account"] && columns["created_at_unix"], nil
+}
+
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
 }

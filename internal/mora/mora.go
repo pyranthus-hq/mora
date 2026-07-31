@@ -962,18 +962,22 @@ func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp,
 // and exercise checkIndexSchema's refusal / auto-heal path against a newer
 // binary — the same seam pattern as indexAutoHeal.
 //
-// v4 (#241): memories gained provider/account columns so search.go/hybrid.go's
+// D's predecessor v4 (#241): memories gained provider/account columns so search.go/hybrid.go's
 // retrieval arms can filter by connector source directly off the indexed row
 // (an in-memory/SQL check against the SAME snapshot the arm is already
 // ranking) instead of re-opening the live vault file mid-ranking — the
 // indexed-snapshot-honest, truly-pre-rank design over a per-candidate
 // parseMemory() disk read.
 //
-// v4 (issue #243): adds gmail_segments / gmail_segments_fts /
+// E's incompatible predecessor v4 (issue #243): adds gmail_segments / gmail_segments_fts /
 // gmail_segment_diagnostics, the disposable evidence-segment projection —
 // an old v3 index has none of these tables, so a binary that understands
 // evidence_ref must not read it as if it did.
-var indexSchemaVersion = 4
+//
+// v5 is the truthful combined schema. A v3 index or either physical v4 shape
+// mismatches this stamp and is rebuilt atomically from the vault; a same-stamp
+// partial v5 is also rejected by the shared physical-readiness probe.
+var indexSchemaVersion = 5
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
 // read time. True on the static-hash floor, where a rebuild is seconds — the

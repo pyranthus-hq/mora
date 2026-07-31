@@ -576,7 +576,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
 	// — the actual RETURNED set — per the frozen contract.
 	if boolArg(args, "confidence", false) {
-		conf := searchConfidence(ctx, cfg, budgeted, sr.SemanticPath, sr.Local, sr.Trace, query, now)
+		conf := searchConfidence(ctx, cfg, budgeted, sr.ScoreFused, sr.Local, sr.Trace, query, now)
 		// #241/#238 interaction: a source excluded by an active source filter
 		// is a caller choice, not a coverage gap — recompute missing_sources/
 		// health_impact over the filter-narrowed population (confidence.go's

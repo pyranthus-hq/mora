@@ -69,7 +69,7 @@ func rrf(lists [][]string, k float64) map[string]float64 {
 // COVERAGE / RETRIEVAL / FUSION / HIT (see docs/design/2026-06-05-t2-recall-eval-design.md §6).
 // It is populated on every call; production callers drop it.
 type retrievalTrace struct {
-	FTS, Vec, Graph, Fused []string // ranked ids; rank = slice index. Fused is the FULL ranking, pre-limit.
+	FTS, Vec, Graph, Segment, Fused []string // ranked ids; rank = slice index. Fused is the FULL ranking, pre-limit.
 	// PreTruncPool is the arm depth actually queried. The eval passes a tracePool
 	// LARGER than production's pool=limit*5 so a gold doc at arm-rank #55 surfaces
 	// as FOUND-BUT-BEYOND-POOL (FUSION), not misread as "no arm found it"
@@ -106,16 +106,17 @@ func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder
 // and must reuse the SAME hybridSearchTrace pass rather than re-running the
 // full embed+retrieve+fuse pipeline a second time just to recover the trace.
 //
-// Local/Trace are populated ONLY on the semantic path (zero value on
-// FTS-only), and are the PRE-union local results — mirroring buildThink's
-// documented choice (think.go) to compute gaps over LOCAL results only, so a
-// shared-corpus contribution is never compared against the personal index's
-// own retrieval trace.
+// Local/Trace are the PRE-union local results and arms. Trace is populated on
+// the semantic path and on a static path whose Gmail segment arm participates;
+// that lets confidence interpret the actual score domain rather than guessing
+// from the embedder. Shared-corpus contributions remain outside the personal
+// index's retrieval trace, mirroring buildThink's documented gap scope.
 type mcpSearchResult struct {
 	Results      []Memory       // post-union — the actual RETURNED set, identical to defaultSearch's return
 	SemanticPath bool           // the SAME chooseEmbedderFor/embedderIsSemantic decision that routed retrieval
-	Local        []Memory       // pre-union local results, semantic path only (nil on FTS-only)
-	Trace        retrievalTrace // hybridSearchTrace's per-arm trace, semantic path only (zero value on FTS-only)
+	ScoreFused   bool           // actual local Memory.Score domain: semantic RRF or static segment RRF
+	Local        []Memory       // pre-union local results
+	Trace        retrievalTrace // per-arm trace when ScoreFused is true
 }
 
 // defaultSearchForMCP is defaultSearch's routing + results, plus the ACTUAL
@@ -144,9 +145,13 @@ func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, l
 	emb, embErr := chooseEmbedderFor(cfg)
 	out.SemanticPath = embErr == nil && embedderIsSemantic(emb)
 	if out.SemanticPath {
+		out.ScoreFused = true
 		local, out.Trace, err = hybridSearchTrace(ctx, cfg, query, scope, limit, 0, filters...)
 	} else {
-		local, err = searchMemories(ctx, cfg, query, scope, limit, filters...)
+		var observed searchMemoryObservation
+		local, err = searchMemoriesObserved(ctx, cfg, query, scope, limit, &observed, filters...)
+		out.ScoreFused = observed.ScoreFused
+		out.Trace = observed.Trace
 	}
 	if err != nil {
 		return out, err
@@ -273,10 +278,11 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// for every OTHER id's fused score — the byte-identity guarantee for
 	// non-participating memories holds automatically. Best-effort: a
 	// segment-arm failure just means an empty arm, never a failed search.
-	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope, f)
 	if segErr != nil {
 		segIDs, gsegEvidence = nil, nil
 	}
+	tr.Segment = append([]string(nil), segIDs...)
 
 	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 && len(segIDs) == 0 {
 		return nil, tr, nil

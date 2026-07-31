@@ -247,14 +247,14 @@ func reportEval(t *testing.T, ctx context.Context, cfg Config, db *sql.DB, queri
 			if err != nil {
 				t.Fatalf("existsInMemoriesTable(%s): %v", g, err)
 			}
-			rFTS, rVec, rGraph, rFused := rankOf(g, tr.FTS), rankOf(g, tr.Vec), rankOf(g, tr.Graph), rankOf(g, tr.Fused)
+			rFTS, rVec, rGraph, rSegment, rFused := rankOf(g, tr.FTS), rankOf(g, tr.Vec), rankOf(g, tr.Graph), rankOf(g, tr.Segment), rankOf(g, tr.Fused)
 			ftsBucket := classifyBucket(false, inIdx, rFTS, kFTS, rFTS >= 0)
-			hybBucket := classifyBucket(false, inIdx, rFused, kHybrid, rFTS >= 0 || rVec >= 0 || rGraph >= 0)
+			hybBucket := classifyBucket(false, inIdx, rFused, kHybrid, rFTS >= 0 || rVec >= 0 || rGraph >= 0 || rSegment >= 0)
 			histFTS[ftsBucket]++
 			histHybrid[hybBucket]++
-			t.Logf("%s %-44q gold=%-28s | FTS %-9s(fts#%s) HYB %-9s(fused#%s) arms[fts=%d vec=%d graph=%d] [src=%s arch=%s gen=%s surf=%s]",
+			t.Logf("%s %-44q gold=%-28s | FTS %-9s(fts#%s) HYB %-9s(fused#%s) arms[fts=%d vec=%d graph=%d segment=%d] [src=%s arch=%s gen=%s surf=%s]",
 				qid, q, g, ftsBucket, rankStr(rFTS), hybBucket, rankStr(rFused),
-				rFTS, rVec, rGraph, m.source, m.archetype, m.gen, m.surface)
+				rFTS, rVec, rGraph, rSegment, m.source, m.archetype, m.gen, m.surface)
 		}
 	}
 
@@ -302,8 +302,8 @@ func bucketHistogram(t *testing.T, ctx context.Context, cfg Config, queries map[
 			if err != nil {
 				t.Fatalf("existsInMemoriesTable(%s): %v", g, err)
 			}
-			rFTS, rVec, rGraph := rankOf(g, tr.FTS), rankOf(g, tr.Vec), rankOf(g, tr.Graph)
-			hist[classifyBucket(false, inIdx, rankOf(g, tr.Fused), kHybrid, rFTS >= 0 || rVec >= 0 || rGraph >= 0)]++
+			rFTS, rVec, rGraph, rSegment := rankOf(g, tr.FTS), rankOf(g, tr.Vec), rankOf(g, tr.Graph), rankOf(g, tr.Segment)
+			hist[classifyBucket(false, inIdx, rankOf(g, tr.Fused), kHybrid, rFTS >= 0 || rVec >= 0 || rGraph >= 0 || rSegment >= 0)]++
 		}
 	}
 	return hist, vecHits

@@ -63,7 +63,8 @@ const (
 // is silent beyond the missing evidence/promotion it causes; that gap is a
 // known, accepted tradeoff of the best-effort policy, not an oversight to
 // fix by adding a new logging path.
-func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string) ([]string, map[string]GmailSegmentEvidence, error) {
+func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string, filters ...searchFilters) ([]string, map[string]GmailSegmentEvidence, error) {
+	f := oneFilter(filters)
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil, nil
@@ -77,6 +78,13 @@ func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string) 
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
+	}
+	// I5: D's trusted source/time boundary applies inside the segment arm's
+	// joined-memory query, before BM25 ordering. An excluded segment must never
+	// earn a rank, consume a candidate slot, or be hydrated back into results.
+	if predicate, predicateArgs := f.sqlPredicate(); predicate != "" {
+		q += predicate
+		args = append(args, predicateArgs...)
 	}
 	q += ` ORDER BY bm25(gmail_segments_fts), gs.evidence_ref`
 	rows, err := db.QueryContext(ctx, q, args...)

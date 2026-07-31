@@ -66,13 +66,20 @@ func budgetSearchResults(mems []Memory, budgetBytes int) (kept []Memory, dropped
 	return kept, len(mems) - len(kept)
 }
 
+// searchMemoryObservation is the optional instrumentation returned only to
+// defaultSearchForMCP; ordinary search callers keep the long-standing result.
+type searchMemoryObservation struct {
+	ScoreFused bool
+	Trace      retrievalTrace
+}
+
 // searchMemories is the FTS-only retrieval arm. filters is an optional
 // trailing #241 source/since_hours pair (searchFilters{}, the zero value,
 // when omitted — every pre-#241 call site keeps compiling unchanged and gets
 // a byte-identical query/result). The filter is a TRUE SQL WHERE predicate
 // (searchFilters.sqlPredicate, search_filters.go) appended BEFORE ORDER
 // BY/LIMIT, evaluated against the indexed memories.provider/account/
-// created_at_unix columns (v4 schema, #241) — the SAME row bm25 already
+// created_at_unix columns (combined v5 schema, #241) — the SAME row bm25 already
 // ranked, never a second parseMemory() disk read of the live vault file mid-
 // ranking. Because the exclusion happens in the WHERE clause itself, a
 // filtered-out row is never fetched, never ranked, and can never crowd a
@@ -80,6 +87,14 @@ func budgetSearchResults(mems []Memory, budgetBytes int) (kept []Memory, dropped
 // TestFiltersSearchMemoryPreRankSourceProof/SinceHoursProof) — LIMIT stays
 // unconditional; there is no longer a separate "drop the SQL LIMIT" branch.
 func searchMemories(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	return searchMemoriesObserved(ctx, cfg, query, scope, limit, nil, filters...)
+}
+
+// searchMemoriesObserved preserves searchMemories' public package signature but
+// optionally exposes the actual score domain and arms to MCP confidence. Static
+// retrieval is raw BM25 until the Gmail segment arm participates; at that point
+// fuseGmailSegmentArm overwrites Memory.Score with positive RRF values.
+func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string, limit int, observed *searchMemoryObservation, filters ...searchFilters) ([]Memory, error) {
 	f := oneFilter(filters)
 	if _, err := os.Stat(dbPath(cfg)); err != nil {
 		if _, err := rebuildIndex(ctx, cfg); err != nil {
@@ -151,6 +166,10 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	for i, m := range out {
 		parentIDs[i] = m.ID
 	}
+	if observed != nil {
+		observed.Trace.FTS = append([]string(nil), parentIDs...)
+		observed.Trace.PreTruncPool = sqlLimit
+	}
 	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source,
 	// mapped to PARENT ids, before fusion/slot accounting (frozen interface
 	// #3). Admit segment-ranked parents even when parent-grain FTS ranked
@@ -161,12 +180,16 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	// Gated on a non-empty arm so a query with zero segment matches is a
 	// complete no-op — the byte-identity guarantee for non-participating
 	// memories (frozen interface #5).
-	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope, f)
 	if segErr == nil && len(segIDs) > 0 {
 		if admitted, admitErr := admitGmailSegmentCandidates(ctx, db, out, segIDs, sqlLimit); admitErr == nil {
 			out = admitted
 		}
 		out = fuseGmailSegmentArm(out, parentIDs, segIDs)
+		if observed != nil {
+			observed.ScoreFused = true
+			observed.Trace.Segment = append([]string(nil), segIDs...)
+		}
 	}
 	// Legacy slot discipline (#237 round-2 P1 fix): capture the pre-filter rank
 	// order's ids BEFORE suppression/visibility filtering touches `out`, so
@@ -176,6 +199,9 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	rawIDs := make([]string, len(out))
 	for i, m := range out {
 		rawIDs[i] = m.ID
+	}
+	if observed != nil && observed.ScoreFused {
+		observed.Trace.Fused = append([]string(nil), rawIDs...)
 	}
 	// B4: a memory with a pending delete op is suppressed from the search chokepoint
 	// (the memories JOIN) while its rebuild is broken, so deleted content is never
