@@ -18,9 +18,10 @@ regression never becomes a published release.
 
 ## What Tier 1 checks
 
-- **install.sh** places the binary, `mora version` is stamped (not `dev`) and
-  matches, init repoints the vault. With `RELEASE=1`, also hard-fails if
-  `install.sh`'s hardcoded `VERSION` ≠ the release version.
+- **install.sh** places the binary, consumes the complete `mora version` output,
+  and requires its first line to match the release exactly (not `dev`). Init
+  repoints the vault. It requires exactly one hardcoded installer `VERSION`
+  assignment; with `RELEASE=1`, that value must equal the release version.
 - **every smoke-testable command** exits cleanly on a synthetically seeded vault
   (`scripts/bench/agent-ab/build_vault.py` + `world.json`).
 - **MCP wire**: `initialize` + `tools/list` + `search_memory` round-trip over
@@ -81,7 +82,7 @@ Developer ID release. For example:
 ```sh
 MORA_REPO="$PWD" \
 MORA_BIN=/path/to/extracted/mora \
-EXPECTED_VER=0.11.3 \
+EXPECTED_VER=0.11.4 \
 RELEASE=1 \
 bash scripts/regress/regression-macos.sh
 ```
