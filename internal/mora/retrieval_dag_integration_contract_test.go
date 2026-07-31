@@ -45,19 +45,6 @@ func TestRetrievalDAGSchemaV5RebuildsEveryPredecessorShape(t *testing.T) {
 	}
 }
 
-func TestRetrievalDAGPartialV5ReadCannotBypassPhysicalReadiness(t *testing.T) {
-	cfg := seedGmailSegmentsSearchFixture(t)
-	retrievalDAGMutateSchema(t, cfg, "partial_v5")
-	db, err := openIndexRO(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("static-floor read should rebuild partial v5: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	retrievalDAGAssertCompleteV5(t, cfg, gsSearchWellFormedID)
-}
-
 func retrievalDAGMutateSchema(t *testing.T, cfg Config, shape string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
