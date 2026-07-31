@@ -102,9 +102,13 @@ PREFIX="$WORK/bin" MORA_VAULT="$MORA_VAULT" sh "$STAGE/install.sh" >/dev/null 2>
 [ -x "$WORK/bin/mora" ] || die "install.sh did not place an executable mora in PREFIX"
 pass "install.sh placed binary at \$PREFIX/mora"
 
-VER_LINE="$(mora version | head -1)"
-echo "$VER_LINE" | grep -q "$EXPECTED_VER" || die "version mismatch: '$VER_LINE' lacks '$EXPECTED_VER'"
-echo "$VER_LINE" | grep -qiw dev && die "binary reports 'dev' — release ldflags not stamped"
+VER_OUTPUT="$(mora version)" || die "mora version failed"
+VER_LINE="${VER_OUTPUT%%$'\n'*}"
+[ "$VER_LINE" = "mora $EXPECTED_VER" ] || \
+  die "version mismatch: '$VER_LINE' != 'mora $EXPECTED_VER'"
+if grep -qiw dev <<<"$VER_LINE"; then
+  die "binary reports 'dev' — release ldflags not stamped"
+fi
 pass "mora version stamped: $VER_LINE"
 
 # `mora config` annotates the vault line for humans ("vault_dir = <path>   ← your
@@ -112,13 +116,30 @@ pass "mora version stamped: $VER_LINE"
 # sees only the path. Anchoring on the arrow (not a bare run of spaces) avoids
 # truncating a vault path that itself contains consecutive spaces; if the annotation
 # is dropped entirely this still yields the bare path.
-ACTIVE_VAULT="$(mora config 2>/dev/null | sed -n 's/^vault_dir = //p' | head -1 | sed -E 's/[[:space:]]+←.*$//')"
+ACTIVE_VAULT="$(mora config 2>/dev/null | sed -n 's/^vault_dir = //p' | sed -E 's/[[:space:]]+←.*$//')"
 [ "$ACTIVE_VAULT" = "$MORA_VAULT" ] || die "active vault '$ACTIVE_VAULT' != expected '$MORA_VAULT'"
 pass "init repointed vault to the sandbox"
 
 # Version-drift guard: install.sh's hardcoded VERSION drives remote-mode downloads.
-INSTALL_VER="$(sed -n 's/^VERSION="\${VERSION:-\([0-9.]*\)}"/\1/p' "$MORA_REPO/install.sh" | head -1)"
-if [ -n "$INSTALL_VER" ] && [ "$INSTALL_VER" != "$EXPECTED_VER" ]; then
+# Zero or duplicate defaults are contract failures: an empty parse must never
+# bypass the RELEASE=1 equality gate.
+INSTALL_VERSION_MATCHES="$(sed -n 's/^VERSION="\${VERSION:-\([0-9.]*\)}"/\1/p' "$MORA_REPO/install.sh")"
+INSTALL_VER_COUNT="$(printf '%s\n' "$INSTALL_VERSION_MATCHES" | awk 'NF { count++ } END { print count + 0 }')"
+[ "$INSTALL_VER_COUNT" -eq 1 ] || \
+  die "install.sh must contain exactly one VERSION default (found $INSTALL_VER_COUNT)"
+INSTALL_VER_ASSIGN_COUNT="$(awk '
+  /^[[:space:]]*#/ { next }
+  {
+    line = $0
+    sub(/^[[:space:]]*/, "", line)
+    if (line ~ /^(export[[:space:]]+|readonly[[:space:]]+)?VERSION[[:space:]]*=/) count++
+  }
+  END { print count + 0 }
+' "$MORA_REPO/install.sh")"
+[ "$INSTALL_VER_ASSIGN_COUNT" -eq 1 ] || \
+  die "install.sh must contain exactly one VERSION assignment (found $INSTALL_VER_ASSIGN_COUNT)"
+INSTALL_VER="$INSTALL_VERSION_MATCHES"
+if [ "$INSTALL_VER" != "$EXPECTED_VER" ]; then
   if [ "${RELEASE:-0}" = "1" ]; then
     die "install.sh VERSION=$INSTALL_VER != release EXPECTED_VER=$EXPECTED_VER (bump install.sh before tagging)"
   fi
@@ -339,7 +360,7 @@ if curl -fsI https://github.com >/dev/null 2>&1; then
     "https://github.com/pyranthus-hq/mora/releases/download/v$PREV_VER/$ASSET" \
     || die "could not fetch the $PREV_VER tarball ($ASSET)"
   tar -xzf "$UPWORK/$ASSET" -C "$OLDSTAGE" || die "could not extract $ASSET"
-  OLDBIN="$(find "$OLDSTAGE" -type f -name mora 2>/dev/null | head -1)"
+  OLDBIN="$(find "$OLDSTAGE" -type f -name mora -print -quit 2>/dev/null)"
   [ -x "$OLDBIN" ] || die "no mora binary in the $PREV_VER tarball"
   # the tarball may extract `mora` to the top level (== $OLDSTAGE/mora) or a
   # nested versioned dir; only copy when it isn't already the staging path
@@ -366,7 +387,10 @@ if curl -fsI https://github.com >/dev/null 2>&1; then
     PREFIX="$UPWORK/bin" MORA_VAULT="$UP_CONFIG/vault" sh "$OLDSTAGE/install.sh" >/dev/null 2>&1 \
       || die "local install of previous version $PREV_VER failed"
     OLDMORA="$UPWORK/bin/mora"
-    "$OLDMORA" version | head -1 | grep -q "$PREV_VER" || die "previous install is not $PREV_VER"
+    OLD_VERSION_OUTPUT="$("$OLDMORA" version)" || die "previous install version command failed"
+    OLD_VERSION_LINE="${OLD_VERSION_OUTPUT%%$'\n'*}"
+    [ "$OLD_VERSION_LINE" = "mora $PREV_VER" ] || \
+      die "previous install version '$OLD_VERSION_LINE' != 'mora $PREV_VER'"
     # populate on the OLD binary
     "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
       "$MORA_REPO/scripts/bench/agent-ab/world.json" "$UP_CONFIG" >/dev/null 2>&1 \
@@ -376,7 +400,10 @@ if curl -fsI https://github.com >/dev/null 2>&1; then
     cp "$MORA_BIN" "$STAGE/mora"
     PREFIX="$UPWORK/bin" MORA_VAULT="$UP_CONFIG/vault" sh "$STAGE/install.sh" >/dev/null 2>&1 \
       || die "in-place upgrade reinstall failed"
-    "$OLDMORA" version | head -1 | grep -q "$EXPECTED_VER" || die "post-upgrade version not $EXPECTED_VER"
+    UPGRADED_VERSION_OUTPUT="$("$OLDMORA" version)" || die "post-upgrade version command failed"
+    UPGRADED_VERSION_LINE="${UPGRADED_VERSION_OUTPUT%%$'\n'*}"
+    [ "$UPGRADED_VERSION_LINE" = "mora $EXPECTED_VER" ] || \
+      die "post-upgrade version '$UPGRADED_VERSION_LINE' != 'mora $EXPECTED_VER'"
     # 3) assert old data survived + index auto-heals (static embedder floor)
     NEW_LIST="$(MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" list --json)"
     NEW_COUNT="$(json_get "$NEW_LIST" 'len(d)')"

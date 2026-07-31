@@ -539,6 +539,32 @@ pass "active Homebrew Cellar executable is refused without mutation"
 WORKFLOW="$ROOT/.github/workflows/release.yml"
 GORELEASER="$ROOT/.goreleaser.yaml"
 MACOS_REGRESSION="$ROOT/scripts/regress/regression-macos.sh"
+TIER1_REGRESSION="$ROOT/scripts/regress/regression.sh"
+
+# Tier 1 runs with pipefail. An early-closing `head` can SIGPIPE a healthy
+# producer and turn a valid release into exit 141. Consume producer output in
+# full, then select or compare it in shell.
+if grep -En -- '(^|[[:space:]|;&(<])([^[:space:]|;&()<>]*/)?head([[:space:]|;&)>]|$)' "$TIER1_REGRESSION" >"$WORK/forbidden"; then
+	cat "$WORK/forbidden" >&2
+	die "Tier 1 must not invoke the early-closing head command under pipefail"
+fi
+# Contract regexes intentionally match literal shell variables.
+# shellcheck disable=SC2016
+require_text "$TIER1_REGRESSION" '\[ "\$VER_LINE" = "mora \$EXPECTED_VER" \]' \
+	"Tier 1 must compare the current artifact version exactly"
+# shellcheck disable=SC2016
+require_text "$TIER1_REGRESSION" '\[ "\$OLD_VERSION_LINE" = "mora \$PREV_VER" \]' \
+	"Tier 1 must compare the previous artifact version exactly"
+# shellcheck disable=SC2016
+require_text "$TIER1_REGRESSION" '\[ "\$UPGRADED_VERSION_LINE" = "mora \$EXPECTED_VER" \]' \
+	"Tier 1 must compare the upgraded artifact version exactly"
+# shellcheck disable=SC2016
+require_text "$TIER1_REGRESSION" '\[ "\$INSTALL_VER_COUNT" -eq 1 \]' \
+	"Tier 1 must reject a missing or duplicate installer VERSION default"
+# shellcheck disable=SC2016
+require_text "$TIER1_REGRESSION" '\[ "\$INSTALL_VER_ASSIGN_COUNT" -eq 1 \]' \
+	"Tier 1 must reject any second installer VERSION assignment"
+pass "Tier 1 version gates consume full output and compare one exact release version"
 
 require_text "$WORKFLOW" 'runs-on:[[:space:]]+macos-(latest|[0-9]+)' \
 	"release signing/notarization must run on a macOS runner"
