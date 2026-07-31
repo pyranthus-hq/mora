@@ -66,11 +66,16 @@ verify_signature() {
 }
 
 verify_notary_ticket() {
-	local binary="$1" attempt assessment
+	local binary="$1" attempt assessment hydration
+	command -v spctl >/dev/null 2>&1 || {
+		echo "error: spctl is required to fetch the Apple notarization ticket" >&2
+		return 1
+	}
 	for attempt in 1 2 3 4 5 6; do
-		# The special `notarized` code requirement verifies Apple's ticket for
-		# this exact code directory. spctl's install policy is for installer
-		# packages, while its execute policy rejects a valid raw CLI as not app-like.
+		# Ask Gatekeeper to fetch the online ticket. A raw CLI is expected to make
+		# the execute assessment return "not app-like"; that result is not the
+		# verdict. The following special code requirement controls the gate.
+		hydration="$(spctl --assess --type execute --verbose=4 "$binary" 2>&1)" || true
 		if assessment="$(codesign --verify --strict --verbose=4 -R='notarized' "$binary" 2>&1)"; then
 			echo "notary ticket: accepted for $(basename "$binary")"
 			return 0
@@ -78,6 +83,7 @@ verify_notary_ticket() {
 		if [[ "$attempt" -lt 6 ]]; then sleep 10; fi
 	done
 	echo "error: Apple did not satisfy the notarized code requirement for $binary" >&2
+	printf 'ticket hydration probe: %s\n' "${hydration:-<no assessment output>}" >&2
 	printf '%s\n' "${assessment:-<no assessment output>}" >&2
 	return 1
 }

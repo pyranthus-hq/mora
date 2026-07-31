@@ -162,6 +162,33 @@ case "${MOCK_NOTARY_MODE:-accepted}" in
 esac
 MOCK_XCRUN
 
+# A fresh raw CLI can need an execute-policy probe to make macOS retrieve its
+# online notary ticket. Gatekeeper still returns rc=3 because a CLI is not
+# app-like; that probe is hydration only, never the release verdict.
+cat >"$MOCK_BIN/spctl" <<'MOCK_SPCTL'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'spctl' >>"$MOCK_LOG"
+for arg in "$@"; do printf '\t%s' "$arg" >>"$MOCK_LOG"; done
+printf '\n' >>"$MOCK_LOG"
+
+case "${MOCK_SPCTL_MODE:-rc3}" in
+	rc3)
+		printf '%s: rejected (the code is valid but does not seem to be an app)\n' "${*: -1}" >&2
+		exit 3
+		;;
+	accepted)
+		printf '%s: accepted\nsource=Notarized Developer ID\n' "${*: -1}" >&2
+		exit 0
+		;;
+	hard_failure)
+		printf 'assessment unavailable\n' >&2
+		exit 1
+		;;
+	*) exit 2 ;;
+esac
+MOCK_SPCTL
+
 cat >"$MOCK_BIN/xattr" <<'MOCK_XATTR'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -212,7 +239,7 @@ dst="${@: -1}"
 cp "$src" "$dst"
 MOCK_DITTO
 
-chmod +x "$MOCK_BIN/codesign" "$MOCK_BIN/xcrun" "$MOCK_BIN/xattr" "$MOCK_BIN/sleep" "$MOCK_BIN/uname" "$MOCK_BIN/ditto"
+chmod +x "$MOCK_BIN/codesign" "$MOCK_BIN/xcrun" "$MOCK_BIN/spctl" "$MOCK_BIN/xattr" "$MOCK_BIN/sleep" "$MOCK_BIN/uname" "$MOCK_BIN/ditto"
 
 run_sign() {
 	local artifact="$1" goos="$2" mode="${3:-valid}"
@@ -286,6 +313,7 @@ printf '%s\n' 'fixture-not-a-secret' >"$AUTH_KEY"
 run_notarize() {
 	local dist="$1" notary_mode="${2:-accepted}" codesign_mode="${3:-valid}"
 	local ticket_mode="${4:-accepted}" quarantine_mode="${5:-accepted}" launch_mode="${6:-accepted}"
+	local spctl_mode="${7:-rc3}"
 	PATH="$MOCK_BIN:$PATH" \
 	MOCK_LOG="$MOCK_LOG" \
 	MOCK_NOTARY_MODE="$notary_mode" \
@@ -293,6 +321,7 @@ run_notarize() {
 	MOCK_TICKET_MODE="$ticket_mode" \
 	MOCK_QUARANTINE_MODE="$quarantine_mode" \
 	MOCK_LAUNCH_MODE="$launch_mode" \
+	MOCK_SPCTL_MODE="$spctl_mode" \
 	APPLE_NOTARY_KEY_PATH="$AUTH_KEY" \
 	APPLE_NOTARY_KEY_ID="TEST123456" \
 	APPLE_NOTARY_ISSUER_ID="00000000-0000-0000-0000-000000000000" \
@@ -314,8 +343,21 @@ expect_pass "both Darwin release archives require an Accepted notarization" \
 	run_notarize "$DIST"
 assert_log_count $'xcrun\tnotarytool\tsubmit\t' 2 \
 	"notarytool must receive both Darwin architecture submissions"
+assert_log_count $'spctl\t--assess\t--type\texecute\t' 2 \
+	"both fresh raw CLIs must receive a best-effort execute-policy hydration probe"
 assert_log_count $'\t-R=notarized\t' 2 \
 	"Apple's notarized code requirement must pass for both Darwin binaries"
+if ! awk -F '\t' '
+	$1 == "spctl" && $0 ~ /\t--type\texecute(\t|$)/ { hydrated++; waiting=1; next }
+	$1 == "codesign" && $0 ~ /\t-R=notarized(\t|$)/ {
+		if (!waiting) exit 1
+		verdicts++; waiting=0
+	}
+	END { if (hydrated != 2 || verdicts != 2 || waiting) exit 1 }
+' "$MOCK_LOG"; then
+	sed -n '1,200p' "$MOCK_LOG" >&2
+	die "each execute-policy hydration probe must precede its controlling codesign ticket verdict"
+fi
 assert_log_count $'xattr\t-w\tcom.apple.quarantine\t' 1 \
 	"the native disposable launch copy must carry a quarantine attribute"
 assert_log_count $'launch\t' 1 \
@@ -346,6 +388,8 @@ for mode in wrong_identifier wrong_team missing_team missing_runtime missing_tim
 done
 expect_fail "missing Apple ticket after Accepted notarization" \
 	run_notarize "$DIST" accepted valid rejected
+expect_fail "spctl acceptance cannot override a missing codesign ticket" \
+	run_notarize "$DIST" accepted valid rejected accepted accepted accepted
 expect_fail "quarantine attribute write failure" \
 	run_notarize "$DIST" accepted valid accepted rejected
 expect_fail "quarantined disposable launch failure" \
@@ -536,6 +580,11 @@ require_text "$GORELEASER" '\{\{[[:space:]]*\.Target[[:space:]]*\}\}' \
 
 require_text "$NOTARIZE" 'codesign[[:space:]].*-R(=|[[:space:]])['"'"']?notarized' \
 	"post-notary verification must evaluate Apple's notarized code requirement"
+require_text "$NOTARIZE" 'spctl[[:space:]]+--assess[[:space:]]+--type[[:space:]]+execute' \
+	"post-notary verification must hydrate the fresh raw CLI ticket with execute policy"
+assert_before "$NOTARIZE" 'spctl[[:space:]]+--assess[[:space:]]+--type[[:space:]]+execute' \
+	'codesign[[:space:]].*-R(=|[[:space:]])['"'"']?notarized' \
+	"execute-policy hydration must precede the codesign ticket verdict"
 require_text "$NOTARIZE" 'xattr[[:space:]]+-w[[:space:]]+com\.apple\.quarantine' \
 	"post-notary verification must quarantine its disposable launch copy"
 if grep -En -- 'spctl[[:space:]].*--type[[:space:]]+install' "$NOTARIZE" >"$WORK/forbidden"; then
@@ -544,6 +593,11 @@ if grep -En -- 'spctl[[:space:]].*--type[[:space:]]+install' "$NOTARIZE" >"$WORK
 fi
 require_text "$MACOS_REGRESSION" 'codesign[[:space:]].*-R(=|[[:space:]])['"'"']?notarized' \
 	"live macOS regression must independently evaluate Apple's notarized requirement"
+require_text "$MACOS_REGRESSION" 'spctl[[:space:]]+--assess[[:space:]]+--type[[:space:]]+execute.*\|\|[[:space:]]+true' \
+	"live macOS execute-policy hydration probe must be explicitly best effort"
+assert_before "$MACOS_REGRESSION" 'spctl[[:space:]]+--assess[[:space:]]+--type[[:space:]]+execute' \
+	'codesign[[:space:]].*-R(=|[[:space:]])['"'"']?notarized' \
+	"live execute-policy hydration must precede the codesign ticket verdict"
 require_text "$MACOS_REGRESSION" 'xattr[[:space:]]+-w[[:space:]]+com\.apple\.quarantine' \
 	"live macOS regression must exercise a quarantined disposable launch"
 if grep -En -- 'spctl[[:space:]].*--type[[:space:]]+install' "$MACOS_REGRESSION" >"$WORK/forbidden"; then
