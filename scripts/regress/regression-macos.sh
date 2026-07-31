@@ -68,6 +68,10 @@ if [ "$RELEASE" = 1 ]; then
     echo "FATAL: xattr required for RELEASE=1 quarantined launch assessment" >&2
     exit 2
   }
+  command -v spctl >/dev/null 2>&1 || {
+    echo "FATAL: spctl required for RELEASE=1 online-ticket hydration" >&2
+    exit 2
+  }
 fi
 
 OWN_WORK=0
@@ -114,9 +118,10 @@ release_cdhash() {
 
 # Independently enforce the release identity contract instead of trusting the
 # installer's own checks. Raw command-line executables cannot carry a stapled
-# ticket. Evaluate Apple's `notarized` code requirement for the exact
-# code-directory hash, then launch a quarantined disposable copy so the test
-# follows the downloaded-command path without changing the release artifact.
+# ticket. First probe execute policy to make macOS retrieve that ticket. A raw
+# CLI normally gets rc=3 because it is not app-like, so the probe is best effort;
+# the subsequent `notarized` code requirement alone controls the verdict. Then
+# launch a quarantined disposable copy without changing the release artifact.
 verify_release_identity() {
   local binary="$1" label="$2" sign_info requirement_info launch_dir launch_copy quarantine_value
 
@@ -147,6 +152,7 @@ verify_release_identity() {
     grep -Eq 'subject\.OU[^=]*= ("VS8M5VJBZ5"|VS8M5VJBZ5)( |$)' \
     || die "$label designated requirement has the wrong Apple team"
 
+  spctl --assess --type execute --verbose=4 "$binary" >/dev/null 2>&1 || true
   codesign --verify --strict --verbose=2 -R='notarized' "$binary" >/dev/null 2>&1 \
     || die "$label does not satisfy Apple's notarized code requirement"
 

@@ -75,15 +75,16 @@ You can inspect the release without changing it:
 ```bash
 codesign --verify --strict --verbose=2 ./mora
 codesign -dvv ./mora 2>&1 | grep -E '^(Identifier|TeamIdentifier|Authority)='
+spctl --assess --type execute --verbose=4 ./mora || true
 codesign --verify --strict --verbose=2 -R='notarized' ./mora
 ```
 
-The final command checks Apple's notarization ticket for the binary's exact code
-directory. Do not use `spctl --type install` for this check: Apple defines that
-policy for installer packages. `spctl --type execute` can reject a correctly
-notarized raw CLI as not app-like. The release pipeline also launches a
-quarantined disposable copy of the native-architecture binary before it
-publishes the release.
+The `spctl` command asks Gatekeeper to fetch the online ticket. It can return
+"not app-like" for a correctly notarized raw CLI, so its exit status is not the
+verdict. The final `codesign` command checks that ticket for the binary's exact
+code directory. Do not use `spctl --type install`; Apple defines that policy for
+installer packages. The release pipeline also launches a quarantined disposable
+copy of the native-architecture binary before it publishes the release.
 
 A later release will add a branded `Mora.app`. That is a whole application
 bundle, not a new skin for this executable. Its updater must replace the whole

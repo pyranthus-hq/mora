@@ -6,7 +6,7 @@
 #      Apple's notarized-code requirement without changing either the signature or
 #      the quarantine attribute. It then sets up your vault and prints next steps.
 #
-#        tar -xzf mora_0.11.2_darwin_arm64.tar.gz && ./install.sh
+#        tar -xzf mora_0.11.3_darwin_arm64.tar.gz && ./install.sh
 #
 #   2) REMOTE: if no binary sits next to this script, it downloads the matching
 #      asset for this machine from the public GitHub release (plain curl, no auth;
@@ -17,11 +17,11 @@
 #   PREFIX=/usr/local/bin    install dir (default: first writable of
 #                            /usr/local/bin, /opt/homebrew/bin, ~/.local/bin)
 #   MORA_VAULT=~/vault/mora  vault location passed to `mora init`
-#   VERSION=0.11.2           release tag for remote mode
+#   VERSION=0.11.3           release tag for remote mode
 #   REPO=pyranthus-hq/mora   source repo for remote mode
 set -eu
 
-VERSION="${VERSION:-0.11.2}"
+VERSION="${VERSION:-0.11.3}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
@@ -47,6 +47,7 @@ sha256_of() {
 verify_macos_release() {
 	[ "$(uname -s)" = "Darwin" ] || return 0
 	command -v codesign >/dev/null 2>&1 || die "codesign is required to verify the macOS release"
+	command -v spctl >/dev/null 2>&1 || die "spctl is required to fetch the Apple notarization ticket"
 
 	codesign --verify --strict --verbose=2 "$1" >/dev/null 2>&1 || \
 		die "macOS release has an invalid code signature — refusing to install"
@@ -69,9 +70,10 @@ verify_macos_release() {
 	printf '%s\n' "$REQUIREMENT_INFO" | \
 		grep -Eq "subject\\.OU[^=]*= (\"${MACOS_TEAM_ID}\"|${MACOS_TEAM_ID})( |$)" || \
 		die "macOS release designated requirement has the wrong Apple team"
-	# Apple's special `notarized` code requirement checks the online ticket for
-	# this exact code directory. spctl's install policy is for installer packages,
-	# and its execute policy rejects valid raw command-line tools as not app-like.
+	# Ask Gatekeeper to fetch the online ticket. Its execute assessment can return
+	# "not app-like" for a valid raw CLI, so that result is deliberately not the
+	# verdict. The special notarized requirement below is the fail-closed check.
+	spctl --assess --type execute --verbose=4 "$1" >/dev/null 2>&1 || true
 	codesign --verify --strict --verbose=2 -R='notarized' "$1" >/dev/null 2>&1 || \
 		die "macOS release does not satisfy Apple's notarized code requirement — connect to the internet and retry"
 }

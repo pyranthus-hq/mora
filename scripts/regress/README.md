@@ -81,7 +81,7 @@ Developer ID release. For example:
 ```sh
 MORA_REPO="$PWD" \
 MORA_BIN=/path/to/extracted/mora \
-EXPECTED_VER=0.11.2 \
+EXPECTED_VER=0.11.3 \
 RELEASE=1 \
 bash scripts/regress/regression-macos.sh
 ```
