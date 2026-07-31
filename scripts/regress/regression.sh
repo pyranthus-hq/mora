@@ -48,7 +48,13 @@ PY="$(command -v python3 || command -v python)"
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 pass()    { printf '  \033[32mok\033[0m   %s\n' "$*"; }
 die()     { printf '  \033[31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }
-run()     { "$@" >/dev/null 2>&1 || die "command failed: $*"; }
+run() {
+  local output
+  if ! output="$("$@" 2>&1)"; then
+    [ -z "$output" ] || printf '%s\n' "$output" >&2
+    die "command failed: $*"
+  fi
+}
 
 # json_true "<json>" "<python-expr over variable d>" — assert a JSON predicate.
 json_true() {
@@ -282,7 +288,7 @@ section "Tier 1g — vault-identity guard (refuse empty/foreign rebuild, no netw
 VIDCFG="$WORK/vid"; VIDVAULT="$VIDCFG/vault"
 # build_vault.py wipes+inits its own sandbox (creating the v2 identity marker) and
 # rebuilds the index, so the vault starts populated with a built, marked index.
-run "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
+run env MORA_VAULT="$VIDVAULT" "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
   "$MORA_REPO/scripts/bench/agent-ab/world.json" "$VIDCFG"
 VID_N="$(json_get "$(MORA_CONFIG_DIR="$VIDCFG" mora list --json)" 'len(d)')"
 [ "$VID_N" -gt 0 ] || die "vid: seeded vault has 0 memories"
@@ -339,7 +345,11 @@ if curl -fsI https://github.com >/dev/null 2>&1; then
   # nested versioned dir; only copy when it isn't already the staging path
   # (cp onto itself errors under set -e).
   [ "$OLDBIN" = "$OLDSTAGE/mora" ] || cp "$OLDBIN" "$OLDSTAGE/mora"
-  cp "$MORA_REPO/install.sh" "$OLDSTAGE/install.sh"
+  # Install the previous release with the installer that shipped beside it.
+  # The current installer correctly refuses pre-Developer-ID Darwin binaries;
+  # overwriting the historical installer here would make the bridge migration
+  # impossible to exercise on macOS.
+  [ -f "$OLDSTAGE/install.sh" ] || die "$PREV_VER archive has no bundled install.sh"
   upgrade_rc=0
   ( # Redirect HOME + XDG into the sandbox so the OLD binary's `mora init` — which
     # may predate MORA_CONFIG_DIR — writes to a throwaway HOME, never the real

@@ -3,7 +3,7 @@
 # archives + checksums + cosign signature + a Homebrew cask in pyranthus-hq/homebrew-tap.
 #
 # NOTE: uses `homebrew_casks:` (NOT the deprecated `brews:`, removed v2.16).
-# Casks also carry the macOS quarantine-xattr strip for the unsigned binary.
+# Darwin binaries are Developer ID signed before GoReleaser archives them.
 version: 2
 
 project_name: mora
@@ -41,6 +41,13 @@ builds:
       - goos: windows
         goarch: arm64
     mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
+    hooks:
+      post:
+        # GoReleaser invokes this for every build target. The helper exits
+        # immediately for non-Darwin targets and fails closed if signing or its
+        # stable identifier/team/runtime/timestamp verification fails.
+        - cmd: bash ./scripts/codesign-darwin.sh "{{ .Path }}" "{{ .Target }}"
+          output: true
 
 archives:
   - id: mora
@@ -107,16 +114,8 @@ homebrew_casks:
       email: bot@pyranthus.com
     binaries:
       - mora
-    # Strip the Gatekeeper quarantine xattr from the unsigned binary so macOS
-    # doesn't show "mora is damaged and cannot be opened". This is why we use a
-    # cask (and why notarization is deferrable for a CLI).
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr",
-                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/mora"]
-          end
+    # The archive contains the original Developer ID signed/notarized binary.
+    # Never mutate that identity with a cask hook: Gatekeeper verifies it.
 
 release:
   github:
