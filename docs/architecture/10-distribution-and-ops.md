@@ -8,8 +8,13 @@ installed. The full pipeline keeps the pure-Go and zero-egress rules.
 | File | Lines | Responsibility |
 |---|---|---|
 | `.goreleaser.yaml` | — | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, `tar.gz` archives + a windows/amd64 `zip`, sha256 checksums, cosign keyless signing, syft SBOM, Homebrew cask metadata, **draft** GitHub Release. |
-| `.github/workflows/ci.yml` | 151 | PR/push gate: gofmt, `go vet`, `go test -race`, a **windows-latest full `go test ./...` portability job (`build-windows`)**, golangci-lint, cross-arch build matrix, binary-size diff (advisory), gitleaks secret scan. |
-| `.github/workflows/release.yml` | — | Tag-triggered (`v*`), macOS-hosted release: imports the Developer ID certificate into an ephemeral keychain, validates Apple/OAuth secrets, runs GoReleaser to build a **draft** release, notarizes and verifies both Darwin artifacts, verifies the remaining artifact contracts, runs Tier 1, then **explicitly publishes** via `gh release edit --draft=false`. |
+| `.github/workflows/ci.yml` | 151 | PR/push gate: macOS secret-free Mora.app release-contract sabotage, gofmt, `go vet`, `go test -race`, a **windows-latest full `go test ./...` portability job (`build-windows`)**, golangci-lint, cross-arch build matrix, binary-size diff (advisory), gitleaks secret scan. |
+| `.github/workflows/release.yml` | — | Tag-triggered (`v*`), macOS-hosted release: imports the Developer ID certificate into an ephemeral keychain, validates Apple/OAuth secrets, runs GoReleaser to build a **draft** release, notarizes and verifies both Darwin artifacts, builds/signs/notarizes/staples both `Mora.app` bundles and uploads their `_app.zip` assets to the draft, verifies the remaining artifact contracts, runs Tier 1, then **explicitly publishes** via `gh release edit --draft=false`. |
+| `cmd/genicns` + `internal/appbundle` | — | Deterministic icon generator: parses the committed pixel-art `docs/assets/mora-eye.svg` (unit `<rect>` grid), composes it onto a macOS rounded-square tile with nearest-neighbor scaling (crisp pixel edges), and encodes a multi-size `Mora.icns`. Stdlib only; byte-identical for the same input + toolchain. |
+| `scripts/assemble-darwin-app.sh` | — | Deterministic `Mora.app` assembly from an already-signed CLI binary + generated icon: frozen `Info.plist` (identifier `com.pyranthus.mora`, name `Mora`, executable `mora`, icon `Mora`), fail-closed arch/version/icon validation, `SOURCE_DATE_EPOCH` mtime pinning. Assembly only — no signing. |
+| `scripts/appbundle-darwin-release.sh` | — | The Mora.app release lane: per-arch checksum-verified extraction of the signed CLI, bundle assembly, **whole-bundle** Developer ID signing (hardened runtime + timestamp), notarization, stapling, `stapler validate` + Gatekeeper acceptance, post-staple `_app.zip` packaging, path-safety + legacy-name guards (`--check-asset-name`), re-extraction and full trust validation of both final ZIPs, quarantined native launch, `checksums-app.txt`. Stable numeric `X.Y.Z` tags only; Apple-invalid prerelease bundle versions fail closed. |
+| `scripts/verify-app-zip.sh` | — | Fail-closed zip gate for app assets: refuses absolute/traversal/symlink/outside-`Mora.app/` entries and missing bundle members before any updater ever extracts the archive. |
+| `scripts/regress/app-bundle-contract.sh` | — | Secret-free adversarial contract for the app lane: icon determinism, frozen plist/layout, wrong identifier/team/arch/version, broken seal, silent no-op staple, Gatekeeper rejection, hostile zips, and release-workflow ordering (app lane after GoReleaser, before credential cleanup and publish). |
 | `.github/workflows/claude.yml` | 63 | On-demand Claude reviewer (`@claude` mention or `claude-review` label). Read-only on contents, advisory only. |
 | `internal/mora/upgrade.go` | ~150 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds (both literal `dev` and git-describe local builds at/ahead of the latest release — never offers a downgrade). After a successful swap it execs the NEW binary's `index rebuild` (`postUpgradeRebuild`, warn-don't-fail) so a schema change never strands a stale index. |
 | `cmd/mora/main.go` | 28 | Entry point. Receives `-ldflags -X main.{version,commit,date}` and forwards into `mora.Build*`. |
@@ -91,7 +96,8 @@ flowchart TD
 3. **Archives.** Darwin/Linux use `tar.gz`; Windows/amd64 uses `zip`. The executable stays at archive root so `go-selfupdate` can find it. The frozen name is `mora_{{.Version}}_{{.Os}}_{{.Arch}}`. Archives also carry `LICENSE`, `README.md`, `docs/guide.md`, `install.sh`, and `examples/*`.
 4. **Checksums, cosign, and SBOM.** One SHA-256 `checksums.txt` remains the self-update trust anchor. Keyless cosign signs that manifest and Syft emits the archive SBOMs. Apple code signing is an additional platform trust layer, not a replacement for the cross-platform checksum contract.
 5. **Notarize and verify before publish.** Each archive's already-signed Darwin executable is submitted to Apple with `notarytool --wait`. The gate requires `Accepted`, reruns `codesign --verify --strict`, confirms the identifier/team/designated requirement, and requires Apple's special `notarized` code requirement for both architectures. Before that requirement, a best-effort `spctl --type execute` probe makes Gatekeeper fetch the online ticket. Its expected raw-CLI "not app-like" result is ignored; it is ticket hydration, not the verdict. The gate also adds quarantine to a disposable copy of the runner-native binary and launches `mora version`. `spctl --type install` is never used because that policy is for installer packages. The release archive is never modified after checksums are generated.
-6. **Draft, then publish.** GoReleaser creates a draft release. OAuth embedding, Windows archive, checksums, macOS signing/notarization, and Tier-1 regression gates all run while it is invisible to `mora upgrade`. Only their success publishes the draft. A signing or notary failure therefore cannot become the latest installable release.
+6. **Mora.app lane.** After the raw artifacts pass their notary gate, `appbundle-darwin-release.sh` builds both branded app bundles from the same checksum-verified signed CLIs, signs each **whole bundle**, notarizes, staples, validates (stapler + codesign + Gatekeeper), and packages post-staple `_app.zip` assets with `checksums-app.txt`. The workflow then cosign-signs that manifest (keyless, like `checksums.txt`) and uploads everything to the still-draft release. The lane runs before credential cleanup (it needs the ephemeral keychain) and before publish. See [Standalone bridge, then `Mora.app`](#standalone-bridge-then-moraapp).
+7. **Draft, then publish.** GoReleaser creates a draft release. OAuth embedding, Windows archive, checksums, macOS signing/notarization, the Mora.app lane, and Tier-1 regression gates all run while it is invisible to `mora upgrade`. Only their success publishes the draft. A signing or notary failure therefore cannot become the latest installable release.
 
 > **One known label inconsistency, not yet reconciled:** the cask's `license:` is hardcoded `"Apache-2.0"` with a `TODO: confirm SPDX id` (`.goreleaser.yaml:80`). The repo `LICENSE` *is* Apache-2.0 (`LICENSE:1-2,189`), so the value is correct today — but note that earlier project memory and the bootstrap board (`bootstrap-release-project.sh:120-122`) still framed the license as an *open decision* (Apache vs MIT, or FSL). **As built, the license is Apache-2.0.**
 
@@ -161,13 +167,49 @@ name and root-level `mora` entry stay unchanged, so every existing installer and
 notarization ticket server-side for a raw executable; unlike an app, it has no
 bundle onto which `stapler` can attach that ticket.
 
-The later branded `Mora.app` is a distinct distribution target with bundle ID
-`com.pyranthus.mora`. Its release asset must use a name that the old standalone
-updater will not select. Installation puts the whole app in a stable location
+The branded `Mora.app` is a distinct distribution target with bundle ID
+`com.pyranthus.mora`. **As built (issue #257 Lane A), every tag release also
+produces two app assets** with this frozen contract:
+
+- **Asset names:** `mora_<version>_darwin_<arch>_app.zip` for stable numeric
+  `X.Y.Z` releases on `amd64` and
+  `arm64`, plus `checksums-app.txt` (sha256, same format as `checksums.txt`)
+  with a keyless cosign signature/certificate
+  (`checksums-app.txt.cosign.sig`/`.cosign.pem`, mirroring `checksums.txt`).
+  The legacy standalone updater (go-selfupdate, pinned v1.5.2) lowercases
+  asset names and selects one that **ends with** `<os><sep><arch><ext>`;
+  `_app.zip` is not such a suffix, so an old `mora upgrade` can never download
+  an app bundle as a raw binary. `appbundle-darwin-release.sh` enforces this
+  at packaging time (`--check-asset-name`), and the contract harness
+  sabotages the guard with every legacy suffix combination.
+- **Bundle layout:** `Contents/MacOS/mora` (the same signed pure-Go CLI the
+  raw archive ships, byte-verified against `checksums.txt` before assembly),
+  `Contents/Resources/Mora.icns` (generated deterministically from
+  `docs/assets/mora-eye.svg` by `cmd/genicns` — same pixel art, rounded-square
+  tile, crisp nearest-neighbor edges), and a frozen `Info.plist`:
+  `CFBundleIdentifier` `com.pyranthus.mora`, `CFBundleName`/`DisplayName`
+  `Mora`, `CFBundleExecutable` `mora`, `CFBundleIconFile` `Mora`,
+  `CFBundleShortVersionString`/`CFBundleVersion` from the release tag.
+- **Whole-bundle trust:** the bundle is signed as a unit with the pinned
+  Developer ID identity (identifier `com.pyranthus.mora`, team `VS8M5VJBZ5`,
+  hardened runtime, secure timestamp), notarized, **stapled**
+  (`Contents/CodeResources` must exist — a silent no-op staple fails the
+  release), `stapler validate`d, and Gatekeeper-assessed. Unlike the raw CLI,
+  `spctl --assess --type execute` on an app is the real verdict and gates the
+  release. The published zip is produced **after** stapling so installs
+  validate offline. Both final ZIPs are then re-extracted and must retain the
+  sealed signature, stapled ticket, exact identity, layout, architecture,
+  notarized-code requirement, and Gatekeeper acceptance before checksumming;
+  `scripts/verify-app-zip.sh` also refuses unsafe archive paths before upload.
+- **The raw archives are untouched:** same names, same root-level binary,
+  same checksums — the v0.11.4-and-earlier install/upgrade path is unchanged.
+
+Installation puts the whole app in a stable location
 and exposes its CLI through a symlink. An app update stages, verifies, and
 atomically replaces the **whole bundle**. Replacing only
 `Contents/MacOS/mora` invalidates the bundle seal, so the raw self-updater cannot
-be reused inside the app unchanged.
+be reused inside the app unchanged. The installer, PATH symlink, and
+whole-bundle updater are Lane B of #257 and are **not** part of this lane.
 
 The permission transition is explicit:
 
@@ -264,7 +306,9 @@ In short: the only network egress the binary performs is to Google's read-only A
 
 14. **Never clear quarantine or re-sign an official macOS release during install or upgrade.** `install.sh` verifies before and after copying. Homebrew and future installers must preserve the same behavior. WHY: quarantine is the Gatekeeper trigger, and ad-hoc re-signing replaces the designated requirement that Full Disk Access was granted to.
 
-15. **The raw bridge and app bundle are different update contracts.** The existing archive keeps `mora` at its root. A future app asset has a non-matching name, and app updates replace the whole signed bundle. WHY: an old `go-selfupdate` client otherwise selects the app archive and extracts the wrong executable, while an inner-binary-only swap invalidates the app seal.
+15. **The raw bridge and app bundle are different update contracts.** The existing archive keeps `mora` at its root. The app asset name `mora_<version>_darwin_<arch>_app.zip` does not end in a `<os><sep><arch><ext>` suffix, so the legacy `go-selfupdate` matcher can never select it (locked by the packaging-time name guard and the contract harness's suffix sabotage), and app updates replace the whole signed bundle. WHY: an old `go-selfupdate` client otherwise selects the app archive and extracts the wrong executable, while an inner-binary-only swap invalidates the app seal.
+
+16. **The app bundle is signed, notarized, stapled, and zipped — in that order.** `appbundle-darwin-release.sh` signs the whole bundle (never only `Contents/MacOS/mora`), staples after Apple accepts, verifies the ticket file and Gatekeeper's verdict, and only then produces the published `_app.zip`. WHY: a zip cut before stapling ships an app that cannot validate offline, and an inner-binary-only signature leaves the resource seal unverified. The contract test asserts the ordering from the mock call log.
 
 ---
 

@@ -19,6 +19,21 @@ env:
   RAPID_SEED: "20260714"
 
 jobs:
+  app-bundle-contract:
+    # Apple plist/archive tools are part of the contract, but signing, notary,
+    # stapler, and Gatekeeper are deterministic PATH fixtures. This gate needs
+    # no certificate or secret and proves hostile final ZIPs fail before a tag.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Mora.app release contract
+        run: bash scripts/regress/app-bundle-contract.sh
+
   test:
     runs-on: ubuntu-latest
     steps:
