@@ -65,6 +65,22 @@ import (
 //	TestClusterContractProviderAnchorRequiresBothFields (identical ProviderID,
 //	DIFFERENT non-empty Provider => must NOT cluster).
 //
+// AMENDMENT (round 3, integrator decision, #237): a draft of the round-2
+// context_memory pin (TestClusterContractContextMemoryExposesFoldedMembers)
+// asserted that a folded member's BODY TEXT must reappear in the rendered
+// "context" text block. Rejected before landing: that duplicates/inflates the
+// context surface and contradicts the frozen compact-citation shape above (a
+// stable-id citation, not a content replay). Corrected, frozen reading:
+// context_memory's envelope may gain an OPTIONAL top-level "corroborating"
+// array — a sibling of "context", the SAME four-key ref shape, present ONLY
+// when clustering actually folded a member, ABSENT (no key at all, anywhere
+// in the envelope) on a zero-cluster query — see
+// TestClusterContractContextMemoryNoClusterOmitsCorroborating. CLI `mora
+// context --json`'s frozen shape is narrower still: exactly ONE shape (a
+// nested "corroborating" array on the head's own receipt, mirroring
+// search_memory) — not two candidate shapes checked defensively — see the
+// tightened TestClusterContractCLIContextExposesFoldedMembers.
+//
 // ---------------------------------------------------------------------------
 // FROZEN INTERFACE (the contract a future implementation must satisfy)
 // ---------------------------------------------------------------------------
@@ -1125,6 +1141,61 @@ func TestClusterContractSuppressedTopHitNoBackfillMCP(t *testing.T) {
 	}
 }
 
+// clusterMemberRefsInOrder is the fixture's measured corroborating-ref content
+// for the two folded members, in the frozen deterministic (rank) order —
+// id/title/source/created_at verbatim. Shared across every surface's
+// compact-citation pin below (think, CLI `mora context --json`, MCP
+// context_memory) so all three assert the exact SAME frozen shape and content
+// instead of drifting independently.
+type wantCorrRef struct{ ID, Title, Source, CreatedAt string }
+
+var clusterMemberRefsInOrder = []wantCorrRef{
+	{ID: "gcal_primary/evt-q3review", Title: "Q3 Planning Review", Source: "calendar", CreatedAt: "2026-05-08T12:00:00Z"},
+	{ID: "imessage/chat-q3review", Title: "Q3 Planning Review follow-up", Source: "imessage", CreatedAt: "2026-05-10T16:35:00Z"},
+}
+
+// assertExactCorroboratingRefs pins the frozen four-key ref shape
+// ({id,title,source,created_at} — no more, no fewer), exact content, and
+// deterministic order for a "corroborating" array, regardless of which
+// surface (search_memory/think/context_memory/CLI context) it came from.
+func assertExactCorroboratingRefs(t *testing.T, corr []any, want []wantCorrRef, label string) {
+	t.Helper()
+	if len(corr) != len(want) {
+		t.Fatalf("%s corroborating refs = %d, want %d (%+v): %v", label, len(corr), len(want), want, corr)
+	}
+	for i, raw := range corr {
+		ref, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("%s corroborating[%d] is not an object: %#v", label, i, raw)
+		}
+		var keys []string
+		for k := range ref {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		wantKeys := []string{"created_at", "id", "source", "title"}
+		if len(keys) != len(wantKeys) {
+			t.Fatalf("%s corroborating[%d] keys = %v, want exactly %v (no more, no fewer)", label, i, keys, wantKeys)
+		}
+		for j := range keys {
+			if keys[j] != wantKeys[j] {
+				t.Fatalf("%s corroborating[%d] keys = %v, want exactly %v", label, i, keys, wantKeys)
+			}
+		}
+		w := want[i]
+		gotID, _ := ref["id"].(string)
+		gotTitle, _ := ref["title"].(string)
+		gotSource, _ := ref["source"].(string)
+		gotCreatedAt, _ := ref["created_at"].(string)
+		if gotID != w.ID || gotTitle != w.Title || gotSource != w.Source || gotCreatedAt != w.CreatedAt {
+			t.Fatalf("%s corroborating[%d] = {id:%q title:%q source:%q created_at:%q}, want "+
+				"{id:%q title:%q source:%q created_at:%q} (deterministic rank order, exact content, "+
+				"no substitutes)", label, i, gotID, gotTitle, gotSource, gotCreatedAt,
+				w.ID, w.Title, w.Source, w.CreatedAt)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 //  12. SCOPING P1 — think must never make a folded cluster member
 //     UNRECOVERABLE. buildThink (think.go) retrieves via hybridSearchTrace —
@@ -1134,7 +1205,9 @@ func TestClusterContractSuppressedTopHitNoBackfillMCP(t *testing.T) {
 //     field entirely, so the two folded members never appear as their own
 //     evidence rows (correctly, since they're clustered) AND never appear as
 //     a citation anywhere else (incorrectly — they simply vanish from think's
-//     output). RED vs f19d15e.
+//     output). Pinned to the exact frozen four-key ref shape, content, and
+//     deterministic order (assertExactCorroboratingRefs), not merely ID
+//     membership. RED vs f19d15e.
 //
 // ---------------------------------------------------------------------------
 func thinkEvidenceRows(t *testing.T, res map[string]any) []map[string]any {
@@ -1181,48 +1254,24 @@ func TestClusterContractThinkExposesFoldedMembers(t *testing.T) {
 			"folded members %v are UNRECOVERABLE from think output: %#v",
 			clusterHeadID, clusterMemberIDsInOrder, headRow)
 	}
-	gotIDs := map[string]bool{}
-	for _, raw := range corr {
-		ref, _ := raw.(map[string]any)
-		var keys []string
-		for k := range ref {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		wantKeys := []string{"created_at", "id", "source", "title"}
-		if len(keys) != len(wantKeys) {
-			t.Fatalf("think corroborating ref keys = %v, want exactly %v", keys, wantKeys)
-		}
-		for i := range keys {
-			if keys[i] != wantKeys[i] {
-				t.Fatalf("think corroborating ref keys = %v, want exactly %v", keys, wantKeys)
-			}
-		}
-		if id, _ := ref["id"].(string); id != "" {
-			gotIDs[id] = true
-		}
-	}
-	for _, mid := range clusterMemberIDsInOrder {
-		if !gotIDs[mid] {
-			t.Fatalf("think's cluster head corroborating refs = %v, missing folded member %s "+
-				"(RED vs f19d15e — think must never hide a member with no citation path)", corr, mid)
-		}
-	}
+	assertExactCorroboratingRefs(t, corr, clusterMemberRefsInOrder, "think")
 }
 
 // ---------------------------------------------------------------------------
 //  13. SCOPING P1 — context_memory (MCP) must never make a folded cluster
 //     member UNRECOVERABLE either. mcpContextMemory (mcp.go) retrieves via
-//     hybridSearch (the same shared primitive) and renders its "context" text
-//     block via buildContext (search.go), which walks the (already-clustered)
-//     item list and renders ONLY each surviving item's Title+Text — a folded
-//     member is not on that list at all (clusterAndTruncate excludes it; its
-//     content survives only as a citation on the head's Memory.Corroborating
-//     field, which buildContext never reads). Checked via each folded
-//     member's distinctive body text rather than its bare title: the head's
-//     own title "Re: Q3 Planning Review - prep notes" already contains the
-//     gcal member's bare title "Q3 Planning Review" as a substring, so a
-//     title-only check would falsely pass. RED vs f19d15e.
+//     hybridSearch (the same shared primitive), so a cluster head's
+//     Memory.Corroborating field IS populated on the Memory value it sees —
+//     but mcpContextMemory's OWN envelope ({"context","freshness",
+//     "budget_unit","budget","used","health"}) never forwards it, so a folded
+//     member is UNRECOVERABLE from context_memory's output today. Per the
+//     round-3 amendment (see top of file), the frozen fix is a top-level
+//     "corroborating" array — a sibling of "context", the same four-key ref
+//     shape as search_memory/think — NOT a body/snippet replay inside the
+//     "context" text block (that would duplicate/inflate context and
+//     contradict the compact-citation contract). RED vs f19d15e (no such
+//     top-level key exists yet). The companion omission pin below covers the
+//     OPTIONAL half: absent entirely on a zero-cluster query.
 //
 // ---------------------------------------------------------------------------
 func TestClusterContractContextMemoryExposesFoldedMembers(t *testing.T) {
@@ -1230,19 +1279,33 @@ func TestClusterContractContextMemoryExposesFoldedMembers(t *testing.T) {
 
 	res := mcpResult(t, budgetCall("context_memory", `{"query":"`+clusterQuery+`"}`))
 	payload := structuredPayload(t, res)
-	text, _ := payload["context"].(string)
-	if text == "" {
-		t.Fatalf("context_memory returned no context text: %#v", payload)
+	corr, ok := payload["corroborating"].([]any)
+	if !ok {
+		t.Fatalf("context_memory carries no top-level corroborating array for a cluster-eligible "+
+			"query — folded members %v are UNRECOVERABLE from context_memory output: %#v",
+			clusterMemberIDsInOrder, payload)
 	}
-	const gcalMemberText = "Quarterly planning review to align on Q3 roadmap priorities and budget allocation across teams."
-	const imessageMemberText = "Great Q3 planning review today, sending over the budget allocation follow up numbers we discussed."
-	if !strings.Contains(text, gcalMemberText) {
-		t.Fatalf("context_memory must not silently drop a folded cluster member's content — "+
-			"gcal_primary/evt-q3review's body is missing from the rendered context block:\n%s", text)
-	}
-	if !strings.Contains(text, imessageMemberText) {
-		t.Fatalf("context_memory must not silently drop a folded cluster member's content — "+
-			"imessage/chat-q3review's body is missing from the rendered context block:\n%s", text)
+	assertExactCorroboratingRefs(t, corr, clusterMemberRefsInOrder, "context_memory")
+}
+
+// TestClusterContractContextMemoryNoClusterOmitsCorroborating is the off-trigger
+// half of test 13: a query touching no cluster at all must carry NO
+// "corroborating" key ANYWHERE in the context_memory envelope — the top-level
+// array above is OPTIONAL, present only when clustering actually folded a
+// member. GREEN today: no corroborating key exists anywhere in context_memory's
+// output yet (the field this contract requires does not exist), so the
+// byte-level absence trivially holds; it is a forward regression guard against
+// a future implementation that always emits an empty "corroborating": []  (or
+// similar) regardless of trigger condition, once test 13 above is implemented.
+func TestClusterContractContextMemoryNoClusterOmitsCorroborating(t *testing.T) {
+	seedClusterFixture(t)
+	// "offsite logistics" matches only note/offsite-planning — a singleton, no
+	// anchor shared with anything else in the fixture (mirrors the
+	// search_memory no-cluster pin, TestClusterContractNoClusterByteIdentical).
+	res := mcpResult(t, budgetCall("context_memory", `{"query":"offsite logistics"}`))
+	if envelopeContainsKey(t, res, "corroborating") {
+		t.Fatal("a zero-cluster query must never surface a corroborating key anywhere in the " +
+			"context_memory envelope")
 	}
 }
 
@@ -1252,7 +1315,11 @@ func TestClusterContractContextMemoryExposesFoldedMembers(t *testing.T) {
 //     retrieves via the same hybridSearch primitive and packs receipts via
 //     contextReceipts (entities.go), whose contextItemJSON shape is
 //     {id,title,created_at} with NO corroborating field — a folded member is
-//     simply absent from items[], with no nested citation either. RED vs
+//     simply absent from items[], with no nested citation either. Frozen
+//     shape (round 3): exactly ONE — a nested "corroborating" array on the
+//     head's own receipt, mirroring search_memory/think, with the exact
+//     four-key ref shape, content, and order (assertExactCorroboratingRefs) —
+//     not checked defensively against multiple candidate shapes. RED vs
 //     f19d15e.
 //
 // ---------------------------------------------------------------------------
@@ -1267,35 +1334,26 @@ func TestClusterContractCLIContextExposesFoldedMembers(t *testing.T) {
 	if !ok {
 		t.Fatalf("context --json has no items array: %#v", env)
 	}
-	gotIDs := map[string]bool{}
+	var headRow map[string]any
 	for _, r := range raw {
 		m, ok := r.(map[string]any)
 		if !ok {
 			continue
 		}
-		if id, _ := m["id"].(string); id != "" {
-			gotIDs[id] = true
-		}
-		// A future implementation may carry folded members as a nested
-		// corroborating array on the head receipt (mirroring search_memory)
-		// rather than as their own top-level row — check both shapes.
-		if corr, ok := m["corroborating"].([]any); ok {
-			for _, cr := range corr {
-				if crm, ok := cr.(map[string]any); ok {
-					if id, _ := crm["id"].(string); id != "" {
-						gotIDs[id] = true
-					}
-				}
-			}
+		if id, _ := m["id"].(string); id == clusterHeadID {
+			headRow = m
 		}
 	}
-	for _, mid := range clusterMemberIDsInOrder {
-		if !gotIDs[mid] {
-			t.Fatalf("`mora context --json` receipts = %v, missing folded member %s — "+
-				"RED vs f19d15e (contextItemJSON has no corroborating field; the member is "+
-				"UNRECOVERABLE from CLI context receipts today)", raw, mid)
-		}
+	if headRow == nil {
+		t.Fatalf("`mora context --json` receipts missing cluster head %s: %v", clusterHeadID, raw)
 	}
+	corr, ok := headRow["corroborating"].([]any)
+	if !ok {
+		t.Fatalf("`mora context --json` head receipt %s carries no corroborating refs — folded "+
+			"members %v are UNRECOVERABLE from CLI context receipts today (contextItemJSON has no "+
+			"corroborating field): %#v", clusterHeadID, clusterMemberIDsInOrder, headRow)
+	}
+	assertExactCorroboratingRefs(t, corr, clusterMemberRefsInOrder, "`mora context --json`")
 }
 
 // ---------------------------------------------------------------------------
