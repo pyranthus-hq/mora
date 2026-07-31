@@ -65,7 +65,22 @@ func budgetSearchResults(mems []Memory, budgetBytes int) (kept []Memory, dropped
 	}
 	return kept, len(mems) - len(kept)
 }
-func searchMemories(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
+
+// searchMemories is the FTS-only retrieval arm. filters is an optional
+// trailing #241 source/since_hours pair (searchFilters{}, the zero value,
+// when omitted — every pre-#241 call site keeps compiling unchanged and gets
+// a byte-identical query/result). The filter is a TRUE SQL WHERE predicate
+// (searchFilters.sqlPredicate, search_filters.go) appended BEFORE ORDER
+// BY/LIMIT, evaluated against the indexed memories.provider/account/
+// created_at_unix columns (v4 schema, #241) — the SAME row bm25 already
+// ranked, never a second parseMemory() disk read of the live vault file mid-
+// ranking. Because the exclusion happens in the WHERE clause itself, a
+// filtered-out row is never fetched, never ranked, and can never crowd a
+// matching row out of `limit` (filters_contract_test.go's
+// TestFiltersSearchMemoryPreRankSourceProof/SinceHoursProof) — LIMIT stays
+// unconditional; there is no longer a separate "drop the SQL LIMIT" branch.
+func searchMemories(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	f := oneFilter(filters)
 	if _, err := os.Stat(dbPath(cfg)); err != nil {
 		if _, err := rebuildIndex(ctx, cfg); err != nil {
 			return nil, err
@@ -89,6 +104,10 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	if scope != "" {
 		sqlq += ` AND m.scope = ?`
 		args = append(args, scope)
+	}
+	if pc, pargs := f.sqlPredicate(); pc != "" {
+		sqlq += pc
+		args = append(args, pargs...)
 	}
 	sqlq += ` ORDER BY score, m.id LIMIT ?`
 	args = append(args, limit)

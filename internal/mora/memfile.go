@@ -296,7 +296,16 @@ func findMemory(cfg Config, id string) (Memory, error) {
 	return decorateDecision(m, time.Now()), nil
 }
 
-func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
+// listMemories backs `mora list`, list_memory, and context_memory's no-query
+// "recency briefing" fallback. filters is an optional trailing #241
+// source/since_hours pair (zero value — a no-op — when omitted, so every
+// pre-#241 call site keeps compiling and behaving unchanged). No pre-rank
+// subtlety is needed here: every file is already parsed and predicate-checked
+// BEFORE the newest-first sort + limit truncate below, so adding the filter
+// predicate alongside the existing scope check can never let a filtered-out
+// memory crowd out a matching one.
+func listMemories(cfg Config, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	f := oneFilter(filters)
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
 		return nil, err
@@ -322,9 +331,13 @@ func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
 		if !g.memoryVisible(m.ID) {
 			continue
 		}
-		if scope == "" || m.Scope == scope {
-			out = append(out, decorateDecision(m, time.Now()))
+		if scope != "" && m.Scope != scope {
+			continue
 		}
+		if f.active() && !f.passes(m) {
+			continue
+		}
+		out = append(out, decorateDecision(m, time.Now()))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	if limit > 0 && len(out) > limit {

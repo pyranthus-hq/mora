@@ -238,6 +238,8 @@ var mcpToolRegistry = []mcpToolDef{
 			{"scope", "string", `Optional scope filter, e.g. "project:acme"`, false},
 			{"limit", "integer", "Max results to return (default 8)", false},
 			{"confidence", "boolean", "Opt-in: also return a compact confidence envelope (strength, score rollup, freshest source, missing/unhealthy sources) derived from this call's own results (default false)", false},
+			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm. An unrecognized value is a tool error.`, false},
+			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm.", false},
 		},
 		Handler: mcpSearchMemory,
 	},
@@ -260,6 +262,8 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "Topic to assemble context for; omit for a recency briefing", false},
 			{"scope", "string", "Optional scope filter", false},
 			{"max_tokens", "integer", "Approximate token budget for the response (default ~6000, max ~20000)", false},
+			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm, including the no-query recency fallback. An unrecognized value is a tool error.`, false},
+			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm, including the no-query recency fallback.", false},
 		},
 		Handler: mcpContextMemory,
 	},
@@ -440,15 +444,27 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 
 func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
+	// #241: since_hours reads briefClock() — the SAME test-injectable clock var
+	// digest/brief already use for their own since-days/since-hours cutoffs
+	// (mora.go) — never a bare time.Now(), so a single call sees one
+	// consistent, pinnable clock across every retrieval arm.
+	now := briefClock()
 	query := strArg(args, "query", "")
 	scope := strArg(args, "scope", "")
 	limit := intArg(args, "limit", mcpSearchDefaultLimit)
+	// #241: optional trusted-source/time-window filters, validated up front and
+	// fail-closed (never a silent no-filter) on an unrecognized source or a
+	// since_hours that is not a positive integer.
+	filters, ferr := parseSearchFilters(args, now)
+	if ferr != nil {
+		return nil, ferr
+	}
 	// #238: defaultSearchForMCP (not the plain defaultSearch every other call
 	// site uses) so the confidence envelope below can consume the ACTUAL
 	// routing decision + retrieval trace this call already computed, instead
 	// of re-probing chooseEmbedderFor or re-running the whole hybrid pipeline
 	// a second time.
-	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit)
+	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit, filters)
 	res := sr.Results
 	logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
@@ -469,7 +485,19 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// release alongside the new typed `health` (C1/C4, Open Q1) — health.index
 	// is what freshness never had: a dirty/failed INDEX distinct from a stale
 	// SOURCE.
-	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": compactHealthOf(cfg, time.Now())}
+	//
+	// #241: when a source filter is active, health is scoped the SAME way
+	// confidence's missing_sources is below — a source the caller explicitly
+	// excluded must not drag the always-present health banner into
+	// degraded/unhealthy (compactHealthFiltered, search_filters.go). Reuses
+	// the SAME `now` captured once above (briefClock()) rather than a fresh
+	// time.Now() — one consistent instant for every filter-related signal
+	// this call computes.
+	health := compactHealthOf(cfg, now)
+	if filters.Source != "" {
+		health = compactHealthFiltered(cfg, now, filters)
+	}
+	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": health}
 	if dropped > 0 {
 		out["results_truncated"] = dropped
 	}
@@ -485,7 +513,32 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
 	// — the actual RETURNED set — per the frozen contract.
 	if boolArg(args, "confidence", false) {
-		out["confidence"] = searchConfidence(ctx, cfg, budgeted, sr.SemanticPath, sr.Local, sr.Trace, query, time.Now())
+		conf := searchConfidence(ctx, cfg, budgeted, sr.SemanticPath, sr.Local, sr.Trace, query, now)
+		// #241/#238 interaction: a source excluded by an active source filter
+		// is a caller choice, not a coverage gap — recompute missing_sources/
+		// health_impact over the filter-narrowed population (confidence.go's
+		// confidenceSourceGaps/searchConfidence are UNTOUCHED; this overwrites
+		// the two fields after the fact, search_filters.go's filteredMissingSources).
+		// SAME captured `now` as above.
+		if filters.Source != "" {
+			conf.MissingSources, conf.HealthImpact = filteredMissingSources(cfg, now, filters)
+		}
+		out["confidence"] = conf
+	}
+	// #241: the "filters" receipt appears ONLY when at least one filter was
+	// actually supplied — omitted params stay byte-identical to pre-#241
+	// output (filters_contract_test.go's ByteIdenticalWhenOmitted pins).
+	if r := filters.receipt(); r != nil {
+		out["filters"] = r
+	}
+	// #241 acceptance: "Health/confidence output distinguishes
+	// excluded_by_filter from unavailable/unhealthy sources" — an explicit
+	// top-level marker, present only when the source filter actually excludes
+	// an enabled source (search_filters.go's excludedByFilterSources).
+	if filters.Source != "" {
+		if excl := excludedByFilterSources(cfg, now, filters); len(excl) > 0 {
+			out["excluded_by_filter"] = excl
+		}
 	}
 	return out, nil
 }
@@ -507,15 +560,21 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 
 func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
+	// #241: same briefClock() seam as mcpSearchMemory — see its comment.
+	now := briefClock()
 	scope := strArg(args, "scope", "")
 	query := strArg(args, "query", "")
 	tokenBudget, charBudget := resolveContextBudgetTokens(cfg, intArg(args, "max_tokens", 0))
+	filters, ferr := parseSearchFilters(args, now)
+	if ferr != nil {
+		return nil, ferr
+	}
 	var items []Memory
 	var err error
 	if query != "" {
-		items, err = hybridSearch(ctx, cfg, query, scope, 10)
+		items, err = hybridSearch(ctx, cfg, query, scope, 10, filters)
 	} else {
-		items, err = listMemories(cfg, scope, 10)
+		items, err = listMemories(cfg, scope, 10, filters)
 	}
 	if err != nil {
 		return nil, err
@@ -523,14 +582,32 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	text := buildContext(cfg, items, charBudget, query != "")
 	logUsage(cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
 	used := estimateTokensUsed(len(text))
-	return map[string]any{
+	// #241: health scoped the same way as mcpSearchMemory's — an excluded
+	// source must not drag the always-present health banner down. Reuses the
+	// SAME `now` captured once above (briefClock()), not a fresh time.Now().
+	health := compactHealthOf(cfg, now)
+	if filters.Source != "" {
+		health = compactHealthFiltered(cfg, now, filters)
+	}
+	out := map[string]any{
 		"context":     text,
 		"freshness":   sourceFreshness(cfg),
 		"budget_unit": budgetUnitTokens,
 		"budget":      tokenBudget,
 		"used":        used,
-		"health":      compactHealthOf(cfg, time.Now()),
-	}, nil
+		"health":      health,
+	}
+	if r := filters.receipt(); r != nil {
+		out["filters"] = r
+	}
+	// #241 acceptance: explicit excluded_by_filter marker — see
+	// mcpSearchMemory's identical block for the full rationale.
+	if filters.Source != "" {
+		if excl := excludedByFilterSources(cfg, now, filters); len(excl) > 0 {
+			out["excluded_by_filter"] = excl
+		}
+	}
+	return out, nil
 }
 
 func mcpThink(ctx context.Context, cfg Config, args map[string]any) (any, error) {

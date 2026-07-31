@@ -35,7 +35,9 @@ func hkBreakLoadConfig(t *testing.T) {
 }
 
 // hkSetSearch swaps the hookSearchMemories seam and restores it after the test.
-func hkSetSearch(t *testing.T, fn func(context.Context, Config, string, string, int) ([]Memory, error)) {
+// The trailing ...searchFilters mirrors searchMemories' #241 optional filter
+// param (hookSearchMemories is var-inferred from searchMemories' own type).
+func hkSetSearch(t *testing.T, fn func(context.Context, Config, string, string, int, ...searchFilters) ([]Memory, error)) {
 	t.Helper()
 	prev := hookSearchMemories
 	hookSearchMemories = fn
@@ -173,7 +175,7 @@ func TestHk_HookRecallLoadConfigError(t *testing.T) {
 func TestHk_HookRecallSearchError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	hkSetSearch(t, func(context.Context, Config, string, string, int) ([]Memory, error) {
+	hkSetSearch(t, func(context.Context, Config, string, string, int, ...searchFilters) ([]Memory, error) {
 		return nil, errors.New("index unavailable")
 	})
 	var out bytes.Buffer

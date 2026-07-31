@@ -123,8 +123,9 @@ func indexUpsert(ctx context.Context, cfg Config, m Memory) error {
 		path := memoryPath(cfg, m)
 		tags := strings.Join(m.Tags, ",")
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Scope, m.Type, m.Title, tags, m.Source, m.CreatedAt, path, m.Text); err != nil {
+			`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Scope, m.Type, m.Title, tags, m.Source, m.CreatedAt, path, m.Text,
+			providerToType(m.Provider), m.Account, createdAtUnix(m.CreatedAt)); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,

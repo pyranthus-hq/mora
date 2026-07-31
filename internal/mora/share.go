@@ -1239,8 +1239,21 @@ func ownedTitle(m Memory) string {
 }
 
 // searchShareIndex is searchMemories against one subscription's index, with
-// every row attributed to the subscription.
-func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope string, limit int) ([]Memory, error) {
+// every row attributed to the subscription. filters is an optional trailing
+// #241 source/since_hours pair (zero value — a no-op, byte-identical to
+// pre-#241 — when omitted). A subscribed share corpus is part of the FINAL
+// returned result set (unionSharedResults fuses it with local results), so
+// the SAME pre-rank discipline searchMemories applies locally applies here:
+// a filtered-out shared row must never crowd a matching one out of the
+// share's own LIMIT, and source=imessage must never leak a gmail memory
+// merely because it came from a subscription rather than the local vault.
+// The predicate reads the share index's OWN provider/account/created_at
+// columns (v4 schema, share_gen.go's writeShareIndexRows) — the same
+// indexed-snapshot design as the local arm, never a live file read (a
+// subscribed corpus's source files are not even necessarily present on this
+// machine).
+func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	f := oneFilter(filters)
 	match := ftsQuery(query)
 	if strings.TrimSpace(match) == "" {
 		return nil, nil
@@ -1251,6 +1264,15 @@ func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope strin
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
+	}
+	// #241: the SQL WHERE predicate excludes a filtered-out shared row from
+	// this subscription's result set entirely, before ORDER BY/LIMIT — the
+	// SAME pre-rank discipline the local arms apply, against the share
+	// index's OWN provider/account/created_at_unix columns
+	// (share_gen.go's writeShareIndexRows).
+	if pc, pargs := f.sqlPredicate(); pc != "" {
+		q += pc
+		args = append(args, pargs...)
 	}
 	q += ` ORDER BY score, m.id LIMIT ?`
 	args = append(args, limit)
@@ -1278,7 +1300,7 @@ func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope strin
 // silently skipped — that's a normal state, visible in `mora share list`. An
 // index that EXISTS but cannot be opened or has the wrong schema fails the
 // whole search loudly: honest-failure over silent partial results.
-func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, limit int) ([][]Memory, error) {
+func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([][]Memory, error) {
 	sf, err := loadShares(cfg)
 	if err != nil {
 		return nil, err
@@ -1310,7 +1332,7 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 				continue
 			}
 		}
-		res, qerr := searchShareIndex(ctx, db, sub.Name, query, scope, limit)
+		res, qerr := searchShareIndex(ctx, db, sub.Name, query, scope, limit, filters...)
 		_ = db.Close()
 		if qerr != nil {
 			continue
@@ -1327,8 +1349,8 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 // UNCHANGED — the zero-share path stays byte-identical for the MCP budget
 // gate and every existing caller. Fusion keys are NUL-separated so a shared id
 // can never collide with a local id in the score map.
-func unionSharedResults(ctx context.Context, cfg Config, local []Memory, query, scope string, limit int) ([]Memory, error) {
-	shared, err := searchSharedCorpora(ctx, cfg, query, scope, limit)
+func unionSharedResults(ctx context.Context, cfg Config, local []Memory, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	shared, err := searchSharedCorpora(ctx, cfg, query, scope, limit, filters...)
 	if err != nil {
 		return nil, err
 	}

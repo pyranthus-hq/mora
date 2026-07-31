@@ -85,8 +85,8 @@ type retrievalTrace struct {
 // It is a thin wrapper over hybridSearchTrace with tracePool=0, so the arm pool
 // stays exactly limit*5 (min 50) and the fused ranking is byte-identical to the
 // pre-trace implementation — one production code path, the trace discarded.
-func hybridSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
-	mems, _, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
+func hybridSearch(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	mems, _, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0, filters...)
 	return mems, err
 }
 
@@ -137,16 +137,16 @@ type mcpSearchResult struct {
 // than hard-failing a search on a one-second daemon blip. The failure is
 // disclosed by the reddened index health banner (indexHealthOf → degraded),
 // not by a crash.
-func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, limit int) (mcpSearchResult, error) {
+func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) (mcpSearchResult, error) {
 	var out mcpSearchResult
 	var local []Memory
 	var err error
 	emb, embErr := chooseEmbedderFor(cfg)
 	out.SemanticPath = embErr == nil && embedderIsSemantic(emb)
 	if out.SemanticPath {
-		local, out.Trace, err = hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
+		local, out.Trace, err = hybridSearchTrace(ctx, cfg, query, scope, limit, 0, filters...)
 	} else {
-		local, err = searchMemories(ctx, cfg, query, scope, limit)
+		local, err = searchMemories(ctx, cfg, query, scope, limit, filters...)
 	}
 	if err != nil {
 		return out, err
@@ -155,7 +155,7 @@ func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, l
 	// Query-time union with subscribed share corpora (`mora share`): owner-
 	// attributed, rank-fused, and a no-op returning `local` unchanged when no
 	// subscriptions exist.
-	out.Results, err = unionSharedResults(ctx, cfg, local, query, scope, limit)
+	out.Results, err = unionSharedResults(ctx, cfg, local, query, scope, limit, filters...)
 	return out, err
 }
 
@@ -179,7 +179,8 @@ func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit i
 // (RETRIEVAL → falsely blaming the embedder). tracePool<=0 (what hybridSearch
 // passes) records the production arms themselves — one query per arm, zero extra
 // work on the production hot path.
-func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, limit, tracePool int) ([]Memory, retrievalTrace, error) {
+func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, limit, tracePool int, filters ...searchFilters) ([]Memory, retrievalTrace, error) {
+	f := oneFilter(filters)
 	var tr retrievalTrace
 	if _, err := os.Stat(dbPath(cfg)); err != nil {
 		if _, err := rebuildIndex(ctx, cfg); err != nil {
@@ -202,7 +203,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// its deduped union across people may exceed pool; that whole union is fused,
 	// never capped — capping it would change the fused ranking for multi-person
 	// queries (and break byte-identity).
-	ftsIDs, err := ftsSearchIDs(ctx, db, query, scope, pool)
+	ftsIDs, err := ftsSearchIDs(ctx, db, query, scope, pool, f)
 	if err != nil {
 		return nil, tr, err
 	}
@@ -234,11 +235,11 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 			useVec = embedderIsSemantic(emb)
 		}
 		if useVec {
-			if vecIDs, err = vectorSearchIDs(ctx, db, emb, query, scope, pool); err != nil {
+			if vecIDs, err = vectorSearchIDs(ctx, db, emb, query, scope, pool, f); err != nil {
 				return nil, tr, err
 			}
 		}
-		if graphIDs, err = graphExpandIDs(ctx, db, query, scope, pool); err != nil {
+		if graphIDs, err = graphExpandIDs(ctx, db, query, scope, pool, f); err != nil {
 			return nil, tr, err
 		}
 	}
@@ -247,16 +248,16 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// tracePool<=pool the production arms ARE the trace arms (no extra queries).
 	if tracePool > pool {
 		tr.PreTruncPool = tracePool
-		if tr.FTS, err = ftsSearchIDs(ctx, db, query, scope, tracePool); err != nil {
+		if tr.FTS, err = ftsSearchIDs(ctx, db, query, scope, tracePool, f); err != nil {
 			return nil, tr, err
 		}
 		if vecOK {
 			if useVec {
-				if tr.Vec, err = vectorSearchIDs(ctx, db, emb, query, scope, tracePool); err != nil {
+				if tr.Vec, err = vectorSearchIDs(ctx, db, emb, query, scope, tracePool, f); err != nil {
 					return nil, tr, err
 				}
 			}
-			if tr.Graph, err = graphExpandIDs(ctx, db, query, scope, tracePool); err != nil {
+			if tr.Graph, err = graphExpandIDs(ctx, db, query, scope, tracePool, f); err != nil {
 				return nil, tr, err
 			}
 		}
@@ -339,7 +340,16 @@ func vectorsAvailable(ctx context.Context, db *sql.DB) bool {
 
 // ftsSearchIDs returns up to pool memory ids ranked by BM25 for the query, scoped.
 // An empty/punctuation-only query yields no ids (mirrors searchMemories).
-func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int) ([]string, error) {
+//
+// filters is an optional trailing #241 source/since_hours pair (zero value —
+// a no-op, byte-identical query — when omitted). The filter is a TRUE SQL
+// WHERE predicate (searchFilters.sqlPredicate) appended BEFORE ORDER
+// BY/LIMIT, against the indexed memories.provider/account/created_at_unix
+// columns — a filtered-out row is never fetched, so it can never crowd a
+// matching row out of `pool` (filters_contract_test.go's
+// TestFiltersHybridFTSArmPreRankProof).
+func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int, filters ...searchFilters) ([]string, error) {
+	f := oneFilter(filters)
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil
@@ -349,6 +359,10 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
+	}
+	if pc, pargs := f.sqlPredicate(); pc != "" {
+		q += pc
+		args = append(args, pargs...)
 	}
 	// Secondary sort by id makes ties deterministic — bm25 alone leaves equal-score
 	// rows in undefined order, which would jitter the pool boundary run-to-run.
@@ -360,7 +374,13 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 // vectorSearchIDs embeds the query and returns up to pool memory ids ranked by
 // cosine similarity (brute force; <100ms to ~250k vectors). Zero-similarity rows
 // are dropped so a query never pulls in wholly unrelated memories on vector alone.
-func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope string, pool int) ([]string, error) {
+//
+// filters is an optional trailing #241 source/since_hours pair (zero value —
+// a no-op — when omitted). The predicate is applied BEFORE the cosine
+// computation for each row: a filtered-out row never earns a cosine score and
+// so can never occupy a pool slot or influence ranking.
+func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope string, pool int, filters ...searchFilters) ([]string, error) {
+	f := oneFilter(filters)
 	qv, err := emb.Embed(query)
 	if err != nil {
 		return nil, err
@@ -370,6 +390,14 @@ func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
+	}
+	// #241: the SQL WHERE predicate excludes a filtered-out row from this
+	// query's result set entirely — BEFORE the cosine loop below ever sees
+	// it, satisfying "exclude before the cosine/top-k loop" by construction
+	// rather than a Go-side per-row skip.
+	if pc, pargs := f.sqlPredicate(); pc != "" {
+		q += pc
+		args = append(args, pargs...)
 	}
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -410,7 +438,16 @@ func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope
 // graphExpandIDs resolves the people named in the query (via the person gazetteer
 // + exact alias match) and pulls their 1-hop evidence memories into the candidate
 // pool — GraphRAG-lite, no LLM. Ordered newest-first for a stable rank.
-func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool int) ([]string, error) {
+//
+// filters is an optional trailing #241 source/since_hours pair (zero value —
+// a no-op, byte-identical query — when omitted). The filter is a TRUE SQL
+// WHERE predicate (searchFilters.sqlPredicate) appended to EACH per-person
+// query BEFORE its own ORDER BY/LIMIT — the per-person LIMIT is never
+// dropped and there is no Go-side fallback/post-filter. A filtered-out row
+// is excluded by the WHERE clause itself, so it is never fetched and can
+// never crowd a matching row out of that person's `pool` slots.
+func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool int, filters ...searchFilters) ([]string, error) {
+	f := oneFilter(filters)
 	gaz, aliasToID, err := loadPersonGazetteer(ctx, db)
 	if err != nil {
 		return nil, err
@@ -443,6 +480,13 @@ func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool i
 		if scope != "" {
 			q += ` AND m.scope = ?`
 			args = append(args, scope)
+		}
+		// #241: the SQL WHERE predicate (provider/account/created_at_unix)
+		// excludes a filtered-out row from THIS per-person query's result set
+		// entirely, before ORDER BY/LIMIT — never a Go-side post-filter.
+		if pc, pargs := f.sqlPredicate(); pc != "" {
+			q += pc
+			args = append(args, pargs...)
 		}
 		q += ` ORDER BY m.created_at DESC, e.evidence_id ASC LIMIT ?`
 		args = append(args, pool)
