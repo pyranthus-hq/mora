@@ -28,9 +28,15 @@ guide, read the [README](../README.md). For code details, read
 
 ## Install
 
-**Installer script** (macOS / Linux): downloads the correct release binary and
-clears the macOS Gatekeeper quarantine. It signs the binary, puts it on your
-PATH, and starts the vault.
+**Installer script** (macOS / Linux): downloads the correct release archive,
+checks its SHA-256 digest, puts `mora` on your PATH, and starts the vault. On
+macOS, the release binary is signed with Apple Developer ID identity
+`com.pyranthus.mora` from team `VS8M5VJBZ5` and submitted to Apple's notary
+service. The installer checks that identity and Apple's notarized-code
+requirement before and after copying the binary. It never removes quarantine or
+re-signs the binary. If `mora` is already a regular file on `PATH`, the
+installer replaces that exact active file. It refuses to overwrite a symlink or
+a Homebrew-managed path; use the package manager or set `PREFIX` explicitly.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
@@ -58,13 +64,30 @@ also use a placeholder Google OAuth client. Thus, `mora connect google` needs
 your own credentials (see BYO credentials below). The release binary includes
 a working client.
 
-**macOS Gatekeeper note:** macOS can block the first run of a downloaded binary
-if you did not use the installer. Right-click `mora` in Finder and choose
-**Open**. You can also clear the quarantine flag:
+**macOS Gatekeeper note:** the standalone `mora` executable is the compatibility
+bridge for the existing tarball and `mora upgrade` contracts. A raw executable
+cannot carry a stapled notarization ticket, so its first notarization-ticket check
+can need an internet connection. Do not clear its quarantine attribute or
+ad-hoc re-sign it. Either action discards part of the release trust path; signing
+it again also changes the identity macOS uses for protected-data permissions.
+You can inspect the release without changing it:
 
 ```bash
-xattr -d com.apple.quarantine ./mora
+codesign --verify --strict --verbose=2 ./mora
+codesign -dvv ./mora 2>&1 | grep -E '^(Identifier|TeamIdentifier|Authority)='
+codesign --verify --strict --verbose=2 -R='notarized' ./mora
 ```
+
+The final command checks Apple's notarization ticket for the binary's exact code
+directory. Do not use `spctl --type install` for this check: Apple defines that
+policy for installer packages. `spctl --type execute` can reject a correctly
+notarized raw CLI as not app-like. The release pipeline also launches a
+quarantined disposable copy of the native-architecture binary before it
+publishes the release.
+
+A later release will add a branded `Mora.app`. That is a whole application
+bundle, not a new skin for this executable. Its updater must replace the whole
+signed bundle so the seal, icon, and permission identity stay intact.
 
 ## Windows
 
@@ -176,12 +199,25 @@ mora connect imessage --since-days 365   # widen the backlog window (negative = 
 
 Mora reads the local Messages database (`~/Library/Messages/chat.db`) in
 **read-only** mode. It sends no data. macOS protects this file with
-**Full Disk Access**, which it grants *per binary*:
+**Full Disk Access**, which it associates with a signed executable target:
 
 1. Run `mora connect imessage`. If access is missing it prints exactly what to do.
 2. Open **System Settings → Privacy & Security → Full Disk Access**, add your `mora` binary (or the
    terminal you run it from), and toggle it on.
 3. Re-run `mora connect imessage`. `mora doctor` reports the access status any time.
+
+If Full Disk Access was granted to an older ad-hoc-signed Mora, the first move
+to the official Developer ID-signed executable is an identity change. macOS can
+require you to remove the stale entry, add the installed `mora` again, and grant
+access once. Later standalone releases keep the same Developer ID team and
+identifier so in-place upgrades have a stable designated requirement.
+
+The planned `Mora.app` migration changes the protected-data target from a raw
+executable to an application bundle. Plan for one final Full Disk Access grant
+to the app during that migration. Keep the old entry until `mora doctor` and an
+iMessage sync pass through the app. Routine app upgrades must replace the whole
+bundle, and Mora will not claim that they preserve access until a real version
+N to N+1 upgrade proves it without a re-grant.
 
 Contact names come from your address book. Thus, iMessage usually gives the
 cleanest name-to-handle map of any source.
@@ -631,6 +667,14 @@ After a successful swap, `mora upgrade` rebuilds the search index with the new
 version. A schema change never leaves a stale index. With the default embedder,
 Mora rebuilds it on the first read. An Ollama re-index can take minutes. Mora
 then tells you to "run `mora index rebuild`" and does not hide the old index.
+
+On macOS, the standalone bridge swaps one notarized Developer ID-signed binary
+for another with the same `com.pyranthus.mora` identifier and Apple team. Do not
+run `codesign --sign -` on an installed release: that replaces the stable
+identity and can invalidate Full Disk Access. The later `Mora.app` line will use
+a separate whole-bundle updater; the standalone updater must not extract an app
+asset and replace only `Contents/MacOS/mora`, because that would break the app's
+signature seal.
 
 Direct-binary installs update from public GitHub releases. They need no token or
 login. Mora sends Homebrew installs to `brew upgrade`. Source and `go build`

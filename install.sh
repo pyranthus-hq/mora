@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 # Mora installer — works two ways:
 #
-#   1) LOCAL (recommended for the demo): extract a release tarball, then run the
-#      bundled install.sh. Installs the `mora` binary, clears the macOS Gatekeeper
-#      quarantine + ad-hoc-signs it (the binary is unsigned), sets up your vault,
-#      and prints next steps.
+#   1) LOCAL: extract a release tarball, then run the bundled install.sh. On
+#      macOS, the installer verifies the official Developer ID signature and
+#      Apple's notarized-code requirement without changing either the signature or
+#      the quarantine attribute. It then sets up your vault and prints next steps.
 #
-#        tar -xzf mora_0.11.1_darwin_arm64.tar.gz && ./install.sh
+#        tar -xzf mora_0.11.2_darwin_arm64.tar.gz && ./install.sh
 #
 #   2) REMOTE: if no binary sits next to this script, it downloads the matching
 #      asset for this machine from the public GitHub release (plain curl, no auth;
@@ -17,14 +17,16 @@
 #   PREFIX=/usr/local/bin    install dir (default: first writable of
 #                            /usr/local/bin, /opt/homebrew/bin, ~/.local/bin)
 #   MORA_VAULT=~/vault/mora  vault location passed to `mora init`
-#   VERSION=0.11.1           release tag for remote mode
+#   VERSION=0.11.2           release tag for remote mode
 #   REPO=pyranthus-hq/mora   source repo for remote mode
 set -eu
 
-VERSION="${VERSION:-0.11.1}"
+VERSION="${VERSION:-0.11.2}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
-HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+MACOS_IDENTIFIER="com.pyranthus.mora"
+MACOS_TEAM_ID="VS8M5VJBZ5"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -35,6 +37,43 @@ sha256_of() {
 	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
 	elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
 	else return 1; fi
+}
+
+# verify_macos_release <binary> — fail closed unless the executable carries
+# Mora's stable Apple Developer ID identity and Apple accepts its notarization
+# ticket. A raw executable cannot carry a stapled ticket, so the first assessment
+# can need a network connection. Do not remove quarantine or re-sign: either
+# action would bypass Gatekeeper or replace the identity that macOS uses for FDA.
+verify_macos_release() {
+	[ "$(uname -s)" = "Darwin" ] || return 0
+	command -v codesign >/dev/null 2>&1 || die "codesign is required to verify the macOS release"
+
+	codesign --verify --strict --verbose=2 "$1" >/dev/null 2>&1 || \
+		die "macOS release has an invalid code signature — refusing to install"
+	SIGN_INFO="$(codesign -dvvv "$1" 2>&1)" || \
+		die "could not inspect the macOS code signature — refusing to install"
+	printf '%s\n' "$SIGN_INFO" | grep -Fqx "Identifier=$MACOS_IDENTIFIER" || \
+		die "macOS release has the wrong signing identifier — expected $MACOS_IDENTIFIER"
+	printf '%s\n' "$SIGN_INFO" | grep -Fqx "TeamIdentifier=$MACOS_TEAM_ID" || \
+		die "macOS release has the wrong Apple team — expected $MACOS_TEAM_ID"
+	printf '%s\n' "$SIGN_INFO" | grep -Fq 'Authority=Developer ID Application:' || \
+		die "macOS release is not signed with a Developer ID Application certificate"
+	printf '%s\n' "$SIGN_INFO" | grep -Eq '^CodeDirectory .*flags=.*\(runtime\)' || \
+		die "macOS release does not enable the hardened runtime"
+	printf '%s\n' "$SIGN_INFO" | grep -Eq '^Timestamp=.+' || \
+		die "macOS release has no secure timestamp"
+	REQUIREMENT_INFO="$(codesign -d -r- "$1" 2>&1)" || \
+		die "could not inspect the macOS designated requirement"
+	printf '%s\n' "$REQUIREMENT_INFO" | grep -Fq "identifier \"$MACOS_IDENTIFIER\"" || \
+		die "macOS release designated requirement has the wrong identifier"
+	printf '%s\n' "$REQUIREMENT_INFO" | \
+		grep -Eq "subject\\.OU[^=]*= (\"${MACOS_TEAM_ID}\"|${MACOS_TEAM_ID})( |$)" || \
+		die "macOS release designated requirement has the wrong Apple team"
+	# Apple's special `notarized` code requirement checks the online ticket for
+	# this exact code directory. spctl's install policy is for installer packages,
+	# and its execute policy rejects valid raw command-line tools as not app-like.
+	codesign --verify --strict --verbose=2 -R='notarized' "$1" >/dev/null 2>&1 || \
+		die "macOS release does not satisfy Apple's notarized code requirement — connect to the internet and retry"
 }
 
 # --- locate or fetch the binary -------------------------------------------------
@@ -97,31 +136,78 @@ if [ -n "${PREFIX:-}" ]; then
 	DEST="$PREFIX"
 else
 	DEST=""
-	for d in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin"; do
-		if [ -d "$d" ] && [ -w "$d" ]; then DEST="$d"; break; fi
-	done
+	# An upgrade must replace the Mora this shell actually runs. Choosing the
+	# first generally writable directory can install a second copy earlier or
+	# later on PATH and leave the old FDA-bound executable active.
+	ACTIVE_MORA="$(command -v mora 2>/dev/null || true)"
+	ACTIVE_PATH=""
+	if [ -n "$ACTIVE_MORA" ]; then
+		case "$ACTIVE_MORA" in
+			/*) ACTIVE_PATH="$ACTIVE_MORA" ;;
+			*/*)
+				ACTIVE_DIR="$(CDPATH='' cd -- "$(dirname -- "$ACTIVE_MORA")" 2>/dev/null && pwd -P)" || \
+					die "could not resolve the active Mora path: $ACTIVE_MORA"
+				ACTIVE_PATH="$ACTIVE_DIR/$(basename -- "$ACTIVE_MORA")"
+				;;
+		esac
+	fi
+	if [ -n "$ACTIVE_PATH" ] && [ -e "$ACTIVE_PATH" ]; then
+		case "$ACTIVE_PATH" in
+			*/Cellar/*|*/Caskroom/*)
+				die "active Mora is managed by Homebrew at $ACTIVE_PATH — use brew upgrade pyranthus-hq/tap/mora"
+				;;
+		esac
+		[ ! -L "$ACTIVE_PATH" ] || \
+			die "active Mora is a symlink at $ACTIVE_PATH — use its package manager or set PREFIX explicitly"
+		ACTIVE_DIR="$(CDPATH='' cd -- "$(dirname -- "$ACTIVE_PATH")" 2>/dev/null && pwd -P)" || \
+			die "could not resolve the active Mora directory: $ACTIVE_PATH"
+		[ -w "$ACTIVE_DIR" ] || \
+			die "active Mora directory is not writable: $ACTIVE_DIR — set PREFIX or fix its permissions"
+		DEST="$ACTIVE_DIR"
+		say "Updating active Mora at $ACTIVE_PATH ..."
+	fi
+	if [ -z "$DEST" ]; then
+		for d in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin"; do
+			# Never replace a package-manager or app-owned symlink implicitly.
+			[ -L "$d/mora" ] && continue
+			if [ -d "$d" ] && [ -w "$d" ]; then DEST="$d"; break; fi
+		done
+	fi
 	[ -n "$DEST" ] || DEST="$HOME/.local/bin"
 fi
 mkdir -p "$DEST"
 
-# --- install + clear Gatekeeper quarantine + ad-hoc sign ------------------------
-cp "$BIN" "$DEST/mora"
-chmod +x "$DEST/mora"
+# --- verify, stage, and atomically install without mutating the signed bytes -----
+verify_macos_release "$BIN"
+INSTALL_TMP="$(mktemp "$DEST/.mora.install.XXXXXX")" || \
+	die "could not create a staged install in $DEST"
+if ! cp "$BIN" "$INSTALL_TMP" || ! chmod +x "$INSTALL_TMP"; then
+	rm -f "$INSTALL_TMP"
+	die "could not stage the Mora binary in $DEST"
+fi
 if [ "$(uname -s)" = "Darwin" ]; then
-	# Be explicit about what we do to Gatekeeper — this is the part security-minded
-	# users want to see, not have done silently. The binary is ad-hoc signed, NOT
-	# Apple-notarized, so without this it trips the "cannot be opened because Apple
-	# cannot check it for malicious software" wall. If you'd rather vet it first, the
-	# binary is already at "$DEST/mora": verify the checksum above, or build from
-	# source with `go install github.com/pyranthus-hq/mora/cmd/mora@latest`.
-	say ""
-	say "macOS: the mora binary is ad-hoc signed, not Apple-notarized. Letting it run"
-	say "       without the Gatekeeper warning by removing the quarantine flag and"
-	say "       ad-hoc re-signing it:"
-	say "         xattr -d com.apple.quarantine $DEST/mora"
-	say "         codesign --force --sign - $DEST/mora"
-	xattr -d com.apple.quarantine "$DEST/mora" 2>/dev/null || true
-	codesign --force --sign - "$DEST/mora" 2>/dev/null || true
+	# Copying or chmod must not have damaged the embedded signature. Keep the
+	# quarantine attribute in place so Gatekeeper evaluates the notarized binary.
+	verify_macos_release "$INSTALL_TMP"
+	PREPARED_CDHASH="$(codesign -dvvv "$INSTALL_TMP" 2>&1 | sed -n 's/^CDHash=//p')"
+	[ -n "$PREPARED_CDHASH" ] || {
+		rm -f "$INSTALL_TMP"
+		die "could not read the staged Mora code-directory hash"
+	}
+	if ! mv -f "$INSTALL_TMP" "$DEST/mora"; then
+		rm -f "$INSTALL_TMP"
+		die "could not atomically install Mora into $DEST"
+	fi
+	INSTALLED_CDHASH="$(codesign -dvvv "$DEST/mora" 2>&1 | sed -n 's/^CDHash=//p')"
+	[ "$INSTALLED_CDHASH" = "$PREPARED_CDHASH" ] || \
+		die "installed Mora code-directory hash changed during installation"
+	verify_macos_release "$DEST/mora"
+	say "✓ verified notarized Developer ID release ($MACOS_IDENTIFIER, team $MACOS_TEAM_ID)"
+else
+	if ! mv -f "$INSTALL_TMP" "$DEST/mora"; then
+		rm -f "$INSTALL_TMP"
+		die "could not atomically install Mora into $DEST"
+	fi
 fi
 
 # --- initialize vault (idempotent) and report ----------------------------------
@@ -146,6 +232,8 @@ cat <<EOF
   vault:   $ACTIVE_VAULT
 EOF
 
+# $PATH is deliberately emitted literally for the user's shell.
+# shellcheck disable=SC2016
 case ":$PATH:" in
 	*":$DEST:"*) : ;;
 	*) printf '\nAdd to your PATH (then restart your shell):\n  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$DEST" ;;

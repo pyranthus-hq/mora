@@ -38,18 +38,28 @@ regression never becomes a published release.
 `regression-macos.sh` exercises the surfaces a Linux container can't — all
 sandboxed so they never touch the live binary, vault, or `~/Library/LaunchAgents`:
 
-- **codesign / Gatekeeper**: install.sh ad-hoc-signs the binary and clears the
-  quarantine xattr so a downloaded Mora runs.
+- **Developer ID / Gatekeeper**: with `RELEASE=1`, requires an externally
+  supplied `MORA_BIN` and proves its `com.pyranthus.mora` identifier, pinned
+  Apple team, hardened runtime, secure timestamp, designated requirement, and
+  Apple's notarized code requirement plus a quarantined disposable launch. It
+  then proves the installer atomically replaces an existing binary without
+  changing the signed release's cdhash.
 - **launchd**: `mora schedule install` writes a correct plist (verified under a
   redirected `HOME`, so it stays inert — never loaded into the live session).
 - **osascript**: `--notify` honours `MORA_NO_NOTIFY`.
 - **iMessage / Apple Calendar**: real read-only `chat.db` decode (the `livedb`
   go test, FDA-gated) and the Calendar connector.
 - **upgrade hazard**: the cp-over-running-binary SIGKILL-137 case and the
-  atomic-rename mitigation `mora upgrade` relies on.
+  atomic-rename mitigation the installer and `mora upgrade` rely on. This
+  hazard uses deliberately ad-hoc-signed throwaway fixtures only; ad-hoc signing
+  is not part of the release or install path.
 
 FDA-gated and live-data steps degrade to a loud SKIP when chat.db / Calendar /
 Full Disk Access aren't available, so the run still passes on a bare Mac.
+For a normal local-development run, Tier 2 stages the locally built binary
+directly and loudly skips only the release identity/notarization section. The
+production installer is not used for that binary because it correctly refuses
+anything outside Mora's signed/notarized release identity.
 
 ## Out of scope (needs credentials)
 
@@ -59,8 +69,22 @@ token) rather than in CI.
 
 ## Inputs (env)
 
-`MORA_REPO`, `MORA_BIN` (a stamped binary), `EXPECTED_VER` (required);
-`PREV_VER` (default `0.7.0`), `SKIP_UPGRADE`, `SKIP_GIT`, `RELEASE`, `WORK`.
+Tier 1 uses `MORA_REPO`, `MORA_BIN` (a stamped binary), `EXPECTED_VER`;
+`PREV_VER` (default `0.7.0`), `SKIP_UPGRADE`, `SKIP_GIT`, `RELEASE`, and `WORK`.
+
+Tier 2 uses `MORA_REPO`; optional `MORA_BIN`, `EXPECTED_VER`, `WORK`,
+`MORA_REGRESS_LIVE_BIN`, `MORA_REGRESS_REAL_NOTIFY`, `SKIP_LIVEDB`, and
+`SKIP_HAZARD`. `RELEASE=1` changes `MORA_BIN` from optional to required and
+fails closed unless that externally supplied binary is Mora's notarized
+Developer ID release. For example:
+
+```sh
+MORA_REPO="$PWD" \
+MORA_BIN=/path/to/extracted/mora \
+EXPECTED_VER=0.11.2 \
+RELEASE=1 \
+bash scripts/regress/regression-macos.sh
+```
 
 > Note: `--tmpfs /work` must be mounted `exec` (build.sh does this) — Docker's
 > default tmpfs is `noexec`, which would block running the installed binary.

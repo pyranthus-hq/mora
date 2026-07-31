@@ -7,17 +7,20 @@ installed. The full pipeline keeps the pure-Go and zero-egress rules.
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `.goreleaser.yaml` | 139 | Release pipeline config (v2 schema): cross-compile matrix (darwin/linux/windows), `tar.gz` archives + a windows/amd64 `zip`, sha256 checksums, cosign keyless signing, syft SBOM, Homebrew cask publish to `pyranthus-hq/homebrew-tap`, **draft** GitHub Release. |
+| `.goreleaser.yaml` | — | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, `tar.gz` archives + a windows/amd64 `zip`, sha256 checksums, cosign keyless signing, syft SBOM, Homebrew cask metadata, **draft** GitHub Release. |
 | `.github/workflows/ci.yml` | 151 | PR/push gate: gofmt, `go vet`, `go test -race`, a **windows-latest full `go test ./...` portability job (`build-windows`)**, golangci-lint, cross-arch build matrix, binary-size diff (advisory), gitleaks secret scan. |
-| `.github/workflows/release.yml` | 136 | Tag-triggered (`v*`): validates the OAuth secret, runs GoReleaser to build a **draft** release, verifies artifacts (checksums present, real OAuth id embedded, windows/amd64 zip holds `mora.exe` + is checksummed), runs the Tier-1 regression gate, then **explicitly publishes** via `gh release edit --draft=false`. Provisions syft + cosign. Wires `GITHUB_TOKEN`, `MORA_GOOGLE_CREDENTIALS_JSON`, `HOMEBREW_TAP_TOKEN`. |
+| `.github/workflows/release.yml` | — | Tag-triggered (`v*`), macOS-hosted release: imports the Developer ID certificate into an ephemeral keychain, validates Apple/OAuth secrets, runs GoReleaser to build a **draft** release, notarizes and verifies both Darwin artifacts, verifies the remaining artifact contracts, runs Tier 1, then **explicitly publishes** via `gh release edit --draft=false`. |
 | `.github/workflows/claude.yml` | 63 | On-demand Claude reviewer (`@claude` mention or `claude-review` label). Read-only on contents, advisory only. |
 | `internal/mora/upgrade.go` | ~150 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds (both literal `dev` and git-describe local builds at/ahead of the latest release — never offers a downgrade). After a successful swap it execs the NEW binary's `index rebuild` (`postUpgradeRebuild`, warn-don't-fail) so a schema change never strands a stale index. |
 | `cmd/mora/main.go` | 28 | Entry point. Receives `-ldflags -X main.{version,commit,date}` and forwards into `mora.Build*`. |
-| `install.sh` | 109 | POSIX installer: local-tarball or authenticated remote-download mode; Gatekeeper quarantine strip + ad-hoc sign. Idempotent `mora init`. |
+| `install.sh` | — | POSIX installer: local-tarball or public remote-download mode; on macOS it verifies the fixed Developer ID team/identifier and Apple's notarized code requirement without changing quarantine or the signature. Idempotent `mora init`. |
 | `install.ps1` | new | Windows installer: downloads `mora_<version>_windows_amd64.zip`, verifies sha256 against `checksums.txt`, installs `%LOCALAPPDATA%\Mora\bin\mora.exe`, and updates the User PATH. |
 | `uninstall.ps1` | new | Windows uninstaller: removes `%LOCALAPPDATA%\Mora`, removes the User PATH entry, deletes `\Mora\` scheduled tasks, and preserves the vault/config unless explicitly purged. |
 | `scripts/build-release.sh` | 49 | Local GoReleaser-mirror cross-build of all four targets + `checksums.txt`. |
 | `scripts/package.sh` | 55 | Single-target packaging with build-time real-OAuth-client embedding (swap-and-restore guard). |
+| `scripts/codesign-darwin.sh` | — | GoReleaser post-build hook: ignores non-Darwin targets; signs Darwin binaries with the pinned identity, hardened runtime, and timestamp; then verifies signature metadata and the designated requirement. |
+| `scripts/notarize-darwin-release.sh` | — | Pre-publish Apple gate: inventories both Darwin archives, verifies checksums/signatures, submits each root-level binary, requires `Accepted` and Apple's `notarized` code requirement, then launches a quarantined disposable copy for the runner's native architecture. |
+| `scripts/regress/release-signing-contract.sh` | — | Secret-free adversarial contract test for both architectures, wrong/missing identity metadata, notary failures, workflow ordering, and forbidden quarantine/ad-hoc-signing bypasses. |
 | `scripts/bootstrap-release-project.sh` | 140 | One-shot GitHub Projects v2 board scaffold (roadmap/PR pipeline). Not part of the build. |
 | `.golangci.yml` | 32 | golangci-lint v2 tuning (the blocking lint gate). |
 | `go.mod` | 84 | Module graph. Pins `modernc.org/sqlite` (pure-Go) and `go-selfupdate`; `go 1.25.8`. |
@@ -42,7 +45,7 @@ pipeline tests the rule on each build.
 
 ### Cross-compile targets
 
-The baseline release ships **darwin + linux × amd64 + arm64** (four binaries). Windows support adds a **windows/amd64** zip archive with `mora.exe`. Windows/arm64 remains deferred. Because the build is pure Go, **no macOS runner is needed**; `release.yml:13` runs the whole thing on `ubuntu-latest` and the comment notes there is no notarization step to require a Mac.
+The baseline release ships **darwin + linux × amd64 + arm64** (four binaries). Windows support adds a **windows/amd64** zip archive with `mora.exe`. Windows/arm64 remains deferred. Go compilation is still a pure cross-build, but the **release** uses a macOS runner for native `codesign`, `notarytool`, and quarantined-launch verification. This does not change the product: every target builds with `CGO_ENABLED=0`; the Apple tools operate on the completed Darwin executables.
 
 The CI **build matrix** (`ci.yml:85-108`) compiles all five targets (darwin/linux × amd64/arm64 plus windows/amd64) with `CGO_ENABLED=0` on every PR. The comment (`ci.yml:58-59`) frames this precisely: it "proves CGO_ENABLED=0 builds on every target before a tag is ever cut. This is the single-binary guarantee, gated."
 
@@ -60,41 +63,35 @@ Builds are reproducible: `-trimpath` strips local paths (`.goreleaser.yaml:22`, 
 
 ---
 
-## Release pipeline (tag → artifacts → tap + cosign)
+## Release pipeline (tag → signed artifacts → Apple notary → publish)
 
 A maintainer cuts a release by pushing a `v*` tag. `release.yml:3-5` triggers on `tags: ["v*"]` and runs one `goreleaser` job.
 
 ```mermaid
 flowchart TD
-    tag["git tag vX.Y.Z<br/>git push --tags"] --> wf["release.yml<br/>(ubuntu-latest)<br/>contents:write + id-token:write"]
-    wf --> setup["checkout (fetch-depth:0)<br/>setup-go (from go.mod)<br/>download syft + cosign"]
-    setup --> gr["goreleaser release --clean"]
-
-    gr --> hooks["before hook:<br/>go mod tidy"]
-    hooks --> build["build: CGO_ENABLED=0<br/>darwin/linux × amd64/arm64<br/>-trimpath, -s -w, ldflags version"]
-    build --> arch["archives (tar.gz)<br/>mora_{ver}_{os}_{arch}.tar.gz<br/>+ LICENSE README docs/guide.md install.sh examples"]
-    arch --> sum["checksum: checksums.txt (sha256)"]
-    sum --> sign["cosign sign-blob<br/>→ checksums.txt.cosign.sig<br/>+ .cosign.pem (keyless / OIDC)"]
-    arch --> sbom["syft SBOM per archive"]
-
-    sign --> rel["GitHub Release<br/>pyranthus-hq/mora<br/>prerelease: auto"]
-    arch --> rel
-    sbom --> rel
-    arch --> cask["Homebrew cask →<br/>pyranthus-hq/homebrew-tap<br/>Casks/mora.rb<br/>(HOMEBREW_TAP_TOKEN)"]
-    cask --> quar["cask post-install hook:<br/>xattr -dr com.apple.quarantine"]
-
-    rel --> upgrade["consumed by:<br/>mora upgrade + install.sh"]
+    tag["git tag vX.Y.Z<br/>git push --tags"] --> wf["release.yml<br/>(macOS runner)<br/>contents:write + id-token:write"]
+    wf --> keychain["validate secrets<br/>create ephemeral keychain<br/>import Developer ID certificate"]
+    keychain --> gr["goreleaser release --clean<br/>draft GitHub release"]
+    gr --> build["CGO_ENABLED=0 cross-build<br/>darwin/linux/windows"]
+    build --> sign["codesign Darwin binaries<br/>identifier com.pyranthus.mora<br/>hardened runtime + timestamp"]
+    sign --> arch["frozen archive names<br/>binary at archive root"]
+    arch --> sum["checksums.txt (sha256)<br/>+ keyless cosign signature"]
+    arch --> notary["submit each signed Darwin binary<br/>notarytool --wait"]
+    notary --> assess["status == Accepted<br/>codesign --strict + notarized requirement<br/>quarantined native launch"]
+    sum --> assess
+    assess --> regress["artifact verification<br/>Tier-1 regression"]
+    regress --> publish["publish draft release"]
+    publish --> consume["install.sh + mora upgrade"]
 ```
 
 ### Stage details
 
-1. **Build** (`.goreleaser.yaml:25-43`). Single build id `mora` from `./cmd/mora`, `CGO_ENABLED=0`, a five-target matrix (darwin/linux/windows × amd64/arm64, minus windows/arm64), reproducible flags.
-2. **Archives** (`.goreleaser.yaml:45-60`). `tar.gz` for darwin/linux with a `zip` `format_override` for windows. The binary sits at the archive root (no nested dir) so both go-selfupdate and the cask resolve it directly. Bundles `LICENSE`, `README.md`, `docs/guide.md`, `install.sh`, `examples/*`. **The `name_template` is load-bearing** (see Invariants): `mora_{{.Version}}_{{.Os}}_{{.Arch}}` (`.goreleaser.yaml:37-38`).
-3. **Checksums** (`.goreleaser.yaml:46-48`). One `checksums.txt`, sha256. This file is the trust anchor for self-update.
-4. **Cosign signing** (`.goreleaser.yaml:52-63`). Keyless `sign-blob` of `checksums.txt` only (`artifacts: checksum`), producing `checksums.txt.cosign.sig` + `.cosign.pem`. Keyless = Sigstore OIDC, no key management — which is why `release.yml:9` grants `id-token: write` and `release.yml:24` installs `sigstore/cosign-installer@v3`.
-5. **SBOM** (`.goreleaser.yaml:67-68`). Syft SBOM per archive (`release.yml:23` downloads syft). The config comment marks it low-priority/droppable for launch.
-6. **Homebrew cask** (`.goreleaser.yaml:70-95`). Publishes a **cask** (`homebrew_casks:`, *not* the deprecated `brews:` removed in GoReleaser v2.16 — `.goreleaser.yaml:5`) to `pyranthus-hq/homebrew-tap` under `Casks/`, authed by `HOMEBREW_TAP_TOKEN` (`release.yml:33`). The cask is chosen specifically so its **post-install hook can strip the macOS quarantine xattr** (`.goreleaser.yaml:89-94`) — the binary is unsigned/un-notarized, and without the strip macOS shows "mora is damaged and cannot be opened." This is the deliberate reason notarization is deferrable for a CLI.
-7. **GitHub Release** (`.goreleaser.yaml:121-130`). Created as a **draft** (`draft: true`) on `pyranthus-hq/mora`, `prerelease: auto` (pre-release iff the tag is a pre-release). The `release.yml` Publish step flips it public only after the verify + regression gates pass. Changelog from GitHub commits, excluding `docs:`/`test:`/`chore:` (`.goreleaser.yaml:104-111`).
+1. **Credentials and keychain.** The workflow fails before building if an Apple or OAuth secret is absent. It creates a throwaway build keychain, imports the Developer ID `.p12`, allows non-interactive `codesign`, and removes the keychain on the always-run cleanup path. The App Store Connect `.p8` exists only in the ephemeral runner workspace. No credential enters an artifact or the repository.
+2. **Build and sign.** One build id `mora` compiles the five-target matrix from `./cmd/mora` with `CGO_ENABLED=0`. Only the two Darwin outputs then receive a hardened-runtime, secure-timestamp Developer ID signature. Their fixed signing contract is identifier `com.pyranthus.mora`, Team Identifier `VS8M5VJBZ5`, and an Apple-trusted Developer ID Application chain.
+3. **Archives.** Darwin/Linux use `tar.gz`; Windows/amd64 uses `zip`. The executable stays at archive root so `go-selfupdate` can find it. The frozen name is `mora_{{.Version}}_{{.Os}}_{{.Arch}}`. Archives also carry `LICENSE`, `README.md`, `docs/guide.md`, `install.sh`, and `examples/*`.
+4. **Checksums, cosign, and SBOM.** One SHA-256 `checksums.txt` remains the self-update trust anchor. Keyless cosign signs that manifest and Syft emits the archive SBOMs. Apple code signing is an additional platform trust layer, not a replacement for the cross-platform checksum contract.
+5. **Notarize and verify before publish.** Each archive's already-signed Darwin executable is submitted to Apple with `notarytool --wait`. The gate requires `Accepted`, reruns `codesign --verify --strict`, confirms the identifier/team/designated requirement, and requires Apple's special `notarized` code requirement for both architectures. It also adds quarantine to a disposable copy of the runner-native binary and launches `mora version`. `spctl --type install` is not used because that policy is for installer packages; `spctl --type execute` can reject a valid raw CLI as not app-like. The release archive is never modified after checksums are generated.
+6. **Draft, then publish.** GoReleaser creates a draft release. OAuth embedding, Windows archive, checksums, macOS signing/notarization, and Tier-1 regression gates all run while it is invisible to `mora upgrade`. Only their success publishes the draft. A signing or notary failure therefore cannot become the latest installable release.
 
 > **One known label inconsistency, not yet reconciled:** the cask's `license:` is hardcoded `"Apache-2.0"` with a `TODO: confirm SPDX id` (`.goreleaser.yaml:80`). The repo `LICENSE` *is* Apache-2.0 (`LICENSE:1-2,189`), so the value is correct today — but note that earlier project memory and the bootstrap board (`bootstrap-release-project.sh:120-122`) still framed the license as an *open decision* (Apache vs MIT, or FSL). **As built, the license is Apache-2.0.**
 
@@ -135,6 +132,7 @@ Key behaviors, each grounded:
 - **Post-upgrade reindex** (`postUpgradeRebuild`). After `UpdateTo` succeeds, upgrade execs the swapped-in binary as `<exe> index rebuild` — the running process is still the old code; `indexSchemaVersion` knowledge lives in the new executable. Failure warns and prints the manual command. It never fails the upgrade (the swap already happened). Belt-and-braces with `indexAutoHeal`: static-floor vaults would self-heal at first read anyway. This hook is what spares semantic-embedder vaults the actionable error.
 - **Checksum validation before swap** (`upgrade.go:60-63`). The updater is built with `&selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"}` — the downloaded archive is verified against the release's published `checksums.txt` (the same file GoReleaser/`build-release.sh` emit) before the binary is swapped. The comment is explicit: "don't trust TLS + the GitHub API alone."
 - **Atomic, failure-safe swap** (`upgrade.go:94-96`). `UpdateTo` replaces the running binary in place. On error the message guarantees "binary left unchanged."
+- **Stable macOS signing identity.** Every official Darwin replacement keeps identifier `com.pyranthus.mora`, Team Identifier `VS8M5VJBZ5`, and the Developer ID designated requirement. `mora upgrade` must copy the release bytes unchanged: any local `codesign --sign -` would replace that identity and can invalidate Full Disk Access. The release gate, not the updater, performs Apple trust assessment before publication.
 - **`--check` is read-only** (`upgrade.go:88-91`): reports availability and stops.
 
 The asset go-selfupdate fetches must match the `name_template` GoReleaser produces — that coupling is the single most fragile seam in this subsystem (see Invariants).
@@ -143,19 +141,46 @@ The asset go-selfupdate fetches must match the `name_template` GoReleaser produc
 
 ## `install.sh` — the hand-install path
 
-`install.sh` is the non-Homebrew installer (used for the Neil pilot demo and direct-download). It runs two ways (`install.sh:2-20`):
+`install.sh` is the non-Homebrew installer. It runs two ways:
 
-1. **Local**: if an executable `mora` sits next to the script (`install.sh:33-34`), use it — the bundled-tarball case (`tar -xzf … && ./install.sh`).
-2. **Remote**: otherwise detect OS/arch (`install.sh:36-39`, normalizing `aarch64→arm64`, `x86_64→amd64`), construct the asset name `mora_${VERSION}_${OS}_${ARCH}.tar.gz` (`install.sh:40`) — **the same name_template the release produces** — and download it. Because the repo is private, it prefers authenticated `gh release download` (`install.sh:44-46`) and falls back to `curl` with a clear "repo is private — run `gh auth login`" failure message (`install.sh:48-50`).
+1. **Local**: if an executable `mora` sits next to the script, use it — the bundled-tarball case (`tar -xzf … && ./install.sh`).
+2. **Remote**: otherwise detect OS/arch (normalizing `aarch64→arm64`, `x86_64→amd64`), construct `mora_${VERSION}_${OS}_${ARCH}.tar.gz` — the same frozen name the release produces — and download it. It prefers `gh` when authenticated and falls back to public `curl`.
 
 Then it:
-- **Picks an install dir on PATH** (`install.sh:57-67`): honors `PREFIX`, else first writable of `/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`, else `~/.local/bin`.
-- **Strips quarantine + ad-hoc-signs on macOS** (`install.sh:69-78`): `xattr -dr com.apple.quarantine` then `codesign --force --sign -`, done *before* first run so a binary that arrived via download/AirDrop/zip never hits the Gatekeeper "cannot be opened because Apple cannot check it" wall. No-op on Linux.
-- **Runs `mora init` idempotently** (`install.sh:81`) against `MORA_VAULT` (default `~/vault/mora`), prints the resolved version, and prints the agent-wiring one-liners (`claude mcp add … / codex mcp add …`) plus next steps (`install.sh:96-109`).
+- **Verifies the downloaded archive before extraction.** The archive's SHA-256 must match `checksums.txt`.
+- **Fails closed on macOS identity.** Before copying, `codesign --verify --strict` must pass; the signature metadata must be exactly `Identifier=com.pyranthus.mora` and `TeamIdentifier=VS8M5VJBZ5` with a Developer ID Application authority; and `codesign -R='notarized'` must accept Apple's ticket for that exact code directory. The same checks run after the copy. `spctl --type install` is for installer packages, and its `execute` policy can reject a correctly notarized raw CLI as not app-like. A raw executable cannot carry a stapled ticket, so the first ticket check can require network access.
+- **Never mutates Gatekeeper state or the signature.** There is no `xattr -d` and no ad-hoc re-sign. Quarantine remains for Gatekeeper to evaluate, and the Developer ID identity remains the one TCC sees. This macOS verification is a no-op on Linux; Linux install behavior is otherwise unchanged.
+- **Replaces the active install.** It honors an explicit `PREFIX`. Otherwise, if `command -v mora` resolves to a regular non-Homebrew file in a writable directory, it replaces that exact pathname. It refuses an active symlink or a path under `Cellar`/`Caskroom` so it cannot silently write through a package-manager or future app-bundle boundary. Only a first install uses the first writable of `/usr/local/bin`, `/opt/homebrew/bin`, and `~/.local/bin`, falling back to `~/.local/bin`.
+- **Runs `mora init` idempotently** against `MORA_VAULT` (default `~/vault/mora`), reports the active vault, then prints the agent-wiring commands and next steps.
 
-> Both the cask post-install hook and `install.sh` exist for the **same reason**: the binary is unsigned/un-notarized, so something must clear Gatekeeper. That is the trade-off of skipping Apple notarization.
+### Standalone bridge, then `Mora.app`
 
-> **Ad-hoc signing breaks TCC grants across upgrades.** macOS keys Full Disk Access (needed for the iMessage `chat.db` read under launchd — a terminal's FDA does NOT transfer to the launchd-spawned process) to the binary's code-signing identity. An ad-hoc signature (`--sign -`) has no stable identity — its designated requirement is the cdhash, which changes every rebuild — so any binary swap (rebuild, `mora upgrade`) silently invalidates the user's FDA grant: the System Settings toggle still shows enabled, but the iMessage leg of scheduled syncs starts failing (`mora doctor` / `sync status` surface it). Adit's dev machine fixes this with a local self-signed **`mora-dev`** signing cert (trusted for codeSign in the login keychain. Sign with `codesign --force --sign mora-dev`) so the identity survives rebuilds — note the grant must be re-toggled ONCE when the identity changes. For *distributed* binaries the equivalent stable identity requires a real Apple Developer ID cert + notarization (self-signed certs don't transfer to other machines). Until then, document "re-toggle FDA after upgrade" for users who schedule iMessage sync.
+The signed raw executable is deliberately a **compatibility bridge**. Its archive
+name and root-level `mora` entry stay unchanged, so every existing installer and
+`go-selfupdate` client can consume the first signed release. Apple stores the
+notarization ticket server-side for a raw executable; unlike an app, it has no
+bundle onto which `stapler` can attach that ticket.
+
+The later branded `Mora.app` is a distinct distribution target with bundle ID
+`com.pyranthus.mora`. Its release asset must use a name that the old standalone
+updater will not select. Installation puts the whole app in a stable location
+and exposes its CLI through a symlink. An app update stages, verifies, and
+atomically replaces the **whole bundle**. Replacing only
+`Contents/MacOS/mora` invalidates the bundle seal, so the raw self-updater cannot
+be reused inside the app unchanged.
+
+The permission transition is explicit:
+
+- An FDA grant made to an old ad-hoc executable cannot be assumed to transfer to
+  the first Developer ID-signed bridge. The user can need to grant the signed
+  executable once.
+- Moving from the raw executable to `Mora.app` changes the TCC target. Plan for
+  one final grant to the app and retain the old entry until app-launched
+  `mora doctor` plus an iMessage sync succeed.
+- Only a real version N to N+1 whole-app replacement that reads iMessage without
+  a re-grant can close the continuity claim. The intended steady state is that
+  routine app upgrades preserve the grant; the release pipeline alone is not
+  evidence that macOS did so.
 
 ### `scripts/package.sh` — the OAuth-embed footgun
 
@@ -203,7 +228,7 @@ Mora's distribution and ops posture is **zero-telemetry, zero-egress, read-only*
 - **Read-only Google scopes, least-privilege.** `internal/google/oauth.go:31-32` hardcodes `Scopes = {gmail.GmailReadonlyScope, calendar.CalendarReadonlyScope}` — there is no write scope anywhere, and Drive is deferred. (`oauth_test.go` exercises `ResolveOAuthConfig`'s scope round-trip — `oauth_test.go:29-30` checks the *passed* scopes survive resolution — but does not itself assert the read-only `Scopes` global. The global at `oauth.go:32` is the ground truth.)
 - **No telemetry / opt-out usage logging.** Usage logging is local-only JSONL in the state dir (never the vault). `usageEnabled` (`usage.go`) honors `DO_NOT_TRACK=1` **and** a `<StateDir>/usage/OFF` sentinel (written by `mora usage off` — `cmdUsage`, `usage.go`). The query field is documented "raw tier only; never sent" (`usageEvent`, `mora.go`).
 - **Zero-egress embeddings guard.** The opt-in Ollama embedder POSTs memory text to its host, so `chooseEmbedder` **refuses any non-loopback `MORA_OLLAMA_URL`** and falls back to the static embedder rather than send memory off-machine (`embed_ollama.go:100-106`). A test enforces this — `TestChooseEmbedderRefusesNonLoopback` (`embed_ollama_test.go:91`). The default static embedder is "pure-Go, zero-egress, single-binary" (`embed.go:10`).
-- **Supply-chain integrity at rest and on update.** Releases are sha256-checksummed and the checksum manifest is cosign-signed (Sigstore keyless); `mora upgrade` re-verifies the downloaded archive against `checksums.txt` before swapping (`upgrade.go:60-63`). gitleaks blocks any committed secret (`ci.yml:107-122`).
+- **Supply-chain integrity at rest and on update.** Releases are sha256-checksummed and the checksum manifest is cosign-signed (Sigstore keyless); `mora upgrade` re-verifies the downloaded archive against `checksums.txt` before swapping (`upgrade.go:60-63`). Darwin binaries additionally carry the fixed Developer ID identity and an Apple notary acceptance ticket, both gated before publication. gitleaks blocks any committed secret (`ci.yml:107-122`).
 
 In short: the only network egress the binary performs is to Google's read-only APIs (during `connect`/`sync`), to GitHub releases (during `upgrade`), and — only if the user opts in — to a **loopback-only** Ollama. Nothing else leaves the machine.
 
@@ -235,6 +260,12 @@ In short: the only network egress the binary performs is to Google's read-only A
 
 12. **The size job is advisory. The secrets and lint jobs are blocking.** `size` is `continue-on-error: true` (`ci.yml:103`). Gitleaks is `--exit-code 1` (`ci.yml:121`). WHY: a size regression should inform, not block. A leaked secret or lint regression must block.
 
+13. **Every Darwin release keeps one designated requirement.** The identifier is `com.pyranthus.mora`, the Team Identifier is `VS8M5VJBZ5`, and the authority is an Apple-trusted Developer ID Application certificate. Hardened runtime and a secure timestamp are required. WHY: macOS TCC continuity depends on stable signed identity; a valid signature from the wrong team is still the wrong product identity.
+
+14. **Never clear quarantine or re-sign an official macOS release during install or upgrade.** `install.sh` verifies before and after copying. Homebrew and future installers must preserve the same behavior. WHY: quarantine is the Gatekeeper trigger, and ad-hoc re-signing replaces the designated requirement that Full Disk Access was granted to.
+
+15. **The raw bridge and app bundle are different update contracts.** The existing archive keeps `mora` at its root. A future app asset has a non-matching name, and app updates replace the whole signed bundle. WHY: an old `go-selfupdate` client otherwise selects the app archive and extracts the wrong executable, while an inner-binary-only swap invalidates the app seal.
+
 ---
 
 ## Related
@@ -250,4 +281,3 @@ In short: the only network egress the binary performs is to Google's read-only A
 - **Homebrew tap repo existence.** `.goreleaser.yaml:74` and `bootstrap-release-project.sh:106-108` both note `pyranthus-hq/homebrew-tap` as a repo to *create*; I could not verify from the code whether it exists yet, so `brew install pyranthus-hq/tap/mora` may not yet resolve.
 - **Whether any `v*` tag / GitHub Release has actually been published.** The pipeline is fully wired, but the existence of a published release (and thus a working `mora upgrade` / remote `install.sh`) is a repo/GitHub-state fact, not a code fact — not verifiable from these files.
 - **License decision finality.** On disk the license is Apache-2.0 (`LICENSE`), and the cask agrees, but project memory and the bootstrap board frame it as an open decision (Apache/MIT/FSL). The code says Apache-2.0. Whether that is the *final* intended license is a governance question outside this subsystem.
-- **Repo public/private status at any given time.** `install.sh` and `upgrade.go` both assume a *private* repo (token-gated download). If the repo is later made public, the auth paths become optional. The code still works either way but the "repo is private" hints would be stale.

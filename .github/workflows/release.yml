@@ -1,14 +1,23 @@
 name: Release
 
-# Tag push → build → DRAFT release → verify artifacts → publish.
+# Tag push → build signed binaries → DRAFT release → notarize + verify
+# artifacts → publish.
 #
 # The publish step is explicit and runs only after verification: `mora
 # upgrade` (go-selfupdate) only sees PUBLISHED releases, so a build that
-# fails verification never reaches an install. Required repo secret:
-#   MORA_GOOGLE_CREDENTIALS_JSON — the full installed-app OAuth client JSON
-#   (same file scripts/package.sh takes via MORA_GOOGLE_CREDENTIALS). Without
-#   it the workflow fails fast rather than shipping binaries that embed the
-#   DEV_PLACEHOLDER client, with which `mora connect google` cannot work.
+# fails verification never reaches an install. Required repo secrets:
+#   MORA_GOOGLE_CREDENTIALS_JSON — full installed-app OAuth client JSON
+#   APPLE_CERT_P12_BASE64        — base64-encoded Developer ID Application P12
+#   APPLE_CERT_PASSWORD          — password used to export that P12
+#   APPLE_API_KEY_P8             — raw, multiline App Store Connect API key
+#   APPLE_API_KEY_ID             — App Store Connect API key ID
+#   APPLE_API_ISSUER_ID          — App Store Connect API issuer UUID
+#   APPLE_TEAM_ID                — Apple Developer team ID
+#
+# Apple credentials are materialized only under RUNNER_TEMP. The certificate
+# is imported into a fresh keychain whose search list is restored by the final
+# cleanup step. A signing/notarization failure leaves only an unpublished draft:
+# `mora upgrade` never sees it.
 
 on:
   push:
@@ -20,18 +29,20 @@ permissions:
 
 jobs:
   goreleaser:
-    runs-on: ubuntu-latest # pure-Go cross-builds need no macOS runner (no notarization)
+    # Native codesign and notarytool are required even though the binaries stay
+    # pure-Go CGO_ENABLED=0 cross-builds.
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # REQUIRED for the changelog
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-      - uses: anchore/sbom-action/download-syft@v0 # syft for SBOM
-      - uses: sigstore/cosign-installer@v3 # cosign for keyless signing
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       # Validate ONLY — the actual embed happens inside goreleaser's before
       # hook (.goreleaser.yaml). Writing the tracked client.json here, before
@@ -43,17 +54,131 @@ jobs:
         env:
           MORA_GOOGLE_CREDENTIALS_JSON: ${{ secrets.MORA_GOOGLE_CREDENTIALS_JSON }}
         run: |
+          set -euo pipefail
           if [ -z "$MORA_GOOGLE_CREDENTIALS_JSON" ]; then
             echo "::error::MORA_GOOGLE_CREDENTIALS_JSON secret is not set — refusing to build a placeholder-OAuth release. Add the secret (the installed-app client JSON) and re-tag."
             exit 1
           fi
-          REAL_ID=$(printf '%s' "$MORA_GOOGLE_CREDENTIALS_JSON" | grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' | head -1)
+          REAL_ID=$(printf '%s' "$MORA_GOOGLE_CREDENTIALS_JSON" \
+            | grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' \
+            | sed -n '1p' || true)
           if [ -z "$REAL_ID" ]; then
             echo "::error::MORA_GOOGLE_CREDENTIALS_JSON does not contain a Google OAuth client id"
             exit 1
           fi
 
-      - uses: goreleaser/goreleaser-action@v6
+      # Import the Developer ID identity into a one-job keychain. Keep the
+      # original keychain search list so the always() cleanup can restore it.
+      # The notary credential is validated before the expensive cross-build,
+      # and no secret bytes are printed or persisted outside RUNNER_TEMP.
+      - name: Prepare Apple signing credentials
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in \
+            APPLE_CERT_P12_BASE64 \
+            APPLE_CERT_PASSWORD \
+            APPLE_API_KEY_P8 \
+            APPLE_API_KEY_ID \
+            APPLE_API_ISSUER_ID \
+            APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name secret is not set"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          case "$APPLE_TEAM_ID" in
+            (*[!A-Z0-9]*|'')
+              echo "::error::APPLE_TEAM_ID must contain only uppercase letters and digits"
+              exit 1
+              ;;
+          esac
+          if [ "${#APPLE_TEAM_ID}" -ne 10 ]; then
+            echo "::error::APPLE_TEAM_ID must be exactly 10 characters"
+            exit 1
+          fi
+          if [ "$APPLE_TEAM_ID" != "VS8M5VJBZ5" ]; then
+            echo "::error::APPLE_TEAM_ID does not match Mora's pinned Developer ID team"
+            exit 1
+          fi
+          case "$APPLE_API_KEY_ID" in
+            (*[!A-Za-z0-9]*|'')
+              echo "::error::APPLE_API_KEY_ID must be alphanumeric"
+              exit 1
+              ;;
+          esac
+          if ! printf '%s' "$APPLE_API_ISSUER_ID" \
+            | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'; then
+            echo "::error::APPLE_API_ISSUER_ID must be a UUID"
+            exit 1
+          fi
+
+          umask 077
+          CREDENTIAL_DIR="$RUNNER_TEMP/mora-apple-credentials"
+          P12_PATH="$CREDENTIAL_DIR/developer-id.p12"
+          NOTARY_KEY_PATH="$CREDENTIAL_DIR/AuthKey.p8"
+          KEYCHAIN_PATH="$RUNNER_TEMP/mora-signing.keychain-db"
+          ORIGINAL_KEYCHAINS="$RUNNER_TEMP/mora-original-keychains.txt"
+          mkdir -p "$CREDENTIAL_DIR"
+
+          security list-keychains -d user > "$ORIGINAL_KEYCHAINS"
+          if ! printf '%s' "$APPLE_CERT_P12_BASE64" | /usr/bin/base64 --decode > "$P12_PATH"; then
+            echo "::error::APPLE_CERT_P12_BASE64 is not valid base64"
+            exit 1
+          fi
+          printf '%s' "$APPLE_API_KEY_P8" > "$NOTARY_KEY_PATH"
+          chmod 600 "$P12_PATH" "$NOTARY_KEY_PATH"
+          PEM_LABEL="PRIVATE KEY"
+          if ! grep -q "^-----BEGIN ${PEM_LABEL}-----$" "$NOTARY_KEY_PATH" \
+            || ! grep -q "^-----END ${PEM_LABEL}-----$" "$NOTARY_KEY_PATH"; then
+            echo "::error::APPLE_API_KEY_P8 must contain the raw PEM private key, not a base64 encoding"
+            exit 1
+          fi
+
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -f pkcs12 \
+            -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          EXPECTED_IDENTITY="Developer ID Application: ADIT ABHIJIT KARODE (VS8M5VJBZ5)"
+          identities="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")"
+          if ! printf '%s\n' "$identities" | grep -Fq "\"$EXPECTED_IDENTITY\""; then
+            echo "::error::P12 does not contain the expected Mora Developer ID Application identity"
+            exit 1
+          fi
+
+          # Authenticate now so an invalid/expired API key cannot create a
+          # draft and consume a full build before failing notarization.
+          xcrun notarytool history \
+            --key "$NOTARY_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --output-format json >/dev/null
+          rm -f "$P12_PATH"
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
           version: "v2.16.0" # exact pin: a floating major silently changes release behavior
@@ -62,10 +187,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Consumed by the before hook that embeds the OAuth client.
           MORA_GOOGLE_CREDENTIALS_JSON: ${{ secrets.MORA_GOOGLE_CREDENTIALS_JSON }}
+          # Consumed by the Darwin build post-hook. The imported certificate is
+          # discoverable only through the ephemeral keychain search list.
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: ADIT ABHIJIT KARODE (VS8M5VJBZ5)"
+          APPLE_BUNDLE_ID: com.pyranthus.mora
+          APPLE_TEAM_ID: VS8M5VJBZ5
           # Fine-grained PAT with contents:write on pyranthus-hq/homebrew-tap.
           # Cask publishing is skip_upload: true in .goreleaser.yaml until the
           # token exists and the tap is public.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # Raw command-line executables cannot carry a stapled ticket. Submit an
+      # archive containing each already-signed Darwin binary, require Apple's
+      # Accepted verdict, then verify the exact binaries in GoReleaser's local
+      # archives. This step must not rewrite those archives: they were uploaded
+      # to the draft release by GoReleaser and their checksums are already fixed.
+      - name: Notarize and verify Darwin release artifacts
+        # Two architectures are submitted serially. Each notarytool wait is
+        # bounded at 30 minutes; leave room for one transient-tool retry.
+        timeout-minutes: 90
+        env:
+          APPLE_NOTARY_KEY_PATH: ${{ runner.temp }}/mora-apple-credentials/AuthKey.p8
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_BUNDLE_ID: com.pyranthus.mora
+          APPLE_TEAM_ID: VS8M5VJBZ5
+        run: |
+          set -euo pipefail
+          bash scripts/notarize-darwin-release.sh dist
 
       # Verify what was actually built before anything becomes visible:
       #  1. the upgrade contract asset exists (checksums.txt — upgrade.go
@@ -76,33 +225,39 @@ jobs:
       #     binary, so assert the real id's PRESENCE, like package.sh does).
       - name: Verify release artifacts
         run: |
+          set -euo pipefail
           test -f dist/checksums.txt || { echo "::error::dist/checksums.txt missing — mora upgrade would reject this release"; exit 1; }
-          REAL_ID=$(grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' internal/google/client.json | head -1)
-          # Guard against a vacuous pass: `| head -1` masks grep's exit status
-          # (no pipefail on the default shell) and `grep -qF ""` below would
-          # match ANY strings output — same guard package.sh carries.
+          REAL_ID=$(grep -oE '[0-9A-Za-z_-]+\.apps\.googleusercontent\.com' internal/google/client.json \
+            | sed -n '1p' || true)
+          # Guard against a vacuous pass: `grep -F ""` below would match ANY
+          # strings output — same guard package.sh carries.
           if [ -z "$REAL_ID" ]; then
             echo "::error::internal/google/client.json carries no real OAuth client id — the embed hook did not run?"
             exit 1
           fi
-          ARCHIVE=$(find dist -maxdepth 1 -name 'mora_*_linux_amd64.tar.gz' | head -1)
-          tar -xzf "$ARCHIVE" -C dist/
-          BIN=$(find dist -type f -name mora | head -1)
-          if ! strings "$BIN" | grep -qF "$REAL_ID"; then
+          ARCHIVE=$(find dist -maxdepth 1 -name 'mora_*_linux_amd64.tar.gz' -print -quit)
+          test -n "$ARCHIVE" || { echo "::error::linux/amd64 archive missing from dist/"; exit 1; }
+          VERIFY_TMP=$(mktemp -d)
+          trap 'rm -rf "$VERIFY_TMP"' EXIT
+          tar -xzf "$ARCHIVE" -C "$VERIFY_TMP"
+          BIN=$(find "$VERIFY_TMP" -type f -name mora -print -quit)
+          test -n "$BIN" || { echo "::error::linux/amd64 archive contains no mora binary"; exit 1; }
+          if ! strings "$BIN" | grep -F "$REAL_ID" >/dev/null; then
             echo "::error::built binary does not embed the real OAuth client id — would ship broken \`connect google\`"
             exit 1
           fi
           # The Windows zip is what install.ps1 downloads; assert it exists, holds
           # mora.exe, and is checksummed — the linux checks above never touch it,
           # so a broken inaugural windows archive would otherwise publish silently.
-          WZIP=$(find dist -maxdepth 1 -name 'mora_*_windows_amd64.zip' | head -1)
+          WZIP=$(find dist -maxdepth 1 -name 'mora_*_windows_amd64.zip' -print -quit)
           test -n "$WZIP" || { echo "::error::windows/amd64 zip missing from dist/"; exit 1; }
-          unzip -l "$WZIP" | grep -q 'mora.exe' || { echo "::error::windows zip contains no mora.exe"; exit 1; }
+          unzip -l "$WZIP" | grep 'mora.exe' >/dev/null || { echo "::error::windows zip contains no mora.exe"; exit 1; }
           grep -qF "$(basename "$WZIP")" dist/checksums.txt || { echo "::error::windows zip absent from checksums.txt"; exit 1; }
           echo "verified: checksums.txt present, real OAuth client embedded, windows zip has mora.exe + checksum"
 
       # Pre-publish regression gate (scripts/regress): run the Tier-1 harness
-      # against the REAL goreleaser linux artifact — install.sh, every command,
+      # against the REAL GoReleaser artifact for this macOS runner — install.sh,
+      # every command,
       # the MCP wire protocol, the filesystem/PDF/DOCX + git-sync connectors, the
       # doctor health gate, and an UPGRADE from the previous published release.
       # RELEASE=1 also hard-fails if install.sh's hardcoded VERSION wasn't bumped
@@ -113,10 +268,20 @@ jobs:
           MORA_REPO: ${{ github.workspace }}
           RELEASE: "1"
         run: |
+          set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
-          ARCHIVE=$(find dist -maxdepth 1 -name 'mora_*_linux_amd64.tar.gz' | head -1)
-          TMP=$(mktemp -d); tar -xzf "$ARCHIVE" -C "$TMP"
-          BIN=$(find "$TMP" -type f -name mora | head -1)
+          case "$(uname -m)" in
+            arm64|aarch64) HOST_ARCH=arm64 ;;
+            x86_64|amd64) HOST_ARCH=amd64 ;;
+            *) echo "::error::unsupported macOS runner architecture: $(uname -m)"; exit 1 ;;
+          esac
+          ARCHIVE=$(find dist -maxdepth 1 -name "mora_*_darwin_${HOST_ARCH}.tar.gz" -print -quit)
+          test -n "$ARCHIVE" || { echo "::error::host Darwin archive missing from dist/"; exit 1; }
+          TMP=$(mktemp -d)
+          trap 'rm -rf "$TMP"' EXIT
+          tar -xzf "$ARCHIVE" -C "$TMP"
+          BIN=$(find "$TMP" -type f -name mora -print -quit)
+          test -n "$BIN" || { echo "::error::Darwin archive contains no mora binary"; exit 1; }
           # The previous PUBLISHED (non-draft) release drives the upgrade sub-test;
           # this tag's release is still a draft at this point, so it is excluded.
           PREV_VER=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName,isDraft \
@@ -130,7 +295,40 @@ jobs:
           fi
           MORA_BIN="$BIN" EXPECTED_VER="$VER" bash scripts/regress/regression.sh
 
+      # Runs after success or failure. Restore the runner's prior search list,
+      # delete the temporary keychain, and erase the API private key. The paths
+      # are explicit job-owned RUNNER_TEMP children; no user keychain is touched.
+      - name: Remove Apple signing credentials
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/mora-signing.keychain-db"
+          ORIGINAL_KEYCHAINS="$RUNNER_TEMP/mora-original-keychains.txt"
+          CREDENTIAL_DIR="$RUNNER_TEMP/mora-apple-credentials"
+
+          if [ -f "$ORIGINAL_KEYCHAINS" ]; then
+            original=()
+            while IFS= read -r line; do
+              keychain="${line#*\"}"
+              keychain="${keychain%\"*}"
+              [ -n "$keychain" ] && original+=("$keychain")
+            done < "$ORIGINAL_KEYCHAINS"
+            if [ "${#original[@]}" -gt 0 ]; then
+              security list-keychains -d user -s "${original[@]}" || true
+            fi
+          fi
+
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          rm -f \
+            "$CREDENTIAL_DIR/developer-id.p12" \
+            "$CREDENTIAL_DIR/AuthKey.p8" \
+            "$ORIGINAL_KEYCHAINS"
+          rmdir "$CREDENTIAL_DIR" 2>/dev/null || true
+
+      # Default success() semantics are intentional: any earlier gate or the
+      # credential cleanup failing leaves the release as an unpublished draft.
       - name: Publish release
+        if: ${{ success() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -137,10 +137,31 @@ macOS is not in CI). A denied open stamps failure via `stampSyncAttemptFailure`.
 legitimate zero-row sync still stamps success. Guarded by
 `TestFDALossNeverStampsSuccess`.
 
-**Signing clause quarantine.** Mora ships unsigned/unnotarized (`install.sh`
-ad-hoc-signs at install time), so "preserve macOS permission identity across a
-signed swap" is unmeetable today. Tracked as a dated HOLE in
-`mutation-matrix-gate2.md` until a signing issue closes it.
+**Signing clause closure has two evidence gates.** The standalone macOS bridge
+is signed with Developer ID identifier `com.pyranthus.mora`, Team Identifier
+`VS8M5VJBZ5`, hardened runtime, and a secure timestamp. The release workflow
+submits both Darwin binaries to Apple and refuses to publish unless notarization,
+strict signature verification, the designated requirement, Apple's notarized
+code requirement, and a quarantined native launch pass. `install.sh` verifies
+the same identity and notarized code requirement before and after its
+copy. It does not clear quarantine or ad-hoc re-sign. A raw executable cannot
+carry a stapled ticket, so its first notarization-ticket check can require a network
+connection.
+
+That closes the **distribution-mechanism** blocker, not the macOS permission
+claim by itself. HEALTH-08 remains a dated HOLE until a real host records all of
+these results: grant FDA to signed version N; atomically upgrade to signed
+version N+1; read iMessage without a re-grant; then replace N+1 with a binary
+from an unrelated signer and prove the read fails loudly without advancing
+`LastSuccessAt`. CI cannot manufacture TCC evidence.
+
+The identity migrations are also not silent. An FDA grant made to an older
+ad-hoc executable can require one grant to the first Developer ID-signed bridge.
+The later branded `Mora.app` changes the TCC target again, so plan for one final
+grant to the app. Routine app upgrades can be called permission-preserving only
+after a real version N to N+1 **whole-bundle** replacement passes the same read
+test without a re-grant; replacing only `Contents/MacOS/mora` invalidates the
+bundle seal and is not an accepted test.
 
 ## Open questions / unverified
 

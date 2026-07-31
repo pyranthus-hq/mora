@@ -3,7 +3,7 @@
 #
 # Covers the surfaces Tier 1 (regression.sh) explicitly defers because they are
 # real-Mac-only and can't run in a Linux container:
-#   2a codesign / Gatekeeper / quarantine  — install.sh's macOS signing path
+#   2a Developer ID / Gatekeeper / installer identity preservation
 #   2b launchd plist generation            — `mora schedule install` (index/pulse)
 #   2c osascript toast gate                — `--notify` + MORA_NO_NOTIFY suppression
 #   2d iMessage real decode                — chat.db typedstream decode (livedb test)
@@ -22,8 +22,11 @@
 #
 # Inputs (env):
 #   MORA_REPO              path to the mora repo (install.sh, build_vault.py, go test)  [required]
-#   MORA_BIN              a freshly-built, version-stamped HEAD `mora` (else we build) [optional]
+#   MORA_BIN              a version-stamped HEAD `mora`; required with RELEASE=1,
+#                         otherwise optional (the harness builds a local binary)
 #   EXPECTED_VER          version the HEAD binary must report (default: git describe)  [optional]
+#   RELEASE=1             require + install an externally supplied Developer-ID-signed,
+#                         Apple-notarized MORA_BIN; any identity failure is fatal
 #   WORK                  sandbox root (default: a fresh mktemp dir, removed on exit)
 #   MORA_REGRESS_LIVE_BIN an FDA-granted installed mora, to exercise the real
 #                         `sync imessage` / calendar success path against the sandbox
@@ -31,7 +34,8 @@
 #   SKIP_LIVEDB=1         skip the FDA-gated chat.db decode test
 #   SKIP_HAZARD=1         skip the SIGKILL-137 / atomic-rename section
 # Exit code is the verdict: 0 = all green, non-zero = first hard failure.
-# (Environmental gaps — no chat.db, FDA not granted — are loud SKIPs, not failures.)
+# (Environmental gaps — no chat.db, FDA not granted — are loud SKIPs, not failures.
+# Release identity is skipped only in local-dev mode; RELEASE=1 is fail closed.)
 set -euo pipefail
 
 # ---- preflight ----------------------------------------------------------------
@@ -45,6 +49,26 @@ command -v go      >/dev/null 2>&1 || { echo "FATAL: go toolchain required" >&2;
 command -v codesign>/dev/null 2>&1 || { echo "FATAL: codesign required (Xcode CLT)" >&2; exit 2; }
 PY="$(command -v python3 || command -v python || true)"
 [ -n "$PY" ] || { echo "FATAL: python3 required (for seeding + JSON asserts)" >&2; exit 2; }
+
+RELEASE="${RELEASE:-0}"
+case "$RELEASE" in
+  0|1) : ;;
+  *) echo "FATAL: RELEASE must be 0 or 1 (got $RELEASE)" >&2; exit 2 ;;
+esac
+if [ "$RELEASE" = 1 ]; then
+  [ -n "${MORA_BIN:-}" ] || {
+    echo "FATAL: RELEASE=1 requires an externally supplied notarized MORA_BIN" >&2
+    exit 2
+  }
+  [ -x "$MORA_BIN" ] || {
+    echo "FATAL: RELEASE=1 MORA_BIN is not executable: $MORA_BIN" >&2
+    exit 2
+  }
+  command -v xattr >/dev/null 2>&1 || {
+    echo "FATAL: xattr required for RELEASE=1 quarantined launch assessment" >&2
+    exit 2
+  }
+fi
 
 OWN_WORK=0
 if [ -z "${WORK:-}" ]; then WORK="$(mktemp -d)"; OWN_WORK=1; fi
@@ -81,6 +105,67 @@ json_true() {
 }
 json_get() { printf '%s' "$1" | "$PY" -c "import sys,json; d=json.load(sys.stdin); print($2)"; }
 
+release_cdhash() {
+  local hash
+  hash="$(codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p')"
+  [ -n "$hash" ] || return 1
+  printf '%s\n' "$hash"
+}
+
+# Independently enforce the release identity contract instead of trusting the
+# installer's own checks. Raw command-line executables cannot carry a stapled
+# ticket. Evaluate Apple's `notarized` code requirement for the exact
+# code-directory hash, then launch a quarantined disposable copy so the test
+# follows the downloaded-command path without changing the release artifact.
+verify_release_identity() {
+  local binary="$1" label="$2" sign_info requirement_info launch_dir launch_copy quarantine_value
+
+  codesign --verify --strict --verbose=2 "$binary" >/dev/null 2>&1 \
+    || die "$label fails strict code-signature verification"
+  sign_info="$(codesign -dvvv "$binary" 2>&1)" \
+    || die "could not inspect $label's code signature"
+  printf '%s\n' "$sign_info" | grep -Fqx 'Identifier=com.pyranthus.mora' \
+    || die "$label has the wrong signing identifier (expected com.pyranthus.mora)"
+  printf '%s\n' "$sign_info" | grep -Fqx 'TeamIdentifier=VS8M5VJBZ5' \
+    || die "$label has the wrong Apple team (expected VS8M5VJBZ5)"
+  printf '%s\n' "$sign_info" | grep -Fq 'Authority=Developer ID Application:' \
+    || die "$label is not signed with a Developer ID Application certificate"
+  printf '%s\n' "$sign_info" | grep -Eq '^CodeDirectory .*flags=.*\(runtime\)' \
+    || die "$label does not enable the hardened runtime"
+  printf '%s\n' "$sign_info" | grep -Eq '^Timestamp=.+' \
+    || die "$label has no secure timestamp"
+
+  requirement_info="$(codesign -d -r- "$binary" 2>&1)" \
+    || die "could not inspect $label's designated requirement"
+  printf '%s\n' "$requirement_info" | grep -Fq 'designated =>' \
+    || die "$label has no designated requirement"
+  printf '%s\n' "$requirement_info" | grep -Fq 'identifier "com.pyranthus.mora"' \
+    || die "$label designated requirement has the wrong identifier"
+  printf '%s\n' "$requirement_info" | grep -Fq 'anchor apple generic' \
+    || die "$label designated requirement is not anchored to Apple"
+  printf '%s\n' "$requirement_info" | \
+    grep -Eq 'subject\.OU[^=]*= ("VS8M5VJBZ5"|VS8M5VJBZ5)( |$)' \
+    || die "$label designated requirement has the wrong Apple team"
+
+  codesign --verify --strict --verbose=2 -R='notarized' "$binary" >/dev/null 2>&1 \
+    || die "$label does not satisfy Apple's notarized code requirement"
+
+  launch_dir="$(mktemp -d "$WORK/notarized-launch.XXXXXX")" \
+    || die "could not create the disposable notarized-launch directory"
+  launch_copy="$launch_dir/mora"
+  cp "$binary" "$launch_copy" \
+    || die "could not stage $label for the quarantined launch"
+  chmod +x "$launch_copy"
+  quarantine_value='0083;00000000;MoraReleaseRegression;'
+  xattr -w com.apple.quarantine "$quarantine_value" "$launch_copy" \
+    || die "could not quarantine the disposable $label launch copy"
+  [ "$(xattr -p com.apple.quarantine "$launch_copy" 2>/dev/null || true)" = "$quarantine_value" ] \
+    || die "disposable $label launch copy did not retain its quarantine attribute"
+  "$launch_copy" version >/dev/null 2>&1 \
+    || die "quarantined disposable copy of $label did not launch"
+  rm -rf "$launch_dir"
+}
+
 # ---- build (or locate) a stamped HEAD binary ---------------------------------
 section "Tier 2 setup — build a stamped binary + sandbox install"
 VER="${EXPECTED_VER:-$(git -C "$MORA_REPO" describe --tags --always --dirty 2>/dev/null | sed 's/^v//')}"
@@ -98,20 +183,52 @@ else
   pass "built stamped binary @ $VER ($SHA)"
 fi
 
-# Stage a release-tarball-shaped dir so install.sh hits its LOCAL mode. Pre-set a
-# quarantine xattr on the staged binary so 2a can prove install.sh clears it.
-STAGE="$WORK/staging"; mkdir -p "$STAGE"
-cp "$BUILT" "$STAGE/mora"; chmod +x "$STAGE/mora"
-cp "$MORA_REPO/install.sh" "$STAGE/install.sh"
-xattr -w com.apple.quarantine "0083;00000000;regress;" "$STAGE/mora" 2>/dev/null || true
-
 PREFIX="$WORK/bin"
-PREFIX="$PREFIX" MORA_VAULT="$MORA_VAULT" sh "$STAGE/install.sh" >/dev/null 2>&1 \
-  || die "install.sh failed"
 MORA="$PREFIX/mora"
-[ -x "$MORA" ] || die "install.sh did not place an executable mora in PREFIX"
-"$MORA" version | grep -q "$VER" || die "installed binary not stamped $VER"
-pass "install.sh installed + stamped $VER into the sandbox PREFIX"
+SOURCE_CDHASH=""
+REPLACED_INODE=""
+INSTALLED_INODE=""
+if [ "$RELEASE" = 1 ]; then
+  verify_release_identity "$MORA_BIN" "provided MORA_BIN"
+  SOURCE_CDHASH="$(release_cdhash "$MORA_BIN")" \
+    || die "could not read provided MORA_BIN's code-directory hash"
+
+  # Shape the source like an extracted release archive so install.sh uses LOCAL
+  # mode. Seed the destination with a deliberately ad-hoc-signed TEST FIXTURE:
+  # a different inode and cdhash make the installer's atomic pathname replacement
+  # observable without touching a real installed Mora.
+  STAGE="$WORK/staging"; mkdir -p "$STAGE" "$PREFIX"
+  cp "$BUILT" "$STAGE/mora"; chmod +x "$STAGE/mora"
+  cp "$MORA_REPO/install.sh" "$STAGE/install.sh"
+  [ "$(release_cdhash "$STAGE/mora")" = "$SOURCE_CDHASH" ] \
+    || die "release staging changed MORA_BIN's code-directory hash"
+
+  cp "$BUILT" "$MORA"
+  codesign --force --sign - --identifier com.pyranthus.mora.regress-old "$MORA" >/dev/null 2>&1 \
+    || die "could not create the ad-hoc pre-install test fixture"
+  REPLACED_INODE="$(stat -f '%i' "$MORA")"
+
+  if ! INSTALL_OUT="$(PREFIX="$PREFIX" MORA_VAULT="$MORA_VAULT" sh "$STAGE/install.sh" 2>&1)"; then
+    printf '%s\n' "$INSTALL_OUT" >&2
+    die "install.sh failed for the signed/notarized release binary"
+  fi
+  [ -x "$MORA" ] || die "install.sh did not place an executable mora in PREFIX"
+  INSTALLED_INODE="$(stat -f '%i' "$MORA")"
+  [ "$INSTALLED_INODE" != "$REPLACED_INODE" ] \
+    || die "install.sh overwrote the existing inode instead of replacing it atomically"
+  pass "install.sh atomically installed the signed release into the sandbox PREFIX"
+else
+  # The production installer intentionally rejects locally built unsigned/ad-hoc
+  # binaries. Stage directly so the unrelated macOS Tier 2 checks remain useful
+  # during development; this path makes no release-identity claim.
+  mkdir -p "$PREFIX"
+  cp "$BUILT" "$MORA"; chmod +x "$MORA"
+  pass "direct-staged local development binary (release installer not exercised)"
+fi
+
+"$MORA" version | grep -q "$VER" || die "sandbox binary not stamped $VER"
+export PATH="$PREFIX:$PATH"
+pass "sandbox binary is stamped $VER"
 
 # Seed a synthetic vault (same corpus as Tier 1 / the bench).
 "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
@@ -120,28 +237,21 @@ pass "install.sh installed + stamped $VER into the sandbox PREFIX"
 pass "seeded sandbox vault"
 
 # =============================================================================
-section "Tier 2a — codesign / Gatekeeper / quarantine (install.sh macOS path)"
-# install.sh ad-hoc-signs the binary and strips the quarantine xattr so a Mora
-# that arrived via download/zip/AirDrop runs without the Gatekeeper wall.
-codesign --verify --verbose=2 "$MORA" 2>/dev/null || die "installed binary fails codesign --verify"
-pass "codesign --verify passes on the installed binary"
-
-codesign -dvv "$MORA" 2>&1 | grep -qi 'Signature=adhoc' \
-  || die "installed binary is not ad-hoc signed (install.sh codesign --sign - did not run)"
-pass "ad-hoc signature present (Signature=adhoc)"
-
-if xattr -p com.apple.quarantine "$MORA" >/dev/null 2>&1; then
-  die "com.apple.quarantine still set after install (install.sh xattr -d did not run)"
-fi
-pass "quarantine xattr cleared by install.sh"
-
-# The real Gatekeeper story: an ad-hoc binary is NOT notarized, so spctl rejects
-# it — yet because quarantine was cleared it still EXECUTES. Assert exactly that.
-"$MORA" version >/dev/null 2>&1 || die "installed binary does not execute"
-if spctl -a -t exec "$MORA" >/dev/null 2>&1; then
-  note "spctl accepted the binary (unexpected for ad-hoc, but fine)"
+section "Tier 2a — Developer ID / Gatekeeper / atomic installer identity"
+if [ "$RELEASE" = 1 ]; then
+  verify_release_identity "$MORA" "installed Mora"
+  INSTALLED_CDHASH="$(release_cdhash "$MORA")" \
+    || die "could not read installed Mora's code-directory hash"
+  [ "$INSTALLED_CDHASH" = "$SOURCE_CDHASH" ] \
+    || die "installer changed the signed release's code-directory hash"
+  [ "$INSTALLED_INODE" != "$REPLACED_INODE" ] \
+    || die "installer did not atomically replace the pre-existing binary"
+  "$MORA" version >/dev/null 2>&1 || die "installed signed release does not execute"
+  pass "identifier com.pyranthus.mora, team VS8M5VJBZ5, Developer ID, runtime + timestamp"
+  pass "designated requirement, Apple's notarized requirement, and quarantined launch"
+  pass "atomic installer replacement preserved cdhash $INSTALLED_CDHASH"
 else
-  pass "spctl rejects ad-hoc (expected); binary still runs because quarantine was cleared"
+  skip "release identity/notarization + installer preservation (requires RELEASE=1 with signed MORA_BIN)"
 fi
 
 # =============================================================================
@@ -267,7 +377,8 @@ fi
 # =============================================================================
 if [ "${SKIP_HAZARD:-0}" != "1" ]; then
 section "Tier 2f — cp-over-running SIGKILL-137 hazard + atomic-rename mitigation"
-# Fresh signed sandbox copies; we never touch the live binary.
+# Fresh ad-hoc-signed TEST-ONLY sandbox copies; we never touch the live binary
+# and these fixtures make no release-identity claim.
 SRVDIR="$WORK/srv"; mkdir -p "$SRVDIR"
 cp "$MORA" "$SRVDIR/mora"; codesign --force --sign - "$SRVDIR/mora" 2>/dev/null || true
 # The swap-in must have a DIFFERENT cdhash than the running copy, or overwriting
@@ -287,8 +398,9 @@ start_server() {  # $1 = binary path → echoes the PID (parent appends to SRV_P
   echo "$p"
 }
 
-# Mitigation (DETERMINISTIC): atomic rename — what `mora upgrade` does — leaves the
-# running inode intact, so a live server SURVIVES the swap.
+# Mitigation (DETERMINISTIC): atomic rename — what the installer and `mora
+# upgrade` do — leaves the running inode intact, so a live server SURVIVES the
+# swap.
 SRV1="$(start_server "$SRVDIR/mora")"; SRV_PIDS+=("$SRV1")
 cp "$SWAPIN" "$WORK/newbin"
 mv -f "$WORK/newbin" "$SRVDIR/mora"
@@ -300,10 +412,10 @@ else
   die "atomic rename killed the running server — unexpected; upgrade swap would be unsafe"
 fi
 
-# Hazard (REPRODUCE-AND-REPORT, non-fatal): install.sh's plain `cp` truncates the
-# SAME inode; on a signed binary the cdhash check then fails and the kernel
-# SIGKILLs the running process (the 137 your history flagged). alive() excludes
-# zombies, so a killed-but-not-yet-reaped server isn't misread as "survived".
+# Hazard (REPRODUCE-AND-REPORT, non-fatal): a plain `cp` over the destination
+# truncates the SAME inode; on a signed binary the cdhash check then fails and
+# the kernel SIGKILLs the running process. alive() excludes zombies, so a
+# killed-but-not-yet-reaped server isn't misread as "survived".
 SRV2DIR="$WORK/srv2"; mkdir -p "$SRV2DIR"
 cp "$MORA" "$SRV2DIR/mora"; codesign --force --sign - "$SRV2DIR/mora" 2>/dev/null || true
 SRV2="$(start_server "$SRV2DIR/mora")"; SRV_PIDS+=("$SRV2")
@@ -313,7 +425,7 @@ if alive "$SRV2"; then
   note "cp-over-running did NOT kill on this macOS build — still hazardous; mora upgrade uses rename to be safe"
   kill "$SRV2" 2>/dev/null || true
 else
-  pass "REPRODUCED SIGKILL-137: install.sh's cp-over-running-binary is unsafe (use mora upgrade's atomic swap)"
+  pass "REPRODUCED SIGKILL-137: cp-over-running is unsafe (installer + upgrade use atomic swap)"
 fi
 exec 3>&- 2>/dev/null || true
 fi
