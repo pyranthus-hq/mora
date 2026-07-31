@@ -69,6 +69,21 @@ func sourceHealthThreshold(sourceType string) time.Duration {
 // one synthetic "failed" entry, so doctor/--strict/--pulse all alarm on it.
 const sourceHealthUnreadableKey = "sources_config"
 
+// healthInstanceKeyForSource is the health-only identity of one configured
+// source row. Most connectors use the digest/watermark instance key verbatim.
+// Filesystem memories intentionally have no Provider and are excluded from
+// digest watermarks, but each configured folder owns a distinct SyncStatus
+// file. Include its source name here so a healthy "docs" folder can never
+// dedupe away a failed "notes" folder. Keep this distinction local to health:
+// changing instanceKeyForSource would also change persisted brief snapshot
+// keys and would require a briefHashSchemaVersion migration.
+func healthInstanceKeyForSource(s Source) string {
+	if s.Type == "filesystem" && s.Account == "" && s.Name != "" {
+		return s.Type + ":" + s.Name
+	}
+	return instanceKeyForSource(s)
+}
+
 // sourceHealthAll walks every ENABLED source (mirroring loadConnectorSyncStatus's
 // walk, digest.go:1055-1065) and classifies each instance's freshness against
 // its injected `now` — never time.Now(), so doctor/banner checks and their
@@ -87,7 +102,7 @@ func sourceHealthAll(cfg Config, now time.Time) []sourceHealth {
 		if !s.IsEnabled() {
 			continue
 		}
-		key := instanceKeyForSource(s)
+		key := healthInstanceKeyForSource(s)
 		if seen[key] {
 			continue
 		}
@@ -245,7 +260,7 @@ func healthBannerLine(h sourceHealth) string {
 // should call sourceHealthAll once and store it on the struct instead of
 // calling this twice.
 func healthBanner(cfg Config, now time.Time) string {
-	return healthBannerFromSources(sourceHealthAll(cfg, now))
+	return healthBannerFrom(healthOf(cfg, now))
 }
 
 // stampSyncAttemptFailure closes the pre-Ingest stamping gap (▸CX): OAuth

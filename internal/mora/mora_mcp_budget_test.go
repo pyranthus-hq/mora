@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // MCP output-size regression gate ("T0").
@@ -537,6 +540,156 @@ func TestUnhealthyBannerFitsTightestMCPBudget(t *testing.T) {
 	dBytes := measureEnvelope(t, budgetCall("delete_memory", `{"id":"delete-target"}`))
 	if dTok := (dBytes + charsPerToken - 1) / charsPerToken; dTok > 500 {
 		t.Fatalf("delete_memory with a MAX-length unhealthy banner = %d tok (%d B) > 500 ceiling", dTok, dBytes)
+	}
+}
+
+// pinMCPWriteBudgetClock makes the full JSON-RPC write_memory round trip
+// deterministic. write_memory owns its surface timestamp through mcpWriteClock;
+// its pending/upsert stamps remain owned by indexClock, so pin both.
+func pinMCPWriteBudgetClock(t *testing.T, now time.Time) {
+	t.Helper()
+	origWriteClock := mcpWriteClock
+	origIndexClock := indexClock
+	mcpWriteClock = func() time.Time { return now }
+	indexClock = func() time.Time { return now }
+	t.Cleanup(func() {
+		mcpWriteClock = origWriteClock
+		indexClock = origIndexClock
+	})
+}
+
+// seedMaxCapUnhealthyBudgetFixture seeds four real, enabled connector instances.
+// The first three deterministic fresh keys serialize to exactly the unchanged
+// compactSourceBytesCap (80 bytes); the fourth is honestly reported omitted.
+// A long stale producer supplies the worst-case capped yellow banner.
+func seedMaxCapUnhealthyBudgetFixture(t *testing.T, now time.Time, prodName string) (Config, compactHealth, int) {
+	t.Helper()
+	cfg := seedBudgetFixture(t)
+
+	sources := []Source{
+		{Name: "applecalendar-x", Type: "applecalendar", Account: "x", Enabled: ptr(true)},
+		{Name: "calendar-office", Type: "calendar", Account: "office", Enabled: ptr(true)},
+		{Name: "gmail-personalxx", Type: "gmail", Account: "personalxx", Enabled: ptr(true)},
+		{Name: "imessage", Type: "imessage", Enabled: ptr(true)},
+	}
+	if err := saveSources(cfg, sources); err != nil {
+		t.Fatalf("saveSources: %v", err)
+	}
+	for _, s := range sources {
+		statusPath := syncStatusPathFor(cfg, s)
+		if statusPath == "" {
+			t.Fatalf("syncStatusPathFor returned empty path for source %+v", s)
+		}
+		err := saveSyncStatusFn(statusPath, &memory.SyncStatus{
+			Source:        s.Name,
+			LastAttemptAt: now.Add(-10 * time.Minute).Format(time.RFC3339),
+			LastSuccessAt: now.Add(-5 * time.Minute).Format(time.RFC3339),
+		})
+		if err != nil {
+			t.Fatalf("saveSyncStatusFn for %s failed: %v", s.Name, err)
+		}
+	}
+
+	if err := saveExpectedProducers(cfg, map[string]expectedProducer{
+		prodName: {Name: prodName, IntervalSeconds: 86400, Source: producerSourceScheduled},
+	}); err != nil {
+		t.Fatalf("saveExpectedProducers failed: %v", err)
+	}
+	old := now.Add(-200 * time.Hour).Format(time.RFC3339)
+	if err := saveProducerStatus(cfg, map[string]producerStatus{
+		prodName: {
+			Name: prodName, LastSuccessAt: old, LastAttemptAt: old,
+			SuccessTimes: []string{old}, IntervalSeconds: 86400, Source: producerSourceScheduled,
+		},
+	}); err != nil {
+		t.Fatalf("saveProducerStatus failed: %v", err)
+	}
+
+	ch := compactHealthOf(cfg, now)
+	perSourceJSON, err := json.Marshal(ch.PerSource)
+	if err != nil {
+		t.Fatalf("marshal per_source: %v", err)
+	}
+	return cfg, ch, len(perSourceJSON)
+}
+
+func TestMCPBudgetCeilingsUnhealthyMaxCap(t *testing.T) {
+	asciiProd := strings.Repeat("scheduled-pulse-producer-with-a-user-defined-identity-", 5)
+	mbProd := strings.Repeat("scheduled-pulse-producer-日本語-🚀-multibyte-", 8)
+	fixedNow := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		prodName string
+	}{
+		{"ascii_long_producer", asciiProd},
+		{"multibyte_long_producer", mbProd},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			pinMCPWriteBudgetClock(t, fixedNow)
+			_, ch, perSourceBytes := seedMaxCapUnhealthyBudgetFixture(t, fixedNow, tt.prodName)
+			if ch.Sources != healthFresh {
+				t.Fatalf("ch.Sources = %q, want fresh for sound sources fixture", ch.Sources)
+			}
+			if !strings.HasPrefix(ch.Banner, "🟡 MORA HEALTH:") {
+				t.Fatalf("ch.Banner = %q, want MAX-length yellow producer banner", ch.Banner)
+			}
+			if len(ch.Banner) > healthBannerLineCap {
+				t.Fatalf("len(ch.Banner) = %d bytes > healthBannerLineCap %d", len(ch.Banner), healthBannerLineCap)
+			}
+			if !utf8.ValidString(ch.Banner) {
+				t.Fatalf("ch.Banner is not valid UTF-8: %q", ch.Banner)
+			}
+			if len(ch.PerSource) == 0 {
+				t.Fatalf("len(PerSource) = 0, want non-empty per_source projection")
+			}
+			if ch.SourcesOmitted <= 0 {
+				t.Fatalf("SourcesOmitted = %d, want > 0 when sources exceed cap/bytes budget", ch.SourcesOmitted)
+			}
+			if perSourceBytes != compactSourceBytesCap {
+				t.Fatalf("json.Marshal(per_source) = %d bytes, want exact cap %d: %+v", perSourceBytes, compactSourceBytesCap, ch.PerSource)
+			}
+
+			writeCase := unhealthyBudgetCases()[0]
+			res := mcpResult(t, writeCase.line)
+			b, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal write_memory CallToolResult: %v", err)
+			}
+			writeBytes := len(b)
+			writeTokens := (writeBytes + charsPerToken - 1) / charsPerToken
+			assertBudget(t, writeCase, writeTokens, writeBytes)
+
+			sc, ok := res["structuredContent"].(map[string]any)
+			if !ok {
+				t.Fatalf("write_memory structuredContent = %T, want object", res["structuredContent"])
+			}
+			actualHealth, ok := sc["health"].(map[string]any)
+			if !ok {
+				t.Fatalf("write_memory health = %T, want object", sc["health"])
+			}
+			actualPerSource, ok := actualHealth["per_source"].(map[string]any)
+			if !ok {
+				t.Fatalf("write_memory health.per_source = %T, want object", actualHealth["per_source"])
+			}
+			actualPerSourceJSON, err := json.Marshal(actualPerSource)
+			if err != nil {
+				t.Fatalf("marshal actual health.per_source: %v", err)
+			}
+			if len(actualPerSourceJSON) != compactSourceBytesCap {
+				t.Fatalf("actual write_memory per_source = %d bytes, want %d: %s", len(actualPerSourceJSON), compactSourceBytesCap, actualPerSourceJSON)
+			}
+			t.Logf("%s/write_memory: %d bytes, %d tokens; banner=%d bytes; per_source=%d bytes",
+				tt.name, writeBytes, writeTokens, len(ch.Banner), len(actualPerSourceJSON))
+
+			deleteCase := unhealthyBudgetCases()[1]
+			deleteBytes := measureEnvelope(t, deleteCase.line)
+			deleteTokens := (deleteBytes + charsPerToken - 1) / charsPerToken
+			assertBudget(t, deleteCase, deleteTokens, deleteBytes)
+		})
 	}
 }
 

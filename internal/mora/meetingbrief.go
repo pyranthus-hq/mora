@@ -351,17 +351,15 @@ func buildEventMeetingBrief(ctx context.Context, cfg Config, eventID string, at 
 }
 
 func buildNextMeetingBrief(ctx context.Context, cfg Config, at time.Time, attendeeFilterIDs map[string]bool, maxTokens, perAttendee int) (MeetingBrief, error) {
-	srcHealth := sourceHealthAll(cfg, at)
-	idxH := indexHealthOf(cfg, at)
-	prodH := producerHealthAll(cfg, at)
+	hSnap := healthOf(cfg, at)
 	empty := MeetingBrief{
 		AsOf:           at.UTC().Format(time.RFC3339),
 		Sections:       []MeetingBriefSection{},
 		EgressCalls:    0,
-		SourceHealth:   srcHealth,
-		idxHealth:      idxH,
-		producerHealth: prodH,
-		Health:         compactHealthFrom(healthFromParts(srcHealth, idxH, prodH)),
+		SourceHealth:   hSnap.Sources,
+		idxHealth:      hSnap.Index,
+		producerHealth: hSnap.Producers,
+		Health:         compactHealthFrom(hSnap),
 	}
 	mems, err := meetingBriefMemories(cfg)
 	if err != nil {
@@ -413,18 +411,16 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		Attendees: attendeeDisplays(attendees),
 		Citation:  eventCitation,
 	}
-	srcHealth := sourceHealthAll(cfg, at)
-	idxH := indexHealthOf(cfg, at)
-	prodH := producerHealthAll(cfg, at)
+	hSnap := healthOf(cfg, at)
 	brief := MeetingBrief{
 		AsOf:           at.UTC().Format(time.RFC3339),
 		Event:          event,
 		Sections:       []MeetingBriefSection{},
 		EgressCalls:    0,
-		SourceHealth:   srcHealth,
-		idxHealth:      idxH,
-		producerHealth: prodH,
-		Health:         compactHealthFrom(healthFromParts(srcHealth, idxH, prodH)),
+		SourceHealth:   hSnap.Sources,
+		idxHealth:      hSnap.Index,
+		producerHealth: hSnap.Producers,
+		Health:         compactHealthFrom(hSnap),
 	}
 	// Refuse-to-GAP, not refuse-to-error. If Mora cannot pick the user out of the
 	// invitee list, then ANY invitee could BE the user, so it must not attribute a

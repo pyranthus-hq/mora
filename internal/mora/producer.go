@@ -296,15 +296,16 @@ func medianDuration(ds []time.Duration) time.Duration {
 
 // producerHealthAll computes the producer arm: one record per EXPECTED producer,
 // state derived from the evidence ledger over the injected now. Fail-closed: an
-// unreadable ledger reports a synthetic failed producer, never green.
+// unreadable ledger reports a typed ledger failure, never a reserved producer
+// name and never green.
 func producerHealthAll(cfg Config, now time.Time) []producerHealth {
 	expected, err := loadExpectedProducers(cfg)
 	if err != nil {
-		return []producerHealth{{Name: "producers", State: prodFailed, LastError: err.Error()}}
+		return []producerHealth{{State: prodFailed, LastError: err.Error(), Subject: producerHealthSubjectLedger}}
 	}
 	status, serr := loadProducerStatus(cfg)
 	if serr != nil {
-		return []producerHealth{{Name: "producers", State: prodFailed, LastError: serr.Error()}}
+		return []producerHealth{{State: prodFailed, LastError: serr.Error(), Subject: producerHealthSubjectLedger}}
 	}
 	names := make([]string, 0, len(expected))
 	for n := range expected {
@@ -318,7 +319,7 @@ func producerHealthAll(cfg Config, now time.Time) []producerHealth {
 		if interval <= 0 {
 			interval = producerDefaultInterval(name)
 		}
-		ph := producerHealth{Name: name, IntervalSeconds: interval, Source: exp.Source}
+		ph := producerHealth{Name: name, IntervalSeconds: interval, Source: exp.Source, Subject: producerHealthSubjectProducer}
 		st, ok := status[name]
 		ph.LastSuccessAt = st.LastSuccessAt
 		ph.LastAttemptAt = st.LastAttemptAt

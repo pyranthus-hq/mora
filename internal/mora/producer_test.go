@@ -304,11 +304,11 @@ func TestDeadProducerSurfacesWithin24h(t *testing.T) {
 		t.Fatalf("doctor --pulse must toast the dead producer, got argv=%#v", *toast)
 	}
 
-	// (5) The daily brief's first content line is the red banner.
+	// (5) The daily brief's first content line is the yellow producer banner.
 	setBriefClockForTest(t, now)
 	briefOut := run(t, "brief")
 	briefLines := strings.SplitN(briefOut, "\n", 3)
-	if len(briefLines) < 2 || !strings.HasPrefix(briefLines[1], "🔴 MORA HEALTH:") || !strings.Contains(briefLines[1], "pulse-daily") {
+	if len(briefLines) < 2 || !strings.HasPrefix(briefLines[1], "🟡 MORA HEALTH:") || !strings.Contains(briefLines[1], "pulse-daily") {
 		t.Fatalf("daily brief's first content line must be the dead-producer banner, got:\n%s", briefOut)
 	}
 

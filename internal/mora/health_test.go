@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -722,4 +723,630 @@ func TestDoctorUsesInjectedClockForGoogleAuthRecency(t *testing.T) {
 	if !strings.Contains(out, want) {
 		t.Fatalf("doctor text output must use the injected clock for auth recency, want %q in:\n%s", want, out)
 	}
+}
+
+// TestIssue223HealthBannerAndCompactState covers issue #223 requirements:
+// - producer-only stale/failed/never -> degraded/yellow
+// - source/index red precedence
+// - healthy no banner
+// - bounded deterministic per-source projection with omitted count
+// - cached brief transition
+// - strict doctor critical producer failure
+// - unreadable ledger fail-closed
+func TestIssue223HealthBannerAndCompactState(t *testing.T) {
+	t.Run("producer_only_degraded_yellow", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		mustSeedExpected(t, cfg, expectedProducer{Name: "ingest-hourly", IntervalSeconds: 3600, Source: producerSourceScheduled})
+		old := now.Add(-11 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "ingest-hourly", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		h := healthOf(cfg, now)
+		if h.State != healthDegraded {
+			t.Fatalf("healthOf.State = %q, want %q", h.State, healthDegraded)
+		}
+
+		ch := compactHealthOf(cfg, now)
+		if ch.State != healthDegraded {
+			t.Fatalf("compactHealthOf.State = %q, want %q", ch.State, healthDegraded)
+		}
+		if !strings.HasPrefix(ch.Banner, "🟡 MORA HEALTH:") || !strings.Contains(ch.Banner, "ingest-hourly") {
+			t.Fatalf("compactHealth.Banner = %q, want yellow producer banner", ch.Banner)
+		}
+	})
+
+	t.Run("source_index_red_precedence", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		enableSources(t, cfg, "gmail")
+		seedSyncStatusFull(t, cfg, "gmail", &memory.SyncStatus{
+			Source:        "gmail",
+			LastAttemptAt: now.Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+			LastSuccessAt: now.Add(-48 * time.Hour).UTC().Format(time.RFC3339),
+			LastError:     "connection refused",
+		})
+
+		mustSeedExpected(t, cfg, expectedProducer{Name: "ingest-hourly", IntervalSeconds: 3600, Source: producerSourceScheduled})
+		old := now.Add(-11 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "ingest-hourly", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		h := healthOf(cfg, now)
+		if h.State != healthUnhealthy {
+			t.Fatalf("healthOf.State = %q, want %q", h.State, healthUnhealthy)
+		}
+
+		banner := healthBanner(cfg, now)
+		if !strings.HasPrefix(banner, "🔴 MORA HEALTH:") || !strings.Contains(banner, "gmail") {
+			t.Fatalf("banner = %q, want RED source alarm outranking yellow producer warning", banner)
+		}
+	})
+
+	t.Run("healthy_no_banner", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		h := healthOf(cfg, now)
+		if h.State != healthHealthy {
+			t.Fatalf("healthOf.State = %q, want %q", h.State, healthHealthy)
+		}
+
+		banner := healthBanner(cfg, now)
+		if banner != "" {
+			t.Fatalf("banner = %q, want empty for healthy vault", banner)
+		}
+	})
+
+	t.Run("two_long_keys_same_prefix", func(t *testing.T) {
+		k1 := "shared_prefix_alpha"
+		k2 := "shared_prefix_beta"
+		h := Health{
+			State: healthDegraded,
+			Sources: []sourceHealth{
+				{Key: k1, State: healthStale},
+				{Key: k2, State: healthStale},
+			},
+			Index: indexHealth{State: idxFresh},
+		}
+		ch := compactHealthFrom(h)
+		if len(ch.PerSource) != 2 {
+			t.Fatalf("len(PerSource) = %d, want 2", len(ch.PerSource))
+		}
+		if ch.PerSource[k1] != healthStale || ch.PerSource[k2] != healthStale {
+			t.Fatalf("PerSource missing exact shared-prefix keys: %+v", ch.PerSource)
+		}
+		if ch.SourcesOmitted != 0 {
+			t.Fatalf("SourcesOmitted = %d, want 0", ch.SourcesOmitted)
+		}
+	})
+
+	t.Run("extremely_long_escaped_key_omitted", func(t *testing.T) {
+		// Key larger than compactSourceBytesCap (80 bytes)
+		longKey := "very_long_source_key_that_exceeds_the_exact_json_byte_cap_of_80_bytes_all_by_itself_and_contains_escaped_quotes_\"quoted\"_and_newlines_\n_to_force_json_escaping_overflow"
+		h := Health{
+			State: healthDegraded,
+			Sources: []sourceHealth{
+				{Key: "gmail", State: healthStale},
+				{Key: longKey, State: healthStale},
+			},
+			Index: indexHealth{State: idxFresh},
+		}
+		ch := compactHealthFrom(h)
+		if ch.PerSource[longKey] != "" {
+			t.Fatalf("longKey should be omitted due to byte cap, but got included: %q", ch.PerSource[longKey])
+		}
+		if ch.PerSource["gmail"] != healthStale {
+			t.Fatalf("gmail should be included: %q", ch.PerSource["gmail"])
+		}
+		if ch.SourcesOmitted != 1 {
+			t.Fatalf("SourcesOmitted = %d, want 1 for omitted longKey", ch.SourcesOmitted)
+		}
+	})
+
+	t.Run("deterministic_selection", func(t *testing.T) {
+		h := Health{
+			State: healthDegraded,
+			Sources: []sourceHealth{
+				{Key: "z_fresh", State: healthFresh},
+				{Key: "a_stale", State: healthStale},
+				{Key: "b_failed", State: healthFailed},
+				{Key: "c_never", State: healthNever},
+				{Key: "d_fresh", State: healthFresh},
+			},
+			Index: indexHealth{State: idxFresh},
+		}
+		ch := compactHealthFrom(h)
+		// b_failed (rank 0), c_never (rank 1), a_stale (rank 2) must be selected
+		if ch.PerSource["b_failed"] != healthFailed || ch.PerSource["c_never"] != healthNever || ch.PerSource["a_stale"] != healthStale {
+			t.Fatalf("PerSource deterministic selection wrong: %+v", ch.PerSource)
+		}
+	})
+
+	t.Run("bounded_deterministic_per_source_projection", func(t *testing.T) {
+		// Table case 1: >cap same-state sources proving oldest (AgeHours desc) selected
+		hAge := Health{
+			State: healthDegraded,
+			Sources: []sourceHealth{
+				{Key: "src_young", State: healthStale, AgeHours: 5},
+				{Key: "src_oldest", State: healthStale, AgeHours: 100},
+				{Key: "src_older", State: healthStale, AgeHours: 50},
+				{Key: "src_newest", State: healthStale, AgeHours: 1},
+			},
+			Index: indexHealth{State: idxFresh},
+		}
+		chAge := compactHealthFrom(hAge)
+		if len(chAge.PerSource) != compactSourceCap {
+			t.Fatalf("len(PerSource) = %d, want %d", len(chAge.PerSource), compactSourceCap)
+		}
+		if chAge.SourcesOmitted != 1 {
+			t.Fatalf("SourcesOmitted = %d, want 1", chAge.SourcesOmitted)
+		}
+		if _, ok := chAge.PerSource["src_oldest"]; !ok {
+			t.Fatalf("src_oldest (AgeHours 100) must be selected: %+v", chAge.PerSource)
+		}
+		if _, ok := chAge.PerSource["src_older"]; !ok {
+			t.Fatalf("src_older (AgeHours 50) must be selected: %+v", chAge.PerSource)
+		}
+		if _, ok := chAge.PerSource["src_young"]; !ok {
+			t.Fatalf("src_young (AgeHours 5) must be selected: %+v", chAge.PerSource)
+		}
+		if _, ok := chAge.PerSource["src_newest"]; ok {
+			t.Fatalf("src_newest (AgeHours 1) should be omitted, but was included: %+v", chAge.PerSource)
+		}
+
+		// Table case 2: escaped, multibyte, very long, and shared-prefix exact keys
+		hComplex := Health{
+			State: healthDegraded,
+			Sources: []sourceHealth{
+				{Key: "escaped_\"quote\"_\n", State: healthStale, AgeHours: 10},
+				{Key: "multibyte_日本語_data", State: healthStale, AgeHours: 10},
+				{Key: "prefix_shared_one", State: healthStale, AgeHours: 10},
+				{Key: "prefix_shared_two", State: healthStale, AgeHours: 10},
+			},
+			Index: indexHealth{State: idxFresh},
+		}
+		ch1 := compactHealthFrom(hComplex)
+		ch2 := compactHealthFrom(hComplex)
+
+		// Assert deterministic repeat (byte-identical JSON)
+		b1, err1 := json.Marshal(ch1)
+		b2, err2 := json.Marshal(ch2)
+		if err1 != nil || err2 != nil || string(b1) != string(b2) {
+			t.Fatalf("deterministic repeat failed: b1=%s, b2=%s", b1, b2)
+		}
+
+		// Assert marshaled PerSource byte cap
+		bMap, _ := json.Marshal(ch1.PerSource)
+		if len(bMap) > compactSourceBytesCap {
+			t.Fatalf("len(json.Marshal(PerSource)) = %d > compactSourceBytesCap %d", len(bMap), compactSourceBytesCap)
+		}
+	})
+
+	t.Run("fresh_index_failed_share_stale_producer", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		// Personal index fresh, but a subscription share index failed
+		mustSeedExpected(t, cfg, expectedProducer{Name: "ingest-hourly", IntervalSeconds: 3600, Source: producerSourceScheduled})
+		old := now.Add(-11 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "ingest-hourly", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		h := Health{
+			Sources:   []sourceHealth{{Key: "gmail", State: healthFresh}},
+			Index:     indexHealth{State: idxFresh, Shares: []indexHealth{{State: idxFailed, LastError: "integrity digest mismatch"}}},
+			Producers: producerHealthAll(cfg, now),
+		}
+		h.State = aggregateHealthState(h)
+
+		if h.State != healthUnhealthy {
+			t.Fatalf("h.State = %q, want unhealthy for failed share index", h.State)
+		}
+		banner := healthBannerFrom(h)
+		if !strings.HasPrefix(banner, "🔴 MORA HEALTH:") || !strings.Contains(banner, "subscription index") {
+			t.Fatalf("banner = %q, want RED share index alarm outranking yellow producer warning", banner)
+		}
+	})
+
+	t.Run("digest_generated_failed_share_red_precedence", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		// Seed stale producer
+		mustSeedExpected(t, cfg, expectedProducer{Name: "ingest-hourly", IntervalSeconds: 3600, Source: producerSourceScheduled})
+		old := now.Add(-11 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "ingest-hourly", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		// Seed a registered broken subscription so shareIndexHealthAll returns idxFailed
+		registerSub(t, cfg, "team")
+		subDir := filepath.Join(filepath.Dir(cfg.VaultDir), "subs", "team")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll sub: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "migrated"), []byte("1"), 0o644); err != nil {
+			t.Fatalf("WriteFile migrated: %v", err)
+		}
+
+		d, err := buildDigest(cfg, now, briefOpts{})
+		if err != nil {
+			t.Fatalf("buildDigest: %v", err)
+		}
+		banner := renderDigestHealthBanner(d)
+		if !strings.HasPrefix(banner, "🔴 MORA HEALTH:") || !strings.Contains(banner, "subscription index") {
+			t.Fatalf("renderDigestHealthBanner = %q, want RED subscription index banner", banner)
+		}
+		payload := digestMCPPayload(cfg, d, 20000)
+		hMap, ok := payload["health"].(compactHealth)
+		if !ok || hMap.State != healthUnhealthy {
+			t.Fatalf("digest payload health = %+v, want state=unhealthy", payload["health"])
+		}
+		if !strings.HasPrefix(hMap.Banner, "🔴 MORA HEALTH:") || !strings.Contains(hMap.Banner, "subscription index") {
+			t.Fatalf("digest payload banner = %q, want RED subscription index banner", hMap.Banner)
+		}
+	})
+
+	t.Run("daily_brief_failed_share_red_precedence", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		mustSeedExpected(t, cfg, expectedProducer{Name: "ingest-hourly", IntervalSeconds: 3600, Source: producerSourceScheduled})
+		old := now.Add(-11 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "ingest-hourly", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		registerSub(t, cfg, "team")
+		subDir := filepath.Join(filepath.Dir(cfg.VaultDir), "subs", "team")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll sub: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "migrated"), []byte("1"), 0o644); err != nil {
+			t.Fatalf("WriteFile migrated: %v", err)
+		}
+
+		d, err := buildDigest(cfg, now, briefOpts{advance: true})
+		if err != nil {
+			t.Fatalf("buildDigest delta: %v", err)
+		}
+		banner := renderDigestHealthBanner(d)
+		if !strings.HasPrefix(banner, "🔴 MORA HEALTH:") || !strings.Contains(banner, "subscription index") {
+			t.Fatalf("delta digest banner = %q, want RED subscription index banner", banner)
+		}
+	})
+
+	t.Run("meeting_brief_failed_share_red_precedence", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		mustSeedExpected(t, cfg, expectedProducer{Name: "ingest-hourly", IntervalSeconds: 3600, Source: producerSourceScheduled})
+		old := now.Add(-11 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "ingest-hourly", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		registerSub(t, cfg, "team")
+		subDir := filepath.Join(filepath.Dir(cfg.VaultDir), "subs", "team")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll sub: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "migrated"), []byte("1"), 0o644); err != nil {
+			t.Fatalf("WriteFile migrated: %v", err)
+		}
+
+		brief, err := buildNextMeetingBrief(context.Background(), cfg, now, nil, 0, 0)
+		if err != nil {
+			t.Fatalf("buildNextMeetingBrief: %v", err)
+		}
+		if brief.Health.State != healthUnhealthy {
+			t.Fatalf("meetingBrief.Health.State = %q, want unhealthy", brief.Health.State)
+		}
+		if !strings.HasPrefix(brief.Health.Banner, "🔴 MORA HEALTH:") || !strings.Contains(brief.Health.Banner, "subscription index") {
+			t.Fatalf("meetingBrief banner = %q, want RED subscription index banner", brief.Health.Banner)
+		}
+	})
+
+	t.Run("cached_brief_transition", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		// 1. Cached brief with red banner, now healthy -> strips banner
+		bodyRed := "# Brief\n🔴 MORA HEALTH: gmail — stale. Run: mora doctor\n\nContent line\n"
+		got := reconcileCachedBriefHealth(cfg, now, bodyRed)
+		if strings.Contains(got, "MORA HEALTH") {
+			t.Fatalf("reconcileCachedBriefHealth did not strip red banner when healthy:\n%s", got)
+		}
+
+		// 2. Cached brief with yellow banner, now healthy -> strips banner
+		bodyYellow := "# Brief\n🟡 MORA HEALTH: ingest-hourly stale. Run: mora doctor\n\nContent line\n"
+		got = reconcileCachedBriefHealth(cfg, now, bodyYellow)
+		if strings.Contains(got, "MORA HEALTH") {
+			t.Fatalf("reconcileCachedBriefHealth did not strip yellow banner when healthy:\n%s", got)
+		}
+
+		// 3. Cached brief with red banner, now producer stale -> replaces red with yellow
+		mustSeedExpected(t, cfg, expectedProducer{Name: "ingest-hourly", IntervalSeconds: 3600, Source: producerSourceScheduled})
+		old := now.Add(-11 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "ingest-hourly", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		got = reconcileCachedBriefHealth(cfg, now, bodyRed)
+		if !strings.Contains(got, "🟡 MORA HEALTH:") || strings.Contains(got, "🔴 MORA HEALTH:") {
+			t.Fatalf("reconcileCachedBriefHealth did not replace red with yellow banner:\n%s", got)
+		}
+		lines := strings.Split(got, "\n")
+		healthLineCount := 0
+		for _, l := range lines {
+			if isHealthBannerLine(l) {
+				healthLineCount++
+			}
+		}
+		if healthLineCount != 1 {
+			t.Fatalf("reconcileCachedBriefHealth resulted in %d health lines, want 1:\n%s", healthLineCount, got)
+		}
+	})
+
+	t.Run("strict_doctor_critical_producer_failure", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		mustSeedExpected(t, cfg, expectedProducer{Name: "pulse-daily", IntervalSeconds: 86400, Source: producerSourceScheduled})
+		old := now.Add(-72 * time.Hour).UTC().Format(time.RFC3339)
+		mustSeedStatus(t, cfg, producerStatus{Name: "pulse-daily", LastSuccessAt: old, LastAttemptAt: old, SuccessTimes: []string{old}})
+
+		setDoctorClock(t, now)
+		var strictOut bytes.Buffer
+		err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader(""))
+		if err == nil {
+			t.Fatalf("doctor --strict must fail on critical producer failure")
+		}
+	})
+
+	t.Run("unreadable_ledger_fail_closed", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		statusPath := producerStatusPath(cfg)
+		if err := os.MkdirAll(filepath.Dir(statusPath), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(statusPath, []byte("INVALID_JSON{"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		h := healthOf(cfg, now)
+		if h.State != healthUnhealthy {
+			t.Fatalf("healthOf.State = %q, want %q for corrupt producer ledger", h.State, healthUnhealthy)
+		}
+
+		banner := healthBanner(cfg, now)
+		if !strings.HasPrefix(banner, "🔴 MORA HEALTH:") || !strings.Contains(banner, "producer") {
+			t.Fatalf("banner = %q, want RED fail-closed alarm for corrupt producer ledger", banner)
+		}
+	})
+
+	t.Run("cap_banner_line_byte_cap_and_utf8", func(t *testing.T) {
+		tests := []struct {
+			name          string
+			input         string
+			wantBytes     int
+			wantEllipsis  bool
+			wantSanitized bool
+		}{
+			{name: "ascii_short", input: "🟡 MORA HEALTH: short banner", wantBytes: 30},
+			{name: "ascii_boundary_239", input: strings.Repeat("a", 239), wantBytes: 239},
+			{name: "ascii_exact_240", input: strings.Repeat("a", 240), wantBytes: 240},
+			{name: "ascii_boundary_241", input: strings.Repeat("a", 241), wantBytes: 240, wantEllipsis: true},
+			{name: "cjk_exact_240", input: strings.Repeat("界", 80), wantBytes: 240},
+			{name: "cjk_over_240", input: strings.Repeat("界", 81), wantBytes: 240, wantEllipsis: true},
+			{name: "emoji_exact_240", input: strings.Repeat("🚀", 60), wantBytes: 240},
+			{name: "emoji_over_240", input: strings.Repeat("🚀", 61), wantBytes: 239, wantEllipsis: true},
+			{name: "combining_over_240", input: strings.Repeat("e\u0301", 100), wantBytes: 240, wantEllipsis: true},
+			{name: "escaped_error_input", input: strings.Repeat("driver said \"boom\" at C:\\tmp\\db\nnext\t", 10), wantBytes: 240, wantEllipsis: true, wantSanitized: true},
+			{name: "invalid_utf8_short", input: string([]byte{'a', 0xff, 'b'}), wantBytes: 5, wantSanitized: true},
+			{name: "invalid_utf8_over_cap", input: strings.Repeat(string([]byte{0xff})+"x", 100), wantBytes: 239, wantEllipsis: true, wantSanitized: true},
+		}
+
+		for _, tt := range tests {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				got := capBannerLine(tt.input)
+				if len(got) != tt.wantBytes {
+					t.Fatalf("len(capBannerLine(%s)) = %d bytes, want %d: %q", tt.name, len(got), tt.wantBytes, got)
+				}
+				if !utf8.ValidString(got) {
+					t.Fatalf("capBannerLine(%s) produced invalid UTF-8: %q", tt.name, got)
+				}
+				if strings.HasSuffix(got, "…") != tt.wantEllipsis {
+					t.Fatalf("capBannerLine(%s) ellipsis = %v, want %v: %q", tt.name, strings.HasSuffix(got, "…"), tt.wantEllipsis, got)
+				}
+				if tt.wantSanitized && strings.ContainsAny(got, "\n\r\t") {
+					t.Fatalf("capBannerLine(%s) retained a line-breaking control: %q", tt.name, got)
+				}
+			})
+		}
+	})
+
+	t.Run("producer_named_producers_vs_corrupt_ledger", func(t *testing.T) {
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+		cases := []struct {
+			name   string
+			state  string
+			status *producerStatus
+		}{
+			{name: "never", state: prodNever},
+			{name: "stale", state: prodStale, status: &producerStatus{
+				Name: "producers", LastSuccessAt: now.Add(-10 * time.Hour).Format(time.RFC3339),
+				LastAttemptAt: now.Add(-10 * time.Hour).Format(time.RFC3339),
+				SuccessTimes:  []string{now.Add(-10 * time.Hour).Format(time.RFC3339)},
+			}},
+			{name: "failed", state: prodFailed, status: &producerStatus{
+				Name: "producers", LastSuccessAt: now.Add(-10 * time.Hour).Format(time.RFC3339),
+				LastAttemptAt: now.Add(-time.Hour).Format(time.RFC3339), LastError: "job timeout",
+				SuccessTimes: []string{now.Add(-10 * time.Hour).Format(time.RFC3339)},
+			}},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run("valid_"+tc.name, func(t *testing.T) {
+				withTempHome(t)
+				run(t, "init")
+				cfg := mustConfig(t)
+				mustSeedExpected(t, cfg, expectedProducer{Name: "producers", IntervalSeconds: 3600, Source: producerSourceScheduled})
+				if tc.status != nil {
+					mustSeedStatus(t, cfg, *tc.status)
+				}
+
+				h := healthOf(cfg, now)
+				if h.State != healthDegraded {
+					t.Fatalf("h.State = %q, want degraded for valid producer named producers in %s state", h.State, tc.state)
+				}
+				if len(h.Producers) != 1 || h.Producers[0].Subject != producerHealthSubjectProducer || h.Producers[0].State != tc.state {
+					t.Fatalf("h.Producers = %+v, want one typed producer in state %s", h.Producers, tc.state)
+				}
+				banner := healthBannerFrom(h)
+				if !strings.HasPrefix(banner, "🟡 MORA HEALTH:") || !strings.Contains(banner, "producers") {
+					t.Fatalf("banner = %q, want YELLOW banner for valid producer named producers", banner)
+				}
+			})
+		}
+
+		for _, ledger := range []string{"expected", "status"} {
+			ledger := ledger
+			t.Run("corrupt_"+ledger, func(t *testing.T) {
+				withTempHome(t)
+				run(t, "init")
+				cfg := mustConfig(t)
+				if ledger == "status" {
+					mustSeedExpected(t, cfg, expectedProducer{Name: "producers", IntervalSeconds: 3600, Source: producerSourceScheduled})
+				}
+				path := producerExpectedPath(cfg)
+				if ledger == "status" {
+					path = producerStatusPath(cfg)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatalf("MkdirAll producer ledger: %v", err)
+				}
+				if err := os.WriteFile(path, []byte("NOT_VALID_JSON{"), 0o600); err != nil {
+					t.Fatalf("WriteFile corrupt %s ledger: %v", ledger, err)
+				}
+
+				h := healthOf(cfg, now)
+				if h.State != healthUnhealthy {
+					t.Fatalf("h.State = %q, want unhealthy for corrupt %s ledger", h.State, ledger)
+				}
+				if len(h.Producers) != 1 || h.Producers[0].Subject != producerHealthSubjectLedger {
+					t.Fatalf("h.Producers = %+v, want one typed ledger failure", h.Producers)
+				}
+				banner := healthBannerFrom(h)
+				if !strings.HasPrefix(banner, "🔴 MORA HEALTH:") || !strings.Contains(banner, "producer ledger unreadable") {
+					t.Fatalf("banner = %q, want RED unreadable-ledger banner", banner)
+				}
+
+				setDoctorClock(t, now)
+				out := run(t, "doctor", "--json")
+				var rep doctorReport
+				if err := json.Unmarshal([]byte(out), &rep); err != nil {
+					t.Fatalf("doctor --json: %v\n%s", err, out)
+				}
+				var found *doctorCheck
+				for i := range rep.Checks {
+					if rep.Checks[i].Name == "producer_ledger_readable" {
+						found = &rep.Checks[i]
+					}
+				}
+				if found == nil || found.OK || !found.Critical {
+					t.Fatalf("producer_ledger_readable check = %+v, want failed critical", found)
+				}
+				var strictOut bytes.Buffer
+				if err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
+					t.Fatalf("doctor --strict must fail for corrupt %s ledger", ledger)
+				}
+			})
+		}
+	})
+
+	t.Run("filesystem_distinct_source_identity", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+		dirDocs := t.TempDir()
+		dirNotes := t.TempDir()
+
+		sDocs := fsSource("docs", dirDocs, "personal")
+		sNotes := fsSource("notes", dirNotes, "work")
+
+		if got := instanceKeyForSource(sDocs); got != "filesystem" {
+			t.Fatalf("global digest/watermark key = %q, want unchanged filesystem key", got)
+		}
+		if got := healthInstanceKeyForSource(sDocs); got != "filesystem:docs" {
+			t.Fatalf("health-only key = %q, want filesystem:docs", got)
+		}
+
+		if err := saveSources(cfg, []Source{sDocs, sNotes}); err != nil {
+			t.Fatalf("saveSources: %v", err)
+		}
+
+		// Save fresh status for filesystem:docs
+		statusDocsPath := syncStatusPathFor(cfg, sDocs)
+		if statusDocsPath == "" {
+			t.Fatalf("syncStatusPathFor returned empty for sDocs")
+		}
+		if err := saveSyncStatusFn(statusDocsPath, &memory.SyncStatus{
+			Source:        "docs",
+			LastAttemptAt: now.Add(-10 * time.Minute).Format(time.RFC3339),
+			LastSuccessAt: now.Add(-5 * time.Minute).Format(time.RFC3339),
+		}); err != nil {
+			t.Fatalf("save docs sync status: %v", err)
+		}
+
+		// Save failed status for filesystem:notes
+		statusNotesPath := syncStatusPathFor(cfg, sNotes)
+		if statusNotesPath == "" {
+			t.Fatalf("syncStatusPathFor returned empty for sNotes")
+		}
+		if err := saveSyncStatusFn(statusNotesPath, &memory.SyncStatus{
+			Source:        "notes",
+			LastAttemptAt: now.Add(-10 * time.Minute).Format(time.RFC3339),
+			LastSuccessAt: now.Add(-time.Hour).Format(time.RFC3339),
+			LastError:     "permission denied",
+			ErrorCount:    1,
+		}); err != nil {
+			t.Fatalf("save notes sync status: %v", err)
+		}
+
+		sh := sourceHealthAll(cfg, now)
+		if len(sh) != 2 {
+			t.Fatalf("sourceHealthAll returned %d entries, want 2: %+v", len(sh), sh)
+		}
+		if sh[0].Key != "filesystem:docs" || sh[1].Key != "filesystem:notes" {
+			t.Fatalf("sourceHealthAll keys = [%s, %s], want [filesystem:docs, filesystem:notes]", sh[0].Key, sh[1].Key)
+		}
+
+		h := healthOf(cfg, now)
+		if h.State != healthUnhealthy {
+			t.Fatalf("h.State = %q, want unhealthy due to failed filesystem:notes source", h.State)
+		}
+
+		ch := compactHealthFrom(h)
+		if ch.PerSource["filesystem:docs"] != healthFresh || ch.PerSource["filesystem:notes"] != healthFailed {
+			t.Fatalf("PerSource map = %+v, want filesystem:docs=fresh and filesystem:notes=failed", ch.PerSource)
+		}
+	})
 }

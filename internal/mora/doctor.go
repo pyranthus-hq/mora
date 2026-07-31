@@ -66,8 +66,8 @@ type doctorReport struct {
 	// Index and Producers are the Gate 2 typed arms (HEALTH-09/-10/-11/-12). Index
 	// is a value (always present); Producers is a deterministic non-null array —
 	// `[]` when nothing is expected (a user who scheduled nothing is never nagged),
-	// and otherwise one record per expected producer, matching the producer_live:*
-	// checks exactly.
+	// one record per expected producer in the normal case, or one typed ledger
+	// failure matching producer_ledger_readable when the ledger cannot be read.
 	Index     indexHealth      `json:"index"`
 	Producers []producerHealth `json:"producers"`
 }
@@ -277,7 +277,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// longer report green while nothing has consumed them.
 	prodHealth := producerHealthAll(cfg, now)
 	for _, p := range prodHealth {
-		checks = append(checks, doctorCheck{Name: "producer_live:" + p.Name, OK: p.State == prodFresh, Critical: true})
+		name := "producer_live:" + p.Name
+		if p.Subject == producerHealthSubjectLedger {
+			name = "producer_ledger_readable"
+		}
+		checks = append(checks, doctorCheck{Name: name, OK: p.State == prodFresh, Critical: true})
 	}
 	// E3 consumer-side detector: if the user demonstrably uses the brief surface (a
 	// dated artifact exists) but the newest is older than 2× the daily cadence, the

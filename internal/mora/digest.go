@@ -688,6 +688,7 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 	sortSections(sections)
 	shelf, shelfMore := assembleUrgentShelf(urgentAll)
 	stale, _ := staleTasks(cfg, 3)
+	hSnap := healthOf(cfg, now)
 	return Digest{
 		Generated:      now.UTC().Format(time.RFC3339),
 		SinceHours:     sinceHours,
@@ -696,9 +697,9 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 		Sections:       sections,
 		Freshness:      sourceFreshness(cfg),
 		StaleTasks:     stale,
-		SourceHealth:   sourceHealthAll(cfg, now),
-		idxHealth:      indexHealthOf(cfg, now),
-		producerHealth: producerHealthAll(cfg, now),
+		SourceHealth:   hSnap.Sources,
+		idxHealth:      hSnap.Index,
+		producerHealth: hSnap.Producers,
 	}, nil
 }
 
@@ -784,6 +785,7 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 	// StaleTasks come from vault/live-tasks.md and are sync-independent — they are
 	// NOT gated by the watermark (D-03 note).
 	stale, _ := staleTasks(cfg, 3)
+	hSnap := healthOf(cfg, now)
 	return Digest{
 		Generated:      now.UTC().Format(time.RFC3339),
 		SinceHours:     0,
@@ -792,9 +794,9 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 		Sections:       sections,
 		Freshness:      sourceFreshness(cfg),
 		StaleTasks:     stale,
-		SourceHealth:   sourceHealthAll(cfg, now),
-		idxHealth:      indexHealthOf(cfg, now),
-		producerHealth: producerHealthAll(cfg, now),
+		SourceHealth:   hSnap.Sources,
+		idxHealth:      hSnap.Index,
+		producerHealth: hSnap.Producers,
 	}, plans, nil
 }
 

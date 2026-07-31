@@ -1,8 +1,10 @@
 package mora
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"time"
 )
 
@@ -15,15 +17,22 @@ import (
 // stale" from "the index is dirty" without re-deriving it from the rich arrays),
 // and the one already-capped banner line (healthBannerLineCap, health_banner.go).
 
+const (
+	compactSourceCap      = 3
+	compactSourceBytesCap = 80
+)
+
 // compactHealth is the bounded envelope: worst-of-3 aggregate state plus the
 // source/index arms as plain state strings (never the full arrays) plus the
-// one-line banner. Producers are folded into State already (aggregateHealthState)
-// and have no hot-surface arm of their own — PR 4 does not need to touch this type.
+// one-line banner. Producers are folded into State already (aggregateHealthState).
+// Includes a token-cheap, bounded per-source map projection (PerSource, SourcesOmitted).
 type compactHealth struct {
-	State   string `json:"state"`            // healthy | degraded | unhealthy
-	Sources string `json:"sources"`          // worst source state: fresh|stale|failed|never
-	Index   string `json:"index"`            // index state: fresh|dirty|degraded|failed|never
-	Banner  string `json:"banner,omitempty"` // capped one-line alarm, "" when healthy
+	State          string            `json:"state"`                     // healthy | degraded | unhealthy
+	Sources        string            `json:"sources"`                   // worst source state: fresh|stale|failed|never
+	PerSource      map[string]string `json:"per_source,omitempty"`      // fixed-cap bounded per-source state map
+	SourcesOmitted int               `json:"sources_omitted,omitempty"` // count of omitted sources when capped
+	Index          string            `json:"index"`                     // index state: fresh|dirty|degraded|failed|never
+	Banner         string            `json:"banner,omitempty"`          // capped one-line alarm, "" when healthy
 }
 
 // compactHealthFrom projects the rich Health kernel down to the bounded
@@ -35,11 +44,49 @@ func compactHealthFrom(h Health) compactHealth {
 	if w := worstSource(h.Sources); w != nil {
 		sources = w.State
 	}
+
+	var perSource map[string]string
+	var omitted int
+	if len(h.Sources) > 0 {
+		srcs := make([]sourceHealth, len(h.Sources))
+		copy(srcs, h.Sources)
+		sort.Slice(srcs, func(i, j int) bool {
+			ri, rj := healthStateRank(srcs[i].State), healthStateRank(srcs[j].State)
+			if ri != rj {
+				return ri < rj
+			}
+			if srcs[i].AgeHours != srcs[j].AgeHours {
+				return srcs[i].AgeHours > srcs[j].AgeHours
+			}
+			return srcs[i].Key < srcs[j].Key
+		})
+
+		candidate := make(map[string]string)
+		for _, s := range srcs {
+			if len(candidate) >= compactSourceCap {
+				omitted++
+				continue
+			}
+			candidate[s.Key] = s.State
+			b, err := json.Marshal(candidate)
+			if err != nil || len(b) > compactSourceBytesCap {
+				delete(candidate, s.Key)
+				omitted++
+				continue
+			}
+		}
+		if len(candidate) > 0 {
+			perSource = candidate
+		}
+	}
+
 	return compactHealth{
-		State:   h.State,
-		Sources: sources,
-		Index:   h.Index.State,
-		Banner:  healthBannerFrom(h),
+		State:          h.State,
+		Sources:        sources,
+		PerSource:      perSource,
+		SourcesOmitted: omitted,
+		Index:          h.Index.State,
+		Banner:         healthBannerFrom(h),
 	}
 }
 

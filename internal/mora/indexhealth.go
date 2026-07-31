@@ -94,6 +94,13 @@ type embedderProvenance struct { // HEALTH-12 (mismatch arm — PR 1; semantic d
 	Match      bool   `json:"match"`            // false => indexHealth.State = "degraded"
 }
 
+type producerHealthSubject string
+
+const (
+	producerHealthSubjectProducer producerHealthSubject = "producer"
+	producerHealthSubjectLedger   producerHealthSubject = "ledger"
+)
+
 type producerHealth struct { // HEALTH-11 (PR 4)
 	Name            string `json:"name"`
 	State           string `json:"state"`
@@ -103,6 +110,10 @@ type producerHealth struct { // HEALTH-11 (PR 4)
 	IntervalSeconds int    `json:"interval_seconds"`
 	AgeHours        int    `json:"age_hours"`
 	Source          string `json:"source"`
+	// Subject distinguishes a real producer named "producers" from the
+	// synthetic fail-closed record emitted when either producer ledger is
+	// unreadable. Never infer this type from Name.
+	Subject producerHealthSubject `json:"subject"`
 }
 
 // indexHealthOf computes the index arm. First match wins; `now` is injected (never
@@ -457,10 +468,12 @@ func aggregateHealthState(h Health) string {
 		}
 	}
 	for _, p := range h.Producers {
-		switch p.State {
-		case prodFailed, prodNever:
+		if p.Subject == producerHealthSubjectLedger {
 			unhealthy = true
-		case prodStale:
+			continue
+		}
+		switch p.State {
+		case prodFailed, prodNever, prodStale:
 			degraded = true
 		}
 	}
