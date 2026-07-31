@@ -100,6 +100,28 @@ func calEventToItem(calID string, ev *calendar.Event) Item {
 	if !occurred.IsZero() {
 		meta["occurred_at"] = occurred.UTC().Format(time.RFC3339)
 	}
+	// source_created_at is when the event was CREATED at Google — a different clock
+	// from occurred_at, which is when it starts. An invite accepted in March for a
+	// meeting in December has both, months apart, and browse surfaces read them as
+	// separate fields (#218); without this key a calendar row can only say when the
+	// event happens, never when it came into existence. Google returns Event.Created
+	// as RFC3339 and it is absent on some event kinds (birthdays, some imported
+	// feeds), so it is validated rather than trusted: an unparseable or empty value
+	// is omitted — an empty string would also be hash material on every such event,
+	// the same reason recurring_event_id is conditional above. Normalized to UTC
+	// RFC3339 like occurred_at so Meta bytes stay stable across runs.
+	//
+	// The gate is strictRFC3339, not time.Parse, and the difference is not cosmetic
+	// here: what lands in Meta is the NORMALIZED render, so a malformed offset does
+	// not produce a malformed stamp — it produces a well-formed stamp holding the
+	// WRONG instant. `…+00:60` parses as ±01:00 and `…+24:00` as a fixed 24h zone,
+	// so a UTC-normalized `source_created_at` would silently be an hour, or a day,
+	// away from when Google actually created the event, with nothing downstream able
+	// to tell. Provider text that is not RFC 3339 is not evidence of a creation
+	// time, so the key is omitted.
+	if created, ok := rfc3339Instant(ev.Created); ok {
+		meta["source_created_at"] = created.UTC().Format(time.RFC3339)
+	}
 	return Item{
 		Kind:       KindCalEvent,
 		ProviderID: calID + "/" + ev.Id,
@@ -117,7 +139,10 @@ func parseCalTime(t *calendar.EventDateTime) time.Time {
 		return time.Time{}
 	}
 	if t.DateTime != "" {
-		if parsed, err := time.Parse(time.RFC3339, t.DateTime); err == nil {
+		// DateTime is provider text and is normalized into occurred_at below.
+		// Validate its RFC 3339 grammar before parsing so Go's permissive parser
+		// cannot launder +00:60/+24:00 into a valid-looking wrong instant.
+		if parsed, ok := rfc3339Instant(t.DateTime); ok {
 			return parsed
 		}
 	}

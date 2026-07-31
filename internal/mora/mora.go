@@ -104,6 +104,18 @@ type Memory struct {
 	LastSynced  string   `json:"last_synced,omitempty"`
 	Truncated   bool     `json:"truncated,omitempty"`
 	DeletedAt   string   `json:"deleted_at,omitempty"`
+	// EventStart, SourceCreatedAt, and IndexedAt split the three distinct instants
+	// `created_at` conflated on a browse row (#218): when the thing happens, when
+	// the source object was created at its provider, and when Mora wrote the
+	// memory into the vault. They are DERIVED at read time by decorateBrowseRecency
+	// (`recency.go`), never persisted (renderMemory writes no such frontmatter),
+	// and populated only on the MCP `list_memory` rows — omitempty therefore keeps
+	// every other payload byte-identical, which the MCP budget gate depends on. An
+	// absent field means Mora cannot derive that instant honestly, never that it
+	// substituted another one.
+	EventStart      string `json:"event_start,omitempty"`
+	SourceCreatedAt string `json:"source_created_at,omitempty"`
+	IndexedAt       string `json:"indexed_at,omitempty"`
 	// Decision carries the validity contract for a decision memory. It is
 	// persisted in Markdown frontmatter and remains visible on local read
 	// surfaces. Legacy decisions are represented as incomplete/provisional

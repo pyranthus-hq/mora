@@ -241,7 +241,7 @@ var mcpToolRegistry = []mcpToolDef{
 		Handler: mcpSearchMemory,
 	},
 	{
-		Name: "list_memory", Description: "List the most recent memories, newest first",
+		Name: "list_memory", Description: "Browse the memories Mora wrote most recently, newest first. Ordered by `indexed_at` (when Mora recorded the memory), never by event time, so a future calendar event cannot lead the list. Each row splits the timestamps `created_at` conflated: `event_start` (when a calendar event happens), `source_created_at` (when the source object was created at its provider), and `indexed_at`; a field Mora cannot derive honestly is omitted rather than filled in",
 		Params: []mcpParam{
 			{"scope", "string", "Optional scope filter", false},
 			{"limit", "integer", "Max memories to return (default 10)", false},
@@ -479,7 +479,9 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	if err != nil {
 		return nil, err
 	}
-	budgeted, dropped := budgetSearchResults(snippetMemories(res, ""), searchMemoryResultsBudgetBytes)
+	// decorateBrowseRecency runs BEFORE snippetMemories, which drops Meta — the
+	// source of event_start/source_created_at (#218).
+	budgeted, dropped := budgetSearchResults(snippetMemories(decorateBrowseRecency(res), ""), searchMemoryResultsBudgetBytes)
 	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, time.Now())}
 	if dropped > 0 {
 		out["memories_truncated"] = dropped
