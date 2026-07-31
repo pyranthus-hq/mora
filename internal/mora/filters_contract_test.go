@@ -883,7 +883,11 @@ func TestFiltersContextMemorySourceMultiColonErrors(t *testing.T) {
 // exactly like a local one would be. The query term ("shforlanx") appears in
 // NO local memory (an empty vault, only the subscription is seeded), so the
 // local arm contributes nothing — any result MUST have come from the shared
-// arm, isolating its filter behavior.
+// arm, isolating its filter behavior. A POSITIVE CONTROL runs first
+// (unfiltered): without it, the exclusion assertion below would pass
+// trivially even if the shared arm returned nothing at all — the control
+// proves the shared arm genuinely surfaces this memory absent a filter,
+// so its absence WITH the filter is meaningful.
 func TestFiltersSharedCorpusExcludesFilteredSource(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -896,6 +900,17 @@ func TestFiltersSharedCorpusExcludesFilteredSource(t *testing.T) {
 		Provider: "gmail", CreatedAt: "2026-07-01T00:00:00Z", Text: "shforlanx shared gmail body",
 	}
 	publishGen(t, cfg, "sharefiltertest", id, []Memory{gmailShared})
+
+	// Positive control: unfiltered, the shared arm must actually surface this
+	// memory (proves the fixture and the shared-corpus plumbing genuinely
+	// work, so the exclusion below is not a vacuous "found nothing either
+	// way" pass).
+	unfiltered := filtersStructured(t, "search_memory", `{"query":"shforlanx"}`)
+	unfilteredResults, _ := unfiltered["results"].([]any)
+	unfilteredIDs := filterResultIDs(t, unfilteredResults)
+	if !containsID(unfilteredIDs, "share-gmail-1") {
+		t.Fatalf("positive control: unfiltered search_memory must surface the subscribed corpus's gmail memory, got %v", unfilteredIDs)
+	}
 
 	sc := filtersStructured(t, "search_memory", `{"query":"shforlanx","source":"imessage"}`)
 	results, _ := sc["results"].([]any)
