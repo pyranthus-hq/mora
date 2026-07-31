@@ -24,17 +24,18 @@ import (
 // (non-envelope) payload stays a strict subset and envelope-OFF output is
 // byte-for-byte unchanged (D15-3 backward-compat).
 type DigestEnvelope struct {
-	Generated       string            `json:"generated"`
-	SinceHours      int               `json:"since_hours"`
-	Urgent          []DigestItem      `json:"urgent,omitempty"`
-	UrgentMore      int               `json:"urgent_more,omitempty"`
-	Sections        []DigestSection   `json:"sections"`
-	SourceStates    []sourceState     `json:"source_states"`
-	Freshness       map[string]string `json:"freshness,omitempty"`
-	StaleTasks      []string          `json:"stale_tasks,omitempty"`
-	SourceHealth    []sourceHealth    `json:"source_health,omitempty"`
-	Health          compactHealth     `json:"health"`
-	SynthesisPrompt string            `json:"synthesis_prompt"`
+	Generated        string            `json:"generated"`
+	SinceHours       int               `json:"since_hours"`
+	Urgent           []DigestItem      `json:"urgent,omitempty"`
+	UrgentMore       int               `json:"urgent_more,omitempty"`
+	Sections         []DigestSection   `json:"sections"`
+	SourceStates     []sourceState     `json:"source_states"`
+	Freshness        map[string]string `json:"freshness,omitempty"`
+	StaleTasks       []string          `json:"stale_tasks,omitempty"`
+	SourceHealth     []sourceHealth    `json:"source_health,omitempty"`
+	Health           compactHealth     `json:"health"`
+	EmptyExplanation string            `json:"empty_explanation,omitempty"`
+	SynthesisPrompt  string            `json:"synthesis_prompt"`
 }
 
 // digestSynthesisPrompt builds the instruction the calling agent's model runs to
@@ -174,7 +175,7 @@ func maxInt(a, b int) int {
 // only calls digestSynthesisPrompt (a pure string builder) — no sampling, no
 // model, no network (D15-1 / SC#2).
 func budgetEnvelopePayload(cfg Config, d Digest, budgetChars int) DigestEnvelope {
-	payload := digestMCPPayload(cfg, d, envelopeItemsBudget(budgetChars))
+	payload := digestMCPPayloadAtBudget(cfg, d, envelopeItemsBudget(budgetChars))
 
 	// Read the budgeted sections + source_states back out — these are EXACTLY what
 	// the caller emits, so the prompt built from them is no-dangling by construction.
@@ -187,17 +188,18 @@ func budgetEnvelopePayload(cfg Config, d Digest, budgetChars int) DigestEnvelope
 	prompt := digestSynthesisPrompt(urgent, sections, states)
 
 	return DigestEnvelope{
-		Generated:       asString(payload["generated"]),
-		SinceHours:      asInt(payload["since_hours"]),
-		Urgent:          urgent,
-		UrgentMore:      asInt(payload["urgent_more"]),
-		Sections:        sections,
-		SourceStates:    states,
-		Freshness:       asStringMap(payload["freshness"]),
-		StaleTasks:      asStringSlice(payload["stale_tasks"]),
-		SourceHealth:    health,
-		Health:          compact,
-		SynthesisPrompt: prompt,
+		Generated:        asString(payload["generated"]),
+		SinceHours:       asInt(payload["since_hours"]),
+		Urgent:           urgent,
+		UrgentMore:       asInt(payload["urgent_more"]),
+		Sections:         sections,
+		SourceStates:     states,
+		Freshness:        asStringMap(payload["freshness"]),
+		StaleTasks:       asStringSlice(payload["stale_tasks"]),
+		SourceHealth:     health,
+		Health:           compact,
+		EmptyExplanation: asString(payload["empty_explanation"]),
+		SynthesisPrompt:  prompt,
 	}
 }
 

@@ -443,10 +443,11 @@ func briefDigest(cfg Config, now time.Time, perSourceCap int) (Digest, error) {
 		return Digest{}, err
 	}
 	if briefSurfacedItemCount(d) == 0 {
-		d, err = buildDigest(cfg, now, briefOpts{advance: false, sinceHours: briefFallbackWindowHours, perSourceCap: perSourceCap})
-		if err != nil {
-			return Digest{}, err
+		fallback, fallbackErr := buildDigest(cfg, now, briefOpts{advance: false, sinceHours: briefFallbackWindowHours, perSourceCap: perSourceCap})
+		if fallbackErr != nil {
+			return Digest{}, fallbackErr
 		}
+		d = preserveBriefFallbackEmptyExplanation(d, fallback)
 	}
 	return d, nil
 }

@@ -464,15 +464,27 @@ func filteredBriefDigest(cfg Config, now time.Time, opts briefOpts) (Digest, err
 		return Digest{}, err
 	}
 	if briefSurfacedItemCount(d) == 0 {
-		d, err = buildDigest(cfg, now, briefOpts{
+		fallback, fallbackErr := buildDigest(cfg, now, briefOpts{
 			advance: false, sinceHours: briefFallbackWindowHours, perSourceCap: opts.perSourceCap,
 			source: opts.source, entityIDSet: opts.entityIDSet, scope: opts.scope, sinceDays: opts.sinceDays,
 		})
-		if err != nil {
-			return Digest{}, err
+		if fallbackErr != nil {
+			return Digest{}, fallbackErr
 		}
+		d = preserveBriefFallbackEmptyExplanation(d, fallback)
 	}
 	return d, nil
+}
+
+// preserveBriefFallbackEmptyExplanation keeps the reason from the first DELTA
+// pass when the brief's internal 24-hour WINDOW fallback is also empty. The
+// fallback is not a caller-requested since_hours mode, so its window-specific
+// reason must not replace a true steady-state "no changes since last brief."
+func preserveBriefFallbackEmptyExplanation(delta, fallback Digest) Digest {
+	if briefSurfacedItemCount(fallback) == 0 && delta.EmptyExplanation != "" {
+		fallback.EmptyExplanation = delta.EmptyExplanation
+	}
+	return fallback
 }
 
 // briefSurfacedItemCount sums len(section.Items) across a digest — the
