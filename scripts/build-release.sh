@@ -33,16 +33,16 @@ for pair in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
   [ "$GOOS" = "windows" ] && bin="mora.exe"
   CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
     go build -trimpath -ldflags "$LDFLAGS" -o "$stage/$bin" ./cmd/mora
-  cp LICENSE README.md install.sh "$stage/"
-  chmod +x "$stage/install.sh"
+  cp LICENSE README.md install.sh install-app.sh uninstall-app.sh "$stage/"
+  chmod +x "$stage/install.sh" "$stage/install-app.sh" "$stage/uninstall-app.sh"
   mkdir -p "$stage/examples" "$stage/docs"
   cp examples/claude-code-mcp.json examples/codex-mcp.json "$stage/examples/"
   cp docs/guide.md "$stage/docs/"
   # binary at archive root (GoReleaser default; go-selfupdate-friendly)
   if [ "$GOOS" = "windows" ]; then
-    (cd "$stage" && zip -qr "$OUT/${name}.zip" "$bin" LICENSE README.md install.sh examples docs)
+    (cd "$stage" && zip -qr "$OUT/${name}.zip" "$bin" LICENSE README.md install.sh install-app.sh uninstall-app.sh examples docs)
   else
-    tar -C "$stage" -czf "$OUT/${name}.tar.gz" "$bin" LICENSE README.md install.sh examples docs
+    tar -C "$stage" -czf "$OUT/${name}.tar.gz" "$bin" LICENSE README.md install.sh install-app.sh uninstall-app.sh examples docs
   fi
   rm -rf "$stage"
 done
