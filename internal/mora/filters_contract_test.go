@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // filters_contract_test.go — issue #241: optional trusted-source ("source") and
@@ -374,6 +376,36 @@ func TestFiltersSearchMemoryFiltersReceiptShape(t *testing.T) {
 	}
 }
 
+// TestFiltersSearchMemoryFiltersReceiptPreservesRawWhitespace pins the
+// "echoes exactly the supplied filter(s)" promise literally: a source value
+// with surrounding whitespace (" imessage ") is trimmed for PARSING/matching
+// (matching is unaffected by incidental whitespace) but the RECEIPT echoes
+// the caller's original, untrimmed string byte-for-byte — never a silently
+// normalized/trimmed copy. (searchFilters.Source, search_filters.go).
+func TestFiltersSearchMemoryFiltersReceiptPreservesRawWhitespace(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ws-1", "imessage", "", time.Now().Format(time.RFC3339), "receiptwhitespacecheck content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"receiptwhitespacecheck","source":" imessage "}`)
+	f, ok := sc["filters"].(map[string]any)
+	if !ok {
+		t.Fatalf("want a top-level filters object: %v", payloadKeys(sc))
+	}
+	if f["source"] != " imessage " {
+		t.Fatalf(`filters.source = %q, want the ORIGINAL untrimmed value %q (the receipt must echo exactly what the caller sent)`, f["source"], " imessage ")
+	}
+	// Matching itself must still work despite the whitespace (parsing trims
+	// before validating/matching; only the RECEIPT preserves the raw form).
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if !containsID(ids, "ws-1") {
+		t.Fatalf(`source=" imessage " (surrounding whitespace) must still match despite the receipt echoing it untrimmed, got %v`, ids)
+	}
+}
+
 // TestFiltersSearchMemoryConfidenceExcludesFilteredSource pins the frozen
 // interaction with #238's confidence envelope (confidence.go, untouched): a
 // source EXCLUDED by an active source filter must not appear in
@@ -644,8 +676,11 @@ func TestFiltersVectorArmPreRankProof(t *testing.T) {
 // share an edge to the SAME person, but the decoys are dated NEWER than the
 // target: a naive "ORDER BY created_at DESC LIMIT pool, filter after"
 // per-person query fills pool=50 with the 51 newer decoys and never reaches
-// the older target; pre-rank semantics drop the per-person SQL LIMIT and
-// Go-filter (by source) before the cut, so the target is found regardless of
+// the older target; the shipping mechanism instead appends the SQL WHERE
+// predicate (provider/account/created_at_unix) to EACH per-person query
+// BEFORE its own ORDER BY/LIMIT — the per-person LIMIT is never dropped and
+// there is no Go-side fallback/post-filter — so a filtered-out decoy is
+// never fetched in the first place, and the target is found regardless of
 // how many newer non-matching rows exist for that person.
 func TestFiltersGraphArmPreRankProof(t *testing.T) {
 	withTempHome(t)
@@ -1022,6 +1057,41 @@ func TestFiltersSearchMemorySinceHoursLargeButSafeIsAccepted(t *testing.T) {
 	}
 }
 
+// TestFiltersSinceHoursMalformedTimestampExcludedAtMaxWindow pins the
+// sentinel-leak fix: a memory with a MALFORMED (non-RFC3339) CreatedAt must
+// be excluded by since_hours even at the LARGEST valid window
+// (maxSinceHours, hardcoded here as 2562047 — must match search_filters.go's
+// derived math.MaxInt64/int64(time.Hour); this file cannot reference that
+// internal const directly and still compile against the pre-implementation
+// base). This is the boundary case that defeats a naive "0/epoch" sentinel:
+// at since_hours=maxSinceHours the cutoff itself goes NEGATIVE (before
+// 1970), so a malformed row stamped created_at_unix=0 would satisfy
+// `created_at_unix >= cutoff` and leak through. The correct sentinel
+// (math.MinInt64) never does, at any window size — a recent-window test
+// alone would NOT catch this, since a small cutoff stays positive and 0
+// already excludes correctly there.
+func TestFiltersSinceHoursMalformedTimestampExcludedAtMaxWindow(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	// writeMemory/renderMemory persist CreatedAt verbatim (no validation), so
+	// parseMemory/rebuildIndex see the exact malformed string createdAtUnix
+	// must fail closed on.
+	writeFilterMemory(t, cfg, "malformed-ts", "gmail", "", "not-a-real-timestamp", "malformedtimestampcheck content")
+	writeFilterMemory(t, cfg, "well-formed-ts", "gmail", "", time.Now().Format(time.RFC3339), "malformedtimestampcheck content well formed")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"malformedtimestampcheck","since_hours":2562047,"limit":10}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if containsID(ids, "malformed-ts") {
+		t.Fatalf("a memory with a malformed CreatedAt must be excluded by since_hours even at the maximum window (0-sentinel-leak regression), got %v", ids)
+	}
+	if !containsID(ids, "well-formed-ts") {
+		t.Fatalf("a well-formed recent memory must still be included at the maximum window, got %v", ids)
+	}
+}
+
 // TestFiltersContextMemorySinceHoursOverflowErrors mirrors the overflow pin
 // for context_memory.
 func TestFiltersContextMemorySinceHoursOverflowErrors(t *testing.T) {
@@ -1110,6 +1180,402 @@ func TestFiltersContextMemoryExcludedByFilterMarker(t *testing.T) {
 	excl, ok := sc["excluded_by_filter"].([]any)
 	if !ok || len(excl) != 1 || excl[0] != "gmail" {
 		t.Fatalf("excluded_by_filter = %v (ok=%v), want exactly [\"gmail\"]", excl, ok)
+	}
+}
+
+// --- filesystem family (integrator decision: reject, fail closed) ---------
+//
+// filesystem is a real connectorCatalog entry, but ingestFilesystem never
+// sets Provider on the memories it writes, so a source filter for it could
+// never match anything even though the family itself is real — a silent-
+// wrong-answer trap indistinguishable from "genuinely no matches this call".
+// digest has the SAME structural limitation today (sourceInstanceKey
+// returns ("", false) for empty Provider; buildDigest's byInstance loop
+// skips non-groupable rows), and issue #241's governing requirement is to
+// REUSE digest's semantics — so "matchable here but not in digest" would
+// violate parity, not extend it. search_filters.go's
+// unsupportedSourceFamilies rejects source="filesystem" (family AND any
+// "filesystem:<name>" instance) explicitly, fail closed, with the reason in
+// the error text. A durable-provenance fix (ingest setting Provider/Account
+// so BOTH digest and search filters gain real filesystem support) is a
+// separate follow-up, not built here.
+
+// TestFiltersSourceFilesystemFamilyRejected pins the bare-family rejection.
+func TestFiltersSourceFilesystemFamilyRejected(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "fs-1", "gmail", "", "2026-07-01T00:00:00Z", "filesystemrejectcheck content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "search_memory", `{"query":"filesystemrejectcheck","source":"filesystem"}`)
+	if !isErr {
+		t.Fatalf(`source="filesystem" must be a tool error (fail closed, no accepted-but-impossible filter); got isError=false, text=%s`, text)
+	}
+}
+
+// TestFiltersSourceFilesystemInstanceRejected pins that a filesystem
+// instance selector (e.g. "filesystem:docs") is rejected the SAME way as
+// the bare family — never silently accepted as a well-formed-but-empty
+// filter (unlike "gmail:doesnotexist", which IS well-formed for a family
+// that genuinely can carry per-item identity).
+func TestFiltersSourceFilesystemInstanceRejected(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "fs-2", "gmail", "", "2026-07-01T00:00:00Z", "filesysteminstancecheck content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "search_memory", `{"query":"filesysteminstancecheck","source":"filesystem:docs"}`)
+	if !isErr {
+		t.Fatalf(`source="filesystem:docs" must be a tool error (fail closed); got isError=false, text=%s`, text)
+	}
+}
+
+// TestFiltersContextMemorySourceFilesystemFamilyRejected mirrors the
+// filesystem rejection pin for context_memory.
+func TestFiltersContextMemorySourceFilesystemFamilyRejected(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ctx-fs-1", "gmail", "", "2026-07-01T00:00:00Z", "ctxfilesystemrejectcheck content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "context_memory", `{"query":"ctxfilesystemrejectcheck","source":"filesystem"}`)
+	if !isErr {
+		t.Fatalf(`source="filesystem" must be a tool error (fail closed); got isError=false, text=%s`, text)
+	}
+}
+
+// --- alias normalization ("applecal:work" -> "applecalendar:work") --------
+//
+// applecalendar is the ONLY catalog family whose on-disk Provider
+// ("applecal") differs from its catalog Type ("applecalendar") —
+// providerToType aliases the two, but only for a WHOLE provider token; it
+// has no notion of a "family:instance" composite like "applecal:work". The
+// query-path (SQL predicate) correctly splits the filter into
+// SourceFamily/SourceInstance BEFORE normalizing (parseSourceFilter), so it
+// resolves "applecal:work" to SourceFamily="applecalendar"/
+// SourceInstance="work" correctly. Every OTHER matching site MUST route
+// through that same normalized form (searchFilters.normalizedSource) rather
+// than comparing the raw "applecal:work" string, or it silently disagrees
+// with the query path. These four pins exercise the alias end-to-end: local
+// results, the no-query path, the excluded_by_filter marker, and
+// health/confidence scoping.
+
+// seedAliasedAccountSource enables a SPECIFIC account instance of an
+// aliased-provider connector and seeds its sync status, so the health/
+// confidence alias pins below have a real "applecalendar:<account>"-keyed
+// health entry to exercise (digest_test.go's enableSources/seedSyncStatus
+// assume Name==Type and carry no Account, so they cannot produce this).
+func seedAliasedAccountSource(t *testing.T, cfg Config, srcType, name, account string, lastSuccess time.Time) {
+	t.Helper()
+	existing, err := loadSources(cfg)
+	if err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+	existing = append(existing, Source{
+		Name: name, Type: srcType, Account: account, Scope: "personal",
+		Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
+	})
+	if err := saveSources(cfg, existing); err != nil {
+		t.Fatalf("saveSources: %v", err)
+	}
+	path := syncStatusPathFor(cfg, Source{Name: name, Type: srcType})
+	if path == "" {
+		t.Fatalf("no sync path for type %q", srcType)
+	}
+	if err := memory.SaveStatus(path, &memory.SyncStatus{
+		Source:        srcType,
+		LastSynced:    lastSuccess.UTC().Format(time.RFC3339),
+		LastAttemptAt: lastSuccess.UTC().Format(time.RFC3339),
+		LastSuccessAt: lastSuccess.UTC().Format(time.RFC3339),
+		ItemCount:     1,
+	}); err != nil {
+		t.Fatalf("SaveStatus: %v", err)
+	}
+}
+
+// TestFiltersAliasedInstanceSearchMemoryResults pins (a): source=
+// "applecal:work" must find a memory whose real Provider/Account are
+// "applecal"/"work" (as an actual applecal connector writes them), and must
+// NOT find a sibling in a different account.
+func TestFiltersAliasedInstanceSearchMemoryResults(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "alias-work", "applecal", "work", "2026-07-01T00:00:00Z", "aliasinstancecheck content work account")
+	writeFilterMemory(t, cfg, "alias-home", "applecal", "home", "2026-07-02T00:00:00Z", "aliasinstancecheck content home account")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"aliasinstancecheck","source":"applecal:work"}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if !containsID(ids, "alias-work") {
+		t.Fatalf(`source="applecal:work" must find the applecal/work memory (alias must normalize to applecalendar:work), got %v`, ids)
+	}
+	if containsID(ids, "alias-home") {
+		t.Fatalf(`source="applecal:work" must NOT find the applecal/home memory, got %v`, ids)
+	}
+}
+
+// TestFiltersAliasedInstanceContextMemoryNoQueryPath pins (b): the SAME
+// alias resolution on context_memory's no-query "recency briefing" fallback
+// (listMemories -> searchFilters.passes -> normalizedSource), not just the
+// hybridSearch query path.
+func TestFiltersAliasedInstanceContextMemoryNoQueryPath(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ctx-alias-work", "applecal", "work", time.Now().Format(time.RFC3339), "ctxaliasnoquery content work account only here")
+	writeFilterMemory(t, cfg, "ctx-alias-home", "applecal", "home", time.Now().Add(-time.Minute).Format(time.RFC3339), "ctxaliasnoquery content home account only here")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "context_memory", `{"source":"applecal:work"}`)
+	ctxText, _ := sc["context"].(string)
+	if !containsSub(ctxText, "work account only here") {
+		t.Fatalf(`no-query context_memory source="applecal:work" must include the work-account note; got: %s`, ctxText)
+	}
+	if containsSub(ctxText, "home account only here") {
+		t.Fatalf(`no-query context_memory source="applecal:work" must exclude the home-account note; got: %s`, ctxText)
+	}
+}
+
+// TestFiltersAliasedInstanceHealthConfidenceScoping pins (c) and (d)
+// together, asserting BOTH the always-present top-level "health" object
+// (compactHealthFiltered) AND the opt-in "confidence" envelope explicitly —
+// not just excluded_by_filter — because health and confidence are two
+// SEPARATE projections of the same underlying sourceHealthAll signal and
+// either one alone could mask a regression in the other. With
+// source="applecal:work" active, the applecalendar:work health entry itself
+// must be recognized as the caller's IN-SCOPE target: its real stale state
+// surfaced in health.state/health.sources/health.per_source AND in
+// confidence.missing_sources/health_impact, and it must NOT appear in
+// excluded_by_filter — while an unrelated enabled source (gmail) IS
+// correctly excluded from health.per_source, confidence.missing_sources,
+// AND named in excluded_by_filter. Before the alias-normalization fix, the
+// raw "applecal:work" string never matched the "applecalendar:work" health
+// key at all, so applecalendar:work itself was wrongly treated as excluded
+// (dropped from health.per_source, appearing in excluded_by_filter) and
+// health.state/confidence.missing_sources/health_impact never reflected its
+// real state — exactly backwards from what a caller who filtered
+// SPECIFICALLY for it would expect.
+func TestFiltersAliasedInstanceHealthConfidenceScoping(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	seedSyncStatus(t, cfg, "gmail", time.Now().Add(-1*time.Hour))                                             // fresh
+	seedAliasedAccountSource(t, cfg, "applecalendar", "applecal-work", "work", time.Now().Add(-30*time.Hour)) // stale (>24h google threshold)
+	writeFilterMemory(t, cfg, "alias-health-1", "applecal", "work", time.Now().Format(time.RFC3339), "aliashealthcheck content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"aliashealthcheck","source":"applecal:work","confidence":true}`)
+
+	// The top-level health object (compactHealthFiltered) — the ALWAYS-PRESENT
+	// rollup, independent of the opt-in confidence envelope. It must keep
+	// applecalendar:work in scope (its real stale state surfaced, dragging
+	// the aggregate state to "degraded" — not "healthy", and not silently
+	// empty because the alias failed to resolve) and must exclude gmail
+	// entirely (not merely omitted from a "missing" list — absent from
+	// Sources/PerSource altogether, since gmail never matches the
+	// applecalendar:work filter).
+	health, ok := sc["health"].(map[string]any)
+	if !ok {
+		t.Fatalf("search_memory must always carry a health object: %v", payloadKeys(sc))
+	}
+	if health["state"] != "degraded" {
+		t.Fatalf(`health.state = %v, want "degraded" (applecalendar:work, the filter's own in-scope target, is stale via the alias)`, health["state"])
+	}
+	if health["sources"] != "stale" {
+		t.Fatalf(`health.sources = %v, want "stale" (the worst — and only — in-scope source)`, health["sources"])
+	}
+	perSource, _ := health["per_source"].(map[string]any)
+	if perSource["applecalendar:work"] != "stale" {
+		t.Fatalf(`health.per_source["applecalendar:work"] = %v, want "stale" (kept in scope by the alias, its real state surfaced)`, perSource["applecalendar:work"])
+	}
+	if _, ok := perSource["gmail"]; ok {
+		t.Fatalf(`health.per_source must not contain "gmail" (excluded by the filter, not merely a missing entry), got %v`, perSource)
+	}
+
+	conf, ok := sc["confidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("confidence:true must produce a confidence object: %v", payloadKeys(sc))
+	}
+	missing := confidenceMissingSources(conf)
+	if !strSlicesEqual(missing, []string{"applecalendar:work"}) {
+		t.Fatalf(`confidence.missing_sources = %v, want exactly ["applecalendar:work"] (the filter's own in-scope target, correctly recognized as stale via the alias)`, missing)
+	}
+	if conf["health_impact"] == "none" {
+		t.Fatalf(`confidence.health_impact = %v, want a degraded state (applecalendar:work is stale and IS in scope)`, conf["health_impact"])
+	}
+
+	excl, _ := sc["excluded_by_filter"].([]any)
+	exclStrs := make([]string, 0, len(excl))
+	for _, v := range excl {
+		if s, ok := v.(string); ok {
+			exclStrs = append(exclStrs, s)
+		}
+	}
+	if !containsID(exclStrs, "gmail") {
+		t.Fatalf(`excluded_by_filter = %v, want it to contain "gmail" (a genuinely unrelated enabled source)`, exclStrs)
+	}
+	if containsID(exclStrs, "applecalendar:work") {
+		t.Fatalf(`excluded_by_filter = %v, must NOT contain "applecalendar:work" — that is the filter's own in-scope target, not something it excluded`, exclStrs)
+	}
+}
+
+// --- MCP discovery (tools/list) --------------------------------------------
+
+// TestFiltersToolsListAdvertisesSourceAndSinceHours pins the discovery
+// surface issue #241 explicitly starts from ("the current MCP schemas"):
+// both search_memory and context_memory must publish `source` (typed
+// string) and `since_hours` (typed integer) in their tools/list
+// inputSchema, and BOTH must be OPTIONAL — absent from "required" — the same
+// as every other optional param on these tools (scope, limit, max_tokens).
+// Drives the real tools/list dispatch (handleMCP), mirroring
+// TestCoreB_McpHandleToolsList's direct-call pattern
+// (mora_coreB_mcp_test.go) — the established convention for schema-shape
+// pins in this package.
+func TestFiltersToolsListAdvertisesSourceAndSinceHours(t *testing.T) {
+	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(1), Method: "tools/list"})
+	res, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result must be a map, got %T", resp.Result)
+	}
+	tools, ok := res["tools"].([]map[string]any)
+	if !ok {
+		t.Fatalf("tools must be a slice of maps, got %T", res["tools"])
+	}
+	byName := map[string]map[string]any{}
+	for _, tl := range tools {
+		name, _ := tl["name"].(string)
+		byName[name] = tl
+	}
+	for _, toolName := range []string{"search_memory", "context_memory"} {
+		tl, ok := byName[toolName]
+		if !ok {
+			t.Fatalf("tools/list is missing %q", toolName)
+		}
+		schema, ok := tl["inputSchema"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: inputSchema must be a map, got %T", toolName, tl["inputSchema"])
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: inputSchema.properties must be a map, got %T", toolName, schema["properties"])
+		}
+		sourceProp, ok := properties["source"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: inputSchema.properties must advertise %q, got keys %v", toolName, "source", payloadKeys(properties))
+		}
+		if sourceProp["type"] != "string" {
+			t.Fatalf("%s: source param type = %v, want %q", toolName, sourceProp["type"], "string")
+		}
+		sinceProp, ok := properties["since_hours"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: inputSchema.properties must advertise %q, got keys %v", toolName, "since_hours", payloadKeys(properties))
+		}
+		if sinceProp["type"] != "integer" {
+			t.Fatalf("%s: since_hours param type = %v, want %q", toolName, sinceProp["type"], "integer")
+		}
+		required, _ := schema["required"].([]string)
+		for _, r := range required {
+			if r == "source" || r == "since_hours" {
+				t.Fatalf("%s: %q must be OPTIONAL (absent from \"required\"), got required=%v", toolName, r, required)
+			}
+		}
+	}
+}
+
+// --- incremental upsert (write_memory / indexUpsert), not just cold rebuild
+//
+// Every OTHER test in this file exercises the v4 provider/account/
+// created_at_unix columns only after mustRebuild (rebuildIndex, index.go) —
+// a cold-rebuild-only test suite cannot protect indexUpsert's SEPARATE
+// INSERT statement (index_upsert.go), the incremental path `write_memory`
+// and connector delta-syncs actually use day to day. A regression that
+// broke ONLY indexUpsert's v4-column population (e.g. reverting its
+// createdAtUnix/providerToType call while leaving rebuildIndex's intact)
+// would stay green across every cold-rebuild pin in this file.
+
+// TestFiltersIncrementalUpsertPopulatesV4Columns pins indexUpsert
+// specifically: after a cold rebuild seeds the index, THREE memories are
+// added via writeMemory+indexUpsert directly (mirroring
+// index_upsert_test.go's TestIndexUpsertAddsAndReplacesSingleRow pattern) —
+// no rebuild in between — the target plus two adversarial decoys, ALL
+// through the same incremental path:
+//
+//   - the target: Provider="imessage", CreatedAt=now (must be found).
+//   - decoy-wrong-provider: Provider="gmail", CreatedAt=now (wrong source,
+//     must be excluded).
+//   - decoy-old: Provider="imessage", CreatedAt from 2020 (right source,
+//     outside the since_hours window, must be excluded).
+//
+// All three share the same FTS query term. This is a NEGATIVE CONTROL: a
+// version of this test with ONLY the target (no decoys) passes VACUOUSLY
+// against the pre-#241 base, because a filter that is silently IGNORED
+// still returns the one-and-only FTS match regardless of its (ignored) args
+// — proving nothing about indexUpsert's column population. With the decoys
+// present, an ignored filter LEAKS them into the results, so the pin
+// correctly fails on the pre-#241 base for the intended reason, and only
+// passes when indexUpsert has genuinely populated provider/created_at_unix
+// AND the arm's SQL predicate genuinely excludes on them.
+//
+// The query conjoins source AND since_hours in ONE request — proving BOTH
+// columns end to end together, since indexUpsert populating one but not the
+// other could still pass two separate single-filter calls while failing
+// here (the SQL predicate ANDs both conditions in one WHERE clause,
+// searchFilters.sqlPredicate).
+func TestFiltersIncrementalUpsertPopulatesV4Columns(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+
+	writeFilterMemory(t, cfg, "cold-seed", "gmail", "", "2026-01-01T00:00:00Z", "unrelated cold seed content")
+	mustRebuild(t, cfg)
+
+	target := Memory{
+		ID: "incremental-target", Scope: "global", Type: "email", Title: "incremental-target",
+		Provider: "imessage", CreatedAt: time.Now().Format(time.RFC3339),
+		Text: "incrementalupsertcheck content target",
+	}
+	decoyWrongProvider := Memory{
+		ID: "incremental-decoy-provider", Scope: "global", Type: "email", Title: "incremental-decoy-provider",
+		Provider: "gmail", CreatedAt: time.Now().Format(time.RFC3339),
+		Text: "incrementalupsertcheck content decoy wrong provider",
+	}
+	decoyOld := Memory{
+		ID: "incremental-decoy-old", Scope: "global", Type: "email", Title: "incremental-decoy-old",
+		Provider: "imessage", CreatedAt: "2020-01-01T00:00:00Z",
+		Text: "incrementalupsertcheck content decoy old",
+	}
+	for _, m := range []Memory{target, decoyWrongProvider, decoyOld} {
+		if err := writeMemory(cfg, m); err != nil {
+			t.Fatalf("writeMemory(%s): %v", m.ID, err)
+		}
+		if err := indexUpsert(ctx, cfg, m); err != nil {
+			t.Fatalf("indexUpsert(%s): %v", m.ID, err)
+		}
+	}
+
+	sc := filtersStructured(t, "search_memory", `{"query":"incrementalupsertcheck","source":"imessage","since_hours":1}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if !containsID(ids, "incremental-target") {
+		t.Fatalf("source=imessage AND since_hours=1 CONJOINED must find the incrementally-upserted target row (indexUpsert must populate BOTH provider and created_at_unix correctly), got %v", ids)
+	}
+	if containsID(ids, "incremental-decoy-provider") {
+		t.Fatalf("must exclude the incrementally-upserted wrong-provider (gmail) decoy, got %v", ids)
+	}
+	if containsID(ids, "incremental-decoy-old") {
+		t.Fatalf("must exclude the incrementally-upserted old (outside since_hours=1) decoy, got %v", ids)
+	}
+
+	f, ok := sc["filters"].(map[string]any)
+	if !ok || f["source"] != "imessage" || fmt.Sprint(f["since_hours"]) != "1" {
+		t.Fatalf(`filters receipt = %v, want exactly {source:imessage, since_hours:1}`, f)
 	}
 }
 
