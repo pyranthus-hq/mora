@@ -15,18 +15,23 @@ import (
 // memory whose own segments failed closed) is an explicit, fail-closed
 // error — never a silent fallback to the full body.
 
-// mcpReadMemoryEvidenceRef handles read_memory(id, evidence_ref=...). It is
-// dispatched from mcpReadMemory BEFORE the ordinary (evidence_ref-free) path,
-// so a plain id-only or id+match/max_tokens/occurrence call is completely
-// untouched by this file (byte-identity for non-participating callers).
-func mcpReadMemoryEvidenceRef(ctx context.Context, cfg Config, m Memory, evidenceRef string, args map[string]any) (any, error) {
+// lookupReadMemoryEvidenceRef resolves read_memory(id, evidence_ref=...) during
+// the retrieval phase. Keeping the DB lookup separate from response shaping
+// lets #245 report retrieval and assembly latency truthfully.
+func lookupReadMemoryEvidenceRef(ctx context.Context, cfg Config, m Memory, evidenceRef string) (gmailSegmentRow, error) {
 	seg, ok, err := gmailSegmentByRef(ctx, cfg, m.ID, evidenceRef)
 	if err != nil {
-		return nil, err
+		return gmailSegmentRow{}, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("evidence_ref %q is not a derived segment of memory %q (unknown ref, a different memory's ref, or this memory's segments failed closed at index time)", evidenceRef, m.ID)
+		return gmailSegmentRow{}, fmt.Errorf("evidence_ref %q is not a derived segment of memory %q (unknown ref, a different memory's ref, or this memory's segments failed closed at index time)", evidenceRef, m.ID)
 	}
+	return seg, nil
+}
+
+// shapeReadMemoryEvidenceRef narrows and shapes an already retrieved segment
+// during the assembly phase. Plain id-only and id+bounded reads never call it.
+func shapeReadMemoryEvidenceRef(cfg Config, m Memory, seg gmailSegmentRow, args map[string]any) map[string]any {
 	// Narrow the target FIRST (DQ6 precedence): #242's own bounded-read
 	// machinery then runs over ONLY this segment's text, so match/
 	// max_tokens/occurrence — if supplied — apply strictly within it.
@@ -40,5 +45,5 @@ func mcpReadMemoryEvidenceRef(ctx context.Context, cfg Config, m Memory, evidenc
 	receipt.EvidenceRef = seg.EvidenceRef
 	receipt.Sender = seg.Sender
 	receipt.At = seg.At
-	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}, nil
+	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}
 }

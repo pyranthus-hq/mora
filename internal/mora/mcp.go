@@ -462,21 +462,26 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
 		return nil, err
 	}
-	retrieval := time.Since(retrievalStarted)
-	assemblyStarted := time.Now()
-	var result map[string]any
 	// Issue #243 — evidence_ref narrows the read target to ONE derived Gmail
-	// segment (DQ6, section 2). Dispatch it before the ordinary path so plain
-	// and bounded reads stay unchanged, while #245 still measures the final
-	// evidence-ref envelope at the shared dispatcher boundary.
-	if evidenceRef := strArg(args, "evidence_ref", ""); evidenceRef != "" {
-		value, refErr := mcpReadMemoryEvidenceRef(ctx, cfg, m, evidenceRef, args)
+	// segment (DQ6, section 2). The segment DB lookup belongs to #245's
+	// retrieval phase alongside findMemory; only bounded-read/receipt shaping
+	// belongs to assembly.
+	evidenceRef := strArg(args, "evidence_ref", "")
+	var evidenceSegment gmailSegmentRow
+	if evidenceRef != "" {
+		var refErr error
+		evidenceSegment, refErr = lookupReadMemoryEvidenceRef(ctx, cfg, m, evidenceRef)
 		if refErr != nil {
-			recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
+			recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
 			recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
 			return nil, refErr
 		}
-		result = value.(map[string]any)
+	}
+	retrieval := time.Since(retrievalStarted)
+	assemblyStarted := time.Now()
+	var result map[string]any
+	if evidenceRef != "" {
+		result = shapeReadMemoryEvidenceRef(cfg, m, evidenceSegment, args)
 	} else {
 		result = mcpReadMemoryResult(cfg, m, args)
 	}
