@@ -101,6 +101,8 @@ Every registered tool now carries a **compact health envelope** — `compactHeal
 
 **Ownership note:** Gate 2 PR 2 owns this envelope shape. PR 5 (producer health) is expected to add `shares_unhealthy` as an **additional key on the same envelope** — it must not introduce a second, competing health shape.
 
+**Opt-in confidence envelope (issue #238):** `search_memory` and `think` each accept a per-call boolean `confidence` arg (default `false`, mirroring the `envelope` gate above) that adds one sibling top-level `confidence` object — `{strength, max_score, mean_score, freshest_source_at, missing_sources, health_impact}` (`confidence.go`) — derived only from data already computed at ranking time (`Memory.Score`/`CreatedAt`, `ThinkGaps`, `sourceHealthAll`), never a new scoring pass. `missing_sources`/`health_impact` are call-scoped over every enabled connector instance's live health, not just this call's contributors, so a fully-dark source surfaces even when it matched nothing. Off (default/omitted/`false`) is byte-identical to the pre-#238 payload.
+
 ### What each handler actually does (and where the work lives)
 
 - **`write_memory`** (`mcp.go`): builds a `Memory` with a fresh `newID()`, requires non-empty `title`+`text`, calls `writeMemory`, then `indexUpsert` (an incremental index update — memory + FTS row only, reprocessing just this one memory instead of the whole vault. The entity graph and vectors reconcile on the next full rebuild). Returns the written `Memory` (object → gets a `structuredContent` mirror). A failed index update is a **degraded success** (`index_stale:true` + warning), never `isError` — retrying a stuck write would mint duplicate ids.

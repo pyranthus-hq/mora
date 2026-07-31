@@ -237,6 +237,7 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "Search query (words are OR-matched against the index)", true},
 			{"scope", "string", `Optional scope filter, e.g. "project:acme"`, false},
 			{"limit", "integer", "Max results to return (default 8)", false},
+			{"confidence", "boolean", "Opt-in: also return a compact confidence envelope (strength, score rollup, freshest source, missing/unhealthy sources) derived from this call's own results (default false)", false},
 		},
 		Handler: mcpSearchMemory,
 	},
@@ -268,6 +269,7 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "The question to synthesize an answer for", true},
 			{"scope", "string", "Optional scope filter", false},
 			{"limit", "integer", "Max evidence memories to gather (default 8)", false},
+			{"confidence", "boolean", "Opt-in: also return a compact confidence envelope (strength, score rollup, freshest source, missing/unhealthy sources) derived from this call's own evidence (default false)", false},
 		},
 		Handler: mcpThink,
 	},
@@ -469,6 +471,14 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if su := sharesUnhealthy(cfg, time.Now()); len(su) > 0 {
 		out["shares_unhealthy"] = su
 	}
+	// Issue #238: opt-in confidence envelope, per-call boolean arg mirroring
+	// digest/brief's `envelope` gate. OFF (default/omitted/false) leaves the
+	// payload byte-identical to today's shape (confidence_contract_test.go's
+	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
+	// — the actual RETURNED set — per the frozen contract.
+	if boolArg(args, "confidence", false) {
+		out["confidence"] = searchConfidence(budgeted, cfg, time.Now())
+	}
 	return out, nil
 }
 
@@ -520,7 +530,14 @@ func mcpThink(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	query := strArg(args, "query", "")
 	res, err := buildThink(ctx, cfg, query, strArg(args, "scope", ""), intArg(args, "limit", 8), time.Now())
 	logUsage(cfg, usageEvent{Tool: "think", Query: query, Scope: strArg(args, "scope", ""), Results: len(res.Evidence), Millis: time.Since(start).Milliseconds()})
-	return map[string]any{"think": res, "health": compactHealthOf(cfg, time.Now())}, err
+	out := map[string]any{"think": res, "health": compactHealthOf(cfg, time.Now())}
+	// Issue #238: opt-in confidence envelope (see mcpSearchMemory's identical
+	// gate). Skipped on error so a failed buildThink never fabricates a
+	// confidence reading over an incomplete/zero-value result.
+	if err == nil && boolArg(args, "confidence", false) {
+		out["confidence"] = thinkConfidence(res, cfg, time.Now())
+	}
+	return out, err
 }
 
 func mcpListEntities(ctx context.Context, cfg Config, args map[string]any) (any, error) {
