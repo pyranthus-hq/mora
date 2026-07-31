@@ -196,6 +196,38 @@ jittered, capped acquire backoff (same #74 rationale as §1: fixed backoff makes
 rivals retry in lockstep on Windows). It is a single-host, single-user lease —
 which is exactly the concurrency model. Pinned by `sources_lock_test.go`.
 
+### Wait budgets: every lock loop is bounded by wall-clock time
+
+Four loops wait on a contended `.lock`: `acquireSourcesLock`
+(`sources_lock.go`), `acquireGovernanceLock` (`governance.go`),
+`acquireProducerLock` (`producer_lock.go`), and the release-side
+`removeLeaseFileGuarded` (`loop.go`). Each is bounded by a **stated wall-clock
+deadline**, checked through the shared `sleepWithinDeadline` helper, which
+refuses a pause that would run past the deadline (so a loop never overshoots its
+budget by a backoff draw, and a just-reaped lease's immediate retry is still
+deadline-checked). The deadline is always real `time.Now()` — never a caller's
+injected logical `now`, which governs only TTL and stamp decisions.
+
+Each path owns its own constant, and the values differ by envelope, not by
+convenience:
+
+| Loop | Constant | Budget | Why |
+|---|---|---|---|
+| `acquireSourcesLock` | `sourcesAcquireTimeout` | 2 s | A registry RMW must WAIT out a holder that releases in microseconds; the margin is for Windows sharing-violation retries. |
+| `acquireGovernanceLock` | `governanceAcquireTimeout` | 2 s | Same shape, but contended by every item of an hourly sync (the lease spans check→write in `writeMappedMemory`), so it must be tunable on its own. |
+| `acquireProducerLock` | `producerAcquireTimeout` | 2 s | Same shape; a best-effort ledger stamp on the tail of a real job. |
+| `removeLeaseFileGuarded` | `leaseRemovalTimeout` | 500 ms | **Deliberately shorter.** Removal runs at shutdown and *inside* the lease guard on the reap path, where every waiting acquirer is blocked behind it; the window it covers is one rival's in-flight `os.Link`/`os.ReadFile`. |
+
+Two rules this encodes. **Removal is not acquisition** — a release path must
+never inherit an acquire-sized wait. **No borrowed budgets** — the share
+subsystem's `shareLeaseAcquireTimeout` (10 s) covers a clone plus index build and
+must not be reused here; a foreign constant silently redefines an unrelated
+path's envelope. Exhausting an acquire budget returns the path's fail-fast
+"…is locked by another mora process (<path>); retry in a moment" error, which
+callers are expected to retry (#115), never a dropped write. Pinned by
+`lock_deadline_test.go` (+ `lock_deadline_notwindows_test.go`: off Windows the
+removal retry collapses to exactly one `os.Remove`, unchanged).
+
 Every lease transition is additionally serialized by a persistent OS-locked
 guard keyed by the lease's physical filesystem identity. Mora resolves the
 deepest existing ancestor, normalizes the missing tail, and folds identity case
@@ -312,7 +344,10 @@ beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
 - Unit pins: `createexclusive_test.go` (G1/G2), `index_upsert_test.go` (G3/G4
   write path), `index_busy_test.go` (G3 read path), `mora_rebuild_atomic_test.go`
   (G4 serialized rebuild), `sources_lock_test.go` (§5 lease) +
-  `TestSourcesRMWNoLostUpdateAcrossProcesses` (cross-process sources.json RMW).
+  `TestSourcesRMWNoLostUpdateAcrossProcesses` (cross-process sources.json RMW),
+  `lock_deadline_test.go` (§5 wait budgets: per-path constants, contention with
+  one winner, give-up at the deadline with the unchanged error strings, bounded
+  removal retry).
 
 See also: [data model & storage](./01-data-model-and-storage.md) (memory file
 anatomy, `atomicWrite`, the vault-identity guard), [MCP server](./06-mcp-server.md)

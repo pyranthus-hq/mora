@@ -33,13 +33,20 @@ const (
 	// atomicWrite) and it is NEVER held across ingest/rebuild, so 30s is far
 	// longer than any legitimate hold — it only ever reaps an abandoned lease.
 	sourcesLockTTL = 30 * time.Second
-	// maxSourcesAcquireAttempts bounds the contention spin. Unlike the loop lease
-	// (which no-ops when a live run holds the lock), a sources RMW must WAIT for
-	// the current holder — which releases within microseconds — so the budget is
-	// generous. Each retry backs off with sourcesAcquireBackoff (jittered, capped),
-	// so ~100 attempts is well under a second of live-holder contention yet leaves
-	// ample margin for Windows sharing-violation retries.
-	maxSourcesAcquireAttempts = 100
+	// sourcesAcquireTimeout is the WALL-CLOCK budget for the contention spin.
+	// Unlike the loop lease (which no-ops when a live run holds the lock), a
+	// sources RMW must WAIT for the current holder — which releases within
+	// microseconds — so the budget is generous. It states in seconds what a
+	// 100-attempt bound only implied: because each retry backs off with the
+	// JITTERED sourcesAcquireBackoff, that bound's real wait was a random draw
+	// (~1.5 s typical, ~3 s worst case), not a stated budget. 2 s keeps the same
+	// envelope — far longer than any live-holder hold, with ample margin for
+	// Windows sharing-violation retries — while making the wait a promise the
+	// caller can rely on. Deliberately NOT the share subsystem's 10 s lease
+	// timeout: that lease covers a clone + index build, this one covers a
+	// microsecond file rewrite. Each lock path owns its own constant so one
+	// path's envelope can never silently redefine another's.
+	sourcesAcquireTimeout = 2 * time.Second
 )
 
 // sourcesAcquireBackoff returns the pause before acquire retry `attempt`. It is
@@ -52,6 +59,41 @@ func sourcesAcquireBackoff(attempt int) time.Duration {
 	return time.Duration(1+mrand.IntN(capMs)) * time.Millisecond
 }
 
+// sleepWithinDeadline pauses for wait and reports whether the caller may retry.
+// It refuses — and does NOT sleep — when that pause would run past deadline, so a
+// loop built on it never overshoots its stated budget by a backoff draw. This is
+// what makes the lock loops bounded by WALL-CLOCK time instead of by an attempt
+// count whose duration depends on how the jittered backoff happened to draw.
+// A zero wait is the "retry immediately" case (an abandoned lease was just
+// reaped) and is still deadline-checked, so even a rival that keeps planting
+// reapable leases cannot spin a loop past its budget.
+//
+// The deadline is always real wall-clock (time.Now()-based), never a caller's
+// injected logical `now`: the injected clock governs TTL/stamp decisions, while
+// this budget bounds how long a physically-running process blocks. Feeding a
+// logical clock in would make a test's skewed `now` either hang or fail
+// instantly (mutateProducers draws the same line for the TTL).
+func sleepWithinDeadline(wait time.Duration, deadline time.Time) bool {
+	return sleepWithinDeadlineWith(wait, deadline, time.Now, time.Sleep)
+}
+
+// sleepWithinDeadlineWith keeps the deadline decision testable without a
+// mutable package-level clock seam. The second check matters under scheduler
+// delay: a sleep that was safe when planned can still wake after the deadline,
+// and must not authorize one more lock operation.
+func sleepWithinDeadlineWith(
+	wait time.Duration,
+	deadline time.Time,
+	now func() time.Time,
+	sleep func(time.Duration),
+) bool {
+	if !now().Add(wait).Before(deadline) {
+		return false
+	}
+	sleep(wait)
+	return now().Before(deadline)
+}
+
 // sourcesLockPath is the lease file co-located with sources.json. Its persistent
 // OS guard is selected deterministically by leaseGuardPath under ConfigDir.
 func sourcesLockPath(cfg Config) string {
@@ -60,7 +102,8 @@ func sourcesLockPath(cfg Config) string {
 
 // acquireSourcesLock takes the sources.json lease for the duration of one
 // read-modify-write. It mirrors acquireLoopLock's publish/reap loop but with the
-// sources TTL and a longer, waiting spin, and it returns a real error (never a
+// sources TTL and a longer, waiting spin bounded by the sourcesAcquireTimeout
+// wall-clock deadline, and it returns a real error (never a
 // silent no-op) if the lease cannot be taken — a sources mutation that cannot
 // serialize must fail loudly, not drop the write. The returned release removes
 // the lease and is idempotent, so a deferred release is safe.
@@ -72,8 +115,10 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 	// run_id is unused for the sources lease (acquire and release live in the
 	// same scope, unlike loop's begin/done split); acquired_at drives the TTL.
 	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
-	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(sourcesAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
+		wait := sourcesAcquireBackoff(attempt)
 		switch {
 		case perr == nil && published:
 			return loopLockReleaser(lockPath, body), nil
@@ -87,7 +132,7 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 				return nil, rerr // a real, non-contention read/rename error
 			}
 			if rerr == nil && reaped {
-				continue // cleared an abandoned lease; retry publish immediately
+				wait = 0 // cleared an abandoned lease; retry publish immediately
 			}
 			// else: a live holder, OR Windows sharing contention on the read/reap —
 			// fall through to the backoff and retry within budget.
@@ -95,11 +140,11 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 		// A live holder, or transient Windows sharing contention on publish/reap
 		// (ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED — a rival writer racing an
 		// os.Remove/os.Link on the same `.lock`). Both are "contended, retry", NOT
-		// fatal: back off and try again within the budget. On non-Windows,
+		// fatal: back off and try again until the budget is spent. On non-Windows,
 		// sharingViolationRetryable is always false, so only the live-holder path
 		// reaches here — behavior is unchanged off Windows.
-		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !sleepWithinDeadline(wait, deadline) {
+			break
 		}
 	}
 	return nil, fmt.Errorf("sources.json is locked by another mora process (%s); retry in a moment", lockPath)

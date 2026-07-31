@@ -466,6 +466,25 @@ func loopLockReleaser(lockPath string, observed []byte) func() {
 	}
 }
 
+// leaseRemovalTimeout is the WALL-CLOCK budget for removeLeaseFileGuarded's
+// retry, deliberately much SHORTER than any acquire budget (sourcesAcquireTimeout
+// and its siblings): removal and acquisition have different latency envelopes.
+// Removal runs at shutdown (`loop done`, releaseLockFileFor) and INSIDE the lease
+// guard on the reap path (breakLock), where every waiting acquirer is blocked
+// behind it, so spending an acquire-sized wait here would tax the very acquirers
+// the retry exists to unblock. The contended window it covers is one rival's
+// in-flight os.Link/os.ReadFile — microseconds — so half a second is already
+// ~20 jittered retries of headroom.
+const leaseRemovalTimeout = 500 * time.Millisecond
+
+// The seams make the Windows sharing-violation retry deterministic on every test
+// host (mirroring share_gc.go's remove seams). Production always uses the
+// operating-system implementations.
+var (
+	leaseRemoveFn           = os.Remove
+	leaseRemovalRetryableFn = sharingViolationRetryable
+)
+
 // removeLeaseFileGuarded frees a held lease while its cross-process guard is
 // held, and the release MUST actually succeed. On Windows os.Remove can
 // transiently fail with
@@ -480,25 +499,27 @@ func loopLockReleaser(lockPath string, observed []byte) func() {
 // silently resurrects the forgotten memory. The acquire loop already tolerates
 // this same sharing violation on publish/reap (it just backs off and retries);
 // release was the one path that ignored it. So retry the remove on that transient
-// error with the same jittered, budget-bounded backoff the acquire loop uses
-// (release therefore can never hang): a lock already gone (IsNotExist) is success,
-// and a genuine non-contention error is terminal. Off Windows
-// sharingViolationRetryable is always false, so this collapses to exactly one
+// error with the same jittered backoff the acquire loops use, bounded by its own
+// leaseRemovalTimeout wall-clock budget (release therefore can never hang, and
+// giving up returns the last transient error): a lock already gone (IsNotExist)
+// is success, and a genuine non-contention error is terminal. Off Windows
+// leaseRemovalRetryableFn is always false, so this collapses to exactly one
 // os.Remove — behavior there is unchanged. It surfaces a permanent error to the
 // lifecycle caller instead of silently leaking a terminal run's lease.
 func removeLeaseFileGuarded(lockPath string) error {
 	var lastErr error
-	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
-		err := os.Remove(lockPath)
+	deadline := time.Now().Add(leaseRemovalTimeout)
+	for attempt := 0; ; attempt++ {
+		err := leaseRemoveFn(lockPath)
 		if err == nil || errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		if !sharingViolationRetryable(err) {
+		if !leaseRemovalRetryableFn(err) {
 			return err
 		}
 		lastErr = err
-		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !sleepWithinDeadline(sourcesAcquireBackoff(attempt), deadline) {
+			break
 		}
 	}
 	return lastErr

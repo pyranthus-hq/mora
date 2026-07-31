@@ -738,8 +738,9 @@ func TestGovernance_MappedWriteHoldsGovernanceLease(t *testing.T) {
 }
 
 // transientContentionTimeout bounds retryTransientContention. It is generous
-// relative to acquireGovernanceLock's own ~1.5s bounded spin (100 attempts x
-// jittered backoff): under heavy Windows CI contention that internal spin can
+// relative to acquireGovernanceLock's own bounded spin (the
+// governanceAcquireTimeout wall-clock budget, jittered backoff within it): under
+// heavy Windows CI contention that internal spin can
 // still be exhausted, at which point the lease returns its fail-fast "retry in a
 // moment" error by design. A real caller — and this test, standing in for one —
 // must retry that transient error rather than treat it as fatal. Only liveness
