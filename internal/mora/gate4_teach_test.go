@@ -614,7 +614,7 @@ func TestGate4DecisionValidityRoundTripsThroughCurrentReadAndSearch(t *testing.T
 		!strings.Contains(contextText, "Flip conditions:") {
 		t.Fatalf("context did not surface decision validity:\n%s", contextText)
 	}
-	_, byInstance, _, err := digestInputs(cfg, time.Now(), briefOpts{sinceHours: 24})
+	_, byInstance, _, _, err := digestInputs(cfg, time.Now(), briefOpts{sinceHours: 24})
 	if err != nil {
 		t.Fatal(err)
 	}

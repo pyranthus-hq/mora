@@ -54,31 +54,39 @@ func filterByInstance(byInstance map[string][]Memory, opts briefOpts, now time.T
 	if !opts.filtered() {
 		return byInstance
 	}
-	var cutoff time.Time
-	if opts.sinceDays > 0 {
-		cutoff = now.Add(-time.Duration(opts.sinceDays) * 24 * time.Hour)
-	}
 	out := make(map[string][]Memory, len(byInstance))
 	for key, mems := range byInstance {
 		var kept []Memory
 		for _, m := range mems {
-			if len(opts.entityIDSet) > 0 && !memoryMentionsEntity(m, opts.entityIDSet) {
-				continue
+			if memoryMatchesPreviewFilters(m, opts, now) {
+				kept = append(kept, m)
 			}
-			if opts.scope != "" && m.Scope != opts.scope {
-				continue
-			}
-			if opts.sinceDays > 0 {
-				ts, err := time.Parse(time.RFC3339, m.CreatedAt)
-				if err != nil || ts.Before(cutoff) {
-					continue
-				}
-			}
-			kept = append(kept, m)
 		}
 		out[key] = kept
 	}
 	return out
+}
+
+// memoryMatchesPreviewFilters is the per-row predicate shared by digest input
+// filtering and the empty-result evidence counter. Source remains instance-level
+// and is deliberately handled by digestSourceMatches at the caller. Keeping one
+// predicate prevents the evidence from claiming a match for a row the actual
+// filter later drops (or vice versa).
+func memoryMatchesPreviewFilters(m Memory, opts briefOpts, now time.Time) bool {
+	if len(opts.entityIDSet) > 0 && !memoryMentionsEntity(m, opts.entityIDSet) {
+		return false
+	}
+	if opts.scope != "" && m.Scope != opts.scope {
+		return false
+	}
+	if opts.sinceDays > 0 {
+		cutoff := now.Add(-time.Duration(opts.sinceDays) * 24 * time.Hour)
+		ts, err := time.Parse(time.RFC3339, m.CreatedAt)
+		if err != nil || ts.Before(cutoff) {
+			return false
+		}
+	}
+	return true
 }
 
 // filters.go — entity/scope/since-days filtering for the brief/digest surfaces

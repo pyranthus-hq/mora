@@ -102,11 +102,26 @@ type DigestObligation struct {
 // These are the typed Delta seam (M-5) read by renderDigest now and the MCP
 // projection in Plan 05 — one source of truth, not a render string plus a map.
 type DigestSection struct {
-	Source    string       `json:"source"`
-	State     string       `json:"state"`
-	Items     []DigestItem `json:"items"`
-	MoreCount int          `json:"more_count,omitempty"`
-	Truncated bool         `json:"truncated,omitempty"`
+	Source         string       `json:"source"`
+	State          string       `json:"state"`
+	Items          []DigestItem `json:"items"`
+	MoreCount      int          `json:"more_count,omitempty"`
+	Truncated      bool         `json:"truncated,omitempty"`
+	ElidedByBudget int          `json:"elided_by_budget,omitempty"`
+}
+
+// digestEmptyEvidence records bounded, deterministic facts from the exact vault
+// input pass used to build a digest. VaultRows counts parsed, visible,
+// non-tombstoned rows. FilteredRows counts those rows that match every active
+// entity/scope/since-days filter plus the source-instance/family filter, before a
+// window or delta classifier can suppress them.
+//
+// This is current-build evidence only: it is unexported, omitted from JSON, not
+// persisted, and never participates in ContentHash or the brief watermark. It
+// therefore does not change the hash schema governed by briefHashSchemaVersion.
+type digestEmptyEvidence struct {
+	vaultRows    int
+	filteredRows int
 }
 
 // Digest is the assembled brief. Generated is injected by the caller (time.Now)
@@ -119,11 +134,12 @@ type Digest struct {
 	// known humans, lifted ABOVE the sections and budget-protected so they always
 	// render. UrgentMore counts any that overflow the shelf cap (they re-surface next
 	// run rather than being marked seen).
-	Urgent     []DigestItem      `json:"urgent,omitempty"`
-	UrgentMore int               `json:"urgent_more,omitempty"`
-	Sections   []DigestSection   `json:"sections"`
-	Freshness  map[string]string `json:"freshness,omitempty"`
-	StaleTasks []string          `json:"stale_tasks,omitempty"`
+	Urgent           []DigestItem      `json:"urgent,omitempty"`
+	UrgentMore       int               `json:"urgent_more,omitempty"`
+	Sections         []DigestSection   `json:"sections"`
+	Freshness        map[string]string `json:"freshness,omitempty"`
+	StaleTasks       []string          `json:"stale_tasks,omitempty"`
+	EmptyExplanation string            `json:"empty_explanation,omitempty"`
 	// SourceHealth is the per-connector freshness snapshot (HEALTH-01/-02),
 	// computed ONCE at build time (sourceHealthAll) and carried on the struct so
 	// every render/projection path (Markdown banner, MCP digest/brief payload)
@@ -140,6 +156,9 @@ type Digest struct {
 	// flagship brief surface too — a healthy source and clean index must not let the
 	// brief render green while nothing has produced it. UNEXPORTED, like idxHealth.
 	producerHealth []producerHealth
+	// emptyEvidence preserves pre-window/pre-delta filter-match facts that cannot
+	// be reconstructed from an empty set of surfaced items.
+	emptyEvidence digestEmptyEvidence
 }
 
 // briefOpts is the buildDigest options seam. advance gates the watermark commit
@@ -203,7 +222,7 @@ func digestSourceLabel(src string) string { _, l := connectorDisplay(src); retur
 //
 // now is injected for deterministic windowing.
 func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
-	perSourceCap, byInstance, memSal, err := digestInputs(cfg, now, opts)
+	perSourceCap, byInstance, memSal, emptyEvidence, err := digestInputs(cfg, now, opts)
 	if err != nil {
 		return Digest{}, err
 	}
@@ -229,6 +248,8 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 		return Digest{}, err
 	}
 	attachDigestCommitments(&d, commitmentsByMemory)
+	d.emptyEvidence = emptyEvidence
+	d.EmptyExplanation = deriveEmptyExplanation(d, opts, false)
 	return d, nil
 }
 
@@ -431,22 +452,24 @@ func attachDigestCommitments(d *Digest, byMemory map[string][]Commitment) {
 // digestInputs factors the shared preprocessing behind both the window and delta
 // paths: parse every non-tombstoned memory, group by INSTANCE key (M-1, never the
 // per-item ProviderID), compute the whole-vault person-salience map ONCE (SC#3), then
-// apply the preview-only entity/scope/since-days filters. It opens no index DB.
-func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, err error) {
+// apply the preview-only entity/scope/since-days filters. It also returns the
+// pre-classification evidence needed to distinguish a real filter miss from a
+// matching row suppressed by a window or watermark. It opens no index DB.
+func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, emptyEvidence digestEmptyEvidence, err error) {
 	perSourceCap = opts.perSourceCap
 	if perSourceCap <= 0 {
 		perSourceCap = digestDefaultCap
 	}
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
-		return 0, nil, nil, err
+		return 0, nil, nil, digestEmptyEvidence{}, err
 	}
 	// Skip tombstones up front (M-4) so a cancelled calendar event (new content_hash)
 	// is never live [updated] nor in the cold-start 7d window.
 	byInstance = map[string][]Memory{}
 	governance, err := loadGovernance(cfg)
 	if err != nil {
-		return 0, nil, nil, err
+		return 0, nil, nil, digestEmptyEvidence{}, err
 	}
 	for _, path := range files {
 		m, perr := parseMemory(path)
@@ -460,21 +483,30 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 			continue
 		}
 		m = decorateDecision(m, now)
+		emptyEvidence.vaultRows++
 		if m.DecisionStatus == decisionNeedsReview {
 			m.Title = "[NEEDS REVIEW] " + m.Title
 			m.Text = "Decision validity is incomplete or expired. Review before relying on it.\n\n" + m.Text
 		}
-		key, ok := sourceInstanceKey(m)
-		if !ok {
+		key, groupable := sourceInstanceKey(m)
+		if !groupable && opts.sinceHours > 0 && (m.Source == "manual" || m.Source == "mcp") {
 			// Explicit-window DAILY is not a watermark run. Include locally
 			// authored memories in a deterministic manual bucket so an open
 			// commitment in a note can satisfy the obligations-v2 uniform DAILY
 			// rule. Delta mode still rejects empty-Provider memories: they have no
 			// connector instance and must never mint a watermark key (M-1).
-			if opts.sinceHours <= 0 || (m.Source != "manual" && m.Source != "mcp") {
-				continue
-			}
 			key = "manual"
+			groupable = true
+		}
+		countsAsFilterMatch := memoryMatchesPreviewFilters(m, opts, now)
+		if opts.source != "" {
+			countsAsFilterMatch = countsAsFilterMatch && groupable && digestSourceMatches(key, opts.source)
+		}
+		if countsAsFilterMatch {
+			emptyEvidence.filteredRows++
+		}
+		if !groupable {
+			continue
 		}
 		byInstance[key] = append(byInstance[key], m)
 	}
@@ -482,7 +514,7 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 	// buildGraph), computed BEFORE the preview-only narrowing (P1-C).
 	memSal = digestMemorySalience(flattenInstances(byInstance))
 	byInstance = filterByInstance(byInstance, opts, now)
-	return perSourceCap, byInstance, memSal, nil
+	return perSourceCap, byInstance, memSal, emptyEvidence, nil
 }
 
 // digestSourceMatches reports whether an instance key passes the digest's
@@ -648,6 +680,9 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 		tis = collapseRecurringSeries(tis, now)
 		items, more := capRecency(tis, perSourceCap, upcoming)
 		items, collapsed := collapseLowSignal(items)
+		if items == nil {
+			items = []DigestItem{}
+		}
 		sections = append(sections, DigestSection{Source: key, Items: items, MoreCount: more + collapsed, Truncated: more > 0})
 	}
 	sortSections(sections)
@@ -732,6 +767,9 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 		// hasDelta counts the shelf too: an instance whose only new item was promoted to
 		// the Urgent shelf still had a delta (state must not read "no changes").
 		state := classifyState(cfg, key, now, delta, len(items) > 0 || len(urgent) > 0)
+		if items == nil {
+			items = []DigestItem{}
+		}
 		sec := DigestSection{Source: key, State: state, Items: items}
 		if moreCount > 0 {
 			sec.MoreCount = moreCount
@@ -820,7 +858,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 	}
 	defer release()
 
-	perSourceCap, byInstance, memSal, err := digestInputs(cfg, now, opts)
+	perSourceCap, byInstance, memSal, _, err := digestInputs(cfg, now, opts)
 	if err != nil {
 		return Digest{}, "", err
 	}
@@ -1696,24 +1734,131 @@ func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
 		}
 	}
 
+	preBudgetCount := briefSurfacedItemCount(d)
 	out.Sections = make([]DigestSection, 0, n)
 	for i, s := range d.Sections {
 		switch {
 		case len(s.Items) == 0:
-			out.Sections = append(out.Sections, s) // empty section: state only.
+			ns := s
+			if ns.Items == nil {
+				ns.Items = []DigestItem{}
+			}
+			out.Sections = append(out.Sections, ns) // empty section: state only.
 		case kept[i] == 0:
 			out.Sections = append(out.Sections, truncatedShell(s)) // suppressed for budget.
 		default:
-			ns := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated}
-			ns.Items = append([]DigestItem(nil), s.Items[:kept[i]]...)
+			ns := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated, ElidedByBudget: s.ElidedByBudget}
+			ns.Items = append([]DigestItem{}, s.Items[:kept[i]]...)
 			if dropped := len(s.Items) - kept[i]; dropped > 0 {
 				ns.MoreCount += dropped
 				ns.Truncated = true
+				ns.ElidedByBudget += dropped
 			}
 			out.Sections = append(out.Sections, ns)
 		}
 	}
+	if out.EmptyExplanation == "" && preBudgetCount > 0 && briefSurfacedItemCount(out) == 0 {
+		out.EmptyExplanation = deriveEmptyExplanation(out, briefOpts{}, true)
+	}
 	return out, survived
+}
+
+// deriveEmptyExplanation returns a human-readable explanation when a brief has
+// zero surfaced items across all sections and the urgent shelf.
+func deriveEmptyExplanation(d Digest, opts briefOpts, budgetElidedAll bool) string {
+	if briefSurfacedItemCount(d) > 0 && !budgetElidedAll {
+		return ""
+	}
+	if budgetElidedAll {
+		return "all items elided by token budget"
+	}
+
+	// Freshness uncertainty outranks absence claims. A filtered or mixed-state
+	// request cannot honestly say "no matches" / "no changes" when one of the
+	// source snapshots is stale or unavailable. SourceHealth covers explicit
+	// window mode (whose empty sections have no delta state); section state is the
+	// fallback for pure/unit callers that do not carry SourceHealth.
+	uncertain, total := emptySourceUncertainty(d, opts.source)
+	if uncertain > 0 {
+		if uncertain == total {
+			return "all source connectors are stale or unavailable"
+		}
+		return "some source connectors are stale or unavailable"
+	}
+
+	// This came from the same parsed, governance-filtered input pass as the digest
+	// itself. Do not re-walk the vault here: a later read could describe a different
+	// snapshot, and raw file count cannot distinguish tombstones/hidden revisions.
+	if d.emptyEvidence.vaultRows == 0 {
+		return "no memory items found in vault"
+	}
+
+	// since_hours is a watermark-independent window, never a delta. Keep its
+	// explanation mode-aware so an empty one cannot claim "no changes since last
+	// brief." When filters are combined with the window, name both constraints.
+	if opts.sinceHours > 0 {
+		if opts.filtered() && d.emptyEvidence.filteredRows == 0 {
+			return "no memory items match the active filters in the requested time window"
+		}
+		return "no memory items found in requested time window"
+	}
+	if opts.filtered() && d.emptyEvidence.filteredRows == 0 {
+		return "no memory items match the active filters"
+	}
+
+	hasColdStart := false
+	hasNoChanges := false
+	for _, s := range d.Sections {
+		switch s.State {
+		case stateColdStart:
+			hasColdStart = true
+		case stateNoChanges:
+			hasNoChanges = true
+		}
+	}
+	if hasColdStart {
+		return "no memory items found in initial 7-day baseline window"
+	}
+	if hasNoChanges {
+		return "no changes since last brief"
+	}
+	if d.emptyEvidence.vaultRows > 0 {
+		return "no memory items surfaced in this brief"
+	}
+	return "no memory items found in vault"
+}
+
+// emptySourceUncertainty returns how many request-relevant source instances are
+// stale/unavailable and how many relevant instances are represented in total.
+// It merges the richer SourceHealth snapshot with delta section state by key,
+// applies the same source-family filter as digest assembly, and treats either
+// arm's uncertainty as authoritative. The result is count-only, so map iteration
+// order cannot affect output.
+func emptySourceUncertainty(d Digest, sourceFilter string) (uncertain, total int) {
+	bySource := make(map[string]bool, len(d.SourceHealth)+len(d.Sections))
+	for _, h := range d.SourceHealth {
+		if !digestSourceMatches(h.Key, sourceFilter) {
+			continue
+		}
+		bySource[h.Key] = h.State != healthFresh
+	}
+	for _, s := range d.Sections {
+		if !digestSourceMatches(s.Source, sourceFilter) {
+			continue
+		}
+		if _, ok := bySource[s.Source]; !ok {
+			bySource[s.Source] = false
+		}
+		if s.State == stateStale || s.State == stateUnavailable {
+			bySource[s.Source] = true
+		}
+	}
+	for _, isUncertain := range bySource {
+		if isUncertain {
+			uncertain++
+		}
+	}
+	return uncertain, len(bySource)
 }
 
 // budgetSourceFloor is how many items each source is guaranteed in the Markdown budget
@@ -1829,6 +1974,17 @@ func digestMCPPayload(cfg Config, d Digest, budgetChars int) map[string]any {
 	if budgetChars <= 0 {
 		budgetChars = defaultContextTokens * charsPerToken
 	}
+	return digestMCPPayloadAtBudget(cfg, d, budgetChars)
+}
+
+// digestMCPPayloadAtBudget is the strict-budget implementation. Unlike the
+// public/shared wrapper above, a zero budget here means zero item bytes rather
+// than "use the default." The envelope path needs that distinction after its
+// prompt reservation legitimately reduces a tiny request's item share to zero.
+func digestMCPPayloadAtBudget(cfg Config, d Digest, budgetChars int) map[string]any {
+	if budgetChars < 0 {
+		budgetChars = 0
+	}
 	states := buildSourceStates(cfg, d)
 
 	// The fixed (always-included) frame: everything except the item bodies. We
@@ -1856,8 +2012,23 @@ func digestMCPPayload(cfg Config, d Digest, budgetChars int) map[string]any {
 	frameBytes := jsonLen(base) + jsonLen([]DigestSection{}) // + an empty sections array key
 	remaining := budgetChars - frameBytes
 
+	preBudgetCount := briefSurfacedItemCount(d)
 	budgeted := budgetSections(d.Sections, remaining)
 	base["sections"] = budgeted
+
+	postBudgetCount := len(d.Urgent)
+	for _, s := range budgeted {
+		postBudgetCount += len(s.Items)
+	}
+
+	emptyExplanation := d.EmptyExplanation
+	if emptyExplanation == "" && preBudgetCount > 0 && postBudgetCount == 0 {
+		emptyExplanation = deriveEmptyExplanation(d, briefOpts{}, true)
+	}
+	if emptyExplanation != "" {
+		base["empty_explanation"] = emptyExplanation
+	}
+
 	return base
 }
 
@@ -1933,15 +2104,20 @@ func budgetSections(sections []DigestSection, budget int) []DigestSection {
 	for i, s := range sections {
 		switch {
 		case len(s.Items) == 0:
-			out = append(out, s) // empty section: state only, keep original MoreCount.
+			ns := s
+			if ns.Items == nil {
+				ns.Items = []DigestItem{}
+			}
+			out = append(out, ns) // empty section: state only, keep original MoreCount.
 		case kept[i] == 0:
 			out = append(out, truncatedShell(s)) // suppressed for budget.
 		default:
-			ns := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated}
-			ns.Items = append([]DigestItem(nil), s.Items[:kept[i]]...)
+			ns := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated, ElidedByBudget: s.ElidedByBudget}
+			ns.Items = append([]DigestItem{}, s.Items[:kept[i]]...)
 			if dropped := len(s.Items) - kept[i]; dropped > 0 {
 				ns.MoreCount += dropped
 				ns.Truncated = true
+				ns.ElidedByBudget += dropped
 			}
 			out = append(out, ns)
 		}
@@ -1954,10 +2130,12 @@ func budgetSections(sections []DigestSection, budget int) []DigestSection {
 // representation that keeps the agent aware of what it isn't seeing.
 func truncatedShell(s DigestSection) DigestSection {
 	return DigestSection{
-		Source:    s.Source,
-		State:     s.State,
-		MoreCount: s.MoreCount + len(s.Items),
-		Truncated: true,
+		Source:         s.Source,
+		State:          s.State,
+		Items:          []DigestItem{},
+		MoreCount:      s.MoreCount + len(s.Items),
+		Truncated:      true,
+		ElidedByBudget: s.ElidedByBudget + len(s.Items),
 	}
 }
 
