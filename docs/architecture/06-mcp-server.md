@@ -148,17 +148,18 @@ flowchart TD
 sequenceDiagram
   participant Agent
   participant handleMCP
-  participant callMCPTool
+  participant invokeMCPTool
   participant Engine as "engine (defaultSearch / buildThink / ...)"
   participant Env as toCallToolResult
   Agent->>handleMCP: tools/call {name, arguments}
-  handleMCP->>callMCPTool: dispatch(name, args)
-  callMCPTool->>Engine: do the work
-  Engine-->>callMCPTool: (value, err)
-  callMCPTool->>callMCPTool: logUsage(event)
-  callMCPTool-->>handleMCP: (value, err)
+  handleMCP->>invokeMCPTool: dispatch(name, args)
+  invokeMCPTool->>Engine: do the work
+  Engine-->>invokeMCPTool: (value, err)
+  invokeMCPTool-->>handleMCP: (value, err, structural usage trace)
   handleMCP->>Env: toCallToolResult(value, err)
   Env-->>handleMCP: {content:[text], isError, structuredContent?}
+  handleMCP->>handleMCP: serialize final CallToolResult for output_bytes
+  handleMCP->>handleMCP: append content-free usage event
   handleMCP-->>Agent: jsonRPCResponse{result}
 ```
 
@@ -187,7 +188,48 @@ The two long-standing RED rows were closed in v0.5.1 (`entities.go` `entitiesFor
 
 ## Usage logging
 
-Every `callMCPTool` case calls `logUsage` (`usage.go`) with a `usageEvent` (`mora.go`: `ts, tool, query, scope, results, millis`). Logging is **local-only JSONL** appended to `<StateDir>/usage/events.jsonl` (`logUsage`, `usage.go`) — never the vault, never any network. It is gated by `usageEnabled` (`usage.go`): disabled if `DO_NOT_TRACK=1` **or** an `OFF` sentinel file exists at `<StateDir>/usage/OFF` (written by `mora usage off`). The `query` field is the *raw tier* — it stays on local disk and is "never sent" (the struct comment makes this explicit). `logUsage` runs before the error check in the search path, so even failed/empty searches are logged with `results: 0`.
+`invokeMCPTool` captures structural handler metadata, but it does not write the
+event yet. `mcpToolInvocation.result` first builds the final `CallToolResult`,
+serializes that exact result map, stamps `output_bytes`, and only then calls
+`logUsage`. This ordering counts the text content block plus the
+`structuredContent` mirror honestly. It does not change the response map or any
+tool budget.
+
+Each new MCP JSONL record has this schema. Fields marked optional are absent
+when they do not apply; old records without the new fields remain readable.
+
+| Field | Presence | Meaning |
+|---|---|---|
+| `ts` | always | UTC RFC3339 append time. |
+| `tool` | always | Registered MCP tool name. Unknown tools are not logged. |
+| `results` | always | Structural result count; `0` on a failed call. |
+| `millis` | always | Total local execution from config load through final-envelope serialization; excludes the JSONL append. |
+| `output_bytes` | MCP calls | Byte length of compact JSON for the final `CallToolResult` map, including `structuredContent` when present. |
+| `phases.config_ms` | MCP calls | Config resolution time. File/database open time stays with retrieval. |
+| `phases.retrieval_ms` | optional | Retrieval/open time where the handler already has a clean boundary (`read_memory`, `search_memory`, `list_memory`, `context_memory`). |
+| `phases.assembly_ms` | optional | Result shaping, health, and budgeting time for those same handlers. |
+| `phases.envelope_ms` | MCP calls | `CallToolResult` assembly plus its size-measurement serialization. |
+| `query` | optional, explicit opt-in | Raw search/entity query for the pre-existing query-retention tier only. Omitted by default. Never used by `read_memory`. |
+| `scope` | optional | Non-content namespace already recorded by retrieval handlers. |
+| `mode` | `read_memory` | Allowlisted `full`, `match`, or `evidence_ref`; every unknown/future mode becomes the generic `other`. |
+| `truncated` | `read_memory` | Whether read shaping returned less than the complete body. |
+| `match_count` | `read_memory` | Count from the bounded-match receipt; `0` otherwise. |
+| `budget_requested` | `read_memory` | Numeric `max_tokens` argument; `0` means omitted. |
+| `budget_used` | `read_memory` | Returned `memory.text` size under Mora's existing `ceil(bytes / 4)` token estimate. |
+
+The `read_memory` event is deliberately stricter than the legacy query tier. It
+never records the memory id, body, excerpt, match string, evidence reference or
+text, metadata, attachment path, or vault path — even when `mora usage queries
+on` or `MORA_LOG_QUERIES=1` enables raw *search-query* retention. Mode labels are
+an allowlist, so a future argument value cannot become a covert content field.
+
+Logging is **local-only JSONL** at `<StateDir>/usage/events.jsonl` — never the
+vault and never a network destination. `DO_NOT_TRACK=1` or the
+`<StateDir>/usage/OFF` sentinel written by `mora usage off` suppresses the whole
+event, including every new field. An in-process append lock keeps concurrent
+MCP/HTTP calls as independent valid JSONL records. `usageReport` decodes into
+the additive Go struct, so legacy lines containing only
+`tool/results/millis` remain backward compatible.
 
 ## Invariants & gotchas
 

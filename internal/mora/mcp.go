@@ -155,7 +155,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 			Arguments map[string]any `json:"arguments"`
 		}
 		_ = json.Unmarshal(req.Params, &p)
-		resp.Result = toCallToolResult(callMCPTool(ctx, p.Name, p.Arguments))
+		resp.Result = invokeMCPTool(ctx, p.Name, p.Arguments).result()
 	default:
 		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
 	}
@@ -359,15 +359,12 @@ func mcpToolNames() []string {
 }
 
 func callMCPTool(ctx context.Context, name string, args map[string]any) (any, error) {
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, err
-	}
-	def, ok := mcpToolIndex[name]
-	if !ok {
-		return nil, fmt.Errorf("unknown tool %q", name)
-	}
-	return def.Handler(ctx, cfg, args)
+	inv := invokeMCPTool(ctx, name, args)
+	// Internal and loopback-HTTP callers consume the native value rather than a
+	// CallToolResult. Assemble the identical envelope once for local measurement
+	// so every registered dispatcher call still emits one output_bytes event.
+	_ = inv.result()
+	return inv.value, inv.err
 }
 
 // mcpWriteClock is the single logical clock for one write_memory call. Tests
@@ -434,17 +431,32 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 }
 
 func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
+	retrievalStarted := time.Now()
 	m, err := findMemory(cfg, strArg(args, "id", ""))
 	if err != nil {
 		// Same read-only shared-corpus fallback as `mora read`: search
 		// returns shared ids with 240-rune snippets, so read_memory is the
 		// documented expansion path for them too.
 		if sm, ok := findSharedMemory(cfg, strArg(args, "id", "")); ok {
-			return mcpReadMemoryResult(cfg, sm, args), nil
+			retrieval := time.Since(retrievalStarted)
+			assemblyStarted := time.Now()
+			result := mcpReadMemoryResult(cfg, sm, args)
+			assembly := time.Since(assemblyStarted)
+			recordMCPPhases(ctx, retrieval, assembly)
+			recordMCPUsage(ctx, cfg, readUsageEvent(args, result, true))
+			return result, nil
 		}
+		recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
+		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
 		return nil, err
 	}
-	return mcpReadMemoryResult(cfg, m, args), nil
+	retrieval := time.Since(retrievalStarted)
+	assemblyStarted := time.Now()
+	result := mcpReadMemoryResult(cfg, m, args)
+	assembly := time.Since(assemblyStarted)
+	recordMCPPhases(ctx, retrieval, assembly)
+	recordMCPUsage(ctx, cfg, readUsageEvent(args, result, true))
+	return result, nil
 }
 
 // mcpReadMemoryResult shapes the read_memory response. The parameter-free
@@ -484,12 +496,16 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// routing decision + retrieval trace this call already computed, instead
 	// of re-probing chooseEmbedderFor or re-running the whole hybrid pipeline
 	// a second time.
+	retrievalStarted := time.Now()
 	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit, filters)
+	retrieval := time.Since(retrievalStarted)
 	res := sr.Results
-	logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
+		recordMCPPhases(ctx, retrieval, 0)
 		return nil, err
 	}
+	assemblyStarted := time.Now()
 	// Honest-snapshot contract on the primary query surface: every search
 	// answer carries the per-source last_synced map (same shape as
 	// context_memory's), so the agent can qualify answers with data age
@@ -560,21 +576,27 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 			out["excluded_by_filter"] = excl
 		}
 	}
+	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil
 }
 
 func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
+	retrievalStarted := time.Now()
 	res, err := listMemories(cfg, strArg(args, "scope", ""), intArg(args, "limit", 10))
-	logUsage(cfg, usageEvent{Tool: "list_memory", Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
+	retrieval := time.Since(retrievalStarted)
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "list_memory", Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
+		recordMCPPhases(ctx, retrieval, 0)
 		return nil, err
 	}
+	assemblyStarted := time.Now()
 	budgeted, dropped := budgetSearchResults(snippetMemories(res, ""), searchMemoryResultsBudgetBytes)
 	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, time.Now())}
 	if dropped > 0 {
 		out["memories_truncated"] = dropped
 	}
+	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil
 }
 
@@ -589,6 +611,7 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	if ferr != nil {
 		return nil, ferr
 	}
+	retrievalStarted := time.Now()
 	var items []Memory
 	var err error
 	if query != "" {
@@ -596,11 +619,14 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	} else {
 		items, err = listMemories(cfg, scope, 10, filters)
 	}
+	retrieval := time.Since(retrievalStarted)
 	if err != nil {
+		recordMCPPhases(ctx, retrieval, 0)
 		return nil, err
 	}
+	assemblyStarted := time.Now()
 	text := buildContext(cfg, items, charBudget, query != "")
-	logUsage(cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
 	used := estimateTokensUsed(len(text))
 	// #241: health scoped the same way as mcpSearchMemory's — an excluded
 	// source must not drag the always-present health banner down. Reuses the
@@ -627,6 +653,7 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 			out["excluded_by_filter"] = excl
 		}
 	}
+	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil
 }
 
@@ -634,7 +661,7 @@ func mcpThink(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	start := time.Now()
 	query := strArg(args, "query", "")
 	res, err := buildThink(ctx, cfg, query, strArg(args, "scope", ""), intArg(args, "limit", 8), time.Now())
-	logUsage(cfg, usageEvent{Tool: "think", Query: query, Scope: strArg(args, "scope", ""), Results: len(res.Evidence), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "think", Query: query, Scope: strArg(args, "scope", ""), Results: len(res.Evidence), Millis: time.Since(start).Milliseconds()})
 	out := map[string]any{"think": res, "health": compactHealthOf(cfg, time.Now())}
 	// Issue #238: opt-in confidence envelope (see mcpSearchMemory's identical
 	// gate). Skipped on error so a failed buildThink never fabricates a
@@ -648,14 +675,14 @@ func mcpThink(ctx context.Context, cfg Config, args map[string]any) (any, error)
 func mcpListEntities(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
 	ents, err := entitiesForMCP(ctx, cfg, strArg(args, "kind", ""), intArg(args, "limit", mcpListEntitiesDefaultLimit))
-	logUsage(cfg, usageEvent{Tool: "list_entities", Results: len(ents), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "list_entities", Results: len(ents), Millis: time.Since(start).Milliseconds()})
 	return map[string]any{"entities": ents, "health": compactHealthOf(cfg, time.Now())}, err
 }
 
 func mcpGetEntity(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
 	res, err := entityDossierForMCP(ctx, cfg, strArg(args, "name", ""), intArg(args, "max_tokens", 0))
-	logUsage(cfg, usageEvent{Tool: "get_entity", Query: strArg(args, "name", ""), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "get_entity", Query: strArg(args, "name", ""), Millis: time.Since(start).Milliseconds()})
 	return map[string]any{"entity": res, "health": compactHealthOf(cfg, time.Now())}, err
 }
 
@@ -698,7 +725,7 @@ func mcpDigest(ctx context.Context, cfg Config, args map[string]any) (any, error
 	// full unclipped sections — is the bug we fix here). The CLI keeps the render
 	// path (renderDigest); the agent reads the structured payload directly.
 	budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
-	logUsage(cfg, usageEvent{Tool: "digest", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "digest", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
 	// Opt-in envelope (15-02, D15-3): when `envelope` is true, return the
 	// DigestEnvelope — the SAME budgeted base payload PLUS a synthesis_prompt
 	// built from those budgeted sections (model-free: Mora attaches a STRING the
@@ -749,7 +776,7 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 		return nil, err
 	}
 	budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
-	logUsage(cfg, usageEvent{Tool: "brief", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "brief", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
 	// Reuse the Phase-15 budget machinery VERBATIM (additive — the digest case and
 	// its helpers are untouched): envelope-gated synthesis_prompt, max_tokens
 	// budget, T0-safe by construction (16-03 adds the gate row). Model-free: the
@@ -804,7 +831,7 @@ func mcpMeetingPrep(ctx context.Context, cfg Config, args map[string]any) (any, 
 	if verr := brief.validate(); verr != nil {
 		return nil, fmt.Errorf("refusing uncited meeting_prep payload: %w", verr)
 	}
-	logUsage(cfg, usageEvent{Tool: "meeting_prep", Results: meetingBriefLineCount(brief), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "meeting_prep", Results: meetingBriefLineCount(brief), Millis: time.Since(start).Milliseconds()})
 	return brief, nil
 }
 
