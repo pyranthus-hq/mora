@@ -944,6 +944,160 @@ func TestFiltersSharedCorpusPreRankCrowdingProof(t *testing.T) {
 	}
 }
 
+// --- since_hours overflow (fail closed, never silently disabled/inverted,
+//     and NEVER an invented product ceiling) -------------------------------
+//
+// since_hours ultimately feeds time.Duration(hours) * time.Hour — a
+// pathological caller-supplied value large enough to overflow int64
+// nanoseconds would wrap to an unpredictable (possibly negative) duration,
+// silently disabling or inverting the filter (the worst failure mode: a
+// caller who asked to narrow the result set instead gets an UNFILTERED or
+// backwards-filtered one with no error). The chosen behavior is FAIL CLOSED
+// at the TRUE arithmetic boundary — floor(math.MaxInt64 / int64(time.Hour))
+// ≈ 2,562,047 hours (~292 years), search_filters.go's maxSinceHours — never
+// a smaller invented "product policy" ceiling: issue #241 specifies
+// since_hours as any positive integer, so a large-but-representable value
+// (e.g. 100000 hours, ~11.4 years) MUST stay valid and behave correctly.
+
+// TestFiltersSearchMemorySinceHoursOverflowErrors pins fail-closed behavior
+// on an out-of-range since_hours large enough to overflow the
+// hours*time.Hour nanosecond conversion — including a value exactly ONE
+// past the true derived boundary (maxSinceHours+1), not just grossly
+// oversized inputs.
+func TestFiltersSearchMemorySinceHoursOverflowErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "overflow-1", "gmail", "", "2026-07-01T00:00:00Z", "overflowcheck content")
+	mustRebuild(t, cfg)
+
+	for _, bad := range []string{`1e15`, `9223372036854775807`, `2562048`} {
+		args := fmt.Sprintf(`{"query":"overflowcheck","since_hours":%s}`, bad)
+		text, isErr := filtersToolError(t, "search_memory", args)
+		if !isErr {
+			t.Fatalf("since_hours=%s (beyond the true int64-nanosecond boundary) must be a tool error (fail closed); got isError=false, text=%s", bad, text)
+		}
+	}
+}
+
+// TestFiltersSearchMemorySinceHoursLargeButSafeIsAccepted is the boundary's
+// other half — the NO-INVENTED-CEILING pin: 100000 hours (~11.4 years) is
+// mathematically safe (nowhere near the ~2.56M-hour true boundary) and MUST
+// be accepted and filter correctly, proving the fail-closed check above is
+// derived from the actual arithmetic, not an arbitrary smaller product
+// ceiling.
+func TestFiltersSearchMemorySinceHoursLargeButSafeIsAccepted(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	old := time.Now().Add(-200000 * time.Hour) // outside a 100000h window
+	recent := time.Now().Add(-1 * time.Hour)   // inside it
+	writeFilterMemory(t, cfg, "largesafe-old", "gmail", "", old.Format(time.RFC3339), "largesafecheck content old")
+	writeFilterMemory(t, cfg, "largesafe-recent", "gmail", "", recent.Format(time.RFC3339), "largesafecheck content recent")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"largesafecheck","since_hours":100000}`)
+	results, _ := sc["results"].([]any)
+	ids := filterResultIDs(t, results)
+	if !containsID(ids, "largesafe-recent") {
+		t.Fatalf("since_hours=100000 (safe, large) must accept the request and include the in-window memory, got %v", ids)
+	}
+	if containsID(ids, "largesafe-old") {
+		t.Fatalf("since_hours=100000 must still exclude the out-of-window memory (200000h old), got %v", ids)
+	}
+}
+
+// TestFiltersContextMemorySinceHoursOverflowErrors mirrors the overflow pin
+// for context_memory.
+func TestFiltersContextMemorySinceHoursOverflowErrors(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	writeFilterMemory(t, cfg, "ctx-overflow-1", "gmail", "", "2026-07-01T00:00:00Z", "ctxoverflowcheck content")
+	mustRebuild(t, cfg)
+
+	text, isErr := filtersToolError(t, "context_memory", `{"query":"ctxoverflowcheck","since_hours":1e15}`)
+	if !isErr {
+		t.Fatalf("since_hours=1e15 (overflow range) must be a tool error (fail closed); got isError=false, text=%s", text)
+	}
+}
+
+// --- excluded_by_filter explicit marker (issue #241 acceptance: "Health/
+// confidence output distinguishes excluded_by_filter from
+// unavailable/unhealthy sources") -------------------------------------------
+//
+// Omission from missing_sources/health alone leaves it ambiguous whether an
+// absent source is healthy or was excluded by the caller's own filter — the
+// issue asks the output to DISTINGUISH the two, not just hide one. A new
+// top-level "excluded_by_filter" array (sibling to "filters"/"confidence"/
+// "health", never nested inside confidence's frozen shape) lists every
+// enabled connector instance an active source filter excluded, explicit and
+// machine-readable — present only when the source filter is active AND
+// excludes at least one enabled source.
+
+// TestFiltersSearchMemoryExcludedByFilterMarker pins the explicit marker on
+// search_memory: gmail (enabled) is excluded by source=imessage and must be
+// named in "excluded_by_filter", not just silently absent from
+// confidence.missing_sources.
+func TestFiltersSearchMemoryExcludedByFilterMarker(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail", "imessage")
+	seedSyncStatus(t, cfg, "gmail", time.Now().Add(-1*time.Hour))
+	seedSyncStatus(t, cfg, "imessage", time.Now().Add(-1*time.Hour))
+	writeFilterMemory(t, cfg, "excl-1", "imessage", "", time.Now().Format(time.RFC3339), "excludedmarker content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"excludedmarker","source":"imessage"}`)
+	excl, ok := sc["excluded_by_filter"].([]any)
+	if !ok {
+		t.Fatalf("search_memory with an active source filter that excludes an enabled source must carry excluded_by_filter: %v", payloadKeys(sc))
+	}
+	if len(excl) != 1 || excl[0] != "gmail" {
+		t.Fatalf("excluded_by_filter = %v, want exactly [\"gmail\"]", excl)
+	}
+}
+
+// TestFiltersSearchMemoryExcludedByFilterAbsentWhenNoExclusion pins the
+// omission half: with only imessage enabled, source=imessage excludes
+// nothing, so the key must not appear at all (never an empty array — the
+// frozen "no key when nothing to report" pattern this codebase uses
+// throughout, e.g. results_truncated/shares_unhealthy).
+func TestFiltersSearchMemoryExcludedByFilterAbsentWhenNoExclusion(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "imessage")
+	seedSyncStatus(t, cfg, "imessage", time.Now().Add(-1*time.Hour))
+	writeFilterMemory(t, cfg, "excl-2", "imessage", "", time.Now().Format(time.RFC3339), "noexclusion content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "search_memory", `{"query":"noexclusion","source":"imessage"}`)
+	if _, ok := sc["excluded_by_filter"]; ok {
+		t.Fatalf("excluded_by_filter must be absent when the filter excludes no enabled source: %v", payloadKeys(sc))
+	}
+}
+
+// TestFiltersContextMemoryExcludedByFilterMarker mirrors the explicit-marker
+// pin for context_memory.
+func TestFiltersContextMemoryExcludedByFilterMarker(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail", "imessage")
+	seedSyncStatus(t, cfg, "gmail", time.Now().Add(-1*time.Hour))
+	seedSyncStatus(t, cfg, "imessage", time.Now().Add(-1*time.Hour))
+	writeFilterMemory(t, cfg, "ctx-excl-1", "imessage", "", time.Now().Format(time.RFC3339), "ctxexcludedmarker content")
+	mustRebuild(t, cfg)
+
+	sc := filtersStructured(t, "context_memory", `{"query":"ctxexcludedmarker","source":"imessage"}`)
+	excl, ok := sc["excluded_by_filter"].([]any)
+	if !ok || len(excl) != 1 || excl[0] != "gmail" {
+		t.Fatalf("excluded_by_filter = %v (ok=%v), want exactly [\"gmail\"]", excl, ok)
+	}
+}
+
 // mustRebuild is a t.Helper wrapper over rebuildIndex, matching this file's
 // (cfg-only, no context plumbing) test style.
 func mustRebuild(t *testing.T, cfg Config) {
