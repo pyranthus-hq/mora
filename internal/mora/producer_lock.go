@@ -33,6 +33,13 @@ const (
 	// is NEVER held across a producer's actual work (fn runs OUTSIDE the lease),
 	// so 30s only ever reaps an abandoned lease. Mirrors sourcesLockTTL.
 	producerLockTTL = 30 * time.Second
+	// producerAcquireTimeout is the WALL-CLOCK budget for the ledger lease's
+	// contention spin, mirroring sourcesAcquireTimeout's envelope (the hold is the
+	// same shape: read a small JSON map, mutate, atomicWrite). It is a SEPARATE
+	// constant because the producer stamp is best-effort telemetry on the tail of a
+	// real job — if this path ever needs to give up sooner than a sources RMW, it
+	// must be able to without shortening the registry's budget.
+	producerAcquireTimeout = 2 * time.Second
 )
 
 // producersDir is the ledger directory under StateDir (rebuildable state, not
@@ -56,8 +63,9 @@ func producerLockPath(cfg Config) string {
 }
 
 // acquireProducerLock takes the producer-ledger lease for one read-modify-write.
-// It mirrors acquireSourcesLock's publish/reap/wait loop (sources_lock.go:68) with
-// the producer TTL and returns a real error (never a silent no-op) if the lease
+// It mirrors acquireSourcesLock's publish/reap/wait loop (sources_lock.go) with
+// the producer TTL and its own producerAcquireTimeout wall-clock acquire budget,
+// and returns a real error (never a silent no-op) if the lease
 // cannot be taken — a producer stamp that cannot serialize must fail loudly to its
 // best-effort caller, not silently drop the write. The returned release is
 // idempotent, so a deferred release is safe.
@@ -69,8 +77,10 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 	// run_id is unused (acquire and release live in the same scope); acquired_at
 	// drives the TTL. Same body shape as the sources/loop leases.
 	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
-	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(producerAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
+		wait := sourcesAcquireBackoff(attempt)
 		switch {
 		case perr == nil && published:
 			return loopLockReleaser(lockPath, body), nil
@@ -82,12 +92,12 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 				return nil, rerr
 			}
 			if rerr == nil && reaped {
-				continue // cleared an abandoned lease; retry publish immediately
+				wait = 0 // cleared an abandoned lease; retry publish immediately
 			}
 			// else: a live holder OR Windows sharing contention — back off and retry.
 		}
-		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !sleepWithinDeadline(wait, deadline) {
+			break
 		}
 	}
 	return nil, fmt.Errorf("producer ledger is locked by another mora process (%s); retry in a moment", lockPath)
@@ -108,7 +118,8 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 // producerLockTTL each judge the other's LIVE lock abandoned, reap it mid-RMW, and
 // silently drop one another's write — precisely what the lease exists to prevent
 // (TestProducerLedgerNoLostUpdateAcrossProcesses caught exactly this). mutateSources
-// draws the same line (sources_lock.go:119 acquires with time.Now()).
+// draws the same line (it acquires with time.Now()), and so does the acquire
+// deadline itself (sleepWithinDeadline).
 func mutateProducers(cfg Config, mutate func(map[string]producerStatus) error) error {
 	release, err := acquireProducerLock(cfg, time.Now())
 	if err != nil {

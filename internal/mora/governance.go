@@ -185,12 +185,23 @@ func saveGovernance(cfg Config, g governance) error {
 // excludes them from `mora sync git`.
 func governanceLockPath(cfg Config) string { return governancePath(cfg) + ".lock" }
 
+// governanceAcquireTimeout is the WALL-CLOCK budget for the governance lease's
+// contention spin. It matches sourcesAcquireTimeout's envelope because the hold
+// is the same shape — a ledger reload plus one atomicWrite, or the connector
+// write chokepoint's check-and-write (governanceWriteLease) — but it is a
+// SEPARATE constant on purpose: the ledger lease is the one contended by every
+// item of an hourly sync, so its budget must be tunable without moving the
+// sources registry's. Exhausting it returns the fail-fast "retry in a moment"
+// error a caller is expected to retry (issue #115), never a dropped suppression.
+const governanceAcquireTimeout = 2 * time.Second
+
 // acquireGovernanceLock serializes a read-modify-write of the governance ledger
 // across processes, exactly as acquireSourcesLock does for sources.json: an
 // unlocked load→append→save races (the last save clobbers the other writer's
 // entry, and a dropped forget suppression silently resurrects forgotten content).
 // It reuses the crash-safe lease primitives (publishLockFile / reapStaleLockTTL /
-// loopLockReleaser) and the sources lease's TTL + jittered backoff — the same
+// loopLockReleaser), the sources lease's TTL + jittered backoff, and its own
+// governanceAcquireTimeout wall-clock acquire budget — the same
 // single-host, single-user model (a manual `mora forget` racing another forget,
 // or the forward-declared scheduled prune #53). It returns a real error, never a
 // silent no-op, if the lease cannot be taken; the returned release is idempotent.
@@ -200,8 +211,10 @@ func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error
 	}
 	lockPath := governanceLockPath(cfg)
 	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
-	for attempt := 0; attempt < maxSourcesAcquireAttempts; attempt++ {
+	deadline := time.Now().Add(governanceAcquireTimeout)
+	for attempt := 0; ; attempt++ {
 		published, perr := publishLockFile(lockPath, body)
+		wait := sourcesAcquireBackoff(attempt)
 		switch {
 		case perr == nil && published:
 			return loopLockReleaser(lockPath, body), nil
@@ -213,11 +226,11 @@ func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error
 				return nil, rerr
 			}
 			if rerr == nil && reaped {
-				continue // cleared an abandoned lease; retry publish immediately.
+				wait = 0 // cleared an abandoned lease; retry publish immediately.
 			}
 		}
-		if attempt < maxSourcesAcquireAttempts-1 {
-			time.Sleep(sourcesAcquireBackoff(attempt))
+		if !sleepWithinDeadline(wait, deadline) {
+			break
 		}
 	}
 	return nil, fmt.Errorf("governance ledger is locked by another mora process (%s); retry in a moment", lockPath)
