@@ -2289,7 +2289,10 @@ func TestGmailSegmentsContractSegmentCandidateOutsideParentPoolSurvives(t *testi
 		t.Fatalf("fixture premise broken: segment arm did not rank buried parent %s: %v", gsBuriedID, segmentIDs)
 	}
 
-	res := mcpResult(t, budgetCall("search_memory", `{"query":"`+gsBuriedMarker+`","limit":3}`))
+	// Use the public default result window. A segment-only candidate earns
+	// only its segment-arm RRF contribution; it must be admitted, but should
+	// not receive a fabricated parent-arm rank merely to force a top-3 win.
+	res := mcpResult(t, budgetCall("search_memory", `{"query":"`+gsBuriedMarker+`","limit":8}`))
 	rows := resultRows(t, res)
 	for _, row := range rows {
 		if rowID(t, row) == gsBuriedID {
