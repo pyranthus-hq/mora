@@ -27,6 +27,44 @@ import (
 // keeping it would contradict the all-green acceptance requirement for a
 // contract test file with no matching implementation in this commit.
 //
+// AMENDMENT (round 2, integrator decision, #237): an independent review of
+// f19d15e (the implementation landed against round 1's contract) proved three
+// P1s, corrected here as test-only amendments — no production code changes in
+// this commit:
+//
+//	(1) BACKFILL: both search_memory paths widen their candidate pool WELL
+//	past `limit` (limit*5, min 50) so a cluster's freed slot can backfill from
+//	the next-best DISTINCT record — but the widening is unconditional, so it
+//	ALSO backfills the slot visibility suppression (a pending delete op, B4)
+//	costs, even when the pool contains ZERO clusters. The frozen reading:
+//	suppression alone never frees a slot; only in-window cluster absorption
+//	does. See TestClusterContractSuppressedTopHitNoBackfill(Hybrid|MCP).
+//
+//	(2) SCOPING: clustering stays exactly where f19d15e put it — INSIDE the
+//	shared primitives searchMemories/hybridSearch/hybridSearchTrace — so every
+//	caller through them (search_memory, think, context_memory, `mora context`)
+//	inherits a cluster head's populated Memory.Corroborating field. (A
+//	search_memory-only descoping was drafted and rejected before landing:
+//	issue #237 originated in `mora think`, and hiding corroborating members
+//	from any surface that already retrieves them would be the same defect the
+//	issue opened against, not a fix for it.) The actual defect: think,
+//	context_memory, and `mora context` all receive already-clustered results
+//	(folded members correctly absent as their own top-level rows) but none of
+//	their OWN output shapes forwards the head's Corroborating field, so a
+//	folded member is UNRECOVERABLE — not merely uncited — from those
+//	surfaces. See TestClusterContractThinkExposesFoldedMembers,
+//	TestClusterContractContextMemoryExposesFoldedMembers, and
+//	TestClusterContractCLIContextExposesFoldedMembers. search_memory's own
+//	"corroborating" ref shape (test 1 below) is unchanged by this amendment.
+//
+//	(3) RULE-1 VACUITY: every fixture set ProviderID but never Provider, so
+//	clusterProviderLinked's a.Provider == b.Provider comparison was exercised
+//	only vacuously (both sides always ""). Fixed by giving
+//	TestClusterContractProviderAnchorEquality's fixture a real, matching,
+//	non-empty Provider, and adding
+//	TestClusterContractProviderAnchorRequiresBothFields (identical ProviderID,
+//	DIFFERENT non-empty Provider => must NOT cluster).
+//
 // ---------------------------------------------------------------------------
 // FROZEN INTERFACE (the contract a future implementation must satisfy)
 // ---------------------------------------------------------------------------
@@ -93,7 +131,12 @@ import (
 // all. This is precision-first: a hub pattern (e.g. one sender fanning out to
 // many distinct recipients, all sharing an instant) is a sign the anchor is
 // too weak to safely collapse, not evidence of one real-world event (see
-// TestClusterContractAntiHubRefusalCap).
+// TestClusterContractAntiHubRefusalCap). A refused candidate's records are
+// excluded from clustering for the REST of that query's walk — refusal is
+// final, not a smaller retry: none of them get a second chance to cluster
+// with each other, or with anything else, once refused (see
+// TestClusterContractRefusalCapBoundary5vs6, which pins the cap at exactly 5
+// members committing vs exactly 6 refusing whole).
 //
 // GREEDY DETERMINISTIC FORMATION: iterate the ranked result pool in rank order
 // (score desc, id asc per the existing tie-break). The strongest unclustered
@@ -119,14 +162,13 @@ import (
 // today's (no "corroborating" key anywhere in the envelope) — clustering must
 // be a pure no-op off its own trigger condition.
 //
-// SCOPING NOTE: the "corroborating" JSON shape is an MCP search_memory
-// presentation concern. The hybrid-path coverage below (TestClusterContract
-// HybridSeamPreTruncate) therefore checks the same "one slot per cluster"
-// property at the raw []Memory / id level directly against hybridSearch /
-// hybridSearchTrace (the post-fusion/pre-truncate seam), rather than re-running
-// the full MCP JSON-shape assertions a second time — per the DAG task's
-// explicit allowance that "a unit-level seam test at the post-fusion/
-// pre-truncate stage is acceptable" for the hybrid path.
+// SCOPING NOTE: clustering is NOT a search_memory-only presentation concern —
+// see the round-2 AMENDMENT above. It runs inside the shared primitives, so
+// TestClusterContractHybridSeamPreTruncate's raw []Memory/id-level check
+// against hybridSearch/hybridSearchTrace (the post-fusion/pre-truncate seam)
+// is exercising the SAME production clustering path search_memory itself
+// uses, not a separate hybrid-only concern — kept as a unit-level seam test
+// rather than re-running the full MCP JSON-shape assertions a second time.
 //
 // clusterContractWindow is this contract's frozen time-window constant. It is a
 // TEST-ONLY constant (no production code exists yet to import it from); a real
@@ -461,7 +503,11 @@ func TestClusterContractProviderAnchorEquality(t *testing.T) {
 	seed := func(id, providerID, createdAt string, attendees []string, occurredAt string) {
 		if err := writeMemory(cfg, Memory{
 			ID: id, Scope: "personal", Type: "event", Title: "Zephyrion Standing Sync",
-			Source: "calendar", ProviderID: providerID, CreatedAt: createdAt,
+			// Provider is set to the SAME non-empty value on both records (round-2
+			// P1 fix: the pre-amendment fixture left Provider "" on every record, so
+			// clusterProviderLinked's a.Provider == b.Provider comparison was checked
+			// only vacuously — "" == "" — never exercised against a real value).
+			Source: "calendar", Provider: "google_calendar", ProviderID: providerID, CreatedAt: createdAt,
 			Meta: map[string]any{"occurred_at": occurredAt, "attendees": attendees, "organizer": attendees[0]},
 			Text: "Zephyrion standing sync notes and action items.",
 		}); err != nil {
@@ -493,6 +539,55 @@ func TestClusterContractProviderAnchorEquality(t *testing.T) {
 	ref, _ := corr[0].(map[string]any)
 	if got, _ := ref["id"].(string); got != "gcal_b/evt-zephyrion-dup" && got != "gcal_a/evt-zephyrion" {
 		t.Fatalf("Rule 1 corroborating id not verbatim: %#v", ref)
+	}
+}
+
+// ---------------------------------------------------------------------------
+//
+//	3b. FORWARD PIN (round-2 P1 fix — Rule 1 vacuity) — Rule 1 requires BOTH
+//	    Provider AND ProviderID to match, not ProviderID alone. Two records
+//	    share an identical ProviderID (as if two different calendar backends
+//	    happened to mint the same opaque id) but carry DIFFERENT non-empty
+//	    Provider values; disjoint people and >24h apart means Rule 2 cannot
+//	    link them either. GREEN today: f19d15e's clusterProviderLinked
+//	    (cluster.go) already checks a.Provider == b.Provider — this is a
+//	    regression guard against ever loosening Rule 1 to ProviderID-only
+//	    equality, not a bug fix.
+//
+// ---------------------------------------------------------------------------
+func TestClusterContractProviderAnchorRequiresBothFields(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	seed := func(id, provider, providerID, createdAt string, attendees []string, occurredAt string) {
+		if err := writeMemory(cfg, Memory{
+			ID: id, Scope: "personal", Type: "event", Title: "Voltridge Standing Sync",
+			Source: "calendar", Provider: provider, ProviderID: providerID, CreatedAt: createdAt,
+			Meta: map[string]any{"occurred_at": occurredAt, "attendees": attendees, "organizer": attendees[0]},
+			Text: "Voltridge standing sync notes and action items.",
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("gcal_a/evt-voltridge", "google_calendar", "primary/evt-voltridge", "2026-06-10T00:00:00Z",
+		[]string{"alice@example.com", "bob@example.com"}, "2026-06-10T09:00:00Z")
+	seed("gcal_b/evt-voltridge-other", "outlook_calendar", "primary/evt-voltridge", "2026-06-15T00:00:00Z",
+		[]string{"carol@example.com", "dave@example.com"}, "2026-06-15T09:00:00Z")
+
+	ctx := context.Background()
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	res := mcpResult(t, budgetCall("search_memory", `{"query":"Voltridge","limit":5}`))
+	rows := resultRows(t, res)
+	if len(rows) != 2 {
+		t.Fatalf("same ProviderID but DIFFERENT non-empty Provider must NOT cluster (Rule 1 "+
+			"requires both fields to match), got %d row(s): %v", len(rows), rows)
+	}
+	if envelopeContainsKey(t, res, "corroborating") {
+		t.Fatal("mismatched-Provider pair must not carry a corroborating key")
 	}
 }
 
@@ -901,5 +996,449 @@ func TestClusterContractNoOccurredAtNoFallback(t *testing.T) {
 	}
 	if envelopeContainsKey(t, res, "corroborating") {
 		t.Fatal("no meta.occurred_at pair must not carry a corroborating key")
+	}
+}
+
+// ---------------------------------------------------------------------------
+//  11. BACKFILL P1 — visibility suppression must NEVER free a result slot;
+//     only in-window cluster absorption may. Six independent "Scratch
+//     Backfill Repro" filesystem memories (no occurred_at, no ProviderID, no
+//     participants at all) can never link via EITHER anchor rule, so the
+//     frozen contract requires clustering to be a byte-identical no-op on
+//     this pool — including under suppression. searchMemories(...,50)
+//     establishes the deterministic full rank order; suppressing the
+//     top-ranked hit via a pending delete op (the B4 read-path guard,
+//     markIndexDirty(pendingOp{Kind: opKindDelete, ...})) must cost that
+//     hit's slot outright — legacy SQL-LIMIT-then-filter semantics — never
+//     backfill from the next-ranked record. RED today: f19d15e's
+//     unconditional deep-pool widening (limit*5, min 50) backfills the freed
+//     slot even though ZERO clusters exist in this pool, breaking "zero
+//     clusters => byte-identical to legacy" on both search paths (and through
+//     the MCP surface that wraps them).
+//
+// ---------------------------------------------------------------------------
+func seedBackfillReproFixture(t *testing.T) Config {
+	t.Helper()
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("backfill/scratch-%02d", i)
+		if err := writeMemory(cfg, Memory{
+			ID: id, Scope: "personal", Type: "note",
+			Title: fmt.Sprintf("Scratch Backfill Repro %02d", i), Source: "filesystem",
+			CreatedAt: fmt.Sprintf("2026-06-2%dT00:00:00Z", i),
+			// Deliberately no occurred_at / from / to / attendees / ProviderID — six
+			// independent singletons that can never link via Rule 2 (no anchor at
+			// all) or Rule 1 (no ProviderID).
+			Text: fmt.Sprintf("Scratch backfill repro body text number %02d for the suppression slot-cost contract.", i),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	ctx := context.Background()
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
+	return cfg
+}
+
+func TestClusterContractSuppressedTopHitNoBackfill(t *testing.T) {
+	cfg := seedBackfillReproFixture(t)
+	ctx := context.Background()
+
+	full, err := searchMemories(ctx, cfg, "Scratch Backfill Repro", "", 50)
+	if err != nil {
+		t.Fatalf("searchMemories(50): %v", err)
+	}
+	if len(full) < 2 {
+		t.Fatalf("expected >= 2 ranked results to seed the repro, got %d: %v", len(full), idList(full))
+	}
+	top := full[0]
+
+	if _, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: top.Path, MemoryID: top.ID}); err != nil {
+		t.Fatalf("markIndexDirty: %v", err)
+	}
+
+	got, err := searchMemories(ctx, cfg, "Scratch Backfill Repro", "", 1)
+	if err != nil {
+		t.Fatalf("searchMemories(1): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("suppressing the top-ranked hit (zero clusters in this pool) must cost its slot "+
+			"outright, NOT backfill from the next-ranked record — legacy SQL-LIMIT-then-filter "+
+			"semantics; got %d result(s): %v", len(got), idList(got))
+	}
+}
+
+func TestClusterContractSuppressedTopHitNoBackfillHybrid(t *testing.T) {
+	cfg := seedBackfillReproFixture(t)
+	ctx := context.Background()
+
+	full, err := hybridSearch(ctx, cfg, "Scratch Backfill Repro", "", 50)
+	if err != nil {
+		t.Fatalf("hybridSearch(50): %v", err)
+	}
+	if len(full) < 2 {
+		t.Fatalf("expected >= 2 ranked results to seed the repro, got %d: %v", len(full), idList(full))
+	}
+	top := full[0]
+
+	if _, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: top.Path, MemoryID: top.ID}); err != nil {
+		t.Fatalf("markIndexDirty: %v", err)
+	}
+
+	got, err := hybridSearch(ctx, cfg, "Scratch Backfill Repro", "", 1)
+	if err != nil {
+		t.Fatalf("hybridSearch(1): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("hybrid path: suppressing the top-ranked hit (zero clusters in this pool) must "+
+			"cost its slot outright, NOT backfill, got %d result(s): %v", len(got), idList(got))
+	}
+}
+
+// TestClusterContractSuppressedTopHitNoBackfillMCP is the MCP-path variant:
+// the same repro driven through the real search_memory tool dispatch (mcp.go),
+// proving the discipline holds end-to-end, not just at the internal primitive.
+func TestClusterContractSuppressedTopHitNoBackfillMCP(t *testing.T) {
+	cfg := seedBackfillReproFixture(t)
+	ctx := context.Background()
+
+	full, err := searchMemories(ctx, cfg, "Scratch Backfill Repro", "", 50)
+	if err != nil {
+		t.Fatalf("searchMemories(50): %v", err)
+	}
+	if len(full) < 2 {
+		t.Fatalf("expected >= 2 ranked results to seed the repro, got %d: %v", len(full), idList(full))
+	}
+	top := full[0]
+	if _, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: top.Path, MemoryID: top.ID}); err != nil {
+		t.Fatalf("markIndexDirty: %v", err)
+	}
+
+	res := mcpResult(t, budgetCall("search_memory", `{"query":"Scratch Backfill Repro","limit":1}`))
+	rows := resultRows(t, res)
+	if len(rows) != 0 {
+		t.Fatalf("MCP search_memory: suppressing the top-ranked hit (zero clusters) must cost its "+
+			"slot outright, NOT backfill, got %d row(s): %v", len(rows), rows)
+	}
+}
+
+// ---------------------------------------------------------------------------
+//  12. SCOPING P1 — think must never make a folded cluster member
+//     UNRECOVERABLE. buildThink (think.go) retrieves via hybridSearchTrace —
+//     the SAME shared primitive search_memory uses — so a cluster head's
+//     Memory.Corroborating field IS populated on the Memory value think sees;
+//     the defect is that buildThink's mapping into ThinkEvidence drops the
+//     field entirely, so the two folded members never appear as their own
+//     evidence rows (correctly, since they're clustered) AND never appear as
+//     a citation anywhere else (incorrectly — they simply vanish from think's
+//     output). RED vs f19d15e.
+//
+// ---------------------------------------------------------------------------
+func thinkEvidenceRows(t *testing.T, res map[string]any) []map[string]any {
+	t.Helper()
+	payload := structuredPayload(t, res)
+	th, ok := payload["think"].(map[string]any)
+	if !ok {
+		t.Fatalf("no think object in structuredContent: %#v", payload)
+	}
+	raw, ok := th["evidence"].([]any)
+	if !ok {
+		t.Fatalf("think.evidence is not an array (or missing): %#v", th["evidence"])
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, r := range raw {
+		m, ok := r.(map[string]any)
+		if !ok {
+			t.Fatalf("think evidence row is not an object: %#v", r)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func TestClusterContractThinkExposesFoldedMembers(t *testing.T) {
+	seedClusterFixture(t)
+
+	res := mcpResult(t, budgetCall("think", `{"query":"`+clusterQuery+`"}`))
+	rows := thinkEvidenceRows(t, res)
+
+	var headRow map[string]any
+	for _, row := range rows {
+		if id, _ := row["stable_id"].(string); id == clusterHeadID {
+			headRow = row
+		}
+	}
+	if headRow == nil {
+		t.Fatalf("cluster head %s missing from think evidence: %v", clusterHeadID, rows)
+	}
+
+	corr, ok := headRow["corroborating"].([]any)
+	if !ok {
+		t.Fatalf("think's cluster head evidence entry %s carries no corroborating citations — "+
+			"folded members %v are UNRECOVERABLE from think output: %#v",
+			clusterHeadID, clusterMemberIDsInOrder, headRow)
+	}
+	gotIDs := map[string]bool{}
+	for _, raw := range corr {
+		ref, _ := raw.(map[string]any)
+		var keys []string
+		for k := range ref {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		wantKeys := []string{"created_at", "id", "source", "title"}
+		if len(keys) != len(wantKeys) {
+			t.Fatalf("think corroborating ref keys = %v, want exactly %v", keys, wantKeys)
+		}
+		for i := range keys {
+			if keys[i] != wantKeys[i] {
+				t.Fatalf("think corroborating ref keys = %v, want exactly %v", keys, wantKeys)
+			}
+		}
+		if id, _ := ref["id"].(string); id != "" {
+			gotIDs[id] = true
+		}
+	}
+	for _, mid := range clusterMemberIDsInOrder {
+		if !gotIDs[mid] {
+			t.Fatalf("think's cluster head corroborating refs = %v, missing folded member %s "+
+				"(RED vs f19d15e — think must never hide a member with no citation path)", corr, mid)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+//  13. SCOPING P1 — context_memory (MCP) must never make a folded cluster
+//     member UNRECOVERABLE either. mcpContextMemory (mcp.go) retrieves via
+//     hybridSearch (the same shared primitive) and renders its "context" text
+//     block via buildContext (search.go), which walks the (already-clustered)
+//     item list and renders ONLY each surviving item's Title+Text — a folded
+//     member is not on that list at all (clusterAndTruncate excludes it; its
+//     content survives only as a citation on the head's Memory.Corroborating
+//     field, which buildContext never reads). Checked via each folded
+//     member's distinctive body text rather than its bare title: the head's
+//     own title "Re: Q3 Planning Review - prep notes" already contains the
+//     gcal member's bare title "Q3 Planning Review" as a substring, so a
+//     title-only check would falsely pass. RED vs f19d15e.
+//
+// ---------------------------------------------------------------------------
+func TestClusterContractContextMemoryExposesFoldedMembers(t *testing.T) {
+	seedClusterFixture(t)
+
+	res := mcpResult(t, budgetCall("context_memory", `{"query":"`+clusterQuery+`"}`))
+	payload := structuredPayload(t, res)
+	text, _ := payload["context"].(string)
+	if text == "" {
+		t.Fatalf("context_memory returned no context text: %#v", payload)
+	}
+	const gcalMemberText = "Quarterly planning review to align on Q3 roadmap priorities and budget allocation across teams."
+	const imessageMemberText = "Great Q3 planning review today, sending over the budget allocation follow up numbers we discussed."
+	if !strings.Contains(text, gcalMemberText) {
+		t.Fatalf("context_memory must not silently drop a folded cluster member's content — "+
+			"gcal_primary/evt-q3review's body is missing from the rendered context block:\n%s", text)
+	}
+	if !strings.Contains(text, imessageMemberText) {
+		t.Fatalf("context_memory must not silently drop a folded cluster member's content — "+
+			"imessage/chat-q3review's body is missing from the rendered context block:\n%s", text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+//  14. SCOPING P1 — CLI `mora context --json` must never make a folded
+//     cluster member UNRECOVERABLE either. cmdContext (commands_memory.go)
+//     retrieves via the same hybridSearch primitive and packs receipts via
+//     contextReceipts (entities.go), whose contextItemJSON shape is
+//     {id,title,created_at} with NO corroborating field — a folded member is
+//     simply absent from items[], with no nested citation either. RED vs
+//     f19d15e.
+//
+// ---------------------------------------------------------------------------
+func TestClusterContractCLIContextExposesFoldedMembers(t *testing.T) {
+	seedClusterFixture(t)
+	out := run(t, "context", "--query", clusterQuery, "--json")
+	var env map[string]any
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("context --json output not valid JSON: %v\n%s", err, out)
+	}
+	raw, ok := env["items"].([]any)
+	if !ok {
+		t.Fatalf("context --json has no items array: %#v", env)
+	}
+	gotIDs := map[string]bool{}
+	for _, r := range raw {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, _ := m["id"].(string); id != "" {
+			gotIDs[id] = true
+		}
+		// A future implementation may carry folded members as a nested
+		// corroborating array on the head receipt (mirroring search_memory)
+		// rather than as their own top-level row — check both shapes.
+		if corr, ok := m["corroborating"].([]any); ok {
+			for _, cr := range corr {
+				if crm, ok := cr.(map[string]any); ok {
+					if id, _ := crm["id"].(string); id != "" {
+						gotIDs[id] = true
+					}
+				}
+			}
+		}
+	}
+	for _, mid := range clusterMemberIDsInOrder {
+		if !gotIDs[mid] {
+			t.Fatalf("`mora context --json` receipts = %v, missing folded member %s — "+
+				"RED vs f19d15e (contextItemJSON has no corroborating field; the member is "+
+				"UNRECOVERABLE from CLI context receipts today)", raw, mid)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+//  15. T0 GUARD — think's and context_memory's token ceilings still pass on
+//     the cluster fixture. PASS today (a small 8-memory fixture is nowhere
+//     near either ceiling); guards a future implementation that exposes
+//     corroborating refs on these surfaces (test 12/13 above) from doing so
+//     at unbounded cost.
+//
+// ---------------------------------------------------------------------------
+func TestClusterContractThinkBudgetUnderCeiling(t *testing.T) {
+	seedClusterFixture(t)
+	line := budgetCall("think", `{"query":"`+clusterQuery+`"}`)
+	bytes := measureEnvelope(t, line)
+	tok := bytes / charsPerToken
+	const thinkCeiling = 6000 // mora_mcp_budget_test.go budgetCases(), tool:"think"
+	if tok > thinkCeiling {
+		t.Fatalf("clustered think envelope = %d tokens (%d bytes), exceeds the T0 ceiling %d", tok, bytes, thinkCeiling)
+	}
+}
+
+func TestClusterContractContextMemoryBudgetUnderCeiling(t *testing.T) {
+	seedClusterFixture(t)
+	line := budgetCall("context_memory", `{"query":"`+clusterQuery+`"}`)
+	bytes := measureEnvelope(t, line)
+	tok := bytes / charsPerToken
+	const contextCeiling = 12000 // mora_mcp_budget_test.go budgetCases(), tool:"context_default"/"context_max"
+	if tok > contextCeiling {
+		t.Fatalf("clustered context_memory envelope = %d tokens (%d bytes), exceeds the T0 ceiling %d", tok, bytes, contextCeiling)
+	}
+}
+
+// ---------------------------------------------------------------------------
+//  16. P2 HARDENING — refusal-cap boundary. Exactly 5 total members (head +
+//     4 corroborating) is AT the clusterMaxMembers cap, not over it, and must
+//     commit; exactly 6 (head + 5) exceeds it and must refuse whole. Distilled
+//     from the same hub/fan-out pathology as TestClusterContractAntiHubRefusalCap
+//     (which tests well past the cap, at 8), pinned here at the exact boundary.
+//     GREEN today: cluster.go's clusterMaxMembers=5 check (`len(candidates)+1 >
+//     clusterMaxMembers`) already gets the boundary right.
+//
+// ---------------------------------------------------------------------------
+func seedRefusalBoundaryFixture(t *testing.T, n int) Config {
+	t.Helper()
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	const occurredAt = "2026-06-26T12:00:00Z"
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("boundary-hub/thread-%02d", i)
+		if err := writeMemory(cfg, Memory{
+			ID: id, Scope: "personal", Type: "email",
+			Title:     fmt.Sprintf("Boundary Hub Regression %02d", i),
+			Source:    "gmail",
+			CreatedAt: occurredAt,
+			Meta: map[string]any{
+				"occurred_at": occurredAt,
+				"from":        []string{"yara@example.com"},
+				"to":          []string{fmt.Sprintf("recipient%02d@example.com", i)},
+			},
+			Text: "Boundary hub regression body text for the 5-vs-6 refusal cap contract.",
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	ctx := context.Background()
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestClusterContractRefusalCapBoundary5vs6(t *testing.T) {
+	t.Run("FiveMembersCluster", func(t *testing.T) {
+		seedRefusalBoundaryFixture(t, 5)
+		res := mcpResult(t, budgetCall("search_memory", `{"query":"Boundary Hub Regression","limit":5}`))
+		rows := resultRows(t, res)
+		if len(rows) != 1 {
+			t.Fatalf("5 total members (head + 4) is AT the cap, not over it — must commit to a "+
+				"single cluster head, got %d row(s): %v", len(rows), rows)
+		}
+		corr, ok := rows[0]["corroborating"].([]any)
+		if !ok || len(corr) != 4 {
+			t.Fatalf("5-member candidate must commit with exactly 4 corroborating members: %#v", rows[0])
+		}
+	})
+	t.Run("SixMembersRefuseWhole", func(t *testing.T) {
+		seedRefusalBoundaryFixture(t, 6)
+		res := mcpResult(t, budgetCall("search_memory", `{"query":"Boundary Hub Regression","limit":10}`))
+		rows := resultRows(t, res)
+		if len(rows) != 6 {
+			t.Fatalf("6 total members (head + 5) EXCEEDS the 5-member cap — the whole candidate must "+
+				"refuse, leaving 6 independent hits, got %d: %v", len(rows), rows)
+		}
+		if envelopeContainsKey(t, res, "corroborating") {
+			t.Fatal("a refused 6-member candidate must carry no corroborating key at all")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+//  17. P2 HARDENING — Rule 2 identity-noise near-miss. Two records' ONLY
+//     shared "identity" token is a structural-noise handle (isStructuralNoise
+//     / isArtifact, classify.go — GitHub notification field labels like
+//     "push"/"author" that personRefs refuses to mint as a person). But
+//     clusterIdentitySet (cluster.go) does no such filtering — it unions raw
+//     from/to/cc/attendees/organizer/participants verbatim — so this pair
+//     currently satisfies Rule 2 (identity intersection + in-window) purely
+//     on a noise-word coincidence and wrongly clusters. RED vs f19d15e.
+//
+// ---------------------------------------------------------------------------
+func TestClusterContractRule2IdentityNoiseNearMiss(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	seed := func(id string, from, to []string, occurredAt string) {
+		if err := writeMemory(cfg, Memory{
+			ID: id, Scope: "personal", Type: "email", Title: "Structural Noise Regression",
+			Source: "gmail", CreatedAt: occurredAt,
+			Meta: map[string]any{"occurred_at": occurredAt, "from": from, "to": to},
+			Text: "Structural noise regression body text for the identity-noise near-miss contract.",
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	// The ONLY shared token between these two identity sets is "push" — a
+	// structural-noise label, not a real person — well inside the 24h window.
+	seed("noise/a-first", []string{"push"}, []string{"mallory@example.com"}, "2026-06-27T09:00:00Z")
+	seed("noise/b-second", []string{"nolan@example.com"}, []string{"push"}, "2026-06-27T10:00:00Z")
+
+	ctx := context.Background()
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	res := mcpResult(t, budgetCall("search_memory", `{"query":"Structural Noise Regression","limit":5}`))
+	rows := resultRows(t, res)
+	if len(rows) != 2 {
+		t.Fatalf("identity intersection on a structural-noise token alone must NOT cluster, got %d "+
+			"row(s): %v — RED vs f19d15e (clusterIdentitySet applies no noise filtering)", len(rows), rows)
+	}
+	if envelopeContainsKey(t, res, "corroborating") {
+		t.Fatal("a structural-noise-only match must not carry a corroborating key")
 	}
 }
