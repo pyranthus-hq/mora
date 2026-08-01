@@ -142,7 +142,7 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	// Gated on a non-empty arm so a query with zero segment matches is a
 	// complete no-op — the byte-identity guarantee for non-participating
 	// memories (frozen interface #5).
-	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArmBounded(ctx, db, query, scope, sqlLimit)
 	if segErr == nil && len(segIDs) > 0 {
 		if admitted, admitErr := admitGmailSegmentCandidates(ctx, db, out, segIDs, sqlLimit); admitErr == nil {
 			out = admitted
@@ -167,6 +167,9 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 		return nil, err
 	}
 	if limit <= 0 {
+		if len(segIDs) > 0 {
+			gsegEvidence = completeGmailSegmentEvidence(ctx, db, query, filtered, gsegEvidence)
+		}
 		attachGmailSegmentEvidence(filtered, gsegEvidence)
 		return filtered, nil // preserve pre-#237 SQL-LIMIT edge semantics; no clustering
 	}
@@ -175,6 +178,9 @@ func searchMemories(ctx context.Context, cfg Config, query, scope string, limit 
 	result := clusterAndTruncate(rawIDs, filtered, limit)
 	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
 	// "does this SURVIVING row's parent have a query-matching segment" (DQ5).
+	if len(segIDs) > 0 {
+		gsegEvidence = completeGmailSegmentEvidence(ctx, db, query, result, gsegEvidence)
+	}
 	attachGmailSegmentEvidence(result, gsegEvidence)
 	return result, nil
 }

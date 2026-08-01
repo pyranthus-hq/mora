@@ -69,7 +69,7 @@ func rrf(lists [][]string, k float64) map[string]float64 {
 // COVERAGE / RETRIEVAL / FUSION / HIT (see docs/design/2026-06-05-t2-recall-eval-design.md §6).
 // It is populated on every call; production callers drop it.
 type retrievalTrace struct {
-	FTS, Vec, Graph, Fused []string // ranked ids; rank = slice index. Fused is the FULL ranking, pre-limit.
+	FTS, Vec, Graph, Segment, Fused []string // ranked ids; rank = slice index. Fused is the FULL ranking, pre-limit.
 	// PreTruncPool is the arm depth actually queried. The eval passes a tracePool
 	// LARGER than production's pool=limit*5 so a gold doc at arm-rank #55 surfaces
 	// as FOUND-BUT-BEYOND-POOL (FUSION), not misread as "no arm found it"
@@ -203,6 +203,14 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		}
 	}
 
+	// Issue #243 production arm: bounded to the SAME parent pool as the other
+	// candidate sources before either fusion or hydration. Best-effort by
+	// design: a segment-query error degrades to an empty arm and no evidence.
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArmBounded(ctx, db, query, scope, pool)
+	if segErr != nil {
+		segIDs, gsegEvidence = nil, nil
+	}
+
 	// Trace arms — deepened to tracePool for attribution ONLY (never fused). At
 	// tracePool<=pool the production arms ARE the trace arms (no extra queries).
 	if tracePool > pool {
@@ -220,9 +228,15 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 				return nil, tr, err
 			}
 		}
+		// Like the other trace arms, Segment is re-queried at tracePool only
+		// for attribution. The production segIDs above remain the sole segment
+		// list fed to RRF below.
+		if traceSegment, _, traceErr := gmailSegmentQueryArmBounded(ctx, db, query, scope, tracePool); traceErr == nil {
+			tr.Segment = traceSegment
+		}
 	} else {
 		tr.PreTruncPool = pool
-		tr.FTS, tr.Vec, tr.Graph = ftsIDs, vecIDs, graphIDs
+		tr.FTS, tr.Vec, tr.Graph, tr.Segment = ftsIDs, vecIDs, graphIDs, segIDs
 	}
 
 	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source, mapped
@@ -232,11 +246,6 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// for every OTHER id's fused score — the byte-identity guarantee for
 	// non-participating memories holds automatically. Best-effort: a
 	// segment-arm failure just means an empty arm, never a failed search.
-	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope)
-	if segErr != nil {
-		segIDs, gsegEvidence = nil, nil
-	}
-
 	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 && len(segIDs) == 0 {
 		return nil, tr, nil
 	}
@@ -304,6 +313,9 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
 	// "does this SURVIVING row's parent have a query-matching segment" (DQ5),
 	// independent of which arm(s) actually ranked it in.
+	if len(segIDs) > 0 {
+		gsegEvidence = completeGmailSegmentEvidence(ctx, db, query, result, gsegEvidence)
+	}
 	attachGmailSegmentEvidence(result, gsegEvidence)
 	return result, tr, nil
 }
