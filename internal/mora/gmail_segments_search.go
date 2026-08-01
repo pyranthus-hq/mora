@@ -25,13 +25,13 @@ type GmailSegmentEvidence struct {
 }
 
 // Fusion tuning for the segment arm. k matches defaultFusion.k (hybrid.go) —
-// both a plain-FTS-only fusion (this file) and the hybrid fusion (hybrid.go)
-// use the SAME damping so a query's ranking behavior does not depend on
-// which arm combination happened to be active. The parent-grain arm keeps a
-// heavier weight (the exact-match anchor, mirroring defaultFusion.fts); the
-// segment arm's weight is what lets a short, sharply-matching segment
-// promote a heavily-diluted parent past decoys that only agree at parent
-// grain (the buried-message acceptance criterion).
+// both the static parent+segment fusion (this file) and the hybrid fusion
+// (hybrid.go) use the SAME damping so a query's ranking behavior does not
+// depend on which arm combination happened to be active. The parent-grain arm
+// keeps a heavier weight (the exact-match anchor, mirroring defaultFusion.fts);
+// the segment arm's weight is what lets a short, sharply-matching segment
+// promote a heavily-diluted parent past decoys that only agree at parent grain
+// (the buried-message acceptance criterion).
 const (
 	gmailSegmentFusionK            = 10
 	gmailSegmentParentWeight       = 1.5
