@@ -25,26 +25,39 @@ type GmailSegmentEvidence struct {
 }
 
 // Fusion tuning for the segment arm. k matches defaultFusion.k (hybrid.go) —
-// both a plain-FTS-only fusion (this file) and the hybrid fusion (hybrid.go)
-// use the SAME damping so a query's ranking behavior does not depend on
-// which arm combination happened to be active. The parent-grain arm keeps a
-// heavier weight (the exact-match anchor, mirroring defaultFusion.fts); the
-// segment arm's weight is what lets a short, sharply-matching segment
-// promote a heavily-diluted parent past decoys that only agree at parent
-// grain (the buried-message acceptance criterion).
+// both the static parent+segment fusion (this file) and the hybrid fusion
+// (hybrid.go) use the SAME damping so a query's ranking behavior does not
+// depend on which arm combination happened to be active. The parent-grain arm
+// keeps a heavier weight (the exact-match anchor, mirroring defaultFusion.fts);
+// the segment arm's weight is what lets a short, sharply-matching segment
+// promote a heavily-diluted parent past decoys that only agree at parent grain
+// (the buried-message acceptance criterion).
 const (
-	gmailSegmentFusionK      = 10
-	gmailSegmentParentWeight = 1.5
-	gmailSegmentArmWeight    = 1.0
+	gmailSegmentFusionK            = 10
+	gmailSegmentParentWeight       = 1.5
+	gmailSegmentArmWeight          = 1.0
+	gmailSegmentDefaultParentPool  = 50
+	gmailSegmentEvidenceIDChunkLen = 200
 )
 
-// gmailSegmentQueryArm runs query against gmail_segments_fts and returns, for
-// every DISTINCT parent memory with at least one matching segment: the
-// parent ids in STRONGEST-first order (best bm25 score, then lowest
-// evidence_ref lexicographically — the same tie-break DQ5 pins for evidence
-// attachment) and a map of that parent's WINNING segment's evidence receipt.
-// A parent's rank-arm membership and its evidence receipt share exactly one
-// query pass, so they can never disagree about which segment "won".
+// gmailSegmentQueryArm is the default-floor package seam used by direct
+// contracts. Production callers with an already-computed candidate depth use
+// gmailSegmentQueryArmBounded so static, hybrid, and deep-trace paths all pass
+// their truthful pool explicitly.
+func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string, filters ...searchFilters) ([]string, map[string]GmailSegmentEvidence, error) {
+	return gmailSegmentQueryArmBounded(ctx, db, query, scope, gmailSegmentDefaultParentPool, filters...)
+}
+
+// gmailSegmentQueryArmBounded runs query against gmail_segments_fts and
+// returns at most pool DISTINCT parent memories with at least one matching
+// segment. The SQL first selects one WINNING segment per parent (best FTS5
+// hidden rank, equivalent to bm25(), then lowest evidence_ref), then orders
+// those parent winners by score, evidence_ref, and memory_id before applying
+// LIMIT. The parent bound is therefore real even when one thread owns many
+// stronger matching segments; a raw row-level LIMIT followed by Go dedup would
+// starve other parents. A parent's rank-arm membership and evidence receipt
+// share exactly this one bounded query, so they cannot disagree about which
+// segment won.
 //
 // Errors are returned to the caller, which treats the segment arm as
 // best-effort BY DESIGN — a deliberate policy, asymmetric with the FATAL
@@ -63,30 +76,66 @@ const (
 // is silent beyond the missing evidence/promotion it causes; that gap is a
 // known, accepted tradeoff of the best-effort policy, not an oversight to
 // fix by adding a new logging path.
-func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string, filters ...searchFilters) ([]string, map[string]GmailSegmentEvidence, error) {
+func gmailSegmentQueryArmBounded(ctx context.Context, db *sql.DB, query, scope string, pool int, filters ...searchFilters) ([]string, map[string]GmailSegmentEvidence, error) {
+	return gmailSegmentWinnerQuery(ctx, db, query, scope, pool, nil, filters...)
+}
+
+// gmailSegmentWinnerQuery is the shared parent-aware winner query. parentIDs
+// optionally restricts it to an already-bounded final result set for DQ5
+// receipt completion; the production arm leaves parentIDs nil and is bounded
+// by pool alone.
+func gmailSegmentWinnerQuery(ctx context.Context, db *sql.DB, query, scope string, pool int, parentIDs []string, filters ...searchFilters) ([]string, map[string]GmailSegmentEvidence, error) {
+	if pool <= 0 {
+		return nil, nil, nil
+	}
 	f := oneFilter(filters)
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil, nil
 	}
-	q := `SELECT gs.evidence_ref, gs.memory_id, gs.sender, gs.at, gs.text
-	      FROM gmail_segments_fts
-	      JOIN gmail_segments gs ON gs.evidence_ref = gmail_segments_fts.evidence_ref
-	      JOIN memories m ON m.id = gs.memory_id
-	      WHERE gmail_segments_fts MATCH ?`
+	q := `WITH ranked_segments AS (
+	        SELECT gs.evidence_ref, gs.memory_id, gs.sender, gs.at, gs.text,
+	               gmail_segments_fts.rank AS segment_score
+	        FROM gmail_segments_fts
+	        JOIN gmail_segments gs ON gs.evidence_ref = gmail_segments_fts.evidence_ref
+	        JOIN memories m ON m.id = gs.memory_id
+	        WHERE gmail_segments_fts MATCH ?`
 	args := []any{match}
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
 	}
 	// I5: D's trusted source/time boundary applies inside the segment arm's
-	// joined-memory query, before BM25 ordering. An excluded segment must never
-	// earn a rank, consume a candidate slot, or be hydrated back into results.
+	// joined-memory query, before parent ranking or limiting. An excluded segment
+	// must never earn a rank, consume a candidate slot, or be hydrated back into
+	// results.
 	if predicate, predicateArgs := f.sqlPredicate(); predicate != "" {
 		q += predicate
 		args = append(args, predicateArgs...)
 	}
-	q += ` ORDER BY bm25(gmail_segments_fts), gs.evidence_ref`
+	if len(parentIDs) > 0 {
+		placeholders := make([]string, len(parentIDs))
+		for i, id := range parentIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		q += ` AND gs.memory_id IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	q += `
+	      ), parent_winners AS (
+	        SELECT evidence_ref, memory_id, sender, at, text, segment_score,
+	               ROW_NUMBER() OVER (
+	                 PARTITION BY memory_id
+	                 ORDER BY segment_score, evidence_ref
+	               ) AS parent_rank
+	        FROM ranked_segments
+	      )
+	      SELECT evidence_ref, memory_id, sender, at, text
+	      FROM parent_winners
+	      WHERE parent_rank = 1
+	      ORDER BY segment_score, evidence_ref, memory_id
+	      LIMIT ?`
+	args = append(args, pool)
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, nil, err
@@ -98,9 +147,6 @@ func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string, 
 		var evRef, memID, sender, at, text string
 		if err := rows.Scan(&evRef, &memID, &sender, &at, &text); err != nil {
 			return nil, nil, err
-		}
-		if _, seen := evidence[memID]; seen {
-			continue // first occurrence per parent (ORDER BY above) is already the strongest
 		}
 		evidence[memID] = GmailSegmentEvidence{
 			EvidenceRef: evRef,
@@ -114,6 +160,51 @@ func gmailSegmentQueryArm(ctx context.Context, db *sql.DB, query, scope string, 
 		return nil, nil, err
 	}
 	return ids, evidence, nil
+}
+
+// completeGmailSegmentEvidence preserves DQ5 after the candidate arm is
+// bounded: a final Gmail parent returned by FTS/vector/graph still receives
+// its strongest query-matching segment even when that parent ranked below the
+// segment arm's pool. Only missing final-result ids are queried, in fixed-size
+// chunks, so neither the candidate map nor SQLite bind count can become
+// unbounded. Deep-trace evidence is never passed here and can never leak into
+// production receipts.
+func completeGmailSegmentEvidence(ctx context.Context, db *sql.DB, query, scope string, rows []Memory, evidence map[string]GmailSegmentEvidence, filters ...searchFilters) map[string]GmailSegmentEvidence {
+	if len(rows) == 0 {
+		return evidence
+	}
+	missing := make([]string, 0, len(rows))
+	seen := make(map[string]bool, len(rows))
+	for _, m := range rows {
+		if !isGmailMemory(m) || seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
+		if _, ok := evidence[m.ID]; !ok {
+			missing = append(missing, m.ID)
+		}
+	}
+	if len(missing) == 0 {
+		return evidence
+	}
+	if evidence == nil {
+		evidence = make(map[string]GmailSegmentEvidence)
+	}
+	for start := 0; start < len(missing); start += gmailSegmentEvidenceIDChunkLen {
+		end := start + gmailSegmentEvidenceIDChunkLen
+		if end > len(missing) {
+			end = len(missing)
+		}
+		chunk := missing[start:end]
+		_, found, err := gmailSegmentWinnerQuery(ctx, db, query, scope, len(chunk), chunk, filters...)
+		if err != nil {
+			return evidence // preserve the arm's best-effort failure policy
+		}
+		for id, receipt := range found {
+			evidence[id] = receipt
+		}
+	}
+	return evidence
 }
 
 // admitGmailSegmentCandidates hydrates the top pool parents named by the

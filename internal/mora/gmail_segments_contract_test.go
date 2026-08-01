@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -106,8 +107,10 @@ import (
 //          contract's truncated fixture deliberately keeps meta_count ==
 //          body_count to prove the check is independent, not a fallback of
 //          the count check).
-//       2. "count_mismatch" — len(meta.messages) != the recovered body-block
-//          count (gmailBodyParts, DQ4).
+//       2. "count_mismatch" — len(meta.messages) != the one canonical RAW
+//          gmailBodySeparator block count used for count, sender validation,
+//          and row text. Splitting after stripFromLine is forbidden: trimming
+//          an empty first message can erase a real boundary and shift bodies.
 //       3. "ordering_mismatch" — DECIDED (round 2, contract, REVISED after a
 //          second audit pass rejected the round-2-first-draft signal). The
 //          issue body names "a metadata/body count OR ordering mismatch" as
@@ -162,15 +165,13 @@ import (
 //     one memory's segments claim identity in another's evidence space
 //     (exactly the misattribution failure mode this issue exists to
 //     prevent).
-//   - DQ4 (body-block recovery) — DECIDED (round 1, unchallenged): reuse the
-//     EXISTING split primitive (gmailBodyParts, commitment.go:548) rather
-//     than inventing a second one — it is already the codebase's one
-//     precedent for recovering per-message boundaries from the
-//     "\n\n---\n\n"-joined body, and reusing it means a literal "---" line
-//     inside a message produces the SAME extra-parts mismatch commitment.go's
-//     own len(messages)==len(parts) guard already relies on
-//     (commitment.go:814), not a second, possibly-divergent definition of
-//     "matches".
+//   - DQ4 (body-block recovery) — DECIDED (review amendment): split the RAW,
+//     unstripped joined body exactly once on gmailBodySeparator, then reuse
+//     that same ordered slice for count, sender validation, and row text.
+//     gmailBodyParts remains a commitment-classification helper but cannot own
+//     evidence identity: its leading stripFromLine+TrimSpace can erase the
+//     first boundary when message 1 is empty, while a later literal separator
+//     restores the apparent count and shifts message text across stable refs.
 //   - DQ5 (evidence attachment condition) — DECIDED (round 2, integrator:
 //     REVISED to the issue-aligned rule, replacing BOTH the round-1 "any
 //     co-match" reading and the round-2 "winning candidate-source ownership"
@@ -1308,6 +1309,65 @@ func TestGmailSegmentsContractFailClosedExplicitEmptyMessages(t *testing.T) {
 	}
 }
 
+// TestGmailSegmentsContractFailClosedEmptyFirstMessageThenLiteralSeparator —
+// REVIEW REGRESSION. The Gmail renderer preserves an empty first message as a
+// real `From:` block. `stripFromLine` trims the whitespace after that header,
+// though, so splitting its result can erase the first real join boundary. A
+// literal separator later in message 2 can then make the derived part count
+// appear to match meta.messages again while shifting message 2's opening text
+// under message 1's evidence_ref. The whole memory must instead fail closed on
+// the one canonical raw-block count: two declared messages versus three
+// separator-delimited blocks.
+func TestGmailSegmentsContractFailClosedEmptyFirstMessageThenLiteralSeparator(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	const (
+		id     = "gmail_thread/th-empty-first-literal-separator"
+		marker = "GMLSEGEMPTYFIRSTSHIFTEDMARKER"
+	)
+	body := gmailSegJoinBody(
+		[2]string{"first@example.com", ""},
+		[2]string{"second@example.com", "Second message opening text.\n\n---\n\n" + marker + " remains part of the second message."},
+	)
+	if err := writeMemory(cfg, Memory{
+		ID: id, Scope: "personal", Type: "email", Source: "gmail",
+		Provider: "gmail", ProviderID: "thread/th-empty-first-literal-separator",
+		Title: "Empty first message alignment", CreatedAt: "2026-06-02T11:00:00Z", Text: body,
+		Meta: map[string]any{
+			"from": []string{"first@example.com", "second@example.com"},
+			"messages": gmailSegMessages(
+				commitmentMessageEvidence{MessageRef: id + "#msg-1", Sender: "first@example.com", At: "2026-06-02T10:55:00Z"},
+				commitmentMessageEvidence{MessageRef: id + "#msg-2", Sender: "second@example.com", At: "2026-06-02T11:00:00Z", BlockRefs: []string{"body"}},
+			),
+		},
+	}); err != nil {
+		t.Fatalf("seed empty-first alignment thread: %v", err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
+
+	if !memoryStillIndexed(t, cfg, id) {
+		t.Fatalf("parent memory %s must remain indexed when segment alignment fails closed", id)
+	}
+	if rows := gmailSegRowsFor(t, cfg, id); len(rows) != 0 {
+		t.Fatalf("empty-first alignment thread produced %d segments, want 0; rows=%+v", len(rows), rows)
+	}
+	diag, ok := gmailSegDiagnosticFor(t, cfg, id)
+	if !ok {
+		t.Fatalf("no gmail_segment_diagnostics row for shifted empty-first alignment on %s", id)
+	}
+	if diag.Reason != gmailSegDiagCountMismatch || diag.MetaCount != 2 || diag.BodyCount != 3 {
+		t.Fatalf("diagnostic = %+v, want reason=%s meta_count=2 body_count=3", diag, gmailSegDiagCountMismatch)
+	}
+	diagJSON, _ := json.Marshal(diag)
+	if strings.Contains(string(diagJSON), marker) {
+		t.Fatalf("gmail_segment_diagnostics row leaked memory content: %s", diagJSON)
+	}
+}
+
 // TestGmailSegmentsContractFailClosedLiteralSeparatorInBody — CONTRACT, RED
 // today. The literal "---" line inside message 2's own body must not be
 // silently absorbed by a naive zip-by-index; the whole memory fails closed,
@@ -1823,6 +1883,227 @@ func evidenceObject(t *testing.T, row map[string]any) map[string]any {
 		t.Fatalf("row has no 'evidence' object: %#v", row)
 	}
 	return ev
+}
+
+const (
+	gsPoolMarker       = "GMLSEGBOUNDEDPARENTPOOLMARKER"
+	gsPoolFanoutID     = "gmail_thread/th-segment-pool-fanout"
+	gsPoolOutsideID    = "gmail_thread/th-segment-pool-parent-059"
+	gsProductionPool   = 50
+	gsDeepTracePool    = 60
+	gsOtherParentCount = 60
+	gsFanoutMessages   = 60
+)
+
+// seedGmailSegmentPoolFixture builds 61 matching PARENT threads but 120
+// matching SEGMENT rows. The fanout parent owns 60 byte-identical, strongest
+// rows; a raw `LIMIT 50` on segment rows would therefore collapse to one
+// parent after dedup. A correct bound first chooses one deterministic winner
+// per parent, then limits the parent-ranked result to the production pool.
+func seedGmailSegmentPoolFixture(t *testing.T) Config {
+	t.Helper()
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	fanoutMeta := make([]commitmentMessageEvidence, gsFanoutMessages)
+	fanoutBody := make([][2]string, gsFanoutMessages)
+	fanoutFrom := make([]string, gsFanoutMessages)
+	for i := 0; i < gsFanoutMessages; i++ {
+		sender := fmt.Sprintf("fanout-%03d@example.com", i)
+		fanoutFrom[i] = sender
+		fanoutMeta[i] = commitmentMessageEvidence{
+			MessageRef: fmt.Sprintf("%s#msg-%03d", gsPoolFanoutID, i),
+			Sender:     sender,
+			At:         "2026-06-15T10:00:00Z",
+			BlockRefs:  []string{"body"},
+		}
+		fanoutBody[i] = [2]string{sender, gsPoolMarker}
+	}
+	if err := writeMemory(cfg, Memory{
+		ID: gsPoolFanoutID, Scope: "personal", Type: "email", Source: "gmail",
+		Provider: "gmail", ProviderID: "thread/th-segment-pool-fanout",
+		Title: "Segment pool fanout", CreatedAt: "2026-06-15T10:00:00Z",
+		Text: gmailSegJoinBody(fanoutBody...),
+		Meta: map[string]any{"from": fanoutFrom, "messages": fanoutMeta},
+	}); err != nil {
+		t.Fatalf("seed segment-pool fanout parent: %v", err)
+	}
+
+	// These 60 parents each contribute one weaker (longer) segment. Their
+	// evidence refs are zero-padded, so exact BM25 ties have an explicit,
+	// deterministic parent order at the pool boundary.
+	for i := 0; i < gsOtherParentCount; i++ {
+		id := fmt.Sprintf("gmail_thread/th-segment-pool-parent-%03d", i)
+		sender := fmt.Sprintf("pool-parent-%03d@example.com", i)
+		title := fmt.Sprintf("Segment pool parent %03d", i)
+		if id == gsPoolOutsideID {
+			// Parent-grain FTS must return this thread even though its equal-score,
+			// lexicographically last segment winner sits below the segment top-50.
+			title = strings.Repeat(gsPoolMarker+" ", 40) + "outside segment pool title co-match"
+		}
+		if err := writeMemory(cfg, Memory{
+			ID: id, Scope: "personal", Type: "email", Source: "gmail",
+			Provider: "gmail", ProviderID: fmt.Sprintf("thread/th-segment-pool-parent-%03d", i),
+			Title: title, CreatedAt: "2026-06-15T09:00:00Z",
+			Text: gmailSegJoinBody([2]string{sender, gsPoolMarker + strings.Repeat(" slower", 64)}),
+			Meta: map[string]any{
+				"from": []string{sender},
+				"messages": gmailSegMessages(commitmentMessageEvidence{
+					MessageRef: id + "#msg-000", Sender: sender,
+					At: "2026-06-15T09:00:00Z", BlockRefs: []string{"body"},
+				}),
+			},
+		}); err != nil {
+			t.Fatalf("seed segment-pool parent %d: %v", i, err)
+		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex segment-pool fixture: %v", err)
+	}
+	return cfg
+}
+
+// gmailSegmentTraceIDs reads the Segment arm without making the pre-fix
+// retrievalTrace shape a compile error. The frozen RED must run against the
+// prior head: absence of a Segment field is itself a truthful-trace failure.
+func gmailSegmentTraceIDs(t *testing.T, tr retrievalTrace) []string {
+	t.Helper()
+	field := reflect.ValueOf(tr).FieldByName("Segment")
+	if !field.IsValid() {
+		t.Fatal("retrievalTrace has no Segment arm; segment hits are invisible to attribution")
+	}
+	ids, ok := field.Interface().([]string)
+	if !ok {
+		t.Fatalf("retrievalTrace.Segment has type %s, want []string", field.Type())
+	}
+	return ids
+}
+
+// TestGmailSegmentsContractBoundedDistinctParentArmAndTruthfulTrace — REVIEW
+// REGRESSION. Production may materialize at most its parent candidate pool,
+// even when one parent owns enough high-scoring messages to consume a naive
+// row-level LIMIT. The parent's strongest segment and parent order stay
+// deterministic. A deep eval trace may query farther, but it must report that
+// deeper Segment arm under PreTruncPool without changing production fusion or
+// results.
+func TestGmailSegmentsContractBoundedDistinctParentArmAndTruthfulTrace(t *testing.T) {
+	cfg := seedGmailSegmentPoolFixture(t)
+	ctx := context.Background()
+	db, err := openIndexRO(ctx, cfg)
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	ids, evidence, err := gmailSegmentQueryArm(ctx, db, gsPoolMarker, "")
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("gmailSegmentQueryArm: %v", err)
+	}
+	idsAgain, evidenceAgain, err := gmailSegmentQueryArm(ctx, db, gsPoolMarker, "")
+	if closeErr := db.Close(); err != nil {
+		t.Fatalf("gmailSegmentQueryArm repeat: %v", err)
+	} else if closeErr != nil {
+		t.Fatalf("close index: %v", closeErr)
+	}
+
+	if len(ids) == 0 || ids[0] != gsPoolFanoutID {
+		t.Fatalf("strongest parent order = %v, want fanout parent %s first", ids, gsPoolFanoutID)
+	}
+	if got := evidence[gsPoolFanoutID].EvidenceRef; got != gsPoolFanoutID+"#msg-000" {
+		t.Fatalf("fanout evidence_ref = %q, want lexicographically first strongest ref %q", got, gsPoolFanoutID+"#msg-000")
+	}
+	if !reflect.DeepEqual(ids, idsAgain) || !reflect.DeepEqual(evidence, evidenceAgain) {
+		t.Fatalf("segment parent arm is nondeterministic:\nfirst ids=%v evidence=%v\nagain ids=%v evidence=%v", ids, evidence, idsAgain, evidenceAgain)
+	}
+	if len(ids) != gsProductionPool || len(evidence) != gsProductionPool {
+		t.Fatalf("production segment arm materialized parents/evidence = %d/%d, want exactly bounded distinct-parent pool %d", len(ids), len(evidence), gsProductionPool)
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("segment parent arm contains duplicate parent %s: %v", id, ids)
+		}
+		seen[id] = true
+	}
+
+	staticRows, err := searchMemories(ctx, cfg, gsPoolMarker, "", 1)
+	if err != nil {
+		t.Fatalf("searchMemories: %v", err)
+	}
+	if len(staticRows) != 1 || staticRows[0].ID != gsPoolFanoutID || staticRows[0].Evidence == nil || staticRows[0].Evidence.EvidenceRef != gsPoolFanoutID+"#msg-000" {
+		t.Fatalf("bounded static winner/evidence drifted: %+v", staticRows)
+	}
+
+	production, productionTrace, err := hybridSearchTrace(ctx, cfg, gsPoolMarker, "", 1, 0)
+	if err != nil {
+		t.Fatalf("hybridSearchTrace production: %v", err)
+	}
+	productionSegment := gmailSegmentTraceIDs(t, productionTrace)
+	if productionTrace.PreTruncPool != gsProductionPool || !reflect.DeepEqual(productionSegment, ids) {
+		t.Fatalf("production trace = pool %d segment %v, want pool %d segment %v", productionTrace.PreTruncPool, productionSegment, gsProductionPool, ids)
+	}
+
+	deep, deepTrace, err := hybridSearchTrace(ctx, cfg, gsPoolMarker, "", 1, gsDeepTracePool)
+	if err != nil {
+		t.Fatalf("hybridSearchTrace deep: %v", err)
+	}
+	deepSegment := gmailSegmentTraceIDs(t, deepTrace)
+	if deepTrace.PreTruncPool != gsDeepTracePool || len(deepSegment) != gsDeepTracePool {
+		t.Fatalf("deep trace = pool %d segment count %d, want pool/count %d", deepTrace.PreTruncPool, len(deepSegment), gsDeepTracePool)
+	}
+	if !reflect.DeepEqual(deepSegment[:gsProductionPool], productionSegment) {
+		t.Fatalf("deep Segment prefix drifted from production arm:\nproduction=%v\ndeep=%v", productionSegment, deepSegment)
+	}
+	if !reflect.DeepEqual(productionTrace.Fused, deepTrace.Fused) || !reflect.DeepEqual(production, deep) {
+		t.Fatalf("deep trace changed production fusion/results:\nproduction fused=%v rows=%+v\ndeep fused=%v rows=%+v", productionTrace.Fused, production, deepTrace.Fused, deep)
+	}
+}
+
+// TestGmailSegmentsContractOutsidePoolCoMatchKeepsStrongestEvidence — GREEN
+// PRESERVATION PIN on the unbounded prior head. gsPoolOutsideID's segment is
+// below the production segment-parent top-50, but its repeated title makes the
+// parent-grain arm return it. DQ5 is match-based, not winning-arm-based: the
+// final row must still carry that parent's strongest matching segment receipt.
+// Bounding the candidate arm must not silently turn evidence completeness into
+// "only parents that won the bounded segment arm".
+func TestGmailSegmentsContractOutsidePoolCoMatchKeepsStrongestEvidence(t *testing.T) {
+	cfg := seedGmailSegmentPoolFixture(t)
+	ctx := context.Background()
+	db, err := openIndexRO(ctx, cfg)
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	segmentIDs, _, err := gmailSegmentQueryArm(ctx, db, gsPoolMarker, "")
+	if closeErr := db.Close(); err != nil {
+		t.Fatalf("gmailSegmentQueryArm: %v", err)
+	} else if closeErr != nil {
+		t.Fatalf("close index: %v", closeErr)
+	}
+	outsideRank := -1
+	for i, id := range segmentIDs {
+		if id == gsPoolOutsideID {
+			outsideRank = i
+			break
+		}
+	}
+	if outsideRank >= 0 && outsideRank < gsProductionPool {
+		t.Fatalf("fixture premise broken: outside-pool parent %s ranked inside segment top-%d at %d: %v", gsPoolOutsideID, gsProductionPool, outsideRank, segmentIDs)
+	}
+
+	rows, err := searchMemories(ctx, cfg, gsPoolMarker, "", 8)
+	if err != nil {
+		t.Fatalf("searchMemories: %v", err)
+	}
+	for _, row := range rows {
+		if row.ID != gsPoolOutsideID {
+			continue
+		}
+		if row.Evidence == nil || row.Evidence.EvidenceRef != gsPoolOutsideID+"#msg-000" {
+			t.Fatalf("outside-pool co-match evidence = %+v, want strongest ref %s#msg-000", row.Evidence, gsPoolOutsideID)
+		}
+		return
+	}
+	t.Fatalf("parent/title arm did not return outside-pool co-match %s: %+v", gsPoolOutsideID, rows)
 }
 
 // ---------------------------------------------------------------------------

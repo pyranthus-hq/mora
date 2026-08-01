@@ -17,11 +17,12 @@ const rrfK = 60.0
 // this corpus: the gold doc is frequently retrieved by the FTS arm at a strong rank
 // but then DEMOTED below the cutoff by docs that several arms weakly agree on (the
 // FUSION-dominant failure mode measured in the live recall eval, where hybrid scored
-// WORSE than FTS-only). FTS is the exact-match correctness anchor and the strongest
-// single arm, so it carries more weight, and a smaller k sharpens the head so a
-// rank-0 hit isn't matched by a rank-50 also-ran. The vec/graph arms still ADD recall
-// for docs FTS misses entirely. Tuned by TestEvalWeightSweep against the live golden
-// set; see docs/design/2026-06-10-retrieval-ranking.md.
+// WORSE than the then-parent-FTS-only baseline). FTS is the exact-match correctness
+// anchor and the strongest single arm, so it carries more weight, and a smaller k
+// sharpens the head so a rank-0 hit isn't matched by a rank-50 also-ran. The
+// vec/graph arms still ADD recall for docs FTS misses entirely. Tuned by
+// TestEvalWeightSweep against the live golden set; see
+// docs/design/2026-06-10-retrieval-ranking.md.
 type fusionParams struct {
 	fts, vec, graph, k float64
 }
@@ -79,8 +80,9 @@ type retrievalTrace struct {
 
 // hybridSearch retrieves with FTS5/BM25 (the exact-match correctness anchor) +
 // static-embedding cosine (recall) + 1-hop graph expansion (people the query
-// names), fused by RRF. It degrades gracefully: with no vector table (a pre-I2
-// index) it is FTS-only; an empty query short-circuits to nil.
+// names), plus Gmail segment-grain FTS, fused by RRF. It degrades gracefully:
+// with no vector table (a pre-I2 index) it still runs parent FTS + Gmail segments;
+// an empty query short-circuits to nil.
 //
 // It is a thin wrapper over hybridSearchTrace with tracePool=0, so the arm pool
 // stays exactly limit*5 (min 50) and the fused ranking is byte-identical to the
@@ -91,8 +93,9 @@ func hybridSearch(ctx context.Context, cfg Config, query, scope string, limit in
 }
 
 // embedderIsSemantic reports whether e produces real semantic vectors rather than
-// the deterministic static-hash floor. Hybrid retrieval beats FTS-only ONLY with a
-// semantic embedder (T2 recall eval, docs/SESSION-2026-06-06-t2-eval.md); under
+// the deterministic static-hash floor. Hybrid retrieval beat the measured
+// parent-FTS baseline ONLY with a semantic embedder (T2 recall eval,
+// docs/SESSION-2026-06-06-t2-eval.md); under
 // static-hash hybrid REGRESSES recall (0.591 -> 0.394 @5), so the default search
 // path gates on this.
 func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder().ModelID() }
@@ -127,17 +130,17 @@ type mcpSearchResult struct {
 //
 // It routes to hybrid ONLY when the ACTIVELY CHOSEN embedder is semantic
 // (Ollama opted in AND the daemon reachable); static-hash — including Ollama
-// opted in but the daemon down — stays pure FTS-only. We gate on
-// chooseEmbedder() rather than just MORA_EMBEDDER because a vector-empty
-// hybrid is NOT equivalent to FTS-only: the graph arm still shifts RRF
-// ranking, so it would not match the measured FTS-only baseline (codex
-// review).
+// opted in but the daemon down — stays on the static keyword surface (parent
+// FTS + Gmail segments). We gate on chooseEmbedder() rather than just
+// MORA_EMBEDDER because a vector-empty hybrid is NOT equivalent to that static
+// surface: the graph arm still shifts RRF ranking, so it would not match the
+// measured baseline (codex review).
 //
 // HEALTH-12 / Packet D2 read path: DEGRADE VISIBLY. An unreachable configured
-// `ollama` embedder makes chooseEmbedderFor err — route to FTS-only rather
-// than hard-failing a search on a one-second daemon blip. The failure is
-// disclosed by the reddened index health banner (indexHealthOf → degraded),
-// not by a crash.
+// `ollama` embedder makes chooseEmbedderFor err — route to the static keyword
+// surface rather than hard-failing a search on a one-second daemon blip. The
+// failure is disclosed by the reddened index health banner (indexHealthOf →
+// degraded), not by a crash.
 func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) (mcpSearchResult, error) {
 	var out mcpSearchResult
 	var local []Memory
@@ -234,9 +237,9 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		// SEMANTIC. Under the static-hash floor the stored vectors are deterministic
 		// noise; fusing a noise arm via RRF rewards cross-arm coincidence and DEMOTES
 		// strong single-arm (FTS) hits — the FUSION-dominant regression where hybrid
-		// scored BELOW FTS-only on the live recall eval (a gold doc at FTS#0 fused to
-		// #15 because the noise vec arm ranked it #52). Graph expansion is
-		// embedder-independent (pure metadata), so it always stays.
+		// scored BELOW the then-parent-FTS-only baseline on the live recall eval (a
+		// gold doc at FTS#0 fused to #15 because the noise vec arm ranked it #52).
+		// Graph expansion is embedder-independent (pure metadata), so it always stays.
 		if embErr == nil {
 			emb = resolved
 			useVec = embedderIsSemantic(emb)
@@ -249,6 +252,14 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		if graphIDs, err = graphExpandIDs(ctx, db, query, scope, pool, f); err != nil {
 			return nil, tr, err
 		}
+	}
+
+	// Issue #243 production arm: bounded to the SAME parent pool as the other
+	// candidate sources before either fusion or hydration. Best-effort by
+	// design: a segment-query error degrades to an empty arm and no evidence.
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArmBounded(ctx, db, query, scope, pool, f)
+	if segErr != nil {
+		segIDs, gsegEvidence = nil, nil
 	}
 
 	// Trace arms — deepened to tracePool for attribution ONLY (never fused). At
@@ -268,9 +279,15 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 				return nil, tr, err
 			}
 		}
+		// Like the other trace arms, Segment is re-queried at tracePool only
+		// for attribution. The production segIDs above remain the sole segment
+		// list fed to RRF below.
+		if traceSegment, _, traceErr := gmailSegmentQueryArmBounded(ctx, db, query, scope, tracePool, f); traceErr == nil {
+			tr.Segment = traceSegment
+		}
 	} else {
 		tr.PreTruncPool = pool
-		tr.FTS, tr.Vec, tr.Graph = ftsIDs, vecIDs, graphIDs
+		tr.FTS, tr.Vec, tr.Graph, tr.Segment = ftsIDs, vecIDs, graphIDs, segIDs
 	}
 
 	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source, mapped
@@ -280,12 +297,6 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// for every OTHER id's fused score — the byte-identity guarantee for
 	// non-participating memories holds automatically. Best-effort: a
 	// segment-arm failure just means an empty arm, never a failed search.
-	segIDs, gsegEvidence, segErr := gmailSegmentQueryArm(ctx, db, query, scope, f)
-	if segErr != nil {
-		segIDs, gsegEvidence = nil, nil
-	}
-	tr.Segment = append([]string(nil), segIDs...)
-
 	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 && len(segIDs) == 0 {
 		return nil, tr, nil
 	}
@@ -353,6 +364,9 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
 	// "does this SURVIVING row's parent have a query-matching segment" (DQ5),
 	// independent of which arm(s) actually ranked it in.
+	if len(segIDs) > 0 {
+		gsegEvidence = completeGmailSegmentEvidence(ctx, db, query, scope, result, gsegEvidence, f)
+	}
 	attachGmailSegmentEvidence(result, gsegEvidence)
 	return result, tr, nil
 }
