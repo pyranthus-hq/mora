@@ -27,13 +27,12 @@ import (
 
 // gmailBodySeparator is the exact per-message join boundary gmail.go's
 // gmailThreadToItem writes ("\n\n---\n\n" between each "From: %s\n\n%s"
-// block) and gmailBodyParts (commitment.go:548) already splits on. Splitting
-// the RAW (unstripped) memory text on this SAME literal reproduces every
-// block WITH its own "From:" header intact — including block 0's, which
-// gmailBodyParts loses because stripFromLine removes it up front — which the
-// ordering-mismatch signal below needs. The two splits always agree on
-// COUNT: stripFromLine only ever removes a single leading line (never a
-// "---" boundary), so len(rawBlocks) == len(gmailBodyParts(m)) always.
+// block). Segment derivation splits the RAW (unstripped) memory text on this
+// literal exactly once and uses that same ordered block slice for count,
+// sender validation, and text. Keeping one canonical alignment path matters:
+// stripFromLine trims whitespace after an empty first message, which can erase
+// a real join boundary before a later literal separator restores the apparent
+// count and shifts one sender's body under another message's evidence_ref.
 const gmailBodySeparator = "\n\n---\n\n"
 
 // Diagnostic reasons, in the exact priority order DQ2 (§2) pins: a fixture
@@ -93,7 +92,13 @@ func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) 
 		return nil, nil // legacy pre-#243 shape: key absent, no claim to fail closed on
 	}
 
-	bodyCount := len(gmailBodyParts(m))
+	// One canonical positional source for every alignment decision below. Never
+	// count or derive text from gmailBodyParts: it strips and TrimSpace's the
+	// first envelope before splitting, so an empty first message can erase a
+	// real boundary and make later blocks shift while the apparent count still
+	// matches meta.messages.
+	rawBlocks := strings.Split(m.Text, gmailBodySeparator)
+	bodyCount := len(rawBlocks)
 
 	// DQ2 priority 1 — truncated, checked FIRST and independently of counts:
 	// untrustworthy CONTENT can coincidentally still produce a matching count.
@@ -101,7 +106,8 @@ func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) 
 		return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: gmailSegDiagTruncated, MetaCount: len(messages), BodyCount: bodyCount}
 	}
 	// DQ2 priority 2 — count mismatch (also covers a literal "---" line
-	// inside one message's own body: gmailBodyParts sees an extra block).
+	// inside one message's own body: the canonical raw split sees an extra
+	// block).
 	if len(messages) != bodyCount {
 		return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: gmailSegDiagCountMismatch, MetaCount: len(messages), BodyCount: bodyCount}
 	}
@@ -111,7 +117,6 @@ func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) 
 	// header at that SAME position — a direct, positional, content-grounded
 	// check, never a timestamp proxy (round 2 rejected that signal; see the
 	// contract's DQ2 doc comment for why).
-	rawBlocks := strings.Split(m.Text, gmailBodySeparator)
 	for i, message := range messages {
 		if i >= len(rawBlocks) {
 			break // defensive; bodyCount==len(messages) is already guaranteed above
@@ -152,16 +157,13 @@ func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) 
 		seenRefs[message.MessageRef] = true
 	}
 
-	// Well-formed: derive one row per message. gmailBodyParts(m)[i] already
-	// carries message i's own authored text — for i==0 stripFromLine already
-	// removed its "From:" line (applied once, to the whole memory text); for
-	// i>0 the block still opens with its own "From: sender\n\n" prefix, so
-	// stripFromLine — the SAME primitive, applied per block rather than
-	// invented a second time — recovers it identically.
-	parts := gmailBodyParts(m)
+	// Well-formed: derive text from the SAME raw block whose count and sender
+	// were validated above. stripFromLine is safe only after alignment is fixed
+	// per block; applying it to the whole joined body before splitting is what
+	// created the empty-first-message shift this invariant prevents.
 	rows := make([]gmailSegmentRow, 0, len(messages))
 	for i, message := range messages {
-		text := strings.TrimSpace(stripFromLine(parts[i]))
+		text := strings.TrimSpace(stripFromLine(rawBlocks[i]))
 		rows = append(rows, gmailSegmentRow{
 			EvidenceRef: message.MessageRef,
 			MemoryID:    m.ID,
