@@ -673,6 +673,64 @@ func TestExistsInMemoriesTable(t *testing.T) {
 	}
 }
 
+// TestEvalSearchMemorySegmentFusionAttributionUsesEmittedRanking is the
+// evaluator-side contract for issue #243's static search surface. The parent
+// FTS arm alone buries the Gmail thread just beyond search_memory's emitted
+// window, while the segment arm promotes that same thread into the real
+// emitted ranking. reportEval must therefore call it a HIT. Reporting FUSION
+// would confuse an arm-local parent rank with the composed surface rank;
+// reporting RETRIEVAL would ignore that the segment arm found it at all.
+func TestEvalSearchMemorySegmentFusionAttributionUsesEmittedRanking(t *testing.T) {
+	t.Setenv("MORA_EMBEDDER", "")
+	cfg := seedGmailSegmentsSearchFixture(t)
+	ctx := context.Background()
+
+	// The shared Gmail fixture has four compact parent-grain decoys. Four more
+	// put the diluted Gmail parent at 0-based parent rank 8: just outside the
+	// production search_memory cutoff, but well inside the deep attribution
+	// trace. Its sharply matching message segment still promotes it into the
+	// actual composed surface's emitted top-8.
+	for i := 4; i < 8; i++ {
+		id := fmt.Sprintf("note/eval-segment-attribution-decoy-%d", i)
+		if err := writeMemory(cfg, Memory{
+			ID: id, Scope: "personal", Type: "note", Source: "filesystem",
+			Title: fmt.Sprintf("Evaluator attribution decoy %d", i), CreatedAt: "2026-06-12T09:00:00Z",
+			Text: gsBuriedMarker + " " + strings.TrimSpace(strings.Repeat("decoyfiller ", 20)),
+		}); err != nil {
+			t.Fatalf("seed evaluator attribution decoy %d: %v", i, err)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatalf("rebuildIndex after evaluator attribution decoys: %v", err)
+	}
+
+	db := openRO(t, cfg)
+	defer db.Close()
+	parentRanked, err := ftsSearchIDs(ctx, db, gsBuriedMarker, "", tracePoolDepth)
+	if err != nil {
+		t.Fatalf("ftsSearchIDs: %v", err)
+	}
+	parentRank := rankOf(gsBuriedID, parentRanked)
+	emittedRanked := mustSearchIDs(t, ctx, cfg, gsBuriedMarker, kFTS)
+	emittedRank := rankOf(gsBuriedID, emittedRanked)
+	if parentRank < kFTS || emittedRank < 0 || emittedRank >= kFTS {
+		t.Fatalf("fixture premise broken: parent FTS rank=%d, emitted static-surface rank=%d, cutoff=%d; parent=%v emitted=%v",
+			parentRank, emittedRank, kFTS, parentRanked, emittedRanked)
+	}
+
+	const qid = "q-segment-static-hit"
+	rep := reportEval(t, ctx, cfg, db,
+		map[string]string{qid: gsBuriedMarker},
+		map[string]map[string]int{qid: {gsBuriedID: 1}},
+		map[string]qmeta{qid: {source: "gmail", archetype: "segment", gen: "seed", surface: "search_memory"}},
+		[]string{qid},
+	)
+	if got := rep.histFTS[bHIT]; got != 1 || rep.histFTS[bFUSION] != 0 || rep.histFTS[bRETRIEVAL] != 0 {
+		t.Fatalf("search_memory attribution = HIT:%d FUSION:%d RETRIEVAL:%d, want exactly HIT:1 FUSION:0 RETRIEVAL:0 (emitted rank=%d, parent FTS rank=%d)",
+			got, rep.histFTS[bFUSION], rep.histFTS[bRETRIEVAL], emittedRank, parentRank)
+	}
+}
+
 // TestEvalSynthetic builds the deterministic fixture, reports the full eval, and
 // gates exactly ONE hard invariant: an exact-phrase query for a phrase that
 // verbatim exists must return its doc on the FTS surface (Recall@5 == 1.0). If
