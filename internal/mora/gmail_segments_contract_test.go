@@ -1308,6 +1308,65 @@ func TestGmailSegmentsContractFailClosedExplicitEmptyMessages(t *testing.T) {
 	}
 }
 
+// TestGmailSegmentsContractFailClosedEmptyFirstMessageThenLiteralSeparator —
+// REVIEW REGRESSION. The Gmail renderer preserves an empty first message as a
+// real `From:` block. `stripFromLine` trims the whitespace after that header,
+// though, so splitting its result can erase the first real join boundary. A
+// literal separator later in message 2 can then make the derived part count
+// appear to match meta.messages again while shifting message 2's opening text
+// under message 1's evidence_ref. The whole memory must instead fail closed on
+// the one canonical raw-block count: two declared messages versus three
+// separator-delimited blocks.
+func TestGmailSegmentsContractFailClosedEmptyFirstMessageThenLiteralSeparator(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	const (
+		id     = "gmail_thread/th-empty-first-literal-separator"
+		marker = "GMLSEGEMPTYFIRSTSHIFTEDMARKER"
+	)
+	body := gmailSegJoinBody(
+		[2]string{"first@example.com", ""},
+		[2]string{"second@example.com", "Second message opening text.\n\n---\n\n" + marker + " remains part of the second message."},
+	)
+	if err := writeMemory(cfg, Memory{
+		ID: id, Scope: "personal", Type: "email", Source: "gmail",
+		Provider: "gmail", ProviderID: "thread/th-empty-first-literal-separator",
+		Title: "Empty first message alignment", CreatedAt: "2026-06-02T11:00:00Z", Text: body,
+		Meta: map[string]any{
+			"from": []string{"first@example.com", "second@example.com"},
+			"messages": gmailSegMessages(
+				commitmentMessageEvidence{MessageRef: id + "#msg-1", Sender: "first@example.com", At: "2026-06-02T10:55:00Z"},
+				commitmentMessageEvidence{MessageRef: id + "#msg-2", Sender: "second@example.com", At: "2026-06-02T11:00:00Z", BlockRefs: []string{"body"}},
+			),
+		},
+	}); err != nil {
+		t.Fatalf("seed empty-first alignment thread: %v", err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuildIndex: %v", err)
+	}
+
+	if !memoryStillIndexed(t, cfg, id) {
+		t.Fatalf("parent memory %s must remain indexed when segment alignment fails closed", id)
+	}
+	if rows := gmailSegRowsFor(t, cfg, id); len(rows) != 0 {
+		t.Fatalf("empty-first alignment thread produced %d segments, want 0; rows=%+v", len(rows), rows)
+	}
+	diag, ok := gmailSegDiagnosticFor(t, cfg, id)
+	if !ok {
+		t.Fatalf("no gmail_segment_diagnostics row for shifted empty-first alignment on %s", id)
+	}
+	if diag.Reason != gmailSegDiagCountMismatch || diag.MetaCount != 2 || diag.BodyCount != 3 {
+		t.Fatalf("diagnostic = %+v, want reason=%s meta_count=2 body_count=3", diag, gmailSegDiagCountMismatch)
+	}
+	diagJSON, _ := json.Marshal(diag)
+	if strings.Contains(string(diagJSON), marker) {
+		t.Fatalf("gmail_segment_diagnostics row leaked memory content: %s", diagJSON)
+	}
+}
+
 // TestGmailSegmentsContractFailClosedLiteralSeparatorInBody — CONTRACT, RED
 // today. The literal "---" line inside message 2's own body must not be
 // silently absorbed by a naive zip-by-index; the whole memory fails closed,
