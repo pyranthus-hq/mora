@@ -169,13 +169,13 @@ The branch **order is the invariant**: COVERAGE is checked *before* any retrieva
 
 ### Per-surface separation (the wrong-surface-confidence guard)
 
-`classifyBucket` scores **one surface at a time**, and `reportEval` (`eval_test.go:198-263`) keeps two separate histograms: `search_memory` (FTS-only, `k=kFTS`) and `context_memory` (hybrid, `k=kHybrid`). This is the spec's primary guard against false confidence: an FTS miss that the vector arm recovers must **not** read as HIT on the FTS surface (`eval_test.go:150-153`). For the FTS surface, `foundByAnyArm` is `rFTS >= 0` only. For the hybrid surface it is `rFTS >= 0 || rVec >= 0 || rGraph >= 0` (`eval_test.go:237-238`). The per-arm ranks come from `retrievalTrace` (see below).
+`classifyBucket` scores **one surface at a time**, and `reportEval` keeps two separate histograms: `search_memory` (static parent FTS + Gmail segment FTS, `k=kFTS`) and `context_memory` (hybrid, `k=kHybrid`). This is the spec's primary guard against false confidence: a static-surface miss that only the vector or graph arm recovers must **not** read as HIT on `search_memory`. For the static keyword surface, `foundByAnyArm` is `rFTS >= 0 || rSegment >= 0`. For the hybrid surface it is `rFTS >= 0 || rVec >= 0 || rGraph >= 0 || rSegment >= 0`. The per-arm ranks come from `retrievalTrace` (see below).
 
 Recall and MRR are scored over each surface's **production-emitted** list — `search_memory`'s real top-`kFTS` via `mustSearchIDs` → `searchMemories`, and `context_memory`'s real top-`kHybrid` via `mustHybridTrace` → `hybridSearchTrace` (`eval_test.go:213-228`). A doc the surface never returns therefore can never earn recall or reciprocal rank. The eval is **surface-honest**, not measuring some idealized fused list the agent never sees.
 
 ### Where the per-arm ranks come from: `hybridSearchTrace`
 
-`classifyBucket` needs to know the rank of a gold doc in *each individual arm* (FTS, Vec, Graph) and in the *full pre-limit fused ranking*. Production `hybridSearch` computes these and discards them. `retrievalTrace` (`hybrid.go:32-39`) exposes them, and `hybridSearchTrace` (`hybrid.go:88`) is the one code path both production and the eval share — `hybridSearch` is a thin wrapper passing `tracePool=0` (`hybrid.go:49-52`).
+`classifyBucket` needs to know the rank of a gold doc in *each individual arm* (FTS, Vec, Graph, Segment) and in the *full pre-limit fused ranking*. Production `hybridSearch` computes these and discards them. `retrievalTrace` exposes them, and `hybridSearchTrace` is the one code path both production and the eval share — `hybridSearch` is a thin wrapper passing `tracePool=0`.
 
 The subtle part is `tracePoolDepth = 200` (`eval_test.go:184`), which is deliberately **larger** than production's pool of `limit*5` (min 50, `hybrid.go:101-104`). The fused production ranking is always computed from arms queried at the *production* pool and fed whole to RRF, so it stays byte-identical to `hybridSearch` regardless of `tracePool` (`hybrid.go:77-87`). But the arm lists *recorded in the trace* are re-queried at the deeper `tracePool`. Without this, a gold doc that an arm found at rank #55 — beyond the production pool — would be invisible to the trace and misclassified as RETRIEVAL (falsely blaming the embedder) instead of FUSION (`hybrid.go:34-38`, `eval_test.go:174`). The deep trace is what separates "an arm found it but fusion buried it" from "no arm found it at all."
 
@@ -362,7 +362,7 @@ Get live numbers with `MORA_EMBEDDER=ollama MORA_EVAL_LIVE=1 go test ./internal/
 
 - **`classifyBucket` branch order is load-bearing.** COVERAGE (`!inIndex`) is checked before any rank/arm state (`eval_test.go:162-169`). WHY: an un-ingested doc must route to the connector and an embedder miss must route to the embedder. The COVERAGE↔RETRIEVAL misroute sends work to the wrong subsystem. `TestClassifyBucket`'s `coverage-beats-rank` case (`eval_test.go:524`) guards the ordering.
 
-- **Per-surface, never cross-surface, attribution.** A surface's `foundByAnyArm` includes only the arms feeding *that* surface — FTS surface uses `rFTS>=0`. Hybrid uses FTS∨Vec∨Graph (`eval_test.go:237-238`). WHY: an FTS miss recovered by the vector arm reading as HIT on the FTS surface is "wrong-surface false confidence," the spec's primary failure mode.
+- **Per-surface, never cross-surface, attribution.** A surface's `foundByAnyArm` includes only the arms feeding *that* surface — the static keyword surface uses FTS∨Segment. Hybrid uses FTS∨Vec∨Graph∨Segment (`eval_test.go`). WHY: a static-surface miss recovered only by vector or graph reading as HIT on `search_memory` is "wrong-surface false confidence," the spec's primary failure mode.
 
 - **`existsInMemoriesTable` must never swallow a DB error into `false`.** It returns `(false, nil)` only for `sql.ErrNoRows`. Any other error propagates (`eval_metrics.go:109-120`). WHY: a swallowed infra fault would misclassify *every* gold doc as COVERAGE and misroute the entire diagnosis to the connector. `TestExistsInMemoriesTable` (`eval_test.go:541-559`) pins both real outcomes.
 
@@ -386,7 +386,7 @@ Get live numbers with `MORA_EMBEDDER=ollama MORA_EVAL_LIVE=1 go test ./internal/
 
 ## Related
 
-- [retrieval & search](./02-retrieval-search.md) — `hybridSearchTrace`, RRF, the arms (FTS/Vec/Graph), `defaultSearch`/`embedderIsSemantic` routing, and the static-hash vs Ollama embedder choice the T2 eval measures.
+- [retrieval & search](./02-retrieval-search.md) — `hybridSearchTrace`, RRF, the arms (FTS/Vec/Graph/Segment), `defaultSearch`/`embedderIsSemantic` routing, and the static-hash vs Ollama embedder choice the T2 eval measures.
 - [MCP server](./06-mcp-server.md) — `toCallToolResult` envelope, `callMCPTool`, `snippetMemories`, and the per-tool returns the T0 gate ceilings bound.
 - [synthesis: think & digest](./07-synthesis-think-digest.md) — the `digest`/`think`/`context_memory` sidecar shapes the T0 gate pins as still-RED.
 - [entity graph](./03-entity-graph.md) — `graphListEntities`/`graphGetEntity`, the source of the two largest T0 blowups.
