@@ -37,6 +37,13 @@ type ThinkEvidence struct {
 	// Empty for the user's own memories — omitempty keeps local-only envelopes
 	// byte-identical (MCP budget gate).
 	Owner string `json:"owner,omitempty"`
+	// Corroborating mirrors a cluster head's Memory.Corroborating (issue #237,
+	// round-2 P1 scoping fix): buildThink retrieves via hybridSearchTrace, the
+	// same shared primitive search_memory uses, so a head's folded members are
+	// already known here — without this field they would be UNRECOVERABLE from
+	// think's output (correctly absent as their own evidence rows, but never
+	// cited anywhere else either). Empty/absent for non-head evidence.
+	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
 }
 
 // ThinkGaps is the deterministic "what's missing" analysis (no model).
@@ -85,13 +92,14 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	}
 	for _, m := range mems {
 		res.Evidence = append(res.Evidence, ThinkEvidence{
-			StableID:  m.ID,
-			Title:     m.Title,
-			Scope:     m.Scope,
-			CreatedAt: m.CreatedAt,
-			Score:     m.Score,
-			Snippet:   matchSnippet(m.Text, query, thinkSnippetLen),
-			Owner:     m.Owner,
+			StableID:      m.ID,
+			Title:         m.Title,
+			Scope:         m.Scope,
+			CreatedAt:     m.CreatedAt,
+			Score:         m.Score,
+			Snippet:       matchSnippet(m.Text, query, thinkSnippetLen),
+			Owner:         m.Owner,
+			Corroborating: m.Corroborating,
 		})
 	}
 	gaps, err := computeGaps(ctx, cfg, query, local, tr, now)
@@ -196,18 +204,22 @@ func computeGaps(ctx context.Context, cfg Config, query string, mems []Memory, t
 
 	// B3 retrieval caveat: when the query named a person (the graph arm fired) and
 	// EVERY returned memory came ONLY from people-graph association — present in the
-	// graph arm but in neither the FTS (lexical) nor vector (semantic) arm — the
+	// graph arm but in neither the FTS (lexical), vector (semantic), nor Gmail
+	// segment (direct message-text) arm — the
 	// evidence proves "these memories are connected to <person>", NOT "they answer
 	// the question". Flag it; do NOT drop — graph-only person expansion is the
 	// showcased GraphRAG-lite recall feature (TestHybridGraphExpansion). Lowest
 	// false-positive trigger: directly-supported count == 0 across ALL returned
-	// evidence (codex). tr.FTS/tr.Vec are the SAME call's production arms.
+	// evidence (codex). tr.FTS/tr.Vec/tr.Segment are the SAME call's production arms.
 	if len(mems) > 0 && len(tr.Graph) > 0 {
-		direct := make(map[string]bool, len(tr.FTS)+len(tr.Vec))
+		direct := make(map[string]bool, len(tr.FTS)+len(tr.Vec)+len(tr.Segment))
 		for _, id := range tr.FTS {
 			direct[id] = true
 		}
 		for _, id := range tr.Vec {
+			direct[id] = true
+		}
+		for _, id := range tr.Segment {
 			direct[id] = true
 		}
 		associationOnly := true

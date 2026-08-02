@@ -155,7 +155,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 			Arguments map[string]any `json:"arguments"`
 		}
 		_ = json.Unmarshal(req.Params, &p)
-		resp.Result = toCallToolResult(callMCPTool(ctx, p.Name, p.Arguments))
+		resp.Result = invokeMCPTool(ctx, p.Name, p.Arguments).result()
 	default:
 		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
 	}
@@ -228,7 +228,13 @@ var mcpToolRegistry = []mcpToolDef{
 	},
 	{
 		Name: "read_memory", Description: "Read a single memory by its id",
-		Params:  []mcpParam{{"id", "string", "The memory id (as returned by search_memory/list_memory)", true}},
+		Params: []mcpParam{
+			{"id", "string", "The memory id (as returned by search_memory/list_memory)", true},
+			{"match", "string", "Optional literal phrase to center a bounded excerpt on (omit for the full body)", false},
+			{"max_tokens", "integer", "Optional excerpt budget in tokens for bounded reads (default ~800)", false},
+			{"occurrence", "integer", "Optional 1-indexed match occurrence to center the excerpt on (default 1)", false},
+			{"evidence_ref", "string", "Optional Gmail evidence ref (from search_memory's evidence.evidence_ref) to read ONLY that message's derived segment, bounded, with a receipt naming its sender/at; a ref that does not belong to this memory id is rejected", false},
+		},
 		Handler: mcpReadMemory,
 	},
 	{
@@ -237,6 +243,9 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "Search query (words are OR-matched against the index)", true},
 			{"scope", "string", `Optional scope filter, e.g. "project:acme"`, false},
 			{"limit", "integer", "Max results to return (default 8)", false},
+			{"confidence", "boolean", "Opt-in: also return a compact confidence envelope (strength, score rollup, freshest source, missing/unhealthy sources) derived from this call's own results (default false)", false},
+			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm. An unrecognized value is a tool error.`, false},
+			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm.", false},
 		},
 		Handler: mcpSearchMemory,
 	},
@@ -259,6 +268,8 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "Topic to assemble context for; omit for a recency briefing", false},
 			{"scope", "string", "Optional scope filter", false},
 			{"max_tokens", "integer", "Approximate token budget for the response (default ~6000, max ~20000)", false},
+			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm, including the no-query recency fallback. An unrecognized value is a tool error.`, false},
+			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm, including the no-query recency fallback.", false},
 		},
 		Handler: mcpContextMemory,
 	},
@@ -268,6 +279,7 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "The question to synthesize an answer for", true},
 			{"scope", "string", "Optional scope filter", false},
 			{"limit", "integer", "Max evidence memories to gather (default 8)", false},
+			{"confidence", "boolean", "Opt-in: also return a compact confidence envelope (strength, score rollup, freshest source, missing/unhealthy sources) derived from this call's own evidence (default false)", false},
 		},
 		Handler: mcpThink,
 	},
@@ -348,15 +360,12 @@ func mcpToolNames() []string {
 }
 
 func callMCPTool(ctx context.Context, name string, args map[string]any) (any, error) {
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, err
-	}
-	def, ok := mcpToolIndex[name]
-	if !ok {
-		return nil, fmt.Errorf("unknown tool %q", name)
-	}
-	return def.Handler(ctx, cfg, args)
+	inv := invokeMCPTool(ctx, name, args)
+	// Internal and loopback-HTTP callers consume the native value rather than a
+	// CallToolResult. Assemble the identical envelope once for local measurement
+	// so every registered dispatcher call still emits one output_bytes event.
+	_ = inv.result()
+	return inv.value, inv.err
 }
 
 // mcpWriteClock is the single logical clock for one write_memory call. Tests
@@ -423,27 +432,112 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 }
 
 func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
+	retrievalStarted := time.Now()
 	m, err := findMemory(cfg, strArg(args, "id", ""))
 	if err != nil {
 		// Same read-only shared-corpus fallback as `mora read`: search
 		// returns shared ids with 240-rune snippets, so read_memory is the
 		// documented expansion path for them too.
 		if sm, ok := findSharedMemory(cfg, strArg(args, "id", "")); ok {
-			return map[string]any{"memory": sm, "health": compactHealthOf(cfg, time.Now())}, nil
+			// Issue #243, P2-1 — evidence_ref is derived ONLY from the LOCAL
+			// vault's own gmail_segments index; a shared memory has no such
+			// projection to narrow into. Fail closed explicitly rather than
+			// silently ignoring evidence_ref and returning the shared
+			// memory's untouched full body.
+			if strArg(args, "evidence_ref", "") != "" {
+				retrieval := time.Since(retrievalStarted)
+				recordMCPPhases(ctx, retrieval, 0)
+				recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+				return nil, fmt.Errorf("evidence_ref is not supported for memory %q resolved via the shared-corpus fallback — evidence segments are derived from the local vault's own index only", strArg(args, "id", ""))
+			}
+			retrieval := time.Since(retrievalStarted)
+			assemblyStarted := time.Now()
+			result := mcpReadMemoryResult(cfg, sm, args)
+			assembly := time.Since(assemblyStarted)
+			recordMCPPhases(ctx, retrieval, assembly)
+			recordMCPUsage(ctx, cfg, readUsageEvent(args, result, true))
+			return result, nil
 		}
+		recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
+		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
 		return nil, err
 	}
-	return map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}, nil
+	// Issue #243 — evidence_ref narrows the read target to ONE derived Gmail
+	// segment (DQ6, section 2). The segment DB lookup belongs to #245's
+	// retrieval phase alongside findMemory; only bounded-read/receipt shaping
+	// belongs to assembly.
+	evidenceRef := strArg(args, "evidence_ref", "")
+	var evidenceSegment gmailSegmentRow
+	if evidenceRef != "" {
+		var refErr error
+		evidenceSegment, refErr = lookupReadMemoryEvidenceRef(ctx, cfg, m, evidenceRef)
+		if refErr != nil {
+			recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
+			recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+			return nil, refErr
+		}
+	}
+	retrieval := time.Since(retrievalStarted)
+	assemblyStarted := time.Now()
+	var result map[string]any
+	if evidenceRef != "" {
+		result = shapeReadMemoryEvidenceRef(cfg, m, evidenceSegment, args)
+	} else {
+		result = mcpReadMemoryResult(cfg, m, args)
+	}
+	assembly := time.Since(assemblyStarted)
+	recordMCPPhases(ctx, retrieval, assembly)
+	recordMCPUsage(ctx, cfg, readUsageEvent(args, result, true))
+	return result, nil
+}
+
+// mcpReadMemoryResult shapes the read_memory response. The parameter-free
+// path (no match/max_tokens/occurrence) stays byte-identical to pre-#242
+// behavior: exactly {"memory","health"}, memory.text the full untouched
+// body. Any of the three #242 knobs being present opts into bounded mode
+// (read_bounded.go), which replaces memory.text with a centred excerpt and
+// adds the sibling "receipt" key — never a second "excerpt" field, so every
+// caller keeps reading the body from memory.text.
+func mcpReadMemoryResult(cfg Config, m Memory, args map[string]any) map[string]any {
+	if !boundedReadRequested(args) {
+		return map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}
+	}
+	shaped, receipt := applyBoundedRead(m, args)
+	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}
 }
 
 func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
+	// #241: since_hours reads briefClock() — the SAME test-injectable clock var
+	// digest/brief already use for their own since-days/since-hours cutoffs
+	// (mora.go) — never a bare time.Now(), so a single call sees one
+	// consistent, pinnable clock across every retrieval arm.
+	now := briefClock()
 	query := strArg(args, "query", "")
-	res, err := defaultSearch(ctx, cfg, query, strArg(args, "scope", ""), intArg(args, "limit", mcpSearchDefaultLimit))
-	logUsage(cfg, usageEvent{Tool: "search_memory", Query: query, Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
+	scope := strArg(args, "scope", "")
+	limit := intArg(args, "limit", mcpSearchDefaultLimit)
+	// #241: optional trusted-source/time-window filters, validated up front and
+	// fail-closed (never a silent no-filter) on an unrecognized source or a
+	// since_hours that is not a positive integer.
+	filters, ferr := parseSearchFilters(args, now)
+	if ferr != nil {
+		return nil, ferr
+	}
+	// #238: defaultSearchForMCP (not the plain defaultSearch every other call
+	// site uses) so the confidence envelope below can consume the ACTUAL
+	// routing decision + retrieval trace this call already computed, instead
+	// of re-probing chooseEmbedderFor or re-running the whole hybrid pipeline
+	// a second time.
+	retrievalStarted := time.Now()
+	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit, filters)
+	retrieval := time.Since(retrievalStarted)
+	res := sr.Results
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
+		recordMCPPhases(ctx, retrieval, 0)
 		return nil, err
 	}
+	assemblyStarted := time.Now()
 	// Honest-snapshot contract on the primary query surface: every search
 	// answer carries the per-source last_synced map (same shape as
 	// context_memory's), so the agent can qualify answers with data age
@@ -459,7 +553,19 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// release alongside the new typed `health` (C1/C4, Open Q1) — health.index
 	// is what freshness never had: a dirty/failed INDEX distinct from a stale
 	// SOURCE.
-	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": compactHealthOf(cfg, time.Now())}
+	//
+	// #241: when a source filter is active, health is scoped the SAME way
+	// confidence's missing_sources is below — a source the caller explicitly
+	// excluded must not drag the always-present health banner into
+	// degraded/unhealthy (compactHealthFiltered, search_filters.go). Reuses
+	// the SAME `now` captured once above (briefClock()) rather than a fresh
+	// time.Now() — one consistent instant for every filter-related signal
+	// this call computes.
+	health := compactHealthOf(cfg, now)
+	if filters.Source != "" {
+		health = compactHealthFiltered(cfg, now, filters)
+	}
+	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": health}
 	if dropped > 0 {
 		out["results_truncated"] = dropped
 	}
@@ -469,71 +575,159 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if su := sharesUnhealthy(cfg, time.Now()); len(su) > 0 {
 		out["shares_unhealthy"] = su
 	}
+	// Issue #238: opt-in confidence envelope, per-call boolean arg mirroring
+	// digest/brief's `envelope` gate. OFF (default/omitted/false) leaves the
+	// payload byte-identical to today's shape (confidence_contract_test.go's
+	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
+	// — the actual RETURNED set — per the frozen contract.
+	if boolArg(args, "confidence", false) {
+		conf := searchConfidence(ctx, cfg, budgeted, sr.ScoreFused, sr.Local, sr.Trace, query, now)
+		// #241/#238 interaction: a source excluded by an active source filter
+		// is a caller choice, not a coverage gap — recompute missing_sources/
+		// health_impact over the filter-narrowed population (confidence.go's
+		// confidenceSourceGaps/searchConfidence are UNTOUCHED; this overwrites
+		// the two fields after the fact, search_filters.go's filteredMissingSources).
+		// SAME captured `now` as above.
+		if filters.Source != "" {
+			conf.MissingSources, conf.HealthImpact = filteredMissingSources(cfg, now, filters)
+		}
+		out["confidence"] = conf
+	}
+	// #241: the "filters" receipt appears ONLY when at least one filter was
+	// actually supplied — omitted params stay byte-identical to pre-#241
+	// output (filters_contract_test.go's ByteIdenticalWhenOmitted pins).
+	if r := filters.receipt(); r != nil {
+		out["filters"] = r
+	}
+	// #241 acceptance: "Health/confidence output distinguishes
+	// excluded_by_filter from unavailable/unhealthy sources" — an explicit
+	// top-level marker, present only when the source filter actually excludes
+	// an enabled source (search_filters.go's excludedByFilterSources).
+	if filters.Source != "" {
+		if excl := excludedByFilterSources(cfg, now, filters); len(excl) > 0 {
+			out["excluded_by_filter"] = excl
+		}
+	}
+	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil
 }
 
 func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
+	retrievalStarted := time.Now()
 	res, err := listMemories(cfg, strArg(args, "scope", ""), intArg(args, "limit", 10))
-	logUsage(cfg, usageEvent{Tool: "list_memory", Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
+	retrieval := time.Since(retrievalStarted)
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "list_memory", Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
+		recordMCPPhases(ctx, retrieval, 0)
 		return nil, err
 	}
+	assemblyStarted := time.Now()
 	budgeted, dropped := budgetSearchResults(snippetMemories(res, ""), searchMemoryResultsBudgetBytes)
 	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, time.Now())}
 	if dropped > 0 {
 		out["memories_truncated"] = dropped
 	}
+	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil
 }
 
 func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
+	// #241: same briefClock() seam as mcpSearchMemory — see its comment.
+	now := briefClock()
 	scope := strArg(args, "scope", "")
 	query := strArg(args, "query", "")
 	tokenBudget, charBudget := resolveContextBudgetTokens(cfg, intArg(args, "max_tokens", 0))
+	filters, ferr := parseSearchFilters(args, now)
+	if ferr != nil {
+		return nil, ferr
+	}
+	retrievalStarted := time.Now()
 	var items []Memory
 	var err error
 	if query != "" {
-		items, err = hybridSearch(ctx, cfg, query, scope, 10)
+		items, err = hybridSearch(ctx, cfg, query, scope, 10, filters)
 	} else {
-		items, err = listMemories(cfg, scope, 10)
+		items, err = listMemories(cfg, scope, 10, filters)
 	}
+	retrieval := time.Since(retrievalStarted)
 	if err != nil {
+		recordMCPPhases(ctx, retrieval, 0)
 		return nil, err
 	}
+	assemblyStarted := time.Now()
 	text := buildContext(cfg, items, charBudget, query != "")
-	logUsage(cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
 	used := estimateTokensUsed(len(text))
-	return map[string]any{
+	// #241: health scoped the same way as mcpSearchMemory's — an excluded
+	// source must not drag the always-present health banner down. Reuses the
+	// SAME `now` captured once above (briefClock()), not a fresh time.Now().
+	health := compactHealthOf(cfg, now)
+	if filters.Source != "" {
+		health = compactHealthFiltered(cfg, now, filters)
+	}
+	out := map[string]any{
 		"context":     text,
 		"freshness":   sourceFreshness(cfg),
 		"budget_unit": budgetUnitTokens,
 		"budget":      tokenBudget,
 		"used":        used,
-		"health":      compactHealthOf(cfg, time.Now()),
-	}, nil
+		"health":      health,
+	}
+	if r := filters.receipt(); r != nil {
+		out["filters"] = r
+	}
+	// #241 acceptance: explicit excluded_by_filter marker — see
+	// mcpSearchMemory's identical block for the full rationale.
+	if filters.Source != "" {
+		if excl := excludedByFilterSources(cfg, now, filters); len(excl) > 0 {
+			out["excluded_by_filter"] = excl
+		}
+	}
+	// Issue #237, round-3 amendment: an OPTIONAL top-level "corroborating" array,
+	// a sibling of "context" — the SAME compact four-key ref shape search_memory
+	// and think use, collecting every cluster head's folded members across
+	// `items`. Present ONLY when clustering actually folded a member (not an
+	// always-there-possibly-empty key), so a zero-cluster query stays byte-
+	// identical to pre-#237 output — no "corroborating" key anywhere.
+	var corroborating []CorroboratingRef
+	for _, m := range items {
+		corroborating = append(corroborating, m.Corroborating...)
+	}
+	if len(corroborating) > 0 {
+		out["corroborating"] = corroborating
+	}
+	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
+	return out, nil
 }
 
 func mcpThink(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
 	query := strArg(args, "query", "")
 	res, err := buildThink(ctx, cfg, query, strArg(args, "scope", ""), intArg(args, "limit", 8), time.Now())
-	logUsage(cfg, usageEvent{Tool: "think", Query: query, Scope: strArg(args, "scope", ""), Results: len(res.Evidence), Millis: time.Since(start).Milliseconds()})
-	return map[string]any{"think": res, "health": compactHealthOf(cfg, time.Now())}, err
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "think", Query: query, Scope: strArg(args, "scope", ""), Results: len(res.Evidence), Millis: time.Since(start).Milliseconds()})
+	out := map[string]any{"think": res, "health": compactHealthOf(cfg, time.Now())}
+	// Issue #238: opt-in confidence envelope (see mcpSearchMemory's identical
+	// gate). Skipped on error so a failed buildThink never fabricates a
+	// confidence reading over an incomplete/zero-value result.
+	if err == nil && boolArg(args, "confidence", false) {
+		out["confidence"] = thinkConfidence(res, cfg, time.Now())
+	}
+	return out, err
 }
 
 func mcpListEntities(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
 	ents, err := entitiesForMCP(ctx, cfg, strArg(args, "kind", ""), intArg(args, "limit", mcpListEntitiesDefaultLimit))
-	logUsage(cfg, usageEvent{Tool: "list_entities", Results: len(ents), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "list_entities", Results: len(ents), Millis: time.Since(start).Milliseconds()})
 	return map[string]any{"entities": ents, "health": compactHealthOf(cfg, time.Now())}, err
 }
 
 func mcpGetEntity(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
 	res, err := entityDossierForMCP(ctx, cfg, strArg(args, "name", ""), intArg(args, "max_tokens", 0))
-	logUsage(cfg, usageEvent{Tool: "get_entity", Query: strArg(args, "name", ""), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "get_entity", Query: strArg(args, "name", ""), Millis: time.Since(start).Milliseconds()})
 	return map[string]any{"entity": res, "health": compactHealthOf(cfg, time.Now())}, err
 }
 
@@ -576,7 +770,7 @@ func mcpDigest(ctx context.Context, cfg Config, args map[string]any) (any, error
 	// full unclipped sections — is the bug we fix here). The CLI keeps the render
 	// path (renderDigest); the agent reads the structured payload directly.
 	budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
-	logUsage(cfg, usageEvent{Tool: "digest", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "digest", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
 	// Opt-in envelope (15-02, D15-3): when `envelope` is true, return the
 	// DigestEnvelope — the SAME budgeted base payload PLUS a synthesis_prompt
 	// built from those budgeted sections (model-free: Mora attaches a STRING the
@@ -627,7 +821,7 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 		return nil, err
 	}
 	budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
-	logUsage(cfg, usageEvent{Tool: "brief", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "brief", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
 	// Reuse the Phase-15 budget machinery VERBATIM (additive — the digest case and
 	// its helpers are untouched): envelope-gated synthesis_prompt, max_tokens
 	// budget, T0-safe by construction (16-03 adds the gate row). Model-free: the
@@ -682,7 +876,7 @@ func mcpMeetingPrep(ctx context.Context, cfg Config, args map[string]any) (any, 
 	if verr := brief.validate(); verr != nil {
 		return nil, fmt.Errorf("refusing uncited meeting_prep payload: %w", verr)
 	}
-	logUsage(cfg, usageEvent{Tool: "meeting_prep", Results: meetingBriefLineCount(brief), Millis: time.Since(start).Milliseconds()})
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "meeting_prep", Results: meetingBriefLineCount(brief), Millis: time.Since(start).Milliseconds()})
 	return brief, nil
 }
 

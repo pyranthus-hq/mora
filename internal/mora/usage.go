@@ -11,8 +11,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// usageAppendMu keeps each in-process event as one independent JSONL record.
+// MCP stdio is sequential today, but the loopback HTTP bridge and tests can call
+// the same dispatcher concurrently through separate file descriptors.
+var usageAppendMu sync.Mutex
 
 func cmdUsage(ctx context.Context, args []string, stdout io.Writer) error {
 	cfg, err := loadConfig()
@@ -126,5 +132,7 @@ func logUsage(cfg Config, e usageEvent) {
 	if err != nil {
 		return
 	}
+	usageAppendMu.Lock()
+	defer usageAppendMu.Unlock()
 	_ = appendFile(filepath.Join(cfg.StateDir, "usage", "events.jsonl"), string(b)+"\n")
 }

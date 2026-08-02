@@ -670,9 +670,19 @@ mora sync google
 mora usage report
 ```
 
-The usage log keeps the tool name, time, result counts, and scope. It does
-**not** keep your query text. You can opt in to keep raw query strings locally,
-such as for an eval set. You can turn this off at any time:
+The usage log keeps the tool name, time, result counts, response-envelope byte
+size, and compact phase timings where Mora can separate them cleanly. Read
+events distinguish full and bounded-match requests; the allowlisted
+`evidence_ref` label is reserved for evidence-reference integration. They keep
+only counts, truncation, and requested/used budgets. They never keep a memory
+id, body, excerpt, match/evidence text, metadata, attachment path, or vault path.
+The log stays at `<state_dir>/usage/events.jsonl`; Mora never writes it into your
+vault or sends it over the network.
+
+Query text is omitted by default. You can opt in to keep raw *search* query
+strings locally, such as for an eval set. This opt-in never causes
+`read_memory` content or match/evidence arguments to be retained. You can turn
+query retention off at any time:
 
 ```bash
 mora usage queries on    # retain raw query text in the local log (off by default)
