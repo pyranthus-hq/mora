@@ -128,6 +128,43 @@ func checkIndexSchema(db *sql.DB) error {
 	}
 	return nil
 }
+
+// indexUpsertSchemaComplete is the physical readiness probe for the
+// incremental-write boundary. It deliberately verifies the union of D and E's
+// schema changes: the legacy readiness contract already required memories,
+// memories_fts, and index_meta; v5 adds D's three memories columns and E's
+// three segment tables. Version fencing still protects ordinary read opens.
+func indexUpsertSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+		 ('memories','memories_fts','index_meta','gmail_segments','gmail_segments_fts','gmail_segment_diagnostics')`).Scan(&n); err != nil {
+		return false, err
+	}
+	if n != 6 {
+		return false, nil
+	}
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(memories)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return columns["provider"] && columns["account"] && columns["created_at_unix"], nil
+}
+
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
 }
@@ -212,7 +249,20 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	_ = tx.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key='vault_id'`).Scan(&indexID)
 
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT)`,
+		// provider/account/created_at_unix (v4, #241): indexed so search.go/
+		// hybrid.go/share.go's retrieval arms can filter by source/time
+		// INSIDE SQL, before ORDER BY/LIMIT — a TRUE pre-rank predicate against
+		// the SAME row the arm is already ranking, never a live vault-file
+		// reopen or a lexical CreatedAt string compare mid-ranking. provider is
+		// stored CANONICALIZED (providerToType(m.Provider), the same alias
+		// sourceInstanceKey applies) so a query-time family filter is an exact
+		// `=` match with no per-row alias resolution; created_at_unix is
+		// CreatedAt parsed as an RFC3339 instant at write time (createdAtUnix,
+		// search_filters.go), so a since_hours cutoff is a plain integer `>=`
+		// compare, never string comparison. A FRESH db gets all three from this
+		// CREATE; an EXISTING pre-column db gets them from the additive ALTERs
+		// below (CREATE TABLE IF NOT EXISTS is a no-op once the table exists).
+		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT, provider TEXT, account TEXT, created_at_unix INTEGER)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text)`,
 		// Entity graph (I1): rebuildable from the vault Markdown, never the only home of state.
 		// salience_micros (Phase 14): the frozen person-ranking sort key. A FRESH db gets it
@@ -259,6 +309,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		// leave a fresh stamp on a stale index.
 		fmt.Sprintf(`PRAGMA user_version = %d`, indexSchemaVersion),
 	}
+	// Issue #243 — the disposable Gmail evidence-segment projection: created
+	// and cleared inside this SAME transaction as every other derived table
+	// (frozen interface #1).
+	stmts = append(stmts, gmailSegSchemaStmts...)
+	stmts = append(stmts, gmailSegDeleteStmts...)
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
 			return 0, err
@@ -273,7 +328,19 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return 0, err
 	}
-	memStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	// v4 (#241): same idempotent-ALTER migration for memories.provider/account/
+	// created_at_unix — tolerated as a no-op ("duplicate column name") on a
+	// fresh db whose CREATE above already has them.
+	for _, col := range []string{
+		`ALTER TABLE memories ADD COLUMN provider TEXT`,
+		`ALTER TABLE memories ADD COLUMN account TEXT`,
+		`ALTER TABLE memories ADD COLUMN created_at_unix INTEGER`,
+	} {
+		if _, err := tx.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return 0, err
+		}
+	}
+	memStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
@@ -283,6 +350,13 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return 0, err
 	}
 	defer ftsStmt.Close()
+	// Issue #243 — prepared once, reused for every live memory below, mirroring
+	// memStmt/ftsStmt's own prepare-once discipline.
+	gsegStmts, err := prepareGmailSegStmts(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	defer gsegStmts.Close()
 	count = 0
 	var parsed []Memory // ALL memories (incl. tombstones) — feeds the graph
 	var live []Memory   // non-tombstoned only — the searchable corpus + vectors
@@ -323,12 +397,22 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		if m.DeletedAt != "" {
 			continue
 		}
+		// #241: provider canonicalized (providerToType) and CreatedAt parsed to
+		// Unix seconds ONCE here, at write time — the arms compare against
+		// these precomputed columns, never a live file or a lexical string.
 		if _, err := memStmt.ExecContext(ctx,
-			m.ID, m.Scope, m.Type, m.Title, strings.Join(m.Tags, ","), m.Source, m.CreatedAt, path, m.Text); err != nil {
+			m.ID, m.Scope, m.Type, m.Title, strings.Join(m.Tags, ","), m.Source, m.CreatedAt, path, m.Text,
+			providerToType(m.Provider), m.Account, createdAtUnix(m.CreatedAt)); err != nil {
 			return count, err
 		}
 		if _, err := ftsStmt.ExecContext(ctx,
 			m.ID, m.Scope, m.Title, strings.Join(m.Tags, ","), m.Source, m.Text); err != nil {
+			return count, err
+		}
+		// Issue #243 — derive this memory's evidence-segment projection (or
+		// its fail-closed diagnostic) in the SAME transaction, over the SAME
+		// live corpus memories/memories_fts just indexed.
+		if err := writeGmailSegments(ctx, gsegStmts, m); err != nil {
 			return count, err
 		}
 		live = append(live, m)
