@@ -13,7 +13,7 @@ id = "generic-api-key"
     condition = "AND"
     regexTarget = "line"
     regexes = [
-      '''usageContract(Body|Match|Evidence)Secret\s*=\s*"(BODY|MATCH|EVIDENCE)_SECRET_[0-9a-f]{8}"''',
+      '''^\s*(usageContractBodySecret\s*=\s*"BODY_SECRET_7f211d9d"|usageContractMatchSecret\s*=\s*"MATCH_SECRET_93a9c521"|usageContractEvidenceSecret\s*=\s*"EVIDENCE_SECRET_4ed4c8a7")\s*$''',
     ]
     paths = [
       '''^internal/mora/usage_mcp_contract_test\.go$''',
