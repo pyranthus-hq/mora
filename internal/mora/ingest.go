@@ -623,7 +623,8 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// Skip rewrite if content unchanged (preserve created_at). This read stays
 	// inside the lease so the whole check→skip→write is one critical section.
 	if existing, err := parseMemory(out); err == nil {
-		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" {
+		evidenceMigration := mm.Provider == "imessage" && existing.Meta["message_evidence_schema"] == nil && mm.Meta["message_evidence_schema"] != nil
+		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" && !evidenceMigration {
 			return nil
 		}
 		m.CreatedAt = existing.CreatedAt // preserve original

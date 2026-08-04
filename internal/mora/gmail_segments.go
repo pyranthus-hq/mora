@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/mail"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Issue #243 — Gmail messages as derived evidence segments with stable
@@ -83,6 +85,9 @@ type gmailSegmentDiagnostic struct {
 // one diagnostic explaining the whole-memory refusal — never both, and
 // never a partial/misattributed row set.
 func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) {
+	if m.Provider == "imessage" || m.Type == "imessage" {
+		return deriveIMessageSegments(m)
+	}
 	if !isGmailMemory(m) {
 		return nil, nil
 	}
@@ -175,6 +180,72 @@ func deriveGmailSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) 
 		})
 	}
 	return rows, nil
+}
+
+type imessageEvidenceMeta struct {
+	EvidenceRef string `json:"evidence_ref"`
+	At          string `json:"at"`
+	FromMe      *bool  `json:"from_me"`
+	Sender      string `json:"sender"`
+	BlockStart  int    `json:"block_start"`
+	BlockEnd    int    `json:"block_end"`
+}
+
+// deriveIMessageSegments rebuilds message-grain evidence exclusively from the
+// vault's metadata plus exact rendered-body byte boundaries. Legacy memories
+// remain parent-searchable and get an explicit coverage diagnostic.
+func deriveIMessageSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnostic) {
+	raw, ok := m.Meta["message_evidence"]
+	if !ok {
+		return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: "message_evidence_unavailable"}
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: "message_evidence_malformed"}
+	}
+	var entries []imessageEvidenceMeta
+	if json.Unmarshal(b, &entries) != nil || len(entries) == 0 {
+		return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: "message_evidence_malformed"}
+	}
+	prefix := m.ID + "#"
+	seen := map[string]bool{}
+	lastEnd := 0
+	rows := make([]gmailSegmentRow, 0, len(entries))
+	for _, e := range entries {
+		if !strings.HasPrefix(e.EvidenceRef, prefix) || e.EvidenceRef == prefix || seen[e.EvidenceRef] ||
+			e.FromMe == nil || strings.TrimSpace(e.Sender) == "" || !validIMessageEvidenceTime(e.At) ||
+			e.BlockStart < lastEnd || e.BlockStart < 0 || e.BlockEnd <= e.BlockStart || e.BlockEnd > len(m.Text) {
+			return nil, &gmailSegmentDiagnostic{MemoryID: m.ID, Reason: "message_evidence_malformed", MetaCount: len(entries)}
+		}
+		seen[e.EvidenceRef] = true
+		lastEnd = e.BlockEnd
+		rows = append(rows, gmailSegmentRow{
+			EvidenceRef: e.EvidenceRef, MemoryID: m.ID, Sender: e.Sender, At: e.At,
+			BlockRefs: []string{fmt.Sprintf("bytes:%d-%d", e.BlockStart, e.BlockEnd), fmt.Sprintf("from_me:%t", *e.FromMe)},
+			Text:      m.Text[e.BlockStart:e.BlockEnd],
+		})
+	}
+	return rows, nil
+}
+
+func validIMessageEvidenceTime(value string) bool {
+	_, err := time.Parse(time.RFC3339, value)
+	return err == nil
+}
+
+// imessageDirection recovers the explicit message direction carried by an
+// iMessage segment. Gmail block refs never use this marker, so their existing
+// search/read receipts stay byte-identical through omitempty.
+func imessageDirection(blockRefs []string) string {
+	for _, ref := range blockRefs {
+		switch ref {
+		case "from_me:true":
+			return "outgoing"
+		case "from_me:false":
+			return "incoming"
+		}
+	}
+	return ""
 }
 
 // gmailSegBlockSender parses the sender address off ONE raw block's own

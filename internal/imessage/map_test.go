@@ -73,16 +73,16 @@ func TestMapConversationContentHashStable(t *testing.T) {
 	if a.ContentHash != b.ContentHash {
 		t.Fatalf("ContentHash unstable across identical input: %q vs %q", a.ContentHash, b.ContentHash)
 	}
-	// The hash now folds the canonical participant Meta (S2) so recovered names /
-	// new participants rewrite the file; an untouched conversation still hashes
-	// identically across syncs (the D-05 skip-rewrite property, just meta-aware).
-	metaJSON, _ := memory.CanonicalMeta(a.Meta)
+	// The meaningful-content hash folds identity Meta but deliberately excludes
+	// message-evidence schema metadata. That lets the one-time #244 migration
+	// rewrite Markdown without manufacturing a Brief [updated] wave.
+	metaJSON, _ := memory.CanonicalMeta(conversationMeta(c, r))
 	want := memory.ContentHash(a.Title, a.Body)
 	if metaJSON != "" {
 		want = memory.ContentHash(a.Title, a.Body, metaJSON)
 	}
 	if a.ContentHash != want {
-		t.Fatalf("ContentHash is not ContentHash(Title, Body, meta)")
+		t.Fatalf("ContentHash is not ContentHash(Title, Body, meaningful meta)")
 	}
 }
 

@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"sort"
 	"strings"
 )
@@ -21,6 +22,7 @@ type GmailSegmentEvidence struct {
 	EvidenceRef string `json:"evidence_ref"`
 	Sender      string `json:"sender"`
 	At          string `json:"at"`
+	Direction   string `json:"direction,omitempty"`
 	Snippet     string `json:"snippet"`
 }
 
@@ -94,7 +96,7 @@ func gmailSegmentWinnerQuery(ctx context.Context, db *sql.DB, query, scope strin
 		return nil, nil, nil
 	}
 	q := `WITH ranked_segments AS (
-	        SELECT gs.evidence_ref, gs.memory_id, gs.sender, gs.at, gs.text,
+	        SELECT gs.evidence_ref, gs.memory_id, gs.sender, gs.at, gs.block_refs, gs.text,
 	               gmail_segments_fts.rank AS segment_score
 	        FROM gmail_segments_fts
 	        JOIN gmail_segments gs ON gs.evidence_ref = gmail_segments_fts.evidence_ref
@@ -123,14 +125,14 @@ func gmailSegmentWinnerQuery(ctx context.Context, db *sql.DB, query, scope strin
 	}
 	q += `
 	      ), parent_winners AS (
-	        SELECT evidence_ref, memory_id, sender, at, text, segment_score,
+	        SELECT evidence_ref, memory_id, sender, at, block_refs, text, segment_score,
 	               ROW_NUMBER() OVER (
 	                 PARTITION BY memory_id
 	                 ORDER BY segment_score, evidence_ref
 	               ) AS parent_rank
 	        FROM ranked_segments
 	      )
-	      SELECT evidence_ref, memory_id, sender, at, text
+	      SELECT evidence_ref, memory_id, sender, at, block_refs, text
 	      FROM parent_winners
 	      WHERE parent_rank = 1
 	      ORDER BY segment_score, evidence_ref, memory_id
@@ -144,14 +146,17 @@ func gmailSegmentWinnerQuery(ctx context.Context, db *sql.DB, query, scope strin
 	var ids []string
 	evidence := map[string]GmailSegmentEvidence{}
 	for rows.Next() {
-		var evRef, memID, sender, at, text string
-		if err := rows.Scan(&evRef, &memID, &sender, &at, &text); err != nil {
+		var evRef, memID, sender, at, blockRefsJSON, text string
+		if err := rows.Scan(&evRef, &memID, &sender, &at, &blockRefsJSON, &text); err != nil {
 			return nil, nil, err
 		}
+		var blockRefs []string
+		_ = json.Unmarshal([]byte(blockRefsJSON), &blockRefs)
 		evidence[memID] = GmailSegmentEvidence{
 			EvidenceRef: evRef,
 			Sender:      sender,
 			At:          at,
+			Direction:   imessageDirection(blockRefs),
 			Snippet:     matchSnippet(text, query, searchSnippetLen),
 		}
 		ids = append(ids, memID)
@@ -176,7 +181,7 @@ func completeGmailSegmentEvidence(ctx context.Context, db *sql.DB, query, scope 
 	missing := make([]string, 0, len(rows))
 	seen := make(map[string]bool, len(rows))
 	for _, m := range rows {
-		if !isGmailMemory(m) || seen[m.ID] {
+		if (!isGmailMemory(m) && m.Provider != "imessage" && m.Type != "imessage") || seen[m.ID] {
 			continue
 		}
 		seen[m.ID] = true

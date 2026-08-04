@@ -2,6 +2,7 @@ package imessage
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -52,10 +53,19 @@ func mapConversation(c convInput, r *Resolver, budget int) memory.MappedMemory {
 	}
 
 	meta := conversationMeta(c, r)
+	meta["message_evidence_schema"] = 1
+	evidence, diagnostics := messageEvidenceMeta(memory.StableID(KindIMessageChat, c.guid), body, res.retained, r)
+	if len(evidence) > 0 {
+		meta["message_evidence"] = evidence
+	}
+	if len(diagnostics) > 0 {
+		meta["message_evidence_diagnostics"] = diagnostics
+	}
 	// Fold the canonical participant Meta into the hash so a recovered name or a
 	// new participant rewrites the file instead of being skipped (D-05 still holds
 	// for an untouched conversation: same title+body+meta -> same hash).
-	metaJSON, _ := memory.CanonicalMeta(meta)
+	hashMeta := conversationMeta(c, r)
+	metaJSON, _ := memory.CanonicalMeta(hashMeta)
 	contentHash := memory.ContentHash(title, body)
 	if metaJSON != "" {
 		contentHash = memory.ContentHash(title, body, metaJSON)
@@ -81,6 +91,61 @@ func mapConversation(c convInput, r *Resolver, budget int) memory.MappedMemory {
 		mm.CreatedAt = created.UTC().Format(time.RFC3339)
 	}
 	return mm
+}
+
+// messageEvidenceMeta records provider identity and exact body byte boundaries
+// without duplicating message content. Only blocks that survived rendering and
+// truncation receive refs. Missing provider GUIDs are explicit and unscorable.
+func messageEvidenceMeta(parentID, body string, messages []renderMessage, r *Resolver) ([]map[string]any, []map[string]any) {
+	var evidence, diagnostics []map[string]any
+	// parseMemory canonicalizes the persisted Markdown body with TrimSpace.
+	// Compute offsets against that exact durable representation, not transient
+	// trailing whitespace that renderMemory will not round-trip.
+	body = strings.TrimSpace(body)
+	lines := make([]string, len(messages))
+	lastRendered := -1
+	for i, m := range messages {
+		lines[i] = renderLine(m, r)
+		if lines[i] != "" {
+			lastRendered = i
+		}
+	}
+	cursor := 0
+	for i, m := range messages {
+		line := lines[i]
+		if line == "" {
+			continue
+		}
+		rel := strings.Index(body[cursor:], line)
+		// renderTranscript removes terminal newlines from the whole transcript.
+		// Normalize only the final retained block the same way so a message whose
+		// own text ends in a newline remains addressable at its visible boundary.
+		if rel < 0 && i == lastRendered {
+			line = strings.TrimSpace(line)
+			rel = strings.Index(body[cursor:], line)
+		}
+		if rel < 0 {
+			diagnostics = append(diagnostics, map[string]any{"reason": "rendered_block_unavailable", "at": m.date.UTC().Format(time.RFC3339)})
+			continue
+		}
+		start := cursor + rel
+		end := start + len(line)
+		cursor = end
+		if m.guid == "" {
+			diagnostics = append(diagnostics, map[string]any{"reason": "missing_provider_guid", "at": m.date.UTC().Format(time.RFC3339)})
+			continue
+		}
+		sender := selfLabel
+		if !m.fromMe {
+			sender = r.Resolve(m.sender)
+		}
+		evidence = append(evidence, map[string]any{
+			"evidence_ref": parentID + "#" + m.guid,
+			"at":           m.date.UTC().Format(time.RFC3339), "from_me": m.fromMe,
+			"sender": sender, "block_start": start, "block_end": end,
+		})
+	}
+	return evidence, diagnostics
 }
 
 // MapConversationFn returns an memory.IngestParams.Map adapter bound to a resolver.

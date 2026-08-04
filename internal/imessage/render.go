@@ -50,6 +50,7 @@ const truncationMarker = "Truncated — showing the most recent messages of this
 // this renderer leaves a no-op pass-through hook (renderAttachmentMarkers) so that
 // slice fills it without reshaping the renderer.
 type renderMessage struct {
+	guid        string // provider message GUID; empty means evidence identity unavailable
 	date        time.Time
 	fromMe      bool
 	sender      string // raw handle; "" for self
@@ -75,6 +76,7 @@ type renderResult struct {
 	Truncated    bool
 	OriginalSize int
 	IngestedSize int
+	retained     []renderMessage
 }
 
 // renderTitle produces the memory Title per D-10:
@@ -119,7 +121,7 @@ func renderBody(messages []renderMessage, r *Resolver, budget int) (string, rend
 	orig := len([]rune(full)) // rune count: honest size in characters, not bytes
 
 	if budget <= 0 || orig <= budget {
-		return full, renderResult{Truncated: false, OriginalSize: orig, IngestedSize: orig}
+		return full, renderResult{Truncated: false, OriginalSize: orig, IngestedSize: orig, retained: msgs}
 	}
 
 	// Newest-first: drop whole messages from the FRONT (oldest) until the rendered
@@ -141,7 +143,11 @@ func renderBody(messages []renderMessage, r *Resolver, budget int) (string, rend
 		// conversation; the marker still honestly flags the drop).
 		body = withMarker(renderTranscript(msgs[len(msgs)-1:], r))
 	}
-	return body, renderResult{Truncated: true, OriginalSize: orig, IngestedSize: len([]rune(body))}
+	retained := msgs[start:]
+	if start >= len(msgs) {
+		retained = msgs[len(msgs)-1:]
+	}
+	return body, renderResult{Truncated: true, OriginalSize: orig, IngestedSize: len([]rune(body)), retained: retained}
 }
 
 // withMarker prefixes the truncation blockquote ABOVE the transcript (D-03 — marker
