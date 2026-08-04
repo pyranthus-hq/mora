@@ -17,10 +17,9 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-const (
-	KindIssue memory.ItemKind = "github_issue"
-	pageSize                  = 100
-)
+const KindIssue memory.ItemKind = "github_issue"
+
+const pageSize = 100
 
 var DefaultRepositories = []string{"pyranthus-hq/mora", "pyranthus-hq/productivity"}
 
