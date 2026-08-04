@@ -278,6 +278,17 @@ re-grant.
 Contact names come from your address book. Thus, iMessage usually gives the
 cleanest name-to-handle map of any source.
 
+Each rendered message now carries a stable, local evidence reference derived
+from Apple's message GUID. After upgrading from an older vault format, the next
+`mora sync imessage` rewrites legacy conversations that fall inside the source's
+configured sync window once to add those references. This schema-only rewrite
+preserves `created_at` and the meaningful content hash, so it does not appear as
+a false `[updated]` item in Brief; the following sync is byte-identical. Older
+conversations outside the configured window remain readable at conversation
+grain but cannot provide message-grain citations until they are re-ingested.
+Use `mora connect imessage --since-days -1` when you deliberately want an
+all-time migration.
+
 ## Connect GitHub issues
 
 ```bash

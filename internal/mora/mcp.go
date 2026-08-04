@@ -242,7 +242,7 @@ var mcpToolRegistry = []mcpToolDef{
 			{"match", "string", "Optional literal phrase to center a bounded excerpt on (omit for the full body)", false},
 			{"max_tokens", "integer", "Optional excerpt budget in tokens for bounded reads (default ~800)", false},
 			{"occurrence", "integer", "Optional 1-indexed match occurrence to center the excerpt on (default 1)", false},
-			{"evidence_ref", "string", "Optional Gmail evidence ref (from search_memory's evidence.evidence_ref) to read ONLY that message's derived segment, bounded, with a receipt naming its sender/at; a ref that does not belong to this memory id is rejected", false},
+			{"evidence_ref", "string", "Optional Gmail or iMessage evidence ref (from search_memory's evidence.evidence_ref) to read ONLY that message's derived segment, bounded, with a receipt naming its sender/time and iMessage direction; a ref that does not belong to this memory id is rejected", false},
 		},
 		Handler: mcpReadMemory,
 	},

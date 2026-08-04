@@ -16,7 +16,7 @@ const chatPageSize = 50
 // They are probed at construction (schema-defensive, Pitfall 9) so a chat.db on an
 // unsupported macOS version fails with a clear error instead of returning wrong rows.
 var requiredMessageColumns = []string{
-	"date", "text", "attributedBody", "is_from_me", "handle_id", "associated_message_type",
+	"guid", "date", "text", "attributedBody", "is_from_me", "handle_id", "associated_message_type",
 }
 
 // optionalMessageColumns enrich rendering when present but are NOT required (their
@@ -335,7 +335,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 	if f.hasRetracted && sqlIdentifier.MatchString(colDateRetracted) {
 		retractedExpr = "m." + colDateRetracted
 	}
-	query := fmt.Sprintf(`SELECT m.ROWID, m.date, m.is_from_me, m.text, m.attributedBody,
+	query := fmt.Sprintf(`SELECT m.ROWID, m.guid, m.date, m.is_from_me, m.text, m.attributedBody,
 	        m.associated_message_type, %s, %s, h.id, a.filename, a.mime_type, a.total_bytes
 	   FROM message m
 	   JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
@@ -355,6 +355,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 	// (a message with N attachments yields N rows). seen preserves first-seen order.
 	type msg struct {
 		rowid    int64
+		guid     string
 		date     int64
 		fromMe   bool
 		kind     messageKind
@@ -369,6 +370,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 	for rows.Next() {
 		var (
 			rowid       int64
+			messageGUID sql.NullString
 			date        int64
 			isFromMe    int
 			text        sql.NullString
@@ -381,7 +383,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 			attMime     sql.NullString
 			attBytes    sql.NullInt64
 		)
-		if err := rows.Scan(&rowid, &date, &isFromMe, &text, &attrBody,
+		if err := rows.Scan(&rowid, &messageGUID, &date, &isFromMe, &text, &attrBody,
 			&assocType, &itemType, &dateRetract, &handleID, &attFile, &attMime, &attBytes); err != nil {
 			// Tolerate an anomalous row: skip it, never crash the conversation.
 			continue
@@ -414,7 +416,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 			if isFromMe == 0 && handleID.Valid {
 				sender = handleID.String // raw handle; mapper resolves to a name (D-09)
 			}
-			m = &msg{rowid: rowid, date: date, fromMe: isFromMe != 0, kind: kind, sender: sender, body: body}
+			m = &msg{rowid: rowid, guid: strings.TrimSpace(messageGUID.String), date: date, fromMe: isFromMe != 0, kind: kind, sender: sender, body: body}
 			byID[rowid] = m
 			order = append(order, rowid)
 			if date > latest {
@@ -453,6 +455,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 		}
 		allAtt = append(allAtt, m.attaches...)
 		msgs = append(msgs, renderMessage{
+			guid:        m.guid,
 			date:        cocoaEpochToTime(m.date),
 			fromMe:      m.fromMe,
 			sender:      m.sender,

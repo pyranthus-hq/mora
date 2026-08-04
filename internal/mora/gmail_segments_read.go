@@ -45,5 +45,6 @@ func shapeReadMemoryEvidenceRef(cfg Config, m Memory, seg gmailSegmentRow, args 
 	receipt.EvidenceRef = seg.EvidenceRef
 	receipt.Sender = seg.Sender
 	receipt.At = seg.At
+	receipt.Direction = imessageDirection(seg.BlockRefs)
 	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}
 }

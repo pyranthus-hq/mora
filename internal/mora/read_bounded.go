@@ -31,6 +31,7 @@ type boundedReadReceipt struct {
 	EvidenceRef string `json:"evidence_ref,omitempty"`
 	Sender      string `json:"sender,omitempty"`
 	At          string `json:"at,omitempty"`
+	Direction   string `json:"direction,omitempty"`
 }
 
 const (

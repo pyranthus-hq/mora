@@ -33,7 +33,7 @@ func TestIm_NewLiveFetcherOpenError(t *testing.T) {
 func TestIm_NewLiveFetcherSchemaMissingColumn(t *testing.T) {
 	// A valid sqlite DB whose message table omits attributedBody (a required column).
 	path := imMakeDB(t,
-		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, text TEXT,
+		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, date INTEGER, text TEXT,
 		    is_from_me INTEGER, handle_id INTEGER, associated_message_type INTEGER)`,
 	)
 	f, err := NewLiveFetcher(path, DenyList{})
@@ -278,7 +278,7 @@ func TestIm_ConversationMessagesScanErrorTolerated(t *testing.T) {
 		`CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT)`,
 		`CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER)`,
 		// Untyped `date` column so we can insert a non-integer value that fails scanning.
-		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date, is_from_me INTEGER, text TEXT,
+		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, date, is_from_me INTEGER, text TEXT,
 		    attributedBody BLOB, associated_message_type INTEGER, item_type INTEGER, date_retracted INTEGER, handle_id INTEGER)`,
 		`CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER)`,
 		`CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, mime_type TEXT, total_bytes INTEGER)`,
@@ -287,10 +287,10 @@ func TestIm_ConversationMessagesScanErrorTolerated(t *testing.T) {
 		`INSERT INTO handle VALUES (1, '+14155551234')`,
 		`INSERT INTO chat_handle_join VALUES (1, 1)`,
 		// Bad row: date is text → Scan(&date int64) fails → row skipped.
-		`INSERT INTO message (ROWID, date, is_from_me, text, associated_message_type, item_type, date_retracted, handle_id)
-		    VALUES (1, 'not-a-number', 0, 'BAD ROW should be skipped', 0, 0, 0, 1)`,
-		fmt.Sprintf(`INSERT INTO message (ROWID, date, is_from_me, text, associated_message_type, item_type, date_retracted, handle_id)
-		    VALUES (2, %d, 0, 'GOOD ROW survives', 0, 0, 0, 1)`, goodNanos),
+		`INSERT INTO message (ROWID, guid, date, is_from_me, text, associated_message_type, item_type, date_retracted, handle_id)
+		    VALUES (1, 'm1', 'not-a-number', 0, 'BAD ROW should be skipped', 0, 0, 0, 1)`,
+		fmt.Sprintf(`INSERT INTO message (ROWID, guid, date, is_from_me, text, associated_message_type, item_type, date_retracted, handle_id)
+		    VALUES (2, 'm2', %d, 0, 'GOOD ROW survives', 0, 0, 0, 1)`, goodNanos),
 		`INSERT INTO chat_message_join VALUES (1, 1), (1, 2)`,
 	)
 	f, err := NewLiveFetcher(path, DenyList{})
@@ -415,12 +415,12 @@ func TestIm_DenyEmptyRosterByIdentifier(t *testing.T) {
 
 // imMessageDDL is a complete `message` table (all required + optional columns) for raw
 // chat.db fixtures whose defect lies elsewhere (missing roster/attachment tables).
-const imMessageDDL = `CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, is_from_me INTEGER, text TEXT,
+const imMessageDDL = `CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, date INTEGER, is_from_me INTEGER, text TEXT,
     attributedBody BLOB, associated_message_type INTEGER, item_type INTEGER, date_retracted INTEGER, handle_id INTEGER)`
 
-// imMessageQueryCols is a 12-name placeholder matching the arity of the conversation
+// imMessageQueryCols is a 13-name placeholder matching the arity of the conversation
 // message SELECT (used only when the fake driver returns zero rows before erroring).
-var imMessageQueryCols = []string{"ROWID", "date", "is_from_me", "text", "attributedBody",
+var imMessageQueryCols = []string{"ROWID", "guid", "date", "is_from_me", "text", "attributedBody",
 	"associated_message_type", "item_type", "date_retracted", "id", "filename", "mime_type", "total_bytes"}
 
 // imNewFetcher seeds a well-formed chat.db and opens a LiveFetcher with no deny list.

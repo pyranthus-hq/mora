@@ -2,6 +2,7 @@ package imessage
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ type seedChat struct {
 
 type seedMsg struct {
 	chatID    int64
+	guid      string
 	date      time.Time
 	fromMe    bool
 	handle    string // sender handle for non-self messages
@@ -51,7 +53,7 @@ func seedChatDB(t *testing.T, chats []seedChat, msgs []seedMsg) string {
 		`CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, display_name TEXT, chat_identifier TEXT)`,
 		`CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT)`,
 		`CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER)`,
-		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, is_from_me INTEGER, text TEXT,
+		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, date INTEGER, is_from_me INTEGER, text TEXT,
 		    attributedBody BLOB, associated_message_type INTEGER, item_type INTEGER, date_retracted INTEGER, handle_id INTEGER)`,
 		`CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER)`,
 		`CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, mime_type TEXT, total_bytes INTEGER)`,
@@ -97,6 +99,10 @@ func seedChatDB(t *testing.T, chats []seedChat, msgs []seedMsg) string {
 	var nextMsg, nextAtt int64
 	for _, m := range msgs {
 		nextMsg++
+		guid := m.guid
+		if guid == "" {
+			guid = fmt.Sprintf("seed-message-%d", nextMsg)
+		}
 		hid := int64(0)
 		if !m.fromMe {
 			hid = intern(m.handle)
@@ -105,9 +111,9 @@ func seedChatDB(t *testing.T, chats []seedChat, msgs []seedMsg) string {
 		if m.fromMe {
 			fromMe = 1
 		}
-		if _, err := db.Exec(`INSERT INTO message (ROWID, date, is_from_me, text, attributedBody, associated_message_type, item_type, date_retracted, handle_id)
-		    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			nextMsg, timeToCocoaNanos(m.date), fromMe, nullable(m.text), nullableBlob(m.attrBody), m.assoc, m.itemType, m.retracted, hid); err != nil {
+		if _, err := db.Exec(`INSERT INTO message (ROWID, guid, date, is_from_me, text, attributedBody, associated_message_type, item_type, date_retracted, handle_id)
+		    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			nextMsg, guid, timeToCocoaNanos(m.date), fromMe, nullable(m.text), nullableBlob(m.attrBody), m.assoc, m.itemType, m.retracted, hid); err != nil {
 			t.Fatalf("insert message: %v", err)
 		}
 		if _, err := db.Exec(`INSERT INTO chat_message_join (chat_id, message_id) VALUES (?, ?)`, m.chatID, nextMsg); err != nil {
