@@ -121,7 +121,10 @@ func TestExamIMessageBodiesMatchRenderer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantMeta, err := json.Marshal(mapped.Meta)
+		// The committed exam corpus intentionally remains a legacy parent-grain
+		// fixture. Compare its metadata to the stable conversation identity subset;
+		// message-evidence schema/diagnostics are migration-only enrichment.
+		wantMeta, err := json.Marshal(conversationMeta(examConversation(t, a, ids, l.Self.ID), resolver))
 		if err != nil {
 			t.Fatal(err)
 		}

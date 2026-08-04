@@ -34,7 +34,7 @@ func TestMessageGUIDSurvivesCollapseRenderAndTruncation(t *testing.T) {
 	}
 	// A tight newest-first budget may retain only message-b. Dropped message-a
 	// must not remain addressable.
-	truncated := mapConversation(c, resolver1to1(), len([]rune(truncationMarker))+45)
+	truncated := mapConversation(c, resolver1to1(), len([]rune(mm.Body))-1)
 	b, _ = json.Marshal(truncated.Meta["message_evidence"])
 	if string(b) == "null" || containsAll(string(b), "message-a") || !containsAll(string(b), "message-b") {
 		t.Fatalf("truncated evidence leaked/dropped wrong refs: %s", b)
