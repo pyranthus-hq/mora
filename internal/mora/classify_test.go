@@ -139,14 +139,14 @@ func TestClassifyShortcode(t *testing.T) {
 		{"  466453  ", "", "service"}, // whitespace trimmed before the digit scan
 
 		// --- boundary: 6 digits -> service, unnamed 7 digits -> artifact ---
-		{"123456", "", "service"}, // exactly 6 -> service
+		{"123456", "", "service"},
 		{"1234567", "", "artifact"},
 
 		// --- named real phone numbers -> person; unnamed -> artifact ---
-		{"4155550123", "Sam", "person"},   // 10-digit US, no '+'
-		{"15551234567", "Mom", "person"},  // 11-digit US, no '+'
+		{"4155550123", "Sam", "person"},
+		{"15551234567", "Mom", "person"},
 		{"+14155550123", "", "artifact"},
-		{"+15551234567", "Mom", "person"}, // '+' prefix, long
+		{"+15551234567", "Mom", "person"},
 		{"+447700900000", "", "artifact"},
 		{"+1262966", "", "artifact"},
 
