@@ -49,15 +49,15 @@ type ThinkEvidence struct {
 
 // ThinkGaps is the deterministic "what's missing" analysis (no model).
 type ThinkGaps struct {
-	Stale            []string `json:"stale,omitempty"`             // freshest evidence is old
-	FreshnessUnknown []string `json:"freshness_unknown,omitempty"` // evidence exists but carries no usable timestamp
-	SparseEvidence   []string `json:"sparse_evidence,omitempty"`   // too few matching records for corroboration
-	SourceCoverage   []string `json:"source_coverage,omitempty"`   // matching evidence is confined to one source
-	TemporalState    []string `json:"temporal_state,omitempty"`    // question asks for a later lifecycle state than evidence proves
-	ThinCoverage     []string `json:"thin_coverage,omitempty"`     // named entity has little evidence
-	CoverageHoles    []string `json:"coverage_holes,omitempty"`    // named entity has no page at all
-	RetrievalCaveats []string `json:"retrieval_caveats,omitempty"` // B3: evidence supported ONLY by people-graph association, not a direct lexical/semantic hit
-	ChecksApplied    []string `json:"checks_applied"`               // receipt: an empty gap set means these checks ran and found nothing
+	Stale            []string `json:"stale,omitempty"`
+	FreshnessUnknown []string `json:"freshness_unknown,omitempty"`
+	SparseEvidence   []string `json:"sparse_evidence,omitempty"`
+	SourceCoverage   []string `json:"source_coverage,omitempty"`
+	TemporalState    []string `json:"temporal_state,omitempty"`
+	ThinCoverage     []string `json:"thin_coverage,omitempty"`
+	CoverageHoles    []string `json:"coverage_holes,omitempty"`
+	RetrievalCaveats []string `json:"retrieval_caveats,omitempty"`
+	ChecksApplied    []string `json:"checks_applied"`
 }
 
 func (g ThinkGaps) empty() bool {
