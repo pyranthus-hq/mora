@@ -14,6 +14,8 @@ message-segment FTS) or hybrid search from measured recall.
 | `internal/mora/embed.go` | 113 | The `Embedder` interface, the static-hash feature-hashing embedder (`staticEmbedder`), `defaultEmbedder`, `normalize`, `cosine`, `encodeVec`/`decodeVec` BLOB codec |
 | `internal/mora/embed_ollama.go` | 117 | The opt-in `ollamaEmbedder` (localhost-only), `chooseEmbedder` selection logic, `isLoopbackURL` egress guard, daemon `reachable` probe |
 | `internal/mora/search.go` | n/a | The CLI/MCP search plumbing: `searchMemories` (static parent-FTS + Gmail-segment path), `ftsQuery`/`ftsToken`/`ftsIsStopword` (query construction + stopword filtering), `snippetMemories`, `budgetSearchResults`, `buildContext`, `parseSearchArgs`. (The `ftsStopwords` var and the `mcpSearchDefaultLimit`/`searchSnippetLen` consts remain in `mora.go`. The FTS5/`mem_vectors` schema DDL and `writeVectors` index-time embedding live in `index.go`, part of the `rebuildIndex` pipeline.) |
+| `internal/mora/cluster.go` | n/a | Post-retrieval corroboration clustering, legacy slot discipline, and the shared result-assembly chokepoint used by both static and hybrid paths. |
+| `internal/mora/supersession.go` | n/a | Precision-first title signatures and derived `later_related_evidence` receipts over the visible deeper candidate pool; never asserts closure or supersession. |
 
 Cross-arm helpers `loadMemoriesByID` (`graph_read.go:152`), `gazetteerScan`/`normalizeGazName`/`tokenizeWords` (`gazetteer.go`), and `snippet`/`matchSnippet` (`think.go`) are owned by sibling docs but called here. They are described only at the boundary.
 
@@ -254,6 +256,19 @@ Both search paths run one more pass, post-fusion/pre-truncate, before the `limit
 ---
 
 ## Invariants & gotchas
+
+- **Later-related evidence is a hint, not inferred truth.** After visibility
+  filtering and corroboration clustering, `clusterAndTruncate` annotates each
+  surviving row from the same deeper candidate pool with the newest record that
+  has a precision-first title match (at least two shared meaningful terms,
+  covering at least 75% of the smaller signature) in the same scope. Lifecycle
+  words such as `pending`, `merged`, and `completed` are removed from the
+  signature so state transitions retain their subject. The newer record must
+  have a validated `indexed_at` clock; unknown-clock provider records cannot
+  claim to be later. The receipt is `later_related_evidence {id,title,source,indexed_at}`.
+  It never reorders rows and never says “superseded” or “closed.” Explicit Teach
+  supersession remains the sole authority for that claim, and governed historical
+  revisions are removed before this annotation pass.
 
 - **Retrieval determinism: every ranking is byte-identical across rebuilds.** Every arm has an explicit secondary sort by id (`ftsSearchIDs` `hybrid.go:222`; `vectorSearchIDs` `hybrid.go:265`. Graph arm `hybrid.go:311`), the fused sort tie-breaks on id (`hybrid.go:164-168`), and the multi-token gazetteer resolves ambiguous names by smallest-id (`hybrid.go:351`). **Why:** BM25 ties and Go map iteration are otherwise undefined-order and would jitter the pool boundary and the eval run-to-run.
 - **Never feed an empty MATCH to FTS5.** `ftsQuery` returns `""` for empty/punctuation-only queries and both callers short-circuit (`mora.go:2211`, `hybrid.go:211`). The all-stopword fallback keeps every token rather than emit `""` (`mora.go:3483`). **Why:** FTS5 raises `fts5: syntax error near ""` on an empty MATCH — a crash, not a no-result.

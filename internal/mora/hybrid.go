@@ -165,6 +165,11 @@ func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, l
 	// subscriptions exist.
 	var sharedFused bool
 	out.Results, sharedFused, err = unionSharedResultsObserved(ctx, cfg, local, query, scope, limit, filters...)
+	// The local retrieval paths annotate from their deeper pre-truncation pools.
+	// Run the same conservative pass once over the final union so a newer related
+	// row from a subscribed corpus (or the personal vault) can warn an older row
+	// from the other side without erasing any deeper-pool hint already attached.
+	out.Results = annotateLaterRelatedEvidence(out.Results, out.Results)
 	out.ScoreFused = out.ScoreFused || sharedFused
 	return out, err
 }

@@ -40,6 +40,9 @@ Hard rules — flag any violation as blocking:
    refuses both mutation tools.
 4. **Honest-snapshot sync:** never swallow sync errors — surface them
    (freshness is the product's value).
+   Retrieval may surface a newer strongly-related record, but must call it
+   `later_related_evidence`, never infer “superseded” or “closed.” Only an
+   explicit Teach governance decision may assert supersession.
 5. **State vs vault:** usage logging and sync cursors live in the **state dir**,
    never the vault. Honor `DO_NOT_TRACK` / `mora usage off`.
 6. **Identity vs filename:** `StableID` is provider identity only
