@@ -145,7 +145,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	resp := jsonRPCResponse{JSONRPC: "2.0", ID: req.ID}
 	switch req.Method {
 	case "initialize":
-		instructions := mcpInstructions
+		var instructions string
 		if cfg, err := loadConfig(); err == nil {
 			instructions = mcpInstructionsFor(cfg.mcpWritePolicy())
 		} else {
