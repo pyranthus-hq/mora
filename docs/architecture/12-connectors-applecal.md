@@ -9,13 +9,13 @@
 
 | File | Responsibility |
 |---|---|
-| `internal/applecal/applecal.go` | The whole connector: `KindAppleCalEvent` + `RegisterKind` init, `DefaultDBPath`/`LegacyDBPath`, `LiveFetcher` (read-only + immutable open, schema probe), `FetchPage` (ROWID-cursor paging, window bounds), `participants`, `eventItem` |
+| `internal/applecal/applecal.go` | The whole connector: `KindAppleCalEvent` + `RegisterKind` init, `DefaultDBPath`/`LegacyDBPath`, `LiveFetcher` (read-only live-WAL-aware open, schema probe), `FetchPage` (ROWID-cursor paging, window bounds), `participants`, `eventItem` |
 | `internal/mora/mora.go` | Wiring: `ingestAppleCal` (darwin gate, FDA error text, shared `Ingest` loop), `appleCalDBPath` (modern→legacy probe), `windowForAppleCal` (these three now in `ingest.go`), catalog entry `applecalendar`, `enableConnector` copy (`setup.go`) |
 | `internal/mora/digest.go` | `syncStatusPathFor` case → `sync/applecal-<name>.json` |
 
 ```mermaid
 flowchart LR
-    DB[(Calendar.sqlitedb\ngroup container, ro+immutable)] --> F[LiveFetcher.FetchPage\nROWID cursor, entity_type=2]
+    DB[(Calendar.sqlitedb\ngroup container, ro+query_only)] --> F[LiveFetcher.FetchPage\nROWID cursor, entity_type=2]
     F --> I[memory.Ingest\nshared resumable loop]
     I --> M[memory.MapItem\nType event / Provider applecal]
     M --> W[writeMappedMemory\nsources/applecal/*.md]
@@ -23,7 +23,7 @@ flowchart LR
 
 ## Design decisions
 
-- **Store location**: the modern path is the calendar group container (`~/Library/Group Containers/group.com.apple.calendar/Calendar.sqlitedb`); `appleCalDBPath` probes it first, then the legacy `~/Library/Calendars/` location. Opened `mode=ro&immutable=1` — Calendar.app may hold the write lock, and immutable guarantees we can never mutate Apple's store.
+- **Store location**: the modern path is the calendar group container (`~/Library/Group Containers/group.com.apple.calendar/Calendar.sqlitedb`); `appleCalDBPath` probes it first, then the legacy `~/Library/Calendars/` location. `calendarDBDSN` builds a hierarchical `file:` URI so the space in `Group Containers` is escaped without escaping `/`. It opens with `mode=ro`, `query_only(1)`, and a bounded busy timeout. `immutable=1` is forbidden because Calendar.app actively changes this WAL database; immutable disables change detection and can miss committed WAL state or return incorrect results.
 - **Core Data epoch**: all store timestamps are seconds since 2001-01-01T00:00:00Z (`appleEpoch`/`appleTime`).
 - **Events only**: `entity_type = 2` selects events (reminders/tasks use other values); `hidden = 0` skips recurrence phantoms.
 - **Forward bound (flood guard)**: `windowForAppleCal` always sets `Until = now + 180d`. Apple Calendar stores subscribed-holiday/sports events YEARS out. An unbounded Until floods the vault and the digest's upcoming-events framing. `SinceDays` keeps the iMessage semantics (0 ⇒ 90d back, negative ⇒ all-time past).
@@ -35,9 +35,9 @@ flowchart LR
 
 ## Tests
 
-`internal/applecal/applecal_test.go` seeds a fixture sqlite store: window bounds (both ends), hidden/entity-type filtering, Core Data conversion, participant normalization + organizer split, cursor paging, kind registration through the shared `MapItem`, and the unsupported-schema error.
+`internal/applecal/applecal_test.go` seeds a fixture sqlite store: hierarchical URI construction, read-only/query-only enforcement, visibility of committed live-WAL state, window bounds (both ends), hidden/entity-type filtering, Core Data conversion, participant normalization + organizer split, cursor paging, kind registration through the shared `MapItem`, and the unsupported-schema error.
 
 ## Related
 
 - [iMessage connector](./05-connectors-imessage.md) — the pattern this mirrors (read-only local store, FDA, no-net invariant)
-- [sync & freshness](./11-sync-and-freshness.md) — `ingest run --all` warn-and-continue (one broken connector can't starve this one)
+- [sync & freshness](./11-sync-and-freshness.md) — `mora sync applecalendar` targeted recovery and `ingest run --all` warn-and-continue (one broken connector can't starve this one)

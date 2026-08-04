@@ -93,6 +93,7 @@
     {"path": "sync google", "kind": "subcommand", "platform": "network-seam"},
     {"path": "sync filesystem", "kind": "subcommand", "platform": "all"},
     {"path": "sync imessage", "kind": "subcommand", "platform": "darwin-seam"},
+    {"path": "sync applecalendar", "kind": "subcommand", "platform": "darwin-seam"},
     {"path": "sync git", "kind": "subcommand", "platform": "git-seam"},
     {"path": "share keygen", "kind": "subcommand", "platform": "all"},
     {"path": "share init", "kind": "subcommand", "platform": "all"},

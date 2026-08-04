@@ -558,13 +558,16 @@ func TestCoreA_CmdSync(t *testing.T) {
 		t.Fatalf("sync status should mark the error-free >48h source STALE; got:\n%s", out)
 	}
 
-	// google + imessage backfills with no enabled sources => 0 items, no error.
+	// Provider backfills with no enabled sources => 0 items, no error.
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 	if out := run(t, "sync", "google"); !strings.Contains(out, "synced 0 item(s)") {
 		t.Fatalf("sync google (empty); got:\n%s", out)
 	}
 	if out := run(t, "sync", "imessage"); !strings.Contains(out, "synced 0 item(s)") {
 		t.Fatalf("sync imessage (empty); got:\n%s", out)
+	}
+	if out := run(t, "sync", "applecalendar"); !strings.Contains(out, "synced 0 item(s)") {
+		t.Fatalf("sync applecalendar (empty); got:\n%s", out)
 	}
 }
 
