@@ -277,7 +277,7 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		default:
 			return fmt.Errorf("unknown mmr setting %q (want on or off)", val)
 		}
-	case "mcp-write-policy", "mcp_write_policy":
+	case "mcp-write-policy":
 		policy, err := parseMCPWritePolicy(val)
 		if err != nil {
 			return err
