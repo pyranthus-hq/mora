@@ -73,7 +73,14 @@ type LiveFetcher struct {
 // query_only keeps Mora read-only while allowing SQLite to apply Calendar.app's
 // readable WAL/SHM sidecars. busy_timeout bounds lock contention.
 func calendarDBDSN(path string) string {
-	u := &url.URL{Scheme: "file", Path: path}
+	uriPath := filepath.ToSlash(path)
+	// url.URL treats a Windows drive path as a URI authority unless it starts
+	// with '/'. SQLite needs file:///C:/... (hierarchical), never file://C:%5C...
+	// (host = "C:%5C..."), which fails the first schema read cryptically.
+	if filepath.VolumeName(path) != "" && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := &url.URL{Scheme: "file", Path: uriPath}
 	return u.String() + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
 }
 

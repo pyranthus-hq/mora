@@ -89,6 +89,9 @@ func TestCalendarDBDSNIsHierarchicalAndReadOnly(t *testing.T) {
 	if strings.Contains(strings.ToLower(dsn), "%2f") {
 		t.Fatalf("calendar DSN escaped path separators: %q", dsn)
 	}
+	if strings.Contains(dsn, "%5C") {
+		t.Fatalf("calendar DSN escaped Windows path separators: %q", dsn)
+	}
 	for _, want := range []string{"Group%20Containers", "Calendar%20%3F%23%25.sqlitedb", "mode=ro", "busy_timeout(5000)", "query_only(1)"} {
 		if !strings.Contains(dsn, want) {
 			t.Fatalf("calendar DSN %q missing %q", dsn, want)
