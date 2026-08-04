@@ -23,7 +23,7 @@ func TestArchitectureOverviewContractMatchesSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	module := strings.TrimPrefix(strings.SplitN(string(goMod), "\n", 2)[0], "module ")
+	module := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(string(goMod), "\n", 2)[0], "module "))
 
 	contractRE := regexp.MustCompile(`<!-- generated-contract: module=([^ ]+) mcp-tools=([0-9]+) connectors=([0-9]+) rrf-k=([0-9]+) segment-k=([0-9]+) -->`)
 	match := contractRE.FindStringSubmatch(overview)
