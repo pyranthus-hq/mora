@@ -830,13 +830,17 @@ func TestCoreA_PrintThinkGaps(t *testing.T) {
 	printThink(&out, ThinkResult{
 		Query: "q2",
 		Gaps: ThinkGaps{
-			Stale:         []string{"stale-note"},
-			ThinCoverage:  []string{"thin-note"},
-			CoverageHoles: []string{"hole-note"},
+			Stale:            []string{"stale-note"},
+			SparseEvidence:   []string{"sparse-note"},
+			SourceCoverage:   []string{"source-note"},
+			TemporalState:    []string{"state-note"},
+			ThinCoverage:     []string{"thin-note"},
+			CoverageHoles:    []string{"hole-note"},
+			RetrievalCaveats: []string{"retrieval-note"},
 		},
 	})
 	got := out.String()
-	for _, want := range []string{"does NOT know", "stale-note", "thin-note", "hole-note"} {
+	for _, want := range []string{"does NOT know", "stale-note", "sparse-note", "source-note", "state-note", "thin-note", "hole-note", "retrieval-note"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("gaps output missing %q; got:\n%s", want, got)
 		}

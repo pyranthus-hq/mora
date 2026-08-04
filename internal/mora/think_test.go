@@ -8,7 +8,83 @@ import (
 )
 
 func gapsJoined(g ThinkGaps) string {
-	return strings.Join(append(append(append([]string{}, g.Stale...), g.ThinCoverage...), g.CoverageHoles...), "\n")
+	var all []string
+	all = append(all, g.Stale...)
+	all = append(all, g.FreshnessUnknown...)
+	all = append(all, g.SparseEvidence...)
+	all = append(all, g.SourceCoverage...)
+	all = append(all, g.TemporalState...)
+	all = append(all, g.ThinCoverage...)
+	all = append(all, g.CoverageHoles...)
+	all = append(all, g.RetrievalCaveats...)
+	return strings.Join(all, "\n")
+}
+
+func TestIssue221GapAnalysisReceiptAndPartialEvidence(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	mems := []Memory{{
+		ID: "gmail_thread/old", Type: "email", Source: "gmail", Title: "Old evidence",
+		Text: "quorlath", CreatedAt: "2026-01-01T00:00:00Z",
+	}}
+	g, err := computeGaps(context.Background(), cfg, "quorlath", mems, retrievalTrace{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Stale) == 0 || len(g.SparseEvidence) == 0 || len(g.SourceCoverage) == 0 {
+		t.Fatalf("old, single-record, single-source evidence must expose every deterministic gap: %+v", g)
+	}
+	if len(g.ChecksApplied) == 0 {
+		t.Fatalf("gap analysis must carry a checks-applied receipt: %+v", g)
+	}
+}
+
+func TestIssue221CheckedAndNoGapsIsDistinguishable(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	mems := []Memory{
+		{ID: "gmail_thread/a", Type: "email", Source: "gmail", Title: "Current A", Text: "quorlath", CreatedAt: "2026-07-31T00:00:00Z"},
+		{ID: "imessage_chat/b", Type: "imessage", Source: "imessage", Title: "Current B", Text: "quorlath", CreatedAt: "2026-07-30T00:00:00Z"},
+	}
+	g, err := computeGaps(context.Background(), cfg, "quorlath", mems, retrievalTrace{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !g.empty() || len(g.ChecksApplied) == 0 {
+		t.Fatalf("healthy evidence should have no gaps but must prove checks ran: %+v", g)
+	}
+}
+
+func TestIssue221OutcomeQuestionRejectsProspectiveOnlyEvidence(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	mems := []Memory{
+		{ID: "gmail_thread/invite", Type: "email", Source: "gmail", Title: "Mercor interview invitation", Text: "Please schedule your interview.", CreatedAt: "2026-07-29T00:00:00Z"},
+		{ID: "calendar_event/interview", Type: "event", Source: "calendar", Title: "Mercor interview scheduled", Text: "Calendar confirmation", CreatedAt: "2026-07-30T00:00:00Z"},
+	}
+	g, err := computeGaps(context.Background(), cfg, "What was the Mercor interview outcome?", mems, retrievalTrace{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.TemporalState) == 0 || !strings.Contains(g.TemporalState[0], "no evidence") {
+		t.Fatalf("prospective scheduling cannot answer an outcome question: %+v", g)
+	}
+
+	mems[1].Title = "Mercor interview completed"
+	mems[1].Text = "The result was accepted."
+	g, err = computeGaps(context.Background(), cfg, "What was the Mercor interview outcome?", mems, retrievalTrace{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.TemporalState) != 0 {
+		t.Fatalf("recorded completion/result must clear the temporal-state gap: %+v", g)
+	}
 }
 
 // TestThinkEvidenceAndStaleness proves think retrieves cited evidence and flags
