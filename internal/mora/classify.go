@@ -6,9 +6,9 @@ import "strings"
 // Automated/transactional senders (no-reply addresses, bulk-ESP hosts, and
 // "... Receipts/Alerts" display names) are demoted to "service" so the People
 // view stays human. Pure and deterministic: same input -> same label across
-// graph rebuilds. Named iMessage phone handles remain people; an unnamed bare
-// phone number is retained as an artifact so it can still be resolved and later
-// merged, without presenting the number itself as a human name.
+// graph rebuilds. Phone identities remain people internally so salience and merge
+// evidence stay intact; unnamed numeric labels are retyped only at public read
+// surfaces (publicEntityKind).
 //
 // Conservatism is deliberate. Local-part matching is token-exact (a denylist
 // token must BE a whole '.'/'-'/'_'-delimited token, or the entire local part) —
@@ -29,13 +29,10 @@ func classifyIdentity(identity, displayName string) string {
 	if at < 0 {
 		// Phone-handle / non-email branch. D14-5: an all-digits handle of length
 		// <=6 is an SMS shortcode (262966, 22395) -> service. Longer dialable
-		// handles need a trusted contact name to enter People; unnamed ones remain
-		// resolvable artifacts. Scoped strictly here; email classification is untouched.
+		// handles remain structural people for ranking and identity reconciliation.
+		// Scoped strictly here; email classification is untouched.
 		if isShortcode(id) {
 			return "service"
-		}
-		if isPhoneNumber(id) && display == "" {
-			return "artifact"
 		}
 		if isOrg(id, display) {
 			return "org"
@@ -152,8 +149,8 @@ func isShortcode(handle string) bool {
 
 // isPhoneNumber recognizes a bare dialable handle without mistaking arbitrary
 // numeric identifiers for people. Seven through fifteen digits is the E.164-sized
-// range; common visual separators are accepted. A trusted contact display name
-// keeps the identity person-kind at the classifyIdentity call site.
+// range; common visual separators are accepted. publicEntityKind combines this
+// signal with a trusted display name at the read boundary.
 func isPhoneNumber(handle string) bool {
 	digits := 0
 	for i, r := range handle {

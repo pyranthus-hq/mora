@@ -163,23 +163,15 @@ func TestGraphIMessagePeople(t *testing.T) {
 	}
 }
 
-// TestIssue219UnnamedPhoneIsNotAPerson keeps a source-native phone node for
-// provenance and lookup, while preventing the number itself from entering People.
+// TestIssue219UnnamedPhoneIsNotAPerson keeps a source-native phone node as a
+// structural person while preventing the number itself from entering public People.
 func TestIssue219UnnamedPhoneIsNotAPerson(t *testing.T) {
-	res := buildGraphResult([]Memory{{
-		ID: "imessage_chat/unnamed", Scope: "personal", Type: "imessage", Title: "chat",
-		CreatedAt: "2026-05-01T00:00:00Z", Text: "x",
-		Meta: map[string]any{"participants": []map[string]string{{"handle": "+15551234567"}}},
-	}}, nil)
-	for _, e := range res.entities {
-		if contains(e.Aliases, "+15551234567") {
-			if e.Kind != "artifact" {
-				t.Fatalf("unnamed phone kind = %q, want artifact", e.Kind)
-			}
-			return
-		}
+	if got := publicEntityKind("person:+15551234567", "person", "+15551234567"); got != "artifact" {
+		t.Fatalf("unnamed public phone kind = %q, want artifact", got)
 	}
-	t.Fatal("unnamed phone identity should remain available as an artifact")
+	if got := publicEntityKind("person:+15551234567", "person", "Neil Patel"); got != "person" {
+		t.Fatalf("named public phone kind = %q, want person", got)
+	}
 }
 
 // TestGraphPersonSelfMerge proves the same address across two memories collapses to

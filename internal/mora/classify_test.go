@@ -49,9 +49,9 @@ func TestClassifyIdentity(t *testing.T) {
 		{"alex.owner@gmail.com", "Alex Owner", "person"},
 		{"sam@owner.dev", "Sam Owner", "person"},
 		{"bob@y.com", "", "person"},
-		// named phone handles are people; unnamed numbers are retained as artifacts
+		// phone handles remain structural people; public surfaces hide unnamed numbers
 		{"+15551234567", "Mom", "person"},
-		{"+447700900000", "", "artifact"},
+		{"+447700900000", "", "person"},
 
 		// --- automated local-part tokens -> service ---
 		{"no-reply@medium.com", "Medium Daily Digest", "service"},
@@ -123,9 +123,8 @@ func TestClassifyIdentity(t *testing.T) {
 }
 
 // TestClassifyShortcode (D14-5) pins the phone-handle branch: an all-digits
-// handle of length <=6 is an SMS shortcode -> service. A real phone number with
-// a trusted contact name stays person; an unnamed number is an artifact rather
-// than a synthetic person.
+// handle of length <=6 is an SMS shortcode -> service. Real phone numbers stay
+// structural people; the read layer keeps unnamed numeric labels out of People.
 func TestClassifyShortcode(t *testing.T) {
 	cases := []struct {
 		identity, display, want string
@@ -138,17 +137,17 @@ func TestClassifyShortcode(t *testing.T) {
 		{"1", "", "service"},          // degenerate single digit
 		{"  466453  ", "", "service"}, // whitespace trimmed before the digit scan
 
-		// --- boundary: 6 digits -> service, unnamed 7 digits -> artifact ---
+		// --- boundary: 6 digits -> service, 7 digits -> person ---
 		{"123456", "", "service"},
-		{"1234567", "", "artifact"},
+		{"1234567", "", "person"},
 
-		// --- named real phone numbers -> person; unnamed -> artifact ---
+		// --- real phone numbers -> structural person ---
 		{"4155550123", "Sam", "person"},
 		{"15551234567", "Mom", "person"},
-		{"+14155550123", "", "artifact"},
+		{"+14155550123", "", "person"},
 		{"+15551234567", "Mom", "person"},
-		{"+447700900000", "", "artifact"},
-		{"+1262966", "", "artifact"},
+		{"+447700900000", "", "person"},
+		{"+1262966", "", "person"},
 
 		// --- non-digit handles fall through to the existing person default ---
 		{"+1-415-555-0123", "Sam", "person"}, // punctuation, not all-digits, has '+'
