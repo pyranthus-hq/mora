@@ -302,17 +302,18 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 }
 func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) >= 1 && isHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora sync <status|google|filesystem|imessage|git>")
+		fmt.Fprintln(stdout, "usage: mora sync <status|google|filesystem|imessage|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
 		fmt.Fprintln(stdout, "  filesystem re-index enabled filesystem sources")
 		fmt.Fprintln(stdout, "  imessage  re-run the iMessage backfill")
+		fmt.Fprintln(stdout, "  applecalendar re-run the local Apple Calendar backfill")
 		fmt.Fprintln(stdout, "  git       back up the vault to a private git remote (off-device)")
 		fmt.Fprintln(stdout, "            --init [--remote URL | --github [--name repo]] [-m msg]")
 		return nil
 	}
 	if len(args) == 0 {
-		return errors.New("usage: mora sync <status|google|filesystem|imessage|git>")
+		return errors.New("usage: mora sync <status|google|filesystem|imessage|applecalendar|git>")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -378,12 +379,20 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
 		return err
 	}
+	// `mora sync applecalendar` — targeted retry for the local Calendar store.
+	// Keep this separate from Google Calendar: the provider, FDA gate, status
+	// receipt, and recovery action are all independent (#266).
+	if args[0] == "applecalendar" {
+		total, err := backfillEnabledAppleCalendar(ctx, cfg, stdout)
+		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		return err
+	}
 	if args[0] == "google" {
 		total, err := backfillEnabledGoogle(ctx, cfg, stdout)
 		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
 		return err
 	}
-	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|filesystem|imessage|git>)", args[0])
+	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|filesystem|imessage|applecalendar|git>)", args[0])
 }
 
 // syncStatusFileThreshold infers the freshness threshold for a raw sync/
@@ -1133,6 +1142,36 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 		if e != nil {
 			failures++
 			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, e)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		return total, err
+	}
+	if failures > 0 {
+		return total, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
+	}
+	return total, nil
+}
+
+// backfillEnabledAppleCalendar runs the local Apple Calendar backfill for every
+// enabled source, then rebuilds the index once. It is the targeted recovery
+// seam for `mora sync applecalendar` and mirrors the iMessage contract: disabled
+// sources are skipped and every source failure remains loud.
+func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
+	sources, err := loadSources(cfg)
+	if err != nil {
+		return 0, err
+	}
+	total, failures := 0, 0
+	for _, s := range sources {
+		if s.Type != "applecalendar" || !s.IsEnabled() {
+			continue
+		}
+		n, ingestErr := ingestSource(cfg, s, stdout)
+		total += n
+		if ingestErr != nil {
+			failures++
+			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, ingestErr)
 		}
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {

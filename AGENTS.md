@@ -31,8 +31,9 @@ Hard rules — flag any violation as blocking:
    the release build.
 3. **Read-only + zero egress:** Google scopes stay `gmail.readonly` /
    `calendar.readonly`. iMessage opens `chat.db` with `mode=ro` (never `immutable=1`);
-   Apple Calendar opens its store `mode=ro&immutable=1` (Calendar.app holds the
-   write lock). No connector writes to its source; no telemetry/egress.
+   Apple Calendar opens its live WAL store with a hierarchical `file:` URI,
+   `mode=ro`, and `query_only(1)` (never `immutable=1`, which can ignore live
+   changes). No connector writes to its source; no telemetry/egress.
 4. **Honest-snapshot sync:** never swallow sync errors — surface them
    (freshness is the product's value).
 5. **State vs vault:** usage logging and sync cursors live in the **state dir**,
@@ -46,4 +47,3 @@ Hard rules — flag any violation as blocking:
 8. **Secrets:** `internal/google/client.json` is a committed NON-SECRET
    placeholder. Real credentials come from `MORA_GOOGLE_CREDENTIALS` at runtime —
    never commit real creds.
-

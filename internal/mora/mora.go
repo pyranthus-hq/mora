@@ -430,6 +430,7 @@ USAGE:
   mora sync google
   mora sync filesystem            # re-index enabled filesystem sources
   mora sync imessage               # macOS: read local Messages (read-only) into memories
+  mora sync applecalendar          # macOS: re-read local Apple Calendar (read-only) into memories
   mora reingest [--full]           # re-fetch + rewrite memories with latest metadata, rebuild graph
   mora usage report
   mora usage off|on

@@ -313,7 +313,7 @@
     },
     {
       "name": "sync",
-      "paths": ["sync", "sync status", "sync google", "sync filesystem", "sync imessage", "sync git"],
+      "paths": ["sync", "sync status", "sync google", "sync filesystem", "sync imessage", "sync applecalendar", "sync git"],
       "evidence": {
         "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
         "json": {"status": "not_supported", "reason": "sync commands are text status surfaces."},

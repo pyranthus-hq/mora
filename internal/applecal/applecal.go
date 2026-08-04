@@ -2,8 +2,8 @@
 // of the local Calendar store (Calendar.sqlitedb in the calendar group
 // container), one memory per event. It mirrors the iMessage connector's
 // constraints exactly: pure Go (modernc sqlite), NO network imports, NO
-// internal/mora import (mora imports us — the connector seam), read-only +
-// immutable open so we never write or checkpoint Apple's database. The real
+// internal/mora import (mora imports us — the connector seam), and a read-only
+// live-WAL-aware open so we never write or checkpoint Apple's database. The real
 // access gate is Full Disk Access (same TCC story as chat.db), surfaced by the
 // caller's error text, not a login.
 package applecal
@@ -62,14 +62,34 @@ type LiveFetcher struct {
 	db *sql.DB
 }
 
-// NewLiveFetcher opens the store read-only + immutable (Calendar.app may hold
-// the write lock; immutable also guarantees we can never mutate it) and runs a
-// schema probe so an unsupported store errors clearly instead of failing
-// cryptically mid-query. A permission-denied open is the FDA-not-granted case;
-// the caller wraps it with the doctor guidance.
+// calendarDBDSN returns a hierarchical file URI, preserving path separators and
+// escaping only path data such as the space in "Group Containers". PathEscape
+// cannot be used on the whole filename: it escapes '/' and turns the absolute
+// path into an opaque file URI, which the Darwin VFS can fail to open.
+//
+// Calendar.sqlitedb is a LIVE WAL database. immutable=1 is intentionally
+// forbidden: SQLite documents that immutable disables change detection and may
+// return incorrect results when another process changes the file. mode=ro plus
+// query_only keeps Mora read-only while allowing SQLite to apply Calendar.app's
+// readable WAL/SHM sidecars. busy_timeout bounds lock contention.
+func calendarDBDSN(path string) string {
+	uriPath := filepath.ToSlash(path)
+	// url.URL treats a Windows drive path as a URI authority unless it starts
+	// with '/'. SQLite needs file:///C:/... (hierarchical), never file://C:%5C...
+	// (host = "C:%5C..."), which fails the first schema read cryptically.
+	if filepath.VolumeName(path) != "" && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := &url.URL{Scheme: "file", Path: uriPath}
+	return u.String() + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
+}
+
+// NewLiveFetcher opens the live store read-only and runs a schema probe so an
+// unsupported store errors clearly instead of failing cryptically mid-query. A
+// permission-denied open is the FDA-not-granted case; the caller wraps it with
+// the doctor guidance.
 func NewLiveFetcher(path string) (*LiveFetcher, error) {
-	dsn := "file:" + url.PathEscape(path) + "?mode=ro&immutable=1"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", calendarDBDSN(path))
 	if err != nil {
 		return nil, err
 	}

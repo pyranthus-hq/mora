@@ -2,6 +2,7 @@ package applecal
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,6 +74,83 @@ func seedDB(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// TestCalendarDBDSNIsHierarchicalAndReadOnly pins the modern group-container
+// path contract from #266. Escaping the whole filename with url.PathEscape
+// encoded every slash and produced an opaque file URI; Darwin's VFS then failed
+// at the first schema read even though the same database opened directly.
+func TestCalendarDBDSNIsHierarchicalAndReadOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Group Containers", "group.com.apple.calendar", "Calendar ?#%.sqlitedb")
+	dsn := calendarDBDSN(path)
+	if !strings.HasPrefix(dsn, "file:///") {
+		t.Fatalf("calendar DSN = %q, want a hierarchical absolute file URI", dsn)
+	}
+	if strings.Contains(strings.ToLower(dsn), "%2f") {
+		t.Fatalf("calendar DSN escaped path separators: %q", dsn)
+	}
+	if strings.Contains(dsn, "%5C") {
+		t.Fatalf("calendar DSN escaped Windows path separators: %q", dsn)
+	}
+	for _, want := range []string{"Group%20Containers", "Calendar%20%3F%23%25.sqlitedb", "mode=ro", "busy_timeout(5000)", "query_only(1)"} {
+		if !strings.Contains(dsn, want) {
+			t.Fatalf("calendar DSN %q missing %q", dsn, want)
+		}
+	}
+	if strings.Contains(dsn, "immutable") {
+		t.Fatalf("live Calendar database must not be opened immutable: %q", dsn)
+	}
+}
+
+// TestLiveFetcherReadsTheLiveWAL reproduces the connector side of #266 without
+// requiring a private Calendar database. Calendar.app owns a live WAL store;
+// its schema and newest rows may exist only in readable WAL/SHM sidecars. An
+// immutable reader ignores change detection and can miss that state. Mora must
+// see the committed WAL while remaining unable to write.
+func TestLiveFetcherReadsTheLiveWAL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Library", "Group Containers", "group.com.apple.calendar")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "Calendar.sqlitedb")
+	writer, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if _, err := writer.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE Calendar (ROWID INTEGER PRIMARY KEY, title TEXT)`,
+		`CREATE TABLE Location (ROWID INTEGER PRIMARY KEY, title TEXT)`,
+		`CREATE TABLE Participant (ROWID INTEGER PRIMARY KEY, owner_id INTEGER, email TEXT, role INTEGER)`,
+		`CREATE TABLE CalendarItem (ROWID INTEGER PRIMARY KEY, summary TEXT, description TEXT, start_date REAL, end_date REAL, all_day INTEGER, calendar_id INTEGER, location_id INTEGER, entity_type INTEGER, UUID TEXT, hidden INTEGER)`,
+		`INSERT INTO Calendar VALUES (1, 'Live')`,
+	} {
+		if _, err := writer.Exec(stmt); err != nil {
+			t.Fatalf("seed live WAL with %q: %v", stmt, err)
+		}
+	}
+
+	f, err := NewLiveFetcher(path)
+	if err != nil {
+		t.Fatalf("open live Calendar WAL read-only: %v", err)
+	}
+	defer f.Close()
+	var title string
+	if err := f.db.QueryRow(`SELECT title FROM Calendar WHERE ROWID = 1`).Scan(&title); err != nil {
+		t.Fatalf("read row committed in live WAL: %v", err)
+	}
+	if title != "Live" {
+		t.Fatalf("live WAL title = %q, want Live", title)
+	}
+	if _, err := f.db.Exec(`CREATE TABLE mora_must_not_write (x INTEGER)`); err == nil {
+		t.Fatal("Apple Calendar connection accepted a write despite mode=ro + query_only")
+	}
 }
 
 // TestFetchPageMapsEvents locks the connector contract: events only
