@@ -148,6 +148,11 @@ type Memory struct {
 	// read_memory/list_memory — omitempty keeps every other read surface
 	// byte-identical.
 	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
+	// LaterRelatedEvidence is a derived retrieval hint, never persisted. It
+	// points from an older result to the newest deeper-pool record with a
+	// strongly matching title in the same scope. It deliberately says related,
+	// not superseded: only Teach governance may assert an actual supersession.
+	LaterRelatedEvidence *LaterRelatedEvidence `json:"later_related_evidence,omitempty"`
 	// Evidence is the compact Gmail evidence-segment receipt (issue #243,
 	// DQ5 §2): the STRONGEST query-matching derived segment's identity +
 	// snippet, attached at search_memory result-assembly time
@@ -168,6 +173,17 @@ type CorroboratingRef struct {
 	Title     string `json:"title"`
 	Source    string `json:"source"`
 	CreatedAt string `json:"created_at"`
+}
+
+// LaterRelatedEvidence is an honest, read_memory-able warning that retrieval
+// found a newer strongly-related record. IndexedAt is the later record's
+// validated write clock; records without an honest write clock cannot be used
+// as a "later" hint.
+type LaterRelatedEvidence struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Source    string `json:"source"`
+	IndexedAt string `json:"indexed_at"`
 }
 
 type Source struct {

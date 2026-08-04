@@ -437,6 +437,15 @@ Incomplete, legacy, or expired decisions are marked `needs_review`.
 
 `mora write` writes only to the local vault, never to your connected accounts.
 
+Search results can carry `later_related_evidence` when Mora finds a newer record
+with a strongly matching title in the same scope, even if that newer record was
+below the requested result window. The receipt gives its `id`, title, source,
+and honest `indexed_at` timestamp so an agent can follow it with `read_memory`
+before repeating an older status. This is deliberately a warning, not an
+automatic closure claim. Use `mora teach memory supersede ... --yes` when you
+want to assert that one authored memory actually replaces another; connector
+evidence remains immutable.
+
 ### Teach Mora
 
 Teach records a local, reversible human correction in Mora's governance

@@ -288,5 +288,5 @@ func clusterAndTruncate(rawIDs []string, visible []Memory, limit int) []Memory {
 	if len(out) > limit {
 		out = out[:limit] // safety net; direct+backfillBudget <= windowN <= limit by construction
 	}
-	return out
+	return annotateLaterRelatedEvidence(out, visible)
 }
