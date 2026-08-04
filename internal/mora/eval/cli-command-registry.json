@@ -58,6 +58,8 @@
     {"path": "config context", "kind": "subcommand", "platform": "all"},
     {"path": "config embedder", "kind": "subcommand", "platform": "all"},
     {"path": "config mmr", "kind": "subcommand", "platform": "all"},
+    {"path": "config mcp-write-policy", "kind": "subcommand", "platform": "all"},
+    {"path": "mcp proposals", "kind": "subcommand", "platform": "all"},
     {"path": "index rebuild", "kind": "subcommand", "platform": "all"},
     {"path": "forget list", "kind": "subcommand", "platform": "all"},
     {"path": "merge list", "kind": "subcommand", "platform": "all"},

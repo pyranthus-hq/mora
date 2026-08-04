@@ -33,6 +33,10 @@ type Config struct {
 	ConfigDir string
 	DataDir   string
 	StateDir  string
+	// MCPWritePolicy controls the mutation authority granted to MCP clients.
+	// Empty means "open" for backward compatibility. "propose" stages writes
+	// for local approval, while "readonly" refuses both writes and deletes.
+	MCPWritePolicy string
 	// Embedder is the durable embedder opt-in from config.toml (`embedder = "ollama"`).
 	// It is the persistent way to turn on semantic retrieval for BOTH the CLI and the
 	// MCP server (which the agent uses) without per-host env wiring. The MORA_EMBEDDER
@@ -420,6 +424,7 @@ USAGE:
   mora schedule install doctor-pulse   # daily 09:00 freshness alarm (after the 08:00 brief)
   mora config context large        # context profile: small | default | large (budget + snippet density)
   mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
+  mora config mcp-write-policy propose   # open | propose | readonly for MCP mutations
   mora connectors list|enable <type>|disable <type>
   mora connect google              # sign in with Google in your browser, then backfill Gmail + Calendar (last 90 days)
   mora connect google --since-days 365   # widen the gmail backfill window
@@ -436,6 +441,7 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
+  mora mcp proposals list          # inspect writes staged by propose-mode MCP clients
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora hook install|uninstall|status

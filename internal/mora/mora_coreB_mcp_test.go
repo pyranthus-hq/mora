@@ -48,8 +48,8 @@ func coreBMcpServe(t *testing.T, stdin string) (string, error) {
 
 // --- cmdMCP -----------------------------------------------------------------
 
-// TestCoreB_McpCmdMCPBadSubcommand locks the usage guard: anything other than a
-// single "serve" arg is a usage error, not a silent no-op.
+// TestCoreB_McpCmdMCPBadSubcommand locks the usage guard: anything other than
+// the serve or proposals command shapes is a usage error, not a silent no-op.
 func TestCoreB_McpCmdMCPBadSubcommand(t *testing.T) {
 	withTempHome(t)
 	var out bytes.Buffer
@@ -62,8 +62,9 @@ func TestCoreB_McpCmdMCPBadSubcommand(t *testing.T) {
 		if err == nil {
 			t.Fatalf("cmdMCP(%v) = nil, want usage error", args)
 		}
-		if err.Error() != "usage: mora mcp serve" {
-			t.Fatalf("cmdMCP(%v) error = %q, want %q", args, err.Error(), "usage: mora mcp serve")
+		const usage = "usage: mora mcp serve | mora mcp proposals <list|approve ID|reject ID>"
+		if err.Error() != usage {
+			t.Fatalf("cmdMCP(%v) error = %q, want %q", args, err.Error(), usage)
 		}
 	}
 }
