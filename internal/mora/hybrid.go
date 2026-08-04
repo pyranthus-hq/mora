@@ -17,11 +17,12 @@ const rrfK = 60.0
 // this corpus: the gold doc is frequently retrieved by the FTS arm at a strong rank
 // but then DEMOTED below the cutoff by docs that several arms weakly agree on (the
 // FUSION-dominant failure mode measured in the live recall eval, where hybrid scored
-// WORSE than FTS-only). FTS is the exact-match correctness anchor and the strongest
-// single arm, so it carries more weight, and a smaller k sharpens the head so a
-// rank-0 hit isn't matched by a rank-50 also-ran. The vec/graph arms still ADD recall
-// for docs FTS misses entirely. Tuned by TestEvalWeightSweep against the live golden
-// set; see docs/design/2026-06-10-retrieval-ranking.md.
+// WORSE than the then-parent-FTS-only baseline). FTS is the exact-match correctness
+// anchor and the strongest single arm, so it carries more weight, and a smaller k
+// sharpens the head so a rank-0 hit isn't matched by a rank-50 also-ran. The
+// vec/graph arms still ADD recall for docs FTS misses entirely. Tuned by
+// TestEvalWeightSweep against the live golden set; see
+// docs/design/2026-06-10-retrieval-ranking.md.
 type fusionParams struct {
 	fts, vec, graph, k float64
 }
@@ -69,7 +70,7 @@ func rrf(lists [][]string, k float64) map[string]float64 {
 // COVERAGE / RETRIEVAL / FUSION / HIT (see docs/design/2026-06-05-t2-recall-eval-design.md §6).
 // It is populated on every call; production callers drop it.
 type retrievalTrace struct {
-	FTS, Vec, Graph, Fused []string // ranked ids; rank = slice index. Fused is the FULL ranking, pre-limit.
+	FTS, Vec, Graph, Segment, Fused []string // ranked ids; rank = slice index. Fused is the FULL ranking, pre-limit.
 	// PreTruncPool is the arm depth actually queried. The eval passes a tracePool
 	// LARGER than production's pool=limit*5 so a gold doc at arm-rank #55 surfaces
 	// as FOUND-BUT-BEYOND-POOL (FUSION), not misread as "no arm found it"
@@ -79,53 +80,102 @@ type retrievalTrace struct {
 
 // hybridSearch retrieves with FTS5/BM25 (the exact-match correctness anchor) +
 // static-embedding cosine (recall) + 1-hop graph expansion (people the query
-// names), fused by RRF. It degrades gracefully: with no vector table (a pre-I2
-// index) it is FTS-only; an empty query short-circuits to nil.
+// names), plus Gmail segment-grain FTS, fused by RRF. It degrades gracefully:
+// with no vector table (a pre-I2 index) it still runs parent FTS + Gmail segments;
+// an empty query short-circuits to nil.
 //
 // It is a thin wrapper over hybridSearchTrace with tracePool=0, so the arm pool
 // stays exactly limit*5 (min 50) and the fused ranking is byte-identical to the
 // pre-trace implementation — one production code path, the trace discarded.
-func hybridSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
-	mems, _, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0)
+func hybridSearch(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	mems, _, err := hybridSearchTrace(ctx, cfg, query, scope, limit, 0, filters...)
 	return mems, err
 }
 
 // embedderIsSemantic reports whether e produces real semantic vectors rather than
-// the deterministic static-hash floor. Hybrid retrieval beats FTS-only ONLY with a
-// semantic embedder (T2 recall eval, docs/SESSION-2026-06-06-t2-eval.md); under
+// the deterministic static-hash floor. Hybrid retrieval beat the measured
+// parent-FTS baseline ONLY with a semantic embedder (T2 recall eval,
+// docs/SESSION-2026-06-06-t2-eval.md); under
 // static-hash hybrid REGRESSES recall (0.591 -> 0.394 @5), so the default search
 // path gates on this.
 func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder().ModelID() }
 
-// defaultSearch backs search_memory + `mora search`. It routes to hybrid ONLY when
-// the ACTIVELY CHOSEN embedder is semantic (Ollama opted in AND the daemon
-// reachable); static-hash — including Ollama opted in but the daemon down — stays
-// pure FTS-only. We gate on chooseEmbedder() rather than just MORA_EMBEDDER because
-// a vector-empty hybrid is NOT equivalent to FTS-only: the graph arm still shifts
-// RRF ranking, so it would not match the measured FTS-only baseline (codex review).
-// Note: in the Ollama-up path this probes once here and again inside hybridSearch;
-// the second probe is a fast localhost check (threading the instance through
-// hybridSearchTrace would ripple into the eval signatures — deferred).
-func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
+// mcpSearchResult is defaultSearch's routing decision + retrieval trace,
+// exposed alongside its results for mcpSearchMemory's confidence envelope
+// (#238 P1/P2 fix). Confidence must key its "scale"/strength on the SAME
+// decision that actually routed and scored this call's results — never a
+// second, independently-timed chooseEmbedderFor probe (which can disagree
+// with the routing probe if Ollama reachability flips between the two) —
+// and must reuse the SAME hybridSearchTrace pass rather than re-running the
+// full embed+retrieve+fuse pipeline a second time just to recover the trace.
+//
+// Local/Trace are the PRE-union local results and arms. Trace is populated on
+// the semantic path and on a static path whose Gmail segment arm participates;
+// that lets confidence interpret the actual score domain rather than guessing
+// from the embedder. Shared-corpus contributions remain outside the personal
+// index's retrieval trace, mirroring buildThink's documented gap scope.
+type mcpSearchResult struct {
+	Results      []Memory       // post-union — the actual RETURNED set, identical to defaultSearch's return
+	SemanticPath bool           // the SAME chooseEmbedderFor/embedderIsSemantic decision that routed retrieval
+	ScoreFused   bool           // actual returned Memory.Score domain, including subscribed-share RRF
+	Local        []Memory       // pre-union local results
+	Trace        retrievalTrace // per-arm trace when ScoreFused is true
+}
+
+// defaultSearchForMCP is defaultSearch's routing + results, plus the ACTUAL
+// routing decision and retrieval trace this call computed, threaded out for
+// mcpSearchMemory's confidence envelope to consume (#238). defaultSearch
+// itself delegates here so its OTHER call sites (the `mora search` CLI) keep
+// their exact signature and behavior, unchanged and untouched.
+//
+// It routes to hybrid ONLY when the ACTIVELY CHOSEN embedder is semantic
+// (Ollama opted in AND the daemon reachable); static-hash — including Ollama
+// opted in but the daemon down — stays on the static keyword surface (parent
+// FTS + Gmail segments). We gate on chooseEmbedder() rather than just
+// MORA_EMBEDDER because a vector-empty hybrid is NOT equivalent to that static
+// surface: the graph arm still shifts RRF ranking, so it would not match the
+// measured baseline (codex review).
+//
+// HEALTH-12 / Packet D2 read path: DEGRADE VISIBLY. An unreachable configured
+// `ollama` embedder makes chooseEmbedderFor err — route to the static keyword
+// surface rather than hard-failing a search on a one-second daemon blip. The
+// failure is disclosed by the reddened index health banner (indexHealthOf →
+// degraded), not by a crash.
+func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) (mcpSearchResult, error) {
+	var out mcpSearchResult
 	var local []Memory
 	var err error
-	// HEALTH-12 / Packet D2 read path: DEGRADE VISIBLY. An unreachable configured
-	// `ollama` embedder makes chooseEmbedderFor err — route to FTS-only rather than
-	// hard-failing a search on a one-second daemon blip. The failure is disclosed by
-	// the reddened index health banner (indexHealthOf → degraded), not by a crash.
 	emb, embErr := chooseEmbedderFor(cfg)
-	if embErr == nil && embedderIsSemantic(emb) {
-		local, err = hybridSearch(ctx, cfg, query, scope, limit)
+	out.SemanticPath = embErr == nil && embedderIsSemantic(emb)
+	if out.SemanticPath {
+		out.ScoreFused = true
+		local, out.Trace, err = hybridSearchTrace(ctx, cfg, query, scope, limit, 0, filters...)
 	} else {
-		local, err = searchMemories(ctx, cfg, query, scope, limit)
+		var observed searchMemoryObservation
+		local, err = searchMemoriesObserved(ctx, cfg, query, scope, limit, &observed, filters...)
+		out.ScoreFused = observed.ScoreFused
+		out.Trace = observed.Trace
 	}
 	if err != nil {
-		return nil, err
+		return out, err
 	}
+	out.Local = local
 	// Query-time union with subscribed share corpora (`mora share`): owner-
 	// attributed, rank-fused, and a no-op returning `local` unchanged when no
 	// subscriptions exist.
-	return unionSharedResults(ctx, cfg, local, query, scope, limit)
+	var sharedFused bool
+	out.Results, sharedFused, err = unionSharedResultsObserved(ctx, cfg, local, query, scope, limit, filters...)
+	out.ScoreFused = out.ScoreFused || sharedFused
+	return out, err
+}
+
+// defaultSearch backs search_memory + `mora search`. See defaultSearchForMCP
+// for the routing rule; this is a thin wrapper that discards the routing
+// decision/trace so every OTHER call site keeps its exact pre-#238 signature
+// and behavior — one production code path, the extras dropped.
+func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit int) ([]Memory, error) {
+	res, err := defaultSearchForMCP(ctx, cfg, query, scope, limit)
+	return res.Results, err
 }
 
 // hybridSearchTrace is hybridSearch with the per-arm ranked lists exposed for
@@ -139,7 +189,8 @@ func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit i
 // (RETRIEVAL → falsely blaming the embedder). tracePool<=0 (what hybridSearch
 // passes) records the production arms themselves — one query per arm, zero extra
 // work on the production hot path.
-func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, limit, tracePool int) ([]Memory, retrievalTrace, error) {
+func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, limit, tracePool int, filters ...searchFilters) ([]Memory, retrievalTrace, error) {
+	f := oneFilter(filters)
 	var tr retrievalTrace
 	if _, err := os.Stat(dbPath(cfg)); err != nil {
 		if _, err := rebuildIndex(ctx, cfg); err != nil {
@@ -162,7 +213,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// its deduped union across people may exceed pool; that whole union is fused,
 	// never capped — capping it would change the fused ranking for multi-person
 	// queries (and break byte-identity).
-	ftsIDs, err := ftsSearchIDs(ctx, db, query, scope, pool)
+	ftsIDs, err := ftsSearchIDs(ctx, db, query, scope, pool, f)
 	if err != nil {
 		return nil, tr, err
 	}
@@ -186,51 +237,73 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		// SEMANTIC. Under the static-hash floor the stored vectors are deterministic
 		// noise; fusing a noise arm via RRF rewards cross-arm coincidence and DEMOTES
 		// strong single-arm (FTS) hits — the FUSION-dominant regression where hybrid
-		// scored BELOW FTS-only on the live recall eval (a gold doc at FTS#0 fused to
-		// #15 because the noise vec arm ranked it #52). Graph expansion is
-		// embedder-independent (pure metadata), so it always stays.
+		// scored BELOW the then-parent-FTS-only baseline on the live recall eval (a
+		// gold doc at FTS#0 fused to #15 because the noise vec arm ranked it #52).
+		// Graph expansion is embedder-independent (pure metadata), so it always stays.
 		if embErr == nil {
 			emb = resolved
 			useVec = embedderIsSemantic(emb)
 		}
 		if useVec {
-			if vecIDs, err = vectorSearchIDs(ctx, db, emb, query, scope, pool); err != nil {
+			if vecIDs, err = vectorSearchIDs(ctx, db, emb, query, scope, pool, f); err != nil {
 				return nil, tr, err
 			}
 		}
-		if graphIDs, err = graphExpandIDs(ctx, db, query, scope, pool); err != nil {
+		if graphIDs, err = graphExpandIDs(ctx, db, query, scope, pool, f); err != nil {
 			return nil, tr, err
 		}
+	}
+
+	// Issue #243 production arm: bounded to the SAME parent pool as the other
+	// candidate sources before either fusion or hydration. Best-effort by
+	// design: a segment-query error degrades to an empty arm and no evidence.
+	segIDs, gsegEvidence, segErr := gmailSegmentQueryArmBounded(ctx, db, query, scope, pool, f)
+	if segErr != nil {
+		segIDs, gsegEvidence = nil, nil
 	}
 
 	// Trace arms — deepened to tracePool for attribution ONLY (never fused). At
 	// tracePool<=pool the production arms ARE the trace arms (no extra queries).
 	if tracePool > pool {
 		tr.PreTruncPool = tracePool
-		if tr.FTS, err = ftsSearchIDs(ctx, db, query, scope, tracePool); err != nil {
+		if tr.FTS, err = ftsSearchIDs(ctx, db, query, scope, tracePool, f); err != nil {
 			return nil, tr, err
 		}
 		if vecOK {
 			if useVec {
-				if tr.Vec, err = vectorSearchIDs(ctx, db, emb, query, scope, tracePool); err != nil {
+				if tr.Vec, err = vectorSearchIDs(ctx, db, emb, query, scope, tracePool, f); err != nil {
 					return nil, tr, err
 				}
 			}
-			if tr.Graph, err = graphExpandIDs(ctx, db, query, scope, tracePool); err != nil {
+			if tr.Graph, err = graphExpandIDs(ctx, db, query, scope, tracePool, f); err != nil {
 				return nil, tr, err
 			}
 		}
+		// Like the other trace arms, Segment is re-queried at tracePool only
+		// for attribution. The production segIDs above remain the sole segment
+		// list fed to RRF below.
+		if traceSegment, _, traceErr := gmailSegmentQueryArmBounded(ctx, db, query, scope, tracePool, f); traceErr == nil {
+			tr.Segment = traceSegment
+		}
 	} else {
 		tr.PreTruncPool = pool
-		tr.FTS, tr.Vec, tr.Graph = ftsIDs, vecIDs, graphIDs
+		tr.FTS, tr.Vec, tr.Graph, tr.Segment = ftsIDs, vecIDs, graphIDs, segIDs
 	}
 
-	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 {
+	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source, mapped
+	// to PARENT ids, before fusion/slot accounting (frozen interface #3): one
+	// more arm in the SAME RRF fusion every other arm feeds. A query with no
+	// segment matches contributes an empty list, which is a complete no-op
+	// for every OTHER id's fused score — the byte-identity guarantee for
+	// non-participating memories holds automatically. Best-effort: a
+	// segment-arm failure just means an empty arm, never a failed search.
+	if len(ftsIDs) == 0 && len(vecIDs) == 0 && len(graphIDs) == 0 && len(segIDs) == 0 {
 		return nil, tr, nil
 	}
 
 	fp := cfg.fusion()
-	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs}, fp.weights(), fp.k)
+	fusionWeights := append(append([]float64{}, fp.weights()...), gmailSegmentArmWeight)
+	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
 	ids := make([]string, 0, len(fused))
 	for id := range fused {
 		ids = append(ids, id)
@@ -261,28 +334,41 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		ids = mmrRerank(ids, fused, vecByID, *mp)
 	}
 
-	if len(ids) > limit {
-		ids = ids[:limit]
-	}
-
+	// Issue #237 — corroborating-record clustering runs HERE: post-fusion,
+	// pre-truncate. Hydrating the full fused ranking (not just the top `limit`)
+	// is what makes the freed-slot backfill possible — a cluster's non-head
+	// members give up their slots to the next-best DISTINCT candidates further
+	// down `ids`, which requires seeing them before truncating.
 	mems, err := loadMemoriesByID(ctx, cfg, db, ids)
 	if err != nil {
 		return nil, tr, err
 	}
-	// loadMemoriesByID returns newest-first; re-order to the fused ranking and stamp
-	// the fused score so callers/telemetry see the retrieval signal.
+	// loadMemoriesByID returns newest-first AND already visibility-filtered
+	// (suppressPendingDeletes/currentMemories, graph_read.go); re-order to the
+	// fused ranking and stamp the fused score so callers/telemetry see the
+	// retrieval signal. `ids` itself is the FULL fused order BEFORE that
+	// visibility filtering ran — the legacy slot discipline's rawIDs window
+	// (cluster.go's clusterAndTruncate doc comment).
 	byID := make(map[string]Memory, len(mems))
 	for _, m := range mems {
 		byID[m.ID] = m
 	}
-	out := make([]Memory, 0, len(ids))
+	visible := make([]Memory, 0, len(ids))
 	for _, id := range ids {
 		if m, ok := byID[id]; ok {
 			m.Score = fused[id]
-			out = append(out, m)
+			visible = append(visible, m)
 		}
 	}
-	return out, tr, nil
+	result := clusterAndTruncate(ids, visible, limit)
+	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
+	// "does this SURVIVING row's parent have a query-matching segment" (DQ5),
+	// independent of which arm(s) actually ranked it in.
+	if len(segIDs) > 0 {
+		gsegEvidence = completeGmailSegmentEvidence(ctx, db, query, scope, result, gsegEvidence, f)
+	}
+	attachGmailSegmentEvidence(result, gsegEvidence)
+	return result, tr, nil
 }
 
 // vectorsAvailable reports whether the mem_vectors table exists and is populated.
@@ -299,7 +385,16 @@ func vectorsAvailable(ctx context.Context, db *sql.DB) bool {
 
 // ftsSearchIDs returns up to pool memory ids ranked by BM25 for the query, scoped.
 // An empty/punctuation-only query yields no ids (mirrors searchMemories).
-func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int) ([]string, error) {
+//
+// filters is an optional trailing #241 source/since_hours pair (zero value —
+// a no-op, byte-identical query — when omitted). The filter is a TRUE SQL
+// WHERE predicate (searchFilters.sqlPredicate) appended BEFORE ORDER
+// BY/LIMIT, against the indexed memories.provider/account/created_at_unix
+// columns — a filtered-out row is never fetched, so it can never crowd a
+// matching row out of `pool` (filters_contract_test.go's
+// TestFiltersHybridFTSArmPreRankProof).
+func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int, filters ...searchFilters) ([]string, error) {
+	f := oneFilter(filters)
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil
@@ -309,6 +404,10 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
+	}
+	if pc, pargs := f.sqlPredicate(); pc != "" {
+		q += pc
+		args = append(args, pargs...)
 	}
 	// Secondary sort by id makes ties deterministic — bm25 alone leaves equal-score
 	// rows in undefined order, which would jitter the pool boundary run-to-run.
@@ -320,7 +419,13 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 // vectorSearchIDs embeds the query and returns up to pool memory ids ranked by
 // cosine similarity (brute force; <100ms to ~250k vectors). Zero-similarity rows
 // are dropped so a query never pulls in wholly unrelated memories on vector alone.
-func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope string, pool int) ([]string, error) {
+//
+// filters is an optional trailing #241 source/since_hours pair (zero value —
+// a no-op — when omitted). The predicate is applied BEFORE the cosine
+// computation for each row: a filtered-out row never earns a cosine score and
+// so can never occupy a pool slot or influence ranking.
+func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope string, pool int, filters ...searchFilters) ([]string, error) {
+	f := oneFilter(filters)
 	qv, err := emb.Embed(query)
 	if err != nil {
 		return nil, err
@@ -330,6 +435,14 @@ func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
+	}
+	// #241: the SQL WHERE predicate excludes a filtered-out row from this
+	// query's result set entirely — BEFORE the cosine loop below ever sees
+	// it, satisfying "exclude before the cosine/top-k loop" by construction
+	// rather than a Go-side per-row skip.
+	if pc, pargs := f.sqlPredicate(); pc != "" {
+		q += pc
+		args = append(args, pargs...)
 	}
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -370,7 +483,16 @@ func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope
 // graphExpandIDs resolves the people named in the query (via the person gazetteer
 // + exact alias match) and pulls their 1-hop evidence memories into the candidate
 // pool — GraphRAG-lite, no LLM. Ordered newest-first for a stable rank.
-func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool int) ([]string, error) {
+//
+// filters is an optional trailing #241 source/since_hours pair (zero value —
+// a no-op, byte-identical query — when omitted). The filter is a TRUE SQL
+// WHERE predicate (searchFilters.sqlPredicate) appended to EACH per-person
+// query BEFORE its own ORDER BY/LIMIT — the per-person LIMIT is never
+// dropped and there is no Go-side fallback/post-filter. A filtered-out row
+// is excluded by the WHERE clause itself, so it is never fetched and can
+// never crowd a matching row out of that person's `pool` slots.
+func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool int, filters ...searchFilters) ([]string, error) {
+	f := oneFilter(filters)
 	gaz, aliasToID, err := loadPersonGazetteer(ctx, db)
 	if err != nil {
 		return nil, err
@@ -403,6 +525,13 @@ func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool i
 		if scope != "" {
 			q += ` AND m.scope = ?`
 			args = append(args, scope)
+		}
+		// #241: the SQL WHERE predicate (provider/account/created_at_unix)
+		// excludes a filtered-out row from THIS per-person query's result set
+		// entirely, before ORDER BY/LIMIT — never a Go-side post-filter.
+		if pc, pargs := f.sqlPredicate(); pc != "" {
+			q += pc
+			args = append(args, pargs...)
 		}
 		q += ` ORDER BY m.created_at DESC, e.evidence_id ASC LIMIT ?`
 		args = append(args, pool)

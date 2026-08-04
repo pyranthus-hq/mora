@@ -730,6 +730,7 @@ func TestInstallAppScriptRollsBackWhenPostRenameVerificationFails(t *testing.T) 
 		"PREFIX=" + linkDir,
 		"MORA_APP_DIR=" + appParent,
 		"MORA_VAULT=" + filepath.Join(home, "vault", "mora"),
+		"VERSION=0.12.0",
 		"MOCK_APP_ARCHIVE=" + archive,
 		"MOCK_APP_CHECKSUM=" + checksum,
 		"MOCK_APP_VERSION=0.12.0",

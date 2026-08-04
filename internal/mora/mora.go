@@ -133,6 +133,37 @@ type Memory struct {
 	// persisted as one canonical JSON line (`meta: {...}`). Powers the entity graph;
 	// the graph compiler reads it deterministically (no NER).
 	Meta map[string]any `json:"meta,omitempty"`
+	// Corroborating holds compact refs to other memories the vault believes
+	// describe the SAME real-world event as this one (issue #237). Populated
+	// at result-assembly time by the shared retrieval primitives
+	// (clusterAndTruncate, cluster.go) — search_memory, think, context_memory,
+	// and CLI `mora context` all propagate it from there to their own output
+	// shapes (see think.go's ThinkEvidence.Corroborating, mcp.go's top-level
+	// context_memory "corroborating", and entities.go's
+	// contextItemJSON.Corroborating). Never persisted and never set on
+	// read_memory/list_memory — omitempty keeps every other read surface
+	// byte-identical.
+	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
+	// Evidence is the compact Gmail evidence-segment receipt (issue #243,
+	// DQ5 §2): the STRONGEST query-matching derived segment's identity +
+	// snippet, attached at search_memory result-assembly time
+	// (gmail_segments_search.go's attachGmailSegmentEvidence) when the row's
+	// underlying parent has at least one query-matching segment. Never
+	// persisted and never set on read_memory/list_memory — omitempty keeps
+	// every other read surface and every non-participating memory's search
+	// row byte-identical (frozen interface #5).
+	Evidence *GmailSegmentEvidence `json:"evidence,omitempty"`
+}
+
+// CorroboratingRef is the compact citation a cluster head's "corroborating"
+// array carries for one other member of its corroborating-record cluster —
+// exactly id/title/source/created_at (Memory's own JSON field names), nothing
+// more, so a citation is stable and read_memory'able unchanged (issue #237).
+type CorroboratingRef struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
 }
 
 type Source struct {
@@ -942,7 +973,23 @@ func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp,
 // Package var (not const) so TestUpgradePreservesState can bump it in-process
 // and exercise checkIndexSchema's refusal / auto-heal path against a newer
 // binary — the same seam pattern as indexAutoHeal.
-var indexSchemaVersion = 3
+//
+// D's predecessor v4 (#241): memories gained provider/account columns so search.go/hybrid.go's
+// retrieval arms can filter by connector source directly off the indexed row
+// (an in-memory/SQL check against the SAME snapshot the arm is already
+// ranking) instead of re-opening the live vault file mid-ranking — the
+// indexed-snapshot-honest, truly-pre-rank design over a per-candidate
+// parseMemory() disk read.
+//
+// E's incompatible predecessor v4 (issue #243): adds gmail_segments / gmail_segments_fts /
+// gmail_segment_diagnostics, the disposable evidence-segment projection —
+// an old v3 index has none of these tables, so a binary that understands
+// evidence_ref must not read it as if it did.
+//
+// v5 is the truthful combined schema. A v3 index or either physical v4 shape
+// mismatches this stamp and is rebuilt atomically from the vault; the
+// incremental-upsert boundary also rejects a same-stamp partial v5.
+var indexSchemaVersion = 5
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
 // read time. True on the static-hash floor, where a rebuild is seconds — the
@@ -1053,7 +1100,7 @@ const mcpMaxRequestBytes = 4 << 20
 // it is how a fresh agent learns Mora exists and when to reach for it — without
 // it the tools sit unused and the agent keeps starting cold. Keep it tight and
 // imperative.
-const mcpInstructions = `Mora is the user's persistent, local memory across sessions — you do NOT start cold. Before answering anything about the user's past work, people, projects, meetings, decisions, or commitments, call search_memory (or context_memory at the start of a task) and answer from what you retrieve. "I don't have that context" is usually a bug: search first. Call brief at the START of a session for the latest what-changed / what-matters brief (the same daily cross-source briefing, resolved to the freshest available) before doing anything else. Use list_memory to browse recent memories, list_entities/get_entity to explore the people-and-topics graph, digest for a daily cross-source briefing (recent emails, texts, calendar, and open tasks), and think for a cited synthesis with an explicit "what the vault does NOT know" gap analysis. Write durable facts and decisions back with write_memory as they emerge — you do not need to ask permission. Always prefer the user's own memories over assumptions, cite what you recalled, surface stale or missing context honestly, and never invent a memory you did not retrieve.`
+const mcpInstructions = `Mora is the user's persistent, local memory across sessions — you do NOT start cold. Before answering anything about the user's past work, people, projects, meetings, decisions, or commitments, call search_memory (or context_memory at the start of a task) and answer from what you retrieve. "I don't have that context" is usually a bug: search first. Call brief at the START of a session for the latest what-changed / what-matters brief (the same daily cross-source briefing, resolved to the freshest available) before doing anything else. Use list_memory to browse recent memories, list_entities/get_entity to explore the people-and-topics graph, digest for a daily cross-source briefing (recent emails, texts, calendar, and open tasks), and think for a cited synthesis with an explicit "what the vault does NOT know" gap analysis. Write durable facts and decisions back with write_memory as they emerge — you do not need to ask permission. Always prefer the user's own memories over assumptions, cite what you recalled, surface stale or missing context honestly, and never invent a memory you did not retrieve. search_memory and context_memory both accept optional source (a connector family like "gmail" or "imessage", or a family:account instance like "gmail:work" — the same vocabulary digest uses; filesystem is not supported as a source filter) and since_hours (a positive-integer look-back window in hours; a memory created exactly at the cutoff is included) filters, applied BEFORE ranking in every retrieval arm — including a subscribed shared corpus — never as a post-hoc filter over an already-ranked page, so a trusted-source or time-window ask is honored exactly rather than approximately. An unrecognized or malformed source value (an unknown connector, a trailing colon, more than one colon, or filesystem) is an explicit tool error, never a silent no-filter. When either is set, the response echoes it back under a top-level "filters" key so you can cite the retrieval boundary in your answer, and any enabled source your filter excluded is named under "excluded_by_filter" rather than being misreported as unavailable or unhealthy. When a search_memory row carries an "evidence" object, that names the exact Gmail message inside the thread that matched — pass its evidence_ref to read_memory to read ONLY that message (bounded, with a sender/at receipt) instead of the whole thread.`
 
 // MCP context_memory budget. Agents speak tokens (Neil's pilot asked for a
 // ~20k-token per-call ceiling — the 2k-char default was too sparse to be useful
@@ -1253,14 +1300,33 @@ func atomicCreate(path string, body []byte, mode os.FileMode) error {
 	return nil
 }
 
-// usageEvent records a single MCP tool invocation for local analytics.
+// usagePhaseTimings is the compact, content-free phase breakdown for one MCP
+// tools/call. Retrieval/assembly are pointers because they are emitted only for
+// handlers (currently read_memory) whose phases are already cleanly separable.
+type usagePhaseTimings struct {
+	ConfigMillis    int64  `json:"config_ms"`
+	RetrievalMillis *int64 `json:"retrieval_ms,omitempty"`
+	AssemblyMillis  *int64 `json:"assembly_ms,omitempty"`
+	EnvelopeMillis  int64  `json:"envelope_ms"`
+}
+
+// usageEvent records one local tool invocation without response or argument
+// content. The read-only pointers are present on read_memory events even for
+// zero/false values and omitted from other tool events.
 type usageEvent struct {
-	TS      string `json:"ts"`
-	Tool    string `json:"tool"`
-	Query   string `json:"query,omitempty"` // stripped by default; retained only when query logging is opted in; never sent off-machine
-	Scope   string `json:"scope,omitempty"`
-	Results int    `json:"results"`
-	Millis  int64  `json:"millis"`
+	TS              string             `json:"ts"`
+	Tool            string             `json:"tool"`
+	Query           string             `json:"query,omitempty"` // stripped by default; retained only when query logging is opted in; never sent off-machine
+	Scope           string             `json:"scope,omitempty"`
+	Results         int                `json:"results"`
+	Millis          int64              `json:"millis"`
+	OutputBytes     int                `json:"output_bytes,omitempty"`
+	Mode            string             `json:"mode,omitempty"`
+	Truncated       *bool              `json:"truncated,omitempty"`
+	MatchCount      *int               `json:"match_count,omitempty"`
+	BudgetRequested *int               `json:"budget_requested,omitempty"`
+	BudgetUsed      *int               `json:"budget_used,omitempty"`
+	Phases          *usagePhaseTimings `json:"phases,omitempty"`
 }
 
 // randRead is the entropy seam (defaults to crypto/rand.Read). Tests override it

@@ -35,7 +35,13 @@ func renderMemory(m Memory) ([]byte, error) {
 	fmt.Fprintf(&b, "---\n")
 	fmt.Fprintf(&b, "id: %s\nscope: %s\ntype: %s\ntitle: %s\n", m.ID, m.Scope, m.Type, quoteYAML(m.Title))
 	fmt.Fprintf(&b, "tags: [%s]\nsource: %s\ncreated_at: %s\n", strings.Join(m.Tags, ", "), quoteYAML(m.Source), m.CreatedAt)
-	if m.Provider != "" {
+	// Issue #237: gate on EITHER field, not just Provider — a caller (or the
+	// cluster-contract test fixture) can legitimately set ProviderID alone, and
+	// dropping it silently would break Rule 1 (provider anchor equality), which
+	// depends on ProviderID surviving the round-trip. Every production connector
+	// already sets both together (memory.MapItem), so this only widens what
+	// persists, never narrows it.
+	if m.Provider != "" || m.ProviderID != "" {
 		fmt.Fprintf(&b, "provider: %s\nprovider_id: %s\n", m.Provider, quoteYAML(m.ProviderID))
 	}
 	if m.Account != "" {
@@ -296,7 +302,16 @@ func findMemory(cfg Config, id string) (Memory, error) {
 	return decorateDecision(m, time.Now()), nil
 }
 
-func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
+// listMemories backs `mora list`, list_memory, and context_memory's no-query
+// "recency briefing" fallback. filters is an optional trailing #241
+// source/since_hours pair (zero value — a no-op — when omitted, so every
+// pre-#241 call site keeps compiling and behaving unchanged). No pre-rank
+// subtlety is needed here: every file is already parsed and predicate-checked
+// BEFORE the newest-first sort + limit truncate below, so adding the filter
+// predicate alongside the existing scope check can never let a filtered-out
+// memory crowd out a matching one.
+func listMemories(cfg Config, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	f := oneFilter(filters)
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
 		return nil, err
@@ -322,9 +337,13 @@ func listMemories(cfg Config, scope string, limit int) ([]Memory, error) {
 		if !g.memoryVisible(m.ID) {
 			continue
 		}
-		if scope == "" || m.Scope == scope {
-			out = append(out, decorateDecision(m, time.Now()))
+		if scope != "" && m.Scope != scope {
+			continue
 		}
+		if f.active() && !f.passes(m) {
+			continue
+		}
+		out = append(out, decorateDecision(m, time.Now()))
 	}
 	// Recency here is MEMORY-WRITE recency, not event time (#218). Sorting by
 	// created_at ranked a connector memory by its provider occurrence instant, so a

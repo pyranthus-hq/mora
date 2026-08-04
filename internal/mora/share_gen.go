@@ -307,8 +307,16 @@ func buildShareGenIndex(ctx context.Context, indexPath string, mems []Memory) er
 // caller's transaction (used by both the generation builder and heal's re-cut).
 // Shares expose the memories/FTS subset and carry the common user_version stamp.
 func writeShareIndexRows(ctx context.Context, tx *sql.Tx, mems []Memory) error {
+	// provider/account/created_at_unix (v4, #241): same additive columns as
+	// the main index (index.go), populated the SAME way (canonicalized
+	// provider, Unix-seconds created_at) so searchShareIndex (share.go) can
+	// apply the SAME SQL-predicate pre-rank filtering the local arms use — a
+	// share index is a derived, rebuildable cache too, and every write path
+	// (generation + heal) routes through this one function, so there is no
+	// separate idempotent-ALTER migration to carry: a share index is always
+	// fully regenerated (DELETE + reinsert), never patched.
 	for _, q := range []string{
-		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT)`,
+		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT, provider TEXT, account TEXT, created_at_unix INTEGER)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text)`,
 		`DELETE FROM memories`,
 		`DELETE FROM memories_fts`,
@@ -319,8 +327,9 @@ func writeShareIndexRows(ctx context.Context, tx *sql.Tx, mems []Memory) error {
 		}
 	}
 	for _, m := range mems {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Scope, m.Type, m.Title, strings.Join(m.Tags, ","), m.Source, m.CreatedAt, m.Path, m.Text); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Scope, m.Type, m.Title, strings.Join(m.Tags, ","), m.Source, m.CreatedAt, m.Path, m.Text,
+			providerToType(m.Provider), m.Account, createdAtUnix(m.CreatedAt)); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memories_fts VALUES (?, ?, ?, ?, ?, ?)`,
