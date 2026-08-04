@@ -1415,7 +1415,7 @@ func loadConnectorSyncStatus(cfg Config, key string) *memory.SyncStatus {
 }
 
 // syncStatusPathFor maps a source to its on-disk SyncStatus path, mirroring the
-// google-/imessage- filename families used by the ingest paths.
+// connector filename families used by the ingest paths.
 func syncStatusPathFor(cfg Config, s Source) string {
 	switch s.Type {
 	case "gmail", "calendar":
@@ -1426,6 +1426,8 @@ func syncStatusPathFor(cfg Config, s Source) string {
 		return filepath.Join(cfg.StateDir, "sync", "applecal-"+s.Name+".json")
 	case "filesystem":
 		return filepath.Join(cfg.StateDir, "sync", "filesystem-"+s.Name+".json")
+	case "github":
+		return filepath.Join(cfg.StateDir, "sync", "github-"+s.Name+".json")
 	default:
 		return ""
 	}

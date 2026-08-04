@@ -166,6 +166,11 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		}
 		return nil
 	}
+	if ctype == "github" {
+		okf(stdout, "enabled github. GitHub is read-only and never creates Mora tasks or launches agents.")
+		fmt.Fprintln(stdout, "Pull the default repository allowlist with `mora sync github`, or configure it with `mora connect github --repo owner/repo`.")
+		return nil
+	}
 	// Connector-appropriate pull hint: only gmail/calendar (NeedsAuth) and
 	// filesystem reach this generic tail — imessage/applecalendar returned above
 	// with their own guidance, unknown types were rejected up front. The old
@@ -311,7 +316,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 		fmt.Fprintln(stdout, "No connectors selected — nothing was enabled.")
 		fmt.Fprintln(stdout, "Tip: in the menu, press space or x to toggle each connector (enter only confirms the screen).")
 		fmt.Fprintln(stdout, "Re-open the menu anytime with `mora connectors setup`, or enable one directly:")
-		fmt.Fprintln(stdout, "  mora connectors enable <gmail|calendar|filesystem|imessage>")
+		fmt.Fprintln(stdout, "  mora connectors enable <gmail|calendar|filesystem|imessage|applecalendar|github>")
 		return nil
 	}
 

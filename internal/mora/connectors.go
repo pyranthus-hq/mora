@@ -85,11 +85,11 @@ func instanceKeyForSource(s Source) string {
 //   - A disabled connector is excluded (consent gate honored).
 //   - An enabled ingesting connector with ZERO memories is still INCLUDED, so an
 //     all-deleted / never-synced source can correctly surface "unavailable".
-//   - A non-ingesting (live-passthrough PostHog/Linear, on-demand GitHub)
+//   - A non-ingesting live-passthrough/on-demand connector
 //     connector is excluded, so it can NEVER read "unavailable — sync error":
 //     it persists no memory and no SyncStatus.
 //
-// Note for Plan 04: today Provider == connector-type for gmail/calendar/imessage,
+// Note for Plan 04: Provider == connector-type for gmail/calendar/imessage/github,
 // so the enumerated connector types reconcile directly against the
 // memory-grouped sourceInstanceKey values. The connector-expansion phase is the
 // one place that mapping becomes provider:account.

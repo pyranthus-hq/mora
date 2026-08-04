@@ -30,12 +30,12 @@ const (
 
 // Freshness thresholds by connector type — TIGHTER than digestStaleHours (48h,
 // digest.go), which stays as-is for the human digest heading. This is the
-// product-invalid alarm threshold (HEALTH-03): the Google connectors are
+// product-invalid alarm threshold (HEALTH-03): the network connectors are
 // polled hourly and a 24h gap already means multiple missed cycles, while
 // imessage/filesystem are local, slower-moving stores where 48h is still
 // honest. Keep both constants; do not silently fork one from the other.
 const (
-	sourceHealthGoogleThreshold = 24 * time.Hour // gmail, calendar, applecalendar
+	sourceHealthGoogleThreshold = 24 * time.Hour // gmail, calendar, applecalendar, github
 	sourceHealthLocalThreshold  = 48 * time.Hour // imessage, filesystem (and any unknown type)
 )
 
@@ -55,7 +55,7 @@ type sourceHealth struct {
 // alias; the catalog type is "applecalendar").
 func sourceHealthThreshold(sourceType string) time.Duration {
 	switch sourceType {
-	case "gmail", "calendar", "applecalendar":
+	case "gmail", "calendar", "applecalendar", "github":
 		return sourceHealthGoogleThreshold
 	default: // imessage, filesystem, and any future/unknown type
 		return sourceHealthLocalThreshold
