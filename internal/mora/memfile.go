@@ -345,7 +345,12 @@ func listMemories(cfg Config, scope string, limit int, filters ...searchFilters)
 		}
 		out = append(out, decorateDecision(m, time.Now()))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	// Recency here is MEMORY-WRITE recency, not event time (#218). Sorting by
+	// created_at ranked a connector memory by its provider occurrence instant, so a
+	// calendar event months out led "the most recent memories" while everything
+	// Mora had just ingested sank. byIngestRecency (`recency.go`) orders by the
+	// per-memory write clock instead and is a total, deterministic order.
+	sort.Slice(out, func(i, j int) bool { return byIngestRecency(out[i], out[j]) })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}

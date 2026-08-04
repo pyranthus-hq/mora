@@ -394,11 +394,21 @@ mora write --scope project:acme --type decision --title "Chose OAuth" --text "..
   --as-of 2026-07-25T12:00:00Z --durability working \
   --flip-conditions "security review fails;provider terms change"   # save a decision with its validity
 mora read <id> --json                                    # one memory by id
-mora list --scope project:acme --json                    # browse memories in a scope
+mora list --scope project:acme --json                    # browse memories in a scope, newest-written first
 mora delete <id> --yes                                   # remove one memory
 mora context --query "auth" --scope project:acme --budget 6000 --json   # token-budgeted context block + per-memory receipts in items[]
 mora think "what did Sam decide about pricing?" --json   # cited evidence + gap analysis
 ```
+
+`mora list` (and the `list_memory` tool) orders by when Mora wrote each memory
+into the vault, not by when the underlying thing happened — so a calendar event
+next January never leads "recent memories". The `list_memory` rows carry
+`event_start`, `source_created_at`, and `indexed_at` as separate fields, and any
+one of them Mora cannot derive from what it stored is left out rather than filled
+in with a substitute. Google Calendar events show a `source_created_at` (when the
+event was created in your calendar) once they have been re-ingested by a version
+that records it; events stored before that, and Apple Calendar events, simply
+omit it.
 
 `mora context` builds one character-limited block for a query. The default is
 2000 characters. Omit `--query` for a recent-data brief. Decision memories use

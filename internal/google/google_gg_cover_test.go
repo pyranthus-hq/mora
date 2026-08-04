@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -1146,26 +1147,287 @@ func TestGg_CalEventToItemVariants(t *testing.T) {
 	})
 }
 
+// TestGg_CalEventSourceCreatedAt pins the source clock the browse row reads as
+// `source_created_at` (#218). Google's Event.Created is when the event came into
+// existence at the provider — a different question from when it starts — so the
+// two must land in Meta as two distinct, separately-derivable values. It is
+// absent on some event kinds and is provider text either way, so it is normalized
+// when it parses and OMITTED when it does not: an unparseable value published
+// here becomes an unparseable timestamp on a browse row, and an empty one becomes
+// content-hash material on every such event.
+func TestGg_CalEventSourceCreatedAt(t *testing.T) {
+	base := func(created string) *calendar.Event {
+		return &calendar.Event{
+			Id:      "e-created",
+			Summary: "Board offsite",
+			Created: created,
+			Start:   &calendar.EventDateTime{DateTime: "2027-02-10T16:00:00Z"},
+		}
+	}
+
+	t.Run("creation time is normalized and distinct from the start", func(t *testing.T) {
+		// Created months before it starts, in a non-UTC zone: normalization to UTC
+		// RFC3339 keeps Meta bytes stable across runs, as occurred_at already is.
+		it := calEventToItem("primary", base("2026-07-26T07:30:00-04:00"))
+		got, _ := it.Meta["source_created_at"].(string)
+		if got != "2026-07-26T11:30:00Z" {
+			t.Fatalf("meta[source_created_at] = %q, want the normalized creation instant", got)
+		}
+		start, _ := it.Meta["occurred_at"].(string)
+		if start != "2027-02-10T16:00:00Z" {
+			t.Fatalf("meta[occurred_at] = %q, want the event start", start)
+		}
+		if got == start {
+			t.Fatal("creation time and start collapsed into one value — the two clocks must stay distinct")
+		}
+	})
+
+	// A valid offset or fraction is honoured, not merely tolerated: the instant is
+	// converted to UTC, so the offset has to have been read correctly to begin with.
+	t.Run("valid offsets and fractional seconds are converted, not discarded", func(t *testing.T) {
+		for _, tc := range []struct{ created, want string }{
+			{"2026-07-26T11:30:00Z", "2026-07-26T11:30:00Z"},
+			{"2026-07-26T17:00:00+05:30", "2026-07-26T11:30:00Z"},
+			{"2026-07-26T11:30:00.123Z", "2026-07-26T11:30:00Z"},
+			{"2026-07-26T07:30:00.999999-04:00", "2026-07-26T11:30:00Z"},
+			{"2026-07-26T11:30:00-00:00", "2026-07-26T11:30:00Z"},
+			{"2026-07-25T12:30:00-23:00", "2026-07-26T11:30:00Z"},
+		} {
+			it := calEventToItem("primary", base(tc.created))
+			if got, _ := it.Meta["source_created_at"].(string); got != tc.want {
+				t.Errorf("Created=%q => meta[source_created_at] = %q, want %q", tc.created, got, tc.want)
+			}
+		}
+	})
+
+	// Sabotage. Event.Created is provider TEXT, and the gate on it is strict
+	// RFC 3339 rather than time.Parse — which matters more here than on a
+	// pass-through field, because what lands in Meta is the UTC-NORMALIZED render.
+	// A stamp Go tolerates does not produce a malformed value downstream; it
+	// produces a well-formed value holding the WRONG instant, with nothing left to
+	// detect it: `+00:60` reads as +01:00 and `+24:00` as a 24-hour zone, so the
+	// persisted creation time would be off by an hour or a day. Text that is not
+	// RFC 3339 is not evidence of a creation time, so the key is omitted.
+	for _, tc := range []struct {
+		name    string
+		created string
+	}{
+		{"absent on birthdays and some imported feeds", ""},
+		{"date-only is not an instant", "2026-07-26"},
+		{"provider text that does not parse", "Jul 26, 2026 7:30am"},
+		{"one-digit hour", "2026-07-26T7:30:00Z"},
+		{"offset minute 60, which time.Parse folds into +01:00", "2026-07-26T07:30:00+00:60"},
+		{"negative offset minute 60", "2026-07-26T07:30:00-00:60"},
+		{"offset hour 24", "2026-07-26T07:30:00+24:00"},
+		{"negative offset hour 24", "2026-07-26T07:30:00-24:00"},
+		{"comma fractional separator", "2026-07-26T07:30:00,5Z"},
+		{"fractional dot with no digits", "2026-07-26T07:30:00.Z"},
+		{"fractional dot with no digits before an offset", "2026-07-26T07:30:00.-04:00"},
+		{"trailing dot and no zone", "2026-07-26T07:30:00."},
+		{"no zone at all", "2026-07-26T07:30:00"},
+		{"offset without its colon", "2026-07-26T07:30:00+0100"},
+		{"one-digit offset hour", "2026-07-26T07:30:00+1:00"},
+		{"one-digit offset minute", "2026-07-26T07:30:00+01:0"},
+		{"lowercase zone designator", "2026-07-26T07:30:00z"},
+		{"lowercase date/time separator", "2026-07-26t07:30:00Z"},
+		{"space instead of T", "2026-07-26 07:30:00Z"},
+		{"trailing byte after a valid stamp", "2026-07-26T07:30:00Z "},
+		{"leap second", "2026-07-26T07:30:60Z"},
+		{"well-formed but not a real calendar date", "2026-02-30T07:30:00Z"},
+	} {
+		tc := tc
+		t.Run("omitted when "+tc.name, func(t *testing.T) {
+			it := calEventToItem("primary", base(tc.created))
+			if v, present := it.Meta["source_created_at"]; present {
+				t.Fatalf("meta[source_created_at] = %v for Created=%q, want the key omitted", v, tc.created)
+			}
+			// The event is otherwise unaffected — a missing creation clock never
+			// costs the row its start.
+			if start, _ := it.Meta["occurred_at"].(string); start != "2027-02-10T16:00:00Z" {
+				t.Fatalf("meta[occurred_at] = %q, want the event start intact", start)
+			}
+		})
+	}
+}
+
+var ggRFC3339GoTolerates = []struct{ stamp, why string }{
+	{"2026-07-31T1:12:34Z", "one-digit hour"},
+	{"2026-07-31T01:12:34+00:60", "offset minute 60, folded into +01:00"},
+	{"2026-07-31T01:12:34-00:60", "offset minute 60, folded into -01:00"},
+	{"2026-07-31T01:12:34+24:00", "offset hour 24"},
+	{"2026-07-31T01:12:34-24:00", "offset hour -24"},
+	{"2026-07-31T01:12:34,5Z", "comma fractional separator"},
+}
+
+// TestGg_StrictRFC3339 pins this package's copy of the strict gate directly
+// (#218). internal/google must not import internal/mora (mora imports google), so
+// the seam that guards Mora's browse timestamps is duplicated here; these cases
+// mirror internal/mora/recency_test.go so the two copies cannot drift apart
+// silently.
+//
+// The oracle is an explicit transcription of the RFC 3339 §5.6 ABNF, never
+// time.Parse — time.Parse is the thing being guarded against.
+func TestGg_StrictRFC3339(t *testing.T) {
+	grammar := regexp.MustCompile(
+		`^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])` +
+			`T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?` +
+			`(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$`)
+
+	valid := []string{
+		"2026-07-31T01:12:34Z",
+		"2026-07-31T00:00:00Z",
+		"2026-07-31T23:59:59Z",
+		"2026-07-31T01:12:34.5Z",
+		"2026-07-31T01:12:34.000000001Z",
+		"2026-07-31T01:12:34-04:00",
+		"2026-07-31T01:12:34+05:30",
+		"2026-07-31T01:12:34+23:59",
+		"2026-07-31T01:12:34-00:00",
+		"2028-02-29T12:00:00Z",
+	}
+	for _, s := range valid {
+		if !grammar.MatchString(s) {
+			t.Fatalf("the ABNF oracle rejected %q — the oracle is wrong", s)
+		}
+		if !strictRFC3339(s) {
+			t.Errorf("strictRFC3339(%q) = false, want true", s)
+		}
+		if _, ok := rfc3339Instant(s); !ok {
+			t.Errorf("rfc3339Instant(%q) rejected a legal stamp", s)
+		}
+	}
+
+	// The forms the pinned toolchain's time.Parse accepts and RFC 3339 does not.
+	// Pinned as a set: if a future Go tightens up, this says so rather than letting
+	// the gate quietly become dead code.
+	for _, tc := range ggRFC3339GoTolerates {
+		if _, err := time.Parse(time.RFC3339, tc.stamp); err != nil {
+			t.Errorf("time.Parse now rejects %q (%s) — re-check this gate's doc comment", tc.stamp, tc.why)
+		}
+		if grammar.MatchString(tc.stamp) {
+			t.Errorf("the ABNF oracle accepted %q (%s) — the oracle is wrong", tc.stamp, tc.why)
+		}
+		if strictRFC3339(tc.stamp) {
+			t.Errorf("strictRFC3339(%q) = true (%s), want false", tc.stamp, tc.why)
+		}
+	}
+
+	// Malformed shapes, judged against the ABNF transcription. "2026-02-30" is the
+	// one the regexp cannot settle: syntactically perfect and simply not a date,
+	// which is deliberately time.Parse's half of the job inside rfc3339Instant.
+	for _, s := range []string{
+		"", "Z", "2026", "2026-07-31T", "2026-07-31T01:12:3",
+		"2026-07-31T01:12:34", "2026-07-31T01:12:34+", "2026-07-31T01:12:34+0",
+		"2026-07-31T01:12:34.", "2026-07-31T01:12:34.Z", "2026-07-31T01:12:34.-04:00",
+		"2026-07-31T01:12:34+0100", "2026-07-31T01:12:34+1:00", "2026-07-31T01:12:34+00:0",
+		"2026-07-31T01:12:34z", "2026-07-31t01:12:34Z", "2026-07-31 01:12:34Z",
+		"2026-07-31T01:12:34Z ", "2026-07-31T01:12:60Z", "2026-13-01T01:12:34Z",
+		"2026-00-01T01:12:34Z", "2026-07-00T01:12:34Z", "2026-07-32T01:12:34Z",
+		"2026-07-31T24:12:34Z", "2026-07-31T01:60:34Z", "2026-07-31T01:12:34+00:60",
+		"20é6-07-31T01:12:34Z", "2026-07-31T01:12:34é", "yesterday",
+	} {
+		if grammar.MatchString(s) {
+			t.Fatalf("the ABNF oracle accepted %q — the oracle is wrong", s)
+		}
+		if strictRFC3339(s) {
+			t.Errorf("strictRFC3339(%q) = true, want false", s)
+		}
+		if _, ok := rfc3339Instant(s); ok {
+			t.Errorf("rfc3339Instant(%q) = ok, want rejected", s)
+		}
+	}
+	if !strictRFC3339("2026-02-30T01:12:34Z") {
+		t.Error("2026-02-30T01:12:34Z is syntactically valid; the calendar check belongs to time.Parse, not the syntax gate")
+	}
+	if _, ok := rfc3339Instant("2026-02-30T01:12:34Z"); ok {
+		t.Error("rfc3339Instant accepted a date that does not exist")
+	}
+}
+
 func TestGg_ParseCalTime(t *testing.T) {
 	if got := parseCalTime(nil); !got.IsZero() {
 		t.Fatalf("nil => %v, want zero", got)
 	}
-	// Valid RFC3339 DateTime.
-	dt := parseCalTime(&calendar.EventDateTime{DateTime: "2026-06-04T09:30:00Z"})
-	if dt.IsZero() || dt.UTC().Format(time.RFC3339) != "2026-06-04T09:30:00Z" {
-		t.Fatalf("DateTime parse = %v", dt)
-	}
-	// Invalid DateTime but valid all-day Date => falls through to Date.
-	d := parseCalTime(&calendar.EventDateTime{DateTime: "not-a-time", Date: "2026-06-04"})
-	if d.IsZero() || d.Format("2006-01-02") != "2026-06-04" {
-		t.Fatalf("Date fallback parse = %v", d)
-	}
-	// Invalid Date => zero.
-	if got := parseCalTime(&calendar.EventDateTime{Date: "13/40/2026"}); !got.IsZero() {
-		t.Fatalf("invalid Date => %v, want zero", got)
-	}
-	// Both empty => zero.
-	if got := parseCalTime(&calendar.EventDateTime{}); !got.IsZero() {
-		t.Fatalf("empty => %v, want zero", got)
-	}
+
+	t.Run("valid DateTime offsets and fractions retain their instant", func(t *testing.T) {
+		for _, tc := range []struct {
+			stamp string
+			want  time.Time
+		}{
+			{"2026-06-04T09:30:00Z", time.Date(2026, 6, 4, 9, 30, 0, 0, time.UTC)},
+			{"2026-06-04T15:00:00+05:30", time.Date(2026, 6, 4, 9, 30, 0, 0, time.UTC)},
+			{"2026-06-04T09:30:00.75Z", time.Date(2026, 6, 4, 9, 30, 0, 750000000, time.UTC)},
+		} {
+			got := parseCalTime(&calendar.EventDateTime{DateTime: tc.stamp})
+			if !got.Equal(tc.want) {
+				t.Errorf("parseCalTime(%q) = %v, want instant %v", tc.stamp, got, tc.want)
+			}
+
+			item := calEventToItem("primary", &calendar.Event{
+				Id:    "valid-start",
+				Start: &calendar.EventDateTime{DateTime: tc.stamp},
+			})
+			if !item.OccurredAt.Equal(tc.want) {
+				t.Errorf("calEventToItem(%q).OccurredAt = %v, want %v", tc.stamp, item.OccurredAt, tc.want)
+			}
+			if gotMeta, _ := item.Meta["occurred_at"].(string); gotMeta != tc.want.UTC().Format(time.RFC3339) {
+				t.Errorf("calEventToItem(%q) meta[occurred_at] = %q, want UTC normalization %q",
+					tc.stamp, gotMeta, tc.want.UTC().Format(time.RFC3339))
+			}
+		}
+	})
+
+	t.Run("Go-permissive non-RFC3339 DateTime is omitted before normalization", func(t *testing.T) {
+		for _, tc := range ggRFC3339GoTolerates {
+			tc := tc
+			t.Run(tc.why, func(t *testing.T) {
+				start := &calendar.EventDateTime{DateTime: tc.stamp}
+				if got := parseCalTime(start); !got.IsZero() {
+					t.Fatalf("parseCalTime(%q) = %v, want zero", tc.stamp, got)
+				}
+
+				// A malformed provider start must not be laundered into the
+				// well-formed-but-wrong occurred_at consumed as event_start.
+				item := calEventToItem("primary", &calendar.Event{
+					Id:     "bad-start",
+					Status: "cancelled",
+					Start:  start,
+				})
+				if !item.OccurredAt.IsZero() {
+					t.Fatalf("calEventToItem(%q).OccurredAt = %v, want zero", tc.stamp, item.OccurredAt)
+				}
+				if got, present := item.Meta["occurred_at"]; present {
+					t.Fatalf("calEventToItem(%q) meta[occurred_at] = %v, want key omitted", tc.stamp, got)
+				}
+				if !item.Deleted {
+					t.Fatal("rejecting a malformed start lost the event tombstone")
+				}
+			})
+		}
+	})
+
+	t.Run("invalid DateTime preserves established all-day Date fallback", func(t *testing.T) {
+		start := &calendar.EventDateTime{DateTime: "not-a-time", Date: "2026-06-04"}
+		got := parseCalTime(start)
+		want := time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("Date fallback parse = %v, want %v", got, want)
+		}
+		item := calEventToItem("primary", &calendar.Event{Id: "all-day", Start: start})
+		if !item.OccurredAt.Equal(want) {
+			t.Fatalf("all-day OccurredAt = %v, want %v", item.OccurredAt, want)
+		}
+		if gotMeta, _ := item.Meta["occurred_at"].(string); gotMeta != "2026-06-04T00:00:00Z" {
+			t.Fatalf("all-day meta[occurred_at] = %q, want midnight UTC", gotMeta)
+		}
+	})
+
+	t.Run("invalid or empty Date is zero", func(t *testing.T) {
+		if got := parseCalTime(&calendar.EventDateTime{Date: "13/40/2026"}); !got.IsZero() {
+			t.Fatalf("invalid Date => %v, want zero", got)
+		}
+		if got := parseCalTime(&calendar.EventDateTime{}); !got.IsZero() {
+			t.Fatalf("empty => %v, want zero", got)
+		}
+	})
 }
