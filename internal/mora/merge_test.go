@@ -60,6 +60,40 @@ func TestP13RefuseNoAddressSignature(t *testing.T) {
 	}
 }
 
+// TestIssue219NearNamesBecomeCandidates pins the two conservative fuzzy forms
+// observed in the live vault. They enter the human queue, but never auto-merge.
+func TestIssue219NearNamesBecomeCandidates(t *testing.T) {
+	cases := []struct {
+		handle, phoneName, email, emailName string
+	}{
+		{"+14155550123", "Dan Rachev", "daniel.rachev@example.com", "Daniel Rachev"},
+		{"+14155550124", "Samika", "samika.karode@example.com", "Samika Karode"},
+	}
+	for _, tc := range cases {
+		mems := []Memory{
+			imsgNamed("c1", tc.handle, tc.phoneName),
+			senderEmail("t1", tc.email, tc.emailName, "me@x.com"),
+		}
+		res := buildGraphResult(mems, nil)
+		if c := candidateFor(res.candidates, tc.handle, tc.email); c == nil {
+			t.Errorf("%q/%q should be a confirmation candidate; got %+v", tc.phoneName, tc.emailName, res.candidates)
+		}
+		if a, b := entCarrying(res.entities, tc.handle), entCarrying(res.entities, tc.email); a == b {
+			t.Errorf("near names must not auto-merge: %q/%q", tc.phoneName, tc.emailName)
+		}
+	}
+}
+
+func TestIssue219NearNameStillRequiresEmailSignature(t *testing.T) {
+	mems := []Memory{
+		imsgNamed("c1", "+14155550123", "Dan Rachev"),
+		senderEmail("t1", "dr42@example.com", "Daniel Rachev", "me@x.com"),
+	}
+	if got := buildGraphResult(mems, nil).candidates; len(got) != 0 {
+		t.Fatalf("near-name proposal without an address signature must refuse-to-gap: %+v", got)
+	}
+}
+
 // TestP13RefuseSingleTokenName proves a single-token contact name ("Mom") is not
 // distinctive enough to bridge channels and is never proposed.
 func TestP13RefuseSingleTokenName(t *testing.T) {

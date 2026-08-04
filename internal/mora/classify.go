@@ -6,8 +6,9 @@ import "strings"
 // Automated/transactional senders (no-reply addresses, bulk-ESP hosts, and
 // "... Receipts/Alerts" display names) are demoted to "service" so the People
 // view stays human. Pure and deterministic: same input -> same label across
-// graph rebuilds. Identities without an '@' (iMessage phone handles) are always
-// real people.
+// graph rebuilds. Named iMessage phone handles remain people; an unnamed bare
+// phone number is retained as an artifact so it can still be resolved and later
+// merged, without presenting the number itself as a human name.
 //
 // Conservatism is deliberate. Local-part matching is token-exact (a denylist
 // token must BE a whole '.'/'-'/'_'-delimited token, or the entire local part) —
@@ -27,12 +28,14 @@ func classifyIdentity(identity, displayName string) string {
 	at := strings.LastIndexByte(id, '@')
 	if at < 0 {
 		// Phone-handle / non-email branch. D14-5: an all-digits handle of length
-		// <=6 is an SMS shortcode (262966, 22395) -> service. The cut is safe
-		// because no real phone number is <=6 digits — a 10/11-digit number or any
-		// '+'-prefixed international number is a real phone and stays person. Scoped
-		// strictly here; it never touches email classification.
+		// <=6 is an SMS shortcode (262966, 22395) -> service. Longer dialable
+		// handles need a trusted contact name to enter People; unnamed ones remain
+		// resolvable artifacts. Scoped strictly here; email classification is untouched.
 		if isShortcode(id) {
 			return "service"
+		}
+		if isPhoneNumber(id) && display == "" {
+			return "artifact"
 		}
 		if isOrg(id, display) {
 			return "org"
@@ -68,6 +71,7 @@ var serviceLocalTokens = map[string]bool{
 	"account": true, "accounts": true,
 	"security": true, "member": true, "members": true,
 	"community": true, "digest": true, "postmaster": true,
+	"unsubscribe": true, "unsub": true,
 	"robot": true, "daemon": true, "reply": true,
 	// NOTE: "mail"/"email" are intentionally NOT here — they mirror the host-label
 	// exclusion (mail.<domain> is ordinary routing; my.email@x is a real human).
@@ -129,8 +133,8 @@ func isDelim(r rune) bool { return r == '.' || r == '-' || r == '_' }
 
 // isShortcode reports whether handle is an SMS shortcode (D14-5): a whole run of
 // 1..6 ASCII digits with no '+' prefix. Real phone numbers are 10+ digits (US is
-// 10/11) and international numbers carry a '+', so both stay person — the length
-// cut never collides with a real human. Byte-exact on the digit run (no regex):
+// 10/11) and international numbers carry a '+', so the length cut never collides
+// with a real human. Byte-exact on the digit run (no regex):
 // any non-digit rune disqualifies, so "+1262966" and "415-555-0123" are NOT
 // shortcodes. The caller has already trimmed/lowercased; an empty handle returns
 // false and falls through to the person default.
@@ -144,6 +148,25 @@ func isShortcode(handle string) bool {
 		}
 	}
 	return true
+}
+
+// isPhoneNumber recognizes a bare dialable handle without mistaking arbitrary
+// numeric identifiers for people. Seven through fifteen digits is the E.164-sized
+// range; common visual separators are accepted. A trusted contact display name
+// keeps the identity person-kind at the classifyIdentity call site.
+func isPhoneNumber(handle string) bool {
+	digits := 0
+	for i, r := range handle {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+		case r == '+' && i == 0:
+		case r == ' ' || r == '-' || r == '(' || r == ')' || r == '.':
+		default:
+			return false
+		}
+	}
+	return digits >= 7 && digits <= 15
 }
 
 func localPartIsService(local string) bool {
