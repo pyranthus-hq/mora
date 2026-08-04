@@ -23,7 +23,7 @@ func TestFetcherPaginatesAllowlistedRepositories(t *testing.T) {
 		if strings.Contains(r.URL.Path, "/mora/") {
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
 				"number": 255, "title": "GitHub source", "body": "body", "state": "open",
-				"html_url": "https://github.com/pyranthus-hq/mora/issues/255",
+				"html_url":   "https://github.com/pyranthus-hq/mora/issues/255",
 				"created_at": "2026-07-31T00:00:00Z", "updated_at": "2026-08-01T00:00:00Z",
 				"labels": []map[string]string{{"name": "product"}}, "assignees": []map[string]string{{"login": "octo"}},
 			}})
@@ -31,7 +31,7 @@ func TestFetcherPaginatesAllowlistedRepositories(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode([]map[string]any{{
 			"number": 9, "title": "Downstream", "body": "body", "state": "open",
-			"html_url": "https://github.com/pyranthus-hq/productivity/issues/9",
+			"html_url":   "https://github.com/pyranthus-hq/productivity/issues/9",
 			"created_at": "2026-07-31T00:00:00Z", "updated_at": "2026-08-01T00:00:00Z",
 		}})
 	}))
