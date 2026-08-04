@@ -16,7 +16,7 @@ func TestRetrievalArchitectureDescribesMergedSegmentSurface(t *testing.T) {
 	}{
 		"00-overview.md": {
 			required: []string{
-				"static keyword surface (parent FTS + bounded Gmail message-segment FTS)",
+				"static keyword surface (parent FTS + bounded Gmail/iMessage message-segment FTS)",
 				"fuses its four arms",
 			},
 			forbidden: []string{
@@ -26,7 +26,7 @@ func TestRetrievalArchitectureDescribesMergedSegmentSurface(t *testing.T) {
 		},
 		"01-data-model-and-storage.md": {
 			required: []string{
-				"static keyword surface (parent FTS plus bounded Gmail message-segment FTS)",
+				"static keyword surface (parent FTS plus bounded Gmail/iMessage segment FTS)",
 			},
 			forbidden: []string{
 				"Under the default static-hash embedder search is FTS-only",
@@ -43,7 +43,7 @@ func TestRetrievalArchitectureDescribesMergedSegmentSurface(t *testing.T) {
 		},
 		"06-mcp-server.md": {
 			required: []string{
-				"else the static keyword surface (parent FTS plus bounded Gmail message-segment FTS)",
+				"else the static keyword surface (parent FTS plus bounded Gmail/iMessage segment FTS)",
 				"static keyword path (`searchMemories`",
 			},
 			forbidden: []string{
@@ -74,7 +74,7 @@ func TestRetrievalArchitectureDescribesMergedSegmentSurface(t *testing.T) {
 		},
 		"15-concurrency-contract.md": {
 			required: []string{
-				"static keyword surface (parent FTS plus bounded Gmail message-segment FTS)",
+				"static keyword surface (parent FTS plus bounded Gmail/iMessage segment FTS)",
 			},
 			forbidden: []string{
 				"where `defaultSearch` is FTS-only",

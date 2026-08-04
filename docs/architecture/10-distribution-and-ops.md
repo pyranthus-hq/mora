@@ -1,40 +1,40 @@
 # Distribution, Build & Ops
 
 This document explains how Mora is built, signed, released, updated, and
-installed. The full pipeline keeps the pure-Go and zero-egress rules.
+installed. The full pipeline keeps the pure-Go build and explicit network
+boundary described in the [README](../../README.md#privacy-boundary).
 
 ## Files
 
-| File | Lines | Responsibility |
-|---|---|---|
-| `.goreleaser.yaml` | — | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, `tar.gz` archives + a windows/amd64 `zip`, sha256 checksums, cosign keyless signing, syft SBOM, Homebrew cask metadata, **draft** GitHub Release. |
-| `.github/workflows/ci.yml` | 151 | PR/push gate: macOS secret-free Mora.app release-contract sabotage, gofmt, `go vet`, `go test -race`, a **windows-latest full `go test ./...` portability job (`build-windows`)**, golangci-lint, cross-arch build matrix, binary-size diff (advisory), gitleaks secret scan. |
-| `.github/workflows/release.yml` | — | Tag-triggered (`v*`), macOS-hosted release: imports the Developer ID certificate into an ephemeral keychain, validates Apple/OAuth secrets, runs GoReleaser to build a **draft** release, notarizes and verifies both Darwin artifacts, builds/signs/notarizes/staples both `Mora.app` bundles and uploads their `_app.zip` assets to the draft, verifies the remaining artifact contracts, runs Tier 1, then **explicitly publishes** via `gh release edit --draft=false`. |
-| `cmd/genicns` + `internal/appbundle` | — | Deterministic icon generator: parses the committed pixel-art `docs/assets/mora-eye.svg` (unit `<rect>` grid), composes it onto a macOS rounded-square tile with nearest-neighbor scaling (crisp pixel edges), and encodes a multi-size `Mora.icns`. Stdlib only; byte-identical for the same input + toolchain. |
-| `scripts/assemble-darwin-app.sh` | — | Deterministic `Mora.app` assembly from an already-signed CLI binary + generated icon: frozen `Info.plist` (identifier `com.pyranthus.mora`, name `Mora`, executable `mora`, icon `Mora`), fail-closed arch/version/icon validation, `SOURCE_DATE_EPOCH` mtime pinning. Assembly only — no signing. |
-| `scripts/appbundle-darwin-release.sh` | — | The Mora.app release lane: per-arch checksum-verified extraction of the signed CLI, bundle assembly, **whole-bundle** Developer ID signing (hardened runtime + timestamp), notarization, stapling, `stapler validate` + Gatekeeper acceptance, post-staple `_app.zip` packaging, path-safety + legacy-name guards (`--check-asset-name`), re-extraction and full trust validation of both final ZIPs, quarantined native launch, `checksums-app.txt`. Stable numeric `X.Y.Z` tags only; Apple-invalid prerelease bundle versions fail closed. |
-| `scripts/verify-app-zip.sh` | — | Fail-closed zip gate for app assets: refuses absolute/traversal/symlink/outside-`Mora.app/` entries and missing bundle members before any updater ever extracts the archive. |
-| `scripts/regress/app-bundle-contract.sh` | — | Secret-free adversarial contract for the app lane: icon determinism, frozen plist/layout, wrong identifier/team/arch/version, broken seal, silent no-op staple, Gatekeeper rejection, hostile zips, and release-workflow ordering (app lane after GoReleaser, before credential cleanup and publish). |
-| `install-app.sh` / `uninstall-app.sh` | — | macOS app migration scripts. Install verifies the app checksum, canonical archive, pinned Apple identity/notary/version/arch, atomically places `Mora.app`, preserves the standalone binary, and creates the PATH symlink. Uninstall verifies the exact signed Mora bundle, atomically detaches it, removes only symlinks targeting that bundle, and preserves vault/config/state/backups. |
-| `.github/workflows/claude.yml` | 63 | On-demand Claude reviewer (`@claude` mention or `claude-review` label). Read-only on contents, advisory only. |
-| `internal/mora/upgrade.go` | ~150 | `mora upgrade [--check]` self-update via `go-selfupdate`: checksum-validated, Homebrew-aware, refuses dev builds (both literal `dev` and git-describe local builds at/ahead of the latest release — never offers a downgrade). After a successful swap it execs the NEW binary's `index rebuild` (`postUpgradeRebuild`, warn-don't-fail) so a schema change never strands a stale index. |
-| `cmd/mora/main.go` | 28 | Entry point. Receives `-ldflags -X main.{version,commit,date}` and forwards into `mora.Build*`. |
-| `install.sh` | — | POSIX installer: local-tarball or public remote-download mode; on macOS it verifies the fixed Developer ID team/identifier and Apple's notarized code requirement without changing quarantine or the signature. Idempotent `mora init`. |
-| `install.ps1` | new | Windows installer: downloads `mora_<version>_windows_amd64.zip`, verifies sha256 against `checksums.txt`, installs `%LOCALAPPDATA%\Mora\bin\mora.exe`, and updates the User PATH. |
-| `uninstall.ps1` | new | Windows uninstaller: removes `%LOCALAPPDATA%\Mora`, removes the User PATH entry, deletes `\Mora\` scheduled tasks, and preserves the vault/config unless explicitly purged. |
-| `scripts/build-release.sh` | 49 | Local GoReleaser-mirror cross-build of all four targets + `checksums.txt`. |
-| `scripts/package.sh` | 55 | Single-target packaging with build-time real-OAuth-client embedding (swap-and-restore guard). |
-| `scripts/codesign-darwin.sh` | — | GoReleaser post-build hook: ignores non-Darwin targets; signs Darwin binaries with the pinned identity, hardened runtime, and timestamp; then verifies signature metadata and the designated requirement. |
-| `scripts/notarize-darwin-release.sh` | — | Pre-publish Apple gate: inventories both Darwin archives, verifies checksums/signatures, submits each root-level binary, requires `Accepted` and Apple's `notarized` code requirement, then launches a quarantined disposable copy for the runner's native architecture. |
-| `scripts/regress/release-signing-contract.sh` | — | Secret-free adversarial contract test for both architectures, wrong/missing identity metadata, notary failures, workflow ordering, and forbidden quarantine/ad-hoc-signing bypasses. |
-| `scripts/bootstrap-release-project.sh` | 140 | One-shot GitHub Projects v2 board scaffold (roadmap/PR pipeline). Not part of the build. |
-| `.golangci.yml` | 32 | golangci-lint v2 tuning (the blocking lint gate). |
-| `go.mod` | 84 | Module graph. Pins `modernc.org/sqlite` (pure-Go) and `go-selfupdate`; `go 1.25.8`. |
-| `LICENSE` | 202 | **Apache-2.0** (copyright AdiSam Consulting LLC). |
+| File | Responsibility |
+|---|---|
+| `.goreleaser.yaml` | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, archives, checksums, cosign keyless signing, SBOM, disabled-by-default Homebrew cask upload, and a draft GitHub Release. |
+| `.github/workflows/ci.yml` | PR/push gate: macOS secret-free Mora.app release-contract sabotage, gofmt, `go vet`, `go test -race`, a Windows portability job, golangci-lint, five-target build matrix, advisory size diff, and gitleaks. |
+| `.github/workflows/release.yml` | Tag-triggered (`v*`), macOS-hosted signed/notarized release workflow; it publishes only after the artifact and Tier-1 gates pass. |
+| `cmd/genicns` + `internal/appbundle` | Deterministic stdlib-only `Mora.icns` generator from the committed pixel-art SVG. |
+| `scripts/assemble-darwin-app.sh` | Deterministic `Mora.app` assembly from an already-signed CLI and generated icon; assembly only, no signing. |
+| `scripts/appbundle-darwin-release.sh` | Checksum-verified assembly, whole-bundle Developer ID signing, notarization, stapling, Gatekeeper validation, packaging, and final ZIP re-verification. |
+| `scripts/verify-app-zip.sh` | Fail-closed path and layout validation for app ZIP assets. |
+| `scripts/regress/app-bundle-contract.sh` | Secret-free adversarial contract for app layout, identity, seal, staple, Gatekeeper, hostile ZIPs, and release ordering. |
+| `install-app.sh` / `uninstall-app.sh` | Fail-closed macOS app install/migration and uninstall paths that preserve user data. |
+| `internal/mora/upgrade.go` | Checksum-validated, Homebrew-aware self-update, including whole-app replacement on macOS. |
+| `cmd/mora/main.go` | Thin entrypoint that forwards linker-supplied version metadata into `internal/mora`. |
+| `install.sh` | POSIX installer; on macOS it verifies the fixed Developer ID identity and notarized-code requirement without changing quarantine or the signature. |
+| `install.ps1` | Windows installer with checksum verification and User PATH setup. |
+| `uninstall.ps1` | Windows uninstaller that preserves vault/config unless explicitly purged. |
+| `scripts/build-release.sh` | Local GoReleaser-mirror cross-build of all five targets plus `checksums.txt`. |
+| `scripts/package.sh` | Single-target packaging with guarded build-time OAuth-client embedding. |
+| `scripts/codesign-darwin.sh` | Darwin signing hook with pinned identity, hardened runtime, timestamp, and post-sign verification. |
+| `scripts/notarize-darwin-release.sh` | Pre-publish Apple notarization and quarantined-launch gate for raw Darwin binaries. |
+| `scripts/regress/release-signing-contract.sh` | Secret-free adversarial signing/notarization contract test. |
+| `scripts/bootstrap-release-project.sh` | One-shot GitHub Projects board scaffold; not part of the build. |
+| `.golangci.yml` | golangci-lint v2 tuning for the blocking lint gate. |
+| `go.mod` | Module graph; pins pure-Go SQLite and `go-selfupdate`, with `go 1.25.8`. |
+| `LICENSE` | Apache-2.0. |
 
 > **Scope note.** This document describes the main build under `./internal/`,
 > `./cmd/`, and the repo-root config. The `dist/` directory is build output.
-> `.claude/worktrees/mora-demo/` is a stale copy. Ignore both.
+> Generated `dist/` output is outside the source-of-truth surface.
 
 ---
 
@@ -100,13 +100,9 @@ flowchart TD
 6. **Mora.app lane.** After the raw artifacts pass their notary gate, `appbundle-darwin-release.sh` builds both branded app bundles from the same checksum-verified signed CLIs, signs each **whole bundle**, notarizes, staples, validates (stapler + codesign + Gatekeeper), and packages post-staple `_app.zip` assets with `checksums-app.txt`. The workflow then cosign-signs that manifest (keyless, like `checksums.txt`) and uploads everything to the still-draft release. The lane runs before credential cleanup (it needs the ephemeral keychain) and before publish. See [Standalone bridge, then `Mora.app`](#standalone-bridge-then-moraapp).
 7. **Draft, then publish.** GoReleaser creates a draft release. OAuth embedding, Windows archive, checksums, macOS signing/notarization, the Mora.app lane, and Tier-1 regression gates all run while it is invisible to `mora upgrade`. Only their success publishes the draft. A signing or notary failure therefore cannot become the latest installable release.
 
-> **One known label inconsistency, not yet reconciled:** the cask's `license:` is hardcoded `"Apache-2.0"` with a `TODO: confirm SPDX id` (`.goreleaser.yaml:80`). The repo `LICENSE` *is* Apache-2.0 (`LICENSE:1-2,189`), so the value is correct today — but note that earlier project memory and the bootstrap board (`bootstrap-release-project.sh:120-122`) still framed the license as an *open decision* (Apache vs MIT, or FSL). **As built, the license is Apache-2.0.**
-
----
-
 ## `mora upgrade` — self-update flow
 
-`mora upgrade` is the "auto-update like Claude Code" path: in-place self-replacement from the latest GitHub release. Dispatched at `mora.go:235-236`. Implemented in `upgrade.go:24`.
+`mora upgrade` is the in-place self-update path from the latest GitHub release.
 
 ```mermaid
 flowchart TD
@@ -262,26 +258,30 @@ The permission transition is explicit:
 
 ## CI gates (`.github/workflows/ci.yml`)
 
-CI runs on every PR and every push to `main` (`ci.yml:3-6`), with `contents: read` only (`ci.yml:8-9`) and per-ref concurrency cancellation (`ci.yml:11-13`). Six jobs (the mermaid and table below predate the `build-windows` job — it runs the full suite on windows-latest):
+CI runs on every PR and every push to `main`, with `contents: read` only and
+per-ref concurrency cancellation. Seven job definitions expand to eleven job
+instances because the cross-build matrix covers five targets.
 
 ```mermaid
 flowchart LR
     pr["PR / push to main"] --> test["test<br/>gofmt -l, go vet,<br/>go test -race (CGO=1)"]
+    pr --> app["app-bundle-contract<br/>secret-free macOS release checks"]
+    pr --> windows["build-windows<br/>full Windows test suite"]
     pr --> lint["lint<br/>golangci-lint v2.12.2"]
-    pr --> build["build matrix<br/>4× CGO=0 cross-build"]
+    pr --> build["build matrix<br/>5× CGO=0 cross-build"]
     pr --> size["size (PR only)<br/>size-diff vs main<br/>(advisory)"]
     pr --> secrets["secrets<br/>gitleaks detect<br/>(blocking)"]
 ```
 
 | Job | Blocking? | What it enforces |
 |---|---|---|
-| `test` (`ci.yml:22-72`) | **yes** | `gofmt -l .` must be empty; `go vet ./...`; `go test -race -vet=off -count=1 -covermode=atomic ./...` with `CGO_ENABLED=1` (the only cgo-on step). Vet stays explicit and is disabled only inside the subsequent test command to avoid duplicate analysis. |
-| `lint` (`ci.yml:40-56`) | **yes** | `golangci-lint` pinned to **`v2.12.2`** via `golangci-lint-action@v8`. The version pin is deliberate (`ci.yml:50-52`): the action `@v6` only installs golangci-lint v1, which cannot read the v2 `.golangci.yml` and builds against go1.24 < the go1.25 target; `@v8` installs v2. |
-| `build` (`ci.yml:85-108`) | **yes** | Cross-builds all five targets (incl. windows/amd64) with `CGO_ENABLED=0`; `fail-fast: false` so all targets report. |
-| `size` (`ci.yml:86-105`) | **no (advisory)** | PR-only binary-size diff vs `main` (`size-diff-action@v1`, `continue-on-error: true`). The comment is explicit: "a size hiccup must never block merge" — but size matters because "a single small static binary IS the product." |
-| `secrets` (`ci.yml:107-122`) | **yes** | gitleaks scans full history (`fetch-depth: 0`) with `--exit-code 1`. Uses the **OSS gitleaks CLI directly, not gitleaks-action@v2** (`ci.yml:114-116`), because the action requires a mandatory `GITLEAKS_LICENSE` for org-owned repos and Mora now lives under `pyranthus-hq`. |
-
-The Claude reviewer (`claude.yml`) is **advisory and opt-in by design**: it does not run on every push (to avoid double-commenting alongside the always-on Codex GitHub app), only on an `@claude` mention or the `claude-review` label, and only from maintainer `Aowner` (`claude.yml:33-36`). Its permissions are `contents: read` — it can comment but cannot push (`claude.yml:21-24`). The review prompt encodes Mora's hard rules and tells Claude to **defer to Codex on test design** (`claude.yml:54-63`).
+| `app-bundle-contract` | **yes** | Runs the secret-free adversarial Mora.app packaging and workflow-order contract on macOS. |
+| `test` | **yes** | Requires clean gofmt, `go vet ./...`, and the full race-enabled test suite. |
+| `build-windows` | **yes** | Runs the full Go test suite natively on `windows-latest`. |
+| `lint` | **yes** | Runs golangci-lint v2.12.2 through `golangci-lint-action@v8`. |
+| `build` | **yes** | Cross-builds all five release targets with `CGO_ENABLED=0`; `fail-fast: false` lets every target report. |
+| `size` | **no (advisory)** | Reports the PR binary-size delta from `main` with `continue-on-error: true`. |
+| `secrets` | **yes** | Runs the OSS gitleaks CLI over full history with a blocking exit code. |
 
 `.golangci.yml` is v2 format (`.golangci.yml:3`), uses the `standard` linter set plus the `std-error-handling` exclusion preset, and adds narrow rule exclusions (capitalized error strings for proper nouns. The fire-and-forget OAuth loopback server's `Serve/Shutdown`. Deprecated `ParseDir` in tests) — `.golangci.yml:13-32`.
 
@@ -289,20 +289,27 @@ The Claude reviewer (`claude.yml`) is **advisory and opt-in by design**: it does
 
 ## License — Apache-2.0
 
-The repository ships under **Apache-2.0** (`LICENSE:1-2`), copyright **AdiSam Consulting LLC** (`LICENSE:189`). The GoReleaser cask metadata declares the same SPDX id (`.goreleaser.yaml:80`). Note the license choice was historically tracked as an open board decision (Apache vs MIT, with FSL floated in project memory), but the file on disk is unambiguously Apache-2.0 today.
+The repository ships under **Apache-2.0**, and the GoReleaser cask metadata
+declares the same SPDX identifier. Cask upload is currently disabled with
+`skip_upload: true`; the release workflow does not publish a Homebrew cask.
 
 ---
 
 ## Security posture as a product invariant
 
-Mora's distribution and ops posture is **zero-telemetry, zero-egress, read-only**, and this is enforced in code:
+Mora keeps the corpus local by default and makes its bounded network surfaces
+explicit. This matches the canonical [README privacy boundary](../../README.md#privacy-boundary):
 
 - **Read-only Google scopes, least-privilege.** `internal/google/oauth.go:31-32` hardcodes `Scopes = {gmail.GmailReadonlyScope, calendar.CalendarReadonlyScope}` — there is no write scope anywhere, and Drive is deferred. (`oauth_test.go` exercises `ResolveOAuthConfig`'s scope round-trip — `oauth_test.go:29-30` checks the *passed* scopes survive resolution — but does not itself assert the read-only `Scopes` global. The global at `oauth.go:32` is the ground truth.)
 - **No telemetry / opt-out usage logging.** Usage logging is local-only JSONL in the state dir (never the vault). `usageEnabled` (`usage.go`) honors `DO_NOT_TRACK=1` **and** a `<StateDir>/usage/OFF` sentinel (written by `mora usage off` — `cmdUsage`, `usage.go`). MCP events measure the serialized final `CallToolResult`; `read_memory` adds only allowlisted structural fields and never ids, bodies, matches, evidence, metadata, or paths. The query field remains an explicit raw-search-query tier only and is never sent (`usageEvent`, `mora.go`; exact schema in [MCP server](./06-mcp-server.md#usage-logging)).
-- **Zero-egress embeddings guard.** The opt-in Ollama embedder POSTs memory text to its host, so `chooseEmbedder` **refuses any non-loopback `MORA_OLLAMA_URL`** and falls back to the static embedder rather than send memory off-machine (`embed_ollama.go:100-106`). A test enforces this — `TestChooseEmbedderRefusesNonLoopback` (`embed_ollama_test.go:91`). The default static embedder is "pure-Go, zero-egress, single-binary" (`embed.go:10`).
+- **Loopback-only embeddings guard.** The explicit Ollama mode refuses a non-loopback or unavailable endpoint rather than sending memory off-machine. Read paths surface the degraded state and can use FTS; rebuild/write paths fail closed. The default static embedder performs no network call.
+- **Explicit connector and operator egress.** Google and GitHub Issues connectors make read-only API requests. `mora upgrade` reads GitHub releases. User-invoked `mora sync git` can push the plaintext vault to a remote the user controls. `mora share` sends age-encrypted authored memories over an access-controlled git remote or S3/R2; confidentiality comes from age encryption, not an assumed bucket setting.
+- **Downstream-agent boundary.** Mora itself makes no model call. An MCP client can send retrieved text to its own model provider; the agent and its group policy control that action.
 - **Supply-chain integrity at rest and on update.** Releases are sha256-checksummed and the checksum manifest is cosign-signed (Sigstore keyless); `mora upgrade` re-verifies the downloaded archive against `checksums.txt` before swapping (`upgrade.go:60-63`). Darwin binaries additionally carry the fixed Developer ID identity and an Apple notary acceptance ticket, both gated before publication. gitleaks blocks any committed secret (`ci.yml:107-122`).
 
-In short: the only network egress the binary performs is to Google's read-only APIs (during `connect`/`sync`), to GitHub releases (during `upgrade`), and — only if the user opts in — to a **loopback-only** Ollama. Nothing else leaves the machine.
+The corpus therefore remains local by default, while backup, sharing, connector,
+update, and downstream-agent transfers stay explicit rather than being hidden
+behind a blanket "zero egress" claim.
 
 ---
 
@@ -328,7 +335,7 @@ In short: the only network egress the binary performs is to Google's read-only A
 
 10. **Read-only Google scopes are a hard product invariant.** `Scopes` is `{gmail.readonly, calendar.readonly}` (`oauth.go:32`), pinned by test. WHY: Mora's trust model is "it can read, it can never write or delete your data." Adding a write scope is a posture change, not a feature.
 
-11. **Zero-egress: memory bytes never leave the machine except to read-only Google APIs (and opt-in loopback Ollama).** The non-loopback Ollama refusal (`embed_ollama.go:100-106`) and the `DO_NOT_TRACK`/`OFF` usage gate (`mora.go:3251-3259`) enforce it. WHY: local-only operation is a core invariant. Any new outbound call must be gated the same way.
+11. **Local by default, with explicit egress boundaries.** Read-only connectors, releases, loopback Ollama, user-invoked backup/share transports, and a downstream agent are the declared boundaries. WHY: users must be able to distinguish local corpus storage from actions that intentionally cross the machine boundary.
 
 12. **The size job is advisory. The secrets and lint jobs are blocking.** `size` is `continue-on-error: true` (`ci.yml:103`). Gitleaks is `--exit-code 1` (`ci.yml:121`). WHY: a size regression should inform, not block. A leaked secret or lint regression must block.
 
@@ -349,9 +356,3 @@ In short: the only network egress the binary performs is to Google's read-only A
 - [Eval & testing](./09-eval-and-testing.md) — the `go test -race` gate and the size/budget regression tests.
 - [Sync & freshness](./11-sync-and-freshness.md) — honest-snapshot sync, the other place the binary touches the network.
 - [Overview](./00-overview.md) — how the binary fits the whole system.
-
-## Open questions / unverified
-
-- **Homebrew tap repo existence.** `.goreleaser.yaml:74` and `bootstrap-release-project.sh:106-108` both note `pyranthus-hq/homebrew-tap` as a repo to *create*; I could not verify from the code whether it exists yet, so `brew install pyranthus-hq/tap/mora` may not yet resolve.
-- **Whether any `v*` tag / GitHub Release has actually been published.** The pipeline is fully wired, but the existence of a published release (and thus a working `mora upgrade` / remote `install.sh`) is a repo/GitHub-state fact, not a code fact — not verifiable from these files.
-- **License decision finality.** On disk the license is Apache-2.0 (`LICENSE`), and the cask agrees, but project memory and the bootstrap board frame it as an open decision (Apache/MIT/FSL). The code says Apache-2.0. Whether that is the *final* intended license is a governance question outside this subsystem.
