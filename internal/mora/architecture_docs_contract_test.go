@@ -34,7 +34,7 @@ func TestArchitectureOverviewContractMatchesSource(t *testing.T) {
 		module,
 		strconv.Itoa(len(mcpToolRegistry)),
 		strconv.Itoa(len(connectorCatalog)),
-		strconv.Itoa(defaultFusion.k),
+		strconv.FormatFloat(defaultFusion.k, 'f', -1, 64),
 		strconv.Itoa(gmailSegmentFusionK),
 	}
 	for i, got := range match[1:] {
