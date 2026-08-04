@@ -715,16 +715,16 @@ func TestConfidenceSearchMemoryUnderT0Ceiling(t *testing.T) {
 
 // --- think -------------------------------------------------------------------
 
-// TestConfidenceThinkStrongEvidenceNoGaps pins think's healthy/strong path: a
-// recent, well-covered match with an empty ThinkGaps (Gaps.empty()==true).
-func TestConfidenceThinkStrongEvidenceNoGaps(t *testing.T) {
+// TestConfidenceThinkModerateSparseSingleSource pins #221's honest partial-evidence
+// path: freshness alone cannot make one Gmail record well-covered.
+func TestConfidenceThinkModerateSparseSingleSource(t *testing.T) {
 	seedConfidenceFixture(t)
 	sc := thinkStructured(t, `{"query":"quorlath","confidence":true}`)
 	conf := mustConfidence(t, sc)
 	assertConfidenceShape(t, conf)
 
-	if conf["strength"] != "strong" {
-		t.Fatalf("strength = %v, want strong (non-empty evidence, no ThinkGaps)", conf["strength"])
+	if conf["strength"] != "moderate" {
+		t.Fatalf("strength = %v, want moderate (one matching record, one source)", conf["strength"])
 	}
 	// #238: think ALWAYS routes through hybridSearchTrace, regardless of
 	// embedder -> scale is always rrf_fused.

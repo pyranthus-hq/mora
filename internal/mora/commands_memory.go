@@ -299,10 +299,25 @@ func printThink(w io.Writer, res ThinkResult) {
 		for _, s := range res.Gaps.Stale {
 			fmt.Fprintf(w, "  · %s\n", s)
 		}
+		for _, s := range res.Gaps.FreshnessUnknown {
+			fmt.Fprintf(w, "  · %s\n", s)
+		}
+		for _, s := range res.Gaps.SparseEvidence {
+			fmt.Fprintf(w, "  · %s\n", s)
+		}
+		for _, s := range res.Gaps.SourceCoverage {
+			fmt.Fprintf(w, "  · %s\n", s)
+		}
+		for _, s := range res.Gaps.TemporalState {
+			fmt.Fprintf(w, "  · %s\n", s)
+		}
 		for _, s := range res.Gaps.ThinCoverage {
 			fmt.Fprintf(w, "  · %s\n", s)
 		}
 		for _, s := range res.Gaps.CoverageHoles {
+			fmt.Fprintf(w, "  · %s\n", s)
+		}
+		for _, s := range res.Gaps.RetrievalCaveats {
 			fmt.Fprintf(w, "  · %s\n", s)
 		}
 	}
