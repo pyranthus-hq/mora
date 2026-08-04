@@ -9,6 +9,7 @@ guide, read the [README](../README.md). For code details, read
 - [Windows](#windows)
 - [Initialize](#initialize)
 - [Connect Google (Gmail + Calendar)](#connect-google-gmail--calendar)
+- [Connect GitHub issues](#connect-github-issues)
 - [Connect iMessage (macOS)](#connect-imessage-macos)
 - [Connect Apple Calendar (macOS)](#connect-apple-calendar-macos)
 - [Add a filesystem source](#add-a-filesystem-source)
@@ -277,6 +278,44 @@ re-grant.
 Contact names come from your address book. Thus, iMessage usually gives the
 cleanest name-to-handle map of any source.
 
+## Connect GitHub issues
+
+```bash
+mora connect github
+mora connect github --repo pyranthus-hq/mora --repo pyranthus-hq/productivity
+```
+
+The default allowlist is `pyranthus-hq/mora` and
+`pyranthus-hq/productivity`. `--repo owner/repo` is repeatable and replaces
+that default with an explicit allowlist. Mora makes read-only GitHub API calls;
+it does not create issues, choose tasks, or launch agents from issue content.
+
+Public repositories work without credentials at GitHub's lower anonymous rate
+limit. For private repositories or a higher limit, provide a read-only token in
+the process environment:
+
+```bash
+export MORA_GITHUB_TOKEN=github_pat_...
+mora sync github
+```
+
+Mora never writes that token to its config, vault, status files, or logs. Each
+issue keeps the repository, number, title, body, lifecycle state, labels,
+assignees, canonical URL, GitHub creation/update times, and local retrieval
+time. Its searchable identity is stable (`github:owner/repo#number`), so edits,
+close, and reopen transitions update one projection instead of creating
+duplicates. The source JSON for every GitHub update is also retained as an
+immutable local receipt under Mora's state directory.
+
+Pagination checkpoints are resumable. Authentication, access, rate-limit,
+offline, and partial-sync failures are reported explicitly by `mora sync
+github` and separately degrade `mora sync status`; previously indexed evidence
+remains searchable. Fix the token/network/access problem and rerun `mora sync
+github` to recover. `mora connectors disable github` stops future reads without
+silently deleting evidence. Use `mora forget --chat
+github:owner/repo#number --yes` when you intentionally want Mora to suppress and
+remove one issue memory.
+
 ## Connect Apple Calendar (macOS)
 
 ```bash
@@ -334,10 +373,10 @@ mora connectors list --json     # the same, machine-readable
 mora connectors setup           # interactive menu to pick and enable connectors
 ```
 
-The catalog is `gmail`, `calendar`, `filesystem`, `imessage`, and
-`applecalendar`. You must enable a connector and give consent. `enable` runs the
-OAuth or access check but gets **no data**. `disable` stops later syncs but does
-not delete indexed data.
+The catalog is `gmail`, `calendar`, `filesystem`, `imessage`,
+`applecalendar`, and `github`. You must enable a connector and give consent.
+`enable` runs the OAuth or access check but gets **no data**. `disable` stops
+later syncs but does not delete indexed data.
 
 ```bash
 mora connectors enable calendar     # consent only; backfill with a sync or ingest
@@ -750,6 +789,7 @@ Keep two separate things fresh: **your data** and **the app**.
 ```bash
 mora sync status                 # per-source freshness — when each connector last pulled
 mora sync google                 # re-pull Gmail + Calendar
+mora sync github                 # refresh allowlisted GitHub issues (read-only)
 mora sync filesystem             # re-index enabled filesystem sources
 mora sync imessage               # re-read the local Messages DB (macOS)
 mora sync applecalendar          # re-read the local Apple Calendar DB (macOS)

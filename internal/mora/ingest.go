@@ -7,10 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/pyranthus-hq/mora/internal/applecal"
-	"github.com/pyranthus-hq/mora/internal/google"
-	"github.com/pyranthus-hq/mora/internal/imessage"
-	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"io/fs"
 	"os"
@@ -19,6 +15,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/applecal"
+	"github.com/pyranthus-hq/mora/internal/githubissues"
+	"github.com/pyranthus-hq/mora/internal/google"
+	"github.com/pyranthus-hq/mora/internal/imessage"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
@@ -83,6 +85,32 @@ func backfillEnabledFilesystem(ctx context.Context, cfg Config, stdout io.Writer
 	}
 	if failures > 0 {
 		return total, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
+	}
+	return total, nil
+}
+
+func backfillEnabledGitHub(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
+	sources, err := loadSources(cfg)
+	if err != nil {
+		return 0, err
+	}
+	total, failures := 0, 0
+	for _, s := range sources {
+		if s.Type != "github" || !s.IsEnabled() {
+			continue
+		}
+		n, syncErr := ingestSource(cfg, s, stdout)
+		total += n
+		if syncErr != nil {
+			failures++
+			warnf(stdout, "%s sync incomplete (prior evidence preserved): %v", s.Name, syncErr)
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		return total, err
+	}
+	if failures > 0 {
+		return total, fmt.Errorf("%d GitHub source(s) failed to sync; prior evidence is preserved and source health is degraded", failures)
 	}
 	return total, nil
 }
@@ -178,6 +206,9 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 	return nil
 }
 func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) >= 1 && args[0] == "github" {
+		return connectGitHub(ctx, args[1:], stdout)
+	}
 	if len(args) >= 1 && args[0] == "imessage" {
 		return connectIMessage(ctx, args[1:], stdout)
 	}
@@ -185,7 +216,7 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 		return connectFilesystem(ctx, args[1:], stdout)
 	}
 	if len(args) < 1 || args[0] != "google" {
-		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
+		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect github [--repo owner/repo] | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
 	}
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -302,9 +333,10 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 }
 func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) >= 1 && isHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora sync <status|google|filesystem|imessage|applecalendar|git>")
+		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
+		fmt.Fprintln(stdout, "  github    re-run the read-only GitHub issue sync")
 		fmt.Fprintln(stdout, "  filesystem re-index enabled filesystem sources")
 		fmt.Fprintln(stdout, "  imessage  re-run the iMessage backfill")
 		fmt.Fprintln(stdout, "  applecalendar re-run the local Apple Calendar backfill")
@@ -313,7 +345,7 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 		return nil
 	}
 	if len(args) == 0 {
-		return errors.New("usage: mora sync <status|google|filesystem|imessage|applecalendar|git>")
+		return errors.New("usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -387,12 +419,17 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
 		return err
 	}
+	if args[0] == "github" {
+		total, err := backfillEnabledGitHub(ctx, cfg, stdout)
+		fmt.Fprintf(stdout, "synced %d issue(s)\n", total)
+		return err
+	}
 	if args[0] == "google" {
 		total, err := backfillEnabledGoogle(ctx, cfg, stdout)
 		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
 		return err
 	}
-	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|filesystem|imessage|applecalendar|git>)", args[0])
+	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>)", args[0])
 }
 
 // syncStatusFileThreshold infers the freshness threshold for a raw sync/
@@ -404,7 +441,7 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 // sourceHealthThreshold does, which is all classification needs.
 func syncStatusFileThreshold(fileName string) time.Duration {
 	switch {
-	case strings.HasPrefix(fileName, "google-"), strings.HasPrefix(fileName, "applecal-"):
+	case strings.HasPrefix(fileName, "google-"), strings.HasPrefix(fileName, "applecal-"), strings.HasPrefix(fileName, "github-"):
 		return sourceHealthGoogleThreshold
 	default: // imessage-, filesystem-, and any future/unknown prefix
 		return sourceHealthLocalThreshold
@@ -532,6 +569,8 @@ func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {
 		return ingestIMessage(cfg, s, out)
 	case "applecalendar":
 		return ingestAppleCal(cfg, s, out)
+	case "github":
+		return ingestGitHub(cfg, s, out)
 	case "gdrive":
 		return 0, nil // deferred to week 2
 	default:
@@ -686,7 +725,7 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 }
 
 // persistSyncStatus writes a sync path's final SyncStatus to disk — the single
-// boundary all four sync paths (google, imessage, applecal, filesystem) route
+// boundary every sync path (google, GitHub, imessage, applecal, filesystem) routes
 // through. A failed save is warned AND folded into the returned error instead
 // of swallowed: the status file drives the digest's three-state health, so
 // losing it silently turns a real outcome into permanent "unavailable"/stale
@@ -930,6 +969,121 @@ func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
 		return res.Status.ItemCount, ingErr
 	}
 	return res.Status.ItemCount, nil
+}
+
+// ingestGitHub snapshots source records immutably before reconciling their
+// stable searchable projections. GitHub remains evidence: this path never calls
+// the task ledger, selects work, or launches an agent.
+func ingestGitHub(cfg Config, s Source, out io.Writer) (int, error) {
+	repos := s.Repositories
+	if len(repos) == 0 {
+		repos = githubissues.DefaultRepositories
+	}
+	fetcher, err := githubissues.NewLiveFetcher(repos, os.Getenv("MORA_GITHUB_TOKEN"))
+	if err != nil {
+		return 0, err
+	}
+	statusPath := syncStatusPathFor(cfg, s)
+	st, _ := memory.LoadStatus(statusPath)
+	st.Source = s.Name
+	prog := newProgress(out, s.Name, "issues")
+	write := func(mm memory.MappedMemory) error {
+		// Snapshot bytes are attached to Meta only by the connector-private mapper
+		// seam, never rendered or logged. The immutable write happens in Map below.
+		if err := writeMappedMemory(cfg, mm); err != nil {
+			return err
+		}
+		prog.tick()
+		return nil
+	}
+	mapIssue := func(it memory.Item, scope string, budget int) memory.MappedMemory {
+		mm := githubissues.MapIssue(it, scope, budget)
+		if payload, ok := it.Payload.(githubissues.Payload); ok {
+			if err := writeGitHubSnapshot(cfg, payload); err != nil {
+				// memory.Ingest has no error-returning Map seam. Attach a sentinel that
+				// makes the Write callback fail before the searchable projection lands.
+				if mm.Meta == nil {
+					mm.Meta = map[string]any{}
+				}
+				mm.Meta["snapshot_error"] = err.Error()
+			}
+		}
+		return mm
+	}
+	writeChecked := func(mm memory.MappedMemory) error {
+		if msg, ok := mm.Meta["snapshot_error"].(string); ok && msg != "" {
+			return errors.New(msg)
+		}
+		return write(mm)
+	}
+	res, ingErr := memory.Ingest(memory.IngestParams{
+		Fetcher: fetcher, Kind: githubissues.KindIssue, Scope: s.Scope, BodyBudget: 64 * 1024,
+		Status: st, Map: mapIssue, Write: writeChecked,
+	})
+	prog.done()
+	return res.Status.ItemCount, persistSyncStatus(out, statusPath, res.Status, ingErr)
+}
+
+func writeGitHubSnapshot(cfg Config, payload githubissues.Payload) error {
+	s := payload.Snapshot
+	stamp := strings.NewReplacer(":", "-", "/", "-").Replace(s.UpdatedAt)
+	if stamp == "" {
+		stamp = "unknown-update"
+	}
+	path := filepath.Join(cfg.StateDir, "source-evidence", "github", s.Repository,
+		strconv.Itoa(s.Number), osSafeBase(stamp)+".json")
+	body := append(append([]byte(nil), payload.Bytes...), '\n')
+	if err := atomicCreate(path, body, 0o600); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("preserving immutable GitHub source snapshot: %w", err)
+	}
+	return nil
+}
+
+func connectGitHub(ctx context.Context, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("connect github", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var repos multiFlag
+	fs.Var(&repos, "repo", "allowlisted owner/repo (repeatable)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected argument %q (usage: mora connect github [--repo owner/repo]...)", fs.Arg(0))
+	}
+	if len(repos) == 0 {
+		repos = append(repos, githubissues.DefaultRepositories...)
+	}
+	clean, err := githubissues.ValidateRepositories(repos)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if err := mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		for i := range sources {
+			if sources[i].Type == "github" {
+				sources[i].Repositories = clean
+				sources[i].Enabled = ptr(true)
+				return sources, nil
+			}
+		}
+		return append(sources, Source{
+			Name: "github", Type: "github", Scope: "personal", Repositories: clean,
+			Enabled: ptr(true), CreatedAt: now,
+		}), nil
+	}); err != nil {
+		return err
+	}
+	if os.Getenv("MORA_GITHUB_TOKEN") == "" {
+		fmt.Fprintln(stdout, "GitHub token not set; using the lower-rate anonymous API for public repositories.")
+		fmt.Fprintln(stdout, "Set MORA_GITHUB_TOKEN for private repositories or higher rate limits; Mora never stores or logs it.")
+	}
+	total, syncErr := backfillEnabledGitHub(ctx, cfg, stdout)
+	fmt.Fprintf(stdout, "synced %d issue(s) from %s\n", total, strings.Join(clean, ", "))
+	return syncErr
 }
 
 // connectIMessage is the one-command convenience (parallel to `connect google`):

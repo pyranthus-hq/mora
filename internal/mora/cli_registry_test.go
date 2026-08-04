@@ -564,6 +564,7 @@ func TestCLIRegistryPriorityGapsUseRealRun(t *testing.T) {
 		t.Setenv("MORA_CONFIG_DIR", filepath.Join(root, "config"))
 		for _, args := range [][]string{
 			{"connect", "google", "--__issue205_probe__"},
+			{"connect", "github", "--repo", "invalid"},
 			{"connect", "imessage", "--__issue205_probe__"},
 			{"connect", "filesystem"},
 		} {

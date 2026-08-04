@@ -26,8 +26,8 @@ func TestSyncRequiresExplicitKnownSource(t *testing.T) {
 	}
 
 	help := run(t, "sync", "--help")
-	if !strings.Contains(help, "sync <status|google|filesystem|imessage|applecalendar|git>") {
-		t.Fatalf("sync help does not advertise the required filesystem route:\n%s", help)
+	if !strings.Contains(help, "sync <status|google|github|filesystem|imessage|applecalendar|git>") {
+		t.Fatalf("sync help does not advertise every supported route:\n%s", help)
 	}
 }
 

@@ -302,9 +302,9 @@
     },
     {
       "name": "connect",
-      "paths": ["connect", "connect google", "connect imessage", "connect filesystem"],
+      "paths": ["connect", "connect google", "connect github", "connect imessage", "connect filesystem"],
       "evidence": {
-        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays"], "reason": "Filesystem succeeds locally; Google and iMessage route through explicit credential/platform seams."},
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays", "TestGitHubStatusPathAndCatalogContract"], "reason": "Filesystem succeeds locally; Google, GitHub, and iMessage route through explicit credential/platform seams."},
         "json": {"status": "not_supported", "reason": "connect flows render text."},
         "state": {"status": "platform_seam", "tests": ["TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays"], "reason": "Source registration is persisted through hermetic filesystem and platform-seam tests."},
         "error": {"status": "test", "tests": ["TestConnectFilesystemMissingPathErrors", "TestConnectFilesystemPreservesCorruptSources", "TestCLIRegistryPriorityGapsUseRealRun/connect_routes"]},
@@ -313,9 +313,9 @@
     },
     {
       "name": "sync",
-      "paths": ["sync", "sync status", "sync google", "sync filesystem", "sync imessage", "sync applecalendar", "sync git"],
+      "paths": ["sync", "sync status", "sync google", "sync github", "sync filesystem", "sync imessage", "sync applecalendar", "sync git"],
       "evidence": {
-        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes", "TestGitHubStatusPathAndCatalogContract"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
         "json": {"status": "not_supported", "reason": "sync commands are text status surfaces."},
         "state": {"status": "test", "tests": ["TestCoreA_CmdSync", "TestFailedSyncNeverAdvancesWatermark", "TestSyncDoesNotResurrectDoneTask"]},
         "error": {"status": "test", "tests": ["TestSyncFilesystemSurfacesCorruptSourceRegistry", "TestSyncGit_FailLoudOnPushError", "TestFailedSyncNeverAdvancesWatermark"]},

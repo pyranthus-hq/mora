@@ -388,7 +388,8 @@ func knownSourceFamily(family string) bool {
 // `Provider: imessageProvider` assignment (internal/imessage/map.go);
 // applecalendar via `memory.RegisterKind(KindAppleCalEvent, "event",
 // "applecal")` (internal/applecal/applecal.go, normalized to
-// "applecalendar" by providerToType). "manual"/"mcp"/other Source labels
+// "applecalendar" by providerToType); github via
+// `memory.RegisterKind(KindIssue, "issue", "github")`. "manual"/"mcp"/other Source labels
 // are not connector-catalog families at all — knownSourceFamily already
 // rejects them as unknown before this map is ever consulted.
 var unsupportedSourceFamilies = map[string]string{

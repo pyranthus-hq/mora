@@ -207,6 +207,7 @@ type Source struct {
 	// matching Phase 1's no-new-file precedent. Empty = include everyone.
 	DenyContacts      []string `json:"deny_contacts,omitempty"`
 	DenyConversations []string `json:"deny_conversations,omitempty"`
+	Repositories      []string `json:"repositories,omitempty"` // github: explicit owner/repo allowlist
 }
 
 // connectorInfo is a static catalog entry describing a user-enableable connector
@@ -269,6 +270,7 @@ var connectorCatalog = []connectorInfo{
 	// without it, applecal memories never reconcile with this instance and
 	// silently vanish from the delta brief.
 	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)", Provider: "applecal", Upcoming: true},
+	{Type: "github", DisplayName: "GitHub Issues", NeedsAuth: false, Ingesting: true, Rank: 4, Label: "GitHub Issues"},
 }
 
 // catalogRow is the per-type view emitted by `connectors list`. Enabled joins the
@@ -444,11 +446,14 @@ USAGE:
   mora connectors list|enable <type>|disable <type>
   mora connect google              # sign in with Google in your browser, then backfill Gmail + Calendar (last 90 days)
   mora connect google --since-days 365   # widen the gmail backfill window
+  mora connect github             # sync issues from the Mora + productivity repositories as read-only evidence
+  mora connect github --repo owner/repo  # replace the default repository allowlist (repeatable)
   mora connect imessage            # macOS: enable iMessage, check Full Disk Access, then backfill
   mora connect imessage --since-days 365   # widen the iMessage backlog window (negative = all-time)
   mora connect filesystem ~/Documents      # add + enable + index a folder in one step (one-shot of: sources add + ingest run)
   mora sync status
   mora sync google
+  mora sync github                # refresh enabled GitHub issue sources (read-only)
   mora sync filesystem            # re-index enabled filesystem sources
   mora sync imessage               # macOS: read local Messages (read-only) into memories
   mora sync applecalendar          # macOS: re-read local Apple Calendar (read-only) into memories

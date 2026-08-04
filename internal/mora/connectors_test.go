@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/applecal"
+	"github.com/pyranthus-hq/mora/internal/githubissues"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/imessage"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -68,7 +69,7 @@ func TestSourceInstanceKeyDoesNotReadSource(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestCapabilityTagsCatalog asserts every ingesting connector in the catalog is
-// tagged Ingesting=true (gmail/calendar/imessage/filesystem). These are the
+// tagged Ingesting=true. These are the
 // connectors that persist memories + a SyncStatus and so belong in the
 // three-state enumeration set.
 func TestCapabilityTagsCatalog(t *testing.T) {
@@ -77,6 +78,7 @@ func TestCapabilityTagsCatalog(t *testing.T) {
 		"calendar":   true,
 		"imessage":   true,
 		"filesystem": true,
+		"github":     true,
 	}
 	for ctype, wantIngesting := range want {
 		ci, ok := lookupCatalog(ctype)
@@ -94,8 +96,8 @@ func TestCapabilityTagsCatalog(t *testing.T) {
 // is never reported as ingesting. This proves the enumeration filter is the tag,
 // not mere catalog membership.
 func TestCapabilityTagExcludesNonIngesting(t *testing.T) {
-	// A hypothetical live-passthrough connector (PostHog/Linear) or on-demand
-	// (GitHub) would carry Ingesting=false. Verify the filter predicate honors it.
+	// A hypothetical live-passthrough or on-demand connector would carry
+	// Ingesting=false. Verify the filter predicate honors it.
 	passthrough := connectorInfo{Type: "posthog", DisplayName: "PostHog", Ingesting: false}
 	if passthrough.Ingesting {
 		t.Fatalf("non-ingesting descriptor must report Ingesting=false")
@@ -303,6 +305,9 @@ func TestConnectorProviderKeysReconcile(t *testing.T) {
 		},
 		"applecalendar": func() string {
 			return memory.MapItem(memory.Item{Kind: applecal.KindAppleCalEvent}, "global", 0).Provider
+		},
+		"github": func() string {
+			return githubissues.MapIssue(memory.Item{Kind: githubissues.KindIssue}, "global", 0).Provider
 		},
 		// filesystem mints NO Provider on purpose: sourceInstanceKey rejects the
 		// empty provider and the brief skips filesystem by design (brief.go).
