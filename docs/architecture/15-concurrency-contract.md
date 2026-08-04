@@ -260,7 +260,7 @@ correctness allows and bounds the rest:
   - The graph gap is bounded by the full-rebuild cadence (the `index-hourly`
     job, `mora index rebuild`, connector sync, delete) — it is never indefinite.
   - The vector gap has **no effect under the default static-hash embedder**,
-    where `defaultSearch` uses the static keyword surface (parent FTS plus bounded Gmail message-segment FTS). Embedder-gated routing enables the four-arm hybrid only under a semantic embedder because graph expansion would otherwise perturb the measured static ranking — see [retrieval & search](./02-retrieval-search.md). Under a semantic (Ollama)
+    where `defaultSearch` uses the static keyword surface (parent FTS plus bounded Gmail/iMessage segment FTS). Embedder-gated routing enables the four-arm hybrid only under a semantic embedder because graph expansion would otherwise perturb the measured static ranking — see [retrieval & search](./02-retrieval-search.md). Under a semantic (Ollama)
     embedder it is a real but bounded, self-healing recall gap on the hybrid arm
     only — the memory is fully searchable via FTS immediately and gains its
     vector at the next full rebuild.
