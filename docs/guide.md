@@ -372,6 +372,25 @@ start. `brief --event-id <id>` and `meeting_prep` build the same cited
 pre-meeting view. This view has past candidate lines, open threads, source age,
 and material shared context.
 
+MCP mutation authority is explicit and persisted in `config.toml`:
+
+```bash
+mora config mcp-write-policy open       # trusted owner's agent; current default
+mora config mcp-write-policy propose    # stage write_memory for local approval
+mora config mcp-write-policy readonly   # refuse write_memory and delete_memory
+
+mora mcp proposals list
+mora mcp proposals approve <proposal-id>
+mora mcp proposals reject <proposal-id>
+```
+
+In `propose` mode, a tool call writes only a `0600` pending proposal under
+Mora's config directory. It is not a memory, is not indexed, and cannot be
+cited until the owner approves it locally. Destructive deletes are never
+staged: both `propose` and `readonly` refuse `delete_memory`. The MCP
+initialization instructions report the active policy, so a semi-trusted client
+is never told it has authority the server will not grant.
+
 Mora ranks these candidates across attendees and shows them as dated evidence.
 They are not current truth or a verified commitment ledger. Mora does not yet
 find obligation owner, direction, or closure with enough trust. Check each

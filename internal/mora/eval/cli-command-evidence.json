@@ -247,12 +247,12 @@
     },
     {
       "name": "configuration",
-      "paths": ["config", "config context", "config embedder", "config mmr"],
+      "paths": ["config", "config context", "config embedder", "config mmr", "config mcp-write-policy"],
       "evidence": {
-        "success": {"status": "test", "tests": ["TestCoreA_CmdConfigShowAndSet"]},
+        "success": {"status": "test", "tests": ["TestCoreA_CmdConfigShowAndSet", "TestMCPWritePolicyConfigRoundTripAndRejectsInvalid"]},
         "json": {"status": "test", "tests": ["TestCLIRegistryJSONSurfacesAreByteClean/config/--json"], "reason": "config show supports JSON; setters return text."},
-        "state": {"status": "test", "tests": ["TestCoreA_CmdConfigShowAndSet", "TestCoreA_WriteConfigPreservesForeignLines"]},
-        "error": {"status": "test", "tests": ["TestCoreA_LoadConfigErrorPropagates", "TestCoreA_FlagParseErrors"]},
+        "state": {"status": "test", "tests": ["TestCoreA_CmdConfigShowAndSet", "TestCoreA_WriteConfigPreservesForeignLines", "TestMCPWritePolicyConfigRoundTripAndRejectsInvalid"]},
+        "error": {"status": "test", "tests": ["TestCoreA_LoadConfigErrorPropagates", "TestCoreA_FlagParseErrors", "TestMCPWritePolicyConfigRoundTripAndRejectsInvalid"]},
         "refusal": {"status": "not_applicable", "reason": "Configuration setters validate values but have no separate permission prompt."}
       }
     },
@@ -401,13 +401,13 @@
     },
     {
       "name": "mcp",
-      "paths": ["mcp", "mcp serve"],
+      "paths": ["mcp", "mcp serve", "mcp proposals"],
       "evidence": {
-        "success": {"status": "test", "tests": ["TestMCPInitializeServesInstructions", "TestCoreB_McpServeSkipsNotificationAndMalformed"]},
+        "success": {"status": "test", "tests": ["TestMCPInitializeServesInstructions", "TestCoreB_McpServeSkipsNotificationAndMalformed", "TestMCPWritePolicyProposeStagesThenOwnerApproves"]},
         "json": {"status": "test", "tests": ["TestMCPToolsCallReturnsCallToolResult"], "reason": "MCP serve is a JSON-RPC pipe."},
-        "state": {"status": "test", "tests": ["TestCoreB_McpCallWriteMemoryHappy", "TestCoreB_McpCallDeleteMemoryHappy"], "reason": "Tool calls may mutate Mora state; protocol initialization is read-only."},
+        "state": {"status": "test", "tests": ["TestCoreB_McpCallWriteMemoryHappy", "TestCoreB_McpCallDeleteMemoryHappy", "TestMCPWritePolicyProposeStagesThenOwnerApproves"], "reason": "Tool calls may mutate Mora state; propose mode stages writes for explicit local approval."},
         "error": {"status": "test", "tests": ["TestCoreB_McpServeScannerError", "TestServeMCPOverHardCapErrorsLoudly"]},
-        "refusal": {"status": "test", "tests": ["TestCoreB_McpCallDeleteMemoryMissingID"]}
+        "refusal": {"status": "test", "tests": ["TestCoreB_McpCallDeleteMemoryMissingID", "TestMCPWritePolicyReadonlyRefusesMutationsBeforeLookup", "TestMCPWritePolicyProposeNeverStagesDelete"]}
       }
     },
     {

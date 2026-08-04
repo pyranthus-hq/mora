@@ -184,6 +184,12 @@ func loadConfig() (Config, error) {
 			// Bool opt-in (`mmr = true`); only "true"/"1" enable. A bool can't be
 			// mistyped into a silent wrong-mode the way a free-form string can.
 			cfg.MMR = val == "true" || val == "1"
+		case "mcp_write_policy":
+			policy, err := parseMCPWritePolicy(val)
+			if err != nil {
+				return cfg, err
+			}
+			cfg.MCPWritePolicy = policy
 		}
 	}
 	return applyEnvOverrides(cfg)
@@ -218,9 +224,9 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "data_dir  = %s   ← search index (rebuildable)\n", cfg.DataDir)
 		fmt.Fprintf(stdout, "state_dir = %s   ← sync watermarks (rebuildable)\n", cfg.StateDir)
 		fmt.Fprintf(stdout, "config    = %s   ← settings + tokens\n", cfg.ConfigDir)
-		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\n",
+		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\nmcp_write_policy = %s\n",
 			embedder, profile,
-			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr)
+			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr, cfg.mcpWritePolicy())
 		return nil
 	}
 	// Machine-readable path dump for tooling (uninstall.ps1 -Purge consumes this
@@ -240,7 +246,7 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		return nil
 	}
 	if len(args) != 2 {
-		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off>]")
+		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off> | mcp-write-policy <open|propose|readonly>]")
 	}
 	key, val := args[0], strings.ToLower(strings.TrimSpace(args[1]))
 	switch key {
@@ -271,8 +277,15 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		default:
 			return fmt.Errorf("unknown mmr setting %q (want on or off)", val)
 		}
+	case "mcp-write-policy", "mcp_write_policy":
+		policy, err := parseMCPWritePolicy(val)
+		if err != nil {
+			return err
+		}
+		cfg.MCPWritePolicy = policy
+		key = "mcp-write-policy"
 	default:
-		return fmt.Errorf("unknown config key %q (want context, embedder, or mmr)", key)
+		return fmt.Errorf("unknown config key %q (want context, embedder, mmr, or mcp-write-policy)", key)
 	}
 	if err := writeConfig(cfg); err != nil {
 		return err
@@ -295,7 +308,7 @@ func cmdConfig(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// writeConfig persists the five keys this binary owns by READ-MODIFY-WRITE:
+// writeConfig persists the keys this binary owns by READ-MODIFY-WRITE:
 // every line it does not own (comments, blank lines, keys written by hand or
 // by a newer mora) is preserved byte-for-byte. The old regenerate-from-struct
 // behavior silently ate those lines on every rewrite — loadConfig skips
@@ -319,7 +332,9 @@ func writeConfig(cfg Config) error {
 		{"state_dir", cfg.StateDir},
 		{"embedder", cfg.Embedder},
 		{"context", cfg.ContextProfile},
-		{"mmr", mmrVal}, // "" ⇒ off ⇒ line dropped (reset-to-default), like embedder/context
+		// Empty values drop these optional settings, preserving their defaults.
+		{"mmr", mmrVal},
+		{"mcp_write_policy", cfg.MCPWritePolicy},
 	}
 	ownedVal := func(key string) (string, bool) {
 		for _, kv := range owned {
@@ -360,7 +375,7 @@ func writeConfig(cfg Config) error {
 		}
 		written[key] = true
 		if val == "" {
-			if key == "embedder" || key == "context" || key == "mmr" {
+			if key == "embedder" || key == "context" || key == "mmr" || key == "mcp_write_policy" {
 				continue // reset-to-default: drop the line
 			}
 			out = append(out, line) // empty dir value: preserve, never silently repoint

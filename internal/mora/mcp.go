@@ -14,10 +14,13 @@ import (
 )
 
 func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
-	if len(args) != 1 || args[0] != "serve" {
-		return errors.New("usage: mora mcp serve")
+	if len(args) == 1 && args[0] == "serve" {
+		return serveMCP(ctx, stdout, stdin)
 	}
-	return serveMCP(ctx, stdout, stdin)
+	if len(args) >= 2 && args[0] == "proposals" {
+		return cmdMCPProposals(ctx, args[1:], stdout)
+	}
+	return errors.New("usage: mora mcp serve | mora mcp proposals <list|approve ID|reject ID>")
 }
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	scanner := bufio.NewScanner(stdin)
@@ -142,7 +145,13 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	resp := jsonRPCResponse{JSONRPC: "2.0", ID: req.ID}
 	switch req.Method {
 	case "initialize":
-		resp.Result = map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "mora", "version": BuildVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": mcpInstructions}
+		instructions := mcpInstructions
+		if cfg, err := loadConfig(); err == nil {
+			instructions = mcpInstructionsFor(cfg.mcpWritePolicy())
+		} else {
+			instructions = "Mora could not load its configuration, so tools are unavailable and no mutation will be attempted. Fix config.toml and reconnect."
+		}
+		resp.Result = map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "mora", "version": BuildVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": instructions}
 	case "tools/list":
 		tools := make([]map[string]any, 0, len(mcpToolRegistry))
 		for _, def := range mcpToolRegistry {
@@ -376,27 +385,14 @@ var mcpWriteClock = time.Now
 
 func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	now := mcpWriteClock()
-	m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
-	if m.Title == "" || m.Text == "" {
-		return nil, errors.New("title and text required")
-	}
-	if m.Type == "decision" {
-		m.Decision = decisionValidityFromFlags(
-			m.CreatedAt,
-			strArg(args, "as_of", ""),
-			strArg(args, "durability", ""),
-			strArg(args, "flip_conditions", ""),
-			strArg(args, "review_by", ""),
-		)
-	} else if strArg(args, "as_of", "") != "" || strArg(args, "durability", "") != "" ||
-		strArg(args, "flip_conditions", "") != "" || strArg(args, "review_by", "") != "" {
-		return nil, errors.New("decision validity fields require type=decision")
+	m, err := mcpMemoryFromArgs(args, now)
+	if err != nil {
+		return nil, err
 	}
 	// Create-exclusive publish: concurrent write_memory calls that mint the
 	// same id never clobber each other (os.Link fails EEXIST → re-mint). This
 	// is the server's most concurrent write path — N agents writing at once.
 	// createMemory sets m.ID and m.Path.
-	var err error
 	var op pendingOp
 	if m, op, err = createMemory(ctx, cfg, m); err != nil {
 		return nil, err
@@ -429,6 +425,30 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	}
 	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
 	return map[string]any{"memory": m, "health": compactHealthOf(cfg, now)}, nil
+}
+
+// mcpMemoryFromArgs validates and shapes a write_memory request without
+// mutating the vault. The propose policy uses the same validation before it
+// persists a pending candidate, so approval cannot reveal a second, looser
+// interpretation of the request.
+func mcpMemoryFromArgs(args map[string]any, now time.Time) (Memory, error) {
+	m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
+	if m.Title == "" || m.Text == "" {
+		return Memory{}, errors.New("title and text required")
+	}
+	if m.Type == "decision" {
+		m.Decision = decisionValidityFromFlags(
+			m.CreatedAt,
+			strArg(args, "as_of", ""),
+			strArg(args, "durability", ""),
+			strArg(args, "flip_conditions", ""),
+			strArg(args, "review_by", ""),
+		)
+	} else if strArg(args, "as_of", "") != "" || strArg(args, "durability", "") != "" ||
+		strArg(args, "flip_conditions", "") != "" || strArg(args, "review_by", "") != "" {
+		return Memory{}, errors.New("decision validity fields require type=decision")
+	}
+	return m, nil
 }
 
 func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {

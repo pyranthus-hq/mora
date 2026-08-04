@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -51,7 +52,26 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	}
 	inv.loggable = true
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
-	inv.value, inv.err = def.Handler(traced, cfg, args)
+	policyHandled := false
+	if name == "write_memory" || name == "delete_memory" {
+		policy := cfg.mcpWritePolicy()
+		switch policy {
+		case mcpWritePolicyReadonly:
+			inv.err = fmt.Errorf("MCP mutation refused: mcp_write_policy=%s; change it locally with `mora config mcp-write-policy open`", policy)
+			policyHandled = true
+		case mcpWritePolicyPropose:
+			if name == "delete_memory" {
+				inv.err = errors.New("MCP delete refused: mcp_write_policy=propose never stages destructive deletes; the owner must run `mora delete <id>` locally")
+				policyHandled = true
+			} else {
+				inv.value, inv.err = stageMCPWriteProposal(cfg, args)
+				policyHandled = true
+			}
+		}
+	}
+	if !policyHandled {
+		inv.value, inv.err = def.Handler(traced, cfg, args)
+	}
 	if trace.event.Tool == "" {
 		// Some handlers (including mutations) have no tool-specific structural
 		// counts. They still get one content-free event and honest envelope size.

@@ -34,6 +34,10 @@ Hard rules — flag any violation as blocking:
    Apple Calendar opens its live WAL store with a hierarchical `file:` URI,
    `mode=ro`, and `query_only(1)` (never `immutable=1`, which can ignore live
    changes). No connector writes to its source; no telemetry/egress.
+   MCP mutations are separately governed by `mcp_write_policy`: initialization
+   text and dispatch authority must agree; `propose` never writes the vault
+   before local approval and never stages destructive deletes; `readonly`
+   refuses both mutation tools.
 4. **Honest-snapshot sync:** never swallow sync errors — surface them
    (freshness is the product's value).
 5. **State vs vault:** usage logging and sync cursors live in the **state dir**,
