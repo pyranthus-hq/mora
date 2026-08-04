@@ -217,10 +217,6 @@ const (
 	mcpEntityNeighborsCap = 15
 )
 
-// neighborTypeStub is the placeholder neighbor kind until Track A (#70) lands
-// real person/org/repo/service/artifact typing. T0 pins dossier shape, not values.
-const neighborTypeStub = "person"
-
 // EntityEvidence is one cited memory line in a get_entity dossier — every
 // surfaced fact carries {id, channel, date} so agents never read uncited bodies.
 type EntityEvidence struct {
@@ -363,14 +359,19 @@ func buildEntityDossierPayload(raw map[string]any, queryName string, tokenBudget
 		out["evidence_truncated"] = true
 	}
 
-	// Typed neighbors — kind stubbed until Track A.
+	// Typed neighbors use the graph's public classification, including service and
+	// artifact demotion, so automated co-participants do not masquerade as people.
 	neighbors := []EntityNeighbor{}
 	if nbrs, ok := raw["neighbors"].([]map[string]any); ok {
 		for _, n := range nbrs {
+			nType := fmt.Sprint(n["type"])
+			if nType == "<nil>" || nType == "" {
+				nType = "person" // compatibility with a pre-typing raw payload
+			}
 			neighbors = append(neighbors, EntityNeighbor{
 				ID:          fmt.Sprint(n["id"]),
 				DisplayName: fmt.Sprint(n["display_name"]),
-				Type:        neighborTypeStub,
+				Type:        nType,
 			})
 		}
 	}

@@ -33,6 +33,22 @@ func listKind(id, storedKind string) string {
 	return legacyKindFromID(id)
 }
 
+// publicEntityKind preserves source-native phone identities internally as people
+// (their participation and salience are real graph evidence) while preventing an
+// unnamed dial string from masquerading as a person's display name. A trusted
+// address-book display keeps the ordinary person kind.
+func publicEntityKind(id, storedKind, display string) string {
+	kind := listKind(id, storedKind)
+	if kind != "person" || !strings.HasPrefix(id, "person:") {
+		return kind
+	}
+	identity := strings.TrimPrefix(id, "person:")
+	if isPhoneNumber(identity) && (strings.TrimSpace(display) == "" || strings.TrimSpace(display) == identity) {
+		return "artifact"
+	}
+	return kind
+}
+
 // sortEntitiesLegacy orders entities the way extractEntities did: count desc, then
 // kind, then name — stable and demo-friendly.
 func sortEntitiesLegacy(es []Entity) {
@@ -146,7 +162,7 @@ func graphListEntities(ctx context.Context, cfg Config) ([]Entity, error) {
 		if len(ids) == 0 {
 			continue // no live evidence -> not a live entity
 		}
-		out = append(out, Entity{Name: display, Kind: listKind(id, storedKind), Count: len(ids), MemoryIDs: ids, Salience: sal.Int64})
+		out = append(out, Entity{Name: display, Kind: publicEntityKind(id, storedKind, display), Count: len(ids), MemoryIDs: ids, Salience: sal.Int64})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -366,11 +382,14 @@ func graphGetEntity(ctx context.Context, cfg Config, name string) (map[string]an
 			return nil, err
 		}
 		for _, cid := range coIDs {
-			var disp string
-			if err := db.QueryRowContext(ctx, `SELECT display_name FROM entities WHERE id = ?`, cid).Scan(&disp); err != nil {
+			var disp, storedKind string
+			if err := db.QueryRowContext(ctx, `SELECT display_name, kind FROM entities WHERE id = ?`, cid).Scan(&disp, &storedKind); err != nil {
 				disp = strings.TrimPrefix(cid, "person:")
+				storedKind = "person"
 			}
-			neighbors = append(neighbors, map[string]any{"id": cid, "display_name": disp})
+			neighbors = append(neighbors, map[string]any{
+				"id": cid, "display_name": disp, "type": publicEntityKind(cid, storedKind, disp),
+			})
 		}
 	}
 
@@ -378,7 +397,7 @@ func graphGetEntity(ctx context.Context, cfg Config, name string) (map[string]an
 		"name": match.display,
 		// Surface the stored kind for person ids (person|service) so get_entity agrees
 		// with list_entities; structural ids keep their legacy prefix-derived kind.
-		"kind":         listKind(match.id, match.specKind),
+		"kind":         publicEntityKind(match.id, match.specKind, match.display),
 		"count":        len(evidence),
 		"found":        true,
 		"memories":     mems,

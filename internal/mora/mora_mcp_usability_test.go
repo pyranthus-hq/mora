@@ -208,8 +208,8 @@ func TestContextCLIBudgetHonorsTokens(t *testing.T) {
 	}
 }
 
-// TestGetEntityDossierShape pins the budgeted, fully-cited dossier contract (Track B).
-// Neighbor type values are stubbed until Track A merges — this test locks shape only.
+// TestGetEntityDossierShape pins the budgeted, fully-cited dossier contract (Track B),
+// including graph-derived neighbor types.
 func TestGetEntityDossierShape(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -274,8 +274,8 @@ func TestGetEntityDossierShape(t *testing.T) {
 	}
 	if nbrs, ok := dossier["neighbors"].([]any); ok && len(nbrs) > 0 {
 		n := nbrs[0].(map[string]any)
-		if n["type"] != neighborTypeStub {
-			t.Fatalf("neighbor type = %v, want stub %q until Track A", n["type"], neighborTypeStub)
+		if n["type"] != "person" {
+			t.Fatalf("neighbor type = %v, want graph classification person", n["type"])
 		}
 	}
 }

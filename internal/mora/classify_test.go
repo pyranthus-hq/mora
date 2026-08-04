@@ -37,7 +37,7 @@ func TestClassifyMeetingNotesArtifact(t *testing.T) {
 }
 
 // TestClassifyIdentity is the A1 contract: automated/transactional senders are
-// classified "service", real humans (and all phone handles) "person". The table
+// classified "service", real humans and named phone handles "person". The table
 // is drawn from the real-data audit (2026-06-04) plus boundary cases.
 func TestClassifyIdentity(t *testing.T) {
 	cases := []struct {
@@ -49,7 +49,7 @@ func TestClassifyIdentity(t *testing.T) {
 		{"alex.owner@gmail.com", "Alex Owner", "person"},
 		{"sam@owner.dev", "Sam Owner", "person"},
 		{"bob@y.com", "", "person"},
-		// phone handles (iMessage) are always person, regardless of digits
+		// phone handles remain structural people; public surfaces hide unnamed numbers
 		{"+15551234567", "Mom", "person"},
 		{"+447700900000", "", "person"},
 
@@ -72,6 +72,8 @@ func TestClassifyIdentity(t *testing.T) {
 		{"mailer-daemon@googlemail.com", "Mail Delivery Subsystem", "service"},
 		{"service@paypal.com", "", "service"},
 		{"customer.service@shop.com", "", "service"},
+		{"unsubscribe-4f19@customer.io", "", "service"},
+		{"unsub@customeriomail.com", "", "service"},
 		// concatenated / plus-tagged no-reply locals the token rule alone would miss
 		{"noreplypatientbilling@onemedical.com", "One Medical", "service"},
 		{"noreply+jobs@google.com", "Google Recruiting", "service"},
@@ -121,9 +123,8 @@ func TestClassifyIdentity(t *testing.T) {
 }
 
 // TestClassifyShortcode (D14-5) pins the phone-handle branch: an all-digits
-// handle of length <=6 is an SMS shortcode -> service, but a real phone number
-// (10/11 digits) or any '+'-prefixed international number stays person. The cut
-// is unambiguous — no real phone is <=6 digits — so this never demotes a human.
+// handle of length <=6 is an SMS shortcode -> service. Real phone numbers stay
+// structural people; the read layer keeps unnamed numeric labels out of People.
 func TestClassifyShortcode(t *testing.T) {
 	cases := []struct {
 		identity, display, want string
@@ -137,16 +138,16 @@ func TestClassifyShortcode(t *testing.T) {
 		{"  466453  ", "", "service"}, // whitespace trimmed before the digit scan
 
 		// --- boundary: 6 digits -> service, 7 digits -> person ---
-		{"123456", "", "service"}, // exactly 6 -> service
-		{"1234567", "", "person"}, // exactly 7 -> already longer than any shortcode
+		{"123456", "", "service"},
+		{"1234567", "", "person"},
 
-		// --- real phone numbers -> person ---
-		{"4155550123", "Sam", "person"},   // 10-digit US, no '+'
-		{"15551234567", "Mom", "person"},  // 11-digit US, no '+'
-		{"+14155550123", "", "person"},    // '+' prefix is never a shortcode
-		{"+15551234567", "Mom", "person"}, // '+' prefix, long
-		{"+447700900000", "", "person"},   // '+' prefix, intl
-		{"+1262966", "", "person"},        // '+' prefix beats the <=6 rule
+		// --- real phone numbers -> structural person ---
+		{"4155550123", "Sam", "person"},
+		{"15551234567", "Mom", "person"},
+		{"+14155550123", "", "person"},
+		{"+15551234567", "Mom", "person"},
+		{"+447700900000", "", "person"},
+		{"+1262966", "", "person"},
 
 		// --- non-digit handles fall through to the existing person default ---
 		{"+1-415-555-0123", "Sam", "person"}, // punctuation, not all-digits, has '+'

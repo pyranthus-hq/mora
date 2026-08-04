@@ -163,6 +163,17 @@ func TestGraphIMessagePeople(t *testing.T) {
 	}
 }
 
+// TestIssue219UnnamedPhoneIsNotAPerson keeps a source-native phone node as a
+// structural person while preventing the number itself from entering public People.
+func TestIssue219UnnamedPhoneIsNotAPerson(t *testing.T) {
+	if got := publicEntityKind("person:+15551234567", "person", "+15551234567"); got != "artifact" {
+		t.Fatalf("unnamed public phone kind = %q, want artifact", got)
+	}
+	if got := publicEntityKind("person:+15551234567", "person", "Neil Patel"); got != "person" {
+		t.Fatalf("named public phone kind = %q, want person", got)
+	}
+}
+
 // TestGraphPersonSelfMerge proves the same address across two memories collapses to
 // one canonical person row with accreted aliases and a 2-memory mention_count.
 func TestGraphPersonSelfMerge(t *testing.T) {

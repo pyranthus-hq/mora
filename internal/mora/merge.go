@@ -159,6 +159,57 @@ func emailPhoneCandidates(persons map[string]*personAgg) []mergeCandidate {
 		}
 	}
 
+	// Near-name forms are confirmation candidates, never automatic merges. This
+	// covers address-book variants such as "Dan Rachev"/"Daniel Rachev" and a
+	// distinctive first-name-only contact such as "Samika"/"Samika Karode". The
+	// shared anchor must be rare, the email must still echo its own trusted name,
+	// and a human must still confirm the source-native pair.
+	type namedIdentity struct{ id, name string }
+	buckets := map[string][]namedIdentity{}
+	for _, id := range ids {
+		if kindOf[id] != "person" {
+			continue
+		}
+		for _, name := range trustedCandidateNames(persons[id]) {
+			for _, key := range candidateNameAnchors(name) {
+				buckets[key] = append(buckets[key], namedIdentity{id: id, name: name})
+			}
+		}
+	}
+	bucketKeys := make([]string, 0, len(buckets))
+	for key := range buckets {
+		bucketKeys = append(bucketKeys, key)
+	}
+	sort.Strings(bucketKeys)
+	for _, key := range bucketKeys {
+		bucket := buckets[key]
+		unique := map[string]bool{}
+		for _, item := range bucket {
+			unique[item.id] = true
+		}
+		if len(unique) > maxNameMergeClusters {
+			continue
+		}
+		for _, phone := range bucket {
+			if !idIsPhoneHandle(phone.id) {
+				continue
+			}
+			for _, email := range bucket {
+				if !idIsEmail(email.id) || phone.name == email.name || !compatibleNearName(phone.name, email.name) {
+					continue
+				}
+				echoed := echoTokens(email.id, strings.Fields(email.name))
+				if len(echoed) == 0 {
+					continue
+				}
+				out = append(out, mergeCandidate{
+					PhoneID: phone.id, EmailID: email.id,
+					Name: phone.name + " / " + email.name, Echoed: echoed,
+				})
+			}
+		}
+	}
+
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].PhoneID != out[j].PhoneID {
 			return out[i].PhoneID < out[j].PhoneID
@@ -180,4 +231,67 @@ func emailPhoneCandidates(persons map[string]*personAgg) []mergeCandidate {
 		last = c
 	}
 	return dedup
+}
+
+// trustedCandidateNames is intentionally a little broader than the auto-merge
+// key: a single alphabetic name of at least four characters can be useful in a
+// human confirmation proposal, but can never authorize a merge by itself.
+func trustedCandidateNames(p *personAgg) []string {
+	var out []string
+	for _, alias := range sortedKeys(p.aliases) {
+		if strings.ContainsRune(alias, '@') || strings.HasPrefix(alias, "+") {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(alias))
+		fields := strings.Fields(name)
+		if len(fields) == 0 || len(fields) == 1 && !distinctiveSingleName(fields[0]) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func distinctiveSingleName(name string) bool {
+	if len([]rune(name)) < 4 {
+		return false
+	}
+	for _, r := range name {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+func candidateNameAnchors(name string) []string {
+	fields := strings.Fields(name)
+	if len(fields) == 0 {
+		return nil
+	}
+	out := []string{"first:" + fields[0]}
+	if len(fields) > 1 {
+		out = append(out, "last:"+fields[len(fields)-1])
+	}
+	return out
+}
+
+func compatibleNearName(a, b string) bool {
+	aa, bb := strings.Fields(a), strings.Fields(b)
+	if len(aa) == 0 || len(bb) == 0 {
+		return false
+	}
+	if len(aa) == 1 || len(bb) == 1 {
+		single, full := aa, bb
+		if len(bb) == 1 {
+			single, full = bb, aa
+		}
+		return len(full) > 1 && single[0] == full[0]
+	}
+	if aa[len(aa)-1] != bb[len(bb)-1] {
+		return false
+	}
+	firstA, firstB := aa[0], bb[0]
+	return len(firstA) >= 3 && len(firstB) >= 3 &&
+		(strings.HasPrefix(firstA, firstB) || strings.HasPrefix(firstB, firstA))
 }
