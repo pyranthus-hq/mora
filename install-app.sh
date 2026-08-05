@@ -5,7 +5,7 @@
 # whole bundle with Darwin's atomic directory-swap primitive.
 set -eu
 
-VERSION="${VERSION:-0.12.3}"
+VERSION="${VERSION:-0.12.4}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 APP_PARENT="${MORA_APP_DIR:-$HOME/Applications}"
