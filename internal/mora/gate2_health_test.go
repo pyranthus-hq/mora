@@ -364,3 +364,25 @@ func TestDisabledSourceWithCorpusIsNotHealthy(t *testing.T) {
 		t.Fatal("doctor healthy=true with a disabled connector over a corpus")
 	}
 }
+
+func TestDisabledCorpusTypesNormalizesProviderAliases(t *testing.T) {
+	cfg := Config{VaultDir: t.TempDir()}
+	appleCalDir := filepath.Join(sourcesRoot(cfg), "applecal")
+	if err := os.MkdirAll(appleCalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appleCalDir, "event.md"), []byte("---\nid: applecal_event_1\n---\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled := ptr(true)
+	if got := disabledCorpusTypes(cfg, []Source{{Name: "applecalendar", Type: "applecalendar", Enabled: enabled}}); len(got) != 0 {
+		t.Fatalf("enabled applecalendar reported disabled provider corpus: %v", got)
+	}
+
+	disabled := ptr(false)
+	got := disabledCorpusTypes(cfg, []Source{{Name: "applecalendar", Type: "applecalendar", Enabled: disabled}})
+	if len(got) != 1 || got[0] != "applecal" {
+		t.Fatalf("disabled applecalendar corpus = %v, want [applecal]", got)
+	}
+}
