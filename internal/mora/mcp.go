@@ -667,9 +667,11 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	}
 	retrievalStarted := time.Now()
 	var items []Memory
+	var commitments []Commitment
+	intent := contextIntentGeneric
 	var err error
 	if query != "" {
-		items, err = hybridSearch(ctx, cfg, query, scope, 10, filters)
+		items, commitments, intent, err = contextQueryData(ctx, cfg, query, scope, 10, filters, now)
 	} else {
 		items, err = listMemories(cfg, scope, 10, filters)
 	}
@@ -680,7 +682,12 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	}
 	assemblyStarted := time.Now()
 	text := buildContext(cfg, items, charBudget, query != "")
-	recordMCPUsage(ctx, cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: len(items), Millis: time.Since(start).Milliseconds()})
+	resultCount := len(items)
+	if intent == contextIntentOpenLoops {
+		text = renderOpenCommitmentContext(commitments, charBudget)
+		resultCount = len(commitments)
+	}
+	recordMCPUsage(ctx, cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: resultCount, Millis: time.Since(start).Milliseconds()})
 	used := estimateTokensUsed(len(text))
 	// #241: health scoped the same way as mcpSearchMemory's — an excluded
 	// source must not drag the always-present health banner down. Reuses the
