@@ -425,6 +425,7 @@ USAGE:
   mora teach undo <ledger-id>      # reverse a commitment or authored-memory decision
   mora index rebuild
   mora share init acme --scope project:acme --recipient age1... --remote <PRIVATE git URL>   # publish a scope, always encrypted
+  mora share fingerprint           # publisher: give this bucket-share fingerprint through a separate trusted channel
   mora share push acme             # preview exactly what leaves, then publish
   mora share subscribe neil --remote <URL>   # read someone's share beside your vault (never merged into it)
   mora tasks sync --write

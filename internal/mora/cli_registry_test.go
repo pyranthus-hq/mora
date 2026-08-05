@@ -455,7 +455,7 @@ func TestCLIRegistryRealRunDispatch(t *testing.T) {
 			switch row.Path {
 			case "index rebuild":
 				probeTail = []string{"--force"}
-			case "share keygen", "mcp serve":
+			case "share keygen", "share fingerprint", "mcp serve":
 				probeTail = nil
 			}
 			currentArgs := append(append([]string(nil), fields...), probeTail...)

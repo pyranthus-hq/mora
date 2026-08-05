@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -172,6 +173,60 @@ func TestShareKeygenCreatesIdentityAndRefusesOverwrite(t *testing.T) {
 	err = Run(context.Background(), []string{"share", "keygen"}, &buf, &buf, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("second keygen = %v; want refuse-to-overwrite error", err)
+	}
+}
+
+func TestShareFingerprintPrintsStablePublicFingerprintOnly(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	first := run(t, "share", "fingerprint")
+	priv, err := readSigningKey(shareSigningKeyPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	want := signPubFingerprint(pub)
+	if !strings.Contains(first, want) {
+		t.Fatalf("fingerprint output = %q; want %q", first, want)
+	}
+	if strings.Contains(first, string(priv)) || strings.Contains(first, hex.EncodeToString(priv)) {
+		t.Fatal("fingerprint command printed private signing-key bytes")
+	}
+	if !strings.Contains(first, "safe to share") || !strings.Contains(first, "separate trusted channel") {
+		t.Fatalf("fingerprint output lacks safe exchange guidance: %q", first)
+	}
+	if !strings.Contains(first, "--confirm-pin <fingerprint>") {
+		t.Fatalf("fingerprint output lacks the subscriber command: %q", first)
+	}
+
+	second := run(t, "share", "fingerprint")
+	if second != first {
+		t.Fatalf("fingerprint changed across runs:\nfirst: %q\nsecond: %q", first, second)
+	}
+	info, err := os.Stat(shareSigningKeyPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows reports synthesized POSIX mode bits (typically 0666). Its real
+	// access control comes from the user's config directory ACL, so only assert
+	// the requested 0600 mode where these bits are meaningful.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("signing key mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestShareFingerprintHelpHasNoSideEffects(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	out := run(t, "share", "fingerprint", "--help")
+	if !strings.Contains(strings.ToLower(out), "usage: mora share") {
+		t.Fatalf("fingerprint --help did not print usage:\n%s", out)
+	}
+	if _, err := os.Stat(shareSigningKeyPath(cfg)); !os.IsNotExist(err) {
+		t.Fatal("fingerprint --help created a signing key")
 	}
 }
 
