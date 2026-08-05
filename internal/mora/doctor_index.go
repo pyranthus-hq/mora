@@ -61,7 +61,7 @@ func disabledCorpusTypes(cfg Config, sources []Source) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() || enabled[e.Name()] {
+		if !e.IsDir() || enabled[providerToType(e.Name())] {
 			continue
 		}
 		if dirHasMemoryFile(filepath.Join(sourcesRoot(cfg), e.Name())) {
