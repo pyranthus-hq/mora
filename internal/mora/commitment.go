@@ -1619,13 +1619,22 @@ func readCommitmentSnapshot(ctx context.Context, cfg Config) (commitmentSnapshot
 }
 
 func readCommitmentInventory(ctx context.Context, cfg Config, at time.Time) (map[string][]Commitment, error) {
+	inventory, _, err := readCommitmentInventoryWithMemories(ctx, cfg, at)
+	return inventory, err
+}
+
+// readCommitmentInventoryWithMemories returns the current typed inventory and
+// the opening memories it validated in the same vault pass. Callers that need
+// both must use this helper instead of resolving each memory id separately,
+// which would rescan the whole vault once per commitment-bearing memory.
+func readCommitmentInventoryWithMemories(ctx context.Context, cfg Config, at time.Time) (map[string][]Commitment, map[string]Memory, error) {
 	snapshot, err := readCommitmentSnapshot(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	governance, err := loadGovernance(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	wanted := make(map[string]bool, len(snapshot.Commitments))
 	for _, commitment := range snapshot.Commitments {
@@ -1634,7 +1643,7 @@ func readCommitmentInventory(ctx context.Context, cfg Config, at time.Time) (map
 	memories := make(map[string]Memory, len(wanted))
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, path := range files {
 		m, perr := parseMemory(path)
@@ -1656,5 +1665,5 @@ func readCommitmentInventory(ctx context.Context, cfg Config, at time.Time) (map
 		}
 		out[commitment.OpenedBy.MemoryID] = append(out[commitment.OpenedBy.MemoryID], commitment)
 	}
-	return out, nil
+	return out, memories, nil
 }
