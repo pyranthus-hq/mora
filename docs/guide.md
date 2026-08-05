@@ -126,6 +126,17 @@ also fails, Mora preserves the private staging directory and reports the exact
 path of the previous app for manual recovery. Standalone installs continue to
 use the original raw-archive updater.
 
+**v0.12.0 bootstrap warning:** the first Mora.app release predates the
+whole-bundle updater. Do not use its `mora upgrade` to cross that boundary: it
+can replace only `Contents/MacOS/mora`, invalidate the bundle seal, and leave
+Full Disk Access attached to a stale app. Re-run the `install-app.sh` command
+above instead. The installer recognizes Mora only by its pinned bundle ID,
+Apple team, and designated requirement; it then replaces an older or damaged
+bundle with the verified signed release, restores the PATH symlink into the
+app, and preserves any drifted standalone executable as
+`mora.standalone-backup`. From v0.12.1 onward, routine `mora upgrade` uses the
+whole-bundle path.
+
 Uninstall only the verified app bundle and its managed PATH symlink with:
 
 ```bash
@@ -659,6 +670,16 @@ On macOS, `schedule install` writes the launchd plist and loads it at once with
 `launchctl bootstrap`. You do not need to log out. If this step fails, the
 command exits non-zero. It prints the exact `launchctl` command for a manual
 load.
+
+For a signed Mora.app install, the plist launches the bundle through macOS
+LaunchServices and waits for that run to finish. This is required for the
+eye-icon Mora.app Full Disk Access grant to cover unattended iMessage and Apple
+Calendar reads; directly invoking the nested CLI can be evaluated as the
+separate generic `mora` executable. Re-run `mora schedule install <job>` after
+migrating from a standalone install so the plist adopts the app-aware launch
+path. macOS `open -W` does not propagate the CLI's exit status, so Mora's
+durable per-source sync status and producer ledger are the controlling
+success/failure receipts surfaced by `mora doctor`.
 
 **Check sync freshness:**
 

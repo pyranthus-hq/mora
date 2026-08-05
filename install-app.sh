@@ -5,7 +5,7 @@
 # whole bundle with Darwin's atomic directory-swap primitive.
 set -eu
 
-VERSION="${VERSION:-0.12.1}"
+VERSION="${VERSION:-0.12.2}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 APP_PARENT="${MORA_APP_DIR:-$HOME/Applications}"
@@ -20,15 +20,40 @@ MAX_APP_ENTRIES=10000
 DOWNLOAD_TMP=""
 APP_STAGE_DIR=""
 LINK_STAGE_DIR=""
+APP_REPLACE_DIR=""
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 cleanup() {
+	if [ -n "$APP_REPLACE_DIR" ] && [ -d "$APP_REPLACE_DIR/Mora.app" ]; then
+		# Until replacement verification commits, the old app remains truth. If
+		# an error or signal arrives after the new rename, move that uncommitted
+		# bundle back into its disposable staging directory before restoring.
+		if [ -e "$APP_DEST" ] || [ -L "$APP_DEST" ]; then
+			INTERRUPTED_APP="$APP_STAGE_DIR/Mora.app"
+			if [ -n "$APP_STAGE_DIR" ] && [ ! -e "$INTERRUPTED_APP" ] && [ ! -L "$INTERRUPTED_APP" ]; then
+				mv "$APP_DEST" "$INTERRUPTED_APP" || true
+			fi
+		fi
+		if [ ! -e "$APP_DEST" ] && [ ! -L "$APP_DEST" ] && mv "$APP_REPLACE_DIR/Mora.app" "$APP_DEST"; then
+			rmdir "$APP_REPLACE_DIR" 2>/dev/null || true
+			APP_REPLACE_DIR=""
+			printf 'warning: interrupted replacement restored the previous Mora.app\n' >&2
+		fi
+	fi
 	[ -z "$DOWNLOAD_TMP" ] || rm -rf "$DOWNLOAD_TMP"
 	[ -z "$APP_STAGE_DIR" ] || rm -rf "$APP_STAGE_DIR"
 	[ -z "$LINK_STAGE_DIR" ] || rm -rf "$LINK_STAGE_DIR"
+	# Never delete APP_REPLACE_DIR from a signal/error trap: while replacement
+	# is active it is the only copy of the user's previous app. Success and a
+	# completed rollback remove it explicitly below.
+	if [ -n "$APP_REPLACE_DIR" ] && [ -d "$APP_REPLACE_DIR/Mora.app" ]; then
+		printf 'warning: previous Mora.app preserved for recovery at %s\n' "$APP_REPLACE_DIR/Mora.app" >&2
+	fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || \
 	die "VERSION must be a stable numeric release (X.Y.Z)"
@@ -71,6 +96,17 @@ file_size() {
 	else stat -c '%s' "$1"; fi
 }
 
+version_is_newer() {
+	awk -v left="$1" -v right="$2" 'BEGIN {
+		split(left, a, "."); split(right, b, ".")
+		for (i = 1; i <= 3; i++) {
+			if ((a[i] + 0) > (b[i] + 0)) exit 0
+			if ((a[i] + 0) < (b[i] + 0)) exit 1
+		}
+		exit 1
+	}'
+}
+
 plist_value() {
 	plutil -extract "$2" raw -o - "$1/Contents/Info.plist" 2>/dev/null || return 1
 }
@@ -96,6 +132,29 @@ verify_signing_target() {
 	printf '%s\n' "$REQUIREMENT" | \
 		grep -Eq "subject\\.OU[^=]*= (\"${MACOS_TEAM_ID}\"|${MACOS_TEAM_ID})( |$)" || \
 		die "$TARGET designated requirement has the wrong Apple team"
+}
+
+# A damaged v0.12.0 bundle can fail strict verification after its legacy
+# updater replaces only Contents/MacOS/mora. Before repairing that bundle, pin
+# the surviving product identity so this installer can never overwrite an
+# unrelated app that merely occupies the Mora.app path.
+verify_existing_app_identity() {
+	APP="$1"
+	[ "$(plist_value "$APP" CFBundleIdentifier)" = "$MACOS_IDENTIFIER" ] || \
+		die "refusing to replace an existing app with the wrong CFBundleIdentifier: $APP"
+	[ "$(plist_value "$APP" CFBundleExecutable)" = "mora" ] || \
+		die "refusing to replace an existing app with the wrong CFBundleExecutable: $APP"
+	SIGN_INFO="$(codesign -dvvv "$APP" 2>&1)" || die "could not inspect the existing Mora.app identity"
+	printf '%s\n' "$SIGN_INFO" | grep -Fqx "Identifier=$MACOS_IDENTIFIER" || \
+		die "refusing to replace an existing app with the wrong signing identifier: $APP"
+	printf '%s\n' "$SIGN_INFO" | grep -Fqx "TeamIdentifier=$MACOS_TEAM_ID" || \
+		die "refusing to replace an existing app from the wrong Apple team: $APP"
+	REQUIREMENT="$(codesign -d -r- "$APP" 2>&1)" || die "could not inspect the existing Mora.app designated requirement"
+	printf '%s\n' "$REQUIREMENT" | grep -Fq "identifier \"$MACOS_IDENTIFIER\"" || \
+		die "refusing to replace an existing app with the wrong designated identifier: $APP"
+	printf '%s\n' "$REQUIREMENT" | \
+		grep -Eq "subject\\.OU[^=]*= (\"${MACOS_TEAM_ID}\"|${MACOS_TEAM_ID})( |$)" || \
+		die "refusing to replace an existing app with the wrong designated Apple team: $APP"
 }
 
 verify_mora_app() {
@@ -162,13 +221,31 @@ preflight_app_zip() {
 	[ "$EXPANDED_SIZE" -le "$MAX_APP_BYTES" ] || die "$ASSET expands beyond $MAX_APP_BYTES bytes"
 }
 
+INSTALL_APP=1
+REPLACE_APP=0
 if [ -e "$APP_DEST" ] || [ -L "$APP_DEST" ]; then
 	[ -d "$APP_DEST" ] && [ ! -L "$APP_DEST" ] || die "existing app target is not a real directory: $APP_DEST"
 	INSTALLED_VERSION="$(plist_value "$APP_DEST" CFBundleShortVersionString)" || die "could not read the installed Mora.app version"
-	verify_mora_app "$APP_DEST" "$INSTALLED_VERSION"
-	say "✓ existing Mora.app $INSTALLED_VERSION is signed, notarized, and stapled"
-	say "  use 'mora upgrade' for atomic whole-bundle updates"
-else
+	printf '%s\n' "$INSTALLED_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || \
+		die "existing Mora.app has an invalid release version: $INSTALLED_VERSION"
+	verify_existing_app_identity "$APP_DEST"
+	if (trap - EXIT INT TERM; verify_mora_app "$APP_DEST" "$INSTALLED_VERSION") >/dev/null 2>&1; then
+		if [ "$INSTALLED_VERSION" = "$VERSION" ]; then
+			INSTALL_APP=0
+			say "✓ existing Mora.app $INSTALLED_VERSION is signed, notarized, and stapled"
+		elif version_is_newer "$INSTALLED_VERSION" "$VERSION"; then
+			die "refusing to downgrade signed Mora.app from $INSTALLED_VERSION to $VERSION"
+		else
+			REPLACE_APP=1
+			say "Replacing stale Mora.app $INSTALLED_VERSION with signed release $VERSION ..."
+		fi
+	else
+		REPLACE_APP=1
+		say "Replacing stale or damaged Mora.app $INSTALLED_VERSION with signed release $VERSION ..."
+	fi
+fi
+
+if [ "$INSTALL_APP" = 1 ]; then
 	DOWNLOAD_TMP="$(mktemp -d)" || die "could not create download directory"
 	USE_GH=0
 	say "Fetching $ASSET from $REPO@v$VERSION ..."
@@ -204,16 +281,41 @@ else
 	ditto -x -k "$DOWNLOAD_TMP/$ASSET" "$APP_STAGE_DIR" || die "could not extract $ASSET"
 	STAGED_APP="$APP_STAGE_DIR/Mora.app"
 	verify_mora_app "$STAGED_APP" "$VERSION"
-	mv "$STAGED_APP" "$APP_DEST" || die "could not atomically install Mora.app"
+	if [ "$REPLACE_APP" = 1 ]; then
+		APP_REPLACE_DIR="$(mktemp -d "$APP_PARENT/.mora-app.replace.XXXXXX")" || die "could not create same-volume app replacement directory"
+		PREVIOUS_APP="$APP_REPLACE_DIR/Mora.app"
+		mv "$APP_DEST" "$PREVIOUS_APP" || die "could not stage the previous Mora.app for replacement"
+		if ! mv "$STAGED_APP" "$APP_DEST"; then
+			mv "$PREVIOUS_APP" "$APP_DEST" || die "new app install failed and the previous Mora.app could not be restored; recover it from $PREVIOUS_APP"
+			rmdir "$APP_REPLACE_DIR" 2>/dev/null || true
+			APP_REPLACE_DIR=""
+			die "could not install the replacement Mora.app; the previous app was restored"
+		fi
+	else
+		mv "$STAGED_APP" "$APP_DEST" || die "could not atomically install Mora.app"
+	fi
 	# verify_mora_app uses die() for precise diagnostics. Run it in a subshell so
 	# its exit cannot bypass the parent shell's rollback branch.
 	if ! (trap - EXIT INT TERM; verify_mora_app "$APP_DEST" "$VERSION"); then
-		if ! mv "$APP_DEST" "$STAGED_APP"; then
+		if [ "$REPLACE_APP" = 1 ]; then
+			if ! mv "$APP_DEST" "$STAGED_APP" || ! mv "$PREVIOUS_APP" "$APP_DEST"; then
+				die "replacement verification failed and rollback failed; recover the previous app from $PREVIOUS_APP"
+			fi
+			rmdir "$APP_REPLACE_DIR" 2>/dev/null || true
+			APP_REPLACE_DIR=""
+			die "replacement Mora.app failed post-install verification; the previous app was restored"
+		elif ! mv "$APP_DEST" "$STAGED_APP"; then
 			die "installed Mora.app failed post-install verification and rollback failed; inspect $APP_DEST"
 		fi
 		die "installed Mora.app failed post-install verification; the incomplete app was removed"
 	fi
-	say "✓ installed signed, notarized, stapled Mora.app $VERSION"
+	if [ "$REPLACE_APP" = 1 ]; then
+		rm -rf "$APP_REPLACE_DIR"
+		APP_REPLACE_DIR=""
+		say "✓ replaced stale or damaged Mora.app with signed, notarized, stapled release $VERSION"
+	else
+		say "✓ installed signed, notarized, stapled Mora.app $VERSION"
+	fi
 fi
 
 if [ -n "${PREFIX:-}" ]; then
@@ -264,7 +366,14 @@ if [ -L "$LINK_DEST" ]; then
 elif [ -e "$LINK_DEST" ]; then
 	[ -f "$LINK_DEST" ] || die "refusing to replace non-file PATH entry: $LINK_DEST"
 	BACKUP="$LINK_DEST.standalone-backup"
-	[ ! -e "$BACKUP" ] && [ ! -L "$BACKUP" ] || die "standalone backup already exists: $BACKUP"
+	if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then
+		BACKUP_NUMBER=1
+		while [ -e "$BACKUP.$BACKUP_NUMBER" ] || [ -L "$BACKUP.$BACKUP_NUMBER" ]; do
+			BACKUP_NUMBER=$((BACKUP_NUMBER + 1))
+			[ "$BACKUP_NUMBER" -le 1000 ] || die "could not allocate a standalone backup path beside $LINK_DEST"
+		done
+		BACKUP="$BACKUP.$BACKUP_NUMBER"
+	fi
 	cp -p "$LINK_DEST" "$BACKUP" || die "could not preserve standalone Mora at $BACKUP"
 	LINK_STAGE_DIR="$(mktemp -d "$LINK_DIR/.mora-link.XXXXXX")" || die "could not stage PATH symlink"
 	ln -s "$APP_EXECUTABLE" "$LINK_STAGE_DIR/mora" || die "could not create PATH symlink"

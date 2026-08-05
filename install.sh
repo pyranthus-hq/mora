@@ -6,7 +6,7 @@
 #      Apple's notarized-code requirement without changing either the signature or
 #      the quarantine attribute. It then sets up your vault and prints next steps.
 #
-#        tar -xzf mora_0.12.1_darwin_arm64.tar.gz && ./install.sh
+#        tar -xzf mora_0.12.2_darwin_arm64.tar.gz && ./install.sh
 #
 #   2) REMOTE: if no binary sits next to this script, it downloads the matching
 #      asset for this machine from the public GitHub release (plain curl, no auth;
@@ -17,11 +17,11 @@
 #   PREFIX=/usr/local/bin    install dir (default: first writable of
 #                            /usr/local/bin, /opt/homebrew/bin, ~/.local/bin)
 #   MORA_VAULT=~/vault/mora  vault location passed to `mora init`
-#   VERSION=0.12.1           release tag for remote mode
+#   VERSION=0.12.2           release tag for remote mode
 #   REPO=pyranthus-hq/mora   source repo for remote mode
 set -eu
 
-VERSION="${VERSION:-0.12.1}"
+VERSION="${VERSION:-0.12.2}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"

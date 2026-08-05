@@ -575,6 +575,8 @@ func TestInstallAppScriptContract(t *testing.T) {
 		`spctl --assess --type execute`,
 		`cp -p "$LINK_DEST" "$BACKUP"`,
 		`ln -s "$APP_EXECUTABLE"`,
+		`Replacing stale or damaged Mora.app`,
+		`PREVIOUS_APP="$APP_REPLACE_DIR/Mora.app"`,
 		`MORA_APP_DIR`,
 		`VERSION must be a stable numeric release`,
 		`*/..|`,
@@ -666,6 +668,7 @@ func TestInstallAppScriptMigratesStandaloneToAppSymlink(t *testing.T) {
 		"PREFIX=" + linkDir,
 		"MORA_APP_DIR=" + appParent,
 		"MORA_VAULT=" + filepath.Join(home, "vault", "mora"),
+		"VERSION=0.12.0",
 		"LANG=C",
 	}
 	output, err := command.CombinedOutput()
@@ -684,6 +687,200 @@ func TestInstallAppScriptMigratesStandaloneToAppSymlink(t *testing.T) {
 	if !strings.Contains(string(output), "Planned Mora.app Full Disk Access migration") ||
 		!strings.Contains(string(output), "continuity is not proven") {
 		t.Fatalf("installer output omitted FDA migration: %s", output)
+	}
+}
+
+func TestInstallAppScriptRepairsDamagedBundleAndPathDrift(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX installer")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	script, err := filepath.Abs(filepath.Join(repoRoot, "install-app.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	appParent := filepath.Join(home, "Applications")
+	app := writeRunnableAppLayout(t, appParent, "0.12.0")
+	if err := os.WriteFile(filepath.Join(app, "old-marker"), []byte("damaged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mockBin := filepath.Join(home, "mock-bin")
+	linkDir := filepath.Join(home, "path-bin")
+	for _, directory := range []string{mockBin, linkDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAppInstallerMocks(t, mockBin)
+	writeFreshAppInstallerMocks(t, mockBin)
+	legacy := filepath.Join(linkDir, "mora")
+	if err := os.WriteFile(legacy, []byte("drifted local build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy+".standalone-backup", []byte("original migration backup"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(home, "mora-app.zip")
+	archiveBody := []byte("mock signed app zip")
+	if err := os.WriteFile(archive, archiveBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checksum := filepath.Join(home, "checksums-app.txt")
+	sum := sha256.Sum256(archiveBody)
+	checksumBody := fmt.Sprintf("%x  mora_0.12.0_darwin_arm64_app.zip\n", sum[:])
+	if err := os.WriteFile(checksum, []byte(checksumBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command("sh", script)
+	command.Env = []string{
+		"PATH=" + mockBin + ":/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME=" + home,
+		"PREFIX=" + linkDir,
+		"MORA_APP_DIR=" + appParent,
+		"MORA_VAULT=" + filepath.Join(home, "vault", "mora"),
+		"VERSION=0.12.0",
+		"MOCK_APP_ARCHIVE=" + archive,
+		"MOCK_APP_CHECKSUM=" + checksum,
+		"MOCK_APP_VERSION=0.12.0",
+		"MOCK_INSTALLED_INVALID=1",
+		"LANG=C",
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install-app.sh repair failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "replaced stale or damaged Mora.app") {
+		t.Fatalf("repair output omitted replacement receipt: %s", output)
+	}
+	if _, err := os.Lstat(filepath.Join(app, "old-marker")); !os.IsNotExist(err) {
+		t.Fatalf("damaged app marker survived replacement: %v", err)
+	}
+	linkTarget, err := os.Readlink(legacy)
+	if err != nil {
+		t.Fatalf("drifted PATH entry was not repaired to a symlink: %v", err)
+	}
+	if want := filepath.Join(app, "Contents", "MacOS", "mora"); linkTarget != want {
+		t.Fatalf("PATH symlink = %q, want %q", linkTarget, want)
+	}
+	assertFileBody(t, legacy+".standalone-backup", "original migration backup")
+	assertFileBody(t, legacy+".standalone-backup.1", "drifted local build")
+}
+
+func TestInstallAppScriptRestoresPreviousBundleWhenReplacementIsInterrupted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX installer")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	script, err := filepath.Abs(filepath.Join(repoRoot, "install-app.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	appParent := filepath.Join(home, "Applications")
+	app := writeRunnableAppLayout(t, appParent, "0.12.0")
+	if err := os.WriteFile(filepath.Join(app, "old-marker"), []byte("previous app"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mockBin := filepath.Join(home, "mock-bin")
+	linkDir := filepath.Join(home, "path-bin")
+	for _, directory := range []string{mockBin, linkDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAppInstallerMocks(t, mockBin)
+	writeFreshAppInstallerMocks(t, mockBin)
+	legacy := filepath.Join(linkDir, "mora")
+	if err := os.WriteFile(legacy, []byte("path entry must remain untouched"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(home, "mora-app.zip")
+	archiveBody := []byte("mock signed app zip")
+	if err := os.WriteFile(archive, archiveBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checksum := filepath.Join(home, "checksums-app.txt")
+	sum := sha256.Sum256(archiveBody)
+	checksumBody := fmt.Sprintf("%x  mora_0.12.0_darwin_arm64_app.zip\n", sum[:])
+	if err := os.WriteFile(checksum, []byte(checksumBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command("sh", script)
+	command.Env = []string{
+		"PATH=" + mockBin + ":/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME=" + home,
+		"PREFIX=" + linkDir,
+		"MORA_APP_DIR=" + appParent,
+		"MORA_VAULT=" + filepath.Join(home, "vault", "mora"),
+		"VERSION=0.12.0",
+		"MOCK_APP_ARCHIVE=" + archive,
+		"MOCK_APP_CHECKSUM=" + checksum,
+		"MOCK_APP_VERSION=0.12.0",
+		"MOCK_INSTALLED_INVALID=1",
+		"MOCK_INTERRUPT_AFTER_INSTALL=1",
+		"LANG=C",
+	}
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("interrupted replacement unexpectedly succeeded:\n%s", output)
+	}
+	assertFileBody(t, filepath.Join(app, "old-marker"), "previous app")
+	assertFileBody(t, legacy, "path entry must remain untouched")
+	if matches, globErr := filepath.Glob(filepath.Join(appParent, ".mora-app.replace.*")); globErr != nil || len(matches) != 0 {
+		t.Fatalf("interrupted replacement left recovery directories %v (glob err=%v)\n%s", matches, globErr, output)
+	}
+}
+
+func TestInstallAppScriptRefusesToDowngradeValidSignedBundle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX installer")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	script, err := filepath.Abs(filepath.Join(repoRoot, "install-app.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	appParent := filepath.Join(home, "Applications")
+	app := writeRunnableAppLayout(t, appParent, "0.12.2")
+	if err := os.WriteFile(filepath.Join(app, "newer-marker"), []byte("valid newer app"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mockBin := filepath.Join(home, "mock-bin")
+	linkDir := filepath.Join(home, "path-bin")
+	for _, directory := range []string{mockBin, linkDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAppInstallerMocks(t, mockBin)
+	legacy := filepath.Join(linkDir, "mora")
+	if err := os.WriteFile(legacy, []byte("path entry must remain untouched"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command("sh", script)
+	command.Env = []string{
+		"PATH=" + mockBin + ":/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME=" + home,
+		"PREFIX=" + linkDir,
+		"MORA_APP_DIR=" + appParent,
+		"MORA_VAULT=" + filepath.Join(home, "vault", "mora"),
+		"VERSION=0.12.1",
+		"MOCK_INSTALLED_VERSION=0.12.2",
+		"LANG=C",
+	}
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "refusing to downgrade signed Mora.app from 0.12.2 to 0.12.1") {
+		t.Fatalf("downgrade run err=%v output=%s", err, output)
+	}
+	assertFileBody(t, filepath.Join(app, "newer-marker"), "valid newer app")
+	assertFileBody(t, legacy, "path entry must remain untouched")
+	if _, err := os.Lstat(legacy + ".standalone-backup"); !os.IsNotExist(err) {
+		t.Fatalf("downgrade refusal created a PATH backup: %v", err)
 	}
 }
 
@@ -950,13 +1147,15 @@ case "$2" in
   CFBundleName|CFBundleDisplayName) printf 'Mora\n' ;;
   CFBundleIconFile) printf 'Mora\n' ;;
   CFBundlePackageType) printf 'APPL\n' ;;
-  CFBundleShortVersionString|CFBundleVersion) printf '0.12.0\n' ;;
+  CFBundleShortVersionString|CFBundleVersion) printf '%s\n' "${MOCK_INSTALLED_VERSION:-0.12.0}" ;;
   LSUIElement) printf 'true\n' ;;
   *) exit 1 ;;
 esac
 `)
 	writeExecutable(t, filepath.Join(directory, "codesign"), `#!/bin/sh
 team="${MOCK_TEAM:-VS8M5VJBZ5}"
+target=""
+for argument in "$@"; do target="$argument"; done
 case "$1" in
   -dvvv)
     printf 'Identifier=com.pyranthus.mora\nAuthority=Developer ID Application: Test (%s)\nTeamIdentifier=%s\nCodeDirectory flags=0x10000(runtime)\nTimestamp=now\n' "$team" "$team" >&2
@@ -964,7 +1163,17 @@ case "$1" in
   -d)
     printf 'designated => identifier "com.pyranthus.mora" and certificate leaf[subject.OU] = "%s"\n' "$team" >&2
     ;;
-  *) exit 0 ;;
+  *)
+    if [ "${MOCK_INSTALLED_INVALID:-0}" = 1 ] && [ "$target" = "$MORA_APP_DIR/Mora.app" ] && [ -f "$target/old-marker" ]; then
+      exit 1
+    fi
+    if [ "${MOCK_INTERRUPT_AFTER_INSTALL:-0}" = 1 ] && [ "$target" = "$MORA_APP_DIR/Mora.app" ] && [ ! -f "$target/old-marker" ]; then
+      kill -TERM "$PPID"
+      sleep 1
+      exit 1
+    fi
+    exit 0
+    ;;
 esac
 `)
 	writeExecutable(t, filepath.Join(directory, "lipo"), "#!/bin/sh\nprintf 'arm64\\n'\n")

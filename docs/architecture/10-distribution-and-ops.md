@@ -213,6 +213,17 @@ the atomic first-install rename. Post-rename verification runs in a rollback-
 capable subshell, so its fail-closed diagnostics cannot bypass removal of an
 incomplete first install. It never re-signs or removes quarantine.
 
+The installer is also the recovery bridge from v0.12.0, whose in-app command
+predates whole-bundle updating. Re-running `install-app.sh` first pins an
+existing target by bundle identifier, executable, Team ID, and designated
+requirement. If that Mora.app is older or its strict seal is damaged, the
+installer verifies the complete replacement before moving the previous app
+aside on the same volume, installs and re-verifies the new bundle, restores the
+old app on failure, and only then repairs the PATH symlink. It refuses an
+unrelated app or wrong Apple team. This prevents a legacy binary-only update or
+local promotion from leaving a stale eye-icon app beside a separately updated
+generic executable.
+
 When the resolved running executable is
 `Mora.app/Contents/MacOS/mora`, `mora upgrade` selects the exact stable release
 asset `mora_<version>_darwin_<arch>_app.zip` and its unique
