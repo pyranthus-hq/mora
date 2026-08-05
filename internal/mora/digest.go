@@ -208,9 +208,9 @@ func digestSourceLabel(src string) string { _, l := connectorDisplay(src); retur
 
 // buildDigest assembles the brief.
 //
-//   - PLAIN-WINDOW mode (opts.sinceHours>0, SC#2): every non-deleted memory created
-//     within the last sinceHours, grouped by sourceInstanceKey, recency-ordered,
-//     capped — the legacy behavior, ad-hoc. NEVER advances the watermark.
+//   - PLAIN-WINDOW mode (opts.sinceHours>0, SC#2): every non-deleted memory whose
+//     true-in-world activity is within the last sinceHours, grouped by
+//     sourceInstanceKey, recency-ordered, capped. NEVER advances the watermark.
 //   - DELTA mode (opts.sinceHours==0, the scheduled default, SC#1): per instance,
 //     surface only memories new-or-changed since its watermark (content-hash diff
 //     via classify). On an instance's first run apply a 7-day courtesy display
@@ -625,9 +625,12 @@ func isLowSignalItem(m Memory, change string, now time.Time) bool {
 	return false
 }
 
-// buildWindowDigest is the plain ad-hoc window path (SC#2): created_at within the
-// last sinceHours, no delta, no watermark, no State sentinels. It mirrors the
-// legacy behavior but groups by instance key so the human labels fire.
+// buildWindowDigest is the plain ad-hoc window path (SC#2): the item's latest
+// true-in-world activity (meta.occurred_at, falling back to created_at) within
+// the last sinceHours, no delta, no watermark, no State sentinels. Using
+// occurred_at is load-bearing for rewritten connector records: created_at is
+// deliberately preserved from first ingest, so a long-lived Gmail/iMessage
+// thread can otherwise look stale after receiving a new message.
 func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, sourceFilter string) (Digest, error) {
 	window := time.Duration(sinceHours) * time.Hour
 	cutoff := now.Add(-window)
@@ -641,8 +644,8 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 		upcoming := connectorUpcoming(key)
 		var tis []tsItem
 		for _, m := range byInstance[key] {
-			ts, err := time.Parse(time.RFC3339, m.CreatedAt)
-			if err != nil {
+			ts := itemOccurredAt(m)
+			if ts.IsZero() {
 				continue
 			}
 			// Forward-bounded window (Bug: an N-hour brief used to surface

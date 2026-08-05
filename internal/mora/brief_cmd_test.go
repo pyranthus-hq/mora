@@ -243,6 +243,76 @@ func TestBriefDigestDeltaThenWindowFallback(t *testing.T) {
 	}
 }
 
+// TestMCPBriefWindowFallbackUsesLatestConversationActivity reproduces a
+// long-lived iMessage miss: connector rewrites preserve the
+// thread's original created_at while meta.occurred_at advances with its latest
+// message. Once the scheduled brief has consumed the content-hash delta, the MCP
+// brief's 24h fallback must still surface the freshly active conversation.
+func TestMCPBriefWindowFallbackUsesLatestConversationActivity(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := briefFixedNow
+
+	oldClock := briefClock
+	briefClock = func() time.Time { return now }
+	t.Cleanup(func() { briefClock = oldClock })
+
+	enableSources(t, cfg, "imessage")
+	seedSyncStatus(t, cfg, "imessage", now.Add(-time.Hour))
+	m := Memory{
+		ID:          "imessage_chat/taylor",
+		Scope:       "global",
+		Type:        "imessage",
+		Title:       "Taylor",
+		Text:        "Taylor: Still good for tomorrow?\nMe: How's 11am for me?\nTaylor: Sure.",
+		Source:      "imessage_chat/taylor",
+		Provider:    "imessage",
+		ProviderID:  "imessage_chat/taylor",
+		ContentHash: "taylor-current-hash",
+		CreatedAt:   now.Add(-30 * 24 * time.Hour).Format(time.RFC3339),
+		Meta: map[string]any{
+			"participants": []map[string]string{{"handle": "+15550102020", "name": "Taylor"}},
+			"occurred_at":  now.Add(-time.Hour).Format(time.RFC3339),
+		},
+	}
+	if err := writeMemory(cfg, m); err != nil {
+		t.Fatalf("writeMemory: %v", err)
+	}
+	rebuildDigestIndex(t, cfg)
+
+	// The scheduled advance already saw this exact revision, so DELTA is empty
+	// and MCP must take the 24h WINDOW fallback where the regression lived.
+	if err := saveBriefSnapshot(cfg, briefSnapshot{
+		Key:   "imessage",
+		Items: map[string]string{m.ID: m.ContentHash},
+	}, now.Add(-30*time.Minute)); err != nil {
+		t.Fatalf("saveBriefSnapshot: %v", err)
+	}
+
+	// Keep this regression on the MCP brief's digest/window mechanics. The daily
+	// commitment inventory has its own eligibility contract and is orthogonal to
+	// the connector timestamp mismatch exercised here.
+	raw, err := mcpBrief(context.Background(), ungatedDigestConfig(cfg), map[string]any{})
+	if err != nil {
+		t.Fatalf("mcpBrief: %v", err)
+	}
+	p, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("mcpBrief returned %T, want structured payload", raw)
+	}
+	if got := p["since_hours"]; got != briefFallbackWindowHours {
+		t.Fatalf("MCP brief did not take the 24h fallback: since_hours=%v", got)
+	}
+	b, err := json.Marshal(p["sections"])
+	if err != nil {
+		t.Fatalf("marshal sections: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"Taylor"`)) {
+		t.Fatalf("MCP brief dropped the freshly active long-lived conversation; sections=%s", b)
+	}
+}
+
 // collectTitles concatenates every section item title (a tiny test helper).
 func collectTitles(d Digest) string {
 	var b strings.Builder

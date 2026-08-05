@@ -163,8 +163,8 @@ func deltaCommit(t *testing.T, cfg Config, now time.Time) Digest {
 
 // --- Task 1: typed Delta seam + delta-aware buildDigest + deleted filter + rank/label ---
 
-// TestBuildDeltaWindowsAndGroups (legacy, ported): the PLAIN-WINDOW path still
-// windows by created_at and groups by the instance key, firing the human labels.
+// TestBuildDeltaWindowsAndGroups (legacy, ported): the PLAIN-WINDOW path windows
+// by true-in-world activity and groups by the instance key, firing the human labels.
 func TestBuildDeltaWindowsAndGroups(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
