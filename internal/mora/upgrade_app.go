@@ -591,7 +591,7 @@ func verifyMoraAppBundle(ctx context.Context, appRoot, expectedVersion, expected
 			return fmt.Errorf("reading designated requirement for %s: %w", target, err)
 		}
 		if err := validateMoraDesignatedRequirement(string(requirement)); err != nil {
-			return fmt.Errorf("designated requirement for %s does not pin Mora's identifier and team", target)
+			return fmt.Errorf("designated requirement for %s does not pin Mora's identifier and team: %w", target, err)
 		}
 	}
 	if output, err := appCommandOutput(ctx, "/usr/bin/xcrun", "stapler", "validate", appRoot); err != nil {
@@ -670,10 +670,15 @@ func validateMoraSigningMetadata(metadata string) error {
 }
 
 func validateMoraDesignatedRequirement(requirement string) error {
+	// codesign writes its display output to stderr and terminates the
+	// requirement with a newline. Match the semantic requirement after trimming
+	// command framing whitespace; requiring absolute end-of-string on the raw
+	// output rejects every genuine signed app before an upgrade can begin.
+	requirement = strings.TrimSpace(requirement)
 	if !strings.Contains(requirement, `identifier "`+moraAppBundleID+`"`) {
 		return fmt.Errorf("missing bundle identifier")
 	}
-	teamPattern := regexp.MustCompile(`subject\.OU[^=]*= ("?` + regexp.QuoteMeta(moraAppleTeamID) + `"?)( |$)`)
+	teamPattern := regexp.MustCompile(`subject\.OU[^=]*=[[:space:]]*"?` + regexp.QuoteMeta(moraAppleTeamID) + `"?(?:[[:space:]]|$)`)
 	if !teamPattern.MatchString(requirement) {
 		return fmt.Errorf("missing Apple team")
 	}
