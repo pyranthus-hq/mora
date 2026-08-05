@@ -418,6 +418,36 @@ func TestValidateMoraSigningMetadata(t *testing.T) {
 	}
 }
 
+func TestValidateMoraDesignatedRequirementAcceptsCodesignOutput(t *testing.T) {
+	// This is the newline-terminated shape emitted by `codesign -d -r-` for the
+	// real signed Mora.app. Keep it literal: a fixture without the final newline
+	// missed the v0.12.1/v0.12.2 self-update failure.
+	actual := `Executable=/Users/adit/Applications/Mora.app/Contents/MacOS/mora
+designated => identifier "com.pyranthus.mora" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = VS8M5VJBZ5
+`
+	if err := validateMoraDesignatedRequirement(actual); err != nil {
+		t.Fatalf("real codesign requirement was rejected: %v", err)
+	}
+
+	quoted := strings.Replace(actual, "= VS8M5VJBZ5", `= "VS8M5VJBZ5" and certificate leaf[subject.CN] = "Developer ID"`, 1)
+	if err := validateMoraDesignatedRequirement(quoted); err != nil {
+		t.Fatalf("quoted team requirement was rejected: %v", err)
+	}
+
+	for name, sabotage := range map[string]string{
+		"wrong-identifier": strings.Replace(actual, moraAppBundleID, "com.example.mora", 1),
+		"wrong-team":       strings.Replace(actual, moraAppleTeamID, "ABCDEFGHIJ", 1),
+		"team-prefix":      strings.Replace(actual, moraAppleTeamID, moraAppleTeamID+"X", 1),
+		"missing-subject":  strings.Replace(actual, "subject.OU", "subject.CN", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateMoraDesignatedRequirement(sabotage); err == nil {
+				t.Fatal("sabotaged designated requirement was accepted")
+			}
+		})
+	}
+}
+
 func TestVerifyMoraAppBundle(t *testing.T) {
 	app := writeAppLayout(t, t.TempDir())
 	original := appCommandOutput
