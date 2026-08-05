@@ -100,6 +100,7 @@
     {"path": "sync applecalendar", "kind": "subcommand", "platform": "darwin-seam"},
     {"path": "sync git", "kind": "subcommand", "platform": "git-seam"},
     {"path": "share keygen", "kind": "subcommand", "platform": "all"},
+    {"path": "share fingerprint", "kind": "subcommand", "platform": "all"},
     {"path": "share init", "kind": "subcommand", "platform": "all"},
     {"path": "share preview", "kind": "subcommand", "platform": "all"},
     {"path": "share push", "kind": "subcommand", "platform": "git-or-bucket-seam"},

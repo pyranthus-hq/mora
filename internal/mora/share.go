@@ -23,6 +23,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -181,6 +182,26 @@ func shareKeygen(cfg Config, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "share identity written to %s — never share or commit this file\n", path)
 	fmt.Fprintf(stdout, "your public key (give this to people who want to share memories with you):\n%s\n", id.Recipient())
+	return nil
+}
+
+// shareFingerprint prints the publisher signing-key fingerprint used by bucket
+// subscribers for first-contact verification. The private key stays in the
+// config directory and is never printed. Creating it here lets a publisher
+// exchange the fingerprint before the first push.
+func shareFingerprint(cfg Config, stdout io.Writer) error {
+	priv, err := shareSigningKey(cfg)
+	if err != nil {
+		return err
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return errors.New("share signing key has no ed25519 public half")
+	}
+	fmt.Fprintln(stdout, "publisher signing fingerprint (safe to share):")
+	fmt.Fprintln(stdout, signPubFingerprint(pub))
+	fmt.Fprintln(stdout, "Send this fingerprint to the subscriber through a separate trusted channel.")
+	fmt.Fprintln(stdout, "They use it with `mora share subscribe ... --confirm-pin <fingerprint>`.")
 	return nil
 }
 
@@ -1568,7 +1589,7 @@ func shareRemove(cfg Config, args []string, stdout io.Writer) error {
 	return fmt.Errorf("no share or subscription named %q — see `mora share list`", name)
 }
 
-const shareUsage = "usage: mora share <keygen | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | gc [<name>] | storage-limit <bytes> | list [--json] | remove <name> --yes>"
+const shareUsage = "usage: mora share <keygen | fingerprint | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | gc [<name>] | storage-limit <bytes> | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
@@ -1591,6 +1612,11 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 			return errors.New(shareUsage)
 		}
 		return shareKeygen(cfg, stdout)
+	case "fingerprint":
+		if len(args) > 1 {
+			return errors.New(shareUsage)
+		}
+		return shareFingerprint(cfg, stdout)
 	case "init":
 		return shareInit(ctx, cfg, args[1:], stdout, realExec)
 	case "preview":

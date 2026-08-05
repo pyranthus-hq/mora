@@ -197,7 +197,7 @@ func shareSubscribeBucketWithStore(ctx context.Context, cfg Config, name string,
 		}
 		fp := signPubFingerprint(pin)
 		if confirmPin == "" {
-			return 0, fmt.Errorf("first contact: confirm the publisher fingerprint out of band, then re-run with --confirm-pin %s", fp)
+			return 0, fmt.Errorf("first contact: ask the publisher to run `mora share fingerprint` and send the result through a separate trusted channel, then re-run with --confirm-pin %s", fp)
 		}
 		if confirmPin != fp {
 			return 0, fmt.Errorf("--confirm-pin %s does not match this share's publisher fingerprint %s — refusing (possible impostor)", confirmPin, fp)
