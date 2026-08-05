@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/pyranthus-hq/mora/internal/google"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/pyranthus-hq/mora/internal/google"
 )
+
+var scheduleExecutable = os.Executable
 
 func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
@@ -96,7 +100,7 @@ func schedulePlistFor(cfg Config, job string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	exe, _ := os.Executable()
+	exe, _ := scheduleExecutable()
 	label := "com.mora." + job
 	runAtLoad := ""
 	if scheduleRunAtLoad(job) {
@@ -114,17 +118,37 @@ func schedulePlistFor(cfg Config, job string) (string, bool) {
 	//     #66); without it the job silently reverts to config.toml's vault.
 	var envVars []string
 	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
-		envVars = append(envVars, "<key>MORA_GOOGLE_CREDENTIALS</key><string>"+creds+"</string>")
+		envVars = append(envVars, "<key>MORA_GOOGLE_CREDENTIALS</key><string>"+plistEscape(creds)+"</string>")
 	}
 	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
-		envVars = append(envVars, "<key>MORA_CONFIG_DIR</key><string>"+cfgDir+"</string>")
+		envVars = append(envVars, "<key>MORA_CONFIG_DIR</key><string>"+plistEscape(cfgDir)+"</string>")
 	}
 	if vault := os.Getenv("MORA_VAULT"); vault != "" {
-		envVars = append(envVars, "<key>MORA_VAULT</key><string>"+vault+"</string>")
+		envVars = append(envVars, "<key>MORA_VAULT</key><string>"+plistEscape(vault)+"</string>")
 	}
 	envBlock := ""
 	if len(envVars) > 0 {
 		envBlock = "<key>EnvironmentVariables</key><dict>" + strings.Join(envVars, "") + "</dict>\n"
+	}
+	program := exe
+	programArgs := plistArgs(cmdArgs)
+	if runtimeGOOS() == "darwin" {
+		resolved := exe
+		if target, err := filepath.EvalSymlinks(exe); err == nil {
+			resolved = target
+		}
+		if appRoot, ok := moraAppRoot(resolved); ok {
+			// TCC associates the eye-icon Full Disk Access grant with the app
+			// bundle's LaunchServices identity. A launchd job that execs the
+			// nested CLI directly is evaluated as the generic executable and can
+			// lose Messages/Calendar access even though Mora.app is enabled.
+			// open -n starts a fresh CLI instance; -W keeps launchd attached until
+			// that instance exits. open does not propagate the child's exit status,
+			// so Mora's command-owned sync and producer ledgers remain the honest
+			// success/failure receipts consumed by doctor and health surfaces.
+			program = "/usr/bin/open"
+			programArgs = plistArgValues("-n", "-W", "-a", appRoot, "--args") + plistArgs(cmdArgs)
+		}
 	}
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -135,7 +159,7 @@ func schedulePlistFor(cfg Config, job string) (string, bool) {
 <key>StandardOutPath</key><string>%s</string>
 <key>StandardErrorPath</key><string>%s</string>
 </dict></plist>
-`, label, exe, plistArgs(cmdArgs), runAtLoad, envBlock, launchdSchedule(job), filepath.Join(cfg.StateDir, job+".out.log"), filepath.Join(cfg.StateDir, job+".err.log"))
+`, label, plistEscape(program), programArgs, runAtLoad, envBlock, launchdSchedule(job), plistEscape(filepath.Join(cfg.StateDir, job+".out.log")), plistEscape(filepath.Join(cfg.StateDir, job+".err.log")))
 	return plist, true
 }
 func installSchedule(stdout io.Writer, cfg Config, job string) error {
@@ -143,7 +167,7 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 	if !ok {
 		return fmt.Errorf("unknown job %q", job)
 	}
-	exe, _ := os.Executable()
+	exe, _ := scheduleExecutable()
 	if runtimeGOOS() == "windows" {
 		args := windowsScheduleCreateArgs(job, exe, cmdArgs)
 		if out, err := runScheduleCommand("schtasks", args...); err != nil {
@@ -319,12 +343,16 @@ func windowsScheduleCadenceArgs(job string) []string {
 	}
 }
 func plistArgs(args string) string {
+	return plistArgValues(strings.Fields(args)...)
+}
+func plistArgValues(args ...string) string {
 	var b strings.Builder
-	for _, a := range strings.Fields(args) {
-		fmt.Fprintf(&b, "<string>%s</string>", a)
+	for _, a := range args {
+		fmt.Fprintf(&b, "<string>%s</string>", plistEscape(a))
 	}
 	return b.String()
 }
+func plistEscape(value string) string { return html.EscapeString(value) }
 func launchdSchedule(job string) string {
 	switch job {
 	case "index-hourly", "ingest-hourly":

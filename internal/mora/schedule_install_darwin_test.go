@@ -56,6 +56,70 @@ func TestDarwinScheduleInstallBootstrapsJob(t *testing.T) {
 	}
 }
 
+func TestDarwinAppScheduleLaunchesBundleThroughLaunchServices(t *testing.T) {
+	withRuntimeGOOS(t, "darwin")
+	oldExecutable := scheduleExecutable
+	scheduleExecutable = func() (string, error) {
+		return "/Users/test/My Applications/Mora.app/Contents/MacOS/mora", nil
+	}
+	t.Cleanup(func() { scheduleExecutable = oldExecutable })
+
+	plist, ok := schedulePlistFor(Config{StateDir: "/Users/test/state"}, "ingest-hourly")
+	if !ok {
+		t.Fatal("schedulePlistFor rejected ingest-hourly")
+	}
+	for _, want := range []string{
+		"<string>/usr/bin/open</string>",
+		"<string>-n</string><string>-W</string>",
+		"<string>-a</string><string>/Users/test/My Applications/Mora.app</string>",
+		"<string>--args</string><string>ingest</string><string>run</string><string>--all</string>",
+	} {
+		if !strings.Contains(plist, want) {
+			t.Fatalf("app schedule missing %q:\n%s", want, plist)
+		}
+	}
+	if strings.Contains(plist, "<string>/Users/test/My Applications/Mora.app/Contents/MacOS/mora</string>") {
+		t.Fatalf("app schedule directly execs the nested CLI instead of the FDA-granted bundle:\n%s", plist)
+	}
+}
+
+func TestDarwinAppScheduleEscapesXMLPaths(t *testing.T) {
+	withRuntimeGOOS(t, "darwin")
+	oldExecutable := scheduleExecutable
+	scheduleExecutable = func() (string, error) {
+		return "/Users/test/Mora & Memory/Mora.app/Contents/MacOS/mora", nil
+	}
+	t.Cleanup(func() { scheduleExecutable = oldExecutable })
+
+	plist, ok := schedulePlistFor(Config{StateDir: "/Users/test/State & Logs"}, "ingest-hourly")
+	if !ok {
+		t.Fatal("schedulePlistFor rejected ingest-hourly")
+	}
+	for _, want := range []string{
+		"<string>/Users/test/Mora &amp; Memory/Mora.app</string>",
+		"<string>/Users/test/State &amp; Logs/ingest-hourly.out.log</string>",
+	} {
+		if !strings.Contains(plist, want) {
+			t.Fatalf("app schedule missing escaped XML value %q:\n%s", want, plist)
+		}
+	}
+}
+
+func TestDarwinStandaloneScheduleStillExecsBinaryDirectly(t *testing.T) {
+	withRuntimeGOOS(t, "darwin")
+	oldExecutable := scheduleExecutable
+	scheduleExecutable = func() (string, error) { return "/Users/test/.local/bin/mora", nil }
+	t.Cleanup(func() { scheduleExecutable = oldExecutable })
+
+	plist, ok := schedulePlistFor(Config{StateDir: "/Users/test/state"}, "ingest-hourly")
+	if !ok {
+		t.Fatal("schedulePlistFor rejected ingest-hourly")
+	}
+	if !strings.Contains(plist, "<string>/Users/test/.local/bin/mora</string>") || strings.Contains(plist, "<string>/usr/bin/open</string>") {
+		t.Fatalf("standalone schedule must retain direct execution:\n%s", plist)
+	}
+}
+
 // TestDarwinScheduleInstallBootoutNotLoadedIsBenign: on a FIRST install nothing
 // is loaded, so the pre-bootstrap bootout fails with "not loaded" — that must
 // not abort the install (bootout is only there to make reinstalls pick up the
