@@ -2,6 +2,7 @@ package mora
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,6 +110,238 @@ func TestCommitmentClosurePreservesOpeningCitation(t *testing.T) {
 		closed.Citations[1].Role != commitCitationClosure ||
 		closed.Citations[1].Citation.MemoryID() != "imessage_chat/closure" {
 		t.Fatalf("citation order/roles = %+v", closed.Citations)
+	}
+}
+
+func imessageLifecycleMemory(t *testing.T, times []string) Memory {
+	t.Helper()
+	const id = "imessage_chat/same-thread-review"
+	lines := []string{
+		"Lucia: Can you send the review notes?",
+		"Me: I sent the review notes.",
+		"Lucia: Got the review notes, thanks.",
+	}
+	body := "## 2026-08-05\n" + strings.Join(lines, "\n")
+	if len(times) != len(lines) {
+		t.Fatalf("times=%d, want %d", len(times), len(lines))
+	}
+	entries := make([]map[string]any, 0, len(lines))
+	cursor := 0
+	for i, line := range lines {
+		start := strings.Index(body[cursor:], line)
+		if start < 0 {
+			t.Fatalf("line %q not found", line)
+		}
+		start += cursor
+		end := start + len(line)
+		cursor = end
+		fromMe := i == 1
+		sender := "Lucia"
+		if fromMe {
+			sender = "Me"
+		}
+		entries = append(entries, map[string]any{
+			"evidence_ref": id + "#" + []string{"ask", "delivery", "ack"}[i],
+			"at":           times[i], "from_me": fromMe, "sender": sender,
+			"block_start": start, "block_end": end,
+		})
+	}
+	return Memory{
+		ID: id, Type: "imessage", Provider: "imessage", Source: "same-thread-review",
+		CreatedAt: times[len(times)-1], Text: body,
+		Meta: map[string]any{
+			"occurred_at":   times[len(times)-1],
+			"message_count": "3",
+			"participants": []map[string]string{{
+				"handle": "+15550100104", "name": "Lucia",
+			}},
+			"message_evidence_schema": 1,
+			"message_evidence":        entries,
+		},
+	}
+}
+
+func TestIMessageSameThreadCommitmentUsesStableMessageEvidence(t *testing.T) {
+	m := imessageLifecycleMemory(t, []string{
+		"2026-08-05T10:00:00Z", "2026-08-05T10:05:00Z", "2026-08-05T10:06:00Z",
+	})
+	evidence := commitmentEvidenceFromMemories([]Memory{m}, Config{})
+	if len(evidence) != 3 || evidence[0].MessageRef != m.ID+"#ask" ||
+		evidence[0].OccurredAt != "2026-08-05T10:00:00Z" || evidence[0].Party != commitmentPartyCounterparty ||
+		evidence[1].MessageRef != m.ID+"#delivery" || evidence[1].BlockRef != "body" ||
+		evidence[1].OccurredAt != "2026-08-05T10:05:00Z" || evidence[1].Party != commitmentPartySelf ||
+		evidence[2].MessageRef != m.ID+"#ack" || evidence[2].OccurredAt != "2026-08-05T10:06:00Z" ||
+		evidence[2].Party != commitmentPartyCounterparty {
+		t.Fatalf("message-grain lifecycle evidence=%+v", evidence)
+	}
+	got := materializeCommitments([]Memory{m}, Config{}, time.Date(2026, 8, 5, 11, 0, 0, 0, time.UTC))
+	if len(got) != 1 {
+		t.Fatalf("commitments=%+v, want one", got)
+	}
+	commitment := got[0]
+	if commitment.State != commitClosed || commitment.OpenedBy.MessageRef != m.ID+"#ask" ||
+		commitment.OpenedBy.OccurredAt != "2026-08-05T10:00:00Z" ||
+		commitment.ClosureRef != m.ID {
+		t.Fatalf("same-thread lifecycle lost message evidence: %+v", commitment)
+	}
+	if commitment.OpenedBy.BlockRef != "body" || commitment.ID == "" {
+		t.Fatalf("opener was not anchored to its bounded message block: %+v", commitment.OpenedBy)
+	}
+	if len(commitment.Citations) != 2 {
+		t.Fatalf("citations=%+v, want opener and closure", commitment.Citations)
+	}
+	opener, closure := commitment.Citations[0], commitment.Citations[1]
+	if opener.Role != commitCitationOpener || opener.EvidenceRef != m.ID+"#ask" ||
+		opener.Citation.Date() != "2026-08-05T10:00:00Z" ||
+		closure.Role != commitCitationClosure || closure.EvidenceRef != m.ID+"#delivery" ||
+		closure.Citation.Date() != "2026-08-05T10:05:00Z" {
+		t.Fatalf("message-grain citations=%+v", commitment.Citations)
+	}
+}
+
+func TestIMessageSameThreadAcknowledgementClosesWhenDeliveryIsAbsent(t *testing.T) {
+	m := imessageLifecycleMemory(t, []string{
+		"2026-08-05T10:00:00Z", "2026-08-05T10:05:00Z", "2026-08-05T10:06:00Z",
+	})
+	entries := m.Meta["message_evidence"].([]map[string]any)
+	delivery := entries[1]
+	start, end := delivery["block_start"].(int), delivery["block_end"].(int)
+	m.Text = m.Text[:start] + strings.Repeat(" ", end-start) + m.Text[end:]
+	m.Meta["message_evidence"] = []map[string]any{entries[0], entries[2]}
+	m.Meta["message_count"] = "2"
+
+	got := materializeCommitments([]Memory{m}, Config{}, time.Date(2026, 8, 5, 11, 0, 0, 0, time.UTC))
+	if len(got) != 1 || got[0].State != commitClosed || got[0].ClosureRef != m.ID ||
+		len(got[0].Citations) != 2 || got[0].Citations[1].EvidenceRef != m.ID+"#ack" {
+		t.Fatalf("acknowledgement did not close from its own message evidence: %+v", got)
+	}
+}
+
+func TestIMessageMalformedMessageEvidenceFailsClosed(t *testing.T) {
+	baseTimes := []string{
+		"2026-08-05T10:00:00Z", "2026-08-05T10:05:00Z", "2026-08-05T10:06:00Z",
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func([]map[string]any)
+	}{
+		{name: "invalid time", mutate: func(entries []map[string]any) { entries[1]["at"] = "not-a-time" }},
+		{name: "duplicate ref", mutate: func(entries []map[string]any) { entries[1]["evidence_ref"] = entries[0]["evidence_ref"] }},
+		{name: "direction disagrees with body", mutate: func(entries []map[string]any) { entries[1]["from_me"] = false; entries[1]["sender"] = "Lucia" }},
+		{name: "sender disagrees with direction", mutate: func(entries []map[string]any) { entries[1]["sender"] = "Lucia" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := imessageLifecycleMemory(t, baseTimes)
+			test.mutate(m.Meta["message_evidence"].([]map[string]any))
+			if got := classifyCommitments(m, Config{}); len(got) != 0 {
+				t.Fatalf("malformed metadata opened commitments: %+v", got)
+			}
+			if got := commitmentEvidenceFromMemories([]Memory{m}, Config{}); len(got) != 0 {
+				t.Fatalf("malformed metadata produced lifecycle evidence: %+v", got)
+			}
+		})
+	}
+	t.Run("schema without entries", func(t *testing.T) {
+		m := imessageLifecycleMemory(t, baseTimes)
+		delete(m.Meta, "message_evidence")
+		if got := classifyCommitments(m, Config{}); len(got) != 0 {
+			t.Fatalf("missing message evidence opened commitments: %+v", got)
+		}
+		if got := commitmentEvidenceFromMemories([]Memory{m}, Config{}); len(got) != 0 {
+			t.Fatalf("missing message evidence produced lifecycle evidence: %+v", got)
+		}
+	})
+	t.Run("rendered message count mismatch", func(t *testing.T) {
+		m := imessageLifecycleMemory(t, baseTimes)
+		entries := m.Meta["message_evidence"].([]map[string]any)
+		m.Meta["message_evidence"] = entries[1:]
+		if got := classifyCommitments(m, Config{}); len(got) != 0 {
+			t.Fatalf("incomplete rendered-message coverage opened commitments: %+v", got)
+		}
+		if got := commitmentEvidenceFromMemories([]Memory{m}, Config{}); len(got) != 0 {
+			t.Fatalf("incomplete rendered-message coverage produced lifecycle evidence: %+v", got)
+		}
+	})
+}
+
+func TestIMessagePartialMessageEvidenceFailsClosed(t *testing.T) {
+	const id = "imessage_chat/partial-thread"
+	lines := []string{
+		"Lucia: Can you send the review notes?",
+		"Lucia: Can you send the budget?",
+		"Me: I sent it.",
+	}
+	body := "## 2026-08-05\n" + strings.Join(lines, "\n")
+	entry := func(line, ref, at, sender string, fromMe bool) map[string]any {
+		start := strings.Index(body, line)
+		return map[string]any{
+			"evidence_ref": id + "#" + ref, "at": at, "from_me": fromMe, "sender": sender,
+			"block_start": start, "block_end": start + len(line),
+		}
+	}
+	m := Memory{
+		ID: id, Type: "imessage", Provider: "imessage", Source: "partial-thread",
+		CreatedAt: "2026-08-05T10:02:00Z", Text: body,
+		Meta: map[string]any{
+			"occurred_at": "2026-08-05T10:02:00Z", "message_count": "3",
+			"participants":            []map[string]string{{"handle": "+15550100104", "name": "Lucia"}},
+			"message_evidence_schema": 1,
+			// The first request has no provider GUID. Letting the remaining
+			// messages through would make the vague delivery close the budget.
+			"message_evidence": []map[string]any{
+				entry(lines[1], "budget", "2026-08-05T10:01:00Z", "Lucia", false),
+				entry(lines[2], "delivery", "2026-08-05T10:02:00Z", "Me", true),
+			},
+			"message_evidence_diagnostics": []map[string]any{{
+				"reason": "missing_provider_guid", "at": "2026-08-05T10:00:00Z",
+			}},
+		},
+	}
+	if got := classifyCommitments(m, Config{}); len(got) != 0 {
+		t.Fatalf("partial evidence opened only the wrong remaining commitment: %+v", got)
+	}
+	if got := commitmentEvidenceFromMemories([]Memory{m}, Config{}); len(got) != 0 {
+		t.Fatalf("partial evidence produced a vague closure route: %+v", got)
+	}
+}
+
+func TestIMessageOutOfOrderMessageTimesFailClosed(t *testing.T) {
+	m := imessageLifecycleMemory(t, []string{
+		"2026-08-05T10:00:00Z", "2026-08-05T09:59:00Z", "2026-08-05T10:06:00Z",
+	})
+	if got := classifyCommitments(m, Config{}); len(got) != 0 {
+		t.Fatalf("backward message time opened commitments: %+v", got)
+	}
+	if got := commitmentEvidenceFromMemories([]Memory{m}, Config{}); len(got) != 0 {
+		t.Fatalf("backward message time produced lifecycle evidence: %+v", got)
+	}
+}
+
+func TestIMessageEqualSecondMessagesRemainValidButTiesDoNotClose(t *testing.T) {
+	m := imessageLifecycleMemory(t, []string{
+		"2026-08-05T10:00:00Z", "2026-08-05T10:00:00Z", "2026-08-05T10:06:00Z",
+	})
+	evidence := commitmentEvidenceFromMemories([]Memory{m}, Config{})
+	if len(evidence) != 3 {
+		t.Fatalf("equal-second metadata was rejected: %+v", evidence)
+	}
+	got := materializeCommitments([]Memory{m}, Config{}, time.Date(2026, 8, 5, 11, 0, 0, 0, time.UTC))
+	if len(got) != 1 || got[0].State != commitClosed || got[0].ClosureRef != m.ID ||
+		len(got[0].Citations) != 2 || got[0].Citations[1].EvidenceRef != m.ID+"#ack" {
+		t.Fatalf("tied delivery closed the opener instead of later acknowledgement: %+v", got)
+	}
+}
+
+func TestIMessageLegacyCommitmentBehaviorIsPreserved(t *testing.T) {
+	m := imessageLifecycleMemory(t, []string{
+		"2026-08-05T10:00:00Z", "2026-08-05T10:05:00Z", "2026-08-05T10:06:00Z",
+	})
+	delete(m.Meta, "message_evidence")
+	delete(m.Meta, "message_evidence_schema")
+	got := materializeCommitments([]Memory{m}, Config{}, time.Date(2026, 8, 5, 11, 0, 0, 0, time.UTC))
+	if len(got) != 1 || got[0].State != commitOpen || got[0].ID != "" ||
+		got[0].OpenedBy.MessageRef != "" || got[0].OpenedBy.OccurredAt != m.Meta["occurred_at"] {
+		t.Fatalf("legacy transcript behavior changed: %+v", got)
 	}
 }
 
