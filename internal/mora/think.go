@@ -45,6 +45,13 @@ type ThinkEvidence struct {
 	// think's output (correctly absent as their own evidence rows, but never
 	// cited anywhere else either). Empty/absent for non-head evidence.
 	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
+
+	// Confidence keeps the full retrieved text and source out of the public
+	// think payload. The opt-in confidence path uses them for strict lexical
+	// proof without changing the default response bytes.
+	confidenceTitle  string
+	confidenceText   string
+	confidenceSource string
 }
 
 // ThinkGaps is the deterministic "what's missing" analysis (no model).
@@ -100,14 +107,17 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	}
 	for _, m := range mems {
 		res.Evidence = append(res.Evidence, ThinkEvidence{
-			StableID:      m.ID,
-			Title:         m.Title,
-			Scope:         m.Scope,
-			CreatedAt:     m.CreatedAt,
-			Score:         m.Score,
-			Snippet:       matchSnippet(m.Text, query, thinkSnippetLen),
-			Owner:         m.Owner,
-			Corroborating: m.Corroborating,
+			StableID:         m.ID,
+			Title:            m.Title,
+			Scope:            m.Scope,
+			CreatedAt:        m.CreatedAt,
+			Score:            m.Score,
+			Snippet:          matchSnippet(m.Text, query, thinkSnippetLen),
+			Owner:            m.Owner,
+			Corroborating:    m.Corroborating,
+			confidenceTitle:  m.Title,
+			confidenceText:   m.Text,
+			confidenceSource: evidenceSource(m),
 		})
 	}
 	gaps, err := computeGaps(ctx, cfg, query, local, tr, now)

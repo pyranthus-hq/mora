@@ -193,6 +193,16 @@ import (
 //     exactly where Score is a magnitude, and gap-based bucketing exactly
 //     where Score is an RRF rank artifact — there is no longer a
 //     tool-identity-based asymmetry, only a scale-based one.
+//
+// #280 AMENDMENT — rank quality is not answerability. A high BM25 magnitude or
+// a clean RRF rank shape can still come from rows that each share only a loose
+// part of the question. Strong now needs confidence-only strict lexical proof.
+// A BM25 result needs one row containing every meaningful query term. A fused
+// result needs two such rows from two sources. Different rows cannot pool
+// different parts of the query. No literal proof caps a result at moderate;
+// it does not force a semantic paraphrase to weak. Confidence omitted/false
+// leaves ThinkGaps, checks_applied, and the synthesis prompt unchanged.
+// max_score and mean_score remain ranking values only.
 
 // confidenceSearchStrongMax / confidenceSearchModerateMax are the FROZEN
 // search_memory bucket boundaries documented above. Test-local (not production
@@ -601,15 +611,13 @@ func TestConfidenceSearchMemoryNoResults(t *testing.T) {
 // "wexoform"), confirming these tests reproduce the SAME empirical repro used
 // to diagnose #238, just now pinned as a passing contract instead of a bug.
 
-// TestConfidenceSearchMemorySemanticStrongEvidenceRRFFused pins the semantic-
-// path "strong" contract: the SAME dominant "wexoform" query/fixture as
+// TestConfidenceSearchMemorySemanticSingleDirectEvidenceModerate pins the
+// semantic-path answerability guard: the SAME dominant "wexoform" query as
 // TestConfidenceSearchMemoryStrongEvidenceHealthySource, but routed through
-// hybridSearch. Pre-fix, this bucketed to "weak" (max_score=0.136 is far
-// above the bm25 moderate bound of -1.5) even though the match is dominant
-// and gap-free — exactly the confirmed defect. Post-fix, strength is derived
-// from computeGaps (results present, no capitalized-name/thin-coverage/stale
-// signal fires for this fixture+query) -> "strong".
-func TestConfidenceSearchMemorySemanticStrongEvidenceRRFFused(t *testing.T) {
+// hybridSearch. The one lexical hit has a dominant RRF score, but fakeOllama
+// also returns unrelated vector ties. Those rows do not add direct support,
+// so the set is moderate rather than strong.
+func TestConfidenceSearchMemorySemanticSingleDirectEvidenceModerate(t *testing.T) {
 	srv := fakeOllama(t, []float64{1, 0, 0, 0})
 	defer srv.Close()
 	t.Setenv("MORA_EMBEDDER", "ollama")
@@ -624,8 +632,8 @@ func TestConfidenceSearchMemorySemanticStrongEvidenceRRFFused(t *testing.T) {
 	if conf["scale"] != "rrf_fused" {
 		t.Fatalf("scale = %v, want rrf_fused (semantic/hybrid path, fakeOllama active)", conf["scale"])
 	}
-	if conf["strength"] != "strong" {
-		t.Fatalf("strength = %v, want strong (path-aware gap rule: results present, computeGaps empty for this fixture+query); max_score=%v", conf["strength"], conf["max_score"])
+	if conf["strength"] != "moderate" {
+		t.Fatalf("strength = %v, want moderate (only one returned row directly covers the query); max_score=%v", conf["strength"], conf["max_score"])
 	}
 	maxScore, ok := conf["max_score"].(float64)
 	if !ok || maxScore <= 0 {
