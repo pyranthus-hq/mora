@@ -4,7 +4,7 @@
 
 # Mora
 
-**Local-first memory for AI agents: one cited corpus from your own mail, messages, and calendars, shared by every agent you wire to it.**
+**Give every AI agent one local, searchable memory of your mail, messages, calendars, files, and GitHub issues.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -15,121 +15,38 @@
 </div>
 
 > [!WARNING]
-> Mora is alpha software. Its connectors, local corpus, search, citations,
-> typed commitments, health checks, and human corrections work. Its meeting
-> and daily output passes a strict rendered-output exam on a frozen synthetic
-> corpus. It is not yet validated on other people's real data. Treat each
-> surfaced item as cited evidence to check, not as a verified current
-> obligation.
+> Mora is alpha software. We use it every day, and its main paths have tests.
+> It has not been tested on many other people's real data. Read the cited source
+> before you act on a result. A failed or old sync can make the local copy stale.
 
-Mora gives your AI agents one shared memory. It syncs read-only copies of
-Gmail, Google Calendar, iMessage, Apple Calendar, and selected files. It
-stores them as readable Markdown and a rebuildable SQLite index on your
-machine. Claude Code, Codex, and any other MCP client you wire to it can then
-search the same history and cite the same evidence. An agent with Mora does
-not start cold, and no one assistant owns your memory.
+Mora copies six kinds of data into readable Markdown on your computer:
 
-Mora splits memory from thinking. It extracts commitments, types them, and
-cites their evidence. Your model does the reasoning on top. Mora refuses to
-guess: a stale source or a failed sync shows up as a loud warning, not a
-silent gap.
+- Gmail
+- Google Calendar
+- iMessage on macOS
+- Apple Calendar on macOS
+- folders and files that you choose
+- GitHub Issues from repositories that you choose
 
-Mora also learns from you. It builds a person graph from the identity
-evidence in your memories. On macOS it can propose that an email address and
-a phone number belong to the same person; you confirm or reject each join.
-You can correct a wrong commitment or retract a bad memory. Each correction
-is local, reversible, and audited. Each confirmed join makes the graph more
-complete, and the graph stays on your machine.
+The source connectors are read-only. Mora builds a local SQLite search index
+from the Markdown. Claude Code, Codex, and other agents can use the same memory
+through MCP, a standard way for an agent to call local tools.
 
-Mora does not upload your corpus by default or host it for you. Backup and share
-commands can send selected data to places you control. A cloud agent can also
-send retrieved text to its model provider. The agent and its group policy
-control that action.
+By default, Mora does not run a language model. It finds evidence, keeps stable
+IDs, and builds cited briefs. Your agent reads that evidence and writes the
+answer. You can optionally use a local Ollama embedding model to improve
+semantic search.
 
 <p align="center">
   <img src="docs/assets/architecture.svg" width="760" alt="Read-only sources flow into a local Markdown vault and SQLite index, then into any MCP client. Backup and sharing are optional network paths."/>
 </p>
 
-## What Mora does
+## Set up Mora in about five minutes
 
-Ask a wired agent about a person, a project, or a promise. Mora hands it the
-matching history — stable memory IDs and dated citations, over MCP or the
-CLI — and the agent answers from that evidence.
+### 1. Install the signed macOS app
 
-Before a meeting, Mora shows what you owe and what the other person owes you.
-Each item is typed: owner, direction, due time, lifecycle state, closure. Each
-item cites the exact message, text, or event it came from. The daily brief
-carries the same typed obligation lane. When a required source is stale or a
-sync fails, Mora tells you. It does not guess, and it does not show a gap as
-an empty result.
-
-These claims are exam-backed. The section below explains the exam. Validation
-on other people's real data has not happened yet. We state that boundary here
-so nobody has to discover it.
-
-## How Mora is tested
-
-Most memory tools show a demo. Mora sits an exam.
-
-- **The answer key comes first.** We write a gold ledger of every commitment:
-  owner, direction, due time, lifecycle, closure. Then we render a synthetic
-  corpus of mail, messages, and calendar events from that ledger. Every label
-  is exact by construction. The corpus ships in this repo.
-- **The corpus is frozen.** A SHA-256 manifest pins every byte. A test fails
-  if one byte changes.
-- **The real product sits the exam.** The same code that builds your meeting
-  brief and daily brief runs on the corpus. A deterministic scorer grades
-  extraction, citation coverage, counterparty identity, direction, due time,
-  lifecycle, and closure.
-- **Readers sit the same exam.** We run prospectively specified validation
-  rounds with human readers and sealed multi-model reader panels. Each reader
-  labels the same rendered corpus, key-blind, under a written adjudication
-  procedure. Their agreement is the check on the gold key itself. One round
-  found a bug in the key — the readers were right, and the key was fixed.
-- **Leakage is linted.** One early round leaked label hints into
-  auditor-visible text. We voided that round, fixed the render, and added a CI
-  lint that blocks gold-label leakage.
-- **Every gate has a tripwire.** A planted-mutation audit disables each
-  production gate in a scratch copy and requires a named test to turn red —
-  23 planted mutants, all killed.
-- **The score is a ratchet.** The strict product target went from 148 failures
-  to zero. Any regression now fails the build.
-
-The corpora, gold ledgers, and dated validation records live in
-[`internal/mora/eval/`](internal/mora/eval/). The methodology is in
-[evaluation and testing](docs/architecture/09-eval-and-testing.md).
-
-## What works today
-
-- **Read-only ingestion.** Mora turns Gmail, Google Calendar, iMessage, Apple
-  Calendar, and selected folders into local Markdown memories. iMessage and
-  Apple Calendar require macOS.
-- **A corpus you own.** Markdown is the source of truth; embedded SQLite, FTS,
-  vectors, and the person graph are indexes that you can rebuild.
-- **Cited recall.** `search`, `think`, `brief`, and meeting-prep surfaces return
-  stable IDs and dated evidence. Optional Ollama embeddings are loopback-only.
-- **Typed, cited commitments.** Meeting and daily output surfaces obligations
-  with owner, direction, due time, lifecycle state, and closure linkage — every
-  line backed by a materialized commitment inventory and an exact citation.
-  Untyped candidates never render as obligations.
-- **Fail-closed health.** Stale sources, dirty indexes, and failed syncs
-  surface as loud warnings on every read path. Mora refuses to present a gap
-  as an empty result.
-- **Human corrections.** On macOS, Mora can propose email↔phone identity joins
-  from Address Book evidence, and never applies a join on its own. You can also
-  correct a commitment's direction, close a stale obligation, or fix and
-  retract your own authored memories. Every correction stays local, keeps its
-  history, and can be undone.
-- **Agent-agnostic access.** Twelve MCP tools and equivalent CLI commands work
-  with any client that can launch a local stdio MCP server.
-
-## Install — experimental
-
-macOS release files carry Mora's Developer ID signature and Apple notarization.
-Linux and macOS installers verify the selected archive against its published
-SHA-256 manifest and stop if they cannot. Windows files remain unsigned.
-
-### macOS — Mora.app (recommended)
+New macOS users should install `Mora.app`. It is signed, notarized, and used as
+the stable target for Full Disk Access.
 
 ```bash
 (
@@ -141,79 +58,68 @@ SHA-256 manifest and stop if they cannot. Windows files remain unsigned.
 )
 ```
 
-The installer verifies the signed, notarized, stapled app; installs it at
-`~/Applications/Mora.app`; and links the `mora` command to the app executable.
-It never clears quarantine or re-signs the release. For the planned app migration,
-add `Mora.app` to Full Disk Access and keep the old entry until `mora doctor`
-and `mora sync imessage` pass. This grant is not yet proven to survive an app
-update; that requires a real signed N→N+1 protected-read test without a re-grant.
-See the [macOS guide](docs/guide.md#install).
+The installer checks the release before it installs
+`~/Applications/Mora.app`. It links the `mora` command to the app. It does not
+clear quarantine or sign the app again.
 
-### Linux or legacy standalone compatibility
+Linux and older standalone installs can use:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
 
-The standalone installer preserves the original root-level binary archive
-contract. New macOS installs should use `Mora.app` above so future updates swap
-the signed bundle as one unit.
-
-### Build from source
+Windows users should see the [Windows guide](docs/windows.md). To build from
+source with Go 1.25 or later:
 
 ```bash
 go install github.com/pyranthus-hq/mora/cmd/mora@latest
 ```
 
-This needs Go 1.25+. Source builds report `dev` and do not update themselves.
-They include only the committed non-secret OAuth placeholder. For Google
-access, use your own client through `MORA_GOOGLE_CREDENTIALS`. See
-[Connect Google](docs/guide.md#connect-google-gmail--calendar).
+Source builds report version `dev`. They do not update themselves. Google also
+needs your own OAuth client when you build from source.
 
-### Windows
+### 2. Start with one source
 
-```powershell
-iwr https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.ps1 -OutFile $env:TEMP\install-mora.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\install-mora.ps1
-```
-
-The PowerShell installer checks the release checksum. It installs to
-`%LOCALAPPDATA%\Mora\bin` and adds that directory to the user PATH. SmartScreen
-can still warn because the binary has no signature. See the
-[Windows guide](docs/windows.md) for platform details and Task Scheduler
-commands.
-
-## Connect one source
-
-For the fastest low-trust start, choose a folder:
+A folder is the quickest start. It needs no account login.
 
 ```bash
-mora doctor
-mora connect filesystem ~/notes
+mora init
+mora connect filesystem ~/Documents/notes
 mora search "a project or person"
 ```
 
-Then add only the sources that you want:
+Then add only the sources you want:
 
 ```bash
-mora connect google                 # Gmail + Google Calendar, read-only
-mora connect google --account work  # optional second Google account
-mora connect imessage               # macOS; requires Full Disk Access
-mora schedule install ingest-hourly
+mora connect google                         # Gmail and Google Calendar
+mora connect github --repo owner/repository # GitHub Issues
+mora connect imessage                       # macOS; needs Full Disk Access
 ```
 
-Google has not verified Mora's shared OAuth app. Google also limits its test
-users. For more control, use your own OAuth client through
-`MORA_GOOGLE_CREDENTIALS`. The [guide](docs/guide.md#connect-google-gmail--calendar)
-explains both paths.
+For Apple Calendar:
 
-## Wire it into an agent
+```bash
+mora connectors enable applecalendar
+mora ingest run --source applecalendar
+```
+
+These words have different meanings:
+
+| Command | What it does |
+| --- | --- |
+| `connect` | Sets up a source, enables it, and gets its first data. |
+| `connectors enable` | Gives Mora permission to use a connector. It does not promise a data pull. |
+| `ingest run` | Reads enabled sources and writes their current data into the vault. Use it for a first load or a backfill. |
+| `sync` | Refreshes a source that is already set up. |
+
+### 3. Give Mora to your agent
 
 ```bash
 claude mcp add mora -s user -- mora mcp serve
 codex mcp add mora -- mora mcp serve
 ```
 
-Any other MCP client can launch the same local stdio server:
+Other MCP clients can start the same command:
 
 ```json
 {
@@ -223,86 +129,269 @@ Any other MCP client can launch the same local stdio server:
 }
 ```
 
-Each MCP tool also has a CLI command. An agent with shell access can use
-`mora search`, `mora think`, `mora brief`, and `mora write` without MCP. See
-the [wiring guide](docs/guide.md#wire-mora-into-your-agent-mcp).
+Mora has 12 MCP tools for search, reading, writing, briefs, meetings, and the
+person graph. The command line covers the same core jobs and also manages setup
+and maintenance.
 
-## Teach Mora
+### 4. Check health and add a schedule
 
-Mora never joins an email identity to a phone number on its own. On macOS, it
-can use Address Book evidence to propose matches for review. The queue explains
-the corroboration and lists the memories each merge would affect before you
-confirm it:
+```bash
+mora doctor
+mora schedule install ingest-hourly
+mora schedule install pulse-daily
+mora schedule list
+```
+
+On macOS, jobs from a signed app launch through `Mora.app`. This lets macOS use
+the app's Full Disk Access identity. Mora records its own sync result because
+the macOS app launcher does not return the inner command's exit code.
+
+## Full Disk Access on macOS
+
+iMessage and Apple Calendar are local, but macOS still protects their files.
+Mora cannot grant this permission for you.
+
+1. Install the signed `Mora.app` first.
+2. Open **System Settings**.
+3. Open **Privacy & Security**, then **Full Disk Access**.
+4. Press **+** and choose `~/Applications/Mora.app`. You may need to press
+   Command-Shift-G and type that path.
+5. Turn Mora on. If macOS asks, quit and reopen the app or terminal.
+6. Run `mora doctor`.
+7. Run `mora sync imessage` or `mora sync applecalendar`.
+
+If an old Mora entry is present, keep it until both checks pass through the new
+app. Then remove the old entry yourself. Mora can report whether a protected
+read worked. It cannot claim that you clicked a setting.
+
+Mora.app v0.12.1 and later replace the whole signed app bundle during
+`mora upgrade` and check the result. If you still use v0.12.0, rerun the app
+installer once instead of using that version's upgrade command. Do not replace
+only `Mora.app/Contents/MacOS/mora`; that breaks the app signature.
+
+One real signed v0.12.3 to v0.12.4 update preserved iMessage and Apple Calendar
+access without another grant on one tested Mac. This is useful evidence, not a
+guarantee for every Mac. After an update, run `mora doctor` and a protected
+sync. Re-grant access if macOS asks.
+
+## Ask an agent to set it up
+
+Copy this prompt into an agent that can run local shell commands:
+
+```text
+Install Mora from the official pyranthus-hq/mora repository and set up a small,
+safe first run. On macOS, use the signed Mora.app installer, not the standalone
+installer. Verify `mora version` and run `mora doctor`. Ask me before any Google
+OAuth approval, GitHub token use, Full Disk Access change, backup, sharing, or
+schedule install. Do not say you clicked or approved a system screen. I will do
+those steps myself. Start with one folder that I choose, connect it, run a test
+search, then offer to wire `mora mcp serve` into my agent. Report every command,
+what it changed, and any check that did not pass.
+```
+
+## Use Mora every day
+
+```bash
+mora brief                                      # what changed and what matters
+mora search "What is open with Sam?"           # direct recall
+mora think "What did we decide about pricing?" # evidence plus gaps for an agent
+mora write --scope project:acme --type decision \
+  --title "OAuth" --text "Use PKCE."            # save a decision
+mora brief --event-id calendar_event/abc        # cited meeting prep
+mora tasks list                                 # open local tasks
+mora doctor                                     # source and index health
+```
+
+Useful flows:
+
+- Start a work session with `mora brief`.
+- Search for a person, project, issue, or decision with `mora search`.
+- Use `mora think` when the answer needs several pieces of evidence.
+- Save a note, fact, decision, or insight that you want agents to remember with
+  `mora write`.
+- Use `mora brief --event-id <id>` before a meeting.
+- Capture and close small local tasks with `mora tasks add`, `list`, and `done`.
+- Run `mora doctor` when results look old or incomplete.
+
+Mora can install Claude Code hooks too:
+
+```bash
+mora hook install
+mora hook status
+```
+
+The `SessionStart` hook adds the brief. The `UserPromptSubmit` hook adds a small
+set of related memories for each prompt. Mora keeps existing valid Claude
+hooks. It refuses to rewrite a settings file that it cannot parse.
+
+## Correct or remove memory
+
+Mora can propose that two addresses belong to the same person. It never accepts
+the match on its own.
 
 ```bash
 mora teach identity list
 mora teach identity confirm --handle <phone> --email <address> --yes
 mora teach identity reject --handle <phone> --email <address>
-mora teach identity undo <ledger-id>
 ```
 
-You can also correct Mora's derived commitments and your own authored memories:
+You can correct a cited commitment or a note that you wrote:
 
 ```bash
 mora teach commitment wrong-direction --memory-id <id> --direction owed_by_self --yes
 mora teach commitment already-closed --memory-id <id> --yes
-mora teach memory correct --id <id> --title "Corrected title" --text "Corrected text" --yes
-mora teach memory retract --id <id> --yes
+mora teach memory correct --id <id> --title "Correct title" --text "Correct text" --yes
 mora teach history --memory-id <id>
+mora teach undo <ledger-id>
 ```
 
-Each decision stays local, preserves its evidence and history, and can be
-reversed with `mora teach undo <ledger-id>`. Connector evidence is immutable;
-memory correction applies only to authored memories. See
-[Teach and human correction](docs/architecture/21-teach.md).
+`mora delete` removes one memory now. A later source sync can restore connector
+data. Use `mora forget` when the removal must remain after sync:
+
+```bash
+mora forget --chat <stable-id> --dry-run
+mora forget --chat <stable-id> --yes
+mora forget list
+mora unforget <entry-id> --yes
+```
+
+Forget changes only Mora's local copy. It never deletes the source message,
+event, or issue.
+
+## Backup and sharing are separate choices
+
+Mora offers three different paths:
+
+| Path | Leaves this computer? | Encryption added by Mora? | Use |
+| --- | --- | --- | --- |
+| `mora backup` | No | No | Make a local `.tar.gz` copy in Mora's state directory. |
+| `mora sync git` | Yes, if the remote is off-device | No | Push the plaintext vault to a private git remote you control. |
+| `mora share` | Yes | Yes, with age | Send only authored memories from one scope through private git or your S3/R2 bucket. |
+
+The vault contains plaintext. A private git remote is private by access rules,
+not by Mora encryption. `mora share` encrypts before upload, but the remote can
+still reveal file sizes and update timing. A person who already downloaded a
+share keeps that copy.
+
+See the [guide](docs/guide.md#backup-and-sharing) before you enable a network
+path.
+
+## Browser access on this computer
+
+An agent that cannot start a local process can use Mora's loopback HTTP server:
+
+```bash
+mora serve http
+# or keep it running as a user service
+mora serve http install
+mora serve http status
+```
+
+It binds only to `127.0.0.1`, uses a bearer token, and does not enable CORS.
+Loopback means this computer only. It is still a local security boundary: any
+process that gets the token can call the allowed routes. The generic HTTP call
+route does not expose `delete_memory`.
+
+## Control writes from MCP
+
+```bash
+mora config mcp-write-policy open
+mora config mcp-write-policy propose
+mora config mcp-write-policy readonly
+```
+
+- `open` lets the connected agent write and delete. This is the default.
+- `propose` stores write proposals for local approval. It refuses deletes.
+- `readonly` refuses writes and deletes.
+
+Review proposals with `mora mcp proposals list`, `approve`, and `reject`.
+
+## Durable loops
+
+Long-running automation can record a lease and a result. This prevents two
+workers from doing the same scheduled work at once.
+
+```bash
+mora loop register daily-report --cadence daily --command "my-report-command"
+mora loop begin daily-report
+mora loop heartbeat daily-report --run <run-id>
+mora loop done daily-report --run <run-id> --ok
+mora loop status daily-report
+mora loop list
+```
+
+The built-in daily brief uses this system. A crash can leave a run marked
+uncertain. Inspect it before you repeat an outside action.
+
+## Update or uninstall
+
+```bash
+mora upgrade --check
+mora upgrade
+mora schedule list
+mora schedule uninstall <each-job-name-shown>
+mora hook uninstall
+mora serve http uninstall
+```
+
+For the signed macOS app, use the checked `uninstall-app.sh` command in the
+[guide](docs/guide.md#uninstall). The uninstaller keeps the vault, settings,
+state, and standalone migration backup. It does not remove scheduled jobs, so
+remove every job shown by `mora schedule list` first.
 
 ## Data layout
 
-Mora keeps data in four places. Only the vault cannot be rebuilt:
-
-| Path | Holds | Recovery |
+| Path | Holds | Can Mora rebuild it? |
 | --- | --- | --- |
-| `vault_dir` (`~/vault/mora`) | Human-readable memories | Back up explicitly |
-| `data_dir` (`~/.local/share/mora`) | SQLite search index | `mora index rebuild` |
-| `state_dir` (`~/.local/state/mora`) | Sync watermarks and local usage log | Recreated on sync |
-| `config_dir` (`~/.config/mora`) | Settings and OAuth tokens | Reconfigure/re-authenticate |
+| `~/vault/mora` | Markdown memories | No. Back it up. |
+| `~/.local/share/mora` | SQLite index and received shares | Yes, except received share data must be pulled again. |
+| `~/.local/state/mora` | Sync state, local usage log, local backups | Usually. |
+| `~/.config/mora` | Settings, OAuth tokens, share keys | No. Reconnect or restore it. |
 
-Run `mora config` to see the full paths. Set `MORA_VAULT` to point one
-process at a different vault. The value must be an absolute path. It wins
-over `vault_dir` for that run only, and it is never written to `config.toml`. The vault is plain Markdown. Use
-full-disk encryption such as FileVault or BitLocker. You can also opt in to
-backup and encrypted sharing. These paths are outside the current product
-hypothesis. Read the [guide](docs/guide.md) before you enable either one.
+Run `mora config` to see the active paths. `MORA_VAULT` can select another
+absolute vault path for one process. It does not change `config.toml`.
 
 ## Privacy boundary
 
-- **Read-only at the source.** Google scopes are `gmail.readonly` and
-  `calendar.readonly`; iMessage and Apple Calendar databases are opened
-  read-only. Mora never sends mail or changes source records.
-- **Local corpus.** The vault, index, tokens, sync state, and usage log remain on
-  your machine. By default, the usage log stores local run data but not query
-  text. It honors `mora usage off` / `DO_NOT_TRACK=1`.
-- **Explicit network paths.** The Mora process uses the network for enabled
-  source sync and release updates. It also uses the network for backup or
-  sharing when you enable them.
-  Optional Ollama inference is restricted to loopback.
-- **Downstream agents are a separate boundary.** After an MCP client retrieves
-  context, its model and data policy apply. A cloud agent can send retrieved
-  text to its provider.
-- **Plaintext at rest.** Any process that can read your home directory can read
-  the vault. Protect the device. Do not put the vault in an unencrypted remote.
+- Source access is read-only. Google uses `gmail.readonly` and
+  `calendar.readonly`. iMessage uses `mode=ro`. Apple Calendar uses `mode=ro`
+  plus SQLite `query_only(1)` so it can read the live write-ahead log safely.
+- The vault, index, tokens, sync state, and usage log stay local by default.
+- Mora uses the network for source APIs, GitHub release checks, and any backup
+  or share target that you choose.
+- Optional Ollama embeddings are allowed only on a loopback address.
+- Mora's local usage log leaves out query text by default. Turn it off with
+  `mora usage off` or `DO_NOT_TRACK=1`.
+- A cloud agent is a separate boundary. After it reads a Mora result, its model
+  provider and data rules apply.
+- Files are plaintext on disk. Use FileVault, BitLocker, or other disk
+  encryption. Do not put the vault in an unencrypted remote.
 
-## Project status and contributing
+## Search and proof
 
-We run Mora every day on our own mail, messages, and calendars. What breaks in
-that use is what we fix first. Changes land as small issues and PRs with test
-evidence. There is no public roadmap, ship date, or payment deadline.
+With the default static embedder, Mora searches parent memories and bounded
+Gmail/iMessage message segments with full-text search. With an active semantic
+Ollama embedder, it combines full-text, vector, person-graph, and message-segment
+results with Reciprocal Rank Fusion. That name means it joins ranked lists by
+position instead of comparing unrelated raw scores.
 
-- [Guide](docs/guide.md) — commands, connectors, and operational details.
-- [Architecture](docs/architecture/00-overview.md) — as-built subsystem spec.
-- [Contributing](CONTRIBUTING.md) — build, test, and review contract.
-- [Security policy](SECURITY.md) — report vulnerabilities privately; never paste
-  vault contents or credentials into a public issue.
+Mora's frozen test corpora start from a written answer key. Tests render mail,
+messages, and events from that key, pin every byte, run the real brief and
+meeting code, and check citations and commitment fields. Mutation tests also
+break each important gate on purpose and require a test to fail. This is strong
+proof against known regressions. It is not proof that every real inbox or
+calendar will work.
+
+The fixtures and scores are in [`internal/mora/eval/`](internal/mora/eval/).
+The method is in [evaluation and testing](docs/architecture/09-eval-and-testing.md).
+
+## More
+
+- [Guide](docs/guide.md) — commands, connectors, and upkeep.
+- [Architecture](docs/architecture/00-overview.md) — current design and code map.
+- [Contributing](CONTRIBUTING.md) — build and review rules.
+- [Security](SECURITY.md) — report a problem privately. Never paste vault data
+  or credentials into a public issue.
 
 ---
 
