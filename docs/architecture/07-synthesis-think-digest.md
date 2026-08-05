@@ -61,9 +61,9 @@ For each `Memory` returned by `hybridSearch`, `buildThink` appends a `ThinkEvide
 
 `think` calls `hybridSearch` **directly** (`think.go`), not the gated `defaultSearch`. This is deliberate and consistent with the project rule that `context_memory`/`think` always run hybrid: under static-hash the vector arm is omitted by `hybridSearchTrace`, so these callers fuse parent FTS + graph + Gmail segments. `mora search`/`search_memory` instead route through `defaultSearch`, whose static keyword surface excludes graph expansion to preserve the measured baseline; only a genuinely semantic embedder selects full four-arm hybrid retrieval (see [retrieval](./02-retrieval-search.md) and `hybrid.go`). The CLI default `--limit` is 8. The MCP default is also 8.
 
-### The three deterministic gap signals (`computeGaps`, `think.go:87`)
+### Deterministic gap signals (`computeGaps`)
 
-`ThinkGaps` (`think.go:38-42`) has three slices, each populated by a distinct, precision-tuned rule:
+`ThinkGaps` reports several separate problems. The main checks are:
 
 1. **`Stale`** — if there are matches, pick the freshest by **parsed instant** (not string compare — mixed RFC3339 offsets like local `-07:00` vs UTC `Z` misorder lexically; `think.go:94-100`). If `now.Sub(newest) > thinkStaleDays*24h` (`thinkStaleDays = 30`, `think.go:22`), emit a dated "freshest matching memory is from … — older than 30 days" warning (`think.go:101-103`). If there are **no** matches at all, instead emit a single `CoverageHoles` entry "No memory matched this query." (`think.go:90-91`).
 
@@ -71,7 +71,7 @@ For each `Memory` returned by `hybridSearch`, `buildThink` appends a `ThinkEvide
 
 3. **`CoverageHoles`** — capitalized multi-word phrases in the query that resolve to **no** entity of any kind. It scans the query with `capitalizedNameRe` (`\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b`, `think.go:56`), then reuses the gazetteer's name-eligibility guard `normalizeGazName` so a title-cased *question* phrase ("What Did", "How Should We") is **not** mistaken for a name (`think.go:145-148`). Only phrases that pass eligibility and fail `entityExists` (`think.go:159`) become holes: "The vault has no entity for <name>." (`think.go:144-154`). `entityExists` checks `entities.display_name` case-insensitively, then scans all `person:%` aliases via `aliasMatches` (`think.go:159-180`).
 
-All three rules sort their inputs before iterating, so `buildThink` output is **byte-stable across rebuilds** — the same determinism invariant the entity graph holds (see [entity-graph](./03-entity-graph.md)).
+The rules use stable input order or sorted keys, so `buildThink` output is **byte-stable across rebuilds** — the same determinism rule used by the entity graph (see [entity-graph](./03-entity-graph.md)).
 
 ### The synthesis prompt (`thinkPrompt`, `think.go:184`)
 
@@ -456,6 +456,7 @@ Both the MCP and CLI paths return the assembled `context` string plus `freshness
 
 - **`think` does NOT call a model — it emits a prompt.** MCP sampling is unwired everywhere. `buildThink` returns a `SynthesisPrompt` string. The *caller's* model turns it into prose. Do not "fix" `think` by adding an API client — that breaks the zero-egress, $0, no-API-key contract (`think.go:13-19`). The deterministic floor (evidence + gaps) is the product when no model is attached.
 - **Gap analysis must stay deterministic and byte-stable.** Every gap rule sorts its inputs before emitting (person ids `think.go:128`, coverage-hole dedup via `seenHole` `think.go:144`), and staleness uses **parsed instants**, never string compare, because mixed RFC3339 offsets misorder lexically (`think.go:94-100`, mirrored in digest's `tsItem`/`capRecency` at `digest.go:435-470` — total comparator `salience int64 → instant → id`). Reordering or skipping the sort reintroduces map-iteration nondeterminism (the digest also sorts instance keys and sections — `sortedInstanceKeys` `digest.go:550`, `sortSections` `digest.go:563`).
+- **Ranking and answerability are different.** With opt-in confidence, `max_score` and `mean_score` show ranking shape. `strong` needs a separate exact-word check on whole returned rows. Different rows cannot pool different parts of the question, and rows removed by the response budget do not count. Shared rows are matched by owner and id, so they count without being confused with a local row that has the same id. A semantic paraphrase without an exact-word match stays `moderate`; Mora does not claim that exact words can measure meaning. This check is confidence-only. It does not change the normal `think` gaps, `checks_applied`, or synthesis prompt.
 - **Thin-coverage matches only the multi-token gazetteer, never loose tokens.** Single first names / common words against aliases would fire false thin-coverage on any shared-first-name query (`think.go:112-115`). Coverage-holes reuse `normalizeGazName` so title-cased question phrases aren't misread as missing names (`think.go:143-148`). Precision-first: a false gap is a false alarm that erodes confidence in the gap analysis.
 - **`think`/`context_memory` call `hybridSearch` directly; `search`/`search_memory` call `defaultSearch`.** This asymmetry is intentional: `hybridSearchTrace` omits static-hash vectors but retains graph expansion, while `defaultSearch` preserves the measured static parent-plus-segment ranking surface. Don't unify them without re-reading [retrieval](./02-retrieval-search.md).
 - **`context_memory` starvation guard: items lead when `hasQuery`.** Flipping the order (wiki first under a query) lets the static preamble eat the budget and starve the relevant memories — the exact failure the guard at `mora.go:2318-2325` prevents.

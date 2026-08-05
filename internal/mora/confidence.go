@@ -9,9 +9,8 @@ import (
 // search_memory and think, gated by a per-call boolean arg (mirroring the
 // digest/brief `envelope` mcpParam precedent). See confidence_contract_test.go's
 // header doc comment for the FROZEN spec this file implements. Every field
-// here is derived ONLY from data already computed at ranking time
-// (Memory.Score/CreatedAt, ThinkEvidence.Score/CreatedAt/Gaps, sourceHealthAll)
-// — this is not a new scoring system, just a rollup of existing signals.
+// here uses data already returned by retrieval plus deterministic gap checks.
+// It never makes a model call or infers an outcome from rank alone.
 //
 // #238 fix: search_memory's Score is a raw bm25 magnitude only while no
 // fusion arm participates. When a semantic embedder is active, defaultSearch routes to
@@ -89,11 +88,10 @@ type confidenceEnvelope struct {
 // This is the #238 P1/P2 fix — searchConfidence never independently probes
 // chooseEmbedderFor/embedderIsSemantic and never re-runs hybridSearchTrace;
 // it only reads what retrieval already decided and already computed.
-// localMems/trace are the PRE-share-union local results, mirroring
-// buildThink's documented LOCAL-only gap scope
-// (think.go) — query is passed through only as a plain string for
-// computeGaps' own gap analysis, not for any additional retrieval.
-func searchConfidence(ctx context.Context, cfg Config, mems []Memory, scoreFused bool, localMems []Memory, trace retrievalTrace, query string, now time.Time) confidenceEnvelope {
+// fullMems is the pre-budget, post-share-union result set used only to recover
+// full text for returned rows. localMems/trace remain the PRE-share-union local
+// results used for the existing local-only gap analysis.
+func searchConfidence(ctx context.Context, cfg Config, mems []Memory, scoreFused bool, fullMems, localMems []Memory, trace retrievalTrace, query string, now time.Time) confidenceEnvelope {
 	scores := make([]float64, len(mems))
 	dates := make([]string, len(mems))
 	for i, m := range mems {
@@ -102,6 +100,8 @@ func searchConfidence(ctx context.Context, cfg Config, mems []Memory, scoreFused
 	}
 	best, mean := confidenceScoreStats(scores)
 	missing, impact := confidenceSourceGaps(cfg, now)
+	coverageMems := returnedMemoryRows(mems, fullMems)
+	gapMems := returnedMemoryRows(mems, localMems)
 
 	// Path-aware (#238/I5): key off the SAME score-domain decision that actually
 	// scored this call's results (threaded in as scoreFused), never a
@@ -112,7 +112,11 @@ func searchConfidence(ctx context.Context, cfg Config, mems []Memory, scoreFused
 	scale := confidenceScaleBM25
 	if scoreFused {
 		scale = confidenceScaleRRFFused
-		strength = confidenceFusedSearchStrength(ctx, cfg, query, localMems, trace, now)
+		strength = confidenceFusedSearchStrength(ctx, cfg, query, gapMems, coverageMems, trace, now)
+	} else if strength == "strong" && memoryLexicalCoverage(query, coverageMems).FullRows == 0 {
+		// BM25 can strongly rank one shared word from a larger question. Without
+		// one row covering the whole lexical relation, strong is not justified.
+		strength = "moderate"
 	}
 
 	return confidenceEnvelope{
@@ -166,12 +170,9 @@ func confidenceSearchStrength(maxScore float64) string {
 	}
 }
 
-// confidenceGapStrength is the shared gap-based strength rule (contract's
-// "STRENGTH BUCKETING" section): no results -> weak; results present and the
-// gap analysis is non-empty -> moderate; results present and gap-free ->
-// strong. Used wherever Score is an RRF-fused rank artifact rather than a
-// bucketable match-quality magnitude: think (always) and, since #238,
-// search_memory's semantic/hybrid or static-segment path.
+// confidenceGapStrength is the base gap rule: no results -> weak; results with
+// gaps -> moderate; gap-free results -> strong candidate. Fused callers still
+// require strict whole-row lexical proof before returning strong.
 func confidenceGapStrength(hasResults bool, gaps ThinkGaps) string {
 	switch {
 	case !hasResults:
@@ -183,45 +184,56 @@ func confidenceGapStrength(hasResults bool, gaps ThinkGaps) string {
 	}
 }
 
-// confidenceThinkStrength buckets think's strength off ThinkGaps — a
-// deterministic signal already computed by computeGaps at buildThink time
-// (contract's "STRENGTH BUCKETING" section) — rather than off raw Score,
-// which is a near-constant RRF rank artifact regardless of embedder (think
-// always routes through hybridSearchTrace).
+// confidenceThinkStrength starts with ThinkGaps, then allows strong only when
+// two rows from two sources each contain the whole lexical query. This proof is
+// confidence-only; it does not alter the normal think payload. A semantic
+// paraphrase without literal proof stays moderate rather than becoming weak.
 func confidenceThinkStrength(res ThinkResult) string {
-	return confidenceGapStrength(len(res.Evidence) > 0, res.Gaps)
+	strength := confidenceGapStrength(len(res.Evidence) > 0, res.Gaps)
+	if strength != "strong" {
+		return strength
+	}
+	coverage := thinkLexicalCoverage(res)
+	if coverage.FullRows >= 2 && coverage.FullSources >= 2 {
+		return "strong"
+	}
+	return "moderate"
 }
 
 // confidenceFusedSearchStrength buckets search_memory's strength on every
-// RRF-fused path using the SAME gap-based rule think uses
-// (confidenceGapStrength), because under RRF fusion Memory.Score there is a
+// RRF-fused path using the same gap base as think plus strict whole-row lexical
+// proof, because under RRF fusion Memory.Score there is a
 // near-constant rank artifact (~0.01-0.15 regardless of match quality — see
 // confidence_contract_test.go's "#238 AMENDMENT" doc comment), not a
 // match-quality magnitude the bm25 thresholds can bucket.
 //
-// mems/tr are THREADED from mcpSearchMemory's own defaultSearchForMCP call
-// (#238 P1/P2 fix) — this function no longer re-runs hybridSearchTrace to
-// recover them; it reuses computeGaps exactly as think does, over the SAME
-// (mems, trace) pair retrieval already produced. mems is deliberately the
-// PRE-share-union local set, mirroring think's choice to compute gaps over
-// LOCAL results only (buildThink doc comment, think.go): a shared-corpus
-// contribution is never compared against the personal index's own retrieval
-// trace or entity graph.
+// Both evidence slices and tr are threaded from mcpSearchMemory's retrieval.
+// gapMems is the budget-surviving local subset, so computeGaps keeps its
+// local-only entity/trace scope. coverageMems is the budget-surviving post-union
+// set, so returned shared rows can supply exact-word support.
 //
 // A computeGaps error still fails closed to "weak" — this is an opt-in,
 // best-effort signal, and it must never turn a working search_memory call
 // into a hard failure or overclaim confidence when the gap analysis can't be
 // run. There is no longer a recompute to fail; this guard covers computeGaps
 // itself (e.g. an index read error).
-func confidenceFusedSearchStrength(ctx context.Context, cfg Config, query string, mems []Memory, tr retrievalTrace, now time.Time) string {
-	if len(mems) == 0 {
+func confidenceFusedSearchStrength(ctx context.Context, cfg Config, query string, gapMems, coverageMems []Memory, tr retrievalTrace, now time.Time) string {
+	if len(gapMems) == 0 && len(coverageMems) == 0 {
 		return "weak"
 	}
-	gaps, err := computeGaps(ctx, cfg, query, mems, tr, now)
+	gaps, err := computeGaps(ctx, cfg, query, gapMems, tr, now)
 	if err != nil {
 		return "weak"
 	}
-	return confidenceGapStrength(true, gaps)
+	strength := confidenceGapStrength(true, gaps)
+	if strength != "strong" {
+		return strength
+	}
+	coverage := memoryLexicalCoverage(query, coverageMems)
+	if coverage.FullRows >= 2 && coverage.FullSources >= 2 {
+		return "strong"
+	}
+	return "moderate"
 }
 
 // confidenceScoreStats returns (max, mean) over scores — the literal numeric

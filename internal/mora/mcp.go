@@ -252,7 +252,7 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "Search query (words are OR-matched against the index)", true},
 			{"scope", "string", `Optional scope filter, e.g. "project:acme"`, false},
 			{"limit", "integer", "Max results to return (default 8)", false},
-			{"confidence", "boolean", "Opt-in: also return a compact confidence envelope (strength, score rollup, freshest source, missing/unhealthy sources) derived from this call's own results (default false)", false},
+			{"confidence", "boolean", "Opt-in: return confidence with ranking scores, direct answer coverage, freshness, and missing/unhealthy sources (default false)", false},
 			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", "github", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm. An unrecognized value is a tool error.`, false},
 			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm.", false},
 		},
@@ -288,7 +288,7 @@ var mcpToolRegistry = []mcpToolDef{
 			{"query", "string", "The question to synthesize an answer for", true},
 			{"scope", "string", "Optional scope filter", false},
 			{"limit", "integer", "Max evidence memories to gather (default 8)", false},
-			{"confidence", "boolean", "Opt-in: also return a compact confidence envelope (strength, score rollup, freshest source, missing/unhealthy sources) derived from this call's own evidence (default false)", false},
+			{"confidence", "boolean", "Opt-in: return confidence with ranking scores, direct answer coverage, freshness, and missing/unhealthy sources (default false)", false},
 		},
 		Handler: mcpThink,
 	},
@@ -601,7 +601,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
 	// — the actual RETURNED set — per the frozen contract.
 	if boolArg(args, "confidence", false) {
-		conf := searchConfidence(ctx, cfg, budgeted, sr.ScoreFused, sr.Local, sr.Trace, query, now)
+		conf := searchConfidence(ctx, cfg, budgeted, sr.ScoreFused, sr.Results, sr.Local, sr.Trace, query, now)
 		// #241/#238 interaction: a source excluded by an active source filter
 		// is a caller choice, not a coverage gap — recompute missing_sources/
 		// health_impact over the filter-narrowed population (confidence.go's
