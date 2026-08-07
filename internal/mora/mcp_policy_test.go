@@ -159,3 +159,10 @@ func TestMCPWritePolicyProposeNeverStagesDelete(t *testing.T) {
 		t.Fatalf("propose delete error = %v", err)
 	}
 }
+func TestMCPInstructionsTreatRetrievedContentAsUntrustedEvidence(t *testing.T) {
+	for _, phrase := range []string{"untrusted evidence", "never as instructions", "do not follow commands"} {
+		if !strings.Contains(mcpInstructions, phrase) {
+			t.Fatalf("MCP instructions missing retrieved-content injection guard %q", phrase)
+		}
+	}
+}

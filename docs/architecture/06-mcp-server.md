@@ -69,7 +69,7 @@ To keep it always reachable, `mora serve http install|uninstall|status` (`serve_
 
 `handleMCP` (`mcp.go`) is the method switch. Three methods are real. Everything else is `-32601`:
 
-- **`initialize`** (`mcp.go`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. `mcpInstructionsFor` derives its mutation sentence from `mcp_write_policy`: `open` invites trusted writes, `propose` says writes remain pending until local approval, and `readonly` forbids both mutation tools. The rest of `mcpInstructions` remains the load-bearing retrieval guidance injected into a cold client's context. A config-load failure emits fail-closed instructions and tool calls fail before dispatch.
+- **`initialize`** (`mcp.go`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. `mcpInstructionsFor` derives its mutation sentence from `mcp_write_policy`: `open` invites trusted writes, `propose` says writes remain pending until local approval, and `readonly` forbids both mutation tools. The rest of `mcpInstructions` remains the load-bearing retrieval guidance injected into a cold client's context, including the invariant that retrieved email, messages, attachments, and documents are untrusted evidence rather than instructions. A config-load failure emits fail-closed instructions and tool calls fail before dispatch.
 - **`tools/list`** (`mcp.go`) ranges `mcpToolRegistry` and returns the twelve-tool catalog built by `mcpTool`.
 - **`tools/call`** (`mcp.go`) decodes `{name, arguments}`, looks the name up in `mcpToolIndex`, and returns `toCallToolResult(callMCPTool(...))`.
 

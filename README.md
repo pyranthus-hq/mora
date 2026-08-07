@@ -133,6 +133,12 @@ Mora has 12 MCP tools for search, reading, writing, briefs, meetings, and the
 person graph. The command line covers the same core jobs and also manages setup
 and maintenance.
 
+Mora also publishes an experimental [Agent Plugins 1.0 package](plugins/mora/README.md)
+that bundles the stdio MCP declaration with portable Agent Skills. It does not
+install Mora, grant source permissions, or sandbox the client. Enabling it may
+auto-start the local MCP server, so review the client's data policy and choose
+`mora config mcp-write-policy propose` or `readonly` before first use.
+
 ### 4. Check health and add a schedule
 
 ```bash
