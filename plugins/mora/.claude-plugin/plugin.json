@@ -1,4 +1,5 @@
 {
   "name": "mora",
-  "description": "Portable workflows for retrieving and safely using Mora memory through its local MCP server."
+  "description": "Portable workflows for retrieving and safely using Mora memory through its local MCP server.",
+  "version": "1.0.0"
 }

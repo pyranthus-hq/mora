@@ -40,6 +40,12 @@ type agentPluginManifest struct {
 	Extensions  map[string]map[string]any `json:"extensions,omitempty"`
 }
 
+type claudePluginManifest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Version     string `json:"version"`
+}
+
 type agentPluginMCPDocument struct {
 	Schema     string                     `json:"$schema"`
 	MCPServers map[string]json.RawMessage `json:"mcpServers"`
@@ -74,6 +80,7 @@ func TestAgentPluginPackageContract(t *testing.T) {
 	assertNoPluginSymlinks(t, pluginRoot)
 	assertAgentPluginManifest(t, filepath.Join(pluginRoot, "plugin.json"))
 	assertAgentPluginMCP(t, filepath.Join(pluginRoot, "mcp.json"))
+	assertClaudePluginManifest(t, filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"))
 
 	repositoryLicense, err := os.ReadFile(filepath.Join("..", "..", "LICENSE"))
 	if err != nil {
@@ -131,6 +138,18 @@ func assertAgentPluginManifest(t *testing.T, path string) {
 		if value == nil {
 			t.Fatalf("plugin.json extension %q must be an object", namespace)
 		}
+	}
+}
+
+func assertClaudePluginManifest(t *testing.T, path string) {
+	t.Helper()
+	var manifest claudePluginManifest
+	readStrictJSONFile(t, path, &manifest)
+	if manifest.Name != "mora" || manifest.Description == "" {
+		t.Fatalf("Claude plugin manifest must identify and describe mora: %#v", manifest)
+	}
+	if !regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(manifest.Version) {
+		t.Fatalf("Claude plugin version %q must be stable semver", manifest.Version)
 	}
 }
 
@@ -208,6 +227,7 @@ func TestAgentPluginSkillsContract(t *testing.T) {
 	reservedToolWords := map[string]bool{"brief": true, "digest": true, "think": true, "meeting_prep": true, "get_entity": true, "list_entities": true}
 
 	var skillNames []string
+	triggerOwners := map[string]string{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -235,6 +255,22 @@ func TestAgentPluginSkillsContract(t *testing.T) {
 		}
 		if frontmatter.License != "Apache-2.0" {
 			t.Errorf("%s license = %q, want Apache-2.0", skillPath, frontmatter.License)
+		}
+		rawTriggers := frontmatter.Metadata["trigger_phrases"]
+		if rawTriggers == "" {
+			t.Errorf("%s metadata.trigger_phrases is required", skillPath)
+		}
+		for _, raw := range strings.Split(rawTriggers, ",") {
+			phrase := strings.ToLower(strings.Join(strings.Fields(raw), " "))
+			if phrase == "" {
+				t.Errorf("%s has an empty trigger phrase", skillPath)
+				continue
+			}
+			if owner, exists := triggerOwners[phrase]; exists {
+				t.Errorf("trigger phrase %q overlaps skills %q and %q", phrase, owner, frontmatter.Name)
+			} else {
+				triggerOwners[phrase] = frontmatter.Name
+			}
 		}
 		if lines := strings.Count(text, "\n") + 1; lines > 500 {
 			t.Errorf("%s has %d lines, Agent Skills recommends <=500", skillPath, lines)

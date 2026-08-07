@@ -6,6 +6,7 @@ compatibility: Requires the local Mora CLI on PATH, shell execution with observa
 metadata:
   author: pyranthus-hq
   version: "1.0"
+  trigger_phrases: "run durable daily brief, advance daily brief, persist daily brief"
 ---
 
 # Daily Brief Loop
