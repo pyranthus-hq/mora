@@ -64,6 +64,19 @@ one advisory job worth treating as blocking yourself — see rule 8 below.
 If `gofmt -l .`, `go vet`, the race tests, and `golangci-lint` are all clean
 locally, CI will be green.
 
+Changes under `plugins/mora/` must also validate the package contract and every
+Agent Skill:
+
+```bash
+go test ./internal/mora -run 'TestAgentPlugin|TestMCPInstructions' -count=1
+for skill in plugins/mora/skills/*; do
+  uvx --from skills-ref agentskills validate "$skill"
+done
+```
+
+Package changes must preserve the local-first boundary: no bundled binary,
+credentials, vault, state, generated memories, or remote MCP transport.
+
 ## The hard rules
 
 These are enforced on PRs and flagged as blocking. Full text in
