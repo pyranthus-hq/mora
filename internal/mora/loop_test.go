@@ -1144,6 +1144,13 @@ func TestLoopEffectKillHelper(t *testing.T) {
 	if os.Getenv("MORA_TEST_LOOP_EFFECT_HELPER") != "1" {
 		return
 	}
+	if raw := os.Getenv("MORA_TEST_LOOP_EFFECT_NOW"); raw != "" {
+		fixed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatalf("parse helper clock: %v", err)
+		}
+		loopClock = func() time.Time { return fixed }
+	}
 	cfg := Config{StateDir: os.Getenv("MORA_TEST_LOOP_EFFECT_STATE")}
 	runID := os.Getenv("MORA_TEST_LOOP_EFFECT_RUN")
 	ready := os.Getenv("MORA_TEST_LOOP_EFFECT_READY")
@@ -1166,7 +1173,10 @@ func TestLoopEffectKillHelper(t *testing.T) {
 func TestLoopEffectProcessKillCannotReplaySamePeriod(t *testing.T) {
 	root := t.TempDir()
 	cfg := Config{StateDir: filepath.Join(root, "state")}
-	now := time.Now().UTC().Truncate(time.Second)
+	// Pin noon UTC so the stale-lock probe remains in the same daily period.
+	// Using wall time made this test cross midnight whenever CI ran in the last
+	// loopLockTTL minutes of a day, incorrectly exercising the next-period path.
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
 	if err := loopBegin(cfg, "daily-brief", true, now, &out); err != nil {
 		t.Fatalf("begin: %v", err)
@@ -1179,6 +1189,7 @@ func TestLoopEffectProcessKillCannotReplaySamePeriod(t *testing.T) {
 		"MORA_TEST_LOOP_EFFECT_HELPER=1",
 		"MORA_TEST_LOOP_EFFECT_STATE="+cfg.StateDir,
 		"MORA_TEST_LOOP_EFFECT_RUN="+rec.RunID,
+		"MORA_TEST_LOOP_EFFECT_NOW="+now.Format(time.RFC3339),
 		"MORA_TEST_LOOP_EFFECT_READY="+ready,
 		"MORA_TEST_LOOP_EFFECT_SENTINEL="+sentinel,
 	)

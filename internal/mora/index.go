@@ -62,8 +62,18 @@ func roIndexDSN(cfg Config) string {
 	}
 	u := &url.URL{Scheme: "file", Path: path}
 	dsn := u.String() + "?mode=ro&_pragma=busy_timeout(15000)&_pragma=query_only(1)"
-	if info, err := os.Stat(dbPath(cfg) + "-wal"); errors.Is(err, os.ErrNotExist) || (err == nil && info.Size() == 0) {
-		dsn += "&immutable=1"
+	// immutable=1 must never be selected merely because the WAL is absent at
+	// this instant: an incremental writer can create it immediately after this
+	// check, and an immutable reader may then ignore committed pages or observe a
+	// malformed image. Use it only for an actually non-writable directory, where
+	// this process cannot create WAL/SHM sidecars and cannot race its own writer.
+	// The normal writable path remains a live mode=ro connection.
+	dirInfo, dirErr := os.Stat(filepath.Dir(dbPath(cfg)))
+	dirReadOnly := dirErr == nil && dirInfo.Mode().Perm()&0o222 == 0
+	if dirReadOnly {
+		if info, err := os.Stat(dbPath(cfg) + "-wal"); errors.Is(err, os.ErrNotExist) || (err == nil && info.Size() == 0) {
+			dsn += "&immutable=1"
+		}
 	}
 	return dsn
 }

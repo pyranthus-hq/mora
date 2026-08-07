@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,16 @@ func TestIndexUpsertKeepsWAL(t *testing.T) {
 // TestReadOnlyIndexNeedsNoDirectoryWriteAccess pins the sandboxed-agent case:
 // callers may read index.db while the containing data directory is not writable.
 // The reader must not request journal-mode changes or sidecar creation.
+func TestWritableIndexDSNNeverUsesImmutableSnapshot(t *testing.T) {
+	cfg := Config{DataDir: t.TempDir()}
+	if err := os.WriteFile(dbPath(cfg), []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if dsn := roIndexDSN(cfg); strings.Contains(dsn, "immutable=1") {
+		t.Fatalf("writable live index DSN must not use immutable snapshot: %s", dsn)
+	}
+}
+
 func TestReadOnlyIndexNeedsNoDirectoryWriteAccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory mode bits do not model Windows ACL write denial")
