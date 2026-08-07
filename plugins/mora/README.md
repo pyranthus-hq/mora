@@ -41,8 +41,14 @@ Skills use the Agent Skills Markdown format. Codex and other compatible harnesse
 
 | Skill | Use it for |
 |---|---|
+| `mora-recall` | Read-only routing for personal history, catch-up, decisions, people, and meeting preparation, with citations and health-aware gaps. |
+| `memory-capture` | Explicit, policy-governed durable write-back with deduplication and never-retry semantics. |
 | `daily-brief-loop` | Explicitly running Mora's advancing, once-per-day local brief automation. Requires the local CLI and is not a read-only catch-up command. |
 | `dining-concierge` | Restaurant and outing recommendations grounded in task-minimal personal context, with a strict external-query boundary. |
+
+## Validate behavior
+
+[`EVALS.md`](EVALS.md) is the manual cross-client dogfood checklist. Run it before a release that changes skill routing, mutation semantics, or MCP packaging. Structural contracts run in `go test ./internal/mora` and CI.
 
 ## Adding a skill
 
