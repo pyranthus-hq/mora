@@ -157,7 +157,7 @@ func readSigningKey(path string) (ed25519.PrivateKey, error) {
 // length-prefixed locator keeps the map (locator, version, payload) -> message
 // injective, so no two distinct inputs collide.
 func manifestSigningMessage(locator string, payload []byte, version int) []byte {
-	msg := make([]byte, 0, len(locator)+len(payload)+48)
+	var msg []byte // append grows safely without overflow-prone attacker-controlled capacity arithmetic
 	msg = append(msg, "mora-share-manifest-v2\x00"...)
 	msg = binary.BigEndian.AppendUint64(msg, uint64(len(locator)))
 	msg = append(msg, locator...)
