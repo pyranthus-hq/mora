@@ -1,4 +1,4 @@
 {
   "name": "mora",
-  "description": "Agent skills that pair with the Mora MCP server. Skills teach an agent to resolve people, shared history, and calendar context from your vault before reaching for the web."
+  "description": "Portable workflows for retrieving and safely using Mora memory through its local MCP server."
 }

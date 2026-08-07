@@ -117,7 +117,14 @@ func TestContextMemoryRoutesCurrentStateAndOpenLoopQuestions(t *testing.T) {
 		t.Fatal(err)
 	}
 	loopText := loops.(map[string]any)["context"].(string)
-	if !strings.Contains(loopText, "cedar review notes") || !strings.Contains(loopText, "[open; owed_by_self]") {
+	var cedarLine string
+	for _, line := range strings.Split(loopText, "\n") {
+		if strings.Contains(line, "cedar review notes") {
+			cedarLine = line
+			break
+		}
+	}
+	if !strings.Contains(cedarLine, "[open;") || !strings.Contains(cedarLine, "owed_by_self]") {
 		t.Fatalf("open-loop context missed the typed open commitment:\n%s", loopText)
 	}
 	if strings.Contains(loopText, "basalt budget") || strings.Contains(loopText, "closed-review") {
