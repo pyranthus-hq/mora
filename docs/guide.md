@@ -346,6 +346,27 @@ Or add this to another MCP client:
 Mora provides 12 tools: write, read, search, list, delete, context, think,
 entity list, entity detail, digest, brief, and meeting prep.
 
+### Agent Plugins package
+
+Release assets include a portable Agent Plugins 1.0 archive. It contributes the
+Mora stdio MCP declaration plus first-party skills for read-only recall, explicit
+memory capture, dining recommendations, and the advanced daily brief operator
+loop. The package does not contain a Mora binary, credentials, vault data, state,
+or generated memories.
+
+Install `mora` separately and make it visible on the client's `PATH`. GUI clients
+can inherit a different `PATH` than a terminal; if MCP startup says the `mora`
+command is unavailable, fix that executable discovery rather than putting a
+machine-specific path in the package.
+
+Read the client's enable screen before installing: a compatible client may start
+`mora mcp serve` from `mcp.json`, and retrieved results may be processed by that
+client's configured model provider. Prefer `propose` or `readonly` until you are
+comfortable with the client's tool-approval UX. Agent skills activate on user
+requests; they do not guarantee a session-start brief. The Claude marketplace
+wrapper intentionally keeps MCP setup explicit rather than adding an automatic
+`.mcp.json` startup declaration.
+
 ### MCP write policy
 
 Choose how much authority the agent gets:

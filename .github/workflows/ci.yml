@@ -43,6 +43,24 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: agent plugin package contract
+        run: |
+          go test ./internal/mora -run 'TestAgentPlugin|TestMCPInstructionsTreatRetrievedContent' -count=1
+          archive="$RUNNER_TEMP/mora-agent-plugin-test.tar.gz"
+          bash scripts/package-agent-plugin.sh 0.0.0-test "$archive"
+          tar -tzf "$archive" | grep -qx './plugin.json'
+          tar -tzf "$archive" | grep -qx './mcp.json'
+          staged="$RUNNER_TEMP/mora-agent-plugin-test"
+          mkdir "$staged"
+          tar -xzf "$archive" -C "$staged"
+          MORA_PLUGIN_CONTRACT_ROOT="$staged" \
+            go test ./internal/mora -run '^TestAgentPlugin(Package|Skills)Contract$' -count=1
+          python3 - "$staged/plugin.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as f:
+              manifest = json.load(f)
+          assert manifest["version"] == "0.0.0-test", manifest
+          PY
       - name: exam schema, ledger, and identity validation
         run: |
           go test ./internal/mora/exam -run 'TestLedgerValidator|TestCommittedLedgerIsValid|TestManifest|TestExamNoRealIdentities' -count=1

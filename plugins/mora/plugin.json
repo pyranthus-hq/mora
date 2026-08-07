@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mora",
+  "description": "Local-first memory skills and MCP tools for grounded recall, briefs, and governed capture.",
+  "author": {
+    "name": "Pyranthus",
+    "url": "https://github.com/pyranthus-hq"
+  },
+  "homepage": "https://github.com/pyranthus-hq/mora",
+  "repository": "https://github.com/pyranthus-hq/mora",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "local-first",
+    "mcp",
+    "agent-skills"
+  ]
+}
