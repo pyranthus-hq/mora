@@ -436,6 +436,15 @@ func parseFrontmatterScalar(key, raw string) (string, error) {
 	}
 	decoded, err := strconv.Unquote(value)
 	if err != nil {
+		// Legacy quoteYAML did not quote a title merely because it contained a
+		// quote. A title such as `"Quoted title` was therefore written raw and
+		// the old parser kept the memory readable by trimming quote characters.
+		// Retain that cosmetic-field compatibility, but do not extend it to
+		// source/provider identity where a changed value can alter matching,
+		// governance, or citation behavior.
+		if key == "title" {
+			return strings.Trim(value, `"`), nil
+		}
 		return "", fmt.Errorf("%s frontmatter value is corrupt: %w", key, err)
 	}
 	return decoded, nil

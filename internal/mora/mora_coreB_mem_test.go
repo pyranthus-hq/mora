@@ -178,6 +178,25 @@ func TestCoreB_MemQuotedScalarDecodingIsExact(t *testing.T) {
 	}
 }
 
+func TestCoreB_MemLegacyLeadingQuoteTitleRemainsReadable(t *testing.T) {
+	// Before quoteYAML treated quote characters as requiring encoding, a title
+	// beginning with `"` and containing none of :#[] was written raw. The legacy
+	// parser trimmed that quote. Preserve that readable result rather than making
+	// a cosmetic title ambiguity invalidate the entire memory.
+	body := "---\n" +
+		"id: mem_legacy_quote\n" +
+		"title: \"Quoted title\n" +
+		"source: manual\n" +
+		"---\n\nbody\n"
+	m, err := parseMemory(coreBMemWriteFile(t, []byte(body)))
+	if err != nil {
+		t.Fatalf("legacy leading-quote title became unreadable: %v", err)
+	}
+	if m.Title != "Quoted title" {
+		t.Fatalf("legacy title = %q, want old-parser value %q", m.Title, "Quoted title")
+	}
+}
+
 func TestCoreB_MemScalarCodecRoundTrips(t *testing.T) {
 	// The renderer and parser are a codec pair, not independent string helpers.
 	// Every value here must survive encode/decode exactly; deleting either the
