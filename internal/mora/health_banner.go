@@ -86,7 +86,7 @@ func healthBannerFrom(h Health) string {
 	if w := worstSource(h.Sources); w != nil {
 		consider(sourceBannerRank(w.State), w.AgeHours, healthBannerLine(*w))
 	}
-	if line := indexBannerLine(h.Index); line != "" {
+	if line := indexBannerLineWithActivity(h.Index, h.Activities); line != "" {
 		consider(indexBannerRank(h.Index.State), h.Index.PendingOps, line)
 	}
 	if w := worstShareIndex(h.Index.Shares); w != nil {
@@ -94,6 +94,14 @@ func healthBannerFrom(h Health) string {
 	}
 	if w := worstProducer(h.Producers); w != nil {
 		consider(producerBannerRank(*w), w.AgeHours, producerBannerLine(*w))
+	}
+	for _, a := range h.Activities {
+		switch a.State {
+		case operationFailed:
+			consider(0, 0, fmt.Sprintf("🔴 MORA HEALTH: %s operation FAILED (%s). Run: mora doctor", strings.ReplaceAll(string(a.Kind), "_", " "), a.FailureCode))
+		case operationStalled:
+			consider(1, 0, fmt.Sprintf("🔴 MORA HEALTH: %s operation STALLED (phase %s). Run: mora doctor", strings.ReplaceAll(string(a.Kind), "_", " "), sanitizeOperationPhase(a.Phase)))
+		}
 	}
 
 	return capBannerLine(best)
@@ -139,8 +147,8 @@ func shareIndexBannerLine(idx indexHealth) string {
 	}
 }
 
-// indexBannerLine renders the index arm's alarm line, or "" when fresh.
-func indexBannerLine(idx indexHealth) string {
+// indexBannerLineWithActivity renders the index arm's alarm line, or "" when fresh.
+func indexBannerLineWithActivity(idx indexHealth, activities []operationActivity) string {
 	switch idx.State {
 	case idxFresh, "":
 		return ""
@@ -159,6 +167,19 @@ func indexBannerLine(idx indexHealth) string {
 		return fmt.Sprintf("🔴 MORA HEALTH: search index is DEGRADED — built with %s, config requests %s. Run: mora doctor",
 			idx.Embedder.Model, idx.Embedder.Configured)
 	case idxDirty:
+		for i := len(activities) - 1; i >= 0; i-- {
+			a := activities[i]
+			if a.State != operationRunning {
+				continue
+			}
+			kind := strings.ReplaceAll(string(a.Kind), "_", " ")
+			snapshot := "the last committed snapshot"
+			if idx.IndexedAt != "" {
+				snapshot = "the last committed snapshot from " + idx.IndexedAt
+			}
+			return fmt.Sprintf("🔴 MORA HEALTH: refresh in progress (%s, phase %s); serving %s. Current index remains DIRTY. Run: mora doctor",
+				kind, sanitizeOperationPhase(a.Phase), snapshot)
+		}
 		if idx.PendingOps > 0 {
 			since := bannerClockOf(idx.DirtySince)
 			return fmt.Sprintf("🔴 MORA HEALTH: search index is DIRTY — %d vault %s not indexed%s. Run: mora index rebuild",

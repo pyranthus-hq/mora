@@ -53,12 +53,13 @@ const (
 const indexProjectionLagThreshold = 6 * time.Hour
 
 // Health is the typed kernel every surface consults — Gate 1's sourceHealth
-// extended with the two states it never had (index, producers).
+// extended with index, producer, and subordinate operation-activity evidence.
 type Health struct {
-	State     string           `json:"state"`     // healthy | degraded | unhealthy (worst-of; UNKNOWN => unhealthy)
-	Sources   []sourceHealth   `json:"sources"`   // Gate 1, unchanged
-	Index     indexHealth      `json:"index"`     // HEALTH-09/-10/-12
-	Producers []producerHealth `json:"producers"` // HEALTH-11 (PR 4)
+	State      string              `json:"state"`      // healthy | degraded | unhealthy (worst-of; UNKNOWN => unhealthy)
+	Sources    []sourceHealth      `json:"sources"`    // Gate 1, unchanged
+	Index      indexHealth         `json:"index"`      // HEALTH-09/-10/-12
+	Producers  []producerHealth    `json:"producers"`  // HEALTH-11 (PR 4)
+	Activities []operationActivity `json:"activities"` // subordinate ingest/rebuild progress; never makes dirty healthy
 }
 
 type indexHealth struct {
@@ -429,9 +430,10 @@ func oldestPendingStamp(ops []pendingOp, journalOldest string) string {
 // collapses them worst-of. Nothing recomputes a sub-arm on its own.
 func healthOf(cfg Config, now time.Time) Health {
 	h := Health{
-		Sources:   sourceHealthAll(cfg, now),
-		Index:     indexHealthOf(cfg, now),
-		Producers: producerHealthAll(cfg, now), // PR 4: producer liveness (HEALTH-11)
+		Sources:    sourceHealthAll(cfg, now),
+		Index:      indexHealthOf(cfg, now),
+		Producers:  producerHealthAll(cfg, now), // PR 4: producer liveness (HEALTH-11)
+		Activities: operationActivities(cfg, now, operationProcessAlive),
 	}
 	// Packet H4: fold every subscription's index health into the aggregate arm.
 	h.Index.Shares = shareIndexHealthAll(cfg, now)
@@ -475,6 +477,14 @@ func aggregateHealthState(h Health) string {
 		switch p.State {
 		case prodFailed, prodNever, prodStale:
 			degraded = true
+		}
+	}
+	// Activity is subordinate evidence: a live operation never makes a dirty
+	// index healthy. A stalled/failed/corrupt receipt does fail closed even if a
+	// separate index signal was lost or has not yet been wired.
+	for _, a := range h.Activities {
+		if a.State == operationStalled || a.State == operationFailed {
+			unhealthy = true
 		}
 	}
 	switch {
