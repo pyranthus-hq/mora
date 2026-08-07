@@ -46,6 +46,15 @@ the app again.
 The app is the Full Disk Access target for iMessage and Apple Calendar. Install
 it before you grant that permission.
 
+#### Homebrew status
+
+The signed-app Homebrew Cask is not published yet. `cmd/gencask` exists so the
+future Cask can be reproduced exactly from a release tag and
+`checksums-app.txt`, but it does not publish anything and currently refuses to
+declare `auto_updates true`. That declaration remains blocked until #291 ships
+scheduled update checks and notification behavior. The private legacy Cask is
+not a supported workaround: it installs a raw binary and strips quarantine.
+
 `mora upgrade` replaces the whole app bundle. It checks the new bundle before
 the swap and checks it again after the swap. It restores the old bundle if the
 post-swap check fails. Never replace only
@@ -668,8 +677,9 @@ mora upgrade
 ```
 
 A signed app install downloads the app ZIP and replaces the full checked
-bundle. A standalone install uses the raw release archive. Homebrew installs
-are sent to `brew upgrade`. Source builds do not self-update.
+bundle. A standalone install uses the raw release archive. Legacy Homebrew
+installs are sent to `brew upgrade`; the new signed-app Cask is not public yet.
+Source builds do not self-update.
 
 After update, check:
 

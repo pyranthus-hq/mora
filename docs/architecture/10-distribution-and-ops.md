@@ -8,10 +8,11 @@ boundary described in the [README](../../README.md#privacy-boundary).
 
 | File | Responsibility |
 |---|---|
-| `.goreleaser.yaml` | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, archives, checksums, cosign keyless signing, SBOM, disabled-by-default Homebrew cask upload, and a draft GitHub Release. |
+| `.goreleaser.yaml` | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, archives, checksums, cosign keyless signing, SBOM, and a draft GitHub Release. It contains no Homebrew publisher because GoReleaser cannot describe the signed app artifact. |
 | `.github/workflows/ci.yml` | PR/push gate: macOS secret-free Mora.app release-contract sabotage, gofmt, `go vet`, `go test -race`, a Windows portability job, golangci-lint, five-target build matrix, advisory size diff, and gitleaks. |
 | `.github/workflows/release.yml` | Tag-triggered (`v*`), macOS-hosted signed/notarized release workflow; it publishes only after the artifact and Tier-1 gates pass. |
-| `cmd/genicns` + `internal/appbundle` | Deterministic stdlib-only `Mora.icns` generator from the committed pixel-art SVG. |
+| `cmd/genicns` + `internal/appbundle` | Deterministic stdlib-only `Mora.icns` generator from the committed pixel-art SVG, plus the dormant signed-app Homebrew Cask renderer. |
+| `cmd/gencask` | Deterministically renders (but never publishes) a Cask from a canonical release tag and `checksums-app.txt`. It refuses `auto_updates` until #291 lands. |
 | `scripts/assemble-darwin-app.sh` | Deterministic `Mora.app` assembly from an already-signed CLI and generated icon; assembly only, no signing. |
 | `scripts/appbundle-darwin-release.sh` | Checksum-verified assembly, whole-bundle Developer ID signing, notarization, stapling, Gatekeeper validation, packaging, and final ZIP re-verification. |
 | `scripts/verify-app-zip.sh` | Fail-closed path and layout validation for app ZIP assets. |
@@ -298,11 +299,28 @@ flowchart LR
 
 ---
 
+## Dormant Homebrew Cask generator
+
+`cmd/gencask` is the repository-owned, stdlib-only renderer for the future
+signed-app Cask. Given a canonical `vMAJOR.MINOR.PATCH` tag and the release's
+`checksums-app.txt`, it requires exactly the AMD64 and ARM64 post-staple
+`*_app.zip` entries and emits byte-stable Ruby. The Cask installs `Mora.app` and
+links `Contents/MacOS/mora`; it has no `xattr`, re-signing, `postflight`, or
+`zap` hook. A preflight refuses a second copy at `~/Applications/Mora.app`, and
+normal Homebrew artifact conflicts remain fail-closed.
+
+This is intentionally **generation only**. Neither GoReleaser nor the release
+workflow carries a tap token or publishes a Cask. `--auto-updates` is an
+explicit generator option, but it fails closed while `CaskAutoUpdatesReady` is
+false. Issue #291 must land and prove scheduled update/check/notification
+behavior before that gate changes. Issue #294's later post-publish job must
+also verify the release is public before it may update the tap.
+
 ## License — Apache-2.0
 
-The repository ships under **Apache-2.0**, and the GoReleaser cask metadata
-declares the same SPDX identifier. Cask upload is currently disabled with
-`skip_upload: true`; the release workflow does not publish a Homebrew cask.
+The repository ships under **Apache-2.0**. Homebrew's current Cask DSL has no
+`license` stanza, so the generated Ruby does not invent one; its homepage points
+to this repository and its committed license.
 
 ---
 
@@ -332,7 +350,7 @@ behind a blanket "zero egress" claim.
 
 3. **The archive `name_template` is a contract shared by installers and self-update.** POSIX assets use `mora_{Version}_{Os}_{Arch}.tar.gz`; Windows uses `mora_{Version}_windows_amd64.zip`. GoReleaser produces the archives, `install.sh` / `install.ps1` reconstruct the names, and `go-selfupdate` matches them. WHY: change the template in one place and self-update or install scripts silently stop finding assets. Treat the templates as frozen.
 
-4. **The binary must live at the archive root (no nested directory).** Both `build-release.sh:38` and GoReleaser's default do this. WHY: go-selfupdate and the Homebrew cask resolve `mora` at the archive root. A nested path breaks both.
+4. **The raw binary must live at the archive root (no nested directory).** Both `build-release.sh:38` and GoReleaser's default do this. WHY: legacy `go-selfupdate` resolves `mora` there. The future Cask is a separate app artifact and links `Mora.app/Contents/MacOS/mora`.
 
 5. **The ldflags version stamp gates self-update.** A build without `-X main.version` reports `dev`, and `mora upgrade` refuses dev builds (`upgrade.go:32-35`). WHY: self-update on an unversioned binary has no baseline to compare against and would loop/misfire. Releases MUST carry the stamp.
 
@@ -357,6 +375,8 @@ behind a blanket "zero egress" claim.
 15. **The raw bridge and app bundle are different update contracts.** The existing archive keeps `mora` at its root. The app asset name `mora_<version>_darwin_<arch>_app.zip` does not end in a `<os><sep><arch><ext>` suffix, so the legacy `go-selfupdate` matcher can never select it (locked by the packaging-time name guard and the contract harness's suffix sabotage), and app updates replace the whole signed bundle. WHY: an old `go-selfupdate` client otherwise selects the app archive and extracts the wrong executable, while an inner-binary-only swap invalidates the app seal.
 
 16. **The app bundle is signed, notarized, stapled, and zipped — in that order.** `appbundle-darwin-release.sh` signs the whole bundle (never only `Contents/MacOS/mora`), staples after Apple accepts, verifies the ticket file and Gatekeeper's verdict, and only then produces the published `_app.zip`. WHY: a zip cut before stapling ships an app that cannot validate offline, and an inner-binary-only signature leaves the resource seal unverified. The contract test asserts the ordering from the mock call log.
+
+17. **GoReleaser never generates or publishes the Homebrew Cask.** Its OSS Cask pipe models the raw archive, not the signed application artifact. `cmd/gencask` accepts only the two post-staple `_app.zip` checksums and currently refuses `auto_updates`. WHY: flipping a disabled raw-Cask stanza could publish an unsigned package shape or promise an updater before #291 exists.
 
 ---
 

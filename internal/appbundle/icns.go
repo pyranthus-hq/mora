@@ -1,4 +1,4 @@
-// Package appbundle generates the deterministic macOS app icon for Mora.app.
+// Package appbundle deterministically generates release metadata and icon assets for Mora.app.
 //
 // The one and only icon source is the committed pixel-art eye at
 // docs/assets/mora-eye.svg. That file is a flat list of axis-aligned unit
