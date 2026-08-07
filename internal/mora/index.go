@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,25 +47,25 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 }
 func dbPath(cfg Config) string { return filepath.Join(cfg.DataDir, "index.db") }
 
-// roIndexDSN is the DSN every read-only index open uses. journal_mode(WAL) is the
-// load-bearing setting for MULTI-PROCESS safety: with N long-lived `mora mcp serve`
-// reader processes (one per agent session), the default rollback journal makes a
-// writer's EXCLUSIVE lock wait for every reader's SHARED lock, so a rebuild/write
-// blows past busy_timeout and surfaces "database is locked". In WAL, readers read
-// the last committed snapshot and are never blocked by an in-flight rebuild, and the
-// single writer proceeds concurrently. busy_timeout(15000) still covers the brief
-// windows a writer holds the WAL write lock or a checkpoint runs — and stops
-// openIndexRO from misreading a transient SQLITE_BUSY as a stale schema and firing a
-// spurious rebuild; humanizeIndexBusy gives an actionable message if a read still
-// outlasts it. (TestReadOnlyIndexWaitsOnWriteLock pins the wait; TestIndexIsWAL pins
-// the mode.)
-//
-// Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out but NOT
-// enforced (connections open read-write) — which is exactly why a "read-only" open
-// can still create the -wal/-shm sidecars WAL requires, so there is no read-only-WAL
-// breakage here.
+// roIndexDSN is the DSN every read-only index open uses. Writers persist WAL mode;
+// readers only need to use that committed mode, not set it again. A hierarchical
+// file URI makes modernc enforce mode=ro instead of silently opening the bare-path
+// spelling read-write. When no live WAL exists, immutable=1 is safe for this
+// per-request snapshot and lets sandboxed agents read index.db without permission
+// to create WAL/SHM sidecars. A live WAL keeps ordinary mode=ro so its committed
+// rows remain visible. query_only is a second fail-closed guard; busy_timeout still
+// covers a live writer's short lock window.
 func roIndexDSN(cfg Config) string {
-	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)"
+	path := filepath.ToSlash(dbPath(cfg))
+	if filepath.VolumeName(path) != "" && !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	u := &url.URL{Scheme: "file", Path: path}
+	dsn := u.String() + "?mode=ro&_pragma=busy_timeout(15000)&_pragma=query_only(1)"
+	if info, err := os.Stat(dbPath(cfg) + "-wal"); errors.Is(err, os.ErrNotExist) || (err == nil && info.Size() == 0) {
+		dsn += "&immutable=1"
+	}
+	return dsn
 }
 
 // rwIndexDSN is the DSN every WRITER of the live index (full rebuild + incremental
