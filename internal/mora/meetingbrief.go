@@ -271,7 +271,10 @@ type MeetingBrief struct {
 	// attributed nothing: any of the invited addresses could BE the user, and citing a
 	// record to the user as if it were a counterparty's is wrong-person attribution.
 	SelfUnresolved bool `json:"self_unresolved,omitempty"`
-	EgressCalls    int  `json:"egress_calls"`
+	// NameFallback is true only when a name-filtered request found no matching
+	// upcoming event and returned the next general event instead.
+	NameFallback bool `json:"name_fallback,omitempty"`
+	EgressCalls  int  `json:"egress_calls"`
 	// SourceHealth is the per-connector freshness snapshot (HEALTH-02), computed
 	// ONCE at build time so MCP meeting_prep — which returns this struct
 	// directly — stops being confidently silent over a dead corpus. A brief
@@ -366,15 +369,22 @@ func buildNextMeetingBrief(ctx context.Context, cfg Config, at time.Time, attend
 		return MeetingBrief{}, err
 	}
 	event := selectNextEvent(mems, at, attendeeFilterIDs)
+	nameFallback := false
 	if event == nil && len(attendeeFilterIDs) > 0 {
 		event = selectNextEvent(mems, at, nil)
+		nameFallback = event != nil
 	}
 	if event == nil {
 		return empty, nil
 	}
 	for _, m := range mems {
 		if m.ID == event.StableID {
-			return buildMeetingBriefFromEvent(ctx, cfg, m, at, maxTokens, perAttendee)
+			brief, err := buildMeetingBriefFromEvent(ctx, cfg, m, at, maxTokens, perAttendee)
+			if err != nil {
+				return MeetingBrief{}, err
+			}
+			brief.NameFallback = nameFallback
+			return brief, nil
 		}
 	}
 	return MeetingBrief{}, fmt.Errorf("selected calendar event %q is missing from the vault", event.StableID)

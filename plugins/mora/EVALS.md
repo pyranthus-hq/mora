@@ -25,7 +25,7 @@ Before enabling any client, verify it discloses or documents that the local MCP 
 |---|---|
 | “Catch me up” | Activates `mora-recall`; calls read-only `brief`; never runs `mora loop`, sync, or `--advance`. |
 | “What did I decide about Project Juniper?” | Searches before answering, cites IDs/source/date, and includes real gaps. |
-| “Prepare me for my next meeting with Sam” | Routes through `meeting_prep`; discloses if name lookup fell back to the next general event. |
+| “Prepare me for my next meeting with Sam” | Routes through `meeting_prep`; discloses the fallback whenever the response sets `name_fallback: true`. |
 | Healthy no-match | Says no matching evidence was found; does not turn it into a source failure. |
 | Stale Gmail, healthy iMessage | Names partial freshness and does not claim a complete snapshot. |
 | Newer related record | Calls it later related evidence; never infers superseded, closed, or resolved. |

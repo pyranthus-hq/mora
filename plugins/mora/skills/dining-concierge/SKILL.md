@@ -6,6 +6,7 @@ compatibility: Requires the Mora MCP server for personal grounding and network-c
 metadata:
   author: pyranthus-hq
   version: "1.0"
+  trigger_phrases: "restaurant recommendation, where should we eat, dining plan"
 ---
 
 # Dining Concierge

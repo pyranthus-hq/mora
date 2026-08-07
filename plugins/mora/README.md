@@ -21,6 +21,7 @@ The bare `mora` command is intentionally resolved by the client. GUI-launched cl
 Mora ignores `PLUGIN_DATA`: every client must use Mora's canonical config, state directory, and vault instead of creating per-client memory islands. The package contains no binary, credentials, connector configuration, vault data, SQLite state, tokens, or generated briefs. It exposes stdio only—never a remote memory endpoint.
 
 Release builds publish `mora-agent-plugin-<version>.tar.gz` with this directory as the archive root for clients that need a standalone package.
+The portable manifest receives the Mora release version during packaging. The Claude wrapper has its own stable semantic version for client cache and update discovery; bump it whenever that wrapper's shipped behavior changes.
 
 ## Install (Claude Code)
 

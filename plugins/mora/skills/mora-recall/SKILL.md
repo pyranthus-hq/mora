@@ -6,6 +6,7 @@ compatibility: Requires the Mora MCP server for full behavior. A local Mora CLI 
 metadata:
   author: pyranthus-hq
   version: "1.0"
+  trigger_phrases: "what did we discuss, what did i decide, catch me up, what changed"
 ---
 
 # Mora Recall
@@ -23,7 +24,7 @@ If Mora tools are unavailable, say that personal grounding is unavailable. With 
 | Broad or fuzzy context | `context_memory` | Ask for a task-sized budget; do not pull the whole vault. |
 | Multi-source decision or explanation | `think` with confidence enabled | Compose from cited evidence and retain its gap analysis. |
 | Person or relationship dossier | `get_entity` | Retrieve only when the question actually needs cross-source identity context. |
-| Upcoming meeting or meeting with a person | `meeting_prep` | Pass `event_id` when known or `name` for the next meeting with that person. If Mora falls back to the next general event, disclose that it did not find the named meeting. |
+| Upcoming meeting or meeting with a person | `meeting_prep` | Pass `event_id` when known or `name` for the next meeting with that person. If the response sets `name_fallback`, disclose that Mora did not find the named meeting and returned the next general event. |
 
 Use `source` and `since_hours` only when the request supplies a real source or time boundary. Filters are constraints, not guesses. Prefer bounded reads using `match`, `max_tokens`, or an evidence reference returned by search.
 

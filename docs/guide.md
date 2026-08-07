@@ -512,7 +512,10 @@ mora brief --event-id calendar_event/abc --at 2026-07-10T15:00:00Z
 ```
 
 The event view shows cited prior context, open items, and source age. `--at`
-makes the time-dependent view repeatable for a test or review.
+makes the time-dependent view repeatable for a test or review. MCP clients may
+request `meeting_prep` by person name. When no upcoming event matches but a
+general next event exists, the response sets `name_fallback: true`; clients
+must disclose the fallback instead of presenting it as the named meeting.
 
 ### Tasks
 

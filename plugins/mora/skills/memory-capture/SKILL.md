@@ -6,6 +6,7 @@ compatibility: Requires the Mora MCP server and its configured open, propose, or
 metadata:
   author: pyranthus-hq
   version: "1.0"
+  trigger_phrases: "remember this, save this memory, capture this fact"
 ---
 
 # Memory Capture

@@ -48,6 +48,9 @@ jobs:
           go test ./internal/mora -run 'TestAgentPlugin|TestMCPInstructionsTreatRetrievedContent' -count=1
           archive="$RUNNER_TEMP/mora-agent-plugin-test.tar.gz"
           bash scripts/package-agent-plugin.sh 0.0.0-test "$archive"
+          checksum="${archive}.sha256"
+          (cd "$(dirname "$archive")" && shasum -a 256 "$(basename "$archive")" > "$(basename "$checksum")")
+          (cd "$(dirname "$archive")" && shasum -a 256 -c "$(basename "$checksum")")
           tar -tzf "$archive" | grep -qx './plugin.json'
           tar -tzf "$archive" | grep -qx './mcp.json'
           staged="$RUNNER_TEMP/mora-agent-plugin-test"

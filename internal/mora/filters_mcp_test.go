@@ -54,6 +54,43 @@ func TestMCPMeetingPrepRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMeetingPrepNameFallbackIsExplicit(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	pinPrepClock(t, now)
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@a.com",
+		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, eventMemFull("evt", "General sync", now.Add(2*time.Hour).Format(time.RFC3339),
+		map[string]string{"riya@a.com": "Riya", "me@a.com": "Me"}, "me@a.com", "riya@a.com")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	fallback, err := buildNextMeetingBrief(context.Background(), cfg, now, map[string]bool{"person:missing@example.com": true}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fallback.NameFallback || fallback.Event == nil || fallback.Event.ID != "evt" {
+		t.Fatalf("fallback brief = %#v, want evt with name_fallback", fallback)
+	}
+
+	matched, err := buildNextMeetingBrief(context.Background(), cfg, now, map[string]bool{"person:riya@a.com": true}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched.NameFallback {
+		t.Fatal("matching name filter must not report fallback")
+	}
+}
+
 // TestMeetingPrepPayloadUnderCeiling (T0 stress): a heavy meeting (25 attendees ×
 // 20 memories each) must still land under the 12000-token ceiling — per-attendee
 // dossier budgets plus the global cited-line cap hold the line.
