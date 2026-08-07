@@ -447,11 +447,11 @@
       "name": "self upgrade",
       "paths": ["upgrade"],
       "evidence": {
-        "success": {"status": "platform_seam", "tests": ["TestDecideUpgrade", "TestPostUpgradeRebuildExecsNewBinary"], "reason": "A live binary replacement requires a signed release and network; decision, archive, replacement-path, and post-upgrade execution are tested at explicit seams."},
-        "json": {"status": "not_supported", "reason": "upgrade is text-only."},
-        "state": {"status": "platform_seam", "tests": ["TestUpgradePreservesState", "TestPostUpgradeRebuildExecsNewBinary"], "reason": "Upgrade filesystem effects are tested with isolated paths and a fake new binary."},
-        "error": {"status": "test", "tests": ["TestMc_CmdUpgradeFlagParseError", "TestCLIRegistryPriorityGapsUseRealRun/upgrade"]},
-        "refusal": {"status": "test", "tests": ["TestCLIRegistryPriorityGapsUseRealRun/upgrade"], "reason": "Source builds refuse self-update before network egress."}
+        "success": {"status": "platform_seam", "tests": ["TestDecideUpgrade", "TestPostUpgradeRebuildExecsNewBinary", "TestUpgradePolicyPersistsWithoutDroppingUnknownConfig", "TestUpdateCheckCachesAvailabilityAcrossErrorsWithoutSecrets"], "reason": "A live binary replacement requires a signed release and network; policy persistence, cached checks, decision, archive, replacement-path, and post-upgrade execution are tested at explicit seams."},
+        "json": {"status": "test", "tests": ["TestUpgradeStatusJSONIsCachedAndMakesNoCalls"], "reason": "upgrade --status --json is stable cached machine output and performs no network or notification call."},
+        "state": {"status": "platform_seam", "tests": ["TestUpgradePreservesState", "TestPostUpgradeRebuildExecsNewBinary", "TestUpgradePolicyPersistsWithoutDroppingUnknownConfig", "TestUpdateCheckCachesAvailabilityAcrossErrorsWithoutSecrets", "TestNotificationFailureKeepsCachedWarning", "TestLoadUpdateReceiptRejectsCorruptOrFutureData"], "reason": "Upgrade filesystem effects and sanitized state-dir policy/receipt persistence are tested with isolated paths and fake release/notifier seams."},
+        "error": {"status": "test", "tests": ["TestMc_CmdUpgradeFlagParseError", "TestCLIRegistryPriorityGapsUseRealRun/upgrade", "TestNotificationFailureKeepsCachedWarning", "TestLoadUpdateReceiptRejectsCorruptOrFutureData"]},
+        "refusal": {"status": "test", "tests": ["TestCLIRegistryPriorityGapsUseRealRun/upgrade", "TestOffScheduledCheckMakesZeroNetworkAndNotifierCalls", "TestSourceDefaultScheduledCheckDoesNothing"], "reason": "Source builds default off and configured off returns before network/notifier egress; bare manual self-update retains its existing dev-build refusal."}
       }
     }
   ]

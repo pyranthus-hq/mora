@@ -26,10 +26,57 @@ const (
 // installs are deferred to `brew upgrade`; source/dev builds are refused.
 func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
-	fs.SetOutput(stdout)
+	fs.SetOutput(io.Discard)
 	checkOnly := fs.Bool("check", false, "only report whether an update is available; don't install")
+	policyFlag := fs.String("policy", "", "set automatic update policy: auto, notify, or off")
+	statusOnly := fs.Bool("status", false, "show cached update policy and check status")
+	jsonOut := fs.Bool("json", false, "emit machine-readable status (requires --status)")
+	scheduledCheck := fs.Bool("scheduled-check", false, "internal check-and-notify seam; never installs")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: mora upgrade [--check | --policy auto|notify|off | --status [--json] | --scheduled-check]")
+	}
+	selected := 0
+	for _, on := range []bool{*checkOnly, *policyFlag != "", *statusOnly, *scheduledCheck} {
+		if on {
+			selected++
+		}
+	}
+	if selected > 1 || (*jsonOut && !*statusOnly) {
+		return fmt.Errorf("usage: mora upgrade [--check | --policy auto|notify|off | --status [--json] | --scheduled-check]")
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if *policyFlag != "" {
+		policy, err := parseUpdatePolicy(*policyFlag)
+		if err != nil {
+			return err
+		}
+		cfg.UpdatePolicy = string(policy)
+		if err := writeConfig(cfg); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "update policy = %s\n", policy)
+		if policy == updatePolicyAuto {
+			fmt.Fprintln(stdout, "automatic installation is not enabled yet; checks cache availability and notify until the verified unattended updater ships")
+		}
+		return nil
+	}
+	if *statusOnly {
+		return cmdUpgradeStatus(cfg, *jsonOut, stdout)
+	}
+	if *checkOnly {
+		if BuildVersion == "" || BuildVersion == "dev" {
+			return fmt.Errorf("this is a source build (version %q) — update checks only work on a released binary; use `git pull && go build`, or install a release", BuildVersion)
+		}
+		return runUpdateCheck(ctx, cfg, false, stdout)
+	}
+	if *scheduledCheck {
+		return runUpdateCheck(ctx, cfg, true, stdout)
 	}
 
 	current := BuildVersion

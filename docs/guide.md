@@ -660,7 +660,34 @@ mora reingest --full
 `reingest --full` rewrites current memories with the latest extraction logic
 and rebuilds the graph. Use it after an update that changes extraction.
 
-Update the installed release:
+Choose the automatic-check policy and inspect its local receipt:
+
+```bash
+mora upgrade --policy auto    # Mora.app-path default; PR #291 currently checks/notifies only
+mora upgrade --policy notify
+mora upgrade --policy off     # scheduled checks make zero network or notification calls
+mora upgrade --status
+mora upgrade --status --json
+```
+
+The default is `auto` for a released binary whose resolved executable has the
+`Mora.app/Contents/MacOS/mora` path shape, `notify` for another released binary,
+and `off` for source/local builds. The status reason is `mora_app_path`: this
+stage recognizes layout only and does not claim the app signature was verified.
+PR #291's pre-apply stage must verify the real bundle identity before any swap.
+The policy and cached status are local. Check receipts live under Mora's state
+directory and contain versions, timestamps, and typed outcome codes only—not
+GitHub tokens, private paths, source content, or raw error text. A failed check
+keeps the last known available version. Update notifications are restrained to
+one per version every 72 hours, and a notification failure leaves the cached
+warning visible.
+
+This first update-policy stage does **not** install updates unattended and does
+not install a schedule. Its internal scheduled-check seam only checks and
+notifies. Until the later verified unattended-updater stage lands, `auto` is an
+explicit future policy whose current behavior is check plus notification.
+
+Check or manually update the installed release:
 
 ```bash
 mora upgrade --check
