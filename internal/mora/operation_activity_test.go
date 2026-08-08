@@ -150,6 +150,19 @@ func TestOperationClassifierRejectsInvalidPhaseAndIncoherentStates(t *testing.T)
 			r.FinishedAt = operationTestNow.Format(time.RFC3339)
 			r.FailureCode = "failed"
 		}, code: "incoherent_state"},
+		{name: "future_completed", edit: func(r *operationRecord) {
+			future := operationTestNow.Add(2 * time.Minute).Format(time.RFC3339)
+			r.State = operationCompleted
+			r.HeartbeatAt = future
+			r.FinishedAt = future
+		}, code: "invalid_timestamp"},
+		{name: "future_failed", edit: func(r *operationRecord) {
+			future := operationTestNow.Add(2 * time.Minute).Format(time.RFC3339)
+			r.State = operationFailed
+			r.HeartbeatAt = future
+			r.FinishedAt = future
+			r.FailureCode = "injected_failure"
+		}, code: "invalid_timestamp"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

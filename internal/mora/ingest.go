@@ -543,18 +543,64 @@ func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
 // stampSyncAttemptFailure can tell "the inner path stamped this attempt" from
 // "a previous attempt failed" by timing, not by comparing error text (a
 // repeated identical failure must still advance LastAttemptAt every time).
-func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
-	// Release any ingest lease this run took (A3 rule d / Finding 2) once the run
-	// ends: no more files land for it, so cmdIngest's terminal rebuild may retire the
-	// covered journal instead of waiting for process exit. A hard SIGKILL skips this;
-	// the lease then names a dead pid and the next rebuild reclaims it.
-	defer releaseIngestLeasesOwnedHere(cfg)
-	attemptStart := time.Now()
-	n, err := ingestSourceDispatch(cfg, s, out)
+// testHookIngestActivityStarted fires after the durable activity+journal marks
+// exist and before provider dispatch can publish. Tests use it as an ordering and
+// concurrency failpoint; production leaves it nil.
+var testHookIngestActivityStarted func(Config, Source, operationHandle)
+
+func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
+	// The activity receipt and matching journal header are both durable before
+	// dispatch can publish a vault file. Even a zero-item run gets a header, so
+	// its success can be closed only by the covering committed rebuild.
+	h, err := beginOperation(cfg, operationKindIngest, "starting", operationClock())
 	if err != nil {
-		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return 0, fmt.Errorf("starting ingest activity: %w", err)
 	}
-	return n, err
+	cfg.operationRunID = h.runID
+	finishFailed := func(code string, cause error) error {
+		finishErr := finishOperation(cfg, h, operationFailed, "failed", operationCounts{Items: n, Errors: 1}, code, operationClock())
+		return errors.Join(cause, finishErr)
+	}
+	sourceKey := ingestOperationSourceKey(s)
+	if err := ensureIngestJournalHeader(cfg, sourceKey); err != nil {
+		return 0, finishFailed("journal_start_failed", err)
+	}
+	// Release only this source's lease. Concurrent in-process ingests share a PID;
+	// releasing every lease here would abandon the still-running sibling.
+	defer releaseIngestLeaseOwnedHere(cfg, sourceKey)
+
+	progress := startOperationProgress(cfg, h, "ingesting")
+	if err := progress.update("ingesting", operationCounts{}); err != nil {
+		_ = progress.stop()
+		return 0, finishFailed("heartbeat_failed", err)
+	}
+	if testHookIngestActivityStarted != nil {
+		testHookIngestActivityStarted(cfg, s, h)
+	}
+	attemptStart := time.Now()
+	n, dispatchErr := ingestSourceDispatch(cfg, s, out)
+	if dispatchErr == nil {
+		dispatchErr = progress.update("awaiting_rebuild", operationCounts{Items: n})
+	}
+	if dispatchErr != nil {
+		progressErr := progress.stop()
+		err = errors.Join(dispatchErr, progressErr)
+		err = finishFailed("ingest_failed", err)
+		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return n, err
+	}
+	// Success deliberately remains running/awaiting_rebuild, and its bounded
+	// heartbeat stays live while sibling sources finish. The committed rebuild
+	// that retires this run's journal stops it and owns the terminal transition.
+	return n, nil
+}
+
+func ingestOperationSourceKey(s Source) string {
+	account := s.Account
+	if s.Type == "filesystem" {
+		account = s.Name
+	}
+	return ingestSourceKey(s.Type, account)
 }
 
 func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {

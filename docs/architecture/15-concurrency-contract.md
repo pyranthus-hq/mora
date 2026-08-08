@@ -252,6 +252,15 @@ not acquire an abandoned run, and an expired heartbeat becomes `stalled` even if
 the PID happens to exist. Health readers take no lock that mutates state and never
 reap receipts.
 
+Ingest publishes its receipt and journal header before provider dispatch and
+releases only that source's lease, not every lease sharing the process PID (two
+in-process sources may run concurrently). A successful ingest remains
+`awaiting_rebuild`; the rebuild may complete it cross-process only with the run id
+from a journal it has actually retired. Rebuild itself heartbeats across every
+expensive phase. Its SQLite commit and StateDir cleanup cannot be one filesystem
+transaction, so cleanup failure is an explicit partial result: keep the committed
+DB, retain dirty evidence, return nonzero, and terminal-fail the rebuild receipt.
+
 ## 6. The eventual-consistency window of the index
 
 `index.db` is a **derived, eventually-consistent cache**. The vault Markdown is

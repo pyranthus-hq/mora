@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -89,6 +90,19 @@ type operationHandle struct {
 type operationLiveness func(pid int) bool
 
 var operationProcessAlive operationLiveness = processAlive
+var operationClock = time.Now
+
+type operationHeartbeatTicker struct {
+	C    <-chan time.Time
+	stop func()
+}
+
+var newOperationHeartbeatTicker = func(d time.Duration) operationHeartbeatTicker {
+	ticker := time.NewTicker(d)
+	return operationHeartbeatTicker{C: ticker.C, stop: ticker.Stop}
+}
+
+var activeOperationProgress sync.Map // run id -> *operationProgress
 
 func operationRoot(cfg Config) string { return filepath.Join(cfg.StateDir, "operations") }
 
@@ -388,6 +402,7 @@ func classifyOperationRecord(rec operationRecord, pathKind operationKind, pathRu
 		if rec.FinishedAt != "" || rec.FailureCode != "" {
 			return bad("incoherent_state")
 		}
+
 	case operationFailed:
 		if rec.FinishedAt == "" || rec.FailureCode == "" {
 			return bad("incoherent_state")
@@ -434,6 +449,120 @@ func invalidOperationActivityWithRun(kind operationKind, runID, code string) ope
 		runID = "unknown"
 	}
 	return operationActivity{Kind: kind, State: operationFailed, RunID: runID, Phase: "unknown", FailureCode: code}
+}
+
+// operationProgress keeps a running receipt live during provider/network and
+// embedding work that can exceed the TTL. Updates and the ticker serialize on
+// mu, so a periodic heartbeat can never overwrite a newer phase/count snapshot.
+type operationProgress struct {
+	cfg    Config
+	handle operationHandle
+	clock  func() time.Time
+
+	mu     sync.Mutex
+	phase  string
+	counts operationCounts
+	err    error
+	stopCh chan struct{}
+	doneCh chan struct{}
+	once   sync.Once
+}
+
+func startOperationProgress(cfg Config, h operationHandle, phase string) *operationProgress {
+	p := &operationProgress{cfg: cfg, handle: h, clock: operationClock, phase: phase, stopCh: make(chan struct{}), doneCh: make(chan struct{})}
+	activeOperationProgress.Store(h.runID, p)
+	go func() {
+		defer close(p.doneCh)
+		defer activeOperationProgress.CompareAndDelete(h.runID, p)
+		ticker := newOperationHeartbeatTicker(operationHeartbeatTTL / 3)
+		defer ticker.stop()
+		for {
+			select {
+			case <-ticker.C:
+				p.mu.Lock()
+				if p.err == nil {
+					p.err = heartbeatOperation(p.cfg, p.handle, p.phase, p.counts, p.clock())
+				}
+				failed := p.err != nil
+				p.mu.Unlock()
+				if failed {
+					return
+				}
+			case <-p.stopCh:
+				return
+			}
+		}
+	}()
+	return p
+}
+
+func (p *operationProgress) update(phase string, counts operationCounts) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return p.err
+	}
+	if err := heartbeatOperation(p.cfg, p.handle, phase, counts, p.clock()); err != nil {
+		p.err = err
+		return err
+	}
+	p.phase, p.counts = phase, counts
+	return nil
+}
+
+func (p *operationProgress) stop() error {
+	p.once.Do(func() { close(p.stopCh) })
+	<-p.doneCh
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.err
+}
+
+// completeOperationAfterCoverage is the narrow cross-process completion seam:
+// a committed rebuild may close an ingest run only after its journal was
+// actually retired. The retired journal's run id is the authority; no PID-only
+// takeover is permitted. Missing records are legacy journal headers and benign.
+func completeOperationAfterCoverage(cfg Config, runID string, now time.Time) error {
+	if !validOperationToken(runID) {
+		return errors.New("invalid covered operation run id")
+	}
+	path := operationPath(cfg, operationKindIngest, runID)
+	err := withLeaseFileGuard(operationGuardPath(cfg, operationKindIngest), func() error {
+		rec, err := loadOperationRecord(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if rec.Kind != operationKindIngest || rec.RunID != runID {
+			return errors.New("covered operation identity mismatch")
+		}
+		if rec.State == operationCompleted || rec.State == operationFailed {
+			return nil
+		}
+		if rec.State != operationRunning {
+			return fmt.Errorf("covered operation has invalid state %q", rec.State)
+		}
+		previous, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
+		if err != nil || now.Before(previous) {
+			return errors.New("covered operation has invalid heartbeat")
+		}
+		stamp := now.UTC().Format(time.RFC3339Nano)
+		rec.State = operationCompleted
+		rec.HeartbeatAt = stamp
+		rec.FinishedAt = stamp
+		rec.Phase = "journal_retired"
+		rec.FailureCode = ""
+		return saveOperationRecord(path, rec)
+	})
+	if err == nil {
+		if tracked, ok := activeOperationProgress.Load(runID); ok {
+			_ = tracked.(*operationProgress).stop()
+		}
+		pruneTerminalOperations(cfg, operationKindIngest)
+	}
+	return err
 }
 
 // pruneTerminalOperations bounds retained completion evidence. It runs only

@@ -19,13 +19,13 @@ it from durable state and carries it as data, like Gate 1's `sourceHealth`.
 | `internal/mora/pending.go` | The **pending-ops ledger**: `pendingOp` (write \| delete \| rebuild), `markIndexDirty`/`unmarkIndexDirty`, `listPendingOps`, the A3 clearing rules (`clearCoveredPendingOps`/`shouldClearOp`), `pendingDeleteIDs`/`suppressPendingDeletes` (the B4 read-path suppression). `indexClock` is the injectable clock all of Gate 2's stamps resolve against. |
 | `internal/mora/atomicio.go` | `atomicWriteDurable` — `atomicWrite` plus two crash barriers (`f.Sync` before rename, `syncDir` after), behind the `markerSyncFn`/`syncDirFn` seams so the durability call-trace is testable. `testHookPostMarkerWrite` fires after a marker is durably on disk (the crash-window seam). |
 | `internal/mora/sync_notwindows.go` / `sync_windows.go` | The `syncDir` build-tag pair — a real parent-dir fsync on POSIX/darwin (`F_FULLFSYNC`), a documented no-op on Windows (NTFS `MoveFileEx` is metadata-journaled). Mirrors `rename_*windows.go`. |
-| `internal/mora/ingest_journal.go` | The **durable ingest journal** (`StateDir/ingest/<source>/journal.log`): a durable `run <op_id> <marked_at>` header written before the first connector publish, best-effort per-path lines, `ingestJournalStatus` (the B1-rule-4 read), and `recoverIngestJournals` (post-rebuild compaction). |
+| `internal/mora/ingest_journal.go` | The **durable ingest journal** (`StateDir/ingest/<source>/journal.log`): a durable `run <op_id> <marked_at>` header written before the first connector publish, best-effort per-path lines, `ingestJournalStatus` (the B1-rule-4 read), and `recoverIngestJournals` (error-returning post-commit compaction + retired run ids). |
 | `internal/mora/operation_activity.go` | The bounded, content-free operation receipt primitive under `StateDir/operations/`: owner-fenced begin/heartbeat/finish writes plus read-only running/stalled/failed/completed classification for ingest and index-rebuild work. |
 | `internal/mora/indexhealth.go` | The **typed health kernel**: `Health`/`indexHealth`/`projectionHealth`/`embedderProvenance`/`producerHealth`, the subordinate `Activities` arm, `indexHealthOf` (the seven-rule first-match-wins predicate), `healthOf` (the one public entry), `aggregateHealthState` (the B1b worst-of collapse), and the no-probe embedder-provenance comparison. |
 | `internal/mora/health_banner.go` | `healthBannerFrom(Health)` — the **one-line aggregate banner** across sources/index/producers/activities, `indexBannerLine`, `healthBannerLineCap`. |
 | `internal/mora/indexstamp.go` | The `index_meta` stamps written inside the rebuild commit tx + the content-manifest helpers (`manifestLine`/`manifestDigestOf`, `indexManifestAlgo`), and `stampIndexAttemptFailure`. |
 | `internal/mora/doctor_index.go` | Doctor-side helpers: the `sources_config` predicate (`enabledSourceCount`/`vaultHasConnectorMemories`), `disabledCorpusTypes`, and `indexMatchesVault` (the B1a manifest recompute). |
-| `internal/mora/index.go` | `rebuildIndexWithPolicy` marks itself, snapshots `listing_started_at`, computes the manifest for free from the parse bytes, stamps the projections + embedder + manifest inside the commit tx, and clears covered ops + journals after commit. |
+| `internal/mora/index.go` | `rebuildIndexWithPolicy` marks itself, snapshots `listing_started_at`, computes the manifest for free from the parse bytes, stamps the projections + embedder + manifest inside the commit tx, and clears covered ops + journals after commit, fails visibly on partial cleanup, and only then completes operation receipts. |
 | `internal/mora/index_upsert.go` | The incremental path advances `indexed_at` + `fts_indexed_at` only (never graph/vectors) and invalidates the manifest. |
 
 ## The core invariant: mark before visible, clear only on commit
@@ -122,9 +122,23 @@ active/stalled/corrupt receipt), so an old failure cannot keep health red after 
 newer success. On-disk terminal retention is bounded to 16 per kind and pruned only
 by a terminal writer.
 
-At this commit the primitive and read surfaces are present; existing ingest and
-rebuild producers do not yet publish these receipts. The existing pending-op and
-ingest-journal dirty rules remain the authoritative activity-independent floor.
+Every `ingestSource` begins its receipt and a run-id-bound journal header before
+provider dispatch can publish a vault byte. A bounded heartbeat keeps long fetches and batch-wait time
+live; clean ingest stops at `awaiting_rebuild`. It becomes `completed` only when a
+committed rebuild actually retires that run's journal. Failed ingest is terminal
+`failed`, and concurrent sources retain separate anonymous receipts (the source key
+exists only in the pre-existing journal layout, never the activity projection).
+
+`rebuildIndexWithPolicy` similarly begins before its pending dirty marker and
+advances through choosing-embedder, open, list, parse, graph, vectors, commitments,
+commit, marker retirement, and finalization phases. Its success transition happens
+only after the SQLite commit, covered pending-op removal, relevant journal removal,
+and covered-ingest completion. A cleanup failure after commit is returned as a
+visible partial failure (`post_commit_cleanup_failed`): the committed database is
+preserved, the uncleared marker keeps the index dirty, and no completed rebuild
+receipt is written. Setup/connect flows already call this rebuild synchronously, so
+they naturally wait for this terminal result; there is no separate setup-status
+surface.
 
 ## Producer liveness (HEALTH-11) — the watchman
 
