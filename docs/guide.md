@@ -691,10 +691,23 @@ keeps the last known available version. Update notifications are restrained to
 one per version every 72 hours, and a notification failure leaves the cached
 warning visible.
 
-This first update-policy stage does **not** install updates unattended and does
-not install a schedule. Its internal scheduled-check seam only checks and
-notifies. Until the later verified unattended-updater stage lands, `auto` is an
-explicit future policy whose current behavior is check plus notification.
+The internal scheduled-check seam implements the policy, but this stage still
+does **not** install a schedule. `notify` remains check plus notification and
+`off` returns before any network, notification, receipt, or lease write. `auto`
+can apply only when the running executable resolves inside `Mora.app`, the
+installed bundle passes its exact version/architecture/Developer ID/notarization
+checks, strict product health passes, the app parent is writable, and those
+identity and health observations still pass immediately before swap.
+
+Automatic application downloads the canonical architecture-specific `_app.zip`
+and `checksums-app.txt`, verifies the checksum and staged bundle through the
+same trust chain as manual whole-app upgrade, and atomically swaps at the same
+app path. Launch/version/signature, conditional index-schema rebuild, and strict
+health must then pass. A failure rolls the app back; rollback and rebuild
+outcomes remain visible in `upgrade --status`. An unwritable app is recorded as
+`deferred [app_unwritable]`, falls back to the restrained notification, and is
+not retried for the same version. Use the printed Homebrew/manual recovery
+command instead. No receipt stores raw errors or recovery paths.
 
 Check or manually update the installed release:
 

@@ -74,6 +74,25 @@ func TestDetectLatestAppRelease(t *testing.T) {
 	}
 }
 
+func TestDetectLatestAppReleaseIgnoresNonCanonicalTags(t *testing.T) {
+	assetName := "mora_1.2.3_darwin_arm64_app.zip"
+	valid := fakeAppRelease{tag: "v1.2.3", assets: []selfupdate.SourceAsset{
+		fakeAppAsset{name: assetName, size: 100, url: githubAssetURL("v1.2.3", assetName)},
+		fakeAppAsset{name: moraAppChecksumFilename, size: 100, url: githubAssetURL("v1.2.3", moraAppChecksumFilename)},
+	}}
+	releases := []selfupdate.SourceRelease{valid}
+	for _, tag := range []string{"v2", "v1.2", "2.0.0", "v02.0.0", "v2.0.0-rc.1", "v2.0.0+build"} {
+		releases = append(releases, fakeAppRelease{tag: tag})
+	}
+	candidate, found, err := detectLatestAppRelease(context.Background(), &fakeAppSource{releases: releases}, "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || candidate.version != "1.2.3" || candidate.assetName != assetName {
+		t.Fatalf("candidate=%+v found=%v", candidate, found)
+	}
+}
+
 func TestDetectLatestAppReleaseFailsClosedWhenNewestReleaseHasNoApp(t *testing.T) {
 	validOld := fakeAppRelease{tag: "v0.12.0", assets: []selfupdate.SourceAsset{
 		fakeAppAsset{name: "mora_0.12.0_darwin_arm64_app.zip", size: 100, url: githubAssetURL("v0.12.0", "app")},

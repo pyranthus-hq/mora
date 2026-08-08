@@ -348,11 +348,12 @@ mora hook uninstall
 mora serve http uninstall
 ```
 
-Automatic update policy currently governs cached checks and restrained
-notifications only; it does not yet install a schedule or perform an unattended
-swap. `off` makes the internal scheduled-check path perform no network or
-notification call. Bare `mora upgrade` remains the explicit verified update
-command.
+The internal scheduled-check path now honors the selected policy: `notify`
+checks and posts restrained reminders, `off` performs no network, notification,
+or state write, and `auto` may replace only a writable, verified `Mora.app` after
+strict health and a second identity check. It records rollback/rebuild outcomes
+locally. No update schedule is installed yet, so bare `mora upgrade` remains the
+normal explicit update command until the scheduling PR lands.
 
 For the signed macOS app, use the checked `uninstall-app.sh` command in the
 [guide](docs/guide.md#uninstall). The uninstaller keeps the vault, settings,

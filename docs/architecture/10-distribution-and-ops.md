@@ -19,7 +19,8 @@ boundary described in the [README](../../README.md#privacy-boundary).
 | `scripts/regress/app-bundle-contract.sh` | Secret-free adversarial contract for app layout, identity, seal, staple, Gatekeeper, hostile ZIPs, and release ordering. |
 | `install-app.sh` / `uninstall-app.sh` | Fail-closed macOS app install/migration and uninstall paths that preserve user data. |
 | `internal/mora/upgrade.go` | Checksum-validated, Homebrew-aware manual self-update, including whole-app replacement on macOS. |
-| `internal/mora/update_policy.go` | Context-sensitive `auto|notify|off` check policy, stable sanitized state-dir receipt, published-stable release selection, restrained checked notifications, and network-free status. It does not schedule or install unattended updates yet. |
+| `internal/mora/update_policy.go` | Context-sensitive `auto|notify|off` check policy, strict sanitized state-dir receipt, published-stable release selection, restrained checked notifications, and network-free status. |
+| `internal/mora/update_unattended.go` | Single-host leased automatic whole-app apply: identity/health fences, signed-asset staging, same-path atomic swap, rollback, conditional one-shot schema rebuild, and typed fallback. It does not install a schedule. |
 | `cmd/mora/main.go` | Thin entrypoint that forwards linker-supplied version metadata into `internal/mora`. |
 | `install.sh` | POSIX installer; on macOS it verifies the fixed Developer ID identity and notarized-code requirement without changing quarantine or the signature. |
 | `install.ps1` | Windows installer with checksum verification and User PATH setup. |
@@ -110,9 +111,9 @@ binary whose resolved path matches `Mora.app/Contents/MacOS/mora` resolves to
 `auto`, other released binaries to `notify`, and source/git-describe builds to
 `off`. The typed reason is `mora_app_path`: path shape is not signature
 verification, and this stage makes no such identity claim. In this stage,
-`auto` deliberately performs
-only the same check-and-notify behavior as `notify`: unattended whole-app swap
-and schedule installation are later, separately reviewed work.
+`notify` remains check-and-notify only. `auto` enters the verified whole-app
+apply path described below. Schedule installation is still later, separately
+reviewed work; this PR exposes only the internal scheduled seam.
 
 `mora upgrade --check` and the internal `--scheduled-check` seam list GitHub
 releases and select only public, non-draft, non-prerelease stable semver tags.
@@ -133,6 +134,40 @@ Writes validate first and use the crash-durable atomic file primitive. A failed
 check updates the attempt/error fields but preserves the last successful
 availability. `mora upgrade --status [--json]` reads only config plus that local
 receipt and performs no network or notification call.
+
+### Leased automatic whole-app apply
+
+Every scheduled `notify` or `auto` check acquires one state-dir host lease before
+network access; `off` returns before even creating the lease. `auto` mutation is
+available only on Darwin for a supported architecture and an executable with
+the frozen `Mora.app/Contents/MacOS/mora` layout. Path recognition alone grants
+nothing: `verifyMoraAppBundle` proves the currently installed version,
+architecture, bundle ID, Developer ID team, hardened/notarized signature,
+staple, Gatekeeper result, and launch before staging and again immediately
+before swap. `doctor --strict --json` is the conservative dirty/corrupt-state
+gate at both boundaries. A live rival update lease is an active-state refusal.
+
+The apply phase re-lists releases and requires the exact canonical version found
+by the leased check. It downloads only that architecture's `_app.zip` and
+`checksums-app.txt`, enforces the existing checksum/ZIP-path trust chain, and
+runs the full bundle verifier on the staged app. The stage lives beside the
+installed app so `atomicSwapMoraAppDirectories` preserves the exact app path and
+volume. An unwritable parent records `deferred/app_unwritable`, not a failed
+swap, and the same version is not attempted again automatically.
+
+After swap, the new bundle must verify and launch at the expected version. The
+new executable runs `index rebuild --if-needed`: it rebuilds only when its own
+schema stamp differs, and the updater invokes that forward decision exactly
+once. The newly installed executable—not the old orchestrating process—then
+runs strict health against its own schema before success. Any version/launch/signature, rebuild,
+or post-health failure swaps the old app back and verifies it; rollback failure
+preserves the recovery bundle. No path or raw error enters the receipt.
+
+The strict receipt adds canonical apply version/timestamps plus typed
+`apply_outcome`, `apply_error_code`, `rollback_outcome`, and `rebuild_outcome`.
+`in_progress` is persisted before staging, so a crash never becomes an
+unconditional success claim. Failpoints pin every pre-swap and post-swap
+ordering boundary. `mora upgrade --status [--json]` surfaces the last evidence.
 
 ## `mora upgrade` — manual self-update flow
 

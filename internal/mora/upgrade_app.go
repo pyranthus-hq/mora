@@ -233,8 +233,11 @@ func detectLatestAppRelease(ctx context.Context, source selfupdate.Source, arch 
 		if release.GetDraft() || release.GetPrerelease() {
 			continue
 		}
-		version, err := semver.NewVersion(release.GetTagName())
-		if err != nil {
+		if !canonicalStableTagPattern.MatchString(release.GetTagName()) {
+			continue
+		}
+		version, err := semver.StrictNewVersion(strings.TrimPrefix(release.GetTagName(), "v"))
+		if err != nil || version.Prerelease() != "" || version.Metadata() != "" {
 			continue
 		}
 		parsed = append(parsed, parsedRelease{release: release, version: version})

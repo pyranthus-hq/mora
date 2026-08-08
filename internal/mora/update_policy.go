@@ -91,6 +91,13 @@ type updateReceipt struct {
 	LastNotifiedAt        string `json:"last_notified_at,omitempty"`
 	LastNotifiedVersion   string `json:"last_notified_version,omitempty"`
 	NotificationErrorCode string `json:"notification_error_code,omitempty"`
+	ApplyVersion          string `json:"apply_version,omitempty"`
+	ApplyAttemptAt        string `json:"apply_attempt_at,omitempty"`
+	AppliedAt             string `json:"applied_at,omitempty"`
+	ApplyOutcome          string `json:"apply_outcome,omitempty"`
+	ApplyErrorCode        string `json:"apply_error_code,omitempty"`
+	RollbackOutcome       string `json:"rollback_outcome,omitempty"`
+	RebuildOutcome        string `json:"rebuild_outcome,omitempty"`
 }
 
 type updateStatus struct {
@@ -106,6 +113,13 @@ type updateStatus struct {
 	LastErrorCode         string `json:"last_error_code,omitempty"`
 	LastNotifiedAt        string `json:"last_notified_at,omitempty"`
 	NotificationErrorCode string `json:"notification_error_code,omitempty"`
+	ApplyVersion          string `json:"apply_version,omitempty"`
+	ApplyAttemptAt        string `json:"apply_attempt_at,omitempty"`
+	AppliedAt             string `json:"applied_at,omitempty"`
+	ApplyOutcome          string `json:"apply_outcome,omitempty"`
+	ApplyErrorCode        string `json:"apply_error_code,omitempty"`
+	RollbackOutcome       string `json:"rollback_outcome,omitempty"`
+	RebuildOutcome        string `json:"rebuild_outcome,omitempty"`
 	RecoveryCommand       string `json:"recovery_command,omitempty"`
 }
 
@@ -222,9 +236,22 @@ func validateUpdateReceipt(receipt updateReceipt, now time.Time) error {
 			return fmt.Errorf("%s contains unknown code %q", code.field, code.value)
 		}
 	}
+	if !oneOf(receipt.ApplyErrorCode, "", "unsafe_health", "app_unwritable", "not_verified_app", "installed_verify_failed", "download_failed", "staged_verify_failed", "state_changed", "swap_failed", "post_swap_verify_failed", "rebuild_failed", "post_health_failed", "rollback_rebuild_failed", "failpoint") {
+		return fmt.Errorf("apply_error_code contains unknown code %q", receipt.ApplyErrorCode)
+	}
+	if !oneOf(receipt.ApplyOutcome, "", "in_progress", "deferred", "failed_before_swap", "updated", "rolled_back", "rollback_failed") {
+		return fmt.Errorf("apply_outcome contains unknown code %q", receipt.ApplyOutcome)
+	}
+	if !oneOf(receipt.RollbackOutcome, "", "not_needed", "succeeded", "failed") {
+		return fmt.Errorf("rollback_outcome contains unknown code %q", receipt.RollbackOutcome)
+	}
+	if !oneOf(receipt.RebuildOutcome, "", "not_run", "not_needed", "succeeded", "failed") {
+		return fmt.Errorf("rebuild_outcome contains unknown code %q", receipt.RebuildOutcome)
+	}
 	versions := []struct{ field, value string }{
 		{"latest_version", receipt.LatestVersion},
 		{"last_notified_version", receipt.LastNotifiedVersion},
+		{"apply_version", receipt.ApplyVersion},
 	}
 	for _, version := range versions {
 		if version.value != "" && !canonicalStableVersion(version.value) {
@@ -246,14 +273,47 @@ func validateUpdateReceipt(receipt updateReceipt, now time.Time) error {
 	if (receipt.LastNotifiedAt == "") != (receipt.LastNotifiedVersion == "") {
 		return fmt.Errorf("last_notified_at and last_notified_version must appear together")
 	}
-	if receipt.NotificationErrorCode != "" && !receipt.UpdateAvailable {
-		return fmt.Errorf("notification_error_code requires an available update")
+	if receipt.NotificationErrorCode != "" && !receipt.UpdateAvailable && receipt.ApplyOutcome != "updated" {
+		return fmt.Errorf("notification_error_code requires an available update or completed apply")
+	}
+	applyAny := receipt.ApplyVersion != "" || receipt.ApplyAttemptAt != "" || receipt.AppliedAt != "" || receipt.ApplyOutcome != "" || receipt.ApplyErrorCode != "" || receipt.RollbackOutcome != "" || receipt.RebuildOutcome != ""
+	if applyAny && (receipt.ApplyVersion == "" || receipt.ApplyAttemptAt == "" || receipt.ApplyOutcome == "") {
+		return fmt.Errorf("apply evidence requires version, attempt timestamp, and outcome")
+	}
+	switch receipt.ApplyOutcome {
+	case "":
+	case "in_progress":
+		if receipt.ApplyErrorCode != "" || receipt.RollbackOutcome != "" || receipt.RebuildOutcome != "" || receipt.AppliedAt != "" {
+			return fmt.Errorf("in_progress outcome cannot claim later-stage evidence")
+		}
+	case "deferred":
+		if !oneOf(receipt.ApplyErrorCode, "unsafe_health", "app_unwritable", "not_verified_app") || receipt.RollbackOutcome != "not_needed" || receipt.RebuildOutcome != "not_run" || receipt.AppliedAt != "" {
+			return fmt.Errorf("deferred outcome has incompatible evidence")
+		}
+	case "failed_before_swap":
+		if !oneOf(receipt.ApplyErrorCode, "not_verified_app", "installed_verify_failed", "download_failed", "staged_verify_failed", "state_changed", "swap_failed", "failpoint") || receipt.RollbackOutcome != "not_needed" || receipt.RebuildOutcome != "not_run" || receipt.AppliedAt != "" {
+			return fmt.Errorf("failed_before_swap outcome has incompatible evidence")
+		}
+	case "updated":
+		if receipt.AppliedAt == "" || receipt.ApplyErrorCode != "" || receipt.RollbackOutcome != "not_needed" || !oneOf(receipt.RebuildOutcome, "not_needed", "succeeded") {
+			return fmt.Errorf("updated outcome has incompatible evidence")
+		}
+	case "rolled_back":
+		if !oneOf(receipt.ApplyErrorCode, "post_swap_verify_failed", "rebuild_failed", "post_health_failed", "failpoint") || receipt.RollbackOutcome != "succeeded" || !oneOf(receipt.RebuildOutcome, "not_run", "not_needed", "failed", "succeeded") || receipt.AppliedAt != "" {
+			return fmt.Errorf("rolled_back outcome has incompatible evidence")
+		}
+	case "rollback_failed":
+		if !oneOf(receipt.ApplyErrorCode, "post_swap_verify_failed", "rebuild_failed", "post_health_failed", "rollback_rebuild_failed", "failpoint") || receipt.RollbackOutcome != "failed" || !oneOf(receipt.RebuildOutcome, "not_run", "not_needed", "failed", "succeeded") || receipt.AppliedAt != "" {
+			return fmt.Errorf("rollback_failed outcome has incompatible evidence")
+		}
 	}
 
 	timestamps := []struct{ field, value string }{
 		{"last_attempt_at", receipt.LastAttemptAt},
 		{"last_success_at", receipt.LastSuccessAt},
 		{"last_notified_at", receipt.LastNotifiedAt},
+		{"apply_attempt_at", receipt.ApplyAttemptAt},
+		{"applied_at", receipt.AppliedAt},
 	}
 	parsed := make(map[string]time.Time, len(timestamps))
 	for _, timestamp := range timestamps {
@@ -275,11 +335,29 @@ func validateUpdateReceipt(receipt updateReceipt, now time.Time) error {
 		}
 	}
 	if notified, ok := parsed["last_notified_at"]; ok {
-		if attempt, present := parsed["last_attempt_at"]; !present || notified.After(attempt) {
+		if receipt.ApplyOutcome == "updated" && receipt.LastNotifiedVersion == receipt.ApplyVersion {
+			if applied, present := parsed["applied_at"]; !present || notified.Before(applied) {
+				return fmt.Errorf("post-apply last_notified_at must be at or after applied_at")
+			}
+		} else if attempt, present := parsed["last_attempt_at"]; !present || notified.After(attempt) {
 			return fmt.Errorf("last_notified_at requires an equal or later last_attempt_at")
 		}
 	}
+	if applied, ok := parsed["applied_at"]; ok {
+		if attempt := parsed["apply_attempt_at"]; applied.Before(attempt) {
+			return fmt.Errorf("applied_at is before apply_attempt_at")
+		}
+	}
 	return nil
+}
+
+func oneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalStableVersion(version string) bool {
@@ -310,8 +388,22 @@ func currentUpdateStatus(cfg Config) (updateStatus, error) {
 		LastErrorCode:         receipt.LastErrorCode,
 		LastNotifiedAt:        receipt.LastNotifiedAt,
 		NotificationErrorCode: receipt.NotificationErrorCode,
-		RecoveryCommand:       updateRecoveryCommand(),
+		ApplyVersion:          receipt.ApplyVersion,
+		ApplyAttemptAt:        receipt.ApplyAttemptAt,
+		AppliedAt:             receipt.AppliedAt,
+		ApplyOutcome:          receipt.ApplyOutcome,
+		ApplyErrorCode:        receipt.ApplyErrorCode,
+		RollbackOutcome:       receipt.RollbackOutcome,
+		RebuildOutcome:        receipt.RebuildOutcome,
+		RecoveryCommand:       updateRecoveryCommandForReceipt(receipt),
 	}, nil
+}
+
+func updateRecoveryCommandForReceipt(receipt updateReceipt) string {
+	if receipt.ApplyOutcome == "deferred" && receipt.ApplyErrorCode == "app_unwritable" {
+		return "brew upgrade --cask --greedy pyranthus-hq/tap/mora"
+	}
+	return updateRecoveryCommand()
 }
 
 func updateRecoveryCommand() string {
@@ -350,6 +442,16 @@ func cmdUpgradeStatus(cfg Config, jsonOut bool, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "last check: %s", status.LastAttemptAt)
 		if status.LastErrorCode != "" {
 			fmt.Fprintf(stdout, " (%s)", status.LastErrorCode)
+		}
+		fmt.Fprintln(stdout)
+	}
+	if status.ApplyOutcome != "" {
+		fmt.Fprintf(stdout, "last automatic apply: %s", status.ApplyOutcome)
+		if status.ApplyVersion != "" {
+			fmt.Fprintf(stdout, " (%s)", status.ApplyVersion)
+		}
+		if status.ApplyErrorCode != "" {
+			fmt.Fprintf(stdout, " [%s]", status.ApplyErrorCode)
 		}
 		fmt.Fprintln(stdout)
 	}
@@ -415,6 +517,13 @@ func runUpdateCheck(ctx context.Context, cfg Config, scheduled bool, stdout io.W
 		return nil
 	}
 	now := updatePolicyClock().UTC()
+	if scheduled {
+		release, err := acquireUpdateLease(cfg, now)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	receipt, err := loadUpdateReceipt(cfg)
 	if err != nil {
 		return err
@@ -423,10 +532,11 @@ func runUpdateCheck(ctx context.Context, cfg Config, scheduled bool, stdout io.W
 	result, err := updateCheckLatest(ctx)
 	if err != nil {
 		receipt.LastErrorCode = "check_failed"
+		checkErr := fmt.Errorf("checking for updates failed; cached availability was preserved: %w", err)
 		if saveErr := saveUpdateReceipt(cfg, receipt); saveErr != nil {
-			return saveErr
+			return errors.Join(checkErr, fmt.Errorf("persisting check failure receipt: %w", saveErr))
 		}
-		return fmt.Errorf("checking for updates failed; cached availability was preserved: %w", err)
+		return checkErr
 	}
 	receipt.LastSuccessAt = now.Format(time.RFC3339)
 	receipt.LastErrorCode = ""
@@ -445,13 +555,20 @@ func runUpdateCheck(ctx context.Context, cfg Config, scheduled bool, stdout io.W
 	}
 	if receipt.UpdateAvailable {
 		fmt.Fprintf(stdout, "update available: %s → %s\n", BuildVersion, receipt.LatestVersion)
-		fmt.Fprintf(stdout, "run `%s` to install it\n", updateRecoveryCommand())
+		if scheduled && resolved.Policy == updatePolicyAuto {
+			fmt.Fprintln(stdout, "verifying safe automatic Mora.app apply …")
+		} else {
+			fmt.Fprintf(stdout, "run `%s` to install it\n", updateRecoveryCommand())
+		}
 	} else if result.Found {
 		fmt.Fprintf(stdout, "mora is up to date (%s)\n", BuildVersion)
 	} else {
 		fmt.Fprintln(stdout, "no published stable releases found")
 	}
 	if scheduled && receipt.UpdateAvailable {
+		if resolved.Policy == updatePolicyAuto {
+			return unattendedUpdateApply(ctx, cfg, &receipt, now, stdout)
+		}
 		return maybeNotifyUpdate(cfg, &receipt, now)
 	}
 	return nil
@@ -474,13 +591,14 @@ func maybeNotifyUpdate(cfg Config, receipt *updateReceipt, now time.Time) error 
 			return nil
 		}
 	}
-	script := `display notification "Mora ` + escapeAppleScriptString(receipt.LatestVersion) + ` is available; run ` + escapeAppleScriptString(updateRecoveryCommand()) + `" with title "Mora · Update available"`
+	script := `display notification "Mora ` + escapeAppleScriptString(receipt.LatestVersion) + ` is available; run ` + escapeAppleScriptString(updateRecoveryCommandForReceipt(*receipt)) + `" with title "Mora · Update available"`
 	if err := updateNotificationRun("-e", script); err != nil {
 		receipt.NotificationErrorCode = "notification_failed"
+		notifyErr := fmt.Errorf("update is available but notification failed: %w", err)
 		if saveErr := saveUpdateReceipt(cfg, *receipt); saveErr != nil {
-			return saveErr
+			return errors.Join(notifyErr, fmt.Errorf("persisting notification failure receipt: %w", saveErr))
 		}
-		return fmt.Errorf("update is available but notification failed: %w", err)
+		return notifyErr
 	}
 	receipt.LastNotifiedAt = now.Format(time.RFC3339)
 	receipt.LastNotifiedVersion = receipt.LatestVersion
