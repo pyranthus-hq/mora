@@ -25,6 +25,8 @@ import (
 // hard requirement: it is what keeps the index dirty across a crash, and the
 // full-vault rebuild is what actually re-indexes the files.
 
+var removeIngestJournalFile = os.Remove
+
 func ingestJournalRoot(cfg Config) string { return filepath.Join(cfg.StateDir, "ingest") }
 
 // ingestStateRootErr guards the journal/lease WRITE seam. An empty or relative
@@ -104,6 +106,17 @@ func ingestLeaseHeld(cfg Config, sourceKey string) bool {
 	return true
 }
 
+// releaseIngestLeaseOwnedHere drops only sourceKey's lease. In-process
+// concurrent ingests share a PID, so releasing every lease when one source
+// finishes would make the other source appear abandoned mid-run.
+func releaseIngestLeaseOwnedHere(cfg Config, sourceKey string) {
+	lp := ingestLeasePath(cfg, sourceKey)
+	me := strconv.Itoa(os.Getpid())
+	if b, err := os.ReadFile(lp); err == nil && strings.TrimSpace(string(b)) == me {
+		_ = os.Remove(lp)
+	}
+}
+
 // releaseIngestLeasesOwnedHere drops every ingest lease this process owns. Called at
 // the end of an ingest run (before cmdIngest's terminal rebuild), so a covered
 // journal retires promptly instead of waiting for process exit. Best-effort.
@@ -168,7 +181,11 @@ func ensureIngestJournalHeader(cfg Config, sourceKey string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return appendJournalDurable(jp, "run "+newID()+" "+indexClock().UTC().Format(time.RFC3339)+"\n")
+	runID := cfg.operationRunID
+	if !validOperationToken(runID) {
+		runID = newID() // legacy/direct caller: still mint a durable dirty identity
+	}
+	return appendJournalDurable(jp, "run "+runID+" "+indexClock().UTC().Format(time.RFC3339)+"\n")
 }
 
 // journalPublishedPath records a just-published file. Best-effort and NOT synced
@@ -253,27 +270,48 @@ func scanJournal(path string) (header string, pathLines int, present bool) {
 // NOT parsed — an ingest of thousands of files must not be pinned dirty forever by
 // one malformed file; the manifest's unparseable count owns that signal) or whose
 // file no longer exists. When no path lines remain, the whole journal (header
-// included) is removed — the run is fully covered. Best-effort throughout: a failed
-// removal leaves a false-dirty the next rebuild clears.
-func recoverIngestJournals(cfg Config, files []string) {
+// included) is removed — the run is fully covered. Cleanup errors are returned:
+// the database may already be committed, but the rebuild must report partial failure
+// and must not publish a false completed activity.
+type ingestJournalRecovery struct {
+	RetiredRunIDs []string
+}
+
+func recoverIngestJournals(cfg Config, files []string) (ingestJournalRecovery, error) {
 	listed := cleanPathSet(files)
 	entries, err := os.ReadDir(ingestJournalRoot(cfg))
-	if err != nil {
-		return
+	if errors.Is(err, os.ErrNotExist) {
+		return ingestJournalRecovery{}, nil
 	}
+	if err != nil {
+		return ingestJournalRecovery{}, err
+	}
+	var result ingestJournalRecovery
+	var recoveryErr error
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		compactIngestJournal(cfg, e.Name(), listed)
+		retired, err := compactIngestJournal(cfg, e.Name(), listed)
+		if err != nil {
+			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("retiring ingest journal: %w", err))
+			continue
+		}
+		if retired != "" {
+			result.RetiredRunIDs = append(result.RetiredRunIDs, retired)
+		}
 	}
+	return result, recoveryErr
 }
 
-func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) {
+func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) (string, error) {
 	path := ingestJournalPath(cfg, sourceKey)
 	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
 	if err != nil {
-		return
+		return "", err
 	}
 	var header string
 	var keptPaths []string
@@ -304,11 +342,15 @@ func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) 
 		// it. A stale lease (dead owner) is reclaimed by ingestLeaseHeld, so a killed
 		// run never pins the index dirty forever.
 		if header != "" && ingestLeaseHeld(cfg, sourceKey) {
-			_ = atomicWrite(path, []byte(header+"\n"), 0o644)
-			return
+			if err := atomicWrite(path, []byte(header+"\n"), 0o644); err != nil {
+				return "", err
+			}
+			return "", nil
 		}
-		_ = os.Remove(path) // fully covered, no live run: retire header + journal
-		return
+		if err := removeIngestJournalFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		return journalHeaderRunID(header), nil
 	}
 	// Some published paths remain uncovered (a write raced in after this rebuild
 	// listed): rewrite the journal keeping the header + the survivors, so the index
@@ -320,5 +362,16 @@ func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) 
 	for _, p := range keptPaths {
 		b2.WriteString(p + "\n")
 	}
-	_ = atomicWrite(path, []byte(b2.String()), 0o644)
+	if err := atomicWrite(path, []byte(b2.String()), 0o644); err != nil {
+		return "", err
+	}
+	return "", nil
+}
+
+func journalHeaderRunID(header string) string {
+	fields := strings.Fields(header)
+	if len(fields) == 3 && fields[0] == "run" && validOperationToken(fields[1]) {
+		return fields[1]
+	}
+	return ""
 }

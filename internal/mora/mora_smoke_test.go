@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // skipOnWindows skips a test whose failure-injection mechanism is POSIX-only and
@@ -53,6 +54,7 @@ func setTestHome(t *testing.T, dir string) {
 // withTempHome points all home-derived dirs at a fresh temp dir on every OS.
 func withTempHome(t *testing.T) {
 	t.Helper()
+	pinOperationClockForTest(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	setTestHome(t, t.TempDir())
 	// Hermeticity: a developer's exported MORA_CONFIG_DIR / MORA_VAULT must not
 	// leak a real config or vault into tests that assume the temp HOME's

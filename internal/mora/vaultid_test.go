@@ -12,10 +12,26 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func pinOperationClockForTest(t *testing.T, base time.Time) {
+	t.Helper()
+	original := operationClock
+	var mu sync.Mutex
+	var tick int64
+	operationClock = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		tick++
+		return base.Add(time.Duration(tick))
+	}
+	t.Cleanup(func() { operationClock = original })
+}
 
 func sandboxCfg(t *testing.T) Config {
 	t.Helper()
+	pinOperationClockForTest(t, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
 	dir := t.TempDir()
 	t.Setenv("MORA_CONFIG_DIR", dir)
 	cfg := defaultConfig()

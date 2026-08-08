@@ -56,6 +56,8 @@ type pendingOp struct {
 	MarkedAt string `json:"marked_at"`           // RFC3339
 }
 
+var removePendingOpFile = os.Remove
+
 func pendingDir(cfg Config) string { return filepath.Join(cfg.StateDir, "pending") }
 
 func pendingOpPath(cfg Config, opID string) string {
@@ -123,11 +125,22 @@ func unmarkIndexDirty(cfg Config, opID string) error {
 	if opID == "" {
 		return nil
 	}
-	err := os.Remove(pendingOpPath(cfg, opID))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	path := pendingOpPath(cfg, opID)
+	var lastErr error
+	deadline := time.Now().Add(leaseRemovalTimeout)
+	for attempt := 0; ; attempt++ {
+		err := removePendingOpFile(path)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if !leaseRemovalRetryableFn(err) {
+			return err
+		}
+		lastErr = err
+		if !sleepWithinDeadline(sourcesAcquireBackoff(attempt), deadline) {
+			return lastErr
+		}
 	}
-	return err
 }
 
 // listPendingOps reads every pending-op file. A missing dir is the common,
@@ -149,6 +162,9 @@ func listPendingOps(cfg Config) ([]pendingOp, error) {
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
 		b, rerr := os.ReadFile(filepath.Join(pendingDir(cfg), e.Name()))
+		if errors.Is(rerr, os.ErrNotExist) {
+			continue // a concurrent committed writer retired it after ReadDir
+		}
 		if rerr != nil {
 			return nil, rerr
 		}
@@ -186,20 +202,24 @@ func pendingDeleteIDs(cfg Config) map[string]bool {
 // demonstrably covered (A3). Call it ONLY after tx.Commit returns nil.
 // listingStartedAt is captured immediately before the rebuild listed the vault;
 // files is the raw listing; parsed is the subset parseMemory succeeded on. Every
-// path is compared after cleanVaultPath. Best-effort: a failed removal leaves a
-// false-dirty the next rebuild clears.
-func clearCoveredPendingOps(cfg Config, listingStartedAt time.Time, files, parsed []string) {
+// path is compared after cleanVaultPath. Removal errors are returned so a
+// post-commit rebuild reports partial failure rather than false completion.
+func clearCoveredPendingOps(cfg Config, listingStartedAt time.Time, files, parsed []string) error {
 	filesSet := cleanPathSet(files)
 	parsedSet := cleanPathSet(parsed)
 	ops, err := listPendingOps(cfg)
 	if err != nil {
-		return
+		return err
 	}
+	var clearErr error
 	for _, op := range ops {
 		if shouldClearOp(op, listingStartedAt, filesSet, parsedSet) {
-			_ = unmarkIndexDirty(cfg, op.OpID)
+			if err := unmarkIndexDirty(cfg, op.OpID); err != nil {
+				clearErr = errors.Join(clearErr, fmt.Errorf("retiring pending operation: %w", err))
+			}
 		}
 	}
+	return clearErr
 }
 
 // shouldClearOp encodes A3's clearing table. Every clause exists because a

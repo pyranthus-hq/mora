@@ -63,6 +63,10 @@ type Config struct {
 	// as the counterparty's unfinished business (wrong-person attribution).
 	// Declared, never guessed: Mora will not infer self from a display name.
 	SelfEmails []string
+	// operationRunID binds an ingest's journal header to its sanitized StateDir
+	// activity receipt. It is process-local orchestration state, never loaded from
+	// or persisted to config.toml.
+	operationRunID string
 	// fusionOv overrides the production RRF arm weights / k (retrieval tuning + the
 	// TestEvalWeightSweep grid). nil ⇒ defaultFusion. Unexported and NOT loaded from
 	// TOML — it is a code/eval seam, not a user knob.
