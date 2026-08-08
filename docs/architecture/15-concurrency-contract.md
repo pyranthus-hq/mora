@@ -242,6 +242,16 @@ ignores them. Failure to create the one deterministic guard fails closed.
 > and is not yet routed through a lease. It is out of scope here and gated by the
 > share subsystem's separate security review.
 
+## 5a. Operation activity owner fences
+
+Operation receipts use the same persistent OS-backed guard domain as file leases
+but deliberately do not reuse loop cadence or period-idempotency. Begin publishes
+a unique run id; heartbeat and finish re-read the record under the guard and must
+match kind, run id, and owner pid before replacement. A reused PID therefore does
+not acquire an abandoned run, and an expired heartbeat becomes `stalled` even if
+the PID happens to exist. Health readers take no lock that mutates state and never
+reap receipts.
+
 ## 6. The eventual-consistency window of the index
 
 `index.db` is a **derived, eventually-consistent cache**. The vault Markdown is

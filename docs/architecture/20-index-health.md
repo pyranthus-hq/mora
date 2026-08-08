@@ -20,8 +20,9 @@ it from durable state and carries it as data, like Gate 1's `sourceHealth`.
 | `internal/mora/atomicio.go` | `atomicWriteDurable` — `atomicWrite` plus two crash barriers (`f.Sync` before rename, `syncDir` after), behind the `markerSyncFn`/`syncDirFn` seams so the durability call-trace is testable. `testHookPostMarkerWrite` fires after a marker is durably on disk (the crash-window seam). |
 | `internal/mora/sync_notwindows.go` / `sync_windows.go` | The `syncDir` build-tag pair — a real parent-dir fsync on POSIX/darwin (`F_FULLFSYNC`), a documented no-op on Windows (NTFS `MoveFileEx` is metadata-journaled). Mirrors `rename_*windows.go`. |
 | `internal/mora/ingest_journal.go` | The **durable ingest journal** (`StateDir/ingest/<source>/journal.log`): a durable `run <op_id> <marked_at>` header written before the first connector publish, best-effort per-path lines, `ingestJournalStatus` (the B1-rule-4 read), and `recoverIngestJournals` (post-rebuild compaction). |
-| `internal/mora/indexhealth.go` | The **typed health kernel**: `Health`/`indexHealth`/`projectionHealth`/`embedderProvenance`/`producerHealth`, `indexHealthOf` (the seven-rule first-match-wins predicate), `healthOf` (the one public entry), `aggregateHealthState` (the B1b worst-of collapse), and the no-probe embedder-provenance comparison. |
-| `internal/mora/health_banner.go` | `healthBannerFrom(Health)` — the **one-line aggregate banner** across sources/index/producers, `indexBannerLine`, `healthBannerLineCap`. |
+| `internal/mora/operation_activity.go` | The bounded, content-free operation receipt primitive under `StateDir/operations/`: owner-fenced begin/heartbeat/finish writes plus read-only running/stalled/failed/completed classification for ingest and index-rebuild work. |
+| `internal/mora/indexhealth.go` | The **typed health kernel**: `Health`/`indexHealth`/`projectionHealth`/`embedderProvenance`/`producerHealth`, the subordinate `Activities` arm, `indexHealthOf` (the seven-rule first-match-wins predicate), `healthOf` (the one public entry), `aggregateHealthState` (the B1b worst-of collapse), and the no-probe embedder-provenance comparison. |
+| `internal/mora/health_banner.go` | `healthBannerFrom(Health)` — the **one-line aggregate banner** across sources/index/producers/activities, `indexBannerLine`, `healthBannerLineCap`. |
 | `internal/mora/indexstamp.go` | The `index_meta` stamps written inside the rebuild commit tx + the content-manifest helpers (`manifestLine`/`manifestDigestOf`, `indexManifestAlgo`), and `stampIndexAttemptFailure`. |
 | `internal/mora/doctor_index.go` | Doctor-side helpers: the `sources_config` predicate (`enabledSourceCount`/`vaultHasConnectorMemories`), `disabledCorpusTypes`, and `indexMatchesVault` (the B1a manifest recompute). |
 | `internal/mora/index.go` | `rebuildIndexWithPolicy` marks itself, snapshots `listing_started_at`, computes the manifest for free from the parse bytes, stamps the projections + embedder + manifest inside the commit tx, and clears covered ops + journals after commit. |
@@ -94,6 +95,36 @@ The **banner** (`healthBannerFrom`) is now the single worst arm across sources, 
 **Pending deletes suppress reads (B4 — a data-safety P0, not cosmetics).** A delete `os.Remove`s the file then rebuilds. A rebuild failure would otherwise leave the index serving content the user deleted. While a `kind=delete` op is pending, its `memory_id` is filtered out of **both** index read chokepoints — the search `memories` JOIN and `loadMemoriesByID` (the graph arm reached by `get_entity`, `list_entities`, and the meeting brief). This turns fail-closed from a banner into an actual guarantee for the one case where serving stale content is harmful.
 
 Finally, `vault/index.md` (injected verbatim into every `context_memory` payload) is refreshed from the *same* stamp the rebuild wrote into `index_meta`, so the page an agent trusts can never claim a freshness the index does not have (B5).
+
+## Subordinate operation activity
+
+`Health.Activities` explains *why* a dirty index may currently be changing without
+weakening the freshness floor. Each sanitized record has only the operation kind
+(`ingest` or `index_rebuild`), lifecycle state, run id, timestamps, phase, and
+bounded counts. It contains no provider/account label, memory path/id, query, or
+source content. Doctor JSON returns a non-null `activities` array and human doctor
+renders the same fields. A live activity does not make health green: `index.state`
+remains `dirty`, aggregate health remains unhealthy, and strict doctor still fails.
+The banner may instead explain that refresh is in progress and the last committed
+snapshot is being served.
+
+The durable record is `StateDir/operations/<kind>/<run_id>.json` (0600,
+crash-durable atomic replacement). A heartbeat update is authorized by the tuple
+(kind, run id, owner pid) under one bounded persistent OS lease guard per kind. PID existence is
+only corroboration: a record is `running` only while its heartbeat is within the
+15-minute TTL and its owner is live. Writers refuse a heartbeat or terminal stamp
+that moves backward. A dead owner or expired heartbeat is classified `stalled`;
+path/record identity mismatch, unknown JSON fields or trailing values, a future
+schema, an invalid phase/timestamp, or incoherent lifecycle fields classify
+`failed`. Classification is strictly read-only — plain doctor and health surfaces
+never repair, reap, or delete markers. Health exposes only the newest valid terminal receipt per kind (plus every
+active/stalled/corrupt receipt), so an old failure cannot keep health red after a
+newer success. On-disk terminal retention is bounded to 16 per kind and pruned only
+by a terminal writer.
+
+At this commit the primitive and read surfaces are present; existing ingest and
+rebuild producers do not yet publish these receipts. The existing pending-op and
+ingest-journal dirty rules remain the authoritative activity-independent floor.
 
 ## Producer liveness (HEALTH-11) — the watchman
 

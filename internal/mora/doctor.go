@@ -68,8 +68,9 @@ type doctorReport struct {
 	// `[]` when nothing is expected (a user who scheduled nothing is never nagged),
 	// one record per expected producer in the normal case, or one typed ledger
 	// failure matching producer_ledger_readable when the ledger cannot be read.
-	Index     indexHealth      `json:"index"`
-	Producers []producerHealth `json:"producers"`
+	Index      indexHealth         `json:"index"`
+	Producers  []producerHealth    `json:"producers"`
+	Activities []operationActivity `json:"activities"`
 }
 
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
@@ -124,9 +125,10 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) e
 	// AND producer liveness; still freshness-only in spirit (no O(vault) walk).
 	srcHealth := sourceHealthAll(cfg, now)
 	banner := healthBannerFrom(Health{
-		Sources:   srcHealth,
-		Index:     indexHealthOf(cfg, now),
-		Producers: producerHealthAll(cfg, now),
+		Sources:    srcHealth,
+		Index:      indexHealthOf(cfg, now),
+		Producers:  producerHealthAll(cfg, now),
+		Activities: operationActivities(cfg, now, operationProcessAlive),
 	})
 
 	// Phase 2 (stamp): AFTER evaluation, record that THIS pulse ran to COMPLETION —
@@ -256,6 +258,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	idxH := indexHealthOf(cfg, now)
 	checks = append(checks, doctorCheck{Name: "index_fresh", OK: idxH.State == idxFresh, Critical: true})
 	checks = append(checks, doctorCheck{Name: "index_embedder", OK: idxH.Embedder.Match, Critical: true})
+	activities := operationActivities(cfg, now, operationProcessAlive)
+	for _, a := range activities {
+		ok := a.State != operationStalled && a.State != operationFailed
+		checks = append(checks, doctorCheck{Name: "operation_healthy:" + string(a.Kind) + ":" + a.RunID, OK: ok, Critical: true})
+	}
 	// ▸R per source TYPE with a corpus but no ENABLED instance: the zero-sources
 	// case is the extreme; the realistic one is disabling ONE connector and silently
 	// losing its alarm while the others keep doctor green.
@@ -338,6 +345,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			Platform:           runtimeGOOS(),
 			Sources:            srcHealth,
 			Index:              idxH,
+			Activities:         activities,
 			// The typed producer arm, not PR 1's empty placeholder: with it hardcoded
 			// empty, `doctor --json` reported "producers": [] while its own
 			// producer_live:* checks were failing — the report contradicted the checks
@@ -375,6 +383,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 			continue
 		}
 		fmt.Fprintf(stdout, "     %s\n", sourceHealthDetailLine(h, now))
+	}
+	for _, a := range activities {
+		fmt.Fprintf(stdout, "     operation %-13s %-9s run=%s phase=%s started=%s heartbeat=%s items=%d files=%d errors=%d\n",
+			a.Kind, a.State, a.RunID, a.Phase, a.StartedAt, a.LastHeartbeat,
+			a.Counts.Items, a.Counts.Files, a.Counts.Errors)
 	}
 	if rec, present, _ := readBlockRecord(cfg); present {
 		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — fix vault_dir in config.toml then `mora index rebuild`; `--force` only if the current vault is correct (it discards the %d indexed memories)\n",
