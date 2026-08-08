@@ -190,6 +190,12 @@ func loadConfig() (Config, error) {
 				return cfg, err
 			}
 			cfg.MCPWritePolicy = policy
+		case "update_policy":
+			policy, err := parseUpdatePolicy(val)
+			if err != nil {
+				return cfg, err
+			}
+			cfg.UpdatePolicy = string(policy)
 		}
 	}
 	return applyEnvOverrides(cfg)
@@ -224,9 +230,10 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "data_dir  = %s   ← search index (rebuildable)\n", cfg.DataDir)
 		fmt.Fprintf(stdout, "state_dir = %s   ← sync watermarks (rebuildable)\n", cfg.StateDir)
 		fmt.Fprintf(stdout, "config    = %s   ← settings + tokens\n", cfg.ConfigDir)
-		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\nmcp_write_policy = %s\n",
+		update := resolveUpdatePolicy(cfg)
+		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\nmcp_write_policy = %s\nupdate_policy = %s (%s)\n",
 			embedder, profile,
-			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr, cfg.mcpWritePolicy())
+			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr, cfg.mcpWritePolicy(), update.Policy, update.Reason)
 		return nil
 	}
 	// Machine-readable path dump for tooling (uninstall.ps1 -Purge consumes this
@@ -335,6 +342,7 @@ func writeConfig(cfg Config) error {
 		// Empty values drop these optional settings, preserving their defaults.
 		{"mmr", mmrVal},
 		{"mcp_write_policy", cfg.MCPWritePolicy},
+		{"update_policy", cfg.UpdatePolicy},
 	}
 	ownedVal := func(key string) (string, bool) {
 		for _, kv := range owned {
@@ -375,7 +383,7 @@ func writeConfig(cfg Config) error {
 		}
 		written[key] = true
 		if val == "" {
-			if key == "embedder" || key == "context" || key == "mmr" || key == "mcp_write_policy" {
+			if key == "embedder" || key == "context" || key == "mmr" || key == "mcp_write_policy" || key == "update_policy" {
 				continue // reset-to-default: drop the line
 			}
 			out = append(out, line) // empty dir value: preserve, never silently repoint

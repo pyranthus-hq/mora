@@ -77,7 +77,7 @@ flowchart TD
 | `usage report\|off\|on` | Local-only content-free analytics. | `cmdUsage` `usage.go` |
 | `disconnect google` | Drop the Google token. | `cmdDisconnect` `setup.go` |
 | `mcp serve` | stdio JSON-RPC MCP server. | `cmdMCP` `mcp.go`, see [mcp-server](./06-mcp-server.md) |
-| `upgrade [--check]` | GitHub-release self-update. Refuses dev builds. | `cmdUpgrade` `upgrade.go:24` |
+| `upgrade [--check\|--policy auto\|notify\|off\|--status [--json]]` | Manual verified self-update plus local automatic-check policy, sanitized cached status, and check-only receipt. Source builds default off; status is network-free. | `cmdUpgrade` `upgrade.go`, `update_policy.go` |
 | `version` / `--version` / `-v` | Version + commit + build date + Go runtime. | `cmdVersion` `:247` |
 
 ## The uniform command voice (2026-06-10)

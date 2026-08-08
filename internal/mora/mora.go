@@ -37,6 +37,9 @@ type Config struct {
 	// Empty means "open" for backward compatibility. "propose" stages writes
 	// for local approval, while "readonly" refuses both writes and deletes.
 	MCPWritePolicy string
+	// UpdatePolicy controls automatic GitHub release checks: auto, notify, or off.
+	// Empty selects a context-sensitive default without persisting it.
+	UpdatePolicy string
 	// Embedder is the durable embedder opt-in from config.toml (`embedder = "ollama"`).
 	// It is the persistent way to turn on semantic retrieval for BOTH the CLI and the
 	// MCP server (which the agent uses) without per-host env wiring. The MORA_EMBEDDER
@@ -467,7 +470,10 @@ USAGE:
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora hook install|uninstall|status
-  mora upgrade                     # self-update to the latest release (brew installs: brew upgrade)
+  mora upgrade                     # manually self-update to the latest release
+  mora upgrade --check             # check + cache published stable release availability
+  mora upgrade --policy auto|notify|off
+  mora upgrade --status [--json]   # cached policy/check/notification status; no network
   mora version`)
 }
 

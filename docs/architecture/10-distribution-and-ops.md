@@ -18,7 +18,8 @@ boundary described in the [README](../../README.md#privacy-boundary).
 | `scripts/verify-app-zip.sh` | Fail-closed path and layout validation for app ZIP assets. |
 | `scripts/regress/app-bundle-contract.sh` | Secret-free adversarial contract for app layout, identity, seal, staple, Gatekeeper, hostile ZIPs, and release ordering. |
 | `install-app.sh` / `uninstall-app.sh` | Fail-closed macOS app install/migration and uninstall paths that preserve user data. |
-| `internal/mora/upgrade.go` | Checksum-validated, Homebrew-aware self-update, including whole-app replacement on macOS. |
+| `internal/mora/upgrade.go` | Checksum-validated, Homebrew-aware manual self-update, including whole-app replacement on macOS. |
+| `internal/mora/update_policy.go` | Context-sensitive `auto|notify|off` check policy, stable sanitized state-dir receipt, published-stable release selection, restrained checked notifications, and network-free status. It does not schedule or install unattended updates yet. |
 | `cmd/mora/main.go` | Thin entrypoint that forwards linker-supplied version metadata into `internal/mora`. |
 | `install.sh` | POSIX installer; on macOS it verifies the fixed Developer ID identity and notarized-code requirement without changing quarantine or the signature. |
 | `install.ps1` | Windows installer with checksum verification and User PATH setup. |
@@ -101,13 +102,48 @@ flowchart TD
 6. **Mora.app lane.** After the raw artifacts pass their notary gate, `appbundle-darwin-release.sh` builds both branded app bundles from the same checksum-verified signed CLIs, signs each **whole bundle**, notarizes, staples, validates (stapler + codesign + Gatekeeper), and packages post-staple `_app.zip` assets with `checksums-app.txt`. The workflow then cosign-signs that manifest (keyless, like `checksums.txt`) and uploads everything to the still-draft release. The lane runs before credential cleanup (it needs the ephemeral keychain) and before publish. See [Standalone bridge, then `Mora.app`](#standalone-bridge-then-moraapp).
 7. **Draft, then publish.** GoReleaser creates a draft release. OAuth embedding, Windows archive, checksums, macOS signing/notarization, the Mora.app lane, and Tier-1 regression gates all run while it is invisible to `mora upgrade`. Only their success publishes the draft. A signing or notary failure therefore cannot become the latest installable release.
 
-## `mora upgrade` — self-update flow
+## Update policy and cached checks (issue #291, stage 1)
 
-`mora upgrade` is the in-place self-update path from the latest GitHub release.
+`mora upgrade --policy auto|notify|off` persists `update_policy` through the
+normal read-modify-write config path. With no configured value, a released
+binary whose resolved path matches `Mora.app/Contents/MacOS/mora` resolves to
+`auto`, other released binaries to `notify`, and source/git-describe builds to
+`off`. The typed reason is `mora_app_path`: path shape is not signature
+verification, and this stage makes no such identity claim. In this stage,
+`auto` deliberately performs
+only the same check-and-notify behavior as `notify`: unattended whole-app swap
+and schedule installation are later, separately reviewed work.
+
+`mora upgrade --check` and the internal `--scheduled-check` seam list GitHub
+releases and select only public, non-draft, non-prerelease stable semver tags.
+The latter may post a macOS notification when an update is available, at most
+once per version every 72 hours. Notification execution is checked; failure is
+recorded without clearing availability. Policy `off` returns before the network
+or notifier seams. Source/dev builds default off and no stage-1 path applies an
+update.
+
+Every attempt atomically writes mode-0600
+`<StateDir>/update/status.json`. The receipt contains schema version, release
+versions, availability, timestamps, and typed error codes only. It never stores
+tokens, URLs, private paths, connector/source data, queries, or raw errors. The
+reader rejects unknown/trailing JSON, unknown error tokens, incoherent fields,
+non-canonical versions, malformed/far-future timestamps, oversized files, and
+future schemas. A future notification timestamp never suppresses a reminder.
+Writes validate first and use the crash-durable atomic file primitive. A failed
+check updates the attempt/error fields but preserves the last successful
+availability. `mora upgrade --status [--json]` reads only config plus that local
+receipt and performs no network or notification call.
+
+## `mora upgrade` — manual self-update flow
+
+Bare `mora upgrade` remains the consented in-place self-update path from the
+latest GitHub release and reuses the existing verified binary/whole-app updater.
+The policy work does not weaken or replace its checksum, signing, rollback, or
+post-upgrade rebuild gates.
 
 ```mermaid
 flowchart TD
-    start["mora upgrade [--check]"] --> dev{"BuildVersion == 'dev' or ''?"}
+    start["bare mora upgrade"] --> dev{"BuildVersion == 'dev' or ''?"}
     dev -- yes --> refuse["refuse:<br/>'this is a source build…<br/>use git pull && go build'"]
     dev -- no --> exe["os.Executable()<br/>+ EvalSymlinks → real path"]
     exe --> brew{"path contains<br/>/Cellar/ or /Caskroom/ ?"}

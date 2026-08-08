@@ -338,6 +338,8 @@ uncertain. Inspect it before you repeat an outside action.
 ## Update or uninstall
 
 ```bash
+mora upgrade --policy auto|notify|off
+mora upgrade --status --json
 mora upgrade --check
 mora upgrade
 mora schedule list
@@ -345,6 +347,12 @@ mora schedule uninstall <each-job-name-shown>
 mora hook uninstall
 mora serve http uninstall
 ```
+
+Automatic update policy currently governs cached checks and restrained
+notifications only; it does not yet install a schedule or perform an unattended
+swap. `off` makes the internal scheduled-check path perform no network or
+notification call. Bare `mora upgrade` remains the explicit verified update
+command.
 
 For the signed macOS app, use the checked `uninstall-app.sh` command in the
 [guide](docs/guide.md#uninstall). The uninstaller keeps the vault, settings,
