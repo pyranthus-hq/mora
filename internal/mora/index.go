@@ -20,18 +20,29 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	fs := flag.NewFlagSet("index", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")
+	ifNeeded := fs.Bool("if-needed", false, "rebuild only when this binary's index schema differs")
 	if perr := fs.Parse(flagsFirst(args)); perr != nil {
 		return perr
 	}
-	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" {
-		return errors.New("usage: mora index rebuild [--force]")
+	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" || (*force && *ifNeeded) {
+		return errors.New("usage: mora index rebuild [--force | --if-needed]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	// index-hourly producer chokepoint (HEALTH-11): stamp the rebuild's own outcome.
-	defer stampChokepoint(cfg, stdout, args, "index-hourly", producerClock(), &err)
+	if *ifNeeded {
+		current, err := indexSchemaMatches(ctx, cfg)
+		if err == nil && current {
+			fmt.Fprintln(stdout, "index schema current; rebuild not needed")
+			return nil
+		}
+	}
+	// The updater's --if-needed probe owns its outcome in the update receipt; it
+	// must not masquerade as the scheduled index-hourly producer.
+	if !*ifNeeded {
+		defer stampChokepoint(cfg, stdout, args, "index-hourly", producerClock(), &err)
+	}
 	policy := policyEnforce
 	if *force {
 		policy = policyAllow
@@ -46,6 +57,19 @@ func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	return nil
 }
 func dbPath(cfg Config) string { return filepath.Join(cfg.DataDir, "index.db") }
+
+func indexSchemaMatches(ctx context.Context, cfg Config) (bool, error) {
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return false, err
+	}
+	return version == indexSchemaVersion, nil
+}
 
 // roIndexDSN is the DSN every read-only index open uses. Writers persist WAL mode;
 // readers only need to use that committed mode, not set it again. A hierarchical

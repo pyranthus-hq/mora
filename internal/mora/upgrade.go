@@ -62,7 +62,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "update policy = %s\n", policy)
 		if policy == updatePolicyAuto {
-			fmt.Fprintln(stdout, "automatic installation is not enabled yet; checks cache availability and notify until the verified unattended updater ships")
+			fmt.Fprintln(stdout, "verified automatic apply is enabled for the internal scheduled-check seam; no update schedule is installed yet")
 		}
 		return nil
 	}
