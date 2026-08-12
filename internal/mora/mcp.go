@@ -259,6 +259,17 @@ var mcpToolRegistry = []mcpToolDef{
 		Handler: mcpSearchMemory,
 	},
 	{
+		Name: "calendar_events", Description: "List calendar events whose start falls in an exact date range. Use this for date, day, and week questions instead of keyword search.",
+		Params: []mcpParam{
+			{"start", "string", "Required inclusive boundary: YYYY-MM-DD or RFC3339", true},
+			{"end", "string", "Required exclusive boundary: YYYY-MM-DD or RFC3339", true},
+			{"timezone", "string", "Optional IANA timezone for date-only boundaries (default local timezone)", false},
+			{"source", "string", `Optional calendar source: "calendar" or "applecalendar"`, false},
+			{"limit", "integer", "Max events to return (default 50, max 200)", false},
+		},
+		Handler: mcpCalendarEvents,
+	},
+	{
 		Name: "list_memory", Description: "Browse the memories Mora wrote most recently, newest first. Ordered by `indexed_at` (when Mora recorded the memory), never by event time, so a future calendar event cannot lead the list. Each row splits the timestamps `created_at` conflated: `event_start` (when a calendar event happens), `source_created_at` (when the source object was created at its provider), and `indexed_at`; a field Mora cannot derive honestly is omitted rather than filled in",
 		Params: []mcpParam{
 			{"scope", "string", "Optional scope filter", false},
