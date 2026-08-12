@@ -112,8 +112,7 @@ binary whose resolved path matches `Mora.app/Contents/MacOS/mora` resolves to
 `off`. The typed reason is `mora_app_path`: path shape is not signature
 verification, and this stage makes no such identity claim. In this stage,
 `notify` remains check-and-notify only. `auto` enters the verified whole-app
-apply path described below. Schedule installation is still later, separately
-reviewed work; this PR exposes only the internal scheduled seam.
+apply path described below. Interactive connector setup records the user-selected policy and installs `update-daily` for active policies; on macOS it follows the existing LaunchServices-aware Mora.app scheduling route.
 
 `mora upgrade --check` and the internal `--scheduled-check` seam list GitHub
 releases and select only public, non-draft, non-prerelease stable semver tags.

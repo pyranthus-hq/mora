@@ -322,6 +322,39 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 
 	imessageSelected := containsType(selected, "imessage")
 
+	// Update policy is explicit consent for the product's GitHub-release egress.
+	// App installs default to verified automatic apply; released CLI installs
+	// default to notification; source builds resolve to off.
+	resolvedPolicy := resolveUpdatePolicy(cfg)
+	selectedPolicy := string(resolvedPolicy.Policy)
+	policyForm := huh.NewForm(
+		huh.NewGroup(huh.NewSelect[string]().
+			Title("How should Mora keep itself updated?").
+			Description("Automatic updates verify and replace only signed Mora.app. Notify checks daily but waits for your approval. Off makes no update checks.").
+			Options(
+				huh.NewOption("Automatic updates (recommended for Mora.app)", string(updatePolicyAuto)),
+				huh.NewOption("Notify only", string(updatePolicyNotify)),
+				huh.NewOption("Off", string(updatePolicyOff)),
+			).
+			Value(&selectedPolicy)),
+	).WithInput(stdin).WithOutput(stdout)
+	if err := policyForm.Run(); err != nil {
+		return err
+	}
+	policy, err := parseUpdatePolicy(selectedPolicy)
+	if err != nil {
+		return err
+	}
+	cfg.UpdatePolicy = string(policy)
+	if err := writeConfig(cfg); err != nil {
+		return err
+	}
+	if policy != updatePolicyOff {
+		if err := installSchedule(stdout, cfg, "update-daily"); err != nil {
+			return fmt.Errorf("install update-daily schedule: %w", err)
+		}
+	}
+
 	// Canonical guided order (UI-SPEC §B): multi-select → (if iMessage) readiness →
 	// Google detect-and-skip → deny-list → backfill confirm → enable → backfill.
 	if imessageSelected {

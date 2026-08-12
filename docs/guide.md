@@ -694,8 +694,8 @@ keeps the last known available version. Update notifications are restrained to
 one per version every 72 hours, and a notification failure leaves the cached
 warning visible.
 
-The internal scheduled-check seam implements the policy, but this stage still
-does **not** install a schedule. `notify` remains check plus notification and
+`mora schedule install update-daily` installs the daily policy check (including
+LaunchServices routing on macOS). `notify` remains check plus notification and
 `off` returns before any network, notification, receipt, or lease write. `auto`
 can apply only when the running executable resolves inside `Mora.app`, the
 installed bundle passes its exact version/architecture/Developer ID/notarization

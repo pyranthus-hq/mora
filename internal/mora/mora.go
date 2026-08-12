@@ -1195,6 +1195,7 @@ var scheduleCommands = map[string]string{
 	"lint-weekly":   "lint",
 	"ingest-hourly": "ingest run --all",
 	"git-daily":     "sync git",
+	"update-daily":  "upgrade --scheduled-check",
 	// doctor-pulse (HEALTH-02 delivery): the freshness-only alarm, run daily
 	// AFTER the 08:00 brief so a source that went dark overnight is caught
 	// within the day rather than waiting for the next time someone reads a brief.
