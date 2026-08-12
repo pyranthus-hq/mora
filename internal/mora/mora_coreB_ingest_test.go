@@ -172,9 +172,28 @@ func TestCoreB_IngestWindowForSourceCalendar(t *testing.T) {
 	coreBIngestNear(t, w.Until, now.AddDate(0, 3, 0), "calendar Until")
 }
 
+func TestCoreB_IMessageLookbackDays(t *testing.T) {
+	cases := []struct {
+		name string
+		s    Source
+		want int
+	}{
+		{"default", Source{}, 365},
+		{"explicit override", Source{SinceDays: 30}, 30},
+		{"all time", Source{SinceDays: -1}, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := iMessageLookbackDays(tc.s); got != tc.want {
+				t.Fatalf("iMessageLookbackDays(%+v) = %d, want %d", tc.s, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCoreB_IngestWindowForIMessage(t *testing.T) {
 	now := time.Now()
-	coreBIngestNear(t, windowForIMessage(Source{}).Since, now.AddDate(0, 0, -90), "imsg default")
+	coreBIngestNear(t, windowForIMessage(Source{}).Since, now.AddDate(0, 0, -365), "imsg default")
 	coreBIngestNear(t, windowForIMessage(Source{SinceDays: 30}).Since, now.AddDate(0, 0, -30), "imsg override")
 	// Negative => all-time (zero Since, no lower bound).
 	w := windowForIMessage(Source{SinceDays: -1})
@@ -863,6 +882,9 @@ func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
 	s := out.String()
 	if !strings.Contains(s, "enabled imessage") {
 		t.Fatalf("connectIMessage output missing enable line:\n%s", s)
+	}
+	if !strings.Contains(s, "last 365 days; use --since-days") {
+		t.Fatalf("connectIMessage output must disclose default lookback:\n%s", s)
 	}
 	guidance := "No Messages database found"
 	// Read the SAME injectable seam the source uses (runtimeGOOS), so the

@@ -361,7 +361,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 		denyContacts = parseCSVList(contactsStr)
 		denyConvos = parseCSVList(convosStr)
 		if len(denyContacts) == 0 && len(denyConvos) == 0 {
-			fmt.Fprintln(stdout, "Deny-list: none — all contacts and conversations will be ingested (within the 90-day lookback).")
+			fmt.Fprintln(stdout, "Deny-list: none — all contacts and conversations will be ingested (within the 365-day lookback).")
 		} else {
 			fmt.Fprintln(stdout, "Deny-list saved:")
 			fmt.Fprintf(stdout, "  contacts:      %s\n", strings.Join(denyContacts, ", "))

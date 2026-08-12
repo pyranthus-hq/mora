@@ -849,13 +849,21 @@ func addressBookRoot() string {
 // windowForIMessage builds the lookback window: a lean 90-day default (D-06),
 // overridable per source via SinceDays (0 ⇒ 90; a negative SinceDays means all-time,
 // matching the Gmail since-days ergonomic). Zero Since = all-time at the SQL bound.
+const defaultIMessageLookbackDays = 365
+
+// iMessageLookbackDays reports the configured effective lookback. A negative
+// override means all available history; zero retains the documented default.
+func iMessageLookbackDays(s Source) int {
+	if s.SinceDays == 0 {
+		return defaultIMessageLookbackDays
+	}
+	return s.SinceDays
+}
+
 func windowForIMessage(s Source) memory.FetchWindow {
-	days := s.SinceDays
-	switch {
-	case days < 0:
+	days := iMessageLookbackDays(s)
+	if days < 0 {
 		return memory.FetchWindow{} // all-time (Since zero ⇒ no lower bound)
-	case days == 0:
-		days = 90
 	}
 	return memory.FetchWindow{Since: time.Now().AddDate(0, 0, -days)}
 }
@@ -909,8 +917,13 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 	st.Source = s.Name
 	win := windowForIMessage(s)
 
-	if out != nil && s.SinceDays < 0 {
-		fmt.Fprintf(out, "  %s: lookback set to all-time (since-days 0)\n", s.Name)
+	if out != nil {
+		days := iMessageLookbackDays(s)
+		if days < 0 {
+			fmt.Fprintf(out, "  %s: lookback set to all available history (since-days < 0)\n", s.Name)
+		} else {
+			fmt.Fprintf(out, "  %s: ingesting the last %d days; use --since-days to change this window.\n", s.Name, days)
+		}
 	}
 	prog := newProgress(out, s.Name, "conversations")
 	write := func(mm memory.MappedMemory) error {
@@ -1293,7 +1306,7 @@ func defaultFilesystemSourceName(path string) string {
 func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 90; negative = all-time)")
+	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 365; negative = all-time)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1309,7 +1322,7 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 		return err
 	}
 	// Persist an explicit window override so this and future `sync imessage` runs
-	// reuse it (0 keeps the 90-day default in windowForIMessage; negative = all-time).
+	// reuse it (0 keeps the 365-day default in windowForIMessage; negative = all-time).
 	// Mirrors `connect google --since-days`.
 	if *sinceDays != 0 {
 		if err := setSourceSinceDays(cfg, "imessage", *sinceDays); err != nil {
@@ -1317,6 +1330,15 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 		}
 	}
 	okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
+	if *sinceDays < 0 {
+		fmt.Fprintln(stdout, "iMessage will ingest all available history.")
+	} else {
+		days := *sinceDays
+		if days == 0 {
+			days = defaultIMessageLookbackDays
+		}
+		fmt.Fprintf(stdout, "iMessage will ingest the last %d days; use --since-days to change this window.\n", days)
+	}
 	ready := printIMessageReadiness(stdout, true)
 	if !ready {
 		// Honest stop: readiness guidance already printed the next steps.
