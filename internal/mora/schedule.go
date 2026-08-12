@@ -30,12 +30,12 @@ func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 		return listSchedules(stdout, cfg)
 	case "install":
 		if len(args) != 2 {
-			return errors.New("usage: mora schedule install <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
+			return errors.New("usage: mora schedule install <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily|update-daily>")
 		}
 		return installSchedule(stdout, cfg, args[1])
 	case "uninstall":
 		if len(args) != 2 {
-			return errors.New("usage: mora schedule uninstall <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
+			return errors.New("usage: mora schedule uninstall <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily|update-daily>")
 		}
 		return uninstallSchedule(stdout, cfg, args[1])
 	case "run":
@@ -338,6 +338,8 @@ func windowsScheduleCadenceArgs(job string) []string {
 		return []string{"/SC", "DAILY", "/ST", "02:00"}
 	case "git-daily":
 		return []string{"/SC", "DAILY", "/ST", "03:00"}
+	case "update-daily":
+		return []string{"/SC", "DAILY", "/ST", "04:00"}
 	default:
 		return []string{"/SC", "HOURLY", "/MO", "1"}
 	}
@@ -365,6 +367,8 @@ func launchdSchedule(job string) string {
 		return "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>"
 	case "git-daily":
 		return "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>"
+	case "update-daily":
+		return "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>0</integer></dict>"
 	case "lint-weekly":
 		return "<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>"
 	default:
