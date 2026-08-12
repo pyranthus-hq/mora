@@ -562,3 +562,20 @@ func TestAddSourceDefaultsDisabled(t *testing.T) {
 		t.Fatalf("filesystem source not found after sources add; got %+v", sources)
 	}
 }
+
+func TestRenderSetupStateHandoff(t *testing.T) {
+	cfg := testCfg(t)
+	var out bytes.Buffer
+	renderSetupState(cfg, &out)
+	got := out.String()
+	for _, want := range []string{"local evidence store", "what did Sam and I decide", "what's on my calendar next week", "write_memory", "disable a connector", "delete a saved memory"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("handoff missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"mora write ", "mora delete ", "connectors disable "} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("handoff must not include state-changing command %q:\n%s", forbidden, got)
+		}
+	}
+}

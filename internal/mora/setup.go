@@ -245,6 +245,12 @@ func renderSetupState(cfg Config, w io.Writer) {
 	fmt.Fprintln(w, "  2. Wire Mora into your agent, once →  mora mcp serve")
 	fmt.Fprintf(w, "%s\n", sty.dim("     Claude Code:  claude mcp add mora -s user -- mora mcp serve"))
 	fmt.Fprintf(w, "%s\n", sty.dim("     Codex:        codex mcp add mora -- mora mcp serve"))
+	fmt.Fprintf(w, "\n%s\n", sty.accent("Use Mora with your agent"))
+	fmt.Fprintln(w, "  Mora is your local evidence store; your agent is the conversational interface.")
+	fmt.Fprintln(w, "  First question: \"what did Sam and I decide about the launch?\"")
+	fmt.Fprintln(w, "  For dates, ask: \"what's on my calendar next week?\"")
+	fmt.Fprintln(w, "  Reading/searching only retrieves local evidence. Saving a durable memory requires explicit write_memory consent or a deliberate CLI write action.")
+	fmt.Fprintln(w, "  You can disable a connector or delete a saved memory at any time.")
 }
 
 // applySetupSelection is the pure, TTY-free consequential half of the setup menu
@@ -291,6 +297,8 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 
 	// The Apocrypha eye — shown once at the top of interactive setup (TTY only).
 	printBanner(stdout)
+	fmt.Fprintln(stdout, "Mora reads only the connectors you select, stores evidence locally, and never writes back to those sources.")
+	fmt.Fprintln(stdout, "Each connector has separate consent: Gmail/Google Calendar use read-only access; iMessage and Apple Calendar use local Full Disk Access; files and GitHub use only the paths or repositories you choose.")
 
 	catalog := connectorCatalogForGOOS(runtimeGOOS())
 	options := make([]huh.Option[string], 0, len(catalog))
