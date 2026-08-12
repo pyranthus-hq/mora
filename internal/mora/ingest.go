@@ -351,6 +351,25 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	receiptToken, cleanedArgs, err := protectedSyncReceiptArg(args)
+	if err != nil {
+		return err
+	}
+	args = cleanedArgs
+	if receiptToken != "" && (len(args) == 0 || !protectedSyncSource(args[0])) {
+		return fmt.Errorf("%s is only valid for imessage or applecalendar sync", protectedSyncReceiptFlag)
+	}
+	// Route protected local-store reads through the signed application when this
+	// invocation came from another host. The launched child carries a receipt token
+	// and runs this same command directly, preventing relay recursion.
+	if receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
+		if rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
+			fmt.Fprintf(stdout, "synced %s via Mora.app\n", args[0])
+			return nil
+		} else if rerr != errProtectedSyncDirect {
+			return rerr
+		}
+	}
 	// `mora sync git` — one-way, push-only, fail-loud off-device backup to a
 	// private git remote (opt-in; the vault otherwise never leaves the device).
 	if args[0] == "git" {
@@ -407,17 +426,35 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	// `mora sync imessage` — re-run the gated iMessage backfill (shared seam).
 	if args[0] == "imessage" {
-		total, err := backfillEnabledIMessage(ctx, cfg, stdout)
+		total, syncErr := backfillEnabledIMessage(ctx, cfg, stdout)
 		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
-		return err
+		if receiptToken != "" {
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			if syncErr != nil {
+				r.Error = syncErr.Error()
+			}
+			if err := writeProtectedSyncReceipt(cfg, r); err != nil {
+				return err
+			}
+		}
+		return syncErr
 	}
 	// `mora sync applecalendar` — targeted retry for the local Calendar store.
 	// Keep this separate from Google Calendar: the provider, FDA gate, status
 	// receipt, and recovery action are all independent (#266).
 	if args[0] == "applecalendar" {
-		total, err := backfillEnabledAppleCalendar(ctx, cfg, stdout)
+		total, syncErr := backfillEnabledAppleCalendar(ctx, cfg, stdout)
 		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
-		return err
+		if receiptToken != "" {
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			if syncErr != nil {
+				r.Error = syncErr.Error()
+			}
+			if err := writeProtectedSyncReceipt(cfg, r); err != nil {
+				return err
+			}
+		}
+		return syncErr
 	}
 	if args[0] == "github" {
 		total, err := backfillEnabledGitHub(ctx, cfg, stdout)

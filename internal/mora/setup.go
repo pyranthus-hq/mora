@@ -150,7 +150,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 	if ctype == "imessage" {
 		// No-auth path: the real gate is Full Disk Access, not a login (Surface 1).
 		okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
-		fmt.Fprintln(stdout, "Next: grant Full Disk Access, then pull data with `mora sync imessage`.")
+		fmt.Fprintln(stdout, "Next: grant Full Disk Access once to ~/Applications/Mora.app, then run `mora sync imessage` from any host app.")
 		fmt.Fprintln(stdout, "Check readiness anytime with `mora doctor`.")
 		if runtimeGOOS() != "darwin" {
 			fmt.Fprintf(stdout, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())

@@ -197,3 +197,8 @@ The meaningful content hash folds in canonical conversation identity metadata, b
 
 - The lookback window default (**365 days**) and the `BodyBudget` (16 KiB) are set at the mora wiring boundary (`ingest.go`), not in this package. Connect and sync output disclose the effective window and point users to `--since-days`; it is a caller choice, not a connector invariant.
 - `chatPageSize = 50` and `maxMarkerScan = 16` are tuned constants with no live-corpus benchmark cited in-repo. Their values are correct as written but the choice rationale beyond the inline comments is not documented in code.
+
+
+### Protected macOS reads through Mora.app
+
+On macOS, `sync imessage` and `sync applecalendar` route through a detected signed `Mora.app` using LaunchServices so Full Disk Access is granted once to the stable app identity. The parent waits for a token-bound StateDir receipt because `open -W` does not return the child exit status; missing, mismatched, and failed receipts are explicit errors and are removed after reading. Standalone binaries continue direct read-only execution.
