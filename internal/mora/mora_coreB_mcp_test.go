@@ -204,7 +204,7 @@ func TestCoreB_McpHandleInitialize(t *testing.T) {
 	}
 }
 
-// TestCoreB_McpHandleToolsList covers the tools/list arm: exactly the 12 tools we
+// TestCoreB_McpHandleToolsList covers the tools/list arm: exactly the 13 tools we
 // publish, each a JSON-Schema object with the required properties.
 func TestCoreB_McpHandleToolsList(t *testing.T) {
 	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(2), Method: "tools/list"})
@@ -216,14 +216,14 @@ func TestCoreB_McpHandleToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("tools must be a slice of maps, got %T", res["tools"])
 	}
-	if len(tools) != 12 {
-		t.Fatalf("expected 12 published tools, got %d", len(tools))
+	if len(tools) != 13 {
+		t.Fatalf("expected 13 published tools, got %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl["name"].(string)] = true
 	}
-	for _, want := range []string{"write_memory", "read_memory", "search_memory", "list_memory",
+	for _, want := range []string{"write_memory", "read_memory", "search_memory", "calendar_events", "list_memory",
 		"delete_memory", "context_memory", "think", "list_entities", "get_entity", "digest", "brief", "meeting_prep"} {
 		if !names[want] {
 			t.Fatalf("tools/list is missing %q; got %v", want, names)

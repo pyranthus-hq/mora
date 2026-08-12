@@ -46,6 +46,8 @@ func mcpSurfaceArgs(name string) map[string]any {
 		return map[string]any{"query": "surface"}
 	case "get_entity":
 		return map[string]any{"name": "Nonexistent Surface Entity"}
+	case "calendar_events":
+		return map[string]any{"start": "2026-01-01", "end": "2026-01-02"}
 	default: // list_memory, list_entities, digest, brief, meeting_prep
 		return map[string]any{}
 	}

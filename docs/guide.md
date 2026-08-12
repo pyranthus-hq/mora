@@ -352,8 +352,9 @@ Or add this to another MCP client:
 }
 ```
 
-Mora provides 12 tools: write, read, search, list, delete, context, think,
-entity list, entity detail, digest, brief, and meeting prep.
+Mora provides 13 tools: write, read, search, list, calendar events, delete, context,
+think, entity list, entity detail, digest, brief, and meeting prep. Use
+`calendar_events` for exact date, day, and week questions rather than keyword search.
 
 ### Agent Plugins package
 

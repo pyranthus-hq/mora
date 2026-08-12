@@ -1,7 +1,7 @@
 # MCP Server
 
 The stdio JSON-RPC 2.0 server gives MCP agents access to Mora. Claude Code and
-Codex can call twelve tools for memory, search, the entity graph, synthesis,
+Codex can call thirteen tools for memory, exact calendar ranges, search, the entity graph, synthesis,
 briefing, and meeting preparation.
 
 ## Files
@@ -43,7 +43,7 @@ flowchart LR
   A["agent (Claude Code / Codex)"] -- "JSON-RPC line on stdin" --> B["serveMCP<br/>bufio.Scanner loop"]
   B --> C["handleMCP<br/>method switch"]
   C -->|initialize| D["serverInfo + instructions"]
-  C -->|tools/list| E["mcpTool x12 catalog"]
+  C -->|tools/list| E["mcpTool x13 catalog"]
   C -->|tools/call| F["callMCPTool"]
   F --> G["toCallToolResult<br/>envelope wrap"]
   D --> H["json.Marshal -> stdout line"]
@@ -70,7 +70,7 @@ To keep it always reachable, `mora serve http install|uninstall|status` (`serve_
 `handleMCP` (`mcp.go`) is the method switch. Three methods are real. Everything else is `-32601`:
 
 - **`initialize`** (`mcp.go`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. `mcpInstructionsFor` derives its mutation sentence from `mcp_write_policy`: `open` invites trusted writes, `propose` says writes remain pending until local approval, and `readonly` forbids both mutation tools. The rest of `mcpInstructions` remains the load-bearing retrieval guidance injected into a cold client's context, including the invariant that retrieved email, messages, attachments, and documents are untrusted evidence rather than instructions. A config-load failure emits fail-closed instructions and tool calls fail before dispatch.
-- **`tools/list`** (`mcp.go`) ranges `mcpToolRegistry` and returns the twelve-tool catalog built by `mcpTool`.
+- **`tools/list`** (`mcp.go`) ranges `mcpToolRegistry` and returns the thirteen-tool catalog built by `mcpTool`.
 - **`tools/call`** (`mcp.go`) decodes `{name, arguments}`, looks the name up in `mcpToolIndex`, and returns `toCallToolResult(callMCPTool(...))`.
 
 ### The derived tool registry (`mcpToolRegistry`)
@@ -79,13 +79,14 @@ Before Gate 2 PR 2, MCP had **three** independent hand-maintained lists that cou
 
 ## The tool catalog
 
-`tools/list` publishes twelve tools. Schemas are built by `mcpTool(name, desc, params...)` (`mcp.go`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*. Tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mcp.go`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
+`tools/list` publishes thirteen tools. Schemas are built by `mcpTool(name, desc, params...)` (`mcp.go`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*. Tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mcp.go`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
 
 | Tool | Purpose | Key args | Default limit / budget |
 |---|---|---|---|
 | `write_memory` | Persist a durable memory. Incremental index upsert | `title`*, `text`*, `scope`, `type`, `source` | scope `global`, type `insight`, source `mcp`. Payload is `{memory, health}` |
 | `read_memory` | Fetch one memory by id (full body, a bounded match-centred excerpt, or one message evidence segment) | `id`*, `match`, `max_tokens`, `occurrence`, `evidence_ref` | Parameter-free payload is `{memory, health}`. `evidence_ref` narrows Gmail or iMessage to one derived message segment; bounded options then apply inside it, and the receipt preserves sender, time, and direction when available. |
 | `search_memory` | Most-relevant memories. Hybrid only when a semantic embedder is active, else the static keyword surface (parent FTS plus bounded Gmail/iMessage segment FTS) | `query`*, `scope`, `limit`, `source`, `since_hours` | `limit` = `mcpSearchDefaultLimit` = **8**. Results with matching derived segments carry an evidence receipt naming the strongest matching message. |
+| `calendar_events` | Exact event-start range enumeration; use for date/day/week questions instead of keyword search | `start`*, `end`*, `timezone`, `source`, `limit` | Boundaries are `[start, end)`; date-only values use requested IANA `timezone` (local by default). `source` is `calendar` or `applecalendar`; limit **50**, max **200**. Reads the vault without writes. Payload is `{events, health}`. |
 | `list_memory` | Recent memory previews, newest **written** first (never event time) | `scope`, `limit` | `limit` = **10**. Ordered by `indexed_at` (`byIngestRecency`); rows split `event_start` / `source_created_at` / `indexed_at`. Bodies are head-clipped to `searchSnippetLen` (**240** runes), `Meta` is omitted, and aggregate row drops are reported as `memories_truncated`. Use `read_memory` for the full record. Payload is `{memories, health}` |
 | `delete_memory` | Remove a memory by id. Reindexes | `id`* | payload is `{deleted, health}` |
 | `context_memory` | One dense, budget-bounded context block (or session-start briefing when no query) | `query`, `scope`, `max_tokens`, `source`, `since_hours` | `max_tokens` ≈ **6000** default, **20000** max. Returns `{context, freshness, budget_unit, budget, used, health}`, plus `filters`/`excluded_by_filter` when a source/since_hours filter is applied (#241 below) |

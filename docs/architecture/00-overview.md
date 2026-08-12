@@ -74,7 +74,7 @@ flowchart TD
         VAULT[("Markdown vault<br/>sources/&lt;provider&gt;/&lt;SafeFilename&gt;.md<br/>SOURCE OF TRUTH")]
         RBI["rebuildIndex<br/>(one transaction)"]
         DB[("SQLite index.db — disposable cache<br/>memories · FTS/vectors · graph · commitments")]
-        MCP["serveMCP (stdio JSON-RPC 2.0)<br/>12 tools → CallToolResult"]
+        MCP["serveMCP (stdio JSON-RPC 2.0)<br/>13 tools → CallToolResult"]
     end
 
     MM --> WMM
@@ -105,9 +105,9 @@ flowchart TD
 3. **Index** — `rebuildIndex` (index.go) reads every Markdown file and repopulates the derived SQLite projections inside **one transaction** (DDL → destructive DELETEs → `memories`+FTS inserts → graph → vectors → typed commitments), so a mid-rebuild failure rolls back to the last good index. The DB is a fully-rebuildable cache. See [data model & storage](./01-data-model-and-storage.md).
 4. **Retrieve** — Search has two paths. `defaultSearch` (`hybrid.go`) routes to the **static keyword surface (parent FTS + bounded Gmail/iMessage message-segment FTS)** under the static-hash embedder and to **hybrid (RRF-fused parent FTS + vector + 1-hop graph + bounded message-segment FTS) only when a semantic embedder is genuinely active**. The semantic gate preserves the measured static baseline because the ungated graph arm would still perturb its ranking. See [retrieval & search](./02-retrieval-search.md) and [entity graph](./03-entity-graph.md).
 5. **Synthesize** — `think`, `digest`, and `context_memory` are deterministic, **model-free** (Mora holds no API key): `think` emits a `SynthesisPrompt` + gap analysis the caller's model runs; `digest`/`context_memory` assemble byte-stable briefs. See [synthesis: think/digest](./07-synthesis-think-digest.md).
-6. **Serve** — `serveMCP` (mcp.go) is a line-oriented stdio JSON-RPC 2.0 server exposing twelve tools. Every `tools/call` return is wrapped in a spec `CallToolResult`. See [MCP server](./06-mcp-server.md). The same data is reachable from the CLI. See [CLI & UX](./08-cli-and-ux.md). Freshness is honest-snapshot, surfaced as a first-class output. See [sync & freshness](./11-sync-and-freshness.md).
+6. **Serve** — `serveMCP` (mcp.go) is a line-oriented stdio JSON-RPC 2.0 server exposing thirteen tools. Every `tools/call` return is wrapped in a spec `CallToolResult`. See [MCP server](./06-mcp-server.md). The same data is reachable from the CLI. See [CLI & UX](./08-cli-and-ux.md). Freshness is honest-snapshot, surfaced as a first-class output. See [sync & freshness](./11-sync-and-freshness.md).
 
-<!-- generated-contract: module=github.com/pyranthus-hq/mora mcp-tools=12 connectors=6 rrf-k=10 segment-k=10 -->
+<!-- generated-contract: module=github.com/pyranthus-hq/mora mcp-tools=13 connectors=6 rrf-k=10 segment-k=10 -->
 
 ## Package & responsibility map
 
@@ -147,7 +147,7 @@ These span subsystems. Each subsystem doc enforces its own. These are the rules 
 | [03 — Person Entity Graph](./03-entity-graph.md) | The derived people graph: the A2→A1→A3 fixed pipeline (trust → classify → merge), the gazetteer, byte-identical rebuilds, and precision-first non-merging. |
 | [04 — Google Connector](./04-connectors-google.md) | Gmail (thread-grained) + Calendar over read-only scopes. Installed-app loopback OAuth. Resumable `Ingest`. The no-cycle / non-secret placeholder rules. |
 | [05 — iMessage Connector](./05-connectors-imessage.md) | Read-only `chat.db` + AddressBook. The `attributedBody` typedstream decoder (and its historical bugs). One-memory-per-conversation. Inverted truncation; FDA. |
-| [06 — MCP Server](./06-mcp-server.md) | The stdio JSON-RPC 2.0 server, twelve-tool catalog, the `CallToolResult` wrapping (and the bare-result bug it fixes), snippeting, and the token budget. |
+| [06 — MCP Server](./06-mcp-server.md) | The stdio JSON-RPC 2.0 server, thirteen-tool catalog, the `CallToolResult` wrapping (and the bare-result bug it fixes), snippeting, and the token budget. |
 | [07 — Synthesis: think / digest / context_memory](./07-synthesis-think-digest.md) | Model-free synthesis: `think`'s deterministic gap analysis + emitted prompt, the windowed `digest`, and `context_memory`'s starvation guard. |
 | [08 — CLI & Terminal UX](./08-cli-and-ux.md) | `Run` dispatch, the `colorEnabled`/styler byte-clean layer, `init`/`doctor`, the banner, and stream-as-parameter test seam. |
 | [09 — Evaluation & Testing](./09-eval-and-testing.md) | The T2 retrieval attribution histogram (COVERAGE/RETRIEVAL/FUSION/HIT), the T0 MCP budget gate, `wantRED` quarantine, and cross-model TDD fixtures. |
