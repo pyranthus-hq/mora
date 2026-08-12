@@ -293,7 +293,9 @@ mora connect imessage
 mora connect imessage --since-days 365
 ```
 
-A negative `--since-days` asks for all available history. This can be large.
+By default, Mora ingests the last **365 days**. Connect and sync output state the effective
+window; pass `--since-days N` to choose another value. A negative `--since-days` asks for
+all available history, which can be large.
 Mora reads one conversation into one memory. It uses Address Book locally to
 map handles to names. It sends no message data.
 

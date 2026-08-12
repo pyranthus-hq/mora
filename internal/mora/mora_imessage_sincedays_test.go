@@ -4,7 +4,7 @@ import "testing"
 
 // `mora connect imessage --since-days N` must persist the backlog window onto the
 // imessage source (mirroring `connect google --since-days`), so the depth is really
-// flag-customizable — not pinned to the 90-day default. The flag is persisted before
+// flag-customizable — not pinned to the default. The flag is persisted before
 // the FDA-readiness gate, so this holds even where chat.db is absent (temp HOME).
 func TestConnectIMessageSinceDaysPersists(t *testing.T) {
 	asDarwinOnWindows(t)

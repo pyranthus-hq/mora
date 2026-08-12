@@ -195,5 +195,5 @@ The meaningful content hash folds in canonical conversation identity metadata, b
 
 ## Open questions / unverified
 
-- The lookback window default (90 days) and the `BodyBudget` (16 KiB) are set at the mora wiring boundary (`ingest.go`), not in this package. They are accurate as of this read but are the caller's choice, not a connector invariant.
+- The lookback window default (**365 days**) and the `BodyBudget` (16 KiB) are set at the mora wiring boundary (`ingest.go`), not in this package. Connect and sync output disclose the effective window and point users to `--since-days`; it is a caller choice, not a connector invariant.
 - `chatPageSize = 50` and `maxMarkerScan = 16` are tuned constants with no live-corpus benchmark cited in-repo. Their values are correct as written but the choice rationale beyond the inline comments is not documented in code.
