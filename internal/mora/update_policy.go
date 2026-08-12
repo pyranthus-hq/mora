@@ -74,7 +74,7 @@ func resolveUpdatePolicy(cfg Config) resolvedUpdatePolicy {
 		if resolved, resolveErr := updatePolicyEvalLinks(exe); resolveErr == nil {
 			exe = resolved
 		}
-		if _, app := moraAppRoot(exe); app {
+		if classifyUpgradeInstall(exe) == upgradeRouteApp {
 			return resolvedUpdatePolicy{Policy: updatePolicyAuto, Reason: "mora_app_path"}
 		}
 	}

@@ -21,6 +21,36 @@ const (
 	upgradeRepoName  = "mora"
 )
 
+var upgradeExecutable = os.Executable
+
+// upgradeInstallRoute selects the safe owner for an executable. App paths win
+// over Homebrew path fragments: a Caskroom-linked Mora.app is still the signed
+// whole-bundle update target, never a raw Homebrew CLI mutation target.
+type upgradeInstallRoute string
+
+const (
+	upgradeRouteApp      upgradeInstallRoute = "app"
+	upgradeRouteHomebrew upgradeInstallRoute = "homebrew"
+	upgradeRouteSource   upgradeInstallRoute = "source"
+	upgradeRouteDirect   upgradeInstallRoute = "direct"
+)
+
+func classifyUpgradeInstall(exe string) upgradeInstallRoute {
+	if _, ok := moraAppRoot(exe); ok {
+		return upgradeRouteApp
+	}
+	if isHomebrewManaged(exe) {
+		return upgradeRouteHomebrew
+	}
+	if BuildVersion == "" || BuildVersion == "dev" {
+		return upgradeRouteSource
+	}
+	if _, local := localBuildBase(BuildVersion); local {
+		return upgradeRouteSource
+	}
+	return upgradeRouteDirect
+}
+
 // cmdUpgrade implements `mora upgrade [--check]`: in-place self-update from the
 // latest GitHub release, mirroring how Claude Code keeps itself current. Homebrew
 // installs are deferred to `brew upgrade`; source/dev builds are refused.
@@ -69,12 +99,6 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	if *statusOnly {
 		return cmdUpgradeStatus(cfg, *jsonOut, stdout)
 	}
-	if *checkOnly {
-		if BuildVersion == "" || BuildVersion == "dev" {
-			return fmt.Errorf("this is a source build (version %q) — update checks only work on a released binary; use `git pull && go build`, or install a release", BuildVersion)
-		}
-		return runUpdateCheck(ctx, cfg, false, stdout)
-	}
 	if *scheduledCheck {
 		return runUpdateCheck(ctx, cfg, true, stdout)
 	}
@@ -84,7 +108,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("this is a source build (version %q) — self-update only works on a released binary; use `git pull && go build`, or install a release", current)
 	}
 
-	exe, err := os.Executable()
+	exe, err := upgradeExecutable()
 	if err != nil {
 		return fmt.Errorf("locating the running binary: %w", err)
 	}
@@ -92,17 +116,19 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 		exe = resolved
 	}
 
-	if isHomebrewManaged(exe) {
-		fmt.Fprintln(stdout, "mora was installed via Homebrew. Update it with:")
-		fmt.Fprintln(stdout, "  brew upgrade pyranthus-hq/tap/mora")
-		return nil
-	}
-
 	// The repo is public, so no token is required; an optional token raises
 	// GitHub API rate limits.
 	token := firstNonEmpty(os.Getenv("MORA_GITHUB_TOKEN"), os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"))
-	if appRoot, ok := moraAppRoot(exe); ok {
+	switch classifyUpgradeInstall(exe) {
+	case upgradeRouteApp:
+		appRoot, _ := moraAppRoot(exe)
 		return cmdUpgradeApp(ctx, current, appRoot, *checkOnly, token, stdout)
+	case upgradeRouteHomebrew:
+		fmt.Fprintln(stdout, "mora was installed via Homebrew. Update it with:")
+		fmt.Fprintln(stdout, "  brew upgrade pyranthus-hq/tap/mora")
+		return nil
+	case upgradeRouteSource:
+		return fmt.Errorf("this is a source build (version %q) — self-update is disabled; use `git pull && go build`, or install a release", current)
 	}
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{APIToken: token})
 	if err != nil {
