@@ -378,3 +378,7 @@ Mora's otherwise-zero-egress posture, so the design is opt-in and loud by constr
 ### Protected macOS reads through Mora.app
 
 On macOS, `sync imessage` and `sync applecalendar` route through a detected signed `Mora.app` using LaunchServices so Full Disk Access is granted once to the stable app identity. The parent waits for a token-bound StateDir receipt because `open -W` does not return the child exit status; missing, mismatched, and failed receipts are explicit errors and are removed after reading. Standalone binaries continue direct read-only execution.
+
+## Index freshness
+
+Authored `mora write` and MCP `write_memory` immediately upsert FTS then coalesce a full atomic reconciliation of graph, vector, commitment, and manifest projections. Pending work remains visibly dirty until a committed rebuild covers it.

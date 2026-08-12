@@ -404,8 +404,7 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	// same id never clobber each other (os.Link fails EEXIST → re-mint). This
 	// is the server's most concurrent write path — N agents writing at once.
 	// createMemory sets m.ID and m.Path.
-	var op pendingOp
-	if m, op, err = createMemory(ctx, cfg, m); err != nil {
+	if m, _, err = createMemory(ctx, cfg, m); err != nil {
 		return nil, err
 	}
 	m = decorateDecision(m, now)
@@ -434,7 +433,15 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 			"health":      compactHealthOf(cfg, now),
 		}, nil
 	}
-	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
+	// Keep the marker until the elected full reconciliation commits. FTS is already
+	// current, but the full rebuild is what reconciles graph/vector/commitment arms.
+	if rerr := reconcileAuthoredWrites(ctx, cfg); rerr != nil {
+		return map[string]any{
+			"memory": m, "index_stale": true,
+			"warning": fmt.Sprintf("memory %s saved and text search updated, but full index reconciliation is pending: %v", m.ID, rerr),
+			"health":  compactHealthOf(cfg, now),
+		}, nil
+	}
 	return map[string]any{"memory": m, "health": compactHealthOf(cfg, now)}, nil
 }
 
