@@ -86,6 +86,12 @@ needs your own OAuth client when you build from source.
 
 ### 2. Start with one source
 
+Mora is the local evidence store; your agent is the conversational interface. After
+connecting a source, try: **“what did Sam and I decide about the launch?”** or
+**“what's on my calendar next week?”** Reading and search retrieve local evidence;
+saving a durable memory requires explicit write consent. You can disable a connector
+or delete a saved memory at any time.
+
 A folder is the quickest start. It needs no account login.
 
 ```bash

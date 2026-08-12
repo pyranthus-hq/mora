@@ -157,6 +157,13 @@ Mora does not write to either source database.
 
 ## First setup
 
+Mora is your local evidence store and your agent is the conversational interface.
+After you connect a source, ask a concrete question such as **“what did Sam and I
+decide about the launch?”** or **“what's on my calendar next week?”** Reading and
+searching retrieve evidence only. Saving a durable memory requires explicit write
+consent; you can disable a connector or delete a saved memory whenever you choose.
+
+
 ```bash
 mora init
 mora doctor
