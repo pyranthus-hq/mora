@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // idxUpsertMemCount reads the memories table row count from the on-disk index.
@@ -263,5 +264,54 @@ func TestIndexUpsertColdStartDelegatesToRebuild(t *testing.T) {
 	// Identity is bound: a marker exists and the index recorded its id.
 	if _, present, err := readVaultMarker(cfg); err != nil || !present {
 		t.Fatalf("vault marker present=%v err=%v after cold-start", present, err)
+	}
+}
+
+// TestAuthoredWriteReconcilesAllProjections proves #316's stronger boundary:
+// write_memory is instantly FTS-searchable and its full derived projections are
+// reconciled before it reports healthy.
+func TestAuthoredWriteReconcilesAllProjections(t *testing.T) {
+	withTempHome(t)
+	t.Setenv("MORA_EMBEDDER", "")
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := context.Background()
+	res, err := callMCPTool(ctx, "write_memory", map[string]any{
+		"title": "Reconcile all arms", "text": "reconcileallneedle Alice owns the launch decision", "scope": "project:launch", "type": "decision",
+	})
+	if err != nil {
+		t.Fatalf("write_memory: %v", err)
+	}
+	id, warning, err := parseWriteResult(res)
+	if err != nil || id == "" || warning != "" {
+		t.Fatalf("write result id=%q warning=%q err=%v", id, warning, err)
+	}
+	got, err := searchMemories(ctx, cfg, "reconcileallneedle", "", 8)
+	if err != nil || len(got) != 1 || got[0].ID != id {
+		t.Fatalf("immediate FTS = %+v err=%v, want %s", got, err, id)
+	}
+	if ops, err := listPendingOps(cfg); err != nil || len(ops) != 0 {
+		t.Fatalf("pending after completed reconciliation = %+v err=%v", ops, err)
+	}
+	if h := indexHealthOf(cfg, time.Now()); h.State != idxFresh {
+		t.Fatalf("index health = %+v, want fresh", h)
+	}
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var vecs, entities int
+	if err := db.QueryRow("SELECT COUNT(*) FROM mem_vectors WHERE memory_id=?", id).Scan(&vecs); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&entities); err != nil {
+		t.Fatal(err)
+	}
+	if vecs != 1 {
+		t.Fatalf("vectors for %s = %d, want 1", id, vecs)
+	}
+	if entities == 0 {
+		t.Fatal("graph has no entities after reconciliation")
 	}
 }

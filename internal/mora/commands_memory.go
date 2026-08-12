@@ -48,7 +48,7 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	// Create-exclusive publish: a colliding newID can never clobber an existing
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
-	m, op, err := createMemory(ctx, cfg, m)
+	m, _, err = createMemory(ctx, cfg, m)
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,12 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		return err
 	}
-	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
+	// Keep the marker until the elected full reconciliation has committed: indexUpsert
+	// makes FTS immediately visible, but only rebuildIndex can make graph, vectors,
+	// and commitments byte-identical to the vault.
+	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
+		fmt.Fprintf(stdout, "warning: memory saved and text search updated, but full index reconciliation is pending: %v\n", err)
+	}
 	return emit(stdout, m, *jsonOut)
 }
 func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {

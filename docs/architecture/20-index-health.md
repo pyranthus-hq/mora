@@ -26,11 +26,11 @@ it from durable state and carries it as data, like Gate 1's `sourceHealth`.
 | `internal/mora/indexstamp.go` | The `index_meta` stamps written inside the rebuild commit tx + the content-manifest helpers (`manifestLine`/`manifestDigestOf`, `indexManifestAlgo`), and `stampIndexAttemptFailure`. |
 | `internal/mora/doctor_index.go` | Doctor-side helpers: the `sources_config` predicate (`enabledSourceCount`/`vaultHasConnectorMemories`), `disabledCorpusTypes`, and `indexMatchesVault` (the B1a manifest recompute). |
 | `internal/mora/index.go` | `rebuildIndexWithPolicy` marks itself, snapshots `listing_started_at`, computes the manifest for free from the parse bytes, stamps the projections + embedder + manifest inside the commit tx, and clears covered ops + journals after commit, fails visibly on partial cleanup, and only then completes operation receipts. |
-| `internal/mora/index_upsert.go` | The incremental path advances `indexed_at` + `fts_indexed_at` only (never graph/vectors) and invalidates the manifest. |
+| `internal/mora/index_upsert.go` + `index_reconcile.go` | Upsert makes FTS immediate; one coalesced elected rebuild then reconciles graph, vectors, commitments, and the manifest. |
 
 ## The core invariant: mark before visible, clear only on commit
 
-Every vault mutation writes a **crash-durable pending-op file** *before* the vault byte becomes visible, and only a successfully-committed rebuild/upsert transaction may retire it. A pending op — or a non-empty ingest journal — makes the index read **dirty** on every surface. So a memory that landed in the vault but not the index can never masquerade as indexed.
+Every vault mutation writes a **crash-durable pending-op file** *before* the vault byte becomes visible, and only a successfully-committed covering rebuild may retire it for an authored write (an upsert makes its FTS row visible but does not cover every projection). A pending op — or a non-empty ingest journal — makes the index read **dirty** on every surface. So a memory that landed in the vault but not the index can never masquerade as indexed.
 
 ```
 mutate(memory m):
@@ -78,7 +78,7 @@ Ingest uses a **crash-recoverable journal** instead of one pathless op, because 
 
 The **fail-closed rule**, enforced everywhere: any state Mora cannot *compute* is `unhealthy`, never `healthy`. There is no "assume fine" branch.
 
-**Three projections, three freshnesses (Finding 2).** A full rebuild advances `fts_indexed_at`, `graph_indexed_at`, and `vectors_indexed_at`. An incremental `indexUpsert` advances only `fts_indexed_at`. So an authored write is findable by FTS immediately but its graph/vector projections lag until the next rebuild. Projection lag is therefore a **relation** between two stamps, never wall-clock age: an idle vault has `fts == graph` and never reddens by aging. The alarm fires only when an authored write has genuinely advanced FTS past the graph and a rebuild is owed.
+**Three projections, three freshnesses (Finding 2).** A full rebuild advances `fts_indexed_at`, `graph_indexed_at`, and `vectors_indexed_at`; incremental `indexUpsert` advances FTS first, making an authored memory immediately searchable. The write then elects one short-lived, StateDir-leased reconciler. It coalesces concurrent writes and invokes the ordinary atomic full rebuild, which is the only operation allowed to retire their pending markers. A losing concurrent writer leaves its marker intact while the elected process catches it up. If election/rebuild fails or the process crashes, health remains honestly dirty and the next write/process may reclaim the expired lease; nothing claims false freshness. Projection lag is therefore a **relation** between two stamps, never wall-clock age.
 
 **Minimal embedder provenance (HEALTH-12 mismatch arm).** The rebuild stamps `embedder_model`/`embedder_dim` (what *ran*) inside its commit tx. `indexHealthOf` compares that against what the config *asks for*, resolved **without probing Ollama** (so doctor stays fast/offline), and reports `degraded` on a mismatch — the recorded incident where the config said `ollama` but the index was silently rebuilt static. Absent provenance (a legacy index) is treated as a match, so an upgrade does not redden every existing user's first doctor.
 
