@@ -65,3 +65,33 @@ func TestNewResolverMissingDBDegrades(t *testing.T) {
 		t.Fatalf("missing-DB resolver should fall back to raw handle, got %q", got)
 	}
 }
+
+// TestResolverLookup distinguishes an Address Book name from the raw-handle
+// fallback without changing Resolve's compatibility contract.
+func TestResolverLookup(t *testing.T) {
+	resolved := newResolverFromMap(map[string]string{
+		"+14155551234":      "Neil Patel",
+		"empty@example.com": "",
+	})
+	cases := []struct {
+		name     string
+		resolver *Resolver
+		handle   string
+		want     string
+		wantOK   bool
+	}{
+		{name: "resolved", resolver: resolved, handle: "+1 (415) 555-1234", want: "Neil Patel", wantOK: true},
+		{name: "unresolved", resolver: resolved, handle: "+19998887777", want: "", wantOK: false},
+		{name: "empty handle", resolver: resolved, handle: "", want: "", wantOK: false},
+		{name: "nil resolver", resolver: nil, handle: "+14155551234", want: "", wantOK: false},
+		{name: "empty mapping", resolver: resolved, handle: "empty@example.com", want: "", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, gotOK := tc.resolver.Lookup(tc.handle)
+			if got != tc.want || gotOK != tc.wantOK {
+				t.Fatalf("Lookup(%q) = (%q, %t), want (%q, %t)", tc.handle, got, gotOK, tc.want, tc.wantOK)
+			}
+		})
+	}
+}

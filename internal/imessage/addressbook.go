@@ -73,17 +73,23 @@ func newResolverFromMap(byHandle map[string]string) *Resolver {
 	return r
 }
 
+// Lookup returns the resolved contact name and whether Address Book supplied it.
+// A nil resolver, empty handle, absent mapping, and empty mapping value are unresolved.
+// The lookup is O(1): the map was built once at construction.
+func (r *Resolver) Lookup(handle string) (name string, ok bool) {
+	if r == nil || handle == "" {
+		return "", false
+	}
+	name, ok = r.byHandle[normalizeHandle(handle)]
+	return name, ok && name != ""
+}
+
 // Resolve returns the contact name for a handle, or the raw handle when there is no
 // match (D-09 — honest, traceable, never a fabricated placeholder). An empty handle returns "" (no
-// fabrication). The lookup is O(1): the map was built once at construction.
+// fabrication). Use Lookup when the caller also needs to distinguish the raw-handle fallback.
 func (r *Resolver) Resolve(handle string) string {
-	if handle == "" {
-		return ""
-	}
-	if r != nil {
-		if name, ok := r.byHandle[normalizeHandle(handle)]; ok && name != "" {
-			return name
-		}
+	if name, ok := r.Lookup(handle); ok {
+		return name
 	}
 	return handle // D-09 raw-handle fallback
 }
