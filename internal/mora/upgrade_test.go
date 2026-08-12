@@ -3,6 +3,7 @@ package mora
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"io"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,45 @@ func TestIsHomebrewManaged(t *testing.T) {
 				t.Fatalf("isHomebrewManaged(%q) = %v, want %v", tc.path, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestClassifyUpgradeInstall(t *testing.T) {
+	oldVersion := BuildVersion
+	t.Cleanup(func() { BuildVersion = oldVersion })
+	cases := []struct {
+		name, version, exe string
+		want               upgradeInstallRoute
+	}{
+		{"signed app", "1.2.3", "/Applications/Mora.app/Contents/MacOS/mora", upgradeRouteApp},
+		{"Caskroom app", "1.2.3", "/opt/homebrew/Caskroom/mora/1.2.3/Mora.app/Contents/MacOS/mora", upgradeRouteApp},
+		{"raw formula", "1.2.3", "/opt/homebrew/Cellar/mora/1.2.3/bin/mora", upgradeRouteHomebrew},
+		{"source", "dev", "/Users/dev/src/mora/mora", upgradeRouteSource},
+		{"release archive", "1.2.3", "/Users/me/.local/bin/mora", upgradeRouteDirect},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			BuildVersion = tc.version
+			if got := classifyUpgradeInstall(tc.exe); got != tc.want {
+				t.Fatalf("classifyUpgradeInstall(%q) = %q, want %q", tc.exe, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCmdUpgradeRoutesHomebrewWithoutNetwork(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	oldExe, oldVersion := upgradeExecutable, BuildVersion
+	t.Cleanup(func() { upgradeExecutable, BuildVersion = oldExe, oldVersion })
+	BuildVersion = "1.2.3"
+	upgradeExecutable = func() (string, error) { return "/opt/homebrew/Cellar/mora/1.2.3/bin/mora", nil }
+	var out bytes.Buffer
+	if err := cmdUpgrade(context.Background(), []string{"--check"}, &out); err != nil {
+		t.Fatalf("cmdUpgrade: %v", err)
+	}
+	if !strings.Contains(out.String(), "brew upgrade pyranthus-hq/tap/mora") {
+		t.Fatalf("Homebrew route output = %q", out.String())
 	}
 }
 
