@@ -410,7 +410,7 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
 	}
-	if pc, pargs := f.sqlPredicate(); pc != "" {
+	if pc, pargs := f.SQLPredicate(); pc != "" {
 		q += pc
 		args = append(args, pargs...)
 	}
@@ -445,7 +445,7 @@ func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope
 	// query's result set entirely — BEFORE the cosine loop below ever sees
 	// it, satisfying "exclude before the cosine/top-k loop" by construction
 	// rather than a Go-side per-row skip.
-	if pc, pargs := f.sqlPredicate(); pc != "" {
+	if pc, pargs := f.SQLPredicate(); pc != "" {
 		q += pc
 		args = append(args, pargs...)
 	}
@@ -534,7 +534,7 @@ func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool i
 		// #241: the SQL WHERE predicate (provider/account/created_at_unix)
 		// excludes a filtered-out row from THIS per-person query's result set
 		// entirely, before ORDER BY/LIMIT — never a Go-side post-filter.
-		if pc, pargs := f.sqlPredicate(); pc != "" {
+		if pc, pargs := f.SQLPredicate(); pc != "" {
 			q += pc
 			args = append(args, pargs...)
 		}

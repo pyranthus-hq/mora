@@ -134,7 +134,7 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 		sqlq += ` AND m.scope = ?`
 		args = append(args, scope)
 	}
-	if pc, pargs := f.sqlPredicate(); pc != "" {
+	if pc, pargs := f.SQLPredicate(); pc != "" {
 		sqlq += pc
 		args = append(args, pargs...)
 	}

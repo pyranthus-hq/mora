@@ -153,7 +153,7 @@ func listMemories(cfg Config, scope string, limit int, filters ...searchFilters)
 		if scope != "" && m.Scope != scope {
 			continue
 		}
-		if f.active() && !f.passes(m) {
+		if f.Active() && !searchFilterPasses(f, m) {
 			continue
 		}
 		out = append(out, decorateDecision(m, time.Now()))

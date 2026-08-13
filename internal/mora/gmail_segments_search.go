@@ -105,7 +105,7 @@ func gmailSegmentWinnerQuery(ctx context.Context, db *sql.DB, query, scope strin
 	// joined-memory query, before parent ranking or limiting. An excluded segment
 	// must never earn a rank, consume a candidate slot, or be hydrated back into
 	// results.
-	if predicate, predicateArgs := f.sqlPredicate(); predicate != "" {
+	if predicate, predicateArgs := f.SQLPredicate(); predicate != "" {
 		q += predicate
 		args = append(args, predicateArgs...)
 	}
