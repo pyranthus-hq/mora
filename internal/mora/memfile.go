@@ -15,23 +15,17 @@ import (
 	"time"
 )
 
-func persistedDocument(m Memory) memfile.Document {
-	return memfile.Document{ID: m.ID, Scope: m.Scope, Type: m.Type, Title: m.Title, Tags: m.Tags, Source: m.Source, CreatedAt: m.CreatedAt, Path: m.Path, Text: m.Text, Provider: m.Provider, Account: m.Account, ProviderID: m.ProviderID, ContentHash: m.ContentHash, LastSynced: m.LastSynced, Truncated: m.Truncated, DeletedAt: m.DeletedAt, Decision: m.Decision, Meta: m.Meta}
-}
-func memoryFromDocument(d memfile.Document) Memory {
-	return Memory{ID: d.ID, Scope: d.Scope, Type: d.Type, Title: d.Title, Tags: d.Tags, Source: d.Source, CreatedAt: d.CreatedAt, Path: d.Path, Text: d.Text, Provider: d.Provider, Account: d.Account, ProviderID: d.ProviderID, ContentHash: d.ContentHash, LastSynced: d.LastSynced, Truncated: d.Truncated, DeletedAt: d.DeletedAt, Decision: d.Decision, Meta: d.Meta}
-}
 func renderMemory(m Memory) ([]byte, error) {
 	normalized := m
 	normalized.Decision = normalizeDecisionValidity(m)
-	return memfile.Render(persistedDocument(normalized))
+	return memfile.Render(normalized)
 }
 func parseMemory(path string) (Memory, error) {
 	d, err := memfile.Parse(path)
 	if err != nil {
 		return Memory{}, err
 	}
-	m := memoryFromDocument(d)
+	m := d
 	if m.Type == "decision" {
 		m.Decision = normalizeDecisionValidity(m)
 	}
@@ -42,7 +36,7 @@ func parseMemoryBytes(path string, b []byte) (Memory, error) {
 	if err != nil {
 		return Memory{}, err
 	}
-	m := memoryFromDocument(d)
+	m := d
 	if m.Type == "decision" {
 		m.Decision = normalizeDecisionValidity(m)
 	}
@@ -50,7 +44,7 @@ func parseMemoryBytes(path string, b []byte) (Memory, error) {
 }
 func memoriesRoot(cfg Config) string              { return memfile.MemoriesRoot(cfg) }
 func sourcesRoot(cfg Config) string               { return memfile.SourcesRoot(cfg) }
-func memoryPath(cfg Config, m Memory) string      { return memfile.Path(cfg, persistedDocument(m)) }
+func memoryPath(cfg Config, m Memory) string      { return memfile.Path(cfg, m) }
 func osSafeBase(id string) string                 { return memfile.OSSafeBase(id) }
 func allMemoryFiles(cfg Config) ([]string, error) { return memfile.All(cfg) }
 
