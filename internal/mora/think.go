@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"regexp"
 	"sort"
 	"strings"
@@ -425,27 +426,6 @@ const snippetTermCap = 12
 // dropped, de-duplicated. Longer terms sort first (stable on query order) so
 // the window centers on the most discriminative match — "What did Dan say
 // about polos" centers on polos, not an early "what".
-func snippetTerms(query string) [][]rune {
-	var out [][]rune
-	seen := map[string]bool{}
-	for _, f := range strings.Fields(query) {
-		term, key := ftsToken(f)
-		if key == "" || seen[key] || ftsIsStopword(term, key) {
-			continue
-		}
-		kr := []rune(key)
-		if len(kr) < 2 {
-			continue
-		}
-		seen[key] = true
-		out = append(out, kr)
-		if len(out) == snippetTermCap {
-			break
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
-	return out
-}
 
 // earliestQueryMatch returns the rune index of the highest-priority query-term
 // match in r, or -1. Terms are tried in snippetTerms order (longest first);
@@ -454,39 +434,6 @@ func snippetTerms(query string) [][]rune {
 // word-boundary and case-insensitive; lowercasing is per-rune so indexes stay
 // aligned with r (a string-level ToLower can change rune counts for a handful
 // of code points).
-func earliestQueryMatch(r []rune, query string) int {
-	terms := snippetTerms(query)
-	if len(terms) == 0 {
-		return -1
-	}
-	lower := make([]rune, len(r))
-	for i, c := range r {
-		lower[i] = unicode.ToLower(c)
-	}
-	isWord := func(c rune) bool { return unicode.IsLetter(c) || unicode.IsDigit(c) }
-	for _, t := range terms {
-		for i := 0; i+len(t) <= len(lower); i++ {
-			if i > 0 && isWord(lower[i-1]) {
-				continue // mid-word — not a token start
-			}
-			hit := true
-			for j, tc := range t {
-				if lower[i+j] != tc {
-					hit = false
-					break
-				}
-			}
-			if !hit {
-				continue
-			}
-			if i+len(t) < len(lower) && isWord(lower[i+len(t)]) {
-				continue // prefix of a longer word ("dan" in "abundant")
-			}
-			return i
-		}
-	}
-	return -1
-}
 
 // matchSnippet returns a single-line, rune-safe window of text centered on the
 // earliest query-term match, so a preview shows WHY a memory matched rather
@@ -495,32 +442,9 @@ func earliestQueryMatch(r []rune, query string) int {
 // answers look unsupported. Deterministic; with no usable term or no body
 // match (a title/tag hit), it falls back to the head clip, byte-identical to
 // snippet().
-func matchSnippet(text, query string, n int) string {
-	flat := strings.Join(strings.Fields(text), " ")
-	r := []rune(flat)
-	if len(r) <= n {
-		return flat
-	}
-	pos := earliestQueryMatch(r, query)
-	leadIn := n / 3 // context ahead of the match so the term doesn't open the window cold
-	if pos < 0 || pos <= leadIn {
-		// No body match, or the match already sits inside the head window.
-		return strings.TrimSpace(string(r[:n])) + "…"
-	}
-	start := pos - leadIn
-	if start+n > len(r) {
-		start = len(r) - n
-	}
-	for start > 0 && start < pos && r[start-1] != ' ' {
-		start++ // never open mid-word
-	}
-	end := start + n
-	if end > len(r) {
-		end = len(r)
-	}
-	out := "…" + strings.TrimSpace(string(r[start:end]))
-	if end < len(r) {
-		out += "…"
-	}
-	return out
+
+func snippetTerms(query string) [][]rune { return searchpkg.Terms(query) }
+func earliestQueryMatch(r []rune, query string) int {
+	return searchpkg.EarliestMatch(r, query)
 }
+func matchSnippet(text, query string, n int) string { return searchpkg.MatchSnippet(text, query, n) }

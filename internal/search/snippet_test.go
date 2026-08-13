@@ -1,10 +1,21 @@
-package mora
+package search
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"unicode/utf8"
 )
+
+func snippet(text string, n int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	r := []rune(text)
+	if len(r) <= n {
+		return text
+	}
+	return strings.TrimSpace(string(r[:n])) + "…"
+}
 
 // The head-clip bug: a query term deep in a long memory was found by FTS but
 // invisible in the 240-char preview, so the answer looked unsupported. The
@@ -12,7 +23,7 @@ import (
 func TestMatchSnippetCentersOnDeepMatch(t *testing.T) {
 	filler := strings.Repeat("morning standup notes and assorted scheduling chatter ", 30)
 	text := filler + "Dan said to wear polos for the party on Saturday. " + filler
-	got := matchSnippet(text, "what did Dan say about polos", 240)
+	got := MatchSnippet(text, "what did Dan say about polos", 240)
 
 	if !strings.Contains(strings.ToLower(got), "polos") {
 		t.Fatalf("snippet does not show the matched term:\n%q", got)
@@ -26,8 +37,8 @@ func TestMatchSnippetCentersOnDeepMatch(t *testing.T) {
 	if n := utf8.RuneCountInString(got); n > 240+2 {
 		t.Fatalf("window blew the size budget: %d runes", n)
 	}
-	if got2 := matchSnippet(text, "what did Dan say about polos", 240); got2 != got {
-		t.Fatalf("matchSnippet is not deterministic:\n%q\nvs\n%q", got, got2)
+	if got2 := MatchSnippet(text, "what did Dan say about polos", 240); got2 != got {
+		t.Fatalf("MatchSnippet is not deterministic:\n%q\nvs\n%q", got, got2)
 	}
 }
 
@@ -36,7 +47,7 @@ func TestMatchSnippetCentersOnDeepMatch(t *testing.T) {
 func TestMatchSnippetNoMatchFallsBackToHead(t *testing.T) {
 	text := strings.Repeat("alpha beta gamma delta epsilon ", 40)
 	want := snippet(text, 100)
-	got := matchSnippet(text, "completely unrelated zebra", 100)
+	got := MatchSnippet(text, "completely unrelated zebra", 100)
 	if got != want {
 		t.Fatalf("no-match case should equal snippet():\ngot  %q\nwant %q", got, want)
 	}
@@ -46,7 +57,7 @@ func TestMatchSnippetNoMatchFallsBackToHead(t *testing.T) {
 func TestMatchSnippetStopwordOnlyQuery(t *testing.T) {
 	text := strings.Repeat("what did the meeting cover today ", 40)
 	want := snippet(text, 80)
-	if got := matchSnippet(text, "what did the", 80); got != want {
+	if got := MatchSnippet(text, "what did the", 80); got != want {
 		t.Fatalf("stopword-only query should equal snippet():\ngot  %q\nwant %q", got, want)
 	}
 }
@@ -55,7 +66,7 @@ func TestMatchSnippetStopwordOnlyQuery(t *testing.T) {
 // leading ellipsis) — same bytes a head reader would expect.
 func TestMatchSnippetHeadMatchKeepsHead(t *testing.T) {
 	text := "The invoice for Sam is due Friday. " + strings.Repeat("further unrelated detail ", 40)
-	got := matchSnippet(text, "Sam invoice", 120)
+	got := MatchSnippet(text, "Sam invoice", 120)
 	if strings.HasPrefix(got, "…") {
 		t.Fatalf("head-window match must not open with an ellipsis: %q", got)
 	}
@@ -67,7 +78,7 @@ func TestMatchSnippetHeadMatchKeepsHead(t *testing.T) {
 // A match at the very end clamps the window to the tail without overrunning.
 func TestMatchSnippetEndMatchClamps(t *testing.T) {
 	text := strings.Repeat("unrelated preamble text ", 40) + "final agreement: pricing locked at launch"
-	got := matchSnippet(text, "pricing locked", 120)
+	got := MatchSnippet(text, "pricing locked", 120)
 	if !strings.Contains(got, "pricing locked") {
 		t.Fatalf("tail window should contain the term: %q", got)
 	}
@@ -83,7 +94,7 @@ func TestMatchSnippetEndMatchClamps(t *testing.T) {
 // on the query side are normalized away.
 func TestMatchSnippetWordBoundaryAndCase(t *testing.T) {
 	text := strings.Repeat("abundant filler words here ", 30) + "then Dan replied yes. " + strings.Repeat("tail ", 30)
-	got := matchSnippet(text, "Dan?", 100)
+	got := MatchSnippet(text, "Dan?", 100)
 	if !strings.Contains(got, "Dan replied") {
 		t.Fatalf("should center on the word Dan, not a substring inside abundant: %q", got)
 	}
@@ -93,7 +104,7 @@ func TestMatchSnippetWordBoundaryAndCase(t *testing.T) {
 // name, not the function word — it must center the window.
 func TestMatchSnippetCapitalizedNameSurvivesStoplist(t *testing.T) {
 	text := strings.Repeat("project status chatter and threads ", 30) + "Will confirmed the venue booking. " + strings.Repeat("more chatter ", 30)
-	got := matchSnippet(text, "Will venue", 120)
+	got := MatchSnippet(text, "Will venue", 120)
 	if !strings.Contains(got, "Will confirmed") {
 		t.Fatalf("capitalized Will should survive the stoplist and center the window: %q", got)
 	}
@@ -103,7 +114,7 @@ func TestMatchSnippetCapitalizedNameSurvivesStoplist(t *testing.T) {
 // surviving capitalized "What" never out-centers the real subject.
 func TestMatchSnippetPrefersMostDiscriminativeTerm(t *testing.T) {
 	text := "What a week of chatter this was. " + strings.Repeat("filler discussion notes ", 30) + "Dan said wear polos on Saturday. " + strings.Repeat("tail ", 30)
-	got := matchSnippet(text, "What did Dan say about polos", 120)
+	got := MatchSnippet(text, "What did Dan say about polos", 120)
 	if !strings.Contains(got, "polos") {
 		t.Fatalf("longest matching term (polos) should win over an early 'what': %q", got)
 	}
@@ -113,7 +124,7 @@ func TestMatchSnippetPrefersMostDiscriminativeTerm(t *testing.T) {
 // UTF-8 (the byte-clean invariant extends to machine surfaces).
 func TestMatchSnippetRuneSafe(t *testing.T) {
 	text := strings.Repeat("🌊 समुद्र की लहरें और संदर्भ ", 30) + " budget approved 預算 " + strings.Repeat("🌊 और भी पाठ ", 30)
-	got := matchSnippet(text, "budget", 120)
+	got := MatchSnippet(text, "budget", 120)
 	if !utf8.ValidString(got) {
 		t.Fatalf("snippet produced invalid UTF-8: %q", got)
 	}
@@ -124,7 +135,7 @@ func TestMatchSnippetRuneSafe(t *testing.T) {
 
 // Short text comes back whole, no ellipses.
 func TestMatchSnippetShortText(t *testing.T) {
-	if got := matchSnippet("short and sweet", "sweet", 100); got != "short and sweet" {
+	if got := MatchSnippet("short and sweet", "sweet", 100); got != "short and sweet" {
 		t.Fatalf("short text should be returned whole: %q", got)
 	}
 }
@@ -133,11 +144,11 @@ func TestMatchSnippetShortText(t *testing.T) {
 // query, flag the clip, and still drop Meta.
 func TestSnippetMemoriesCentersOnQuery(t *testing.T) {
 	long := strings.Repeat("weekly sync chatter about roadmaps ", 30) + "decision: polos confirmed for the party " + strings.Repeat("post-meeting notes ", 30)
-	mems := []Memory{
+	mems := []memory.Memory{
 		{ID: "m1", Text: long, Meta: map[string]any{"k": "v"}},
 		{ID: "m2", Text: "tiny body"},
 	}
-	out := snippetMemories(mems, "polos party")
+	out := SnippetMemories(mems, "polos party", 240)
 	if !strings.Contains(out[0].Text, "polos") {
 		t.Fatalf("search preview hides the match again: %q", out[0].Text)
 	}
@@ -149,5 +160,19 @@ func TestSnippetMemoriesCentersOnQuery(t *testing.T) {
 	}
 	if out[1].Text != "tiny body" || out[1].Truncated {
 		t.Fatalf("short body must pass through untouched: %+v", out[1])
+	}
+}
+
+func TestSnippetMemories(t *testing.T) {
+	if SnippetMemories(nil, "q", 10) != nil {
+		t.Fatal("nil must stay nil")
+	}
+	in := []memory.Memory{{ID: "m1", Text: "  one   two three four  ", Meta: map[string]any{"x": 1}}}
+	got := SnippetMemories(in, "three", 8)
+	if len(got) != 1 || got[0].Meta != nil || !got[0].Truncated || !strings.Contains(got[0].Text, "three") {
+		t.Fatalf("got=%+v", got)
+	}
+	if in[0].Meta == nil {
+		t.Fatal("input mutated")
 	}
 }
