@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -137,46 +136,12 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 // phantom minted by older binaries on `connectors enable filesystem`) does not
 // count: it can never ingest, so enable must guide the user to configure a
 // folder rather than flip it.
-func hasConfiguredFilesystemSource(sources []Source) bool {
-	for _, s := range sources {
-		if s.Type == "filesystem" && s.Path != "" {
-			return true
-		}
-	}
-	return false
-}
 
 // containsType reports whether types contains t.
-func containsType(types []string, t string) bool {
-	for _, x := range types {
-		if x == t {
-			return true
-		}
-	}
-	return false
-}
 
 // withoutTypes returns types with each of drop removed (preserving order).
-func withoutTypes(types []string, drop ...string) []string {
-	out := types[:0:0]
-	for _, x := range types {
-		if !containsType(drop, x) {
-			out = append(out, x)
-		}
-	}
-	return out
-}
 
 // parseCSVList splits a comma-separated input into trimmed, non-empty entries.
-func parseCSVList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if t := strings.TrimSpace(part); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
 
 // setIMessageDenyList persists the deny-list onto the imessage source row in
 // sources.json (creating the row if needed), so every future `mora sync imessage`
@@ -235,21 +200,21 @@ func ensureGoogleSources(cfg Config, account string) error {
 // is already connected under. The re-auth guard: connecting the SAME mailbox
 // under a SECOND label would double-ingest it (every thread twice, distinct
 // @account StableIDs), so connect exits gracefully instead.
+func hasConfiguredFilesystemSource(s []Source) bool { return registry.HasConfiguredFilesystemSource(s) }
+func containsType(types []string, t string) bool    { return registry.ContainsType(types, t) }
+func withoutTypes(types []string, drop ...string) []string {
+	return registry.WithoutTypes(types, drop...)
+}
+func parseCSVList(s string) []string                    { return registry.ParseCSVList(s) }
+func isValidAccountLabel(s string) bool                 { return registry.ValidAccountLabel(s) }
+func googleSourceNames(account string) (string, string) { return registry.GoogleSourceNames(account) }
+func googleAccountForEmail(s []Source, email string) (string, bool) {
+	return registry.GoogleAccountForEmail(s, email)
+}
+
 func loadSources(cfg Config) ([]Source, error)       { return registry.LoadSources(cfg) }
 func saveSources(cfg Config, sources []Source) error { return registry.SaveSources(cfg, sources) }
 func loadSourcesOrEmpty(cfg Config) []Source         { return registry.LoadSourcesOrEmpty(cfg) }
-
-func googleAccountForEmail(sources []Source, email string) (label string, found bool) {
-	if email == "" {
-		return "", false
-	}
-	for _, s := range sources {
-		if (s.Type == "gmail" || s.Type == "calendar") && s.Email != "" && strings.EqualFold(s.Email, email) {
-			return s.Account, true
-		}
-	}
-	return "", false
-}
 
 // setSourceEmailByAccount stamps the signed-in address onto an account's
 // gmail/calendar rows (the guard's lookup data).
@@ -283,22 +248,8 @@ func sourceFreshlySynced(cfg Config, s Source, within time.Duration, now time.Ti
 // isValidAccountLabel gates `--account`: lowercase letters, digits, hyphens —
 // the label lands in filenames (tokens/google-<label>.json, source names,
 // sync-status paths), so it must be path-safe by construction.
-func isValidAccountLabel(label string) bool {
-	for _, r := range label {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
-			return false
-		}
-	}
-	return label != ""
-}
 
 // googleSourceNames maps an account label to its gmail/calendar source names.
-func googleSourceNames(account string) (gmail, calendar string) {
-	if account == "" {
-		return "gmail", "calendar"
-	}
-	return "gmail-" + account, "calendar-" + account
-}
 func addSource(cfg Config, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add <filesystem|gmail|calendar|gdrive> [flags]")
