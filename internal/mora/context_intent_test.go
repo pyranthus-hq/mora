@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ func TestContextMemoryRoutesCurrentStateAndOpenLoopQuestions(t *testing.T) {
 	t.Cleanup(func() { briefClock = oldClock })
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "self@example.com",
-		Enabled: ptr(true), CreatedAt: now.Add(-24 * time.Hour).Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Add(-24 * time.Hour).Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}

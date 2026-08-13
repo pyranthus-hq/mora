@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"strings"
 	"testing"
@@ -25,8 +26,8 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 		t.Fatalf("loadConfig: %v", err)
 	}
 	if err := saveSources(cfg, []Source{
-		{Name: "bad", Type: "filesystem", Scope: "global", Enabled: ptr(true)},
-		{Name: "good", Type: "filesystem", Scope: "global", Enabled: ptr(true)},
+		{Name: "bad", Type: "filesystem", Scope: "global", Enabled: genericutil.Ptr(true)},
+		{Name: "good", Type: "filesystem", Scope: "global", Enabled: genericutil.Ptr(true)},
 	}); err != nil {
 		t.Fatalf("saveSources: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestIngestRunNamedSourceStillAborts(t *testing.T) {
 		t.Fatalf("loadConfig: %v", err)
 	}
 	if err := saveSources(cfg, []Source{
-		{Name: "bad", Type: "filesystem", Scope: "global", Enabled: ptr(true)},
+		{Name: "bad", Type: "filesystem", Scope: "global", Enabled: genericutil.Ptr(true)},
 	}); err != nil {
 		t.Fatalf("saveSources: %v", err)
 	}

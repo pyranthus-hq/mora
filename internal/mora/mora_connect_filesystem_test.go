@@ -2,6 +2,7 @@ package mora
 
 import (
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -341,7 +342,7 @@ func TestConnectFilesystemReconnectRefreshes(t *testing.T) {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 	const planted = "2020-01-01T00:00:00Z"
-	if err := saveSources(cfg, []Source{{Name: "myfolder", Type: "filesystem", Scope: "personal", Path: realDir, Enabled: ptr(true), CreatedAt: planted}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "myfolder", Type: "filesystem", Scope: "personal", Path: realDir, Enabled: genericutil.Ptr(true), CreatedAt: planted}}); err != nil {
 		t.Fatalf("saveSources: %v", err)
 	}
 

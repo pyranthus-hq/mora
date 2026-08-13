@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -336,7 +337,7 @@ func TestDisabledSourceWithCorpusIsNotHealthy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gmailDir, "thread.md"), []byte("---\nid: gmail_t\n---\n\nbody\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Enabled: ptr(false)}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Enabled: genericutil.Ptr(false)}}); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
@@ -375,12 +376,12 @@ func TestDisabledCorpusTypesNormalizesProviderAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	enabled := ptr(true)
+	enabled := genericutil.Ptr(true)
 	if got := disabledCorpusTypes(cfg, []Source{{Name: "applecalendar", Type: "applecalendar", Enabled: enabled}}); len(got) != 0 {
 		t.Fatalf("enabled applecalendar reported disabled provider corpus: %v", got)
 	}
 
-	disabled := ptr(false)
+	disabled := genericutil.Ptr(false)
 	got := disabledCorpusTypes(cfg, []Source{{Name: "applecalendar", Type: "applecalendar", Enabled: disabled}})
 	if len(got) != 1 || got[0] != "applecal" {
 		t.Fatalf("disabled applecalendar corpus = %v, want [applecal]", got)

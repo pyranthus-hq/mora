@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,7 +26,7 @@ func isolateUpdatePolicyTest(t *testing.T) Config {
 	oldCheck := updateCheckLatest
 	oldNotify := updateNotificationRun
 	oldGOOS := runtimeGOOS
-	oldMarkerSync := markerSyncFn
+	oldMarkerSync := atomicio.MarkerSyncFn
 	t.Cleanup(func() {
 		BuildVersion = oldVersion
 		updatePolicyClock = oldClock
@@ -34,7 +35,7 @@ func isolateUpdatePolicyTest(t *testing.T) Config {
 		updateCheckLatest = oldCheck
 		updateNotificationRun = oldNotify
 		runtimeGOOS = oldGOOS
-		markerSyncFn = oldMarkerSync
+		atomicio.MarkerSyncFn = oldMarkerSync
 	})
 	cfg := defaultConfig()
 	for _, path := range []string{cfg.ConfigDir, cfg.StateDir} {

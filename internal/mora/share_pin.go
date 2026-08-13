@@ -14,6 +14,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"os/exec"
@@ -310,10 +311,10 @@ func writeMigratedLatch(cfg Config, name string) error {
 		return fmt.Errorf("share %q: checking migrated latch: %w", name, statErr)
 	}
 	if errors.Is(statErr, os.ErrNotExist) {
-		if err := atomicWriteDurable(shareMigratedLatchPath(cfg, name), []byte("1\n"), 0o644); err != nil {
+		if err := atomicio.WriteDurable(shareMigratedLatchPath(cfg, name), []byte("1\n"), 0o644); err != nil {
 			return fmt.Errorf("share %q: persisting migrated latch: %w", name, err)
 		}
-	} else if err := syncDir(filepath.Dir(shareMigratedLatchPath(cfg, name))); err != nil {
+	} else if err := atomicio.SyncDir(filepath.Dir(shareMigratedLatchPath(cfg, name))); err != nil {
 		// A prior call may have synced the latch bytes and renamed it, then failed
 		// its directory barrier. Retry that last barrier before retiring legacy.
 		return fmt.Errorf("share %q: making existing migrated latch durable: %w", name, err)

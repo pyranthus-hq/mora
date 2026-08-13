@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -142,7 +143,7 @@ func writeBlockRecord(cfg Config, d rebuildDecision, vaultDir string, oldCount, 
 	if err != nil {
 		return err
 	}
-	return atomicWrite(blockRecordPath(cfg), b, 0o644)
+	return atomicio.Write(blockRecordPath(cfg), b, 0o644)
 }
 
 func clearBlockRecord(cfg Config) error {

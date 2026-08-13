@@ -31,6 +31,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"io/fs"
 	"os"
@@ -138,7 +140,7 @@ func saveShares(cfg Config, sf shareFile) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(sharesPath(cfg), append(b, '\n'), 0o600)
+	return atomicio.Write(sharesPath(cfg), append(b, '\n'), 0o600)
 }
 
 func validateSubscriptionNameAvailable(sf shareFile, name string) error {
@@ -177,7 +179,7 @@ func shareKeygen(cfg Config, stdout io.Writer) error {
 	}
 	body := fmt.Sprintf("# created: %s\n# public key: %s\n%s\n",
 		time.Now().Format(time.RFC3339), id.Recipient(), id)
-	if err := atomicWrite(path, []byte(body), 0o600); err != nil {
+	if err := atomicio.Write(path, []byte(body), 0o600); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "share identity written to %s — never share or commit this file\n", path)
@@ -455,7 +457,7 @@ func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	}
 	giPath := filepath.Join(staging, ".gitignore")
 	if _, err := os.Stat(giPath); os.IsNotExist(err) {
-		if werr := atomicWrite(giPath, []byte(shareGitignoreBody), 0o644); werr != nil {
+		if werr := atomicio.Write(giPath, []byte(shareGitignoreBody), 0o644); werr != nil {
 			return fmt.Errorf("writing .gitignore: %w", werr)
 		}
 	}
@@ -467,7 +469,7 @@ func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 	if err != nil {
 		return err
 	}
-	if err := atomicWrite(filepath.Join(staging, "share.json"), append(mb, '\n'), 0o644); err != nil {
+	if err := atomicio.Write(filepath.Join(staging, "share.json"), append(mb, '\n'), 0o644); err != nil {
 		return err
 	}
 	if err := configureRemote(ctx, staging, *github, *repoName, *remote, run); err != nil {
@@ -543,7 +545,7 @@ func saveSharePushState(cfg Config, name string, st sharePushState) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(sharePushStatePath(cfg, name), append(b, '\n'), 0o600)
+	return atomicio.Write(sharePushStatePath(cfg, name), append(b, '\n'), 0o600)
 }
 
 // shareChanges is one push's delta: what gets (re)encrypted, what gets removed
@@ -1309,7 +1311,7 @@ func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope strin
 		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text, &m.Score); err != nil {
 			return nil, err
 		}
-		m.Tags = splitCSV(tags)
+		m.Tags = genericutil.SplitCSV(tags)
 		m.Owner = owner
 		out = append(out, m)
 	}
@@ -1595,7 +1597,7 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	if len(args) == 0 {
 		return errors.New(shareUsage)
 	}
-	if isHelpFlag(args[0]) || (len(args) > 1 && isHelpFlag(args[1])) {
+	if genericutil.IsHelpFlag(args[0]) || (len(args) > 1 && genericutil.IsHelpFlag(args[1])) {
 		_, err := io.WriteString(stdout, shareUsage+"\n")
 		return err
 	}

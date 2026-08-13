@@ -3,6 +3,7 @@ package mora
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,7 +46,7 @@ func TestSourcesLockSerializesRMW(t *testing.T) {
 	bDone := make(chan error, 1)
 	go func() {
 		bDone <- mutateSources(cfg, func(s []Source) ([]Source, error) {
-			return append(s, Source{Name: "B", Type: "filesystem", Enabled: ptr(true)}), nil
+			return append(s, Source{Name: "B", Type: "filesystem", Enabled: genericutil.Ptr(true)}), nil
 		})
 	}()
 
@@ -65,7 +66,7 @@ func TestSourcesLockSerializesRMW(t *testing.T) {
 		relA()
 		t.Fatalf("A load: %v", err)
 	}
-	aSources = append(aSources, Source{Name: "A", Type: "filesystem", Enabled: ptr(true)})
+	aSources = append(aSources, Source{Name: "A", Type: "filesystem", Enabled: genericutil.Ptr(true)})
 	if err := saveSources(cfg, aSources); err != nil {
 		relA()
 		t.Fatalf("A save: %v", err)
@@ -93,7 +94,7 @@ func TestSourcesLockSerializesRMW(t *testing.T) {
 // wedges the registry — while preserving the pre-existing row.
 func TestSourcesLockReapsStaleLock(t *testing.T) {
 	cfg := Config{ConfigDir: t.TempDir()}
-	if err := saveSources(cfg, []Source{{Name: "pre", Type: "filesystem", Enabled: ptr(true)}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "pre", Type: "filesystem", Enabled: genericutil.Ptr(true)}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -109,7 +110,7 @@ func TestSourcesLockReapsStaleLock(t *testing.T) {
 	}
 
 	if err := mutateSources(cfg, func(s []Source) ([]Source, error) {
-		return append(s, Source{Name: "after-crash", Type: "filesystem", Enabled: ptr(true)}), nil
+		return append(s, Source{Name: "after-crash", Type: "filesystem", Enabled: genericutil.Ptr(true)}), nil
 	}); err != nil {
 		t.Fatalf("mutateSources over a stale lease should reap and proceed: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestSourcesConcurrentRMWNoLostUpdate(t *testing.T) {
 	const n = 8
 	seed := make([]Source, n)
 	for i := range seed {
-		seed[i] = Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: ptr(false)}
+		seed[i] = Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: genericutil.Ptr(false)}
 	}
 	if err := saveSources(cfg, seed); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -199,7 +200,7 @@ func TestSourcesRMWNoLostUpdateAcrossProcesses(t *testing.T) {
 	const n = 8
 	seed := make([]Source, n)
 	for i := range seed {
-		seed[i] = Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: ptr(false)}
+		seed[i] = Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: genericutil.Ptr(false)}
 	}
 	if err := saveSources(cfg, seed); err != nil {
 		t.Fatalf("seed: %v", err)

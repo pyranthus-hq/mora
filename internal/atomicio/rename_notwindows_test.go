@@ -1,6 +1,6 @@
 //go:build !windows
 
-package mora
+package atomicio
 
 import (
 	"errors"
@@ -15,8 +15,8 @@ import (
 // on the Linux CI jobs and locally, guarding against the stub ever returning true.
 func TestSharingViolationRetryable_NotWindows(t *testing.T) {
 	for _, err := range []error{nil, os.ErrPermission, os.ErrNotExist, errors.New("boom")} {
-		if sharingViolationRetryable(err) {
-			t.Fatalf("sharingViolationRetryable(%v) = true off Windows; must always be false", err)
+		if SharingViolationRetryable(err) {
+			t.Fatalf("SharingViolationRetryable(%v) = true off Windows; must always be false", err)
 		}
 		if renameReplaceRetryable(err) {
 			t.Fatalf("renameReplaceRetryable(%v) = true off Windows; must always be false", err)

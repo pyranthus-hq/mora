@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"sort"
 	"strings"
 )
@@ -263,7 +264,7 @@ func admitGmailSegmentCandidates(ctx context.Context, db *sql.DB, candidates []M
 		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text); err != nil {
 			return candidates, err
 		}
-		m.Tags = splitCSV(tags)
+		m.Tags = genericutil.SplitCSV(tags)
 		if full, ferr := parseMemory(m.Path); ferr == nil {
 			m = full
 		}

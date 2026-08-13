@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1637,7 +1638,7 @@ func renderDigest(d Digest, budgetChars int) string {
 		budgetChars = defaultContextTokens * charsPerToken
 	}
 	bd, _ := budgetDigestForMarkdown(d, budgetChars)
-	return truncateRunes(renderDigestBody(bd), budgetChars)
+	return genericutil.TruncateRunes(renderDigestBody(bd), budgetChars)
 }
 
 // budgetDigestForMarkdown structurally budgets a digest to budgetChars of RENDERED

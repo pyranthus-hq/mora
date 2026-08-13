@@ -3,6 +3,7 @@ package mora
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
@@ -122,13 +123,13 @@ func acquireSourcesLock(cfg Config, now time.Time) (release func(), err error) {
 		switch {
 		case perr == nil && published:
 			return loopLockReleaser(lockPath, body), nil
-		case perr != nil && !sharingViolationRetryable(perr):
+		case perr != nil && !atomicio.SharingViolationRetryable(perr):
 			// A real, non-contention fs error: fail, never interleave a partial write.
 			return nil, perr
 		case perr == nil:
 			// The lock exists; try to reap it if the holder abandoned it (over TTL).
 			reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
-			if rerr != nil && !sharingViolationRetryable(rerr) {
+			if rerr != nil && !atomicio.SharingViolationRetryable(rerr) {
 				return nil, rerr // a real, non-contention read/rename error
 			}
 			if rerr == nil && reaped {

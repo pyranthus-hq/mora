@@ -101,31 +101,6 @@ func TestCoreB_UtilSourceFreshlySynced(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// expandHome — only a leading "~/" is expanded.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilExpandHome(t *testing.T) {
-	withTempHome(t)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := expandHome("~/x/y"); got != filepath.Join(home, "x", "y") {
-		t.Fatalf("expandHome(~/x/y) = %q, want %q", got, filepath.Join(home, "x", "y"))
-	}
-	if got := expandHome("~/x/y"); !strings.HasPrefix(got, home) {
-		t.Fatalf("expanded path %q must be rooted at HOME %q", got, home)
-	}
-	// Unchanged: absolute, relative, bare ~, and ~user (no "~/" prefix).
-	for _, p := range []string{"/abs/path", "rel/path", "~", "~otheruser", "./x", "a~/b"} {
-		if got := expandHome(p); got != p {
-			t.Errorf("expandHome(%q) = %q, want unchanged", p, got)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // parseSearchArgs — every flag/error branch.
 // ---------------------------------------------------------------------------
 
@@ -174,71 +149,6 @@ func TestCoreB_UtilParseSearchArgs(t *testing.T) {
 	// --limit=non-integer (= form).
 	if _, _, _, _, err := parseSearchArgs([]string{"--limit=xyz"}); err == nil || !strings.Contains(err.Error(), "invalid syntax") {
 		t.Fatalf("--limit=xyz err = %v, want invalid syntax", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// atomicWrite — content + mode + MkdirAll-fail branch.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilAtomicWrite(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "deep", "f.txt")
-	body := []byte("hello atomic\n")
-	if err := atomicWrite(path, body, 0o640); err != nil {
-		t.Fatalf("atomicWrite: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, body) {
-		t.Fatalf("content = %q, want %q", got, body)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertPermUnix(t, info.Mode(), 0o640)
-
-	// MkdirAll-fail: make the parent a regular FILE, then write to file/child.
-	fileAsDir := filepath.Join(dir, "iamafile")
-	if err := os.WriteFile(fileAsDir, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWrite(filepath.Join(fileAsDir, "child.txt"), []byte("no"), 0o644); err == nil {
-		t.Fatal("atomicWrite into a path whose parent is a file must error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// appendFile — appends, creates parent, MkdirAll-fail branch.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilAppendFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sub", "log.jsonl")
-	if err := appendFile(path, "line-a\n"); err != nil {
-		t.Fatalf("appendFile 1: %v", err)
-	}
-	if err := appendFile(path, "line-b\n"); err != nil {
-		t.Fatalf("appendFile 2: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "line-a\nline-b\n" {
-		t.Fatalf("appended content = %q, want two concatenated lines", got)
-	}
-
-	// MkdirAll-fail: parent is a file.
-	fileAsDir := filepath.Join(dir, "afile")
-	if err := os.WriteFile(fileAsDir, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := appendFile(filepath.Join(fileAsDir, "child.log"), "z\n"); err == nil {
-		t.Fatal("appendFile whose parent is a file must error")
 	}
 }
 

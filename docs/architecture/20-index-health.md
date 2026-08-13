@@ -17,8 +17,9 @@ it from durable state and carries it as data, like Gate 1's `sourceHealth`.
 | File | Responsibility |
 |---|---|
 | `internal/mora/pending.go` | The **pending-ops ledger**: `pendingOp` (write \| delete \| rebuild), `markIndexDirty`/`unmarkIndexDirty`, `listPendingOps`, the A3 clearing rules (`clearCoveredPendingOps`/`shouldClearOp`), `pendingDeleteIDs`/`suppressPendingDeletes` (the B4 read-path suppression). `indexClock` is the injectable clock all of Gate 2's stamps resolve against. |
-| `internal/mora/atomicio.go` | `atomicWriteDurable` — `atomicWrite` plus two crash barriers (`f.Sync` before rename, `syncDir` after), behind the `markerSyncFn`/`syncDirFn` seams so the durability call-trace is testable. `testHookPostMarkerWrite` fires after a marker is durably on disk (the crash-window seam). |
-| `internal/mora/sync_notwindows.go` / `sync_windows.go` | The `syncDir` build-tag pair — a real parent-dir fsync on POSIX/darwin (`F_FULLFSYNC`), a documented no-op on Windows (NTFS `MoveFileEx` is metadata-journaled). Mirrors `rename_*windows.go`. |
+| `internal/atomicio/atomicio.go` | `atomicio.WriteDurable` — `atomicio.Write` plus two crash barriers (`f.Sync` before rename, `atomicio.SyncDir` after), behind the `atomicio.MarkerSyncFn`/`atomicio.SyncDirFn` seams so the durability call-trace is testable. |
+| `internal/mora/pending.go` | `testHookPostMarkerWrite` fires inside `markIndexDirty` after a marker is durably on disk (the crash-window seam) — declared here (not in `internal/atomicio`) since it is set and read entirely from this file. |
+| `internal/atomicio/sync_notwindows.go` / `sync_windows.go` | The `atomicio.SyncDir` build-tag pair — a real parent-dir fsync on POSIX/darwin (`F_FULLFSYNC`), a documented no-op on Windows (NTFS `MoveFileEx` is metadata-journaled). Mirrors `internal/atomicio/rename_*windows.go`. |
 | `internal/mora/ingest_journal.go` | The **durable ingest journal** (`StateDir/ingest/<source>/journal.log`): a durable `run <op_id> <marked_at>` header written before the first connector publish, best-effort per-path lines, `ingestJournalStatus` (the B1-rule-4 read), and `recoverIngestJournals` (error-returning post-commit compaction + retired run ids). |
 | `internal/mora/operation_activity.go` | The bounded, content-free operation receipt primitive under `StateDir/operations/`: owner-fenced begin/heartbeat/finish writes plus read-only running/stalled/failed/completed classification for ingest and index-rebuild work. |
 | `internal/mora/indexhealth.go` | The **typed health kernel**: `Health`/`indexHealth`/`projectionHealth`/`embedderProvenance`/`producerHealth`, the subordinate `Activities` arm, `indexHealthOf` (the seven-rule first-match-wins predicate), `healthOf` (the one public entry), `aggregateHealthState` (the B1b worst-of collapse), and the no-probe embedder-provenance comparison. |
@@ -34,8 +35,8 @@ Every vault mutation writes a **crash-durable pending-op file** *before* the vau
 
 ```
 mutate(memory m):
-  1. markIndexDirty(cfg, op)   — atomicWriteDurable StateDir/pending/<op_id>.json
-        (f.Sync + syncDir; MUST fully return before step 2). On a real I/O fault:
+  1. markIndexDirty(cfg, op)   — atomicio.WriteDurable StateDir/pending/<op_id>.json
+        (f.Sync + atomicio.SyncDir; MUST fully return before step 2). On a real I/O fault:
         ABORT before a single vault byte changes (errIndexUnmarkable) — a retry
         then cannot mint a duplicate memory, preserving the MCP isError asymmetry.
   2. write the vault file                          — the mutation becomes VISIBLE
@@ -49,7 +50,7 @@ mutate(memory m):
 
 **Why files, not an index table.** The first design put pending ops in an `index.db` table. Adversarial review killed it: it would brick every existing v2 install (the upsert fast-path's readiness check would fail on the new table) and **deadlock against the rebuild's own `_txlock=immediate` write transaction** — a rebuild of thousands of memories against Ollama holds that lock for minutes, and a second immediate transaction (the mark) would block and die on `busy_timeout`. Files never contend on the writer lock, never fail on a locked/corrupt/missing index, and need **no schema bump** (`indexSchemaVersion` stays 2, shared with every subscriber's share index).
 
-**Durability is the hard requirement.** Plain `atomicWrite` gives neither data nor directory-entry durability on POSIX (a bare `os.Rename`), so a power loss could persist the vault publish while losing the earlier marker — the forbidden **false-clean**. `atomicWriteDurable` fsyncs the temp file *before* the rename and fsyncs the parent directory *after*, both propagating their errors. Because `StateDir` and `VaultDir` are independently settable (and the vault is often an external/synced volume), ordering — the marker fully returning before the vault publish — is the invariant, not a shared journal.
+**Durability is the hard requirement.** Plain `atomicio.Write` gives neither data nor directory-entry durability on POSIX (a bare `os.Rename`), so a power loss could persist the vault publish while losing the earlier marker — the forbidden **false-clean**. `atomicio.WriteDurable` fsyncs the temp file *before* the rename and fsyncs the parent directory *after*, both propagating their errors. Because `StateDir` and `VaultDir` are independently settable (and the vault is often an external/synced volume), ordering — the marker fully returning before the vault publish — is the invariant, not a shared journal.
 
 ## The clearing rules (A3)
 
@@ -153,7 +154,7 @@ A healthy source and a clean index prove data *arrived* and is *indexed* — not
 
 **The watchman does not deadlock on its own stamp.** `doctor --pulse` stamps producer `doctor-pulse`, so it monitors *itself*. The stamp rule is **read-then-write**: it classifies the *prior* stamp (Phase 1) **before** writing, then stamps `LastSuccessAt = now` **unconditionally on the completion path — including the exit-2 path** (Phase 2). "The pulse succeeded" means *it ran to completion*, **not** "everything is healthy" — so a legitimately-failing gmail can never rot the watchman arm to stale and make doctor scream "the watchman is dead" while it runs every hour. This self-recovers in exactly one cadence: run N (stale stamp) reports the missed cadence, exits 2, **stamps**. Run N+1 sees a fresh stamp and exits 0. A plain `mora doctor` (not `--pulse`) never stamps, so a developer running it once cannot silence the watchman for a cadence.
 
-**The ledger RMW is cross-process safe.** `status.json` is a single shared file every producer appends to, so a manual `mora index rebuild` racing the scheduled `index-hourly` would lose an update under a plain `atomicWrite` (last rename wins). `producer_lock.go` is a **sibling of `mutateSources`**: it holds the same crash-safe, Windows-CI-green file lease (`publishLockFile`/`reapStaleLockTTL`/`loopLockReleaser`) around the whole read-modify-write and **reloads inside the lease** so a concurrent writer's committed change is always observed. The lease is held only for the microsecond stamp — never across a producer's actual work.
+**The ledger RMW is cross-process safe.** `status.json` is a single shared file every producer appends to, so a manual `mora index rebuild` racing the scheduled `index-hourly` would lose an update under a plain `atomicio.Write` (last rename wins). `producer_lock.go` is a **sibling of `mutateSources`**: it holds the same crash-safe, Windows-CI-green file lease (`publishLockFile`/`reapStaleLockTTL`/`loopLockReleaser`) around the whole read-modify-write and **reloads inside the lease** so a concurrent writer's committed change is always observed. The lease is held only for the microsecond stamp — never across a producer's actual work.
 
 Identity is **argv-derived** at each chokepoint (`pulse --advance` ⇒ pulse-daily, `index rebuild` ⇒ index-hourly, …), which keeps a legacy pre-flag plist's alarm alive. A `--producer=<job>` token overrides it when present.
 

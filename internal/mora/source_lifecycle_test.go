@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,7 +134,7 @@ func TestDisableThenEnableFilesystemDoesNotResurrectPhantom(t *testing.T) {
 
 	// A legacy pathless row (older binaries minted one) must never be
 	// (re)activated by enable — it can only fail the walk.
-	if err := saveSources(cfg, []Source{{Name: "filesystem", Type: "filesystem", Scope: "personal", Enabled: ptr(false), CreatedAt: time.Now().Format(time.RFC3339)}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "filesystem", Type: "filesystem", Scope: "personal", Enabled: genericutil.Ptr(false), CreatedAt: time.Now().Format(time.RFC3339)}}); err != nil {
 		t.Fatal(err)
 	}
 	out = run(t, "connectors", "enable", "filesystem")

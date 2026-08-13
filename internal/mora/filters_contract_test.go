@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"strings"
 	"testing"
 	"time"
@@ -1276,7 +1277,7 @@ func seedAliasedAccountSource(t *testing.T, cfg Config, srcType, name, account s
 	}
 	existing = append(existing, Source{
 		Name: name, Type: srcType, Account: account, Scope: "personal",
-		Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
 	})
 	if err := saveSources(cfg, existing); err != nil {
 		t.Fatalf("saveSources: %v", err)

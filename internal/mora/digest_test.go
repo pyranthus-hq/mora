@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"testing"
 	"time"
 
@@ -101,7 +102,7 @@ func enableSources(t *testing.T, cfg Config, types ...string) {
 	t.Helper()
 	var srcs []Source
 	for _, ty := range types {
-		s := Source{Name: ty, Type: ty, Scope: "personal", Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
+		s := Source{Name: ty, Type: ty, Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
 		if ty == "calendar" {
 			s.Calendar = "primary"
 		}

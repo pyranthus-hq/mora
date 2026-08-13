@@ -3,6 +3,7 @@ package mora
 import (
 	"encoding/json"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,7 +154,7 @@ func saveBriefSnapshot(cfg Config, snap briefSnapshot, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteDurable(briefPath(cfg, snap.Key), append(body, '\n'), 0o600)
+	return atomicio.WriteDurable(briefPath(cfg, snap.Key), append(body, '\n'), 0o600)
 }
 
 // classify is the PURE delta engine: it takes a loaded snapshot, the parsed

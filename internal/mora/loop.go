@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -302,7 +303,7 @@ func saveRunRecord(cfg Config, r loopRunRecord, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
+	return atomicio.Write(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
 }
 
 // saveRunRecordDurable is reserved for the two non-idempotent effect
@@ -315,7 +316,7 @@ func saveRunRecordDurable(cfg Config, r loopRunRecord, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteDurable(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
+	return atomicio.WriteDurable(loopLatestPath(cfg, r.LoopID), append(body, '\n'), 0o600)
 }
 
 // saveRunRecordPreservingEffect keeps durability monotonic after a durable
@@ -348,7 +349,7 @@ func sanitizeJournalNote(s string) string {
 func appendLoopJournal(cfg Config, r loopRunRecord, now time.Time, note string) error {
 	line := fmt.Sprintf("%s | %s | %s | %s | %d | %s\n",
 		now.UTC().Format(time.RFC3339), r.LoopID, r.RunID, r.Status, r.Attempt, sanitizeJournalNote(note))
-	return appendFile(loopJournalPath(cfg, r.LoopID), line)
+	return atomicio.AppendFile(loopJournalPath(cfg, r.LoopID), line)
 }
 
 // ---------------------------------------------------------------------------
@@ -482,7 +483,7 @@ const leaseRemovalTimeout = 500 * time.Millisecond
 // operating-system implementations.
 var (
 	leaseRemoveFn           = os.Remove
-	leaseRemovalRetryableFn = sharingViolationRetryable
+	leaseRemovalRetryableFn = atomicio.SharingViolationRetryable
 )
 
 // removeLeaseFileGuarded frees a held lease while its cross-process guard is
@@ -637,7 +638,7 @@ func saveLoopRegistration(cfg Config, reg loopRegistration, now time.Time) error
 	if err != nil {
 		return err
 	}
-	return atomicWrite(loopRegistryPath(cfg, reg.LoopID), append(body, '\n'), 0o600)
+	return atomicio.Write(loopRegistryPath(cfg, reg.LoopID), append(body, '\n'), 0o600)
 }
 
 // listLoopRegistrations enumerates every registered loop, skipping any whose
@@ -906,7 +907,7 @@ func loopDone(cfg Config, id, runID string, ok bool, failReason string, now time
 			// Immutable audit copy; ignore only a benign audit-copy write failure;
 			// latest.json + journal remain the authoritative terminal pair.
 			if body, merr := json.MarshalIndent(rec, "", "  "); merr == nil {
-				_ = atomicWrite(loopRunArchivePath(cfg, id, rec.Period, rec.RunID), append(body, '\n'), 0o600)
+				_ = atomicio.Write(loopRunArchivePath(cfg, id, rec.Period, rec.RunID), append(body, '\n'), 0o600)
 			}
 		}
 		if lerr == nil {
@@ -969,7 +970,7 @@ func heartbeatLoopRunGuarded(cfg Config, id, runID string, now time.Time) error 
 	if err != nil {
 		return err
 	}
-	if err := atomicWrite(loopLockPath(cfg, id), next, 0o600); err != nil {
+	if err := atomicio.Write(loopLockPath(cfg, id), next, 0o600); err != nil {
 		return err
 	}
 	rec.HeartbeatAt = stamp
@@ -1076,7 +1077,7 @@ func markLoopRunEffectStartedGuarded(cfg Config, id, runID string, now time.Time
 	if err != nil {
 		return err
 	}
-	return atomicWrite(loopLockPath(cfg, id), next, 0o600)
+	return atomicio.Write(loopLockPath(cfg, id), next, 0o600)
 }
 
 // markLoopRunEffectCommittedGuarded durably records a successful non-idempotent
@@ -1116,7 +1117,7 @@ func markLoopRunEffectCommittedGuarded(cfg Config, id, runID string, now time.Ti
 	if err != nil {
 		return err
 	}
-	return atomicWrite(loopLockPath(cfg, id), next, 0o600)
+	return atomicio.Write(loopLockPath(cfg, id), next, 0o600)
 }
 
 // loopHeartbeat is the CLI-facing heartbeat, with the same JSON/human output
@@ -1219,7 +1220,7 @@ func heartbeatLockFileFor(lockPath, owner string, now time.Time) bool {
 		if err != nil {
 			return err
 		}
-		if err := atomicWrite(lockPath, next, 0o600); err != nil {
+		if err := atomicio.Write(lockPath, next, 0o600); err != nil {
 			return err
 		}
 		owned = true

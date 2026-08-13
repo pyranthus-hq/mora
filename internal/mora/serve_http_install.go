@@ -14,6 +14,8 @@ package mora
 
 import (
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"net"
 	"net/http"
@@ -178,7 +180,7 @@ func installServeHTTP(cfg Config, stdout io.Writer) error {
 			return err
 		}
 		plistPath := filepath.Join(dir, serveHTTPLabel+".plist")
-		if err := atomicWrite(plistPath, []byte(serveHTTPPlist(cfg, exe)), 0o644); err != nil {
+		if err := atomicio.Write(plistPath, []byte(serveHTTPPlist(cfg, exe)), 0o644); err != nil {
 			return err
 		}
 		if out, err := runScheduleCommand("launchctl", "bootstrap", "gui/"+uid, plistPath); err != nil {
@@ -208,7 +210,7 @@ func installServeHTTP(cfg Config, stdout io.Writer) error {
 		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 			return err
 		}
-		if err := atomicWrite(unitPath, []byte(serveHTTPSystemdUnit(cfg, exe)), 0o644); err != nil {
+		if err := atomicio.Write(unitPath, []byte(serveHTTPSystemdUnit(cfg, exe)), 0o644); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "wrote systemd user unit %s\nEnable + start it:\n  systemctl --user daemon-reload\n  systemctl --user enable --now mora-serve-http.service\nTo keep it running after logout:\n  loginctl enable-linger %q\n", unitPath, os.Getenv("USER"))
@@ -261,14 +263,14 @@ func statusServeHTTP(cfg Config, stdout io.Writer) error {
 	switch runtimeGOOS() {
 	case "darwin":
 		if dir, err := launchAgentsDir(); err == nil {
-			installed = fileExists(filepath.Join(dir, serveHTTPLabel+".plist"))
+			installed = genericutil.FileExists(filepath.Join(dir, serveHTTPLabel+".plist"))
 		}
 	case "windows":
 		_, err := runScheduleCommand("schtasks", "/Query", "/TN", `Mora\serve-http`)
 		installed = err == nil
 	default:
 		if unitPath, err := systemdUserUnitPath(); err == nil {
-			installed = fileExists(unitPath)
+			installed = genericutil.FileExists(unitPath)
 		}
 	}
 

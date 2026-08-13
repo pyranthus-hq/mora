@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -756,7 +757,7 @@ const transientContentionTimeout = 30 * time.Second
 // clause adds no non-Windows behavior). Anything else is a genuine failure.
 func isTransientContention(err error) bool {
 	return err != nil &&
-		(strings.Contains(err.Error(), "retry in a moment") || sharingViolationRetryable(err))
+		(strings.Contains(err.Error(), "retry in a moment") || atomicio.SharingViolationRetryable(err))
 }
 
 // retryTransientContention re-runs fn until it succeeds, returns a non-transient

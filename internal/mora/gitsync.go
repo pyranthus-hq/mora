@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"os/exec"
@@ -134,7 +135,7 @@ func syncGit(ctx context.Context, cfg Config, args []string, stdout io.Writer, r
 		// a user's edits).
 		giPath := filepath.Join(vault, ".gitignore")
 		if _, err := os.Stat(giPath); os.IsNotExist(err) {
-			if werr := atomicWrite(giPath, []byte(gitignoreBody), 0o644); werr != nil {
+			if werr := atomicio.Write(giPath, []byte(gitignoreBody), 0o644); werr != nil {
 				return fmt.Errorf("writing .gitignore: %w", werr)
 			}
 		}

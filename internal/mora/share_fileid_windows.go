@@ -4,6 +4,7 @@ package mora
 
 import (
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"time"
 
@@ -47,7 +48,7 @@ func fileIdentity(path string, fileInfo os.FileInfo) (fileIDKey, error) {
 		// ACCESS_DENIED/SHARING_VIOLATION even though the requested handle shares
 		// read, write, and delete. Retry only that transient class; permanent
 		// permission and identity failures still fail accounting closed.
-		if !sharingViolationRetryable(err) || !time.Now().Before(deadline) {
+		if !atomicio.SharingViolationRetryable(err) || !time.Now().Before(deadline) {
 			return fileIDKey{}, fmt.Errorf("storage accounting: file identity %s: %w", path, err)
 		}
 		time.Sleep(sourcesAcquireBackoff(attempt))

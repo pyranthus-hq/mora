@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -177,7 +178,7 @@ func saveGovernance(cfg Config, g governance) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(governancePath(cfg), append(b, '\n'), 0o600)
+	return atomicio.Write(governancePath(cfg), append(b, '\n'), 0o600)
 }
 
 // governanceLockPath is the ledger's cross-process lease file. Both it and the
@@ -218,11 +219,11 @@ func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error
 		switch {
 		case perr == nil && published:
 			return loopLockReleaser(lockPath, body), nil
-		case perr != nil && !sharingViolationRetryable(perr):
+		case perr != nil && !atomicio.SharingViolationRetryable(perr):
 			return nil, perr // a real, non-contention fs error: never interleave a partial write.
 		case perr == nil:
 			reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
-			if rerr != nil && !sharingViolationRetryable(rerr) {
+			if rerr != nil && !atomicio.SharingViolationRetryable(rerr) {
 				return nil, rerr
 			}
 			if rerr == nil && reaped {
@@ -652,7 +653,7 @@ func writeUnlessForgotten(cfg Config, provider, id, dest string, body []byte, mo
 	if testHookInWriteCritical != nil {
 		testHookInWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
 	}
-	if err := atomicWrite(dest, body, mode); err != nil {
+	if err := atomicio.Write(dest, body, mode); err != nil {
 		return false, err
 	}
 	return true, nil

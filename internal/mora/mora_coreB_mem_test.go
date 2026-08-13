@@ -503,38 +503,6 @@ func TestCoreB_MemAllMemoryFilesWalkErrorSurfaces(t *testing.T) {
 	}
 }
 
-func TestCoreB_MemTruncateRunes(t *testing.T) {
-	if got := truncateRunes("abc", 0); got != "" {
-		t.Fatalf("max<=0 should yield empty, got %q", got)
-	}
-	if got := truncateRunes("abc", -3); got != "" {
-		t.Fatalf("negative max should yield empty, got %q", got)
-	}
-	if got := truncateRunes("hello", 10); got != "hello" {
-		t.Fatalf("short string should be unchanged, got %q", got)
-	}
-	if got := truncateRunes("hello", 5); got != "hello" {
-		t.Fatalf("exact length should be unchanged, got %q", got)
-	}
-	if got := truncateRunes("hello world", 5); got != "hello" {
-		t.Fatalf("expected ASCII clip to 5, got %q", got)
-	}
-	// Multibyte: "hé" is bytes h(1)+é(2). max=2 lands inside é, so it must back
-	// up to a rune boundary rather than split the rune.
-	s := "héllo"
-	got := truncateRunes(s, 2)
-	if got != "h" {
-		t.Fatalf("expected rune-safe backup to %q, got %q", "h", got)
-	}
-	if !utf8.ValidString(got) {
-		t.Fatalf("truncateRunes produced invalid UTF-8: %q", got)
-	}
-	// A whole multibyte string under the limit is returned intact.
-	if got := truncateRunes(s, 100); got != s {
-		t.Fatalf("multibyte string within limit should be unchanged, got %q", got)
-	}
-}
-
 func TestCoreB_MemBuildContext(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")

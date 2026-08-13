@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"strings"
@@ -96,7 +97,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		// pipes, the Plan-04 non-TTY menu path) — there we just flip the bit and
 		// hint the user to authorize separately. Token reuse on re-enable.
 		if _, err := google.LoadToken(googleTokenPath(cfg)); err != nil {
-			if isInteractive(stdin) {
+			if genericutil.IsInteractive(stdin) {
 				printGoogleAuthPreamble(stdout)
 				oc, err := google.ResolveOAuthConfig(google.Scopes)
 				if err != nil {

@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,7 +101,7 @@ func TestInstallServeHTTPDarwin(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 	plist := filepath.Join(home, "Library", "LaunchAgents", "com.mora.serve-http.plist")
-	if !fileExists(plist) {
+	if !genericutil.FileExists(plist) {
 		t.Fatalf("expected plist at %s", plist)
 	}
 	if !sawCall(*calls, "launchctl", "bootout") {
@@ -127,7 +128,7 @@ func TestInstallServeHTTPDarwinPortBusyAborts(t *testing.T) {
 	if !strings.Contains(err.Error(), "already in use") {
 		t.Fatalf("want a port-busy error, got: %v", err)
 	}
-	if fileExists(filepath.Join(home, "Library", "LaunchAgents", "com.mora.serve-http.plist")) {
+	if genericutil.FileExists(filepath.Join(home, "Library", "LaunchAgents", "com.mora.serve-http.plist")) {
 		t.Error("no plist should be written when preflight fails")
 	}
 }
@@ -143,7 +144,7 @@ func TestInstallServeHTTPLinuxWritesUnit(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 	unit := filepath.Join(home, ".config", "systemd", "user", "mora-serve-http.service")
-	if !fileExists(unit) {
+	if !genericutil.FileExists(unit) {
 		t.Fatalf("expected systemd unit at %s", unit)
 	}
 	if !strings.Contains(out.String(), "systemctl --user enable --now") {
@@ -166,7 +167,7 @@ func TestUninstallServeHTTPDarwinRemovesPlist(t *testing.T) {
 	if err := uninstallServeHTTP(Config{StateDir: t.TempDir()}, &out); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
-	if fileExists(filepath.Join(home, "Library", "LaunchAgents", "com.mora.serve-http.plist")) {
+	if genericutil.FileExists(filepath.Join(home, "Library", "LaunchAgents", "com.mora.serve-http.plist")) {
 		t.Error("plist should be removed after uninstall")
 	}
 	if !sawCall(*calls, "launchctl", "bootout") {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -236,9 +237,9 @@ func TestUnattendedUpdateOrdersVerificationBeforeAtomicSwap(t *testing.T) {
 func TestUnattendedPreSwapFailureJoinsReceiptPersistenceFailure(t *testing.T) {
 	f := setupUnattendedFixture(t)
 	unattendedVerifyApp = func(context.Context, string, string, string) error { return errors.New("bad signature") }
-	originalSync := markerSyncFn
+	originalSync := atomicio.MarkerSyncFn
 	syncs := 0
-	markerSyncFn = func(file *os.File) error {
+	atomicio.MarkerSyncFn = func(file *os.File) error {
 		syncs++
 		if syncs == 2 {
 			return errors.New("receipt disk unavailable")
@@ -260,9 +261,9 @@ func TestUnattendedRollbackFailureJoinsReceiptPersistenceFailure(t *testing.T) {
 		}
 		return nil
 	}
-	originalSync := markerSyncFn
+	originalSync := atomicio.MarkerSyncFn
 	syncs := 0
-	markerSyncFn = func(file *os.File) error {
+	atomicio.MarkerSyncFn = func(file *os.File) error {
 		syncs++
 		if syncs == 2 {
 			return errors.New("rollback receipt disk unavailable")
@@ -378,7 +379,7 @@ func TestUnattendedSuccessNotificationFailureKeepsUpdatedEvidence(t *testing.T) 
 func TestAutomaticNotificationFailureJoinsReceiptPersistenceFailure(t *testing.T) {
 	f := setupUnattendedFixture(t)
 	updateNotificationRun = func(...string) error { return errors.New("notification transport failed") }
-	markerSyncFn = func(*os.File) error { return errors.New("notification receipt disk unavailable") }
+	atomicio.MarkerSyncFn = func(*os.File) error { return errors.New("notification receipt disk unavailable") }
 	receipt := availableReceipt(f)
 	receipt.UpdateAvailable = false
 	receipt.ApplyVersion = receipt.LatestVersion

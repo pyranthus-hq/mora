@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,9 +118,9 @@ func TestIngestingConnectorsEnabledIntersectIngesting(t *testing.T) {
 	// gmail enabled+ingesting (no memories — must still enumerate);
 	// calendar enabled+ingesting; imessage DISABLED (must be excluded).
 	want := []Source{
-		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "calendar", Type: "calendar", Scope: "personal", Calendar: "primary", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: ptr(false), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "calendar", Type: "calendar", Scope: "personal", Calendar: "primary", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: genericutil.Ptr(false), CreatedAt: "2026-01-01T00:00:00Z"},
 	}
 	if err := saveSources(cfg, want); err != nil {
 		t.Fatalf("saveSources: %v", err)
@@ -150,9 +151,9 @@ func TestIngestingConnectorsSortedDeterministic(t *testing.T) {
 
 	// Deliberately reverse-ordered on disk.
 	want := []Source{
-		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "calendar", Type: "calendar", Scope: "personal", Calendar: "primary", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "calendar", Type: "calendar", Scope: "personal", Calendar: "primary", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
 	}
 	if err := saveSources(cfg, want); err != nil {
 		t.Fatalf("saveSources: %v", err)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -768,7 +769,7 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	pinPrepClock(t, now)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@a.com",
-		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatalf("save self source: %v", err)
 	}

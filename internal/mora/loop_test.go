@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1086,11 +1087,11 @@ func TestLoopEffectIntentDurabilityFailurePreventsFunction(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	rec, _ := loadRunRecord(cfg, "daily-brief")
-	origSync, origClock := markerSyncFn, loopClock
-	markerSyncFn = func(*os.File) error { return errors.New("fsync unavailable") }
+	origSync, origClock := atomicio.MarkerSyncFn, loopClock
+	atomicio.MarkerSyncFn = func(*os.File) error { return errors.New("fsync unavailable") }
 	loopClock = func() time.Time { return loopNow.Add(time.Minute) }
 	t.Cleanup(func() {
-		markerSyncFn = origSync
+		atomicio.MarkerSyncFn = origSync
 		loopClock = origClock
 	})
 

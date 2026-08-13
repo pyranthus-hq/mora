@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -152,7 +153,7 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text, &m.Score); err != nil {
 			return nil, err
 		}
-		m.Tags = splitCSV(tags)
+		m.Tags = genericutil.SplitCSV(tags)
 		if full, ferr := parseMemory(m.Path); ferr == nil {
 			full.Score = m.Score
 			m = full
@@ -262,9 +263,9 @@ func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string 
 		first, second = its.String(), wiki.String()
 	}
 	var out strings.Builder
-	out.WriteString(truncateRunes(first, budget))
+	out.WriteString(genericutil.TruncateRunes(first, budget))
 	if rem := budget - out.Len(); rem > 0 {
-		out.WriteString(truncateRunes(second, rem))
+		out.WriteString(genericutil.TruncateRunes(second, rem))
 	}
 	return out.String()
 }

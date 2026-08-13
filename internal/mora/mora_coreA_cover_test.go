@@ -155,31 +155,6 @@ func TestCoreA_ParseCSVList(t *testing.T) {
 	}
 }
 
-func TestCoreA_IsInteractive(t *testing.T) {
-	// A non-*os.File reader is never interactive.
-	if isInteractive(strings.NewReader("")) {
-		t.Error("strings.Reader must not be interactive")
-	}
-	// A real regular file is an *os.File but not a char device => false.
-	f, err := os.CreateTemp(t.TempDir(), "notty")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if isInteractive(f) {
-		t.Error("regular file must not be interactive")
-	}
-	// A closed *os.File makes Stat fail => the Stat-error branch returns false.
-	f2, err := os.CreateTemp(t.TempDir(), "closed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f2.Close()
-	if isInteractive(f2) {
-		t.Error("closed file (Stat error) must not be interactive")
-	}
-}
-
 // errString is a tiny error whose message is exactly s.
 type errString string
 

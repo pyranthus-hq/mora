@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -545,7 +546,7 @@ func writeClaudeSettings(path string, settings map[string]any) error {
 		return err
 	}
 	body = append(body, '\n')
-	return atomicWrite(path, body, 0o600)
+	return atomicio.Write(path, body, 0o600)
 }
 
 func upsertClaudeHook(hooks map[string][]claudeHookGroup, event, sub string, def claudeCommandHook) {

@@ -3,6 +3,7 @@ package mora
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,11 +85,11 @@ func acquireProducerLock(cfg Config, now time.Time) (release func(), err error) 
 		switch {
 		case perr == nil && published:
 			return loopLockReleaser(lockPath, body), nil
-		case perr != nil && !sharingViolationRetryable(perr):
+		case perr != nil && !atomicio.SharingViolationRetryable(perr):
 			return nil, perr // a real, non-contention fs error: never interleave
 		case perr == nil:
 			reaped, rerr := reapStaleLockTTL(lockPath, now, producerLockTTL)
-			if rerr != nil && !sharingViolationRetryable(rerr) {
+			if rerr != nil && !atomicio.SharingViolationRetryable(rerr) {
 				return nil, rerr
 			}
 			if rerr == nil && reaped {
@@ -159,7 +160,7 @@ func saveProducerStatus(cfg Config, m map[string]producerStatus) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(producerStatusPath(cfg), b, 0o600)
+	return atomicio.Write(producerStatusPath(cfg), b, 0o600)
 }
 
 // loadExpectedProducers reads the expectation map. Like the status ledger, a
@@ -188,5 +189,5 @@ func saveExpectedProducers(cfg Config, m map[string]expectedProducer) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(producerExpectedPath(cfg), b, 0o600)
+	return atomicio.Write(producerExpectedPath(cfg), b, 0o600)
 }

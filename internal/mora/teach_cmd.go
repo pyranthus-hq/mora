@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"sort"
@@ -274,7 +275,7 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 			replacement.Type = *mtype
 		}
 		if *tags != "" {
-			replacement.Tags = splitCSV(*tags)
+			replacement.Tags = genericutil.SplitCSV(*tags)
 		}
 		if replacement.Type == "decision" {
 			replacement.Decision = decisionValidityFromFlags(replacement.CreatedAt, *asOf, *durability, *flip, *reviewBy)

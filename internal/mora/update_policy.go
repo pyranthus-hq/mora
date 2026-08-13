@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -218,7 +219,7 @@ func saveUpdateReceipt(cfg Config, receipt updateReceipt) error {
 	if len(body) > updateReceiptMaxBytes {
 		return fmt.Errorf("update status exceeds %d bytes", updateReceiptMaxBytes)
 	}
-	return atomicWriteDurable(updateReceiptPath(cfg), body, 0o600)
+	return atomicio.WriteDurable(updateReceiptPath(cfg), body, 0o600)
 }
 
 func validateUpdateReceipt(receipt updateReceipt, now time.Time) error {

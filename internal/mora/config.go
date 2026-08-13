@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -124,7 +126,7 @@ func applyEnvOverrides(cfg Config) (Config, error) {
 		if strings.TrimSpace(v) == "" {
 			return cfg, fmt.Errorf("MORA_VAULT is set but blank; unset it or set an absolute vault path")
 		}
-		p := expandHome(v)
+		p := genericutil.ExpandHome(v)
 		if !filepath.IsAbs(p) {
 			return cfg, fmt.Errorf("MORA_VAULT=%q is not an absolute path; a relative vault depends on the process working directory (services and schedules run elsewhere), so it is refused", v)
 		}
@@ -164,7 +166,7 @@ func loadConfig() (Config, error) {
 			continue
 		}
 		key := strings.TrimSpace(parts[0])
-		val := expandHome(parseConfigValue(parts[1]))
+		val := genericutil.ExpandHome(parseConfigValue(parts[1]))
 		switch key {
 		case "vault_dir":
 			cfg.VaultDir = val
@@ -397,7 +399,7 @@ func writeConfig(cfg Config) error {
 		}
 		out = append(out, fmt.Sprintf("%s = %q", kv.key, kv.val))
 	}
-	return atomicWrite(path, []byte(strings.Join(out, "\n")+"\n"), 0o600)
+	return atomicio.Write(path, []byte(strings.Join(out, "\n")+"\n"), 0o600)
 }
 func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -416,7 +418,7 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	}
 	repointed := false
 	if *vault != "" {
-		want := expandHome(*vault)
+		want := genericutil.ExpandHome(*vault)
 		// Repointing an EXISTING install's vault orphans the current one from
 		// Mora's view — it must never happen as a side effect of a scripted
 		// init (two live incidents). Same-dir re-init stays idempotent, and
@@ -531,7 +533,7 @@ func scaffoldControlFiles(cfg Config) error {
 		if _, err := os.Stat(path); err == nil {
 			continue
 		}
-		if err := atomicWrite(path, []byte(body), 0o644); err != nil {
+		if err := atomicio.Write(path, []byte(body), 0o644); err != nil {
 			return err
 		}
 	}

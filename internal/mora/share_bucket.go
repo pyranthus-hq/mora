@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"sort"
@@ -294,7 +295,7 @@ func bucketFetch(ctx context.Context, store objectStore, cfg bucketConfig, sub s
 		if blobKey(ct) != e.Blob {
 			return nil, 0, fmt.Errorf("subscription %q: the blob for %s failed its content-hash check — refusing", sub.Name, e.ID)
 		}
-		if err := atomicWrite(filepath.Join(memDir, e.ID+".md.age"), ct, 0o644); err != nil {
+		if err := atomicio.Write(filepath.Join(memDir, e.ID+".md.age"), ct, 0o644); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -308,7 +309,7 @@ func bucketFetch(ctx context.Context, store objectStore, cfg bucketConfig, sub s
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := atomicWrite(filepath.Join(destDir, "share.json"), append(mb, '\n'), 0o644); err != nil {
+	if err := atomicio.Write(filepath.Join(destDir, "share.json"), append(mb, '\n'), 0o644); err != nil {
 		return nil, 0, err
 	}
 	return env.SignPub, env.Version, nil

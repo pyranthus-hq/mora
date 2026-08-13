@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"strings"
 	"testing"
@@ -658,10 +659,10 @@ func seedMaxCapUnhealthyBudgetFixture(t *testing.T, now time.Time, prodName stri
 	cfg := seedBudgetFixture(t)
 
 	sources := []Source{
-		{Name: "applecalendar-x", Type: "applecalendar", Account: "x", Enabled: ptr(true)},
-		{Name: "calendar-office", Type: "calendar", Account: "office", Enabled: ptr(true)},
-		{Name: "gmail-personalxx", Type: "gmail", Account: "personalxx", Enabled: ptr(true)},
-		{Name: "imessage", Type: "imessage", Enabled: ptr(true)},
+		{Name: "applecalendar-x", Type: "applecalendar", Account: "x", Enabled: genericutil.Ptr(true)},
+		{Name: "calendar-office", Type: "calendar", Account: "office", Enabled: genericutil.Ptr(true)},
+		{Name: "gmail-personalxx", Type: "gmail", Account: "personalxx", Enabled: genericutil.Ptr(true)},
+		{Name: "imessage", Type: "imessage", Enabled: genericutil.Ptr(true)},
 	}
 	if err := saveSources(cfg, sources); err != nil {
 		t.Fatalf("saveSources: %v", err)

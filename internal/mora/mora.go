@@ -7,8 +7,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
-	mrand "math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -771,7 +771,7 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 	}
 	line := fmt.Sprintf("- [%s] pulse | tasks_added:%d | stale:%d\n", now.Format(time.RFC3339), added, len(stale))
 	if *write {
-		if err := appendFile(filepath.Join(cfg.VaultDir, "log.md"), line); err != nil {
+		if err := atomicio.AppendFile(filepath.Join(cfg.VaultDir, "log.md"), line); err != nil {
 			return err
 		}
 	}
@@ -1208,36 +1208,6 @@ var runScheduleCommand scheduleCommandRunner = func(name string, args ...string)
 	return exec.Command(name, args...).CombinedOutput()
 }
 
-// renameReplaceWithRetry publishes tmp onto path via os.Rename, replacing any
-// existing target. On POSIX this is a single atomic rename(2) and the loop runs
-// exactly once. On Windows, os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_
-// EXISTING): replacing an existing target requires deleting it, so concurrent
-// writers racing to rename onto the SAME target transiently fail with
-// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION. Retry those with JITTERED, capped
-// backoff — deterministic backoff makes racing writers retry in lockstep and keep
-// colliding, so the jitter is what lets them de-correlate — up to a deadline. Only
-// the error path pays this; a permanent error (or any non-Windows error) surfaces
-// on the first attempt.
-func renameReplaceWithRetry(tmp, path string) error {
-	var deadline time.Time
-	for attempt := 0; ; attempt++ {
-		rerr := os.Rename(tmp, path)
-		if rerr == nil {
-			return nil
-		}
-		if !renameReplaceRetryable(rerr) {
-			return rerr
-		}
-		if deadline.IsZero() {
-			deadline = time.Now().Add(5 * time.Second)
-		} else if !time.Now().Before(deadline) {
-			return rerr
-		}
-		capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
-		time.Sleep(time.Duration(1+mrand.IntN(capMs)) * time.Millisecond)
-	}
-}
-
 // linkPublish is the create-exclusive publish primitive (defaults to os.Link).
 // Seam: tests override it to simulate a filesystem that refuses hard links and so
 // exercise atomicCreate's fallback path on an ordinary filesystem.
@@ -1334,7 +1304,7 @@ func atomicCreate(path string, body []byte, mode os.FileMode) error {
 	// the Windows MoveFileEx jittered retry; on failure drop the empty placeholder so
 	// a failed write leaves nothing behind — and surface (join) any cleanup error so
 	// a leaked placeholder is never silently swallowed.
-	if rerr := renameReplaceWithRetry(tmp, path); rerr != nil {
+	if rerr := atomicio.RenameReplaceWithRetry(tmp, path); rerr != nil {
 		return errors.Join(rerr, os.Remove(path))
 	}
 	return nil

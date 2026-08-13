@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"regexp"
 	"sort"
@@ -1049,7 +1050,7 @@ func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind
 		probe.Title = ""
 		probe.Text = segment
 		if !containsPersonalTrivia(segment) && classifyMeetingBriefEvidence(probe, cfg, at) == kind {
-			return truncateRunes(oneLine(segment), 360)
+			return genericutil.TruncateRunes(oneLine(segment), 360)
 		}
 	}
 	// Fallback: the subject line. A FORWARDED subject is a stranger's subject — the
@@ -1063,7 +1064,7 @@ func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind
 	probe.Title = title
 	probe.Text = ""
 	if classifyMeetingBriefEvidence(probe, cfg, at) == kind {
-		return truncateRunes(title, 360)
+		return genericutil.TruncateRunes(title, 360)
 	}
 	return ""
 }

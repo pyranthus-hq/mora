@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestMCPMeetingPrepRoundTrip(t *testing.T) {
 	pinPrepClock(t, now)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@a.com",
-		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestMeetingPrepNameFallbackIsExplicit(t *testing.T) {
 	pinPrepClock(t, now)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@a.com",
-		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestMeetingPrepPayloadUnderCeiling(t *testing.T) {
 	pinPrepClock(t, now)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@x.com",
-		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
