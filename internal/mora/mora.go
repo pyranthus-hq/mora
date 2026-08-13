@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"os"
 	"os/exec"
@@ -21,6 +22,7 @@ import (
 )
 
 type Config = configstore.Config
+type DecisionValidity = memory.DecisionValidity
 
 // Build info, injected at release time via -ldflags -X. Defaults keep `go run`
 // and source builds honest about being unversioned.
