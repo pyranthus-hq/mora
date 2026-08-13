@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/registry"
 )
 
 // IsEnabled centralizes the nil-sentinel handling for Source.Enabled so no
@@ -24,34 +25,9 @@ import (
 // lookupCatalog returns the catalog entry for ctype. The bool is false for any
 // type not in the static catalog — callers MUST reject unknown types with an
 // error (D-03 / ASVS V5), never silently no-op.
-func lookupCatalog(ctype string) (connectorInfo, bool) {
-	for _, c := range connectorCatalog {
-		if c.Type == ctype {
-			return c, true
-		}
-	}
-	return connectorInfo{}, false
-}
-func macOSOnlyConnector(ctype string) bool {
-	switch ctype {
-	case "imessage", "applecalendar", "addressbook":
-		return true
-	default:
-		return false
-	}
-}
-func connectorCatalogForGOOS(goos string) []connectorInfo {
-	if goos != "windows" {
-		return connectorCatalog
-	}
-	out := make([]connectorInfo, 0, len(connectorCatalog))
-	for _, c := range connectorCatalog {
-		if !macOSOnlyConnector(c.Type) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
+func lookupCatalog(t string) (connectorInfo, bool)        { return registry.Lookup(t) }
+func macOSOnlyConnector(t string) bool                    { return registry.MacOSOnly(t) }
+func connectorCatalogForGOOS(goos string) []connectorInfo { return registry.CatalogForGOOS(goos) }
 func cmdSources(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add|list")
