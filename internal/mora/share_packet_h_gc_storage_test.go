@@ -440,16 +440,6 @@ func TestShareStorageLimitIncludesAllProductRoots(t *testing.T) {
 			t.Fatalf("nested roots/hard link charged %d bytes; want one 31-byte identity", got)
 		}
 	})
-
-	t.Run("case-distinct roots are never collapsed by GOOS", func(t *testing.T) {
-		origGOOS := runtimeGOOS
-		runtimeGOOS = func() string { return "darwin" }
-		t.Cleanup(func() { runtimeGOOS = origGOOS })
-		if storagePathWithin(filepath.Join("tmp", "A"), filepath.Join("tmp", "a")) ||
-			storagePathWithin(filepath.Join("tmp", "a"), filepath.Join("tmp", "A")) {
-			t.Fatal("case-distinct roots collapsed solely because GOOS=darwin")
-		}
-	})
 }
 
 // row 53c

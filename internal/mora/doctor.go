@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -484,73 +483,6 @@ func humanizeAgo(d time.Duration) string {
 		days := int(d / (24 * time.Hour))
 		return fmt.Sprintf("%d %s ago", days, plural(days, "day"))
 	}
-}
-
-// Storage budget thresholds from Neil's pilot ask: a 2-3 GB target and a 10-15 GB
-// hard ceiling. `mora doctor` reports the live footprint against these so the user
-// has the visibility he wanted; Mora never deletes or caps automatically.
-const (
-	storageTargetBytes  = 3 * (1 << 30)  // 3 GiB soft target
-	storageCeilingBytes = 15 * (1 << 30) // 15 GiB hard ceiling
-)
-
-// dirBytes returns the total size of regular files under root (recursive,
-// best-effort: a missing root and unreadable entries contribute 0).
-func dirBytes(root string) int64 {
-	var total int64
-	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if info, e := d.Info(); e == nil {
-			total += info.Size()
-		}
-		return nil
-	})
-	return total
-}
-
-// vaultStorageBytes is Mora's on-disk footprint: the human-readable vault plus
-// the SQLite index (static embeddings live inside the index DB). The DB is added
-// only when it lives OUTSIDE the vault — if data_dir is configured inside
-// vault_dir, dirBytes already walked it and adding it again would double-count.
-func vaultStorageBytes(cfg Config) int64 {
-	total := dirBytes(cfg.VaultDir)
-	db := dbPath(cfg)
-	if info, err := os.Stat(db); err == nil {
-		rv := resolveReal(cfg.VaultDir)
-		if !strings.HasPrefix(resolveReal(db), rv+string(os.PathSeparator)) {
-			total += info.Size()
-		}
-	}
-	return total
-}
-
-// storageStatus classifies a footprint: ok up to the target, warn between target
-// and ceiling, over past the ceiling.
-func storageStatus(b int64) string {
-	switch {
-	case b > storageCeilingBytes:
-		return "over"
-	case b > storageTargetBytes:
-		return "warn"
-	default:
-		return "ok"
-	}
-}
-
-// formatBytes renders a byte count as a human-readable binary unit (B, KiB, …).
-func formatBytes(n int64) string {
-	const unit = 1 << 10
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // printIMessageReadiness probes and prints the three iMessage readiness checks plus

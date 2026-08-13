@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/pyranthus-hq/mora/internal/storage"
+
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -99,7 +101,7 @@ func leaseGuardIdentity(lockPath string) (resolved, identity string) {
 			// actual filesystem spelling for guard placement on case-sensitive or
 			// normalization-sensitive volumes.
 			resolved = filepath.Join(real, physicalTail)
-			if key, keyErr := fileIdentity(real, info); keyErr == nil {
+			if key, keyErr := storage.FileIdentity(real, info); keyErr == nil {
 				return resolved, fmt.Sprintf("%v|%s", key, tail)
 			}
 			break

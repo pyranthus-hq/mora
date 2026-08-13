@@ -1,12 +1,14 @@
 //go:build windows
 
-package mora
+package storage
 
 import (
 	"fmt"
-	"github.com/pyranthus-hq/mora/internal/atomicio"
+	mrand "math/rand/v2"
 	"os"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 
 	"golang.org/x/sys/windows"
 )
@@ -51,7 +53,7 @@ func fileIdentity(path string, fileInfo os.FileInfo) (fileIDKey, error) {
 		if !atomicio.SharingViolationRetryable(err) || !time.Now().Before(deadline) {
 			return fileIDKey{}, fmt.Errorf("storage accounting: file identity %s: %w", path, err)
 		}
-		time.Sleep(sourcesAcquireBackoff(attempt))
+		time.Sleep(acquireBackoff(attempt))
 	}
 	defer windows.CloseHandle(h)
 	var info windows.ByHandleFileInformation
@@ -62,4 +64,9 @@ func fileIdentity(path string, fileInfo os.FileInfo) (fileIDKey, error) {
 		volume: info.VolumeSerialNumber,
 		index:  uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
 	}, nil
+}
+
+func acquireBackoff(attempt int) time.Duration {
+	capMs := 1 << min(attempt, 5)
+	return time.Duration(1+mrand.IntN(capMs)) * time.Millisecond
 }
