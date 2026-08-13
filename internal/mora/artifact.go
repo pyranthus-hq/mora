@@ -26,7 +26,7 @@ func briefArtifactPath(cfg Config, now time.Time) string {
 // writeBriefArtifact renders an already-built Digest to the dated vault artifact
 // at briefArtifactPath(cfg, now) and returns the path written.
 //
-// The body is EXACTLY renderDigest(d, cfg.contextDefaultTokens()*charsPerToken) — the
+// The body is EXACTLY renderDigest(d, contextDefaultTokens(cfg)*charsPerToken) — the
 // same Markdown the human brief and MCP digest emit, so there is one source of
 // truth for brief rendering. The write goes through atomicWriteDurable (synced
 // temp + rename + parent-directory sync) so a crash mid-write never leaves a
@@ -41,7 +41,7 @@ func briefArtifactPath(cfg Config, now time.Time) string {
 // persisting the artifact does NOT advance the delta. The watermark stays gated on
 // --advance (D13-3 / SC#4).
 func writeBriefArtifact(cfg Config, d Digest, now time.Time) (string, error) {
-	return writeBriefArtifactAt(cfg, d, now, cfg.contextDefaultTokens()*charsPerToken)
+	return writeBriefArtifactAt(cfg, d, now, contextDefaultTokens(cfg)*charsPerToken)
 }
 
 // writeBriefArtifactAt persists a Digest at an EXPLICIT budget. The scheduled

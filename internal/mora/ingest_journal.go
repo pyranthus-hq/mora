@@ -182,7 +182,7 @@ func ensureIngestJournalHeader(cfg Config, sourceKey string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	runID := cfg.operationRunID
+	runID := cfg.OperationRunID()
 	if !validOperationToken(runID) {
 		runID = newID() // legacy/direct caller: still mint a durable dirty identity
 	}

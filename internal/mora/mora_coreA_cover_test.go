@@ -36,13 +36,13 @@ func coreADirsCfg(t *testing.T) Config {
 func TestCoreA_Fusion(t *testing.T) {
 	// Default path: no override => production defaultFusion.
 	var c Config
-	if got := c.fusion(); got != defaultFusion {
+	if got := configFusion(c); got != defaultFusion {
 		t.Fatalf("fusion() default = %+v, want %+v", got, defaultFusion)
 	}
 	// Override path: the eval/test seam wins.
 	ov := fusionParams{fts: 2, vec: 3, graph: 4, k: 5}
-	c.fusionOv = &ov
-	if got := c.fusion(); got != ov {
+	c.SetFusionOverride(&ov)
+	if got := configFusion(c); got != ov {
 		t.Fatalf("fusion() override = %+v, want %+v", got, ov)
 	}
 }

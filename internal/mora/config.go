@@ -20,9 +20,9 @@ import (
 
 // fusion returns the active RRF fusion params: the per-Config override when set,
 // else the production default. Single source of truth for search + eval.
-func (c Config) fusion() fusionParams {
-	if c.fusionOv != nil {
-		return *c.fusionOv
+func configFusion(c Config) fusionParams {
+	if override, ok := c.FusionOverride().(*fusionParams); ok && override != nil {
+		return *override
 	}
 	return defaultFusion
 }
@@ -31,9 +31,9 @@ func (c Config) fusion() fusionParams {
 // (mmrOv) wins; else the durable user opt-in (MMR) yields default params; else nil.
 // Single source of truth, mirroring fusion(). The returned params carry force only
 // when set via mmrOv — the MMR bool path always has force=false.
-func (c Config) mmr() *mmrParams {
-	if c.mmrOv != nil {
-		return c.mmrOv
+func configMMR(c Config) *mmrParams {
+	if override, ok := c.MMROverride().(*mmrParams); ok && override != nil {
+		return override
 	}
 	if c.MMR {
 		return &mmrParams{lambda: defaultLambda}
@@ -130,21 +130,14 @@ func applyEnvOverrides(cfg Config) (Config, error) {
 		if !filepath.IsAbs(p) {
 			return cfg, fmt.Errorf("MORA_VAULT=%q is not an absolute path; a relative vault depends on the process working directory (services and schedules run elsewhere), so it is refused", v)
 		}
-		persisted := cfg.VaultDir
-		cfg.vaultDirCfg = &persisted
-		cfg.VaultDir = p
+		cfg.ApplyVaultOverride(p)
 	}
 	return cfg, nil
 }
 
 // persistVaultDir is the vault_dir value writeConfig writes: the durable
 // (defaults/config.toml) location, never the MORA_VAULT runtime override.
-func (c Config) persistVaultDir() string {
-	if c.vaultDirCfg != nil {
-		return *c.vaultDirCfg
-	}
-	return c.VaultDir
-}
+func persistVaultDir(c Config) string { return c.PersistVaultDir() }
 
 func loadConfig() (Config, error) {
 	cfg := defaultConfig()
@@ -235,7 +228,7 @@ func cmdConfig(args []string, stdout io.Writer) error {
 		update := resolveUpdatePolicy(cfg)
 		fmt.Fprintf(stdout, "embedder  = %s\ncontext   = %s  (default budget %d tokens, digest snippets %d chars; ceiling %d)\nmmr       = %s\nmcp_write_policy = %s\nupdate_policy = %s (%s)\n",
 			embedder, profile,
-			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens(), mmr, cfg.mcpWritePolicy(), update.Policy, update.Reason)
+			contextDefaultTokens(cfg), digestSnippetChars(cfg), contextMaxTokens(cfg), mmr, configMCPWritePolicy(cfg), update.Policy, update.Reason)
 		return nil
 	}
 	// Machine-readable path dump for tooling (uninstall.ps1 -Purge consumes this
@@ -312,7 +305,7 @@ func cmdConfig(args []string, stdout io.Writer) error {
 	}
 	if key == "context" {
 		fmt.Fprintf(stdout, "(default budget %d tokens, digest snippets %d chars; per-call max_tokens still wins, ceiling %d)\n",
-			cfg.contextDefaultTokens(), cfg.digestSnippetChars(), cfg.contextMaxTokens())
+			contextDefaultTokens(cfg), digestSnippetChars(cfg), contextMaxTokens(cfg))
 	}
 	return nil
 }
@@ -336,7 +329,7 @@ func writeConfig(cfg Config) error {
 		mmrVal = "true"
 	}
 	owned := []struct{ key, val string }{
-		{"vault_dir", cfg.persistVaultDir()},
+		{"vault_dir", persistVaultDir(cfg)},
 		{"data_dir", cfg.DataDir},
 		{"state_dir", cfg.StateDir},
 		{"embedder", cfg.Embedder},
@@ -428,8 +421,8 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		// MORA_VAULT-effective one: the durable config.toml location is what a
 		// repoint orphans, and an exported MORA_VAULT equal to --vault must not
 		// let the confirmation gate be skipped.
-		if filepath.Clean(cfg.persistVaultDir()) != filepath.Clean(want) && configFileExists(cfg) {
-			if err := confirmVaultRepointFn(stdin, stdout, cfg.persistVaultDir(), want); err != nil {
+		if filepath.Clean(persistVaultDir(cfg)) != filepath.Clean(want) && configFileExists(cfg) {
+			if err := confirmVaultRepointFn(stdin, stdout, persistVaultDir(cfg), want); err != nil {
 				return err
 			}
 			repointed = true
@@ -437,7 +430,7 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 		cfg.VaultDir = want
 		// An explicit --vault is the one sanctioned repoint path: drop the env
 		// stash so writeConfig persists the flag value even under MORA_VAULT.
-		cfg.vaultDirCfg = nil
+		cfg.ClearVaultOverride()
 	}
 	for _, dir := range []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir, memoriesRoot(cfg), sourcesRoot(cfg), filepath.Join(cfg.ConfigDir, "tokens")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {

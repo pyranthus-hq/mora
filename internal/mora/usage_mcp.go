@@ -54,7 +54,7 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
 	policyHandled := false
 	if name == "write_memory" || name == "delete_memory" {
-		policy := cfg.mcpWritePolicy()
+		policy := configMCPWritePolicy(cfg)
 		switch policy {
 		case mcpWritePolicyReadonly:
 			inv.err = fmt.Errorf("MCP mutation refused: mcp_write_policy=%s; change it locally with `mora config mcp-write-policy open`", policy)

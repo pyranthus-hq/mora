@@ -64,7 +64,7 @@ func persistedVaultDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	return cfg.persistVaultDir()
+	return persistVaultDir(cfg)
 }
 
 // TestMoraVaultEnvNotPersistedByConfigWrite locks the runtime-only nature of the

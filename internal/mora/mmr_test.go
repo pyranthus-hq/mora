@@ -207,19 +207,25 @@ func TestMMRRerankDoesNotMutateInput(t *testing.T) {
 // TestConfigMMRGating locks mmr() precedence: off by default; the MMR bool yields
 // default params with force=false; the mmrOv seam always wins and is the ONLY source
 // of force.
+func configWithMMROverride(enabled bool, override *mmrParams) Config {
+	cfg := Config{MMR: enabled}
+	cfg.SetMMROverride(override)
+	return cfg
+}
+
 func TestConfigMMRGating(t *testing.T) {
-	if p := (Config{}).mmr(); p != nil {
+	if p := configMMR(Config{}); p != nil {
 		t.Fatalf("default Config ⇒ MMR off (nil), got %+v", p)
 	}
-	p := (Config{MMR: true}).mmr()
+	p := configMMR(Config{MMR: true})
 	if p == nil || p.lambda != defaultLambda || p.force {
 		t.Fatalf("MMR:true ⇒ {λ=%v, force=false}, got %+v", defaultLambda, p)
 	}
 	ov := &mmrParams{lambda: 0.3, force: true}
-	if got := (Config{mmrOv: ov}).mmr(); got != ov {
+	if got := configMMR(configWithMMROverride(false, ov)); got != ov {
 		t.Fatalf("mmrOv must win, got %+v", got)
 	}
-	if got := (Config{MMR: true, mmrOv: ov}).mmr(); got != ov {
+	if got := configMMR(configWithMMROverride(true, ov)); got != ov {
 		t.Fatalf("mmrOv must win over MMR bool, got %+v", got)
 	}
 }
@@ -277,7 +283,7 @@ func TestLoadVectorsByID(t *testing.T) {
 // CGO=0 CI (no Ollama).
 func forcedMMR(base Config, lambda float64) Config {
 	c := base
-	c.mmrOv = &mmrParams{lambda: lambda, force: true}
+	c.SetMMROverride(&mmrParams{lambda: lambda, force: true})
 	return c
 }
 
@@ -616,7 +622,7 @@ func TestEvalMMRAB(t *testing.T) {
 	t.Logf("MMR off            Recall@%d=%.4f MRR=%.4f intra-list-redundancy=%.4f", kHybrid, rOff, mOff, dOff)
 	for _, lambda := range []float64{0.5, 0.7, 0.9} {
 		c := cfg
-		c.mmrOv = &mmrParams{lambda: lambda} // force=false: real useVec under Ollama
+		c.SetMMROverride(&mmrParams{lambda: lambda}) // force=false: real useVec under Ollama
 		r, m, d, rf := measure(c)
 		t.Logf("MMR on  (λ=%.1f)    Recall@%d=%.4f MRR=%.4f intra-list-redundancy=%.4f (reordered %.0f%% of queries vs off)",
 			lambda, kHybrid, r, m, d, rf*100)

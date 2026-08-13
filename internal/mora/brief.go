@@ -401,7 +401,7 @@ func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	return renderDigest(d, cfg.contextDefaultTokens()*charsPerToken), true, nil
+	return renderDigest(d, contextDefaultTokens(cfg)*charsPerToken), true, nil
 }
 
 // healthBannerLinePrefix is the fixed prefix healthBannerLine/healthBannerFrom

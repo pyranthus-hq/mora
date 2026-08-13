@@ -852,7 +852,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 		return Digest{}, "", fmt.Errorf("an explicit --since-hours window is watermark-independent and cannot --advance")
 	}
 	if budgetChars <= 0 {
-		budgetChars = cfg.contextDefaultTokens() * charsPerToken
+		budgetChars = contextDefaultTokens(cfg) * charsPerToken
 	}
 
 	// Hold the brief lock across the WHOLE transaction (build → budget → persist →
@@ -1029,7 +1029,7 @@ func urgentItemFor(cfg Config, m Memory, key, change, phrase string) DigestItem 
 		Title:     m.Title,
 		Source:    key,
 		CreatedAt: m.CreatedAt,
-		Snippet:   urgentSnippet(m.Text, cfg.digestSnippetChars(), phrase),
+		Snippet:   urgentSnippet(m.Text, digestSnippetChars(cfg), phrase),
 		Change:    change,
 	}
 }
@@ -1354,7 +1354,7 @@ func digestItemFor(cfg Config, m Memory, key, change string) DigestItem {
 		Title:     m.Title,
 		Source:    key,
 		CreatedAt: m.CreatedAt,
-		Snippet:   snippetTail(m.Text, cfg.digestSnippetChars()),
+		Snippet:   snippetTail(m.Text, digestSnippetChars(cfg)),
 		Change:    change,
 	}
 }
