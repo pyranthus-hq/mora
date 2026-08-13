@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,7 +85,7 @@ func TestNoUserVisibleSQLITEBUSY(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := saveSources(cfg, []Source{{
-		Name: "fs", Type: "filesystem", Path: fsRoot, Enabled: ptr(true), Scope: "global",
+		Name: "fs", Type: "filesystem", Path: fsRoot, Enabled: genericutil.Ptr(true), Scope: "global",
 	}}); err != nil {
 		t.Fatal(err)
 	}

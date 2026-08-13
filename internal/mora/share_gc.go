@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"math"
 	"os"
@@ -260,7 +261,7 @@ func reapOrphanedGitPins(cfg Config, name, owner string, retainGen map[string]bo
 var (
 	shareGCRemoveFn           = os.Remove
 	shareGCRemoveAllFn        = os.RemoveAll
-	shareGCRemovalRetryableFn = sharingViolationRetryable
+	shareGCRemovalRetryableFn = atomicio.SharingViolationRetryable
 )
 
 // deferrableRemove/deferrableRemoveAll delete a path but defer only a Windows
@@ -543,7 +544,7 @@ func cmdShareStorageLimit(cfg Config, args []string, stdout io.Writer, now time.
 	if merr != nil {
 		return merr
 	}
-	if werr := atomicWriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); werr != nil {
+	if werr := atomicio.WriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); werr != nil {
 		return werr
 	}
 	fmt.Fprintf(stdout, "share storage limit set to %s (%d bytes). Doctor's recommended ceiling stays 15 GiB.\n", formatBytes(bytes), bytes)

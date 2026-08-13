@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"strings"
 	"testing"
 	"time"
@@ -508,7 +509,7 @@ func TestCommitmentsMaterializedByIndexGeneration(t *testing.T) {
 	cfg := mustConfig(t)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "self@example.com",
-		Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z",
+		Enabled: genericutil.Ptr(true), CreatedAt: "2026-07-01T00:00:00Z",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +577,7 @@ func TestCommitmentClassificationRejectsThirdPartyAssignment(t *testing.T) {
 	cfg := mustConfig(t)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "self@example.com",
-		Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z",
+		Enabled: genericutil.Ptr(true), CreatedAt: "2026-07-01T00:00:00Z",
 	}}); err != nil {
 		t.Fatal(err)
 	}

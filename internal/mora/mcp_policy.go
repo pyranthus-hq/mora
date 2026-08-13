@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -85,7 +86,7 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := atomicWrite(path, append(b, '\n'), 0o600); err != nil {
+	if err := atomicio.Write(path, append(b, '\n'), 0o600); err != nil {
 		return nil, err
 	}
 	return map[string]any{

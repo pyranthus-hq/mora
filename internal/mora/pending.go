@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,7 +110,7 @@ func markIndexDirty(ctx context.Context, cfg Config, op pendingOp) (pendingOp, e
 	if err != nil {
 		return op, err
 	}
-	if err := atomicWriteDurable(pendingOpPath(cfg, op.OpID), body, 0o644); err != nil {
+	if err := atomicio.WriteDurable(pendingOpPath(cfg, op.OpID), body, 0o644); err != nil {
 		return op, fmt.Errorf("%w: %v", errIndexUnmarkable, err)
 	}
 	if testHookPostMarkerWrite != nil {
@@ -117,6 +118,14 @@ func markIndexDirty(ctx context.Context, cfg Config, op pendingOp) (pendingOp, e
 	}
 	return op, nil
 }
+
+// testHookPostMarkerWrite, when non-nil (tests only), fires inside
+// markIndexDirty AFTER atomicio.WriteDurable has fully returned — i.e. the
+// pending marker is on stable storage (file + parent dir synced) and BEFORE
+// the caller publishes the vault file. It is the seam
+// TestMarkerSurvivesCrashBeforeVaultPublish uses to simulate a crash in
+// exactly the mark-before-visible window. Nil in production.
+var testHookPostMarkerWrite func()
 
 // unmarkIndexDirty retires one pending op. Best-effort: a lost removal only
 // creates a false-DIRTY, which the next committed rebuild clears (A3) — the safe

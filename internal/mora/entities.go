@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"regexp"
 	"sort"
@@ -445,19 +446,19 @@ func fitEntityEvidence(e EntityEvidence, maxBytes int) (EntityEvidence, bool) {
 	}
 	out := e
 	for jsonLen(out) > maxBytes && len(out.Snippet) > 0 {
-		out.Snippet = truncateRunes(out.Snippet, len(out.Snippet)-1)
+		out.Snippet = genericutil.TruncateRunes(out.Snippet, len(out.Snippet)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.Title) > 0 {
-		out.Title = truncateRunes(out.Title, len(out.Title)-1)
+		out.Title = genericutil.TruncateRunes(out.Title, len(out.Title)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.CreatedAt) > 0 {
-		out.CreatedAt = truncateRunes(out.CreatedAt, len(out.CreatedAt)-1)
+		out.CreatedAt = genericutil.TruncateRunes(out.CreatedAt, len(out.CreatedAt)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.Source) > 0 {
-		out.Source = truncateRunes(out.Source, len(out.Source)-1)
+		out.Source = genericutil.TruncateRunes(out.Source, len(out.Source)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.ID) > 0 {
-		out.ID = truncateRunes(out.ID, len(out.ID)-1)
+		out.ID = genericutil.TruncateRunes(out.ID, len(out.ID)-1)
 	}
 	return out, jsonLen(out) <= maxBytes
 }

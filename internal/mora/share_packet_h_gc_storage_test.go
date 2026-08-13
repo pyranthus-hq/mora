@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -80,7 +81,7 @@ func packetHSetLimitHeadroom(t *testing.T, cfg Config, headroom int64) int64 {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := atomicWriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
+		if err := atomicio.WriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		used, err := productStorageBytes(cfg)
@@ -94,7 +95,7 @@ func packetHSetLimitHeadroom(t *testing.T, cfg Config, headroom int64) int64 {
 		limit = next
 	}
 	body, _ := json.Marshal(shareStorageLimit{Bytes: limit, UpdatedAt: "2026-07-16T00:00:00Z"})
-	if err := atomicWriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
+	if err := atomicio.WriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return limit
@@ -718,7 +719,7 @@ func TestLegalLargeShareIsNotHardCappedAt4GiB(t *testing.T) {
 	// product cap. Nine corpus-widths exceed the conservative 8x index reserve.
 	limit := legalCorpusBytes * 9
 	body, _ := json.Marshal(shareStorageLimit{Bytes: limit, UpdatedAt: "2026-07-16T00:00:00Z"})
-	if err := atomicWriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
+	if err := atomicio.WriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := admitShareGenerationBytes(cfg, "legal", legalCorpusBytes, shareMaxShareEntries); err != nil {

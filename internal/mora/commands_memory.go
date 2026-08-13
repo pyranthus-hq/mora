@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"strconv"
@@ -39,7 +40,7 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
+	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
 	if m.Type == "decision" {
 		m.Decision = decisionValidityFromFlags(m.CreatedAt, *asOf, *durability, *flip, *reviewBy)
 	} else if *asOf != "" || *durability != "" || *flip != "" || *reviewBy != "" {
@@ -132,7 +133,7 @@ func cmdList(ctx context.Context, args []string, stdout io.Writer) error {
 	return emit(stdout, items, *jsonOut)
 }
 func cmdSearch(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) >= 1 && isHelpFlag(args[0]) {
+	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
 		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--limit N] [--json]")
 		return nil
 	}

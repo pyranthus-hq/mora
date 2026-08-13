@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -154,14 +155,14 @@ func appendJournalDurable(path, line string) error {
 		f.Close()
 		return err
 	}
-	if err := markerSyncFn(f); err != nil {
+	if err := atomicio.MarkerSyncFn(f); err != nil {
 		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return syncDirFn(dir)
+	return atomicio.SyncDirFn(dir)
 }
 
 // ensureIngestJournalHeader writes the durable "run <op_id> <marked_at>" header the
@@ -196,7 +197,7 @@ func journalPublishedPath(cfg Config, sourceKey, path string) {
 	if ingestStateRootErr(cfg) != nil {
 		return // the durable header guard already failed loudly for this run
 	}
-	_ = appendFile(ingestJournalPath(cfg, sourceKey), cleanVaultPath(path)+"\n")
+	_ = atomicio.AppendFile(ingestJournalPath(cfg, sourceKey), cleanVaultPath(path)+"\n")
 }
 
 // ingestJournalStatus reports the aggregate ingest-journal state — the B1-rule-4
@@ -342,7 +343,7 @@ func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) 
 		// it. A stale lease (dead owner) is reclaimed by ingestLeaseHeld, so a killed
 		// run never pins the index dirty forever.
 		if header != "" && ingestLeaseHeld(cfg, sourceKey) {
-			if err := atomicWrite(path, []byte(header+"\n"), 0o644); err != nil {
+			if err := atomicio.Write(path, []byte(header+"\n"), 0o644); err != nil {
 				return "", err
 			}
 			return "", nil
@@ -362,7 +363,7 @@ func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) 
 	for _, p := range keptPaths {
 		b2.WriteString(p + "\n")
 	}
-	if err := atomicWrite(path, []byte(b2.String()), 0o644); err != nil {
+	if err := atomicio.Write(path, []byte(b2.String()), 0o644); err != nil {
 		return "", err
 	}
 	return "", nil

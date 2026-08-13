@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"strings"
 	"testing"
@@ -207,9 +208,9 @@ func TestUrgentShelfLeadsBriefAndSurvivesBudget(t *testing.T) {
 
 	enableSources(t, cfg, "gmail", "calendar", "imessage")
 	if err := saveSources(cfg, []Source{
-		{Name: "gmail", Type: "gmail", Email: "me@example.com", Scope: "personal", Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339)},
-		{Name: "calendar", Type: "calendar", Calendar: "primary", Scope: "personal", Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339)},
-		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339)},
+		{Name: "gmail", Type: "gmail", Email: "me@example.com", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)},
+		{Name: "calendar", Type: "calendar", Calendar: "primary", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)},
+		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)},
 	}); err != nil {
 		t.Fatalf("saveSources: %v", err)
 	}

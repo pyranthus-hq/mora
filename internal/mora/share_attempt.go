@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,7 @@ var errAttemptOwnershipLost = errors.New("share attempt: a successor owns the re
 // their order.
 var (
 	shareAttemptStartFileSyncFn = (*os.File).Sync
-	shareAttemptStartDirSyncFn  = syncDir
+	shareAttemptStartDirSyncFn  = atomicio.SyncDir
 )
 
 func shareAttemptClaimPaths(cfg Config, name string) ([]string, error) {
@@ -133,7 +134,7 @@ func writeShareAttemptStartDurable(path string, body []byte) error {
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		return err
 	}
-	if err := renameReplaceWithRetry(tmp, path); err != nil {
+	if err := atomicio.RenameReplaceWithRetry(tmp, path); err != nil {
 		return err
 	}
 	return shareAttemptStartDirSyncFn(dir)
@@ -167,7 +168,7 @@ func recoverShareAttemptClaims(cfg Config, name string) error {
 	// First make the restored authoritative name durable, then make removal of
 	// its claim alias durable. A hardlink-unsupported fallback may already have
 	// consumed the claim path; cleanup treats that as success.
-	if err := syncDir(dir); err != nil {
+	if err := atomicio.SyncDir(dir); err != nil {
 		return err
 	}
 	return cleanupAttemptDebrisDurably(dir, claim)
@@ -180,7 +181,7 @@ func cleanupAttemptDebrisDurably(dir string, paths ...string) error {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
-	cleanupErr = errors.Join(cleanupErr, syncDir(dir))
+	cleanupErr = errors.Join(cleanupErr, atomicio.SyncDir(dir))
 	return cleanupErr
 }
 
@@ -225,7 +226,7 @@ func finishShareAttempt(cfg Config, name, runID string, terminal shareAttempt) e
 	defer func() { _ = os.Remove(temp) }()
 
 	claim := path + ".claim-" + runID
-	if rerr := renameReplaceWithRetry(path, claim); rerr != nil {
+	if rerr := atomicio.RenameReplaceWithRetry(path, claim); rerr != nil {
 		if errors.Is(rerr, os.ErrNotExist) {
 			return errAttemptOwnershipLost
 		}
@@ -241,7 +242,7 @@ func finishShareAttempt(cfg Config, name, runID string, terminal shareAttempt) e
 			// only authoritative attempt bytes.
 			return errors.Join(errAttemptOwnershipLost, fmt.Errorf("restore claimed attempt: %w", restoreErr))
 		}
-		if syncErr := syncDir(dir); syncErr != nil {
+		if syncErr := atomicio.SyncDir(dir); syncErr != nil {
 			return errors.Join(errAttemptOwnershipLost, syncErr)
 		}
 		return errors.Join(errAttemptOwnershipLost, cleanupAttemptDebrisDurably(dir, claim, temp))
@@ -257,7 +258,7 @@ func finishShareAttempt(cfg Config, name, runID string, terminal shareAttempt) e
 	}
 	// The terminal record must be authoritative and directory-durable before
 	// claim/temp cleanup. A second directory sync makes that cleanup durable.
-	if err := syncDir(dir); err != nil {
+	if err := atomicio.SyncDir(dir); err != nil {
 		return err
 	}
 	return cleanupAttemptDebrisDurably(dir, claim, temp)

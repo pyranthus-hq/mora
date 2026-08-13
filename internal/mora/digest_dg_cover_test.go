@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -170,7 +171,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 			Name:    "gmail",
 			Type:    "gmail",
 			Account: string([]byte{'b', 'a', 'd', 0, 'a', 'c', 'c', 't'}),
-			Enabled: ptr(true),
+			Enabled: genericutil.Ptr(true),
 		}}
 		if err := saveSources(cfg, sources); err != nil {
 			t.Fatalf("saveSources: %v", err)
@@ -281,8 +282,8 @@ func TestDg_SyncStatusLookupPathsAndFailures(t *testing.T) {
 	}
 
 	if err := saveSources(cfg, []Source{
-		{Name: "off", Type: "gmail", Enabled: ptr(false)},
-		{Name: "custom", Type: "custom", Enabled: ptr(true)},
+		{Name: "off", Type: "gmail", Enabled: genericutil.Ptr(false)},
+		{Name: "custom", Type: "custom", Enabled: genericutil.Ptr(true)},
 	}); err != nil {
 		t.Fatalf("saveSources: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestDg_SyncStatusLookupPathsAndFailures(t *testing.T) {
 		t.Fatalf("disabled gmail status = %+v, want nil", got)
 	}
 
-	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Enabled: ptr(true)}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Enabled: genericutil.Ptr(true)}}); err != nil {
 		t.Fatalf("saveSources gmail: %v", err)
 	}
 	badStatusPath := syncStatusPathFor(cfg, Source{Name: "gmail", Type: "gmail"})

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"go/parser"
 	"go/token"
 	"strings"
@@ -53,7 +54,7 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +259,7 @@ func TestMeetingBriefDropsAmbiguousSharedThread(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +314,7 @@ func TestMeetingBriefDropsAmbiguousOutboundGroupAttribution(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +369,7 @@ func TestMeetingBriefRendersActionablePassageNotTriviaFromMixedThread(t *testing
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +422,7 @@ func TestMeetingBriefMaxTokensBudgetsSerializedPayload(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +478,7 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +593,7 @@ func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +644,7 @@ func TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed(t *testing.T
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +716,7 @@ func TestBriefEventCLIAndMCPReturnSameShape(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -795,7 +796,7 @@ func TestMeetingBriefUsesExactAttendeeIdentityNotSharedDisplayName(t *testing.T)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,6 @@
 //go:build windows
 
-package mora
+package atomicio
 
 import (
 	"os"
@@ -9,9 +9,9 @@ import (
 )
 
 // TestSharingViolationRetryable_Windows pins the Windows contention classifier
-// that makes acquireSourcesLock RETRY (not fatally fail) when a rival writer
-// races an os.Remove/os.Link on the same `.lock` — the ERROR_SHARING_VIOLATION /
-// ERROR_ACCESS_DENIED that failed build-windows on TestSourcesConcurrentRMWNoLostUpdate.
+// that makes a lease/lock acquire loop RETRY (not fatally fail) when a rival
+// writer races an os.Remove/os.Link on the same lock file — the
+// ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED windows callers must tolerate.
 // Deterministic: it classifies constructed errnos, no race required.
 func TestSharingViolationRetryable_Windows(t *testing.T) {
 	cases := []struct {
@@ -28,8 +28,8 @@ func TestSharingViolationRetryable_Windows(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sharingViolationRetryable(tc.err); got != tc.want {
-				t.Fatalf("sharingViolationRetryable(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := SharingViolationRetryable(tc.err); got != tc.want {
+				t.Fatalf("SharingViolationRetryable(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 			// renameReplaceRetryable delegates to the same classification.
 			if got := renameReplaceRetryable(tc.err); got != tc.want {

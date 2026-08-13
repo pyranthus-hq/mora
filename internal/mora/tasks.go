@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -155,7 +156,7 @@ func syncTasks(cfg Config, write bool) (int, error) {
 	}
 	if write && added > 0 {
 		body = strings.TrimRight(body, "\n") + "\n" + strings.Join(rows, "\n") + "\n"
-		if err := atomicWrite(livePath, []byte(body), 0o644); err != nil {
+		if err := atomicio.Write(livePath, []byte(body), 0o644); err != nil {
 			return 0, err
 		}
 	}
@@ -245,7 +246,7 @@ func markTaskDone(cfg Config, name string) (int, error) {
 	if updated == 0 {
 		return 0, nil
 	}
-	if err := atomicWrite(livePath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+	if err := atomicio.Write(livePath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
 		return 0, err
 	}
 	return updated, nil
@@ -299,7 +300,7 @@ func addTask(cfg Config, lt LiveTask) (bool, error) {
 	row := fmt.Sprintf("| %s | %s | %s | %s | queued | %s | %s | %s |",
 		lt.Task, lt.Domain, lt.Owner, lt.Pri, lt.Blocker, lt.Horizon, time.Now().Format("2006-01-02"))
 	body = strings.TrimRight(body, "\n") + "\n" + row + "\n"
-	if err := atomicWrite(livePath, []byte(body), 0o644); err != nil {
+	if err := atomicio.Write(livePath, []byte(body), 0o644); err != nil {
 		return false, err
 	}
 	return true, nil

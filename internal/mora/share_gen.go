@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"sort"
@@ -355,14 +356,14 @@ var testHookPreCommitClaim func()
 // the commits directory entry is durable. Production always uses syncDir; the
 // row-51d mutation is deleting the call at the publish site, not replacing this
 // seam.
-var shareCommitSyncDirFn = syncDir
+var shareCommitSyncDirFn = atomicio.SyncDir
 
 // shareAdmitFn is an optional per-write byte admitter: it rejects a corpus write
 // that would push the whole-product footprint over the configured limit.
 type shareAdmitFn func(nextBytes int64) error
 
 // buildShareGenerationFromEntries writes a new immutable generation (durable
-// corpus → index → syncDir(gen) → syncDir(gens)) from an already-decrypted,
+// corpus → index → atomicio.SyncDir(gen) → atomicio.SyncDir(gens)) from an already-decrypted,
 // validated entry set and returns the frozen digests. It never touches a
 // published generation; nothing observes the generation until the commit link.
 func buildShareGenerationFromEntries(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry) (corpusDigest, indexDigest string, err error) {
@@ -388,7 +389,7 @@ func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen stri
 				return "", "", aerr
 			}
 		}
-		if werr := atomicWriteDurable(dst, entries[i].body, 0o644); werr != nil {
+		if werr := atomicio.WriteDurable(dst, entries[i].body, 0o644); werr != nil {
 			return "", "", werr
 		}
 		mems[i] = entries[i].mem
@@ -426,10 +427,10 @@ func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen stri
 	}
 	// Both the generation's own entries and its dir entry in the parent gens/
 	// must be durable before the gen can be referenced by a commit record.
-	if err := syncDir(shareGenDir(cfg, name, gen)); err != nil {
+	if err := atomicio.SyncDir(shareGenDir(cfg, name, gen)); err != nil {
 		return "", "", err
 	}
-	if err := syncDir(shareGensDir(cfg, name)); err != nil {
+	if err := atomicio.SyncDir(shareGensDir(cfg, name)); err != nil {
 		return "", "", err
 	}
 	return corpusDigest, indexDigest, nil
@@ -464,7 +465,7 @@ func claimExclusiveDurable(temp, dest string) error {
 	if closeErr := claim.Close(); closeErr != nil {
 		return errors.Join(closeErr, os.Remove(dest))
 	}
-	return renameReplaceWithRetry(temp, dest)
+	return atomicio.RenameReplaceWithRetry(temp, dest)
 }
 
 // shareCommitParams carries everything the claim loop needs to construct and
@@ -577,7 +578,7 @@ func publishShareGeneration(cfg Config, p shareCommitParams) (int, error) {
 		if errors.Is(claimErr, os.ErrExist) {
 			continue // someone claimed this seq; re-verify ownership at the top
 		}
-		if sharingViolationRetryable(claimErr) {
+		if atomicio.SharingViolationRetryable(claimErr) {
 			continue
 		}
 		return 0, claimErr

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -91,7 +93,7 @@ func setSourceEnabledByName(cfg Config, name string, enabled bool) error {
 	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
 		for i := range sources {
 			if sources[i].Name == name {
-				sources[i].Enabled = ptr(enabled)
+				sources[i].Enabled = genericutil.Ptr(enabled)
 				return sources, nil
 			}
 		}
@@ -135,7 +137,7 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 				// older binaries). Disabling one is still allowed.
 				continue
 			}
-			sources[i].Enabled = ptr(enabled)
+			sources[i].Enabled = genericutil.Ptr(enabled)
 			found = true
 		}
 		if !found && enabled && ctype != "filesystem" {
@@ -151,7 +153,7 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 				Name:      ctype,
 				Type:      ctype,
 				Scope:     "personal",
-				Enabled:   ptr(enabled),
+				Enabled:   genericutil.Ptr(enabled),
 				CreatedAt: time.Now().Format(time.RFC3339),
 			})
 		}
@@ -221,7 +223,7 @@ func setIMessageDenyList(cfg Config, contacts, conversations []string) error {
 		if !found {
 			sources = append(sources, Source{
 				Name: "imessage", Type: "imessage", Scope: "personal",
-				Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
+				Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
 				DenyContacts: contacts, DenyConversations: conversations,
 			})
 		}
@@ -245,10 +247,10 @@ func ensureGoogleSources(cfg Config, account string) error {
 		gmailName, calName := googleSourceNames(account)
 		now := time.Now().Format(time.RFC3339)
 		if !have[gmailName] {
-			sources = append(sources, Source{Name: gmailName, Type: "gmail", Scope: "personal", Account: account, Enabled: ptr(false), CreatedAt: now})
+			sources = append(sources, Source{Name: gmailName, Type: "gmail", Scope: "personal", Account: account, Enabled: genericutil.Ptr(false), CreatedAt: now})
 		}
 		if !have[calName] {
-			sources = append(sources, Source{Name: calName, Type: "calendar", Scope: "personal", Calendar: "primary", Account: account, Enabled: ptr(false), CreatedAt: now})
+			sources = append(sources, Source{Name: calName, Type: "calendar", Scope: "personal", Calendar: "primary", Account: account, Enabled: genericutil.Ptr(false), CreatedAt: now})
 		}
 		return sources, nil
 	})
@@ -355,7 +357,7 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	// explicitly (never nil) so the grandfather migration in loadSources (which
 	// normalizes nil => true for pre-Enabled legacy sources) cannot silently
 	// auto-enable a freshly added source on the next load.
-	s := Source{Name: *name, Type: stype, Scope: *scope, Path: expandHome(*path), Label: *label, Calendar: *cal, FolderID: *folder, CreatedAt: time.Now().Format(time.RFC3339)}
+	s := Source{Name: *name, Type: stype, Scope: *scope, Path: genericutil.ExpandHome(*path), Label: *label, Calendar: *cal, FolderID: *folder, CreatedAt: time.Now().Format(time.RFC3339)}
 	if s.Type == "filesystem" && s.Path == "" {
 		return errors.New("filesystem source requires --path")
 	}
@@ -376,7 +378,7 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 				next = append(next, existing)
 			}
 		}
-		s.Enabled = ptr(typeEnabled)
+		s.Enabled = genericutil.Ptr(typeEnabled)
 		next = append(next, s)
 		return next, nil
 	}); err != nil {
@@ -403,7 +405,7 @@ func loadSources(cfg Config) ([]Source, error) {
 	// `false` is preserved as disabled (it is non-nil, so the loop skips it).
 	for i := range sources {
 		if sources[i].Enabled == nil {
-			sources[i].Enabled = ptr(true)
+			sources[i].Enabled = genericutil.Ptr(true)
 		}
 	}
 	return sources, nil
@@ -422,5 +424,5 @@ func saveSources(cfg Config, sources []Source) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(filepath.Join(cfg.ConfigDir, "sources.json"), append(b, '\n'), 0o600)
+	return atomicio.Write(filepath.Join(cfg.ConfigDir, "sources.json"), append(b, '\n'), 0o600)
 }

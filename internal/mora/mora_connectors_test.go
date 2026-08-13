@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -62,7 +63,7 @@ func asDarwinOnWindows(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestIsEnabled is the function-level table test for the nil-sentinel helper
-// and the ptr(bool) constructor (D-10/D-12 centralized nil-handling).
+// and the genericutil.Ptr(bool) constructor (D-10/D-12 centralized nil-handling).
 func TestIsEnabled(t *testing.T) {
 	cases := []struct {
 		name string
@@ -70,8 +71,8 @@ func TestIsEnabled(t *testing.T) {
 		want bool
 	}{
 		{"nil grandfather-unset", nil, false},
-		{"explicit false", ptr(false), false},
-		{"explicit true", ptr(true), true},
+		{"explicit false", genericutil.Ptr(false), false},
+		{"explicit true", genericutil.Ptr(true), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,9 +84,9 @@ func TestIsEnabled(t *testing.T) {
 	}
 
 	// ptr must return a pointer to a distinct copy each call.
-	a, b := ptr(true), ptr(false)
+	a, b := genericutil.Ptr(true), genericutil.Ptr(false)
 	if a == b || *a != true || *b != false {
-		t.Fatalf("ptr() returned unexpected pointers: *a=%v *b=%v same=%v", *a, *b, a == b)
+		t.Fatalf("genericutil.Ptr() returned unexpected pointers: *a=%v *b=%v same=%v", *a, *b, a == b)
 	}
 }
 
@@ -142,8 +143,8 @@ func TestEnabledPersists(t *testing.T) {
 	}
 
 	want := []Source{
-		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: ptr(false), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "calendar", Type: "calendar", Scope: "personal", Calendar: "primary", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(false), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "calendar", Type: "calendar", Scope: "personal", Calendar: "primary", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
 	}
 	if err := saveSources(cfg, want); err != nil {
 		t.Fatalf("saveSources: %v", err)

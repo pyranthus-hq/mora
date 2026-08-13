@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"path/filepath"
 	"time"
 )
@@ -51,7 +52,7 @@ func writeBriefArtifact(cfg Config, d Digest, now time.Time) (string, error) {
 func writeBriefArtifactAt(cfg Config, d Digest, now time.Time, budgetChars int) (string, error) {
 	path := briefArtifactPath(cfg, now)
 	body := renderDigest(d, budgetChars)
-	if err := atomicWriteDurable(path, []byte(body), 0o644); err != nil {
+	if err := atomicio.WriteDurable(path, []byte(body), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

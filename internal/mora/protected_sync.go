@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,7 @@ func writeProtectedSyncReceipt(cfg Config, r protectedSyncReceipt) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(protectedSyncReceiptPath(cfg, r.Token), b, 0o600)
+	return atomicio.Write(protectedSyncReceiptPath(cfg, r.Token), b, 0o600)
 }
 
 func readProtectedSyncReceipt(cfg Config, token, source string) (protectedSyncReceipt, error) {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -284,7 +285,7 @@ func saveOperationRecord(path string, rec operationRecord) error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteDurable(path, body, 0o600)
+	return atomicio.WriteDurable(path, body, 0o600)
 }
 
 func loadOperationRecord(path string) (operationRecord, error) {

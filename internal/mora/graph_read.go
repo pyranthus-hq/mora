@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"sort"
 	"strings"
@@ -198,7 +199,7 @@ func loadMemoriesByID(ctx context.Context, cfg Config, db *sql.DB, ids []string)
 		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text); err != nil {
 			return nil, err
 		}
-		m.Tags = splitCSV(tags)
+		m.Tags = genericutil.SplitCSV(tags)
 		// The index table is a lossy projection (no provider/last_synced/etc.).
 		// Hydrate full fidelity from the source file so get_entity returns the same
 		// Memory shape the old listMemories path did; fall back to the row if the

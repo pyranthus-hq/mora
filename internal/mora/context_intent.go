@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"sort"
 	"strings"
 	"time"
@@ -223,7 +224,7 @@ func renderOpenCommitmentContext(commitments []Commitment, budget int) string {
 	b.WriteString("# Open commitments\n")
 	if len(commitments) == 0 {
 		b.WriteString("No open commitments matched this request.\n")
-		return truncateRunes(b.String(), budget)
+		return genericutil.TruncateRunes(b.String(), budget)
 	}
 	for _, commitment := range commitments {
 		state := commitOpen
@@ -245,5 +246,5 @@ func renderOpenCommitmentContext(commitments []Commitment, budget int) string {
 		}
 		b.WriteString("\n")
 	}
-	return truncateRunes(b.String(), budget)
+	return genericutil.TruncateRunes(b.String(), budget)
 }

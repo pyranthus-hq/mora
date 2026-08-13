@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func TestExamForwardedSubjectNeverBecomesEvidence(t *testing.T) {
 
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestExamLeadInFragmentNeverBecomesEvidence(t *testing.T) {
 
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func TestExamGmailBareQuestionNeedsRealInterrogative(t *testing.T) {
 
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestExamHardWrapJoinsBeforeSegmenting(t *testing.T) {
 
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}

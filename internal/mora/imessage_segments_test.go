@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -53,7 +54,7 @@ func TestIMessageEvidenceMigrationRewritesOnceWithoutBriefDelta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(dest, legacyBytes, 0o644); err != nil {
+	if err := atomicio.Write(dest, legacyBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,7 +177,7 @@ func TestIMessageEvidenceMigrationSIGKILLRecoversThroughJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(dest, legacyBytes, 0o644); err != nil {
+	if err := atomicio.Write(dest, legacyBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	mm := memory.MappedMemory{

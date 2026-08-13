@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"io/fs"
 	"os"
@@ -27,7 +28,7 @@ func cmdUsage(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	switch {
 	case len(args) >= 1 && args[0] == "off":
-		return atomicWrite(filepath.Join(cfg.StateDir, "usage", "OFF"), []byte("off\n"), 0o600)
+		return atomicio.Write(filepath.Join(cfg.StateDir, "usage", "OFF"), []byte("off\n"), 0o600)
 	case len(args) >= 1 && args[0] == "on":
 		return os.Remove(filepath.Join(cfg.StateDir, "usage", "OFF"))
 	case len(args) >= 1 && args[0] == "report":
@@ -38,7 +39,7 @@ func cmdUsage(ctx context.Context, args []string, stdout io.Writer) error {
 		marker := filepath.Join(cfg.StateDir, "usage", "QUERIES")
 		switch {
 		case len(args) >= 2 && args[1] == "on":
-			return atomicWrite(marker, []byte("on\n"), 0o600)
+			return atomicio.Write(marker, []byte("on\n"), 0o600)
 		case len(args) >= 2 && args[1] == "off":
 			if err := os.Remove(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
@@ -134,5 +135,5 @@ func logUsage(cfg Config, e usageEvent) {
 	}
 	usageAppendMu.Lock()
 	defer usageAppendMu.Unlock()
-	_ = appendFile(filepath.Join(cfg.StateDir, "usage", "events.jsonl"), string(b)+"\n")
+	_ = atomicio.AppendFile(filepath.Join(cfg.StateDir, "usage", "events.jsonl"), string(b)+"\n")
 }

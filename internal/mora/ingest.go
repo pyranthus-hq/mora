@@ -7,6 +7,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"io/fs"
 	"os"
@@ -332,7 +334,7 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) >= 1 && isHelpFlag(args[0]) {
+	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
 		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
@@ -728,7 +730,7 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	if jerr := ensureIngestJournalHeader(cfg, sourceKey); jerr != nil {
 		return jerr
 	}
-	if err := atomicWrite(out, body, 0o644); err != nil {
+	if err := atomicio.Write(out, body, 0o644); err != nil {
 		return err
 	}
 	if testHookPostConnectorPublish != nil {
@@ -1004,7 +1006,7 @@ func appleCalDBPath() string {
 	if _, err := os.Stat(modern); err == nil {
 		return modern
 	}
-	if legacy := applecal.LegacyDBPath(home); fileExists(legacy) {
+	if legacy := applecal.LegacyDBPath(home); genericutil.FileExists(legacy) {
 		return legacy
 	}
 	return modern
@@ -1163,13 +1165,13 @@ func connectGitHub(ctx context.Context, args []string, stdout io.Writer) error {
 		for i := range sources {
 			if sources[i].Type == "github" {
 				sources[i].Repositories = clean
-				sources[i].Enabled = ptr(true)
+				sources[i].Enabled = genericutil.Ptr(true)
 				return sources, nil
 			}
 		}
 		return append(sources, Source{
 			Name: "github", Type: "github", Scope: "personal", Repositories: clean,
-			Enabled: ptr(true), CreatedAt: now,
+			Enabled: genericutil.Ptr(true), CreatedAt: now,
 		}), nil
 	}); err != nil {
 		return err
@@ -1225,7 +1227,7 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 	if path == "" {
 		return errors.New("usage: mora connect filesystem <path> [--name <name>] [--scope <scope>]")
 	}
-	path = expandHome(path)
+	path = genericutil.ExpandHome(path)
 	// Canonicalize to absolute: the scheduled `ingest --all` job runs from
 	// launchd's cwd, not the user's shell, so a persisted relative path would
 	// target the wrong (or no) folder.
@@ -1260,7 +1262,7 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 	if srcName == "" {
 		srcName = defaultFilesystemSourceName(path)
 	}
-	s := Source{Name: srcName, Type: "filesystem", Scope: *scope, Path: path, Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
+	s := Source{Name: srcName, Type: "filesystem", Scope: *scope, Path: path, Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
 	// Serialize the read-modify-write (P3) directly (not via mutateSources) so the
 	// custom "cannot read existing sources" error survives. The lease covers ONLY
 	// load->mutate->save and is released BEFORE the (potentially multi-minute)

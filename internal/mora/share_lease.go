@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"time"
@@ -46,11 +47,11 @@ func acquireImportLease(cfg Config, name, runID string, now time.Time) (release 
 		switch {
 		case perr == nil && published:
 			return func() { releaseLockFileFor(lockPath, runID) }, nil
-		case perr != nil && !sharingViolationRetryable(perr):
+		case perr != nil && !atomicio.SharingViolationRetryable(perr):
 			return nil, perr
 		case perr == nil:
 			reaped, rerr := reapStaleLockTTL(lockPath, now, shareImportTTL)
-			if rerr != nil && !sharingViolationRetryable(rerr) {
+			if rerr != nil && !atomicio.SharingViolationRetryable(rerr) {
 				return nil, rerr
 			}
 			if rerr == nil && reaped {
@@ -80,11 +81,11 @@ func acquireStorageLease(cfg Config, runID string, now time.Time) (release func(
 		switch {
 		case perr == nil && published:
 			return func() { releaseLockFileFor(lockPath, runID) }, nil
-		case perr != nil && !sharingViolationRetryable(perr):
+		case perr != nil && !atomicio.SharingViolationRetryable(perr):
 			return nil, perr
 		case perr == nil:
 			reaped, rerr := reapStaleLockTTL(lockPath, now, shareImportTTL)
-			if rerr != nil && !sharingViolationRetryable(rerr) {
+			if rerr != nil && !atomicio.SharingViolationRetryable(rerr) {
 				return nil, rerr
 			}
 			if rerr == nil && reaped {

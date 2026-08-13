@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -112,11 +113,11 @@ func TestCoreB_IngestFileExists(t *testing.T) {
 	if err := os.WriteFile(present, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !fileExists(present) {
-		t.Fatalf("fileExists(%q) = false, want true", present)
+	if !genericutil.FileExists(present) {
+		t.Fatalf("genericutil.FileExists(%q) = false, want true", present)
 	}
-	if fileExists(filepath.Join(dir, "nope.txt")) {
-		t.Fatalf("fileExists(missing) = true, want false")
+	if genericutil.FileExists(filepath.Join(dir, "nope.txt")) {
+		t.Fatalf("genericutil.FileExists(missing) = true, want false")
 	}
 }
 
@@ -326,8 +327,8 @@ func TestCoreB_IngestLoadSourcesCorrupt(t *testing.T) {
 func TestCoreB_IngestSaveLoadRoundTrip(t *testing.T) {
 	cfg := Config{ConfigDir: t.TempDir()}
 	in := []Source{
-		{Name: "a", Type: "filesystem", Scope: "personal", Path: "/x", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "b", Type: "gmail", Scope: "personal", Enabled: ptr(false), CreatedAt: "2026-01-02T00:00:00Z"},
+		{Name: "a", Type: "filesystem", Scope: "personal", Path: "/x", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "b", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(false), CreatedAt: "2026-01-02T00:00:00Z"},
 	}
 	if err := saveSources(cfg, in); err != nil {
 		t.Fatalf("saveSources: %v", err)

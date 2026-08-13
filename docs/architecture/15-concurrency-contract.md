@@ -22,19 +22,19 @@ a one-host file lease. These controls fit one machine's Mora processes.
 | # | Guarantee | Mechanism | Anchor |
 |---|---|---|---|
 | G1 | **No lost writes** — a write reported as saved is on disk exactly once. A same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicCreate` |
-| G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicWrite`, `atomicCreate` |
+| G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicio.Write`, `atomicCreate` |
 | G3 | **No surfaced `database is locked`** — concurrent reader *processes* never block a writer, and a contended writer waits out its rival's commit instead of erroring | `journal_mode(WAL)` on the index (readers read a snapshot, never hold a lock a writer must wait for) + `busy_timeout(15000)` on every writer and read-only DSN + `_txlock=immediate` on writers | `rwIndexDSN`, `roIndexDSN`, `rebuildIndexWithPolicy`, `indexUpsert` |
 | G4 | **Bounded eventual consistency** — the vault is the source of truth. The index converges | Tiny synchronous upsert on the write path. Serialized full rebuilds reconcile the rest | `indexUpsert`, `rebuildIndexWithPolicy` |
 
 ## 1. Per-memory atomic files
 
 The vault is the source of truth (invariant I1). Every durable write goes
-through one of two publish primitives in `internal/mora/mora.go`, and both are
-**content-atomic** — the target name only ever appears with the full body behind
+through one of two publish primitives — `atomicio.Write` (`internal/atomicio`)
+or `atomicCreate` (`internal/mora/mora.go`) — and both are **content-atomic** — the target name only ever appears with the full body behind
 it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
 `digest`, `meetingprep`, share) never observes a partial file.
 
-- **`atomicWrite(path, body, mode)`** — the general persistence primitive
+- **`atomicio.Write(path, body, mode)`** — the general persistence primitive
   (updates, connector re-writes, status files, watermarks, `sources.json`,
   control files). It stages through a **unique** temp (`os.CreateTemp(dir,
   "."+base+"-*.tmp")`, never a fixed `<path>.tmp` — a fixed name once let two
@@ -45,12 +45,12 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
   - Windows wrinkle: `os.Rename` → `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`;
     concurrent writers racing onto the SAME target transiently fail with sharing
     violations, so the rename retries with **jittered**, capped backoff up to a
-    5 s deadline (`renameReplaceWithRetry`/`renameReplaceRetryable`. Always a
+    5 s deadline (`atomicio.RenameReplaceWithRetry`/`renameReplaceRetryable`. Always a
     single attempt off Windows). Deterministic backoff made 16 goroutines retry
     in lockstep and keep colliding — the jitter is load-bearing (#73/#74).
 
 - **`atomicCreate(path, body, mode)`** — the **create-exclusive** primitive for
-  brand-new authored memories. Unlike `atomicWrite`, it MUST NOT clobber: it
+  brand-new authored memories. Unlike `atomicio.Write`, it MUST NOT clobber: it
   stages a unique temp and `os.Link`s it onto the target. `os.Link` is both
   create-exclusive (fails `os.ErrExist` on a present target, never replaces) and
   content-atomic, so a racing second writer gets `EEXIST` — exactly one wins.
@@ -72,7 +72,7 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
 Authored ids are minted by `newID`: `mem_<yyyymmdd_hhmmss>_<8 hex>` — a
 **second-granularity** timestamp plus 4 `crypto/rand` bytes. Two authored writes
 in the same second can therefore mint the same id and thus the same
-`memoryPath`. Under the old `atomicWrite` publish, the second writer's
+`memoryPath`. Under the old `atomicio.Write` publish, the second writer's
 `os.Rename` would replace the first's file: both callers report success, but one
 memory is silently lost.
 
@@ -93,7 +93,7 @@ Two correctness details reinforce it:
   stall the re-mint loop.
 - Only **new** authored memories use `createMemory`. Updates and connector
   re-writes deliberately keep `writeMemory`/`writeMappedMemory` →
-  `atomicWrite`, because re-rendering an existing memory onto its own **stable**
+  `atomicio.Write`, because re-rendering an existing memory onto its own **stable**
   path is a correct idempotent overwrite, not a collision.
 
 The re-mint-on-collision mechanism itself is pinned by `createexclusive_test.go`,
@@ -175,7 +175,7 @@ lock is held at listing time) and the G4 assertion in the contract stress test.
 ## 5. The `sources.json` lease
 
 `sources.json` (the consent/source registry in `ConfigDir`) is the one piece of
-state mutated by a **read-modify-write**, not a single write. `atomicWrite`
+state mutated by a **read-modify-write**, not a single write. `atomicio.Write`
 makes each `saveSources` durable and temp-collision-free, but two callers each
 doing `loadSources → mutate → saveSources` still race: the last rename wins and
 silently drops the other's mutation (a lost enable bit, deny-list, or persisted
@@ -367,7 +367,7 @@ beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
   removal retry).
 
 See also: [data model & storage](./01-data-model-and-storage.md) (memory file
-anatomy, `atomicWrite`, the vault-identity guard), [MCP server](./06-mcp-server.md)
+anatomy, `atomicio.Write`, the vault-identity guard), [MCP server](./06-mcp-server.md)
 (the write_memory/read/search tool surface), [index health](./20-index-health.md)
 (Gate 2 pending-ops ledger), and [sync &
 freshness](./11-sync-and-freshness.md) (honest-snapshot sync, the scheduled

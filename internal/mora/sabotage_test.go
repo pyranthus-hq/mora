@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -102,7 +103,7 @@ func seedSabotageHome(t *testing.T, onlyBase map[string]bool) (Config, sabotageE
 	at := sabotageAsOf(t, event)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Add(-30 * 24 * time.Hour).Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Add(-30 * 24 * time.Hour).Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"html"
 	"io"
 	"os"
@@ -185,7 +186,7 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 		label := "com.mora." + job
 		plist, _ := schedulePlistFor(cfg, job)
 		plistPath := filepath.Join(dir, label+".plist")
-		if err := atomicWrite(plistPath, []byte(plist), 0o644); err != nil {
+		if err := atomicio.Write(plistPath, []byte(plist), 0o644); err != nil {
 			return err
 		}
 		// Writing the plist does NOT load it: without an explicit bootstrap the

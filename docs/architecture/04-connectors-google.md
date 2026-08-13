@@ -143,7 +143,7 @@ flowchart TD
   MAP --> W[Write → writeMappedMemory]
   W --> SKIP{same ContentHash\n&& not tombstone?}
   SKIP -->|yes| KEEP[skip rewrite\npreserve created_at]
-  SKIP -->|no| WRITE[render + atomicWrite\nsources/&lt;provider&gt;/&lt;SafeFilename&gt;.md]
+  SKIP -->|no| WRITE[render + atomicio.Write\nsources/&lt;provider&gt;/&lt;SafeFilename&gt;.md]
   W -->|Write error| CNT[ErrorCount++, continue]
   LOOP -->|page done| NEXT{NextCursor == ""?}
   NEXT -->|no| ADV[cursor = NextCursor\nCheckpoint = NextCursor] --> FP
