@@ -30,14 +30,6 @@ const (
 
 // DecisionValidity makes the conditions under which a decision remains useful
 // first-class data rather than prose an agent can accidentally omit.
-type DecisionValidity struct {
-	AsOf           string   `json:"as_of"`
-	Durability     string   `json:"durability"`
-	FlipConditions []string `json:"flip_conditions"`
-	ReviewBy       string   `json:"review_by,omitempty"`
-	Complete       bool     `json:"complete"`
-}
-
 func normalizeDecisionValidity(m Memory) *DecisionValidity {
 	if m.Type != "decision" {
 		return nil
