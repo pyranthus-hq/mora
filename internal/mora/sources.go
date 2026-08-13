@@ -2,15 +2,11 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -234,18 +230,15 @@ func ensureGoogleSources(cfg Config, account string) error {
 // loadSourcesOrEmpty is loadSources with the error collapsed to "no sources" —
 // for guard paths where a missing/corrupt sources file should mean "no
 // conflict", never an abort.
-func loadSourcesOrEmpty(cfg Config) []Source {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return nil
-	}
-	return sources
-}
 
 // googleAccountForEmail reports which existing account label a Google address
 // is already connected under. The re-auth guard: connecting the SAME mailbox
 // under a SECOND label would double-ingest it (every thread twice, distinct
 // @account StableIDs), so connect exits gracefully instead.
+func loadSources(cfg Config) ([]Source, error)       { return registry.LoadSources(cfg) }
+func saveSources(cfg Config, sources []Source) error { return registry.SaveSources(cfg, sources) }
+func loadSourcesOrEmpty(cfg Config) []Source         { return registry.LoadSourcesOrEmpty(cfg) }
+
 func googleAccountForEmail(sources []Source, email string) (label string, found bool) {
 	if email == "" {
 		return "", false
@@ -361,30 +354,6 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	}
 	return emit(stdout, s, true)
 }
-func loadSources(cfg Config) ([]Source, error) {
-	path := filepath.Join(cfg.ConfigDir, "sources.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var sources []Source
-	if err := json.Unmarshal(b, &sources); err != nil {
-		return nil, err
-	}
-	// Grandfather migration (D-12): a missing `enabled` key means a pre-Enabled
-	// binary wrote this source, i.e. the user had already explicitly added it —
-	// treat absence as prior consent and normalize nil => true. An explicit
-	// `false` is preserved as disabled (it is non-nil, so the loop skips it).
-	for i := range sources {
-		if sources[i].Enabled == nil {
-			sources[i].Enabled = genericutil.Ptr(true)
-		}
-	}
-	return sources, nil
-}
 
 // saveSources persists the source registry. atomicWrite stages through a unique
 // temp per writer, so this is safe against the temp-collision race (two writers
@@ -394,10 +363,3 @@ func loadSources(cfg Config) ([]Source, error) {
 // mutateSources / acquireSourcesLock (sources_lock.go); every load → mutate →
 // save on sources.json MUST go through one of them. Call saveSources directly
 // only while already holding the sources lease (mutateSources does).
-func saveSources(cfg Config, sources []Source) error {
-	b, err := json.MarshalIndent(sources, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicio.Write(filepath.Join(cfg.ConfigDir, "sources.json"), append(b, '\n'), 0o600)
-}
