@@ -29,6 +29,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/imessage"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/whatsapp"
 )
 
 func syncStatusFileThreshold(name string) time.Duration { return ingestpkg.StatusFileThreshold(name) }
@@ -523,12 +524,13 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 }
 func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
 		fmt.Fprintln(stdout, "  github    re-run the read-only GitHub issue sync")
 		fmt.Fprintln(stdout, "  filesystem re-index enabled filesystem sources")
 		fmt.Fprintln(stdout, "  imessage  re-run the iMessage backfill")
+		fmt.Fprintln(stdout, "  whatsapp  re-run the local WhatsApp backfill")
 		fmt.Fprintln(stdout, "  applecalendar re-run the local Apple Calendar backfill")
 		fmt.Fprintln(stdout, "  git       back up the vault to a private git remote (off-device)")
 		fmt.Fprintln(stdout, "            --init [--remote URL | --github [--name repo]] [-m msg]")
@@ -536,7 +538,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if len(args) == 0 {
 		return newCodedError(errCodeUsageMissingArgument, nil,
-			"usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+			"usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>")
 	}
 	// Strip the relay receipt token BEFORE any flag parsing. --mora-app-receipt
 	// is a private argument of the signed-app relay protocol, not part of a
@@ -549,7 +551,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	args = cleanedArgs
 	if receiptToken != "" && (len(args) == 0 || !protectedSyncSource(args[0])) {
-		return fmt.Errorf("%s is only valid for imessage or applecalendar sync", protectedSyncReceiptFlag)
+		return fmt.Errorf("%s is only valid for imessage, whatsapp, or applecalendar sync", protectedSyncReceiptFlag)
 	}
 	if len(args) == 0 {
 		return newCodedError(errCodeUsageMissingArgument, nil,
@@ -698,6 +700,27 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		return syncErr
 	}
+	// `mora sync whatsapp` — re-run the local WhatsApp backfill. Same protected
+	// local-store contract as imessage/applecalendar: FDA-gated, relay receipt.
+	if args[0] == "whatsapp" {
+		total, syncErr := backfillEnabledWhatsApp(ctx, cfg, sourceProgress)
+		rerr := emitSyncSourceResult(cfg, stdout, "whatsapp", sourceJSON, total, "synced %d item(s)\n")
+		// The relay receipt is written even when the stdout emit failed: the
+		// launching host is waiting on it, and a broken pipe must not strand it.
+		if receiptToken != "" {
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], Items: total, CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			if syncErr != nil {
+				r.Error = syncErr.Error()
+			}
+			if err := writeProtectedSyncReceipt(cfg, r); err != nil {
+				return err
+			}
+		}
+		if rerr != nil {
+			return rerr
+		}
+		return syncErr
+	}
 	// `mora sync applecalendar` — targeted retry for the local Calendar store.
 	// Keep this separate from Google Calendar: the provider, FDA gate, status
 	// receipt, and recovery action are all independent (#266).
@@ -733,7 +756,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		return err
 	}
-	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>)", args[0])
+	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>)", args[0])
 }
 
 // syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
@@ -964,6 +987,8 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 				s.SinceDays = reingestFullDays // all-time lookback (copy; not persisted)
 			case "imessage":
 				s.SinceDays = -1 // all-time (windowForIMessage)
+			case "whatsapp":
+				s.SinceDays = -1 // all locally available history
 			}
 		}
 		plans = append(plans, sourceRunPlan{Key: healthInstanceKeyForSource(s), Source: s})
@@ -1212,6 +1237,8 @@ func ingestSourceDispatchDetailed(ctx context.Context, cfg Config, s Source, out
 		return ingestGoogleDetailed(ctx, cfg, s, google.KindCalEvent, out)
 	case "imessage":
 		return ingestIMessageDetailed(ctx, cfg, s, out)
+	case "whatsapp":
+		return ingestWhatsAppDetailed(ctx, cfg, s, out)
 	case "applecalendar":
 		return ingestAppleCalDetailed(ctx, cfg, s, out)
 	case "github":
@@ -1402,6 +1429,107 @@ func googleTokenPath(cfg Config) string { return googleTokenPathFor(cfg, "") }
 
 // imessageStatusPath mirrors googleStatusPath so `mora sync status` reads the
 // honest-snapshot freshness for iMessage generically (no special-casing).
+
+func whatsAppStatusPath(cfg Config, name string) string {
+	return filepath.Join(cfg.StateDir, "sync", "whatsapp-"+name+".json")
+}
+
+const defaultWhatsAppLookbackDays = 90
+
+func windowForWhatsApp(s Source) memory.FetchWindow {
+	days := s.SinceDays
+	if days == 0 {
+		days = defaultWhatsAppLookbackDays
+	}
+	if days < 0 {
+		return memory.FetchWindow{}
+	}
+	return memory.FetchWindow{Since: time.Now().AddDate(0, 0, -days)}
+}
+
+type whatsAppFetcher interface {
+	memory.Fetcher
+	Close() error
+}
+
+var newWhatsAppFetcher = func(path string) (whatsAppFetcher, error) {
+	return whatsapp.NewLiveFetcher(path)
+}
+
+// ingestWhatsApp reads the local ChatStorage.sqlite read-only and writes one
+// memory per conversation (#295). It is macOS-gated (a non-darwin host prints an
+// honest note and returns 0, never a false error) and surfaces resumable errors.
+// Rendering/truncation is the connector's inverted-truncation mapper, routed
+// through the shared resumable Ingest loop via the Map hook — the writeMappedMemory
+// boundary is reused, never reimplemented. The two-lane relevance gate lives in
+// the connector's Meta (relevance_lane / inclusion_rationale) and is enforced by
+// digest/urgent/commitment consumers.
+func ingestWhatsApp(cfg Config, s Source, out io.Writer) (int, error) {
+	result, err := ingestWhatsAppDetailed(context.Background(), cfg, s, out)
+	return result.Materialized, err
+}
+
+func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+	if runtimeGOOS() != "darwin" {
+		if out != nil {
+			fmt.Fprintf(out, "note: WhatsApp ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
+		}
+		return sourceIngestResult{}, nil
+	}
+	fetcher, err := newWhatsAppFetcher(whatsAppDBPath())
+	if err != nil {
+		// A present-but-unreadable ChatStorage.sqlite is the FDA-denied case (or an
+		// unsupported private schema) — point the user at doctor guidance rather
+		// than dumping a raw sqlite error.
+		return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, err,
+			"cannot read WhatsApp ChatStorage.sqlite (Full Disk Access not granted, app not installed, or unsupported schema?) — run `mora doctor`: %v", err)
+	}
+	defer fetcher.Close()
+
+	statusPath := whatsAppStatusPath(cfg, s.Name)
+	st, _ := memory.LoadStatus(statusPath)
+	st.Source = s.Name
+	win := windowForWhatsApp(s)
+
+	if out != nil {
+		days := s.SinceDays
+		if days == 0 {
+			days = defaultWhatsAppLookbackDays
+		}
+		if days < 0 {
+			fmt.Fprintf(out, "  %s: lookback set to all available history (since-days < 0)\n", s.Name)
+		} else {
+			fmt.Fprintf(out, "  %s: ingesting the last %d days; use --since-days to change this window.\n", s.Name, days)
+		}
+	}
+	prog := newProgress(out, s.Name, "conversations")
+	write := func(mm memory.MappedMemory) (bool, error) {
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
+		}
+		if wrote {
+			prog.tick()
+		}
+		return wrote, nil
+	}
+
+	res, ingErr := memory.Ingest(memory.IngestParams{
+		Context: ctx, Fetcher: fetcher, Kind: whatsapp.KindConversation, Window: win, Scope: s.Scope,
+		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
+		Map:        whatsapp.MapConversationFn(),
+	})
+	prog.done()
+	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
+	if ingErr != nil {
+		if out != nil {
+			warnf(out, "whatsapp sync incomplete: %v", ingErr)
+		}
+		return sourceIngestResultFromMemory(res), ingErr
+	}
+	return sourceIngestResultFromMemory(res), nil
+}
 
 // chatDBPath is the default local iMessage database location. macOS-only; the
 // caller gates on runtime.GOOS before reading it.
@@ -1946,6 +2074,15 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 // sources are skipped (D-07), sync errors are surfaced (never swallowed).
 func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
 	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool { return s.Type == "imessage" }, func(s Source, err error) {
+		warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
+	})
+}
+
+// backfillEnabledWhatsApp runs the local WhatsApp backfill for every enabled
+// whatsapp source, then rebuilds the index. Mirrors backfillEnabledIMessage:
+// disabled sources are skipped (D-07), sync errors are surfaced (never swallowed).
+func backfillEnabledWhatsApp(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
+	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool { return s.Type == "whatsapp" }, func(s Source, err error) {
 		warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
 	})
 }

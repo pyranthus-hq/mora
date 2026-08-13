@@ -69,6 +69,14 @@ func AssignedToThirdParty(text string, selfNames map[string]bool) bool {
 	return false
 }
 
+// IsWhatsApp reports whether provider identity identifies a WhatsApp memory.
+func IsWhatsApp(m memory.Memory) bool { return strings.EqualFold(m.Provider, "whatsapp") }
+
+// IsConversation reports whether m is a chat-transcript memory (iMessage or
+// WhatsApp): its "Speaker: line" shape drives speaker-prefix stripping,
+// open-loop direction policy, and the actionable-question gate.
+func IsConversation(m memory.Memory) bool { return IsIMessage(m) || IsWhatsApp(m) }
+
 // IsIMessage reports whether provider identity identifies an iMessage memory.
 func IsIMessage(m memory.Memory) bool {
 	return strings.EqualFold(m.Provider, "imessage") || strings.Contains(strings.ToLower(m.ProviderID), "imessage")
@@ -166,7 +174,7 @@ func UserOwnedOpenLoop(m memory.Memory, signal string, self map[string]bool) boo
 	if UserAuthoredTask(m) {
 		return true
 	}
-	if IsIMessage(m) {
+	if IsConversation(m) {
 		speaker, body := LastConversationLine(m.Text)
 		if body == "" || PersonalTriviaOnly(body, materialContextPhrases) {
 			return false
@@ -215,7 +223,7 @@ func UserOwnedOpenLoop(m memory.Memory, signal string, self map[string]bool) boo
 
 // EndsInActionableQuestion applies the appropriate provider question gate.
 func EndsInActionableQuestion(m memory.Memory, signal string) bool {
-	if IsIMessage(m) {
+	if IsConversation(m) {
 		_, question := LastConversationLine(m.Text)
 		return ActionableQuestion(question)
 	}

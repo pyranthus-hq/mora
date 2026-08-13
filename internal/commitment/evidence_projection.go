@@ -104,7 +104,7 @@ func EvidenceFromMemories(mems []memory.Memory, selfEmails map[string]bool) []Ev
 		keys := CounterpartyKeys(m, counterparty)
 		appendEvidence := func(text, messageRef, blockRef, occurredAt string, party Party) {
 			evidenceCitation := citation
-			if IsIMessage(m) && messageRef != "" {
+			if IsConversation(m) && messageRef != "" {
 				// Connector admission already proved the message timestamp and the base citation proved identity/source fields.
 				evidenceCitation, _ = evidence.ForMemory(m, SourceOf(m), occurredAt)
 			}
@@ -144,7 +144,7 @@ func EvidenceFromMemories(mems []memory.Memory, selfEmails map[string]bool) []Ev
 			if party != PartyUnknown && len(parts) > 0 {
 				appendEvidence(parts[0], "", "", at, party)
 			}
-		case IsIMessage(m):
+		case IsConversation(m):
 			if messages, present := imessage.CommitmentMessages(m); present {
 				for _, message := range messages {
 					party := PartyCounterparty

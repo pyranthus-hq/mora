@@ -175,3 +175,44 @@ func PrintIMessageReadiness(stdout io.Writer, setupVariant bool, seams IMessageS
 	fmt.Fprintln(stdout, "Mora only ever READS the database — it never writes to or modifies your Messages.")
 	return false
 }
+
+// WhatsAppSeams supplies the platform and filesystem boundary for the readiness probe.
+type WhatsAppSeams struct {
+	GOOS          func() string
+	DBPath        func() string
+	Stat          func(string) (os.FileInfo, error)
+	ProbeReadable func(string) (bool, error)
+}
+
+// PrintWhatsAppReadiness probes and prints the stable WhatsApp readiness
+// checklist: macOS-only gate, ChatStorage.sqlite presence, then a REAL read
+// probe (never os.Stat) as the Full Disk Access signal — the same contract as
+// the iMessage block above.
+func PrintWhatsAppReadiness(stdout io.Writer, seams WhatsAppSeams) bool {
+	goos := seams.GOOS()
+	if goos != "darwin" {
+		fmt.Fprintln(stdout, "warn whatsapp_macos")
+		fmt.Fprintf(stdout, "WhatsApp ingest only runs on macOS — skipping ChatStorage.sqlite checks on %s.\n", goos)
+		return false
+	}
+	fmt.Fprintln(stdout, "ok   whatsapp_macos")
+	path := seams.DBPath()
+	if _, err := seams.Stat(path); err != nil {
+		fmt.Fprintln(stdout, "warn whatsapp_chat_storage")
+		fmt.Fprintln(stdout, "No WhatsApp database found. Install and open WhatsApp Desktop, then re-run `mora doctor`.")
+		return false
+	}
+	fmt.Fprintln(stdout, "ok   whatsapp_chat_storage")
+	readable, err := seams.ProbeReadable(path)
+	if readable && err == nil {
+		fmt.Fprintln(stdout, "ok   whatsapp_full_disk_access")
+		fmt.Fprintln(stdout, "WhatsApp is ready to sync. Run `mora ingest run --source whatsapp`.")
+		return true
+	}
+	fmt.Fprintln(stdout, "warn whatsapp_full_disk_access")
+	fmt.Fprintln(stdout, "WhatsApp ChatStorage.sqlite exists but could not be read. Grant Full Disk Access to Mora.app, then re-run `mora doctor`.")
+	if err != nil {
+		fmt.Fprintf(stdout, "     %v\n", err)
+	}
+	return false
+}

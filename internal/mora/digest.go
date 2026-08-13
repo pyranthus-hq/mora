@@ -63,6 +63,8 @@ type DigestItem struct {
 	CreatedAt   string             `json:"created_at"`
 	Snippet     string             `json:"snippet"`
 	Change      string             `json:"change,omitempty"` // new | updated (M-5)
+	Lane        string             `json:"lane,omitempty"`
+	Rationale   string             `json:"inclusion_rationale,omitempty"`
 	Obligations []DigestObligation `json:"obligations,omitempty"`
 	// The scalar lane is retained for legacy, ID-less commitment generations.
 	// Identified generations use Obligations so one artifact can expose every
@@ -979,6 +981,12 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 	// low-signal collapse as before.
 	var tis []tsItem
 	for _, c := range cands {
+		if c.m.Provider == "whatsapp" && c.m.Meta != nil {
+			if lane, _ := c.m.Meta["relevance_lane"].(string); lane == "none" {
+				countOnlyIDs = append(countOnlyIDs, c.m.ID)
+				continue
+			}
+		}
 		if ok, phrase := isUrgent(c.m, now); ok {
 			urgent = append(urgent, urgentEntry{
 				item:       urgentItemFor(cfg, c.m, key, c.change, phrase),
@@ -1295,7 +1303,7 @@ const digestLowSignalFloor = 2
 // consuming agent then reports a replied-to thread as "unanswered". The digest
 // is "what's new"; the newest content is the tail.
 func digestItemFor(cfg Config, m Memory, key, change string) DigestItem {
-	return DigestItem{
+	it := DigestItem{
 		ID:        m.ID,
 		Title:     m.Title,
 		Source:    key,
@@ -1303,6 +1311,11 @@ func digestItemFor(cfg Config, m Memory, key, change string) DigestItem {
 		Snippet:   snippetTail(m.Text, digestSnippetChars(cfg)),
 		Change:    change,
 	}
+	if m.Provider == "whatsapp" && m.Meta != nil {
+		it.Lane, _ = m.Meta["relevance_lane"].(string)
+		it.Rationale, _ = m.Meta["inclusion_rationale"].(string)
+	}
+	return it
 }
 
 // snippetTail is snippet's end-anchored twin: it keeps the LAST n content runes
@@ -1360,6 +1373,8 @@ func syncStatusPathFor(cfg Config, s Source) string {
 		return filepath.Join(cfg.StateDir, "sync", "google-"+s.Name+".json")
 	case "imessage":
 		return filepath.Join(cfg.StateDir, "sync", "imessage-"+s.Name+".json")
+	case "whatsapp":
+		return filepath.Join(cfg.StateDir, "sync", "whatsapp-"+s.Name+".json")
 	case "applecalendar":
 		return filepath.Join(cfg.StateDir, "sync", "applecal-"+s.Name+".json")
 	case "filesystem":
@@ -1406,7 +1421,7 @@ func sortSections(sections []DigestSection) {
 
 // renderDigestHeader renders the brief's first line.
 func digestRenderItem(it DigestItem) digestpkg.Item {
-	out := digestpkg.Item{ID: it.ID, Title: it.Title, Source: it.Source, CreatedAt: it.CreatedAt, Snippet: it.Snippet, Change: it.Change, Owner: digestpkg.Atom{Kind: it.Owner.Kind, Value: it.Owner.Value}, Direction: string(it.Direction), CounterpartyLabel: it.CounterpartyLabel, DueAt: it.DueAt, Lifecycle: it.Lifecycle, ClosureRef: it.ClosureRef}
+	out := digestpkg.Item{ID: it.ID, Title: it.Title, Source: it.Source, CreatedAt: it.CreatedAt, Snippet: it.Snippet, Change: it.Change, Lane: it.Lane, Rationale: it.Rationale, Owner: digestpkg.Atom{Kind: it.Owner.Kind, Value: it.Owner.Value}, Direction: string(it.Direction), CounterpartyLabel: it.CounterpartyLabel, DueAt: it.DueAt, Lifecycle: it.Lifecycle, ClosureRef: it.ClosureRef}
 	for _, o := range it.Obligations {
 		ro := digestpkg.Obligation{CommitmentID: o.CommitmentID, Summary: o.Summary, Owner: digestpkg.Atom{Kind: o.Owner.Kind, Value: o.Owner.Value}, Direction: string(o.Direction), CounterpartyLabel: o.CounterpartyLabel, DueAt: o.DueAt, Lifecycle: o.Lifecycle, ClosureRef: o.ClosureRef}
 		for _, c := range o.Citations {

@@ -703,6 +703,13 @@
       "payload": "mora.sync.imessage"
     },
     {
+      "path": "sync whatsapp",
+      "kind": "subcommand",
+      "platform": "darwin-seam",
+      "json_contract": "receipt",
+      "payload": "mora.sync.whatsapp"
+    },
+    {
       "path": "sync applecalendar",
       "kind": "subcommand",
       "platform": "darwin-seam",

@@ -9,6 +9,9 @@ import (
 const urgentShelfCap = 5
 
 func isUrgent(m Memory, now time.Time) (bool, string) {
+	if isWhatsAppInformationalMemory(m) {
+		return false, ""
+	}
 	_, _, starred := urgencypkg.Labels(m)
 	return urgencypkg.Qualifies(hasHumanSender(m), itemOccurredAt(m), now, m.Title, m.Text, starred)
 }

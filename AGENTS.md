@@ -8,7 +8,7 @@ The deep architecture spec lives in [`docs/architecture/`](docs/architecture/00-
 
 Local-first, agent-agnostic memory CLI: one pure-Go binary that stores
 human-readable Markdown memories, indexes them in embedded SQLite, and serves
-them to any MCP agent. Read-only connectors (Gmail, Calendar, iMessage), zero
+them to any MCP agent. Read-only connectors (Gmail, Calendar, iMessage, WhatsApp), zero
 egress. See the [README](README.md) for orientation, [`docs/guide.md`](docs/guide.md)
 for every command and connector, and [`docs/architecture/`](docs/architecture/00-overview.md)
 for the subsystem spec.
@@ -30,7 +30,9 @@ Hard rules — flag any violation as blocking:
    only. The race detector in CI (`CGO_ENABLED=1`) is test-only and never affects
    the release build.
 3. **Read-only + zero egress:** Google scopes stay `gmail.readonly` /
-   `calendar.readonly`. iMessage opens `chat.db` with `mode=ro` (never `immutable=1`);
+   `calendar.readonly`. iMessage opens `chat.db` and WhatsApp opens only
+   `ChatStorage.sqlite` with `mode=ro` (never `immutable=1`; never open
+   WhatsApp's `Axolotl.sqlite` key store);
    Apple Calendar opens its live WAL store with a hierarchical `file:` URI,
    `mode=ro`, and `query_only(1)` (never `immutable=1`, which can ignore live
    changes). No connector writes to its source; no telemetry/egress.

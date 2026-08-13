@@ -16,7 +16,10 @@ type Obligation struct {
 	Citations                                                  []Citation
 }
 type Item struct {
-	ID, Title, Source, CreatedAt, Snippet, Change              string
+	ID, Title, Source, CreatedAt, Snippet, Change string
+	// Lane/Rationale carry the WhatsApp two-lane relevance-gate annotation;
+	// empty for every other connector (no render change).
+	Lane, Rationale                                            string
 	Obligations                                                []Obligation
 	Owner                                                      Atom
 	Direction, CounterpartyLabel, DueAt, Lifecycle, ClosureRef string
@@ -69,7 +72,11 @@ func sortStrings(v []string) {
 }
 func SectionHeading(s Section) string { return "\n## " + Heading(s) + "\n" }
 func ArtifactLine(it Item) string {
-	return fmt.Sprintf("- %s%s — %s (id: %s)\n", ChangePrefix(it.Change), it.Title, it.Snippet, it.ID)
+	gate := ""
+	if it.Lane != "" {
+		gate = fmt.Sprintf(" [%s: %s]", it.Lane, it.Rationale)
+	}
+	return fmt.Sprintf("- %s%s%s — %s (id: %s)\n", ChangePrefix(it.Change), it.Title, gate, it.Snippet, it.ID)
 }
 func CounterpartyLabel(label string) string {
 	if label = strings.TrimSpace(label); label != "" {

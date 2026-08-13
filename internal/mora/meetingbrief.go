@@ -624,7 +624,7 @@ func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind
 	body := senderAuthoredBody(stripFromLine(m.Text))
 	for _, rawSegment := range meetingBriefEvidenceSegments(body) {
 		segment := stripNoiseTokens(rawSegment)
-		if isIMessageMemory(m) {
+		if meetingpkg.IsConversation(m) {
 			// "Me: Good morning leaving now" — the transcript's speaker label is
 			// scaffolding, not part of what was said, and must never render in a line.
 			segment = stripSpeakerPrefix(segment)
@@ -792,6 +792,32 @@ func classifyMeetingBriefEvidence(m Memory, cfg Config, at time.Time) string {
 }
 
 func isIMessageMemory(m Memory) bool { return meetingpkg.IsIMessage(m) }
+
+// isWhatsAppInformationalMemory reports whether a WhatsApp memory landed in the
+// two-lane relevance gate's informational (or excluded) lane — i.e. anything
+// that is NOT a verified owner-addressed personal action. Informational lane
+// memories may inform the brief but can never create tasks or urgent items
+// (#295). Memories with no lane metadata at all still count as informational:
+// the gate fails CLOSED.
+func isWhatsAppInformationalMemory(m Memory) bool {
+	if !strings.EqualFold(m.Provider, "whatsapp") {
+		return false
+	}
+	if m.Meta == nil {
+		return true
+	}
+	lane, _ := m.Meta["relevance_lane"].(string)
+	return lane != "personal_action"
+}
+
+// conversationProvider reports which chat channel a conversation memory came
+// from, so governance atoms keep the channels distinct.
+func conversationProvider(m Memory) string {
+	if strings.EqualFold(m.Provider, "whatsapp") {
+		return "whatsapp"
+	}
+	return "imessage"
+}
 
 func isGmailMemory(m Memory) bool { return meetingpkg.IsGmail(m) }
 

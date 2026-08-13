@@ -420,7 +420,7 @@ func buildGraphResult(mems []memory.Memory, confirmed []confirmedMerge) graphRes
 		for _, s := range senders {
 			senderSet[s] = true
 		}
-		nameTrusted := m.Type == "imessage"
+		nameTrusted := m.Type == "imessage" || m.Type == "whatsapp"
 		if len(parts) > maxParticipantFanout {
 			warnings = append(warnings, fmt.Sprintf(
 				"graph: memory %s has %d participants; capping person fan-out to %d",

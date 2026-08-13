@@ -56,7 +56,7 @@ func CounterpartyAtoms(provider string, meta map[string]any) []Atom {
 		}
 	}
 	switch provider {
-	case "imessage":
+	case "imessage", "whatsapp":
 		for _, p := range graph.MetaPairs(meta["participants"]) {
 			add(AtomHandle, p.Handle)
 		}

@@ -428,6 +428,10 @@
     "status": "parses"
   },
   {
+    "path": "sync whatsapp",
+    "status": "static_only"
+  },
+  {
     "path": "tasks",
     "status": "empty"
   },

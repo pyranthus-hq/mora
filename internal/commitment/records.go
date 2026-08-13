@@ -171,7 +171,7 @@ func textNamesPerson(lower string, names []string) bool {
 
 func OpenerCitations(m memory.Memory, commitmentID, evidenceRef, occurredAt string) []Citation {
 	citationAt := graph.ValidFrom(m)
-	if IsIMessage(m) && evidenceRef != "" {
+	if IsConversation(m) && evidenceRef != "" {
 		citationAt = occurredAt
 	} else {
 		evidenceRef = ""

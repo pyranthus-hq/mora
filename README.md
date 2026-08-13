@@ -19,11 +19,12 @@
 > It has not been tested on many other people's real data. Read the cited source
 > before you act on a result. A failed or old sync can make the local copy stale.
 
-Mora copies six kinds of data into readable Markdown on your computer:
+Mora copies seven kinds of data into readable Markdown on your computer:
 
 - Gmail
 - Google Calendar
 - iMessage on macOS
+- WhatsApp Desktop on macOS
 - Apple Calendar on macOS
 - folders and files that you choose
 - GitHub Issues from repositories that you choose
@@ -106,6 +107,8 @@ Then add only the sources you want:
 mora connect google                         # Gmail and Google Calendar
 mora connect github --repo owner/repository # GitHub Issues
 mora connect imessage                       # macOS; needs Full Disk Access
+mora connectors enable whatsapp             # macOS; local read-only store
+mora ingest run --source whatsapp
 ```
 
 For Apple Calendar:
@@ -166,7 +169,7 @@ the macOS app launcher does not return the inner command's exit code.
 
 ## Full Disk Access on macOS
 
-iMessage and Apple Calendar are local, but macOS still protects their files.
+iMessage, WhatsApp, and Apple Calendar are local, but macOS still protects their files.
 Mora cannot grant this permission for you.
 
 1. Install the signed `Mora.app` first.
@@ -176,7 +179,7 @@ Mora cannot grant this permission for you.
    Command-Shift-G and type that path.
 5. Turn Mora on. If macOS asks, quit and reopen the app or terminal.
 6. Run `mora doctor`.
-7. Run `mora sync imessage` or `mora sync applecalendar`.
+7. Run `mora sync imessage`, `mora sync whatsapp`, or `mora sync applecalendar`.
 
 If an old Mora entry is present, keep it until both checks pass through the new
 app. Then remove the old entry yourself. Mora can report whether a protected

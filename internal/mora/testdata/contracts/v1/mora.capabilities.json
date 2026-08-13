@@ -619,6 +619,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "sync whatsapp",
+      "payload": "mora.sync.whatsapp",
+      "platform": "darwin-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "tasks add",
       "payload": "mora.tasks.add",
       "platform": "all",
@@ -1191,6 +1199,19 @@
       "needs_auth": false,
       "type": "imessage",
       "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "WhatsApp",
+      "name": "WhatsApp",
+      "needs_auth": false,
+      "type": "whatsapp",
+      "upcoming": false
     }
   ],
   "error_codes": [
@@ -1723,6 +1744,10 @@
     },
     {
       "name": "mora.sync.status",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.whatsapp",
       "version": 1
     },
     {

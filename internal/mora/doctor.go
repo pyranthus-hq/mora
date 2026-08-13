@@ -15,6 +15,7 @@ import (
 	doctorpkg "github.com/pyranthus-hq/mora/internal/doctor"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/imessage"
+	"github.com/pyranthus-hq/mora/internal/whatsapp"
 )
 
 // doctorCheck is one named health probe. Critical checks gate `--strict` (and
@@ -222,6 +223,20 @@ func doctorFailSummary(checks []doctorCheck) string { return doctorpkg.FailSumma
 func humanizeAgo(d time.Duration) string            { return doctorpkg.HumanizeAgo(d) }
 func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
 	return doctorpkg.PrintIMessageReadiness(stdout, setupVariant, doctorpkg.IMessageSeams{GOOS: runtimeGOOS, ChatDBPath: chatDBPath, Stat: os.Stat, ProbeReadable: imessage.ProbeReadable})
+}
+
+// printWhatsAppReadiness probes and prints the WhatsApp readiness checks
+// (macOS gate, ChatStorage.sqlite presence, real read probe for Full Disk
+// Access). Presentation lives in internal/doctor; mora injects the facts — the
+// same seam split as printIMessageReadiness. Returns true only when all pass.
+func printWhatsAppReadiness(stdout io.Writer) bool {
+	return doctorpkg.PrintWhatsAppReadiness(stdout, doctorpkg.WhatsAppSeams{GOOS: runtimeGOOS, DBPath: whatsAppDBPath, Stat: os.Stat, ProbeReadable: whatsapp.ProbeReadable})
+}
+
+// whatsAppDBPath is the default local WhatsApp Desktop database location.
+func whatsAppDBPath() string {
+	home, _ := os.UserHomeDir()
+	return whatsapp.DefaultDBPath(home)
 }
 
 func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
@@ -580,6 +595,12 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
 	// Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(stdout, false)
+	for _, source := range sources {
+		if source.Type == "whatsapp" && source.IsEnabled() {
+			printWhatsAppReadiness(stdout)
+			break
+		}
+	}
 	if *strict && !healthy {
 		return fmt.Errorf("doctor: %s", doctorFailSummary(checks))
 	}
