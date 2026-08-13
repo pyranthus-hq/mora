@@ -2,11 +2,9 @@ package mora
 
 import (
 	"errors"
-	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -22,15 +20,11 @@ import (
 // hard requirement: it is what keeps the index dirty across a crash, and the
 // full-vault rebuild is what actually re-indexes the files.
 
-func ingestJournalRoot(cfg Config) string                       { return ingestpkg.JournalRoot(cfg) }
 func ingestStateRootErr(cfg Config) error                       { return ingestpkg.ValidateStateRoot(cfg) }
 func ingestSourceKey(provider, account string) string           { return ingestpkg.SourceKey(provider, account) }
 func ingestJournalPath(cfg Config, key string) string           { return ingestpkg.JournalPath(cfg, key) }
 func ingestLeasePath(cfg Config, key string) string             { return ingestpkg.LeasePath(cfg, key) }
 func ingestJournalStatus(cfg Config) (bool, int, string, error) { return ingestpkg.JournalStatus(cfg) }
-func journalHeaderRunID(header string) string {
-	return ingestpkg.HeaderRunID(header, validOperationToken)
-}
 
 var removeIngestJournalFile = os.Remove
 
@@ -91,6 +85,13 @@ func releaseIngestLeasesOwnedHere(cfg Config) {
 
 func appendJournalDurable(path, line string) error { return ingestpkg.AppendDurable(path, line) }
 
+func ingestRecoverySeams() ingestpkg.RecoverySeams {
+	return ingestpkg.RecoverySeams{CleanPathSet: cleanPathSet, CleanPath: cleanVaultPath, LeaseHeld: func(cfg Config, key string) bool { return ingestLeaseHeld(cfg, key) }, Remove: removeIngestJournalFile, ValidToken: validOperationToken}
+}
+func recoverIngestJournals(cfg Config, files []string) (ingestJournalRecovery, error) {
+	return ingestpkg.RecoverJournals(cfg, files, ingestRecoverySeams())
+}
+
 // ensureIngestJournalHeader writes the durable "run <op_id> <marked_at>" header the
 // FIRST time a source publishes in a run — BEFORE the file becomes visible. It is a
 // stat-cheap no-op once the header exists, so a whole backfill pays one durable
@@ -146,97 +147,4 @@ func journalPublishedPath(cfg Config, sourceKey, path string) {
 // included) is removed — the run is fully covered. Cleanup errors are returned:
 // the database may already be committed, but the rebuild must report partial failure
 // and must not publish a false completed activity.
-type ingestJournalRecovery struct {
-	RetiredRunIDs []string
-}
-
-func recoverIngestJournals(cfg Config, files []string) (ingestJournalRecovery, error) {
-	listed := cleanPathSet(files)
-	entries, err := os.ReadDir(ingestJournalRoot(cfg))
-	if errors.Is(err, os.ErrNotExist) {
-		return ingestJournalRecovery{}, nil
-	}
-	if err != nil {
-		return ingestJournalRecovery{}, err
-	}
-	var result ingestJournalRecovery
-	var recoveryErr error
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		retired, err := compactIngestJournal(cfg, e.Name(), listed)
-		if err != nil {
-			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("retiring ingest journal: %w", err))
-			continue
-		}
-		if retired != "" {
-			result.RetiredRunIDs = append(result.RetiredRunIDs, retired)
-		}
-	}
-	return result, recoveryErr
-}
-
-func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) (string, error) {
-	path := ingestJournalPath(cfg, sourceKey)
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	var header string
-	var keptPaths []string
-	for _, raw := range strings.Split(string(b), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "run ") {
-			header = line
-			continue
-		}
-		p := cleanVaultPath(line)
-		if listed[p] {
-			continue // covered by this rebuild
-		}
-		if _, statErr := os.Stat(p); errors.Is(statErr, os.ErrNotExist) {
-			continue // the file is gone; nothing to recover
-		}
-		keptPaths = append(keptPaths, line)
-	}
-	if len(keptPaths) == 0 {
-		// A3 rule d: retire the header ONLY when no LIVE ingest lease is held for this
-		// source. Otherwise a run publishing more files (item N landed AFTER this
-		// rebuild listed) would lose its dirty signal, and a SIGKILL before item N's
-		// path line appended would be a false-clean (Finding 2). Keep just the header
-		// so the index stays dirty; a later rebuild (after the lease releases) retires
-		// it. A stale lease (dead owner) is reclaimed by ingestLeaseHeld, so a killed
-		// run never pins the index dirty forever.
-		if header != "" && ingestLeaseHeld(cfg, sourceKey) {
-			if err := atomicio.Write(path, []byte(header+"\n"), 0o644); err != nil {
-				return "", err
-			}
-			return "", nil
-		}
-		if err := removeIngestJournalFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		return journalHeaderRunID(header), nil
-	}
-	// Some published paths remain uncovered (a write raced in after this rebuild
-	// listed): rewrite the journal keeping the header + the survivors, so the index
-	// stays dirty until a later rebuild covers them.
-	var b2 strings.Builder
-	if header != "" {
-		b2.WriteString(header + "\n")
-	}
-	for _, p := range keptPaths {
-		b2.WriteString(p + "\n")
-	}
-	if err := atomicio.Write(path, []byte(b2.String()), 0o644); err != nil {
-		return "", err
-	}
-	return "", nil
-}
+type ingestJournalRecovery = ingestpkg.Recovery
