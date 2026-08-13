@@ -10,6 +10,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/registry"
 	"io"
 	"os"
 	"os/exec"
@@ -61,27 +62,7 @@ var (
 //     hardcoded sourceDigestRank / digestSourceLabel switch DATA onto the
 //     descriptor so an Nth connector is not silently truncated-first or rendered
 //     as an ugly title-cased raw provider. connectorDisplay is the single reader.
-type connectorInfo struct {
-	Type        string
-	DisplayName string
-	NeedsAuth   bool
-	Ingesting   bool
-	Rank        int
-	Label       string
-	// Provider is the memory-side Provider this connector's mapper mints in
-	// frontmatter when it differs from Type (applecalendar mints "applecal").
-	// Empty means Provider == Type. The alias is applied at LOOKUP boundaries
-	// only (providerToType / sourceInstanceKey in connectors.go) — on-disk
-	// frontmatter is never rewritten to "fix" a mismatch.
-	// TestConnectorProviderKeysReconcile enforces the round-trip for every
-	// ingesting entry.
-	Provider string
-	// Upcoming marks connectors whose items are future-dated events: cold-start
-	// courtesy windows look FORWARD (next 7d) instead of back. Capability DATA
-	// here, never a provider-string heuristic in digest code (the old
-	// HasPrefix(key, "calendar") silently missed applecalendar).
-	Upcoming bool
-}
+type connectorInfo = registry.Info
 
 // connectorCatalog is the static, exhaustive catalog of user-enableable connector
 // types (D-01 static catalog, D-02 per-type granularity). gmail and calendar are
@@ -93,22 +74,7 @@ type connectorInfo struct {
 // preserve the legacy digest intent: calendar=(0,"Calendar"), imessage=(1,
 // "Texts"), gmail=(2,"Emails"); filesystem gets a real rank (3) + clean label
 // ("Files") rather than the old default-rank-3 / title-cased fallback.
-var connectorCatalog = []connectorInfo{
-	{Type: "gmail", DisplayName: "Gmail", NeedsAuth: true, Ingesting: true, Rank: 2, Label: "Emails"},
-	{Type: "calendar", DisplayName: "Google Calendar", NeedsAuth: true, Ingesting: true, Rank: 0, Label: "Calendar", Upcoming: true},
-	{Type: "filesystem", DisplayName: "Filesystem", NeedsAuth: false, Ingesting: true, Rank: 3, Label: "Files"},
-	// iMessage: default-disabled, no OAuth — the real gate is macOS Full Disk
-	// Access (surfaced by `mora doctor`), not a login (D-11, Surface 1).
-	{Type: "imessage", DisplayName: "iMessage", NeedsAuth: false, Ingesting: true, Rank: 1, Label: "Texts"},
-	// Apple Calendar: same gate story as iMessage (local store + Full Disk
-	// Access, no login). Rank ties with Google Calendar break on the key, so
-	// both calendar sections lead the digest together. Its mapper mints
-	// Provider "applecal" (internal/applecal), so the entry carries the alias —
-	// without it, applecal memories never reconcile with this instance and
-	// silently vanish from the delta brief.
-	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)", Provider: "applecal", Upcoming: true},
-	{Type: "github", DisplayName: "GitHub Issues", NeedsAuth: false, Ingesting: true, Rank: 4, Label: "GitHub Issues"},
-}
+var connectorCatalog = registry.Entries()
 
 // catalogRow is the per-type view emitted by `connectors list`. Enabled joins the
 // static catalog against the user's sources.json consent state.
