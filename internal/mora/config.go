@@ -7,11 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -40,161 +40,10 @@ func configMMR(c Config) *mmrParams {
 	}
 	return nil
 }
-func defaultConfig() Config {
-	// MORA_CONFIG_DIR points an entire invocation at an ISOLATED install
-	// (scripts, launchd jobs, demos, tests): config, vault, derived index, and
-	// watermark state ALL default under the override. Re-rooting only the
-	// config dir was not enough — a scratch `init` then rebuilt (wiped) the
-	// LIVE ~/.local/share index.db and shared the live watermark state, the
-	// exact incident class this env var exists to prevent. A config.toml
-	// inside the override still wins for any dir it names (loadConfig
-	// overlays).
-	if dir := os.Getenv("MORA_CONFIG_DIR"); dir != "" {
-		return Config{
-			VaultDir:  filepath.Join(dir, "vault"),
-			ConfigDir: dir,
-			DataDir:   filepath.Join(dir, "data"),
-			StateDir:  filepath.Join(dir, "state"),
-		}
-	}
-	home, _ := os.UserHomeDir()
-	return Config{
-		VaultDir:  filepath.Join(home, "vault", "mora"),
-		ConfigDir: filepath.Join(home, ".config", "mora"),
-		DataDir:   filepath.Join(home, ".local", "share", "mora"),
-		StateDir:  filepath.Join(home, ".local", "state", "mora"),
-	}
-}
-
-// parseConfigValue extracts a config value from the raw right-hand side of a
-// `key = value` line. A quoted value parses via strconv.Unquote (escapes
-// honored) and anything after the closing quote — an inline comment — is
-// ignored; the old strip-outer-quotes approach loaded `"/x" # note` as the
-// garbage path `/x" # note`, which the read-modify-write writeConfig then
-// persisted back, orphaning the real vault. Hand-editing config.toml is a
-// path our own refusal messages recommend, so it must parse exactly. An
-// unquoted value cuts at the first '#'.
-// splitCommaList parses a comma-separated config value into trimmed, non-empty
-// entries, preserving order and dropping blanks ("a, ,b" -> ["a","b"]).
-func splitCommaList(raw string) []string {
-	var out []string
-	for _, part := range strings.Split(raw, ",") {
-		if v := strings.TrimSpace(part); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func parseConfigValue(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, `"`) {
-		for i := 1; i < len(raw); i++ {
-			switch raw[i] {
-			case '\\':
-				i++ // skip the escaped byte
-			case '"':
-				if v, err := strconv.Unquote(raw[:i+1]); err == nil {
-					return v
-				}
-				return strings.Trim(raw[:i+1], `"`)
-			}
-		}
-		return strings.Trim(raw, `"`) // unterminated quote: legacy lenient read
-	}
-	if i := strings.IndexByte(raw, '#'); i >= 0 {
-		raw = raw[:i]
-	}
-	return strings.TrimSpace(raw)
-}
-
-// applyEnvOverrides layers process-environment overrides on top of the
-// defaults+config.toml resolution, so they win regardless of which loadConfig
-// return path produced cfg. MORA_VAULT is the vault location install.sh
-// documents and passes to `init`; a user who exports it expects the running
-// binary to honor it too — reading config.toml's vault_dir instead silently
-// points every command at the wrong memories (issue #66).
-//
-// A set MORA_VAULT must be an absolute path (after ~/ expansion): a relative
-// value resolves against the process CWD, so the SAME exported value would
-// silently select different vaults for a terminal run vs an installed
-// service/schedule (which run from / or an arbitrary dir). Blank-after-trim is
-// a misconfiguration, not a selection. Both are refused loudly; the empty
-// string means unset, as usual for env vars.
-func applyEnvOverrides(cfg Config) (Config, error) {
-	if v := os.Getenv("MORA_VAULT"); v != "" {
-		if strings.TrimSpace(v) == "" {
-			return cfg, fmt.Errorf("MORA_VAULT is set but blank; unset it or set an absolute vault path")
-		}
-		p := genericutil.ExpandHome(v)
-		if !filepath.IsAbs(p) {
-			return cfg, fmt.Errorf("MORA_VAULT=%q is not an absolute path; a relative vault depends on the process working directory (services and schedules run elsewhere), so it is refused", v)
-		}
-		cfg.ApplyVaultOverride(p)
-	}
-	return cfg, nil
-}
-
-// persistVaultDir is the vault_dir value writeConfig writes: the durable
-// (defaults/config.toml) location, never the MORA_VAULT runtime override.
+func defaultConfig() Config           { return configstore.Default() }
 func persistVaultDir(c Config) string { return c.PersistVaultDir() }
-
-func loadConfig() (Config, error) {
-	cfg := defaultConfig()
-	path := filepath.Join(cfg.ConfigDir, "config.toml")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return applyEnvOverrides(cfg)
-		}
-		return cfg, err
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		val := genericutil.ExpandHome(parseConfigValue(parts[1]))
-		switch key {
-		case "vault_dir":
-			cfg.VaultDir = val
-		case "data_dir":
-			cfg.DataDir = val
-		case "state_dir":
-			cfg.StateDir = val
-		case "embedder":
-			cfg.Embedder = val
-		case "context":
-			cfg.ContextProfile = val
-		case "self_emails":
-			// Comma-separated list of the user's own additional addresses. Merged into
-			// the self set used for self-exclusion; see Config.SelfEmails.
-			cfg.SelfEmails = splitCommaList(val)
-		case "mmr":
-			// Bool opt-in (`mmr = true`); only "true"/"1" enable. A bool can't be
-			// mistyped into a silent wrong-mode the way a free-form string can.
-			cfg.MMR = val == "true" || val == "1"
-		case "mcp_write_policy":
-			policy, err := parseMCPWritePolicy(val)
-			if err != nil {
-				return cfg, err
-			}
-			cfg.MCPWritePolicy = policy
-		case "update_policy":
-			policy, err := parseUpdatePolicy(val)
-			if err != nil {
-				return cfg, err
-			}
-			cfg.UpdatePolicy = string(policy)
-		}
-	}
-	return applyEnvOverrides(cfg)
-}
+func loadConfig() (Config, error)     { return configstore.Load() }
+func writeConfig(cfg Config) error    { return configstore.Write(cfg) }
 
 // cmdConfig is the durable-settings surface: `mora config` shows the resolved
 // configuration; `mora config context <small|default|large>` sets the context
@@ -319,81 +168,6 @@ func cmdConfig(args []string, stdout io.Writer) error {
 // keeping config.toml minimal); an empty DIR value is broken either way but
 // is preserved verbatim — dropping it would silently repoint the install to
 // the defaults via an unrelated rewrite.
-func writeConfig(cfg Config) error {
-	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
-		return err
-	}
-	path := filepath.Join(cfg.ConfigDir, "config.toml")
-	mmrVal := ""
-	if cfg.MMR {
-		mmrVal = "true"
-	}
-	owned := []struct{ key, val string }{
-		{"vault_dir", persistVaultDir(cfg)},
-		{"data_dir", cfg.DataDir},
-		{"state_dir", cfg.StateDir},
-		{"embedder", cfg.Embedder},
-		{"context", cfg.ContextProfile},
-		// Empty values drop these optional settings, preserving their defaults.
-		{"mmr", mmrVal},
-		{"mcp_write_policy", cfg.MCPWritePolicy},
-		{"update_policy", cfg.UpdatePolicy},
-	}
-	ownedVal := func(key string) (string, bool) {
-		for _, kv := range owned {
-			if kv.key == key {
-				return kv.val, true
-			}
-		}
-		return "", false
-	}
-
-	var existing []string
-	if b, err := os.ReadFile(path); err == nil {
-		existing = strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-		if len(existing) == 1 && existing[0] == "" {
-			existing = nil
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	written := map[string]bool{}
-	var out []string
-	for _, line := range existing {
-		trimmed := strings.TrimSpace(line)
-		key := ""
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			if parts := strings.SplitN(trimmed, "=", 2); len(parts) == 2 {
-				key = strings.TrimSpace(parts[0])
-			}
-		}
-		val, owns := ownedVal(key)
-		if !owns {
-			out = append(out, line) // not ours: preserve verbatim
-			continue
-		}
-		if written[key] {
-			continue // collapse duplicate owned keys onto the first occurrence
-		}
-		written[key] = true
-		if val == "" {
-			if key == "embedder" || key == "context" || key == "mmr" || key == "mcp_write_policy" || key == "update_policy" {
-				continue // reset-to-default: drop the line
-			}
-			out = append(out, line) // empty dir value: preserve, never silently repoint
-			continue
-		}
-		out = append(out, fmt.Sprintf("%s = %q", key, val))
-	}
-	for _, kv := range owned {
-		if kv.val == "" || written[kv.key] {
-			continue
-		}
-		out = append(out, fmt.Sprintf("%s = %q", kv.key, kv.val))
-	}
-	return atomicio.Write(path, []byte(strings.Join(out, "\n")+"\n"), 0o600)
-}
 func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
