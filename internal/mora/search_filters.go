@@ -2,6 +2,7 @@ package mora
 
 import (
 	"fmt"
+	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"math"
 	"sort"
 	"strings"
@@ -22,58 +23,12 @@ import (
 // branch each arm takes.
 
 // searchFilters is the parsed, validated optional filter pair.
-type searchFilters struct {
-	// Source is the ORIGINAL, UNMODIFIED caller-supplied value (whitespace
-	// included), e.g. "gmail" or "gmail:work" — kept byte-for-byte for the
-	// "filters" response receipt only, which promises to echo back exactly
-	// what the caller sent (docs/architecture/06-mcp-server.md's "Response
-	// receipt" bullet). Parsing/validation runs on a TRIMMED copy
-	// (parseSearchFilters), but Source itself is never trimmed or otherwise
-	// normalized. Every matching comparison — sqlPredicate, passes,
-	// excludedByFilterSources, filteredMissingSources, compactHealthFiltered
-	// — MUST use normalizedSource()/SourceFamily/SourceInstance instead,
-	// never Source directly (see normalizedSource's doc comment for why the
-	// raw string is unsafe to compare with). "" means no source filter.
-	Source string
-	// SourceFamily/SourceInstance are Source's PARSED, NORMALIZED, VALIDATED
-	// components — SourceFamily run through providerToType (the same
-	// provider->catalog-type alias digestSourceMatches applies, e.g.
-	// "applecal" -> "applecalendar"), so it matches the CANONICAL value every
-	// retrieval arm's SQL predicate compares memories.provider against
-	// (index-time-normalized, see index.go/index_upsert.go/share_gen.go).
-	// SourceInstance is "" when Source has no ":account" suffix (any account
-	// of that family matches); otherwise the exact account label. Set ONLY
-	// when Source != "" (parseSearchFilters validates+populates both
-	// together, failing closed on anything that doesn't parse).
-	SourceFamily, SourceInstance string
-	// SinceHours is a positive look-back window in hours; "" (0) means no
-	// time filter.
-	SinceHours int
-	// Now is the reference instant SinceHours is computed against. It is
-	// captured ONCE per MCP call (mcp.go handlers) and threaded down, so a
-	// single call sees one consistent clock across every retrieval arm —
-	// never a fresh time.Now() call deep inside an arm.
-	Now time.Time
-}
+type searchFilters = searchpkg.Filter
 
 // active reports whether either filter was actually supplied.
-func (f searchFilters) active() bool { return f.Source != "" || f.SinceHours > 0 }
 
 // receipt is the frozen "filters" response object: nil (no key at all) when
 // neither filter was supplied, otherwise exactly the supplied filter(s).
-func (f searchFilters) receipt() map[string]any {
-	if !f.active() {
-		return nil
-	}
-	out := map[string]any{}
-	if f.Source != "" {
-		out["source"] = f.Source
-	}
-	if f.SinceHours > 0 {
-		out["since_hours"] = f.SinceHours
-	}
-	return out
-}
 
 // normalizedSource returns the source filter in its FULLY CANONICAL
 // family[:instance] form — built from SourceFamily/SourceInstance (already
@@ -98,15 +53,6 @@ func (f searchFilters) receipt() map[string]any {
 // family with an account suffix (today: applecalendar, aliased from
 // "applecal"). Source itself is preserved ONLY for the "filters" response
 // receipt, which echoes back exactly what the caller sent, unnormalized.
-func (f searchFilters) normalizedSource() string {
-	if f.SourceFamily == "" {
-		return ""
-	}
-	if f.SourceInstance == "" {
-		return f.SourceFamily
-	}
-	return f.SourceFamily + ":" + f.SourceInstance
-}
 
 // sqlPredicate returns an " AND ..." WHERE-clause fragment (empty when
 // inactive) plus its bind args, for the retrieval arms that filter INSIDE
@@ -137,25 +83,6 @@ func (f searchFilters) normalizedSource() string {
 // maxSinceHours, which is itself derived from staying inside int64 range —
 // see maxSinceHours' own doc comment), so it fails closed regardless of how
 // negative the cutoff gets.
-func (f searchFilters) sqlPredicate() (clause string, args []any) {
-	var parts []string
-	if f.SourceFamily != "" {
-		parts = append(parts, "m.provider = ?")
-		args = append(args, f.SourceFamily)
-		if f.SourceInstance != "" {
-			parts = append(parts, "m.account = ?")
-			args = append(args, f.SourceInstance)
-		}
-	}
-	if f.SinceHours > 0 {
-		parts = append(parts, "m.created_at_unix >= ?")
-		args = append(args, f.Now.Add(-time.Duration(f.SinceHours)*time.Hour).Unix())
-	}
-	if len(parts) == 0 {
-		return "", nil
-	}
-	return " AND " + strings.Join(parts, " AND "), args
-}
 
 // passes is passes' Go-side twin for listMemories (memfile.go): the no-query
 // context_memory "recency briefing" fallback walks vault Markdown files
@@ -168,10 +95,10 @@ func (f searchFilters) sqlPredicate() (clause string, args []any) {
 // instant time comparison — never lexical. Matches on normalizedSource(),
 // NOT the raw f.Source — see normalizedSource's doc comment for why the raw
 // string is unsafe to compare with for an aliased family:instance selector.
-func (f searchFilters) passes(m Memory) bool {
+func searchFilterPasses(f searchFilters, m Memory) bool {
 	if f.SourceFamily != "" {
 		key, ok := sourceInstanceKey(m)
-		if !ok || !digestSourceMatches(key, f.normalizedSource()) {
+		if !ok || !digestSourceMatches(key, f.NormalizedSource()) {
 			return false
 		}
 	}
@@ -192,12 +119,6 @@ func (f searchFilters) passes(m Memory) bool {
 // searchFilters slice, defaulting to the zero value (no-op) when omitted —
 // the shared boilerplate every retrieval entry point's optional trailing
 // param needs.
-func oneFilter(filters []searchFilters) searchFilters {
-	if len(filters) > 0 {
-		return filters[0]
-	}
-	return searchFilters{}
-}
 
 // createdAtUnix parses createdAt as an RFC3339 instant and returns its Unix
 // seconds, or math.MinInt64 on a parse failure. The SINGLE conversion every
@@ -215,13 +136,6 @@ func oneFilter(filters []searchFilters) searchFilters {
 // MinInt64 is below any cutoff sqlPredicate's bounded arithmetic can ever
 // produce, so the malformed row is excluded regardless of how large
 // since_hours (and therefore how negative the cutoff) gets.
-func createdAtUnix(createdAt string) int64 {
-	ts, err := time.Parse(time.RFC3339, createdAt)
-	if err != nil {
-		return math.MinInt64
-	}
-	return ts.Unix()
-}
 
 // parseSearchFilters extracts and validates the optional source/since_hours
 // MCP args, failing CLOSED (an error, never a silent no-filter) on an
@@ -423,11 +337,11 @@ func knownSourceTypes() []string {
 // (results_truncated, shares_unhealthy). sourceHealthAll's own contract
 // guarantees a Key-sorted slice, so filtering it preserves that order.
 // filters MUST be the parsed searchFilters (never a raw source string) so
-// this routes through filters.normalizedSource() — see normalizedSource's
+// this routes through filters.NormalizedSource() — see normalizedSource's
 // doc comment for why the raw caller-supplied string is unsafe to compare
 // with for an aliased family:instance selector.
 func excludedByFilterSources(cfg Config, now time.Time, filters searchFilters) []string {
-	source := filters.normalizedSource()
+	source := filters.NormalizedSource()
 	all := sourceHealthAll(cfg, now)
 	var excluded []string
 	for _, h := range all {
@@ -452,7 +366,7 @@ func excludedByFilterSources(cfg Config, now time.Time, filters searchFilters) [
 // see excludedByFilterSources' identical note / normalizedSource's doc
 // comment.
 func filteredMissingSources(cfg Config, now time.Time, filters searchFilters) ([]string, string) {
-	source := filters.normalizedSource()
+	source := filters.NormalizedSource()
 	all := sourceHealthAll(cfg, now)
 	kept := make([]sourceHealth, 0, len(all))
 	missing := make([]string, 0, len(all))
@@ -488,7 +402,7 @@ func filteredMissingSources(cfg Config, now time.Time, filters searchFilters) ([
 // see excludedByFilterSources' identical note / normalizedSource's doc
 // comment.
 func compactHealthFiltered(cfg Config, now time.Time, filters searchFilters) compactHealth {
-	source := filters.normalizedSource()
+	source := filters.NormalizedSource()
 	h := healthOf(cfg, now)
 	kept := make([]sourceHealth, 0, len(h.Sources))
 	for _, s := range h.Sources {
@@ -500,3 +414,6 @@ func compactHealthFiltered(cfg Config, now time.Time, filters searchFilters) com
 	h.State = aggregateHealthState(h)
 	return compactHealthFrom(h)
 }
+
+func oneFilter(filters []searchFilters) searchFilters { return searchpkg.One(filters) }
+func createdAtUnix(createdAt string) int64            { return searchpkg.CreatedAtUnix(createdAt) }

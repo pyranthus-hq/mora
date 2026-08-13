@@ -133,7 +133,7 @@ func openCommitmentsForContext(ctx context.Context, cfg Config, query, scope str
 		if scope != "" && m.Scope != scope {
 			continue
 		}
-		if filters.active() && !filters.passes(m) {
+		if filters.Active() && !searchFilterPasses(filters, m) {
 			continue
 		}
 		for _, commitment := range commitments {

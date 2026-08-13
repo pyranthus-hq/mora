@@ -1293,7 +1293,7 @@ func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope strin
 	// SAME pre-rank discipline the local arms apply, against the share
 	// index's OWN provider/account/created_at_unix columns
 	// (share_gen.go's writeShareIndexRows).
-	if pc, pargs := f.sqlPredicate(); pc != "" {
+	if pc, pargs := f.SQLPredicate(); pc != "" {
 		q += pc
 		args = append(args, pargs...)
 	}

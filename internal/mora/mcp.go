@@ -634,7 +634,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// #241: the "filters" receipt appears ONLY when at least one filter was
 	// actually supplied — omitted params stay byte-identical to pre-#241
 	// output (filters_contract_test.go's ByteIdenticalWhenOmitted pins).
-	if r := filters.receipt(); r != nil {
+	if r := filters.Receipt(); r != nil {
 		out["filters"] = r
 	}
 	// #241 acceptance: "Health/confidence output distinguishes
@@ -722,7 +722,7 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 		"used":        used,
 		"health":      health,
 	}
-	if r := filters.receipt(); r != nil {
+	if r := filters.Receipt(); r != nil {
 		out["filters"] = r
 	}
 	// #241 acceptance: explicit excluded_by_filter marker — see
