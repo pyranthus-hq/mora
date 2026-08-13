@@ -2,11 +2,9 @@ package mora
 
 import (
 	"context"
-	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -32,22 +30,8 @@ func snippetMemories(mems []Memory, query string) []Memory {
 // already capped the body (searchSnippetLen) and dropped Meta, so a single row is
 // O(1KB) — far under searchMemoryResultsBudgetBytes (11K), and the forced row can
 // never itself breach the ceiling. Returns the kept prefix and the number dropped.
-func budgetSearchResults(mems []Memory, budgetBytes int) (kept []Memory, dropped int) {
-	if budgetBytes <= 0 || len(mems) == 0 {
-		return mems, 0
-	}
-	const jsonSep = 2 // per-element comma/bracket glue (conservative over-count), matching budgetSections.
-	kept = make([]Memory, 0, len(mems))
-	used := 0
-	for _, m := range mems {
-		cost := jsonLen(m) + jsonSep
-		if used+cost > budgetBytes && len(kept) > 0 {
-			break
-		}
-		kept = append(kept, m)
-		used += cost
-	}
-	return kept, len(mems) - len(kept)
+func budgetSearchResults(mems []Memory, budget int) ([]Memory, int) {
+	return searchpkg.BudgetResults(mems, budget)
 }
 
 // searchMemoryObservation is the optional instrumentation returned only to
@@ -214,43 +198,7 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 	return result, nil
 }
 func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string {
-	if budget <= 0 {
-		return ""
-	}
-	var wiki strings.Builder
-	for _, rel := range []string{"index.md", "priority-map.md", "live-tasks.md", "heartbeat.md", "auto-resolver.md"} {
-		if body, err := os.ReadFile(filepath.Join(cfg.VaultDir, rel)); err == nil {
-			fmt.Fprintf(&wiki, "\n# %s\n%s\n", rel, string(body))
-		}
-	}
-	var its strings.Builder
-	for _, m := range items {
-		if m.Decision != nil {
-			fmt.Fprintf(&its, "\n# %s\nDecision status: %s\nAs of: %s\nDurability: %s\nFlip conditions: %s\n",
-				m.Title, m.DecisionStatus, m.Decision.AsOf, m.Decision.Durability,
-				strings.Join(m.Decision.FlipConditions, "; "))
-			if m.Decision.ReviewBy != "" {
-				fmt.Fprintf(&its, "Review by: %s\n", m.Decision.ReviewBy)
-			}
-			fmt.Fprintf(&its, "%s\n", m.Text)
-			continue
-		}
-		fmt.Fprintf(&its, "\n# %s\n%s\n", m.Title, m.Text)
-	}
-	// Ordering by intent: when there IS a query, the caller already filtered
-	// items to the most relevant memories — surface them first so the static
-	// wiki preamble can never starve them out of the budget. With no query
-	// (session-start briefing), the wiki preamble leads and items fill the rest.
-	first, second := wiki.String(), its.String()
-	if hasQuery {
-		first, second = its.String(), wiki.String()
-	}
-	var out strings.Builder
-	out.WriteString(genericutil.TruncateRunes(first, budget))
-	if rem := budget - out.Len(); rem > 0 {
-		out.WriteString(genericutil.TruncateRunes(second, rem))
-	}
-	return out.String()
+	return searchpkg.BuildContext(cfg, items, budget, hasQuery)
 }
 
 // ftsToken normalizes a raw field into its bare term and a lowercase key used
