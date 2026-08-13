@@ -1602,6 +1602,8 @@ func commitmentTransition(text string) (string, commitmentTransitionVoice) {
 		"already sent", "already delivered", "already uploaded", "already attached",
 		"already did", "already done", "already finished",
 		"already handled", "already took care of", "took care of it already",
+		"alr sent", "alr delivered", "alr uploaded", "alr attached",
+		"alr did", "alr done", "alr finished", "alr handled",
 	}) || lower == "done" || strings.HasPrefix(lower, "done ") || strings.Contains(lower, " done ") {
 		return commitClosed, commitmentVoiceDelivery
 	}

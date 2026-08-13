@@ -62,6 +62,7 @@ func TestCommitmentLifecycleGuards(t *testing.T) {
 		{name: "done", text: "Done with the reviewer list.", role: commitmentPartySelf, want: commitClosed},
 		{name: "acknowledged", text: "Got the reviewer list, thanks.", role: commitmentPartyCounterparty, want: commitClosed},
 		{name: "colloquial already did", text: "I already did the reviewer list.", role: commitmentPartySelf, want: commitClosed},
+		{name: "abbreviated already did", text: "I alr did the reviewer list.", role: commitmentPartySelf, want: commitClosed},
 		{name: "colloquial already handled", text: "I already handled the reviewer list.", role: commitmentPartySelf, want: commitClosed},
 		{name: "delivery as promised", text: "Here is the reviewer list, as promised.", role: commitmentPartySelf, want: commitClosed},
 		{name: "attendance thank you closes matching", text: "Thanks for coming to walk through the reviewer list.", role: commitmentPartyCounterparty, want: commitClosed},
