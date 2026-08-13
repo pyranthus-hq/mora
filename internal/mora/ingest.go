@@ -22,8 +22,31 @@ import (
 	"github.com/pyranthus-hq/mora/internal/githubissues"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/imessage"
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+func syncStatusFileThreshold(name string) time.Duration { return ingestpkg.StatusFileThreshold(name) }
+func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now time.Time) string {
+	return ingestpkg.StatusFileState(st, threshold, now)
+}
+func persistSyncStatus(out io.Writer, path string, st *memory.SyncStatus, ingErr error) error {
+	saveErr, result := ingestpkg.PersistStatus(path, st, ingErr)
+	if saveErr != nil && out != nil {
+		warnf(out, "could not persist sync status (%s): %v", path, saveErr)
+	}
+	return result
+}
+func googleStatusPath(cfg Config, name string) string {
+	return ingestpkg.StatusPath(cfg, "google", name)
+}
+func imessageStatusPath(cfg Config, name string) string {
+	return ingestpkg.StatusPath(cfg, "imessage", name)
+}
+func appleCalStatusPath(cfg Config, name string) string {
+	return ingestpkg.StatusPath(cfg, "applecal", name)
+}
+func sourceFreshness(cfg Config) map[string]string { return ingestpkg.SourceFreshness(cfg) }
 
 func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
 	sources, _ := loadSources(cfg)
@@ -478,40 +501,12 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 // source being disabled/removed), so it cannot resolve a full Source struct —
 // but the filename prefix is enough to pick the SAME threshold family
 // sourceHealthThreshold does, which is all classification needs.
-func syncStatusFileThreshold(fileName string) time.Duration {
-	switch {
-	case strings.HasPrefix(fileName, "google-"), strings.HasPrefix(fileName, "applecal-"), strings.HasPrefix(fileName, "github-"):
-		return sourceHealthGoogleThreshold
-	default: // imessage-, filesystem-, and any future/unknown prefix
-		return sourceHealthLocalThreshold
-	}
-}
 
 // syncStatusFileState classifies one raw sync/ status file with the EXACT same
 // worst-first precedence as sourceHealthFor (never > failed > stale > fresh),
 // so `mora sync status`'s per-line verdict can never again disagree with the
 // health banner (C3 ▸R2: the old flat-48h/LastSynced check ignored ErrorCount
 // and used a single threshold for every connector type).
-func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now time.Time) string {
-	if st.LastSuccessAt == "" {
-		return healthNever
-	}
-	if st.LastError != "" || st.ErrorCount > 0 {
-		return healthFailed
-	}
-	t, err := time.Parse(time.RFC3339, st.LastSuccessAt)
-	if err != nil {
-		return healthNever
-	}
-	age := now.Sub(t)
-	if age < 0 {
-		age = 0
-	}
-	if age > threshold {
-		return healthStale
-	}
-	return healthFresh
-}
 
 // cmdReingest re-fetches enabled sources and rewrites memories with the latest
 // structured metadata (the Meta-in-content-hash change means a normal sync already
@@ -817,17 +812,6 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 // losing it silently turns a real outcome into permanent "unavailable"/stale
 // readings. ingErr (the sync's own error) stays primary; the save error is
 // returned only when the sync itself succeeded.
-func persistSyncStatus(out io.Writer, statusPath string, st *memory.SyncStatus, ingErr error) error {
-	if serr := memory.SaveStatus(statusPath, st); serr != nil {
-		if out != nil {
-			warnf(out, "could not persist sync status (%s): %v", statusPath, serr)
-		}
-		if ingErr == nil {
-			return fmt.Errorf("persisting sync status: %w", serr)
-		}
-	}
-	return ingErr
-}
 func windowForSource(s Source, kind google.ItemKind) google.FetchWindow {
 	now := time.Now()
 	w := google.FetchWindow{Labels: s.LabelIDs, CalendarID: s.Calendar}
@@ -862,15 +846,9 @@ func googleTokenPathFor(cfg Config, account string) string {
 	return filepath.Join(cfg.ConfigDir, "tokens", name)
 }
 func googleTokenPath(cfg Config) string { return googleTokenPathFor(cfg, "") }
-func googleStatusPath(cfg Config, name string) string {
-	return filepath.Join(cfg.StateDir, "sync", "google-"+name+".json")
-}
 
 // imessageStatusPath mirrors googleStatusPath so `mora sync status` reads the
 // honest-snapshot freshness for iMessage generically (no special-casing).
-func imessageStatusPath(cfg Config, name string) string {
-	return filepath.Join(cfg.StateDir, "sync", "imessage-"+name+".json")
-}
 
 // chatDBPath is the default local iMessage database location. macOS-only; the
 // caller gates on runtime.GOOS before reading it.
@@ -993,9 +971,6 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 }
 
 // appleCalStatusPath mirrors imessageStatusPath for the Apple Calendar store.
-func appleCalStatusPath(cfg Config, name string) string {
-	return filepath.Join(cfg.StateDir, "sync", "applecal-"+name+".json")
-}
 
 // appleCalDBPath probes the modern group-container store first, then the
 // legacy ~/Library/Calendars location; returns the modern default when neither
@@ -1585,27 +1560,6 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 // LastSynced=="") is INCLUDED with an empty value so it can read "unavailable"
 // downstream (SC#3 gap) rather than being silently dropped, which hid a broken
 // source.
-func sourceFreshness(cfg Config) map[string]string {
-	out := map[string]string{}
-	dir := filepath.Join(cfg.StateDir, "sync")
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
-		if err != nil || st == nil {
-			continue
-		}
-		key := st.Source
-		if key == "" {
-			// Fall back to the filename stem (sans the known prefixes) only when the
-			// status carries no Source — never invent a mangled key.
-			key = strings.TrimSuffix(e.Name(), ".json")
-			key = strings.TrimPrefix(key, "google-")
-			key = strings.TrimPrefix(key, "imessage-")
-		}
-		out[key] = st.LastSynced // "" for a never-synced source — surfaced, not dropped.
-	}
-	return out
-}
 func curatedAllowedExt(ext string) bool {
 	switch strings.ToLower(ext) {
 	case ".md", ".markdown", ".txt", ".text", ".rst", ".json", ".yaml", ".yml", ".toml", ".csv":
