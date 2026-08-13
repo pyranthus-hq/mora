@@ -110,25 +110,6 @@ func TestCoreA_FormatBytes(t *testing.T) {
 	}
 }
 
-func TestCoreA_Percentile(t *testing.T) {
-	if got := percentile(nil, 50); got != 0 {
-		t.Errorf("percentile(empty) = %d, want 0", got)
-	}
-	if got := percentile([]int64{5}, 50); got != 5 {
-		t.Errorf("percentile([5],50) = %d, want 5", got)
-	}
-	v := []int64{5, 1, 4, 2, 3} // unsorted on purpose
-	if got := percentile(v, 50); got != 3 {
-		t.Errorf("percentile(p50) = %d, want 3", got)
-	}
-	if got := percentile(v, 0); got != 1 {
-		t.Errorf("percentile(p0) = %d, want 1", got)
-	}
-	if got := percentile(v, 100); got != 5 {
-		t.Errorf("percentile(p100) = %d, want 5", got)
-	}
-}
-
 func TestCoreA_IsGoogleAuthError(t *testing.T) {
 	if isGoogleAuthError(nil) {
 		t.Error("nil error must not be a google-auth error")

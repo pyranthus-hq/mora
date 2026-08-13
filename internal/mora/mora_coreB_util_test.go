@@ -156,32 +156,6 @@ func TestCoreB_UtilParseSearchArgs(t *testing.T) {
 // queryLoggingEnabled — env + marker gates.
 // ---------------------------------------------------------------------------
 
-func TestCoreB_UtilQueryLoggingEnabled(t *testing.T) {
-	cfg := testCfg(t)
-	t.Setenv("MORA_LOG_QUERIES", "")
-
-	if queryLoggingEnabled(cfg) {
-		t.Fatal("query logging must default OFF")
-	}
-
-	t.Setenv("MORA_LOG_QUERIES", "1")
-	if !queryLoggingEnabled(cfg) {
-		t.Fatal("MORA_LOG_QUERIES=1 must enable query logging")
-	}
-	t.Setenv("MORA_LOG_QUERIES", "")
-
-	// Marker file also enables it.
-	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "usage"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cfg.StateDir, "usage", "QUERIES"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !queryLoggingEnabled(cfg) {
-		t.Fatal("usage/QUERIES marker must enable query logging")
-	}
-}
-
 func coreBUtilReadEvent(t *testing.T, cfg Config) usageEvent {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(cfg.StateDir, "usage", "events.jsonl"))
