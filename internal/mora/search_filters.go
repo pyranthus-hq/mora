@@ -1,11 +1,8 @@
 package mora
 
 import (
-	"fmt"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
-	"math"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -142,65 +139,6 @@ func searchFilterPasses(f searchFilters, m Memory) bool {
 // unrecognized/malformed source or a since_hours that is not a positive
 // integer. now is the caller's captured clock (mcp.go handlers call
 // briefClock() once per request and thread it through).
-func parseSearchFilters(args map[string]any, now time.Time) (searchFilters, error) {
-	f := searchFilters{Now: now}
-	if raw, ok := args["source"]; ok {
-		s, ok := raw.(string)
-		if !ok {
-			return searchFilters{}, fmt.Errorf("source must be a string, got %T", raw)
-		}
-		// Parse/validate on the TRIMMED value (surrounding whitespace is not
-		// part of the grammar), but keep f.Source as the ORIGINAL, untrimmed
-		// string — the "filters" receipt promises to echo back exactly what
-		// the caller sent (docs/architecture/06-mcp-server.md's "Response
-		// receipt" bullet), and silently trimming it before storage would
-		// break that promise for a caller who (deliberately or not) sent
-		// leading/trailing whitespace.
-		family, instance, err := parseSourceFilter(strings.TrimSpace(s))
-		if err != nil {
-			return searchFilters{}, err
-		}
-		f.Source = s
-		f.SourceFamily, f.SourceInstance = family, instance
-	}
-	if raw, ok := args["since_hours"]; ok {
-		n, ok := raw.(float64)
-		if !ok {
-			return searchFilters{}, fmt.Errorf("since_hours must be a positive integer, got %T", raw)
-		}
-		if n != math.Trunc(n) || n <= 0 {
-			return searchFilters{}, fmt.Errorf("since_hours must be a positive integer, got %v", raw)
-		}
-		// Fail-closed overflow guard, checked on the RAW float64 BEFORE any int
-		// conversion or duration arithmetic: since_hours ultimately feeds
-		// time.Duration(hours) * time.Hour (sqlPredicate/passes), and
-		// time.Duration is int64 nanoseconds. A since_hours large enough to
-		// overflow that multiplication would wrap to an unpredictable —
-		// possibly negative — duration, silently disabling or INVERTING the
-		// filter (the worst failure mode: a caller who asked to narrow the
-		// result set instead gets an unfiltered or backwards one with no
-		// error). maxSinceHours is NOT an invented product ceiling — issue
-		// #241 specifies since_hours as any positive integer, so a large-but-
-		// representable value (e.g. 100000 hours, ~11.4 years) must stay
-		// valid. It is derived directly from the arithmetic's own bound (see
-		// maxSinceHours' doc comment): anything at or beyond it is an
-		// explicit tool error, never a silently saturated/clamped value.
-		if n > float64(maxSinceHours) {
-			return searchFilters{}, fmt.Errorf("since_hours=%v exceeds the maximum representable value of %d hours (the int64-nanosecond time.Duration bound) — omit the filter for no time bound", raw, maxSinceHours)
-		}
-		f.SinceHours = int(n)
-	}
-	return f, nil
-}
-
-// maxSinceHours is since_hours' fail-closed ceiling, derived directly from
-// the arithmetic sqlPredicate/passes perform (time.Duration(hours) *
-// time.Hour, int64 nanoseconds) — floor(math.MaxInt64 / int64(time.Hour)) —
-// NEVER an invented product policy number. Any since_hours at or below this
-// value cannot overflow that multiplication; anything above it provably can
-// (and would silently wrap to an unpredictable, possibly negative, duration
-// — see parseSearchFilters' doc comment). ≈ 2,562,047 hours (~292 years).
-const maxSinceHours = math.MaxInt64 / int64(time.Hour)
 
 // parseSourceFilter validates s against the family:instance grammar and
 // returns its normalized (family, instance) components, failing closed
@@ -223,43 +161,17 @@ const maxSinceHours = math.MaxInt64 / int64(time.Hour)
 // is well-formed, just a legitimate zero-match filter — there is no
 // enumerable universe of valid account labels to validate an instance
 // against, matching digestSourceMatches' own semantics exactly).
-func parseSourceFilter(s string) (family, instance string, err error) {
-	parts := strings.Split(s, ":")
-	switch len(parts) {
-	case 1:
-		family = parts[0]
-	case 2:
-		family, instance = parts[0], parts[1]
-		if instance == "" {
-			return "", "", fmt.Errorf("source %q has an empty account instance after ':' — expected type or type:account", s)
-		}
-	default:
-		return "", "", fmt.Errorf("source %q is malformed — expected type or type:account (a single colon), got %d colon-separated parts", s, len(parts)-1)
-	}
-	if family == "" {
-		return "", "", fmt.Errorf("source must not be empty")
-	}
-	family = providerToType(family)
-	if !knownSourceFamily(family) {
-		return "", "", fmt.Errorf("unknown source %q — expected a connector type (%s) or type:account",
-			s, strings.Join(knownSourceTypes(), ", "))
-	}
-	// #241 integrator decision (filesystem family audit): a family that is a
-	// real catalog connector but whose memories carry no per-item Provider
-	// identity would otherwise be ACCEPTED yet NEVER MATCH ANYTHING — a
-	// silent-wrong-answer trap indistinguishable from "no matches this call"
-	// (see unsupportedSourceFamilies' own doc comment for the full
-	// rationale). Reject it explicitly, fail closed, for BOTH the bare
-	// family and any family:instance under it.
-	if reason, unsupported := unsupportedSourceFamilies[family]; unsupported {
-		return "", "", fmt.Errorf("source %q is unsupported: %s", s, reason)
-	}
-	return family, instance, nil
-}
 
 // knownSourceFamily reports whether family (already providerToType-
 // normalized) names a real catalog connector. The fail-closed gate: an
 // unrecognized family is a tool error, never a silent no-filter/empty-match.
+func searchCatalog() searchpkg.Catalog {
+	return searchpkg.Catalog{Normalize: providerToType, Known: knownSourceFamily, Types: knownSourceTypes, Unsupported: func(family string) (string, bool) { reason, ok := unsupportedSourceFamilies[family]; return reason, ok }}
+}
+func parseSearchFilters(args map[string]any, now time.Time) (searchFilters, error) {
+	return searchpkg.ParseFilter(args, now, searchCatalog())
+}
+
 func knownSourceFamily(family string) bool {
 	for _, c := range connectorCatalog {
 		if c.Type == family {
