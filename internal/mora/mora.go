@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -1101,31 +1100,6 @@ const (
 	// map + JSON frame. budgetSearchResults cuts on whole-Memory boundaries.
 	searchMemoryResultsBudgetBytes = 11000
 )
-
-var p0Re = regexp.MustCompile(`^(\d+\.|-)\s+\*\*([^*]+)\*\*`)
-
-// terminalTaskStatuses are the Status (col 4) values that close a task. A row in
-// any of these states is finished work and must never resurface as "stale"
-// (issue #19), regardless of its Last-touched date.
-var terminalTaskStatuses = map[string]bool{
-	"done":      true,
-	"completed": true,
-	"cancelled": true,
-	"canceled":  true,
-	"wontfix":   true,
-}
-
-// LiveTask is one row of live-tasks.md (the 8-column task table).
-type LiveTask struct {
-	Task        string `json:"task"`
-	Domain      string `json:"domain"`
-	Owner       string `json:"owner"`
-	Pri         string `json:"pri"`
-	Status      string `json:"status"`
-	Blocker     string `json:"blocker"`
-	Horizon     string `json:"horizon"`
-	LastTouched string `json:"last_touched"`
-}
 
 // mcpMaxRequestBytes caps one JSON-RPC request line. bufio.Scanner's 64KB
 // default is too small for real tool calls (a write_memory body or a think

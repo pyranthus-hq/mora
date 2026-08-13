@@ -1,9 +1,10 @@
-package mora
+package tasks
 
 import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -499,7 +500,9 @@ func TestCoreB_TaskSyncTasksMissingPriorityMap(t *testing.T) {
 // branches. The permission is restored before t.TempDir cleanup runs.
 func coreBTaskseal(t *testing.T, cfg Config) {
 	t.Helper()
-	skipOnWindows(t, "chmod 0500 does not make the vault directory unwritable on Windows; atomicWrite's temp-file creation still succeeds")
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0500 does not make the vault directory unwritable on Windows; atomicWrite temp-file creation still succeeds")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root — the 0500 write bit is bypassed, so the write error can't be provoked")
 	}
