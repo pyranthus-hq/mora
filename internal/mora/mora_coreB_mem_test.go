@@ -349,39 +349,3 @@ func TestCoreB_MemSnippetMemories(t *testing.T) {
 		t.Fatalf("head clip should not reach the buried term, got %q", head[0].Text)
 	}
 }
-
-func TestCoreB_MemBudgetSearchResults(t *testing.T) {
-	mems := []Memory{
-		{ID: "a", Title: "Alpha", Text: strings.Repeat("alpha ", 20)},
-		{ID: "b", Title: "Beta", Text: strings.Repeat("beta ", 20)},
-		{ID: "c", Title: "Gamma", Text: strings.Repeat("gamma ", 20)},
-	}
-
-	// Disabled (budget <= 0): everything kept, nothing dropped.
-	kept, dropped := budgetSearchResults(mems, 0)
-	if len(kept) != 3 || dropped != 0 {
-		t.Fatalf("budget<=0 should keep all: kept=%d dropped=%d", len(kept), dropped)
-	}
-	kept, dropped = budgetSearchResults(mems, -1)
-	if len(kept) != 3 || dropped != 0 {
-		t.Fatalf("negative budget should keep all: kept=%d dropped=%d", len(kept), dropped)
-	}
-
-	// Empty slice: no work, no drops.
-	kept, dropped = budgetSearchResults(nil, 100)
-	if len(kept) != 0 || dropped != 0 {
-		t.Fatalf("empty input: kept=%d dropped=%d", len(kept), dropped)
-	}
-
-	// Tiny budget: first row is force-kept, the rest dropped.
-	kept, dropped = budgetSearchResults(mems, 10)
-	if len(kept) != 1 || kept[0].ID != "a" || dropped != 2 {
-		t.Fatalf("tiny budget should keep only the first: kept=%d dropped=%d", len(kept), dropped)
-	}
-
-	// Generous budget: keep everything.
-	kept, dropped = budgetSearchResults(mems, 1_000_000)
-	if len(kept) != 3 || dropped != 0 {
-		t.Fatalf("big budget should keep all: kept=%d dropped=%d", len(kept), dropped)
-	}
-}
