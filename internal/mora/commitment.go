@@ -1384,9 +1384,10 @@ func applyCommitmentLifecycle(commitments []Commitment, evidence []commitmentEvi
 type commitmentTransitionVoice string
 
 const (
-	commitmentVoiceDelivery commitmentTransitionVoice = "delivery"
-	commitmentVoiceAck      commitmentTransitionVoice = "ack"
-	commitmentVoiceEither   commitmentTransitionVoice = "either"
+	commitmentVoiceDelivery      commitmentTransitionVoice = "delivery"
+	commitmentVoiceAck           commitmentTransitionVoice = "ack"
+	commitmentVoiceAttendanceAck commitmentTransitionVoice = "attendance_ack"
+	commitmentVoiceEither        commitmentTransitionVoice = "either"
 )
 
 func commitmentTransition(text string) (string, commitmentTransitionVoice) {
@@ -1412,6 +1413,14 @@ func commitmentTransition(text string) (string, commitmentTransitionVoice) {
 		return commitClosed, commitmentVoiceEither
 	}
 	if containsAnyPhrase(lower, []string{
+		"thanks for coming", "thank you for coming", "thanks for joining", "thank you for joining",
+	}) {
+		// Attendance/joining acknowledgements are generic thread noise: they close a
+		// commitment only when the event/object it names actually overlaps, even in
+		// the same memory, so an unrelated "thanks for coming" can't sweep the thread.
+		return commitClosed, commitmentVoiceAttendanceAck
+	}
+	if containsAnyPhrase(lower, []string{
 		"got it", "got the ", "received ", "i found ", "we found ", "opens correctly", "arrived",
 	}) {
 		return commitClosed, commitmentVoiceAck
@@ -1419,7 +1428,12 @@ func commitmentTransition(text string) (string, commitmentTransitionVoice) {
 	if containsAnyPhrase(lower, []string{
 		"i sent ", "we sent ", "sent the ", "sent it", "i delivered ", "we delivered ",
 		"was delivered", "i attached ", "we attached ", "attached the ", "i uploaded ",
-		"we uploaded ", "completed ", "finished ", "all set",
+		"we uploaded ", "completed ", "finished ", "all set", "as promised",
+		// Colloquial self-confirmation: a same-object "already" report is delivery
+		// evidence, not a fresh promise, even without one of the verbs above.
+		"already sent", "already delivered", "already uploaded", "already attached",
+		"already did", "already done", "already finished",
+		"already handled", "already took care of", "took care of it already",
 	}) || lower == "done" || strings.HasPrefix(lower, "done ") || strings.Contains(lower, " done ") {
 		return commitClosed, commitmentVoiceDelivery
 	}
@@ -1460,15 +1474,20 @@ func commitmentClosureScore(commitment Commitment, evidence commitmentEvidence, 
 		if evidence.Party != ownerParty {
 			return 0
 		}
-	case commitmentVoiceAck:
+	case commitmentVoiceAck, commitmentVoiceAttendanceAck:
 		if evidence.Party == ownerParty {
 			return 0
 		}
 	}
 	overlap := commitmentObjectOverlap(commitment.Summary+" "+commitment.OpenedBy.Quote, evidence.Text)
 	sameMemory := commitment.OpenedBy.MemoryID == evidence.MemoryID
-	if overlap == 0 && !sameMemory {
-		return 0
+	if overlap == 0 {
+		// Attendance/joining acknowledgements are broad thread noise (any
+		// commitment can share a MemoryID with a "thanks for coming"), so they
+		// never get the same-memory pass that delivery/receipt evidence gets.
+		if voice == commitmentVoiceAttendanceAck || !sameMemory {
+			return 0
+		}
 	}
 	score := overlap * 10
 	if sameMemory {

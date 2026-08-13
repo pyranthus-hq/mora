@@ -61,6 +61,12 @@ func TestCommitmentLifecycleGuards(t *testing.T) {
 		{name: "delivered", text: "I sent the reviewer list.", role: commitmentPartySelf, want: commitClosed},
 		{name: "done", text: "Done with the reviewer list.", role: commitmentPartySelf, want: commitClosed},
 		{name: "acknowledged", text: "Got the reviewer list, thanks.", role: commitmentPartyCounterparty, want: commitClosed},
+		{name: "colloquial already did", text: "I already did the reviewer list.", role: commitmentPartySelf, want: commitClosed},
+		{name: "colloquial already handled", text: "I already handled the reviewer list.", role: commitmentPartySelf, want: commitClosed},
+		{name: "delivery as promised", text: "Here is the reviewer list, as promised.", role: commitmentPartySelf, want: commitClosed},
+		{name: "attendance thank you closes matching", text: "Thanks for coming to walk through the reviewer list.", role: commitmentPartyCounterparty, want: commitClosed},
+		{name: "unrelated thank you stays open", text: "Thanks for coming to the birthday party.", role: commitmentPartyCounterparty, want: commitOpen},
+		{name: "objectless already did stays open across threads", text: "I already did it.", role: commitmentPartySelf, want: commitOpen},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -76,6 +82,43 @@ func TestCommitmentLifecycleGuards(t *testing.T) {
 				Party:            tt.role,
 				Authored:         authored,
 				CounterpartyKeys: keys,
+			}})
+			if len(got) != 1 || got[0].State != tt.want {
+				t.Fatalf("state = %+v, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAttendanceAcknowledgementSameThreadRequiresObjectOverlap(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "unrelated attendance thank-you in same thread stays open",
+			text: "Thanks for joining the call today, it was great to catch up.",
+			want: commitOpen,
+		},
+		{
+			name: "attendance thank-you naming the same object closes",
+			text: "Thanks for joining to walk through the reviewer list.",
+			want: commitClosed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commitment := lifecycleTestCommitment()
+			// Same MemoryID as the opener: evidence lands in the same thread/memory
+			// the commitment was opened in, which used to bypass overlap entirely.
+			got := applyCommitmentLifecycle([]Commitment{commitment}, []commitmentEvidence{{
+				MemoryID:         commitment.OpenedBy.MemoryID,
+				Text:             tt.text,
+				OccurredAt:       "2026-07-20T11:00:00Z",
+				Party:            commitmentPartyCounterparty,
+				Authored:         true,
+				CounterpartyKeys: []string{"name:sam rivera"},
 			}})
 			if len(got) != 1 || got[0].State != tt.want {
 				t.Fatalf("state = %+v, want %s", got, tt.want)
