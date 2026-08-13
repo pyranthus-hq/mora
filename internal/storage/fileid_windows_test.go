@@ -1,6 +1,6 @@
 //go:build windows
 
-package mora
+package storage
 
 import (
 	"os"
