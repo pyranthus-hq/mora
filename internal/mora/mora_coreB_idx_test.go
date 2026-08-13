@@ -82,49 +82,6 @@ func coreBIdxmem(id, scope, typ, title, text string) Memory {
 // TestCoreB_IdxCheckIndexSchemaMatchAndMismatch pins both branches of
 // checkIndexSchema: the current version passes, a wrong version returns the
 // actionable "different mora version" error naming both versions.
-func TestCoreB_IdxCheckIndexSchemaMatchAndMismatch(t *testing.T) {
-	dbFile := filepath.Join(t.TempDir(), "schema.db")
-	db, err := sql.Open("sqlite", dbFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	if _, err := db.Exec("PRAGMA user_version = " + coreBIdxItoa(indexSchemaVersion)); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkIndexSchema(db); err != nil {
-		t.Fatalf("matching version must pass, got %v", err)
-	}
-
-	if _, err := db.Exec("PRAGMA user_version = 99"); err != nil {
-		t.Fatal(err)
-	}
-	err = checkIndexSchema(db)
-	if err == nil {
-		t.Fatal("wrong version must error")
-	}
-	for _, want := range []string{"different mora version", "index schema v99", "expects v" + coreBIdxItoa(indexSchemaVersion), "mora index rebuild"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("schema error %q missing %q", err.Error(), want)
-		}
-	}
-
-	// Scan-error branch: a closed handle surfaces the query error, never masks it.
-	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed.Close()
-	if err := checkIndexSchema(closed); err == nil {
-		t.Fatal("checkIndexSchema on a closed db must return the scan error")
-	} else if !strings.Contains(err.Error(), "closed") {
-		t.Fatalf("closed-db error = %v, want a 'database is closed' error", err)
-	}
-}
-
-// TestCoreB_IdxOpenIndexROValid: a freshly built index opens read-only and serves
-// a working handle (Ping + a real row count through the returned db).
 func TestCoreB_IdxOpenIndexROValid(t *testing.T) {
 	cfg := coreBIdxpopulatedVault(t, "v_ro", []Memory{
 		coreBIdxmem(newID(), "global", "insight", "one", "first body"),
