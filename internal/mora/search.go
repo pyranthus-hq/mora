@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // snippetMemories returns copies of the results with each body flattened to a
@@ -20,22 +19,7 @@ import (
 // so a preview shows the evidence for the hit, not the memory's opening lines.
 // Only the token-budgeted MCP surface calls this; the CLI keeps full bodies+meta.
 func snippetMemories(mems []Memory, query string) []Memory {
-	if mems == nil {
-		return nil
-	}
-	out := make([]Memory, len(mems))
-	for i, m := range mems {
-		full := strings.Join(strings.Fields(m.Text), " ")
-		if utf8.RuneCountInString(full) > searchSnippetLen {
-			m.Text = matchSnippet(m.Text, query, searchSnippetLen)
-			m.Truncated = true
-		} else {
-			m.Text = full
-		}
-		m.Meta = nil // unbounded graph frontmatter — not part of a search preview
-		out[i] = m
-	}
-	return out
+	return searchpkg.SnippetMemories(mems, query, searchSnippetLen)
 }
 
 // budgetSearchResults caps the aggregate JSON size of a (snippeted) search result
