@@ -595,7 +595,7 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	if err != nil {
 		return 0, fmt.Errorf("starting ingest activity: %w", err)
 	}
-	cfg.operationRunID = h.runID
+	cfg.SetOperationRunID(h.runID)
 	finishFailed := func(code string, cause error) error {
 		finishErr := finishOperation(cfg, h, operationFailed, "failed", operationCounts{Items: n, Errors: 1}, code, operationClock())
 		return errors.Join(cause, finishErr)

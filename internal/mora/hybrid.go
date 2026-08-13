@@ -306,7 +306,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		return nil, tr, nil
 	}
 
-	fp := cfg.fusion()
+	fp := configFusion(cfg)
 	fusionWeights := append(append([]float64{}, fp.weights()...), gmailSegmentArmWeight)
 	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
 	ids := make([]string, 0, len(fused))
@@ -323,7 +323,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	tr.Fused = append([]string(nil), ids...) // PURE fused ranking (pre-limit) for §6 attribution — MMR never touches it
 
 	// W2/B1a: optional greedy MMR rerank of the fused pool before the top-k truncate.
-	// Default-OFF (cfg.mmr()==nil ⇒ skipped ⇒ byte-identical to the pre-W2 fused order).
+	// Default-OFF (configMMR(cfg)==nil ⇒ skipped ⇒ byte-identical to the pre-W2 fused order).
 	// Runs only when a semantic embedder is live (useVec) or the eval seam forces it;
 	// emb is the same model the arms used (set in the vecOK block), avoiding a second
 	// chooseEmbedderFor that could mismatch the index model. A pure permutation, so it
@@ -331,7 +331,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// vecOK gates it: with no stored vectors (a pre-I2 index) there is nothing to
 	// rerank on AND emb is unset, so MMR must no-op rather than deref a nil Embedder
 	// (the force seam bypasses the useVec/semantic gate, never the vectors-exist gate).
-	if mp := cfg.mmr(); mp != nil && vecOK && emb != nil && mmrActive(useVec, mp) && len(ids) > 1 {
+	if mp := configMMR(cfg); mp != nil && vecOK && emb != nil && mmrActive(useVec, mp) && len(ids) > 1 {
 		vecByID, err := loadVectorsByID(ctx, db, emb.ModelID(), ids)
 		if err != nil {
 			return nil, tr, err

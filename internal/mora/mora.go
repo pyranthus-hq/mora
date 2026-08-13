@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 	"io"
 	"os"
 	"os/exec"
@@ -19,6 +20,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type Config = configstore.Config
+
 // Build info, injected at release time via -ldflags -X. Defaults keep `go run`
 // and source builds honest about being unversioned.
 var (
@@ -26,75 +29,6 @@ var (
 	BuildCommit  = "none"
 	BuildDate    = "unknown"
 )
-
-type Config struct {
-	VaultDir  string
-	ConfigDir string
-	DataDir   string
-	StateDir  string
-	// MCPWritePolicy controls the mutation authority granted to MCP clients.
-	// Empty means "open" for backward compatibility. "propose" stages writes
-	// for local approval, while "readonly" refuses both writes and deletes.
-	MCPWritePolicy string
-	// UpdatePolicy controls automatic GitHub release checks: auto, notify, or off.
-	// Empty selects a context-sensitive default without persisting it.
-	UpdatePolicy string
-	// Embedder is the durable embedder opt-in from config.toml (`embedder = "ollama"`).
-	// It is the persistent way to turn on semantic retrieval for BOTH the CLI and the
-	// MCP server (which the agent uses) without per-host env wiring. The MORA_EMBEDDER
-	// env var, when SET, still wins (it is the CI-determinism + power-user override);
-	// this is the fallback consulted only when the env is unset. Empty ⇒ static floor.
-	Embedder string
-	// ContextProfile is the durable quality/size knob from config.toml
-	// (`context = "small"|"large"`; empty ⇒ default). It scales the DEFAULT
-	// token budget of every budget-bounded surface (context_memory, digest,
-	// brief, the persisted brief artifact) and the digest per-item snippet
-	// length — small for lean agent windows, large for denser context. It
-	// NEVER moves the 20k per-call ceiling, and an explicit max_tokens from
-	// the caller always wins. Set via `mora config context <profile>`.
-	ContextProfile string
-	// SelfEmails are the user's OWN additional addresses, from config.toml
-	// (`self_emails = "you@work.com, you@alias.com"`). Mora derives self from the
-	// mailbox Google OAuth was granted on (Source.Email), but a calendar routinely
-	// invites a different alias — a Workspace address, a custom domain. An alias it
-	// cannot recognize as self fails self-exclusion, so the user becomes an
-	// "attendee" of their own meeting and their own records get cited back to them
-	// as the counterparty's unfinished business (wrong-person attribution).
-	// Declared, never guessed: Mora will not infer self from a display name.
-	SelfEmails []string
-	// operationRunID binds an ingest's journal header to its sanitized StateDir
-	// activity receipt. It is process-local orchestration state, never loaded from
-	// or persisted to config.toml.
-	operationRunID string
-	// fusionOv overrides the production RRF arm weights / k (retrieval tuning + the
-	// TestEvalWeightSweep grid). nil ⇒ defaultFusion. Unexported and NOT loaded from
-	// TOML — it is a code/eval seam, not a user knob.
-	fusionOv *fusionParams
-	// MMR opts the hybrid path into a greedy Maximal Marginal Relevance rerank of the
-	// fused candidates (a diversity-aware reorder) before the top-k truncate. Durable,
-	// from config.toml `mmr = true`; default false ⇒ fused order unchanged (the
-	// production default path stays byte-identical). Only takes effect when the vector
-	// arm is live (a semantic embedder), since MMR reranks on cosine. Mirrors Embedder;
-	// there is deliberately no MORA_MMR env var (the eval forces via mmrOv, not env).
-	MMR bool
-	// mmrOv overrides the MMR params (the W2 regression gate + the unit tests). nil ⇒
-	// derive from Config.MMR with defaultLambda. Unexported and NOT loaded from TOML —
-	// a code/eval seam exactly like fusionOv, and the ONLY path that can set
-	// mmrParams.force (so the user MMR bool can never run MMR under static-hash).
-	mmrOv *mmrParams
-	// vaultDirCfg is the pre-MORA_VAULT vault_dir (defaults/config.toml), stashed
-	// by applyEnvOverrides when the env var repoints VaultDir for this process.
-	// It is what writeConfig persists: the env override is runtime-only, and a
-	// read-modify-write of an unrelated key (or a scripted re-init) must never
-	// silently repoint the durable vault — that orphans the configured one, the
-	// incident class cmdInit's repoint confirmation exists to prevent. A pointer,
-	// NOT an empty-string sentinel: a malformed-but-preserved `vault_dir = ""` in
-	// config.toml stashes as a valid (empty) persisted value, which a sentinel
-	// would misread as "no override" and persist the env vault. nil ⇒ no override
-	// active ⇒ persist VaultDir as-is. Unexported and NOT loaded from TOML, like
-	// fusionOv/mmrOv.
-	vaultDirCfg *string
-}
 
 type Memory struct {
 	ID          string   `json:"id"`
@@ -820,7 +754,7 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 		if opts.advance {
 			// Budget stdout, the artifact, and the commit at the SAME persist budget so
 			// all three agree on exactly which items were shown.
-			budgetChars := cfg.contextDefaultTokens() * charsPerToken
+			budgetChars := contextDefaultTokens(cfg) * charsPerToken
 			var bd Digest
 			var path string
 			advance := func() error {

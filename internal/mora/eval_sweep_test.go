@@ -92,7 +92,7 @@ func TestEvalWeightSweep(t *testing.T) {
 	for _, c := range grid {
 		fp := fusionParams(c)
 		cfg := tmpCfg
-		cfg.fusionOv = &fp
+		cfg.SetFusionOverride(&fp)
 		hist, _ := bucketHistogram(t, ctx, cfg, queries, rel, qids)
 		r := result{c: c, hit: hist[bHIT], fus: hist[bFUSION], ret: hist[bRETRIEVAL]}
 		t.Logf("k=%-4g fts=%-4g vec=%-4g graph=%g  ->  HIT=%2d FUSION=%2d RETRIEVAL=%d",

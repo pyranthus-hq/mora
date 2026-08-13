@@ -30,7 +30,7 @@ func parseMCPWritePolicy(raw string) (string, error) {
 	}
 }
 
-func (c Config) mcpWritePolicy() string {
+func configMCPWritePolicy(c Config) string {
 	if c.MCPWritePolicy == "" {
 		return mcpWritePolicyOpen
 	}

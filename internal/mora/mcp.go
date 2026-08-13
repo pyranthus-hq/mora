@@ -55,7 +55,7 @@ func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 // contextDefaultTokens resolves the ContextProfile to the default token budget
 // used when a caller passes no max_tokens: small=3000, default=6000,
 // large=12000. Unknown values fall back to the default (never zero).
-func (c Config) contextDefaultTokens() int {
+func contextDefaultTokens(c Config) int {
 	switch c.ContextProfile {
 	case "small":
 		return defaultContextTokens / 2
@@ -70,7 +70,7 @@ func (c Config) contextDefaultTokens() int {
 // ceiling: small/default keep the 20k guardrail (one tool result must not
 // dominate a normal agent window); large opts into 50k — the user choosing
 // "large" is explicitly trading window headroom for denser single-call context.
-func (c Config) contextMaxTokens() int {
+func contextMaxTokens(c Config) int {
 	if c.ContextProfile == "large" {
 		return largeContextMaxTokens
 	}
@@ -81,7 +81,7 @@ func (c Config) contextMaxTokens() int {
 // snippet length: small=120, default=200 (digestSnippetLen), large=400. The
 // large profile exists precisely so conversation tails (the user's own
 // replies) survive the clip — see digestItemFor.
-func (c Config) digestSnippetChars() int {
+func digestSnippetChars(c Config) int {
 	switch c.ContextProfile {
 	case "small":
 		return 120
@@ -103,9 +103,9 @@ const budgetUnitTokens = "tokens"
 // cannot overflow.
 func resolveContextBudgetTokens(cfg Config, maxTokens int) (tokens int, charBudget int) {
 	if maxTokens <= 0 {
-		maxTokens = cfg.contextDefaultTokens()
+		maxTokens = contextDefaultTokens(cfg)
 	}
-	if ceiling := cfg.contextMaxTokens(); maxTokens > ceiling {
+	if ceiling := contextMaxTokens(cfg); maxTokens > ceiling {
 		maxTokens = ceiling
 	}
 	return maxTokens, maxTokens * charsPerToken
@@ -147,7 +147,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	case "initialize":
 		var instructions string
 		if cfg, err := loadConfig(); err == nil {
-			instructions = mcpInstructionsFor(cfg.mcpWritePolicy())
+			instructions = mcpInstructionsFor(configMCPWritePolicy(cfg))
 		} else {
 			instructions = "Mora could not load its configuration, so tools are unavailable and no mutation will be attempted. Fix config.toml and reconnect."
 		}
