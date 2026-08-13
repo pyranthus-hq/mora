@@ -6,8 +6,6 @@ import (
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -58,73 +56,39 @@ var removeIngestJournalFile = os.Remove
 // still fires on the next rebuild. Not fsync'd: a lost lease only lets a covered
 // header retire slightly sooner, never a false-clean (the journal header is the
 // durable dirty signal).
-func ensureIngestLease(cfg Config, sourceKey string) error {
-	if err := ingestStateRootErr(cfg); err != nil {
-		return err
-	}
-	lp := ingestLeasePath(cfg, sourceKey)
-	if b, err := os.ReadFile(lp); err == nil {
-		if pid, perr := strconv.Atoi(strings.TrimSpace(string(b))); perr == nil && pid == os.Getpid() {
-			return nil // our lease is already present
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(lp), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(lp, []byte(strconv.Itoa(os.Getpid())), 0o644)
-}
 
 // ingestLeaseHeld reports whether a LIVE ingest run holds sourceKey's lease. A lease
 // owned by a dead pid is stale: it is removed and reported not-held, so a killed
 // ingest's leftover lease cannot block the recovery rebuild from retiring its header.
-func ingestLeaseHeld(cfg Config, sourceKey string) bool {
-	b, err := os.ReadFile(ingestLeasePath(cfg, sourceKey))
-	if err != nil {
-		return false
-	}
-	pid, perr := strconv.Atoi(strings.TrimSpace(string(b)))
-	if perr != nil || !processAlive(pid) {
-		_ = os.Remove(ingestLeasePath(cfg, sourceKey)) // reclaim a stale lease
-		return false
-	}
-	return true
-}
 
 // releaseIngestLeaseOwnedHere drops only sourceKey's lease. In-process
 // concurrent ingests share a PID, so releasing every lease when one source
 // finishes would make the other source appear abandoned mid-run.
-func releaseIngestLeaseOwnedHere(cfg Config, sourceKey string) {
-	lp := ingestLeasePath(cfg, sourceKey)
-	me := strconv.Itoa(os.Getpid())
-	if b, err := os.ReadFile(lp); err == nil && strings.TrimSpace(string(b)) == me {
-		_ = os.Remove(lp)
-	}
-}
 
 // releaseIngestLeasesOwnedHere drops every ingest lease this process owns. Called at
 // the end of an ingest run (before cmdIngest's terminal rebuild), so a covered
 // journal retires promptly instead of waiting for process exit. Best-effort.
-func releaseIngestLeasesOwnedHere(cfg Config) {
-	entries, err := os.ReadDir(ingestJournalRoot(cfg))
-	if err != nil {
-		return
-	}
-	me := strconv.Itoa(os.Getpid())
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		lp := ingestLeasePath(cfg, e.Name())
-		if b, rerr := os.ReadFile(lp); rerr == nil && strings.TrimSpace(string(b)) == me {
-			_ = os.Remove(lp)
-		}
-	}
-}
 
 // appendJournalDurable appends one line and forces both crash-durability barriers
 // (f.Sync before return + parent-dir sync), reusing the same seams as
 // atomicWriteDurable so the durability call-trace tests can record them. Used for
 // the header line, whose loss would be a false-clean.
+func ingestLeaseSeams() ingestpkg.LeaseSeams {
+	return ingestpkg.LeaseSeams{PID: os.Getpid, ProcessAlive: processAlive}
+}
+func ensureIngestLease(cfg Config, key string) error {
+	return ingestpkg.EnsureLease(cfg, key, ingestLeaseSeams())
+}
+func ingestLeaseHeld(cfg Config, key string) bool {
+	return ingestpkg.LeaseHeld(cfg, key, ingestLeaseSeams())
+}
+func releaseIngestLeaseOwnedHere(cfg Config, key string) {
+	ingestpkg.ReleaseLeaseOwnedHere(cfg, key, ingestLeaseSeams())
+}
+func releaseIngestLeasesOwnedHere(cfg Config) {
+	ingestpkg.ReleaseLeasesOwnedHere(cfg, ingestLeaseSeams())
+}
+
 func appendJournalDurable(path, line string) error { return ingestpkg.AppendDurable(path, line) }
 
 // ensureIngestJournalHeader writes the durable "run <op_id> <marked_at>" header the
