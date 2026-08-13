@@ -2,7 +2,6 @@ package mora
 
 import (
 	"context"
-	"github.com/pyranthus-hq/mora/internal/genericutil"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"os"
 	"strings"
@@ -74,65 +73,20 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 		return nil, err
 	}
 	defer db.Close()
-	match := ftsQuery(query)
-	if strings.TrimSpace(match) == "" {
-		// An empty / all-punctuation query has no terms to MATCH. FTS5 errors on
-		// an empty MATCH string ("fts5: syntax error near \"\""), so short-circuit
-		// to zero results rather than crashing the search command.
-		return nil, nil
-	}
-	// Issue #237 — corroborating-record clustering needs to see PAST the raw
-	// `limit` so a cluster's freed slots can backfill from the next-best
-	// DISTINCT candidates: fetch a deeper pool (same limit*5-min-50 formula
-	// hybrid.go's arms use), cluster, then truncate to `limit` below. A
-	// non-positive limit keeps today's exact SQL LIMIT semantics (0 rows /
-	// SQLite's "no limit" for negative) and skips clustering entirely — no
-	// caller passes one, but this preserves the pre-#237 edge behavior.
-	sqlLimit := limit
-	if limit > 0 {
-		sqlLimit = limit * 5
-		if sqlLimit < 50 {
-			sqlLimit = 50
-		}
-	}
-	sqlq := `SELECT m.id, m.scope, m.type, m.title, m.tags, m.source, m.created_at, m.path, m.text, bm25(memories_fts) AS score
-		FROM memories_fts JOIN memories m ON m.id = memories_fts.id WHERE memories_fts MATCH ?`
-	args := []any{match}
-	if scope != "" {
-		sqlq += ` AND m.scope = ?`
-		args = append(args, scope)
-	}
-	if pc, pargs := f.SQLPredicate(); pc != "" {
-		sqlq += pc
-		args = append(args, pargs...)
-	}
-	sqlq += ` ORDER BY score, m.id LIMIT ?`
-	args = append(args, sqlLimit)
-	rows, err := db.QueryContext(ctx, sqlq, args...)
+	fts, err := searchpkg.ExecuteFTS(ctx, db, query, scope, limit, f)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Memory
-	for rows.Next() {
-		var m Memory
-		var tags string
-		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text, &m.Score); err != nil {
-			return nil, err
-		}
-		m.Tags = genericutil.SplitCSV(tags)
-		if full, ferr := parseMemory(m.Path); ferr == nil {
-			full.Score = m.Score
-			m = full
-		}
-		out = append(out, m)
+	if strings.TrimSpace(searchpkg.FTSQuery(query)) == "" {
+		return nil, nil
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	parentIDs := make([]string, len(out))
-	for i, m := range out {
-		parentIDs[i] = m.ID
+	out, parentIDs, sqlLimit := fts.Memories, fts.ParentIDs, fts.PoolLimit
+	// Hydrate persisted frontmatter fields which are deliberately absent from the index row.
+	for i, row := range out {
+		if full, ferr := parseMemory(row.Path); ferr == nil {
+			full.Score = row.Score
+			out[i] = full
+		}
 	}
 	if observed != nil {
 		observed.Trace.FTS = append([]string(nil), parentIDs...)
