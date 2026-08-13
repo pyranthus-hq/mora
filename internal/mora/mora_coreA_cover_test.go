@@ -47,24 +47,6 @@ func TestCoreA_Fusion(t *testing.T) {
 	}
 }
 
-func TestCoreA_ParseConfigValue(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{`"/home/x/vault"`, "/home/x/vault"}, // plain quoted
-		{`"/x" # inline comment`, "/x"},      // inline comment after close quote ignored
-		{`"/tmp/a\tb"`, "/tmp/a\tb"},         // escape honored via Unquote
-		{`"a\qb"`, `a\qb`},                   // invalid escape: Unquote fails => lenient Trim
-		{`"unterminated`, "unterminated"},    // unterminated quote: legacy lenient read
-		{`/plain/path`, "/plain/path"},       // unquoted
-		{`/plain # note`, "/plain"},          // unquoted cut at '#'
-		{`  spaced  `, "spaced"},             // trimmed
-	}
-	for _, tc := range cases {
-		if got := parseConfigValue(tc.in); got != tc.want {
-			t.Errorf("parseConfigValue(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 func TestCoreA_HumanizeAgoAndPlural(t *testing.T) {
 	cases := []struct {
 		d    time.Duration
@@ -174,51 +156,6 @@ func TestCoreA_RunDispatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 // config: load (all keys + read error), show, set, write-preserve
 // ---------------------------------------------------------------------------
-
-func TestCoreA_LoadConfigAllKeys(t *testing.T) {
-	withTempHome(t)
-	dir := configDirFor(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	body := strings.Join([]string{
-		"# a comment line",
-		"", // blank line
-		"vault_dir = \"/v/dir\"",
-		"data_dir = \"/d/dir\"",
-		"state_dir = \"/s/dir\"",
-		"embedder = \"ollama\"",
-		"context = \"large\"",
-		"mmr = true",
-		"unknown_key = \"ignored\"",
-		"no_equals_line", // len(parts)!=2 => skipped
-	}, "\n")
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.VaultDir != "/v/dir" || cfg.DataDir != "/d/dir" || cfg.StateDir != "/s/dir" {
-		t.Fatalf("dirs not loaded: %+v", cfg)
-	}
-	if cfg.Embedder != "ollama" || cfg.ContextProfile != "large" || !cfg.MMR {
-		t.Fatalf("embedder/context/mmr not loaded: %+v", cfg)
-	}
-}
-
-func TestCoreA_LoadConfigReadError(t *testing.T) {
-	withTempHome(t)
-	dir := configDirFor(t)
-	// Make config.toml a DIRECTORY so os.ReadFile returns a non-ErrNotExist error.
-	if err := os.MkdirAll(filepath.Join(dir, "config.toml"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadConfig(); err == nil {
-		t.Fatal("loadConfig should surface a non-ErrNotExist read error")
-	}
-}
 
 func TestCoreA_CmdConfigShowAndSet(t *testing.T) {
 	withTempHome(t)

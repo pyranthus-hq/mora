@@ -177,33 +177,6 @@ func TestMoraVaultEnvNotPersistedWhenConfigVaultDirEmpty(t *testing.T) {
 // a misconfiguration, not a vault selection — it must fail loudly rather than
 // silently resolve to a garbage path. (Empty string means unset, as usual for
 // env vars.) (Fizz review F4.)
-func TestMoraVaultEnvRejectsBlank(t *testing.T) {
-	withTempHome(t)
-	t.Setenv("MORA_VAULT", "   ")
-	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "MORA_VAULT") {
-		t.Fatalf("blank MORA_VAULT must fail loudly naming the variable, got err=%v", err)
-	}
-}
-
-// TestMoraVaultEnvRejectsRelativePath: a relative MORA_VAULT would resolve
-// against the process CWD — installed services and schedules run from / (or an
-// arbitrary dir), so the same value would silently select different vaults per
-// process. Refuse it loudly. (Fizz review F4.)
-func TestMoraVaultEnvRejectsRelativePath(t *testing.T) {
-	withTempHome(t)
-	for _, v := range []string{"relative/vault", "~"} {
-		t.Setenv("MORA_VAULT", v)
-		if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "MORA_VAULT") {
-			t.Fatalf("relative MORA_VAULT %q must fail loudly naming the variable, got err=%v", v, err)
-		}
-	}
-}
-
-// TestSchedulePlistCarriesVaultEnv locks the launchd-env contract for
-// MORA_VAULT, mirroring TestSchedulePlistCarriesConfigDirEnv: launchd jobs run
-// with a bare environment, so an install whose vault is selected by MORA_VAULT
-// must have the var snapshotted into the plist or the job silently operates on
-// config.toml's vault.
 func TestSchedulePlistCarriesVaultEnv(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,16 +21,7 @@ const (
 	mcpWritePolicyReadonly = "readonly"
 )
 
-func parseMCPWritePolicy(raw string) (string, error) {
-	policy := strings.ToLower(strings.TrimSpace(raw))
-	switch policy {
-	case mcpWritePolicyOpen, mcpWritePolicyPropose, mcpWritePolicyReadonly:
-		return policy, nil
-	default:
-		return "", fmt.Errorf("invalid mcp_write_policy %q (want open, propose, or readonly)", raw)
-	}
-}
-
+func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
 func configMCPWritePolicy(c Config) string {
 	if c.MCPWritePolicy == "" {
 		return mcpWritePolicyOpen

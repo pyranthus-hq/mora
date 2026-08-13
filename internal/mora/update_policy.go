@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,13 +36,8 @@ const (
 var canonicalStableTagPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
 func parseUpdatePolicy(raw string) (updatePolicy, error) {
-	p := updatePolicy(strings.ToLower(strings.TrimSpace(raw)))
-	switch p {
-	case updatePolicyAuto, updatePolicyNotify, updatePolicyOff:
-		return p, nil
-	default:
-		return "", fmt.Errorf("unknown update policy %q (want auto, notify, or off)", raw)
-	}
+	p, err := configstore.ParseUpdatePolicy(raw)
+	return updatePolicy(p), err
 }
 
 type resolvedUpdatePolicy struct {
