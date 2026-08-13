@@ -153,12 +153,16 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if len(args) == 0 || args[0] != "run" {
 		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora ingest run --source <name>|--all")
 	}
+	receiptToken, cleanedArgs, receiptErr := protectedSyncReceiptArg(args[1:])
+	if receiptErr != nil {
+		return receiptErr
+	}
 	fs := flag.NewFlagSet("ingest run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	sourceName := fs.String("source", "", "source")
 	all := fs.Bool("all", false, "all")
 	jsonOut := fs.Bool("json", false, "emit the ingest receipt as JSON")
-	if perr := fs.Parse(args[1:]); perr != nil {
+	if perr := fs.Parse(cleanedArgs); perr != nil {
 		return newMoraError(errCodeUsageUnknownFlag, "usage", perr, "%v", perr)
 	}
 	// Per-source progress and resumable-failure warnings are diagnostics, not
@@ -175,6 +179,38 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	// A token marks the app child and prevents relay recursion. The scheduled
+	// all-source parent otherwise relays through the signed app and trusts only a
+	// fresh token-bound receipt from that exact child invocation.
+	if receiptToken == "" && *all {
+		if relayErr := relayProtectedIngest(ctx, cfg, true, ""); relayErr == nil {
+			return nil
+		} else if !errors.Is(relayErr, errProtectedSyncDirect) {
+			return relayErr
+		}
+	}
+	// The app relay receives a token-bound, current-run receipt after all deferred
+	// finalizers run. In particular, the producer chokepoint below runs first, so
+	// a producer-stamp failure becomes receipt.Error rather than a false success.
+	if receiptToken != "" {
+		defer func() {
+			sourceLabel := "ingest-hourly"
+			if !*all && *sourceName != "" {
+				sourceLabel = *sourceName
+			}
+			r := protectedSyncReceipt{
+				Token:       receiptToken,
+				Source:      sourceLabel,
+				CompletedAt: producerClock().UTC().Format(time.RFC3339),
+			}
+			if err != nil {
+				r.Error = err.Error()
+			}
+			if werr := writeProtectedSyncReceipt(cfg, r); werr != nil && err == nil {
+				err = werr
+			}
+		}()
 	}
 	// ingest-hourly producer chokepoint (HEALTH-11): only the scheduled `--all` run
 	// is the producer; a targeted `--source` run is an interactive one-off.
