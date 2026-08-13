@@ -20,7 +20,6 @@ import (
 // IsEnabled centralizes the nil-sentinel handling for Source.Enabled so no
 // caller dereferences the raw pointer. nil (legacy/unset) is normalized to true
 // by loadSources before callers ever see it; an explicit *false stays disabled (D-12).
-func (s Source) IsEnabled() bool { return s.Enabled != nil && *s.Enabled }
 
 // lookupCatalog returns the catalog entry for ctype. The bool is false for any
 // type not in the static catalog — callers MUST reject unknown types with an

@@ -19,13 +19,6 @@ import (
 // Gmail parent row that has at least one query-matching segment (DQ5, §2) —
 // exactly {evidence_ref, sender, at, snippet}, the parent's STRONGEST
 // matching segment (best score, then lowest evidence_ref lexicographically).
-type GmailSegmentEvidence struct {
-	EvidenceRef string `json:"evidence_ref"`
-	Sender      string `json:"sender"`
-	At          string `json:"at"`
-	Direction   string `json:"direction,omitempty"`
-	Snippet     string `json:"snippet"`
-}
 
 // Fusion tuning for the segment arm. k matches defaultFusion.k (hybrid.go) —
 // both the static parent+segment fusion (this file) and the hybrid fusion

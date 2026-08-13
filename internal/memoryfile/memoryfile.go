@@ -18,27 +18,8 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-// Document is the persisted subset of a Mora memory.
-type Document struct {
-	ID          string
-	Scope       string
-	Type        string
-	Title       string
-	Tags        []string
-	Source      string
-	CreatedAt   string
-	Path        string
-	Text        string
-	Provider    string
-	Account     string
-	ProviderID  string
-	ContentHash string
-	LastSynced  string
-	Truncated   bool
-	DeletedAt   string
-	Decision    *memory.DecisionValidity
-	Meta        map[string]any
-}
+// Document is the shared memory record; the codec persists only its canonical frontmatter subset.
+type Document = memory.Memory
 
 // Render serializes a document as canonical Mora Markdown.
 func Render(m Document) ([]byte, error) {
