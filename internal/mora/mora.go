@@ -1287,32 +1287,6 @@ func atomicCreate(path string, body []byte, mode os.FileMode) error {
 // usagePhaseTimings is the compact, content-free phase breakdown for one MCP
 // tools/call. Retrieval/assembly are pointers because they are emitted only for
 // handlers (currently read_memory) whose phases are already cleanly separable.
-type usagePhaseTimings struct {
-	ConfigMillis    int64  `json:"config_ms"`
-	RetrievalMillis *int64 `json:"retrieval_ms,omitempty"`
-	AssemblyMillis  *int64 `json:"assembly_ms,omitempty"`
-	EnvelopeMillis  int64  `json:"envelope_ms"`
-}
-
-// usageEvent records one local tool invocation without response or argument
-// content. The read-only pointers are present on read_memory events even for
-// zero/false values and omitted from other tool events.
-type usageEvent struct {
-	TS              string             `json:"ts"`
-	Tool            string             `json:"tool"`
-	Query           string             `json:"query,omitempty"` // stripped by default; retained only when query logging is opted in; never sent off-machine
-	Scope           string             `json:"scope,omitempty"`
-	Results         int                `json:"results"`
-	Millis          int64              `json:"millis"`
-	OutputBytes     int                `json:"output_bytes,omitempty"`
-	Mode            string             `json:"mode,omitempty"`
-	Truncated       *bool              `json:"truncated,omitempty"`
-	MatchCount      *int               `json:"match_count,omitempty"`
-	BudgetRequested *int               `json:"budget_requested,omitempty"`
-	BudgetUsed      *int               `json:"budget_used,omitempty"`
-	Phases          *usagePhaseTimings `json:"phases,omitempty"`
-}
-
 // randRead is the entropy seam (defaults to crypto/rand.Read). Tests override it
 // to simulate an unavailable OS CSPRNG and exercise newID's fallback branch.
 var randRead = rand.Read
