@@ -27,6 +27,7 @@ the fixture to current output.
 | `internal/mora/sabotage_test.go`, `junk_invariance_test.go` | — | End-to-end meeting-brief replay through the direct builder/renderer and MCP `meeting_prep`. Scorer degeneration checks. Older-junk byte invariance and newer-junk line invariance |
 | `internal/mora/junk_patterns_test.go` | — | Test-only table mapping the frozen incident signatures to defect classes and source fixtures. Shared by replay and invariance gates without shipping scorer data in the binary |
 | `internal/mora/exam/` | — | Stdlib plus `internal/memory` ledger schema, twelve-rule validator, real-identity lint, and deterministic corpus renderer. The package is test infrastructure and must never be imported by `cmd/mora`. |
+| `internal/appbundle/install_script_test.go`, `uninstall_script_test.go` | — | Repository-level `install-app.sh` / `uninstall-app.sh` contracts and sandboxed integration tests. They belong to the app-bundle release surface rather than `internal/mora`; keeping them in this separate package lets their subprocess wall time overlap the Mora suite. |
 | `internal/mora/eval/obligations-v1/` | — | Plain-English contract, typed synthetic ledger, generated four-channel vault, event pin, and the sorted regenerate-and-hash manifest. The ledger is input. Every vault byte is renderer output. |
 | `internal/mora/eval/obligations-v3/` | — | Sealed schema-v3 validation corpus: fresh four-channel records, per-message Gmail direction fixtures, event pin, generated vault, and sorted hash manifest. |
 
