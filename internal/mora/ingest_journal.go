@@ -1,17 +1,15 @@
 package mora
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // ingest_journal.go — the durable ingest journal (Gate 2, A3 rule d). A killed
@@ -26,45 +24,30 @@ import (
 // hard requirement: it is what keeps the index dirty across a crash, and the
 // full-vault rebuild is what actually re-indexes the files.
 
-var removeIngestJournalFile = os.Remove
+func ingestJournalRoot(cfg Config) string                       { return ingestpkg.JournalRoot(cfg) }
+func ingestStateRootErr(cfg Config) error                       { return ingestpkg.ValidateStateRoot(cfg) }
+func ingestSourceKey(provider, account string) string           { return ingestpkg.SourceKey(provider, account) }
+func ingestJournalPath(cfg Config, key string) string           { return ingestpkg.JournalPath(cfg, key) }
+func ingestLeasePath(cfg Config, key string) string             { return ingestpkg.LeasePath(cfg, key) }
+func ingestJournalStatus(cfg Config) (bool, int, string, error) { return ingestpkg.JournalStatus(cfg) }
+func journalHeaderRunID(header string) string {
+	return ingestpkg.HeaderRunID(header, validOperationToken)
+}
 
-func ingestJournalRoot(cfg Config) string { return filepath.Join(cfg.StateDir, "ingest") }
+var removeIngestJournalFile = os.Remove
 
 // ingestStateRootErr guards the journal/lease WRITE seam. An empty or relative
 // StateDir would resolve the journal root against the process cwd and scatter
 // runtime files there — under `go test`, into the package source tree (#184;
 // PR #182 nearly committed such a lease file). Refuse loudly before the first
 // MkdirAll instead of publishing state to a location nobody will ever read.
-func ingestStateRootErr(cfg Config) error {
-	if cfg.StateDir == "" || !filepath.IsAbs(cfg.StateDir) {
-		return fmt.Errorf("ingest journal requires an absolute state_dir, got %q", cfg.StateDir)
-	}
-	return nil
-}
 
 // ingestSourceKey names one journal per connector instance. SafeFilename maps the
 // path-hostile characters an account label could carry.
-func ingestSourceKey(provider, account string) string {
-	key := provider
-	if account != "" {
-		key += "@" + account
-	}
-	if key == "" {
-		key = "unknown"
-	}
-	return memory.SafeFilename(key)
-}
-
-func ingestJournalPath(cfg Config, sourceKey string) string {
-	return filepath.Join(ingestJournalRoot(cfg), sourceKey, "journal.log")
-}
 
 // ingestLeasePath is the live-run marker beside a source's journal. Its presence
 // with a LIVE owner pid tells a concurrent committed rebuild that files are still
 // landing for this run, so it must NOT retire the run's header yet (A3 rule d).
-func ingestLeasePath(cfg Config, sourceKey string) string {
-	return filepath.Join(ingestJournalRoot(cfg), sourceKey, "lease")
-}
 
 // ensureIngestLease marks a source's ingest run live, keyed by the CURRENT pid.
 // Called at the same mark-before-visible chokepoint that writes the journal header,
@@ -142,28 +125,7 @@ func releaseIngestLeasesOwnedHere(cfg Config) {
 // (f.Sync before return + parent-dir sync), reusing the same seams as
 // atomicWriteDurable so the durability call-trace tests can record them. Used for
 // the header line, whose loss would be a false-clean.
-func appendJournalDurable(path, line string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteString(line); err != nil {
-		f.Close()
-		return err
-	}
-	if err := atomicio.MarkerSyncFn(f); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return atomicio.SyncDirFn(dir)
-}
+func appendJournalDurable(path, line string) error { return ingestpkg.AppendDurable(path, line) }
 
 // ensureIngestJournalHeader writes the durable "run <op_id> <marked_at>" header the
 // FIRST time a source publishes in a run — BEFORE the file becomes visible. It is a
@@ -206,65 +168,11 @@ func journalPublishedPath(cfg Config, sourceKey, path string) {
 // closed); paths is the total journaled published-path line count (banner detail);
 // oldest is the earliest header marked_at (DirtySince). Cheap: a ReadDir of
 // StateDir/ingest plus a scan per source journal.
-func ingestJournalStatus(cfg Config) (dirty bool, paths int, oldest string, err error) {
-	entries, rerr := os.ReadDir(ingestJournalRoot(cfg))
-	if errors.Is(rerr, os.ErrNotExist) {
-		return false, 0, "", nil
-	}
-	if rerr != nil {
-		return false, 0, "", rerr
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		hdr, n, present := scanJournal(ingestJournalPath(cfg, e.Name()))
-		if !present {
-			continue
-		}
-		// A PRESENT journal file is dirty regardless of its content. A committed
-		// rebuild REMOVES a fully-covered journal (recoverIngestJournals), so any
-		// lingering journal.log means an ingest run started and was not covered — and
-		// a zero-byte or header-less file is a real crash state: appendJournalDurable
-		// creates/opens the file BEFORE writing and syncing the header, so a SIGKILL in
-		// that window leaves a present-but-empty journal. Treating it as absence (the
-		// old hasContent==false path) was a false-clean — a truncated/malformed journal
-		// must fail closed, not be indistinguishable from "no run" (A3 rule d).
-		dirty = true
-		paths += n
-		if hdr != "" && (oldest == "" || hdr < oldest) {
-			oldest = hdr
-		}
-	}
-	return dirty, paths, oldest, nil
-}
 
 // scanJournal returns the header marked_at (if any), the number of published-path
 // lines, and whether the journal file is PRESENT (openable). Presence — not content
 // — is the dirty signal: a zero-byte or header-less file is a crash state, never
 // "absent" (Finding 4). A missing/unreadable file is not present.
-func scanJournal(path string) (header string, pathLines int, present bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", 0, false
-	}
-	present = true
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 3 && fields[0] == "run" {
-			header = fields[2]
-			continue
-		}
-		pathLines++
-	}
-	return header, pathLines, present
-}
 
 // recoverIngestJournals runs after a committed rebuild. For each source journal it
 // drops every published-path line the rebuild LISTED (rule d: listed, deliberately
@@ -367,12 +275,4 @@ func compactIngestJournal(cfg Config, sourceKey string, listed map[string]bool) 
 		return "", err
 	}
 	return "", nil
-}
-
-func journalHeaderRunID(header string) string {
-	fields := strings.Fields(header)
-	if len(fields) == 3 && fields[0] == "run" && validOperationToken(fields[1]) {
-		return fields[1]
-	}
-	return ""
 }
