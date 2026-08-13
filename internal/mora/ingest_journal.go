@@ -1,11 +1,8 @@
 package mora
 
 import (
-	"errors"
-	"github.com/pyranthus-hq/mora/internal/atomicio"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"os"
-	"time"
 )
 
 // ingest_journal.go — the durable ingest journal (Gate 2, A3 rule d). A killed
@@ -20,7 +17,6 @@ import (
 // hard requirement: it is what keeps the index dirty across a crash, and the
 // full-vault rebuild is what actually re-indexes the files.
 
-func ingestStateRootErr(cfg Config) error                       { return ingestpkg.ValidateStateRoot(cfg) }
 func ingestSourceKey(provider, account string) string           { return ingestpkg.SourceKey(provider, account) }
 func ingestJournalPath(cfg Config, key string) string           { return ingestpkg.JournalPath(cfg, key) }
 func ingestLeasePath(cfg Config, key string) string             { return ingestpkg.LeasePath(cfg, key) }
@@ -83,8 +79,6 @@ func releaseIngestLeasesOwnedHere(cfg Config) {
 	ingestpkg.ReleaseLeasesOwnedHere(cfg, ingestLeaseSeams())
 }
 
-func appendJournalDurable(path, line string) error { return ingestpkg.AppendDurable(path, line) }
-
 func ingestRecoverySeams() ingestpkg.RecoverySeams {
 	return ingestpkg.RecoverySeams{CleanPathSet: cleanPathSet, CleanPath: cleanVaultPath, LeaseHeld: func(cfg Config, key string) bool { return ingestLeaseHeld(cfg, key) }, Remove: removeIngestJournalFile, ValidToken: validOperationToken}
 }
@@ -92,40 +86,25 @@ func recoverIngestJournals(cfg Config, files []string) (ingestJournalRecovery, e
 	return ingestpkg.RecoverJournals(cfg, files, ingestRecoverySeams())
 }
 
+func ingestPublishSeams() ingestpkg.PublishSeams {
+	return ingestpkg.PublishSeams{ValidToken: validOperationToken, NewID: newID, Clock: indexClock, CleanPath: cleanVaultPath, Lease: ingestLeaseSeams()}
+}
+func ensureIngestJournalHeader(cfg Config, key string) error {
+	return ingestpkg.EnsureJournalHeader(cfg, key, ingestPublishSeams())
+}
+func journalPublishedPath(cfg Config, key, path string) {
+	ingestpkg.RecordPublishedPath(cfg, key, path, ingestPublishSeams())
+}
+
 // ensureIngestJournalHeader writes the durable "run <op_id> <marked_at>" header the
 // FIRST time a source publishes in a run — BEFORE the file becomes visible. It is a
 // stat-cheap no-op once the header exists, so a whole backfill pays one durable
 // write, not one per memory. MUST be called before the atomicWrite that publishes.
-func ensureIngestJournalHeader(cfg Config, sourceKey string) error {
-	// Take the live-run lease FIRST (before any file is published), so a concurrent
-	// committed rebuild that lists this run's files cannot retire the header out from
-	// under a still-in-flight publish (A3 rule d / Finding 2). Idempotent per process.
-	if err := ensureIngestLease(cfg, sourceKey); err != nil {
-		return err
-	}
-	jp := ingestJournalPath(cfg, sourceKey)
-	if _, err := os.Stat(jp); err == nil {
-		return nil // header already written this run
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	runID := cfg.OperationRunID()
-	if !validOperationToken(runID) {
-		runID = newID() // legacy/direct caller: still mint a durable dirty identity
-	}
-	return appendJournalDurable(jp, "run "+runID+" "+indexClock().UTC().Format(time.RFC3339)+"\n")
-}
 
 // journalPublishedPath records a just-published file. Best-effort and NOT synced
 // per line: the durable header already keeps the index dirty, and the recovery
 // rebuild lists every file on disk regardless — so a lost path line only costs a
 // covered file being re-listed, never a false-clean.
-func journalPublishedPath(cfg Config, sourceKey, path string) {
-	if ingestStateRootErr(cfg) != nil {
-		return // the durable header guard already failed loudly for this run
-	}
-	_ = atomicio.AppendFile(ingestJournalPath(cfg, sourceKey), cleanVaultPath(path)+"\n")
-}
 
 // ingestJournalStatus reports the aggregate ingest-journal state — the B1-rule-4
 // half that lives outside StateDir/pending/. dirty is true if ANY source has an
