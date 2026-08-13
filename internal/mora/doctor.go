@@ -12,35 +12,16 @@ import (
 	"strings"
 	"time"
 
+	doctorpkg "github.com/pyranthus-hq/mora/internal/doctor"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/imessage"
 )
-
-func disjointRealPaths(vault, tokenDir string) bool {
-	rv := resolveReal(vault)
-	rt := resolveReal(tokenDir)
-	return !strings.HasPrefix(rt+string(os.PathSeparator), rv+string(os.PathSeparator)) && rt != rv
-}
-
-func looksSynced(p string) bool {
-	markers := []string{"com~apple~CloudDocs", "Dropbox", "Google Drive", "OneDrive", "Sync"}
-	for _, m := range markers {
-		if strings.Contains(p, m) {
-			return true
-		}
-	}
-	return false
-}
 
 // doctorCheck is one named health probe. Critical checks gate `--strict` (and
 // the JSON report's `healthy`); non-critical ones are advisory only — notably
 // the iMessage/macOS surfaces, which "warn" off-darwin without meaning Mora is
 // broken, so a Linux regression run still reports healthy.
-type doctorCheck struct {
-	Name     string `json:"name"`
-	OK       bool   `json:"ok"`
-	Critical bool   `json:"critical"`
-}
+type doctorCheck = doctorpkg.Check
 
 // doctorReport is the machine-readable shape emitted by `mora doctor --json`,
 // designed so a release regression harness can gate on `.healthy` (and inspect
@@ -86,6 +67,14 @@ var doctorNotifyRunner notifyRunner = osascriptRunner
 
 // sourceHealthDetailLine renders one unhealthy source's human-readable line,
 // e.g. "gmail        FAILED — last success 52h ago — database or disk is full (13)".
+func disjointRealPaths(vault, tokenDir string) bool { return doctorpkg.PathsDisjoint(vault, tokenDir) }
+func looksSynced(path string) bool                  { return doctorpkg.LooksSynced(path) }
+func doctorFailSummary(checks []doctorCheck) string { return doctorpkg.FailSummary(checks) }
+func humanizeAgo(d time.Duration) string            { return doctorpkg.HumanizeAgo(d) }
+func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
+	return doctorpkg.PrintIMessageReadiness(stdout, setupVariant, doctorpkg.IMessageSeams{GOOS: runtimeGOOS, ChatDBPath: chatDBPath, Stat: os.Stat, ProbeReadable: imessage.ProbeReadable})
+}
+
 func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
 	var status string
 	switch h.State {
@@ -168,15 +157,6 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) e
 }
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
-func doctorFailSummary(checks []doctorCheck) string {
-	var failed []string
-	for _, c := range checks {
-		if c.Critical && !c.OK {
-			failed = append(failed, c.Name)
-		}
-	}
-	return fmt.Sprintf("%d critical check(s) failed: %s", len(failed), strings.Join(failed, ", "))
-}
 
 func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -466,24 +446,6 @@ func printGoogleAuthRecency(cfg Config, stdout io.Writer, now time.Time) {
 // humanizeAgo renders a duration as a coarse "N <unit> ago" string for the
 // doctor auth line. Sub-day durations collapse to hours/minutes so a fresh
 // reauth doesn't read as "0 days ago".
-func humanizeAgo(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		m := int(d / time.Minute)
-		return fmt.Sprintf("%d %s ago", m, plural(m, "minute"))
-	case d < 24*time.Hour:
-		h := int(d / time.Hour)
-		return fmt.Sprintf("%d %s ago", h, plural(h, "hour"))
-	default:
-		days := int(d / (24 * time.Hour))
-		return fmt.Sprintf("%d %s ago", days, plural(days, "day"))
-	}
-}
 
 // printIMessageReadiness probes and prints the three iMessage readiness checks plus
 // the Full Disk Access guidance per UI-SPEC Surface 3 (IMSG-08). The FDA signal is a
@@ -491,57 +453,3 @@ func humanizeAgo(d time.Duration) string {
 // present-but-unreadable chat.db is exactly the FDA-denied case. setupVariant points
 // the recovery loop's final step all the way to data (`mora sync imessage`) when shown
 // inline during `connectors setup`. Returns true only when all three checks pass.
-func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
-	if runtimeGOOS() != "darwin" {
-		fmt.Fprintln(stdout, "warn imessage_macos")
-		fmt.Fprintf(stdout, "iMessage ingest only runs on macOS — skipping chat.db checks on %s.\n", runtimeGOOS())
-		return false
-	}
-	fmt.Fprintln(stdout, "ok   imessage_macos")
-
-	path := chatDBPath()
-	dbExists := false
-	if _, err := os.Stat(path); err == nil {
-		dbExists = true
-	}
-	if dbExists {
-		fmt.Fprintln(stdout, "ok   imessage_chat_db")
-	} else {
-		fmt.Fprintln(stdout, "warn imessage_chat_db")
-	}
-
-	readable := false
-	if dbExists {
-		readable, _ = imessage.ProbeReadable(path)
-	}
-	if readable {
-		fmt.Fprintln(stdout, "ok   imessage_full_disk_access")
-		fmt.Fprintln(stdout, "iMessage is ready to sync. Run `mora sync imessage`.")
-		return true
-	}
-
-	fmt.Fprintln(stdout, "warn imessage_full_disk_access")
-	fmt.Fprintln(stdout)
-	if !dbExists {
-		// No chat.db at all (e.g. Messages never set up). Honest about the cause.
-		fmt.Fprintln(stdout, "No Messages database found at ~/Library/Messages/chat.db.")
-		fmt.Fprintln(stdout, "Open the Messages app and sign in to iMessage, then re-run `mora doctor`.")
-		return false
-	}
-	finalStep := "  4. Re-run `mora doctor` to confirm."
-	if setupVariant {
-		finalStep = "  4. Re-run `mora doctor` to confirm, then `mora sync imessage`."
-	}
-	fmt.Fprintln(stdout, "iMessage needs Full Disk Access to read your Messages database.")
-	fmt.Fprintln(stdout, "chat.db exists but could not be read (permission denied) — Full Disk Access is not granted.")
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "To grant it:")
-	fmt.Fprintln(stdout, "  1. Open System Settings → Privacy & Security → Full Disk Access.")
-	fmt.Fprintln(stdout, "  2. Click the + button and add ~/Applications/Mora.app (not Terminal, Claude, or your editor).")
-	fmt.Fprintln(stdout, "     If Mora.app is already listed, toggle it OFF and back ON.")
-	fmt.Fprintln(stdout, "  3. Fully quit and reopen Mora.app.")
-	fmt.Fprintln(stdout, finalStep)
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Mora only ever READS the database — it never writes to or modifies your Messages.")
-	return false
-}

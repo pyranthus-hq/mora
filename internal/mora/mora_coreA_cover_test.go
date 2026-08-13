@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // coreADirsCfg returns a Config with every dir rooted under one temp dir — for the
@@ -44,33 +43,6 @@ func TestCoreA_Fusion(t *testing.T) {
 	c.SetFusionOverride(&ov)
 	if got := configFusion(c); got != ov {
 		t.Fatalf("fusion() override = %+v, want %+v", got, ov)
-	}
-}
-
-func TestCoreA_HumanizeAgoAndPlural(t *testing.T) {
-	cases := []struct {
-		d    time.Duration
-		want string
-	}{
-		{-5 * time.Second, "just now"},
-		{30 * time.Second, "just now"},
-		{time.Minute, "1 minute ago"},
-		{5 * time.Minute, "5 minutes ago"},
-		{time.Hour, "1 hour ago"},
-		{3 * time.Hour, "3 hours ago"},
-		{24 * time.Hour, "1 day ago"},
-		{72 * time.Hour, "3 days ago"},
-	}
-	for _, tc := range cases {
-		if got := humanizeAgo(tc.d); got != tc.want {
-			t.Errorf("humanizeAgo(%v) = %q, want %q", tc.d, got, tc.want)
-		}
-	}
-	if got := plural(1, "row"); got != "row" {
-		t.Errorf("plural(1) = %q, want row", got)
-	}
-	if got := plural(0, "row"); got != "rows" {
-		t.Errorf("plural(0) = %q, want rows", got)
 	}
 }
 
