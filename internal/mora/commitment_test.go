@@ -110,6 +110,34 @@ func TestCommitmentDirectionTable(t *testing.T) {
 			name: "ambiguous addressee refuses", text: "Could you send the receipt?",
 			author: other, wantExists: false,
 		},
+		{
+			name: "hypothetical question is not a request", text: "What would you do if I asked you to send the outline?",
+			author: self, addressee: other, wantExists: false,
+		},
+		{
+			name: "product research prompt is not a request", text: "If we added a sharing feature, what would you use it for?",
+			author: other, addressee: self, wantExists: false,
+		},
+		{
+			name: "discourse add-that is not a promise", text: "I should add that the vendor already confirmed the shipment.",
+			author: self, addressee: other, wantExists: false,
+		},
+		{
+			name: "retrospective problem analysis is not a promise", text: "I should share the problems we have had with the old uploader in this analysis.",
+			author: self, addressee: other, wantExists: false,
+		},
+		{
+			name: "explicit future repair remains a promise", text: "I will fix the uploader and send the patch tomorrow.",
+			author: self, addressee: other, wantOwner: self, wantDir: commitOwedBySelf, wantExists: true,
+		},
+		{
+			name: "action-verb add still promises", text: "I'll add the invoice to the folder.",
+			author: self, addressee: other, wantOwner: self, wantDir: commitOwedBySelf, wantExists: true,
+		},
+		{
+			name: "quoted excerpt is not authored speech", text: "\"Could you send the signed contract by Friday?\"",
+			author: other, addressee: self, wantExists: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,6 +155,38 @@ func TestCommitmentDirectionTable(t *testing.T) {
 				t.Fatalf("owner/direction = %+v/%q, want %+v/%q", owner, direction, tt.wantOwner, tt.wantDir)
 			}
 		})
+	}
+}
+
+func TestIMessagePastedCorrespondenceIsNotAttributedToChatParticipant(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	memory := func(message string) Memory {
+		const id = "imessage_chat/invented-paste"
+		body := "## 2026-08-01\nMe: " + message
+		start := strings.Index(body, "Me:")
+		return Memory{
+			ID: id, Type: "imessage", Provider: "imessage", Source: "invented-paste",
+			CreatedAt: "2026-08-01T10:00:00Z", Text: body,
+			Meta: map[string]any{
+				"message_count": "1",
+				"participants": []map[string]string{{
+					"handle": "+15550100120", "name": "Lucia",
+				}},
+				"message_evidence_schema": 1,
+				"message_evidence": []map[string]any{{
+					"evidence_ref": id + "#outgoing", "at": "2026-08-01T10:00:00Z",
+					"from_me": true, "sender": "Me", "block_start": start, "block_end": len(body),
+				}},
+			},
+		}
+	}
+
+	pasted := "Hi Morgan,\n\nCould you send the corrected invoice by Friday?\n\nBest,\nAvery"
+	if got := classifyCommitments(memory(pasted), cfg); len(got) != 0 {
+		t.Fatalf("pasted correspondence was attributed to the chat participant: %+v", got)
+	}
+	if got := classifyCommitments(memory("Could you send the corrected invoice by Friday?"), cfg); len(got) != 1 || got[0].Direction != commitOwedByCounterparty {
+		t.Fatalf("ordinary direct chat request was suppressed: %+v", got)
 	}
 }
 
@@ -260,6 +320,72 @@ func TestCommitmentCounterpartyDoesNotExcludePartialSelfNameMatch(t *testing.T) 
 	}
 	if got, ok := commitmentCounterparty(m, cfg); ok {
 		t.Fatalf("ambiguous participants resolved to %+v; a partial self-name match must fail closed", got)
+	}
+}
+
+func TestGmailOpaqueReplyAliasUsesProvenThreadCounterparty(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	memory := Memory{
+		ID: "gmail_thread/invented-opaque-reply", Type: "email", Provider: "gmail",
+		Source: "invented-opaque-reply", CreatedAt: "2026-08-01T10:05:00Z",
+		Text: "From: Ledger Team <ledger@example.test>\n\nHere are the account details.\n\n---\n\n" +
+			"Could you send the corrected ledger?",
+		Meta: map[string]any{
+			"from": []string{"ledger@example.test", "self@example.com"},
+			"to":   []string{"self@example.com", "7f24c91d@relay.example.test"},
+			"cc":   []string{"observer.one@example.test", "observer.two@example.test"},
+			"messages": []commitmentMessageEvidence{
+				{
+					MessageRef: "gmail_thread/invented-opaque-reply#incoming",
+					Sender:     "ledger@example.test", To: []string{"self@example.com"},
+					At: "2026-08-01T10:00:00Z", BlockRefs: []string{"incoming-body"},
+				},
+				{
+					MessageRef: "gmail_thread/invented-opaque-reply#request",
+					Sender:     "self@example.com", To: []string{"7f24c91d@relay.example.test"},
+					Cc: []string{"observer.one@example.test", "observer.two@example.test"},
+					At: "2026-08-01T10:05:00Z", BlockRefs: []string{"request-body"},
+				},
+			},
+		},
+	}
+	got := classifyCommitments(memory, cfg)
+	if len(got) != 1 {
+		t.Fatalf("commitments = %+v, want the self-authored request", got)
+	}
+	if got[0].Direction != commitOwedByCounterparty ||
+		got[0].Owner.Value != "ledger@example.test" ||
+		got[0].Counterparty.Value != "ledger@example.test" {
+		t.Fatalf("commitment = %+v, want the proven thread correspondent to owe the request", got[0])
+	}
+}
+
+func TestGmailOpaqueReplyAliasMultiplePrimaryRecipientsFailsClosed(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	memory := Memory{
+		ID: "gmail_thread/invented-ambiguous-reply", Type: "email", Provider: "gmail",
+		Source: "invented-ambiguous-reply", CreatedAt: "2026-08-01T10:05:00Z",
+		Text: "From: Ledger Team <ledger@example.test>\n\nHere are the account details.\n\n---\n\n" +
+			"Could you send the corrected ledger?",
+		Meta: map[string]any{
+			"from": []string{"ledger@example.test", "self@example.com"},
+			"to":   []string{"self@example.com", "first-relay@example.test", "second-relay@example.test"},
+			"messages": []commitmentMessageEvidence{
+				{
+					MessageRef: "gmail_thread/invented-ambiguous-reply#incoming",
+					Sender:     "ledger@example.test", To: []string{"self@example.com"},
+					At: "2026-08-01T10:00:00Z", BlockRefs: []string{"incoming-body"},
+				},
+				{
+					MessageRef: "gmail_thread/invented-ambiguous-reply#request",
+					Sender:     "self@example.com", To: []string{"first-relay@example.test", "second-relay@example.test"},
+					At: "2026-08-01T10:05:00Z", BlockRefs: []string{"request-body"},
+				},
+			},
+		},
+	}
+	if got := classifyCommitments(memory, cfg); len(got) != 0 {
+		t.Fatalf("multiple primary recipients resolved to a guessed commitment %+v", got)
 	}
 }
 

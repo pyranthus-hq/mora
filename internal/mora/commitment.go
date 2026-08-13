@@ -226,10 +226,124 @@ func atomPresent(a govAtom) bool {
 	return strings.TrimSpace(a.Kind) != "" && strings.TrimSpace(a.Value) != ""
 }
 
+// commitmentHypotheticalRE matches a question ABOUT a hypothetical action ("what
+// would you do if...", "how would you use this") rather than a request FOR one. The
+// interrogative "what/how" ahead of the modal is the tell: a real request opens
+// directly with the modal ("Would you send...", "Could you confirm...").
+var commitmentHypotheticalRE = regexp.MustCompile(`(?i)\b(what|how)\s+(would|will|could)\s+(you|we|i|they)\b`)
+
+// commitmentConditionalFeatureRE matches product-research framing: a hypothetical
+// feature introduced by "if we/you/I added/built/had/shipped..." This is market
+// research about a feature that does not exist, not a task handed to anyone.
+var commitmentConditionalFeatureRE = regexp.MustCompile(`(?i)\bif\s+(we|you|i)\s+(added|add|build|built|had|have|made|make|create|created|shipped|ship|launched|launch|introduced|introduce|offered|offer)\b`)
+
+// commitmentIsHypothetical reports whether text poses a hypothetical or
+// research-style question about a possible future rather than requesting or
+// promising a concrete action. "What would you do if I asked you to send the
+// deck?" and "If we added this, what would you use it for?" must never open a
+// commitment merely because they contain a request/promise phrase as a substring.
+func commitmentIsHypothetical(lower string) bool {
+	if commitmentHypotheticalRE.MatchString(lower) || commitmentConditionalFeatureRE.MatchString(lower) {
+		return true
+	}
+	return containsAnyPhrase(lower, []string{
+		"hypothetically", "purely hypothetical", "just curious what", "just curious how",
+		"out of curiosity", "as a thought experiment",
+	})
+}
+
+// commitmentIsQuotedExcerpt reports whether text is substantially a quoted excerpt
+// (opens with a quotation mark that closes over most of the sentence) rather than
+// the speaker's own words. Pasting a copied passage into a conversation ("'We need
+// your approval before Friday' — from the vendor's note") must not be attributed as
+// the paster's own request or promise merely because it appears in their turn.
+func commitmentIsQuotedExcerpt(text string) bool {
+	t := strings.TrimSpace(text)
+	openers := map[string]string{"\"": "\"", "“": "”"}
+	for open, close := range openers {
+		if !strings.HasPrefix(t, open) {
+			continue
+		}
+		rest := t[len(open):]
+		idx := strings.LastIndex(rest, close)
+		if idx < 0 {
+			continue
+		}
+		quoted := strings.TrimSpace(rest[:idx])
+		if len(strings.Fields(quoted)) >= 4 && float64(len(quoted)) >= 0.6*float64(len(t)) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	commitmentMailGreetingRE = regexp.MustCompile(`(?i)^(hi|hello|dear)\b.*[,!]$`)
+	commitmentMailSignoffRE  = regexp.MustCompile(`(?i)^(best|best regards|regards|thanks|thank you|sincerely|warmly)[,!]?$`)
+)
+
+// commitmentIsPastedCorrespondence recognizes a whole email-like artifact pasted
+// into a chat. The chat envelope proves who pasted the text, not who authored the
+// request inside it, so fail closed unless later provenance identifies that author.
+// Requiring multiple structural signals avoids suppressing ordinary short messages.
+func commitmentIsPastedCorrespondence(text string) bool {
+	if !strings.Contains(text, "\n") {
+		return false
+	}
+	var lines []string
+	headerCount := 0
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "from:") || strings.HasPrefix(lower, "to:") ||
+			strings.HasPrefix(lower, "cc:") || strings.HasPrefix(lower, "subject:") {
+			headerCount++
+		}
+		if strings.Contains(lower, "forwarded message") {
+			return true
+		}
+	}
+	if headerCount >= 2 {
+		return true
+	}
+	if len(lines) < 4 || len(strings.Fields(text)) < 10 || !commitmentMailGreetingRE.MatchString(lines[0]) {
+		return false
+	}
+	start := len(lines) - 3
+	if start < 1 {
+		start = 1
+	}
+	for _, line := range lines[start:] {
+		if commitmentMailSignoffRE.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func commitmentIsRetrospectiveAnalysis(lower string) bool {
+	if containsAnyPhrase(lower, directRequestPhrases) ||
+		containsAnyPhrase(lower, []string{"i'll ", "i will ", "let me ", "i promised "}) {
+		return false
+	}
+	return containsAnyPhrase(lower, []string{
+		"problems we have had", "problems we've had", "issues we have had", "issues we've had",
+		"what went wrong", "root cause", "the problem was", "the issue was",
+		"had trouble with", "was not working", "wasn't working", "did not work", "didn't work",
+	})
+}
+
 func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (owner govAtom, direction Direction, ok bool) {
 	text = oneLine(text)
 	lower := strings.ToLower(text)
 	if text == "" || !atomPresent(speech.Self) || !atomPresent(speech.Counterparty) {
+		return govAtom{}, "", false
+	}
+	if commitmentIsHypothetical(lower) || commitmentIsQuotedExcerpt(text) || commitmentIsRetrospectiveAnalysis(lower) {
 		return govAtom{}, "", false
 	}
 
@@ -276,6 +390,12 @@ func firstPersonCommitment(lower string) bool {
 	if containsAnyPhrase(lower, []string{"i'd already ", "i'd previously ", "i'd just "}) {
 		return false
 	}
+	// "I should/I'll/I'd add that ..." is the discourse sense of "add" (introducing
+	// a remark, as in analysis or meeting notes) not the action sense ("I'll add the
+	// invoice"). Only the complementizer "that" tells them apart.
+	if commitmentDiscourseAddRE.MatchString(lower) {
+		return false
+	}
 	return containsAnyPhrase(lower, []string{
 		"send", "share", "review", "confirm", "sign", "bring", "upload", "deliver",
 		"call", "follow up", "get back", "organize", "archive", "initial", "choose",
@@ -283,6 +403,8 @@ func firstPersonCommitment(lower string) bool {
 		"add", "post", "text", "count", "hold", "reserve", "log",
 	})
 }
+
+var commitmentDiscourseAddRE = regexp.MustCompile(`(?i)\bi(?:'ll|'d| will| should| can) add that\b`)
 
 var userAuthoredPromiseToAnotherRE = regexp.MustCompile(`(?i)\bi told\s+((?:[\p{L}\p{N}_.’'\-]+\s+){0,3}[\p{L}\p{N}_.’'\-]+)\s+i(?:['’]d|\s+would)\s+`)
 
@@ -442,6 +564,30 @@ func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
 		return govAtom{}, false
 	}
 	return candidates[0], true
+}
+
+// gmailThreadCounterparty uses immutable per-message authorship to establish the
+// correspondent for a thread. Recipient lists can contain relay Reply-To aliases
+// and observers; a single distinct non-self sender is stronger evidence than
+// guessing among those recipients. Multiple non-self senders remain ambiguous.
+func gmailThreadCounterparty(m Memory, cfg Config) (govAtom, bool) {
+	self := selfEmails(cfg)
+	seen := map[string]govAtom{}
+	for _, message := range gmailCommitmentMessages(m) {
+		value := strings.ToLower(strings.TrimSpace(message.Sender))
+		if value == "" || self[value] {
+			continue
+		}
+		key := mailboxKey(value)
+		seen[key] = govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, value)}
+	}
+	if len(seen) != 1 {
+		return govAtom{}, false
+	}
+	for _, counterparty := range seen {
+		return counterparty, true
+	}
+	return govAtom{}, false
 }
 
 // participantNameIsSelf handles imported/transcoded iMessage records that list the
@@ -810,12 +956,13 @@ func acceptanceRestatesRequest(existing []Commitment, candidate Commitment) (int
 	return -1, false
 }
 
-func gmailAddressee(sender govAtom, to, cc []string, self, counterparty govAtom) govAtom {
+func gmailAddressee(sender govAtom, to, cc []string, self, counterparty govAtom, threadCounterparty bool) govAtom {
 	recipients := append(append([]string(nil), to...), cc...)
 	seenOther := map[string]bool{}
+	seenOtherTo := map[string]bool{}
 	hasSelf := false
 	hasCounterparty := false
-	for _, raw := range recipients {
+	for i, raw := range recipients {
 		value := strings.ToLower(strings.TrimSpace(raw))
 		atom := govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, value)}
 		switch {
@@ -827,12 +974,20 @@ func gmailAddressee(sender govAtom, to, cc []string, self, counterparty govAtom)
 		case value != "":
 			seenOther[mailboxKey(value)] = true
 		}
+		if i < len(to) && value != "" && !atomEqual(atom, self) {
+			seenOtherTo[mailboxKey(value)] = true
+		}
 	}
 	switch {
 	case atomEqual(sender, counterparty) && hasSelf &&
 		(len(seenOther) == 0 || (len(seenOther) == 1 && hasCounterparty)):
 		return self
 	case atomEqual(sender, self) && hasCounterparty && len(seenOther) == 1:
+		return counterparty
+	case atomEqual(sender, self) && threadCounterparty && !hasCounterparty && len(seenOtherTo) == 1:
+		// A single primary recipient on a reply to a thread with one proven
+		// correspondent may be that provider's opaque Reply-To alias. CCs are
+		// observers and never select the owner; multiple primary recipients fail.
 		return counterparty
 	default:
 		return govAtom{}
@@ -903,6 +1058,13 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	}
 
 	counterparty, ok := commitmentCounterparty(m, cfg)
+	threadCounterpartyProven := false
+	if isGmailMemory(m) {
+		if established, found := gmailThreadCounterparty(m, cfg); found {
+			counterparty, ok = established, true
+			threadCounterpartyProven = true
+		}
+	}
 	if !ok && isGmailMemory(m) {
 		// A non-self author is the counterparty for both their own commitment and
 		// their request to the user, even when another attendee was copied. This
@@ -919,6 +1081,9 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	if isIMessageMemory(m) {
 		if messages, present := imessageCommitmentMessages(m); present {
 			for _, message := range messages {
+				if commitmentIsPastedCorrespondence(message.Body) {
+					continue
+				}
 				author, addressee := counterparty, selfAtom
 				if message.Party == commitmentPartySelf {
 					author, addressee = selfAtom, counterparty
@@ -950,6 +1115,9 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 			return out
 		}
 		for _, turn := range conversationTurns(m.Text) {
+			if commitmentIsPastedCorrespondence(turn.Body) {
+				continue
+			}
 			author, addressee := counterparty, selfAtom
 			if turn.Self {
 				author, addressee = selfAtom, counterparty
@@ -997,7 +1165,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				if !atomEqual(author, selfAtom) && !atomEqual(author, counterparty) {
 					continue
 				}
-				addressee := gmailAddressee(author, message.To, message.Cc, selfAtom, counterparty)
+				addressee := gmailAddressee(author, message.To, message.Cc, selfAtom, counterparty, threadCounterpartyProven)
 				blockRef := gmailAuthoredBlockRef(message, parts[i])
 				slot := 0
 				for _, segment := range commitmentSegments(parts[i]) {
@@ -1063,7 +1231,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 			if sender != "" {
 				author = govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, sender)}
 			}
-			addressee := gmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), selfAtom, counterparty)
+			addressee := gmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), selfAtom, counterparty, threadCounterpartyProven)
 			first := ""
 			if len(parts) > 0 {
 				first = parts[0]
@@ -1097,7 +1265,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 			if sender != "" {
 				author = govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, sender)}
 			}
-			addressee := gmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), selfAtom, counterparty)
+			addressee := gmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), selfAtom, counterparty, threadCounterpartyProven)
 			reportedActor, attributed := reportedActorFor(m, m.Title, counterparty, selfAtom)
 			if attributed && reportedActor == nil {
 				return uniqueCommitments(out)
