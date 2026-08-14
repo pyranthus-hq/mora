@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -45,8 +44,6 @@ func setTestHome(t *testing.T, dir string) {
 	t.Setenv("USERPROFILE", dir)
 }
 
-var authoredReconcileRunnerTestMu sync.Mutex
-
 func setAuthoredReconcileRunnerForTest(t *testing.T, runner func(context.Context, Config) error) {
 	t.Helper()
 	authoredReconcileRunnerMu.Lock()
@@ -67,10 +64,9 @@ func withTempHome(t *testing.T) {
 	// temp-home tests may tear their StateDir down immediately after a call, so keep
 	// it inert by default and opt in with a local seam where its scheduling contract
 	// is under test.
-	// This also serializes any test that chooses a temporary HOME, preventing its
-	// reconciler seam from changing under another test's MCP call.
-	authoredReconcileRunnerTestMu.Lock()
-	t.Cleanup(func() { authoredReconcileRunnerTestMu.Unlock() })
+	// Snapshotting the runner before the production goroutine boundary keeps this
+	// cleanup-safe. Tests using withTempHome also call t.Setenv below, so Go's test
+	// harness already forbids them from running in parallel.
 	setAuthoredReconcileRunnerForTest(t, func(context.Context, Config) error { return nil })
 	pinOperationClockForTest(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	setTestHome(t, t.TempDir())
