@@ -1,17 +1,26 @@
-package mora
+package retention
 
 import (
 	"math"
 	"slices"
 	"testing"
 	"time"
+
+	embedpkg "github.com/pyranthus-hq/mora/internal/embed"
 )
+
+var testStopwords = map[string]bool{"a": true, "about": true, "am": true, "an": true, "and": true, "are": true, "as": true, "at": true, "be": true, "been": true, "being": true, "but": true, "by": true, "can": true, "could": true, "did": true, "do": true, "does": true, "doing": true, "for": true, "from": true, "had": true, "has": true, "have": true, "how": true, "i": true, "if": true, "in": true, "into": true, "is": true, "it": true, "its": true, "me": true, "my": true, "of": true, "on": true, "or": true, "our": true, "so": true, "that": true, "the": true, "their": true, "them": true, "then": true, "there": true, "these": true, "they": true, "this": true, "to": true, "was": true, "we": true, "were": true, "what": true, "when": true, "which": true, "who": true, "will": true, "with": true, "would": true, "you": true, "your": true}
+
+func testStopword(s string) bool { return testStopwords[s] }
+func rankForgettability(now time.Time, title string, names []string, candidates []Candidate, opts Options) Ranking {
+	return Rank(now, title, names, candidates, opts, Policy{ThinCoverageK: 3, EvidenceCap: 12, Tokenize: embedpkg.TokenizeWords, IsStopword: testStopword})
+}
 
 func TestForgettabilityGoldenRegimes(t *testing.T) {
 	now := mustForgetTime(t, "2026-01-01T12:00:00Z")
 	eventTitle := "Coffee kindergarten portfolio lease"
 	attendees := []string{"Dana", "Sam", "Leo", "Pat", "Riley", "Austin", "Taylor", "Casey"}
-	candidates := []forgettabilityCandidate{
+	candidates := []Candidate{
 		{
 			StableID: "kid-thread", Title: "Mira kindergarten", Text: "Dana mentioned that her daughter Mira started kindergarten and loves the new class.",
 			OccurredAt: daysAgo(now, 240), PersonID: "person:dana@example.com", PersonDisplay: "Dana", PersonKind: "person", PersonLastSeen: daysAgo(now, 45),
@@ -84,7 +93,7 @@ func TestForgettabilityGoldenRegimes(t *testing.T) {
 		},
 	}
 
-	got := rankForgettability(now, eventTitle, attendees, candidates, forgettabilityOptions{})
+	got := rankForgettability(now, eventTitle, attendees, candidates, Options{})
 	want := expectedForgettabilityMicros(t, now, eventTitle, attendees, candidates)
 	for _, r := range got.All {
 		if r.ValueMicros != want[r.StableID] {
@@ -113,14 +122,14 @@ func TestForgettabilityGoldenRegimes(t *testing.T) {
 	if got.ByID("denver-old").ValueMicros <= got.ByID("austin-new").ValueMicros {
 		t.Fatalf("forgotten old location should outrank newer replacement when dated-historical: old=%d new=%d", got.ByID("denver-old").ValueMicros, got.ByID("austin-new").ValueMicros)
 	}
-	if !slices.Contains(got.Gaps.ThinAttendees, "Only 1 memory about Austin - coverage is thin.") {
-		t.Fatalf("thin attendee gap missing: %#v", got.Gaps.ThinAttendees)
+	if !slices.Contains(got.ThinAttendees, "Only 1 memory about Austin - coverage is thin.") {
+		t.Fatalf("thin attendee gap missing: %#v", got.ThinAttendees)
 	}
 }
 
 func TestForgettabilityHardShadowDropsNearRestatement(t *testing.T) {
 	now := mustForgetTime(t, "2026-01-01T12:00:00Z")
-	candidates := []forgettabilityCandidate{
+	candidates := []Candidate{
 		{
 			StableID: "old-restatement", Title: "Denver apartment lease paperwork", Text: "Denver apartment lease paperwork done",
 			OccurredAt: daysAgo(now, 300), PersonID: "person:casey@example.com", PersonDisplay: "Casey", PersonKind: "person", PersonLastSeen: daysAgo(now, 20),
@@ -133,7 +142,7 @@ func TestForgettabilityHardShadowDropsNearRestatement(t *testing.T) {
 		},
 	}
 
-	got := rankForgettability(now, "Denver lease", []string{"Casey"}, candidates, forgettabilityOptions{})
+	got := rankForgettability(now, "Denver lease", []string{"Casey"}, candidates, Options{})
 	old := got.ByID("old-restatement")
 	if old.Gates.Valid {
 		t.Fatalf("old near-verbatim restatement remained valid: %#v", old.Gates)
@@ -148,7 +157,7 @@ func TestForgettabilityHardShadowDropsNearRestatement(t *testing.T) {
 
 func TestForgettabilityDatedTieBreakAndPerAttendeeCap(t *testing.T) {
 	now := mustForgetTime(t, "2026-01-01T12:00:00Z")
-	candidates := []forgettabilityCandidate{
+	candidates := []Candidate{
 		forgettabilityCandidateForCap("dana-1", "person:dana@example.com", "Dana", daysAgo(now, 120), now.Format(time.RFC3339)),
 		forgettabilityCandidateForCap("dana-2", "person:dana@example.com", "Dana", "", now.Format(time.RFC3339)),
 		forgettabilityCandidateForCap("dana-3", "person:dana@example.com", "Dana", daysAgo(now, 121), daysAgo(now, 1)),
@@ -156,7 +165,7 @@ func TestForgettabilityDatedTieBreakAndPerAttendeeCap(t *testing.T) {
 		forgettabilityCandidateForCap("pat-1", "person:pat@example.com", "Pat", daysAgo(now, 90), daysAgo(now, 90)),
 	}
 
-	got := rankForgettability(now, "portfolio", []string{"Dana", "Pat"}, candidates, forgettabilityOptions{EvidenceCap: 4, PerAttendeeCap: 3})
+	got := rankForgettability(now, "portfolio", []string{"Dana", "Pat"}, candidates, Options{EvidenceCap: 4, PerAttendeeCap: 3})
 	selectedIDs := resultIDs(got.Selected)
 	if countPerson(got.Selected, "person:dana@example.com") != 3 {
 		t.Fatalf("selected %d Dana items, want per-attendee cap 3: %v", countPerson(got.Selected, "person:dana@example.com"), selectedIDs)
@@ -169,7 +178,7 @@ func TestForgettabilityDatedTieBreakAndPerAttendeeCap(t *testing.T) {
 	}
 }
 
-func forgettabilityCandidateForCap(id, personID, display, occurred, lastSeen string) forgettabilityCandidate {
+func forgettabilityCandidateForCap(id, personID, display, occurred, lastSeen string) Candidate {
 	text := map[string]string{
 		"dana-1": "orchard runway cacao lantern marble violet",
 		"dana-2": "harbor cobalt prism velvet meadow copper",
@@ -177,16 +186,16 @@ func forgettabilityCandidateForCap(id, personID, display, occurred, lastSeen str
 		"dana-4": "forest indigo ceramic basil comet willow",
 		"pat-1":  "market juniper slate apricot signal nickel",
 	}[id]
-	return forgettabilityCandidate{
+	return Candidate{
 		StableID: id, Title: "portfolio " + id, Text: text,
 		OccurredAt: occurred, PersonID: personID, PersonDisplay: display, PersonKind: "person", PersonLastSeen: lastSeen,
 		AttendeeKnown: true, IdentityCorroborated: true, HumanAuthored: true, MessageCount: 1, MentionCount: 5,
 	}
 }
 
-func expectedForgettabilityMicros(t *testing.T, now time.Time, eventTitle string, attendeeNames []string, candidates []forgettabilityCandidate) map[string]int64 {
+func expectedForgettabilityMicros(t *testing.T, now time.Time, eventTitle string, attendeeNames []string, candidates []Candidate) map[string]int64 {
 	t.Helper()
-	opts := defaultForgettabilityOptions(forgettabilityOptions{})
+	opts := defaultForgettabilityOptions(Options{}, Policy{ThinCoverageK: 3, EvidenceCap: 12})
 	eventTokens := testDistinctiveTokens(eventTitle, attendeeNames)
 	tokenSets := map[string]map[string]bool{}
 	for _, c := range candidates {
@@ -259,13 +268,13 @@ func expectedForgettabilityMicros(t *testing.T, now time.Time, eventTitle string
 func testDistinctiveTokens(s string, attendeeNames []string) map[string]bool {
 	exclude := map[string]bool{}
 	for _, name := range attendeeNames {
-		for _, tok := range tokenizeWords(name) {
+		for _, tok := range embedpkg.TokenizeWords(name) {
 			exclude[tok] = true
 		}
 	}
 	out := map[string]bool{}
-	for _, tok := range tokenizeWords(s) {
-		if len(tok) < 3 || ftsStopwords[tok] || exclude[tok] {
+	for _, tok := range embedpkg.TokenizeWords(s) {
+		if len(tok) < 3 || testStopword(tok) || exclude[tok] {
 			continue
 		}
 		out[tok] = true
@@ -296,7 +305,7 @@ func daysAgo(now time.Time, days int) string {
 	return now.Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
 }
 
-func resultIDs(results []forgettabilityResult) []string {
+func resultIDs(results []Result) []string {
 	ids := make([]string, 0, len(results))
 	for _, r := range results {
 		ids = append(ids, r.StableID)
@@ -304,7 +313,7 @@ func resultIDs(results []forgettabilityResult) []string {
 	return ids
 }
 
-func countPerson(results []forgettabilityResult, personID string) int {
+func countPerson(results []Result, personID string) int {
 	n := 0
 	for _, r := range results {
 		if r.PersonID == personID {
@@ -321,4 +330,19 @@ func indexOf(ids []string, id string) int {
 		}
 	}
 	return len(ids)
+}
+
+func TestExportedRetentionHelpers(t *testing.T) {
+	policy := Policy{Tokenize: embedpkg.TokenizeWords, IsStopword: testStopword}
+	got := DistinctiveTokens("The lease portfolio", nil, policy)
+	if got["the"] || !got["lease"] || !got["portfolio"] {
+		t.Fatalf("tokens=%v", got)
+	}
+	if IntersectionSize(map[string]bool{"a": true, "b": true}, map[string]bool{"b": true}) != 1 {
+		t.Fatal("intersection changed")
+	}
+	when, ok := ParseTime("", "2026-01-01T00:00:00Z")
+	if !ok || when.Year() != 2026 {
+		t.Fatalf("time=(%v,%v)", when, ok)
+	}
 }
