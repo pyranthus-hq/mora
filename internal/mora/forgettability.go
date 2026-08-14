@@ -1,6 +1,7 @@
 package mora
 
 import (
+	saliencepkg "github.com/pyranthus-hq/mora/internal/salience"
 	"math"
 	"sort"
 	"time"
@@ -204,7 +205,7 @@ func scoreForgettabilityCandidate(now time.Time, eventTokens map[string]bool, to
 	if c.ContentCorroborated || (c.HumanAuthored && len(c.Text) >= opts.BodyMinChars) {
 		corroboration = 1
 	}
-	rarity := 1 - sat(float64(mc-1), opts.RarityScale)
+	rarity := 1 - saliencepkg.Saturate(float64(mc-1), opts.RarityScale)
 	forget := clamp01(opts.WeightAge*a + opts.WeightDormancy*b + opts.WeightRarity*corroboration*rarity)
 
 	rel := 0.0
