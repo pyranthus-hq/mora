@@ -8,11 +8,21 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strconv"
 	"time"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
+
+func mcpTool(name, desc string, params ...mcpParam) map[string]any {
+	converted := make([]mcppkg.Param, len(params))
+	for i, p := range params {
+		converted[i] = mcppkg.Param{Name: p.Name, Type: p.Type, Desc: p.Desc, Required: p.Required}
+	}
+	return mcppkg.Tool(name, desc, converted...)
+}
+func strArg(args map[string]any, key, def string) string     { return mcppkg.StringArg(args, key, def) }
+func intArg(args map[string]any, key string, def int) int    { return mcppkg.IntArg(args, key, def) }
+func boolArg(args map[string]any, key string, def bool) bool { return mcppkg.BoolArg(args, key, def) }
 
 func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 1 && args[0] == "serve" {
@@ -917,7 +927,7 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 // directly" report).
 type mcpParam struct {
 	Name     string
-	Type     string // JSON Schema type: "string" | "integer"
+	Type     string
 	Desc     string
 	Required bool
 }
@@ -926,37 +936,6 @@ type mcpParam struct {
 // is false so strict clients (Codex) know the arg set is closed; tools with no
 // params still publish an explicit empty object schema rather than the old
 // catch-all that gave agents zero guidance.
-func mcpTool(name, desc string, params ...mcpParam) map[string]any {
-	properties := map[string]any{}
-	var required []string
-	for _, p := range params {
-		properties[p.Name] = map[string]any{"type": p.Type, "description": p.Desc}
-		if p.Required {
-			required = append(required, p.Name)
-		}
-	}
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return map[string]any{"name": name, "description": desc, "inputSchema": schema}
-}
-func strArg(args map[string]any, key, def string) string {
-	if v, ok := args[key].(string); ok {
-		return v
-	}
-	return def
-}
-func intArg(args map[string]any, key string, def int) int {
-	if v, ok := args[key].(float64); ok {
-		return int(v)
-	}
-	return def
-}
 
 // boolArg reads an MCP tool arg as a bool. MCP arguments arrive as map[string]any
 // from json.Unmarshal, so we accept a native JSON bool directly and ALSO a
@@ -964,14 +943,3 @@ func intArg(args map[string]any, key string, def int) int {
 // malformed string) falls back to def. This mirrors strArg/intArg's defensive
 // type-switch — an untrusted/absent value never crashes and never silently flips
 // the safe default (the opt-in envelope arg must default OFF, 15-02 T-15-04).
-func boolArg(args map[string]any, key string, def bool) bool {
-	switch v := args[key].(type) {
-	case bool:
-		return v
-	case string:
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
-	}
-	return def
-}
