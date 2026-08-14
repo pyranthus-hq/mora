@@ -1,4 +1,4 @@
-package mora
+package identity
 
 import (
 	"os"
@@ -276,5 +276,37 @@ func TestClassifyIdentityTypes(t *testing.T) {
 		if got := classifyIdentity(c.identity, c.display); got != c.want {
 			t.Errorf("classifyIdentity(%q, %q) = %q, want %q", c.identity, c.display, got, c.want)
 		}
+	}
+}
+
+func TestExportedIdentitySurface(t *testing.T) {
+	if Classify("noreply@example.com", "") != "service" {
+		t.Fatal("classify changed")
+	}
+	if !IsShortcode("12345") || IsShortcode("+12345") {
+		t.Fatal("shortcode changed")
+	}
+	phones := []string{"4155550123", "+1 (415) 555-0123", "415.555.0123"}
+	for _, phone := range phones {
+		if !IsPhoneNumber(phone) {
+			t.Errorf("phone %q rejected", phone)
+		}
+	}
+	for _, bad := range []string{"", "123456", "1234567890123456", "415x5550123", "1+4155550123"} {
+		if IsPhoneNumber(bad) {
+			t.Errorf("bad phone %q accepted", bad)
+		}
+	}
+	if !IsArtifact("push", "") || IsArtifact("pusher", "") {
+		t.Fatal("artifact changed")
+	}
+	if !IsRepo("owner/repo", "") || IsRepo("owner/repo/path", "") {
+		t.Fatal("repo changed")
+	}
+	if !IsStructuralNoise(" Push ") || IsStructuralNoise("pushkin") {
+		t.Fatal("noise changed")
+	}
+	if !IsDelimiter('-') || IsDelimiter('+') {
+		t.Fatal("delimiter changed")
 	}
 }
