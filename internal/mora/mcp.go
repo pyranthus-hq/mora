@@ -24,6 +24,25 @@ func strArg(args map[string]any, key, def string) string     { return mcppkg.Str
 func intArg(args map[string]any, key string, def int) int    { return mcppkg.IntArg(args, key, def) }
 func boolArg(args map[string]any, key string, def bool) bool { return mcppkg.BoolArg(args, key, def) }
 
+func contextDefaultTokens(c Config) int { return mcppkg.ContextDefaultTokens(c.ContextProfile) }
+func contextMaxTokens(c Config) int     { return mcppkg.ContextMaxTokens(c.ContextProfile) }
+func digestSnippetChars(c Config) int {
+	return mcppkg.DigestSnippetChars(c.ContextProfile, digestSnippetLen)
+}
+func resolveContextBudgetTokens(c Config, n int) (int, int) {
+	return mcppkg.ResolveContextBudgetTokens(c.ContextProfile, n)
+}
+func resolveContextBudget(c Config, n int) int {
+	return mcppkg.ResolveContextBudget(c.ContextProfile, n)
+}
+func estimateTokensUsed(bytes int) int { return mcppkg.EstimateTokensUsed(bytes) }
+func mcpEntityBudgetChars(c Config, n int) int {
+	return mcppkg.EnvelopeBudgetChars(c.ContextProfile, n)
+}
+func mcpDigestBudgetChars(c Config, n int) int {
+	return mcppkg.EnvelopeBudgetChars(c.ContextProfile, n)
+}
+
 func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 1 && args[0] == "serve" {
 		return serveMCP(ctx, stdout, stdin)
@@ -40,42 +59,16 @@ func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 // contextDefaultTokens resolves the ContextProfile to the default token budget
 // used when a caller passes no max_tokens: small=3000, default=6000,
 // large=12000. Unknown values fall back to the default (never zero).
-func contextDefaultTokens(c Config) int {
-	switch c.ContextProfile {
-	case "small":
-		return defaultContextTokens / 2
-	case "large":
-		return defaultContextTokens * 2
-	default:
-		return defaultContextTokens
-	}
-}
 
 // contextMaxTokens resolves the ContextProfile to the per-call max_tokens
 // ceiling: small/default keep the 20k guardrail (one tool result must not
 // dominate a normal agent window); large opts into 50k — the user choosing
 // "large" is explicitly trading window headroom for denser single-call context.
-func contextMaxTokens(c Config) int {
-	if c.ContextProfile == "large" {
-		return largeContextMaxTokens
-	}
-	return maxContextTokens
-}
 
 // digestSnippetChars resolves the ContextProfile to the digest per-item
 // snippet length: small=120, default=200 (digestSnippetLen), large=400. The
 // large profile exists precisely so conversation tails (the user's own
 // replies) survive the clip — see digestItemFor.
-func digestSnippetChars(c Config) int {
-	switch c.ContextProfile {
-	case "small":
-		return 120
-	case "large":
-		return 400
-	default:
-		return digestSnippetLen
-	}
-}
 
 // budgetUnitTokens is stamped on every budget-bounded MCP/CLI JSON envelope so
 // consumers can verify the knob unit (#69).
@@ -86,36 +79,14 @@ const budgetUnitTokens = "tokens"
 // profile default; over-ceiling requests clamp to contextMaxTokens. Clamping
 // happens BEFORE the *charsPerToken conversion so an arbitrarily large max_tokens
 // cannot overflow.
-func resolveContextBudgetTokens(cfg Config, maxTokens int) (tokens int, charBudget int) {
-	if maxTokens <= 0 {
-		maxTokens = contextDefaultTokens(cfg)
-	}
-	if ceiling := contextMaxTokens(cfg); maxTokens > ceiling {
-		maxTokens = ceiling
-	}
-	return maxTokens, maxTokens * charsPerToken
-}
 
 // resolveContextBudget converts a requested token budget (the context_memory
 // max_tokens arg) into a character budget for buildContext.
-func resolveContextBudget(cfg Config, maxTokens int) int {
-	_, chars := resolveContextBudgetTokens(cfg, maxTokens)
-	return chars
-}
 
 // estimateTokensUsed converts a byte count to the codebase's token heuristic.
-func estimateTokensUsed(bytes int) int {
-	if bytes <= 0 {
-		return 0
-	}
-	return (bytes + charsPerToken - 1) / charsPerToken
-}
 
 // mcpEntityBudgetChars converts max_tokens into a compact dossier byte budget,
 // accounting for the CallToolResult envelope inflation (same divisor as digest).
-func mcpEntityBudgetChars(cfg Config, maxTokens int) int {
-	return resolveContextBudget(cfg, maxTokens) / mcpDigestEnvelopeDivisor
-}
 
 // mcpDigestBudgetChars converts a requested max_tokens into a COMPACT-payload byte
 // budget for digestMCPPayload such that the doubled+indented envelope stays under
@@ -123,9 +94,6 @@ func mcpEntityBudgetChars(cfg Config, maxTokens int) int {
 // tokens; we divide by the envelope inflation factor so the on-the-wire envelope
 // (what the T0 gate measures) respects the ceiling while the knob still scales
 // (a 20k request yields a strictly larger compact budget than the 6k default).
-func mcpDigestBudgetChars(cfg Config, maxTokens int) int {
-	return resolveContextBudget(cfg, maxTokens) / mcpDigestEnvelopeDivisor
-}
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	resp := jsonRPCResponse{JSONRPC: "2.0", ID: req.ID}
 	switch req.Method {
