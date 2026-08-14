@@ -89,13 +89,8 @@ const budgetUnitTokens = "tokens"
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
-			var instructions string
-			if cfg, err := loadConfig(); err == nil {
-				instructions = mcpInstructionsFor(configMCPWritePolicy(cfg))
-			} else {
-				instructions = "Mora could not load its configuration, so tools are unavailable and no mutation will be attempted. Fix config.toml and reconnect."
-			}
-			return map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "mora", "version": BuildVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": instructions}
+			cfg, err := loadConfig()
+			return mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil)
 		},
 		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcppkg.ToolCatalog())} },
 		func(ctx context.Context, name string, args map[string]any) any {

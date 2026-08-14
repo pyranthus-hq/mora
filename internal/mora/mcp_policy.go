@@ -20,8 +20,6 @@ const (
 func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
 func configMCPWritePolicy(c Config) string           { return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy) }
 
-func mcpInstructionsFor(policy string) string { return mcppkg.InstructionsFor(policy) }
-
 type mcpWriteProposal = mcppkg.Proposal
 
 func mcpProposalDir(cfg Config) string { return mcppkg.ProposalDir(cfg) }

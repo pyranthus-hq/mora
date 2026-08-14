@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,15 +11,15 @@ import (
 )
 
 func TestMCPWritePolicyInstructionsMatchAuthority(t *testing.T) {
-	open := mcpInstructionsFor(mcpWritePolicyOpen)
+	open := mcppkg.InstructionsFor(mcpWritePolicyOpen)
 	if !strings.Contains(open, "you do not need to ask permission") {
 		t.Fatalf("open instructions lost the trusted-client guidance: %s", open)
 	}
-	propose := mcpInstructionsFor(mcpWritePolicyPropose)
+	propose := mcppkg.InstructionsFor(mcpWritePolicyPropose)
 	if strings.Contains(propose, "you do not need to ask permission") || !strings.Contains(propose, "pending proposal queue") {
 		t.Fatalf("propose instructions overstate mutation authority: %s", propose)
 	}
-	readonly := mcpInstructionsFor(mcpWritePolicyReadonly)
+	readonly := mcppkg.InstructionsFor(mcpWritePolicyReadonly)
 	if strings.Contains(readonly, "you do not need to ask permission") || !strings.Contains(readonly, "read-only") {
 		t.Fatalf("readonly instructions overstate mutation authority: %s", readonly)
 	}
