@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
-)
 
-// rrfK is the Reciprocal Rank Fusion constant (k=60 is the standard from the
-// original RRF paper). It dampens the head so a single list can't dominate.
-const rrfK = 60.0
+	searchpkg "github.com/pyranthus-hq/mora/internal/search"
+)
 
 // fusionParams are the per-arm weights + the RRF damping constant used to fuse the
 // FTS/vector/graph arms. They exist because equal-weight RRF at k=60 is too flat for
@@ -46,23 +44,12 @@ var defaultFusion = fusionParams{fts: 1.5, vec: 1, graph: 1, k: 10}
 // nil one) defaults that arm to weight 1.0, so equal/nil weights reduce to plain RRF.
 // Rank-based (not score-based), so it fuses BM25's unbounded scores and cosine's
 // [0,1] without normalization.
-func rrfWeighted(lists [][]string, weights []float64, k float64) map[string]float64 {
-	score := map[string]float64{}
-	for li, list := range lists {
-		w := 1.0
-		if li < len(weights) {
-			w = weights[li]
-		}
-		for rank, id := range list {
-			score[id] += w / (k + float64(rank+1))
-		}
-	}
-	return score
-}
 
 // rrf is plain (equal-weight) RRF — retained for callers/tests that don't tune arms.
-func rrf(lists [][]string, k float64) map[string]float64 {
-	return rrfWeighted(lists, nil, k)
+
+// rrfWeighted is the composition adapter used by non-search retrieval surfaces.
+func rrfWeighted(lists [][]string, weights []float64, k float64) map[string]float64 {
+	return searchpkg.FuseScores(lists, weights, k)
 }
 
 // retrievalTrace exposes the per-arm ranked lists hybridSearch computes and
@@ -308,18 +295,8 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 
 	fp := configFusion(cfg)
 	fusionWeights := append(append([]float64{}, fp.weights()...), gmailSegmentArmWeight)
-	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
-	ids := make([]string, 0, len(fused))
-	for id := range fused {
-		ids = append(ids, id)
-	}
-	// Deterministic order: fused score desc, then id asc (stable tie-break).
-	sort.Slice(ids, func(i, j int) bool {
-		if fused[ids[i]] != fused[ids[j]] {
-			return fused[ids[i]] > fused[ids[j]]
-		}
-		return ids[i] < ids[j]
-	})
+	// Deterministic score-desc/ID-asc fusion is package-owned.
+	ids, fused := searchpkg.FuseRanked([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
 	tr.Fused = append([]string(nil), ids...) // PURE fused ranking (pre-limit) for §6 attribution — MMR never touches it
 
 	// W2/B1a: optional greedy MMR rerank of the fused pool before the top-k truncate.

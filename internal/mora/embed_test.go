@@ -9,18 +9,6 @@ import (
 	embedpkg "github.com/pyranthus-hq/mora/internal/embed"
 )
 
-func TestRRFFusion(t *testing.T) {
-	// id "b" is rank-1 in list A and rank-2 in list B; id "a" is rank-2 in A only.
-	score := rrf([][]string{{"x", "b", "a"}, {"y", "b"}}, rrfK)
-	if score["b"] <= score["a"] {
-		t.Fatalf("b (in both lists) should outscore a: b=%.4f a=%.4f", score["b"], score["a"])
-	}
-	// Rank-1 of a single list beats rank-3 of a single list.
-	if score["x"] <= score["a"] {
-		t.Fatalf("rank-1 x should beat rank-3 a: x=%.4f a=%.4f", score["x"], score["a"])
-	}
-}
-
 func fakeOllama(t *testing.T, vec []float64) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
