@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,33 +17,15 @@ import (
 )
 
 const (
-	mcpWritePolicyOpen     = "open"
-	mcpWritePolicyPropose  = "propose"
-	mcpWritePolicyReadonly = "readonly"
+	mcpWritePolicyOpen     = mcppkg.WritePolicyOpen
+	mcpWritePolicyPropose  = mcppkg.WritePolicyPropose
+	mcpWritePolicyReadonly = mcppkg.WritePolicyReadonly
 )
 
 func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
-func configMCPWritePolicy(c Config) string {
-	if c.MCPWritePolicy == "" {
-		return mcpWritePolicyOpen
-	}
-	return c.MCPWritePolicy
-}
+func configMCPWritePolicy(c Config) string           { return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy) }
 
-const openWriteInstruction = "Write durable facts and decisions back with write_memory as they emerge — you do not need to ask permission."
-
-func mcpInstructionsFor(policy string) string {
-	var replacement string
-	switch policy {
-	case mcpWritePolicyPropose:
-		replacement = "You may submit durable facts and decisions with write_memory, but they enter a pending proposal queue and are NOT part of the vault until the owner approves them locally. delete_memory is unavailable in this mode."
-	case mcpWritePolicyReadonly:
-		replacement = "This connection is read-only: do not call write_memory or delete_memory; both will refuse without changing the vault."
-	default:
-		replacement = openWriteInstruction
-	}
-	return strings.Replace(mcpInstructions, openWriteInstruction, replacement, 1)
-}
+func mcpInstructionsFor(policy string) string { return mcppkg.InstructionsFor(policy) }
 
 type mcpWriteProposal struct {
 	ID         string         `json:"id"`

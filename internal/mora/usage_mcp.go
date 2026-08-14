@@ -3,10 +3,11 @@ package mora
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
 
 // mcpUsageTrace carries content-free measurement from one tools/call handler to
@@ -53,21 +54,14 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	inv.loggable = true
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
 	policyHandled := false
-	if name == "write_memory" || name == "delete_memory" {
-		policy := configMCPWritePolicy(cfg)
-		switch policy {
-		case mcpWritePolicyReadonly:
-			inv.err = fmt.Errorf("MCP mutation refused: mcp_write_policy=%s; change it locally with `mora config mcp-write-policy open`", policy)
-			policyHandled = true
-		case mcpWritePolicyPropose:
-			if name == "delete_memory" {
-				inv.err = errors.New("MCP delete refused: mcp_write_policy=propose never stages destructive deletes; the owner must run `mora delete <id>` locally")
-				policyHandled = true
-			} else {
-				inv.value, inv.err = stageMCPWriteProposal(cfg, args)
-				policyHandled = true
-			}
-		}
+	action, policyErr := mcppkg.MutationAction(configMCPWritePolicy(cfg), name)
+	switch action {
+	case mcppkg.ActionRefuse:
+		inv.err = policyErr
+		policyHandled = true
+	case mcppkg.ActionPropose:
+		inv.value, inv.err = stageMCPWriteProposal(cfg, args)
+		policyHandled = true
 	}
 	if !policyHandled {
 		inv.value, inv.err = def.Handler(traced, cfg, args)
