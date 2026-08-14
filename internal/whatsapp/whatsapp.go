@@ -17,10 +17,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const KindConversation memory.ItemKind = "whatsapp_conversation"
+
 const (
-	KindConversation       memory.ItemKind = "whatsapp_conversation"
-	pageSize                               = 50
-	cocoaUnixOffsetSeconds                 = 978307200
+	pageSize               = 50
+	cocoaUnixOffsetSeconds = 978307200
 )
 
 func init() { memory.RegisterKind(KindConversation, "whatsapp", "whatsapp") }

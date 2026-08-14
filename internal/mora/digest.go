@@ -1013,10 +1013,11 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 	// the commit. On cold start the cap-`more` overflow stays part of the baselined
 	// archive (starting line, not a truncated delta).
 	displayed, lm, countOnly := splitDisplayLowSignal(shown, memberOf)
+	countOnlyIDs = append(countOnlyIDs, countOnly...)
 	for _, u := range urgent {
 		lm[u.item.ID] = []string{u.item.ID} // a shelf line commits its own id when it renders.
 	}
-	return displayed, urgent, lm, countOnly, more + (len(shown) - len(displayed))
+	return displayed, urgent, lm, countOnlyIDs, more + (len(shown) - len(displayed))
 }
 
 // urgentEntry is one shelf candidate carried up from a section for cross-source
