@@ -2,17 +2,12 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"io"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 )
 
@@ -27,22 +22,13 @@ func configMCPWritePolicy(c Config) string           { return mcppkg.NormalizeWr
 
 func mcpInstructionsFor(policy string) string { return mcppkg.InstructionsFor(policy) }
 
-type mcpWriteProposal struct {
-	ID         string         `json:"id"`
-	ProposedAt string         `json:"proposed_at"`
-	Arguments  map[string]any `json:"arguments"`
-}
+type mcpWriteProposal = mcppkg.Proposal
 
-func mcpProposalDir(cfg Config) string {
-	return filepath.Join(cfg.ConfigDir, "mcp-proposals")
+func mcpProposalDir(cfg Config) string { return mcppkg.ProposalDir(cfg) }
+func readMCPWriteProposal(cfg Config, id string) (mcpWriteProposal, string, error) {
+	return mcppkg.ReadProposal(cfg, id)
 }
-
-func mcpProposalPath(cfg Config, id string) (string, error) {
-	if !strings.HasPrefix(id, "p_") || strings.ContainsAny(id, `/\\`) || filepath.Base(id) != id {
-		return "", fmt.Errorf("invalid MCP proposal id %q", id)
-	}
-	return filepath.Join(mcpProposalDir(cfg), id+".json"), nil
-}
+func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) { return mcppkg.ListProposals(cfg) }
 
 func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 	now := mcpWriteClock()
@@ -50,18 +36,7 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 		return nil, err
 	}
 	proposal := mcpWriteProposal{ID: "p_" + newID(), ProposedAt: now.Format(time.RFC3339), Arguments: args}
-	path, err := mcpProposalPath(cfg, proposal.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	b, err := json.MarshalIndent(proposal, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := atomicio.Write(path, append(b, '\n'), 0o600); err != nil {
+	if _, err := mcppkg.SaveProposal(cfg, proposal); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -69,57 +44,6 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 		"message":  fmt.Sprintf("not written to the vault; the owner can inspect and approve with `mora mcp proposals approve %s`", proposal.ID),
 		"health":   compactHealthOf(cfg, now),
 	}, nil
-}
-
-func readMCPWriteProposal(cfg Config, id string) (mcpWriteProposal, string, error) {
-	path, err := mcpProposalPath(cfg, id)
-	if err != nil {
-		return mcpWriteProposal{}, "", err
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return mcpWriteProposal{}, "", fmt.Errorf("MCP proposal %q not found", id)
-		}
-		return mcpWriteProposal{}, "", err
-	}
-	var proposal mcpWriteProposal
-	if err := json.Unmarshal(b, &proposal); err != nil {
-		return mcpWriteProposal{}, "", fmt.Errorf("parse MCP proposal %q: %w", id, err)
-	}
-	if proposal.ID != id {
-		return mcpWriteProposal{}, "", fmt.Errorf("MCP proposal id mismatch: file %q contains %q", id, proposal.ID)
-	}
-	return proposal, path, nil
-}
-
-func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) {
-	entries, err := os.ReadDir(mcpProposalDir(cfg))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	proposals := make([]mcpWriteProposal, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		proposal, _, err := readMCPWriteProposal(cfg, id)
-		if err != nil {
-			return nil, err
-		}
-		proposals = append(proposals, proposal)
-	}
-	sort.Slice(proposals, func(i, j int) bool {
-		if proposals[i].ProposedAt == proposals[j].ProposedAt {
-			return proposals[i].ID < proposals[j].ID
-		}
-		return proposals[i].ProposedAt < proposals[j].ProposedAt
-	})
-	return proposals, nil
 }
 
 func cmdMCPProposals(ctx context.Context, args []string, stdout io.Writer) error {
