@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	embedpkg "github.com/pyranthus-hq/mora/internal/embed"
 	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	"io"
 	"os"
@@ -636,9 +637,4 @@ func writeVectors(ctx context.Context, tx *sql.Tx, emb Embedder, mems []Memory) 
 // embedderDigestOf extracts the semantic model digest an embedder carries (D3),
 // via an optional Digest() method so the Embedder interface stays minimal. The
 // static floor has no digest and returns "".
-func embedderDigestOf(emb Embedder) string {
-	if d, ok := emb.(interface{ Digest() string }); ok {
-		return d.Digest()
-	}
-	return ""
-}
+func embedderDigestOf(emb Embedder) string { return embedpkg.DigestOf(emb) }

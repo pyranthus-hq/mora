@@ -1,4 +1,4 @@
-package mora
+package embed
 
 import (
 	"encoding/json"
