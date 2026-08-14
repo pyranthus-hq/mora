@@ -134,10 +134,11 @@ func strictlyAfter(opened, evidence string) bool {
 }
 
 // counterpartyLinked permits a cross-memory lifecycle link only when
-// source-native atoms or full trusted names agree. A bare given or single-token
-// name is never identity evidence: it cannot link Sam Rivera to Sam Chen, or to
-// an unrelated handle labelled Sam. Authored message text is not identity proof:
-// it can name somebody other than the sender or recipient.
+// source-native atoms or full trusted names agree, unless comparable atoms
+// explicitly contradict the name. A bare given or single-token name is never
+// identity evidence: it cannot link Sam Rivera to Sam Chen, or to an unrelated
+// handle labelled Sam. Authored message text is not identity proof: it can name
+// somebody other than the sender or recipient.
 func counterpartyLinked(keys, evidenceKeys []string, _ string) bool {
 	evidenceSet := map[string]bool{}
 	for _, key := range evidenceKeys {
@@ -153,6 +154,9 @@ func counterpartyLinked(keys, evidenceKeys []string, _ string) bool {
 			return true
 		}
 	}
+	if stableAtomConflict(keys, evidenceKeys) {
+		return false
+	}
 	leftFull, rightFull := fullNameKeys(keys), fullNameKeys(evidenceKeys)
 	for full := range leftFull {
 		if rightFull[full] {
@@ -160,6 +164,37 @@ func counterpartyLinked(keys, evidenceKeys []string, _ string) bool {
 		}
 	}
 	return false
+}
+
+// stableAtomConflict prevents a display-name fallback from unifying two
+// explicitly distinct source-native identities. An address and a handle are not
+// comparable across providers, but two differing addresses or two differing
+// handles are affirmative evidence that the parties are not the same person.
+func stableAtomConflict(left, right []string) bool {
+	for _, kind := range []string{"address", "handle"} {
+		leftValues, rightValues := stableAtomValues(left, kind), stableAtomValues(right, kind)
+		if len(leftValues) == 0 || len(rightValues) == 0 {
+			continue
+		}
+		for value := range leftValues {
+			if rightValues[value] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func stableAtomValues(keys []string, wantKind string) map[string]bool {
+	values := map[string]bool{}
+	for _, key := range keys {
+		kind, value, ok := strings.Cut(strings.ToLower(strings.TrimSpace(key)), ":")
+		if ok && kind == wantKind && value != "" {
+			values[value] = true
+		}
+	}
+	return values
 }
 
 func fullNameKeys(keys []string) map[string]bool {

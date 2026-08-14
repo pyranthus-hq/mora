@@ -226,3 +226,13 @@ func TestApplyLifecycleProjectionBranches(t *testing.T) {
 	_ = ApplyLifecycle(nil, ordered)
 
 }
+
+func TestCounterpartyLinkedRejectsConflictingStableAtoms(t *testing.T) {
+	if counterpartyLinked(
+		[]string{"address:casey.one@example.com", "name:casey liao", "given:casey"},
+		[]string{"address:casey.two@example.com", "name:casey liao", "given:casey"},
+		"Sent the paper-store receipt.",
+	) {
+		t.Fatal("different Gmail addresses linked through an exact display name")
+	}
+}

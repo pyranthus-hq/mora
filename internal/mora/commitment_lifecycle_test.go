@@ -478,7 +478,7 @@ func TestCrossThreadClosureGivenNameIdentityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("allows matching full trusted metadata names across memories", func(t *testing.T) {
+	t.Run("refuses matching full names with conflicting iMessage handles", func(t *testing.T) {
 		fullName := oneMessageIMessageCommitmentMemory(t, "imessage_chat/casey-full", "+15550100230", "Casey Liao",
 			"I'll send the paper-store receipt.", "2026-08-01T09:00:00Z")
 		matchingName := oneMessageIMessageCommitmentMemory(t, "imessage_chat/casey-matching", "+15550100231", "Casey Liao",
@@ -486,10 +486,11 @@ func TestCrossThreadClosureGivenNameIdentityGate(t *testing.T) {
 
 		got := materializeCommitments([]Memory{fullName, matchingName}, cfg, now)
 		rows := commitmentFor(got, fullName.ID)
-		if len(rows) != 1 || rows[0].State != commitClosed || rows[0].ClosureRef != matchingName.ID {
-			t.Fatalf("matching full-name closure did not link: %+v", rows)
+		if len(rows) != 1 || rows[0].State != commitOpen || rows[0].ClosureRef != commitClosureNone {
+			t.Fatalf("a conflicting iMessage handle overrode the identity contradiction: %+v", rows)
 		}
 	})
+
 }
 
 func TestStaleSourceMarksCommitmentStateUncertain(t *testing.T) {
