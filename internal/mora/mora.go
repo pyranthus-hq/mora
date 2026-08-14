@@ -3,12 +3,12 @@ package mora
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/registry"
 	"io"
@@ -85,19 +85,9 @@ type catalogRow struct {
 	NeedsAuth bool   `json:"needs_auth"`
 }
 
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+type jsonRPCRequest = mcppkg.Request
 
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id,omitempty"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
+type jsonRPCResponse = mcppkg.Response
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {

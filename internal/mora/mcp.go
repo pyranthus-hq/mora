@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
 
 func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
@@ -23,33 +24,7 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	return errors.New("usage: mora mcp serve | mora mcp proposals <list|approve ID|reject ID>")
 }
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
-	scanner := bufio.NewScanner(stdin)
-	scanner.Buffer(make([]byte, 64*1024), mcpMaxRequestBytes)
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-		// JSON-RPC notifications carry no "id" and MUST NOT be answered. The
-		// post-initialize `notifications/initialized` is the common one; replying
-		// to it (with a stray -32601 frame) makes strict MCP clients — notably
-		// Antigravity's official go-sdk — abort the session and drop every tool
-		// ("tools/list: invalid request"). Lenient clients (Claude Code, Codex)
-		// tolerate the stray frame, which is why this hid. Ignore notifications.
-		if req.ID == nil {
-			continue
-		}
-		resp := handleMCP(ctx, req)
-		b, _ := json.Marshal(resp)
-		fmt.Fprintln(stdout, string(b))
-	}
-	if err := scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			return fmt.Errorf("MCP request line exceeded the %d-byte cap: %w", mcpMaxRequestBytes, err)
-		}
-		return err
-	}
-	return nil
+	return mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
 }
 
 // contextDefaultTokens resolves the ContextProfile to the default token budget
@@ -178,29 +153,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 // structuredContent for clients that consume machine-readable output. A tool
 // error is returned as isError:true content rather than a JSON-RPC error, so the
 // calling agent's tool loop stays alive and can react to the message.
-func toCallToolResult(v any, err error) map[string]any {
-	if err != nil {
-		return map[string]any{
-			"content": []map[string]any{{"type": "text", "text": err.Error()}},
-			"isError": true,
-		}
-	}
-	text, mErr := json.MarshalIndent(v, "", "  ")
-	if mErr != nil {
-		text = []byte(fmt.Sprintf("%v", v))
-	}
-	res := map[string]any{
-		"content": []map[string]any{{"type": "text", "text": string(text)}},
-		"isError": false,
-	}
-	// structuredContent must be a JSON object per the MCP spec; only attach it
-	// when the marshaled value is object-shaped. Tools that return arrays still
-	// carry the full payload via the text block above.
-	if len(text) > 0 && text[0] == '{' {
-		res["structuredContent"] = v
-	}
-	return res
-}
+func toCallToolResult(v any, err error) map[string]any { return mcppkg.CallToolResult(v, err) }
 
 // mcpToolDef is one MCP tool's registry entry — the SINGLE source both
 // tools/list (via mcpTool) and callMCPTool derive from (C3 ▸R2: MCP had THREE
