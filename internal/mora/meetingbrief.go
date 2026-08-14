@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	saliencepkg "github.com/pyranthus-hq/mora/internal/salience"
 	"io"
 	"regexp"
 	"sort"
@@ -581,7 +582,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 			}
 			attachCommitment(&line, commitment)
 			bulkAuthored := memoryIsServiceOnly(m)
-			messageCount := metaMessageCount(m)
+			messageCount := saliencepkg.MessageCount(m)
 			candidate := meetingBriefCandidate{
 				kind:           kind,
 				line:           line,

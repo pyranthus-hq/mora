@@ -7,6 +7,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	saliencepkg "github.com/pyranthus-hq/mora/internal/salience"
 	"math"
 	"reflect"
 	"strings"
@@ -19,15 +20,15 @@ import (
 // log1p(x) negative, so the normalized value goes below 0 and must clamp to 0
 // (never a spurious negative saturation).
 func TestRt_SatNegativeInputClamps(t *testing.T) {
-	if got := sat(-0.5, 12); got != 0 {
+	if got := saliencepkg.Saturate(-0.5, 12); got != 0 {
 		t.Fatalf("sat(-0.5,12) = %v, want 0 (negative input clamps to 0)", got)
 	}
 	// A value just below zero also clamps (boundary).
-	if got := sat(-1e-9, 250); got != 0 {
+	if got := saliencepkg.Saturate(-1e-9, 250); got != 0 {
 		t.Fatalf("sat(-1e-9,250) = %v, want 0", got)
 	}
 	// Sanity: a small positive input is strictly positive (the clamp is one-sided).
-	if got := sat(0.5, 12); !(got > 0) {
+	if got := saliencepkg.Saturate(0.5, 12); !(got > 0) {
 		t.Fatalf("sat(0.5,12) = %v, want > 0", got)
 	}
 }
@@ -227,7 +228,7 @@ func TestRt_RecencyDecayNeverExceedsOne(t *testing.T) {
 		"2026-05-01T00:00:00Z", // ~31d
 		"2025-12-03T00:00:00Z", // one half-life
 	} {
-		got := recencyDecay(ls, vaultMax)
+		got := saliencepkg.RecencyDecay(ls, vaultMax)
 		if got > 1 || got <= 0 || math.IsNaN(got) {
 			t.Fatalf("recencyDecay(%q) = %v, want in (0,1]", ls, got)
 		}
