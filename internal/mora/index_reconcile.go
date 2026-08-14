@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -19,20 +20,43 @@ func authoredReconcileLockPath(cfg Config) string {
 
 const authoredReconcileTTL = 2 * time.Minute
 
-// scheduleAuthoredReconciliation starts the coalescing reconciler after an MCP
-// request has returned from its durable FTS upsert. A long-lived MCP process
-// therefore catches graph/vector/commitment projections up promptly. The worker
-// deliberately owns no response semantics: failures leave the pending ledger and
-// health dirty for the next recovery path.
-var scheduleAuthoredReconciliation = func(cfg Config) {
-	go func() {
-		if err := reconcileAuthoredWrites(context.Background(), cfg); err != nil {
+// authoredReconcileRunner is the narrow test seam below the production goroutine
+// launcher. The lock keeps a test seam change from racing an in-flight MCP
+// request; scheduleAuthoredReconciliation itself always exercises the real
+// launcher.
+var (
+	authoredReconcileRunnerMu sync.RWMutex
+	authoredReconcileRunner   = reconcileAuthoredWrites
+)
+
+func authoredReconcileRunnerSnapshot() func(context.Context, Config) error {
+	authoredReconcileRunnerMu.RLock()
+	runner := authoredReconcileRunner
+	authoredReconcileRunnerMu.RUnlock()
+	return runner
+}
+
+func defaultAuthoredReconcileScheduler(cfg Config) {
+	// Snapshot before the goroutine boundary: a short-lived caller or a hermetic
+	// test may restore its runner seam immediately after scheduling, but that must
+	// never change the work this invocation already elected to perform.
+	runner := authoredReconcileRunnerSnapshot()
+	go func(run func(context.Context, Config) error) {
+		if err := run(context.Background(), cfg); err != nil {
 			// stderr is outside the MCP stdio transport. Do not clear or alter a
 			// marker here: a logged failure must remain visible to health and the
 			// next explicit/scheduled recovery path.
 			fmt.Fprintf(os.Stderr, "warn: authored projection reconciliation pending: %v\n", err)
 		}
-	}()
+	}(runner)
+}
+
+// scheduleAuthoredReconciliation schedules (but does not await) the coalescing
+// worker before mcpWriteMemory returns. The worker itself waits through its 75 ms
+// burst window before any rebuild work, keeping the whole-vault rebuild off the
+// request path. Failures leave the pending ledger and health dirty.
+func scheduleAuthoredReconciliation(cfg Config) {
+	defaultAuthoredReconcileScheduler(cfg)
 }
 
 // reconcileAuthoredWrites elects at most one concurrent background worker to

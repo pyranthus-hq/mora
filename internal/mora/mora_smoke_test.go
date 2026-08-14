@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -44,6 +45,21 @@ func setTestHome(t *testing.T, dir string) {
 	t.Setenv("USERPROFILE", dir)
 }
 
+var authoredReconcileRunnerTestMu sync.Mutex
+
+func setAuthoredReconcileRunnerForTest(t *testing.T, runner func(context.Context, Config) error) {
+	t.Helper()
+	authoredReconcileRunnerMu.Lock()
+	orig := authoredReconcileRunner
+	authoredReconcileRunner = runner
+	authoredReconcileRunnerMu.Unlock()
+	t.Cleanup(func() {
+		authoredReconcileRunnerMu.Lock()
+		authoredReconcileRunner = orig
+		authoredReconcileRunnerMu.Unlock()
+	})
+}
+
 // withTempHome points all home-derived dirs at a fresh temp dir on every OS.
 func withTempHome(t *testing.T) {
 	t.Helper()
@@ -51,9 +67,11 @@ func withTempHome(t *testing.T) {
 	// temp-home tests may tear their StateDir down immediately after a call, so keep
 	// it inert by default and opt in with a local seam where its scheduling contract
 	// is under test.
-	origReconcileSchedule := scheduleAuthoredReconciliation
-	scheduleAuthoredReconciliation = func(Config) {}
-	t.Cleanup(func() { scheduleAuthoredReconciliation = origReconcileSchedule })
+	// This also serializes any test that chooses a temporary HOME, preventing its
+	// reconciler seam from changing under another test's MCP call.
+	authoredReconcileRunnerTestMu.Lock()
+	t.Cleanup(func() { authoredReconcileRunnerTestMu.Unlock() })
+	setAuthoredReconcileRunnerForTest(t, func(context.Context, Config) error { return nil })
 	pinOperationClockForTest(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	setTestHome(t, t.TempDir())
 	// Hermeticity: a developer's exported MORA_CONFIG_DIR / MORA_VAULT must not

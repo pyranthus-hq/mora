@@ -284,10 +284,6 @@ func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 		return origList(c)
 	}
 	t.Cleanup(func() { listRebuildFiles = origList })
-	origSchedule := scheduleAuthoredReconciliation
-	scheduled := 0
-	scheduleAuthoredReconciliation = func(Config) { scheduled++ }
-	t.Cleanup(func() { scheduleAuthoredReconciliation = origSchedule })
 	res, err := callMCPTool(ctx, "write_memory", map[string]any{
 		"title": "Reconcile all arms", "text": "I told Jordan I would return the borrowed lens before the workshop. reconcileallneedle", "scope": "project:launch", "type": "note",
 	})
@@ -304,9 +300,6 @@ func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 	}
 	if rebuildListings != 0 {
 		t.Fatalf("write_memory ran %d full rebuild listing(s), want 0 on the request path", rebuildListings)
-	}
-	if scheduled != 1 {
-		t.Fatalf("write_memory scheduled %d asynchronous reconciliation worker(s), want 1", scheduled)
 	}
 	got, err := searchMemories(ctx, cfg, "reconcileallneedle", "", 8)
 	if err != nil || len(got) != 1 || got[0].ID != id {
@@ -365,34 +358,62 @@ func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 
 // TestMCPAuthoredWriteSchedulesProjectionReconciliation proves the production
 // long-lived-MCP recovery path separately from the request-path test above. The
-// worker is started by the handler but its whole-vault rebuild completes only
-// after that handler has returned its pending/dirty response.
+// worker is scheduled by the handler but waits through its coalescing window, so
+// its whole-vault rebuild completes after the pending/dirty response is assembled.
 func TestMCPAuthoredWriteSchedulesProjectionReconciliation(t *testing.T) {
 	withTempHome(t)
 	t.Setenv("MORA_EMBEDDER", "")
 	run(t, "init")
 	cfg := mustConfig(t)
 
-	done := make(chan error, 1)
-	origSchedule := scheduleAuthoredReconciliation
-	scheduleAuthoredReconciliation = func(c Config) {
-		go func() { done <- reconcileAuthoredWrites(context.Background(), c) }()
-	}
-	t.Cleanup(func() { scheduleAuthoredReconciliation = origSchedule })
-
-	res, err := callMCPTool(context.Background(), "write_memory", map[string]any{
-		"title": "Async reconcile", "text": "asyncreconcileneedle", "scope": "project:launch", "type": "note",
+	runnerStarted := make(chan struct{})
+	releaseRunner := make(chan struct{})
+	runnerDone := make(chan error, 1)
+	setAuthoredReconcileRunnerForTest(t, func(ctx context.Context, c Config) error {
+		close(runnerStarted)
+		<-releaseRunner
+		err := reconcileAuthoredWrites(ctx, c)
+		runnerDone <- err
+		return err
 	})
-	if err != nil {
-		t.Fatalf("write_memory: %v", err)
+
+	type writeOutcome struct {
+		result any
+		err    error
 	}
-	wrapped, ok := res.(map[string]any)
-	if !ok || wrapped["projections_pending"] != true {
-		t.Fatalf("MCP response must return pending before asynchronous reconciliation, got %#v", res)
-	}
+	writeDone := make(chan writeOutcome, 1)
+	go func() {
+		res, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+			"title": "Async reconcile", "text": "asyncreconcileneedle", "scope": "project:launch", "type": "note",
+		})
+		writeDone <- writeOutcome{result: res, err: err}
+	}()
 
 	select {
-	case err := <-done:
+	case <-runnerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("production scheduler did not launch the reconciler")
+	}
+	var outcome writeOutcome
+	select {
+	case outcome = <-writeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("write_memory waited for the blocked reconciliation worker")
+	}
+	if outcome.err != nil {
+		t.Fatalf("write_memory: %v", outcome.err)
+	}
+	wrapped, ok := outcome.result.(map[string]any)
+	if !ok || wrapped["projections_pending"] != true {
+		t.Fatalf("MCP response must return pending before asynchronous reconciliation, got %#v", outcome.result)
+	}
+	if health, ok := wrapped["health"].(compactHealth); !ok || health.Index != idxDirty {
+		t.Fatalf("MCP response health must remain dirty before reconciliation is released, got %#v", wrapped["health"])
+	}
+
+	close(releaseRunner)
+	select {
+	case err := <-runnerDone:
 		if err != nil {
 			t.Fatalf("asynchronous reconciliation: %v", err)
 		}
