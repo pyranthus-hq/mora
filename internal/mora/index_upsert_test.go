@@ -267,17 +267,29 @@ func TestIndexUpsertColdStartDelegatesToRebuild(t *testing.T) {
 	}
 }
 
-// TestAuthoredWriteReconcilesAllProjections proves #316's stronger boundary:
-// write_memory is instantly FTS-searchable and its full derived projections are
-// reconciled before it reports healthy.
-func TestAuthoredWriteReconcilesAllProjections(t *testing.T) {
+// TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild pins the fast
+// authored-write contract: write_memory must never synchronously walk/rebuild the
+// vault after its FTS upsert. Its durable pending marker keeps health dirty until
+// the ordinary explicit/scheduled rebuild restores every full projection.
+func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 	withTempHome(t)
 	t.Setenv("MORA_EMBEDDER", "")
 	run(t, "init")
 	cfg := mustConfig(t)
 	ctx := context.Background()
+	origList := listRebuildFiles
+	rebuildListings := 0
+	listRebuildFiles = func(c Config) ([]string, error) {
+		rebuildListings++
+		return origList(c)
+	}
+	t.Cleanup(func() { listRebuildFiles = origList })
+	origSchedule := scheduleAuthoredReconciliation
+	scheduled := 0
+	scheduleAuthoredReconciliation = func(Config) { scheduled++ }
+	t.Cleanup(func() { scheduleAuthoredReconciliation = origSchedule })
 	res, err := callMCPTool(ctx, "write_memory", map[string]any{
-		"title": "Reconcile all arms", "text": "reconcileallneedle Alice owns the launch decision", "scope": "project:launch", "type": "decision",
+		"title": "Reconcile all arms", "text": "I told Jordan I would return the borrowed lens before the workshop. reconcileallneedle", "scope": "project:launch", "type": "note",
 	})
 	if err != nil {
 		t.Fatalf("write_memory: %v", err)
@@ -286,32 +298,111 @@ func TestAuthoredWriteReconcilesAllProjections(t *testing.T) {
 	if err != nil || id == "" || warning != "" {
 		t.Fatalf("write result id=%q warning=%q err=%v", id, warning, err)
 	}
+	wrapped, ok := res.(map[string]any)
+	if !ok || wrapped["projections_pending"] != true || wrapped["reconcile_hint"] != authoredWriteReconcileHint {
+		t.Fatalf("write result must expose pending full projections and the explicit reconciliation path, got %#v", res)
+	}
+	if rebuildListings != 0 {
+		t.Fatalf("write_memory ran %d full rebuild listing(s), want 0 on the request path", rebuildListings)
+	}
+	if scheduled != 1 {
+		t.Fatalf("write_memory scheduled %d asynchronous reconciliation worker(s), want 1", scheduled)
+	}
 	got, err := searchMemories(ctx, cfg, "reconcileallneedle", "", 8)
 	if err != nil || len(got) != 1 || got[0].ID != id {
 		t.Fatalf("immediate FTS = %+v err=%v, want %s", got, err, id)
 	}
-	if ops, err := listPendingOps(cfg); err != nil || len(ops) != 0 {
-		t.Fatalf("pending after completed reconciliation = %+v err=%v", ops, err)
+	if ops, err := listPendingOps(cfg); err != nil || len(ops) != 1 || ops[0].Kind != opKindWrite || !strings.Contains(ops[0].Path, id) {
+		t.Fatalf("pending after FTS-only write = %+v err=%v, want its durable write marker", ops, err)
 	}
-	if h := indexHealthOf(cfg, time.Now()); h.State != idxFresh {
-		t.Fatalf("index health = %+v, want fresh", h)
+	if h := indexHealthOf(cfg, time.Now()); h.State != idxDirty {
+		t.Fatalf("index health = %+v, want dirty while full projections are pending", h)
 	}
 	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var vecs, entities int
+	var vecs, entities, commitments int
 	if err := db.QueryRow("SELECT COUNT(*) FROM mem_vectors WHERE memory_id=?", id).Scan(&vecs); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&entities); err != nil {
 		t.Fatal(err)
 	}
-	if vecs != 1 {
-		t.Fatalf("vectors for %s = %d, want 1", id, vecs)
+	if err := db.QueryRow("SELECT COUNT(*) FROM commitments WHERE memory_id=?", id).Scan(&commitments); err != nil {
+		t.Fatal(err)
 	}
-	if entities == 0 {
-		t.Fatal("graph has no entities after reconciliation")
+	if vecs != 0 || entities != 0 || commitments != 0 {
+		t.Fatalf("full projections changed on FTS-only request: vectors=%d entities=%d commitments=%d, want zero", vecs, entities, commitments)
+	}
+
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatalf("explicit rebuild: %v", err)
+	}
+	if rebuildListings != 1 {
+		t.Fatalf("explicit rebuild ran %d listing(s), want 1", rebuildListings)
+	}
+	if ops, err := listPendingOps(cfg); err != nil || len(ops) != 0 {
+		t.Fatalf("pending after explicit reconciliation = %+v err=%v", ops, err)
+	}
+	if h := indexHealthOf(cfg, time.Now()); h.State != idxFresh {
+		t.Fatalf("index health = %+v, want fresh after explicit reconciliation", h)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM mem_vectors WHERE memory_id=?", id).Scan(&vecs); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&entities); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM commitments WHERE memory_id=?", id).Scan(&commitments); err != nil {
+		t.Fatal(err)
+	}
+	if vecs != 1 || entities == 0 || commitments != 1 {
+		t.Fatalf("explicit reconciliation incomplete: vectors=%d entities=%d commitments=%d, want 1/non-zero/1", vecs, entities, commitments)
+	}
+}
+
+// TestMCPAuthoredWriteSchedulesProjectionReconciliation proves the production
+// long-lived-MCP recovery path separately from the request-path test above. The
+// worker is started by the handler but its whole-vault rebuild completes only
+// after that handler has returned its pending/dirty response.
+func TestMCPAuthoredWriteSchedulesProjectionReconciliation(t *testing.T) {
+	withTempHome(t)
+	t.Setenv("MORA_EMBEDDER", "")
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	done := make(chan error, 1)
+	origSchedule := scheduleAuthoredReconciliation
+	scheduleAuthoredReconciliation = func(c Config) {
+		go func() { done <- reconcileAuthoredWrites(context.Background(), c) }()
+	}
+	t.Cleanup(func() { scheduleAuthoredReconciliation = origSchedule })
+
+	res, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+		"title": "Async reconcile", "text": "asyncreconcileneedle", "scope": "project:launch", "type": "note",
+	})
+	if err != nil {
+		t.Fatalf("write_memory: %v", err)
+	}
+	wrapped, ok := res.(map[string]any)
+	if !ok || wrapped["projections_pending"] != true {
+		t.Fatalf("MCP response must return pending before asynchronous reconciliation, got %#v", res)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("asynchronous reconciliation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("asynchronous reconciliation did not complete")
+	}
+	if ops, err := listPendingOps(cfg); err != nil || len(ops) != 0 {
+		t.Fatalf("pending after asynchronous reconciliation = %+v err=%v", ops, err)
+	}
+	if h := indexHealthOf(cfg, time.Now()); h.State != idxFresh {
+		t.Fatalf("index health = %+v, want fresh after asynchronous reconciliation", h)
 	}
 }

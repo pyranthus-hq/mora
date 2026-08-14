@@ -47,6 +47,13 @@ func setTestHome(t *testing.T, dir string) {
 // withTempHome points all home-derived dirs at a fresh temp dir on every OS.
 func withTempHome(t *testing.T) {
 	t.Helper()
+	// Async MCP reconciliation is a process-lifetime production worker. Hermetic
+	// temp-home tests may tear their StateDir down immediately after a call, so keep
+	// it inert by default and opt in with a local seam where its scheduling contract
+	// is under test.
+	origReconcileSchedule := scheduleAuthoredReconciliation
+	scheduleAuthoredReconciliation = func(Config) {}
+	t.Cleanup(func() { scheduleAuthoredReconciliation = origReconcileSchedule })
 	pinOperationClockForTest(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	setTestHome(t, t.TempDir())
 	// Hermeticity: a developer's exported MORA_CONFIG_DIR / MORA_VAULT must not

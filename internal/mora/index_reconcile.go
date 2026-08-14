@@ -19,10 +19,26 @@ func authoredReconcileLockPath(cfg Config) string {
 
 const authoredReconcileTTL = 2 * time.Minute
 
-// reconcileAuthoredWrites elects at most one concurrent writer to rebuild every
-// derived projection after a small coalescing window. Other writers keep their
-// durable pending markers; the elected rebuild covers and retires them. This
-// avoids N full rebuilds during a multi-agent write storm while retaining the
+// scheduleAuthoredReconciliation starts the coalescing reconciler after an MCP
+// request has returned from its durable FTS upsert. A long-lived MCP process
+// therefore catches graph/vector/commitment projections up promptly. The worker
+// deliberately owns no response semantics: failures leave the pending ledger and
+// health dirty for the next recovery path.
+var scheduleAuthoredReconciliation = func(cfg Config) {
+	go func() {
+		if err := reconcileAuthoredWrites(context.Background(), cfg); err != nil {
+			// stderr is outside the MCP stdio transport. Do not clear or alter a
+			// marker here: a logged failure must remain visible to health and the
+			// next explicit/scheduled recovery path.
+			fmt.Fprintf(os.Stderr, "warn: authored projection reconciliation pending: %v\n", err)
+		}
+	}()
+}
+
+// reconcileAuthoredWrites elects at most one concurrent background worker to
+// rebuild every derived projection after a small coalescing window. Other writers
+// keep their durable pending markers; the elected rebuild covers and retires them.
+// This avoids N full rebuilds during a multi-agent write storm while retaining the
 // ordinary rebuild's WAL transaction, snapshot, activity, and crash recovery
 // semantics.
 //
