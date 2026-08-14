@@ -381,23 +381,7 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 // persists a pending candidate, so approval cannot reveal a second, looser
 // interpretation of the request.
 func mcpMemoryFromArgs(args map[string]any, now time.Time) (Memory, error) {
-	m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
-	if m.Title == "" || m.Text == "" {
-		return Memory{}, errors.New("title and text required")
-	}
-	if m.Type == "decision" {
-		m.Decision = decisionValidityFromFlags(
-			m.CreatedAt,
-			strArg(args, "as_of", ""),
-			strArg(args, "durability", ""),
-			strArg(args, "flip_conditions", ""),
-			strArg(args, "review_by", ""),
-		)
-	} else if strArg(args, "as_of", "") != "" || strArg(args, "durability", "") != "" ||
-		strArg(args, "flip_conditions", "") != "" || strArg(args, "review_by", "") != "" {
-		return Memory{}, errors.New("decision validity fields require type=decision")
-	}
-	return m, nil
+	return mcppkg.MemoryFromArgs(args, now, decisionValidityFromFlags)
 }
 
 func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
