@@ -52,6 +52,16 @@
     },
     {
       "surface": "daily",
+      "text": "- Reviewer list — From: Sam Rivera \u003csam@example.org\u003e Can you send the reviewer list? (id: gmail_thread/exam-closed-open)\n  obligation: owner=address:alex@example.com · direction=owed_by_self · due=none · lifecycle=open · closure=none\n",
+      "owner": "address:alex@example.com",
+      "memory_id": "gmail_thread/exam-closed-open",
+      "direction": "owed_by_self",
+      "due": "none",
+      "lifecycle": "open",
+      "closure_ref": "none"
+    },
+    {
+      "surface": "daily",
       "text": "- Summary table — From: Nina Ellis \u003cnina@example.org\u003e I will send you the summary table next week. (id: gmail_thread/exam-nina-summary)\n  obligation: owner=address:nina@example.org · direction=owed_by_counterparty · due=relative · lifecycle=open · closure=none\n",
       "owner": "address:nina@example.org",
       "memory_id": "gmail_thread/exam-nina-summary",
