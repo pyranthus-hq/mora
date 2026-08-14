@@ -700,25 +700,16 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	if sup, _ := g.suppresses(mm); sup {
 		return nil
 	}
-	m := Memory{
-		ID: mm.StableID, Scope: mm.Scope, Type: mm.Type, Title: mm.Title,
-		Tags: mm.Tags, Source: mm.Source, CreatedAt: mm.CreatedAt, Text: mm.Body,
-		Provider: mm.Provider, Account: mm.Account, ProviderID: mm.ProviderID, ContentHash: mm.ContentHash,
-		LastSynced: mm.LastSynced, Truncated: mm.Truncated, DeletedAt: mm.DeletedAt,
-		Meta: mm.Meta,
+	// Derive the canonical record/path and skip decision inside the held lease so
+	// the whole check→skip→write remains one critical section.
+	out := ingestpkg.MappedTargetPath(cfg, mm)
+	var existing *Memory
+	if parsed, err := parseMemory(out); err == nil {
+		existing = &parsed
 	}
-	// SafeFilename maps / : and space, but a StableID can still carry Windows
-	// reserved characters (? * " < > |); osSafeBase finishes the job on Windows
-	// and is a no-op elsewhere, so this stays byte-identical on macOS/Linux.
-	out := filepath.Join(sourcesRoot(cfg), mm.Provider, osSafeBase(memory.SafeFilename(mm.StableID))+".md")
-	// Skip rewrite if content unchanged (preserve created_at). This read stays
-	// inside the lease so the whole check→skip→write is one critical section.
-	if existing, err := parseMemory(out); err == nil {
-		evidenceMigration := mm.Provider == "imessage" && existing.Meta["message_evidence_schema"] == nil && mm.Meta["message_evidence_schema"] != nil
-		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" && !evidenceMigration {
-			return nil
-		}
-		m.CreatedAt = existing.CreatedAt // preserve original
+	m, skip := ingestpkg.PrepareMapped(mm, existing)
+	if skip {
+		return nil
 	}
 	body, err := renderMemory(m)
 	if err != nil {
