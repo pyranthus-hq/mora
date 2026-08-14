@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	embedpkg "github.com/pyranthus-hq/mora/internal/embed"
 )
 
 // Gazetteer body-matching finds known people mentioned in free text (message and
@@ -11,6 +13,9 @@ import (
 // own person aliases, and matched against body tokens on word boundaries. It is
 // deliberately HIGH PRECISION over recall — a wrong MENTIONS edge pollutes the
 // graph, so the guards below err toward missing a mention rather than inventing one.
+
+func tokenizeForScan(s string) ([]string, []bool) { return embedpkg.TokenizeForScan(s) }
+func tokenizeWords(s string) []string             { return embedpkg.TokenizeWords(s) }
 
 const (
 	// minGazNameLen is the shortest display name eligible for body matching.
@@ -198,50 +203,12 @@ func gazetteerScan(g gazetteer, text string) []string {
 // tokenizeWords splits text into lowercased word tokens — maximal runs of letters,
 // digits, apostrophes, and hyphens. Splitting on every other rune gives word-
 // boundary matching for free ("Samuelson" never matches "Sam").
-func tokenizeWords(s string) []string {
-	toks, _ := tokenizeForScan(s)
-	return toks
-}
 
 // tokenizeForScan tokenizes like tokenizeWords but also reports, per token,
 // whether the separator immediately before it was made up of ONLY ASCII space/tab
 // (joinable[i]). A name match may bridge tokens i..i+w-1 only when every internal
 // joinable flag is true, so punctuation, '@', '/', and newlines all block a match.
 // joinable[0] is false (no preceding gap).
-func tokenizeForScan(s string) (words []string, joinable []bool) {
-	var cur strings.Builder
-	inWord := false
-	sepSeen := false
-	sepSpaceOnly := true
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\'' || r == '-' {
-			if !inWord {
-				if len(words) == 0 {
-					joinable = append(joinable, false)
-				} else {
-					joinable = append(joinable, sepSeen && sepSpaceOnly)
-				}
-				inWord = true
-			}
-			cur.WriteRune(r)
-		} else {
-			if inWord {
-				words = append(words, strings.ToLower(cur.String()))
-				cur.Reset()
-				inWord = false
-				sepSpaceOnly = true // new separator run begins after this word
-			}
-			sepSeen = true
-			if r != ' ' && r != '\t' {
-				sepSpaceOnly = false
-			}
-		}
-	}
-	if inWord {
-		words = append(words, strings.ToLower(cur.String()))
-	}
-	return words, joinable
-}
 
 func hasLetter(s string) bool {
 	for _, r := range s {
