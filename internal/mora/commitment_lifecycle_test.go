@@ -400,6 +400,98 @@ func TestMaterializedCommitmentLinksCrossSourceClosure(t *testing.T) {
 	}
 }
 
+// oneMessageIMessageCommitmentMemory is a minimal provider-realistic iMessage
+// record: it uses the production message-evidence schema and a source-native
+// handle, rather than constructing lifecycle evidence directly.
+func oneMessageIMessageCommitmentMemory(t *testing.T, id, handle, name, body, at string) Memory {
+	t.Helper()
+	line := name + ": " + body
+	text := "## 2026-08-02\n" + line
+	start := strings.Index(text, line)
+	if start < 0 {
+		t.Fatalf("line %q not found", line)
+	}
+	return Memory{
+		ID: id, Type: "imessage", Provider: "imessage", Source: id,
+		CreatedAt: at, Text: text,
+		Meta: map[string]any{
+			"occurred_at": at, "message_count": "1",
+			"participants":            []map[string]string{{"handle": handle, "name": name}},
+			"message_evidence_schema": 1,
+			"message_evidence": []map[string]any{{
+				"evidence_ref": id + "#m1", "at": at, "from_me": false, "sender": name,
+				"block_start": start, "block_end": start + len(line),
+			}},
+		},
+	}
+}
+
+func TestCrossThreadClosureGivenNameIdentityGate(t *testing.T) {
+	cfg := Config{SelfEmails: []string{"self@example.com"}}
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	commitmentFor := func(rows []Commitment, memoryID string) []Commitment {
+		var out []Commitment
+		for _, row := range rows {
+			if row.OpenedBy.MemoryID == memoryID {
+				out = append(out, row)
+			}
+		}
+		return out
+	}
+
+	t.Run("refuses two different full names sharing a given name", func(t *testing.T) {
+		rivera := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-rivera", "+15550100220", "Sam Rivera",
+			"I'll send the reviewer list.", "2026-08-01T09:00:00Z")
+		chen := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-chen", "+15550100221", "Sam Chen",
+			"Sent the reviewer list.", "2026-08-02T09:00:00Z")
+
+		got := materializeCommitments([]Memory{rivera, chen}, cfg, now)
+		rows := commitmentFor(got, rivera.ID)
+		if len(rows) != 1 || rows[0].State != commitOpen || rows[0].ClosureRef != commitClosureNone {
+			t.Fatalf("Sam Chen closed Sam Rivera's separate commitment: %+v", rows)
+		}
+	})
+
+	t.Run("refuses two first-name-only contacts", func(t *testing.T) {
+		first := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-first-a", "+15550100222", "Sam",
+			"I'll send the reviewer list.", "2026-08-01T09:00:00Z")
+		second := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-first-b", "+15550100223", "Sam",
+			"Sent the reviewer list.", "2026-08-02T09:00:00Z")
+
+		got := materializeCommitments([]Memory{first, second}, cfg, now)
+		rows := commitmentFor(got, first.ID)
+		if len(rows) != 1 || rows[0].State != commitOpen || rows[0].ClosureRef != commitClosureNone {
+			t.Fatalf("one first-name-only Sam closed another's commitment: %+v", rows)
+		}
+	})
+
+	t.Run("refuses a full-name opener and an unrelated first-name-only handle", func(t *testing.T) {
+		rivera := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-rivera-full", "+15550100224", "Sam Rivera",
+			"I'll send the reviewer list.", "2026-08-01T09:00:00Z")
+		unrelatedSam := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-unrelated-short", "+15550100225", "Sam",
+			"Sent the reviewer list.", "2026-08-02T09:00:00Z")
+
+		got := materializeCommitments([]Memory{rivera, unrelatedSam}, cfg, now)
+		rows := commitmentFor(got, rivera.ID)
+		if len(rows) != 1 || rows[0].State != commitOpen || rows[0].ClosureRef != commitClosureNone {
+			t.Fatalf("a distinct first-name-only handle closed Sam Rivera's commitment: %+v", rows)
+		}
+	})
+
+	t.Run("allows matching full trusted metadata names across memories", func(t *testing.T) {
+		fullName := oneMessageIMessageCommitmentMemory(t, "imessage_chat/casey-full", "+15550100230", "Casey Liao",
+			"I'll send the paper-store receipt.", "2026-08-01T09:00:00Z")
+		matchingName := oneMessageIMessageCommitmentMemory(t, "imessage_chat/casey-matching", "+15550100231", "Casey Liao",
+			"Sent the paper-store receipt.", "2026-08-02T09:00:00Z")
+
+		got := materializeCommitments([]Memory{fullName, matchingName}, cfg, now)
+		rows := commitmentFor(got, fullName.ID)
+		if len(rows) != 1 || rows[0].State != commitClosed || rows[0].ClosureRef != matchingName.ID {
+			t.Fatalf("matching full-name closure did not link: %+v", rows)
+		}
+	})
+}
+
 func TestStaleSourceMarksCommitmentStateUncertain(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
