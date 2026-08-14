@@ -48,6 +48,25 @@ func appleCalStatusPath(cfg Config, name string) string {
 }
 func sourceFreshness(cfg Config) map[string]string { return ingestpkg.SourceFreshness(cfg) }
 
+func ingestOperationSourceKey(s Source) string { return ingestpkg.OperationSourceKey(s) }
+func windowForSource(s Source, k google.ItemKind) google.FetchWindow {
+	return ingestpkg.GoogleWindow(s, k, time.Now())
+}
+func googleTokenPathFor(cfg Config, account string) string {
+	return ingestpkg.GoogleTokenPath(cfg, account)
+}
+func iMessageLookbackDays(s Source) int             { return ingestpkg.IMessageLookbackDays(s) }
+func windowForIMessage(s Source) memory.FetchWindow { return ingestpkg.IMessageWindow(s, time.Now()) }
+func windowForAppleCal(s Source, now time.Time) memory.FetchWindow {
+	return ingestpkg.AppleCalendarWindow(s, now)
+}
+func defaultFilesystemSourceName(path string) string {
+	return ingestpkg.DefaultFilesystemSourceName(path)
+}
+func curatedAllowedExt(ext string) bool    { return ingestpkg.CuratedAllowedExt(ext) }
+func curatedExtractExt(ext string) bool    { return ingestpkg.CuratedExtractExt(ext) }
+func curatedMetadataFile(name string) bool { return ingestpkg.CuratedMetadataFile(name) }
+
 func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
 	sources, _ := loadSources(cfg)
 	total := 0
@@ -629,14 +648,6 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	return n, nil
 }
 
-func ingestOperationSourceKey(s Source) string {
-	account := s.Account
-	if s.Type == "filesystem" {
-		account = s.Name
-	}
-	return ingestSourceKey(s.Type, account)
-}
-
 func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {
 	switch s.Type {
 	case "filesystem":
@@ -812,39 +823,12 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 // losing it silently turns a real outcome into permanent "unavailable"/stale
 // readings. ingErr (the sync's own error) stays primary; the save error is
 // returned only when the sync itself succeeded.
-func windowForSource(s Source, kind google.ItemKind) google.FetchWindow {
-	now := time.Now()
-	w := google.FetchWindow{Labels: s.LabelIDs, CalendarID: s.Calendar}
-	switch kind {
-	case google.KindGmailThread:
-		// Default to a lean 90-day window: a year of mail is mostly low-signal
-		// noise for a memory index (~6.7k threads vs ~1.6k here). Override with
-		// `mora connect google --since-days N` (persisted on the source, so
-		// future `sync google` reuses it).
-		days := s.SinceDays
-		if days == 0 {
-			days = 90
-		}
-		w.Since = now.AddDate(0, 0, -days)
-	case google.KindCalEvent:
-		w.Since = now.AddDate(0, -6, 0)
-		w.Until = now.AddDate(0, 3, 0)
-	}
-	return w
-}
 
 // googleTokenPathFor maps an account label to its token file. The unlabeled
 // default keeps the legacy tokens/google.json (existing installs untouched);
 // a labeled account (a second mailbox, e.g. personal vs business) gets its own
 // tokens/google-<label>.json so two Google identities never clobber each
 // other's refresh tokens.
-func googleTokenPathFor(cfg Config, account string) string {
-	name := "google.json"
-	if account != "" {
-		name = "google-" + account + ".json"
-	}
-	return filepath.Join(cfg.ConfigDir, "tokens", name)
-}
 func googleTokenPath(cfg Config) string { return googleTokenPathFor(cfg, "") }
 
 // imessageStatusPath mirrors googleStatusPath so `mora sync status` reads the
@@ -866,24 +850,10 @@ func addressBookRoot() string {
 // windowForIMessage builds the lookback window: a lean 90-day default (D-06),
 // overridable per source via SinceDays (0 ⇒ 90; a negative SinceDays means all-time,
 // matching the Gmail since-days ergonomic). Zero Since = all-time at the SQL bound.
-const defaultIMessageLookbackDays = 365
+const defaultIMessageLookbackDays = ingestpkg.DefaultIMessageLookbackDays
 
 // iMessageLookbackDays reports the configured effective lookback. A negative
 // override means all available history; zero retains the documented default.
-func iMessageLookbackDays(s Source) int {
-	if s.SinceDays == 0 {
-		return defaultIMessageLookbackDays
-	}
-	return s.SinceDays
-}
-
-func windowForIMessage(s Source) memory.FetchWindow {
-	days := iMessageLookbackDays(s)
-	if days < 0 {
-		return memory.FetchWindow{} // all-time (Since zero ⇒ no lower bound)
-	}
-	return memory.FetchWindow{Since: time.Now().AddDate(0, 0, -days)}
-}
 
 // iMessageFetcher is the injectable open+close seam for chat.db (Packet G2 /
 // HEALTH-08). Production uses imessage.NewLiveFetcher; tests inject a denial or
@@ -991,16 +961,6 @@ func appleCalDBPath() string {
 // negative = all-time past) and a FIXED 180-day forward bound — Apple Calendar
 // stores subscribed-holiday events YEARS out, and an unbounded Until would
 // flood the vault (and the digest's upcoming-events section) with them.
-func windowForAppleCal(s Source, now time.Time) memory.FetchWindow {
-	days := s.SinceDays
-	switch {
-	case days < 0:
-		return memory.FetchWindow{Until: now.AddDate(0, 0, 180)}
-	case days == 0:
-		days = 90
-	}
-	return memory.FetchWindow{Since: now.AddDate(0, 0, -days), Until: now.AddDate(0, 0, 180)}
-}
 
 // ingestAppleCal reads the local Apple Calendar store read-only and writes one
 // memory per event. macOS-gated like iMessage (same Full Disk Access story —
@@ -1310,13 +1270,6 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 // directory path (its base name), so `connect filesystem ~/notes` and `connect
 // filesystem ~/docs` coexist without an explicit --name. Falls back to
 // "filesystem" for degenerate paths (root, ".", empty base).
-func defaultFilesystemSourceName(path string) string {
-	base := filepath.Base(filepath.Clean(path))
-	if base == "." || base == string(filepath.Separator) || base == "" {
-		return "filesystem"
-	}
-	return base
-}
 func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -1560,14 +1513,6 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 // LastSynced=="") is INCLUDED with an empty value so it can read "unavailable"
 // downstream (SC#3 gap) rather than being silently dropped, which hid a broken
 // source.
-func curatedAllowedExt(ext string) bool {
-	switch strings.ToLower(ext) {
-	case ".md", ".markdown", ".txt", ".text", ".rst", ".json", ".yaml", ".yml", ".toml", ".csv":
-		return true
-	default:
-		return false
-	}
-}
 
 // curatedExtractExt reports whether ext is a non-plain-text format Mora ingests by
 // EXTRACTING its text (vs reading raw bytes). Today: .docx (stdlib zip+xml) and
@@ -1575,14 +1520,6 @@ func curatedAllowedExt(ext string) bool {
 // PDF extraction is lossy on exotic font encodings and yields nothing on scanned
 // documents (no OCR — that would break the no-CGO/single-binary constraint); such
 // files are skipped, never indexed as garbage.
-func curatedExtractExt(ext string) bool {
-	switch strings.ToLower(ext) {
-	case ".docx", ".pdf":
-		return true
-	default:
-		return false
-	}
-}
 
 // extractDocxText returns the visible text of a .docx by reading word/document.xml
 // (the main body) and concatenating its <w:t> runs, breaking paragraphs on </w:p>.
@@ -1646,12 +1583,4 @@ func extractDocxText(path string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
-}
-func curatedMetadataFile(name string) bool {
-	switch name {
-	case "go.mod", "go.sum", "Makefile", "Dockerfile", "CLAUDE.md", "AGENTS.md",
-		"README", "package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "CHANGELOG.md":
-		return true
-	}
-	return false
 }
