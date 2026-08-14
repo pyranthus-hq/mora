@@ -74,7 +74,7 @@ func TestReportPerToolScorecardIsStableAndHonestAboutLegacyCoverage(t *testing.T
 			t.Fatalf("report missing %q:\n%s", want, got)
 		}
 	}
-	if read, search, write := strings.Index(got, "read_memory:"), strings.Index(got, "search_memory:"), strings.Index(got, "write_memory:"); !(read < search && search < write) {
+	if read, search, write := strings.Index(got, "read_memory:"), strings.Index(got, "search_memory:"), strings.Index(got, "write_memory:"); read >= search || search >= write {
 		t.Fatalf("scorecard is not tool-sorted:\n%s", got)
 	}
 }
