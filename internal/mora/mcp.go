@@ -2,7 +2,6 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -95,33 +94,27 @@ const budgetUnitTokens = "tokens"
 // (what the T0 gate measures) respects the ceiling while the knob still scales
 // (a 20k request yields a strictly larger compact budget than the 6k default).
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
-	resp := jsonRPCResponse{JSONRPC: "2.0", ID: req.ID}
-	switch req.Method {
-	case "initialize":
-		var instructions string
-		if cfg, err := loadConfig(); err == nil {
-			instructions = mcpInstructionsFor(configMCPWritePolicy(cfg))
-		} else {
-			instructions = "Mora could not load its configuration, so tools are unavailable and no mutation will be attempted. Fix config.toml and reconnect."
-		}
-		resp.Result = map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "mora", "version": BuildVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": instructions}
-	case "tools/list":
-		tools := make([]map[string]any, 0, len(mcpToolRegistry))
-		for _, def := range mcpToolRegistry {
-			tools = append(tools, mcpTool(def.Name, def.Description, def.Params...))
-		}
-		resp.Result = map[string]any{"tools": tools}
-	case "tools/call":
-		var p struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		_ = json.Unmarshal(req.Params, &p)
-		resp.Result = invokeMCPTool(ctx, p.Name, p.Arguments).result()
-	default:
-		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-	}
-	return resp
+	return mcppkg.Dispatch(ctx, req,
+		func() any {
+			var instructions string
+			if cfg, err := loadConfig(); err == nil {
+				instructions = mcpInstructionsFor(configMCPWritePolicy(cfg))
+			} else {
+				instructions = "Mora could not load its configuration, so tools are unavailable and no mutation will be attempted. Fix config.toml and reconnect."
+			}
+			return map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "mora", "version": BuildVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": instructions}
+		},
+		func() any {
+			tools := make([]map[string]any, 0, len(mcpToolRegistry))
+			for _, def := range mcpToolRegistry {
+				tools = append(tools, mcpTool(def.Name, def.Description, def.Params...))
+			}
+			return map[string]any{"tools": tools}
+		},
+		func(ctx context.Context, name string, args map[string]any) any {
+			return invokeMCPTool(ctx, name, args).result()
+		},
+	)
 }
 
 // toCallToolResult wraps a tool's native return value in a spec-compliant MCP
