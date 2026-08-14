@@ -908,13 +908,10 @@ const mcpInstructions = `Mora is the user's persistent, local memory across sess
 // buildContext truncates in runes and a pure-Go tokenizer would be a dependency
 // we don't need for a guardrail, so we approximate ~charsPerToken chars/token.
 const (
-	charsPerToken        = 4     // rough English heuristic; budget guardrail, not exact accounting
-	defaultContextTokens = 6000  // denser than the old ~4k-token default
-	maxContextTokens     = 20000 // Neil's ceiling; one tool result must not dominate the window
-	// largeContextMaxTokens is the raised one-call ceiling the "large" context
-	// profile opts into (contextMaxTokens) — an explicit user trade of agent
-	// window headroom for denser context.
-	largeContextMaxTokens = 50000
+	charsPerToken         = mcppkg.CharsPerToken
+	defaultContextTokens  = mcppkg.DefaultContextTokens
+	maxContextTokens      = mcppkg.MaxContextTokens
+	largeContextMaxTokens = mcppkg.LargeContextMaxTokens
 )
 
 // mcpDigestEnvelopeDivisor budgets the COMPACT digest payload so the full
@@ -926,7 +923,7 @@ const (
 // the compact sections to budgetChars/divisor so digest_max lands under 20000 and
 // digest_default under its 6000-token budget with headroom. It is a guardrail
 // constant, not exact accounting (the codebase's whole budget unit is approximate).
-const mcpDigestEnvelopeDivisor = 3
+const mcpDigestEnvelopeDivisor = mcppkg.EnvelopeDivisor
 
 // mcpDigestMaxItems is the GENEROUS per-source cap the MCP digest surfaces so the
 // byte budget (not the human-brief cap of digestDefaultCap=8) governs how many
