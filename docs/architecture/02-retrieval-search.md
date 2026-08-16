@@ -15,7 +15,7 @@ message-segment FTS) or hybrid search from measured recall.
 | `internal/mora/embed_ollama.go` | 117 | The opt-in `ollamaEmbedder` (localhost-only), `chooseEmbedder` selection logic, `isLoopbackURL` egress guard, daemon `reachable` probe |
 | `internal/mora/search.go` | n/a | The CLI/MCP search plumbing: `searchMemories` (static parent-FTS + Gmail-segment path), `ftsQuery`/`ftsToken`/`ftsIsStopword` (query construction + stopword filtering), `snippetMemories`, `budgetSearchResults`, `buildContext`, `parseSearchArgs`. (The `ftsStopwords` var and the `mcpSearchDefaultLimit`/`searchSnippetLen` consts remain in `mora.go`. The FTS5/`mem_vectors` schema DDL and `writeVectors` index-time embedding live in `index.go`, part of the `rebuildIndex` pipeline.) |
 | `internal/mora/cluster.go` | n/a | Post-retrieval corroboration clustering, legacy slot discipline, and the shared result-assembly chokepoint used by both static and hybrid paths. |
-| `internal/mora/supersession.go` | n/a | Precision-first title signatures and derived `later_related_evidence` receipts over the visible deeper candidate pool; never asserts closure or supersession. |
+| `internal/search/later_related.go` | n/a | Precision-first title signatures and derived `later_related_evidence` receipts over the visible deeper candidate pool; never asserts closure or supersession. |
 
 Cross-arm helpers `loadMemoriesByID` (`graph_read.go:152`), `gazetteerScan`/`normalizeGazName`/`tokenizeWords` (`gazetteer.go`), and `snippet`/`matchSnippet` (`think.go`) are owned by sibling docs but called here. They are described only at the boundary.
 
