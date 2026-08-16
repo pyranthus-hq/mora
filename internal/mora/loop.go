@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 	"io"
 	"os"
 	"path/filepath"
@@ -368,11 +368,7 @@ const maxLoopAcquireAttempts = 4
 // progress between begin and done. Liveness is therefore a false stale signal;
 // the lock's lifetime is bounded purely by the TTL (an over-TTL lease is
 // abandoned). Mirrors saveBriefSnapshot's UTC RFC3339 stamp.
-type loopLockBody struct {
-	RunID      string `json:"run_id"`
-	PID        int    `json:"pid"`
-	AcquiredAt string `json:"acquired_at"`
-}
+type loopLockBody = leasefile.Body
 
 // acquireLoopLock takes the per-loop lease at <id>/.lock for run runID. It
 // mirrors acquireBriefLock's exclusive shape and ADDS a {run_id,pid,acquired_at}
@@ -380,6 +376,27 @@ type loopLockBody struct {
 // held fd), so the lock survives across the begin->done process gap; loopDone
 // releases it by path, but only if the lock still belongs to its run. A
 // non-expired holder => errLoopLockHeld (the caller no-ops; the cadence retries).
+func leaseRemovalOptions() leasefile.RemovalOptions {
+	return leasefile.RemovalOptions{Remove: leaseRemoveFn, Retryable: leaseRemovalRetryableFn, Backoff: sourcesAcquireBackoff, Now: time.Now, Sleep: time.Sleep, Timeout: leaseRemovalTimeout, BeforeRemove: testHookBreakLockBeforeRemove, AfterRead: testHookReleaseLockAfterRead}
+}
+func publishLockFile(path string, body []byte) (bool, error) { return leasefile.Publish(path, body) }
+
+func loopLockReleaser(path string, observed []byte) func() {
+	return leasefile.Releaser(path, observed, leaseRemovalOptions())
+}
+func removeLeaseFileGuarded(path string) error { return leasefile.Remove(path, leaseRemovalOptions()) }
+func reapStaleLock(path string, now time.Time) (bool, error) {
+	return leasefile.Reap(path, now, loopLockTTL, leaseRemovalOptions())
+}
+func reapStaleLockTTL(path string, now time.Time, ttl time.Duration) (bool, error) {
+	return leasefile.Reap(path, now, ttl, leaseRemovalOptions())
+}
+
+func releaseLockFileFor(path, owner string) { leasefile.Release(path, owner, leaseRemovalOptions()) }
+func heartbeatLockFileFor(path, owner string, now time.Time) bool {
+	return leasefile.Heartbeat(path, owner, now)
+}
+
 func acquireLoopLock(cfg Config, id, runID string, now time.Time) (release func(), err error) {
 	dir := loopDir(cfg, id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -420,52 +437,9 @@ func acquireLoopLock(cfg Config, id, runID string, now time.Time) (release func(
 // temp + os.Link. Returns (true,nil) on success, (false,nil) if the lock is
 // already held (EEXIST), or (false,err) on a real fs error. The temp is always
 // cleaned up — on success its extra name is dropped, leaving only lockPath.
-func publishLockFile(lockPath string, body []byte) (bool, error) {
-	var published bool
-	err := withLeaseFileGuard(lockPath, func() error {
-		var err error
-		published, err = publishLockFileGuarded(lockPath, body)
-		return err
-	})
-	return published, err
-}
 
 // publishLockFileGuarded is publishLockFile's inner operation. The caller must
 // hold lockPath's lease-file guard.
-func publishLockFileGuarded(lockPath string, body []byte) (bool, error) {
-	dir := filepath.Dir(lockPath)
-	tmp, err := os.CreateTemp(dir, ".lock-*.tmp")
-	if err != nil {
-		return false, err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // drop the temp name whether link succeeds or not
-	if _, werr := tmp.Write(body); werr != nil {
-		tmp.Close()
-		return false, werr
-	}
-	if cerr := tmp.Close(); cerr != nil {
-		return false, cerr
-	}
-	if err := os.Link(tmpName, lockPath); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return false, nil // already held
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func loopLockReleaser(lockPath string, observed []byte) func() {
-	released := false
-	return func() {
-		if released {
-			return
-		}
-		released = true
-		_, _ = breakLock(lockPath, observed)
-	}
-}
 
 // leaseRemovalTimeout is the WALL-CLOCK budget for removeLeaseFileGuarded's
 // retry, deliberately much SHORTER than any acquire budget (sourcesAcquireTimeout
@@ -507,24 +481,6 @@ var (
 // leaseRemovalRetryableFn is always false, so this collapses to exactly one
 // os.Remove — behavior there is unchanged. It surfaces a permanent error to the
 // lifecycle caller instead of silently leaking a terminal run's lease.
-func removeLeaseFileGuarded(lockPath string) error {
-	var lastErr error
-	deadline := time.Now().Add(leaseRemovalTimeout)
-	for attempt := 0; ; attempt++ {
-		err := leaseRemoveFn(lockPath)
-		if err == nil || errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if !leaseRemovalRetryableFn(err) {
-			return err
-		}
-		lastErr = err
-		if !sleepWithinDeadline(sourcesAcquireBackoff(attempt), deadline) {
-			break
-		}
-	}
-	return lastErr
-}
 
 // reapStaleLock removes an ABANDONED loop lease and reports whether it did,
 // using loopLockTTL as the abandonment bound. See reapStaleLockTTL for the
@@ -532,9 +488,6 @@ func removeLeaseFileGuarded(lockPath string) error {
 // unchanged while the crash-safe lease primitives (publishLockFile / breakLock /
 // loopLockReleaser / loopLockBody + this reaper) are shared with the sources.json
 // lease in sources_lock.go.
-func reapStaleLock(lockPath string, now time.Time) (bool, error) {
-	return reapStaleLockTTL(lockPath, now, loopLockTTL)
-}
 
 // reapStaleLockTTL removes an ABANDONED lease and reports whether it did. Stale :=
 // corrupt/empty/partial OR acquired_at older than ttl. Liveness is NOT a
@@ -545,29 +498,6 @@ func reapStaleLock(lockPath string, now time.Time) (bool, error) {
 // a corrupt lock is reapable, never a fatal error. ttl is a parameter (not the
 // loopLockTTL constant) so the shorter-lived sources.json lease can reuse this
 // exact reaper with its own abandonment bound.
-func reapStaleLockTTL(lockPath string, now time.Time, ttl time.Duration) (bool, error) {
-	data, err := os.ReadFile(lockPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil // freed between our publish attempt and read: path is free
-	}
-	if err != nil {
-		return false, err // transient read error: do NOT reap blindly
-	}
-
-	stale := false
-	var body loopLockBody
-	if jerr := json.Unmarshal(data, &body); jerr != nil || body.AcquiredAt == "" {
-		stale = true // corrupt / empty / partial
-	} else if t, perr := time.Parse(time.RFC3339, body.AcquiredAt); perr != nil {
-		stale = true // unparseable timestamp => corrupt => stale
-	} else if now.UTC().Sub(t.UTC()) >= ttl {
-		stale = true // EXPIRED — the holder exceeded the abandonment bound
-	}
-	if !stale {
-		return false, nil // a fresh lease: the real holder (regardless of pid liveness)
-	}
-	return breakLock(lockPath, data)
-}
 
 // testHookBreakLockBeforeRemove is a deterministic witness that fires while the
 // cross-process guard is held and the exact observed bytes still occupy
@@ -579,35 +509,6 @@ var testHookBreakLockBeforeRemove func()
 // guard first, so the compare+remove is one serialized transition: lockPath is
 // never renamed away and therefore never has a restore window in which a third
 // process can acquire and then be dropped.
-func breakLock(lockPath string, observed []byte) (bool, error) {
-	reaped := false
-	err := withLeaseFileGuard(lockPath, func() error {
-		cur, err := os.ReadFile(lockPath)
-		if errors.Is(err, os.ErrNotExist) {
-			reaped = true
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(cur, observed) {
-			return nil // a newer holder won before we acquired the guard
-		}
-		if testHookBreakLockBeforeRemove != nil {
-			testHookBreakLockBeforeRemove()
-		}
-		// Windows can transiently deny removal even while Mora holds the lease
-		// guard (for example, an antivirus handle briefly opened without sharing).
-		// A one-shot remove leaks the fresh lease because loopLockReleaser has no
-		// error channel; use the same bounded retry path as owner-CAS release.
-		if err := removeLeaseFileGuarded(lockPath); err != nil {
-			return err
-		}
-		reaped = true
-		return nil
-	})
-	return reaped, err
-}
 
 // ---------------------------------------------------------------------------
 // registry store (self-heal, same shape as the run record)
@@ -1180,54 +1081,11 @@ var testHookReleaseLockAfterRead func()
 // absent / unreadable / legacy with no run_id). The share import lease reuses
 // this against subs/<name>/import.lock, so a reaped holder's late release can
 // NEVER remove its successor's lease (the blind-release-drops-B's-lease hole).
-func releaseLockFileFor(lockPath, owner string) {
-	_ = withLeaseFileGuard(lockPath, func() error {
-		data, err := os.ReadFile(lockPath)
-		if err != nil {
-			return nil // absent/unreadable: nothing to release
-		}
-		if testHookReleaseLockAfterRead != nil {
-			testHookReleaseLockAfterRead()
-		}
-		var body loopLockBody
-		if json.Unmarshal(data, &body) == nil && body.RunID != "" && body.RunID != owner {
-			return nil // a different run owns the lease now; leave it
-		}
-		// Read, owner check, and delete are one guarded transition. In particular,
-		// a same-owner heartbeat cannot replace the bytes between this check and
-		// removal and turn release into a silent leaked lease.
-		return removeLeaseFileGuarded(lockPath)
-	})
-}
 
 // heartbeatLockFileFor is the owner-CAS re-stamp: it updates acquired_at only if
 // the guarded on-disk run_id is still owner. The replacement happens while the
 // same cross-process guard excludes publish/reap, so no absent-path window can
 // resurrect a reaped holder over its successor.
-func heartbeatLockFileFor(lockPath, owner string, now time.Time) bool {
-	owned := false
-	err := withLeaseFileGuard(lockPath, func() error {
-		data, err := os.ReadFile(lockPath)
-		if err != nil {
-			return err
-		}
-		var body loopLockBody
-		if json.Unmarshal(data, &body) != nil || body.RunID != owner {
-			return nil // reaped/replaced: ownership lost
-		}
-		body.AcquiredAt = now.UTC().Format(time.RFC3339Nano)
-		next, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		if err := atomicio.Write(lockPath, next, 0o600); err != nil {
-			return err
-		}
-		owned = true
-		return nil
-	})
-	return err == nil && owned
-}
 
 // ---------------------------------------------------------------------------
 // status — the GENERIC health ladder (run record + registry only)
