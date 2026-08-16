@@ -36,7 +36,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -233,16 +232,6 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 // repo. It carries no memory content — only enough for a subscriber to see
 // what they cloned. The subscriber's OWN subscription name, not this file, is
 // the attribution label (publisher-controlled metadata is never a trust label).
-type shareManifest struct {
-	Schema    int    `json:"schema"`
-	Name      string `json:"name"`
-	Scope     string `json:"scope"`
-	Owner     string `json:"owner,omitempty"`
-	CreatedAt string `json:"created_at"`
-	Client    string `json:"client"`
-}
-
-const shareManifestSchema = 1
 
 // shareGitignoreBody inverts the vault list: in a share repo the SENSITIVE
 // thing is plaintext markdown — only *.md.age ciphertext and the manifest
@@ -414,7 +403,6 @@ func shareInit(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 
 // shareExportIDRE is the hard gate on ids that become filenames in the share
 // repo and in subscriber corpora: safe charset, no separators, no leading dot.
-var shareExportIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // sharePushState is the LOCAL change-detection record for one publish, at
 // <StateDir>/share/publish/<name>.json. Plaintext content hashes stay on this
@@ -728,7 +716,6 @@ func sharePreview(cfg Config, args []string, stdout io.Writer) error {
 // shareMaxMemoryBytes caps one decrypted memory. Authored notes are small;
 // anything larger in a share repo is malformed or hostile (decompression-bomb
 // class), and the whole import stops loudly rather than filling the disk.
-const shareMaxMemoryBytes = 4 << 20
 
 type shareImportStats struct {
 	Imported int    // files newly written or changed this import

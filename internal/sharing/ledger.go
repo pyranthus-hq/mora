@@ -124,3 +124,17 @@ func (c BucketConfig) Display() string {
 	}
 	return loc
 }
+
+const ExportManifestSchema = 1
+const MaxMemoryBytes = 4 << 20
+
+var ExportIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+type ExportManifest struct {
+	Schema    int    `json:"schema"`
+	Name      string `json:"name"`
+	Scope     string `json:"scope"`
+	Owner     string `json:"owner,omitempty"`
+	CreatedAt string `json:"created_at"`
+	Client    string `json:"client"`
+}
