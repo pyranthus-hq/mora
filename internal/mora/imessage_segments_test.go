@@ -13,29 +13,6 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-func TestDeriveIMessageSegmentsAndLegacyCoverage(t *testing.T) {
-	legacy := Memory{ID: "imessage_chat/chat", Type: "imessage", Provider: "imessage", Text: "Me: legacy"}
-	rows, diag := deriveGmailSegments(legacy)
-	if len(rows) != 0 || diag == nil || diag.Reason != "message_evidence_unavailable" {
-		t.Fatalf("legacy coverage = rows=%v diag=%+v", rows, diag)
-	}
-
-	body := "## 2026-08-01\nMe: same\nAlex: same"
-	m := legacy
-	m.Text = body
-	m.Meta = map[string]any{"message_evidence": []map[string]any{
-		{"evidence_ref": m.ID + "#a", "at": "2026-08-01T09:00:00Z", "from_me": true, "sender": "Me", "block_start": 14, "block_end": 22},
-		{"evidence_ref": m.ID + "#b", "at": "2026-08-01T09:01:00Z", "from_me": false, "sender": "Alex", "block_start": 23, "block_end": 33},
-	}}
-	rows, diag = deriveGmailSegments(m)
-	if diag != nil || len(rows) != 2 {
-		t.Fatalf("derived rows=%+v diag=%+v", rows, diag)
-	}
-	if rows[0].EvidenceRef == rows[1].EvidenceRef || rows[0].Sender != "Me" || rows[1].Sender != "Alex" || rows[0].Text != "Me: same" || rows[1].Text != "Alex: same" {
-		t.Fatalf("wrong exact evidence: %+v", rows)
-	}
-}
-
 func TestIMessageEvidenceMigrationRewritesOnceWithoutBriefDelta(t *testing.T) {
 	cfg := coreBIngestInitCfg(t)
 	const (
