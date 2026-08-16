@@ -101,28 +101,6 @@ func TestScheduledAutoCallsApplyUnderLease(t *testing.T) {
 	}
 }
 
-func TestUpdateLeaseRejectsConcurrentHolderAndReapsStale(t *testing.T) {
-	cfg := isolateUnattendedTest(t)
-	now := time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC)
-	release, err := acquireUpdateLease(cfg, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := acquireUpdateLease(cfg, now); err == nil {
-		t.Fatal("concurrent lease acquired")
-	}
-	release()
-	staleBody := []byte(`{"pid":123,"acquired_at":"2026-08-07T20:00:00Z"}`)
-	if err := os.WriteFile(updateLeasePath(cfg), staleBody, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	release, err = acquireUpdateLease(cfg, now)
-	if err != nil {
-		t.Fatalf("stale lease not reaped: %v", err)
-	}
-	release()
-}
-
 func TestOffScheduledCheckDoesNotCreateLease(t *testing.T) {
 	cfg := isolateUnattendedTest(t)
 	BuildVersion = "1.0.0"
@@ -205,33 +183,6 @@ func setupUnattendedFixture(t *testing.T) unattendedFixture {
 func availableReceipt(f unattendedFixture) updateReceipt {
 	ts := f.now.Format(time.RFC3339)
 	return updateReceipt{SchemaVersion: updateReceiptSchema, LastAttemptAt: ts, LastSuccessAt: ts, LatestVersion: "1.1.0", UpdateAvailable: true}
-}
-
-func TestUnattendedUpdateOrdersVerificationBeforeAtomicSwap(t *testing.T) {
-	f := setupUnattendedFixture(t)
-	receipt := availableReceipt(f)
-	var out bytes.Buffer
-	if err := runUnattendedAppUpdate(context.Background(), f.cfg, &receipt, f.now, &out); err != nil {
-		t.Fatal(err)
-	}
-	if receipt.ApplyOutcome != "updated" || receipt.RollbackOutcome != "not_needed" || receipt.RebuildOutcome != "succeeded" || receipt.UpdateAvailable {
-		t.Fatalf("receipt=%+v", receipt)
-	}
-	joined := strings.Join(*f.events, ",")
-	want := "verify:1.0.0,health,writable,download,download,archive,extract,verify:1.1.0,verify:1.0.0,health,swap,verify:1.1.0,rebuild,post_health,notify"
-	if joined != want {
-		t.Fatalf("events=%s\nwant=%s", joined, want)
-	}
-	if strings.Count(joined, "rebuild") != 1 {
-		t.Fatalf("forward rebuild ran more than once: %s", joined)
-	}
-	stored, err := loadUpdateReceipt(f.cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.ApplyOutcome != "updated" || stored.AppliedAt == "" {
-		t.Fatalf("stored=%+v", stored)
-	}
 }
 
 func TestUnattendedPreSwapFailureJoinsReceiptPersistenceFailure(t *testing.T) {
@@ -600,4 +551,53 @@ func TestIndexRebuildIfNeededNoOpsOnCurrentSchema(t *testing.T) {
 	if !strings.Contains(out.String(), "rebuild not needed") {
 		t.Fatalf("out=%q", out.String())
 	}
+}
+
+func TestUnattendedUpdateOrdersVerificationBeforeAtomicSwap(t *testing.T) {
+	f := setupUnattendedFixture(t)
+	receipt := availableReceipt(f)
+	var out bytes.Buffer
+	if err := runUnattendedAppUpdate(context.Background(), f.cfg, &receipt, f.now, &out); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ApplyOutcome != "updated" || receipt.RollbackOutcome != "not_needed" || receipt.RebuildOutcome != "succeeded" || receipt.UpdateAvailable {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+	joined := strings.Join(*f.events, ",")
+	want := "verify:1.0.0,health,writable,download,download,archive,extract,verify:1.1.0,verify:1.0.0,health,swap,verify:1.1.0,rebuild,post_health,notify"
+	if joined != want {
+		t.Fatalf("events=%s\nwant=%s", joined, want)
+	}
+	if strings.Count(joined, "rebuild") != 1 {
+		t.Fatalf("forward rebuild ran more than once: %s", joined)
+	}
+	stored, err := loadUpdateReceipt(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ApplyOutcome != "updated" || stored.AppliedAt == "" {
+		t.Fatalf("stored=%+v", stored)
+	}
+}
+
+func TestUpdateLeaseRejectsConcurrentHolderAndReapsStale(t *testing.T) {
+	cfg := isolateUnattendedTest(t)
+	now := time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC)
+	release, err := acquireUpdateLease(cfg, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireUpdateLease(cfg, now); err == nil {
+		t.Fatal("concurrent lease acquired")
+	}
+	release()
+	staleBody := []byte(`{"pid":123,"acquired_at":"2026-08-07T20:00:00Z"}`)
+	if err := os.WriteFile(updateLeasePath(cfg), staleBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err = acquireUpdateLease(cfg, now)
+	if err != nil {
+		t.Fatalf("stale lease not reaped: %v", err)
+	}
+	release()
 }

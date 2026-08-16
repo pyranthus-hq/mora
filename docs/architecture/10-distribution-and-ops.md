@@ -20,7 +20,7 @@ boundary described in the [README](../../README.md#privacy-boundary).
 | `install-app.sh` / `uninstall-app.sh` | Fail-closed macOS app install/migration and uninstall paths that preserve user data. |
 | `internal/mora/upgrade.go` | Checksum-validated, Homebrew-aware manual self-update, including whole-app replacement on macOS. |
 | `internal/mora/update_policy.go` | Context-sensitive `auto|notify|off` check policy, strict sanitized state-dir receipt, published-stable release selection, restrained checked notifications, and network-free status. |
-| `internal/mora/update_unattended.go` | Single-host leased automatic whole-app apply: identity/health fences, signed-asset staging, same-path atomic swap, rollback, conditional one-shot schema rebuild, and typed fallback. It does not install a schedule. |
+| `internal/update/unattended.go` | Single-host leased automatic whole-app apply: identity/health fences, signed-asset staging, same-path atomic swap, rollback, conditional one-shot schema rebuild, and typed fallback. It does not install a schedule. |
 | `cmd/mora/main.go` | Thin entrypoint that forwards linker-supplied version metadata into `internal/mora`. |
 | `install.sh` | POSIX installer; on macOS it verifies the fixed Developer ID identity and notarized-code requirement without changing quarantine or the signature. |
 | `install.ps1` | Windows installer with checksum verification and User PATH setup. |
@@ -135,6 +135,8 @@ availability. `mora upgrade --status [--json]` reads only config plus that local
 receipt and performs no network or notification call.
 
 ### Leased automatic whole-app apply
+
+`internal/update` owns the typed lease/apply/rollback state machine. `internal/mora` retains configured policy, release credentials, app primitive adapters, doctor/index composition, notification policy, and CLI/status presentation.
 
 Every scheduled `notify` or `auto` check acquires one state-dir host lease before
 network access; `off` returns before even creating the lease. `auto` mutation is
