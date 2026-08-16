@@ -146,7 +146,11 @@ func TestDanglingSymlinkRefused(t *testing.T) {
 }
 func TestFreshSettingsAndPath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	} else {
+		t.Setenv("HOME", home)
+	}
 	path, err := SettingsPath()
 	if err != nil || path != filepath.Join(home, ".claude", "settings.json") {
 		t.Fatalf("path=%q err=%v", path, err)
