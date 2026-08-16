@@ -44,7 +44,7 @@ Decisions ride the [governance ledger](./17-governance-ledger.md) as `merge_conf
 | `mora merge reject --handle H --email A` | record a reject → the pair stays apart, never re-proposed |
 | `mora merge undo <ledger-id>` | revoke a prior decision |
 
-`governance.mergeDecisions()` resolves the ledger's `merge_confirm` entries into (a) the confirmed pairs the graph build applies and (b) the set of decided pairs the queue must not re-propose. Last-writer-wins per pair, so a reject after a confirm takes effect. The confirm application is **general** (it honors any explicit pair), while the auto-*proposer* is email↔phone-specific — so a manual `confirm` also serves as the escape hatch for a real pair the proposer refused.
+`internal/governance.MergeDecisions` resolves the ledger's `merge_confirm` entries into (a) the confirmed pairs the graph build applies and (b) the set of decided pairs the queue must not re-propose. Last-writer-wins per pair, so a reject after a confirm takes effect. The confirm application is **general** (it honors any explicit pair), while the auto-*proposer* is email↔phone-specific — so a manual `confirm` also serves as the escape hatch for a real pair the proposer refused.
 
 ## Provenance on every merge
 

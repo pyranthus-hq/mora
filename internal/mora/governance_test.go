@@ -84,40 +84,6 @@ func TestGovernance_CounterpartiesGmailAddressesLowercased(t *testing.T) {
 // the suppression decision (guard core)
 // ---------------------------------------------------------------------------
 
-func TestGovernance_SuppressItemAtomExactOnly(t *testing.T) {
-	g := governance{Schema: governanceSchema, Entries: []govEntry{{
-		ID: "e1", Kind: govKindForget, Action: govActionSuppress,
-		Atom: govAtom{Kind: atomStableID, Value: "gmail_thread/x"},
-	}}}
-	// exact match suppresses
-	if sup, _ := g.suppresses(gmailMM("x", nil, nil)); !sup {
-		t.Fatal("exact stable_id must be suppressed")
-	}
-	// @account variant must NOT be caught by a base-id forget (no @account strip).
-	if sup, _ := g.suppresses(gmailMM("x@work", nil, nil)); sup {
-		t.Fatal("forgetting base id must NOT suppress the @account thread (over-match)")
-	}
-	// a different thread is untouched
-	if sup, _ := g.suppresses(gmailMM("y", nil, nil)); sup {
-		t.Fatal("unrelated thread must not be suppressed")
-	}
-}
-
-func TestGovernance_SuppressSoleHandleButKeepGroup(t *testing.T) {
-	g := governance{Schema: governanceSchema, Entries: []govEntry{{
-		ID: "e1", Kind: govKindForget, Action: govActionSuppress,
-		Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
-	}}}
-	// 1:1 chat with the forgotten handle => suppressed.
-	if sup, _ := g.suppresses(imsgMM("solo", "+14155550123")); !sup {
-		t.Fatal("1:1 chat with forgotten handle must be suppressed")
-	}
-	// GROUP chat containing the forgotten handle among others => KEPT (data-loss guard).
-	if sup, _ := g.suppresses(imsgMM("grp", "+14155550123", "+14155550999")); sup {
-		t.Fatal("group thread must NOT be whole-suppressed by a person forget")
-	}
-}
-
 func TestGovernance_GmailSoleAddressOnly(t *testing.T) {
 	g := governance{Schema: governanceSchema, Entries: []govEntry{{
 		ID: "e1", Kind: govKindForget, Action: govActionSuppress,
@@ -352,38 +318,6 @@ func TestGovernance_MergeConfirmPersists(t *testing.T) {
 	}
 	if got.Decision != "confirm" || got.Atom2 == nil || got.Atom2.Value != "sam@example.com" {
 		t.Fatalf("correction lost its stable-atom keys: %+v", got)
-	}
-}
-
-func TestGovernance_BriefLineDecisionsPersistAndLastWriterWins(t *testing.T) {
-	cfg := Config{VaultDir: t.TempDir()}
-	stable := govAtom{Provider: "gmail", Kind: atomStableID, Value: "gmail_thread/t1"}
-	attendee := govAtom{Kind: atomAddress, Value: "sam@example.com"}
-	if _, err := appendGovernanceEntry(cfg, govEntry{
-		Kind:     govKindRedact,
-		Action:   govActionRecord,
-		Atom:     stable,
-		Atom2:    &attendee,
-		Decision: mergeDecisionReject,
-	}); err != nil {
-		t.Fatalf("append reject: %v", err)
-	}
-	if _, err := appendGovernanceEntry(cfg, govEntry{
-		Kind:     govKindRedact,
-		Action:   govActionRecord,
-		Atom:     stable,
-		Atom2:    &attendee,
-		Decision: mergeDecisionConfirm,
-	}); err != nil {
-		t.Fatalf("append confirm: %v", err)
-	}
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := briefLineDecisionKey(stable, attendee)
-	if got := g.briefLineDecisions()[key]; got != mergeDecisionConfirm {
-		t.Fatalf("brief line decision = %q, want last-writer %q", got, mergeDecisionConfirm)
 	}
 }
 
@@ -766,14 +700,3 @@ func TestGovernance_ConcurrentSyncAndForgetNoResurrection(t *testing.T) {
 // (precision-first) rather than risk deleting a group thread; person-level email
 // suppression needs self-identity (P13). See docs/architecture/17.
 // ---------------------------------------------------------------------------
-
-func TestGovernance_GmailRealisticOneToOneNotSuppressed(t *testing.T) {
-	g := governance{Schema: governanceSchema, Entries: []govEntry{{
-		ID: "e1", Kind: govKindForget, Action: govActionSuppress,
-		Atom: govAtom{Kind: atomAddress, Value: "sam@example.com"},
-	}}}
-	// from=[sam], to=[me]: the normal inbound shape, self present ⇒ 2 atoms.
-	if sup, _ := g.suppresses(gmailMM("t", []string{"sam@example.com"}, []string{"me@x.com"})); sup {
-		t.Fatal("realistic 1:1 email (self included) must NOT be whole-suppressed by --email (P13-deferred)")
-	}
-}

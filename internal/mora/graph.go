@@ -46,14 +46,6 @@ func personID(s string) string          { return graphpkg.PersonID(s) }
 func mailboxKey(s string) string        { return graphpkg.MailboxKey(s) }
 func metaStrings(v any) []string        { return graphpkg.MetaStrings(v) }
 func metaNames(v any) map[string]string { return graphpkg.MetaNames(v) }
-func metaPairs(v any) []struct{ handle, name string } {
-	in := graphpkg.MetaPairs(v)
-	out := make([]struct{ handle, name string }, len(in))
-	for i, p := range in {
-		out[i] = struct{ handle, name string }{p.Handle, p.Name}
-	}
-	return out
-}
 func personRefs(m Memory) ([]personRef, []string, []string, string) {
 	p, s, r, rel := graphpkg.PersonRefs(m)
 	out := make([]personRef, len(p))

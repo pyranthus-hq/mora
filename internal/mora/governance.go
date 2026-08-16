@@ -4,8 +4,6 @@ import (
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	governancepkg "github.com/pyranthus-hq/mora/internal/governance"
 	"os"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -32,19 +30,19 @@ const governanceSchema = governancepkg.SchemaVersion
 // index rebuild (which parses `*.md`) ignores it; NOT matched by the vault
 // `.gitignore` (index.db/tokens/identity*/share/) so it survives `mora sync git`.
 const (
-	governanceParentStableIDKey = "governance_parent_stable_id"
-	governanceParentProviderKey = "governance_parent_provider"
-	governanceParentAtomsKey    = "governance_parent_atoms"
+	governanceParentStableIDKey = governancepkg.ParentStableIDKey
+	governanceParentProviderKey = governancepkg.ParentProviderKey
+	governanceParentAtomsKey    = governancepkg.ParentAtomsKey
 )
 
 // Atom kinds — the source-native identity the ledger keys on. "host" is reserved
 // for a future connector field (no source populates it yet), so it is accepted
 // in the schema but derived from no Meta.
 const (
-	atomStableID = "stable_id" // one whole memory (a chat/thread/event)
-	atomHandle   = "handle"    // an iMessage participant handle (+1…, or an email)
-	atomAddress  = "address"   // a Gmail/Calendar email address
-	atomHost     = "host"      // reserved; no source field yet
+	atomStableID = governancepkg.AtomStableID // one whole memory (a chat/thread/event)
+	atomHandle   = governancepkg.AtomHandle   // an iMessage participant handle (+1…, or an email)
+	atomAddress  = governancepkg.AtomAddress  // a Gmail/Calendar email address
+	atomHost     = governancepkg.AtomHost     // reserved; no source field yet
 )
 
 // Entry kinds — the governance operations that ride the one ledger. Only the
@@ -52,23 +50,23 @@ const (
 // the rest are durable records later phases consume (redact = P16 graph-compile
 // participant filter; merge_confirm = P13 confirm-queue; archive reserved).
 const (
-	govKindForget          = "forget"
-	govKindPrune           = "prune"
-	govKindSourceScope     = "source_scope"
-	govKindRedact          = "redact"
-	govKindMergeConfirm    = "merge_confirm"
-	govKindArchive         = "archive"
-	govKindTeachCommitment = "teach_commitment"
-	govKindTeachMemory     = "teach_memory"
-	govKindEvalConsent     = "eval_consent"
+	govKindForget          = governancepkg.KindForget
+	govKindPrune           = governancepkg.KindPrune
+	govKindSourceScope     = governancepkg.KindSourceScope
+	govKindRedact          = governancepkg.KindRedact
+	govKindMergeConfirm    = governancepkg.KindMergeConfirm
+	govKindArchive         = governancepkg.KindArchive
+	govKindTeachCommitment = governancepkg.KindTeachCommitment
+	govKindTeachMemory     = governancepkg.KindTeachMemory
+	govKindEvalConsent     = governancepkg.KindEvalConsent
 )
 
 // Actions — what an entry DOES at the write chokepoint. "suppress" skips the
 // write entirely (never persist); "record" is an inert durable note (corrections)
 // with no write-time effect.
 const (
-	govActionSuppress = "suppress"
-	govActionRecord   = "record"
+	govActionSuppress = governancepkg.ActionSuppress
+	govActionRecord   = governancepkg.ActionRecord
 )
 
 // merge_confirm decisions — the two verdicts the P13 one-tap confirm-queue records
@@ -76,8 +74,8 @@ const (
 // "reject" pins them apart (never re-proposed, never merged). A later entry on the
 // same pair supersedes an earlier one (last-writer-wins).
 const (
-	mergeDecisionConfirm = "confirm"
-	mergeDecisionReject  = "reject"
+	mergeDecisionConfirm = governancepkg.DecisionConfirm
+	mergeDecisionReject  = governancepkg.DecisionReject
 )
 
 // govAtom is a stable-atom key. Provider "" is a cross-provider wildcard (e.g.
@@ -97,17 +95,7 @@ type governance struct {
 // activeSuppress returns the live entries that gate the write chokepoint (the
 // suppression kinds, action=suppress, not revoked).
 func (g governance) activeSuppress() []govEntry {
-	var out []govEntry
-	for _, e := range g.Entries {
-		if govEntryRevoked(e) || e.Action != govActionSuppress {
-			continue
-		}
-		switch e.Kind {
-		case govKindForget, govKindPrune, govKindSourceScope:
-			out = append(out, e)
-		}
-	}
-	return out
+	return governancepkg.ActiveSuppress(toGovernanceLedger(g))
 }
 
 func toGovernanceEntry(e govEntry) governancepkg.Entry   { return e }
@@ -209,43 +197,7 @@ func itemAtom(provider, stableID string) govAtom {
 // from/to/cc/attendees/organizer (these INCLUDE self, which is why identity
 // suppression is gated on a sole counterparty — see decideSuppress).
 func counterpartyAtoms(provider string, meta map[string]any) []govAtom {
-	if meta == nil {
-		return nil
-	}
-	seen := map[string]govAtom{}
-	add := func(kind, raw string) {
-		v := normalizeIdentity(kind, raw)
-		if v == "" {
-			return
-		}
-		seen[kind+"\x00"+v] = govAtom{Provider: provider, Kind: kind, Value: v}
-	}
-	switch provider {
-	case "imessage":
-		for _, p := range metaPairs(meta["participants"]) {
-			add(atomHandle, p.handle)
-		}
-	default: // gmail / calendar (email-addressed connectors)
-		for _, key := range []string{"from", "to", "cc", "attendees"} {
-			for _, a := range metaStrings(meta[key]) {
-				add(atomAddress, a)
-			}
-		}
-		if org, ok := meta["organizer"].(string); ok {
-			add(atomAddress, org)
-		}
-	}
-	out := make([]govAtom, 0, len(seen))
-	for _, a := range seen {
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind < out[j].Kind
-		}
-		return out[i].Value < out[j].Value
-	})
-	return out
+	return governancepkg.CounterpartyAtoms(provider, meta)
 }
 
 // normalizeIdentity applies the MINIMAL normalization a stable-atom key needs.
@@ -257,9 +209,6 @@ func normalizeIdentity(kind, raw string) string { return governancepkg.Normalize
 
 // providerMatches reports whether an entry's atom provider matches a memory's
 // provider. "" on the entry is a cross-provider wildcard.
-func providerMatches(entryProvider, memProvider string) bool {
-	return governancepkg.ProviderMatches(entryProvider, memProvider)
-}
 
 // decideSuppress is the write-chokepoint decision, pure over (ledger, memory
 // fields). Returns the id of the first matching active suppression entry, or "".
@@ -271,87 +220,17 @@ func providerMatches(entryProvider, memProvider string) bool {
 //     "layoff email" guard); its per-participant redaction is deferred to the
 //     P16 graph-compile-time filter, recorded via a `redact` entry.
 func (g governance) decideSuppress(provider, stableID string, meta map[string]any) (bool, string) {
-	item := itemAtom(provider, stableID)
-	cps := counterpartyAtoms(provider, meta)
-	sole := len(cps) == 1
-	parentProvider, parentID, parentCps := governanceParentContext(meta)
-	parentSole := len(parentCps) == 1
-	for _, e := range g.activeSuppress() {
-		a := e.Atom
-		switch a.Kind {
-		case atomStableID:
-			if providerMatches(a.Provider, provider) && a.Value == item.Value {
-				return true, e.ID
-			}
-			if parentID != "" && providerMatches(a.Provider, parentProvider) && a.Value == parentID {
-				return true, e.ID
-			}
-		case atomHandle, atomAddress:
-			if sole && cps[0].Kind == a.Kind && providerMatches(a.Provider, provider) && cps[0].Value == a.Value {
-				return true, e.ID
-			}
-			if parentSole && parentCps[0].Kind == a.Kind &&
-				providerMatches(a.Provider, parentProvider) && parentCps[0].Value == a.Value {
-				return true, e.ID
-			}
-		}
-	}
-	return false, ""
+	return governancepkg.DecideSuppress(toGovernanceLedger(g), provider, stableID, meta)
 }
 
 // governanceParentContext decodes the source-native parent identity stamped on a
 // derived attachment. These keys are intentionally separate from graph Meta so an
 // attachment does not double-count the parent's participants, but the governance
 // write/removal chokepoints can still cascade a parent forget.
-func governanceParentContext(meta map[string]any) (provider, stableID string, atoms []govAtom) {
-	if meta == nil {
-		return "", "", nil
-	}
-	provider, _ = meta[governanceParentProviderKey].(string)
-	stableID, _ = meta[governanceParentStableIDKey].(string)
-	add := func(kind, value string) {
-		value = normalizeIdentity(kind, value)
-		if (kind == atomHandle || kind == atomAddress) && value != "" {
-			atoms = append(atoms, govAtom{Provider: provider, Kind: kind, Value: value})
-		}
-	}
-	switch rows := meta[governanceParentAtomsKey].(type) {
-	case []map[string]string:
-		for _, row := range rows {
-			add(row["kind"], row["value"])
-		}
-	case []any:
-		for _, raw := range rows {
-			switch row := raw.(type) {
-			case map[string]any:
-				kind, _ := row["kind"].(string)
-				value, _ := row["value"].(string)
-				add(kind, value)
-			case map[string]string:
-				add(row["kind"], row["value"])
-			}
-		}
-	}
-	sort.Slice(atoms, func(i, j int) bool {
-		if atoms[i].Kind != atoms[j].Kind {
-			return atoms[i].Kind < atoms[j].Kind
-		}
-		return atoms[i].Value < atoms[j].Value
-	})
-	dedup := atoms[:0]
-	for _, atom := range atoms {
-		if len(dedup) > 0 && dedup[len(dedup)-1].Kind == atom.Kind &&
-			dedup[len(dedup)-1].Value == atom.Value {
-			continue
-		}
-		dedup = append(dedup, atom)
-	}
-	return provider, stableID, dedup
-}
 
 // suppresses is the MappedMemory-typed decision (the connector write path).
 func (g governance) suppresses(mm memory.MappedMemory) (bool, string) {
-	return g.decideSuppress(mm.Provider, mm.StableID, mm.Meta)
+	return governancepkg.Suppresses(toGovernanceLedger(g), mm)
 }
 
 // shouldSuppressWrite is the guard entry point: load the ledger (fail-closed on
@@ -372,77 +251,26 @@ func shouldSuppressWrite(cfg Config, mm memory.MappedMemory) (bool, string, erro
 // source-native ledger key and the graph's identity space — and it maps to the
 // pre-merge id, never a post-merge canonical (the #52 trap): the canonical moves as
 // identities cluster, the source atom does not.
-func atomPersonID(a govAtom) string {
-	switch a.Kind {
-	case atomHandle, atomAddress:
-		if a.Value == "" {
-			return ""
-		}
-		return personID(a.Value)
-	}
-	return ""
-}
+func atomPersonID(a govAtom) string { return governancepkg.AtomPersonID(a) }
 
 // mergePairKey is the order-independent key of a source-atom person pair, used to
 // dedup decisions and to filter already-decided candidates out of the confirm-queue.
-func mergePairKey(a, b string) string {
-	if a > b {
-		a, b = b, a
-	}
-	return a + "\x00" + b
-}
+func mergePairKey(a, b string) string { return governancepkg.MergePairKey(a, b) }
 
 // briefLineDecisionKey is the stable key for one meeting-brief attribution decision:
 // "this cited source memory (stable atom) is / is not linked to this attendee atom".
 // Last writer wins by key.
-func briefLineDecisionKey(stableAtom, attendeeAtom govAtom) string {
-	return stableAtom.Provider + "\x00" +
-		stableAtom.Value + "\x00" +
-		attendeeAtom.Provider + "\x00" +
-		attendeeAtom.Kind + "\x00" +
-		attendeeAtom.Value
-}
+func briefLineDecisionKey(a, b govAtom) string { return governancepkg.BriefLineDecisionKey(a, b) }
 
 // briefLineDecisions resolves P16 click-to-correct entries from the governance
 // ledger: redact entries keyed by (stable_id atom, attendee atom) with decision
 // confirm/reject. Returned map uses briefLineDecisionKey and applies last-writer-
 // wins semantics.
 func (g governance) briefLineDecisions() map[string]string {
-	decisions := map[string]string{}
-	for _, e := range g.Entries {
-		if govEntryRevoked(e) || e.Kind != govKindRedact || e.Action != govActionRecord || e.Atom2 == nil {
-			continue
-		}
-		if e.Atom.Kind != atomStableID || strings.TrimSpace(e.Atom.Value) == "" {
-			continue
-		}
-		attendee := *e.Atom2
-		if attendee.Kind != atomHandle && attendee.Kind != atomAddress {
-			continue
-		}
-		attendee.Value = normalizeIdentity(attendee.Kind, attendee.Value)
-		if attendee.Value == "" {
-			continue
-		}
-		if e.Decision != mergeDecisionConfirm && e.Decision != mergeDecisionReject {
-			continue
-		}
-		decisions[briefLineDecisionKey(e.Atom, attendee)] = e.Decision
-	}
-	return decisions
+	return governancepkg.BriefLineDecisions(toGovernanceLedger(g))
 }
 
 // activeMergeConfirms returns the non-revoked, two-atom merge_confirm entries.
-func (g governance) activeMergeConfirms() []govEntry {
-	var out []govEntry
-	for _, e := range g.Entries {
-		if govEntryRevoked(e) || e.Kind != govKindMergeConfirm || e.Atom2 == nil {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
 
 // mergeDecisions resolves the ledger's merge_confirm entries into what P13 consumes:
 //   - confirmed: same-person pairs (as pre-merge person ids) the graph build unifies;
@@ -453,33 +281,10 @@ func (g governance) activeMergeConfirms() []govEntry {
 // Last-writer-wins per pair (entries are chronological), so a reject after a confirm
 // (or vice-versa) takes effect. Deterministic: confirmed is sorted.
 func (g governance) mergeDecisions() (confirmed []confirmedMerge, decided map[string]bool) {
-	decided = map[string]bool{}
-	verdict := map[string]string{} // pairKey -> latest decision
-	ids := map[string][2]string{}  // pairKey -> (personA, personB)
-	govOf := map[string]string{}   // pairKey -> authorizing ledger id
-	for _, e := range g.activeMergeConfirms() {
-		a, b := atomPersonID(e.Atom), atomPersonID(*e.Atom2)
-		if a == "" || b == "" || a == b {
-			continue
-		}
-		key := mergePairKey(a, b)
-		verdict[key] = e.Decision
-		ids[key] = [2]string{a, b}
-		govOf[key] = e.ID
-		decided[key] = true
+	items, decided := governancepkg.MergeDecisions(toGovernanceLedger(g))
+	for _, m := range items {
+		confirmed = append(confirmed, confirmedMerge{A: m.A, B: m.B, GovID: m.GovID})
 	}
-	for key, d := range verdict {
-		if d == mergeDecisionConfirm {
-			p := ids[key]
-			confirmed = append(confirmed, confirmedMerge{A: p[0], B: p[1], GovID: govOf[key]})
-		}
-	}
-	sort.Slice(confirmed, func(i, j int) bool {
-		if confirmed[i].A != confirmed[j].A {
-			return confirmed[i].A < confirmed[j].A
-		}
-		return confirmed[i].B < confirmed[j].B
-	})
 	return confirmed, decided
 }
 
