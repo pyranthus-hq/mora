@@ -199,7 +199,7 @@ which is exactly the concurrency model. Pinned by `sources_lock_test.go`.
 ### Wait budgets: every lock loop is bounded by wall-clock time
 
 Four loops wait on a contended `.lock`: `acquireSourcesLock`
-(`sources_lock.go`), `acquireGovernanceLock` (`governance.go`),
+(`sources_lock.go`), `governance.Store.Acquire` (`internal/governance/store.go`, adapted by Mora),
 `acquireProducerLock` (`producer_lock.go`), and the release-side
 `removeLeaseFileGuarded` (`loop.go`). Each is bounded by a **stated wall-clock
 deadline**, checked through the shared `sleepWithinDeadline` helper, which
@@ -214,7 +214,7 @@ convenience:
 | Loop | Constant | Budget | Why |
 |---|---|---|---|
 | `acquireSourcesLock` | `sourcesAcquireTimeout` | 2 s | A registry RMW must WAIT out a holder that releases in microseconds; the margin is for Windows sharing-violation retries. |
-| `acquireGovernanceLock` | `governanceAcquireTimeout` | 2 s | Same shape, but contended by every item of an hourly sync (the lease spans check→write in `writeMappedMemory`), so it must be tunable on its own. |
+| `governance.Store.Acquire` | `governance.AcquireTimeout` | 2 s | Same shape, but contended by every item of an hourly sync (the lease spans check→write in `writeMappedMemory`), so it must be tunable on its own. |
 | `acquireProducerLock` | `producerAcquireTimeout` | 2 s | Same shape; a best-effort ledger stamp on the tail of a real job. |
 | `removeLeaseFileGuarded` | `leaseRemovalTimeout` | 500 ms | **Deliberately shorter.** Removal runs at shutdown and *inside* the lease guard on the reap path, where every waiting acquirer is blocked behind it; the window it covers is one rival's in-flight `os.Link`/`os.ReadFile`. |
 
