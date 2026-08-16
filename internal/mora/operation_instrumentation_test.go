@@ -32,41 +32,6 @@ func activityWithKind(activities []operationActivity, kind operationKind, state 
 	return nil
 }
 
-func TestOperationProgressPeriodicHeartbeatUsesInjectedTicker(t *testing.T) {
-	cfg := Config{StateDir: t.TempDir()}
-	h, err := beginOperation(cfg, operationKindIngest, "ingesting", operationTestNow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ticks := make(chan time.Time, 1)
-	origTicker, origClock := newOperationHeartbeatTicker, operationClock
-	t.Cleanup(func() { newOperationHeartbeatTicker, operationClock = origTicker, origClock })
-	newOperationHeartbeatTicker = func(time.Duration) operationHeartbeatTicker {
-		return operationHeartbeatTicker{C: ticks, stop: func() {}}
-	}
-	heartbeatAt := operationTestNow.Add(5 * time.Minute)
-	operationClock = func() time.Time { return heartbeatAt }
-	progress := startOperationProgress(cfg, h, "ingesting")
-	ticks <- heartbeatAt
-	deadline := time.Now().Add(time.Second)
-	for {
-		rec, err := loadOperationRecord(operationPath(cfg, h.kind, h.runID))
-		if err == nil && rec.HeartbeatAt == heartbeatAt.Format(time.RFC3339Nano) {
-			break
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				t.Fatalf("periodic heartbeat receipt stayed unreadable: %v", err)
-			}
-			t.Fatalf("periodic heartbeat did not advance: %+v", rec)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if err := progress.stop(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestIngestActivityMarkedBeforeVisibleAndCompletesAfterCoveredRebuild(t *testing.T) {
 	cfg := gate2Vault(t)
 	src, _ := writeIngestFixture(t, "alpha")
@@ -97,7 +62,7 @@ func TestIngestActivityMarkedBeforeVisibleAndCompletesAfterCoveredRebuild(t *tes
 	if a := activityWithKind(acts, operationKindIngest, operationRunning); a == nil || a.Phase != "awaiting_rebuild" {
 		t.Fatalf("post-ingest activities = %+v", acts)
 	}
-	if _, ok := activeOperationProgress.Load(sawRunID); !ok {
+	if !operationProgressActive(sawRunID) {
 		t.Fatal("awaiting-rebuild ingest stopped its bounded heartbeat early")
 	}
 	if h := healthOf(cfg, operationClock().Add(time.Second)); h.Index.State != idxDirty || h.State != healthUnhealthy {
@@ -112,7 +77,7 @@ func TestIngestActivityMarkedBeforeVisibleAndCompletesAfterCoveredRebuild(t *tes
 	if a == nil || a.RunID != sawRunID || a.Phase != "journal_retired" {
 		t.Fatalf("covered ingest did not complete after journal retirement: %+v", acts)
 	}
-	if _, ok := activeOperationProgress.Load(sawRunID); ok {
+	if operationProgressActive(sawRunID) {
 		t.Fatal("covered ingest heartbeat was not stopped")
 	}
 	if _, err := os.Stat(ingestJournalPath(cfg, ingestOperationSourceKey(src))); !errors.Is(err, os.ErrNotExist) {

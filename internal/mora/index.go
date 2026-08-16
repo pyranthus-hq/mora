@@ -108,7 +108,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		if activityCompleted {
 			return
 		}
-		progressErr := progress.stop()
+		progressErr := progress.Stop()
 		err = errors.Join(err, progressErr)
 		code := "rebuild_failed"
 		if committed {
@@ -145,7 +145,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// errEmbedderUnavailable and this HARD-FAILS: the self-op above stays (index reads
 	// dirty), the previous vectors are untouched (no tx was ever opened), and NOTHING
 	// is silently re-embedded with the static fallback (the recorded incident).
-	if err := progress.update("choosing_embedder", operationCounts{}); err != nil {
+	if err := progress.Update("choosing_embedder", operationCounts{}); err != nil {
 		return 0, err
 	}
 	emb, err := chooseEmbedderFor(cfg)
@@ -157,7 +157,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// would otherwise both start, then one hits SQLITE_BUSY on the first write and
 	// cannot retry inside an open tx. The 15s busy_timeout matches the RO DSN so a
 	// rebuild waits out a contending writer rather than failing fast.
-	if err := progress.update("opening_index", operationCounts{}); err != nil {
+	if err := progress.Update("opening_index", operationCounts{}); err != nil {
 		return 0, err
 	}
 	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
@@ -190,7 +190,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// Snapshot the wall clock the instant BEFORE listing (A3): a pending op whose
 	// marked_at is at or before this instant is demonstrably covered by this
 	// rebuild's listing; one marked AFTER it raced in and is NOT cleared here.
-	if err := progress.update("listing", operationCounts{}); err != nil {
+	if err := progress.Update("listing", operationCounts{}); err != nil {
 		return 0, err
 	}
 	listingStartedAt := indexClock()
@@ -327,7 +327,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// the parse uses (parseMemoryBytes) — zero extra I/O. An unreadable file is
 	// skipped here and counts toward `unparseable` (listed − parsed) below.
 	var manifestLines []string
-	if err := progress.update("parsing", operationCounts{Files: len(files)}); err != nil {
+	if err := progress.Update("parsing", operationCounts{Files: len(files)}); err != nil {
 		return 0, err
 	}
 	for _, path := range files {
@@ -384,7 +384,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// transaction — a graph failure rolls back the whole index too (atomic). cfg
 	// carries the vault dir so the graph can apply the governance ledger's confirmed
 	// cross-channel merges (a corrupt ledger fails the rebuild loud, never silently).
-	if err := progress.update("graph", operationCounts{Items: count, Files: len(files)}); err != nil {
+	if err := progress.Update("graph", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
 	if err := writeGraph(ctx, tx, cfg, parsed); err != nil {
@@ -396,7 +396,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// `embedder = "ollama"` opt-in indexes semantic vectors the query path will match,
 	// and a mid-rebuild daemon death now surfaces as a real error from Embed (rolling
 	// this whole tx back) instead of committing zero vectors.
-	if err := progress.update("vectors", operationCounts{Items: count, Files: len(files)}); err != nil {
+	if err := progress.Update("vectors", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
 	if err := writeVectors(ctx, tx, emb, live); err != nil {
@@ -407,7 +407,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// and vectors. Their generation also binds the injected rebuild instant and
 	// source-health snapshot because state_uncertain is a material input: two
 	// different health snapshots must never share one generation id.
-	if err := progress.update("commitments", operationCounts{Items: count, Files: len(files)}); err != nil {
+	if err := progress.Update("commitments", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
 	stampNow := indexClock().UTC()
@@ -490,7 +490,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, effID); err != nil {
 		return count, err
 	}
-	if err := progress.update("committing", operationCounts{Items: count, Files: len(files)}); err != nil {
+	if err := progress.Update("committing", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -509,7 +509,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// journal actually retires. The database commit above is preserved on cleanup
 	// failure, but the command returns a visible partial failure and its activity is
 	// terminal `failed`, never a false `completed`.
-	if err := progress.update("retiring_markers", operationCounts{Items: count, Files: len(files)}); err != nil {
+	if err := progress.Update("retiring_markers", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
 	if err := clearCoveredPendingOps(cfg, listingStartedAt, files, memoryPaths(parsed)); err != nil {
@@ -533,10 +533,10 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if werr := writeWikiIndex(cfg, count, stampNowText); werr != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not refresh vault/index.md: %v\n", werr)
 	}
-	if err := progress.update("finalizing", operationCounts{Items: count, Files: len(files)}); err != nil {
+	if err := progress.Update("finalizing", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
-	if err := progress.stop(); err != nil {
+	if err := progress.Stop(); err != nil {
 		return count, err
 	}
 	if err := finishOperation(cfg, activity, operationCompleted, "completed", operationCounts{Items: count, Files: len(files)}, "", operationClock()); err != nil {
