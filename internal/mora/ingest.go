@@ -615,12 +615,12 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 		return errors.Join(cause, finishErr)
 	}
 	sourceKey := ingestOperationSourceKey(s)
-	if err := ensureIngestJournalHeader(cfg, sourceKey); err != nil {
+	if err := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); err != nil {
 		return 0, finishFailed("journal_start_failed", err)
 	}
 	// Release only this source's lease. Concurrent in-process ingests share a PID;
 	// releasing every lease here would abandon the still-running sibling.
-	defer releaseIngestLeaseOwnedHere(cfg, sourceKey)
+	defer ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
 
 	progress := startOperationProgress(cfg, h, "ingesting")
 	if err := progress.Update("ingesting", operationCounts{}); err != nil {
@@ -723,8 +723,8 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// still reads the index dirty and the next rebuild recovers the memory. Only an
 	// ACTUAL publish is journaled — the content-hash-unchanged / suppressed early
 	// returns above wrote no new file and reach neither line.
-	sourceKey := ingestSourceKey(mm.Provider, mm.Account)
-	if jerr := ensureIngestJournalHeader(cfg, sourceKey); jerr != nil {
+	sourceKey := ingestpkg.SourceKey(mm.Provider, mm.Account)
+	if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 		return jerr
 	}
 	if err := atomicio.Write(out, body, 0o644); err != nil {
@@ -737,7 +737,7 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 		// so removing it is a false-clean. Nil in production.
 		testHookPostConnectorPublish()
 	}
-	journalPublishedPath(cfg, sourceKey, out)
+	ingestpkg.RecordPublishedPath(cfg, sourceKey, out, ingestPublishSeams())
 	return nil
 }
 
@@ -1447,8 +1447,8 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		// journal it here too (miss it and every filesystem memory is silently
 		// unrecoverable after a killed ingest). Durable header BEFORE the write is
 		// visible; path line after a real publish.
-		sourceKey := ingestSourceKey("filesystem", s.Name)
-		if jerr := ensureIngestJournalHeader(cfg, sourceKey); jerr != nil {
+		sourceKey := ingestpkg.SourceKey("filesystem", s.Name)
+		if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 			return jerr
 		}
 		// Suppression re-check + write, atomic under the governance lease so a
@@ -1458,7 +1458,7 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 			return werr
 		}
 		if wrote {
-			journalPublishedPath(cfg, sourceKey, dest)
+			ingestpkg.RecordPublishedPath(cfg, sourceKey, dest, ingestPublishSeams())
 			count++
 		}
 		return nil

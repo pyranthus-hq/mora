@@ -10,6 +10,7 @@ import (
 	"fmt"
 	embedpkg "github.com/pyranthus-hq/mora/internal/embed"
 	indexstore "github.com/pyranthus-hq/mora/internal/index"
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"io"
 	"os"
 	"strings"
@@ -515,7 +516,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := clearCoveredPendingOps(cfg, listingStartedAt, files, memoryPaths(parsed)); err != nil {
 		return count, fmt.Errorf("index committed but pending-marker retirement failed: %w", err)
 	}
-	recovery, recoveryErr := recoverIngestJournals(cfg, files)
+	recovery, recoveryErr := ingestpkg.RecoverJournals(cfg, files, ingestRecoverySeams())
 	var completionErr error
 	for _, runID := range recovery.RetiredRunIDs {
 		if err := completeOperationAfterCoverage(cfg, runID, operationClock()); err != nil {
