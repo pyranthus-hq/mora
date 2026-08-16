@@ -23,8 +23,8 @@ before it creates data.
 
 | File | Responsibility |
 |---|---|
-| `internal/governance/store.go` | Durable primitive: canonical atom/entry/ledger DTOs, exact vault JSON load/save, fail-loud corruption, cross-process lease, reload-under-lock append/revoke, and identity normalization. It never renders or deletes Markdown and never imports Mora. |
-| `internal/mora/governance.go` | Composition and policy adapters: active suppression/brief/merge projections, stable-atom derivation from memory metadata, attachment inheritance, and the lease-held Markdown write primitive used by connectors. |
+| `internal/governance` | Canonical DTOs; exact vault JSON/lease mechanics; pure source-atom extraction; suppression and derived-parent decisions; brief-line redaction, merge, Teach-memory/commitment, and eval-consent projections. It never renders or deletes Markdown and never imports Mora. |
+| `internal/mora/governance.go` | Composition adapters: stable-atom derivation from loaded memories, attachment provenance stamping, application of lower-package projections, and the lease-held Markdown write primitive used by connectors. |
 | `internal/mora/governance_cmd.go` | The CLI: `cmdForget` / `cmdUnforget` / `forget list`, the lease-held vault scan and suppression append, and the confirm/dry-run gating. |
 | `internal/mora/ingest.go` | Two lease-held guards: `writeMappedMemory` (the connector write chokepoint) holds the governance lease across its suppression check **and** its `atomicio.Write`, and `ingestFilesystem` — which renders directly and bypasses `writeMappedMemory` — does the same per file via `writeUnlessForgotten` (see gotcha below). |
 | `internal/mora/pdf.go` | The derived-attachment path: parent provenance is stamped onto each attachment memory, and every derived write rechecks parent suppression under the governance lease. |

@@ -110,6 +110,8 @@ addresses, handles, identity-derived hashes, or other raw identities.
 
 ## Persistence and rebuild contract
 
+`internal/governance` owns the pure replay projections for authored-memory visibility, active commitment feedback, teaching-entry history, and evaluation consent. Mora owns CLI authority, publication, rebuild ordering, and applying those projected decisions to index/graph output.
+
 Teach entries use the same vault-resident `.mora-governance.json` ledger as
 forget and identity decisions. Appends and revocations are serialized by the
 governance lease. Each projection-changing operation first marks the index
