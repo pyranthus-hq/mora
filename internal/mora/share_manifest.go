@@ -6,11 +6,6 @@ import (
 	sharingpkg "github.com/pyranthus-hq/mora/internal/sharing"
 )
 
-const (
-	shareManifestV2Schema = sharingpkg.ManifestSchema
-	shareMaxManifestBytes = sharingpkg.MaxManifestBytes
-)
-
 var errShareKeyRotated = sharingpkg.ErrShareKeyRotated
 
 func shareSigningKeyPath(cfg Config) string { return sharingpkg.SigningKeyPath(cfg.ConfigDir) }
