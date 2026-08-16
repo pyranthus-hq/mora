@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	meetingpkg "github.com/pyranthus-hq/mora/internal/meeting"
 	saliencepkg "github.com/pyranthus-hq/mora/internal/salience"
 	"io"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -817,8 +817,7 @@ func latestMeetingBriefEvidenceDate(mems []Memory, at time.Time) string {
 }
 
 func meetingBriefHistoricalText(asOf time.Time, date, attendee, raw string) string {
-	prefix := meetingBriefHistoricalPrefix(asOf, date, attendee)
-	return prefix + "“" + oneLine(raw) + "”"
+	return meetingpkg.HistoricalText(asOf, date, attendee, raw)
 }
 
 // meetingBriefHistoricalPrefix stamps every line with its age and the person it
@@ -830,44 +829,7 @@ func meetingBriefHistoricalText(asOf time.Time, date, attendee, raw string) stri
 // authored it. Claiming authorship it cannot prove would be its own wrong-person bug.
 // What it can say honestly is when, who it involves, and the exact words.
 func meetingBriefHistoricalPrefix(asOf time.Time, date, attendee string) string {
-	factAt, err := time.Parse(time.RFC3339, date)
-	if err != nil {
-		return ""
-	}
-	age := meetingBriefRelativeAge(asOf, factAt)
-	attendee = strings.TrimSpace(attendee)
-	if attendee == "" {
-		return age + " — "
-	}
-	return fmt.Sprintf("%s · %s — ", age, attendee)
-}
-
-func meetingBriefRelativeAge(asOf, factAt time.Time) string {
-	age := asOf.Sub(factAt)
-	if age < 0 {
-		age = 0
-	}
-	days := int(age.Hours()/24 + 0.5)
-	switch {
-	case days < 1:
-		return "Earlier that day"
-	case days == 1:
-		return "~1 day ago"
-	case days < 60:
-		return fmt.Sprintf("~%d days ago", days)
-	case days < 730:
-		months := int(float64(days)/30.4375 + 0.5)
-		if months < 2 {
-			months = 2
-		}
-		return fmt.Sprintf("~%d months ago", months)
-	default:
-		years := int(float64(days)/365.25 + 0.5)
-		if years < 2 {
-			years = 2
-		}
-		return fmt.Sprintf("~%d years ago", years)
-	}
+	return meetingpkg.HistoricalPrefix(asOf, date, attendee)
 }
 
 func (l CitedBriefLine) validateHistorical(asOf time.Time) error {
@@ -1083,27 +1045,7 @@ func meetingBriefActionableEvidenceText(m Memory, cfg Config, at time.Time, kind
 // columns, and treating "\n" as a sentence terminator cut clauses in half ("Please
 // share the Ahrefs findings/report prior to the"). A newline only ends a sentence
 // when the line actually ended one.
-func meetingBriefEvidenceSegments(text string) []string {
-	text = unwrapHardWraps(stripURLs(text))
-
-	var segments []string
-	var current strings.Builder
-	flush := func() {
-		if segment := oneLine(current.String()); segment != "" {
-			segments = append(segments, segment)
-		}
-		current.Reset()
-	}
-	for _, r := range text {
-		current.WriteRune(r)
-		switch r {
-		case '\n', '.', '!', '?', ';':
-			flush()
-		}
-	}
-	flush()
-	return segments
-}
+func meetingBriefEvidenceSegments(text string) []string { return meetingpkg.EvidenceSegments(text) }
 
 // quotedBlockMarkers open a region of a mail body that the SENDER DID NOT WRITE: a
 // forwarded message, a quoted reply chain, a signature, or a legal disclaimer.
@@ -1111,27 +1053,12 @@ func meetingBriefEvidenceSegments(text string) []string {
 // nobody), and attributing it to the sender is how "Fwd: Ai / AEO" — Gouri
 // forwarding a marketing mail — put a stranger's CTA ("Open to see how the loop
 // works?") into the brief as Gouri's unfinished business with the user.
-var quotedBlockMarkers = []string{
-	"---------- forwarded message",
-	"-----original message-----",
-	"begin forwarded message:",
-	"________________________________",
-	"this email and any files transmitted",
-	"confidential and intended solely",
-	"sent from my iphone",
-	"unsubscribe",
-}
 
 // quotedReplyLine matches the "On <date>, <someone> wrote:" attribution line that
 // opens a quoted reply chain, in the forms Gmail/Outlook actually emit.
-var quotedReplyLine = regexp.MustCompile(`(?i)^\s*on .{0,120}\bwrote:\s*$`)
 
 // signatureDelimiter is the RFC 3676 signature separator ("-- ") plus the bare "--"
 // that most clients emit in practice.
-func isSignatureDelimiter(line string) bool {
-	t := strings.TrimRight(line, " \t")
-	return t == "--" || t == "-"
-}
 
 // senderAuthoredBody returns only the prose the sender actually wrote: the body up to
 // the first forwarded block, quoted reply, signature, or legal disclaimer. Quoted
@@ -1140,75 +1067,32 @@ func isSignatureDelimiter(line string) bool {
 // Without this, every reply chain re-litigates its own history and every forward puts
 // a stranger's words in the sender's mouth — and the brief attributes both to the
 // attendee as things they are waiting on the user for.
-func senderAuthoredBody(text string) string {
-	var kept []string
-	for _, line := range strings.Split(text, "\n") {
-		lower := strings.ToLower(strings.TrimSpace(line))
-		if quotedReplyLine.MatchString(line) || isSignatureDelimiter(line) {
-			break
-		}
-		stop := false
-		for _, marker := range quotedBlockMarkers {
-			if strings.Contains(lower, marker) {
-				stop = true
-				break
-			}
-		}
-		if stop {
-			break
-		}
-		if strings.HasPrefix(strings.TrimSpace(line), ">") {
-			continue // quoted remnant
-		}
-		kept = append(kept, line)
-	}
-	return strings.Join(kept, "\n")
-}
+func senderAuthoredBody(text string) string { return meetingpkg.SenderAuthoredBody(text) }
 
 // speakerPrefix matches the transcript label an iMessage line carries ("Me: ",
 // "Gouri Karode: "). It is scaffolding the renderer added, not words anybody spoke.
-var speakerPrefix = regexp.MustCompile(`^[\p{L}][\p{L}\p{N} .'’\-]{0,30}:\s+`)
 
 // stripSpeakerPrefix removes a leading transcript speaker label from a line.
-func stripSpeakerPrefix(segment string) string {
-	return strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))
-}
+func stripSpeakerPrefix(text string) string { return meetingpkg.StripSpeakerPrefix(text) }
 
 // isForwardedSubject reports whether a subject line marks the mail as a forward.
 // "Re:" is deliberately NOT included: a reply is still the sender writing to you.
-func isForwardedSubject(title string) bool {
-	lower := strings.ToLower(strings.TrimSpace(title))
-	return strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")
-}
+func isForwardedSubject(text string) bool { return meetingpkg.IsForwardedSubject(text) }
 
 // isLeadInFragment reports whether a sentence merely ANNOUNCES content instead of
 // carrying it. "Based on our conversation, here are the next steps and deliverables:"
 // ends in a colon and states nothing the user must do — it points at a list that the
 // sentence splitter then threw away. A brief line has to stand on its own.
-func isLeadInFragment(text string) bool {
-	t := strings.TrimSpace(text)
-	if t == "" {
-		return true
-	}
-	if strings.HasSuffix(t, ":") {
-		return true
-	}
-	// A "sentence" of one or two words is a header, not a statement.
-	return len(strings.Fields(t)) < 3
-}
+func isLeadInFragment(text string) bool { return meetingpkg.IsLeadInFragment(text) }
 
 // urlPattern matches a URL while it is still whole: an explicit scheme, a www.
 // host, or a bare host-with-path ("meet.google.com/ctk-rdtz-jnx?hs=224",
 // "aka.ms/JoinTeamsMeeting?omkt=en-US") — the shape that survives a plain-text
 // email once the mail client has dropped the angle brackets.
-var urlPattern = regexp.MustCompile(`(?i)(?:https?://|www\.)\S+|[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}/\S*`)
 
 // stripURLs removes whole URLs from a body before it is segmented, so URL debris
 // can never be mistaken for prose. It runs on the RAW text — after segmentation the
 // pieces no longer look like URLs, which is exactly how the shards got through.
-func stripURLs(text string) string {
-	return urlPattern.ReplaceAllString(text, " ")
-}
 
 // unwrapHardWraps joins a line to the next when the line did not actually end a
 // sentence and the next line continues it (a lowercase or digit start). Plain-text
@@ -1217,45 +1101,12 @@ func stripURLs(text string) string {
 //
 // The lowercase-continuation test is deliberately conservative: it never merges two
 // iMessage turns, because a new turn starts with a capitalized speaker name.
-func unwrapHardWraps(text string) string {
-	lines := strings.Split(text, "\n")
-	var out strings.Builder
-	for i, line := range lines {
-		out.WriteString(line)
-		if i == len(lines)-1 {
-			break
-		}
-		trimmed := strings.TrimRight(line, " \t")
-		next := strings.TrimLeft(lines[i+1], " \t")
-		if continuesSentence(trimmed, next) {
-			out.WriteByte(' ')
-			continue
-		}
-		out.WriteByte('\n')
-	}
-	return out.String()
-}
 
 // continuesSentence reports whether next is the wrapped remainder of line.
-func continuesSentence(line, next string) bool {
-	if line == "" || next == "" {
-		return false
-	}
-	switch line[len(line)-1] {
-	case '.', '!', '?', ';', ':', '|', '-', '*':
-		return false
-	}
-	r := rune(next[0])
-	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-}
 
-func containsPersonalTrivia(text string) bool {
-	return containsAnyPhrase(strings.ToLower(text), personalTriviaPhrases)
-}
+func containsPersonalTrivia(text string) bool { return meetingpkg.ContainsPersonalTrivia(text) }
 
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
+func oneLine(text string) string { return meetingpkg.OneLine(text) }
 
 // meetingNotificationSubjects are the Google Calendar RSVP/invite subject prefixes.
 // These mails are EVENT PLUMBING, machine-generated by the calendar server — nobody
@@ -1464,12 +1315,6 @@ var materialContextPhrases = []string{
 	"deadline", "next step", "project:", "milestone",
 }
 
-var personalTriviaPhrases = []string{
-	"kid's name", "kids' names", "son's name", "daughter's name",
-	"birthday", "favorite food", "favourite food", "favorite drink",
-	"favourite drink", "hobby", "vacation", "spouse", "wife", "husband",
-}
-
 func userOwnedOpenLoop(m Memory, cfg Config) bool {
 	text := signalText(m)
 	if userAuthoredTask(m) {
@@ -1637,57 +1482,12 @@ func gmailActionableAsk(text string) bool {
 // path/encoded blob, or mostly non-letter punctuation — i.e. not a real word. Used
 // to STRIP such tokens (not drop the whole segment), so a genuine ask that merely
 // contains a link ("can you review <url>?") keeps a clean excerpt.
-func tokenIsNoise(tok string) bool {
-	lower := strings.ToLower(tok)
-	for _, marker := range urlNoiseMarkers {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	// 2+ "letter/letter" slashes = a URL path ("com/calendar/event"), not a lone
-	// slash pair ("A/B", "yes/no", "CA/NY") or a numeric date ("3/15").
-	slashes := 0
-	for i := 1; i+1 < len(tok); i++ {
-		a, b := tok[i-1], tok[i+1]
-		if tok[i] == '/' &&
-			((a >= 'a' && a <= 'z') || (a >= 'A' && a <= 'Z')) &&
-			((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')) {
-			slashes++
-		}
-	}
-	if slashes >= 2 {
-		return true
-	}
-	// A real word is mostly letters; a URL-encoded or address blob
-	// (",+Dublin,+CA+94568?") is mostly "+", "%", digits, and punctuation.
-	letters := 0
-	for _, r := range tok {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			letters++
-		}
-	}
-	total := len([]rune(tok))
-	return total >= 8 && letters*2 < total
-}
 
 // stripNoiseTokens removes URL / path / encoded tokens from a text segment, keeping
 // the prose. A pure URL shard ("com/maps/search/...+United+States?") collapses to
 // "", while a genuine ask that merely contains a link keeps its words — so the URL
 // noise is removed without dropping the obligation. Applied per-segment ONLY.
-func stripNoiseTokens(text string) string {
-	kept := make([]string, 0, 8)
-	for _, tok := range strings.Fields(text) {
-		if !tokenIsNoise(tok) {
-			kept = append(kept, tok)
-		}
-	}
-	return strings.Join(kept, " ")
-}
-
-var urlNoiseMarkers = []string{
-	"http://", "https://", "://", "www.", ".com/", ".org/", ".net/",
-	"/search", "/maps", "/url?", "%0a", "%20", "%2f", "utm_",
-}
+func stripNoiseTokens(text string) string { return meetingpkg.StripNoiseTokens(text) }
 
 // interrogativeOpeners mark a "?" as a real question aimed at a person rather than a
 // marketing hook; a Gmail open loop requires one of these (or a direct request).
@@ -1708,8 +1508,7 @@ var nonObligationQuestionPhrases = []string{
 }
 
 func personalTriviaOnly(text string) bool {
-	lower := strings.ToLower(text)
-	return containsAnyPhrase(lower, personalTriviaPhrases) && !containsAnyPhrase(lower, materialContextPhrases)
+	return meetingpkg.PersonalTriviaOnly(text, materialContextPhrases)
 }
 
 func materialSharedContext(m Memory, text string, at time.Time) bool {
@@ -1732,35 +1531,7 @@ func signalText(m Memory) string {
 // decision on the strength of a word that wasn't there. Same class of error would
 // let "intro" match "introduction" and "left" match "leftover".
 func containsAnyPhrase(text string, phrases []string) bool {
-	for _, phrase := range phrases {
-		if containsPhrase(text, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsPhrase(text, phrase string) bool {
-	if phrase == "" {
-		return false
-	}
-	for start := 0; start < len(text); {
-		i := strings.Index(text[start:], phrase)
-		if i < 0 {
-			return false
-		}
-		i += start
-		end := i + len(phrase)
-		// A phrase that already begins/ends with a space or punctuation carries its
-		// own boundary; only check the side that ends in a word character.
-		okBefore := i == 0 || !isWordByte(text[i-1]) || !isWordByte(phrase[0])
-		okAfter := end == len(text) || !isWordByte(text[end]) || !isWordByte(phrase[len(phrase)-1])
-		if okBefore && okAfter {
-			return true
-		}
-		start = i + 1
-	}
-	return false
+	return meetingpkg.ContainsAnyPhrase(text, phrases)
 }
 
 func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {

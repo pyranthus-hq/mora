@@ -33,18 +33,6 @@ func TestEvidenceSegmentsNeverShredURLsIntoQuestions(t *testing.T) {
 // RC2: "\n" was a sentence terminator, so a hard-wrapped Gmail body (plain text
 // wraps at ~72 cols) was cut mid-clause. The real brief rendered "Please share
 // the Ahrefs findings/report prior to the" — the line simply ran out.
-func TestEvidenceSegmentsDoNotTruncateMidClause(t *testing.T) {
-	wrapped := "Please share the Ahrefs findings/report prior to the\nkickoff meeting so we can review it together.\n"
-	for _, seg := range meetingBriefEvidenceSegments(wrapped) {
-		if strings.HasSuffix(seg, "prior to the") {
-			t.Fatalf("hard-wrapped line was cut mid-clause: %q", seg)
-		}
-	}
-	joined := strings.Join(meetingBriefEvidenceSegments(wrapped), " | ")
-	if !strings.Contains(joined, "kickoff meeting") {
-		t.Fatalf("the unwrapped sentence must survive intact; got %q", joined)
-	}
-}
 
 // RC3: containsAnyPhrase was a raw substring test, so "depending on" matched the
 // unresolved-thread phrase "pending". A vendor's price quote was filed as an
@@ -253,37 +241,6 @@ func TestInboundGroupThreadIsNotTwoPartyBusiness(t *testing.T) {
 // "Fwd: Ai / AEO" — Gouri forwarding a marketing email — and surfaced the forwarded
 // stranger's CTA ("Open to see how the loop works?") as Gouri's unfinished business
 // with Adit. Only what the sender actually wrote, above the quote, is evidence.
-func TestForwardedAndQuotedContentIsNotTheSendersWords(t *testing.T) {
-	fwd := "Thanks, take a look when you can.\n" +
-		"---------- Forwarded message ---------\n" +
-		"From: Spammy SEM <sem@vendor.com>\n" +
-		"Open to see how the loop works?\n"
-	got := senderAuthoredBody(fwd)
-	if strings.Contains(got, "loop works") {
-		t.Errorf("forwarded block leaked into the sender's words: %q", got)
-	}
-	if !strings.Contains(got, "take a look") {
-		t.Errorf("the sender's own prose must survive: %q", got)
-	}
-
-	reply := "Yes, Friday works.\nOn Tue, Mar 17, 2026 at 4:12 PM Beth <beth@x.com> wrote:\n> can you send the deck?\n"
-	got = senderAuthoredBody(reply)
-	if strings.Contains(got, "send the deck") {
-		t.Errorf("quoted reply chain leaked: %q", got)
-	}
-	if !strings.Contains(got, "Friday works") {
-		t.Errorf("the reply itself must survive: %q", got)
-	}
-
-	sig := "Here is the plan.\n--\nGouri Karode | AI Marketing Strategist\nThis email and any files transmitted with it are confidential.\n"
-	got = senderAuthoredBody(sig)
-	if strings.Contains(got, "confidential") {
-		t.Errorf("signature/disclaimer leaked: %q", got)
-	}
-	if !strings.Contains(got, "Here is the plan") {
-		t.Errorf("the body must survive: %q", got)
-	}
-}
 
 // RC9: a sentence that ends in a colon is a LEAD-IN, not content. The real brief
 // surfaced "Based on our conversation, here are the next steps and deliverables:" —

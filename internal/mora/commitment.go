@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	commitmentpkg "github.com/pyranthus-hq/mora/internal/commitment"
+	meetingpkg "github.com/pyranthus-hq/mora/internal/meeting"
 	"regexp"
 	"sort"
 	"strconv"
@@ -641,7 +642,7 @@ func gmailFulfilledQuotedRequest(m Memory, message commitmentMessageEvidence, bo
 	lines := strings.Split(body, "\n")
 	attribution := -1
 	for i, line := range lines {
-		if quotedReplyLine.MatchString(line) {
+		if meetingpkg.IsQuotedReplyLine(line) {
 			attribution = i
 			break
 		}

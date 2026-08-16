@@ -39,5 +39,3 @@ func urgentSnippet(text string, n int, phrase string) string {
 	return urgencypkg.Snippet(text, n, phrase)
 }
 func stripFromLine(text string) string { return urgencypkg.StripFromLine(text) }
-
-func isWordByte(b byte) bool { return urgencypkg.IsWordByte(b) }
