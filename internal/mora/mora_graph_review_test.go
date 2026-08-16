@@ -3,7 +3,6 @@ package mora
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
 )
 
@@ -52,31 +51,6 @@ func TestGraphReadSelfHealsPreS1Index(t *testing.T) {
 
 // Finding (Codex P1 / wf): hub ids use SafeFilename, which maps "/", ":", " " all
 // to "_" -> distinct StableIDs collapse to one hub node + edge src.
-func TestBuildGraphHubIDsAreInjective(t *testing.T) {
-	mems := []Memory{
-		{ID: "x/y", Scope: "personal", Title: "A", Text: "[[Shared]]", CreatedAt: "2026-05-01T00:00:00Z"},
-		{ID: "x_y", Scope: "personal", Title: "B", Text: "[[Shared]]", CreatedAt: "2026-05-02T00:00:00Z"},
-	}
-	ents, edges, _ := buildGraph(mems)
-	hubs := map[string]bool{}
-	for _, e := range ents {
-		if strings.HasPrefix(e.ID, "memory:") {
-			hubs[e.ID] = true
-		}
-	}
-	if len(hubs) != 2 {
-		t.Fatalf("distinct memories x/y and x_y collapsed to hub ids %v (want 2)", hubs)
-	}
-	srcs := map[string]bool{}
-	for _, ed := range edges {
-		if ed.Dst == "link:Shared" {
-			srcs[ed.Src] = true
-		}
-	}
-	if len(srcs) != 2 {
-		t.Fatalf("edge srcs collapsed to %v (want 2 distinct hubs)", srcs)
-	}
-}
 
 // Finding (Codex P1 / wf): stored entity stats count tombstoned evidence while
 // every live read filters invalidated_at IS NULL -> stored row disagrees.

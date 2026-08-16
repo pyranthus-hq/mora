@@ -243,7 +243,7 @@ kill_mutant "flywheel/delete-governance-arm" \
   ./internal/mora '^TestExamCorrectionFlywheel$'
 
 kill_mutant "flywheel/neuter-rule-3" \
-  internal/mora/graph.go \
+  internal/graph/graph.go \
   'for _, cm := range confirmedSorted {' \
   'for _, cm := range []confirmedMerge{} {' \
   ./internal/mora '^TestExamCorrectionFlywheel$'

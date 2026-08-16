@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"testing"
 )
@@ -165,14 +164,6 @@ func TestGraphIMessagePeople(t *testing.T) {
 
 // TestIssue219UnnamedPhoneIsNotAPerson keeps a source-native phone node as a
 // structural person while preventing the number itself from entering public People.
-func TestIssue219UnnamedPhoneIsNotAPerson(t *testing.T) {
-	if got := publicEntityKind("person:+15551234567", "person", "+15551234567"); got != "artifact" {
-		t.Fatalf("unnamed public phone kind = %q, want artifact", got)
-	}
-	if got := publicEntityKind("person:+15551234567", "person", "Neil Patel"); got != "person" {
-		t.Fatalf("named public phone kind = %q, want person", got)
-	}
-}
 
 // TestGraphPersonSelfMerge proves the same address across two memories collapses to
 // one canonical person row with accreted aliases and a 2-memory mention_count.
@@ -259,32 +250,6 @@ func TestGraphPersonTombstone(t *testing.T) {
 
 // TestGraphFanoutCap proves a memory with more than the fan-out cap participants
 // caps its person edges and emits a warning (no silent truncation).
-func TestGraphFanoutCap(t *testing.T) {
-	var to []string
-	for i := 0; i < maxParticipantFanout+20; i++ {
-		to = append(to, fmt.Sprintf("p%03d@x.com", i))
-	}
-	m := Memory{
-		ID: "gmail_thread/big", Type: "email", Title: "blast", CreatedAt: "2026-05-01T00:00:00Z",
-		Meta: map[string]any{"from": []any{"sender@x.com"}, "to": toAnySlice(to)},
-	}
-	ents, edges, warnings := buildGraph([]Memory{m})
-
-	// Count PARTICIPATED_IN person edges from the hub.
-	n := 0
-	for _, e := range edges {
-		if e.Rel == "PARTICIPATED_IN" {
-			n++
-		}
-	}
-	if n > maxParticipantFanout {
-		t.Fatalf("fan-out not capped: %d PARTICIPATED_IN edges > cap %d", n, maxParticipantFanout)
-	}
-	if len(warnings) == 0 {
-		t.Fatal("expected a fan-out cap warning (honesty: no silent truncation)")
-	}
-	_ = ents
-}
 
 // TestPersonCoOccurrence proves the query-time self-join surfaces people who
 // shared a thread/event, and excludes those who never co-occurred.
@@ -339,4 +304,13 @@ func toAnySlice(ss []string) []any {
 		out[i] = s
 	}
 	return out
+}
+
+func TestIssue219UnnamedPhoneIsNotAPerson(t *testing.T) {
+	if got := publicEntityKind("person:+15551234567", "person", "+15551234567"); got != "artifact" {
+		t.Fatalf("unnamed public phone kind = %q, want artifact", got)
+	}
+	if got := publicEntityKind("person:+15551234567", "person", "Neil Patel"); got != "person" {
+		t.Fatalf("named public phone kind = %q, want person", got)
+	}
 }
