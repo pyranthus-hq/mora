@@ -15,7 +15,7 @@ import (
 // through the token-holding AI browser.
 func TestServeHTTPCallAllowlistBlocksDelete(t *testing.T) {
 	s := &httpServer{token: "tok", port: 7777}
-	h := s.hostGuard(s.auth(s.routes()))
+	h := s.handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/call",
 		strings.NewReader(`{"name":"delete_memory","arguments":{"id":"x"}}`))

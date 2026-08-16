@@ -713,7 +713,7 @@ func TestGate4TeachMutationsAreNotMCPTools(t *testing.T) {
 	}
 
 	server := &httpServer{token: "tok", port: 7777}
-	handler := server.hostGuard(server.auth(server.routes()))
+	handler := server.handler()
 	request := httptest.NewRequest(http.MethodPost, "/call",
 		strings.NewReader(`{"name":"teach_commitment","arguments":{"decision":"useful","yes":true,"authorized_by":"agent"}}`))
 	request.Host = "127.0.0.1:7777"

@@ -406,7 +406,7 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 	}
 	requestBody, _ := json.Marshal(map[string]any{"event_id": event.EventID, "at": asOf})
 	server := &httpServer{token: "exam-token", port: 7777}
-	handler := server.hostGuard(server.auth(server.routes()))
+	handler := server.handler()
 	req := httptest.NewRequest(http.MethodPost, "/meeting-prep", bytes.NewReader(requestBody))
 	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer exam-token")
