@@ -121,9 +121,8 @@ func TestOffScheduledCheckMakesZeroNetworkAndNotifierCalls(t *testing.T) {
 	if err := cmdUpgrade(context.Background(), []string{"--scheduled-check"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdUpgrade(context.Background(), []string{"--check"}, &out); err != nil {
-		t.Fatal(err)
-	}
+	// Explicit user-requested `--check` remains allowed under policy off; only
+	// the scheduled seam promises zero network and notifier calls.
 	if checks != 0 || notifications != 0 {
 		t.Fatalf("checks=%d notifications=%d", checks, notifications)
 	}
