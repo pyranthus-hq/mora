@@ -3,6 +3,8 @@ package mora
 import (
 	"database/sql"
 	"errors"
+
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"os"
 	"strconv"
 	"strings"
@@ -192,7 +194,7 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		h.LastError = operr.Error()
 		return h
 	}
-	journalDirty, journalPaths, journalOldest, jerr := ingestJournalStatus(cfg)
+	journalDirty, journalPaths, journalOldest, jerr := ingestpkg.JournalStatus(cfg)
 	if jerr != nil {
 		h.State = idxFailed
 		h.LastError = jerr.Error()
