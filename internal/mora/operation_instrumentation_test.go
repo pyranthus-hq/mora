@@ -51,13 +51,13 @@ func TestOperationProgressPeriodicHeartbeatUsesInjectedTicker(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		rec, err := loadOperationRecord(operationPath(cfg, h.kind, h.runID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if rec.HeartbeatAt == heartbeatAt.Format(time.RFC3339Nano) {
+		if err == nil && rec.HeartbeatAt == heartbeatAt.Format(time.RFC3339Nano) {
 			break
 		}
 		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("periodic heartbeat receipt stayed unreadable: %v", err)
+			}
 			t.Fatalf("periodic heartbeat did not advance: %+v", rec)
 		}
 		time.Sleep(time.Millisecond)
