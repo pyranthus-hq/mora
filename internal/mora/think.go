@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
+	synthesispkg "github.com/pyranthus-hq/mora/internal/synthesis"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // I3 `think` is the synthesis envelope: a DETERMINISTIC floor (retrieve + gap
@@ -21,58 +21,16 @@ import (
 // model runs, is the antidote to confidently-wrong RAG.
 
 const (
-	thinkStaleDays  = 30
+	thinkStaleDays  = synthesispkg.StaleDays
 	thinkThinK      = 2 // an entity with fewer than this many memories is "thin"
-	thinkSparseK    = 2 // fewer retrieved records cannot independently corroborate an answer
-	thinkSnippetLen = 240
+	thinkSnippetLen = synthesispkg.SnippetLen
 )
 
 // ThinkEvidence is one retrieved memory with provenance for citation.
-type ThinkEvidence struct {
-	StableID  string  `json:"stable_id"`
-	Title     string  `json:"title"`
-	Scope     string  `json:"scope"`
-	CreatedAt string  `json:"created_at"`
-	Score     float64 `json:"score"`
-	Snippet   string  `json:"snippet"`
-	// Owner marks evidence from a subscribed share corpus (subscription name).
-	// Empty for the user's own memories — omitempty keeps local-only envelopes
-	// byte-identical (MCP budget gate).
-	Owner string `json:"owner,omitempty"`
-	// Corroborating mirrors a cluster head's Memory.Corroborating (issue #237,
-	// round-2 P1 scoping fix): buildThink retrieves via hybridSearchTrace, the
-	// same shared primitive search_memory uses, so a head's folded members are
-	// already known here — without this field they would be UNRECOVERABLE from
-	// think's output (correctly absent as their own evidence rows, but never
-	// cited anywhere else either). Empty/absent for non-head evidence.
-	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
-
-	// Confidence keeps the full retrieved text and source out of the public
-	// think payload. The opt-in confidence path uses them for strict lexical
-	// proof without changing the default response bytes.
-	confidenceTitle  string
-	confidenceText   string
-	confidenceSource string
-}
+type ThinkEvidence = synthesispkg.Evidence
 
 // ThinkGaps is the deterministic "what's missing" analysis (no model).
-type ThinkGaps struct {
-	Stale            []string `json:"stale,omitempty"`
-	FreshnessUnknown []string `json:"freshness_unknown,omitempty"`
-	SparseEvidence   []string `json:"sparse_evidence,omitempty"`
-	SourceCoverage   []string `json:"source_coverage,omitempty"`
-	TemporalState    []string `json:"temporal_state,omitempty"`
-	ThinCoverage     []string `json:"thin_coverage,omitempty"`
-	CoverageHoles    []string `json:"coverage_holes,omitempty"`
-	RetrievalCaveats []string `json:"retrieval_caveats,omitempty"`
-	ChecksApplied    []string `json:"checks_applied"`
-}
-
-func (g ThinkGaps) empty() bool {
-	return len(g.Stale) == 0 && len(g.FreshnessUnknown) == 0 && len(g.SparseEvidence) == 0 &&
-		len(g.SourceCoverage) == 0 && len(g.TemporalState) == 0 && len(g.ThinCoverage) == 0 &&
-		len(g.CoverageHoles) == 0 && len(g.RetrievalCaveats) == 0
-}
+type ThinkGaps = synthesispkg.Gaps
 
 // ThinkResult is the synthesis envelope returned by `think`.
 type ThinkResult struct {
@@ -106,21 +64,7 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	if err != nil {
 		return res, err
 	}
-	for _, m := range mems {
-		res.Evidence = append(res.Evidence, ThinkEvidence{
-			StableID:         m.ID,
-			Title:            m.Title,
-			Scope:            m.Scope,
-			CreatedAt:        m.CreatedAt,
-			Score:            m.Score,
-			Snippet:          matchSnippet(m.Text, query, thinkSnippetLen),
-			Owner:            m.Owner,
-			Corroborating:    m.Corroborating,
-			confidenceTitle:  m.Title,
-			confidenceText:   m.Text,
-			confidenceSource: evidenceSource(m),
-		})
-	}
+	res.Evidence = synthesispkg.EvidenceFromMemories(mems, query)
 	gaps, err := computeGaps(ctx, cfg, query, local, tr, now)
 	if err != nil {
 		return res, err
@@ -153,44 +97,7 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 // computeGaps derives staleness, thin-coverage, and coverage-hole signals — all
 // deterministic and free, before any model is consulted.
 func computeGaps(ctx context.Context, cfg Config, query string, mems []Memory, tr retrievalTrace, now time.Time) (ThinkGaps, error) {
-	g := ThinkGaps{ChecksApplied: []string{
-		"staleness", "evidence_density", "source_coverage", "temporal_state", "entity_coverage", "retrieval_support",
-	}}
-
-	if len(mems) == 0 {
-		g.CoverageHoles = append(g.CoverageHoles, "No memory matched this query.")
-	} else {
-		// Pick the freshest evidence by PARSED instant — string compare would
-		// misorder mixed RFC3339 offsets (e.g. local -07:00 vs UTC Z) (codex I3).
-		var newest time.Time
-		for _, m := range mems {
-			if t, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil && t.After(newest) {
-				newest = t
-			}
-		}
-		if newest.IsZero() {
-			g.FreshnessUnknown = append(g.FreshnessUnknown, "The matching evidence has no usable timestamp, so Mora cannot verify whether it is current.")
-		} else if now.Sub(newest) > thinkStaleDays*24*time.Hour {
-			g.Stale = append(g.Stale, fmt.Sprintf("The freshest matching memory is from %s — older than %d days; the answer may be out of date.", newest.UTC().Format("2006-01-02"), thinkStaleDays))
-		}
-		if len(mems) < thinkSparseK {
-			g.SparseEvidence = append(g.SparseEvidence, fmt.Sprintf("Only %d matching memory was found; the answer lacks independent corroboration.", len(mems)))
-		}
-		sources := map[string]bool{}
-		for _, m := range mems {
-			sources[evidenceSource(m)] = true
-		}
-		if len(sources) == 1 {
-			var source string
-			for s := range sources {
-				source = s
-			}
-			g.SourceCoverage = append(g.SourceCoverage, fmt.Sprintf("All matching evidence comes from %s; no other source corroborates it.", source))
-		}
-		if outcomeQuestion(query) && onlyProspectiveEvidence(mems) {
-			g.TemporalState = append(g.TemporalState, "The evidence shows only invitation or scheduling state; Mora has no evidence that the event was completed or that an outcome/result was recorded.")
-		}
-	}
+	g := synthesispkg.BasicGaps(mems, query, now)
 
 	db, err := ensureIndexDB(ctx, cfg)
 	if err != nil {
@@ -334,7 +241,7 @@ func thinkPrompt(query string, ev []ThinkEvidence, gaps ThinkGaps, loops []Perso
 		}
 		fmt.Fprintf(&b, "- [%s] (%s, %s) %s — %s\n", e.StableID, e.Scope, e.CreatedAt, e.Title, e.Snippet)
 	}
-	if !gaps.empty() {
+	if !gaps.Empty() {
 		b.WriteString("\nKNOWN GAPS (surface these honestly in a 'What the vault does not know' section):\n")
 		for _, s := range gaps.Stale {
 			fmt.Fprintf(&b, "- %s\n", s)
@@ -365,55 +272,8 @@ func thinkPrompt(query string, ev []ThinkEvidence, gaps ThinkGaps, loops []Perso
 	return b.String()
 }
 
-func outcomeQuestion(query string) bool {
-	words := wordSet(query)
-	for _, term := range []string{"outcome", "result", "results", "accepted", "rejected", "offer", "decision", "completed", "happened"} {
-		if words[term] {
-			return true
-		}
-	}
-	lower := strings.ToLower(query)
-	return strings.Contains(lower, "how did") && (words["interview"] || words["meeting"] || words["event"])
-}
-
-func onlyProspectiveEvidence(mems []Memory) bool {
-	prospective := 0
-	for _, m := range mems {
-		words := wordSet(m.Title + "\n" + m.Text)
-		for _, term := range []string{"completed", "finished", "happened", "attended", "outcome", "result", "accepted", "rejected", "offer", "passed", "failed", "hired", "withdrew", "cancelled", "canceled"} {
-			if words[term] {
-				return false
-			}
-		}
-		for _, term := range []string{"invite", "invited", "invitation", "schedule", "scheduled", "scheduling", "upcoming", "calendar", "confirmed", "confirmation"} {
-			if words[term] {
-				prospective++
-				break
-			}
-		}
-	}
-	return prospective > 0 && prospective == len(mems)
-}
-
-func wordSet(s string) map[string]bool {
-	out := map[string]bool{}
-	for _, word := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
-		out[word] = true
-	}
-	return out
-}
-
 // snippet returns a single-line, rune-safe prefix of text.
-func snippet(text string, n int) string {
-	text = strings.Join(strings.Fields(text), " ")
-	r := []rune(text)
-	if len(r) <= n {
-		return text
-	}
-	return strings.TrimSpace(string(r[:n])) + "…"
-}
+func snippet(text string, n int) string { return searchpkg.MatchSnippet(text, "", n) }
 
 // snippetTermCap bounds how many query terms a snippet scan considers — a
 // think query with pasted context must not turn every preview into a long scan.

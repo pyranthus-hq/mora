@@ -54,7 +54,7 @@ func TestIssue221CheckedAndNoGapsIsDistinguishable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !g.empty() || len(g.ChecksApplied) == 0 {
+	if !g.Empty() || len(g.ChecksApplied) == 0 {
 		t.Fatalf("healthy evidence should have no gaps but must prove checks ran: %+v", g)
 	}
 }

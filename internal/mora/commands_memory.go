@@ -298,7 +298,7 @@ func printThink(w io.Writer, res ThinkResult) {
 	for _, e := range res.Evidence {
 		fmt.Fprintf(w, "  [%s] %s — %s\n", e.StableID, e.Title, e.Snippet)
 	}
-	if res.Gaps.empty() {
+	if res.Gaps.Empty() {
 		fmt.Fprintln(w, "\nGaps: none detected.")
 	} else {
 		fmt.Fprintln(w, "\nWhat the vault does NOT know:")
