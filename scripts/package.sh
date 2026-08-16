@@ -33,7 +33,7 @@ fi
 
 # Stamp the version (mirrors goreleaser's -X targets: main.version/commit/date →
 # mora.BuildVersion). REQUIRED: `mora upgrade` REFUSES an unstamped "dev" build
-# (upgrade.go), so a hand-built tarball that ships as "dev" can never self-update —
+# (internal/binupdate), so a hand-built tarball that ships as "dev" can never self-update —
 # this is exactly why the earlier Neil zip was stuck. -trimpath + CGO_ENABLED=0 match
 # the release builds (pure Go, reproducible, clean cross-compile).
 COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo none)"
@@ -58,7 +58,7 @@ cp examples/claude-code-mcp.json examples/codex-mcp.json "$WORK/examples/"
 
 cd "$DIST"
 tar -czf "mora_${VERSION}_${GOOS}_${GOARCH}.tar.gz" "mora_${VERSION}_${GOOS}_${GOARCH}"
-# checksums.txt is the UPGRADE CONTRACT: `mora upgrade` (upgrade.go's
+# checksums.txt is the UPGRADE CONTRACT: `mora upgrade` (internal/binupdate
 # ChecksumValidator) refuses any release whose checksum asset is not named
 # exactly "checksums.txt" — v0.6.0 shipped only SHA256SUMS and broke every
 # install's self-update. Emit both: checksums.txt for the validator (matches
