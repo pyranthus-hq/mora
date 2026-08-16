@@ -156,7 +156,7 @@ func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, l
 	// Run the same conservative pass once over the final union so a newer related
 	// row from a subscribed corpus (or the personal vault) can warn an older row
 	// from the other side without erasing any deeper-pool hint already attached.
-	out.Results = annotateLaterRelatedEvidence(out.Results, out.Results)
+	out.Results = searchpkg.AnnotateLaterRelatedEvidence(out.Results, out.Results)
 	out.ScoreFused = out.ScoreFused || sharedFused
 	return out, err
 }

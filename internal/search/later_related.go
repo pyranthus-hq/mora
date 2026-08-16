@@ -1,6 +1,8 @@
-package mora
+package search
 
 import (
+	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/recency"
 	"strings"
 	"unicode"
 )
@@ -59,9 +61,9 @@ func stronglyRelatedTitles(a, b string) bool {
 // It does not reorder results or assert closure. The pointer is derived after
 // visibility filtering, so pending deletes, retracted memories, and explicitly
 // superseded Teach revisions can never be cited as the newer evidence.
-func annotateLaterRelatedEvidence(results, pool []Memory) []Memory {
+func AnnotateLaterRelatedEvidence(results, pool []memory.Memory) []memory.Memory {
 	for i := range results {
-		rowAt, rowOK := ingestRecencyOf(results[i])
+		rowAt, rowOK := recency.IngestTime(results[i])
 		if !rowOK {
 			continue
 		}
@@ -69,18 +71,18 @@ func annotateLaterRelatedEvidence(results, pool []Memory) []Memory {
 		for _, corroborating := range results[i].Corroborating {
 			skip[corroborating.ID] = true
 		}
-		var newest Memory
+		var newest memory.Memory
 		var newestAt string
 		var newestInstant = rowAt
 		for _, candidate := range pool {
 			if skip[candidate.ID] || candidate.Scope != results[i].Scope || !stronglyRelatedTitles(results[i].Title, candidate.Title) {
 				continue
 			}
-			candidateInstant, ok := ingestRecencyOf(candidate)
+			candidateInstant, ok := recency.IngestTime(candidate)
 			if !ok || !candidateInstant.After(rowAt) {
 				continue
 			}
-			candidateIndexedAt, _ := indexedAtOf(candidate)
+			candidateIndexedAt, _ := recency.IndexedAt(candidate)
 			if candidateInstant.After(newestInstant) || (candidateInstant.Equal(newestInstant) && candidate.ID < newest.ID) {
 				newest = candidate
 				newestAt = candidateIndexedAt
@@ -88,7 +90,7 @@ func annotateLaterRelatedEvidence(results, pool []Memory) []Memory {
 			}
 		}
 		if newest.ID != "" {
-			results[i].LaterRelatedEvidence = &LaterRelatedEvidence{
+			results[i].LaterRelatedEvidence = &memory.LaterRelatedEvidence{
 				ID: newest.ID, Title: newest.Title, Source: newest.Source, IndexedAt: newestAt,
 			}
 		}
