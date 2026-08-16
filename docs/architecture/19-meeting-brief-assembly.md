@@ -53,7 +53,7 @@ They do not have separate CLI paths.
    explicit staleness guards, and load-bearing shared work context. Personal
    trivia without an actionable relationship to the user is dropped. Rendering
    extracts the qualifying sentence/clause itself, so trivia elsewhere in an
-   otherwise-actionable thread cannot ride along in the cited line.
+   otherwise-actionable thread cannot ride along in the cited line. `internal/meeting` owns the pure sender-authored text and historical-framing mechanics (quote/forward/signature exclusion, URL/noise removal, hard-wrap repair, segmentation, and phrase boundaries); Mora owns identity-aware classification and selection.
 5. Hydrate `forgettabilityCandidate` values and call `rankForgettability` once
    over the global cross-attendee pool. Selection is `value_micros` descending,
    then dated evidence and stable id, with a three-line per-attendee cap and a

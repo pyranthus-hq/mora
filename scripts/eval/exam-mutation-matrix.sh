@@ -161,51 +161,51 @@ kill_mutant "production/meetingBriefResolveAttribution" \
 
 
 kill_mutant "production/stripURLs" \
-  internal/mora/meetingbrief.go \
-  'text = unwrapHardWraps(stripURLs(text))' \
-  'text = unwrapHardWraps(text)' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/text.go \
+  'text = UnwrapHardWraps(StripURLs(text))' \
+  'text = UnwrapHardWraps(text)' \
+  ./internal/meeting '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/unwrapHardWraps" \
-  internal/mora/meetingbrief.go \
-  $'func unwrapHardWraps(text string) string {\n\tlines := strings.Split(text, "\\n")\n\tvar out strings.Builder\n\tfor i, line := range lines {\n\t\tout.WriteString(line)\n\t\tif i == len(lines)-1 {\n\t\t\tbreak\n\t\t}\n\t\ttrimmed := strings.TrimRight(line, " \\t")\n\t\tnext := strings.TrimLeft(lines[i+1], " \\t")\n\t\tif continuesSentence(trimmed, next) {\n\t\t\tout.WriteByte(\' \')\n\t\t\tcontinue\n\t\t}\n\t\tout.WriteByte(\'\\n\')\n\t}\n\treturn out.String()\n}' \
-  $'func unwrapHardWraps(text string) string {\n\treturn text\n}' \
-  ./internal/mora '^TestExamHardWrapJoinsBeforeSegmenting$'
+  internal/meeting/text.go \
+  'if ContinuesSentence(trimmed, next) {' \
+  'if false {' \
+  ./internal/meeting '^TestEvidenceSegmentsDoNotTruncateMidClause$'
 
 kill_mutant "production/senderAuthoredBody" \
-  internal/mora/meetingbrief.go \
-  'body := senderAuthoredBody(stripFromLine(m.Text))' \
-  'body := stripFromLine(m.Text)' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/text.go \
+  'if quotedReplyLine.MatchString(line) || isSignatureDelimiter(line) {' \
+  'if false {' \
+  ./internal/meeting '^TestForwardedAndQuotedContentIsNotTheSendersWords$'
 
 
 kill_mutant "production/stripSpeakerPrefix" \
-  internal/mora/meetingbrief.go \
-  $'func stripSpeakerPrefix(segment string) string {\n\treturn strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))\n}' \
-  $'func stripSpeakerPrefix(segment string) string {\n\treturn segment\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/text.go \
+  'return strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))' \
+  'return segment' \
+  ./internal/meeting '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/isForwardedSubject" \
-  internal/mora/meetingbrief.go \
-  $'func isForwardedSubject(title string) bool {\n\tlower := strings.ToLower(strings.TrimSpace(title))\n\treturn strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")\n}' \
-  $'func isForwardedSubject(title string) bool {\n\treturn false\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/text.go \
+  'return strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")' \
+  'return false' \
+  ./internal/meeting '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/isLeadInFragment" \
-  internal/mora/meetingbrief.go \
-  $'func isLeadInFragment(text string) bool {\n\tt := strings.TrimSpace(text)\n\tif t == "" {\n\t\treturn true\n\t}\n\tif strings.HasSuffix(t, ":") {\n\t\treturn true\n\t}\n\t// A "sentence" of one or two words is a header, not a statement.\n\treturn len(strings.Fields(t)) < 3\n}' \
-  $'func isLeadInFragment(text string) bool {\n\treturn false\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/text.go \
+  'return len(strings.Fields(t)) < 3' \
+  'return false' \
+  ./internal/meeting '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/stripNoiseTokens" \
-  internal/mora/meetingbrief.go \
-  'segment := stripNoiseTokens(rawSegment)' \
-  'segment := strings.TrimSpace(rawSegment)' \
-  ./internal/mora '^TestExamCorrectionFlywheel$'
+  internal/meeting/text.go \
+  'if !TokenIsNoise(tok) {' \
+  'if true {' \
+  ./internal/meeting '^TestStripNoiseTokens$'
 
 kill_mutant "production/gmailActionableAsk" \
   internal/mora/meetingbrief.go \
@@ -215,10 +215,10 @@ kill_mutant "production/gmailActionableAsk" \
 
 
 kill_mutant "production/containsPhrase" \
-  internal/mora/meetingbrief.go \
-  $'func containsPhrase(text, phrase string) bool {\n\tif phrase == ""' \
-  $'func containsPhrase(text, phrase string) bool {\n\treturn strings.Contains(text, phrase)\n\tif phrase == ""' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/text.go \
+  'if okBefore && okAfter {' \
+  'if true {' \
+  ./internal/meeting '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "surface/direct-wall-clock" \
