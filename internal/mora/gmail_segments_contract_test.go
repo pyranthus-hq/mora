@@ -231,7 +231,7 @@ import (
 //     message block with bounded adjacent context". This contract reads that
 //     as: evidence_ref narrows the READ TARGET from the full thread body to
 //     that ONE segment's text, and #242's EXISTING applyBoundedRead/
-//     boundedReadReceipt pipeline (read_bounded.go) then runs UNCHANGED over
+//     boundedReadReceipt pipeline (internal/mcp/read_bounded.go) then runs UNCHANGED over
 //     that narrowed text — never a bespoke new receipt struct. Concretely
 //     pinned, without forcing every key on every call:
 //       - The receipt/response ALWAYS carries the parent id, the requested
@@ -241,7 +241,7 @@ import (
 //         checks exactly these four, nothing more asserted about the rest of
 //         the shape.
 //       - "bounded adjacent context" is #242's OWN centered-excerpt mechanism
-//         (centeredExcerptAt, read_bounded.go), reused as-is over the
+//         (centeredExcerptAt, internal/mcp/read_bounded.go), reused as-is over the
 //         narrowed segment text: a match phrase inside a long segment returns
 //         a window of SURROUNDING text (not the bare phrase alone), the same
 //         leading/trailing ellipsis-bounded behavior #242 already ships —

@@ -327,7 +327,7 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 // path (no match/max_tokens/occurrence) stays byte-identical to pre-#242
 // behavior: exactly {"memory","health"}, memory.text the full untouched
 // body. Any of the three #242 knobs being present opts into bounded mode
-// (read_bounded.go), which replaces memory.text with a centred excerpt and
+// (internal/mcp/read_bounded.go), which replaces memory.text with a centred excerpt and
 // adds the sibling "receipt" key — never a second "excerpt" field, so every
 // caller keeps reading the body from memory.text.
 func mcpReadMemoryResult(cfg Config, m Memory, args map[string]any) map[string]any {
