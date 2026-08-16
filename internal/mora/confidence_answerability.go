@@ -17,7 +17,8 @@ func returnedMemoryRows(returned, full []Memory) []Memory {
 func thinkLexicalCoverage(res ThinkResult) lexicalCoverage {
 	rows := make([]search.LexicalEvidence, 0, len(res.Evidence))
 	for _, e := range res.Evidence {
-		rows = append(rows, search.LexicalEvidence{Title: e.confidenceTitle, Text: e.confidenceText, Source: e.confidenceSource})
+		title, text, source := e.ConfidenceFacts()
+		rows = append(rows, search.LexicalEvidence{Title: title, Text: text, Source: source})
 	}
 	return search.StrictLexicalCoverage(res.Query, rows)
 }

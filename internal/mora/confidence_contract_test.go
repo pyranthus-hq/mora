@@ -164,10 +164,10 @@ import (
 //     no results (Evidence/mems empty)      -> "weak"     (CoverageHoles fires
 //                                                            for think; search_memory
 //                                                            has no results to bucket)
-//     results present AND !Gaps.empty()      -> "moderate" (Stale/ThinCoverage/
+//     results present AND !Gaps.Empty()      -> "moderate" (Stale/ThinCoverage/
 //                                                            CoverageHoles/
 //                                                            RetrievalCaveats)
-//     results present AND  Gaps.empty()      -> "strong"
+//     results present AND  Gaps.Empty()      -> "strong"
 //
 // OPEN QUESTIONS / RISKS FOR THE INTEGRATOR (repeated in the final report):
 //  1. search_memory's absolute bm25 thresholds (FTS-only path only, post-#238)

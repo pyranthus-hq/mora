@@ -73,7 +73,7 @@ func thinkConfidence(res ThinkResult, cfg Config, now time.Time) confidenceEnvel
 	}
 }
 func confidenceThinkStrength(res ThinkResult) string {
-	return confidencepkg.DirectStrength(len(res.Evidence) > 0, !res.Gaps.empty(), thinkLexicalCoverage(res))
+	return confidencepkg.DirectStrength(len(res.Evidence) > 0, !res.Gaps.Empty(), thinkLexicalCoverage(res))
 }
 func confidenceFusedSearchStrength(ctx context.Context, cfg Config, query string, gapMems, coverageMems []Memory, tr retrievalTrace, now time.Time) string {
 	if len(gapMems) == 0 && len(coverageMems) == 0 {
@@ -84,7 +84,7 @@ func confidenceFusedSearchStrength(ctx context.Context, cfg Config, query string
 		return "weak"
 	}
 	coverage := memoryLexicalCoverage(query, coverageMems)
-	return confidencepkg.DirectStrength(true, !gaps.empty(), coverage)
+	return confidencepkg.DirectStrength(true, !gaps.Empty(), coverage)
 }
 func confidenceSourceGaps(cfg Config, now time.Time) ([]string, string) {
 	return confidencepkg.SourceGaps(sourceHealthAll(cfg, now))
