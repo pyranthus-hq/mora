@@ -45,7 +45,6 @@ func updateReceiptStore(cfg Config) updatepkg.Store {
 func updateReceiptPath(cfg Config) string                 { return updateReceiptStore(cfg).Path() }
 func loadUpdateReceipt(cfg Config) (updateReceipt, error) { return updateReceiptStore(cfg).Load() }
 func saveUpdateReceipt(cfg Config, r updateReceipt) error { return updateReceiptStore(cfg).Save(r) }
-func canonicalStableVersion(v string) bool                { return updatepkg.CanonicalStableVersion(v) }
 
 func parseUpdatePolicy(raw string) (updatePolicy, error) {
 	p, err := configstore.ParseUpdatePolicy(raw)
