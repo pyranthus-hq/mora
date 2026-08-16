@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	commitmentpkg "github.com/pyranthus-hq/mora/internal/commitment"
 	"regexp"
 	"sort"
 	"strconv"
@@ -19,20 +19,20 @@ import (
 // Direction is the shared obligation-direction vocabulary used by every
 // product lane. A named type prevents task-ledger and evidence-derived loops
 // from drifting into independently invented string values.
-type Direction string
+type Direction = commitmentpkg.Direction
 
 const (
-	commitDirectionUnknown   Direction = "unknown"
-	commitOwedBySelf         Direction = "owed_by_self"
-	commitOwedByCounterparty Direction = "owed_by_counterparty"
+	commitDirectionUnknown   = commitmentpkg.DirectionUnknown
+	commitOwedBySelf         = commitmentpkg.OwedBySelf
+	commitOwedByCounterparty = commitmentpkg.OwedByCounterparty
 
-	commitOpen       = "open"
-	commitClosed     = "closed"
-	commitSuperseded = "superseded"
+	commitOpen       = commitmentpkg.Open
+	commitClosed     = commitmentpkg.Closed
+	commitSuperseded = commitmentpkg.Superseded
 
-	commitDueNone         = "none"
-	commitDueRelative     = "relative"
-	commitDueExplicitDate = "explicit_date"
+	commitDueNone         = commitmentpkg.DueNone
+	commitDueRelative     = commitmentpkg.DueRelative
+	commitDueExplicitDate = commitmentpkg.DueExplicitDate
 
 	commitClosureNone = "none"
 
@@ -76,74 +76,13 @@ type commitSpan struct {
 	OccurredAt   string   `json:"occurred_at,omitempty"`
 }
 
-type commitDue struct {
-	Kind string `json:"kind"`
-	At   string `json:"at,omitempty"`
-}
-
-var (
-	commitMonthDateRE = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+([0-9]{1,2})(?:st|nd|rd|th)?(?:,\s*([0-9]{4}))?\b`)
-	commitISODateRE   = regexp.MustCompile(`\b([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})\b`)
-	commitRelativeRE  = regexp.MustCompile(`(?i)\b(today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|week|month)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|when|once|until|by\s+the\s+end|in\s+the\s+(?:morning|afternoon|evening)|before\s+(?:breakfast|lunch|dinner)|in\s+[0-9]+\s+(?:minutes?|hours?|days?|weeks?))\b`)
-	commitEventDueRE  = regexp.MustCompile(`(?i)\bfor\s+the\s+(?:[\p{L}\p{N}’'\-]+\s+){0,6}(?:meeting|session|review|walk-through)\b`)
-)
+type commitDue = commitmentpkg.Due
 
 func classifyCommitmentDue(text, occurredAt string) commitDue {
-	text = oneLine(text)
-	if text == "" {
-		return commitDue{Kind: commitDueNone}
-	}
-	anchor, err := time.Parse(time.RFC3339, strings.TrimSpace(occurredAt))
-	if err == nil {
-		if date, ok := explicitCommitmentDue(text, anchor.UTC()); ok {
-			return commitDue{Kind: commitDueExplicitDate, At: date}
-		}
-	}
-	if commitRelativeRE.MatchString(text) || commitEventDueRE.MatchString(text) {
-		return commitDue{Kind: commitDueRelative}
-	}
-	return commitDue{Kind: commitDueNone}
+	return commitmentpkg.ClassifyDue(text, occurredAt)
 }
 
-func explicitCommitmentDue(text string, anchor time.Time) (string, bool) {
-	year, month, day := 0, time.Month(0), 0
-	if match := commitISODateRE.FindStringSubmatch(text); len(match) != 0 {
-		year, _ = strconv.Atoi(match[1])
-		monthValue, _ := strconv.Atoi(match[2])
-		month = time.Month(monthValue)
-		day, _ = strconv.Atoi(match[3])
-	} else if match := commitMonthDateRE.FindStringSubmatch(text); len(match) != 0 {
-		monthTime, err := time.Parse("January", strings.ToUpper(match[1][:1])+strings.ToLower(match[1][1:]))
-		if err != nil {
-			return "", false
-		}
-		month = monthTime.Month()
-		day, _ = strconv.Atoi(match[2])
-		year = anchor.Year()
-		if match[3] != "" {
-			year, _ = strconv.Atoi(match[3])
-		}
-	}
-	if year == 0 || month == 0 || day == 0 {
-		return "", false
-	}
-
-	// The opener supplies a calendar date, not an instant. Preserve exactly that
-	// expressiveness; clock-level due extraction requires a separately typed,
-	// event-linked capability.
-	date := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
-	if date.Year() != year || date.Month() != month || date.Day() != day {
-		return "", false
-	}
-	return date.Format("2006-01-02"), true
-}
-
-func commitDueValue(due commitDue) string {
-	if due.Kind == commitDueExplicitDate {
-		return due.At
-	}
-	return due.Kind
-}
+func commitDueValue(due commitDue) string { return commitmentpkg.DueValue(due) }
 
 type commitmentMessageEvidence struct {
 	MessageRef   string   `json:"message_ref"`
@@ -203,17 +142,7 @@ type commitmentSpeechContext struct {
 // evidence identity. Person identity is deliberately absent: graph alias merges
 // can regroup a commitment without churning its durable anchor.
 func commitmentID(messageRef, blockRef string, slot int) string {
-	if messageRef == "" || blockRef == "" || slot < 0 {
-		return ""
-	}
-	hash := sha256.New()
-	for _, component := range []string{messageRef, blockRef, strconv.Itoa(slot)} {
-		var size [4]byte
-		binary.BigEndian.PutUint32(size[:], uint32(len(component)))
-		_, _ = hash.Write(size[:])
-		_, _ = hash.Write([]byte(component))
-	}
-	return "commit:v1:" + hex.EncodeToString(hash.Sum(nil))
+	return commitmentpkg.ID(messageRef, blockRef, slot)
 }
 
 func atomEqual(a, b govAtom) bool {
