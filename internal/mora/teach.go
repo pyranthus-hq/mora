@@ -149,7 +149,7 @@ func (g governance) memoryVisible(id string) bool {
 		if e.ReplacementID != "" {
 			replacementEver[e.ReplacementID] = true
 		}
-		if e.revoked() {
+		if govEntryRevoked(e) {
 			continue
 		}
 		if e.TargetID != "" {
@@ -204,7 +204,7 @@ func (g governance) teachingEntries() []govEntry {
 func (g governance) evalConsentEnabled() bool {
 	enabled := false
 	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindEvalConsent || e.Action != govActionRecord {
+		if govEntryRevoked(e) || e.Kind != govKindEvalConsent || e.Action != govActionRecord {
 			continue
 		}
 		switch e.Decision {
@@ -220,7 +220,7 @@ func (g governance) evalConsentEnabled() bool {
 func (g governance) activeTeachCommitments() []govEntry {
 	var out []govEntry
 	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindTeachCommitment ||
+		if govEntryRevoked(e) || e.Kind != govKindTeachCommitment ||
 			e.Action != govActionRecord || !teachDecisionValid(e.Decision) {
 			continue
 		}

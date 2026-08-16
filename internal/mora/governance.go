@@ -1,13 +1,9 @@
 package mora
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
-	"io/fs"
+	governancepkg "github.com/pyranthus-hq/mora/internal/governance"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -30,13 +26,11 @@ import (
 // at the single connector write chokepoint (`writeMappedMemory`), so re-ingest
 // cannot defeat it.
 
-const governanceSchema = 1
+const governanceSchema = governancepkg.SchemaVersion
 
 // governanceFile is the ledger's on-disk name inside the vault. A dotfile so the
 // index rebuild (which parses `*.md`) ignores it; NOT matched by the vault
 // `.gitignore` (index.db/tokens/identity*/share/) so it survives `mora sync git`.
-const governanceFile = ".mora-governance.json"
-
 const (
 	governanceParentStableIDKey = "governance_parent_stable_id"
 	governanceParentProviderKey = "governance_parent_provider"
@@ -89,39 +83,10 @@ const (
 // govAtom is a stable-atom key. Provider "" is a cross-provider wildcard (e.g.
 // forget an email address across gmail AND calendar); a concrete provider scopes
 // the match to that connector (e.g. an iMessage handle).
-type govAtom struct {
-	Provider string `json:"provider,omitempty"`
-	Kind     string `json:"kind"`
-	Value    string `json:"value"`
-}
+type govAtom = governancepkg.Atom
+type govEntry = governancepkg.Entry
 
-// govEntry is one durable governance decision.
-type govEntry struct {
-	ID     string  `json:"id"`
-	Kind   string  `json:"kind"`
-	Atom   govAtom `json:"atom"`
-	Action string  `json:"action"`
-	Reason string  `json:"reason,omitempty"`
-	// Atom2/Decision carry a two-atom correction (merge_confirm): "these two
-	// source-native identities are (confirm) / are not (reject) the same person".
-	// Keyed by atoms, never a person: id — the #52 trap.
-	Atom2    *govAtom `json:"atom2,omitempty"`
-	Decision string   `json:"decision,omitempty"`
-	// Teach decisions key product corrections on stable memory/commitment
-	// identity. ReplacementID links an authored-memory revision while retaining
-	// the original Markdown evidence.
-	TargetID           string    `json:"target_id,omitempty"`
-	CommitmentID       string    `json:"commitment_id,omitempty"`
-	ReplacementID      string    `json:"replacement_id,omitempty"`
-	CorrectedAtom      *govAtom  `json:"corrected_atom,omitempty"`
-	CorrectedDirection Direction `json:"corrected_direction,omitempty"`
-	DuplicateOf        string    `json:"duplicate_of,omitempty"`
-	CreatedAt          string    `json:"created_at"`
-	CreatedBy          string    `json:"created_by"`
-	RevokedAt          string    `json:"revoked_at,omitempty"` // set by unforget/undo; a revoked entry is inert
-}
-
-func (e govEntry) revoked() bool { return e.RevokedAt != "" }
+func govEntryRevoked(e govEntry) bool { return e.RevokedAt != "" }
 
 // governance is the whole ledger.
 type governance struct {
@@ -134,7 +99,7 @@ type governance struct {
 func (g governance) activeSuppress() []govEntry {
 	var out []govEntry
 	for _, e := range g.Entries {
-		if e.revoked() || e.Action != govActionSuppress {
+		if govEntryRevoked(e) || e.Action != govActionSuppress {
 			continue
 		}
 		switch e.Kind {
@@ -145,7 +110,23 @@ func (g governance) activeSuppress() []govEntry {
 	return out
 }
 
-func governancePath(cfg Config) string { return filepath.Join(cfg.VaultDir, governanceFile) }
+func toGovernanceEntry(e govEntry) governancepkg.Entry   { return e }
+func fromGovernanceEntry(e governancepkg.Entry) govEntry { return e }
+func toGovernanceLedger(g governance) governancepkg.Ledger {
+	return governancepkg.Ledger{Schema: g.Schema, Entries: g.Entries}
+}
+func fromGovernanceLedger(g governancepkg.Ledger) governance {
+	return governance{Schema: g.Schema, Entries: g.Entries}
+}
+func governanceStore(cfg Config) governancepkg.Store {
+	return governancepkg.Store{VaultDir: cfg.VaultDir, NewID: newID, Now: time.Now, CreatedBy: func() string { return "mora " + BuildVersion }, PostLoad: func() {
+		if testHookGovAppendPostLoad != nil {
+			testHookGovAppendPostLoad()
+		}
+	}}
+}
+
+func governancePath(cfg Config) string { return governanceStore(cfg).Path() }
 
 // loadGovernance reads the ledger. An ABSENT ledger is the common case and reads
 // as an empty ledger (no error). A CORRUPT ledger FAILS LOUD: treating it as
@@ -153,38 +134,17 @@ func governancePath(cfg Config) string { return filepath.Join(cfg.VaultDir, gove
 // error is surfaced to the write path, which counts it as a failed write
 // (honest-snapshot) rather than laundering a partial/wrong sync into success.
 func loadGovernance(cfg Config) (governance, error) {
-	b, err := os.ReadFile(governancePath(cfg))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return governance{Schema: governanceSchema}, nil
-		}
-		return governance{}, err
-	}
-	var g governance
-	if err := json.Unmarshal(b, &g); err != nil {
-		return governance{}, fmt.Errorf("governance ledger %s is unreadable (corrupt JSON) — restore it from your vault backup (e.g. `mora sync git`) rather than deleting it: %w", governancePath(cfg), err)
-	}
-	return g, nil
+	g, err := governanceStore(cfg).Load()
+	return fromGovernanceLedger(g), err
 }
 
 // saveGovernance persists the ledger via atomicWrite (temp+rename). Mode 0600 —
 // it names identities the user chose to forget, mildly sensitive; and the vault
 // may leave the machine via `mora sync git`.
-func saveGovernance(cfg Config, g governance) error {
-	if g.Schema == 0 {
-		g.Schema = governanceSchema
-	}
-	b, err := json.MarshalIndent(g, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicio.Write(governancePath(cfg), append(b, '\n'), 0o600)
-}
-
 // governanceLockPath is the ledger's cross-process lease file. Both it and the
 // persistent OS guard selected by leaseGuardPath end in `*.lock`, so vault Git
 // excludes them from `mora sync git`.
-func governanceLockPath(cfg Config) string { return governancePath(cfg) + ".lock" }
+func governanceLockPath(cfg Config) string { return governanceStore(cfg).LockPath() }
 
 // governanceAcquireTimeout is the WALL-CLOCK budget for the governance lease's
 // contention spin. It matches sourcesAcquireTimeout's envelope because the hold
@@ -206,35 +166,8 @@ const governanceAcquireTimeout = 2 * time.Second
 // single-host, single-user model (a manual `mora forget` racing another forget,
 // or the forward-declared scheduled prune #53). It returns a real error, never a
 // silent no-op, if the lease cannot be taken; the returned release is idempotent.
-func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error) {
-	if err := os.MkdirAll(cfg.VaultDir, 0o700); err != nil {
-		return nil, err
-	}
-	lockPath := governanceLockPath(cfg)
-	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
-	deadline := time.Now().Add(governanceAcquireTimeout)
-	for attempt := 0; ; attempt++ {
-		published, perr := publishLockFile(lockPath, body)
-		wait := sourcesAcquireBackoff(attempt)
-		switch {
-		case perr == nil && published:
-			return loopLockReleaser(lockPath, body), nil
-		case perr != nil && !atomicio.SharingViolationRetryable(perr):
-			return nil, perr // a real, non-contention fs error: never interleave a partial write.
-		case perr == nil:
-			reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
-			if rerr != nil && !atomicio.SharingViolationRetryable(rerr) {
-				return nil, rerr
-			}
-			if rerr == nil && reaped {
-				wait = 0 // cleared an abandoned lease; retry publish immediately.
-			}
-		}
-		if !sleepWithinDeadline(wait, deadline) {
-			break
-		}
-	}
-	return nil, fmt.Errorf("governance ledger is locked by another mora process (%s); retry in a moment", lockPath)
+func acquireGovernanceLock(cfg Config, now time.Time) (func(), error) {
+	return governanceStore(cfg).Acquire(now)
 }
 
 // appendGovernanceEntry mints id/created_at/created_by, appends, and persists.
@@ -243,23 +176,8 @@ func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error
 // and RELOADS inside the lease, so two concurrent writers can never clobber each
 // other's entry — a dropped forget suppression would silently resurrect content.
 func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
-	release, err := acquireGovernanceLock(cfg, time.Now())
-	if err != nil {
-		return govEntry{}, err
-	}
-	defer release()
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		return govEntry{}, err
-	}
-	if testHookGovAppendPostLoad != nil {
-		// Test seam (nil in production): widen the read-modify-write window between
-		// load and save. Under the lease this merely slows one serialized writer; if
-		// the lease were removed it lets concurrent writers overlap their RMW and drop
-		// an append — the lost-update the ConcurrentAppendsNoLostUpdate test forces.
-		testHookGovAppendPostLoad()
-	}
-	return appendGovernanceEntryLocked(cfg, g, e)
+	stored, err := governanceStore(cfg).Append(toGovernanceEntry(e))
+	return fromGovernanceEntry(stored), err
 }
 
 // appendGovernanceEntryLocked appends to a ledger already loaded while the caller
@@ -267,52 +185,21 @@ func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
 // append are one critical section; calling appendGovernanceEntry there would try
 // to reacquire the same cross-process lease.
 func appendGovernanceEntryLocked(cfg Config, g governance, e govEntry) (govEntry, error) {
-	if e.ID == "" {
-		e.ID = "gov_" + strings.TrimPrefix(newID(), "mem_")
-	}
-	if e.CreatedAt == "" {
-		e.CreatedAt = nowRFC3339()
-	}
-	if e.CreatedBy == "" {
-		e.CreatedBy = "mora " + BuildVersion
-	}
-	g.Entries = append(g.Entries, e)
-	if err := saveGovernance(cfg, g); err != nil {
-		return govEntry{}, err
-	}
-	return e, nil
+	stored, err := governanceStore(cfg).AppendLocked(toGovernanceLedger(g), toGovernanceEntry(e))
+	return fromGovernanceEntry(stored), err
 }
 
 // revokeGovernanceEntry marks an entry inert (unforget/undo). Returns whether an
 // active entry with that id was found. Serialized + reloaded under the same lease
 // as appendGovernanceEntry so a concurrent append is never clobbered by a revoke.
 func revokeGovernanceEntry(cfg Config, id string) (bool, error) {
-	release, err := acquireGovernanceLock(cfg, time.Now())
-	if err != nil {
-		return false, err
-	}
-	defer release()
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		return false, err
-	}
-	found := false
-	for i := range g.Entries {
-		if g.Entries[i].ID == id && !g.Entries[i].revoked() {
-			g.Entries[i].RevokedAt = nowRFC3339()
-			found = true
-		}
-	}
-	if !found {
-		return false, nil
-	}
-	return true, saveGovernance(cfg, g)
+	return governanceStore(cfg).Revoke(id)
 }
 
 // itemAtom is a memory's whole-item stable-atom key (exact StableID — never with
 // the `@account` suffix stripped, which would over-match across accounts).
 func itemAtom(provider, stableID string) govAtom {
-	return govAtom{Provider: provider, Kind: atomStableID, Value: stableID}
+	return governancepkg.ItemAtom(provider, stableID)
 }
 
 // counterpartyAtoms is the memory's set of EXTERNAL identity atoms, coerced from
@@ -366,21 +253,12 @@ func counterpartyAtoms(provider string, meta map[string]any) []govAtom {
 // only trimmed. Deliberately NOT phone/email canonicalization — that lives in
 // canonicalizePersons and coupling to it would risk a false merge (precision-first:
 // under-match rather than over-match).
-func normalizeIdentity(kind, raw string) string {
-	v := strings.TrimSpace(raw)
-	if v == "" {
-		return ""
-	}
-	if kind == atomAddress || strings.Contains(v, "@") {
-		return strings.ToLower(v)
-	}
-	return v
-}
+func normalizeIdentity(kind, raw string) string { return governancepkg.NormalizeIdentity(kind, raw) }
 
 // providerMatches reports whether an entry's atom provider matches a memory's
 // provider. "" on the entry is a cross-provider wildcard.
 func providerMatches(entryProvider, memProvider string) bool {
-	return entryProvider == "" || entryProvider == memProvider
+	return governancepkg.ProviderMatches(entryProvider, memProvider)
 }
 
 // decideSuppress is the write-chokepoint decision, pure over (ledger, memory
@@ -532,7 +410,7 @@ func briefLineDecisionKey(stableAtom, attendeeAtom govAtom) string {
 func (g governance) briefLineDecisions() map[string]string {
 	decisions := map[string]string{}
 	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindRedact || e.Action != govActionRecord || e.Atom2 == nil {
+		if govEntryRevoked(e) || e.Kind != govKindRedact || e.Action != govActionRecord || e.Atom2 == nil {
 			continue
 		}
 		if e.Atom.Kind != atomStableID || strings.TrimSpace(e.Atom.Value) == "" {
@@ -558,7 +436,7 @@ func (g governance) briefLineDecisions() map[string]string {
 func (g governance) activeMergeConfirms() []govEntry {
 	var out []govEntry
 	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindMergeConfirm || e.Atom2 == nil {
+		if govEntryRevoked(e) || e.Kind != govKindMergeConfirm || e.Atom2 == nil {
 			continue
 		}
 		out = append(out, e)

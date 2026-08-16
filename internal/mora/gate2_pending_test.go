@@ -60,7 +60,7 @@ func govFingerprint(t *testing.T, cfg Config) (entries, revoked int) {
 	}
 	for _, e := range g.Entries {
 		entries++
-		if e.revoked() {
+		if govEntryRevoked(e) {
 			revoked++
 		}
 	}

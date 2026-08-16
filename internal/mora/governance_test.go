@@ -3,12 +3,10 @@ package mora
 import (
 	"context"
 	"errors"
-	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -54,13 +52,6 @@ func gmailMM(id string, from, to []string) memory.MappedMemory {
 // atom derivation (pure, the Meta->key map)
 // ---------------------------------------------------------------------------
 
-func TestGovernance_ItemAtomIsExactStableID(t *testing.T) {
-	a := itemAtom("gmail", "gmail_thread/x@work")
-	if a.Kind != atomStableID || a.Value != "gmail_thread/x@work" || a.Provider != "gmail" {
-		t.Fatalf("item atom = %+v", a)
-	}
-}
-
 func TestGovernance_CounterpartiesIMessageHandles(t *testing.T) {
 	mm := imsgMM("g1", "+14155550123")
 	cps := counterpartyAtoms(mm.Provider, mm.Meta)
@@ -88,55 +79,6 @@ func TestGovernance_CounterpartiesGmailAddressesLowercased(t *testing.T) {
 // ---------------------------------------------------------------------------
 // ledger load/save/append/revoke
 // ---------------------------------------------------------------------------
-
-func TestGovernance_LoadAbsentIsEmptyNoError(t *testing.T) {
-	cfg := Config{VaultDir: t.TempDir()}
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		t.Fatalf("absent ledger must not error: %v", err)
-	}
-	if len(g.Entries) != 0 {
-		t.Fatalf("absent ledger must be empty, got %d entries", len(g.Entries))
-	}
-}
-
-func TestGovernance_CorruptFailsClosed(t *testing.T) {
-	cfg := Config{VaultDir: t.TempDir()}
-	if err := os.WriteFile(governancePath(cfg), []byte("{not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A corrupt governance ledger must FAIL LOUD, never be treated as empty — a
-	// silently-ignored ledger would resurrect forgotten content (privacy leak).
-	if _, err := loadGovernance(cfg); err == nil {
-		t.Fatal("corrupt ledger must return an error, not an empty ledger")
-	}
-}
-
-func TestGovernance_AppendRevokeRoundTrip(t *testing.T) {
-	cfg := Config{VaultDir: t.TempDir()}
-	e, err := appendGovernanceEntry(cfg, govEntry{
-		Kind: govKindForget, Action: govActionSuppress,
-		Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
-	})
-	if err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	if e.ID == "" || e.CreatedAt == "" {
-		t.Fatalf("append must mint id + created_at, got %+v", e)
-	}
-	g, _ := loadGovernance(cfg)
-	if len(g.activeSuppress()) != 1 {
-		t.Fatalf("want 1 active suppress entry, got %d", len(g.activeSuppress()))
-	}
-	found, err := revokeGovernanceEntry(cfg, e.ID)
-	if err != nil || !found {
-		t.Fatalf("revoke: found=%v err=%v", found, err)
-	}
-	g, _ = loadGovernance(cfg)
-	if len(g.activeSuppress()) != 0 {
-		t.Fatalf("revoked entry must be inert, got %d active", len(g.activeSuppress()))
-	}
-}
 
 // ---------------------------------------------------------------------------
 // the suppression decision (guard core)
@@ -639,64 +581,6 @@ func TestGovernance_FilesystemWriteHoldsGovernanceLease(t *testing.T) {
 // serialized ledger writes: concurrent forgets must never lose a suppression
 // (a dropped entry whose files were removed is a resurrection).
 // ---------------------------------------------------------------------------
-
-func TestGovernance_ConcurrentAppendsNoLostUpdate(t *testing.T) {
-	cfg := Config{VaultDir: t.TempDir()}
-	const n = 16
-
-	// A start-barrier releases all n appenders at once, and a widened
-	// read-modify-write window (below) makes them observe the SAME pre-append
-	// ledger — so WITHOUT the lease every save clobbers the others and only one
-	// entry survives (a lost update = a resurrected suppression). WITH the lease
-	// the n RMWs serialize and every entry survives. The barrier is what makes the
-	// failure deterministic: without it, fast sequential appends can each finish
-	// before the next starts, so the old test passed even with the lease removed.
-	// (This lost update is at the FILESYSTEM level — each goroutine has its own
-	// in-memory ledger — so `go test -race` does NOT flag it; the count assertion
-	// is the sole detector, which is exactly why the barrier is required.)
-	testHookGovAppendPostLoad = func() {
-		// Widen the load→save window so overlapping unlocked writers collide. Under
-		// the lease this only slows one serialized holder at a time (no overlap).
-		for i := 0; i < 500; i++ {
-			runtime.Gosched()
-		}
-	}
-	t.Cleanup(func() { testHookGovAppendPostLoad = nil })
-
-	release := make(chan struct{})
-	var ready, wg sync.WaitGroup
-	ready.Add(n)
-	wg.Add(n)
-	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			ready.Done() // parked at the barrier
-			<-release    // ...released simultaneously with the others
-			_, err := appendGovernanceEntry(cfg, govEntry{
-				Kind: govKindForget, Action: govActionSuppress,
-				Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: fmt.Sprintf("+1408555%04d", i)},
-			})
-			errs <- err
-		}(i)
-	}
-	ready.Wait()   // every goroutine is at the barrier
-	close(release) // fire them together
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent append: %v", err)
-		}
-	}
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(g.Entries) != n {
-		t.Fatalf("lost update: want %d entries, got %d (unlocked read-modify-write clobbered a suppression)", n, len(g.Entries))
-	}
-}
 
 // ---------------------------------------------------------------------------
 // #113 gap #1: the CONNECTOR write path (writeMappedMemory) must hold the
