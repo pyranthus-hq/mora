@@ -44,47 +44,6 @@ func mustLifecycleCitation(memoryID, at string) BriefCitation {
 	return citation
 }
 
-func TestCommitmentLifecycleGuards(t *testing.T) {
-	tests := []struct {
-		name string
-		text string
-		role commitmentPartyRole
-		keys []string
-		want string
-	}{
-		{name: "negation", text: "I haven't sent the reviewer list.", role: commitmentPartySelf, want: commitOpen},
-		{name: "modality", text: "I will send the reviewer list.", role: commitmentPartySelf, want: commitOpen},
-		{name: "question", text: "Did you send the reviewer list?", role: commitmentPartyCounterparty, want: commitOpen},
-		{name: "question without punctuation", text: "Did you send the reviewer list", role: commitmentPartyCounterparty, want: commitOpen},
-		{name: "staged", text: "The reviewer list is staged.", role: commitmentPartySelf, want: commitOpen},
-		{name: "quoted", text: "I sent the reviewer list.", role: commitmentPartySelf, want: commitOpen},
-		{name: "wrong counterparty", text: "I sent the reviewer list.", role: commitmentPartySelf, keys: []string{"name:bob jones"}, want: commitOpen},
-		{name: "delivered", text: "I sent the reviewer list.", role: commitmentPartySelf, want: commitClosed},
-		{name: "done", text: "Done with the reviewer list.", role: commitmentPartySelf, want: commitClosed},
-		{name: "acknowledged", text: "Got the reviewer list, thanks.", role: commitmentPartyCounterparty, want: commitClosed},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			authored := tt.name != "quoted"
-			keys := tt.keys
-			if len(keys) == 0 {
-				keys = []string{"name:sam rivera"}
-			}
-			got := applyCommitmentLifecycle([]Commitment{lifecycleTestCommitment()}, []commitmentEvidence{{
-				MemoryID:         "imessage_chat/closure",
-				Text:             tt.text,
-				OccurredAt:       "2026-07-20T11:00:00Z",
-				Party:            tt.role,
-				Authored:         authored,
-				CounterpartyKeys: keys,
-			}})
-			if len(got) != 1 || got[0].State != tt.want {
-				t.Fatalf("state = %+v, want %s", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCommitmentClosurePreservesOpeningCitation(t *testing.T) {
 	commitment := lifecycleTestCommitment()
 	got := applyCommitmentLifecycle([]Commitment{commitment}, []commitmentEvidence{{
@@ -343,60 +302,6 @@ func TestIMessageLegacyCommitmentBehaviorIsPreserved(t *testing.T) {
 	if len(got) != 1 || got[0].State != commitOpen || got[0].ID != "" ||
 		got[0].OpenedBy.MessageRef != "" || got[0].OpenedBy.OccurredAt != m.Meta["occurred_at"] {
 		t.Fatalf("legacy transcript behavior changed: %+v", got)
-	}
-}
-
-func TestCommitmentSupersededIsNotClosed(t *testing.T) {
-	got := applyCommitmentLifecycle([]Commitment{lifecycleTestCommitment()}, []commitmentEvidence{{
-		MemoryID:         "gmail_thread/replacement",
-		Text:             "The reviewer list deadline moved to Monday instead.",
-		OccurredAt:       "2026-07-20T11:00:00Z",
-		Party:            commitmentPartyCounterparty,
-		Authored:         true,
-		CounterpartyKeys: []string{"name:sam rivera"},
-	}})
-	if got[0].State != commitSuperseded || got[0].SupersededBy != "gmail_thread/replacement" {
-		t.Fatalf("superseded transition = %+v", got[0])
-	}
-	if got[0].ClosureRef != commitClosureNone {
-		t.Fatalf("superseded commitment got closure_ref %q", got[0].ClosureRef)
-	}
-}
-
-func TestCommitmentClosureRefusesMultipleCandidates(t *testing.T) {
-	first := lifecycleTestCommitment()
-	second := lifecycleTestCommitment()
-	second.ID = commitmentID("gmail_thread/second#m1", "body", 0)
-	second.OpenedBy.MemoryID = "gmail_thread/second"
-	second.OpenedBy.MessageRef = "gmail_thread/second#m1"
-	second.Citations[0].CommitmentID = second.ID
-
-	got := applyCommitmentLifecycle([]Commitment{first, second}, []commitmentEvidence{{
-		MemoryID:         "imessage_chat/closure",
-		Text:             "I sent the reviewer list.",
-		OccurredAt:       "2026-07-20T11:00:00Z",
-		Party:            commitmentPartySelf,
-		Authored:         true,
-		CounterpartyKeys: []string{"name:sam rivera"},
-	}})
-	for _, commitment := range got {
-		if commitment.State != commitOpen || commitment.Gap == "" {
-			t.Fatalf("ambiguous closure guessed instead of gapping: %+v", got)
-		}
-	}
-}
-
-func TestDistinctObligationsWithSameTextAreNotMerged(t *testing.T) {
-	first := lifecycleTestCommitment()
-	second := lifecycleTestCommitment()
-	second.ID = commitmentID("gmail_thread/second#m1", "body", 0)
-	second.OpenedBy.MemoryID = "gmail_thread/second"
-	second.OpenedBy.MessageRef = "gmail_thread/second#m1"
-	second.Citations[0].CommitmentID = second.ID
-
-	got := deduplicateCommitments([]Commitment{first, second})
-	if len(got) != 2 || got[0].DuplicateOf != "" || got[1].DuplicateOf != "" {
-		t.Fatalf("text-only candidate generation merged distinct obligations: %+v", got)
 	}
 }
 

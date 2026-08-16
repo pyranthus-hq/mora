@@ -154,6 +154,8 @@ At the render level the same seam is exposed structurally on `DigestItem.Change`
 
 ### Daily obligation lane
 
+The guarded lifecycle and provenance-dedup decisions consumed by this snapshot are pure projections owned by `internal/commitment`; Mora retains provider evidence parsing, citation assembly, honest-snapshot health policy, persistence, and digest attachment.
+
 Before urgency, recurrence collapse, ranking, or caps, the digest gates candidates on the generation-stamped whole-vault commitment snapshot: only open, canonical commitments whose opening evidence falls inside the trailing seven 24-hour periods ending at the injected clock (inclusive at both endpoints) can enter the DAILY surface. Filtering before caps prevents irrelevant artifacts from consuming a scarce slot. `attachDigestCommitments` then nests one `DigestObligation` beneath the artifact for each eligible materialized commitment with a non-empty evidence-derived ID and its own typed opening citation. Each subrow copies `CommitmentID`, `Owner`, `Direction`, `DueAt`, `Lifecycle`, `ClosureRef`, and all typed citations from that same filtered snapshot. It never re-runs classification over a clipped snippet or fabricates missing identity. An identified row without its own opening citation is dropped.
 
 A local manual promise may name its addressee while carrying no provider address or handle. In that case the snapshot preserves the authored name separately as `CounterpartyLabel`; it does not populate the governed counterparty atom, enter entity resolution, or participate in merge suggestions. CLI output renders the label as plain `counterparty=<name>` attribution, while MCP exposes the distinct field structurally.

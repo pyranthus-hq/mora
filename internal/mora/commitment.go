@@ -1246,8 +1246,37 @@ func closureEvidenceSegments(text string) []string {
 	return out
 }
 
+type commitmentTransitionVoice = commitmentpkg.TransitionVoice
+
+const (
+	commitmentVoiceDelivery = commitmentpkg.VoiceDelivery
+	commitmentVoiceAck      = commitmentpkg.VoiceAck
+	commitmentVoiceEither   = commitmentpkg.VoiceEither
+)
+
+func commitmentTransition(text string) (string, commitmentTransitionVoice) {
+	return commitmentpkg.Transition(text)
+}
+func strictlyAfter(opened, evidence string) bool {
+	return commitmentpkg.StrictlyAfter(opened, evidence)
+}
+func commitmentObjectOverlap(a, b string) int { return commitmentpkg.ObjectOverlap(a, b) }
+func commitmentDedupCandidate(a, b Commitment) bool {
+	return commitmentpkg.DedupCandidate(commitmentLifecycleItem(a), commitmentLifecycleItem(b))
+}
+func commitmentEvidenceLess(a, b Commitment) bool {
+	return commitmentpkg.EvidenceLess(commitmentLifecycleItem(a), commitmentLifecycleItem(b))
+}
+func containsStringFold(values []string, want string) bool {
+	return commitmentpkg.ContainsStringFold(values, want)
+}
+func commitmentLifecycleItem(c Commitment) commitmentpkg.Item {
+	return commitmentpkg.Item{ID: c.ID, Owner: commitmentpkg.Atom{Provider: c.Owner.Provider, Kind: c.Owner.Kind, Value: c.Owner.Value}, Counterparty: commitmentpkg.Atom{Provider: c.Counterparty.Provider, Kind: c.Counterparty.Kind, Value: c.Counterparty.Value}, CounterpartyKeys: c.CounterpartyKeys, Direction: c.Direction, Summary: c.Summary, OpenedBy: commitmentpkg.Span{MemoryID: c.OpenedBy.MemoryID, MessageRef: c.OpenedBy.MessageRef, BlockRef: c.OpenedBy.BlockRef, AncestorRefs: c.OpenedBy.AncestorRefs, Quote: c.OpenedBy.Quote, OccurredAt: c.OpenedBy.OccurredAt}, Due: c.Due, State: c.State, ClosureRef: c.ClosureRef, SupersededBy: c.SupersededBy, Gap: c.Gap, DuplicateOf: c.DuplicateOf}
+}
+func commitmentLifecycleEvidence(e commitmentEvidence) commitmentpkg.Evidence {
+	return commitmentpkg.Evidence{MemoryID: e.MemoryID, MessageRef: e.MessageRef, Text: e.Text, OccurredAt: e.OccurredAt, Party: commitmentpkg.Party(e.Party), Authored: e.Authored, CounterpartyKeys: e.CounterpartyKeys}
+}
 func applyCommitmentLifecycle(commitments []Commitment, evidence []commitmentEvidence) []Commitment {
-	out := append([]Commitment(nil), commitments...)
 	sort.Slice(evidence, func(i, j int) bool {
 		if evidence[i].OccurredAt != evidence[j].OccurredAt {
 			return evidence[i].OccurredAt < evidence[j].OccurredAt
@@ -1257,327 +1286,55 @@ func applyCommitmentLifecycle(commitments []Commitment, evidence []commitmentEvi
 		}
 		return evidence[i].Text < evidence[j].Text
 	})
-	for _, candidate := range evidence {
-		transition, voice := commitmentTransition(candidate.Text)
-		if transition == "" || !candidate.Authored {
-			continue
-		}
-		bestScore := 0
-		var best []int
-		for i := range out {
-			if out[i].State != commitOpen {
-				continue
-			}
-			score := commitmentClosureScore(out[i], candidate, transition, voice)
-			switch {
-			case score > bestScore:
-				bestScore, best = score, []int{i}
-			case score > 0 && score == bestScore:
-				best = append(best, i)
-			}
-		}
-		if bestScore == 0 {
-			continue
-		}
-		if len(best) != 1 {
-			gap := fmt.Sprintf("Ambiguous state evidence %s fits %d open commitments; state left open.", candidate.MemoryID, len(best))
-			for _, i := range best {
-				out[i].Gap = gap
-			}
-			continue
-		}
-		i := best[0]
-		switch transition {
-		case commitSuperseded:
-			out[i].State = commitSuperseded
-			out[i].SupersededBy = candidate.MemoryID
-		case commitClosed:
-			out[i].State = commitClosed
-			out[i].ClosureRef = candidate.MemoryID
+	items := make([]commitmentpkg.Item, len(commitments))
+	for i, c := range commitments {
+		items[i] = commitmentLifecycleItem(c)
+	}
+	ev := make([]commitmentpkg.Evidence, len(evidence))
+	for i, e := range evidence {
+		ev[i] = commitmentLifecycleEvidence(e)
+	}
+	projected := commitmentpkg.ProjectLifecycle(items, ev)
+	out := append([]Commitment(nil), commitments...)
+	for i, p := range projected {
+		out[i].State = p.Item.State
+		out[i].ClosureRef = p.Item.ClosureRef
+		out[i].SupersededBy = p.Item.SupersededBy
+		out[i].Gap = p.Item.Gap
+		if p.ClosureEvidence >= 0 {
+			candidate := evidence[p.ClosureEvidence]
 			if candidate.Citation.MemoryID() != "" {
 				stableEvidenceRef := ""
-				if strings.HasPrefix(candidate.MemoryID, "imessage_chat/") &&
-					strings.HasPrefix(candidate.MessageRef, candidate.MemoryID+"#") {
+				if strings.HasPrefix(candidate.MemoryID, "imessage_chat/") && strings.HasPrefix(candidate.MessageRef, candidate.MemoryID+"#") {
 					stableEvidenceRef = candidate.MessageRef
 				}
-				out[i].Citations = mergeCommitmentCitations(out[i].Citations, []CommitmentCitation{{
-					Citation: candidate.Citation, CommitmentID: out[i].ID, Role: commitCitationClosure,
-					EvidenceRef: stableEvidenceRef,
-				}})
+				out[i].Citations = mergeCommitmentCitations(out[i].Citations, []CommitmentCitation{{Citation: candidate.Citation, CommitmentID: out[i].ID, Role: commitCitationClosure, EvidenceRef: stableEvidenceRef}})
 			}
 		}
 	}
 	return out
-}
-
-type commitmentTransitionVoice string
-
-const (
-	commitmentVoiceDelivery commitmentTransitionVoice = "delivery"
-	commitmentVoiceAck      commitmentTransitionVoice = "ack"
-	commitmentVoiceEither   commitmentTransitionVoice = "either"
-)
-
-func commitmentTransition(text string) (string, commitmentTransitionVoice) {
-	lower := strings.ToLower(oneLine(text))
-	if lower == "" || commitmentLooksQuestion(lower) ||
-		containsAnyPhrase(lower, []string{
-			"haven't ", "have not ", "hasn't ", "has not ", "didn't ", "did not ",
-			"not sent", "not delivered", "not uploaded", "not finished", "never sent",
-			"will send", "will deliver", "will upload", "going to send", "plan to send",
-			"intend to send", "can send", "could send", "should send",
-			"is staged", "was staged", "staged for", "queued for", "ready to send",
-		}) {
-		return "", commitmentVoiceEither
-	}
-	if containsAnyPhrase(lower, []string{
-		"instead", "replaced by", "new deadline", "deadline moved", "deadline changed",
-		"moved to monday", "moved to tuesday", "moved to wednesday",
-		"moved to thursday", "moved to friday",
-	}) {
-		return commitSuperseded, commitmentVoiceEither
-	}
-	if containsAnyPhrase(lower, []string{"no longer needed", "cancelled", "canceled"}) {
-		return commitClosed, commitmentVoiceEither
-	}
-	if containsAnyPhrase(lower, []string{
-		"got it", "got the ", "received ", "i found ", "we found ", "opens correctly", "arrived",
-	}) {
-		return commitClosed, commitmentVoiceAck
-	}
-	if containsAnyPhrase(lower, []string{
-		"i sent ", "we sent ", "sent the ", "sent it", "i delivered ", "we delivered ",
-		"was delivered", "i attached ", "we attached ", "attached the ", "i uploaded ",
-		"we uploaded ", "completed ", "finished ", "all set",
-	}) || lower == "done" || strings.HasPrefix(lower, "done ") || strings.Contains(lower, " done ") {
-		return commitClosed, commitmentVoiceDelivery
-	}
-	return "", commitmentVoiceEither
-}
-
-func commitmentLooksQuestion(lower string) bool {
-	if strings.Contains(lower, "?") {
-		return true
-	}
-	trimmed := strings.TrimSpace(lower)
-	for _, prefix := range []string{
-		"did you ", "did they ", "have you ", "has it ", "has the ", "is it ",
-		"is the ", "was it ", "was the ", "when will ", "will you ", "can you ",
-		"could you ",
-	} {
-		if strings.HasPrefix(trimmed, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func commitmentClosureScore(commitment Commitment, evidence commitmentEvidence, transition string, voice commitmentTransitionVoice) int {
-	if evidence.Party == commitmentPartyUnknown || !strictlyAfter(commitment.OpenedBy.OccurredAt, evidence.OccurredAt) {
-		return 0
-	}
-	if commitment.OpenedBy.MemoryID != evidence.MemoryID &&
-		!commitmentCounterpartyLinked(commitment.CounterpartyKeys, evidence.CounterpartyKeys, evidence.Text) {
-		return 0
-	}
-	ownerParty := commitmentPartyCounterparty
-	if commitment.Direction == commitOwedBySelf {
-		ownerParty = commitmentPartySelf
-	}
-	switch voice {
-	case commitmentVoiceDelivery:
-		if evidence.Party != ownerParty {
-			return 0
-		}
-	case commitmentVoiceAck:
-		if evidence.Party == ownerParty {
-			return 0
-		}
-	}
-	overlap := commitmentObjectOverlap(commitment.Summary+" "+commitment.OpenedBy.Quote, evidence.Text)
-	sameMemory := commitment.OpenedBy.MemoryID == evidence.MemoryID
-	if overlap == 0 && !sameMemory {
-		return 0
-	}
-	score := overlap * 10
-	if sameMemory {
-		score++
-	}
-	if transition == commitSuperseded {
-		score++
-	}
-	return score
-}
-
-func commitmentCounterpartyLinked(commitmentKeys, evidenceKeys []string, evidenceText string) bool {
-	evidenceSet := map[string]bool{}
-	for _, key := range evidenceKeys {
-		evidenceSet[strings.ToLower(strings.TrimSpace(key))] = true
-	}
-	lowerText := strings.ToLower(oneLine(evidenceText))
-	for _, key := range commitmentKeys {
-		normalized := strings.ToLower(strings.TrimSpace(key))
-		if evidenceSet[normalized] {
-			return true
-		}
-		kind, value, ok := strings.Cut(normalized, ":")
-		if ok && (kind == "name" || kind == "given") && len(value) >= 3 &&
-			strings.Contains(lowerText, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func strictlyAfter(openedAt, evidenceAt string) bool {
-	open, openErr := time.Parse(time.RFC3339, strings.TrimSpace(openedAt))
-	evidence, evidenceErr := time.Parse(time.RFC3339, strings.TrimSpace(evidenceAt))
-	return openErr == nil && evidenceErr == nil && evidence.After(open)
-}
-
-var commitmentObjectStopwords = map[string]bool{
-	"a": true, "an": true, "and": true, "are": true, "at": true, "before": true,
-	"by": true, "can": true, "could": true, "did": true, "do": true, "for": true,
-	"from": true, "got": true, "have": true, "i": true, "in": true, "is": true,
-	"it": true, "me": true, "my": true, "now": true, "of": true, "on": true,
-	"please": true, "send": true, "sent": true, "share": true, "shared": true,
-	"the": true, "them": true, "this": true, "to": true, "upload": true,
-	"uploaded": true, "we": true, "will": true, "with": true, "you": true,
-	"your": true, "delivered": true, "attached": true, "completed": true,
-	"finished": true, "instead": true, "deadline": true, "moved": true,
-}
-
-func commitmentObjectTokens(text string) map[string]bool {
-	out := map[string]bool{}
-	for _, raw := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
-		token := strings.TrimSpace(raw)
-		if len(token) < 3 || commitmentObjectStopwords[token] {
-			continue
-		}
-		if len(token) > 4 && strings.HasSuffix(token, "s") {
-			token = strings.TrimSuffix(token, "s")
-		}
-		out[token] = true
-	}
-	return out
-}
-
-func commitmentObjectOverlap(a, b string) int {
-	left, right := commitmentObjectTokens(a), commitmentObjectTokens(b)
-	n := 0
-	for token := range left {
-		if right[token] {
-			n++
-		}
-	}
-	return n
 }
 
 func deduplicateCommitments(commitments []Commitment) []Commitment {
-	out := append([]Commitment(nil), commitments...)
-	sort.SliceStable(out, func(i, j int) bool {
-		return commitmentEvidenceLess(out[i], out[j])
-	})
-	for i := range out {
-		if out[i].ID == "" || out[i].DuplicateOf != "" {
-			continue
-		}
-		for j := i + 1; j < len(out); j++ {
-			if out[j].ID == "" || out[j].DuplicateOf != "" ||
-				!commitmentDedupCandidate(out[i], out[j]) ||
-				!commitmentStrongProvenance(out[i], out[j]) ||
-				!commitmentSameLifecycleInstance(out[i], out[j]) {
-				continue
-			}
-			out[j].DuplicateOf = out[i].ID
-			for _, citation := range out[j].Citations {
+	items := make([]commitmentpkg.Item, len(commitments))
+	for i, c := range commitments {
+		items[i] = commitmentLifecycleItem(c)
+	}
+	projected := commitmentpkg.ProjectDuplicates(items)
+	out := make([]Commitment, 0, len(commitments))
+	for _, p := range projected {
+		c := commitments[p.OriginalIndex]
+		c.DuplicateOf = p.Item.DuplicateOf
+		for _, support := range p.SupportingOriginalIndexes {
+			for _, citation := range commitments[support].Citations {
 				citation.Role = commitCitationSupporting
-				citation.CommitmentID = out[j].ID
-				out[i].Citations = mergeCommitmentCitations(out[i].Citations, []CommitmentCitation{citation})
+				citation.CommitmentID = commitments[support].ID
+				c.Citations = mergeCommitmentCitations(c.Citations, []CommitmentCitation{citation})
 			}
 		}
+		out = append(out, c)
 	}
 	return out
-}
-
-func commitmentEvidenceLess(a, b Commitment) bool {
-	if a.OpenedBy.OccurredAt != b.OpenedBy.OccurredAt {
-		aTime, aErr := time.Parse(time.RFC3339, a.OpenedBy.OccurredAt)
-		bTime, bErr := time.Parse(time.RFC3339, b.OpenedBy.OccurredAt)
-		if aErr == nil && bErr == nil && !aTime.Equal(bTime) {
-			return aTime.Before(bTime)
-		}
-		return a.OpenedBy.OccurredAt < b.OpenedBy.OccurredAt
-	}
-	if a.OpenedBy.MessageRef != b.OpenedBy.MessageRef {
-		return a.OpenedBy.MessageRef < b.OpenedBy.MessageRef
-	}
-	if a.OpenedBy.BlockRef != b.OpenedBy.BlockRef {
-		return a.OpenedBy.BlockRef < b.OpenedBy.BlockRef
-	}
-	return a.ID < b.ID
-}
-
-func commitmentDedupCandidate(a, b Commitment) bool {
-	if strings.EqualFold(oneLine(a.Summary), oneLine(b.Summary)) {
-		return true
-	}
-	left, right := commitmentObjectTokens(a.Summary), commitmentObjectTokens(b.Summary)
-	if len(left) == 0 || len(right) == 0 {
-		return false
-	}
-	overlap := commitmentObjectOverlap(a.Summary, b.Summary)
-	smaller := len(left)
-	if len(right) < smaller {
-		smaller = len(right)
-	}
-	return overlap*2 >= smaller
-}
-
-func commitmentStrongProvenance(a, b Commitment) bool {
-	if a.OpenedBy.MessageRef != "" && a.OpenedBy.MessageRef == b.OpenedBy.MessageRef &&
-		a.OpenedBy.BlockRef != "" && a.OpenedBy.BlockRef == b.OpenedBy.BlockRef {
-		return true
-	}
-	return containsStringFold(a.OpenedBy.AncestorRefs, b.OpenedBy.MessageRef) ||
-		containsStringFold(b.OpenedBy.AncestorRefs, a.OpenedBy.MessageRef)
-}
-
-func containsStringFold(values []string, want string) bool {
-	if want == "" {
-		return false
-	}
-	for _, value := range values {
-		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(want)) {
-			return true
-		}
-	}
-	return false
-}
-
-func commitmentSameLifecycleInstance(a, b Commitment) bool {
-	sameCounterparty := atomEqual(a.Counterparty, b.Counterparty) ||
-		commitmentKeySetsOverlap(a.CounterpartyKeys, b.CounterpartyKeys)
-	sameOwner := atomEqual(a.Owner, b.Owner) ||
-		(a.Direction == commitOwedByCounterparty && b.Direction == commitOwedByCounterparty && sameCounterparty)
-	return sameOwner && sameCounterparty &&
-		a.Direction == b.Direction && a.Due == b.Due && a.State == b.State &&
-		a.ClosureRef == b.ClosureRef
-}
-
-func commitmentKeySetsOverlap(a, b []string) bool {
-	seen := map[string]bool{}
-	for _, key := range a {
-		seen[strings.ToLower(strings.TrimSpace(key))] = true
-	}
-	for _, key := range b {
-		if seen[strings.ToLower(strings.TrimSpace(key))] {
-			return true
-		}
-	}
-	return false
 }
 
 func materializeCommitments(mems []Memory, cfg Config, now time.Time) []Commitment {
