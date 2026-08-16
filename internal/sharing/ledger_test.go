@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -61,8 +62,11 @@ func TestLedgerRoundTripAndPaths(t *testing.T) {
 		t.Fatal("paths changed")
 	}
 	info, err := os.Stat(LedgerPath(configDir))
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("ledger mode=%v err=%v", info.Mode().Perm(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("ledger mode=%v, want 0600", info.Mode().Perm())
 	}
 }
 func TestLedgerRefusals(t *testing.T) {
