@@ -1197,81 +1197,63 @@ func recurringSeriesID(m Memory) string {
 // Non-recurring items pass through untouched. Output order is the representative's
 // best position; capRecency re-sorts afterward, so order here only needs to be
 // deterministic.
+func digestSelection(ti tsItem) digestpkg.Selection {
+	return digestpkg.Selection{ID: ti.item.ID, Title: ti.item.Title, Change: ti.item.Change, Series: ti.series, At: ti.ts, Salience: ti.sal, LowSignal: ti.item.LowSignal}
+}
 func collapseRecurringSeries(tis []tsItem, now time.Time) []tsItem {
-	// Bucket COLLAPSIBLE indices by series; preserve first-seen order for
-	// determinism. An "updated" instance is NEVER folded: a single rescheduled
-	// occurrence is a real, instance-specific change the reader must see (and, in
-	// delta mode, folding it would mark its update acknowledged without ever
-	// surfacing it). Only new/window instances — the actual flood — collapse.
-	collapsible := func(ti tsItem) bool { return ti.series != "" && ti.item.Change != "updated" }
-	groups := map[string][]int{}
-	var order []string
+	in := make([]digestpkg.Selection, len(tis))
 	for i, ti := range tis {
-		if !collapsible(ti) {
-			continue
-		}
-		if _, seen := groups[ti.series]; !seen {
-			order = append(order, ti.series)
-		}
-		groups[ti.series] = append(groups[ti.series], i)
+		in[i] = digestSelection(ti)
 	}
-	if len(groups) == 0 {
-		return tis // nothing collapsible — fast path, byte-identical.
-	}
-
-	out := make([]tsItem, 0, len(tis))
-	// Pass-through every item that is NOT part of a multi-instance collapsible
-	// group: non-recurring items, individually-changed (updated) instances, and a
-	// lone instance whose series has just one member this run.
-	for _, ti := range tis {
-		if !collapsible(ti) || len(groups[ti.series]) == 1 {
-			out = append(out, ti)
-		}
-	}
-	// One representative per multi-instance series.
-	for _, sid := range order {
-		idxs := groups[sid]
-		if len(idxs) < 2 {
-			continue
-		}
-		rep := idxs[0]
-		var last time.Time
-		var bestSal int64
-		members := make([]string, 0, len(idxs))
-		for _, k := range idxs {
-			members = append(members, tis[k].item.ID)
-			if tis[k].ts.After(last) {
-				last = tis[k].ts
-			}
-			if tis[k].sal > bestSal {
-				bestSal = tis[k].sal
-			}
-			if betterSeriesRep(tis[k].ts, tis[rep].ts, now) {
-				rep = k
-			}
-		}
-		rti := tis[rep]
-		rti.sal = bestSal // a series leads on its most-salient instance.
-		rti.members = members
-		rti.item.Title = fmt.Sprintf("%s (×%d through %s)", rti.item.Title, len(idxs), last.UTC().Format("Jan 2"))
-		out = append(out, rti)
+	projected := digestpkg.CollapseRecurring(in, now)
+	out := make([]tsItem, 0, len(projected))
+	for _, p := range projected {
+		ti := tis[p.OriginalIndex]
+		ti.item.Title = p.Title
+		ti.sal = p.Salience
+		ti.members = p.Members
+		out = append(out, ti)
 	}
 	return out
+}
+func betterSeriesRep(a, b, now time.Time) bool {
+	return digestpkg.BetterSeriesRepresentative(a, b, now)
+}
+func capRecency(tis []tsItem, cap int, upcoming bool) (items []DigestItem, more int) {
+	in := make([]digestpkg.Selection, len(tis))
+	for i, ti := range tis {
+		in[i] = digestSelection(ti)
+	}
+	order, _ := digestpkg.OrderSelections(in, len(in), upcoming)
+	sorted := make([]tsItem, len(tis))
+	for i, original := range order {
+		sorted[i] = tis[original]
+	}
+	copy(tis, sorted) // preserve the former in-place stable sort behavior.
+	if len(tis) > cap {
+		more = len(tis) - cap
+		tis = tis[:cap]
+	}
+	for _, ti := range tis {
+		items = append(items, ti.item)
+	}
+	return items, more
+}
+func collapseLowSignal(items []DigestItem) (displayed []DigestItem, collapsed int) {
+	in := make([]digestpkg.Selection, len(items))
+	for i, it := range items {
+		in[i] = digestpkg.Selection{ID: it.ID, LowSignal: it.LowSignal}
+	}
+	kept, collapsed := digestpkg.CollapseLowSignal(in, digestLowSignalFloor)
+	for _, i := range kept {
+		displayed = append(displayed, items[i])
+	}
+	return displayed, collapsed
 }
 
 // betterSeriesRep reports whether instant a is a better series representative than
 // b relative to now: the nearest future occurrence wins; if both are future the
 // EARLIER wins; if neither is future the LATER (most recent past) wins.
-func betterSeriesRep(a, b, now time.Time) bool {
-	aFut, bFut := !a.Before(now), !b.Before(now)
-	if aFut != bFut {
-		return aFut // a future instance beats a past one.
-	}
-	if aFut { // both future: soonest.
-		return a.Before(b)
-	}
-	return a.After(b) // both past: most recent.
-}
 
 // capRecency orders items SALIENCE-FIRST then most-recent (the existing instant +
 // id tie-break) and keeps the first cap, returning the kept items and the count
@@ -1289,29 +1271,6 @@ func betterSeriesRep(a, b, now time.Time) bool {
 // EARLIEST-instant-first instead of most-recent-first. Past-oriented sources keep
 // most-recent-first. (Bug: a 48h brief used to rank the farthest-future event of a
 // calendar section first.)
-func capRecency(tis []tsItem, cap int, upcoming bool) (items []DigestItem, more int) {
-	sort.SliceStable(tis, func(i, j int) bool {
-		if tis[i].sal != tis[j].sal {
-			return tis[i].sal > tis[j].sal // salience DESC is the primary key (SC#3).
-		}
-		if !tis[i].ts.Equal(tis[j].ts) {
-			if upcoming {
-				return tis[i].ts.Before(tis[j].ts) // nearest-future-first for events.
-			}
-			return tis[i].ts.After(tis[j].ts) // then most-recent-first.
-		}
-		return tis[i].item.ID < tis[j].item.ID // deterministic tie-break on exact-instant ties.
-	})
-	if len(tis) > cap {
-		more = len(tis) - cap
-		tis = tis[:cap]
-	}
-	out := make([]DigestItem, len(tis))
-	for i, ti := range tis {
-		out[i] = ti.item
-	}
-	return out, more
-}
 
 // digestLowSignalFloor is how many of a section's MOST-RECENT zero-salience items
 // stay visible before the rest collapse into the "+N more" count. Keeping a small
@@ -1327,20 +1286,6 @@ const digestLowSignalFloor = 2
 // tail. It is DISPLAY-only: the caller still marks the full capped set as
 // acknowledged for the Phase-12 watermark, so collapsed items are counted (never
 // re-surfaced), not silently dropped.
-func collapseLowSignal(items []DigestItem) (displayed []DigestItem, collapsed int) {
-	kept := 0
-	for _, it := range items {
-		if it.LowSignal {
-			if kept >= digestLowSignalFloor {
-				collapsed++
-				continue
-			}
-			kept++
-		}
-		displayed = append(displayed, it)
-	}
-	return displayed, collapsed
-}
 
 // digestItemFor builds a DigestItem from a memory, stamping the instance key as
 // the section Source and the typed Change. The snippet is TAIL-biased:
@@ -1362,14 +1307,7 @@ func digestItemFor(cfg Config, m Memory, key, change string) DigestItem {
 
 // snippetTail is snippet's end-anchored twin: it keeps the LAST n content runes
 // and marks the elision at the start. Short bodies pass through whole.
-func snippetTail(text string, n int) string {
-	text = strings.Join(strings.Fields(text), " ")
-	r := []rune(text)
-	if len(r) <= n {
-		return text
-	}
-	return "…" + strings.TrimSpace(string(r[len(r)-n:]))
-}
+func snippetTail(text string, n int) string { return digestpkg.SnippetTail(text, n) }
 
 // inColdStartWindow reports whether a memory's instant falls in the cold-start
 // courtesy window: the last 7 days for gmail/imessage (by created_at), or the
@@ -1377,12 +1315,7 @@ func snippetTail(text string, n int) string {
 // Window math stays now.Add(±N*time.Hour) + parsed-instant compare (DST-safe;
 // not converted to calendar arithmetic). (D-04)
 func inColdStartWindow(ts, now time.Time, isCalendar bool) bool {
-	if isCalendar {
-		end := now.Add(time.Duration(digestColdStartDays) * 24 * time.Hour)
-		return !ts.Before(now) && !ts.After(end)
-	}
-	start := now.Add(-time.Duration(digestColdStartDays) * 24 * time.Hour)
-	return !ts.Before(start)
+	return digestpkg.InColdStartWindow(ts, now, isCalendar, digestColdStartDays)
 }
 
 // loadConnectorSyncStatus loads the on-disk SyncStatus for an enumerated
