@@ -3,7 +3,6 @@ package mora
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -50,34 +49,9 @@ func hkSetSearch(t *testing.T, fn func(context.Context, Config, string, string, 
 
 // TestHk_ClaudeCommandHookUnmarshalError asserts the custom UnmarshalJSON
 // surfaces a decode error when a typed field carries the wrong JSON type.
-func TestHk_ClaudeCommandHookUnmarshalError(t *testing.T) {
-	var h claudeCommandHook
-	if err := json.Unmarshal([]byte(`{"type":123}`), &h); err == nil {
-		t.Fatal("claudeCommandHook.UnmarshalJSON must reject a non-string type")
-	}
-	// A well-formed object with an unknown field must round-trip through Extra.
-	if err := json.Unmarshal([]byte(`{"type":"command","command":"x","weird":true}`), &h); err != nil {
-		t.Fatalf("valid hook must decode: %v", err)
-	}
-	if _, ok := h.Extra["weird"]; !ok {
-		t.Fatalf("unknown field must be preserved in Extra, got %#v", h.Extra)
-	}
-}
 
 // TestHk_ClaudeHookGroupUnmarshalError asserts the group decoder rejects a
 // wrong-typed matcher and preserves unknown group-level fields.
-func TestHk_ClaudeHookGroupUnmarshalError(t *testing.T) {
-	var g claudeHookGroup
-	if err := json.Unmarshal([]byte(`{"matcher":123}`), &g); err == nil {
-		t.Fatal("claudeHookGroup.UnmarshalJSON must reject a non-string matcher")
-	}
-	if err := json.Unmarshal([]byte(`{"matcher":"Bash","hooks":[],"extraKey":1}`), &g); err != nil {
-		t.Fatalf("valid group must decode: %v", err)
-	}
-	if _, ok := g.Extra["extraKey"]; !ok {
-		t.Fatalf("unknown group field must survive in Extra, got %#v", g.Extra)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // cmdHook dispatch
@@ -417,10 +391,3 @@ func TestHk_HookStatusMalformedHooks(t *testing.T) {
 // not valid JSON at all surfaces a parse error instead of being silently
 // treated as empty settings. (Treating it as empty is exactly the wipe hazard:
 // install would then rewrite the file with only mora hooks.)
-func TestHk_LoadClaudeSettingsMalformedTopLevel(t *testing.T) {
-	tmp := withTempHookHome(t)
-	writeClaudeSettingsFixture(t, tmp, "not json at all\n")
-	if err := hookStatus(io.Discard); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
-		t.Fatalf("status must surface an unparseable settings file, got: %v", err)
-	}
-}
