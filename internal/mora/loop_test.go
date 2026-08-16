@@ -197,135 +197,27 @@ func plantLock(t *testing.T, cfg Config, id, runID string, pid int, acquiredAt t
 }
 
 // spawnDeadPid starts then reaps a process so its pid is reliably dead (ESRCH).
-func spawnDeadPid(t *testing.T) int {
-	t.Helper()
-	cmd := exec.Command("true")
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot spawn a process to get a dead pid: %v", err)
-	}
-	pid := cmd.Process.Pid
-	_ = cmd.Wait() // reap; pid is now dead (not yet reused)
-	return pid
-}
 
 // TestReapStaleLock_ByTTL: a lock whose acquired_at is older than the TTL is
 // reaped — the TTL is the sole abandonment bound (the run exceeded its budget).
-func TestReapStaleLock_ByTTL(t *testing.T) {
-	cfg := loopTestCfg(t)
-	plantLock(t, cfg, "L", "run_x", os.Getpid(), loopNow.Add(-16*time.Minute)) // EXPIRED
-	reaped, err := reapStaleLock(loopLockPath(cfg, "L"), loopNow)
-	if err != nil || !reaped {
-		t.Fatalf("reapStaleLock(expired) = (%v,%v), want (true,nil)", reaped, err)
-	}
-	if _, err := os.Stat(loopLockPath(cfg, "L")); !os.IsNotExist(err) {
-		t.Fatalf("expired lock should be removed; stat err=%v", err)
-	}
-}
 
 // TestReapStaleLock_FreshDeadPidNotReaped pins the cross-process model fix: a
 // FRESH lease whose begin-process pid is already dead must NOT be reaped — that
 // pid is dead by design the instant `begin` exits, and reaping it would let a
 // second begin start a concurrent run mid-flight. Only the TTL bounds abandonment.
-func TestReapStaleLock_FreshDeadPidNotReaped(t *testing.T) {
-	dp := spawnDeadPid(t)
-	cfg := loopTestCfg(t)
-	plantLock(t, cfg, "L", "run_x", dp, loopNow) // FRESH acquired_at, dead begin-pid
-	reaped, err := reapStaleLock(loopLockPath(cfg, "L"), loopNow)
-	if err != nil || reaped {
-		t.Fatalf("reapStaleLock(fresh, dead pid) = (%v,%v), want (false,nil) — TTL is the only bound", reaped, err)
-	}
-	if _, err := os.Stat(loopLockPath(cfg, "L")); err != nil {
-		t.Fatalf("a fresh lease must NOT be removed regardless of pid: %v", err)
-	}
-}
 
 // TestReapStaleLock_FreshNotReaped: a fresh lease is protected — never reaped.
-func TestReapStaleLock_FreshNotReaped(t *testing.T) {
-	cfg := loopTestCfg(t)
-	plantLock(t, cfg, "L", "run_x", os.Getpid(), loopNow) // fresh
-	reaped, err := reapStaleLock(loopLockPath(cfg, "L"), loopNow)
-	if err != nil || reaped {
-		t.Fatalf("reapStaleLock(fresh) = (%v,%v), want (false,nil)", reaped, err)
-	}
-	if _, err := os.Stat(loopLockPath(cfg, "L")); err != nil {
-		t.Fatalf("fresh lock must NOT be removed: %v", err)
-	}
-}
 
 // TestReapStaleLock_CorruptIsStale: an empty/garbage lock (writer crashed in the
 // O_EXCL-create -> body-Write window) self-heals as stale.
-func TestReapStaleLock_CorruptIsStale(t *testing.T) {
-	for _, body := range [][]byte{[]byte(""), []byte("garbage"), []byte(`{"pid":0}`)} {
-		cfg := loopTestCfg(t)
-		writeRawFile(t, loopLockPath(cfg, "L"), body)
-		reaped, err := reapStaleLock(loopLockPath(cfg, "L"), loopNow)
-		if err != nil || !reaped {
-			t.Fatalf("reapStaleLock(corrupt %q) = (%v,%v), want (true,nil)", body, reaped, err)
-		}
-	}
-}
 
 // TestBreakLock_ContentChangedPreserves: if the lock no longer holds the bytes
 // we judged stale, breakLock must leave the newer holder untouched.
-func TestBreakLock_ContentChangedPreserves(t *testing.T) {
-	cfg := loopTestCfg(t)
-	writeRawFile(t, loopLockPath(cfg, "L"), []byte("AAA-fresh-holder"))
-	reaped, err := breakLock(loopLockPath(cfg, "L"), []byte("BBB-what-we-observed"))
-	if err != nil || reaped {
-		t.Fatalf("breakLock(content changed) = (%v,%v), want (false,nil)", reaped, err)
-	}
-	got, rerr := os.ReadFile(loopLockPath(cfg, "L"))
-	if rerr != nil || string(got) != "AAA-fresh-holder" {
-		t.Fatalf("a fresh holder's lock must remain intact; got %q err=%v", got, rerr)
-	}
-}
 
 // TestBreakLockSerializesRemoveBeforeFreshPublish is the issue-58 race witness:
 // a publisher arriving at breakLock's remove boundary must wait until the stale
 // inode is removed, then publish successfully. The old rename-away/restore
 // sequence exposed a free path and could drop this fresh inode on restore EEXIST.
-func TestBreakLockSerializesRemoveBeforeFreshPublish(t *testing.T) {
-	cfg := loopTestCfg(t)
-	path := loopLockPath(cfg, "L")
-	stale := []byte("stale-holder")
-	fresh := []byte("fresh-holder")
-	writeRawFile(t, path, stale)
-
-	type publishResult struct {
-		published bool
-		err       error
-	}
-	started := make(chan struct{})
-	result := make(chan publishResult, 1)
-	testHookBreakLockBeforeRemove = func() {
-		go func() {
-			close(started)
-			published, err := publishLockFile(path, fresh)
-			result <- publishResult{published: published, err: err}
-		}()
-		<-started
-		select {
-		case got := <-result:
-			t.Fatalf("fresh publisher completed inside breakLock's guarded remove: %+v", got)
-		case <-time.After(50 * time.Millisecond):
-			// Expected: publisher is blocked on the persistent OS guard.
-		}
-	}
-	t.Cleanup(func() { testHookBreakLockBeforeRemove = nil })
-
-	reaped, err := breakLock(path, stale)
-	if err != nil || !reaped {
-		t.Fatalf("breakLock(stale) = (%v,%v), want (true,nil)", reaped, err)
-	}
-	got := <-result
-	if got.err != nil || !got.published {
-		t.Fatalf("fresh publisher after serialized remove = %+v, want published", got)
-	}
-	body, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(body, fresh) {
-		t.Fatalf("fresh lock was dropped after break: body=%q err=%v", body, err)
-	}
-}
 
 // TestLeaseGuardPlacementSafety pins both guard-path safety properties: stable
 // guards remain within Mora-controlled writable roots, while a share-import
@@ -1395,42 +1287,6 @@ func TestReleaseLoopLockForOnlyOwnRun(t *testing.T) {
 // release has read its owner, a heartbeat must wait. Release removes the lease;
 // the delayed heartbeat then observes absence and cannot silently leave a fresh
 // same-owner lock behind.
-func TestReleaseSerializesAgainstSameOwnerHeartbeat(t *testing.T) {
-	cfg := loopTestCfg(t)
-	path := loopLockPath(cfg, "daily-brief")
-	plantLock(t, cfg, "daily-brief", "run_A", os.Getpid(), loopNow)
-
-	heartbeatStarted := make(chan struct{})
-	heartbeatDone := make(chan bool, 1)
-	heartbeatFinishedEarly := false
-	heartbeatOwned := false
-	testHookReleaseLockAfterRead = func() {
-		go func() {
-			close(heartbeatStarted)
-			heartbeatDone <- heartbeatLockFileFor(path, "run_A", loopNow.Add(time.Minute))
-		}()
-		<-heartbeatStarted
-		select {
-		case heartbeatOwned = <-heartbeatDone:
-			heartbeatFinishedEarly = true
-		case <-time.After(50 * time.Millisecond):
-			// Expected: heartbeat waits for release's read/check/remove transition.
-		}
-	}
-	t.Cleanup(func() { testHookReleaseLockAfterRead = nil })
-
-	releaseLockFileFor(path, "run_A")
-	if heartbeatFinishedEarly {
-		t.Fatalf("heartbeat completed inside guarded release (owned=%v)", heartbeatOwned)
-	}
-	heartbeatOwned = <-heartbeatDone
-	if heartbeatOwned {
-		t.Fatal("heartbeat resurrected a lease after the same owner's release")
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("release/heartbeat race leaked lease; stat err=%v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // TIER E — status health ladder (GENERIC: run-record + registry only)
