@@ -2,7 +2,9 @@ package synthesis
 
 import (
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/commitment"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/openloops"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +86,25 @@ func TestEmpty(t *testing.T) {
 	for _, g := range []Gaps{{Stale: []string{"x"}}, {FreshnessUnknown: []string{"x"}}, {SparseEvidence: []string{"x"}}, {SourceCoverage: []string{"x"}}, {TemporalState: []string{"x"}}, {ThinCoverage: []string{"x"}}, {CoverageHoles: []string{"x"}}, {RetrievalCaveats: []string{"x"}}} {
 		if g.Empty() {
 			t.Fatalf("reported empty: %+v", g)
+		}
+	}
+}
+
+func TestPromptNoEvidence(t *testing.T) {
+	got := Prompt("Where?", nil, Gaps{}, nil)
+	want := "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. If the evidence is insufficient, say so plainly rather than guessing.\n\nQUESTION: Where?\n\nEVIDENCE:\n(none found)\n"
+	if got != want {
+		t.Fatalf("prompt=%q want %q", got, want)
+	}
+}
+func TestPromptEvidenceGapsAndLoops(t *testing.T) {
+	ev := []Evidence{{StableID: "local", Scope: "global", CreatedAt: "2026-01-01", Title: "Plan", Snippet: "body"}, {StableID: "shared", Owner: "alice", Scope: "team", CreatedAt: "2026-01-02", Title: "Note", Snippet: "shared body"}}
+	gaps := Gaps{Stale: []string{"stale"}, FreshnessUnknown: []string{"unknown"}, SparseEvidence: []string{"sparse"}, SourceCoverage: []string{"source"}, TemporalState: []string{"temporal"}, ThinCoverage: []string{"thin"}, CoverageHoles: []string{"hole"}, RetrievalCaveats: []string{"caveat"}}
+	loops := []openloops.Person{{Person: "Sam", Loops: []openloops.Loop{{Task: "send", Lifecycle: commitment.Open, Direction: commitment.OwedBySelf, Lane: openloops.LaneEvidence}}}}
+	got := Prompt("Q", ev, gaps, loops)
+	for _, want := range []string{"- [local] (global, 2026-01-01) Plan — body", "- [shared] (shared:alice, team, 2026-01-02) Note — shared body", "KNOWN GAPS", "- stale\n", "- unknown\n", "- sparse\n", "- source\n", "- temporal\n", "- thin\n", "- hole\n", "- caveat\n", "OPEN LOOPS", "Sam — send"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
 		}
 	}
 }
