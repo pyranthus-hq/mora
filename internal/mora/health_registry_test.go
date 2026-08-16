@@ -131,7 +131,7 @@ func driveEverySurface(t *testing.T, ctx context.Context, cfg Config) {
 	}
 
 	srv := &httpServer{token: "tok", port: 7777}
-	handler := srv.hostGuard(srv.auth(srv.routes()))
+	handler := srv.handler()
 	for _, rt := range srv.httpRoutes() {
 		key := rt.Method + " " + rt.Pattern
 		if httpHealthExemptRoutes[key] {

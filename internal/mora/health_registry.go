@@ -13,8 +13,8 @@ package mora
 //
 //   - MCP: mcpToolRegistry (mcp.go) — both tools/list and callMCPTool's dispatch
 //     derive from the SAME []mcpToolDef slice.
-//   - HTTP: httpRoutes() (serve_http.go) — routes() builds its ServeMux from the
-//     SAME []httpRoute slice.
+//   - HTTP: internal/loopbackhttp owns one route registry used for both its
+//     ServeMux and the []httpRoute metadata enumerated through the Mora adapter.
 //
 // The CLI cannot be derived the same way — a Go `switch` has no runtime
 // reflection — so cliHealthSurfaces below is an EXPLICIT list, hand-verified
