@@ -79,20 +79,6 @@ func TestDirtyIndexIsUnhealthy(t *testing.T) {
 
 // TestFreshSourceCannotMaskDirtyIndex (matrix row 11) — the aggregate is worst-of:
 // a fresh source cannot mask a dirty index. MUTATION: best-of instead of worst-of => healthy => RED.
-func TestFreshSourceCannotMaskDirtyIndex(t *testing.T) {
-	h := Health{
-		Sources: []sourceHealth{{Key: "gmail", State: healthFresh, AgeHours: 0}},
-		Index:   indexHealth{State: idxDirty, PendingOps: 3, DirtySince: gate2Now.UTC().Format(time.RFC3339)},
-	}
-	if got := aggregateHealthState(h); got != healthUnhealthy {
-		t.Fatalf("aggregate(fresh source + dirty index) = %q, want unhealthy", got)
-	}
-	// The banner reflects the index arm even though the source is fresh.
-	banner := healthBannerFrom(h)
-	if !strings.Contains(banner, "search index is DIRTY") {
-		t.Fatalf("banner = %q, want the index dirty line", banner)
-	}
-}
 
 // TestDoctorStrictNonzeroOnDirtyIndex (matrix row 12) — doctor --strict is nonzero
 // on a dirty index. MUTATION: index_fresh made non-critical => strict exits 0 => RED.

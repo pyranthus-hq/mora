@@ -37,9 +37,8 @@ type operationProgress = operation.Progress
 var operationClock = time.Now
 var operationProcessAlive operationLiveness = processAlive
 
-func operationRoot(cfg Config) string        { return operation.Root(cfg) }
-func validOperationToken(s string) bool      { return operation.ValidToken(s) }
-func sanitizeOperationPhase(s string) string { return operation.SanitizePhase(s) }
+func operationRoot(cfg Config) string   { return operation.Root(cfg) }
+func validOperationToken(s string) bool { return operation.ValidToken(s) }
 
 func processAlive(pid int) bool { return operation.ProcessAlive(pid) }
 

@@ -62,7 +62,6 @@ func healthStateRank(state string) int                      { return healthpkg.S
 func healthBannerFromSources(sources []sourceHealth) string { return healthpkg.Banner(sources) }
 func worstSource(sources []sourceHealth) *sourceHealth      { return healthpkg.Worst(sources) }
 func sanitizeHealthError(s string) string                   { return healthpkg.SanitizeError(s) }
-func healthBannerLine(h sourceHealth) string                { return healthpkg.BannerLine(h) }
 func healthBanner(cfg Config, now time.Time) string {
 	return healthBannerFrom(healthOf(cfg, now))
 }
