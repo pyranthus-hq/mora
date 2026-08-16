@@ -40,37 +40,16 @@ import (
 
 // transportRef is the ledger discriminator: absent (nil) ⇒ git (v1), so existing
 // shares.json rows parse and behave unchanged.
-type transportRef struct {
-	Kind   string        `json:"kind,omitempty"` // "git" | "bucket"; empty ⇒ git
-	Bucket *bucketConfig `json:"bucket,omitempty"`
-}
 
 // bucketConfig locates an S3-compatible destination. Credentials are NEVER stored
 // here — SecretRef names where they live (env), matching v1's PAT-redaction posture.
-type bucketConfig struct {
-	Endpoint  string `json:"endpoint,omitempty"` // "" ⇒ AWS; else R2/B2/MinIO URL
-	Region    string `json:"region,omitempty"`
-	Bucket    string `json:"bucket"`
-	Prefix    string `json:"prefix,omitempty"`
-	SecretRef string `json:"secret_ref,omitempty"`
-}
 
 // objectPrefix is the key prefix (with a trailing slash) all of this share's
 // objects live under, so many shares can share one bucket.
-func (c bucketConfig) objectPrefix() string {
-	p := strings.Trim(c.Prefix, "/")
-	if p == "" {
-		return ""
-	}
-	return p + "/"
-}
 
 // locator is the stable canonical destination bound into every manifest signature
 // (see manifestSigningMessage) so a manifest signed for this bucket/prefix cannot
 // be replayed at another. Field-separated to stay unambiguous.
-func (c bucketConfig) locator() string {
-	return "bucket\x00" + strings.TrimRight(c.Endpoint, "/") + "\x00" + c.Bucket + "\x00" + strings.Trim(c.Prefix, "/")
-}
 
 const shareManifestObject = "manifest"
 
@@ -117,7 +96,7 @@ func bucketCurrentEnvelope(ctx context.Context, store objectStore, prefix string
 // order. v1 re-encrypts the full set each push (authored notes are small); dedup
 // is a later optimization.
 func bucketPublish(ctx context.Context, store objectStore, cfg bucketConfig, pub sharePublish, mems []Memory, priv ed25519.PrivateKey, recips []age.Recipient) error {
-	prefix := cfg.objectPrefix()
+	prefix := cfg.ObjectPrefix()
 
 	version := 1
 	if cur, err := bucketCurrentEnvelope(ctx, store, prefix); err == nil {
@@ -152,7 +131,7 @@ func bucketPublish(ctx context.Context, store objectStore, cfg bucketConfig, pub
 	if err != nil {
 		return err
 	}
-	env, err := sealManifest(priv, cfg.locator(), manJSON, version, recips, true)
+	env, err := sealManifest(priv, cfg.Locator(), manJSON, version, recips, true)
 	if err != nil {
 		return err
 	}
@@ -228,7 +207,7 @@ func bucketDeleteOrphans(ctx context.Context, store objectStore, prefix string, 
 // index. Nothing is written to the real corpus here; a mid-fetch failure just
 // discards the throwaway destDir. Returns the pin + version to persist on success.
 func bucketFetch(ctx context.Context, store objectStore, cfg bucketConfig, sub shareSubscription, ids []age.Identity, destDir string) (ed25519.PublicKey, int, error) {
-	prefix := cfg.objectPrefix()
+	prefix := cfg.ObjectPrefix()
 
 	env, err := bucketCurrentEnvelope(ctx, store, prefix)
 	if err != nil {
@@ -237,7 +216,7 @@ func bucketFetch(ctx context.Context, store objectStore, cfg bucketConfig, sub s
 		}
 		return nil, 0, err
 	}
-	if err := verifyEnvelope(env, cfg.locator(), sub.PinnedPubkey, sub.LastVersion); err != nil {
+	if err := verifyEnvelope(env, cfg.Locator(), sub.PinnedPubkey, sub.LastVersion); err != nil {
 		return nil, 0, fmt.Errorf("subscription %q: %w", sub.Name, err)
 	}
 	manJSON, err := openManifestPayload(env, ids)

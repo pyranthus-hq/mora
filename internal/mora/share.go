@@ -50,111 +50,24 @@ import (
 
 // shareFile is the on-disk registry at <ConfigDir>/shares.json — the durable
 // record ("grant ledger") of what this machine publishes and subscribes to.
-type shareFile struct {
-	Schema        int                 `json:"schema"`
-	Publishes     []sharePublish      `json:"publishes,omitempty"`
-	Subscriptions []shareSubscription `json:"subscriptions,omitempty"`
-}
 
 // sharePublish is one outbound grant: this scope, to these recipients, at this
 // remote. Recipients are age X25519 public keys exchanged out of band.
-type sharePublish struct {
-	Name       string        `json:"name"`
-	Scope      string        `json:"scope"`
-	Recipients []string      `json:"recipients"`
-	Remote     string        `json:"remote,omitempty"`
-	Transport  *transportRef `json:"transport,omitempty"` // nil ⇒ git (v1 remote)
-	Owner      string        `json:"owner,omitempty"`
-	CreatedAt  string        `json:"created_at"`
-}
 
 // shareSubscription is one inbound corpus. Name is chosen by the SUBSCRIBER and
 // is the attribution label on unioned results — publisher-controlled metadata
 // is never used as the trust label.
-type shareSubscription struct {
-	Name         string        `json:"name"`
-	Remote       string        `json:"remote"`
-	Transport    *transportRef `json:"transport,omitempty"`     // nil ⇒ git (v1 remote)
-	PinnedPubkey []byte        `json:"pinned_pubkey,omitempty"` // TOFU-pinned publisher ed25519 key (non-git)
-	LastVersion  int           `json:"last_version,omitempty"`  // highest manifest version accepted (anti-rollback)
-	CreatedAt    string        `json:"created_at"`
-}
-
-const shareFileSchema = 1
 
 // Share/subscription names become directory names and attribution labels;
 // scopes expand to export paths and travel between machines. Both are therefore
 // validated strictly — unlike `mora write --scope`, which accepts any string.
-var (
-	shareNameRE  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	shareScopeRE = regexp.MustCompile(`^(personal|global|project:[A-Za-z0-9][A-Za-z0-9._-]*)$`)
-)
-
-func validShareName(s string) bool  { return shareNameRE.MatchString(s) }
-func validShareScope(s string) bool { return shareScopeRE.MatchString(s) }
-
-func sharesPath(cfg Config) string { return filepath.Join(cfg.ConfigDir, "shares.json") }
 
 // Publisher-side staging repo (git worktree holding manifest + ciphertext).
-func shareStagingDir(cfg Config, name string) string {
-	return filepath.Join(cfg.DataDir, "share", "publish", name)
-}
 
 // Subscriber-side share root: clone, decrypted corpus, and per-share index.
-func shareSubRoot(cfg Config, name string) string {
-	return filepath.Join(cfg.DataDir, "share", "subs", name)
-}
-func shareRepoDir(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "repo")
-}
-func shareCorpusDir(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "corpus")
-}
-func shareIndexPath(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "index.db")
-}
-
-func loadShares(cfg Config) (shareFile, error) {
-	var sf shareFile
-	b, err := os.ReadFile(sharesPath(cfg))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return shareFile{Schema: shareFileSchema}, nil
-		}
-		return sf, err
-	}
-	if err := json.Unmarshal(b, &sf); err != nil {
-		// This error surfaces from every search/think once subscriptions exist,
-		// so it must name the file and the fix, not just the parse failure.
-		return sf, fmt.Errorf("%s is corrupt (%v) — fix or delete the file; it holds share/subscription registrations", sharesPath(cfg), err)
-	}
-	return sf, nil
-}
 
 // saveShares persists the registry. Same caveat as saveSources: atomicWrite
 // makes the write itself safe, not the surrounding read-modify-write.
-func saveShares(cfg Config, sf shareFile) error {
-	sf.Schema = shareFileSchema
-	b, err := json.MarshalIndent(sf, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicio.Write(sharesPath(cfg), append(b, '\n'), 0o600)
-}
-
-func validateSubscriptionNameAvailable(sf shareFile, name string) error {
-	for _, existing := range sf.Subscriptions {
-		if existing.Name == name {
-			return fmt.Errorf("subscription %q already exists — `mora share pull %s` updates it", name, name)
-		}
-	}
-	for _, existing := range sf.Publishes {
-		if existing.Name == name {
-			return fmt.Errorf("%q already names a share you publish — share and subscription names share one namespace", name)
-		}
-	}
-	return nil
-}
 
 // The subscriber's age identity. Lives beside the OAuth tokens in ConfigDir —
 // a secret, 0600, never inside the vault and never inside any share repo.

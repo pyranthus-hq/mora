@@ -48,37 +48,8 @@ func TestShareBareAndUnknownSubverbError(t *testing.T) {
 	}
 }
 
-func TestValidShareName(t *testing.T) {
-	valid := []string{"acme", "team-x", "a", "neil.work", "p_0"}
-	invalid := []string{"", "Acme", "-lead", ".dot", "a/b", "a b", "a:b", "..", strings.Repeat("x", 65)}
-	for _, s := range valid {
-		if !validShareName(s) {
-			t.Errorf("validShareName(%q) = false; want true", s)
-		}
-	}
-	for _, s := range invalid {
-		if validShareName(s) {
-			t.Errorf("validShareName(%q) = true; want false", s)
-		}
-	}
-}
-
 // Share scopes are deliberately stricter than `mora write` scopes: they expand to
 // directory names and travel between machines, so only the documented forms pass.
-func TestValidShareScope(t *testing.T) {
-	valid := []string{"personal", "global", "project:acme", "project:Acme-2.x", "project:a_b"}
-	invalid := []string{"", "project:", "project:../x", "project:a/b", "personal/extra", "..", "project:.hidden", "team:acme"}
-	for _, s := range valid {
-		if !validShareScope(s) {
-			t.Errorf("validShareScope(%q) = false; want true", s)
-		}
-	}
-	for _, s := range invalid {
-		if validShareScope(s) {
-			t.Errorf("validShareScope(%q) = true; want false", s)
-		}
-	}
-}
 
 func TestSharesFileRoundTrip(t *testing.T) {
 	withTempHome(t)
