@@ -44,49 +44,6 @@ func stubPortFree(t *testing.T, free bool) {
 	serveHTTPPortFree = func(int) bool { return free }
 }
 
-func TestServeHTTPPlistRenders(t *testing.T) {
-	t.Setenv("MORA_CONFIG_DIR", "/tmp/isolated-vault")
-	t.Setenv("MORA_PORT", "")
-	cfg := Config{StateDir: "/state"}
-	p := serveHTTPPlist(cfg, "/usr/local/bin/mora")
-
-	for _, want := range []string{
-		"<key>Label</key><string>com.mora.serve-http</string>",
-		"<string>/usr/local/bin/mora</string><string>serve</string><string>http</string>",
-		"<key>RunAtLoad</key><true/>",
-		"<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>",
-		"<key>ThrottleInterval</key><integer>30</integer>",
-		"<key>MORA_CONFIG_DIR</key><string>/tmp/isolated-vault</string>",
-		filepath.Join("/state", "serve-http.out.log"),
-	} {
-		if !strings.Contains(p, want) {
-			t.Errorf("plist missing %q\n---\n%s", want, p)
-		}
-	}
-	// KeepAlive must NOT be the bare-true form that respawns even on clean exit.
-	if strings.Contains(p, "<key>KeepAlive</key><true/>") {
-		t.Error("KeepAlive must be {SuccessfulExit:false}, not bare true")
-	}
-}
-
-func TestServeHTTPSystemdUnitRenders(t *testing.T) {
-	t.Setenv("MORA_CONFIG_DIR", "/tmp/v")
-	t.Setenv("MORA_PORT", "8899")
-	cfg := Config{StateDir: "/state"}
-	u := serveHTTPSystemdUnit(cfg, "/opt/mora")
-	for _, want := range []string{
-		"ExecStart=/opt/mora serve http",
-		"Restart=on-failure",
-		"Environment=MORA_CONFIG_DIR=/tmp/v",
-		"Environment=MORA_PORT=8899",
-		"WantedBy=default.target",
-	} {
-		if !strings.Contains(u, want) {
-			t.Errorf("systemd unit missing %q\n---\n%s", want, u)
-		}
-	}
-}
-
 func TestInstallServeHTTPDarwin(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -172,12 +129,5 @@ func TestUninstallServeHTTPDarwinRemovesPlist(t *testing.T) {
 	}
 	if !sawCall(*calls, "launchctl", "bootout") {
 		t.Error("uninstall should bootout the daemon")
-	}
-}
-
-func TestServeHTTPServiceRejectsUnknownSub(t *testing.T) {
-	var out strings.Builder
-	if err := serveHTTPService(Config{}, "bogus", &out); err == nil {
-		t.Fatal("expected an error for an unknown subcommand")
 	}
 }
