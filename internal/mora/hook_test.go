@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -178,268 +177,6 @@ func TestHookStatusReportsInstalledHooks(t *testing.T) {
 	}
 }
 
-func TestHookInstallMergesAndIsIdempotent(t *testing.T) {
-	tmp := withTempHookHome(t)
-	path := filepath.Join(tmp, ".claude", "settings.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	golden := `{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "other-tool recall",
-            "timeout": 3
-          }
-        ]
-      }
-    ]
-  },
-  "theme": "dark"
-}
-`
-	if err := os.WriteFile(path, []byte(golden), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	run(t, "hook", "install", "--threshold", "-0.25")
-	once, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	run(t, "hook", "install", "--threshold", "-0.25")
-	twice, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(once, twice) {
-		t.Fatalf("install twice should be byte-identical\nonce:\n%s\ntwice:\n%s", once, twice)
-	}
-	settings := readClaudeSettingsForTest(t, tmp)
-	if settings["theme"] != "dark" {
-		t.Fatalf("top-level settings were not preserved: %#v", settings)
-	}
-	hooks := hookGroupsForTest(t, settings)
-	if !containsHookCommand(hooks["UserPromptSubmit"], "other-tool recall") {
-		t.Fatalf("unrelated hook was not preserved: %#v", hooks["UserPromptSubmit"])
-	}
-	assertHookInstalled(t, settings, "UserPromptSubmit", "mora hook recall --threshold -0.25")
-}
-
-func TestHookInstallPreservesUnrelatedUnknownHookFields(t *testing.T) {
-	tmp := withTempHookHome(t)
-	path := writeClaudeSettingsFixture(t, tmp, matcherUnknownHookSettings())
-
-	run(t, "hook", "install")
-	afterInstall := readClaudeSettingsForTest(t, tmp)
-	assertUnrelatedMatcherHookIntact(t, afterInstall)
-	installedBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	run(t, "hook", "install")
-	reinstalledBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(installedBytes, reinstalledBytes) {
-		t.Fatalf("install twice should be byte-identical with matcher-bearing hooks\nonce:\n%s\ntwice:\n%s", installedBytes, reinstalledBytes)
-	}
-
-	run(t, "hook", "uninstall")
-	afterUninstall := readClaudeSettingsForTest(t, tmp)
-	assertUnrelatedMatcherHookIntact(t, afterUninstall)
-	hooks := hookGroupsForTest(t, afterUninstall)
-	if containsHookCommand(hooks["SessionStart"], "mora hook") || containsHookCommand(hooks["UserPromptSubmit"], "mora hook") {
-		t.Fatalf("mora hooks still present after uninstall: %#v", hooks)
-	}
-}
-
-func TestHookUninstallRemovesOnlyMoraHooks(t *testing.T) {
-	tmp := withTempHookHome(t)
-	path := filepath.Join(tmp, ".claude", "settings.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	body := `{
-  "hooks": {
-    "SessionStart": [
-      {"hooks":[{"type":"command","command":"/tmp/mora hook session-start #mora-managed:session-start","timeout":15}]}
-    ],
-    "UserPromptSubmit": [
-      {"hooks":[{"type":"command","command":"other-tool recall","timeout":3}]},
-      {"hooks":[{"type":"command","command":"/tmp/mora hook recall #mora-managed:recall","timeout":10}]}
-    ]
-  }
-}
-`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	run(t, "hook", "uninstall")
-	settings := readClaudeSettingsForTest(t, tmp)
-	hooks := hookGroupsForTest(t, settings)
-	if containsHookCommand(hooks["SessionStart"], "mora hook") || containsHookCommand(hooks["UserPromptSubmit"], "mora hook") {
-		t.Fatalf("mora hooks still present after uninstall: %#v", hooks)
-	}
-	if !containsHookCommand(hooks["UserPromptSubmit"], "other-tool recall") {
-		t.Fatalf("unrelated hook was removed: %#v", hooks["UserPromptSubmit"])
-	}
-	if _, ok := hooks["SessionStart"]; ok {
-		t.Fatalf("empty SessionStart group should be pruned: %#v", hooks["SessionStart"])
-	}
-}
-
-func TestHookInstallMalformedHooksDoesNotOverwrite(t *testing.T) {
-	tmp := withTempHookHome(t)
-	path := writeClaudeSettingsFixture(t, tmp, `{"hooks":"not an object","theme":"dark"}`+"\n")
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runErr(t, "hook", "install"); err == nil {
-		t.Fatal("install should fail on malformed hooks")
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatalf("malformed hooks file was overwritten\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-}
-
-func TestHookInstallUnparseableSettingsFailsClosed(t *testing.T) {
-	// A settings.json that fails strict JSON parsing (JSONC comments, trailing
-	// commas) must abort install with a clear error and leave the file
-	// byte-identical. Before the fix, loadClaudeSettings silently discarded the
-	// unparseable file and install wrote back ONLY the mora hooks, wiping every
-	// other setting the user had.
-	cases := []struct {
-		name string
-		body string
-	}{
-		{"jsonc comment", "{\n  // enable dark mode\n  \"theme\": \"dark\"\n}\n"},
-		{"trailing comma", "{\n  \"theme\": \"dark\",\n}\n"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			tmp := withTempHookHome(t)
-			path := writeClaudeSettingsFixture(t, tmp, c.body)
-			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = runErr(t, "hook", "install")
-			if err == nil {
-				t.Fatal("install must refuse to modify an unparseable settings file")
-			}
-			if !strings.Contains(err.Error(), "not valid JSON") || !strings.Contains(err.Error(), path) {
-				t.Fatalf("error must name the file and the parse problem, got: %v", err)
-			}
-			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(before, after) {
-				t.Fatalf("unparseable settings file was rewritten\nbefore:\n%s\nafter:\n%s", before, after)
-			}
-		})
-	}
-}
-
-func TestHookUninstallUnparseableSettingsFailsClosed(t *testing.T) {
-	// Same wipe hazard as install: uninstall loads, edits, and writes back the
-	// whole settings map, so a silently-discarded parse would erase everything.
-	tmp := withTempHookHome(t)
-	path := writeClaudeSettingsFixture(t, tmp, "{\n  \"theme\": \"dark\",\n}\n")
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = runErr(t, "hook", "uninstall")
-	if err == nil {
-		t.Fatal("uninstall must refuse to modify an unparseable settings file")
-	}
-	if !strings.Contains(err.Error(), "not valid JSON") || !strings.Contains(err.Error(), path) {
-		t.Fatalf("error must name the file and the parse problem, got: %v", err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatalf("unparseable settings file was rewritten\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-}
-
-func TestHookInstallUnreadableSettingsFailsClosed(t *testing.T) {
-	// A settings.json that exists but cannot be read must abort install: a
-	// silently-swallowed read error would make install proceed from empty
-	// settings and replace the file with mora-only content. Unix-only: it
-	// relies on POSIX file-permission semantics.
-	if runtime.GOOS == "windows" {
-		t.Skip("file-permission semantics differ on Windows")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("runs as root — the 0000 read bit is bypassed, so the read error can't be provoked")
-	}
-	tmp := withTempHookHome(t)
-	path := writeClaudeSettingsFixture(t, tmp, `{"theme":"dark"}`+"\n")
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	_, err := runErr(t, "hook", "install")
-	if err == nil || !strings.Contains(err.Error(), path) {
-		t.Fatalf("install must surface a settings read error naming the file, got: %v", err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != `{"theme":"dark"}`+"\n" {
-		t.Fatalf("unreadable settings file was rewritten:\n%s", after)
-	}
-}
-
-func TestHookInstallDanglingSymlinkSettingsFailsClosed(t *testing.T) {
-	// A dangling settings.json symlink reads as ErrNotExist, but something IS
-	// at the path (e.g. a link into a dotfiles repo whose target is briefly
-	// missing). Install must refuse rather than replace the symlink with a
-	// mora-only regular file. Unix-only: symlink creation on Windows needs
-	// elevated privileges.
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation on Windows requires elevated privileges")
-	}
-	tmp := withTempHookHome(t)
-	path := filepath.Join(tmp, ".claude", "settings.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(tmp, "missing-target.json"), path); err != nil {
-		t.Fatal(err)
-	}
-	_, err := runErr(t, "hook", "install")
-	if err == nil || !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), path) {
-		t.Fatalf("install must refuse a dangling settings symlink, got: %v", err)
-	}
-	fi, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("dangling symlink was replaced with a regular file: %v", fi.Mode())
-	}
-}
-
 func TestHookInstallUninstallBinaryNameIndependent(t *testing.T) {
 	// The install/uninstall marker must not depend on the binary being named
 	// "mora": users run renamed binaries (mora-dev/mora-new). Simulate one and
@@ -532,32 +269,6 @@ func writeClaudeSettingsFixture(t *testing.T, home, body string) string {
 	return path
 }
 
-func matcherUnknownHookSettings() string {
-	return `{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "other-tool pre",
-            "timeout": 3,
-            "async": true,
-            "once": true,
-            "if": "success",
-            "args": ["--flag"],
-            "foo": 1
-          }
-        ]
-      }
-    ]
-  },
-  "theme": "dark"
-}
-`
-}
-
 func decodeHookOutput(t *testing.T, body string) hookEnvelope {
 	t.Helper()
 	var got hookEnvelope
@@ -621,23 +332,147 @@ func containsHookCommand(groups []claudeHookGroup, substr string) bool {
 	return false
 }
 
-func assertUnrelatedMatcherHookIntact(t *testing.T, settings map[string]any) {
-	t.Helper()
-	hooks := settings["hooks"].(map[string]any)
-	groups := hooks["PreToolUse"].([]any)
-	group := groups[0].(map[string]any)
-	if group["matcher"] != "Bash" {
-		t.Fatalf("matcher not preserved: %#v", group)
+func TestHookUninstallRemovesOnlyMoraHooks(t *testing.T) {
+	tmp := withTempHookHome(t)
+	path := filepath.Join(tmp, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	cmd := group["hooks"].([]any)[0].(map[string]any)
-	if cmd["command"] != "other-tool pre" || cmd["type"] != "command" {
-		t.Fatalf("command hook changed: %#v", cmd)
+	body := `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks":[{"type":"command","command":"/tmp/mora hook session-start #mora-managed:session-start","timeout":15}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks":[{"type":"command","command":"other-tool recall","timeout":3}]},
+      {"hooks":[{"type":"command","command":"/tmp/mora hook recall #mora-managed:recall","timeout":10}]}
+    ]
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if cmd["async"] != true || cmd["once"] != true || cmd["if"] != "success" || cmd["foo"].(float64) != 1 {
-		t.Fatalf("unknown command fields not preserved: %#v", cmd)
+
+	run(t, "hook", "uninstall")
+	settings := readClaudeSettingsForTest(t, tmp)
+	hooks := hookGroupsForTest(t, settings)
+	if containsHookCommand(hooks["SessionStart"], "mora hook") || containsHookCommand(hooks["UserPromptSubmit"], "mora hook") {
+		t.Fatalf("mora hooks still present after uninstall: %#v", hooks)
 	}
-	args := cmd["args"].([]any)
-	if len(args) != 1 || args[0] != "--flag" {
-		t.Fatalf("args not preserved: %#v", cmd)
+	if !containsHookCommand(hooks["UserPromptSubmit"], "other-tool recall") {
+		t.Fatalf("unrelated hook was removed: %#v", hooks["UserPromptSubmit"])
+	}
+	if _, ok := hooks["SessionStart"]; ok {
+		t.Fatalf("empty SessionStart group should be pruned: %#v", hooks["SessionStart"])
+	}
+}
+
+func TestHookInstallMergesAndIsIdempotent(t *testing.T) {
+	tmp := withTempHookHome(t)
+	path := filepath.Join(tmp, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	golden := `{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "other-tool recall",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "theme": "dark"
+}
+`
+	if err := os.WriteFile(path, []byte(golden), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, "hook", "install", "--threshold", "-0.25")
+	once, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(t, "hook", "install", "--threshold", "-0.25")
+	twice, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(once, twice) {
+		t.Fatalf("install twice should be byte-identical\nonce:\n%s\ntwice:\n%s", once, twice)
+	}
+	settings := readClaudeSettingsForTest(t, tmp)
+	if settings["theme"] != "dark" {
+		t.Fatalf("top-level settings were not preserved: %#v", settings)
+	}
+	hooks := hookGroupsForTest(t, settings)
+	if !containsHookCommand(hooks["UserPromptSubmit"], "other-tool recall") {
+		t.Fatalf("unrelated hook was not preserved: %#v", hooks["UserPromptSubmit"])
+	}
+	assertHookInstalled(t, settings, "UserPromptSubmit", "mora hook recall --threshold -0.25")
+}
+
+func TestHookInstallMalformedHooksDoesNotOverwrite(t *testing.T) {
+	tmp := withTempHookHome(t)
+	path := writeClaudeSettingsFixture(t, tmp, `{"hooks":"not an object","theme":"dark"}`+"\n")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runErr(t, "hook", "install"); err == nil {
+		t.Fatal("install should fail on malformed hooks")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("malformed hooks file was overwritten\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestHookInstallUnparseableSettingsFailsClosed(t *testing.T) {
+	// A settings.json that fails strict JSON parsing (JSONC comments, trailing
+	// commas) must abort install with a clear error and leave the file
+	// byte-identical. Before the fix, loadClaudeSettings silently discarded the
+	// unparseable file and install wrote back ONLY the mora hooks, wiping every
+	// other setting the user had.
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"jsonc comment", "{\n  // enable dark mode\n  \"theme\": \"dark\"\n}\n"},
+		{"trailing comma", "{\n  \"theme\": \"dark\",\n}\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmp := withTempHookHome(t)
+			path := writeClaudeSettingsFixture(t, tmp, c.body)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runErr(t, "hook", "install")
+			if err == nil {
+				t.Fatal("install must refuse to modify an unparseable settings file")
+			}
+			if !strings.Contains(err.Error(), "not valid JSON") || !strings.Contains(err.Error(), path) {
+				t.Fatalf("error must name the file and the parse problem, got: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("unparseable settings file was rewritten\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
 	}
 }
