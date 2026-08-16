@@ -1,20 +1,20 @@
 //go:build !windows
 
-package mora
+package leasefile
 
 import (
 	"os"
 	"syscall"
 )
 
-func lockLeaseGuard(f *os.File) error {
+func lock(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
 }
 
-func tryLockLeaseGuard(f *os.File) error {
+func TryLock(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 }
 
-func unlockLeaseGuard(f *os.File) error {
+func Unlock(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
