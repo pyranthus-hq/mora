@@ -162,7 +162,7 @@ transaction**:
   snapshot. (A memory written AFTER the surviving rebuild's listing is ordinary
   until-next-reconcile staleness — see §6 — not this race.) This is the P1 fix.
 - **One transaction for the whole rebuild** (schema, DELETEs, `memories`+FTS,
-  `writeGraph`, `writeVectors`) so a mid-rebuild failure rolls back to the prior
+  Mora’s graph compile + `graphstore.Write(tx, result)`, `writeVectors`) so a mid-rebuild failure rolls back to the prior
   committed index rather than leaving a half-empty one.
 
 Interaction with the write path: a full rebuild can never drop a committed

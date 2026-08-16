@@ -4,11 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	embedpkg "github.com/pyranthus-hq/mora/internal/embed"
+	graphpkg "github.com/pyranthus-hq/mora/internal/graph"
+	"github.com/pyranthus-hq/mora/internal/graphstore"
 	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"io"
@@ -552,61 +553,20 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 // timestamps persist as SQL NULL. Statements are prepared once and reused — a
 // real vault is ~10^5 edges, so per-row SQL re-parsing dominated the rebuild.
 func writeGraph(ctx context.Context, tx *sql.Tx, cfg Config, mems []Memory) error {
-	// Resolve the confirm-queue's confirmed cross-channel merges (RULE 3). An absent
-	// ledger is the common case (no confirms); a corrupt one fails loud so a rebuild
-	// can never silently drop a user's confirmed unification.
 	g, err := loadGovernance(cfg)
 	if err != nil {
 		return err
 	}
 	confirmed, _ := g.mergeDecisions()
-	res := buildGraphResult(mems, confirmed)
-	ents, edges, warnings := res.entities, res.edges, res.warnings
-	for _, w := range warnings {
-		fmt.Fprintln(os.Stderr, w)
+	merges := make([]graphpkg.ConfirmedMerge, len(confirmed))
+	for i, m := range confirmed {
+		merges[i] = graphpkg.ConfirmedMerge{A: m.A, B: m.B, GovID: m.GovID}
 	}
-	entStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO entities (id, kind, display_name, aliases, mention_count, first_seen, last_seen, salience_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return err
+	result := graphpkg.Build(mems, merges)
+	for _, warning := range result.Warnings {
+		fmt.Fprintln(os.Stderr, warning)
 	}
-	defer entStmt.Close()
-	for _, e := range ents {
-		aliases := e.Aliases
-		if aliases == nil {
-			aliases = []string{}
-		}
-		aj, err := json.Marshal(aliases)
-		if err != nil {
-			return err
-		}
-		if _, err := entStmt.ExecContext(ctx, e.ID, e.Kind, e.DisplayName, string(aj), e.MentionCount, nullStr(e.FirstSeen), nullStr(e.LastSeen), e.Salience); err != nil {
-			return err
-		}
-	}
-	edgeStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO edges (src, rel, dst, evidence_id, valid_from, valid_to, observed_at, invalidated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer edgeStmt.Close()
-	for _, ed := range edges {
-		if _, err := edgeStmt.ExecContext(ctx, ed.Src, ed.Rel, ed.Dst, ed.EvidenceID, nullStr(ed.ValidFrom), nullStr(ed.ObservedAt), nullStr(ed.InvalidatedAt)); err != nil {
-			return err
-		}
-	}
-	// Merge provenance (P13): one row per applied fusion, so "why is X the same as Y"
-	// is durable and auditable (feeds the trust model). Deterministic, so it keeps the
-	// rebuild byte-identical for a fixed vault + ledger.
-	mergeStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO person_merges (member_a, member_b, signal, detail) VALUES (?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer mergeStmt.Close()
-	for _, m := range res.merges {
-		if _, err := mergeStmt.ExecContext(ctx, m.A, m.B, m.Signal, m.Detail); err != nil {
-			return err
-		}
-	}
-	return nil
+	return graphstore.Write(ctx, tx, result)
 }
 
 // writeVectors embeds each memory (title + body) and inserts its vector on the
