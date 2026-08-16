@@ -1,17 +1,22 @@
-package mora
+package briefstate
 
 import (
 	"bytes"
+	"github.com/pyranthus-hq/mora/internal/config"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
 // brief_test.go drives the Phase-12 delta core (Plan 03): the watermark store
-// (load/save/lock) and the PURE classify() hash-diff. Written RED-first.
+// (load/save/lock) and the PURE Classify() hash-diff. Written RED-first.
 //
 // The load-bearing invariant under test: the delta is the CONTENT-HASH set, not
 // timestamps. writeMappedMemory preserves created_at on a content change, so a
@@ -22,36 +27,36 @@ import (
 // fixedNow is a deterministic instant used everywhere a now is injected.
 var fixedNow = time.Date(2026, 6, 8, 15, 4, 5, 0, time.UTC)
 
-func testCfg(t *testing.T) Config {
+func testCfg(t *testing.T) config.Config {
 	t.Helper()
-	return Config{StateDir: t.TempDir()}
+	return config.Config{StateDir: t.TempDir()}
 }
 
 // ---------------------------------------------------------------------------
-// DELTA CLASSIFICATION — pure classify(snapshot, memories) -> {new, updated}
+// DELTA CLASSIFICATION — pure Classify(snapshot, memories) -> {new, updated}
 // ---------------------------------------------------------------------------
 
 // TestClassifySteadyState asserts the three hash-diff buckets: not-in-snapshot
 // => new, in-snapshot-but-hash-differs => updated, in-snapshot-and-hash-equal =>
 // skipped (not surfaced).
 func TestClassifySteadyState(t *testing.T) {
-	snap := briefSnapshot{
+	snap := Snapshot{
 		Key:               "gmail",
-		HashSchemaVersion: briefHashSchemaVersion,
+		HashSchemaVersion: HashSchemaVersion,
 		Items: map[string]string{
 			"gmail_thread/aaa": "h_aaa",
 			"gmail_thread/bbb": "h_bbb_old",
 			"gmail_thread/ccc": "h_ccc",
 		},
 	}
-	mems := []Memory{
+	mems := []memory.Memory{
 		{ID: "gmail_thread/aaa", Provider: "gmail", ContentHash: "h_aaa"},     // unchanged
 		{ID: "gmail_thread/bbb", Provider: "gmail", ContentHash: "h_bbb_new"}, // updated
 		{ID: "gmail_thread/ccc", Provider: "gmail", ContentHash: "h_ccc"},     // unchanged
 		{ID: "gmail_thread/ddd", Provider: "gmail", ContentHash: "h_ddd"},     // new
 	}
 
-	d := classify(snap, mems, fixedNow)
+	d := Classify(snap, mems, fixedNow)
 
 	if d.ColdStart {
 		t.Fatalf("ColdStart=true, want false (snapshot present, matching schema)")
@@ -98,15 +103,15 @@ func TestClassifySteadyState(t *testing.T) {
 // as "updated". This proves the delta is hash-driven, never created_at-driven.
 func TestClassifyTimestampIndependentUpdated(t *testing.T) {
 	oldTS := "2020-01-01T00:00:00Z"
-	snap := briefSnapshot{
+	snap := Snapshot{
 		Key:               "imessage",
-		HashSchemaVersion: briefHashSchemaVersion,
+		HashSchemaVersion: HashSchemaVersion,
 		Items:             map[string]string{"imessage_chat/x": "old_hash"},
 	}
 	// Same created_at as the prior brief — only the hash grew (grown conversation).
-	mems := []Memory{{ID: "imessage_chat/x", Provider: "imessage", CreatedAt: oldTS, ContentHash: "grown_hash"}}
+	mems := []memory.Memory{{ID: "imessage_chat/x", Provider: "imessage", CreatedAt: oldTS, ContentHash: "grown_hash"}}
 
-	d := classify(snap, mems, fixedNow)
+	d := Classify(snap, mems, fixedNow)
 
 	if len(d.Items) != 1 {
 		t.Fatalf("len(d.Items)=%d, want 1", len(d.Items))
@@ -119,13 +124,13 @@ func TestClassifyTimestampIndependentUpdated(t *testing.T) {
 // TestClassifyEmptyKeySkipped asserts a memory whose sourceInstanceKey returns
 // ok=false (empty Provider — the filesystem connector) is never bucketed (M-1).
 func TestClassifyEmptyKeySkipped(t *testing.T) {
-	snap := briefSnapshot{Key: "gmail", HashSchemaVersion: briefHashSchemaVersion, Items: map[string]string{}}
-	mems := []Memory{
+	snap := Snapshot{Key: "gmail", HashSchemaVersion: HashSchemaVersion, Items: map[string]string{}}
+	mems := []memory.Memory{
 		{ID: "fs/note", Provider: "", ContentHash: "h_fs"},           // empty key => skip entirely
 		{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"}, // real => new
 	}
 
-	d := classify(snap, mems, fixedNow)
+	d := Classify(snap, mems, fixedNow)
 
 	for _, it := range d.Items {
 		if it.ID == "fs/note" {
@@ -144,13 +149,13 @@ func TestClassifyEmptyKeySkipped(t *testing.T) {
 // the baseline is ALL current hashes (archived backfill becomes the starting
 // line, not a flood). Display-window selection is the caller's concern (Plan 04).
 func TestClassifyColdStart(t *testing.T) {
-	snap := briefSnapshot{} // zero value => no snapshot for this instance
-	mems := []Memory{
+	snap := Snapshot{} // zero value => no snapshot for this instance
+	mems := []memory.Memory{
 		{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"},
 		{ID: "gmail_thread/b", Provider: "gmail", ContentHash: "hb"},
 	}
 
-	d := classify(snap, mems, fixedNow)
+	d := Classify(snap, mems, fixedNow)
 
 	if !d.ColdStart {
 		t.Fatalf("ColdStart=false, want true (no snapshot)")
@@ -168,14 +173,14 @@ func TestClassifyColdStart(t *testing.T) {
 // differs from current is cold-start-equivalent: re-baseline to all current
 // hashes AND set SchemaReset so an empty post-upgrade brief isn't misread.
 func TestClassifySchemaResetRebaselines(t *testing.T) {
-	snap := briefSnapshot{
+	snap := Snapshot{
 		Key:               "gmail",
-		HashSchemaVersion: briefHashSchemaVersion + 1, // future/old schema mismatch
+		HashSchemaVersion: HashSchemaVersion + 1, // future/old schema mismatch
 		Items:             map[string]string{"gmail_thread/a": "stale_under_old_scheme"},
 	}
-	mems := []Memory{{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"}}
+	mems := []memory.Memory{{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"}}
 
-	d := classify(snap, mems, fixedNow)
+	d := Classify(snap, mems, fixedNow)
 
 	if !d.SchemaReset {
 		t.Fatalf("SchemaReset=false on a hash_schema_version mismatch, want true")
@@ -199,7 +204,7 @@ func TestClassifySchemaResetRebaselines(t *testing.T) {
 // a missing snapshot loads as a zero value, not an error.
 func TestLoadBriefSnapshotMissing(t *testing.T) {
 	cfg := testCfg(t)
-	snap := loadBriefSnapshot(cfg, "gmail")
+	snap := Load(cfg, "gmail")
 	if len(snap.Items) != 0 {
 		t.Fatalf("missing snapshot had %d items, want zero value", len(snap.Items))
 	}
@@ -212,7 +217,7 @@ func TestLoadBriefSnapshotMissing(t *testing.T) {
 // so sourceFreshness never reads it.
 func TestBriefPathOutsideSync(t *testing.T) {
 	cfg := testCfg(t)
-	p := briefPath(cfg, "gmail")
+	p := Path(cfg, "gmail")
 	if filepath.Dir(p) != filepath.Join(cfg.StateDir, "brief") {
 		t.Fatalf("briefPath dir = %q, want <StateDir>/brief", filepath.Dir(p))
 	}
@@ -228,16 +233,16 @@ func TestBriefPathOutsideSync(t *testing.T) {
 // snapshot.
 func TestSaveBriefSnapshotRoundTrip(t *testing.T) {
 	cfg := testCfg(t)
-	snap := briefSnapshot{
+	snap := Snapshot{
 		Key:               "gmail",
-		HashSchemaVersion: briefHashSchemaVersion,
+		HashSchemaVersion: HashSchemaVersion,
 		Items:             map[string]string{"gmail_thread/a": "ha", "gmail_thread/b": "hb"},
 	}
-	if err := saveBriefSnapshot(cfg, snap, fixedNow); err != nil {
+	if err := Save(cfg, snap, fixedNow); err != nil {
 		t.Fatalf("saveBriefSnapshot: %v", err)
 	}
-	got := loadBriefSnapshot(cfg, "gmail")
-	if got.Key != "gmail" || got.HashSchemaVersion != briefHashSchemaVersion {
+	got := Load(cfg, "gmail")
+	if got.Key != "gmail" || got.HashSchemaVersion != HashSchemaVersion {
 		t.Fatalf("round-trip header mismatch: %+v", got)
 	}
 	if !mapsEqual(got.Items, snap.Items) {
@@ -252,11 +257,11 @@ func TestSaveBriefSnapshotRoundTrip(t *testing.T) {
 // stableIDs — gmail_thread/<id>, imessage_chat/<guid> — at rest, T-12-06).
 func TestSaveBriefSnapshotPermissions(t *testing.T) {
 	cfg := testCfg(t)
-	snap := briefSnapshot{Key: "gmail", HashSchemaVersion: briefHashSchemaVersion, Items: map[string]string{"gmail_thread/a": "ha"}}
-	if err := saveBriefSnapshot(cfg, snap, fixedNow); err != nil {
+	snap := Snapshot{Key: "gmail", HashSchemaVersion: HashSchemaVersion, Items: map[string]string{"gmail_thread/a": "ha"}}
+	if err := Save(cfg, snap, fixedNow); err != nil {
 		t.Fatalf("saveBriefSnapshot: %v", err)
 	}
-	fi, err := os.Stat(briefPath(cfg, "gmail"))
+	fi, err := os.Stat(Path(cfg, "gmail"))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -270,29 +275,29 @@ func TestSaveBriefSnapshotByteStable(t *testing.T) {
 	cfg := testCfg(t)
 	now := fixedNow
 
-	snap1 := briefSnapshot{
+	snap1 := Snapshot{
 		Key:               "gmail",
-		HashSchemaVersion: briefHashSchemaVersion,
+		HashSchemaVersion: HashSchemaVersion,
 		Items:             map[string]string{"z": "1", "a": "2", "m": "3", "b": "4"},
 	}
-	if err := saveBriefSnapshot(cfg, snap1, now); err != nil {
+	if err := Save(cfg, snap1, now); err != nil {
 		t.Fatalf("save 1: %v", err)
 	}
-	first, err := os.ReadFile(briefPath(cfg, "gmail"))
+	first, err := os.ReadFile(Path(cfg, "gmail"))
 	if err != nil {
 		t.Fatalf("read 1: %v", err)
 	}
 
 	// Reload, re-save with the SAME logical content and a different now-UTC source
 	// instant that canonicalizes to the same RFC3339 string.
-	snap2 := loadBriefSnapshot(cfg, "gmail")
+	snap2 := Load(cfg, "gmail")
 	// Inject in a deliberately different insertion order to defeat any accidental
 	// map-iteration-order dependence.
 	snap2.Items = map[string]string{"b": "4", "m": "3", "a": "2", "z": "1"}
-	if err := saveBriefSnapshot(cfg, snap2, now.Local()); err != nil {
+	if err := Save(cfg, snap2, now.Local()); err != nil {
 		t.Fatalf("save 2: %v", err)
 	}
-	second, err := os.ReadFile(briefPath(cfg, "gmail"))
+	second, err := os.ReadFile(Path(cfg, "gmail"))
 	if err != nil {
 		t.Fatalf("read 2: %v", err)
 	}
@@ -307,7 +312,7 @@ func TestSaveBriefSnapshotByteStable(t *testing.T) {
 // of the whole brief.
 func TestLoadBriefSnapshotCorruptRecovers(t *testing.T) {
 	cfg := testCfg(t)
-	p := briefPath(cfg, "gmail")
+	p := Path(cfg, "gmail")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -315,7 +320,7 @@ func TestLoadBriefSnapshotCorruptRecovers(t *testing.T) {
 		t.Fatalf("write garbage: %v", err)
 	}
 
-	snap := loadBriefSnapshot(cfg, "gmail")
+	snap := Load(cfg, "gmail")
 	if len(snap.Items) != 0 {
 		t.Fatalf("corrupt snapshot recovered with %d items, want zero/cold-start", len(snap.Items))
 	}
@@ -324,9 +329,9 @@ func TestLoadBriefSnapshotCorruptRecovers(t *testing.T) {
 	}
 
 	// And it must be cold-start-equivalent through the classifier, not steady-state.
-	mems := []Memory{{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"}}
-	if d := classify(snap, mems, fixedNow); !d.ColdStart {
-		t.Fatalf("classify(corrupt-recovered snapshot) ColdStart=false, want true (cold-start-equivalent)")
+	mems := []memory.Memory{{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"}}
+	if d := Classify(snap, mems, fixedNow); !d.ColdStart {
+		t.Fatalf("Classify(corrupt-recovered snapshot) ColdStart=false, want true (cold-start-equivalent)")
 	}
 }
 
@@ -335,7 +340,7 @@ func TestLoadBriefSnapshotCorruptRecovers(t *testing.T) {
 // stale items are dropped so classify re-baselines.
 func TestLoadBriefSnapshotSchemaMismatchRecovers(t *testing.T) {
 	cfg := testCfg(t)
-	p := briefPath(cfg, "gmail")
+	p := Path(cfg, "gmail")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -346,12 +351,12 @@ func TestLoadBriefSnapshotSchemaMismatchRecovers(t *testing.T) {
 		t.Fatalf("seed stale snapshot: %v", err)
 	}
 
-	snap := loadBriefSnapshot(cfg, "gmail")
+	snap := Load(cfg, "gmail")
 	if len(snap.Items) != 0 {
 		t.Fatalf("schema-mismatch load kept %d items, want re-baseline (0)", len(snap.Items))
 	}
-	mems := []Memory{{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"}}
-	d := classify(snap, mems, fixedNow)
+	mems := []memory.Memory{{ID: "gmail_thread/a", Provider: "gmail", ContentHash: "ha"}}
+	d := Classify(snap, mems, fixedNow)
 	if !d.ColdStart {
 		t.Fatalf("schema-mismatch recovered snapshot is not cold-start-equivalent")
 	}
@@ -371,18 +376,18 @@ func TestLoadBriefSnapshotSchemaMismatchRecovers(t *testing.T) {
 func TestAcquireBriefLockExclusion(t *testing.T) {
 	cfg := testCfg(t)
 
-	release1, err := acquireBriefLock(cfg)
+	release1, err := AcquireLock(cfg)
 	if err != nil {
 		t.Fatalf("first acquireBriefLock: %v", err)
 	}
 
-	if _, err := acquireBriefLock(cfg); err == nil {
+	if _, err := AcquireLock(cfg); err == nil {
 		t.Fatalf("second acquireBriefLock succeeded while first held, want failure (no interleave)")
 	}
 
 	release1()
 
-	release2, err := acquireBriefLock(cfg)
+	release2, err := AcquireLock(cfg)
 	if err != nil {
 		t.Fatalf("acquireBriefLock after release failed: %v", err)
 	}
@@ -406,7 +411,7 @@ func TestAcquireBriefLockSerializesWriters(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			release, err := acquireBriefLock(cfg)
+			release, err := AcquireLock(cfg)
 			if err != nil {
 				mu.Lock()
 				contended++
@@ -442,8 +447,8 @@ func TestBriefLockCrashHelper(t *testing.T) {
 	if os.Getenv("MORA_TEST_BRIEF_LOCK_HELPER") != "1" {
 		return
 	}
-	cfg := Config{StateDir: os.Getenv("MORA_TEST_BRIEF_LOCK_STATE")}
-	release, err := acquireBriefLock(cfg)
+	cfg := config.Config{StateDir: os.Getenv("MORA_TEST_BRIEF_LOCK_STATE")}
+	release, err := AcquireLock(cfg)
 	if err != nil {
 		t.Fatalf("helper acquire brief lock: %v", err)
 	}
@@ -489,7 +494,7 @@ func TestAcquireBriefLockReleasedByProcessDeath(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := acquireBriefLock(Config{StateDir: stateDir}); err == nil {
+	if _, err := AcquireLock(config.Config{StateDir: stateDir}); err == nil {
 		t.Fatal("parent acquired brief lock while helper was alive")
 	}
 	if err := cmd.Process.Kill(); err != nil {
@@ -498,7 +503,7 @@ func TestAcquireBriefLockReleasedByProcessDeath(t *testing.T) {
 	_ = cmd.Wait()
 	killed = true
 
-	release, err := acquireBriefLock(Config{StateDir: stateDir})
+	release, err := AcquireLock(config.Config{StateDir: stateDir})
 	if err != nil {
 		t.Fatalf("brief lock remained stranded after process death: %v", err)
 	}
@@ -529,17 +534,17 @@ func mapsEqual(a, b map[string]string) bool {
 // watermark exists to suppress. The schema bump makes the broken-era snapshot
 // read as SchemaReset: one clean re-baseline, nothing surfaced.
 func TestBrokenKeyingEraSnapshotResetsNotFloods(t *testing.T) {
-	brokenEra := briefSnapshot{
+	brokenEra := Snapshot{
 		Key:               "applecalendar",
 		LastBriefAt:       "2026-06-01T00:00:00Z",
 		HashSchemaVersion: 1, // the version every broken-era install has on disk
 		Items:             map[string]string{},
 	}
-	mems := []Memory{
+	mems := []memory.Memory{
 		{ID: "e1", Provider: "applecal", ContentHash: "h1"},
 		{ID: "e2", Provider: "applecal", ContentHash: "h2"},
 	}
-	d := classify(brokenEra, mems, time.Now())
+	d := Classify(brokenEra, mems, time.Now())
 	if len(d.Items) != 0 {
 		t.Fatalf("broken-era snapshot flooded %d backlog item(s) as deltas; want a clean re-baseline", len(d.Items))
 	}
@@ -549,4 +554,78 @@ func TestBrokenKeyingEraSnapshotResetsNotFloods(t *testing.T) {
 	if len(d.Baseline) != 2 {
 		t.Fatalf("baseline must still record all current hashes, got %d", len(d.Baseline))
 	}
+}
+
+func assertPermUnix(t *testing.T, got, want os.FileMode) {
+	t.Helper()
+	if runtime.GOOS != "windows" && got.Perm() != want.Perm() {
+		t.Fatalf("mode = %v, want %v", got.Perm(), want.Perm())
+	}
+}
+
+func TestMt_LoadBriefSnapshotNilItemsNormalized(t *testing.T) {
+	cfg := testCfg(t)
+	p := Path(cfg, "gmail")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// hash_schema_version matches current; "items" is absent → unmarshal leaves it nil.
+	raw := `{"key":"gmail","last_brief_at":"2026-06-08T00:00:00Z","hash_schema_version":` +
+		strconv.Itoa(HashSchemaVersion) + `}` + "\n"
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := Load(cfg, "gmail")
+	if snap.Items == nil {
+		t.Fatal("loadBriefSnapshot left Items nil, want a normalized empty map")
+	}
+	if len(snap.Items) != 0 {
+		t.Fatalf("normalized Items should be empty, got %v", snap.Items)
+	}
+}
+
+func TestMt_SaveBriefSnapshotNilItems(t *testing.T) {
+	cfg := testCfg(t)
+	if err := Save(cfg, Snapshot{Key: "gmail", Items: nil}, fixedNow); err != nil {
+		t.Fatalf("saveBriefSnapshot: %v", err)
+	}
+	body, err := os.ReadFile(Path(cfg, "gmail"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"items": {}`) {
+		t.Fatalf("nil Items should serialize to an empty object, got:\n%s", body)
+	}
+	got := Load(cfg, "gmail")
+	if got.Items == nil || len(got.Items) != 0 {
+		t.Fatalf("round-tripped Items = %v, want a non-nil empty map", got.Items)
+	}
+}
+
+func TestMt_AcquireBriefLockMkdirError(t *testing.T) {
+	root := t.TempDir()
+	stateFile := filepath.Join(root, "state-is-a-file")
+	if err := os.WriteFile(stateFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{StateDir: stateFile} // StateDir is a file → MkdirAll(<file>/brief) fails
+	if _, err := AcquireLock(cfg); err == nil {
+		t.Fatal("acquireBriefLock should fail when StateDir/brief cannot be created")
+	}
+}
+
+func TestMt_AcquireBriefLockDoubleRelease(t *testing.T) {
+	cfg := testCfg(t)
+	release, err := AcquireLock(cfg)
+	if err != nil {
+		t.Fatalf("acquireBriefLock: %v", err)
+	}
+	release()
+	release() // idempotent — must not panic or error
+
+	again, err := AcquireLock(cfg)
+	if err != nil {
+		t.Fatalf("re-acquire after double-release failed: %v", err)
+	}
+	again()
 }
