@@ -609,7 +609,7 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	if err != nil {
 		return 0, fmt.Errorf("starting ingest activity: %w", err)
 	}
-	cfg.SetOperationRunID(h.runID)
+	cfg.SetOperationRunID(h.RunID)
 	finishFailed := func(code string, cause error) error {
 		finishErr := finishOperation(cfg, h, operationFailed, "failed", operationCounts{Items: n, Errors: 1}, code, operationClock())
 		return errors.Join(cause, finishErr)
@@ -623,8 +623,8 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	defer releaseIngestLeaseOwnedHere(cfg, sourceKey)
 
 	progress := startOperationProgress(cfg, h, "ingesting")
-	if err := progress.update("ingesting", operationCounts{}); err != nil {
-		_ = progress.stop()
+	if err := progress.Update("ingesting", operationCounts{}); err != nil {
+		_ = progress.Stop()
 		return 0, finishFailed("heartbeat_failed", err)
 	}
 	if testHookIngestActivityStarted != nil {
@@ -633,10 +633,10 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	attemptStart := time.Now()
 	n, dispatchErr := ingestSourceDispatch(cfg, s, out)
 	if dispatchErr == nil {
-		dispatchErr = progress.update("awaiting_rebuild", operationCounts{Items: n})
+		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{Items: n})
 	}
 	if dispatchErr != nil {
-		progressErr := progress.stop()
+		progressErr := progress.Stop()
 		err = errors.Join(dispatchErr, progressErr)
 		err = finishFailed("ingest_failed", err)
 		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
