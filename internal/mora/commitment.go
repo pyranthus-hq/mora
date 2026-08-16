@@ -192,12 +192,12 @@ func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (owne
 }
 
 func directCommitmentRequest(lower string) bool {
-	return containsAnyPhrase(lower, directRequestPhrases) ||
+	return meetingpkg.DirectRequest(lower) ||
 		containsAnyPhrase(lower, []string{"please bring", "needs your ", "still needs your "})
 }
 
 func firstPersonCommitment(lower string) bool {
-	if !containsAnyPhrase(lower, firstPersonCommitmentPhrases) {
+	if !meetingpkg.FirstPersonCommitment(lower) {
 		return false
 	}
 	// "I'd" is either "I would" (a commitment) or "I had" (a report about the
@@ -358,7 +358,7 @@ func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
 			}
 		}
 	} else if isIMessageMemory(m) {
-		selfTokens := selfNameTokens(self)
+		selfTokens := meetingpkg.SelfNameTokens(self)
 		for _, pair := range participantPairs(m.Meta["participants"]) {
 			if participantNameIsSelf(pair["name"], selfTokens) {
 				continue
@@ -786,7 +786,7 @@ func commitmentCitation(m Memory, commitmentID, evidenceRef, occurredAt string) 
 }
 
 func classifyCommitments(m Memory, cfg Config) []Commitment {
-	if m.DeletedAt != "" || isMeetingNotification(m) || memoryIsServiceOnly(m) {
+	if m.DeletedAt != "" || meetingpkg.IsMeetingNotification(m) || memoryIsServiceOnly(m) {
 		return nil
 	}
 	selfAtom := canonicalSelfAtom(cfg, "")
@@ -916,7 +916,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	if isGmailMemory(m) {
 		messages := gmailCommitmentMessages(m)
 		parts := gmailBodyParts(m)
-		selfTokens := selfNameTokens(selfEmails(cfg))
+		selfTokens := meetingpkg.SelfNameTokens(selfEmails(cfg))
 		if len(messages) > 0 && len(messages) == len(parts) {
 			for i, message := range messages {
 				sender := strings.ToLower(strings.TrimSpace(message.Sender))
@@ -931,7 +931,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				blockRef := gmailAuthoredBlockRef(message, parts[i])
 				slot := 0
 				for _, segment := range commitmentSegments(parts[i]) {
-					if assignedToThirdParty(segment, selfTokens) {
+					if meetingpkg.AssignedToThirdParty(segment, selfTokens) {
 						continue
 					}
 					reportedActor, attributed := reportedActorFor(m, segment, counterparty, selfAtom)
@@ -999,7 +999,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 				first = parts[0]
 			}
 			for _, segment := range commitmentSegments(first) {
-				if assignedToThirdParty(segment, selfTokens) {
+				if meetingpkg.AssignedToThirdParty(segment, selfTokens) {
 					continue
 				}
 				reportedActor, attributed := reportedActorFor(m, segment, counterparty, selfAtom)
@@ -1021,7 +1021,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 		}
 
 		// A sender-authored subject is its own immutable evidence block.
-		if !isForwardedSubject(m.Title) && !assignedToThirdParty(m.Title, selfTokens) {
+		if !isForwardedSubject(m.Title) && !meetingpkg.AssignedToThirdParty(m.Title, selfTokens) {
 			sender := strings.ToLower(strings.TrimSpace(firstGmailSender(m)))
 			author := govAtom{}
 			if sender != "" {
@@ -1139,7 +1139,7 @@ func commitmentEvidenceFromMemories(mems []Memory, cfg Config) []commitmentEvide
 	var out []commitmentEvidence
 	self := canonicalSelfAtom(cfg, "")
 	for _, m := range mems {
-		if m.DeletedAt != "" || isMeetingNotification(m) || memoryIsServiceOnly(m) {
+		if m.DeletedAt != "" || meetingpkg.IsMeetingNotification(m) || memoryIsServiceOnly(m) {
 			continue
 		}
 		citation, err := citationForMemory(m, evidenceSource(m), validFromOf(m))

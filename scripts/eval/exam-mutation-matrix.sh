@@ -106,24 +106,24 @@ PY
 }
 
 kill_mutant "production/classifyMeetingBriefEvidence" \
-  internal/mora/meetingbrief.go \
-  'kind := classifyMeetingBriefEvidence(m, cfg, at)' \
-  'kind := meetingBriefOpenLoops' \
-  ./internal/mora '^TestExamRealPredictionsPin$'
+  internal/meeting/classify.go \
+  'return Unresolved' \
+  'return OpenLoops' \
+  ./internal/meeting '^TestClassifyEvidencePolicy$'
 
 
 kill_mutant "production/isMeetingNotification" \
-  internal/mora/meetingbrief.go \
-  $'if isMeetingNotification(m) {\n\t\treturn ""\n\t}' \
-  $'if false {\n\t\treturn ""\n\t}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'return ContainsAnyPhrase(strings.ToLower(m.Text), meetingNotificationBodyMarkers)' \
+  'return false' \
+  ./internal/meeting '^TestMeetingNotificationMailIsNotEvidence$'
 
 
 kill_mutant "production/assignedToThirdParty" \
-  internal/mora/meetingbrief.go \
-  $'if assignedToThirdParty(signalText(m), selfNameTokens(selfEmails(cfg))) {\n\t\treturn ""\n\t}' \
-  $'if false {\n\t\treturn ""\n\t}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'if !selfNames[assignee[0]] {' \
+  'if false {' \
+  ./internal/meeting '^TestThirdPartyActionItemIsNotTheUsersOpenLoop$'
 
 
 kill_mutant "production/memoryIsServiceOnly" \
@@ -133,17 +133,17 @@ kill_mutant "production/memoryIsServiceOnly" \
   ./internal/mora '^TestExamServiceOnlyGateIsAssembled$'
 
 kill_mutant "production/userOwnedOpenLoop" \
-  internal/mora/meetingbrief.go \
-  $'if userOwnedOpenLoop(m, cfg) {\n\t\treturn meetingBriefOpenLoops\n\t}' \
-  $'if true {\n\t\treturn meetingBriefOpenLoops\n\t}' \
-  ./internal/mora '^TestExamRealPredictionsPin$'
+  internal/meeting/classify.go \
+  'if UserOwnedOpenLoop(m, in.SignalText, in.Self) {' \
+  'if false {' \
+  ./internal/meeting '^TestClassifyEvidencePolicy$'
 
 
 kill_mutant "production/meetingBriefIsTwoPartyExchange" \
-  internal/mora/meetingbrief.go \
-  $'if isGmailMemory(m) && !meetingBriefIsTwoPartyExchange(m, self, roster...) {\n\t\t\t\tcontinue\n\t\t\t}' \
-  $'if false {\n\t\t\t\tcontinue\n\t\t\t}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'if key != "" && !inRoom[key] {' \
+  'if false {' \
+  ./internal/meeting '^TestInboundGroupThreadIsNotTwoPartyBusiness$'
 
 
 kill_mutant "production/relationalEvidenceIDs" \
@@ -208,10 +208,10 @@ kill_mutant "production/stripNoiseTokens" \
   ./internal/meeting '^TestStripNoiseTokens$'
 
 kill_mutant "production/gmailActionableAsk" \
-  internal/mora/meetingbrief.go \
-  $'func gmailActionableAsk(text string) bool {\n\tif !actionableQuestion(text) {\n\t\treturn false\n\t}\n\tlower := strings.ToLower(text)\n\treturn containsAnyPhrase(lower, interrogativeOpeners) || containsAnyPhrase(lower, directRequestPhrases)\n}' \
-  $'func gmailActionableAsk(text string) bool {\n\treturn actionableQuestion(text)\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'return ContainsAnyPhrase(lower, interrogativeOpeners) || ContainsAnyPhrase(lower, directRequestPhrases)' \
+  'return true' \
+  ./internal/meeting '^TestGmailActionableAsk_StrictForEmail$'
 
 
 kill_mutant "production/containsPhrase" \
