@@ -7,5 +7,3 @@ func classifyIdentity(identity, displayName string) string {
 }
 func isPhoneNumber(handle string) bool     { return identitypkg.IsPhoneNumber(handle) }
 func isStructuralNoise(handle string) bool { return identitypkg.IsStructuralNoise(handle) }
-
-func isDelim(r rune) bool { return identitypkg.IsDelimiter(r) }
