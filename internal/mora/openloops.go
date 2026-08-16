@@ -138,6 +138,3 @@ func entityDisplayName(ctx context.Context, db *sql.DB, pid string) string {
 	}
 	return strings.TrimPrefix(pid, "person:")
 }
-func renderOpenLoops(b *strings.Builder, loops []PersonOpenLoops) {
-	b.WriteString(openloopspkg.Render(loops))
-}

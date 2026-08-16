@@ -90,7 +90,7 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	// Packet H5: surface any degraded/failed/never subscription as an explicit gap
 	// so a suppressed-or-degraded share is visible, never silently dropped.
 	res.SharesUnhealthy = sharesUnhealthy(cfg, now)
-	res.SynthesisPrompt = thinkPrompt(query, res.Evidence, gaps, loops)
+	res.SynthesisPrompt = synthesispkg.Prompt(query, res.Evidence, gaps, loops)
 	return res, nil
 }
 
@@ -224,53 +224,6 @@ func entityExists(ctx context.Context, db *sql.DB, name string) bool {
 
 // thinkPrompt builds the instruction the calling agent's model runs to produce a
 // cited answer plus an explicit "what's missing" section grounded in the gaps.
-func thinkPrompt(query string, ev []ThinkEvidence, gaps ThinkGaps, loops []PersonOpenLoops) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. ")
-	b.WriteString("If the evidence is insufficient, say so plainly rather than guessing.\n\n")
-	fmt.Fprintf(&b, "QUESTION: %s\n\nEVIDENCE:\n", query)
-	if len(ev) == 0 {
-		b.WriteString("(none found)\n")
-	}
-	for _, e := range ev {
-		if e.Owner != "" {
-			// Shared evidence is labeled so the synthesis attributes claims to
-			// the sharing party, never to the user's own vault.
-			fmt.Fprintf(&b, "- [%s] (shared:%s, %s, %s) %s — %s\n", e.StableID, e.Owner, e.Scope, e.CreatedAt, e.Title, e.Snippet)
-			continue
-		}
-		fmt.Fprintf(&b, "- [%s] (%s, %s) %s — %s\n", e.StableID, e.Scope, e.CreatedAt, e.Title, e.Snippet)
-	}
-	if !gaps.Empty() {
-		b.WriteString("\nKNOWN GAPS (surface these honestly in a 'What the vault does not know' section):\n")
-		for _, s := range gaps.Stale {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-		for _, s := range gaps.FreshnessUnknown {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-		for _, s := range gaps.SparseEvidence {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-		for _, s := range gaps.SourceCoverage {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-		for _, s := range gaps.TemporalState {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-		for _, s := range gaps.ThinCoverage {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-		for _, s := range gaps.CoverageHoles {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-		for _, s := range gaps.RetrievalCaveats {
-			fmt.Fprintf(&b, "- %s\n", s)
-		}
-	}
-	renderOpenLoops(&b, loops)
-	return b.String()
-}
 
 // snippet returns a single-line, rune-safe prefix of text.
 func snippet(text string, n int) string { return searchpkg.MatchSnippet(text, "", n) }

@@ -4,6 +4,7 @@ package synthesis
 import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/openloops"
 	"github.com/pyranthus-hq/mora/internal/search"
 	"strings"
 	"time"
@@ -139,4 +140,52 @@ func wordSet(s string) map[string]bool {
 		out[word] = true
 	}
 	return out
+}
+
+func Prompt(query string, ev []Evidence, gaps Gaps, loops []openloops.Person) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. ")
+	b.WriteString("If the evidence is insufficient, say so plainly rather than guessing.\n\n")
+	fmt.Fprintf(&b, "QUESTION: %s\n\nEVIDENCE:\n", query)
+	if len(ev) == 0 {
+		b.WriteString("(none found)\n")
+	}
+	for _, e := range ev {
+		if e.Owner != "" {
+			// Shared evidence is labeled so the synthesis attributes claims to
+			// the sharing party, never to the user's own vault.
+			fmt.Fprintf(&b, "- [%s] (shared:%s, %s, %s) %s — %s\n", e.StableID, e.Owner, e.Scope, e.CreatedAt, e.Title, e.Snippet)
+			continue
+		}
+		fmt.Fprintf(&b, "- [%s] (%s, %s) %s — %s\n", e.StableID, e.Scope, e.CreatedAt, e.Title, e.Snippet)
+	}
+	if !gaps.Empty() {
+		b.WriteString("\nKNOWN GAPS (surface these honestly in a 'What the vault does not know' section):\n")
+		for _, s := range gaps.Stale {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		for _, s := range gaps.FreshnessUnknown {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		for _, s := range gaps.SparseEvidence {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		for _, s := range gaps.SourceCoverage {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		for _, s := range gaps.TemporalState {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		for _, s := range gaps.ThinCoverage {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		for _, s := range gaps.CoverageHoles {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		for _, s := range gaps.RetrievalCaveats {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+	}
+	b.WriteString(openloops.Render(loops))
+	return b.String()
 }
