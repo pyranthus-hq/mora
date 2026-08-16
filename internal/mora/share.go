@@ -21,7 +21,6 @@ package mora
 // structurally invisible to all three, and vice versa.
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -618,21 +617,6 @@ func computeShareChanges(cfg Config, pub sharePublish, mems []Memory) (shareChan
 	}
 	sort.Strings(ch.RemoveFiles)
 	return ch, nil
-}
-
-func encryptShareBytes(recipients []age.Recipient, plaintext []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	w, err := age.Encrypt(&buf, recipients...)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := w.Write(plaintext); err != nil {
-		return nil, err
-	}
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 // resolvePublish picks the named publish, or the only one when unnamed.
