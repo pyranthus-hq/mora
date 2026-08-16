@@ -164,5 +164,3 @@ func ftsQuery(q string) string { return searchpkg.FTSQuery(q) }
 func parseSearchArgs(args []string) (string, int, bool, []string, error) {
 	return searchpkg.ParseArgs(args)
 }
-func ftsToken(f string) (string, string)  { return searchpkg.Token(f) }
-func ftsIsStopword(term, key string) bool { return searchpkg.IsStopword(term, key) }
