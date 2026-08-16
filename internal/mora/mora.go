@@ -681,13 +681,6 @@ func resolveReal(p string) string {
 	return filepath.Clean(p)
 }
 
-func plural(n int, unit string) string {
-	if n == 1 {
-		return unit
-	}
-	return unit + "s"
-}
-
 // backfillEnabledGoogle re-runs the gated google backfill (the `mora sync google`
 // route) for every ENABLED gmail/calendar source, then rebuilds the index. It is
 // the single backfill seam shared by cmdSync and applySetupSelection so the setup
