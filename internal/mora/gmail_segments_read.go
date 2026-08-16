@@ -9,7 +9,7 @@ import (
 // Issue #243 — read_memory's evidence_ref extension (frozen interface #4,
 // DQ6 §2). evidence_ref narrows the READ TARGET from the full thread body to
 // ONE segment's text; #242's existing applyBoundedRead/boundedReadReceipt
-// pipeline (read_bounded.go) then runs UNCHANGED over that narrowed text —
+// pipeline (internal/mcp/read_bounded.go) then runs UNCHANGED over that narrowed text —
 // never a bespoke new receipt struct. A ref that does not resolve to a
 // derived segment of the GIVEN memory id (wrong memory, unknown ref, or a
 // memory whose own segments failed closed) is an explicit, fail-closed
