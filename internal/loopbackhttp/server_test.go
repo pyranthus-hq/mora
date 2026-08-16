@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -157,8 +158,10 @@ func TestTokenReuseGenerationAndMalformedReplacement(t *testing.T) {
 			if seed == `{"token":"stable"}` && a != "stable" {
 				t.Fatalf("replaced stable")
 			}
-			if info, err := os.Stat(p); err != nil || info.Mode().Perm() != 0600 {
-				t.Fatalf("mode %v %v", info, err)
+			if info, err := os.Stat(p); err != nil {
+				t.Fatalf("stat token: %v", err)
+			} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
+				t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
 			}
 		})
 	}
