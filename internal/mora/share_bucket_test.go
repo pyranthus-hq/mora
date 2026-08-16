@@ -242,7 +242,7 @@ func TestBucketFetchRejectsTamperedBlob(t *testing.T) {
 	}
 	// Corrupt one ciphertext blob in place.
 	for k := range f.store.objs {
-		if shareBlobKeyRE.MatchString(strings.TrimPrefix(k, f.bc.objectPrefix())) {
+		if shareBlobKeyRE.MatchString(strings.TrimPrefix(k, f.bc.ObjectPrefix())) {
 			f.store.objs[k][0] ^= 0xff
 			break
 		}
@@ -277,7 +277,7 @@ func TestBucketFetchRejectsCrossLocator(t *testing.T) {
 	// signature was bound to A's locator, so it must still be rejected.
 	other := f.bc
 	other.Prefix = "shares/beta"
-	srcPre, dstPre := f.bc.objectPrefix(), other.objectPrefix()
+	srcPre, dstPre := f.bc.ObjectPrefix(), other.ObjectPrefix()
 	keys, _ := f.store.listKeys(f.ctx, srcPre)
 	for _, k := range keys {
 		b, _ := f.store.getObject(f.ctx, k)
@@ -295,7 +295,7 @@ func TestBucketFetchRejectsCrossLocator(t *testing.T) {
 func TestBucketPublishEgressAuditRefusesStrayPlaintext(t *testing.T) {
 	f := newBucketFixture(t)
 	// Something else drops a plaintext object under the prefix.
-	if err := f.store.putObject(f.ctx, f.bc.objectPrefix()+"leak.md", []byte("secret")); err != nil {
+	if err := f.store.putObject(f.ctx, f.bc.ObjectPrefix()+"leak.md", []byte("secret")); err != nil {
 		t.Fatal(err)
 	}
 	err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips())
@@ -314,7 +314,7 @@ func TestBucketFetchRejectsDeclaredSizeMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := f.bc.objectPrefix()
+	prefix := f.bc.ObjectPrefix()
 	if err := f.store.putObject(f.ctx, prefix+blobObjectName(ct), ct); err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestBucketFetchRejectsDeclaredSizeMismatch(t *testing.T) {
 		Entries: []manifestEntry{{ID: "mem_20260101_000000_cccccccc", Blob: blobKey(ct), Size: 999999}},
 	}
 	mj, _ := json.Marshal(man)
-	env, err := sealManifest(f.priv, f.bc.locator(), mj, 1, f.recips(), true)
+	env, err := sealManifest(f.priv, f.bc.Locator(), mj, 1, f.recips(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestFirstBucketSubscribeBindsProbeSignerAndVersion(t *testing.T) {
 		if err := bucketPublish(f.ctx, other, f.bc, f.pub, f.mems, otherPriv, f.recips()); err != nil {
 			t.Fatal(err)
 		}
-		switcher := &switchingGetStore{first: f.store, second: other, manifestKey: f.bc.objectPrefix() + shareManifestObject}
+		switcher := &switchingGetStore{first: f.store, second: other, manifestKey: f.bc.ObjectPrefix() + shareManifestObject}
 		confirm := signPubFingerprint(f.priv.Public().(ed25519.PublicKey))
 		var out bytes.Buffer
 		err = shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, switcher)
@@ -479,7 +479,7 @@ func TestFirstBucketSubscribeBindsProbeSignerAndVersion(t *testing.T) {
 		if err := bucketPublish(f.ctx, older, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
 			t.Fatal(err)
 		}
-		switcher := &switchingGetStore{first: f.store, second: older, manifestKey: f.bc.objectPrefix() + shareManifestObject}
+		switcher := &switchingGetStore{first: f.store, second: older, manifestKey: f.bc.ObjectPrefix() + shareManifestObject}
 		confirm := signPubFingerprint(f.priv.Public().(ed25519.PublicKey))
 		var out bytes.Buffer
 		err := shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, switcher)
@@ -540,7 +540,7 @@ func TestBucketRepublishIncrementsAndCleansOrphans(t *testing.T) {
 	}
 	// After the second push: exactly len(mems) ciphertext blobs + one manifest.
 	// Orphan blobs from the first push (age re-encrypts, so keys differ) are gone.
-	keys, _ := f.store.listKeys(f.ctx, f.bc.objectPrefix())
+	keys, _ := f.store.listKeys(f.ctx, f.bc.ObjectPrefix())
 	if len(keys) != len(f.mems)+1 {
 		t.Fatalf("after republish: %d objects, want %d (blobs+manifest); orphans not cleaned: %v", len(keys), len(f.mems)+1, keys)
 	}
