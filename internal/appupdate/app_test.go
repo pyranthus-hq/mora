@@ -1,4 +1,4 @@
-package mora
+package appupdate
 
 import (
 	"archive/zip"
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,8 +15,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/creativeprojects/go-selfupdate"
 )
+
+var runtimeGOOS = func() string { return runtime.GOOS }
+var postAppUpgradeRebuild = func(context.Context, string, io.Writer) error { return nil }
+
+func cmdUpgradeApp(ctx context.Context, current, root string, check bool, token string, out io.Writer) error {
+	return Run(ctx, Options{CurrentVersion: current, AppRoot: root, CheckOnly: check, Token: token, Stdout: out, GOOS: runtimeGOOS(), Arch: runtime.GOARCH, RepoOwner: "pyranthus-hq", RepoName: "mora", Decide: func(current, latest string) (Decision, bool, error) {
+		c, err := semver.NewVersion(current)
+		if err != nil {
+			return "", false, err
+		}
+		l, err := semver.NewVersion(latest)
+		if err != nil {
+			return "", false, err
+		}
+		if c.GreaterThan(l) {
+			return DecisionLocalAhead, false, nil
+		}
+		if c.Equal(l) {
+			return DecisionUpToDate, false, nil
+		}
+		return DecisionUpgrade, false, nil
+	}, PostRebuild: postAppUpgradeRebuild})
+}
 
 func TestMoraAppRoot(t *testing.T) {
 	valid := filepath.Join(string(filepath.Separator), "Users", "adit", "Applications", "Mora.app", "Contents", "MacOS", "mora")
@@ -771,5 +796,66 @@ func assertFileBody(t *testing.T, path, want string) {
 	}
 	if string(body) != want {
 		t.Fatalf("%s = %q, want %q", path, body, want)
+	}
+}
+
+func TestReleaseURLPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		url string
+		ok  bool
+	}{{"https://github.com/pyranthus-hq/mora/releases/download/v1/a.zip", true}, {"http://github.com/x", false}, {"https://evil.example/x", false}, {"https://user@github.com/x", false}, {"https://github.com/x?q=1", false}, {"https://github.com/x#frag", false}} {
+		err := validateGitHubReleaseURL(tt.url)
+		if (err == nil) != tt.ok {
+			t.Errorf("validate(%q) err=%v ok=%v", tt.url, err, tt.ok)
+		}
+	}
+}
+func TestReleaseRedirectPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		url string
+		ok  bool
+	}{{"https://github.com/x", true}, {"https://objects.githubusercontent.com/x?q=1", true}, {"https://release-assets.githubusercontent.com/x", true}, {"https://evilgithubusercontent.com/x", false}, {"http://objects.githubusercontent.com/x", false}, {"https://user@github.com/x", false}} {
+		if got := allowedReleaseRedirect(tt.url); got != tt.ok {
+			t.Errorf("allowed(%q)=%v want %v", tt.url, got, tt.ok)
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func TestDownloadReleaseFileBoundsCleanupAndAuthRedirect(t *testing.T) {
+	orig := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = orig })
+	calls := 0
+	secondAuth := ""
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: 302, Status: "302 Found", Header: http.Header{"Location": []string{"https://objects.githubusercontent.com/asset"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		}
+		secondAuth = r.Header.Get("Authorization")
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: http.Header{}, Body: io.NopCloser(strings.NewReader("payload")), ContentLength: -1, Request: r}, nil
+	})
+	dest := filepath.Join(t.TempDir(), "asset")
+	if err := downloadReleaseFile(context.Background(), "https://github.com/release", "secret", dest, 10); err != nil {
+		t.Fatal(err)
+	}
+	if secondAuth != "" {
+		t.Fatalf("authorization leaked across redirect: %q", secondAuth)
+	}
+	body, err := os.ReadFile(dest)
+	if err != nil || string(body) != "payload" {
+		t.Fatalf("body=%q err=%v", body, err)
+	}
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: http.Header{}, Body: io.NopCloser(strings.NewReader("12345678901")), ContentLength: -1, Request: r}, nil
+	})
+	overflow := filepath.Join(t.TempDir(), "overflow")
+	if err := downloadReleaseFile(context.Background(), "https://github.com/release", "", overflow, 10); err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("overflow err=%v", err)
+	}
+	if _, err := os.Stat(overflow); !os.IsNotExist(err) {
+		t.Fatalf("partial download remains: %v", err)
 	}
 }

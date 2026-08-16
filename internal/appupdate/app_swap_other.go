@@ -1,6 +1,6 @@
 //go:build !darwin
 
-package mora
+package appupdate
 
 import "fmt"
 

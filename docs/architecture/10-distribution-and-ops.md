@@ -140,7 +140,7 @@ Every scheduled `notify` or `auto` check acquires one state-dir host lease befor
 network access; `off` returns before even creating the lease. `auto` mutation is
 available only on Darwin for a supported architecture and an executable with
 the frozen `Mora.app/Contents/MacOS/mora` layout. Path recognition alone grants
-nothing: `verifyMoraAppBundle` proves the currently installed version,
+nothing: `appupdate.VerifyBundle` proves the currently installed version,
 architecture, bundle ID, Developer ID team, hardened/notarized signature,
 staple, Gatekeeper result, and launch before staging and again immediately
 before swap. `doctor --strict --json` is the conservative dirty/corrupt-state
@@ -150,7 +150,7 @@ The apply phase re-lists releases and requires the exact canonical version found
 by the leased check. It downloads only that architecture's `_app.zip` and
 `checksums-app.txt`, enforces the existing checksum/ZIP-path trust chain, and
 runs the full bundle verifier on the staged app. The stage lives beside the
-installed app so `atomicSwapMoraAppDirectories` preserves the exact app path and
+installed app so `appupdate.AtomicSwap` preserves the exact app path and
 volume. An unwritable parent records `deferred/app_unwritable`, not a failed
 swap, and the same version is not attempted again automatically.
 
