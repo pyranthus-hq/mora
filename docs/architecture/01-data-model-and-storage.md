@@ -11,7 +11,8 @@ the Markdown. The vault is the source of truth. The database is a cache.
 | `internal/mora/mora.go` | 3933 | `Memory`/`Source`/`Config` model; `createMemory`; `atomicCreate` |
 | `internal/atomicio/atomicio.go` | 163 | Atomic file primitives: `atomicio.Write` (temp file + `os.Rename`); `atomicio.AppendFile` |
 | `internal/mora/ingest.go` | 1104 | Connector ingest/sync wiring & the write boundary: `writeMappedMemory`; `cmdIngest`/`cmdConnect`/`cmdSync`/`cmdReingest`; `ingestGoogle`/`ingestIMessage`/`ingestAppleCal`/`ingestFilesystem`; `persistSyncStatus`; `sourceFreshness`; `curatedExtractExt`/`extractDocxText` |
-| `internal/mora/index.go` | 364 | `rebuildIndex`/`rebuildIndexWithPolicy` + SQLite DDL; `cmdIndex`; `dbPath`/`roIndexDSN`/`openIndexRO`/`checkIndexSchema`; `writeGraph`/`writeVectors` |
+| `internal/mora/index.go` | composition | `rebuildIndex`/`rebuildIndexWithPolicy`, SQLite DDL/deletes, transaction lifecycle, governance/compiler wiring, vectors and schema metadata. |
+| `internal/graphstore/store.go` | SQL projection | Same-transaction graph entity/edge/merge writes and low-level graph reads; accepts caller-owned `*sql.Tx`/`*sql.DB` and never commits. |
 | `internal/mora/config.go` | 496 | `Config` load/parse/write (`defaultConfig`/`loadConfig`/`parseConfigValue`/`cmdConfig`/`writeConfig`); `init` scaffolding (`cmdInit`/`scaffoldControlFiles`/`confirmVaultRepoint`). Retrieval-weight accessors (`Config.fusion`/`Config.mmr`) |
 | `internal/mora/memfile.go` | — | Memory-file render/parse/path: `renderMemory`/`parseMemory`/`writeMemory`; `findMemory`/`allMemoryFiles`/`listMemories`. The `memoriesRoot`/`sourcesRoot`/`memoryPath`/`osSafeBase` path helpers; `newID`. The mora-local `ContentHash` (filesystem ids only) |
 | `internal/memory/mapped.go` | 154 | `MappedMemory` hand-off struct; `MapItem` (Item→MappedMemory, byte budget, content-hash fold); `CanonicalMeta`. Kind→(type,provider) registry |
@@ -269,7 +270,7 @@ flowchart TD
     DDL --> LOOP["for each file: parseMemory"]
     LOOP -->|"parse err"| SKIPF["skip file (continue)"]
     LOOP --> INS["INSERT OR REPLACE memories<br/>+ INSERT memories_fts<br/>append to parsed[]"]
-    INS --> GRAPH["writeGraph(tx, parsed)<br/>buildGraph → entities + edges"]
+    INS --> GRAPH["Mora compile + graphstore.Write(tx, result)<br/>entities + edges + merge provenance"]
     GRAPH --> VEC["writeVectors(tx, chooseEmbedder, parsed)<br/>embed title+text → mem_vectors"]
     VEC --> OBL["writeCommitments(tx, manifest generation, parsed)<br/>speech act + opener due → guarded lifecycle → provenance dedup"]
     OBL --> COMMIT["tx.Commit"]

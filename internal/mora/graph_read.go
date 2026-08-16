@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/graphstore"
 	"os"
 	"sort"
 	"strings"
@@ -106,27 +106,7 @@ func graphReady(cfg Config) bool {
 // liveEvidenceByEntity returns the distinct, sorted evidence memory ids per entity
 // from the non-invalidated edges (live reads filter invalidated_at IS NULL).
 func liveEvidenceByEntity(ctx context.Context, db *sql.DB) (map[string][]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT dst, evidence_id FROM edges WHERE invalidated_at IS NULL ORDER BY dst, evidence_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	byDst := map[string][]string{}
-	seen := map[string]map[string]bool{}
-	for rows.Next() {
-		var dst, ev string
-		if err := rows.Scan(&dst, &ev); err != nil {
-			return nil, err
-		}
-		if seen[dst] == nil {
-			seen[dst] = map[string]bool{}
-		}
-		if !seen[dst][ev] {
-			seen[dst][ev] = true
-			byDst[dst] = append(byDst[dst], ev)
-		}
-	}
-	return byDst, rows.Err()
+	return graphstore.LiveEvidenceByEntity(ctx, db)
 }
 
 // graphListEntities returns the legacy entity list ({name,kind,count,memory_ids})
@@ -138,35 +118,21 @@ func graphListEntities(ctx context.Context, cfg Config) ([]Entity, error) {
 		return nil, err
 	}
 	defer db.Close()
-
-	evidence, err := liveEvidenceByEntity(ctx, db)
+	evidence, err := graphstore.LiveEvidenceByEntity(ctx, db)
 	if err != nil {
 		return nil, err
 	}
-	// salience_micros is the frozen person-ranking sort key (Phase 14-03). Read it into
-	// Entity.Salience so the People overview can rank by salience (14-04). NULL/absent
-	// (structural rows, or a pre-14-03 DB whose ALTER hasn't run) scans to 0 via
-	// sql.NullInt64 — purely additive, the existing fields/gate are unchanged.
-	rows, err := db.QueryContext(ctx, `SELECT id, kind, display_name, salience_micros FROM entities WHERE id NOT LIKE 'memory:%'`)
+	rows, err := graphstore.ListEntityRows(ctx, db)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []Entity
-	for rows.Next() {
-		var id, storedKind, display string
-		var sal sql.NullInt64
-		if err := rows.Scan(&id, &storedKind, &display, &sal); err != nil {
-			return nil, err
-		}
-		ids := evidence[id]
+	for _, row := range rows {
+		ids := evidence[row.ID]
 		if len(ids) == 0 {
-			continue // no live evidence -> not a live entity
+			continue
 		}
-		out = append(out, Entity{Name: display, Kind: publicEntityKind(id, storedKind, display), Count: len(ids), MemoryIDs: ids, Salience: sal.Int64})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		out = append(out, Entity{Name: row.DisplayName, Kind: publicEntityKind(row.ID, row.Kind, row.DisplayName), Count: len(ids), MemoryIDs: ids, Salience: row.SalienceMicros})
 	}
 	sortEntitiesLegacy(out)
 	return out, nil
@@ -181,45 +147,10 @@ func loadMemoriesByID(ctx context.Context, cfg Config, db *sql.DB, ids []string)
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	ph := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		ph[i] = "?"
-		args[i] = id
-	}
-	rows, err := db.QueryContext(ctx, `SELECT id, scope, type, title, tags, source, created_at, path, text FROM memories WHERE id IN (`+strings.Join(ph, ",")+`)`, args...)
+	out, err := graphstore.LoadMemoriesByID(ctx, db, ids, graphstore.LoadOptions{Hydrate: parseMemory})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Memory
-	for rows.Next() {
-		var m Memory
-		var tags string
-		if err := rows.Scan(&m.ID, &m.Scope, &m.Type, &m.Title, &tags, &m.Source, &m.CreatedAt, &m.Path, &m.Text); err != nil {
-			return nil, err
-		}
-		m.Tags = genericutil.SplitCSV(tags)
-		// The index table is a lossy projection (no provider/last_synced/etc.).
-		// Hydrate full fidelity from the source file so get_entity returns the same
-		// Memory shape the old listMemories path did; fall back to the row if the
-		// file is unreadable.
-		if full, ferr := parseMemory(m.Path); ferr == nil {
-			full.Score = m.Score
-			out = append(out, full)
-		} else {
-			out = append(out, m)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CreatedAt != out[j].CreatedAt {
-			return out[i].CreatedAt > out[j].CreatedAt
-		}
-		return out[i].ID < out[j].ID
-	})
 	out = suppressPendingDeletes(cfg, out)
 	return currentMemories(cfg, out, time.Now())
 }
@@ -230,51 +161,12 @@ func loadMemoriesByID(ctx context.Context, cfg Config, db *sql.DB, ids []string)
 // N-participant memory costs O(N) edge rows, not O(N²). Tombstoned edges are
 // excluded (live reads only). Sorted, deduped.
 func coOccurringPeople(ctx context.Context, db *sql.DB, personID string) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT e2.dst
-		FROM edges e1
-		JOIN edges e2 ON e1.src = e2.src
-		LEFT JOIN entities ent ON e2.dst = ent.id
-		WHERE e1.dst = ?
-		  AND e1.rel IN ('PARTICIPATED_IN','ATTENDED')
-		  AND e2.rel IN ('PARTICIPATED_IN','ATTENDED')
-		  AND e2.dst <> e1.dst
-		  AND (ent.kind IS NULL OR ent.kind = 'person')
-		  AND e1.invalidated_at IS NULL
-		  AND e2.invalidated_at IS NULL
-		ORDER BY e2.dst`, personID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var dst string
-		if err := rows.Scan(&dst); err != nil {
-			return nil, err
-		}
-		out = append(out, dst)
-	}
-	return out, rows.Err()
+	return graphstore.CoOccurringPeople(ctx, db, personID)
 }
 
 // aliasMatches reports whether name equals any alias (case-insensitive) in the
 // JSON aliases array, enabling precise email/handle lookups in get_entity.
-func aliasMatches(aliasesJSON, name string) bool {
-	if aliasesJSON == "" {
-		return false
-	}
-	var aliases []string
-	if json.Unmarshal([]byte(aliasesJSON), &aliases) != nil {
-		return false
-	}
-	for _, a := range aliases {
-		if strings.EqualFold(a, name) {
-			return true
-		}
-	}
-	return false
-}
+func aliasMatches(aliasesJSON, name string) bool { return graphstore.AliasMatches(aliasesJSON, name) }
 
 // graphGetEntity returns the memories referencing a named entity plus graph
 // provenance (incoming edges, aliases, degree, spec kind) from the materialized
@@ -285,129 +177,49 @@ func graphGetEntity(ctx context.Context, cfg Config, name string) (map[string]an
 		return nil, err
 	}
 	defer db.Close()
-
-	// Resolve the entity by case-insensitive display name (excluding hub nodes),
-	// preferring the most-mentioned on ties — deterministic, matches the old
-	// "first by count desc" behavior.
-	rows, err := db.QueryContext(ctx, `SELECT id, kind, display_name, aliases, mention_count, salience_micros FROM entities WHERE id NOT LIKE 'memory:%'`)
+	match, err := graphstore.FindEntity(ctx, db, name)
 	if err != nil {
-		return nil, err
-	}
-	type cand struct {
-		id, specKind, display, aliases string
-		mention                        int
-		salience                       int64
-	}
-	var match *cand
-	for rows.Next() {
-		var c cand
-		var sal sql.NullInt64
-		if err := rows.Scan(&c.id, &c.specKind, &c.display, &c.aliases, &c.mention, &sal); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		c.salience = sal.Int64
-		// Match the display name OR any exact alias (email/handle/name variant), so a
-		// precise lookup like get_entity("neil@example.com") disambiguates two people
-		// who share a display name (codex S4). Name lookups still pick the
-		// most-mentioned match deterministically.
-		if !strings.EqualFold(c.display, name) && !aliasMatches(c.aliases, name) {
-			continue
-		}
-		if match == nil || c.mention > match.mention || (c.mention == match.mention && c.id < match.id) {
-			cc := c
-			match = &cc
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	if match == nil {
 		return map[string]any{"name": name, "found": false, "memories": []Memory{}}, nil
 	}
-
-	edgeRows, err := db.QueryContext(ctx, `SELECT src, rel, evidence_id, observed_at FROM edges WHERE dst = ? AND invalidated_at IS NULL ORDER BY src, evidence_id`, match.id)
+	incoming, evidence, err := graphstore.IncomingEdges(ctx, db, match.ID)
 	if err != nil {
 		return nil, err
 	}
-	var edges []map[string]any
-	var evidence []string
-	seen := map[string]bool{}
-	for edgeRows.Next() {
-		var src, rel, ev string
-		var obs sql.NullString
-		if err := edgeRows.Scan(&src, &rel, &ev, &obs); err != nil {
-			edgeRows.Close()
-			return nil, err
-		}
-		edges = append(edges, map[string]any{"neighbor": src, "rel": rel, "direction": "in", "evidence_id": ev, "observed_at": obs.String})
-		if !seen[ev] {
-			seen[ev] = true
-			evidence = append(evidence, ev)
-		}
-	}
-	edgeRows.Close()
-	if err := edgeRows.Err(); err != nil {
-		return nil, err
-	}
-	sort.Strings(evidence)
-
-	// Live-evidence gate: an entity whose every edge is invalidated (e.g. all its
-	// evidence memories are tombstoned) is not a live entity. graphListEntities
-	// already drops it; mirror that here so get_entity and list_entities agree
-	// instead of returning {found:true, count:0, memories:[]}.
 	if len(evidence) == 0 {
 		return map[string]any{"name": name, "found": false, "memories": []Memory{}}, nil
 	}
-
+	edges := make([]map[string]any, 0, len(incoming))
+	for _, e := range incoming {
+		edges = append(edges, map[string]any{"neighbor": e.Neighbor, "rel": e.Rel, "direction": "in", "evidence_id": e.EvidenceID, "observed_at": e.ObservedAt})
+	}
 	mems, err := loadMemoriesByID(ctx, cfg, db, evidence)
 	if err != nil {
 		return nil, err
 	}
 	var aliases []string
-	if match.aliases != "" {
-		_ = json.Unmarshal([]byte(match.aliases), &aliases)
+	if match.AliasesJSON != "" {
+		_ = json.Unmarshal([]byte(match.AliasesJSON), &aliases)
 	}
 	if aliases == nil {
 		aliases = []string{}
 	}
-
-	// 1-hop neighbors: for a person, the people they share a thread/event with
-	// (query-time co-occurrence self-join), resolved to display names. This is the
-	// seam I2 hybrid retrieval expands into the candidate pool.
 	neighbors := []map[string]any{}
-	if strings.HasPrefix(match.id, "person:") {
-		coIDs, err := coOccurringPeople(ctx, db, match.id)
+	if strings.HasPrefix(match.ID, "person:") {
+		ids, err := graphstore.CoOccurringPeople(ctx, db, match.ID)
 		if err != nil {
 			return nil, err
 		}
-		for _, cid := range coIDs {
-			var disp, storedKind string
-			if err := db.QueryRowContext(ctx, `SELECT display_name, kind FROM entities WHERE id = ?`, cid).Scan(&disp, &storedKind); err != nil {
-				disp = strings.TrimPrefix(cid, "person:")
-				storedKind = "person"
+		for _, id := range ids {
+			var display, kind string
+			if err := db.QueryRowContext(ctx, `SELECT display_name, kind FROM entities WHERE id = ?`, id).Scan(&display, &kind); err != nil {
+				display = strings.TrimPrefix(id, "person:")
+				kind = "person"
 			}
-			neighbors = append(neighbors, map[string]any{
-				"id": cid, "display_name": disp, "type": publicEntityKind(cid, storedKind, disp),
-			})
+			neighbors = append(neighbors, map[string]any{"id": id, "display_name": display, "type": publicEntityKind(id, kind, display)})
 		}
 	}
-
-	return map[string]any{
-		"name": match.display,
-		// Surface the stored kind for person ids (person|service) so get_entity agrees
-		// with list_entities; structural ids keep their legacy prefix-derived kind.
-		"kind":         publicEntityKind(match.id, match.specKind, match.display),
-		"count":        len(evidence),
-		"found":        true,
-		"memories":     mems,
-		"graph_kind":   match.specKind,
-		"display_name": match.display,
-		"aliases":      aliases,
-		"salience":     match.salience,
-		"degree":       len(edges),
-		"edges":        edges,
-		"neighbors":    neighbors,
-	}, nil
+	return map[string]any{"name": match.DisplayName, "kind": publicEntityKind(match.ID, match.Kind, match.DisplayName), "count": len(evidence), "found": true, "memories": mems, "graph_kind": match.Kind, "display_name": match.DisplayName, "aliases": aliases, "salience": match.SalienceMicros, "degree": len(edges), "edges": edges, "neighbors": neighbors}, nil
 }
