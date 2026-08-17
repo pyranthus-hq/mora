@@ -16,198 +16,70 @@ package mora
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	sharingpkg "github.com/pyranthus-hq/mora/internal/sharing"
 )
 
-// shareGenSeqWidth zero-pads commit sequence numbers so lexical max == numeric
-// max in a plain directory listing (e.g. "0000000006").
-const shareGenSeqWidth = 10
+const (
+	shareGenSeqWidth = sharingpkg.GenSeqWidth
+	shareGenRetain   = sharingpkg.GenRetain
+)
 
-// shareGenRetain is how many superseded generations GC keeps for in-flight
-// readers before reclaiming older ones (K).
-const shareGenRetain = 3
-
-// shareImportTTL is the import lease's abandonment bound — the fifth threshold
-// family (Landmine 13). Generous (10 min vs sourcesLockTTL's 30s) because a real
-// decrypt+rebuild of a large share can dominate, so a live-but-slow import must
-// not be spuriously reaped. Overridable in tests to force reap windows.
+// shareImportTTL is the import lease abandonment bound; orchestration owns it.
 var shareImportTTL = 10 * time.Minute
 
-// shareCommit is one published generation's commit record, linked atomically
-// into commits/<seq>. It binds BOTH served artifacts (the corpus the read path
-// serves and the index.db the search path serves) to this generation.
-type shareCommit struct {
-	Seq          int    `json:"seq"`
-	Gen          string `json:"gen"`                    // "gen-<run_id>" — the generation dir this seq publishes
-	RunID        string `json:"run_id"`                 // == the import lease run_id that committed it
-	SourceRev    string `json:"source_rev"`             // the immutable input this gen was built from (git tip sha or bucket version)
-	BucketFloor  int    `json:"bucket_floor,omitempty"` // monotonic replay floor inherited by every derivative commit
-	BuiltAt      string `json:"built_at"`               // RFC3339 — the sub's freshness clock
-	CorpusDigest string `json:"corpus_digest"`          // sha256 over sorted "<hex>  <relpath>" lines of this gen's frozen corpus
-	IndexDigest  string `json:"index_digest"`           // sha256 of the checkpointed+closed index.db file
-	Count        int    `json:"count"`
-}
+type shareCommit = sharingpkg.Commit
 
-// ---- layout paths (all under one subscription root, one filesystem) ----
-
-func shareGensDir(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "gens")
+func shareGenerationStore(cfg Config) sharingpkg.GenerationStore {
+	return sharingpkg.GenerationStore{DataDir: cfg.DataDir}
 }
+func shareGensDir(cfg Config, name string) string { return shareGenerationStore(cfg).GensDir(name) }
 func shareGenDir(cfg Config, name, gen string) string {
-	return filepath.Join(shareGensDir(cfg, name), gen)
+	return shareGenerationStore(cfg).GenDir(name, gen)
 }
 func shareGenCorpusDir(cfg Config, name, gen string) string {
-	return filepath.Join(shareGenDir(cfg, name, gen), "corpus")
+	return shareGenerationStore(cfg).CorpusDir(name, gen)
 }
 func shareGenIndexPath(cfg Config, name, gen string) string {
-	return filepath.Join(shareGenDir(cfg, name, gen), "index.db")
+	return shareGenerationStore(cfg).IndexPath(name, gen)
 }
 func shareCommitsDir(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "commits")
+	return shareGenerationStore(cfg).CommitsDir(name)
 }
 func shareCommitPath(cfg Config, name string, seq int) string {
-	return filepath.Join(shareCommitsDir(cfg, name), fmt.Sprintf("%0*d", shareGenSeqWidth, seq))
+	return shareGenerationStore(cfg).CommitPath(name, seq)
 }
 func shareAttemptPath(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "attempt.json")
+	return shareGenerationStore(cfg).AttemptPath(name)
 }
 func shareImportLockPath(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "import.lock")
+	return shareGenerationStore(cfg).ImportLockPath(name)
 }
 func shareMigratedLatchPath(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "migrated")
+	return shareGenerationStore(cfg).MigratedLatchPath(name)
 }
 func shareFetchDir(cfg Config, name, runID string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "fetch-"+runID)
+	return shareGenerationStore(cfg).FetchDir(name, runID)
 }
-func genRunID(gen string) string { return strings.TrimPrefix(gen, "gen-") }
-
-// ---- resolver: serving resolves the highest committed generation ----
-
-// resolvePublishedCommit lists commits/, picks the maximum seq, and returns its
-// shareCommit. ok=false when commits/ is empty or absent (fail-closed: nothing
-// resolves). An unreadable commits/ dir or an unreadable/corrupt max-seq record
-// is an ERROR (fail closed — the sourceHealthUnreadable pattern), never a
-// silent healthy-empty. This reads a directory listing, never a mutable
-// pointer, so a reader can never observe an "absent pointer" served as healthy.
+func genRunID(gen string) string { return sharingpkg.RunID(gen) }
 func resolvePublishedCommit(cfg Config, name string) (shareCommit, bool, error) {
-	dir := shareCommitsDir(cfg, name)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return shareCommit{}, false, nil
-		}
-		return shareCommit{}, false, err
-	}
-	maxSeq := -1
-	var maxName string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		n, perr := strconv.Atoi(strings.TrimSpace(e.Name()))
-		if perr != nil {
-			continue // ignore non-numeric debris (e.g. an O_EXCL placeholder mid-claim)
-		}
-		if n > maxSeq {
-			maxSeq, maxName = n, e.Name()
-		}
-	}
-	if maxSeq < 0 {
-		return shareCommit{}, false, nil
-	}
-	b, err := os.ReadFile(filepath.Join(dir, maxName))
-	if err != nil {
-		return shareCommit{}, false, err
-	}
-	var c shareCommit
-	if err := json.Unmarshal(b, &c); err != nil {
-		return shareCommit{}, false, fmt.Errorf("share %q: commit record %s is corrupt: %w", name, maxName, err)
-	}
-	return c, true, nil
+	return shareGenerationStore(cfg).Resolve(name)
 }
-
-// readAllCommits reads every parseable commit record (used by the claim loop and
-// GC). Non-numeric or unparseable entries are skipped for the seq scan; a truly
-// unreadable directory is an error.
 func readAllCommits(cfg Config, name string) ([]shareCommit, error) {
-	dir := shareCommitsDir(cfg, name)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var out []shareCommit
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if _, perr := strconv.Atoi(strings.TrimSpace(e.Name())); perr != nil {
-			continue
-		}
-		b, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
-		if rerr != nil {
-			return nil, rerr
-		}
-		var c shareCommit
-		if json.Unmarshal(b, &c) != nil {
-			// A briefly-unreadable placeholder (O_EXCL claim mid-fallback) — skip
-			// it for the seq scan; the resolver treats it as not-yet-committed.
-			continue
-		}
-		out = append(out, c)
-	}
-	return out, nil
+	return shareGenerationStore(cfg).ReadAll(name)
 }
-
-// ---- digests ----
-
-// corpusDigestOf hashes a generation's frozen corpus into its committed content
-// identity: sha256 over the sorted "<hex>  <relpath>" lines, relpath being the
-// bare "<id>.md" file name (the corpus dir is flat). Mirrors manifestDigestOf.
-func corpusDigestOf(corpusDir string) (string, error) {
-	entries, err := os.ReadDir(corpusDir)
-	if err != nil {
-		return "", err
-	}
-	var lines []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		b, rerr := os.ReadFile(filepath.Join(corpusDir, e.Name()))
-		if rerr != nil {
-			return "", rerr
-		}
-		sum := sha256.Sum256(b)
-		lines = append(lines, hex.EncodeToString(sum[:])+"  "+e.Name())
-	}
-	return manifestDigestOf(lines), nil
-}
-
-// fileDigestOf returns the sha256 of a whole file (the index.db integrity stamp).
-func fileDigestOf(path string) (string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), nil
-}
+func corpusDigestOf(corpusDir string) (string, error) { return sharingpkg.CorpusDigest(corpusDir) }
+func fileDigestOf(path string) (string, error)        { return sharingpkg.FileDigest(path) }
 
 // ---- generation build (crash-durable ordering) ----
 
