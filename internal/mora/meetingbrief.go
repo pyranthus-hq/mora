@@ -867,9 +867,6 @@ func signalText(m Memory) string {
 // will cost $2,000+ depending on how many campaigns") was filed as an unresolved
 // decision on the strength of a word that wasn't there. Same class of error would
 // let "intro" match "introduction" and "left" match "leftover".
-func containsAnyPhrase(text string, phrases []string) bool {
-	return meetingpkg.ContainsAnyPhrase(text, phrases)
-}
 
 func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
 	banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.IndexHealth, Producers: brief.ProducerHealth})

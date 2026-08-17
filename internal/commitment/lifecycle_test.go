@@ -167,3 +167,25 @@ func TestApplyLifecycleAddsTypedClosureCitation(t *testing.T) {
 		t.Fatalf("got=%+v", got[0])
 	}
 }
+
+func TestApplyLifecycleProjectionBranches(t *testing.T) {
+	item := lifecycleItem()
+	sup := ApplyLifecycle([]Record{item}, []Evidence{{MemoryID: "replacement", Text: "The reviewer list deadline moved to Monday instead.", OccurredAt: "2026-07-20T11:00:00Z", Party: PartyCounterparty, Authored: true, CounterpartyKeys: []string{"name:sam rivera"}}})
+	if sup[0].State != Superseded || sup[0].SupersededBy != "replacement" {
+		t.Fatalf("sup=%+v", sup[0])
+	}
+	closed := ApplyLifecycle([]Record{item}, []Evidence{{MemoryID: "delivery", Text: "I sent the reviewer list.", OccurredAt: "2026-07-20T11:00:00Z", Party: PartySelf, Authored: true, CounterpartyKeys: []string{"name:sam rivera"}}})
+	if closed[0].State != Closed || len(closed[0].Citations) != 0 {
+		t.Fatalf("closed=%+v", closed[0])
+	}
+	second := item
+	second.ID = "c2"
+	second.OpenedBy.MessageRef = "m2"
+	ambiguous := ApplyLifecycle([]Record{item, second}, []Evidence{{MemoryID: "delivery", Text: "I sent the reviewer list.", OccurredAt: "2026-07-20T11:00:00Z", Party: PartySelf, Authored: true, CounterpartyKeys: []string{"name:sam rivera"}}})
+	if ambiguous[0].Gap == "" || ambiguous[1].Gap == "" {
+		t.Fatalf("ambiguous=%+v", ambiguous)
+	}
+	ordered := []Evidence{{MemoryID: "z", Text: "b", OccurredAt: "2026-07-20T12:00:00Z"}, {MemoryID: "z", Text: "b", OccurredAt: "2026-07-20T11:00:00Z"}, {MemoryID: "a", Text: "c", OccurredAt: "2026-07-20T11:00:00Z"}, {MemoryID: "a", Text: "a", OccurredAt: "2026-07-20T11:00:00Z"}}
+	_ = ApplyLifecycle(nil, ordered)
+
+}
