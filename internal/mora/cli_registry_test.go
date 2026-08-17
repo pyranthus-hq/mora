@@ -501,8 +501,24 @@ func TestCLIRegistryRealRunDispatch(t *testing.T) {
 			if current == unknown {
 				t.Fatalf("registered token is behaviorally indistinguishable from an unknown token:\ncurrent=%+v\nunknown=%+v", current, unknown)
 			}
-			if row.Kind == "alias" && current.HasError {
-				t.Fatalf("documented alias failed: %s", current.Error)
+			if row.Kind == "alias" {
+				alias := normalizeCLIProbe(runCLIRegistryProbe(t, fields), normalizers...)
+				if alias.HasError {
+					t.Fatalf("documented alias failed: %s", alias.Error)
+				}
+				if row.Path == "--version" || row.Path == "-v" {
+					jsonAlias := runCLIRegistryProbe(t, append(append([]string(nil), fields...), "--json"))
+					if jsonAlias.HasError {
+						t.Fatalf("version JSON alias failed: %s", jsonAlias.Error)
+					}
+					var receipt receiptEnvelope
+					if err := json.Unmarshal([]byte(jsonAlias.Stdout), &receipt); err != nil {
+						t.Fatalf("version JSON alias output must decode: %v\n%s", err, jsonAlias.Stdout)
+					}
+					if receipt.Schema != "mora.version" || receipt.SchemaVersion != 1 {
+						t.Fatalf("version JSON alias receipt = %+v", receipt)
+					}
+				}
 			}
 		})
 	}

@@ -383,7 +383,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "upgrade":
 		return cmdUpgrade(ctx, args[1:], stdout, stderr)
 	case "version", "--version", "-v":
-		return cmdVersion(stdout, stderr)
+		return cmdVersion(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -392,7 +392,33 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	}
 }
 
-func cmdVersion(stdout, stderr io.Writer) error {
+func cmdVersion(_ context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+	}
+	if fs.NArg() != 0 {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.version", 1, struct {
+			Version   string `json:"version"`
+			Commit    string `json:"commit"`
+			Built     string `json:"built"`
+			GoVersion string `json:"go_version"`
+			OS        string `json:"os"`
+			Arch      string `json:"arch"`
+		}{
+			Version:   BuildVersion,
+			Commit:    BuildCommit,
+			Built:     BuildDate,
+			GoVersion: runtime.Version(),
+			OS:        runtime.GOOS,
+			Arch:      runtime.GOARCH,
+		})
+	}
 	fmt.Fprintf(stdout, "mora %s\n", BuildVersion)
 	fmt.Fprintf(stdout, "  commit: %s\n", BuildCommit)
 	fmt.Fprintf(stdout, "  built:  %s\n", BuildDate)
@@ -670,6 +696,7 @@ func legacyPulseDailyInvocation(args []string) bool {
 func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	fs := flag.NewFlagSet("pulse", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
 	write := fs.Bool("write", false, "write")
 	digest := fs.Bool("digest", false, "digest")
 	// --since-hours (SC#2): the explicit ad-hoc window. A positive value renders
@@ -740,6 +767,11 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 	// persist/notify step (Task 2) so the digest, the dated artifact path, and any
 	// watermark all agree on the logical day (D13-3, determinism).
 	now := briefClock()
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.pulse", 1, struct {
+			Sources []sourceHealth `json:"sources"`
+		}{Sources: sourceHealthAll(cfg, now)})
+	}
 	if *loopID != "" {
 		if err := heartbeatLoopRun(cfg, *loopID, *loopRunID, loopClock()); err != nil {
 			return fmt.Errorf("advancing pulse loop fence: %w", err)

@@ -527,6 +527,13 @@ backup state, and configured shares. On macOS it also tests protected reads.
 `--strict` exits with an error when a critical check fails. `--pulse` checks
 freshness and can show a native alert on macOS.
 
+For agent-facing status checks, `mora version --json` (also `mora --version
+--json` and `mora -v --json`) emits the `mora.version` v1 receipt with the
+stamped version, commit, build time, Go version, OS, and architecture. `mora
+pulse --json` emits the `mora.pulse` v1 receipt with a `sources` array of the
+same per-source freshness facts used by Mora's health reporting. Both receipts
+include top-level `schema` and `schema_version` fields.
+
 Mora shows failed, never-run, or stale sources in briefs and read paths. It
 does not turn missing current data into a clean empty answer.
 
