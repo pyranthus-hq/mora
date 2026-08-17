@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 type Citation struct{ memoryID, channel, source, date string }
@@ -59,4 +61,29 @@ func (c Citation) Validate() error {
 		return fmt.Errorf("invalid date %q: %w", c.date, err)
 	}
 	return nil
+}
+
+func ForMemory(m memory.Memory, source, date string) (Citation, error) {
+	channel := strings.TrimSpace(m.Provider)
+	if channel == "" {
+		channel = strings.TrimSpace(m.Type)
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = strings.TrimSpace(m.Source)
+		if source == "" {
+			if m.Provider != "" {
+				source = m.Provider
+			} else {
+				source = m.Type
+			}
+		}
+	}
+	if channel == "" {
+		channel = source
+	}
+	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(date)); err == nil {
+		date = parsed.UTC().Format(time.RFC3339)
+	}
+	return NewCitation(m.ID, channel, source, date)
 }
