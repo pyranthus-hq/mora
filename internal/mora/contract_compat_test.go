@@ -71,6 +71,15 @@ var contractVolatileLeaves = map[string]any{
 	// bytes between two runs seconds apart.
 	"mora.backup.bytes":                float64(0),
 	"mora.doctor.report.storage_bytes": float64(0),
+
+	// Environment-derived, exactly like a temp path. CI is not macOS and the
+	// toolchain moves, so freezing these values would red the corpus on its
+	// first CI run and again on every Go upgrade. Their presence and type stay
+	// frozen; their values were never a contract.
+	"mora.version.os":             "<goos>",
+	"mora.version.arch":           "<goarch>",
+	"mora.version.go_version":     "<go-version>",
+	"mora.doctor.report.platform": "<goos>",
 }
 
 // contractNormalize replaces the classes of value that legitimately differ
@@ -129,6 +138,13 @@ func contractNormalizeString(value, home string) string {
 		if resolved, err := filepath.EvalSymlinks(home); err == nil && resolved != home {
 			value = strings.ReplaceAll(value, resolved, "<home>")
 		}
+	}
+	if strings.Contains(value, "<home>") {
+		// Windows renders a home-rooted path with backslashes, so the byte
+		// compare would fail on windows-latest for every payload that carries
+		// one. The separator is not part of any contract. Confined to
+		// home-rooted values so a legitimate backslash elsewhere survives.
+		value = strings.ReplaceAll(value, `\`, "/")
 	}
 	value = contractVolatileTimestamp.ReplaceAllString(value, "<timestamp>")
 	value = contractVolatileID.ReplaceAllString(value, "<id>")

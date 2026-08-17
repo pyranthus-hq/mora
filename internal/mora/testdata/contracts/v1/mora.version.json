@@ -1,9 +1,9 @@
 {
-  "arch": "arm64",
+  "arch": "\u003cgoarch\u003e",
   "built": "unknown",
   "commit": "none",
-  "go_version": "go1.26.3",
-  "os": "darwin",
+  "go_version": "\u003cgo-version\u003e",
+  "os": "\u003cgoos\u003e",
   "schema": "mora.version",
   "schema_version": 1,
   "version": "dev"
