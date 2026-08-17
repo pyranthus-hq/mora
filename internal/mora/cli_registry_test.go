@@ -36,6 +36,7 @@ type cliRegistryRow struct {
 	Platform     string `json:"platform"`
 	JSONContract string `json:"json_contract,omitempty"`
 	Payload      string `json:"payload,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type cliBehaviorEvidence struct {
@@ -103,6 +104,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
+	payloadContracts := map[string]string{}
 	for _, row := range registry.Commands {
 		if strings.TrimSpace(row.Path) != row.Path || row.Path == "" {
 			t.Fatalf("non-canonical registry path %q", row.Path)
@@ -119,12 +121,24 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		default:
 			t.Fatalf("%s: unknown registry kind %q", row.Path, row.Kind)
 		}
-		if row.JSONContract != "" {
-			switch row.JSONContract {
-			case "result", "receipt", "exempt":
-			default:
-				t.Fatalf("%s: unknown json contract %q", row.Path, row.JSONContract)
+		switch row.JSONContract {
+		case "result", "receipt":
+			if row.Payload == "" {
+				t.Fatalf("%s: %s contract is missing payload", row.Path, row.JSONContract)
 			}
+			if prior, ok := payloadContracts[row.Payload]; ok && prior != row.JSONContract {
+				t.Fatalf("%s: payload %q has conflicting contracts %q and %q", row.Path, row.Payload, prior, row.JSONContract)
+			}
+			payloadContracts[row.Payload] = row.JSONContract
+		case "exempt":
+			if row.Reason == "" {
+				t.Fatalf("%s: exempt contract is missing reason", row.Path)
+			}
+			if row.Payload != "" {
+				t.Fatalf("%s: exempt contract must not declare payload %q", row.Path, row.Payload)
+			}
+		default:
+			t.Fatalf("%s: missing or unknown json contract %q", row.Path, row.JSONContract)
 		}
 	}
 
