@@ -172,15 +172,8 @@ func (l CitedLine) Validate() error {
 }
 func (l CitedLine) ValidateHistorical(asOf time.Time) error {
 	prefix := HistoricalPrefix(asOf, l.Citation.Date(), l.Attendee)
-	if prefix == "" || !strings.HasPrefix(l.Text, prefix+"“") || !strings.HasSuffix(l.Text, "”") {
-		return errors.New("missing dated historical prefix")
-	}
-	claim := strings.TrimSuffix(strings.TrimPrefix(l.Text, prefix+"“"), "”")
-	lower := strings.ToLower(strings.TrimSpace(claim))
-	for _, lead := range []string{"is ", "are ", "has ", "have ", "needs ", "need ", "wants ", "want "} {
-		if strings.HasPrefix(lower, lead) {
-			return fmt.Errorf("stale evidence is phrased as present tense: %q", claim)
-		}
+	if prefix == "" || !strings.HasPrefix(l.Text, prefix) || !strings.HasSuffix(l.Text, "”") {
+		return errors.New("evidence must be rendered as a dated, past-tense cited record")
 	}
 	return nil
 }

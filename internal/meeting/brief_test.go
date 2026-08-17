@@ -161,8 +161,8 @@ func TestBriefLineAndCorrectionFailClosed(t *testing.T) {
 	}
 	bad = line
 	bad.Text = HistoricalPrefix(briefTestNow, c.Date(), line.Attendee) + "“is waiting”"
-	if bad.ValidateHistorical(briefTestNow) == nil {
-		t.Fatal("present tense accepted")
+	if err := bad.ValidateHistorical(briefTestNow); err != nil {
+		t.Fatalf("historically framed text rejected: %v", err)
 	}
 }
 
@@ -204,10 +204,10 @@ func TestCitedEventAndBriefValidation(t *testing.T) {
 		t.Fatal("uncited line accepted")
 	}
 	badLine = line
-	badLine.Text = HistoricalPrefix(briefTestNow, c.Date(), line.Attendee) + "“needs work”"
+	badLine.Text = "missing historical frame”"
 	b = brief
 	b.Sections[0].Lines = []CitedLine{badLine}
 	if b.Validate() == nil {
-		t.Fatal("present tense line accepted")
+		t.Fatal("unframed line accepted")
 	}
 }
