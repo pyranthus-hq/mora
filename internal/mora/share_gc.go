@@ -7,11 +7,11 @@ package mora
 // preflight, at end-of-pull, and from the manual `mora share gc` command.
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	sharingpkg "github.com/pyranthus-hq/mora/internal/sharing"
 	"io"
 	"math"
 	"os"
@@ -70,218 +70,21 @@ func liveImportOwner(cfg Config, name string, now time.Time) string {
 	return body.RunID
 }
 
-// shareGCSweep reclaims, in order: committed losers/superseded gens (keeping K),
-// uncommitted crash orphans, stale bucket staging, orphaned git import refs, and
-// stale commit records — never touching the published head or lowering the
-// bucket floor. A deletion blocked by a Windows sharing violation / open handle
-// is deferred to the next sweep, never forced or looped.
-func shareGCSweep(cfg Config, name string, now time.Time) error {
-	root := shareSubRoot(cfg, name)
-	if _, err := os.Stat(root); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	published, ok, err := resolvePublishedCommit(cfg, name)
-	if err != nil {
-		return err
-	}
-	records, err := readAllCommits(cfg, name)
-	if err != nil {
-		return err
-	}
-	owner := liveImportOwner(cfg, name, now)
-
-	// Retain set: the published seq plus the K highest superseded seqs.
-	retainSeq := map[int]bool{}
-	genBySeq := map[int]string{}
-	var loserSeqs []int
-	for _, r := range records {
-		genBySeq[r.Seq] = r.Gen
-		if ok && r.Seq < published.Seq {
-			loserSeqs = append(loserSeqs, r.Seq)
-		}
-	}
-	if ok {
-		retainSeq[published.Seq] = true
-	}
-	sort.Sort(sort.Reverse(sort.IntSlice(loserSeqs)))
-	for i, s := range loserSeqs {
-		if i < shareGenRetain {
-			retainSeq[s] = true
-		}
-	}
-	retainGen := map[string]bool{}
-	for s := range retainSeq {
-		if g, has := genBySeq[s]; has {
-			retainGen[g] = true
-		}
-	}
-
-	// Floor-safety assertion: before deleting any record, prove the published
-	// head carries a floor >= every floor we retain or delete (GC may never lower
-	// the replay floor).
-	willDeleteRecord := false
-	maxFloor := 0
-	for _, r := range records {
-		if r.BucketFloor > maxFloor {
-			maxFloor = r.BucketFloor
-		}
-		if ok && r.Seq < published.Seq && !retainSeq[r.Seq] {
-			willDeleteRecord = true
-		}
-	}
-	if willDeleteRecord && ok && published.BucketFloor < maxFloor {
-		return fmt.Errorf("share %q: GC aborted — published head floor %d < max committed floor %d; refusing to lower the replay floor", name, published.BucketFloor, maxFloor)
-	}
-
-	genSeqOf := func(gen string) (int, bool) {
-		for s, g := range genBySeq {
-			if g == gen {
-				return s, true
-			}
-		}
-		return 0, false
-	}
-
-	// Sweep the generation directories.
-	if gens, gerr := os.ReadDir(shareGensDir(cfg, name)); gerr == nil {
-		for _, e := range gens {
-			if !e.IsDir() || !strings.HasPrefix(e.Name(), "gen-") {
-				continue
-			}
-			gen := e.Name()
-			if retainGen[gen] {
-				continue
-			}
-			if ok && gen == published.Gen {
-				continue // never touch the published gen
-			}
-			if seq, committed := genSeqOf(gen); committed {
-				if ok && seq < published.Seq {
-					if rerr := deferrableRemoveAll(shareGenDir(cfg, name, gen)); rerr != nil {
-						return rerr
-					}
-				}
-				continue
-			}
-			// Uncommitted crash orphan: reclaim only past TTL and only if its run-id
-			// does not own the live lease.
-			if genRunID(gen) == owner {
-				continue
-			}
-			info, ierr := e.Info()
-			if ierr != nil {
-				return ierr
-			}
-			if now.Sub(info.ModTime()) < shareImportTTL {
-				continue
-			}
-			if rerr := deferrableRemoveAll(shareGenDir(cfg, name, gen)); rerr != nil {
-				return rerr
-			}
-		}
-	} else if !errors.Is(gerr, os.ErrNotExist) {
-		return gerr
-	}
-
-	// Stale bucket staging: fetch-* dirs older than TTL not owned by the live lease.
-	if subs, serr := os.ReadDir(root); serr == nil {
-		for _, e := range subs {
-			if !e.IsDir() || !strings.HasPrefix(e.Name(), "fetch-") {
-				continue
-			}
-			if strings.TrimPrefix(e.Name(), "fetch-") == owner {
-				continue
-			}
-			info, ierr := e.Info()
-			if ierr != nil {
-				return ierr
-			}
-			if now.Sub(info.ModTime()) < shareImportTTL {
-				continue
-			}
-			if rerr := deferrableRemoveAll(filepath.Join(root, e.Name())); rerr != nil {
-				return rerr
-			}
-		}
-	} else {
-		return serr
-	}
-
-	// Orphaned git import refs (best-effort; touches only the named private ref).
-	reapOrphanedGitPins(cfg, name, owner, retainGen)
-
-	// Stale commit records: seq < published beyond the K retained.
-	if ok {
-		for _, r := range records {
-			if r.Seq < published.Seq && !retainSeq[r.Seq] {
-				if rerr := deferrableRemove(shareCommitPath(cfg, name, r.Seq)); rerr != nil {
-					return rerr
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// reapOrphanedGitPins enumerates refs/mora/import/ and removes a private pin whose
-// run-id owns neither the live lease nor a retained generation, via the exact
-// read-only for-each-ref + CAS update-ref -d invocation. Best-effort.
-var shareGCGitExecFn execFunc = realExec
-
-func reapOrphanedGitPins(cfg Config, name, owner string, retainGen map[string]bool) {
-	repo := shareRepoDir(cfg, name)
-	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
-		if _, err2 := os.Stat(filepath.Join(repo, "HEAD")); err2 != nil {
-			return
-		}
-	}
-	out, err := shareGCGitExecFn(context.Background(), repo, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/mora/import/")
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-		ref, sha := fields[0], fields[1]
-		runID := strings.TrimPrefix(ref, "refs/mora/import/")
-		if runID == owner || retainGen["gen-"+runID] {
-			continue
-		}
-		_, _ = shareGCGitExecFn(context.Background(), repo, "git", "update-ref", "-d", ref, sha)
-	}
-}
-
-// The seams make the Windows sharing-violation branch deterministic on every
-// test host. Production always uses the operating-system implementations.
 var (
+	shareGCGitExecFn          = execFunc(realExec)
 	shareGCRemoveFn           = os.Remove
 	shareGCRemoveAllFn        = os.RemoveAll
 	shareGCRemovalRetryableFn = atomicio.SharingViolationRetryable
 )
 
-// deferrableRemove/deferrableRemoveAll delete a path but defer only a Windows
-// sharing violation / open-handle failure to the next sweep (mirroring
-// removeLeaseFile's non-forcing policy). Other filesystem failures are loud:
-// silently swallowing EACCES/EIO would claim reclamation that never happened.
-func deferrableRemove(path string) error {
-	err := shareGCRemoveFn(path)
-	if err == nil || errors.Is(err, os.ErrNotExist) || shareGCRemovalRetryableFn(err) {
-		return nil
-	}
-	return err
+func shareGCGCOptions() sharingpkg.GCOptions {
+	return sharingpkg.GCOptions{GitExec: shareGCGitExecFn, Remove: shareGCRemoveFn, RemoveAll: shareGCRemoveAllFn, RemovalRetryable: shareGCRemovalRetryableFn, TTL: shareImportTTL}
 }
-
+func shareGCSweep(cfg Config, name string, now time.Time) error {
+	return sharingpkg.Sweep(sharingpkg.GenerationStore{DataDir: cfg.DataDir}, name, liveImportOwner(cfg, name, now), now, shareGCGCOptions())
+}
 func deferrableRemoveAll(path string) error {
-	err := shareGCRemoveAllFn(path)
-	if err == nil || errors.Is(err, os.ErrNotExist) || shareGCRemovalRetryableFn(err) {
-		return nil
-	}
-	return err
+	return sharingpkg.DeferrableRemoveAll(path, shareGCGCOptions())
 }
 
 // ---- CLI: mora share gc / mora share storage-limit ----
