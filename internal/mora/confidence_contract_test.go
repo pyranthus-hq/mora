@@ -96,7 +96,7 @@ import (
 //     ONLY on the path where its Score is also RRF-fused.
 //
 // health_impact severity mirrors this repo's EXISTING worst-first precedence
-// for unhealthy states (health.go's healthStateRank / worstSource doc comment:
+// for unhealthy states (health.StateRank / health.Worst doc comment:
 // "failed (an active error) outranks never (no data point at all) outranks
 // stale (data exists, just aging)"): failed > never > stale. This contract
 // reuses that precedent rather than freezing a new one.
