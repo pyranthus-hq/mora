@@ -357,7 +357,7 @@
   },
   {
     "path": "sources add",
-    "status": "parses"
+    "status": "empty"
   },
   {
     "path": "sources list",

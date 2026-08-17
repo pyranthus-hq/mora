@@ -19,6 +19,7 @@ const (
 	errClassUsage      = "usage"
 	errClassConnector  = "connector"
 	errClassPermission = "permission"
+	errClassConsent    = "consent"
 	errClassData       = "data"
 	errClassIndex      = "index"
 	errClassInternal   = "internal"
@@ -51,6 +52,11 @@ const (
 	errCodeConnectorStale        = "connector.stale"
 	errCodeConnectorEmpty        = "connector.empty"
 	errCodeConnectorUnclassified = "connector.unclassified"
+
+	// A consent gate Mora DIRECTLY OBSERVED in its own governance ledger. This
+	// is not the `permission` class: that class is reserved for an observed
+	// OPERATING-SYSTEM refusal, and Mora still infers those from error prose.
+	errCodeConsentRequired = "consent.required"
 
 	errCodeDataNotFound = "data.not_found"
 	errCodeDataCorrupt  = "data.corrupt"
@@ -112,6 +118,8 @@ var moraErrorCodeClass = map[string]string{
 	errCodeConnectorEmpty:        errClassConnector,
 	errCodeConnectorUnclassified: errClassConnector,
 
+	errCodeConsentRequired: errClassConsent,
+
 	errCodeDataNotFound: errClassData,
 	errCodeDataCorrupt:  errClassData,
 
@@ -143,6 +151,7 @@ var exitCodeByClass = map[string]int{
 	errClassUsage:      exitCodeGenericFailure,
 	errClassConnector:  exitCodeGenericFailure,
 	errClassPermission: exitCodeGenericFailure,
+	errClassConsent:    exitCodeGenericFailure,
 	errClassData:       exitCodeGenericFailure,
 	errClassIndex:      exitCodeGenericFailure,
 	errClassInternal:   exitCodeGenericFailure,

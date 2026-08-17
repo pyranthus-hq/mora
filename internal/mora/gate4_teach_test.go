@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -649,16 +650,27 @@ func TestGate4EvalExamplesRequireConsentAndMinimizeContent(t *testing.T) {
 		strings.Contains(out, "created_at") || strings.Contains(out, "2026-") {
 		t.Fatalf("privacy-minimized export leaked target identity: %s", out)
 	}
-	var examples []teachExample
-	if err := json.Unmarshal([]byte(out), &examples); err != nil || len(examples) != 1 {
+	// Plan 01-07: the array moves under `examples` inside the schema envelope.
+	var doc struct {
+		Examples []teachExample `json:"examples"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Examples) != 1 {
 		t.Fatalf("minimized examples = %s, err %v", out, err)
 	}
+	examples := doc.Examples
 	if examples[0].Ref != "example-0001" {
 		t.Fatalf("privacy-minimized export used an identity-derived reference: %+v", examples)
 	}
 	run(t, "teach", "consent", "disable", "--yes")
-	if _, err := runErr(t, "teach", "examples", "--json"); err == nil {
+	_, err := runErr(t, "teach", "examples", "--json")
+	if err == nil {
 		t.Fatal("evaluation examples remained enabled after consent was withdrawn")
+	}
+	// Plan 01-07: the refusal is TYPED, so an agent detects "consent required"
+	// without reading the English sentence.
+	var coded moraError
+	if !errors.As(err, &coded) || coded.Code != errCodeConsentRequired {
+		t.Fatalf("teach examples refusal = %#v, want code %q", err, errCodeConsentRequired)
 	}
 }
 
