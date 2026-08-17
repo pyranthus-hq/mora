@@ -1,4 +1,4 @@
-package meeting
+package evidencetext
 
 import (
 	"strings"

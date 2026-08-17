@@ -161,51 +161,51 @@ kill_mutant "production/meetingBriefResolveAttribution" \
 
 
 kill_mutant "production/stripURLs" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'text = UnwrapHardWraps(StripURLs(text))' \
   'text = UnwrapHardWraps(text)' \
-  ./internal/meeting '^TestEvidenceTextHelpers$'
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/unwrapHardWraps" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'if ContinuesSentence(trimmed, next) {' \
   'if false {' \
-  ./internal/meeting '^TestEvidenceSegmentsDoNotTruncateMidClause$'
+  ./internal/evidencetext '^TestEvidenceSegmentsDoNotTruncateMidClause$'
 
 kill_mutant "production/senderAuthoredBody" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'if quotedReplyLine.MatchString(line) || isSignatureDelimiter(line) {' \
   'if false {' \
-  ./internal/meeting '^TestForwardedAndQuotedContentIsNotTheSendersWords$'
+  ./internal/evidencetext '^TestForwardedAndQuotedContentIsNotTheSendersWords$'
 
 
 kill_mutant "production/stripSpeakerPrefix" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'return strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))' \
   'return segment' \
-  ./internal/meeting '^TestEvidenceTextHelpers$'
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/isForwardedSubject" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'return strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")' \
   'return false' \
-  ./internal/meeting '^TestEvidenceTextHelpers$'
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/isLeadInFragment" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'return len(strings.Fields(t)) < 3' \
   'return false' \
-  ./internal/meeting '^TestEvidenceTextHelpers$'
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/stripNoiseTokens" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'if !TokenIsNoise(tok) {' \
   'if true {' \
-  ./internal/meeting '^TestStripNoiseTokens$'
+  ./internal/evidencetext '^TestStripNoiseTokens$'
 
 kill_mutant "production/gmailActionableAsk" \
   internal/meeting/classify.go \
@@ -215,10 +215,10 @@ kill_mutant "production/gmailActionableAsk" \
 
 
 kill_mutant "production/containsPhrase" \
-  internal/meeting/text.go \
+  internal/evidencetext/text.go \
   'if okBefore && okAfter {' \
   'if true {' \
-  ./internal/meeting '^TestEvidenceTextHelpers$'
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "surface/direct-wall-clock" \
