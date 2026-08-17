@@ -360,10 +360,18 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add <filesystem|gmail|calendar|gdrive> [flags]")
 	}
+	// A dash-led argument in the TYPE slot is a usage error, not a source type.
+	// `mora sources add --json` used to register a live source literally named
+	// and typed "--json" — the same silent-mutation class Plan 01-05 closed for
+	// `tasks add` and `loop begin`.
 	stype := args[0]
+	if strings.HasPrefix(stype, "-") {
+		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora sources add <filesystem|gmail|calendar|gdrive> [flags]")
+	}
 	fs := flag.NewFlagSet("sources add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	name := fs.String("name", stype, "source name")
+	_ = fs.Bool("json", false, "emit JSON (this command always emits JSON)")
 	scope := fs.String("scope", "personal", "scope")
 	path := fs.String("path", "", "path")
 	label := fs.String("label", "", "gmail label")
@@ -409,7 +417,10 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	}); err != nil {
 		return err
 	}
-	return emit(stdout, s, true)
+	// `sources add` has always answered with the stored source as JSON on both
+	// branches; Plan 01-07 versions that document rather than changing when it
+	// appears. --json is accepted and is a no-op for the same reason.
+	return emitReceipt(stdout, "mora.sources.add", 1, s)
 }
 func loadSources(cfg Config) ([]Source, error) {
 	path := filepath.Join(cfg.ConfigDir, "sources.json")

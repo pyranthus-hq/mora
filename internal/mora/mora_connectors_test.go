@@ -184,13 +184,17 @@ func TestConnectorsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectors list --json should succeed (RED until Plan 02): %v\n%s", err, out)
 	}
-	var rows []struct {
-		Type    string `json:"type"`
-		Enabled bool   `json:"enabled"`
+	// Plan 01-07: the rows move under `connectors` inside the schema envelope.
+	var doc struct {
+		Connectors []struct {
+			Type    string `json:"type"`
+			Enabled bool   `json:"enabled"`
+		} `json:"connectors"`
 	}
-	if err := json.Unmarshal([]byte(out), &rows); err != nil {
-		t.Fatalf("connectors list --json should emit a JSON array of rows: %v\n%s", err, out)
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("connectors list --json should emit a JSON document of rows: %v\n%s", err, out)
 	}
+	rows := doc.Connectors
 	var sawGmail, sawCalendar bool
 	for _, r := range rows {
 		switch r.Type {
@@ -214,12 +218,16 @@ func TestConnectorsListWindowsHidesMacOSOnlyConnectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectors list --json on windows: %v\n%s", err, out)
 	}
-	var rows []struct {
-		Type string `json:"type"`
+	// Plan 01-07: the rows move under `connectors`.
+	var doc struct {
+		Connectors []struct {
+			Type string `json:"type"`
+		} `json:"connectors"`
 	}
-	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("connectors list --json invalid JSON: %v\n%s", err, out)
 	}
+	rows := doc.Connectors
 	types := map[string]bool{}
 	for _, r := range rows {
 		types[r.Type] = true

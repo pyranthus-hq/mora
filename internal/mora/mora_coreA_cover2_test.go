@@ -379,10 +379,14 @@ func TestCoreA_CmdConnectors(t *testing.T) {
 		t.Fatalf("connectors list; got:\n%s", out)
 	}
 	listJSON := run(t, "connectors", "list", "--json")
-	var rows []catalogRow
-	if err := json.Unmarshal([]byte(listJSON), &rows); err != nil {
+	// Plan 01-07: the rows move under `connectors` inside the schema envelope.
+	var listDoc struct {
+		Connectors []catalogRow `json:"connectors"`
+	}
+	if err := json.Unmarshal([]byte(listJSON), &listDoc); err != nil {
 		t.Fatalf("connectors list --json: %v\n%s", err, listJSON)
 	}
+	rows := listDoc.Connectors
 	if len(rows) == 0 {
 		t.Fatal("connectors list --json should return the catalog")
 	}
