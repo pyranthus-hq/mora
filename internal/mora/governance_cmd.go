@@ -138,7 +138,7 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return err
 	}
 	fmt.Fprintf(stdout, "forgot %s: removed %d %s; future syncs suppressed (entry %s)\n", label, removed, memWord(removed), entry.ID)
-	fmt.Fprintln(stdout, "note: this stops Mora from holding and re-acquiring the content locally; it does NOT delete anything at Gmail/Apple. Reverse with `mora unforget "+entry.ID+"`.")
+	fmt.Fprintln(stderr, "note: this stops Mora from holding and re-acquiring the content locally; it does NOT delete anything at Gmail/Apple. Reverse with `mora unforget "+entry.ID+"`.")
 	return nil
 }
 

@@ -471,7 +471,7 @@ func TestSetupBackfillDefaultsNo(t *testing.T) {
 	run(t, "sources", "add", "filesystem", "--name", "docs", "--path", t.TempDir())
 
 	var buf bytes.Buffer
-	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, false, &buf, strings.NewReader("")); err != nil {
+	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, false, &buf, testStderr, strings.NewReader("")); err != nil {
 		t.Fatalf("applySetupSelection(doBackfill=false) should succeed: %v\n%s", err, buf.String())
 	}
 

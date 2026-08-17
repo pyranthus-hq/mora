@@ -154,7 +154,7 @@ func cmdUpgradeApp(ctx context.Context, current, appRoot string, checkOnly bool,
 
 	fmt.Fprintf(stdout, "update available: %s → %s\n", current, candidate.version)
 	if isLocalBuild {
-		fmt.Fprintf(stdout, "note: this replaces your local app build (%s) with the released app bundle\n", current)
+		fmt.Fprintf(stderr, "note: this replaces your local app build (%s) with the released app bundle\n", current)
 	}
 	if checkOnly {
 		fmt.Fprintln(stdout, "run `mora upgrade` to install it")
@@ -172,7 +172,7 @@ func cmdUpgradeApp(ctx context.Context, current, appRoot string, checkOnly bool,
 			return
 		}
 		if err := os.RemoveAll(stageDir); err != nil {
-			fmt.Fprintf(stdout, "warning: could not remove app upgrade staging directory %s: %v\n", stageDir, err)
+			fmt.Fprintf(stderr, "warning: could not remove app upgrade staging directory %s: %v\n", stageDir, err)
 		}
 	}()
 
@@ -204,7 +204,7 @@ func cmdUpgradeApp(ctx context.Context, current, appRoot string, checkOnly bool,
 		var rollbackFailure *moraAppRollbackFailure
 		if errors.As(err, &rollbackFailure) {
 			preserveStage = true
-			fmt.Fprintf(stdout, "warning: preserving the previous Mora.app for manual recovery at %s\n", rollbackFailure.recoveryPath)
+			fmt.Fprintf(stderr, "warning: preserving the previous Mora.app for manual recovery at %s\n", rollbackFailure.recoveryPath)
 		}
 		return fmt.Errorf("whole-bundle update failed: %w", err)
 	}
@@ -212,7 +212,7 @@ func cmdUpgradeApp(ctx context.Context, current, appRoot string, checkOnly bool,
 	fmt.Fprintf(stdout, "✓ updated Mora.app to %s\n", candidate.version)
 	newExecutable := filepath.Join(appRoot, "Contents", "MacOS", "mora")
 	if err := postAppUpgradeRebuild(ctx, newExecutable, stdout); err != nil {
-		fmt.Fprintf(stdout, "warning: index rebuild failed: %v\n", err)
+		fmt.Fprintf(stderr, "warning: index rebuild failed: %v\n", err)
 		fmt.Fprintln(stdout, "  finish the upgrade with: mora index rebuild")
 	}
 	fmt.Fprintln(stdout, "  run `mora version` to confirm")

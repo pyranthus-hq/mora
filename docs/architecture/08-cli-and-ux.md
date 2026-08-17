@@ -203,6 +203,10 @@ Checks are collected into an ordered slice (not a map) precisely so both the JSO
 
 ## Invariants & gotchas
 
+### Stdout/stderr contract
+
+Command results belong on stdout. Diagnostics, including advisory `note:` and `warning:` messages, belong on stderr. With `--json`, stdout is exactly one valid JSON document (or empty when the command has no result); callers never need to strip human prose before decoding it. Doctor check rows remain stdout report content rather than diagnostics.
+
 - **Byte-clean: ANSI never reaches a machine stream.** Every styled write goes through `colorEnabled`/`styler`. `--json` short-circuits color first (`render.go:22`). The MCP stdio path and any pipe/redirect fail the `isTTYWriter` test. *Why:* a stray escape corrupts JSON parsing, bloats agent token cost, and garbles CI/redirect output. Pinned by `TestColorEnabledGate` + `TestDigestByteCleanOnNonTTY`.
 - **TTY detection for OUTPUT uses go-isatty, not `os.ModeCharDevice`.** `/dev/null` is a character device that would pass `ModeCharDevice` but is not a terminal. *Why:* `mora … > /dev/null` with `TERM` set must not enable color. Pinned by `TestColorDisabledForDevNull`. (Stdin/`isInteractive` may keep the stdlib stat because its failure mode is benign blocking, not byte leakage.)
 - **`styleDigestTTY` is a skin, not a fork.** The digest's data string (`renderDigest`) is byte-identical to what the MCP `digest` tool returns. Styling is layered only on the TTY branch in `cmdPulse`. *Why:* the agent and the human must read the same digest content. If styling moved into `renderDigest`, the machine path would carry ANSI or drift from the human path.

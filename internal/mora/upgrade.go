@@ -103,7 +103,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout, stderr io.Writer) er
 
 	fmt.Fprintf(stdout, "update available: %s → %s\n", current, latest.Version())
 	if isLocalBuild {
-		fmt.Fprintf(stdout, "note: this replaces your local source build (%s) with the released binary\n", current)
+		fmt.Fprintf(stderr, "note: this replaces your local source build (%s) with the released binary\n", current)
 	}
 	if *checkOnly {
 		fmt.Fprintln(stdout, "run `mora upgrade` to install it")
@@ -120,7 +120,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// slow moment to pay the rebuild). Warn-don't-fail: the swap already
 	// succeeded, and the index error message names the same fix.
 	if err := postUpgradeRebuild(ctx, exe, stdout); err != nil {
-		fmt.Fprintf(stdout, "warning: index rebuild failed: %v\n", err)
+		fmt.Fprintf(stderr, "warning: index rebuild failed: %v\n", err)
 		fmt.Fprintln(stdout, "  finish the upgrade with: mora index rebuild")
 	}
 	fmt.Fprintln(stdout, "  run `mora version` to confirm")

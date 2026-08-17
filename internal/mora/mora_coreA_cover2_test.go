@@ -202,13 +202,13 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 	var out bytes.Buffer
 	stdin := strings.NewReader("") // non-TTY
 
-	if err := enableConnector(context.Background(), cfg, "nope", &out, stdin); err == nil {
+	if err := enableConnector(context.Background(), cfg, "nope", &out, testStderr, stdin); err == nil {
 		t.Fatal("enableConnector must reject an unknown type")
 	}
 
 	// filesystem with NO configured folder: guidance, no phantom row, no error.
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "filesystem", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "filesystem", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "mora connect filesystem") {
@@ -220,7 +220,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "filesystem", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "filesystem", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "enabled filesystem") {
@@ -229,7 +229,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 
 	// imessage: no login, Full-Disk-Access guidance.
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "imessage", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "imessage", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "enabled imessage") {
@@ -238,7 +238,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 
 	// applecalendar: same no-login gate.
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "applecalendar", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "applecalendar", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "enabled applecalendar") {
@@ -249,7 +249,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 	// "needs authorization" note, still flips the bit.
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "gmail", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "gmail", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "needs Google authorization") {
@@ -261,7 +261,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "gmail", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "gmail", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Reusing your saved Google sign-in") {
@@ -313,7 +313,7 @@ func TestCoreA_ApplySetupSelection(t *testing.T) {
 	}
 
 	// doBackfill=false: enable only, ZERO ingest.
-	if err := applySetupSelection(context.Background(), cfg, []string{"imessage", "filesystem"}, false, &out, stdin); err != nil {
+	if err := applySetupSelection(context.Background(), cfg, []string{"imessage", "filesystem"}, false, &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := loadSources(cfg)
@@ -329,7 +329,7 @@ func TestCoreA_ApplySetupSelection(t *testing.T) {
 
 	// doBackfill=true with no google sources => backfill runs, reports 0.
 	out.Reset()
-	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, true, &out, stdin); err != nil {
+	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, true, &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "backfilled 0 item(s)") {

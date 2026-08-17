@@ -299,7 +299,7 @@ func cmdConfig(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "%s = %s\n", key, shown)
 	if key == "mmr" && cfg.MMR && cfg.Embedder != "ollama" {
-		fmt.Fprintln(stdout, "note: MMR reranks on vector similarity, so it only takes effect under a semantic embedder — run `mora config embedder ollama`.")
+		fmt.Fprintln(stderr, "note: MMR reranks on vector similarity, so it only takes effect under a semantic embedder — run `mora config embedder ollama`.")
 	}
 	if key == "context" {
 		fmt.Fprintf(stdout, "(default budget %d tokens, digest snippets %d chars; per-call max_tokens still wins, ceiling %d)\n",
@@ -472,7 +472,7 @@ func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	fmt.Fprintf(stdout, "  Layout: mora config\n\n")
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
-	return runSetupMenu(ctx, cfg, stdin, stdout)
+	return runSetupMenu(ctx, cfg, stdin, stdout, stderr)
 }
 
 // configFileExists reports whether a config.toml is already on disk —

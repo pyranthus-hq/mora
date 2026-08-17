@@ -62,7 +62,7 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 		if len(args) != 2 {
 			return errors.New("usage: mora connectors enable <type>")
 		}
-		return enableConnector(ctx, cfg, args[1], stdout, stdin)
+		return enableConnector(ctx, cfg, args[1], stdout, stderr, stdin)
 	case "disable":
 		if len(args) != 2 {
 			return errors.New("usage: mora connectors disable <type>")
@@ -70,7 +70,7 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 		return disableConnector(cfg, args[1], stdout)
 	case "setup":
 		// D-08: re-open the same interactive setup menu anytime.
-		return runSetupMenu(ctx, cfg, stdin, stdout)
+		return runSetupMenu(ctx, cfg, stdin, stdout, stderr)
 	default:
 		return errors.New("usage: mora connectors list|enable|disable|setup")
 	}
@@ -80,7 +80,7 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 // consent if the type needs it, flips the Enabled bit, then STOPS — it pulls
 // ZERO data (REG-03 / D-04). Backfill is a separate, explicit step (sync/ingest).
 // Unknown types are rejected (D-03 / ASVS V5), never silently no-op'd.
-func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Writer, stdin io.Reader) error {
+func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stderr io.Writer, stdin io.Reader) error {
 	info, ok := lookupCatalog(ctype)
 	if !ok {
 		return fmt.Errorf("unknown connector %q; run `mora connectors list`", ctype)
@@ -110,7 +110,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 					return err
 				}
 			} else {
-				fmt.Fprintf(stdout, "note: %s needs Google authorization — run `mora connect google` (or `mora connectors enable %s` in a terminal) to grant consent.\n", ctype, ctype)
+				fmt.Fprintf(stderr, "note: %s needs Google authorization — run `mora connect google` (or `mora connectors enable %s` in a terminal) to grant consent.\n", ctype, ctype)
 			}
 		} else {
 			// CROSS-PHASE TOUCH (UI-SPEC §C): a saved token means the browser step is
@@ -153,7 +153,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access, then pull data with `mora sync imessage`.")
 		fmt.Fprintln(stdout, "Check readiness anytime with `mora doctor`.")
 		if runtimeGOOS() != "darwin" {
-			fmt.Fprintf(stdout, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
+			fmt.Fprintf(stderr, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -162,7 +162,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		okf(stdout, "enabled applecalendar. Apple Calendar reads your local Calendar database — no login needed.")
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access (the same toggle iMessage uses), then pull data with `mora ingest run --source applecalendar`.")
 		if runtimeGOOS() != "darwin" {
-			fmt.Fprintf(stdout, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
+			fmt.Fprintf(stderr, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -255,9 +255,9 @@ func renderSetupState(cfg Config, w io.Writer) {
 // makes the headline consent guarantee ("no affirmative confirm ⇒ zero ingest",
 // D-09) assertable in a unit test without a TTY or huh. It sits ON TOP of
 // enableConnector — it never reimplements enable/auth (T-04-03).
-func applySetupSelection(ctx context.Context, cfg Config, selected []string, doBackfill bool, stdout io.Writer, stdin io.Reader) error {
+func applySetupSelection(ctx context.Context, cfg Config, selected []string, doBackfill bool, stdout, stderr io.Writer, stdin io.Reader) error {
 	for _, ctype := range selected {
-		if err := enableConnector(ctx, cfg, ctype, stdout, stdin); err != nil {
+		if err := enableConnector(ctx, cfg, ctype, stdout, stderr, stdin); err != nil {
 			return err
 		}
 	}
@@ -280,7 +280,7 @@ func applySetupSelection(ctx context.Context, cfg Config, selected []string, doB
 // empty stdin) it prints a hint and returns immediately — it NEVER blocks. The
 // menu only gathers selection + confirm; the consequential actions are delegated
 // to the pure applySetupSelection seam.
-func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Writer) error {
+func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stderr io.Writer) error {
 	f, ok := stdin.(*os.File)
 	if !ok || !isatty.IsTerminal(f.Fd()) {
 		// Non-interactive (pipe / CI / test). Do NOT block (T-04-01).
@@ -398,7 +398,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 		}
 	}
 	// Enable + (if confirmed) google backfill via the shared consent seam.
-	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stdin); err != nil {
+	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stderr, stdin); err != nil {
 		return err
 	}
 	if imessageSelected {
@@ -410,7 +410,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 				}
 				fmt.Fprintf(stdout, "backfilled %d iMessage conversation(s).\n", total)
 			} else {
-				fmt.Fprintln(stdout, "note: iMessage isn't ready yet (Full Disk Access) — skipped. Run `mora doctor`, then `mora sync imessage`.")
+				fmt.Fprintln(stderr, "note: iMessage isn't ready yet (Full Disk Access) — skipped. Run `mora doctor`, then `mora sync imessage`.")
 			}
 		}
 	}

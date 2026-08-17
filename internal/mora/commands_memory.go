@@ -65,7 +65,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// The op REMAINS on failure — the vault has the memory, the index does not,
 		// so the index reads dirty until a rebuild covers it (A2). Do not retire it.
 		if errors.Is(err, errRebuildBlocked) {
-			fmt.Fprintf(stdout, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
+			fmt.Fprintf(stderr, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
 			return emit(stdout, m, *jsonOut)
 		}
 		return err
