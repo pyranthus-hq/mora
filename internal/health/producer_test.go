@@ -166,7 +166,12 @@ func TestProducerStorePathsBytesAndCorruption(t *testing.T) {
 	}
 }
 func TestProducerStoreMutateSerializesAndAborts(t *testing.T) {
-	store := ProducerStore{StateDir: t.TempDir()}
+	// This witness tests reload-under-lock serialization, not the independent
+	// two-second acquisition deadline. Freeze only wall time so a deliberately
+	// simultaneous 20-writer stampede cannot consume that production budget on
+	// a slow CI filesystem before the last legitimate waiter gets its turn.
+	wall := time.Now()
+	store := ProducerStore{StateDir: t.TempDir(), WallNow: func() time.Time { return wall }}
 	if err := store.MutateStatus(func(map[string]ProducerStatus) error { return errors.New("stop") }); err == nil {
 		t.Fatal("mutation error swallowed")
 	}
