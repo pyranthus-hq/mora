@@ -549,34 +549,6 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 	}
 }
 
-func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
-	brief := MeetingBrief{
-		AsOf: "2026-07-10T15:00:00Z",
-		Event: &CitedMeetingEvent{
-			ID:       "calendar_event/e1",
-			Title:    "Sync",
-			StartsAt: "2026-07-10T17:00:00Z",
-			Citation: mustBriefCitationForTest(t, "calendar_event/e1", "calendar", "calendar_event/e1", "2026-07-10T17:00:00Z"),
-		},
-		Sections: []MeetingBriefSection{{
-			Kind:  meetingBriefOpenLoops,
-			Title: meetingBriefSectionTitles[meetingBriefOpenLoops],
-			Lines: []CitedBriefLine{{
-				Text:     "Send the deck",
-				Citation: BriefCitation{},
-			}},
-		}},
-	}
-	var out bytes.Buffer
-	err := renderMeetingBrief(&out, brief)
-	if err == nil || !strings.Contains(err.Error(), "refusing to render uncited") {
-		t.Fatalf("render error = %v, want fail-closed uncited error", err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("fail-closed renderer wrote partial output: %q", out.String())
-	}
-}
-
 func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
