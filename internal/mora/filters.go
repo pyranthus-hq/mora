@@ -2,10 +2,8 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/previewfilter"
-	"sort"
 	"strings"
 	"time"
 )
@@ -97,79 +95,13 @@ func memoryMentionsEntity(m Memory, idSet map[string]bool) bool {
 // briefOpts.entityIDSet / the meeting-prep attendee filter; the canonical id is
 // the edges key for evidence assembly. One indexed query; buildDigest stays DB-free.
 func resolveEntityID(ctx context.Context, cfg Config, name string) (canonical string, idSet map[string]bool, ok bool, ambiguous []string, err error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", nil, false, nil, nil
-	}
 	db, err := ensureIndexDB(ctx, cfg)
 	if err != nil {
 		return "", nil, false, nil, err
 	}
 	defer db.Close()
-
-	rows, err := db.QueryContext(ctx, `SELECT id, display_name, aliases, mention_count FROM entities WHERE id NOT LIKE 'memory:%'`)
-	if err != nil {
-		return "", nil, false, nil, err
-	}
-	type cand struct {
-		id, display, aliasesJSON string
-		aliases                  []string
-	}
-	isAddr := strings.Contains(name, "@") || strings.HasPrefix(name, "+")
-	wantID := personID(name)
-	var aliasHit *cand
-	var byName []cand
-	for rows.Next() {
-		var c cand
-		var mention int
-		if err := rows.Scan(&c.id, &c.display, &c.aliasesJSON, &mention); err != nil {
-			rows.Close()
-			return "", nil, false, nil, err
-		}
-		if c.aliasesJSON != "" {
-			_ = json.Unmarshal([]byte(c.aliasesJSON), &c.aliases)
-		}
-		if isAddr && aliasIDSet(c.id, c.aliases)[wantID] {
-			cc := c
-			aliasHit = &cc // exact address/handle match is unique to a cluster
-		}
-		if strings.EqualFold(c.display, name) || aliasMatches(c.aliasesJSON, name) {
-			byName = append(byName, c)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return "", nil, false, nil, err
-	}
-
-	if aliasHit != nil {
-		return aliasHit.id, aliasIDSet(aliasHit.id, aliasHit.aliases), true, nil, nil
-	}
-	uniq := map[string]cand{}
-	for _, c := range byName {
-		uniq[c.id] = c
-	}
-	switch len(uniq) {
-	case 0:
-		return "", nil, false, nil, nil
-	case 1:
-		for _, c := range uniq {
-			return c.id, aliasIDSet(c.id, c.aliases), true, nil, nil
-		}
-	}
-	ids := make([]string, 0, len(uniq))
-	for id := range uniq {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		disp := uniq[id].display
-		if disp == "" {
-			disp = strings.TrimPrefix(id, "person:")
-		}
-		ambiguous = append(ambiguous, disp+" <"+strings.TrimPrefix(id, "person:")+">")
-	}
-	return "", nil, false, ambiguous, nil
+	resolved, err := previewfilter.ResolveEntity(ctx, db, name)
+	return resolved.Canonical, resolved.IDSet, resolved.OK, resolved.Ambiguous, err
 }
 
 // clampSinceDays normalizes a since-days flag value: a negative is treated as no
