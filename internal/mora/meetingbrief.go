@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	evidencepkg "github.com/pyranthus-hq/mora/internal/evidence"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	meetingpkg "github.com/pyranthus-hq/mora/internal/meeting"
 	saliencepkg "github.com/pyranthus-hq/mora/internal/salience"
@@ -595,24 +596,7 @@ func meetingBriefMemories(cfg Config) ([]Memory, error) {
 func meetingBriefLineCount(brief MeetingBrief) int { return meetingpkg.LineCount(brief) }
 
 func citationForMemory(m Memory, source, date string) (BriefCitation, error) {
-	channel := strings.TrimSpace(m.Provider)
-	if channel == "" {
-		channel = strings.TrimSpace(m.Type)
-	}
-	source = strings.TrimSpace(source)
-	if source == "" {
-		source = strings.TrimSpace(evidenceSource(m))
-	}
-	if source == "" {
-		source = channel
-	}
-	if channel == "" {
-		channel = source
-	}
-	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(date)); err == nil {
-		date = parsed.UTC().Format(time.RFC3339)
-	}
-	return newBriefCitation(m.ID, channel, source, date)
+	return evidencepkg.ForMemory(m, source, date)
 }
 
 func attendeeAtomForIdentity(identity string) (govAtom, error) {
