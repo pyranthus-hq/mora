@@ -193,6 +193,67 @@ Checks are collected into an ordered slice (not a map) precisely so both the JSO
 
 `--pulse` skips every check above and runs ONLY the per-source freshness classification: all fresh → one `ok` line, exit 0. Any source `stale`/`failed`/`never` → prints the red banner (`healthBannerFromSources`, shared with the daily/meeting brief — see [sync & freshness](./11-sync-and-freshness.md)), posts a best-effort native toast (`notifyHealthAlarm`, the same GOOS/`MORA_NO_NOTIFY`-gated seam as the brief's toast), and returns the TYPED `exitCodeError{code: 2}` (`loop.go`) so `cmd/mora/main.go` exits 2 — distinct from `--strict`'s generic non-zero, so a caller can tell "sick" (`--pulse`) from "broken" (`--strict`). `--pulse --json` emits ONLY `{"sources": [...]}`. No banner text reaches the JSON stream. Meant to be scheduled: `mora schedule install doctor-pulse` installs a daily 09:00 job.
 
+## Error codes and exit codes (CON-03 / CON-07)
+
+Mora publishes a machine-checked error taxonomy so an unattended agent can branch on a code instead of matching English. `internal/mora/errors.go` declares it; `internal/mora/eval/error-code-registry.json` (`schema_version: 1`, issue 416) publishes it; `TestErrorCodeRegistryMatchesSource` parses the source with `go/ast` and fails if the two drift in either direction — a code declared but not registered, or registered with no constant behind it.
+
+A failure reaches a caller as a `moraError` carrying `Code`, `Class`, `Source`, and `Msg`. `moraError.Unwrap` returns the cause, so `errors.Is(err, errIndexUnmarkable)` and the other package sentinels still match through the wrap.
+
+### The codes
+
+| Code | Class | `error_class` | Retryable | Meaning |
+|---|---|---|---|---|
+| `usage.unknown_flag` | usage | — | no | Unknown or malformed flag. |
+| `usage.unknown_value` | usage | — | no | A flag or positional carried a value the command does not accept. |
+| `usage.missing_argument` | usage | — | no | A required positional argument was absent. |
+| `connector.malformed_response` | connector | `malformed` | no | A connector process, API, or local database returned a payload Mora could not parse. |
+| `connector.unavailable` | connector | `unavailable` | yes | A connector's process, binary, database, or endpoint could not be reached. |
+| `connector.unauthorized` | connector | `unauthorized` | no | An authentication or permission refusal Mora **directly observed** — never an inference from an error string. |
+| `connector.stale` | connector | `stale` | yes | A source last succeeded longer ago than its freshness budget allows. |
+| `connector.empty` | connector | `empty` | no | A source read cleanly and returned zero items. Defined here; emitted per-source in Phase 2 (ISO-02). |
+| `connector.unclassified` | connector | `unclassified` | no | A failure with no typed cause, and the read-time backfill for records persisted before the taxonomy shipped. |
+| `data.not_found` | data | — | no | A requested memory, entity, or record does not exist. |
+| `data.corrupt` | data | — | no | A vault or state file exists but could not be decoded. |
+| `index.unavailable` | index | — | yes | The index database could not be opened. `mora index rebuild` is the repair. |
+| `index.schema_mismatch` | index | — | no | The index exists but its tables or columns do not match this build. |
+| `internal.unexpected` | internal | — | no | A failure Mora cannot attribute to caller, connector, or data. A Mora bug. |
+
+The `permission` class is declared with **no code**. Mora currently *infers* Full Disk Access from an error string rather than observing a refusal, and Phase 3 (DOC-03) owns replacing that inference; minting a permission code now would publish the same unverified claim in typed form.
+
+### `error_class` → `sourceHealth.state` is many-to-one
+
+CON-07's five discriminations are an **orthogonal axis**, not a fourth state vocabulary. A connector failure carries both: a `state` (what a human or a banner reads) and an `error_class` (what a machine branches on).
+
+| `error_class` | `sourceHealth.state` |
+|---|---|
+| `unavailable` | `failed` |
+| `unauthorized` | `failed` |
+| `malformed` | `failed` |
+| `unclassified` | `failed` |
+| `stale` | `stale` |
+| `empty` | `fresh`, with `item_count` 0 |
+
+Three `failed` sources are now distinguishable from one another without reading `last_error` prose. The three existing state vocabularies are **unchanged and no fourth is introduced**:
+
+- `fresh | stale | failed | never` — `sourceHealth.State` (`health.go`), used by `doctor`, `sync status`, and the banner.
+- `healthy | degraded | unhealthy` — the aggregate health verdict.
+- `fresh | dirty | degraded | failed | never` — `indexHealth.State` (the index arm).
+
+### Exit codes
+
+Three process exit codes ship, and this taxonomy grandfathered all three rather than moving any of them:
+
+| Exit | Meaning | Produced by |
+|---|---|---|
+| `0` | Success. | every command |
+| `1` | Generic failure. Every error class maps here, **including `doctor --strict` on an unhealthy report**. | `main.go` fallback, `exitCodeForClass` |
+| `2` | `doctor --pulse`: a source, the index, or a producer is unhealthy. Sick, not broken. | `cmdDoctorPulse` (`doctor.go`) |
+| `10` | `loop begin`: this period already succeeded. The idempotent skip. | `loopSkipExitCode` (`loop.go`) |
+
+**3 through 9 are permanently reserved-unused** — those statuses are widely squatted by shells, test runners, and wrapper scripts, so leaving them unallocated means a future Mora code can never be confused with one of those conventions. A future phase allocates at **11 or above**. `TestExitCodeAllocationIsGrandfathered` fails if `exitCodeForClass` ever returns a status in the reserved band, or a status below 11 that is not 1, 2, or 10.
+
+**Why `doctor --strict` unhealthy still exits 1 rather than 2.** The inconsistency is real and measured: on one vault with a missing index, `doctor --pulse` exits 2 and `doctor --strict` exits 1. Changing it was put to the maintainer and declined. A process exit status is the one contract here with no additive migration path, and the machine consumer this taxonomy serves already has a clean signal — `doctor --json --strict` prints the full report (`"healthy": false`) *before* returning the error, so a JSON caller distinguishes unhealthy (report, exit 1) from crashed (no report, exit 1) today. Only a shell consumer reading a bare `$?` without `--json` cannot, and that consumer gets a non-zero either way.
+
 ## `init` config-preservation
 
 `cmdInit` (`config.go`) **never resets an existing install's config.** It calls `loadConfig()` (`config.go`) first, which returns defaults only when no `config.toml` exists. An existing file is parsed and its `vault_dir`/`data_dir`/`state_dir` preserved. A re-run of `init` therefore cannot repoint Mora away from a custom vault and orphan it (the failure that `bba2c6c fix(init)` corrected). `--vault` is the only override, applied on top of the loaded config (`config.go`). It then `MkdirAll`s all dirs (0700), writes config (atomic, 0600), scaffolds control files (`scaffoldControlFiles` skips files that already exist, `config.go`), rebuilds the index, and finally launches `runSetupMenu` — which itself is TTY-guarded (`setup.go`): on a non-TTY stdin it prints a hint and returns immediately, never blocking CI/scripts.
