@@ -48,12 +48,13 @@ const (
 )
 
 type Evidence struct {
-	MemoryID, MessageRef, Text, OccurredAt string
-	Party                                  Party
-	Authored                               bool
-	CounterpartyKeys                       []string
-	Citation                               evidence.Citation
-	CitationEvidenceRef                    string
+	MemoryID, MessageRef, BlockRef, Text, OccurredAt string
+	Party                                            Party
+	Authored                                         bool
+	CounterpartyKeys                                 []string
+	Citation                                         evidence.Citation
+	Source                                           string
+	CitationEvidenceRef                              string
 }
 type LifecycleResult struct {
 	Item            Item
