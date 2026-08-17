@@ -744,8 +744,8 @@
       "path": "usage queries",
       "kind": "subcommand",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.usage.queries"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "disconnect google",
@@ -772,15 +772,15 @@
       "path": "hook session-start",
       "kind": "subcommand",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.hook.session-start"
+      "json_contract": "exempt",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
     },
     {
       "path": "hook recall",
       "kind": "subcommand",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.hook.recall"
+      "json_contract": "exempt",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
     },
     {
       "path": "hook install",

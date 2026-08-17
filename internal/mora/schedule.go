@@ -50,10 +50,32 @@ func cmdSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		}
 		return uninstallSchedule(stdout, cfg, args[1])
 	case "run":
+		jsonOut := false
+		rest := make([]string, 0, len(args))
+		for _, a := range args {
+			if a == "--json" {
+				jsonOut = true
+				continue
+			}
+			rest = append(rest, a)
+		}
+		args = rest
 		if len(args) != 2 || args[1] != "pulse-daily" {
 			return errors.New("usage: mora schedule run pulse-daily")
 		}
-		return runScheduledPulseDaily(ctx, cfg, stdout, stderr)
+		// Under --json the scheduled run's own progress is a diagnostic; the
+		// receipt is the document. The job's exit status is unchanged.
+		out := stdout
+		if jsonOut {
+			out = stderr
+		}
+		if err := runScheduledPulseDaily(ctx, cfg, out, stderr); err != nil {
+			return err
+		}
+		if jsonOut {
+			return emitReceipt(stdout, "mora.schedule.run", 1, scheduleRunReceipt{Job: args[1], Ran: true})
+		}
+		return nil
 	default:
 		return errors.New("usage: mora schedule install|list|uninstall|run")
 	}
@@ -65,6 +87,14 @@ func cmdSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) e
 // identity into cmdPulse's heartbeat/commit fence, and records exactly one
 // terminal transition before returning. Exit 10 is an idempotent scheduler
 // success (today already completed), not a failed OS job.
+// scheduleRunReceipt is the machine form of one scheduled job invocation. A
+// skipped once-per-period run is still `ran: true` at the CLI level — the gate
+// is reported by the loop receipts, not by this one.
+type scheduleRunReceipt struct {
+	Job string `json:"job"`
+	Ran bool   `json:"ran"`
+}
+
 func runScheduledPulseDaily(ctx context.Context, cfg Config, stdout, stderr io.Writer) error {
 	const loopID = "daily-brief"
 	now := loopClock()

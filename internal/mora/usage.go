@@ -21,16 +21,48 @@ import (
 // the same dispatcher concurrently through separate file descriptors.
 var usageAppendMu sync.Mutex
 
+// usageStateReceipt is the machine form of a usage-tracking toggle. These
+// commands were silent on success; the receipt is the only stdout they produce,
+// and only under --json.
+type usageStateReceipt struct {
+	Setting string `json:"setting"`
+	Enabled bool   `json:"enabled"`
+}
+
 func cmdUsage(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	jsonOut := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" && (len(args) == 0 || args[0] != "report") {
+			jsonOut = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if len(args) > 0 && args[0] != "report" {
+		args = rest
+	}
+	emitState := func(setting string, enabled bool, err error) error {
+		if err != nil {
+			return err
+		}
+		if !jsonOut {
+			return nil
+		}
+		return emitReceipt(stdout, "mora.usage."+setting, 1, usageStateReceipt{Setting: setting, Enabled: enabled})
+	}
 	switch {
 	case len(args) >= 1 && args[0] == "off":
-		return atomicWrite(filepath.Join(cfg.StateDir, "usage", "OFF"), []byte("off\n"), 0o600)
+		return emitState("off", false, atomicWrite(filepath.Join(cfg.StateDir, "usage", "OFF"), []byte("off\n"), 0o600))
 	case len(args) >= 1 && args[0] == "on":
-		return os.Remove(filepath.Join(cfg.StateDir, "usage", "OFF"))
+		if err := os.Remove(filepath.Join(cfg.StateDir, "usage", "OFF")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return emitState("on", true, nil)
 	case len(args) >= 1 && args[0] == "report":
 		fs := flag.NewFlagSet("usage report", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
@@ -48,12 +80,12 @@ func cmdUsage(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		marker := filepath.Join(cfg.StateDir, "usage", "QUERIES")
 		switch {
 		case len(args) >= 2 && args[1] == "on":
-			return atomicWrite(marker, []byte("on\n"), 0o600)
+			return emitState("queries.on", true, atomicWrite(marker, []byte("on\n"), 0o600))
 		case len(args) >= 2 && args[1] == "off":
 			if err := os.Remove(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
-			return nil
+			return emitState("queries.off", false, nil)
 		default:
 			return errors.New("usage: mora usage queries <on|off>")
 		}

@@ -649,12 +649,23 @@ func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now tim
 // structured metadata (the Meta-in-content-hash change means a normal sync already
 // rewrites within the window; --full extends the lookback to all-time so the
 // rewrite reaches memories older than the default window), then rebuilds the graph.
+// reingestReceipt reports what one reingest run did. Phase 2 (ISO-02) may add
+// the per-source breakdown; additions are minor, removals need a bump.
+type reingestReceipt struct {
+	Full          bool `json:"full"`
+	Items         int  `json:"items"`
+	FailedSources int  `json:"failed_sources"`
+}
+
 func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	full := false
+	jsonOut := false
 	for _, a := range args {
 		switch a {
 		case "--full":
 			full = true
+		case "--json":
+			jsonOut = true
 		case "-h", "--help":
 			fmt.Fprintln(stdout, "usage: mora reingest [--full]")
 			fmt.Fprintln(stdout, "  re-fetch enabled sources, rewrite memories with the latest")
@@ -669,6 +680,9 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	if err != nil {
 		return err
 	}
+	// Per-source progress is a diagnostic, not the result: under --json it moves
+	// to stderr so stdout carries exactly one document (CON-06).
+	progress := progressWriter(stdout, stderr, jsonOut)
 	sources, _ := loadSources(cfg)
 	total, failures := 0, 0
 	for _, s := range sources {
@@ -683,15 +697,29 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 				s.SinceDays = -1 // all-time (windowForIMessage)
 			}
 		}
-		n, e := ingestSource(cfg, s, stdout)
+		n, e := ingestSource(cfg, s, progress)
 		total += n
 		if e != nil {
 			failures++
-			warnf(stdout, "%s reingest incomplete (resumable): %v", s.Name, e)
+			warnf(progress, "%s reingest incomplete (resumable): %v", s.Name, e)
 		}
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return err
+	}
+	if jsonOut {
+		// The receipt ships BEFORE the aggregate failure return, so a partial
+		// reingest never hands a caller exit 1 with an empty stdout — the same
+		// rule `ingest run` follows.
+		if eerr := emitReceipt(stdout, "mora.reingest", 1, reingestReceipt{
+			Full: full, Items: total, FailedSources: failures,
+		}); eerr != nil {
+			return eerr
+		}
+		if failures > 0 {
+			return fmt.Errorf("%d source(s) failed to reingest; data may be stale (run `mora sync status`)", failures)
+		}
+		return nil
 	}
 	suffix := ""
 	if full {
