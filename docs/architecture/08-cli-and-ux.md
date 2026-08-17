@@ -19,7 +19,27 @@ clean data to a machine or agent.
 
 ## `mora capabilities`
 
-`mora capabilities --json` emits the `mora.capabilities` v1 receipt. Its top-level payload names the build version, the currently published CLI result contracts, the static connector catalog, registered MCP tools and configured MCP write policy, and known receipt schemas. Connector and global `repair` / `deep_link` support use the stable tri-state values `supported`, `unsupported`, or `planned`; Phase 3 and Phase 5 change those values when the features land rather than revising the receipt schema. The deliberately omitted `gdrive` connector remains absent because it is not a user-enableable catalog entry.
+`mora capabilities --json` emits the `mora.capabilities` v1 receipt. Its top-level payload names the build version, every command path with its JSON contract and payload schema, the static connector catalog, every published error code, the allocated and reserved process exit codes, registered MCP tools and configured MCP write policy, and known receipt schemas. Connector and global `repair` / `deep_link` support use the stable tri-state values `supported`, `unsupported`, or `planned`; Phase 3 and Phase 5 change those values when the features land rather than revising the receipt schema. The deliberately omitted `gdrive` connector remains absent because it is not a user-enableable catalog entry.
+
+### `capabilities` is derived, so edit the registry and not the payload
+
+**Do not hand-edit `internal/mora/capabilities.go` to describe a command, an error code, or an exit code.** Four of its sections are projections of a source that already has its own drift test:
+
+| Section | Source | Mechanism |
+|---|---|---|
+| `commands` | `internal/mora/eval/cli-command-registry.json` | `go:embed`, one payload row per registry row |
+| `schemas` | the same registry's distinct non-exempt `payload` values, plus `moraExtraSchemas` | derived at runtime |
+| `error_codes` | `internal/mora/eval/error-code-registry.json` | `go:embed` |
+| `exit_codes` | the same file's `exit_codes`, `reserved_exit_codes`, and `first_allocatable_exit_code` | `go:embed` |
+| `connectors` | `connectorCatalog` (`internal/mora/mora.go`) | walked at runtime |
+| `mcp.tools` / `mcp.schemas` | `mcpToolNames()` | walked at runtime |
+| `mcp.write_policy` | `Config.mcpWritePolicy()` | read per invocation, never a constant |
+
+`TestCapabilitiesMatchesRegistries` asserts set equality both ways for each section, and `TestCapabilitiesWritePolicyFollowsConfig` drives the config through all three policy values to prove the field is live.
+
+Two honest limits, stated so nobody over-trusts the test. First, because the two registries are embedded, an edit to either file moves the payload and the test's expectation together — that test therefore catches a **projection** bug (a filtered, truncated, or field-dropping copy), not registry drift. Registry drift is caught by `TestCLIRegistryMatchesProductionDispatch`, `TestContractEveryPayloadIsVersioned`, `TestErrorCodeRegistryMatchesSource`, and the golden corpus. Second, per-connector `incremental_sync` has no registry behind it: it is asserted in `capabilitiesIncrementalSync`, which carries the evidence for today's `unsupported` value in its comment. Phase 4 (ING-01) flips it, and nothing automatic will catch it if that phase forgets.
+
+Every element of `commands` and `error_codes` carries the same key set, with `reason` and `error_class` emitted empty rather than omitted. The compatibility gate walks arrays index-wise, so uneven key sets can report a false removal once an array reorders.
 
 The machine-readable command contract is
 `internal/mora/eval/cli-command-registry.json`, with row behavior evidence in
