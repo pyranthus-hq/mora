@@ -618,7 +618,7 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		logUsage(cfg, usageEvent{Tool: "brief", Results: meetingBriefLineCount(brief)})
 		if *jsonOut {
-			return emit(stdout, brief, true)
+			return emitReceipt(stdout, "mora.brief", 1, brief)
 		}
 		return renderMeetingBrief(stdout, brief)
 	}
@@ -646,7 +646,7 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if *jsonOut {
 		// Byte-clean structured result; --envelope has no effect on --json (the
 		// envelope is a human-stdout addition, like pulse --digest --envelope).
-		return emit(stdout, briefResult{Generated: generated, Body: body}, *jsonOut)
+		return emitReceipt(stdout, "mora.brief", 1, briefResult{Generated: generated, Body: body})
 	}
 	if generated {
 		// Freshly generated: apply the TTY skin (off-TTY this is a no-op, byte-clean).

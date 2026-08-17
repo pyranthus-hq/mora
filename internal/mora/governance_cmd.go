@@ -52,6 +52,7 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	email := fs.String("email", "", "forget a 1:1 email counterpart by address")
 	dryRun := fs.Bool("dry-run", false, "preview which memories would be removed")
 	yes := fs.Bool("yes", false, "confirm removal (destructive)")
+	jsonOut := fs.Bool("json", false, "emit JSON")
 	// NOT flagsFirst: forget's selectors (--chat/--handle/--email) are value-taking,
 	// which flagsFirst would corrupt. forget takes no positionals, so plain Parse works.
 	if err := fs.Parse(args); err != nil {
@@ -74,6 +75,11 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	if *dryRun {
+		if *jsonOut {
+			// A dry run is still an outcome a caller acts on, so it gets the same
+			// schema with dry_run true and nothing removed.
+			return emitReceipt(stdout, "mora.forget", 1, newForgetReceipt(label, true, matches, 0, ""))
+		}
 		fmt.Fprintf(stdout, "forget %s would remove %d %s:\n", label, len(matches), memWord(len(matches)))
 		for _, m := range matches {
 			fmt.Fprintf(stdout, "  %s\n", m.ID)
@@ -146,9 +152,43 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "forgot %s: removed %d %s; future syncs suppressed (entry %s)\n", label, removed, memWord(removed), entry.ID)
+	// The reversal note stays on stderr in both branches — stdout carries the
+	// document alone under --json (CON-06).
 	fmt.Fprintln(stderr, "note: this stops Mora from holding and re-acquiring the content locally; it does NOT delete anything at Gmail/Apple. Reverse with `mora unforget "+entry.ID+"`.")
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.forget", 1, newForgetReceipt(label, false, matches, removed, entry.ID))
+	}
+	fmt.Fprintf(stdout, "forgot %s: removed %d %s; future syncs suppressed (entry %s)\n", label, removed, memWord(removed), entry.ID)
 	return nil
+}
+
+// forgetReceipt is the machine form of a forget outcome. memory_ids lists what
+// matched, so a dry run tells a caller exactly what an --yes run would remove.
+type forgetReceipt struct {
+	Target     string   `json:"target"`
+	DryRun     bool     `json:"dry_run"`
+	Matched    int      `json:"matched"`
+	Removed    int      `json:"removed"`
+	MemoryIDs  []string `json:"memory_ids"`
+	EntryID    string   `json:"entry_id"`
+	Suppressed bool     `json:"suppressed"`
+}
+
+func newForgetReceipt(target string, dryRun bool, matches []Memory, removed int, entryID string) forgetReceipt {
+	ids := make([]string, 0, len(matches))
+	for _, m := range matches {
+		ids = append(ids, m.ID)
+	}
+	sort.Strings(ids)
+	return forgetReceipt{
+		Target:     target,
+		DryRun:     dryRun,
+		Matched:    len(matches),
+		Removed:    removed,
+		MemoryIDs:  ids,
+		EntryID:    entryID,
+		Suppressed: entryID != "",
+	}
 }
 
 // testHookForgetAfterScan fires while cmdForget holds the governance lease after
@@ -163,6 +203,7 @@ func cmdUnforget(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	fs := flag.NewFlagSet("unforget", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	yes := fs.Bool("yes", false, "confirm")
+	jsonOut := fs.Bool("json", false, "emit JSON")
 	if err := fs.Parse(flagsFirst(args)); err != nil {
 		return err
 	}
@@ -198,8 +239,16 @@ func cmdUnforget(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		// The op REMAINS -> the index reads dirty until a rebuild covers the change.
 		return fmt.Errorf("unforgot %s, but the search index could not be updated: %w — run `mora index rebuild`", fs.Arg(0), err)
 	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.unforget", 1, unforgetReceipt{EntryID: fs.Arg(0), Revoked: true})
+	}
 	fmt.Fprintf(stdout, "unforgot %s; future syncs may re-ingest this content (within the connector's lookback window)\n", fs.Arg(0))
 	return nil
+}
+
+type unforgetReceipt struct {
+	EntryID string `json:"entry_id"`
+	Revoked bool   `json:"revoked"`
 }
 
 // forgetTarget builds the stable-atom key from exactly one selector flag. A
