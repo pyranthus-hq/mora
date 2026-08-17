@@ -262,6 +262,18 @@ func runeIndexFold(runes []rune, phrase string) int {
 	return -1
 }
 
+// Qualifies applies the deterministic urgent-shelf gate to caller-supplied identity and time facts.
+func Qualifies(human bool, occurredAt, now time.Time, title, body string, starred bool) (bool, string) {
+	if !human || !withinUrgentRecency(occurredAt, now) {
+		return false, ""
+	}
+	phrase := matchDeadlinePhrase(title, body)
+	if phrase == "" && !starred {
+		return false, ""
+	}
+	return true, phrase
+}
+
 func Labels(m memory.Memory) (bool, bool, bool)        { return gmailLabels(m) }
 func Score(m memory.Memory, phrase string) int         { return urgencyScore(m, phrase) }
 func Within(t, now time.Time) bool                     { return withinUrgentRecency(t, now) }

@@ -9,15 +9,8 @@ import (
 const urgentShelfCap = 5
 
 func isUrgent(m Memory, now time.Time) (bool, string) {
-	if !hasHumanSender(m) || !urgencypkg.Within(itemOccurredAt(m), now) {
-		return false, ""
-	}
-	phrase := urgencypkg.MatchDeadline(m.Title, m.Text)
 	_, _, starred := urgencypkg.Labels(m)
-	if phrase == "" && !starred {
-		return false, ""
-	}
-	return true, phrase
+	return urgencypkg.Qualifies(hasHumanSender(m), itemOccurredAt(m), now, m.Title, m.Text, starred)
 }
 func hasHumanSender(m Memory) bool {
 	_, senders, _, _ := personRefs(m)
