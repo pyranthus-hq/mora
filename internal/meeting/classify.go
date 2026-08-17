@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	commitmentpkg "github.com/pyranthus-hq/mora/internal/commitment"
 	graphpkg "github.com/pyranthus-hq/mora/internal/graph"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -21,8 +22,6 @@ var thirdPartyAssignmentPrefixes = []string{"action item for", "action items for
 var unresolvedThreadPhrases = []string{"still waiting", "not decided", "haven't decided", "have not decided", "unresolved", "open question", "tbd", "pending", "blocked on", "need to decide", "decide whether", "circle back", "follow up", "follow-up", "next steps", "awaiting"}
 var stalenessGuardPhrases = []string{"moved to ", "moving to ", "relocated to ", "new role", "new title", "new job", "new company", "now at ", "no longer at", "no longer with", "formerly at", "formerly with", "changed roles", "changed companies", "changed jobs"}
 var materialContextPhrases = []string{"decision", "proposal", "contract", "pilot", "launch", "roadmap", "budget", "pricing", "fundraising", "funding", "hiring", "partnership", "introduction", "intro", "document", "deck", "review", "approval", "deadline", "next step", "project:", "milestone"}
-var firstPersonCommitmentPhrases = []string{"i'll ", "i'd ", "i will ", "i owe ", "i need to ", "i should ", "i promised ", "let me ", "i can send", "i can share", "i can introduce", "i'll follow up", "i will follow up", "i'll get back", "i will get back"}
-var directRequestPhrases = []string{"can you ", "could you ", "would you ", "please send", "please share", "please review", "please confirm", "please sign", "please introduce", "please add", "need your approval", "needs your approval", "need your sign-off", "waiting for your", "get back to me", "when can you", "do you mind"}
 var nonObligationQuestionPhrases = []string{"questions about your order", "any questions", "how did we do", "how are we doing", "rate your", "your feedback", "give feedback", "leave a review", "take our survey", "was this helpful", "view in browser", "unsubscribe", "manage your subscription"}
 var interrogativeOpeners = []string{"who ", "what ", "when ", "where ", "why ", "how ", "which ", "whose ", "is there", "are there", "is it", "do we", "can you", "could you", "would you", "will you", "do you", "did you", "are you", "have you", "should we", "should i", "any chance", "when can", "let me know if"}
 
@@ -117,12 +116,12 @@ func IsTwoPartyExchange(m memory.Memory, self map[string]bool, attendees ...stri
 
 // FirstPersonCommitment reports whether text contains an explicit user promise.
 func FirstPersonCommitment(text string) bool {
-	return ContainsAnyPhrase(strings.ToLower(text), firstPersonCommitmentPhrases)
+	return commitmentpkg.FirstPersonCommitment(text)
 }
 
 // DirectRequest reports whether text contains an explicit request.
 func DirectRequest(text string) bool {
-	return ContainsAnyPhrase(strings.ToLower(text), directRequestPhrases)
+	return commitmentpkg.DirectRequest(text)
 }
 
 // UserAuthoredTask reports whether the memory is a locally authored task.
@@ -172,7 +171,7 @@ func GmailActionableAsk(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
-	return ContainsAnyPhrase(lower, interrogativeOpeners) || ContainsAnyPhrase(lower, directRequestPhrases)
+	return ContainsAnyPhrase(lower, interrogativeOpeners) || DirectRequest(lower)
 }
 
 // UserOwnedOpenLoop applies provider-specific direction and ownership policy.

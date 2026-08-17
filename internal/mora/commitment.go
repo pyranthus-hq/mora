@@ -9,7 +9,6 @@ import (
 	"fmt"
 	commitmentpkg "github.com/pyranthus-hq/mora/internal/commitment"
 	meetingpkg "github.com/pyranthus-hq/mora/internal/meeting"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -132,11 +131,32 @@ type commitmentSnapshot struct {
 }
 
 type commitmentSpeechContext struct {
-	Author        govAtom
-	Addressee     govAtom
-	Self          govAtom
-	Counterparty  govAtom
-	ReportedActor *govAtom
+	Author, Addressee, Self, Counterparty govAtom
+	ReportedActor                         *govAtom
+}
+
+func commitmentSpeechAtom(a govAtom) commitmentpkg.Atom {
+	return commitmentpkg.Atom{Provider: a.Provider, Kind: a.Kind, Value: a.Value}
+}
+func commitmentGovAtom(a commitmentpkg.Atom) govAtom {
+	return govAtom{Provider: a.Provider, Kind: a.Kind, Value: a.Value}
+}
+func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (govAtom, Direction, bool) {
+	var reported *commitmentpkg.Atom
+	if speech.ReportedActor != nil {
+		atom := commitmentSpeechAtom(*speech.ReportedActor)
+		reported = &atom
+	}
+	owner, direction, ok := commitmentpkg.ClassifySpeech(text, commitmentpkg.SpeechContext{Author: commitmentSpeechAtom(speech.Author), Addressee: commitmentSpeechAtom(speech.Addressee), Self: commitmentSpeechAtom(speech.Self), Counterparty: commitmentSpeechAtom(speech.Counterparty), ReportedActor: reported})
+	return commitmentGovAtom(owner), direction, ok
+}
+func directCommitmentRequest(text string) bool {
+	return commitmentpkg.DirectRequest(text) || containsAnyPhrase(text, []string{"please bring", "needs your ", "still needs your "})
+}
+func firstPersonCommitment(text string) bool        { return commitmentpkg.FirstPersonCommitment(text) }
+func userAuthoredPromiseToAnother(text string) bool { return commitmentpkg.ManualPromise(text) }
+func userAuthoredPromiseCounterpartyLabel(text string) string {
+	return commitmentpkg.ManualPromiseCounterpartyLabel(text)
 }
 
 // commitmentID is versioned and length-prefixed exactly like the scorer's
@@ -154,83 +174,6 @@ func atomEqual(a, b govAtom) bool {
 
 func atomPresent(a govAtom) bool {
 	return strings.TrimSpace(a.Kind) != "" && strings.TrimSpace(a.Value) != ""
-}
-
-func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (owner govAtom, direction Direction, ok bool) {
-	text = oneLine(text)
-	lower := strings.ToLower(text)
-	if text == "" || !atomPresent(speech.Self) || !atomPresent(speech.Counterparty) {
-		return govAtom{}, "", false
-	}
-
-	if speech.ReportedActor != nil && atomPresent(*speech.ReportedActor) {
-		owner = *speech.ReportedActor
-	} else if directCommitmentRequest(lower) {
-		if !atomPresent(speech.Addressee) {
-			return govAtom{}, "", false
-		}
-		owner = speech.Addressee
-	} else if firstPersonCommitment(lower) {
-		if !atomPresent(speech.Author) || nonActionableAcknowledgement(lower) {
-			return govAtom{}, "", false
-		}
-		owner = speech.Author
-	} else {
-		return govAtom{}, "", false
-	}
-
-	switch {
-	case atomEqual(owner, speech.Self):
-		return owner, commitOwedBySelf, true
-	case atomEqual(owner, speech.Counterparty):
-		return owner, commitOwedByCounterparty, true
-	default:
-		// A third actor is not silently collapsed onto the attendee. The caller may
-		// materialize it once it can supply that actor's stable atom.
-		return govAtom{}, "", false
-	}
-}
-
-func directCommitmentRequest(lower string) bool {
-	return meetingpkg.DirectRequest(lower) ||
-		containsAnyPhrase(lower, []string{"please bring", "needs your ", "still needs your "})
-}
-
-func firstPersonCommitment(lower string) bool {
-	if !meetingpkg.FirstPersonCommitment(lower) {
-		return false
-	}
-	// "I'd" is either "I would" (a commitment) or "I had" (a report about the
-	// past). A past-perfect modifier makes the latter explicit and must not turn a
-	// completed action into new future work.
-	if containsAnyPhrase(lower, []string{"i'd already ", "i'd previously ", "i'd just "}) {
-		return false
-	}
-	return containsAnyPhrase(lower, []string{
-		"send", "share", "review", "confirm", "sign", "bring", "upload", "deliver",
-		"call", "follow up", "get back", "organize", "archive", "initial", "choose",
-		"return", "introduce", "leave", "export", "provide", "finish", "prepare",
-		"add", "post", "text", "count", "hold", "reserve", "log",
-	})
-}
-
-var userAuthoredPromiseToAnotherRE = regexp.MustCompile(`(?i)\bi told\s+((?:[\p{L}\p{N}_.’'\-]+\s+){0,3}[\p{L}\p{N}_.’'\-]+)\s+i(?:['’]d|\s+would)\s+`)
-
-func userAuthoredPromiseToAnother(text string) bool {
-	lower := strings.ToLower(oneLine(text))
-	if !userAuthoredPromiseToAnotherRE.MatchString(lower) ||
-		containsAnyPhrase(lower, []string{" i would have ", " i would already ", " i would previously "}) {
-		return false
-	}
-	return firstPersonCommitment(strings.Replace(lower, " i would ", " i will ", 1))
-}
-
-func userAuthoredPromiseCounterpartyLabel(text string) string {
-	match := userAuthoredPromiseToAnotherRE.FindStringSubmatch(oneLine(text))
-	if len(match) != 2 {
-		return ""
-	}
-	return strings.Join(strings.Fields(match[1]), " ")
 }
 
 // reportedActorFor resolves attributed third-person speech only from stable source
@@ -313,15 +256,6 @@ func textNamesPerson(lower string, names []string) bool {
 		}
 	}
 	return false
-}
-
-func nonActionableAcknowledgement(lower string) bool {
-	trimmed := strings.TrimSpace(lower)
-	if !strings.HasPrefix(trimmed, "thanks") && !strings.HasPrefix(trimmed, "thank you") &&
-		!strings.HasPrefix(trimmed, "yep") && !strings.HasPrefix(trimmed, "okay") {
-		return false
-	}
-	return strings.Contains(trimmed, " meet you ") || strings.Contains(trimmed, " see you ")
 }
 
 func canonicalSelfAtom(cfg Config, preferred string) govAtom {

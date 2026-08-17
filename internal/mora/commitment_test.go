@@ -9,63 +9,6 @@ import (
 	"time"
 )
 
-func TestCommitmentDirectionTable(t *testing.T) {
-	self := govAtom{Kind: atomAddress, Value: "self@example.com"}
-	other := govAtom{Kind: atomAddress, Value: "other@example.com"}
-	tests := []struct {
-		name       string
-		text       string
-		author     govAtom
-		addressee  govAtom
-		reported   *govAtom
-		wantOwner  govAtom
-		wantDir    Direction
-		wantExists bool
-	}{
-		{
-			name: "self authored commitment", text: "I will send the outline.",
-			author: self, addressee: other, wantOwner: self, wantDir: commitOwedBySelf, wantExists: true,
-		},
-		{
-			name: "counterparty authored commitment", text: "I'll bring the room key.",
-			author: other, addressee: self, wantOwner: other, wantDir: commitOwedByCounterparty, wantExists: true,
-		},
-		{
-			name: "self request to counterparty", text: "Could you confirm the sample count?",
-			author: self, addressee: other, wantOwner: other, wantDir: commitOwedByCounterparty, wantExists: true,
-		},
-		{
-			name: "counterparty request to self", text: "Please send the receipt.",
-			author: other, addressee: self, wantOwner: self, wantDir: commitOwedBySelf, wantExists: true,
-		},
-		{
-			name: "reported speech follows actor", text: "Milo said he'll upload the selects for me.",
-			author: self, addressee: other, reported: &other, wantOwner: other, wantDir: commitOwedByCounterparty, wantExists: true,
-		},
-		{
-			name: "ambiguous addressee refuses", text: "Could you send the receipt?",
-			author: other, wantExists: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			owner, direction, ok := classifyCommitmentSpeech(tt.text, commitmentSpeechContext{
-				Author: tt.author, Addressee: tt.addressee, Self: self,
-				Counterparty: other, ReportedActor: tt.reported,
-			})
-			if ok != tt.wantExists {
-				t.Fatalf("classified=%v, want %v (owner=%+v direction=%q)", ok, tt.wantExists, owner, direction)
-			}
-			if !ok {
-				return
-			}
-			if !atomEqual(owner, tt.wantOwner) || direction != tt.wantDir {
-				t.Fatalf("owner/direction = %+v/%q, want %+v/%q", owner, direction, tt.wantOwner, tt.wantDir)
-			}
-		})
-	}
-}
-
 // obligations-v2 says the user's own clear promise to another person belongs in
 // owed_by_self. These invented notes exercise that rule without borrowing frozen
 // fixture wording, plus the "concrete future action" near-miss boundary.
