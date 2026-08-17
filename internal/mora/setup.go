@@ -19,7 +19,7 @@ import (
 // `mora connectors list|enable|disable|setup`. It mirrors cmdSources' shape
 // (arg-0 switch, loadConfig up front). stdin is threaded for the Plan-04 setup
 // menu; the OAuth consent path reads NO stdin (browser loopback).
-func cmdConnectors(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora connectors list|enable|disable|setup")
 	}
@@ -451,7 +451,7 @@ func disableConnector(cfg Config, ctype string, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "%s disabled. Ingest stopped; existing memories kept and searchable. Re-enable instantly with `mora connectors enable %s`.\n", ctype, ctype)
 	return nil
 }
-func cmdDisconnect(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdDisconnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) < 1 || args[0] != "google" {
 		return errors.New("usage: mora disconnect google")
 	}

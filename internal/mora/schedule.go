@@ -17,7 +17,7 @@ import (
 
 var scheduleExecutable = os.Executable
 
-func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora schedule install|list|uninstall|run")
 	}
@@ -42,7 +42,7 @@ func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 		if len(args) != 2 || args[1] != "pulse-daily" {
 			return errors.New("usage: mora schedule run pulse-daily")
 		}
-		return runScheduledPulseDaily(ctx, cfg, stdout)
+		return runScheduledPulseDaily(ctx, cfg, stdout, stderr)
 	default:
 		return errors.New("usage: mora schedule install|list|uninstall|run")
 	}
@@ -54,7 +54,7 @@ func cmdSchedule(ctx context.Context, args []string, stdout io.Writer) error {
 // identity into cmdPulse's heartbeat/commit fence, and records exactly one
 // terminal transition before returning. Exit 10 is an idempotent scheduler
 // success (today already completed), not a failed OS job.
-func runScheduledPulseDaily(ctx context.Context, cfg Config, stdout io.Writer) error {
+func runScheduledPulseDaily(ctx context.Context, cfg Config, stdout, stderr io.Writer) error {
 	const loopID = "daily-brief"
 	now := loopClock()
 	if err := loopBegin(cfg, loopID, false, now, stdout); err != nil {
@@ -72,7 +72,7 @@ func runScheduledPulseDaily(ctx context.Context, cfg Config, stdout io.Writer) e
 		"--write", "--digest", "--advance", "--sync", "--brief-file", "--notify",
 		"--loop", loopID, "--loop-run", rec.RunID,
 	}
-	if err := cmdPulse(ctx, pulseArgs, stdout); err != nil {
+	if err := cmdPulse(ctx, pulseArgs, stdout, stderr); err != nil {
 		closeErr := loopDone(cfg, loopID, rec.RunID, false, err.Error(), loopClock(), stdout)
 		return errors.Join(fmt.Errorf("scheduled pulse: %w", err), closeErr)
 	}

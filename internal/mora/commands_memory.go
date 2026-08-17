@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("write", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "global", "scope")
@@ -73,7 +73,7 @@ func cmdWrite(ctx context.Context, args []string, stdout io.Writer) error {
 	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
 	return emit(stdout, m, *jsonOut)
 }
-func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("read", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "json")
@@ -104,7 +104,7 @@ func cmdRead(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	return emit(stdout, m, *jsonOut)
 }
-func cmdList(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "scope")
@@ -126,7 +126,7 @@ func cmdList(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	return emit(stdout, items, *jsonOut)
 }
-func cmdSearch(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && isHelpFlag(args[0]) {
 		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--limit N] [--json]")
 		return nil
@@ -151,7 +151,7 @@ func cmdSearch(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	return emit(stdout, items, jsonOut)
 }
-func cmdDelete(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	yes := fs.Bool("yes", false, "yes")
@@ -192,7 +192,7 @@ func cmdDelete(ctx context.Context, args []string, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "deleted %s\n", m.ID)
 	return nil
 }
-func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("context", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "scope")
@@ -242,7 +242,7 @@ func cmdContext(ctx context.Context, args []string, stdout io.Writer) error {
 // the I3 synthesis envelope (hybrid evidence + deterministic gap analysis + a
 // synthesis prompt the calling agent's model runs). The deterministic floor is
 // fully useful with no model attached.
-func cmdThink(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdThink(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	jsonOut := false
 	scope := ""
 	limit := 8

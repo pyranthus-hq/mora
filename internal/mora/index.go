@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) (err error) {
+func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) (err error) {
 	fs := flag.NewFlagSet("index", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")

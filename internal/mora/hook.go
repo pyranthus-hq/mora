@@ -151,7 +151,7 @@ func cloneRawMessages(in map[string]json.RawMessage) map[string]json.RawMessage 
 	return out
 }
 
-func cmdHook(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora hook session-start|recall|install|uninstall|status")
 	}

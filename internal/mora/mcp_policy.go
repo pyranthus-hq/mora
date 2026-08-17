@@ -146,7 +146,7 @@ func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) {
 	return proposals, nil
 }
 
-func cmdMCPProposals(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

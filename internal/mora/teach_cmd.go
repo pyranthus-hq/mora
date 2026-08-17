@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func cmdTeach(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora teach <identity|commitment|memory|undo|history|consent|examples>")
 	}
@@ -20,7 +20,7 @@ func cmdTeach(ctx context.Context, args []string, stdout io.Writer) error {
 		if len(args) == 1 {
 			return errors.New("usage: mora teach identity <list|confirm|reject|undo>")
 		}
-		return cmdMerge(ctx, args[1:], stdout)
+		return cmdMerge(ctx, args[1:], stdout, stderr)
 	case "commitment":
 		return teachCommitment(ctx, args[1:], stdout)
 	case "memory":

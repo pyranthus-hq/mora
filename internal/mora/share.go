@@ -1591,7 +1591,7 @@ func shareRemove(cfg Config, args []string, stdout io.Writer) error {
 
 const shareUsage = "usage: mora share <keygen | fingerprint | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | gc [<name>] | storage-limit <bytes> | list [--json] | remove <name> --yes>"
 
-func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+func cmdShare(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
 		return errors.New(shareUsage)
 	}
@@ -1632,9 +1632,9 @@ func cmdShare(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	case "remove":
 		return shareRemove(cfg, args[1:], stdout)
 	case "gc":
-		return cmdShareGC(cfg, args[1:], stdout, time.Now())
+		return cmdShareGC(cfg, args[1:], stdout, stderr, time.Now())
 	case "storage-limit":
-		return cmdShareStorageLimit(cfg, args[1:], stdout, time.Now())
+		return cmdShareStorageLimit(cfg, args[1:], stdout, stderr, time.Now())
 	default:
 		return errors.New(shareUsage)
 	}

@@ -181,7 +181,7 @@ func TestCmdUpgradeAppReplacesWholeBundle(t *testing.T) {
 	}
 
 	var stdout strings.Builder
-	if err := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout); err != nil {
+	if err := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if downloads != 2 || swaps != 1 || verifications != 3 || rebuilds != 1 {
@@ -272,7 +272,7 @@ func TestCmdUpgradeAppPreservesOldAppWhenRollbackFails(t *testing.T) {
 	}
 
 	var stdout strings.Builder
-	upgradeErr := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout)
+	upgradeErr := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout, testStderr)
 	if upgradeErr == nil || !strings.Contains(upgradeErr.Error(), "rollback failed") {
 		t.Fatalf("upgrade error = %v", upgradeErr)
 	}

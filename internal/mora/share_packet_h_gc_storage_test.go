@@ -355,7 +355,7 @@ func TestManualShareGCDoesNotRequireSuccessfulPull(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := cmdShare(context.Background(), []string{"gc", "acme"}, &out, strings.NewReader("")); err != nil {
+	if err := cmdShare(context.Background(), []string{"gc", "acme"}, &out, testStderr, strings.NewReader("")); err != nil {
 		t.Fatalf("manual dispatcher required a successful pull: %v", err)
 	}
 	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
@@ -638,7 +638,7 @@ func TestManualGCKeepsStorageLeaseAlivePastTTL(t *testing.T) {
 	t.Cleanup(func() { testHookShareGCAfterStorageLease = nil })
 	gcDone := make(chan error, 1)
 	go func() {
-		gcDone <- cmdShareGC(cfg, nil, io.Discard, time.Now())
+		gcDone <- cmdShareGC(cfg, nil, io.Discard, testStderr, time.Now())
 	}()
 	<-entered
 	time.Sleep(3 * shareImportTTL)
@@ -699,7 +699,7 @@ func TestManualGCReclaimsUnregisteredFirstSubscribeCrash(t *testing.T) {
 		t.Fatalf("crashed first subscribe unexpectedly registered: %+v %v", sf, err)
 	}
 	var out bytes.Buffer
-	if err := cmdShareGC(cfg, []string{name}, &out, time.Now()); err != nil {
+	if err := cmdShareGC(cfg, []string{name}, &out, testStderr, time.Now()); err != nil {
 		t.Fatalf("manual GC could not reclaim unregistered state: %v", err)
 	}
 	if _, err := os.Stat(shareSubRoot(cfg, name)); !errors.Is(err, os.ErrNotExist) {

@@ -1412,7 +1412,7 @@ func loopList(cfg Config, jsonOut bool, now time.Time, stdout io.Writer) error {
 // regardless of flag ordering); list takes no id. Mirrors cmdSchedule/cmdPulse
 // (flag.ContinueOnError + io.Discard). now is the real wall clock (the only
 // place a fresh time.Now() is taken — every helper receives it injected).
-func cmdLoop(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	_ = ctx
 	if len(args) == 0 {
 		return errors.New("usage: mora loop begin|heartbeat|done|status|register|list <id> [flags]")

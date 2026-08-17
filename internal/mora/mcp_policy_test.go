@@ -56,7 +56,7 @@ func TestMCPWritePolicyConfigRoundTripAndRejectsInvalid(t *testing.T) {
 		t.Fatalf("loaded policy = %q, want readonly", loaded.mcpWritePolicy())
 	}
 	var out bytes.Buffer
-	if err := cmdConfig([]string{"mcp-write-policy", "propose"}, &out); err != nil {
+	if err := cmdConfig([]string{"mcp-write-policy", "propose"}, &out, testStderr); err != nil {
 		t.Fatalf("set policy through CLI: %v", err)
 	}
 	if got := mustConfig(t).mcpWritePolicy(); got != mcpWritePolicyPropose {

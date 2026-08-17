@@ -44,7 +44,7 @@ func TestWipedIndexMetaFailsClosed(t *testing.T) {
 		t.Fatalf("wiped-index_meta state = %q, want failed (fail closed)", st)
 	}
 	var buf bytes.Buffer
-	err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf)
+	err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr)
 	if err == nil {
 		t.Fatal("doctor --strict exited 0 on a wiped index_meta")
 	}
@@ -82,7 +82,7 @@ func TestZeroByteJournalFailsClosed(t *testing.T) {
 		t.Fatalf("zero-byte journal state = %q, want dirty (fail closed)", st)
 	}
 	var buf bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf); err == nil {
+	if err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr); err == nil {
 		t.Fatal("doctor --strict exited 0 with a zero-byte ingest journal")
 	}
 	var rep doctorReport
@@ -171,7 +171,7 @@ func TestGovernanceMutationReindexes(t *testing.T) {
 			t.Fatal(err)
 		}
 		var buf bytes.Buffer
-		if err := cmdUnforget(context.Background(), []string{"--yes", seed.ID}, &buf); err != nil {
+		if err := cmdUnforget(context.Background(), []string{"--yes", seed.ID}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if st := gate2IndexState(t, cfg); st != idxFresh {
@@ -187,7 +187,7 @@ func TestGovernanceMutationReindexes(t *testing.T) {
 		listRebuildFiles = func(Config) ([]string, error) { return nil, context.DeadlineExceeded }
 		defer func() { listRebuildFiles = orig }()
 		var buf bytes.Buffer
-		if err := cmdBriefCorrect(context.Background(), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf); err == nil {
+		if err := cmdBriefCorrect(context.Background(), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf, testStderr); err == nil {
 			t.Fatal("cmdBriefCorrect returned nil despite a forced rebuild failure")
 		}
 		if st := gate2IndexState(t, cfg); st == idxFresh {

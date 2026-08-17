@@ -51,7 +51,7 @@ func connectorCatalogForGOOS(goos string) []connectorInfo {
 	}
 	return out
 }
-func cmdSources(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdSources(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add|list")
 	}

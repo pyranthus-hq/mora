@@ -32,7 +32,7 @@ import (
 // per-participant redaction is deferred to P16). Person-level fan-out across an
 // identity's aliases needs the identity graph (P13) and is deliberately out of
 // scope here, so no false-merge can over-reach.
-func cmdForget(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "list" {
 		return forgetList(stdout)
 	}
@@ -150,7 +150,7 @@ var testHookForgetAfterScan func()
 // cmdUnforget reverses a forget: it revokes the suppression so future syncs may
 // re-ingest the content again (subject to the connector's lookback window — an
 // unforget is not a guaranteed restore of already-removed older content).
-func cmdUnforget(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdUnforget(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("unforget", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	yes := fs.Bool("yes", false, "confirm")

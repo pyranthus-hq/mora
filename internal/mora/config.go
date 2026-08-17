@@ -202,7 +202,7 @@ func loadConfig() (Config, error) {
 // `mora config embedder <ollama|static>` is the same durable seam the retrieval
 // docs point at. "default"/"static" reset by DROPPING the key rather than
 // persisting a redundant value, so config.toml stays minimal.
-func cmdConfig(args []string, stdout io.Writer) error {
+func cmdConfig(args []string, stdout, stderr io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -391,7 +391,7 @@ func writeConfig(cfg Config) error {
 	}
 	return atomicWrite(path, []byte(strings.Join(out, "\n")+"\n"), 0o600)
 }
-func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	vault := fs.String("vault", "", "vault directory")

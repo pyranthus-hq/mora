@@ -86,7 +86,7 @@ type httpConfig struct {
 // cmdServe dispatches `mora serve <subcommand>`. Today only `http` exists; the
 // verb is deliberately generic so future transports (e.g. an SSE MCP endpoint)
 // can slot in beside it without a new top-level command.
-func cmdServe(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdServe(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] != "http" {
 		return errors.New("usage: mora serve http [install|uninstall|status] [--port 7777] [--print-token]")
 	}

@@ -115,7 +115,7 @@ func backfillEnabledGitHub(ctx context.Context, cfg Config, stdout io.Writer) (i
 	return total, nil
 }
 
-func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error) {
+func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	if len(args) == 0 || args[0] != "run" {
 		return errors.New("usage: mora ingest run --source <name>|--all")
 	}
@@ -205,7 +205,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 	}
 	return nil
 }
-func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && args[0] == "github" {
 		return connectGitHub(ctx, args[1:], stdout)
 	}
@@ -331,7 +331,7 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 	renderSetupState(cfg, stdout)
 	return nil
 }
-func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && isHelpFlag(args[0]) {
 		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
@@ -478,7 +478,7 @@ func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now tim
 // structured metadata (the Meta-in-content-hash change means a normal sync already
 // rewrites within the window; --full extends the lookback to all-time so the
 // rewrite reaches memories older than the default window), then rebuilds the graph.
-func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	full := false
 	for _, a := range args {
 		switch a {

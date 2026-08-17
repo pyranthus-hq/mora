@@ -495,7 +495,7 @@ func TestBucketStorageLimitRetryUsesPrintedExactDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := cmdShareStorageLimit(f.cfg, []string{"16"}, &out, time.Now()); err != nil {
+	if err := cmdShareStorageLimit(f.cfg, []string{"16"}, &out, testStderr, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	confirm := signPubFingerprint(f.priv.Public().(ed25519.PublicKey))
@@ -522,7 +522,7 @@ func TestBucketStorageLimitRetryUsesPrintedExactDecision(t *testing.T) {
 			t.Fatalf("normal admission refusal retained bucket staging %q", entry.Name())
 		}
 	}
-	if err := cmdShareStorageLimit(f.cfg, []string{required}, &out, time.Now()); err != nil {
+	if err := cmdShareStorageLimit(f.cfg, []string{required}, &out, testStderr, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := shareSubscribeBucketWithStore(f.ctx, f.cfg, "acme", f.bc, confirm, &out, f.store); err != nil {

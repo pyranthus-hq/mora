@@ -19,7 +19,7 @@ import (
 //	mora graph "Sam"           # drill into one entity (connections + evidence)
 //	mora graph --top 20        # widen the overview
 //	mora graph --json          # structured output (entities, or the entity record)
-func cmdGraph(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdGraph(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	top := 12
 	jsonOut := false
 	var positional []string

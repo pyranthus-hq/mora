@@ -117,7 +117,7 @@ func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
 // could never distinguish "sick" from "broken" for a caller/automation.
 // --pulse --json emits ONLY the sources array (no banner text, no other
 // checks); --pulse --strict is a no-op (--pulse already exits 2 on its own).
-func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) error {
+func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout, stderr io.Writer) error {
 	// Phase 1 (evaluate): classify the PRIOR ledger — INCLUDING the watchman's own
 	// prior doctor-pulse stamp — before writing anything, so a genuinely-missed
 	// cadence is honestly reported (E4). --pulse now covers sources, the index arm
@@ -177,7 +177,7 @@ func doctorFailSummary(checks []doctorCheck) string {
 	return fmt.Sprintf("%d critical check(s) failed: %s", len(failed), strings.Join(failed, ", "))
 }
 
-func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report (with --pulse: only the sources array)")
@@ -203,7 +203,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 
 	if *pulse {
-		return cmdDoctorPulse(cfg, now, *jsonOut, stdout)
+		return cmdDoctorPulse(cfg, now, *jsonOut, stdout, stderr)
 	}
 
 	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")

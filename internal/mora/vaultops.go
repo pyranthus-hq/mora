@@ -61,7 +61,7 @@ func cmdLint(ctx context.Context, args []string, stdout, stderr io.Writer) (err 
 	}
 	return nil
 }
-func cmdBackup(ctx context.Context, args []string, stdout io.Writer) (err error) {
+func cmdBackup(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

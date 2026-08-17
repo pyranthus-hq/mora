@@ -20,7 +20,7 @@ import (
 // the same dispatcher concurrently through separate file descriptors.
 var usageAppendMu sync.Mutex
 
-func cmdUsage(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdUsage(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

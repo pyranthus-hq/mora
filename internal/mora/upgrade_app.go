@@ -110,7 +110,7 @@ func moraAppAssetName(version, arch string) (string, error) {
 	return fmt.Sprintf("mora_%s_darwin_%s_app.zip", parsed.String(), arch), nil
 }
 
-func cmdUpgradeApp(ctx context.Context, current, appRoot string, checkOnly bool, token string, stdout io.Writer) error {
+func cmdUpgradeApp(ctx context.Context, current, appRoot string, checkOnly bool, token string, stdout, stderr io.Writer) error {
 	if runtimeGOOS() != "darwin" {
 		return fmt.Errorf("Mora.app whole-bundle updates require macOS")
 	}

@@ -124,7 +124,7 @@ func TestHk_IngestingConnectorsDedupesInstanceKey(t *testing.T) {
 func TestHk_CmdEntitiesListText(t *testing.T) {
 	hkSeedEntities(t)
 	var out bytes.Buffer
-	if err := cmdEntities(context.Background(), nil, &out); err != nil {
+	if err := cmdEntities(context.Background(), nil, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
@@ -140,7 +140,7 @@ func TestHk_CmdEntitiesListText(t *testing.T) {
 func TestHk_CmdEntitiesListJSON(t *testing.T) {
 	hkSeedEntities(t)
 	var out bytes.Buffer
-	if err := cmdEntities(context.Background(), []string{"--json"}, &out); err != nil {
+	if err := cmdEntities(context.Background(), []string{"--json"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var ents []Entity
@@ -163,7 +163,7 @@ func TestHk_CmdEntitiesEmptyVault(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var out bytes.Buffer
-	if err := cmdEntities(context.Background(), nil, &out); err != nil {
+	if err := cmdEntities(context.Background(), nil, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "No entities found yet") {
@@ -176,7 +176,7 @@ func TestHk_CmdEntitiesEmptyVault(t *testing.T) {
 func TestHk_CmdEntitiesDetailText(t *testing.T) {
 	hkSeedEntities(t)
 	var out bytes.Buffer
-	if err := cmdEntities(context.Background(), []string{"Priya"}, &out); err != nil {
+	if err := cmdEntities(context.Background(), []string{"Priya"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
@@ -193,7 +193,7 @@ func TestHk_CmdEntitiesDetailText(t *testing.T) {
 func TestHk_CmdEntitiesDetailJSON(t *testing.T) {
 	hkSeedEntities(t)
 	var out bytes.Buffer
-	if err := cmdEntities(context.Background(), []string{"Priya", "--json"}, &out); err != nil {
+	if err := cmdEntities(context.Background(), []string{"Priya", "--json"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var res map[string]any
@@ -213,7 +213,7 @@ func TestHk_CmdEntitiesDetailJSON(t *testing.T) {
 func TestHk_CmdEntitiesLoadConfigError(t *testing.T) {
 	hkBreakLoadConfig(t)
 	var out bytes.Buffer
-	if err := cmdEntities(context.Background(), nil, &out); err == nil {
+	if err := cmdEntities(context.Background(), nil, &out, testStderr); err == nil {
 		t.Fatal("cmdEntities must surface an unreadable config error")
 	}
 }
@@ -241,7 +241,7 @@ func TestHk_CmdEntitiesGraphError(t *testing.T) {
 	}
 	t.Setenv("MORA_CONFIG_DIR", cfgDir)
 	var out bytes.Buffer
-	if err := cmdEntities(context.Background(), nil, &out); err == nil {
+	if err := cmdEntities(context.Background(), nil, &out, testStderr); err == nil {
 		t.Fatal("cmdEntities must surface a graph-build error when the index cannot be written")
 	}
 }

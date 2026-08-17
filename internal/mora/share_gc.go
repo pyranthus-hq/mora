@@ -390,7 +390,7 @@ func storagePathWithin(path, root string) bool {
 // and reports before/after whole-product bytes.
 var testHookShareGCAfterStorageLease func()
 
-func cmdShareGC(cfg Config, args []string, stdout io.Writer, now time.Time) error {
+func cmdShareGC(cfg Config, args []string, stdout, stderr io.Writer, now time.Time) error {
 	name := ""
 	if len(args) > 0 {
 		if strings.HasPrefix(args[0], "-") || len(args) > 1 {
@@ -522,7 +522,7 @@ func cmdShareGC(cfg Config, args []string, stdout io.Writer, now time.Time) erro
 // cmdShareStorageLimit writes the durable whole-product admission opt-in. It
 // takes storage.lock before replacing the config so a concurrent build reads one
 // stable value.
-func cmdShareStorageLimit(cfg Config, args []string, stdout io.Writer, now time.Time) error {
+func cmdShareStorageLimit(cfg Config, args []string, stdout, stderr io.Writer, now time.Time) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		return errors.New("usage: mora share storage-limit <bytes|15GiB>")
 	}

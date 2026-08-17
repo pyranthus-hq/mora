@@ -25,7 +25,7 @@ import (
 // Every decision is recorded in the governance ledger keyed on the SOURCE-NATIVE
 // atoms ({imessage,handle,+1…} and {,address,a@b.com}), never the post-merge person
 // id — so it survives the next connector re-sync (the #52 trap).
-func cmdMerge(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdMerge(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora merge <list|confirm|reject|undo> (see `mora merge list`)")
 	}

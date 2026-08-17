@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func cmdTasks(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora tasks <sync [--write] | add <name> [flags] | done <name> | list [--json]>")
 	}

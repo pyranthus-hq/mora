@@ -124,7 +124,7 @@ func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 	runtimeGOOS = func() string { return "windows" }
 
 	var js bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &js); err != nil {
+	if err := cmdDoctor(context.Background(), []string{"--json"}, &js, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var rep doctorReport
@@ -136,7 +136,7 @@ func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 	}
 
 	var text bytes.Buffer
-	if err := cmdDoctor(context.Background(), nil, &text); err != nil {
+	if err := cmdDoctor(context.Background(), nil, &text, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(text.String(), "skipping chat.db checks on windows") {

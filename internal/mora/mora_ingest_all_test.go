@@ -43,7 +43,7 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err = cmdIngest(context.Background(), []string{"run", "--all"}, &buf)
+	err = cmdIngest(context.Background(), []string{"run", "--all"}, &buf, testStderr)
 	if err == nil {
 		t.Fatalf("expected an aggregate error when a source fails (never swallow sync errors); output:\n%s", buf.String())
 	}
@@ -79,7 +79,7 @@ func TestIngestRunNamedSourceStillAborts(t *testing.T) {
 		return 0, errors.New("boom")
 	}
 	var buf bytes.Buffer
-	if err := cmdIngest(context.Background(), []string{"run", "--source", "bad"}, &buf); err == nil {
+	if err := cmdIngest(context.Background(), []string{"run", "--source", "bad"}, &buf, testStderr); err == nil {
 		t.Fatalf("named-source failure must abort with the error")
 	}
 }

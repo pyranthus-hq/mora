@@ -24,7 +24,7 @@ const (
 // cmdUpgrade implements `mora upgrade [--check]`: in-place self-update from the
 // latest GitHub release, mirroring how Claude Code keeps itself current. Homebrew
 // installs are deferred to `brew upgrade`; source/dev builds are refused.
-func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdUpgrade(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	fs.SetOutput(stdout)
 	checkOnly := fs.Bool("check", false, "only report whether an update is available; don't install")
@@ -55,7 +55,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	// GitHub API rate limits.
 	token := firstNonEmpty(os.Getenv("MORA_GITHUB_TOKEN"), os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"))
 	if appRoot, ok := moraAppRoot(exe); ok {
-		return cmdUpgradeApp(ctx, current, appRoot, *checkOnly, token, stdout)
+		return cmdUpgradeApp(ctx, current, appRoot, *checkOnly, token, stdout, stderr)
 	}
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{APIToken: token})
 	if err != nil {

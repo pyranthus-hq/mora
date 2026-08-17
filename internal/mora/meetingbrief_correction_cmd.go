@@ -16,7 +16,7 @@ import (
 //
 // The key is ALWAYS source-native atoms (stable_id + handle/address), never a
 // canonical person id, so the correction persists across connector re-sync.
-func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdBriefCorrect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("brief correct", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	memoryID := fs.String("memory-id", "", "cited source memory id")

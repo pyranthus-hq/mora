@@ -108,7 +108,7 @@ func isCheckboxMarker(s string) bool {
 // cmdEntities implements `mora entities [name] [--json]`: a read-only view of the
 // vault's entity graph. With a name, it filters to memories referencing that
 // entity (matched by name across any kind).
-func cmdEntities(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdEntities(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// The optional entity name is positional and may sit before OR after --json
 	// (Go's flag package stops at the first positional), so split flags out by hand.
 	jsonOut := false
