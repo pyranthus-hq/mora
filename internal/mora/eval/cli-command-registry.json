@@ -27,6 +27,7 @@
     {"path": "tasks", "kind": "verb", "platform": "all"},
     {"path": "pulse", "kind": "verb", "platform": "all"},
     {"path": "lint", "kind": "verb", "platform": "all", "json_contract": "result", "payload": "mora.lint.report"},
+    {"path": "capabilities", "kind": "verb", "platform": "all", "json_contract": "result", "payload": "mora.capabilities"},
     {"path": "backup", "kind": "verb", "platform": "all"},
     {"path": "doctor", "kind": "verb", "platform": "all"},
     {"path": "config", "kind": "verb", "platform": "all"},

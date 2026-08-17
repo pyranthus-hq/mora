@@ -337,6 +337,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdPulse(ctx, args[1:], stdout)
 	case "lint":
 		return cmdLint(ctx, args[1:], stdout, stderr)
+	case "capabilities":
+		return cmdCapabilities(ctx, args[1:], stdout, stderr)
 	case "backup":
 		return cmdBackup(ctx, args[1:], stdout)
 	case "doctor":

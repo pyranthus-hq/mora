@@ -17,6 +17,10 @@ clean data to a machine or agent.
 
 `main.main()` (`cmd/mora/main.go:18`) is intentionally tiny: it copies the three release-injected vars (`version`, `commit`, `date`) into the package globals (`mora.BuildVersion` etc., declared at `internal/mora/mora.go:38`) and hands everything else to `mora.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Stdin)`. **The streams are passed as parameters, never read from `os.*` inside the package** — that is the seam that makes every command testable with a `bytes.Buffer` and is also the foundation of the byte-clean invariant (a buffer is not a `*os.File`, so styling auto-disables in tests). If `Run` returns an error, `main` prints it to stderr and exits 1. There is no other exit path.
 
+## `mora capabilities`
+
+`mora capabilities --json` emits the `mora.capabilities` v1 receipt. Its top-level payload names the build version, the currently published CLI result contracts, the static connector catalog, registered MCP tools and configured MCP write policy, and known receipt schemas. Connector and global `repair` / `deep_link` support use the stable tri-state values `supported`, `unsupported`, or `planned`; Phase 3 and Phase 5 change those values when the features land rather than revising the receipt schema. The deliberately omitted `gdrive` connector remains absent because it is not a user-enableable catalog entry.
+
 The machine-readable command contract is
 `internal/mora/eval/cli-command-registry.json`, with row behavior evidence in
 `internal/mora/eval/cli-command-evidence.json`. The registry covers canonical
