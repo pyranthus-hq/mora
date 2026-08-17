@@ -28,10 +28,10 @@ func CanonicalSelf(self map[string]bool, preferred string) Atom {
 	}
 	return Atom{Kind: "self", Value: "self"}
 }
-func isGmail(m memory.Memory) bool {
+func IsGmail(m memory.Memory) bool {
 	return strings.EqualFold(m.Provider, "gmail") || strings.Contains(strings.ToLower(m.ProviderID), "gmail")
 }
-func isIMessage(m memory.Memory) bool {
+func IsIMessage(m memory.Memory) bool {
 	return strings.EqualFold(m.Provider, "imessage") || strings.Contains(strings.ToLower(m.ProviderID), "imessage")
 }
 func metaStrings(value any) []string {
@@ -70,7 +70,7 @@ func ParticipantNameIsSelf(name string, selfTokens map[string]bool) bool {
 }
 func Counterparty(m memory.Memory, self map[string]bool) (Atom, bool) {
 	candidates := []Atom{}
-	if isGmail(m) {
+	if IsGmail(m) {
 		seen := map[string]bool{}
 		for _, field := range []string{"from", "to", "cc"} {
 			for _, raw := range metaStrings(m.Meta[field]) {
@@ -82,7 +82,7 @@ func Counterparty(m memory.Memory, self map[string]bool) (Atom, bool) {
 				candidates = append(candidates, Atom{Kind: AtomAddress, Value: identity.Normalize(AtomAddress, value)})
 			}
 		}
-	} else if isIMessage(m) {
+	} else if IsIMessage(m) {
 		selfTokens := identity.SelfNameTokens(self)
 		for _, pair := range participantPairs(m.Meta["participants"]) {
 			if ParticipantNameIsSelf(pair["name"], selfTokens) {
@@ -107,7 +107,7 @@ func CounterpartyKeys(m memory.Memory, counterparty Atom) []string {
 		}
 	}
 	add(counterparty.Kind, identity.Normalize(counterparty.Kind, counterparty.Value))
-	if isGmail(m) {
+	if IsGmail(m) {
 		var names map[string]string
 		if body, err := json.Marshal(m.Meta["names"]); err == nil && json.Unmarshal(body, &names) == nil {
 			for raw, name := range names {
@@ -122,7 +122,7 @@ func CounterpartyKeys(m memory.Memory, counterparty Atom) []string {
 			}
 		}
 	}
-	if isIMessage(m) {
+	if IsIMessage(m) {
 		for _, pair := range participantPairs(m.Meta["participants"]) {
 			atom := Atom{Provider: "imessage", Kind: AtomHandle, Value: identity.Normalize(AtomHandle, pair["handle"])}
 			if !EqualAtom(atom, counterparty) {

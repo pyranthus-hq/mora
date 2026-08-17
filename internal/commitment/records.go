@@ -3,6 +3,11 @@ package commitment
 import (
 	"sort"
 	"strings"
+
+	"github.com/pyranthus-hq/mora/internal/evidence"
+	"github.com/pyranthus-hq/mora/internal/evidencetext"
+	"github.com/pyranthus-hq/mora/internal/graph"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 func citationKey(c Citation) string {
@@ -162,4 +167,23 @@ func textNamesPerson(lower string, names []string) bool {
 		}
 	}
 	return false
+}
+
+func OpenerCitations(m memory.Memory, commitmentID, evidenceRef, occurredAt string) []Citation {
+	citationAt := graph.ValidFrom(m)
+	if IsIMessage(m) && evidenceRef != "" {
+		citationAt = occurredAt
+	} else {
+		evidenceRef = ""
+	}
+	citation, err := evidence.ForMemory(m, SourceOf(m), citationAt)
+	if err != nil {
+		return []Citation{}
+	}
+	return []Citation{{Citation: citation, CommitmentID: commitmentID, Role: CitationOpener, EvidenceRef: evidenceRef}}
+}
+func NewRecord(m memory.Memory, summary, messageRef, blockRef, occurredAt string, ancestorRefs []string, slot int, owner, counterparty Atom, direction Direction) Record {
+	id := ID(messageRef, blockRef, slot)
+	summary = evidencetext.OneLine(summary)
+	return Record{ID: id, Owner: owner, Counterparty: counterparty, CounterpartyKeys: CounterpartyKeys(m, counterparty), Direction: direction, Summary: summary, OpenedBy: Span{MemoryID: m.ID, MessageRef: messageRef, BlockRef: blockRef, AncestorRefs: append([]string(nil), ancestorRefs...), Quote: summary, OccurredAt: occurredAt}, Due: ClassifyDue(summary, occurredAt), State: Open, ClosureRef: ClosureNone, Citations: OpenerCitations(m, id, messageRef, occurredAt), DuplicateOf: ""}
 }

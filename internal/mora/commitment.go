@@ -45,22 +45,9 @@ type commitSpan = commitmentpkg.Span
 
 type commitDue = commitmentpkg.Due
 
-func classifyCommitmentDue(text, occurredAt string) commitDue {
-	return commitmentpkg.ClassifyDue(text, occurredAt)
-}
-
 func commitDueValue(due commitDue) string { return commitmentpkg.DueValue(due) }
 
-type commitmentMessageEvidence struct {
-	MessageRef   string   `json:"message_ref"`
-	Sender       string   `json:"sender,omitempty"`
-	To           []string `json:"to,omitempty"`
-	Cc           []string `json:"cc,omitempty"`
-	At           string   `json:"at,omitempty"`
-	BlockRefs    []string `json:"block_refs,omitempty"`
-	AncestorRefs []string `json:"ancestor_refs,omitempty"`
-}
-
+type commitmentMessageEvidence = commitmentpkg.GmailMessage
 type CommitmentCitation = commitmentpkg.Citation
 
 type commitmentPartyRole string
@@ -177,10 +164,6 @@ func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
 // meaningful display-name token is independently present in a configured self
 // mailbox local-part; a partial/common-name overlap is insufficient.
 
-func commitmentCounterpartyKeys(m Memory, counterparty govAtom) []string {
-	return commitmentpkg.CounterpartyKeys(m, counterparty)
-}
-
 func participantPairs(value any) []map[string]string {
 	b, err := json.Marshal(value)
 	if err != nil {
@@ -194,15 +177,7 @@ func participantPairs(value any) []map[string]string {
 }
 
 func gmailCommitmentMessages(m Memory) []commitmentMessageEvidence {
-	b, err := json.Marshal(m.Meta["messages"])
-	if err != nil {
-		return nil
-	}
-	var messages []commitmentMessageEvidence
-	if json.Unmarshal(b, &messages) != nil {
-		return nil
-	}
-	return messages
+	return commitmentpkg.GmailMessages(m)
 }
 
 type imessageCommitmentMessage struct {
@@ -233,24 +208,9 @@ func imessageCommitmentMessages(m Memory) ([]imessageCommitmentMessage, bool) {
 // trustedIMessageAuthoredBody removes exactly one rendered sender prefix. The
 // explicit direction and sender metadata must agree with the visible block.
 
-func firstGmailSender(m Memory) string {
-	first := strings.TrimSpace(strings.SplitN(m.Text, "\n", 2)[0])
-	if !strings.HasPrefix(strings.ToLower(first), "from:") {
-		return ""
-	}
-	header := strings.TrimSpace(first[len("From:"):])
-	for _, candidate := range metaStrings(m.Meta["from"]) {
-		if strings.Contains(strings.ToLower(header), strings.ToLower(candidate)) {
-			return candidate
-		}
-	}
-	return ""
-}
+func firstGmailSender(m Memory) string { return commitmentpkg.FirstGmailSender(m) }
 
-func gmailBodyParts(m Memory) []string {
-	body := stripFromLine(m.Text)
-	return strings.Split(body, "\n\n---\n\n")
-}
+func gmailBodyParts(m Memory) []string { return commitmentpkg.GmailBodyParts(m) }
 
 // gmailAuthoredBlockRef binds a sender-authored prefix to the first ordered block
 // ref. The Gmail renderer preserves block order. When later footer, quoted, or
@@ -258,10 +218,7 @@ func gmailBodyParts(m Memory) []string {
 // therefore the first ref remains the only evidence-derived ref we can assign.
 // A message with no authored prefix stays ID-less.
 func gmailAuthoredBlockRef(message commitmentMessageEvidence, body string) string {
-	if len(message.BlockRefs) == 0 || strings.TrimSpace(senderAuthoredBody(body)) == "" {
-		return ""
-	}
-	return message.BlockRefs[0]
+	return commitmentpkg.GmailAuthoredBlockRef(message, body)
 }
 
 // gmailFulfilledQuotedRequest recognizes the contract's one exceptional quoted
@@ -293,50 +250,14 @@ func gmailAddressee(sender govAtom, to, cc []string, self, counterparty govAtom)
 	return commitmentpkg.GmailAddressee(sender, to, cc, self, counterparty)
 }
 
-func commitmentCitation(m Memory, commitmentID, evidenceRef, occurredAt string) []CommitmentCitation {
-	citationAt := validFromOf(m)
-	if isIMessageMemory(m) && evidenceRef != "" {
-		citationAt = occurredAt
-	} else {
-		evidenceRef = ""
-	}
-	citation, err := citationForMemory(m, evidenceSource(m), citationAt)
-	if err != nil {
-		return []CommitmentCitation{}
-	}
-	return []CommitmentCitation{{
-		Citation: citation, CommitmentID: commitmentID, Role: commitCitationOpener, EvidenceRef: evidenceRef,
-	}}
-}
-
 func classifyCommitments(m Memory, cfg Config) []Commitment {
 	if m.DeletedAt != "" || meetingpkg.IsMeetingNotification(m) || memoryIsServiceOnly(m) {
 		return nil
 	}
 	selfAtom := canonicalSelfAtom(cfg, "")
 	newCommitment := func(summary, messageRef, blockRef, occurredAt string, ancestorRefs []string, slot int, owner, counterparty govAtom, direction Direction) Commitment {
-		due := classifyCommitmentDue(summary, occurredAt)
-		id := commitmentID(messageRef, blockRef, slot)
-		return Commitment{
-			ID:               id,
-			Owner:            owner,
-			Counterparty:     counterparty,
-			CounterpartyKeys: commitmentCounterpartyKeys(m, counterparty),
-			Direction:        direction,
-			Summary:          oneLine(summary),
-			OpenedBy: commitSpan{
-				MemoryID: m.ID, MessageRef: messageRef, BlockRef: blockRef,
-				AncestorRefs: append([]string(nil), ancestorRefs...),
-				Quote:        oneLine(summary), OccurredAt: occurredAt,
-			},
-			Due:         due,
-			State:       commitOpen,
-			ClosureRef:  commitClosureNone,
-			Citations:   commitmentCitation(m, id, messageRef, occurredAt),
-			DuplicateOf: "",
-		}
+		return commitmentpkg.NewRecord(m, summary, messageRef, blockRef, occurredAt, ancestorRefs, slot, owner, counterparty, direction)
 	}
-
 	var out []Commitment
 	if m.Provider == "" && (m.Source == "manual" || m.Source == "mcp") {
 		// obligations-v2: "the user's own clear promise to another person" is
@@ -577,29 +498,9 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 
 func commitmentSegments(text string) []string { return commitmentpkg.Segments(text) }
 
-type conversationTurn struct {
-	Self bool
-	Body string
-}
+type conversationTurn = commitmentpkg.Turn
 
-func conversationTurns(text string) []conversationTurn {
-	var turns []conversationTurn
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "*") {
-			continue
-		}
-		label, body, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(body) == "" {
-			continue
-		}
-		turns = append(turns, conversationTurn{
-			Self: strings.EqualFold(strings.TrimSpace(label), "me"),
-			Body: strings.TrimSpace(body),
-		})
-	}
-	return turns
-}
+func conversationTurns(text string) []conversationTurn { return commitmentpkg.ConversationTurns(text) }
 
 func uniqueCommitments(in []Commitment) []Commitment { return commitmentpkg.Unique(in) }
 
