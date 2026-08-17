@@ -18,7 +18,7 @@ later work.
 | `internal/mora/share*.go` | — | CLI consent, registry mutation, git transport, fetch/build/commit ordering, publication/import governance, query-time union, health composition, and orchestration. |
 | `internal/sharing/` | — | Transport-neutral paths/contracts, encrypted bucket transport, durable ledgers, the owner-fenced `attempt.json` lifecycle, and immutable-generation paths, commit resolution, and artifact digests. |
 | `internal/mora/share*_test.go` | — | End-to-end coverage with real age crypto plus fake git/transport seams. Lower storage and transport mechanics are tested with their implementations. |
-| `internal/mora/gitsync.go` | 299 | Reused trust primitives: `execFunc`/`realExec` + `redactCredentials` (`gitsync.go:20-48`), `vaultRepoState` plain-`.git` guard (`gitsync.go:228`), `configureRemote` (`gitsync.go:265`), `commitIdentityArgs` (`gitsync.go:245`). |
+| `internal/gitsync`; Mora adapter | — | Reused trust primitives now live below Mora: credential-redacted `Runner`/`RealExec`, plain-`.git` guard, remote configuration, and fallback commit identity. Mora keeps CLI parsing and off-device consent/disclosure. |
 
 ## The two sides
 

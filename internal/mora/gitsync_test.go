@@ -161,175 +161,6 @@ func TestSyncGitInit_BootstrapsRepoAndPushes(t *testing.T) {
 	}
 }
 
-func TestSyncGitInit_IdempotentSkipsInitWhenRepoExists(t *testing.T) {
-	cfg := gitSyncTestConfig(t)
-	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	f := dirtyFake()
-	f.hasOrigin = true // origin already configured
-	var out strings.Builder
-
-	if err := syncGit(context.Background(), cfg, []string{"--init"}, &out, f.run); err != nil {
-		t.Fatalf("syncGit --init (existing repo): %v", err)
-	}
-	if f.sawSubcommand("git", "init") {
-		t.Errorf("must not re-run `git init` when .git exists, calls=%v", f.calls)
-	}
-}
-
-func TestSyncGitInit_NoRemoteFailsLoud(t *testing.T) {
-	cfg := gitSyncTestConfig(t)
-	f := dirtyFake()
-	var out strings.Builder
-	// No --remote, no --github, no existing origin (hasOrigin defaults false).
-
-	err := syncGit(context.Background(), cfg, []string{"--init"}, &out, f.run)
-	if err == nil {
-		t.Fatal("expected fail-loud error when no remote is configured")
-	}
-	if f.sawSubcommand("git", "push", "-u", "origin", "HEAD") {
-		t.Error("must not push when no remote is configured")
-	}
-}
-
-func TestSyncGit_BareRequiresInit(t *testing.T) {
-	cfg := gitSyncTestConfig(t) // no .git
-	f := dirtyFake()
-	var out strings.Builder
-
-	err := syncGit(context.Background(), cfg, nil, &out, f.run)
-	if err == nil {
-		t.Fatal("expected error when vault is not a git repo")
-	}
-	if !strings.Contains(err.Error(), "--init") {
-		t.Errorf("error should advise --init, got: %v", err)
-	}
-}
-
-func TestSyncGit_FailLoudOnPushError(t *testing.T) {
-	cfg := gitSyncTestConfig(t)
-	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	f := dirtyFake()
-	f.hasOrigin = true
-	f.errOn = map[string]error{"git push": os.ErrPermission}
-	var out strings.Builder
-
-	if err := syncGit(context.Background(), cfg, nil, &out, f.run); err == nil {
-		t.Fatal("push failure must surface (never swallowed)")
-	}
-}
-
-func TestSyncGit_GithubConvenienceCreatesPrivateRepo(t *testing.T) {
-	cfg := gitSyncTestConfig(t)
-	f := dirtyFake() // no origin yet (hasOrigin defaults false)
-	var out strings.Builder
-
-	// Bare --github uses the default repo name; --name overrides it.
-	err := syncGit(context.Background(), cfg, []string{"--init", "--github"}, &out, f.run)
-	if err != nil {
-		t.Fatalf("syncGit --github: %v", err)
-	}
-	if !f.sawSubcommand("gh", "repo", "create", "mora-vault") {
-		t.Errorf("expected `gh repo create mora-vault`, calls=%v", f.calls)
-	}
-
-	f2 := dirtyFake()
-	var out2 strings.Builder
-	if err := syncGit(context.Background(), cfg, []string{"--init", "--github", "--name", "my-vault"}, &out2, f2.run); err != nil {
-		t.Fatalf("syncGit --github --name: %v", err)
-	}
-	if !f2.sawSubcommand("gh", "repo", "create", "my-vault") {
-		t.Errorf("expected `gh repo create my-vault`, calls=%v", f2.calls)
-	}
-	// Must be private + non-interactive.
-	var ghCall []string
-	for _, c := range f.calls {
-		if len(c) >= 2 && c[0] == "gh" && c[1] == "repo" {
-			ghCall = c
-		}
-	}
-	joined := strings.Join(ghCall, " ")
-	if !strings.Contains(joined, "--private") {
-		t.Errorf("gh repo create must pass --private, got: %v", ghCall)
-	}
-}
-
-func TestRedactCredentials(t *testing.T) {
-	cases := map[string]string{
-		"remote: error\nhttps://ghp_SECRET123@github.com/me/vault.git denied": "https://<redacted>@github.com/me/vault.git",
-		"http://user:pass@host/x.git":                                         "http://<redacted>@host/x.git",
-		"git@github.com:me/vault.git no creds here":                           "git@github.com:me/vault.git",
-	}
-	for in, mustContain := range cases {
-		got := redactCredentials(in)
-		if strings.Contains(got, "ghp_SECRET123") || strings.Contains(got, "user:pass") {
-			t.Errorf("secret survived redaction: %q -> %q", in, got)
-		}
-		if !strings.Contains(got, mustContain) {
-			t.Errorf("redact(%q) = %q, want substring %q", in, got, mustContain)
-		}
-	}
-}
-
-func TestSyncGit_FallbackIdentityWhenUnset(t *testing.T) {
-	cfg := gitSyncTestConfig(t)
-	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// Fresh machine: dirty tree but NO configured git identity (no "git config"
-	// canned output → gitConfigSet reports unset).
-	f := &fakeExec{
-		hasOrigin: true,
-		out: map[string]string{
-			"git --version": "git version 2.43.0",
-			"git status":    "?? new.md\n",
-		},
-	}
-	var out strings.Builder
-	if err := syncGit(context.Background(), cfg, nil, &out, f.run); err != nil {
-		t.Fatalf("syncGit (no identity): %v", err)
-	}
-	// The commit call must carry fallback identity so a fresh machine doesn't abort.
-	var commit []string
-	for _, c := range f.calls {
-		for _, a := range c {
-			if a == "commit" {
-				commit = c
-			}
-		}
-	}
-	joined := strings.Join(commit, " ")
-	if !strings.Contains(joined, "user.email=mora@localhost") || !strings.Contains(joined, "user.name=Mora") {
-		t.Errorf("commit must inject fallback identity when unset, got: %v", commit)
-	}
-}
-
-func TestSyncGit_PreservesConfiguredIdentity(t *testing.T) {
-	cfg := gitSyncTestConfig(t)
-	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	f := dirtyFake() // "git config" -> "configured" (identity is set)
-	f.hasOrigin = true
-	var out strings.Builder
-	if err := syncGit(context.Background(), cfg, nil, &out, f.run); err != nil {
-		t.Fatalf("syncGit: %v", err)
-	}
-	if !f.sawSubcommand("git", "commit") {
-		t.Errorf("expected a commit on a dirty tree, calls=%v", f.calls)
-	}
-	for _, c := range f.calls {
-		for _, a := range c {
-			if strings.HasPrefix(a, "user.name=") || strings.HasPrefix(a, "user.email=") {
-				t.Errorf("must not override a configured identity, calls=%v", f.calls)
-			}
-		}
-	}
-}
-
 func TestGitDailyScheduleWired(t *testing.T) {
 	if scheduleCommands["git-daily"] != "sync git" {
 		t.Errorf("git-daily must map to `sync git`, got %q", scheduleCommands["git-daily"])
@@ -337,43 +168,6 @@ func TestGitDailyScheduleWired(t *testing.T) {
 	if launchdSchedule("git-daily") == "" {
 		t.Error("git-daily must have a launchd schedule")
 	}
-}
-
-func TestSyncGit_RefusesGitfileAndSymlinkIndirection(t *testing.T) {
-	// A `.git` FILE (worktree/submodule-style `gitdir:` indirection) or symlink
-	// must be refused outright: following it would make every git command operate
-	// on a PARENT or unrelated repository — staging the vault into that repo and
-	// pushing it to that repo's remote.
-	t.Run("gitfile", func(t *testing.T) {
-		cfg := gitSyncTestConfig(t)
-		if err := os.WriteFile(filepath.Join(cfg.VaultDir, ".git"), []byte("gitdir: ../.git\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		f := dirtyFake()
-		f.hasOrigin = true
-		var out strings.Builder
-		err := syncGit(context.Background(), cfg, nil, &out, f.run)
-		if err == nil || !strings.Contains(err.Error(), "not a plain directory") {
-			t.Fatalf("gitfile .git must be refused, got: %v", err)
-		}
-		if f.sawSubcommand("git", "add") {
-			t.Errorf("must not stage anything behind an indirected .git, calls=%v", f.calls)
-		}
-	})
-	t.Run("symlink", func(t *testing.T) {
-		skipOnWindows(t, "os.Symlink needs SeCreateSymbolicLinkPrivilege on Windows; the symlinked-.git indirection cannot be created without elevation (the gitfile subtest still covers the refusal)")
-		cfg := gitSyncTestConfig(t)
-		if err := os.Symlink(t.TempDir(), filepath.Join(cfg.VaultDir, ".git")); err != nil {
-			t.Fatal(err)
-		}
-		f := dirtyFake()
-		f.hasOrigin = true
-		var out strings.Builder
-		err := syncGit(context.Background(), cfg, nil, &out, f.run)
-		if err == nil || !strings.Contains(err.Error(), "not a plain directory") {
-			t.Fatalf("symlinked .git must be refused, got: %v", err)
-		}
-	})
 }
 
 func TestSyncGit_DestinationFlagsRequireInit(t *testing.T) {
@@ -419,40 +213,18 @@ func TestSyncGit_RejectsPositionalAndConflictingFlags(t *testing.T) {
 	}
 }
 
-func TestSyncGitInit_GithubIdempotentWhenOriginExists(t *testing.T) {
-	cfg := gitSyncTestConfig(t)
-	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	f := dirtyFake()
-	f.hasOrigin = true // an earlier `--init --github` already wired origin
-	var out strings.Builder
-	if err := syncGit(context.Background(), cfg, []string{"--init", "--github"}, &out, f.run); err != nil {
-		t.Fatalf("re-running --init --github with an existing origin must succeed: %v", err)
-	}
-	if f.sawSubcommand("gh", "repo", "create") {
-		t.Errorf("must not re-create the GitHub repo when origin exists, calls=%v", f.calls)
-	}
-	if !f.sawSubcommand("git", "push", "-u", "origin", "HEAD") {
-		t.Errorf("re-init should still push, calls=%v", f.calls)
-	}
-}
-
-func TestSyncGit_RefusesDetachedHead(t *testing.T) {
+func TestSyncGit_FailLoudOnPushError(t *testing.T) {
 	cfg := gitSyncTestConfig(t)
 	if err := os.MkdirAll(filepath.Join(cfg.VaultDir, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	f := dirtyFake()
 	f.hasOrigin = true
-	f.errOn = map[string]error{"git symbolic-ref": os.ErrNotExist} // -q exits non-zero when detached
+	f.errOn = map[string]error{"git push": os.ErrPermission}
 	var out strings.Builder
-	err := syncGit(context.Background(), cfg, nil, &out, f.run)
-	if err == nil || !strings.Contains(err.Error(), "detached HEAD") {
-		t.Fatalf("detached HEAD must be refused, got: %v", err)
-	}
-	if f.sawSubcommand("git", "add") || f.sawSubcommand("git", "commit") {
-		t.Errorf("must not stage or commit on detached HEAD, calls=%v", f.calls)
+
+	if err := syncGit(context.Background(), cfg, nil, &out, f.run); err == nil {
+		t.Fatal("push failure must surface (never swallowed)")
 	}
 }
 
