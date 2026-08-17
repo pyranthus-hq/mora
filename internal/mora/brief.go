@@ -1,9 +1,9 @@
 package mora
 
 import (
+	briefartifactpkg "github.com/pyranthus-hq/mora/internal/briefartifact"
 	briefstatepkg "github.com/pyranthus-hq/mora/internal/briefstate"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -52,69 +52,10 @@ func acquireBriefLock(cfg Config) (func(), error) { return briefstatepkg.Acquire
 // (T-16-04). 24h mirrors the digest's own digestDefaultHours framing.
 const briefFallbackWindowHours = 24
 
-// latestBriefPath resolves the NEWEST persisted brief under <VaultDir>/briefs by
-// PARSING the YYYY-MM-DD date in each "<date>-brief.md" filename and returning
-// the highest one. Selection is by parsed FILENAME date (UTC), NOT os file mtime
-// — mtime is non-deterministic and timezone-fragile, and the filename date is the
-// canonical UTC-day key briefArtifactPath writes (artifact.go:21).
-//
-// Returns (path, parsedDateUTC, true) for the highest-dated parseable file, or
-// ("", zero, false) when briefs/ is absent (os.ReadDir error) or holds no
-// parseable "-brief.md" file. now is accepted for call-site symmetry with
-// briefIsFresh (and a future TTL) but never drives the SELECTION — the freshest
-// FILE is purely a function of the filenames on disk, so two calls over the same
-// dir are byte-identical.
-func latestBriefPath(cfg Config, now time.Time) (string, time.Time, bool) {
-	_ = now // selection is by parsed filename date, never now — kept for symmetry.
-	dir := filepath.Join(cfg.VaultDir, "briefs")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", time.Time{}, false
-	}
-	var (
-		bestName string
-		bestDate time.Time
-		found    bool
-	)
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		prefix, ok := strings.CutSuffix(name, "-brief.md")
-		if !ok {
-			continue
-		}
-		d, perr := time.Parse("2006-01-02", prefix)
-		if perr != nil {
-			continue // unparseable date prefix (e.g. "2026-99-99") — ignore.
-		}
-		if !found || d.After(bestDate) {
-			bestName, bestDate, found = name, d, true
-		}
-	}
-	if !found {
-		return "", time.Time{}, false
-	}
-	return filepath.Join(dir, bestName), bestDate.UTC(), true
+func latestBriefPath(cfg Config, _ time.Time) (string, time.Time, bool) {
+	return briefartifactpkg.Latest(cfg.VaultDir)
 }
-
-// briefIsFresh reports whether a resolved brief's parsed date is fresh relative
-// to the injected now: true iff dated's UTC day equals now's UTC day OR the day
-// before. The yesterday allowance is the UTC-boundary fallback — the scheduled
-// pulse-daily job persists today's file on a UTC day, and a user opening a
-// session at local morning may still be on yesterday's UTC day, so treating
-// today-or-yesterday as fresh avoids needlessly regenerating a brief the
-// scheduled job just wrote (and avoids two different briefs in one local day).
-//
-// PURE: a function of the two times only — no clock, no filesystem. The
-// comparison is on the "2006-01-02" string to avoid any sub-day drift.
-func briefIsFresh(dated, now time.Time) bool {
-	today := now.UTC().Format("2006-01-02")
-	yday := now.UTC().AddDate(0, 0, -1).Format("2006-01-02")
-	d := dated.UTC().Format("2006-01-02")
-	return d == today || d == yday
-}
+func briefIsFresh(dated, now time.Time) bool { return briefartifactpkg.IsFresh(dated, now) }
 
 // resolveBrief returns the LOCAL brief: the freshest persisted brief read
 // VERBATIM when one exists for today's or yesterday's UTC day, otherwise a brief
