@@ -38,7 +38,21 @@ type tasksDoneReceipt struct {
 // splitLeadingPositionals cuts an argument list at the first dash-led argument,
 // so a command whose positional may contain spaces can still accept trailing
 // flags without folding them into the positional.
+//
+// A literal `--` ends flag interpretation: everything after it is positional,
+// however it is spelled. Without that escape hatch the dash-led guard below
+// makes a legitimately dash-led name — `tasks done -- -urgent` — unaddressable,
+// which is a capability the guard was never meant to remove.
 func splitLeadingPositionals(args []string) (positional, flags []string) {
+	// `--` wins wherever it sits, so `tasks done --json -- -urgent` keeps both
+	// the flag and the dash-led name. Scanning for it first is what makes that
+	// work: the dash-led cut below would otherwise fire on `--json` at index 0
+	// and never reach the terminator.
+	for i, arg := range args {
+		if arg == "--" {
+			return args[i+1:], args[:i]
+		}
+	}
 	for i, arg := range args {
 		if strings.HasPrefix(arg, "-") {
 			return args[:i], args[i:]
@@ -83,10 +97,17 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// tasks add --json` used to create a live task literally called
 		// "--json", so a machine caller asking for JSON silently mutated the
 		// vault. Refuse instead.
-		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+		// A literal `--` ends flag interpretation for the name slot, so a
+		// legitimately dash-led title stays addressable: `tasks add -- -urgent`.
+		rest := args[1:]
+		literalName := len(rest) > 0 && rest[0] == "--"
+		if literalName {
+			rest = rest[1:]
+		}
+		if len(rest) == 0 || (!literalName && strings.HasPrefix(rest[0], "-")) {
 			return usage
 		}
-		name := strings.TrimSpace(args[1])
+		name := strings.TrimSpace(rest[0])
 		fs := flag.NewFlagSet("tasks add", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		domain := fs.String("domain", "memory", "domain")
@@ -95,8 +116,14 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		horizon := fs.String("horizon", "this week", "horizon")
 		blocker := fs.String("blocker", "None", "blocker")
 		asJSON := fs.Bool("json", false, "json")
-		if err := fs.Parse(args[2:]); err != nil {
+		if err := fs.Parse(rest[1:]); err != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+		}
+		// Same silent-drop hazard as `done`: an unquoted multiword title used to
+		// keep only its first word and discard the rest without a word.
+		if extra := fs.Args(); len(extra) > 0 {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", nil,
+				"usage: mora tasks add <name> [flags] (unexpected argument %q — quote a name containing spaces)", extra[0])
 		}
 		if name == "" {
 			return usage
@@ -165,6 +192,14 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		asJSON := fs.Bool("json", false, "json")
 		if err := fs.Parse(flagArgs); err != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+		}
+		// Go's flag package stops at the first non-flag argument and parks the
+		// rest in Args(). Left unchecked, `tasks done a b --json junk` closes
+		// "a b" and drops "junk" without a word — closing a task the caller did
+		// not finish naming. Refuse instead of guessing.
+		if rest := fs.Args(); len(rest) > 0 {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", nil,
+				"usage: mora tasks done <name> [--json] (unexpected argument %q after flags — quote a name containing spaces, or pass it after `--`)", rest[0])
 		}
 		name := strings.TrimSpace(strings.Join(positional, " "))
 		if name == "" {

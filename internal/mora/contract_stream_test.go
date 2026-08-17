@@ -3,6 +3,7 @@ package mora
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -261,6 +262,123 @@ func TestContractDashLedPositionalsAreRefused(t *testing.T) {
 	}
 	if strings.Contains(stdout, "--json") {
 		t.Fatalf("a flag was stored as a loop id: %q", stdout)
+	}
+}
+
+// TestContractTrailingArgumentsAreRefused pins the other half of the dash-led
+// guard. Go's flag package stops at the first non-flag argument and parks the
+// rest in Args(); left unchecked, `tasks done a b --json junk` closed "a b" and
+// discarded "junk" without a word — mutating on a name the caller never
+// finished spelling.
+func TestContractTrailingArgumentsAreRefused(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "tasks", "add", "alpha beta")
+
+	for _, args := range [][]string{
+		{"tasks", "done", "alpha", "beta", "--json", "junk"},
+		{"tasks", "done", "alpha beta", "--", "gamma delta"},
+		{"tasks", "add", "gamma", "delta"},
+	} {
+		stdout, _, err := runSplit(t, args...)
+		if err == nil {
+			t.Fatalf("%q silently discarded a trailing argument", args)
+		}
+		if !strings.Contains(err.Error(), "usage:") {
+			t.Fatalf("%q error = %v; want a usage error", args, err)
+		}
+		if strings.TrimSpace(stdout) != "" {
+			t.Fatalf("%q wrote to stdout on a usage error: %q", args, stdout)
+		}
+	}
+}
+
+// TestContractDashLedNamesStayAddressable checks the escape hatch the dash-led
+// guard needs to stay honest: refusing a flag in the name slot must not make a
+// legitimately dash-led task name unreachable.
+func TestContractDashLedNamesStayAddressable(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "tasks", "add", "--", "-urgent")
+
+	if listed := run(t, "tasks", "list"); !strings.Contains(listed, "-urgent") {
+		t.Fatalf("`tasks add -- -urgent` did not store the dash-led name:\n%s", listed)
+	}
+
+	stdout, _, err := runSplit(t, "tasks", "done", "--json", "--", "-urgent")
+	if err != nil {
+		t.Fatalf("`tasks done --json -- -urgent`: %v", err)
+	}
+	var receipt struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		Task          string `json:"task"`
+		RowsUpdated   int    `json:"rows_updated"`
+	}
+	if uerr := json.Unmarshal([]byte(stdout), &receipt); uerr != nil {
+		t.Fatalf("stdout is not exactly one JSON document: %v\nstdout: %q", uerr, stdout)
+	}
+	if receipt.Schema != "mora.tasks.done" || receipt.SchemaVersion != 1 {
+		t.Fatalf("envelope = %q v%d; want mora.tasks.done v1", receipt.Schema, receipt.SchemaVersion)
+	}
+	if receipt.Task != "-urgent" || receipt.RowsUpdated != 1 {
+		t.Fatalf("receipt = %+v; want one row closed for -urgent", receipt)
+	}
+}
+
+// TestContractIngestRunReceiptSurvivesFailure pins CON-02 on the path that ends
+// in an error after work already landed. A partial named-source ingest has
+// written memories to the vault, so returning only the error handed an agent
+// exit 1 and an empty stdout — the one outcome it cannot act on.
+func TestContractIngestRunReceiptSurvivesFailure(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	cfg := mustConfig(t)
+	origFn := ingestSourceFn
+	t.Cleanup(func() { ingestSourceFn = origFn })
+	// Partial run: three items land, then the connector fails.
+	ingestSourceFn = func(_ Config, _ Source, _ io.Writer) (int, error) {
+		return 3, errString("kaboom")
+	}
+	if err := saveSources(cfg, []Source{
+		{Name: "boom", Type: "filesystem", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runSplit(t, "ingest", "run", "--source", "boom", "--json")
+	if err == nil {
+		t.Fatal("a failing named source must still surface its error")
+	}
+	if !strings.Contains(err.Error(), "kaboom") {
+		t.Fatalf("error = %v; want the connector failure to survive", err)
+	}
+	var receipt struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		Source        string `json:"source"`
+		Items         int    `json:"items"`
+		FailedSources int    `json:"failed_sources"`
+	}
+	if uerr := json.Unmarshal([]byte(stdout), &receipt); uerr != nil {
+		t.Fatalf("stdout is not exactly one JSON document: %v\nstdout: %q", uerr, stdout)
+	}
+	if receipt.Schema != "mora.ingest.run" || receipt.SchemaVersion != 1 {
+		t.Fatalf("envelope = %q v%d; want mora.ingest.run v1", receipt.Schema, receipt.SchemaVersion)
+	}
+	if receipt.Source != "boom" || receipt.Items != 3 || receipt.FailedSources != 1 {
+		t.Fatalf("receipt = %+v; want the 3 landed items and one failed source", receipt)
+	}
+
+	// Human mode is unchanged: the success-only prose line still does not print
+	// on a failing run.
+	humanOut, _, herr := runSplit(t, "ingest", "run", "--source", "boom")
+	if herr == nil {
+		t.Fatal("human-mode failing ingest must error too")
+	}
+	if strings.Contains(humanOut, "ingested ") {
+		t.Fatalf("human stdout gained a success line on a failing run: %q", humanOut)
 	}
 }
 

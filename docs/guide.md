@@ -224,6 +224,10 @@ The connector verbs also take `--json`:
   source name and the item count that run pulled.
 - `mora ingest run --all --json` (or `--source <name> --json`) emits the
   `mora.ingest.run` v1 receipt with the item count and how many sources failed.
+  A run that ingests some items and then fails still emits the receipt before it
+  exits non-zero, so the count of what landed is never lost to an error. A run
+  that fails before ingesting anything — an unknown source, a disabled source, a
+  missing selector — emits no receipt, because a usage error is not a result.
 
 Under `--json` these commands send their progress lines and resumable-failure
 warnings to stderr, so stdout stays exactly one JSON document.
@@ -535,6 +539,14 @@ These tasks live in Mora. They do not change tasks in another service.
 `mora.tasks.add`, `mora.tasks.done`, or `mora.tasks.sync` v1 receipt. The task
 name is the first positional argument, so it can never start with `-`: `mora
 tasks add --json` is a usage error, not a task named `--json`.
+
+Two rules follow from that:
+
+- Quote a name that contains spaces. An unquoted extra word is a usage error,
+  not a silently shortened name — `mora tasks done alpha beta --json junk` fails
+  rather than closing `alpha beta` and dropping `junk`.
+- Pass a name that really does start with `-` after `--`: `mora tasks add --
+  -urgent` and `mora tasks done --json -- -urgent`.
 
 ### Health
 

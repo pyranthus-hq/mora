@@ -196,22 +196,47 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if !*all && !named {
 		return fmt.Errorf("no source named %q — run `mora sources list` to see configured sources", *sourceName)
 	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		if namedErr != nil {
-			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, err)
+	// A named source that failed is one failed source; `failures` stays the
+	// --all-only counter so the aggregate error below keeps its meaning.
+	failedSources := failures
+	if namedErr != nil {
+		failedSources = 1
+	}
+	// CON-02: every --json path that got as far as writing memories owes stdout
+	// exactly one JSON document saying what landed. A partial named-source
+	// failure and a failed rebuild both leave items in the vault, so returning
+	// their error without the receipt handed an agent exit 1 and an empty
+	// stdout — the one outcome it cannot act on. --all already emitted before
+	// its aggregate error; these two paths did not.
+	//
+	// Errors raised BEFORE any ingest work (unknown source, disabled source,
+	// missing selector) still emit nothing: a usage error is not a result.
+	//
+	// Human output is unchanged — the prose line still prints only on success.
+	emitRunReceipt := func() error {
+		if !*jsonOut {
+			return nil
 		}
-		return err
+		return emitReceipt(stdout, "mora.ingest.run", 1, ingestRunReceipt{
+			Source: *sourceName, All: *all, Items: count, FailedSources: failedSources,
+		})
+	}
+	if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+		if eerr := emitRunReceipt(); eerr != nil {
+			return eerr
+		}
+		if namedErr != nil {
+			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, rerr)
+		}
+		return rerr
+	}
+	if eerr := emitRunReceipt(); eerr != nil {
+		return eerr
 	}
 	if namedErr != nil {
 		return namedErr
 	}
-	if *jsonOut {
-		if rerr := emitReceipt(stdout, "mora.ingest.run", 1, ingestRunReceipt{
-			Source: *sourceName, All: *all, Items: count, FailedSources: failures,
-		}); rerr != nil {
-			return rerr
-		}
-	} else {
+	if !*jsonOut {
 		fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
 	}
 	if failures > 0 {
