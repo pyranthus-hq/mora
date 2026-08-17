@@ -84,7 +84,9 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 		fs := flag.NewFlagSet("connectors "+verb, flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		jsonOut := fs.Bool("json", false, "json output")
-		if err := fs.Parse(args[1:]); err != nil {
+		// flagsFirst so `connectors disable gmail --json` parses the flag that
+		// follows the positional; Go's flag package stops at the first non-flag.
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 		}
 		if fs.NArg() != 1 {

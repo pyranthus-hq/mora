@@ -257,7 +257,7 @@
   },
   {
     "path": "reingest",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "schedule",
@@ -309,11 +309,11 @@
   },
   {
     "path": "share fingerprint",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "share gc",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "share init",
@@ -321,7 +321,7 @@
   },
   {
     "path": "share keygen",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "share list",
@@ -493,11 +493,11 @@
   },
   {
     "path": "usage off",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "usage on",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "usage queries",
@@ -505,11 +505,11 @@
   },
   {
     "path": "usage queries off",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "usage queries on",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "usage report",

@@ -107,8 +107,9 @@ func cmdServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		filtered = append(filtered, a)
 	}
-	if len(filtered) > 0 {
-		switch filtered[0] {
+	rest = filtered
+	if len(rest) > 0 {
+		switch rest[0] {
 		case "install", "uninstall", "status":
 			cfg, err := loadConfig()
 			if err != nil {
@@ -120,12 +121,12 @@ func cmdServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			if jsonOut {
 				out = stderr
 			}
-			if err := serveHTTPService(cfg, filtered[0], out); err != nil {
+			if err := serveHTTPService(cfg, rest[0], out); err != nil {
 				return err
 			}
 			if jsonOut {
-				return emitReceipt(stdout, "mora.serve.http."+filtered[0], 1, serveHTTPServiceReceipt{
-					Action: filtered[0], OK: true,
+				return emitReceipt(stdout, "mora.serve.http."+rest[0], 1, serveHTTPServiceReceipt{
+					Action: rest[0], OK: true,
 				})
 			}
 			return nil

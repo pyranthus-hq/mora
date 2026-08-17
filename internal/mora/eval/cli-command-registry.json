@@ -245,8 +245,8 @@
       "path": "disconnect",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "receipt",
-      "payload": "mora.disconnect"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "mcp",
