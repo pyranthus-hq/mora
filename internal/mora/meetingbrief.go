@@ -22,7 +22,6 @@ const (
 )
 
 var meetingBriefSectionTitles = meetingpkg.SectionTitles
-var meetingBriefSectionOrder = meetingpkg.SectionOrder
 
 type BriefCitation = meetingpkg.Citation
 type BriefLineCorrection = meetingpkg.LineCorrection
@@ -403,68 +402,23 @@ func commitmentRefersToMeeting(commitment Commitment, event Memory, attendeeName
 }
 
 func meetingBriefWithCandidates(brief MeetingBrief, candidates []meetingBriefCandidate) MeetingBrief {
-	brief.Sections = brief.Sections[:0]
-	for _, kind := range meetingBriefSectionOrder {
-		lines := make([]CitedBriefLine, 0)
-		for _, candidate := range candidates {
-			if candidate.kind == kind {
-				lines = append(lines, candidate.line)
-			}
-		}
-		if len(lines) > 0 {
-			brief.Sections = append(brief.Sections, MeetingBriefSection{
-				Kind:  kind,
-				Title: meetingBriefSectionTitles[kind],
-				Lines: lines,
-			})
-		}
+	items := make([]meetingpkg.SectionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		items = append(items, meetingpkg.SectionCandidate{Kind: candidate.kind, Line: candidate.line})
 	}
-	return brief
+	return meetingpkg.WithCandidates(brief, items)
 }
 
 func meetingBriefResolveAttribution(associations []meetingBriefCandidate, lineDecisions map[string]string) (meetingBriefCandidate, bool) {
-	filtered := make([]meetingBriefCandidate, 0, len(associations))
-	confirmed := make([]meetingBriefCandidate, 0, len(associations))
+	items := make([]meetingpkg.AttributionAssociation, 0, len(associations))
 	for _, candidate := range associations {
-		switch lineDecisions[candidate.decisionKey] {
-		case mergeDecisionReject:
-			continue
-		case mergeDecisionConfirm:
-			confirmed = append(confirmed, candidate)
-		}
-		filtered = append(filtered, candidate)
+		items = append(items, meetingpkg.AttributionAssociation{DecisionKey: candidate.decisionKey, PersonID: candidate.rank.PersonID, AttendeeSender: candidate.attendeeSender})
 	}
-	if len(confirmed) == 1 {
-		return confirmed[0], true
-	}
-	if len(confirmed) > 1 || len(filtered) == 0 {
+	index, ok := meetingpkg.ResolveAttribution(items, lineDecisions, mergeDecisionConfirm, mergeDecisionReject)
+	if !ok {
 		return meetingBriefCandidate{}, false
 	}
-
-	byPerson := map[string]meetingBriefCandidate{}
-	for _, candidate := range filtered {
-		current, exists := byPerson[candidate.rank.PersonID]
-		if !exists || candidate.attendeeSender {
-			byPerson[candidate.rank.PersonID] = candidate
-		} else {
-			byPerson[candidate.rank.PersonID] = current
-		}
-	}
-	var only meetingBriefCandidate
-	senders := make([]meetingBriefCandidate, 0, len(byPerson))
-	for _, candidate := range byPerson {
-		only = candidate
-		if candidate.attendeeSender {
-			senders = append(senders, candidate)
-		}
-	}
-	if len(senders) == 1 {
-		return senders[0], true
-	}
-	if len(senders) == 0 && len(byPerson) == 1 {
-		return only, true
-	}
-	return meetingBriefCandidate{}, false
+	return associations[index], true
 }
 
 func meetingBriefAttendeeIsSender(m Memory, identity string) bool {
@@ -638,13 +592,7 @@ func meetingBriefMemories(cfg Config) ([]Memory, error) {
 	return mems, nil
 }
 
-func meetingBriefLineCount(brief MeetingBrief) int {
-	count := 0
-	for _, section := range brief.Sections {
-		count += len(section.Lines)
-	}
-	return count
-}
+func meetingBriefLineCount(brief MeetingBrief) int { return meetingpkg.LineCount(brief) }
 
 func citationForMemory(m Memory, source, date string) (BriefCitation, error) {
 	channel := strings.TrimSpace(m.Provider)
@@ -924,38 +872,6 @@ func containsAnyPhrase(text string, phrases []string) bool {
 }
 
 func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
-	if err := brief.Validate(); err != nil {
-		return fmt.Errorf("refusing to render uncited meeting brief: %w", err)
-	}
-	// The red health banner (HEALTH-02) renders FIRST, unconditionally — even
-	// when there's no next meeting (brief.Event == nil below): a broken source
-	// is worth surfacing regardless of whether there happens to be an upcoming
-	// event. Pure over the pre-built brief.SourceHealth (no cfg/now at render
-	// time — D-03).
-	if banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.IndexHealth, Producers: brief.ProducerHealth}); banner != "" {
-		fmt.Fprintln(w, banner)
-		fmt.Fprintln(w)
-	}
-	if brief.Event == nil {
-		return nil
-	}
-	fmt.Fprintln(w, "# Meeting brief")
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "- %s — %s", brief.Event.Title, brief.Event.StartsAt)
-	if len(brief.Event.Attendees) > 0 {
-		fmt.Fprintf(w, " — attendees: %s", strings.Join(brief.Event.Attendees, ", "))
-	}
-	fmt.Fprintf(w, " %s\n", renderBriefCitation(brief.Event.Citation))
-	for _, section := range brief.Sections {
-		fmt.Fprintf(w, "\n## %s\n", section.Title)
-		for _, line := range section.Lines {
-			fmt.Fprintf(w, "- %s %s\n", line.Text, renderBriefCitation(line.Citation))
-			fmt.Fprintf(w, "  actions: correct=`%s` unlink=`%s`\n", line.Correction.CorrectCommand, line.Correction.UnlinkCommand)
-		}
-	}
-	return nil
-}
-
-func renderBriefCitation(c BriefCitation) string {
-	return fmt.Sprintf("{memory-id: %s, channel: %s, source: %s, date: %s}", c.MemoryID(), c.Channel(), c.Source(), c.Date())
+	banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.IndexHealth, Producers: brief.ProducerHealth})
+	return meetingpkg.Render(w, brief, banner)
 }

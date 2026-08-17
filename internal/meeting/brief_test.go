@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -209,5 +210,52 @@ func TestCitedEventAndBriefValidation(t *testing.T) {
 	b.Sections[0].Lines = []CitedLine{badLine}
 	if b.Validate() == nil {
 		t.Fatal("unframed line accepted")
+	}
+}
+
+func TestPresentationAndAttributionPolicies(t *testing.T) {
+	_, _, _, _, brief := validBriefParts(t)
+	var out bytes.Buffer
+	if err := Render(&out, brief, "RED HEALTH"); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.HasPrefix(got, "RED HEALTH\n\n# Meeting brief\n") || !strings.Contains(got, "actions: correct=") || !strings.Contains(got, CitationText(brief.Event.Citation)) {
+		t.Fatalf("render=%q", got)
+	}
+	out.Reset()
+	empty := Brief{AsOf: briefTestNow.Format(time.RFC3339)}
+	if err := Render(&out, empty, ""); err != nil || out.Len() != 0 {
+		t.Fatalf("empty render=%q err=%v", out.String(), err)
+	}
+	bad := brief
+	bad.Sections[0].Lines[0].Citation = Citation{}
+	out.Reset()
+	if err := Render(&out, bad, ""); err == nil || !strings.Contains(err.Error(), "refusing to render uncited") || out.Len() != 0 {
+		t.Fatalf("bad render=%q err=%v", out.String(), err)
+	}
+	candidate := brief.Sections[0].Lines[0]
+	built := WithCandidates(empty, []SectionCandidate{{Kind: SharedContext, Line: candidate}, {Kind: OpenLoops, Line: candidate}})
+	if LineCount(built) != 2 || built.Sections[0].Kind != OpenLoops || built.Sections[1].Kind != SharedContext {
+		t.Fatalf("sections=%+v", built.Sections)
+	}
+	assocs := []AttributionAssociation{{DecisionKey: "a", PersonID: "p1"}, {DecisionKey: "b", PersonID: "p2", AttendeeSender: true}}
+	if i, ok := ResolveAttribution(assocs, map[string]string{}, "confirm", "reject"); !ok || i != 1 {
+		t.Fatalf("sender selection=%d,%v", i, ok)
+	}
+	if i, ok := ResolveAttribution(assocs, map[string]string{"a": "confirm"}, "confirm", "reject"); !ok || i != 0 {
+		t.Fatalf("confirm selection=%d,%v", i, ok)
+	}
+	for _, decisions := range []map[string]string{{"a": "confirm", "b": "confirm"}, {"a": "reject", "b": "reject"}} {
+		if _, ok := ResolveAttribution(assocs, decisions, "confirm", "reject"); ok {
+			t.Fatalf("ambiguous accepted: %v", decisions)
+		}
+	}
+	same := []AttributionAssociation{{PersonID: "p1"}, {PersonID: "p1"}}
+	if _, ok := ResolveAttribution(same, nil, "confirm", "reject"); !ok {
+		t.Fatal("one-person attribution rejected")
+	}
+	ambiguous := []AttributionAssociation{{PersonID: "p1"}, {PersonID: "p2"}}
+	if _, ok := ResolveAttribution(ambiguous, nil, "confirm", "reject"); ok {
+		t.Fatal("multi-person attribution accepted")
 	}
 }
