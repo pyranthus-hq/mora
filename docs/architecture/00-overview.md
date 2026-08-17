@@ -163,6 +163,7 @@ These span subsystems. Each subsystem doc enforces its own. These are the rules 
 | [19 — Meeting brief assembly](./19-meeting-brief-assembly.md) | Deterministic, cited unfinished-business assembly, attendee selection, materiality, and health-aware uncertainty. |
 | [20 — Index health](./20-index-health.md) | Dirty/fresh index state, generation markers, ingest journals, recovery, and the fail-closed read contract. |
 | [21 — Teach and human correction](./21-teach.md) | The local human-review plane: typed identity proposals, reversible commitment verdicts, authored-memory revision history, decision validity, consent-gated examples, and deterministic governance rebuilds. |
+| [22 — The Mora machine contract](./22-cli-contracts.md) | **The published contract for programs that call Mora**: the versioned JSON envelope and its one breaking shape change, the stdout/stderr split, the exit-code table, the error-code taxonomy, `--json` coverage and its declared exemptions, `mora capabilities` as the discovery entry point, and the backward-compatibility guarantee — each claim naming the test that enforces it. Consumer-facing; 08 holds the implementation. |
 
 ## Glossary
 

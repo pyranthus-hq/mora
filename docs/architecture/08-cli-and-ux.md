@@ -193,82 +193,44 @@ sequenceDiagram
 
 ### The versioned JSON envelope (CON-01)
 
-Every machine payload Mora prints carries two keys:
-
-| Key | Type | Meaning |
-|---|---|---|
-| `schema` | string | The payload's published name, e.g. `mora.doctor.report`. It equals the `payload` value the command registry assigns that path. |
-| `schema_version` | integer | A MAJOR-only version. It starts at 1. |
+**The consumer-facing rules — the two keys, MAJOR-only semantics, the bare-array shape moves, the
+exempt families, and why MCP results carry no envelope — are published in
+[22 — The Mora machine contract](./22-cli-contracts.md), §1.** They are not repeated here. What
+follows is the implementation a contributor needs.
 
 `emitReceipt(w, schema, version, payload)` (`receipt.go`) is the single writer. It **merges** the two
-keys into the payload object rather than wrapping it, so every field a payload published before keeps
-its name, its type, and its top-level position.
+keys into the payload object rather than wrapping it, which is what keeps every pre-existing field at
+its own name, type, and top-level position — the property the compatibility gate then freezes.
 
-**Versioning rule — the whole point of MAJOR-only:**
-
-- **Adding a field is MINOR.** It does not bump `schema_version`. Phase 3's repair fields and Phase
-  7's freshness fields land on `doctor`'s report this way.
-- **Removing a field, renaming one, or changing its type is BREAKING** and requires a
-  `schema_version` bump plus a release note.
-- A consumer should read the fields it knows and ignore the rest. A payload gaining keys is normal.
-
-**Bare arrays.** A top-level JSON array cannot carry the envelope, so a command that printed one now
-prints an object with the array under a named key (`memories`, `tasks`, `loops`, `pending`,
-`connectors`, `examples`, `entries`, `sources`). That is the one breaking shape change the envelope
-forces; every such move is listed in `docs/guide.md`.
-
-**Exempt paths.** A registry row marked `json_contract: "exempt"` carries a `reason` and emits no
-document. Two families are exempt: **dispatch-only groups** (`mora share`, `mora teach`, `mora loop`
-…), where a bare invocation is a usage error and this codebase holds that *a usage error is not a
-result*; and the **Claude Code hook handlers** (`hook session-start`, `hook recall`), whose stdout is
-Claude Code's own `hookSpecificOutput` envelope rather than a Mora payload.
-
-**MCP tool results deliberately carry NO envelope.** The T0 budget gate measured `write_memory`'s
-worst-case row at 1,470 of 1,500 tokens, and the envelope costs a measured +30 tokens per object
-payload (two keys, paid twice: the indented text block plus the `structuredContent` mirror). Adding
-it would leave zero headroom on the gate whose purpose is to be the forcing function. MCP schema
-names and versions are published through `mora capabilities` (`capabilities.mcp.schemas`) instead.
-
-`TestContractEveryPayloadIsVersioned` (`contract_envelope_test.go`) proves the coverage from the
-registry: it drives every executable non-exempt row and asserts `schema` equals the registry's
-`payload`, and it fails if executed + shape-only rows do not add up to the non-exempt row count.
+A payload's schema name is not chosen at the call site: it must equal the `payload` value
+`internal/mora/eval/cli-command-registry.json` assigns that path.
+`TestContractEveryPayloadIsVersioned` (`contract_envelope_test.go`) drives every executable non-exempt
+row and fails if executed plus shape-only rows do not add up to the non-exempt row count, so a new
+command cannot be added without a payload name and a classification.
 
 ### The frozen v1 corpus and the compatibility gate (CON-05)
 
-A version number proves nothing on its own. `internal/mora/testdata/contracts/v1/<schema>.json` holds
-one frozen document per executable versioned payload, and `contract_compat_test.go` decodes it in
-both directions:
+**The guarantee itself — what a pinned consumer may rely on, the exact remedy for a removal, the
+corpus's 50/45 scope limit, and the fact that ordering is not frozen — is published in
+[22 — The Mora machine contract](./22-cli-contracts.md), §7.** The contributor-facing mechanics:
 
-| Test | Direction | What it proves |
-|---|---|---|
-| `TestContractCompatAdditiveIsSafe` | today's output → a type built from the v1 golden, unknown fields ignored | Every v1 field still populates. It then injects a field nothing emits today and asserts the pinned consumer's view is byte-identical, so *adding is safe* is measured, not assumed. |
-| `TestContractCompatRemovalIsCaught` | the v1 golden → a type built from today's payload, `DisallowUnknownFields` | A removed or renamed field is an unknown field in that direction and fails. A key-by-key walk runs alongside it for what strict decoding cannot see: inside an array that is empty today, and scalar retypes. |
-| `TestContractGoldenCorpusIsComplete` | registry → corpus | A new payload with no golden fails, so nothing escapes the gate. |
-| `TestContractCompatRemedyMessage` | — | Covers the failure text itself and proves the detector fires on a synthetic removal. |
+`internal/mora/testdata/contracts/v1/<schema>.json` holds one frozen document per executable versioned
+payload. `contract_compat_test.go` decodes each in both directions
+(`TestContractCompatAdditiveIsSafe`, `TestContractCompatRemovalIsCaught`), reconciles the corpus
+against the registry (`TestContractGoldenCorpusIsComplete`), and re-drives every command
+(`TestContractGoldenCorpusIsFrozen`).
 
-**The rule, restated as the tests enforce it:**
+Two things worth knowing before you touch it:
 
-- **Adding a field needs no version bump.** Regenerate the corpus with
-  `MORA_UPDATE_CONTRACT_GOLDENS=1`.
-- **Removing, renaming, or retyping a field requires bumping that schema's `schema_version` and
-  adding `testdata/contracts/v2/`.** The v1 goldens are never edited in place.
-- **Regeneration cannot be used to drop a field.** Under `MORA_UPDATE_CONTRACT_GOLDENS=1` the
-  generator refuses to write a document that lost a key the committed golden carries, and the failure
-  message for a dropped key never mentions the env var. Otherwise the gate would be bypassable by
-  following its own advice: remove a field, regenerate, go green.
-
-**What the corpus does and does not freeze.** It freezes the field set, the JSON types, and the
-stable values. It does not freeze ids, timestamps, absolute paths, bare calendar dates, two inherently
-variable byte counts (`mora.backup.bytes`, `mora.doctor.report.storage_bytes`), or the ordering of a
-collection — each is normalized to a typed placeholder, and the normalization is listed in
-`contract_compat_test.go`. Generation proves the list is sufficient by running the whole command
-sequence twice and failing on any divergence, so a missed pattern is a hard generation failure rather
-than a CI flap.
-
-**Corpus scope.** 50 goldens cover every payload the suite can execute. The other 45 payloads belong
-to rows that must never run in a test — destructive, network-bound, host-mutating, or platform-gated
-— and get the same schema-shape assertion `TestContractEveryPayloadIsVersioned` gives them.
-Fabricating a document for those would freeze a shape no command emits.
+- **Regenerate with `MORA_UPDATE_CONTRACT_GOLDENS=1` only for an ADDITION.** The generator refuses to
+  write a document that lost a key, and the failure message for a dropped key deliberately never
+  mentions the env var — otherwise the gate would be bypassable by following its own advice.
+- **Volatility is normalized, not excluded.** `contractNormalize` and `contractVolatileLeaves`
+  (`contract_compat_test.go`) replace ids, timestamps, absolute paths, bare dates, and two inherently
+  variable byte counts with typed placeholders, and sort every array. Generation runs the whole
+  command sequence twice and fails on any divergence, so a missed pattern is a hard generation failure
+  rather than a CI flap. If CI reds on `ubuntu-latest` or `windows-latest`, `contractNormalizeString`
+  and `contractVolatileLeaves` are where to look — the corpus has only ever been generated on darwin.
 
 ### The banner
 
@@ -300,45 +262,11 @@ A failure reaches a caller as a `moraError` carrying `Code`, `Class`, `Source`, 
 
 ### The codes
 
-| Code | Class | `error_class` | Retryable | Meaning |
-|---|---|---|---|---|
-| `usage.unknown_flag` | usage | — | no | Unknown or malformed flag. |
-| `usage.unknown_value` | usage | — | no | A flag or positional carried a value the command does not accept. |
-| `usage.missing_argument` | usage | — | no | A required positional argument was absent. |
-| `connector.malformed_response` | connector | `malformed` | no | A connector process, API, or local database returned a payload Mora could not parse. |
-| `connector.unavailable` | connector | `unavailable` | yes | A connector's process, binary, database, or endpoint could not be reached. |
-| `connector.unauthorized` | connector | `unauthorized` | no | An authentication or permission refusal Mora **directly observed** — never an inference from an error string. |
-| `connector.stale` | connector | `stale` | yes | A source last succeeded longer ago than its freshness budget allows. |
-| `connector.empty` | connector | `empty` | no | A source read cleanly and returned zero items. Defined here; emitted per-source in Phase 2 (ISO-02). |
-| `connector.unclassified` | connector | `unclassified` | no | A failure with no typed cause, and the read-time backfill for records persisted before the taxonomy shipped. |
-| `data.not_found` | data | — | no | A requested memory, entity, or record does not exist. |
-| `data.corrupt` | data | — | no | A vault or state file exists but could not be decoded. |
-| `index.unavailable` | index | — | yes | The index database could not be opened. `mora index rebuild` is the repair. |
-| `index.schema_mismatch` | index | — | no | The index exists but its tables or columns do not match this build. |
-| `internal.unexpected` | internal | — | no | A failure Mora cannot attribute to caller, connector, or data. A Mora bug. |
-
-The `permission` class is declared with **no code**. Mora currently *infers* Full Disk Access from an error string rather than observing a refusal, and Phase 3 (DOC-03) owns replacing that inference; minting a permission code now would publish the same unverified claim in typed form.
-
-### `error_class` → `sourceHealth.state` is many-to-one
-
-CON-07's five discriminations are an **orthogonal axis**, not a fourth state vocabulary. A connector failure carries both: a `state` (what a human or a banner reads) and an `error_class` (what a machine branches on).
-
-| `error_class` | `sourceHealth.state` |
-|---|---|
-| `unavailable` | `failed` |
-| `unauthorized` | `failed` |
-| `malformed` | `failed` |
-| `unclassified` | `failed` |
-| `stale` | `stale` |
-| `empty` | `fresh`, with `item_count` 0 |
-
-Three `failed` sources are now distinguishable from one another without reading `last_error` prose. The three existing state vocabularies are **unchanged and no fourth is introduced**:
-
-- `fresh | stale | failed | never` — `sourceHealth.State` (`health.go`), used by `doctor`, `sync status`, and the banner.
-- `healthy | degraded | unhealthy` — the aggregate health verdict.
-- `fresh | dirty | degraded | failed | never` — `indexHealth.State` (the index arm).
-
-`memory.SyncStatus` gained `error_code` **beside** its existing free-text `last_error`; `last_error` is unchanged in name, type, and meaning (CON-05). A record written before this change decodes with an empty `error_code`, and Mora reads that as `connector.unclassified` at read time rather than rewriting the file on disk. `sourceHealth` and the `mora sync status --json` receipt both carry the field, so `doctor --json` and `sync status --json` agree.
+**The full table — fifteen codes, seven classes, retryability, the `error_class` axis, the
+many-to-one mapping into `state`, and why the `permission` class deliberately has no code — is
+published in [22 — The Mora machine contract](./22-cli-contracts.md), §4.** Edit
+`internal/mora/errors.go` and `internal/mora/eval/error-code-registry.json` together; the `go/ast`
+sweep fails if they disagree in either direction.
 
 ### Where a code is attached
 
@@ -349,18 +277,14 @@ Three `failed` sources are now distinguishable from one another without reading 
 
 ### Exit codes
 
-Three non-zero process exit codes ship, and this taxonomy grandfathered all three rather than moving any of them:
+**The published table — 1, 2, and 10 grandfathered, 3 through 9 permanently reserved-unused, 11 the
+first allocatable, and the reasoning behind `doctor --strict` staying 1 — is published in
+[22 — The Mora machine contract](./22-cli-contracts.md), §3.**
 
-| Exit | Meaning | Produced by |
-|---|---|---|
-| `0` | Success. | every command |
-| `1` | Generic failure. Every error class maps here, **including `doctor --strict` on an unhealthy report**. | `main.go` fallback, `exitCodeForClass` |
-| `2` | `doctor --pulse`: a source, the index, or a producer is unhealthy. Sick, not broken. | `cmdDoctorPulse` (`doctor.go`) |
-| `10` | `loop begin`: this period already succeeded. The idempotent skip. | `loopSkipExitCode` (`loop.go`) |
-
-**3 through 9 are permanently reserved-unused** — those statuses are widely squatted by shells, test runners, and wrapper scripts, so leaving them unallocated means a future Mora code can never be confused with one of those conventions. A future phase allocates at **11 or above**. `TestExitCodeAllocationIsGrandfathered` fails if `exitCodeForClass` ever returns a status in the reserved band, or a status below 11 that is not 1, 2, or 10.
-
-**Why `doctor --strict` unhealthy still exits 1 rather than 2.** The inconsistency is real and measured: on one vault with a missing index, `doctor --pulse` exits 2 and `doctor --strict` exits 1. Changing it was put to the maintainer and declined. A process exit status is the one contract here with no additive migration path, and the machine consumer this taxonomy serves already has a clean signal — `doctor --json --strict` prints the full report (`"healthy": false`) *before* returning the error, so a JSON caller distinguishes unhealthy (report, exit 1) from crashed (no report, exit 1) today. Only a shell consumer reading a bare `$?` without `--json` cannot, and that consumer gets a non-zero either way.
+Implementation: `exitCodeForClass` (`errors.go`) maps a class to a status,
+`cmd/mora/main.go` applies the fallback, `cmdDoctorPulse` (`doctor.go`) produces 2, and
+`loopSkipExitCode` (`loop.go`) produces 10. `TestExitCodeAllocationIsGrandfathered` fails if any
+status lands in the reserved band, or below 11 without being 1, 2, or 10.
 
 ## `init` config-preservation
 

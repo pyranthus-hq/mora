@@ -570,6 +570,13 @@ Adding a field to any payload is a minor change and never bumps
 `schema_version`; removing or renaming one is breaking and does. Read the fields
 you know and ignore the rest.
 
+These rules are the same for every command, so they are stated once here rather
+than repeated per verb. If you are writing a program against Mora, read
+[the machine contract](architecture/22-cli-contracts.md): the envelope, the
+stdout/stderr split, the exit codes, the full error-code table, which commands
+have no `--json` document and why, and exactly what a pinned consumer may rely
+on — with the test that enforces each claim named.
+
 `mora think` makes no model call. It returns cited evidence, coverage gaps, and
 a prompt that your agent can use. A result may include
 `later_related_evidence`. This means a newer, strongly related record exists.
