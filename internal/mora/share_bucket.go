@@ -9,7 +9,6 @@ import (
 )
 
 const shareManifestObject = sharingpkg.ManifestObject
-const shareMaxShareEntries = sharingpkg.MaxShareEntries
 const shareManifestSchema = sharingpkg.ExportManifestSchema
 const shareMaxMemoryBytes = sharingpkg.MaxMemoryBytes
 
