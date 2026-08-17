@@ -367,6 +367,43 @@ Or add this to another MCP client:
 Mora provides 12 tools: write, read, search, list, delete, context, think,
 entity list, entity detail, digest, brief, and meeting prep.
 
+### Ask Mora what it can do
+
+An agent does not have to guess. One command answers it:
+
+```bash
+mora capabilities --json
+```
+
+The reply is a single document with these field groups:
+
+| Field | What it holds |
+|---|---|
+| `mora_version` | The build you are talking to. |
+| `commands` | Every command path, with its `kind`, its `platform`, its `json_contract` (`result`, `receipt`, or `exempt`), its `payload` schema name, and, on exempt rows, the `reason` it emits no result document. |
+| `connectors` | Every connector Mora can ingest, with its display name, its label, whether it needs a login, whether it is ingesting, whether its items are future-dated, and its feature block. |
+| `schemas` | Every published CLI payload schema name and its version. |
+| `error_codes` | Every published error code, its class, its connector `error_class` where it has one, its exit code, whether a retry can succeed, and its meaning. |
+| `exit_codes` | The allocated process exit codes (1, 2, and 10), the reserved range, and the first code a future release may allocate. |
+| `mcp` | The write policy in force on this machine, the 12 MCP tool names, and the payload schema version for each tool. |
+| `features` | Top-level support for repair and deep links. |
+
+Support is reported with three words and only three: `supported`, `unsupported`,
+and `planned`. Read the word, not the presence of the field.
+
+Two things are reported `unsupported` today, at the top level and for every
+connector: **repair** and **deep links**. Neither exists yet. Repair becomes
+supported when Phase 3 lands it; deep links when Phase 5 does. Per-connector
+`incremental_sync` is also `unsupported` today — every connector re-reads a time
+window rather than resuming from a stored position.
+
+Exit codes 3 through 9 are permanently reserved and will never be used, so a
+wrapper script can tell a Mora status from one invented by a shell or a test
+runner. The next code Mora may allocate is 11.
+
+The document is built from Mora's own registries, so it cannot describe a
+command, error code, or schema that the binary does not have.
+
 ### MCP write policy
 
 Choose how much authority the agent gets:

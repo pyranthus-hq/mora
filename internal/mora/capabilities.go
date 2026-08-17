@@ -23,18 +23,80 @@ type capabilitiesFeatures struct {
 	DeepLink string `json:"deep_link"`
 }
 
+// capabilitiesConnectorFeatures is the per-connector tri-state block. It is a
+// separate type from capabilitiesFeatures because `incremental_sync` is a
+// per-connector property with no top-level analogue; sharing one struct and
+// hiding the field behind `omitempty` would make the top-level document's shape
+// depend on a value rather than on the schema.
+type capabilitiesConnectorFeatures struct {
+	Repair          string `json:"repair"`
+	DeepLink        string `json:"deep_link"`
+	IncrementalSync string `json:"incremental_sync"`
+}
+
+// capabilitiesCommand mirrors one row of eval/cli-command-registry.json. The
+// JSON tags are the registry's own key names, so the section is decoded from the
+// embedded registry rather than transformed into a second vocabulary that could
+// drift from the first.
+//
+// `reason` is emitted ALWAYS, empty on non-exempt rows, rather than with
+// `omitempty`. The compatibility gate walks arrays index-wise, so a document
+// whose elements carry different key sets can report a false removal when the
+// array reorders. A uniform key set makes that impossible.
 type capabilitiesCommand struct {
 	Path         string `json:"path"`
+	Kind         string `json:"kind"`
+	Platform     string `json:"platform"`
 	JSONContract string `json:"json_contract"`
 	Payload      string `json:"payload"`
+	Reason       string `json:"reason"`
 }
 
 type capabilitiesConnector struct {
-	Type      string               `json:"type"`
-	Name      string               `json:"name"`
-	NeedsAuth bool                 `json:"needs_auth"`
-	Ingesting bool                 `json:"ingesting"`
-	Features  capabilitiesFeatures `json:"features"`
+	Type      string                        `json:"type"`
+	Name      string                        `json:"name"`
+	NeedsAuth bool                          `json:"needs_auth"`
+	Ingesting bool                          `json:"ingesting"`
+	Label     string                        `json:"label"`
+	Upcoming  bool                          `json:"upcoming"`
+	Features  capabilitiesConnectorFeatures `json:"features"`
+}
+
+// capabilitiesErrorCode mirrors one row of eval/error-code-registry.json. Like
+// capabilitiesCommand, every field is emitted always — `error_class` is empty on
+// the codes outside the connector class rather than absent.
+type capabilitiesErrorCode struct {
+	Code       string `json:"code"`
+	Class      string `json:"class"`
+	ErrorClass string `json:"error_class"`
+	ExitCode   int    `json:"exit_code"`
+	Retryable  bool   `json:"retryable"`
+	Meaning    string `json:"meaning"`
+}
+
+// capabilitiesExitCode publishes one allocated process exit code. `source` and
+// `witness` from the registry row are deliberately NOT republished: they name
+// Go files and test functions, which are not part of a consumer contract.
+type capabilitiesExitCode struct {
+	Code    int    `json:"code"`
+	Status  string `json:"status"`
+	Meaning string `json:"meaning"`
+}
+
+type capabilitiesReservedExitCodes struct {
+	From   int    `json:"from"`
+	To     int    `json:"to"`
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+// capabilitiesExitCodes publishes the exit-code reality, including the fact that
+// 3 through 9 are permanently reserved-unused. A caller that only saw the
+// allocated list would reasonably assume 3 is the next code Mora will mint.
+type capabilitiesExitCodes struct {
+	Allocated        []capabilitiesExitCode        `json:"allocated"`
+	Reserved         capabilitiesReservedExitCodes `json:"reserved"`
+	FirstAllocatable int                           `json:"first_allocatable"`
 }
 
 type capabilitiesSchema struct {
@@ -58,6 +120,8 @@ type capabilitiesPayload struct {
 	Commands    []capabilitiesCommand   `json:"commands"`
 	Connectors  []capabilitiesConnector `json:"connectors"`
 	Schemas     []capabilitiesSchema    `json:"schemas"`
+	ErrorCodes  []capabilitiesErrorCode `json:"error_codes"`
+	ExitCodes   capabilitiesExitCodes   `json:"exit_codes"`
 	MCP         capabilitiesMCP         `json:"mcp"`
 	Features    capabilitiesFeatures    `json:"features"`
 }
@@ -66,21 +130,67 @@ type capabilitiesRegistry struct {
 	Commands []capabilitiesCommand `json:"commands"`
 }
 
+// capabilitiesErrorRegistry mirrors eval/error-code-registry.json. The exit-code
+// table lives in that file rather than in a second place, so `exit_codes` here
+// is derived, not hand-written.
+type capabilitiesErrorRegistry struct {
+	Codes             []capabilitiesErrorCode       `json:"codes"`
+	ExitCodes         []capabilitiesExitCode        `json:"exit_codes"`
+	ReservedExitCodes capabilitiesReservedExitCodes `json:"reserved_exit_codes"`
+	FirstAllocatable  int                           `json:"first_allocatable_exit_code"`
+}
+
+// The registries are the source of truth for what Mora can do, and a shipped
+// binary cannot assume they are on disk beside it. Embedding them is what makes
+// `capabilities` unable to disagree with them: there is one copy of the data,
+// compiled in, and no generated Go table to fall out of date. The cost is that
+// the drift test for these two sections is tautological by construction — the
+// non-tautological binding is to the connector catalog, the MCP tool list, and
+// the live write policy, which come from Go source rather than from these files.
+//
 //go:embed eval/cli-command-registry.json
 var embeddedCLICommandRegistry []byte
+
+//go:embed eval/error-code-registry.json
+var embeddedErrorCodeRegistry []byte
 
 func capabilitiesCommands() ([]capabilitiesCommand, error) {
 	var registry capabilitiesRegistry
 	if err := json.Unmarshal(embeddedCLICommandRegistry, &registry); err != nil {
 		return nil, fmt.Errorf("parse embedded CLI command registry: %w", err)
 	}
-	commands := make([]capabilitiesCommand, 0, 1)
-	for _, command := range registry.Commands {
-		if command.Path == "lint" {
-			commands = append(commands, command)
-		}
-	}
+	commands := make([]capabilitiesCommand, 0, len(registry.Commands))
+	commands = append(commands, registry.Commands...)
+	sort.Slice(commands, func(i, j int) bool { return commands[i].Path < commands[j].Path })
 	return commands, nil
+}
+
+func capabilitiesErrorRegistryDecoded() (capabilitiesErrorRegistry, error) {
+	var registry capabilitiesErrorRegistry
+	if err := json.Unmarshal(embeddedErrorCodeRegistry, &registry); err != nil {
+		return registry, fmt.Errorf("parse embedded error code registry: %w", err)
+	}
+	return registry, nil
+}
+
+func capabilitiesErrorCodes(registry capabilitiesErrorRegistry) []capabilitiesErrorCode {
+	codes := make([]capabilitiesErrorCode, 0, len(registry.Codes))
+	codes = append(codes, registry.Codes...)
+	sort.Slice(codes, func(i, j int) bool { return codes[i].Code < codes[j].Code })
+	return codes
+}
+
+func capabilitiesExitCodeTable(registry capabilitiesErrorRegistry) capabilitiesExitCodes {
+	allocated := make([]capabilitiesExitCode, 0, len(registry.ExitCodes))
+	for _, row := range registry.ExitCodes {
+		allocated = append(allocated, capabilitiesExitCode{Code: row.Code, Status: row.Status, Meaning: row.Meaning})
+	}
+	sort.Slice(allocated, func(i, j int) bool { return allocated[i].Code < allocated[j].Code })
+	return capabilitiesExitCodes{
+		Allocated:        allocated,
+		Reserved:         registry.ReservedExitCodes,
+		FirstAllocatable: registry.FirstAllocatable,
+	}
 }
 
 // capabilitiesSchemas derives the published CLI schema list from the embedded
@@ -133,6 +243,26 @@ func capabilitiesMCPSchemas() []capabilitiesSchema {
 	return schemas
 }
 
+// capabilitiesIncrementalSync reports whether a connector can fetch only what
+// changed since its last successful run. Today every connector answers
+// `unsupported`, and that is a measured claim, not a placeholder:
+//
+//   - Every ingest path fetches a TIME WINDOW (windowForSource, windowForIMessage,
+//     windowForAppleCal) recomputed from the clock on each run, never from a
+//     stored position.
+//   - memory.SyncStatus.Checkpoint is a WITHIN-RUN page-resume token: ingest.go
+//     clears it (`p.Status.Checkpoint = ""`) once a run completes, so the next run
+//     starts from the beginning of the window.
+//   - SyncStatus.GmailHistory and SyncStatus.CalSyncToken are declared and
+//     commented "future incremental". Nothing outside their declaration in
+//     internal/memory/status.go reads or writes either field.
+//   - ingestFilesystem walks the whole tree every run.
+//
+// This is the one value in the payload with no registry behind it. Phase 4
+// (ING-01) flips it, and when it does, this function is where the evidence for
+// the new value belongs.
+func capabilitiesIncrementalSync(connectorInfo) string { return featureUnsupported }
+
 func capabilitiesConnectors() []capabilitiesConnector {
 	connectors := make([]capabilitiesConnector, 0, len(connectorCatalog))
 	for _, connector := range connectorCatalog {
@@ -141,13 +271,20 @@ func capabilitiesConnectors() []capabilitiesConnector {
 			Name:      connector.DisplayName,
 			NeedsAuth: connector.NeedsAuth,
 			Ingesting: connector.Ingesting,
-			Features: capabilitiesFeatures{
+			Label:     connector.Label,
+			Upcoming:  connector.Upcoming,
+			Features: capabilitiesConnectorFeatures{
 				Repair:   featureUnsupported,
 				DeepLink: featureUnsupported,
+				// Verified by grep rather than assumed: no `deep_link`, `DeepLink`,
+				// `permalink`, `message://`, or `x-apple` appears in any non-test Go
+				// file outside this one.
+				IncrementalSync: capabilitiesIncrementalSync(connector),
 			},
 		})
 	}
 	// gdrive is deliberately absent because it is a no-op stub outside connectorCatalog.
+	sort.Slice(connectors, func(i, j int) bool { return connectors[i].Type < connectors[j].Type })
 	return connectors
 }
 
@@ -173,11 +310,17 @@ func cmdCapabilities(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
+	errorRegistry, err := capabilitiesErrorRegistryDecoded()
+	if err != nil {
+		return err
+	}
 	payload := capabilitiesPayload{
 		MoraVersion: BuildVersion,
 		Commands:    commands,
 		Connectors:  capabilitiesConnectors(),
 		Schemas:     schemas,
+		ErrorCodes:  capabilitiesErrorCodes(errorRegistry),
+		ExitCodes:   capabilitiesExitCodeTable(errorRegistry),
 		MCP: capabilitiesMCP{
 			WritePolicy: cfg.mcpWritePolicy(),
 			Tools:       mcpToolNames(),
@@ -188,6 +331,11 @@ func cmdCapabilities(ctx context.Context, args []string, stdout, stderr io.Write
 	if *jsonOut {
 		return emitReceipt(stdout, "mora.capabilities", 1, payload)
 	}
-	fmt.Fprintf(stdout, "Mora %s capabilities: %d connector(s), %d MCP tool(s).\n", payload.MoraVersion, len(payload.Connectors), len(payload.MCP.Tools))
+	// Human output stays a summary on purpose: rendering 131 command rows for a
+	// reader is worse than pointing them at --json.
+	fmt.Fprintf(stdout, "Mora %s capabilities: %d command(s), %d connector(s), %d schema(s), %d error code(s), %d MCP tool(s).\n",
+		payload.MoraVersion, len(payload.Commands), len(payload.Connectors), len(payload.Schemas), len(payload.ErrorCodes), len(payload.MCP.Tools))
+	fmt.Fprintf(stdout, "MCP write policy: %s. Repair: %s. Deep links: %s. Run `mora capabilities --json` for the full contract.\n",
+		payload.MCP.WritePolicy, payload.Features.Repair, payload.Features.DeepLink)
 	return nil
 }
