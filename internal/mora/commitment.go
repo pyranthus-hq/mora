@@ -110,9 +110,6 @@ func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (govA
 	owner, direction, ok := commitmentpkg.ClassifySpeech(text, commitmentpkg.SpeechContext{Author: commitmentSpeechAtom(speech.Author), Addressee: commitmentSpeechAtom(speech.Addressee), Self: commitmentSpeechAtom(speech.Self), Counterparty: commitmentSpeechAtom(speech.Counterparty), ReportedActor: reported})
 	return commitmentGovAtom(owner), direction, ok
 }
-func directCommitmentRequest(text string) bool {
-	return commitmentpkg.DirectRequest(text) || containsAnyPhrase(text, []string{"please bring", "needs your ", "still needs your "})
-}
 func userAuthoredPromiseToAnother(text string) bool { return commitmentpkg.ManualPromise(text) }
 func userAuthoredPromiseCounterpartyLabel(text string) string {
 	return commitmentpkg.ManualPromiseCounterpartyLabel(text)
@@ -369,66 +366,15 @@ func gmailAuthoredBlockRef(message commitmentMessageEvidence, body string) strin
 // two ordered block refs are required so the opening and closure remain grounded;
 // a quote without authored fulfillment returns no obligation.
 func gmailFulfilledQuotedRequest(m Memory, message commitmentMessageEvidence, body string) (delivery, request string, quotedAuthor govAtom, blockRef string, ok bool) {
-	if len(message.BlockRefs) != 2 {
-		return "", "", govAtom{}, "", false
-	}
-	lines := strings.Split(body, "\n")
-	attribution := -1
-	for i, line := range lines {
-		if meetingpkg.IsQuotedReplyLine(line) {
-			attribution = i
-			break
-		}
-	}
-	if attribution < 0 {
-		return "", "", govAtom{}, "", false
-	}
-	delivery = oneLine(senderAuthoredBody(strings.Join(lines[:attribution], "\n")))
-	transition, voice := commitmentTransition(delivery)
-	if transition != commitClosed || voice != commitmentVoiceDelivery {
-		return "", "", govAtom{}, "", false
-	}
-
-	attributionLine := strings.ToLower(strings.TrimSpace(lines[attribution]))
 	var names map[string]string
-	if body, err := json.Marshal(m.Meta["names"]); err != nil || json.Unmarshal(body, &names) != nil {
+	if raw, err := json.Marshal(m.Meta["names"]); err != nil || json.Unmarshal(raw, &names) != nil {
 		return "", "", govAtom{}, "", false
 	}
-	var authors []govAtom
-	keys := make([]string, 0, len(names))
-	for raw := range names {
-		keys = append(keys, raw)
-	}
-	sort.Strings(keys)
-	for _, raw := range keys {
-		name := strings.ToLower(strings.TrimSpace(names[raw]))
-		fields := strings.Fields(name)
-		if name == "" || (!strings.Contains(attributionLine, name) &&
-			(len(fields) == 0 || len(fields[0]) < 3 || !strings.Contains(attributionLine, fields[0]))) {
-			continue
-		}
-		authors = append(authors, govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, raw)})
-	}
-	if len(authors) != 1 {
+	delivery, request, author, blockRef, ok := commitmentpkg.FulfilledQuotedRequest(body, message.BlockRefs, names)
+	if !ok {
 		return "", "", govAtom{}, "", false
 	}
-
-	var quotedLines []string
-	for _, line := range lines[attribution+1:] {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, ">") {
-			if trimmed != "" {
-				break
-			}
-			continue
-		}
-		quotedLines = append(quotedLines, strings.TrimSpace(strings.TrimPrefix(trimmed, ">")))
-	}
-	segments := commitmentSegments(strings.Join(quotedLines, "\n"))
-	if len(segments) != 1 || !directCommitmentRequest(strings.ToLower(oneLine(segments[0]))) {
-		return "", "", govAtom{}, "", false
-	}
-	return delivery, segments[0], authors[0], message.BlockRefs[1], true
+	return delivery, request, govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, author)}, blockRef, true
 }
 
 // acceptanceRestatesRequest implements the contract rule that accepting an
@@ -751,24 +697,7 @@ func classifyCommitments(m Memory, cfg Config) []Commitment {
 	return uniqueCommitments(out)
 }
 
-func commitmentSegments(text string) []string {
-	authored := senderAuthoredBody(text)
-	if containsAnyPhrase(strings.ToLower(authored), []string{
-		"earlier request from the archive", "quoted request", "quoted below",
-		"forwarded below", "earlier message below",
-	}) {
-		return nil
-	}
-	var out []string
-	for _, raw := range meetingBriefEvidenceSegments(authored) {
-		segment := stripNoiseTokens(raw)
-		if segment == "" || isLeadInFragment(segment) || containsPersonalTrivia(segment) {
-			continue
-		}
-		out = append(out, oneLine(segment))
-	}
-	return out
-}
+func commitmentSegments(text string) []string { return commitmentpkg.Segments(text) }
 
 type conversationTurn struct {
 	Self bool
@@ -897,36 +826,10 @@ func commitmentEvidenceFromMemories(mems []Memory, cfg Config) []commitmentEvide
 	return out
 }
 
-func closureEvidenceSegments(text string) []string {
-	authored := senderAuthoredBody(text)
-	if authored == "" {
-		return nil
-	}
-	var out []string
-	for _, raw := range meetingBriefEvidenceSegments(authored) {
-		segment := oneLine(stripNoiseTokens(raw))
-		if segment != "" && !isLeadInFragment(segment) {
-			out = append(out, segment)
-		}
-	}
-	return out
-}
+func closureEvidenceSegments(text string) []string { return commitmentpkg.ClosureSegments(text) }
 
-type commitmentTransitionVoice = commitmentpkg.TransitionVoice
-
-const (
-	commitmentVoiceDelivery = commitmentpkg.VoiceDelivery
-	commitmentVoiceAck      = commitmentpkg.VoiceAck
-	commitmentVoiceEither   = commitmentpkg.VoiceEither
-)
-
-func commitmentTransition(text string) (string, commitmentTransitionVoice) {
-	return commitmentpkg.Transition(text)
-}
-func commitmentObjectOverlap(a, b string) int { return commitmentpkg.ObjectOverlap(a, b) }
-func commitmentEvidenceLess(a, b Commitment) bool {
-	return commitmentpkg.EvidenceLess(a, b)
-}
+func commitmentObjectOverlap(a, b string) int     { return commitmentpkg.ObjectOverlap(a, b) }
+func commitmentEvidenceLess(a, b Commitment) bool { return commitmentpkg.EvidenceLess(a, b) }
 func containsStringFold(values []string, want string) bool {
 	return commitmentpkg.ContainsStringFold(values, want)
 }
