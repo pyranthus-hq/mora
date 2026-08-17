@@ -5,14 +5,51 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// sqliteErrorCode classifies one sqlite failure into a published index.* code.
+//
+// The match is on error prose because the driver gives nothing better: modernc's
+// sqlite reports a missing table, a duplicate column, and an unopenable file as
+// text, with no error number or sentinel to test against. Replacing that is out
+// of scope here. What this function buys is that every such match now lives in
+// ONE named place: a future phase that gains a structured signal rewrites this
+// body, and the published taxonomy above it does not move.
+//
+// It is deliberately NOT folded into the call sites' own strings.Contains
+// checks. Those gate CONTROL FLOW — which errors the rebuild transaction
+// tolerates — and merging them into this classifier would widen what gets
+// swallowed. This function only LABELS an error that is already being returned.
+func sqliteErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return errCodeIndexUnavailable
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "unable to open database file"):
+		return errCodeIndexUnavailable
+	case strings.Contains(msg, "duplicate column name"),
+		strings.Contains(msg, "no such table"),
+		strings.Contains(msg, "no such column"):
+		return errCodeIndexSchemaMismatch
+	default:
+		// Attributable to neither the index's shape nor its availability. An
+		// unexplained sqlite failure is a Mora bug until proven otherwise.
+		return errCodeInternalUnexpected
+	}
+}
 
 func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) (err error) {
 	fs := flag.NewFlagSet("index", flag.ContinueOnError)
@@ -359,7 +396,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// never aborted by this idempotent ALTER. Any OTHER error is fatal.
 	if _, err := tx.ExecContext(ctx, `ALTER TABLE entities ADD COLUMN salience_micros INTEGER`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column name") {
-		return 0, err
+		return 0, newCodedError(sqliteErrorCode(err), err, "%v", err)
 	}
 	// v4 (#241): same idempotent-ALTER migration for memories.provider/account/
 	// created_at_unix — tolerated as a no-op ("duplicate column name") on a
@@ -370,7 +407,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		`ALTER TABLE memories ADD COLUMN created_at_unix INTEGER`,
 	} {
 		if _, err := tx.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return 0, err
+			return 0, newCodedError(sqliteErrorCode(err), err, "%v", err)
 		}
 	}
 	memStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)

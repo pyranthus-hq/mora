@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -48,6 +49,43 @@ type sourceHealth struct {
 	LastSuccessAt string `json:"last_success_at,omitempty"`
 	AgeHours      int    `json:"age_hours"`
 	LastError     string `json:"last_error,omitempty"`
+	// ErrorCode is the typed companion to LastError (CON-07), carried beside the
+	// prose rather than replacing it. Empty on a fresh source. See
+	// internal/mora/eval/error-code-registry.json for the published values and
+	// docs/architecture/08-cli-and-ux.md for the error_class -> State mapping.
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// syncErrorCodeForState resolves the published error code one persisted sync
+// record carries, given the state it classified to. A typed code always wins.
+// A failure with no typed code reads as connector.unclassified — the backfill
+// rule for records written before this taxonomy shipped. A stale record with no
+// recorded failure carries connector.stale, because staleness IS the CON-07
+// discrimination that state expresses. A fresh source carries nothing.
+func syncErrorCodeForState(state, code, lastError string) string {
+	if backfilled := syncErrorCodeOrUnclassified(code, lastError); backfilled != "" {
+		return backfilled
+	}
+	// No typed code and no recorded prose: the state is the only signal left.
+	switch state {
+	case healthFailed:
+		return errCodeConnectorUnclassified
+	case healthStale:
+		return errCodeConnectorStale
+	}
+	return ""
+}
+
+// connectorErrorCodeFor reports the published code a connector failure already
+// carries. An error nothing typed reads as connector.unclassified, which is the
+// same value a pre-taxonomy record backfills to — "we failed and nothing named
+// the cause" has exactly one representation, never two.
+func connectorErrorCodeFor(err error) string {
+	var typed moraError
+	if errors.As(err, &typed) && classForErrorCode(typed.Code) == errClassConnector {
+		return typed.Code
+	}
+	return errCodeConnectorUnclassified
 }
 
 // sourceHealthThreshold dispatches the freshness threshold on Source.Type —
@@ -95,7 +133,15 @@ func sourceHealthAll(cfg Config, now time.Time) []sourceHealth {
 	sources, err := loadSources(cfg)
 	if err != nil {
 		// Fail closed (not open): a corrupt sources.json must alarm, not vanish.
-		return []sourceHealth{{Key: sourceHealthUnreadableKey, State: healthFailed, LastError: "sources.json: " + err.Error()}}
+		// This one is NOT a connector failure — the config Mora reads to find its
+		// connectors is the thing that could not be decoded, so it carries the
+		// data class rather than a connector.* code.
+		return []sourceHealth{{
+			Key:       sourceHealthUnreadableKey,
+			State:     healthFailed,
+			LastError: "sources.json: " + err.Error(),
+			ErrorCode: errCodeDataCorrupt,
+		}}
 	}
 	seen := map[string]bool{}
 	for _, s := range sources {
@@ -133,6 +179,7 @@ func sourceHealthFor(cfg Config, s Source, key string, now time.Time) sourceHeal
 		h.State = healthNever
 		if st != nil {
 			h.LastError = st.LastError
+			h.ErrorCode = syncErrorCodeForState(h.State, st.ErrorCode, st.LastError)
 		}
 		return h
 	}
@@ -143,6 +190,7 @@ func sourceHealthFor(cfg Config, s Source, key string, now time.Time) sourceHeal
 		// An unparseable stamp is as good as no stamp — fail closed to never
 		// rather than silently reading as fresh (age 0).
 		h.State = healthNever
+		h.ErrorCode = syncErrorCodeForState(h.State, st.ErrorCode, st.LastError)
 		return h
 	}
 	age := now.Sub(t)
@@ -158,6 +206,7 @@ func sourceHealthFor(cfg Config, s Source, key string, now time.Time) sourceHeal
 	default:
 		h.State = healthFresh
 	}
+	h.ErrorCode = syncErrorCodeForState(h.State, st.ErrorCode, st.LastError)
 	return h
 }
 
@@ -310,6 +359,11 @@ func stampSyncAttemptFailure(cfg Config, s Source, ingestErr error, attemptStart
 	st.Source = s.Name
 	st.LastAttemptAt = attemptStart.UTC().Format(time.RFC3339)
 	st.LastError = ingestErr.Error()
+	// The typed companion lands in the SAME stamp as the prose (CON-07). This is
+	// the one place every connector failure is persisted, so classifying here is
+	// what makes `sync status --json` and doctor's `sources` array carry a code
+	// rather than an empty slot.
+	st.ErrorCode = connectorErrorCodeFor(ingestErr)
 	st.ErrorCount++
 	if serr := saveSyncStatusFn(path, st); serr != nil && out != nil {
 		warnf(out, "could not stamp sync failure (%s): %v", path, serr)

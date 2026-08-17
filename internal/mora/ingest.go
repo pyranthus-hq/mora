@@ -3,13 +3,16 @@ package mora
 import (
 	"archive/zip"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -118,7 +121,7 @@ func backfillEnabledGitHub(ctx context.Context, cfg Config, stdout io.Writer) (i
 
 func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	if len(args) == 0 || args[0] != "run" {
-		return errors.New("usage: mora ingest run --source <name>|--all")
+		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora ingest run --source <name>|--all")
 	}
 	fs := flag.NewFlagSet("ingest run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -136,7 +139,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	// loop with sourceName=="", match nothing, and print a successful-looking
 	// "ingested 0 item(s)".
 	if !*all && *sourceName == "" {
-		return errors.New("usage: mora ingest run --source <name>|--all")
+		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora ingest run --source <name>|--all")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -404,7 +407,8 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return nil
 	}
 	if len(args) == 0 {
-		return errors.New("usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+		return newCodedError(errCodeUsageMissingArgument, nil,
+			"usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 	}
 	var statusJSON bool
 	if args[0] == "status" {
@@ -587,6 +591,12 @@ func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) 
 			ItemCount:     st.ItemCount,
 			ErrorCount:    st.ErrorCount,
 			LastError:     st.LastError,
+			// The typed companion CON-07 needs. A record persisted before the
+			// taxonomy shipped has no code on disk and is NOT rewritten; it reads
+			// as connector.unclassified here instead.
+			ErrorCode: syncErrorCodeForState(
+				syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
+				st.ErrorCode, st.LastError),
 		})
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i].Source < sources[j].Source })
@@ -713,9 +723,56 @@ func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
 	attemptStart := time.Now()
 	n, err := ingestSourceDispatch(cfg, s, out)
 	if err != nil {
+		// The connector failure boundary (CON-07). Every source failure passes
+		// through here exactly once, so this is where an untyped one acquires a
+		// published code. The message is preserved byte-for-byte and the cause
+		// stays reachable through errors.Is/errors.As — this adds a label; it does
+		// not change what failed or what the user reads.
+		err = classifyConnectorError(err)
 		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
 	}
 	return n, err
+}
+
+// classifyConnectorError attaches a CON-07 discrimination to a connector
+// failure. A failure already typed at its own boundary keeps that code — the
+// site that RAISED it knows more than this function can infer.
+//
+// Every rule below is STRUCTURAL: a decoder type, a sentinel, an interface. None
+// matches on error prose. That restraint is deliberate. The live Doctor
+// misdiagnosis Phase 3 (DOC-03) exists to kill was produced by exactly that
+// habit — inferring a permission state from an error string — and a typed
+// taxonomy that re-encodes a guess is worse than none, because it makes the
+// guess look like a fact. An unrecognized failure is honestly unclassified.
+func classifyConnectorError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var typed moraError
+	if errors.As(err, &typed) && classForErrorCode(typed.Code) == errClassConnector {
+		return err
+	}
+	return newCodedError(connectorCodeForCause(err), err, "%v", err)
+}
+
+// connectorCodeForCause is classifyConnectorError's structural rule table, split
+// out so a test can drive every branch with a synthetic cause.
+func connectorCodeForCause(err error) string {
+	// A payload the connector returned but Mora could not decode.
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return errCodeConnectorMalformed
+	}
+	// The connector's process, binary, endpoint, or backing file is not there.
+	var execErr *exec.Error
+	var exitErr *exec.ExitError
+	var netErr net.Error
+	if errors.Is(err, fs.ErrNotExist) || errors.As(err, &execErr) || errors.As(err, &exitErr) ||
+		errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) {
+		return errCodeConnectorUnavailable
+	}
+	return errCodeConnectorUnclassified
 }
 
 func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {
@@ -837,7 +894,13 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 		if s.Account != "" {
 			connectCmd += " --account " + s.Account
 		}
-		return 0, fmt.Errorf("not connected to google (run `%s`): %w", connectCmd, err)
+		// connector.unauthorized is honest here and nowhere else in this file: the
+		// credential itself could not be loaded, which Mora DIRECTLY observed. It is
+		// deliberately not derived from isGoogleAuthError's prose markers ("token",
+		// "expired", "oauth"), which are a good enough hint for a human sentence but
+		// would be an inference if they typed a published code.
+		return 0, newCodedError(errCodeConnectorUnauthorized, err,
+			"not connected to google (run `%s`): %v", connectCmd, err)
 	}
 	fetcher, err := google.NewLiveFetcher(ctx, oc, tok)
 	if err != nil {
@@ -1012,7 +1075,18 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 	if err != nil {
 		// A present-but-unreadable chat.db is the FDA-denied case — point the user at
 		// the doctor guidance rather than dumping a raw sqlite error.
-		return 0, fmt.Errorf("cannot read your Messages database (Full Disk Access not granted?) — run `mora doctor`: %w", err)
+		//
+		// PHASE 3 HANDOFF (DOC-03). The prose above INFERS Full Disk Access from a
+		// failed open; Mora never observed a permission refusal. This plan does not
+		// remove that claim — it supplies the typed alternative so DOC-03 has
+		// something to switch to. The code is connector.unavailable, NOT
+		// connector.unauthorized, precisely because the permission state is
+		// unverified: a machine reading this receipt learns "could not open", which
+		// is true, rather than "denied", which is a guess. When DOC-03 lands a real
+		// probe, an observed refusal becomes connector.unauthorized here and the
+		// English can finally say what it means.
+		return 0, newCodedError(errCodeConnectorUnavailable, err,
+			"cannot read your Messages database (Full Disk Access not granted?) — run `mora doctor`: %v", err)
 	}
 	defer fetcher.Close()
 
@@ -1103,7 +1177,11 @@ func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
 	}
 	fetcher, err := applecal.NewLiveFetcher(appleCalDBPath())
 	if err != nil {
-		return 0, fmt.Errorf("cannot read your Calendar database (Full Disk Access not granted?) — run `mora doctor`: %w", err)
+		// Same PHASE 3 HANDOFF (DOC-03) as ingestIMessage: the Full Disk Access
+		// sentence is an inference this plan preserves verbatim, and the typed code
+		// beside it reports only what Mora actually observed — the open failed.
+		return 0, newCodedError(errCodeConnectorUnavailable, err,
+			"cannot read your Calendar database (Full Disk Access not granted?) — run `mora doctor`: %v", err)
 	}
 	defer fetcher.Close()
 

@@ -184,7 +184,7 @@ func rebuildBlockMessage(d rebuildDecision, vaultDir string, oldCount int) strin
 func readIndexVaultID(ctx context.Context, cfg Config) (string, error) {
 	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
-		return "", err
+		return "", newCodedError(sqliteErrorCode(err), err, "%v", err)
 	}
 	defer db.Close()
 	var v string
@@ -202,7 +202,10 @@ func readIndexVaultID(ctx context.Context, cfg Config) (string, error) {
 		if errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), "unable to open database file") {
 			return "", nil
 		}
-		return "", err
+		// Anything left is a real read failure. The two checks above stay exactly
+		// as they are — they decide which sqlite errors mean "no id" — while this
+		// residual path gains the published code (sqliteErrorCode, index.go).
+		return "", newCodedError(sqliteErrorCode(err), err, "%v", err)
 	}
 	return v, nil
 }

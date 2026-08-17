@@ -239,6 +239,15 @@ Three `failed` sources are now distinguishable from one another without reading 
 - `healthy | degraded | unhealthy` — the aggregate health verdict.
 - `fresh | dirty | degraded | failed | never` — `indexHealth.State` (the index arm).
 
+`memory.SyncStatus` gained `error_code` **beside** its existing free-text `last_error`; `last_error` is unchanged in name, type, and meaning (CON-05). A record written before this change decodes with an empty `error_code`, and Mora reads that as `connector.unclassified` at read time rather than rewriting the file on disk. `sourceHealth` and the `mora sync status --json` receipt both carry the field, so `doctor --json` and `sync status --json` agree.
+
+### Where a code is attached
+
+- **`stampSyncAttemptFailure` (`health.go`)** is the single boundary every connector failure is persisted through, so it is where the code lands on disk.
+- **`classifyConnectorError` / `connectorCodeForCause` (`ingest.go`)** classify an untyped failure at `ingestSource`. Every rule is **structural** — a decoder type, a sentinel, an interface — and none matches on error prose. A failure whose message merely says "unauthorized" is `connector.unclassified`, deliberately: re-encoding a guess as a typed code makes the guess look like a fact, which is the exact habit Phase 3 (DOC-03) exists to remove.
+- **`sqliteErrorCode` (`index.go`)** classifies index failures. The sqlite driver reports a missing table, a duplicate column, and an unopenable file only as prose, so the match is on strings by necessity. Every such match now lives in that one function; the call sites keep their own `strings.Contains` checks because those gate *control flow* (which errors the rebuild tolerates), not labeling.
+- The `Full Disk Access not granted?` sentences in `ingest.go` are **unchanged** by this taxonomy and carry `connector.unavailable`, not `connector.unauthorized` — Mora observed a failed open, not a refusal. Phase 3 (DOC-03) owns removing the inference; the typed code is what it will switch to.
+
 ### Exit codes
 
 Three process exit codes ship, and this taxonomy grandfathered all three rather than moving any of them:
