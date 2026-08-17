@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	commitmentpkg "github.com/pyranthus-hq/mora/internal/commitment"
+	imessagepkg "github.com/pyranthus-hq/mora/internal/imessage"
 	meetingpkg "github.com/pyranthus-hq/mora/internal/meeting"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -318,130 +318,20 @@ type imessageCommitmentMessage struct {
 // projection. The second return value says that message_evidence was present.
 // Present but malformed metadata must not fall back to transcript guesses.
 func imessageCommitmentMessages(m Memory) ([]imessageCommitmentMessage, bool) {
-	if _, present := m.Meta["message_evidence"]; !present {
-		if _, schemaPresent := m.Meta["message_evidence_schema"]; schemaPresent {
-			return nil, true
-		}
-		return nil, false
-	}
-	if fmt.Sprint(m.Meta["message_evidence_schema"]) != "1" {
-		return nil, true
-	}
-	if _, hasDiagnostics := m.Meta["message_evidence_diagnostics"]; hasDiagnostics {
-		return nil, true
-	}
-	messageCount, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(m.Meta["message_count"])))
-	if err != nil || messageCount < 1 {
-		return nil, true
-	}
-	rows, diagnostic := deriveIMessageSegments(m)
-	if diagnostic != nil {
-		return nil, true
-	}
-	if (!m.Truncated && len(rows) != messageCount) || (m.Truncated && len(rows) > messageCount) ||
-		!imessageEvidenceCoversRenderedBody(m.Text, rows) {
-		return nil, true
-	}
-	messages := make([]imessageCommitmentMessage, 0, len(rows))
-	var lastAt time.Time
-	for _, row := range rows {
-		at, err := time.Parse(time.RFC3339, row.At)
-		if err != nil || (!lastAt.IsZero() && at.Before(lastAt)) {
-			return nil, true
-		}
-		lastAt = at
-		trimmed := strings.TrimSpace(row.Text)
-		if strings.HasPrefix(trimmed, "*") && strings.HasSuffix(trimmed, "*") {
-			// System events have stable message identity but no authored party.
-			continue
-		}
-		direction := imessageDirection(row.BlockRefs)
-		body, ok := trustedIMessageAuthoredBody(row, direction)
-		if !ok {
-			return nil, true
-		}
+	parsed, present := imessagepkg.CommitmentMessages(m)
+	messages := make([]imessageCommitmentMessage, 0, len(parsed))
+	for _, message := range parsed {
 		party := commitmentPartyCounterparty
-		if direction == "outgoing" {
+		if message.Self {
 			party = commitmentPartySelf
 		}
-		messages = append(messages, imessageCommitmentMessage{
-			MessageRef: row.EvidenceRef,
-			// One iMessage evidence_ref names one connector-visible authored
-			// block. Keep the block identity content-independent, like Gmail.
-			BlockRef: "body",
-			Body:     body,
-			At:       row.At,
-			Party:    party,
-		})
+		messages = append(messages, imessageCommitmentMessage{MessageRef: message.MessageRef, BlockRef: message.BlockRef, Body: message.Body, At: message.At, Party: party})
 	}
-	return messages, true
-}
-
-func imessageEvidenceCoversRenderedBody(body string, rows []gmailSegmentRow) bool {
-	cursor := 0
-	for _, row := range rows {
-		start, end, ok := imessageEvidenceByteRange(row.BlockRefs)
-		if !ok || start < cursor || end > len(body) || !imessageStructuralGap(body[cursor:start]) {
-			return false
-		}
-		cursor = end
-	}
-	return imessageStructuralGap(body[cursor:])
-}
-
-func imessageEvidenceByteRange(refs []string) (int, int, bool) {
-	for _, ref := range refs {
-		raw, ok := strings.CutPrefix(ref, "bytes:")
-		if !ok {
-			continue
-		}
-		startRaw, endRaw, ok := strings.Cut(raw, "-")
-		if !ok {
-			return 0, 0, false
-		}
-		start, startErr := strconv.Atoi(startRaw)
-		end, endErr := strconv.Atoi(endRaw)
-		return start, end, startErr == nil && endErr == nil && start >= 0 && end > start
-	}
-	return 0, 0, false
-}
-
-func imessageStructuralGap(gap string) bool {
-	for _, line := range strings.Split(gap, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "> ") {
-			continue
-		}
-		return false
-	}
-	return true
+	return messages, present
 }
 
 // trustedIMessageAuthoredBody removes exactly one rendered sender prefix. The
 // explicit direction and sender metadata must agree with the visible block.
-func trustedIMessageAuthoredBody(row gmailSegmentRow, direction string) (string, bool) {
-	if direction != "incoming" && direction != "outgoing" {
-		return "", false
-	}
-	firstLine, rest, _ := strings.Cut(strings.TrimSpace(row.Text), "\n")
-	label, firstBody, ok := strings.Cut(firstLine, ":")
-	if !ok {
-		return "", false
-	}
-	label = strings.TrimSpace(label)
-	if direction == "outgoing" {
-		if !strings.EqualFold(label, "me") || !strings.EqualFold(strings.TrimSpace(row.Sender), "me") {
-			return "", false
-		}
-	} else if strings.EqualFold(label, "me") || !strings.EqualFold(label, strings.TrimSpace(row.Sender)) {
-		return "", false
-	}
-	body := strings.TrimSpace(firstBody + "\n" + rest)
-	if body == "" {
-		return "", false
-	}
-	return body, true
-}
 
 func firstGmailSender(m Memory) string {
 	first := strings.TrimSpace(strings.SplitN(m.Text, "\n", 2)[0])
