@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -554,4 +555,297 @@ func contractCompareShapes(schema string, golden, live any) []string {
 	}
 	walk("", golden, live)
 	return findings
+}
+
+// contractAnyType is the element type used wherever a shape cannot be derived.
+var contractAnyType = reflect.TypeOf((*any)(nil)).Elem()
+
+// contractShapeType builds a Go struct type that mirrors a decoded JSON
+// document: one exported field per object key, tagged with that key, nested
+// recursively. Fields are named F0..Fn because a JSON key is not necessarily a
+// legal Go identifier; the json tag carries the real name.
+//
+// Building the type from a document rather than hand-writing 50 structs is what
+// keeps this honest as the corpus grows. A hand-maintained struct set drifts
+// silently; a derived one cannot.
+func contractShapeType(value any) reflect.Type {
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := contractSortedKeys(typed)
+		fields := make([]reflect.StructField, 0, len(keys))
+		for i, key := range keys {
+			if strings.ContainsAny(key, `"\,`) {
+				// A key that cannot be expressed in a struct tag would
+				// silently become an unmatched field, which would make the
+				// strict decode below lie. Refuse the whole object instead.
+				return contractAnyType
+			}
+			fields = append(fields, reflect.StructField{
+				Name: fmt.Sprintf("F%d", i),
+				Type: contractShapeType(typed[key]),
+				Tag:  reflect.StructTag(fmt.Sprintf(`json:"%s"`, key)),
+			})
+		}
+		return reflect.StructOf(fields)
+	case []any:
+		// Merge every element's keys so the element type covers the whole
+		// array, not just its first row.
+		merged := map[string]any{}
+		object := len(typed) > 0
+		for _, element := range typed {
+			inner, ok := element.(map[string]any)
+			if !ok {
+				object = false
+				break
+			}
+			for key, innerValue := range inner {
+				if existing, seen := merged[key]; !seen || existing == nil {
+					merged[key] = innerValue
+				}
+			}
+		}
+		if !object {
+			return reflect.SliceOf(contractAnyType)
+		}
+		return reflect.SliceOf(contractShapeType(merged))
+	default:
+		return contractAnyType
+	}
+}
+
+// contractDecodeStrict decodes `document` into a struct shaped like `shape`
+// with unknown fields REFUSED. It is the stdlib half of the removal detector:
+// a key the frozen golden carries that today's payload no longer has is, by
+// construction, an unknown field.
+func contractDecodeStrict(document []byte, shape any) error {
+	target := reflect.New(contractShapeType(shape))
+	decoder := json.NewDecoder(bytes.NewReader(document))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target.Interface())
+}
+
+// contractUnknownField extracts the field name from encoding/json's unknown
+// field error, so the failure can be restated as the remedy rather than as a
+// decoder diagnostic.
+var contractUnknownField = regexp.MustCompile(`unknown field "([^"]*)"`)
+
+// TestContractCompatRemovalIsCaught is the load-bearing half.
+//
+// For every schema it decodes the FROZEN v1 golden against today's shape with
+// DisallowUnknownFields. A field removed or renamed since v1 is an unknown
+// field in that direction and fails here. The key-by-key walk runs alongside
+// it because strict decoding cannot see inside an array that is empty in
+// today's output, and cannot see a scalar retype.
+//
+// Both report the same remedy: bump the schema's `schema_version` and move the
+// golden. Neither offers regeneration, because regenerating is how a removal
+// would be laundered into a green suite.
+func TestContractCompatRemovalIsCaught(t *testing.T) {
+	withTempHome(t)
+	live := contractLiveDocuments(t)
+
+	for _, schema := range contractSortedKeys(live) {
+		t.Run(schema, func(t *testing.T) {
+			golden, ok := contractReadGolden(t, schema)
+			if !ok {
+				t.Fatalf("no frozen golden for %s", schema)
+			}
+			body := contractMarshalGolden(t, golden)
+			if err := contractDecodeStrict(body, live[schema]); err != nil {
+				if match := contractUnknownField.FindStringSubmatch(err.Error()); match != nil {
+					t.Fatalf("%s", contractRemovalRemedy(schema, match[1]))
+				}
+				t.Fatalf("%s: frozen v1 golden no longer decodes against today's payload: %v\n%s",
+					schema, err, contractRemovalRemedy(schema, "<see error>"))
+			}
+			if findings := contractCompareShapes(schema, golden, live[schema]); len(findings) > 0 {
+				t.Fatalf("%s", strings.Join(findings, "\n"))
+			}
+		})
+	}
+}
+
+// contractFutureField is the key injected to simulate a LATER release adding a
+// field. A pinned v1 consumer must be unmoved by it.
+const contractFutureField = "mora_future_field_added_by_a_later_phase"
+
+// TestContractCompatAdditiveIsSafe is the other direction.
+//
+// For every schema it builds the v1 consumer type FROM the frozen golden and
+// decodes today's output into it with a plain json.Unmarshal — unknown fields
+// ignored, exactly as a real pinned consumer behaves. Every v1 field must come
+// back carrying the value the golden carries.
+//
+// It then does the thing the phase actually promises Phases 3, 5, and 7:
+// injects a field that does not exist today, at the top level and inside every
+// array element, and asserts the v1 consumer's view is byte-identical. Additive
+// safety is proven here rather than assumed from the version number.
+func TestContractCompatAdditiveIsSafe(t *testing.T) {
+	withTempHome(t)
+	live := contractLiveDocuments(t)
+
+	for _, schema := range contractSortedKeys(live) {
+		t.Run(schema, func(t *testing.T) {
+			golden, ok := contractReadGolden(t, schema)
+			if !ok {
+				t.Fatalf("no frozen golden for %s", schema)
+			}
+			want := contractMarshalGolden(t, golden)
+
+			seen := contractPinnedConsumerView(t, golden, live[schema])
+			if diff, differs := contractFirstDifference("", golden, seen); differs {
+				field := strings.TrimPrefix(diff, ".")
+				t.Fatalf("a consumer pinned to %s v1 no longer sees %s.\n%s",
+					schema, field, contractRemovalRemedy(schema, field))
+			}
+
+			extended := contractAddFutureFields(live[schema])
+			afterExtension := contractPinnedConsumerView(t, golden, extended)
+			got := contractMarshalGolden(t, afterExtension)
+			if !bytes.Equal(want, got) {
+				t.Fatalf("%s: adding a field moved what a pinned v1 consumer sees; "+
+					"the envelope is not additively safe\nwant:\n%s\ngot:\n%s", schema, want, got)
+			}
+		})
+	}
+}
+
+// contractPinnedConsumerView decodes `document` through a type frozen at the
+// golden's field set and returns what that consumer ends up holding.
+func contractPinnedConsumerView(t *testing.T, golden, document any) any {
+	t.Helper()
+	body, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := reflect.New(contractShapeType(golden))
+	// A pinned consumer IGNORES fields it does not know. No DisallowUnknownFields.
+	if err := json.Unmarshal(body, target.Interface()); err != nil {
+		t.Fatalf("a consumer pinned to v1 can no longer decode today's output: %v", err)
+	}
+	round, err := json.Marshal(target.Elem().Interface())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view any
+	if err := json.Unmarshal(round, &view); err != nil {
+		t.Fatal(err)
+	}
+	return view
+}
+
+// contractAddFutureFields simulates a later release: every object in the
+// document gains a key nothing today emits.
+func contractAddFutureFields(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed)+1)
+		for key, inner := range typed {
+			out[key] = contractAddFutureFields(inner)
+		}
+		out[contractFutureField] = "a field a later phase added"
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, inner := range typed {
+			out[i] = contractAddFutureFields(inner)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+// TestContractCompatRemedyMessage covers the failure text itself, so the one
+// thing a future maintainer reads at 2am cannot rot untested, and proves the
+// detector fires on a synthetic removal rather than only on a real one.
+func TestContractCompatRemedyMessage(t *testing.T) {
+	t.Run("removal message names the bump and not the regeneration", func(t *testing.T) {
+		message := contractRemovalRemedy("mora.doctor.report", "storage_bytes")
+		for _, want := range []string{"bump", "mora.doctor.report", "schema_version", "storage_bytes",
+			"testdata/contracts/v<N>/"} {
+			if !strings.Contains(message, want) {
+				t.Errorf("remedy message is missing %q: %s", want, message)
+			}
+		}
+		// Naming the update env var here would tell the reader to launder the
+		// removal. The message must offer exactly one way out.
+		if strings.Contains(message, contractGoldenUpdateEnv) {
+			t.Errorf("remedy message offers regeneration as a way out: %s", message)
+		}
+	})
+
+	t.Run("retype message names the bump", func(t *testing.T) {
+		message := contractRetypeRemedy("mora.list", "memories", "array", "object")
+		for _, want := range []string{"bump", "mora.list", "schema_version", "array", "object"} {
+			if !strings.Contains(message, want) {
+				t.Errorf("retype message is missing %q: %s", want, message)
+			}
+		}
+	})
+
+	t.Run("synthetic removal is caught by the strict decode", func(t *testing.T) {
+		golden := map[string]any{
+			"schema":         "mora.synthetic",
+			"schema_version": float64(1),
+			"kept":           "value",
+			"removed":        "value",
+			"nested":         map[string]any{"kept": "value", "removed": "value"},
+		}
+		today := map[string]any{
+			"schema":         "mora.synthetic",
+			"schema_version": float64(1),
+			"kept":           "value",
+			"nested":         map[string]any{"kept": "value"},
+		}
+		body, err := json.Marshal(golden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = contractDecodeStrict(body, today)
+		if err == nil {
+			t.Fatal("strict decode accepted a golden carrying a field today's payload no longer has; " +
+				"the removal detector does not fire")
+		}
+		match := contractUnknownField.FindStringSubmatch(err.Error())
+		if match == nil {
+			t.Fatalf("strict decode failed for the wrong reason: %v", err)
+		}
+		if got := contractRemovalRemedy("mora.synthetic", match[1]); !strings.Contains(got, "bump") {
+			t.Fatalf("remedy message: %s", got)
+		}
+	})
+
+	t.Run("synthetic removal is caught by the key walk", func(t *testing.T) {
+		golden := map[string]any{
+			"kept":    "value",
+			"removed": "value",
+			"rows":    []any{map[string]any{"kept": "value", "removed": "value"}},
+			"retyped": "value",
+		}
+		today := map[string]any{
+			"kept":    "value",
+			"rows":    []any{map[string]any{"kept": "value"}},
+			"retyped": float64(1),
+		}
+		findings := contractCompareShapes("mora.synthetic", golden, today)
+		joined := strings.Join(findings, "\n")
+		for _, want := range []string{
+			contractRemovalRemedy("mora.synthetic", "removed"),
+			contractRemovalRemedy("mora.synthetic", "rows[0].removed"),
+			contractRetypeRemedy("mora.synthetic", "retyped", "string", "number"),
+		} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("key walk missed a finding.\nwant: %s\ngot:\n%s", want, joined)
+			}
+		}
+	})
+
+	t.Run("an added field produces no finding", func(t *testing.T) {
+		golden := map[string]any{"kept": "value"}
+		today := map[string]any{"kept": "value", "added": "value"}
+		if findings := contractCompareShapes("mora.synthetic", golden, today); len(findings) > 0 {
+			t.Fatalf("adding a field must not be a breaking change: %v", findings)
+		}
+	})
 }

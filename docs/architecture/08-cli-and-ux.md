@@ -213,6 +213,43 @@ names and versions are published through `mora capabilities` (`capabilities.mcp.
 registry: it drives every executable non-exempt row and asserts `schema` equals the registry's
 `payload`, and it fails if executed + shape-only rows do not add up to the non-exempt row count.
 
+### The frozen v1 corpus and the compatibility gate (CON-05)
+
+A version number proves nothing on its own. `internal/mora/testdata/contracts/v1/<schema>.json` holds
+one frozen document per executable versioned payload, and `contract_compat_test.go` decodes it in
+both directions:
+
+| Test | Direction | What it proves |
+|---|---|---|
+| `TestContractCompatAdditiveIsSafe` | today's output → a type built from the v1 golden, unknown fields ignored | Every v1 field still populates. It then injects a field nothing emits today and asserts the pinned consumer's view is byte-identical, so *adding is safe* is measured, not assumed. |
+| `TestContractCompatRemovalIsCaught` | the v1 golden → a type built from today's payload, `DisallowUnknownFields` | A removed or renamed field is an unknown field in that direction and fails. A key-by-key walk runs alongside it for what strict decoding cannot see: inside an array that is empty today, and scalar retypes. |
+| `TestContractGoldenCorpusIsComplete` | registry → corpus | A new payload with no golden fails, so nothing escapes the gate. |
+| `TestContractCompatRemedyMessage` | — | Covers the failure text itself and proves the detector fires on a synthetic removal. |
+
+**The rule, restated as the tests enforce it:**
+
+- **Adding a field needs no version bump.** Regenerate the corpus with
+  `MORA_UPDATE_CONTRACT_GOLDENS=1`.
+- **Removing, renaming, or retyping a field requires bumping that schema's `schema_version` and
+  adding `testdata/contracts/v2/`.** The v1 goldens are never edited in place.
+- **Regeneration cannot be used to drop a field.** Under `MORA_UPDATE_CONTRACT_GOLDENS=1` the
+  generator refuses to write a document that lost a key the committed golden carries, and the failure
+  message for a dropped key never mentions the env var. Otherwise the gate would be bypassable by
+  following its own advice: remove a field, regenerate, go green.
+
+**What the corpus does and does not freeze.** It freezes the field set, the JSON types, and the
+stable values. It does not freeze ids, timestamps, absolute paths, bare calendar dates, two inherently
+variable byte counts (`mora.backup.bytes`, `mora.doctor.report.storage_bytes`), or the ordering of a
+collection — each is normalized to a typed placeholder, and the normalization is listed in
+`contract_compat_test.go`. Generation proves the list is sufficient by running the whole command
+sequence twice and failing on any divergence, so a missed pattern is a hard generation failure rather
+than a CI flap.
+
+**Corpus scope.** 50 goldens cover every payload the suite can execute. The other 45 payloads belong
+to rows that must never run in a test — destructive, network-bound, host-mutating, or platform-gated
+— and get the same schema-shape assertion `TestContractEveryPayloadIsVersioned` gives them.
+Fabricating a document for those would freeze a shape no command emits.
+
 ### The banner
 
 `printBanner(w)` (`banner.go:80`) renders the "Apocrypha eye" + `M O R A` wordmark **once**, at the top of `runSetupMenu` (`setup.go`). It is pure decoration with three independent suppressors: non-`*os.File` or non-TTY writer → prints nothing (`banner.go:82`); `MORA_NO_BANNER` set → prints nothing (`banner.go:85`). Color further gated by `bannerColor` (its own NO_COLOR/dumb/isatty check, `banner.go:69`). The raw art reads as an eye in monochrome, so NO_COLOR terminals still get the art. Only pipes/CI/`--json` get nothing. The trailing whitespace on each art line is **intentional and load-bearing** (37-column rows for centering) and the lines are backtick literals precisely so gofmt cannot strip it (`banner.go:18`).
