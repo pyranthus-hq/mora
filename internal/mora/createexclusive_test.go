@@ -1,154 +1,34 @@
 package mora
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
-// dirBaseNames lists the base names in a directory, for orphan-temp assertions.
-func dirBaseNames(t *testing.T, dir string) []string {
+func forceLinkUnsupported(t *testing.T) {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir %s: %v", dir, err)
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	return names
+	old := linkPublish
+	t.Cleanup(func() { linkPublish = old })
+	linkPublish = func(string, string) error { return syntheticLinkUnsupportedErr() }
 }
+
+// dirBaseNames lists the base names in a directory, for orphan-temp assertions.
 
 // TestAtomicCreateHappyPath: a create onto a free path writes the body, applies
 // the caller's mode, and leaves no staging temp behind.
-func TestAtomicCreateHappyPath(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mem.md")
-
-	// CreateTemp opens at 0600, so 0644 proves atomicCreate applies the mode.
-	if err := atomicCreate(path, []byte("body\n"), 0o644); err != nil {
-		t.Fatalf("atomicCreate: %v", err)
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(got) != "body\n" {
-		t.Fatalf("content = %q, want %q", got, "body\n")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	assertPermUnix(t, info.Mode(), 0o644)
-
-	if names := dirBaseNames(t, dir); len(names) != 1 || names[0] != "mem.md" {
-		t.Fatalf("expected only mem.md, found %v (orphan temp left behind)", names)
-	}
-}
 
 // TestAtomicCreateRefusesToClobber is the core anti-clobber guarantee: a create
 // onto an already-existing path must fail with os.ErrExist and MUST NOT overwrite
 // the existing bytes (unlike atomicWrite's replace-on-rename). No orphan temp.
-func TestAtomicCreateRefusesToClobber(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mem.md")
-
-	if err := atomicCreate(path, []byte("ORIGINAL"), 0o644); err != nil {
-		t.Fatalf("seed create: %v", err)
-	}
-
-	err := atomicCreate(path, []byte("REPLACEMENT"), 0o644)
-	if err == nil {
-		t.Fatalf("atomicCreate clobbered an existing file (want error)")
-	}
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("want os.ErrExist, got %v", err)
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(got) != "ORIGINAL" {
-		t.Fatalf("existing content changed to %q (clobbered)", got)
-	}
-	if names := dirBaseNames(t, dir); len(names) != 1 || names[0] != "mem.md" {
-		t.Fatalf("orphan temp left after EEXIST: %v", names)
-	}
-}
 
 // TestAtomicCreateConcurrentSamePathSingleWinner is the concurrency proof: N
 // writers racing to create the SAME path yield EXACTLY ONE success; the rest get
 // os.ErrExist. The published file always equals exactly one writer's full body —
 // never empty, never torn. This is the property newID collisions used to violate
 // (last-rename-wins clobber). Run under -race.
-func TestAtomicCreateConcurrentSamePathSingleWinner(t *testing.T) {
-	const writers = 16
-	const bodyLen = 1 << 12
-
-	bodies := make([][]byte, writers)
-	for i := range bodies {
-		bodies[i] = bytes.Repeat([]byte{byte('A' + i)}, bodyLen)
-	}
-	matchesACandidate := func(got []byte) bool {
-		for _, b := range bodies {
-			if bytes.Equal(got, b) {
-				return true
-			}
-		}
-		return false
-	}
-
-	for iter := 0; iter < 200; iter++ {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "mem.md")
-
-		var wg sync.WaitGroup
-		errs := make([]error, writers)
-		for i := 0; i < writers; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				errs[i] = atomicCreate(path, bodies[i], 0o644)
-			}(i)
-		}
-		wg.Wait()
-
-		nSuccess, nExist := 0, 0
-		for i, err := range errs {
-			switch {
-			case err == nil:
-				nSuccess++
-			case errors.Is(err, os.ErrExist):
-				nExist++
-			default:
-				t.Fatalf("iter %d: writer %d unexpected error: %v", iter, i, err)
-			}
-		}
-		if nSuccess != 1 {
-			t.Fatalf("iter %d: want exactly 1 winner, got %d (clobber/lost-write risk)", iter, nSuccess)
-		}
-		if nExist != writers-1 {
-			t.Fatalf("iter %d: want %d EEXIST losers, got %d", iter, writers-1, nExist)
-		}
-
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("iter %d: read target: %v", iter, err)
-		}
-		if !matchesACandidate(got) {
-			t.Fatalf("iter %d: target torn/empty: %d bytes match no single writer body", iter, len(got))
-		}
-	}
-}
 
 // TestCreateMemoryPersistsWithUniqueID: the happy path mints an id, writes the
 // rendered memory, and returns the memory with ID + Path populated.
@@ -324,157 +204,24 @@ func TestNewIDWarnsOnCSPRNGFallback(t *testing.T) {
 // forceLinkUnsupported drives atomicCreate's no-hardlink fallback on an ordinary
 // filesystem by making the os.Link publish fail with a platform-appropriate
 // "hard links unsupported" error. Restores the seam on cleanup.
-func forceLinkUnsupported(t *testing.T) {
-	t.Helper()
-	old := linkPublish
-	t.Cleanup(func() { linkPublish = old })
-	linkPublish = func(string, string) error { return syntheticLinkUnsupportedErr() }
-}
 
 // TestAtomicCreateFallbackHappyPath: on a no-hardlink filesystem, atomicCreate
 // still publishes the body (O_EXCL claim + rename), applies the mode, and leaves
 // no staging temp or placeholder residue.
-func TestAtomicCreateFallbackHappyPath(t *testing.T) {
-	forceLinkUnsupported(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mem.md")
-
-	if err := atomicCreate(path, []byte("body\n"), 0o644); err != nil {
-		t.Fatalf("atomicCreate (fallback): %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(got) != "body\n" {
-		t.Fatalf("content = %q, want %q", got, "body\n")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	assertPermUnix(t, info.Mode(), 0o644)
-	if names := dirBaseNames(t, dir); len(names) != 1 || names[0] != "mem.md" {
-		t.Fatalf("expected only mem.md, found %v (orphan temp/placeholder)", names)
-	}
-}
 
 // TestAtomicCreateFallbackRefusesToClobber: the fallback preserves the no-clobber
 // guarantee — a create onto an existing path fails at the O_EXCL claim with
 // os.ErrExist and does not overwrite the existing bytes.
-func TestAtomicCreateFallbackRefusesToClobber(t *testing.T) {
-	forceLinkUnsupported(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mem.md")
-
-	if err := atomicCreate(path, []byte("ORIGINAL"), 0o644); err != nil {
-		t.Fatalf("seed (fallback): %v", err)
-	}
-	err := atomicCreate(path, []byte("REPLACEMENT"), 0o644)
-	if err == nil {
-		t.Fatalf("fallback atomicCreate clobbered an existing file (want error)")
-	}
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("want os.ErrExist from O_EXCL claim, got %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(got) != "ORIGINAL" {
-		t.Fatalf("existing content changed to %q (clobbered)", got)
-	}
-	if names := dirBaseNames(t, dir); len(names) != 1 || names[0] != "mem.md" {
-		t.Fatalf("orphan temp/placeholder left after EEXIST: %v", names)
-	}
-}
 
 // TestAtomicCreateFallbackConcurrentSingleWinner is the no-clobber proof in
 // FALLBACK mode: N writers racing to create the SAME path via the O_EXCL claim
 // yield exactly one success; the rest get os.ErrExist and the file equals exactly
 // one writer's full body. Run under -race.
-func TestAtomicCreateFallbackConcurrentSingleWinner(t *testing.T) {
-	forceLinkUnsupported(t)
-	const writers = 16
-	const bodyLen = 1 << 12
-	bodies := make([][]byte, writers)
-	for i := range bodies {
-		bodies[i] = bytes.Repeat([]byte{byte('A' + i)}, bodyLen)
-	}
-	matchesACandidate := func(got []byte) bool {
-		for _, b := range bodies {
-			if bytes.Equal(got, b) {
-				return true
-			}
-		}
-		return false
-	}
-
-	for iter := 0; iter < 100; iter++ {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "mem.md")
-
-		var wg sync.WaitGroup
-		errs := make([]error, writers)
-		for i := 0; i < writers; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				errs[i] = atomicCreate(path, bodies[i], 0o644)
-			}(i)
-		}
-		wg.Wait()
-
-		nSuccess, nExist := 0, 0
-		for i, err := range errs {
-			switch {
-			case err == nil:
-				nSuccess++
-			case errors.Is(err, os.ErrExist):
-				nExist++
-			default:
-				t.Fatalf("iter %d: writer %d unexpected error: %v", iter, i, err)
-			}
-		}
-		if nSuccess != 1 {
-			t.Fatalf("iter %d: want exactly 1 winner in fallback mode, got %d (clobber risk)", iter, nSuccess)
-		}
-		if nExist != writers-1 {
-			t.Fatalf("iter %d: want %d EEXIST losers, got %d", iter, writers-1, nExist)
-		}
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("iter %d: read: %v", iter, err)
-		}
-		if !matchesACandidate(got) {
-			t.Fatalf("iter %d: file torn/empty: %d bytes match no single writer body", iter, len(got))
-		}
-	}
-}
 
 // TestAtomicCreateSurfacesRealLinkError: a link error that is NEITHER os.ErrExist
 // NOR link-unsupported must surface as-is — NOT masked as a collision and NOT
 // silently routed through the fallback (conservative classification). No file is
 // created.
-func TestAtomicCreateSurfacesRealLinkError(t *testing.T) {
-	old := linkPublish
-	defer func() { linkPublish = old }()
-	realErr := errors.New("simulated disk failure")
-	linkPublish = func(string, string) error { return realErr }
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mem.md")
-	err := atomicCreate(path, []byte("body"), 0o644)
-	if !errors.Is(err, realErr) {
-		t.Fatalf("want the real link error surfaced, got %v", err)
-	}
-	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("no file should exist after a real link error, stat err = %v", statErr)
-	}
-	if names := dirBaseNames(t, dir); len(names) != 0 {
-		t.Fatalf("orphan temp left after real link error: %v", names)
-	}
-}
 
 // TestCreateMemoryWorksWhenLinkUnsupported: the end-to-end user-write path saves a
 // memory even when the vault filesystem has no hard links (the blocking-finding

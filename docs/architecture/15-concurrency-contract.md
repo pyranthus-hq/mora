@@ -21,8 +21,8 @@ a one-host file lease. These controls fit one machine's Mora processes.
 
 | # | Guarantee | Mechanism | Anchor |
 |---|---|---|---|
-| G1 | **No lost writes** — a write reported as saved is on disk exactly once. A same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicCreate` |
-| G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicio.Write`, `atomicCreate` |
+| G1 | **No lost writes** — a write reported as saved is on disk exactly once. A same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicio.CreateExclusive` |
+| G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicio.Write`, `atomicio.CreateExclusive` |
 | G3 | **No surfaced `database is locked`** — concurrent reader *processes* never block a writer, and a contended writer waits out its rival's commit instead of erroring | `journal_mode(WAL)` on the index (readers read a snapshot, never hold a lock a writer must wait for) + `busy_timeout(15000)` on every writer and read-only DSN + `_txlock=immediate` on writers | `rwIndexDSN`, `roIndexDSN`, `rebuildIndexWithPolicy`, `indexUpsert` |
 | G4 | **Bounded eventual consistency** — the vault is the source of truth. The index converges | Tiny synchronous upsert on the write path. Serialized full rebuilds reconcile the rest | `indexUpsert`, `rebuildIndexWithPolicy` |
 
@@ -30,7 +30,7 @@ a one-host file lease. These controls fit one machine's Mora processes.
 
 The vault is the source of truth (invariant I1). Every durable write goes
 through one of two publish primitives — `atomicio.Write` (`internal/atomicio`)
-or `atomicCreate` (`internal/mora/mora.go`) — and both are **content-atomic** — the target name only ever appears with the full body behind
+or `atomicio.CreateExclusive` (through Mora’s thin `atomicCreate` adapter) — and both are **content-atomic** — the target name only ever appears with the full body behind
 it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
 `digest`, `meetingprep`, share) never observes a partial file.
 
@@ -49,7 +49,7 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
     single attempt off Windows). Deterministic backoff made 16 goroutines retry
     in lockstep and keep colliding — the jitter is load-bearing (#73/#74).
 
-- **`atomicCreate(path, body, mode)`** — the **create-exclusive** primitive for
+- **`atomicio.CreateExclusive(path, body, mode, …)`** — the **create-exclusive** primitive behind Mora’s `atomicCreate` adapter for
   brand-new authored memories. Unlike `atomicio.Write`, it MUST NOT clobber: it
   stages a unique temp and `os.Link`s it onto the target. `os.Link` is both
   create-exclusive (fails `os.ErrExist` on a present target, never replaces) and
@@ -59,7 +59,7 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
   `MoveFileEx` retry because it never replaces).
   - Fallback: some filesystems (exFAT/FAT32, some SMB/NFS) refuse hard links
     (`EPERM`/`ENOTSUP`, never `EEXIST`). Since `vault_dir` is user-configurable,
-    `atomicCreate` preserves the no-clobber guarantee there via
+    `atomicio.CreateExclusive` preserves the no-clobber guarantee there via
     `os.OpenFile(O_CREATE|O_EXCL)` to claim the path, then renames its temp onto
     its **own** claimed placeholder. Documented tradeoff: only on this branch can
     a concurrent reader briefly observe an EMPTY placeholder — which every
@@ -80,7 +80,7 @@ memory is silently lost.
 `write_memory`):
 
 1. mint an id (`newIDFn`, a test seam over `newID`),
-2. render, `atomicCreate` it,
+2. render, publish it through `atomicio.CreateExclusive`,
 3. on `os.ErrExist` (a real id collision), **re-mint and retry**, bounded by
    `maxCreateAttempts` (8) — a liveness backstop, since each retry draws fresh
    entropy so exhausting it is astronomically improbable.
