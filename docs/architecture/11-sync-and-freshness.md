@@ -17,7 +17,7 @@ data as a product invariant and always shows it.
 | `internal/briefstate/briefstate.go` | 276 | The Phase-12 **`brief/` watermark store** — separate per-instance state from `sync/` (`Snapshot`, `Load`/`Save`, `AcquireLock`). Decoupled from `SyncStatus` on purpose, consumed by Mora digest composition, and never read by freshness. |
 | `internal/mora/connectors.go` | 132 | `ingestingConnectors` (enabled∩ingesting enumeration — the set the digest's three-state classifier drives from) + `sourceInstanceKey` (the watermark/grouping key seam) + `connectorDisplay`. |
 | `internal/registry.SourceStore` | `internal/leasefile` | The **sources.json read-modify-write lease (P3)**: acquire → reload-inside-lock → caller mutation → atomic save → release at `<ConfigDir>/sources.json.lock`, with 30-second TTL reap and a two-second real-wall-clock budget. Mora retains authorization and supplies the mutation callback. |
-| `internal/mora/gitsync.go` | 234 | `mora sync git` — opt-in **off-device backup** of the vault to a private git remote (issue #6). `syncGit` (one-way push-only orchestration), `configureRemote` (`--github`/`--remote`/existing-origin precedence), `commitIdentityArgs` (fresh-machine identity fallback), `redactCredentials` (strips PAT userinfo from fail-loud git output), `realExec` (the injectable git/gh exec seam). |
+| `internal/gitsync`; thin `internal/mora/gitsync.go` adapter | — | `internal/gitsync.Sync` owns one-way push-only backup mechanics, remote precedence, identity fallback, tracked-secret refusal, credential redaction, and the injectable git/gh runner. Mora parses/validates flags, loads config, supplies the clock, prints the off-device consent disclosure, and dispatches the command. |
 | `internal/mora/digest.go` | 758 | `buildDigest` embeds `sourceFreshness(cfg)` into the digest `Freshness` map and reads per-instance `SyncStatus` via `loadConnectorSyncStatus`/`syncStatusPathFor` for the three-state health labels; `renderDigest` prints the `Fresh as of:` line. |
 | `internal/mora/health.go` | — | Gate 1 (HEALTH-01..05): `sourceHealth`/`sourceHealthAll` (the never/failed/stale/fresh classification, stricter thresholds than the digest three-state), `healthBanner`/`healthBannerFromSources` (the red one-line alarm), `stampSyncAttemptFailure` (closes the pre-Ingest stamping gap). |
 | `internal/mora/doctor.go` | — | `cmdDoctor`'s `--pulse` flag (`cmdDoctorPulse`) — freshness-only check, exits 2 + posts a toast when unhealthy — plus the `source_fresh:<key>` checks appended to the normal `doctor`/`doctor --json`/`doctor --strict` report. |
@@ -296,7 +296,7 @@ Two properties worth calling out because they were explicitly tested (`internal/
 
 Issue #6. The vault is plaintext Markdown with no durable off-machine copy; `mora
 sync git` adds a **one-way, push-only** backup to a **private git remote the user
-controls** (`internal/mora/gitsync.go`). It is the *only* deliberate exception to
+controls** (`internal/gitsync`, authorized and disclosed by `internal/mora/gitsync.go`). It is the *only* deliberate exception to
 Mora's otherwise-zero-egress posture, so the design is opt-in and loud by construction:
 
 - **Shells out to system `git` (and optional `gh`), not a vendored Go lib.** This
