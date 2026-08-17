@@ -417,3 +417,185 @@ func TestContractStampedFailureCarriesErrorCode(t *testing.T) {
 		t.Logf("state = %q (no prior success recorded)", h.State)
 	}
 }
+
+// stubFetcher drives memory.Ingest without a live connector, so a test can
+// reproduce a failure raised INSIDE the shared ingest loop — the family whose
+// LastAttemptAt stamp trips stampSyncAttemptFailure's inner-path guard.
+type stubFetcher struct {
+	page memory.Page
+	err  error
+}
+
+func (f stubFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, cursor string) (memory.Page, error) {
+	if f.err != nil {
+		return memory.Page{}, f.err
+	}
+	return f.page, nil
+}
+
+// TestContractInnerPathFailureCarriesErrorCode (01-06 review, P1 #1): a failure
+// raised inside memory.Ingest stamps its own LastAttemptAt, so the outer
+// stampSyncAttemptFailure correctly declines to re-stamp. That guard is load
+// bearing and must stay. What it means is that the outer stamp is NOT the only
+// place a connector failure is persisted — persistSyncStatus must type this
+// family, or the whole dropped-item/fetch-failure family lands on disk with
+// prose and no code.
+//
+// MUTATION: remove the `if ingErr != nil { st.ErrorCode = ... }` block from
+// persistSyncStatus. This test must fail.
+func TestContractInnerPathFailureCarriesErrorCode(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := Source{Name: "gmail", Type: "gmail"}
+	path := syncStatusPathFor(cfg, source)
+
+	// A prior, DIFFERENT failure already typed this record.
+	if err := memory.SaveStatus(path, &memory.SyncStatus{
+		Source: "gmail", ErrorCount: 1,
+		LastError: "not connected to google", ErrorCode: errCodeConnectorUnauthorized,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ingestSource captures attemptStart BEFORE dispatch; memory.Ingest stamps
+	// LastAttemptAt after it, which is precisely what trips the guard.
+	attemptStart := time.Now()
+	res, ingErr := memory.Ingest(memory.IngestParams{
+		Fetcher: stubFetcher{err: fmt.Errorf("fetch page: %w", fs.ErrNotExist)},
+		Kind:    "gmail_thread", Scope: "personal", BodyBudget: 1000,
+		Status: st, Write: func(memory.MappedMemory) error { return nil },
+	})
+	if ingErr == nil {
+		t.Fatal("the stub fetcher must fail")
+	}
+	if perr := persistSyncStatus(io.Discard, path, res.Status, ingErr); perr == nil {
+		t.Fatal("persistSyncStatus must return the ingest error")
+	}
+
+	// Now the outer boundary runs, exactly as ingestSource drives it.
+	stampSyncAttemptFailure(cfg, source, classifyConnectorError(ingErr), attemptStart, io.Discard)
+
+	got, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ErrorCode != errCodeConnectorUnavailable {
+		t.Fatalf("persisted ErrorCode = %q, want %q — a failure raised inside memory.Ingest was left untyped or kept a stale code",
+			got.ErrorCode, errCodeConnectorUnavailable)
+	}
+	// The guard's own contract still holds: the inner path's prose survives.
+	if got.LastError != ingErr.Error() {
+		t.Fatalf("LastError = %q, want the inner path's own prose %q", got.LastError, ingErr.Error())
+	}
+}
+
+// TestContractRecoveredSourceReportsNoErrorCode (01-06 review, P1 #2): the whole
+// point of a typed receipt is that an agent can act on it. A `fresh` source that
+// still reports connector.unauthorized inverts that. Drives failure -> clean
+// recovery end to end and asserts the code is gone from the record, from the
+// derived health snapshot, and from the published receipt.
+//
+// MUTATION: drop `p.Status.ErrorCode = ""` from memory.Ingest's clean-completion
+// reset. This test must fail three times over.
+func TestContractRecoveredSourceReportsNoErrorCode(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := Source{Name: "gmail", Type: "gmail"}
+	path := syncStatusPathFor(cfg, source)
+
+	// The source failed with a typed code on a prior run.
+	if err := memory.SaveStatus(path, &memory.SyncStatus{
+		Source: "gmail", ItemCount: 4, ErrorCount: 1,
+		LastError: "not connected to google", ErrorCode: errCodeConnectorUnauthorized,
+		LastAttemptAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+		LastSuccessAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ErrorCode != errCodeConnectorUnauthorized {
+		t.Fatalf("setup: seeded code did not persist, got %q", st.ErrorCode)
+	}
+
+	// It recovers: one clean page, nothing dropped.
+	res, ingErr := memory.Ingest(memory.IngestParams{
+		Fetcher: stubFetcher{page: memory.Page{}},
+		Kind:    "gmail_thread", Scope: "personal", BodyBudget: 1000,
+		Status: st, Write: func(memory.MappedMemory) error { return nil },
+	})
+	if ingErr != nil {
+		t.Fatalf("the clean run must succeed: %v", ingErr)
+	}
+	if perr := persistSyncStatus(io.Discard, path, res.Status, nil); perr != nil {
+		t.Fatal(perr)
+	}
+
+	// 1. The persisted record.
+	got, err := memory.LoadStatus(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ErrorCode != "" {
+		t.Errorf("recovered source still carries error_code %q on disk", got.ErrorCode)
+	}
+	if got.LastError != "" || got.ErrorCount != 0 {
+		t.Errorf("the prose reset regressed: LastError=%q ErrorCount=%d", got.LastError, got.ErrorCount)
+	}
+
+	// 2. The derived health snapshot doctor publishes.
+	h := sourceHealthFor(cfg, source, "gmail", time.Now())
+	if h.State != healthFresh {
+		t.Fatalf("recovered source state = %q, want %q", h.State, healthFresh)
+	}
+	if h.ErrorCode != "" {
+		t.Errorf("a %s source reports error_code %q — the receipt says a healthy source is broken",
+			healthFresh, h.ErrorCode)
+	}
+
+	// 3. The published receipt an agent actually reads.
+	stdout, _, err := runSplit(t, "sync", "status", "--json")
+	if err != nil {
+		t.Fatalf("sync status --json: %v", err)
+	}
+	var receipt struct {
+		Sources []struct {
+			Source    string `json:"source"`
+			State     string `json:"state"`
+			ErrorCode string `json:"error_code"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
+		t.Fatalf("decode receipt: %v\n%s", err, stdout)
+	}
+	found := false
+	for _, s := range receipt.Sources {
+		if s.Source != "gmail" {
+			continue
+		}
+		found = true
+		if s.State != healthFresh {
+			t.Errorf("receipt state = %q, want %q", s.State, healthFresh)
+		}
+		if s.ErrorCode != "" {
+			t.Errorf("receipt error_code = %q on a recovered source", s.ErrorCode)
+		}
+	}
+	if !found {
+		t.Fatalf("gmail missing from the receipt:\n%s", stdout)
+	}
+}

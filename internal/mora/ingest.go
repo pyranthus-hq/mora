@@ -755,6 +755,15 @@ func classifyConnectorError(err error) error {
 	return newCodedError(connectorCodeForCause(err), err, "%v", err)
 }
 
+// connectorErrorCode returns the published code a connector failure resolves to,
+// applying the SAME classification the ingestSource boundary applies. It exists
+// so a failure raised inside memory.Ingest can be typed at the moment it is
+// persisted: internal/memory writes prose and never claims a code, because the
+// taxonomy lives here and that package must not import this one.
+func connectorErrorCode(err error) string {
+	return connectorErrorCodeFor(classifyConnectorError(err))
+}
+
 // connectorCodeForCause is classifyConnectorError's structural rule table, split
 // out so a test can drive every branch with a synthetic cause.
 func connectorCodeForCause(err error) string {
@@ -957,6 +966,18 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 // readings. ingErr (the sync's own error) stays primary; the save error is
 // returned only when the sync itself succeeded.
 func persistSyncStatus(out io.Writer, statusPath string, st *memory.SyncStatus, ingErr error) error {
+	// A failure raised INSIDE memory.Ingest is typed HERE, not at ingestSource.
+	// memory.Ingest stamps its own LastAttemptAt, which correctly trips
+	// stampSyncAttemptFailure's inner-path guard (health.go) — that guard exists
+	// so the outer stamp can never clobber a checkpoint or counter the inner path
+	// already persisted, and two tests pin it. The outer stamp therefore never
+	// runs for this family, and without this line the whole dropped-item and
+	// fetch-failure family would persist prose with no code (or, worse, keep a
+	// code left by an earlier and different failure). Every memory.Ingest call
+	// site routes through this function, so this is the complete boundary for it.
+	if ingErr != nil {
+		st.ErrorCode = connectorErrorCode(ingErr)
+	}
 	if serr := memory.SaveStatus(statusPath, st); serr != nil {
 		if out != nil {
 			warnf(out, "could not persist sync status (%s): %v", statusPath, serr)

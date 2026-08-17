@@ -354,15 +354,22 @@ func stampSyncAttemptFailure(cfg Config, s Source, ingestErr error, attemptStart
 		return
 	}
 	if lastAttempt, perr := time.Parse(time.RFC3339, st.LastAttemptAt); perr == nil && !lastAttempt.Before(attemptStart) {
-		return // the inner path already stamped this attempt.
+		// The inner path already stamped this attempt — including its ErrorCode,
+		// which persistSyncStatus (ingest.go) set at the same moment it wrote the
+		// prose. Returning without a re-load-and-save is the point of this guard.
+		return
 	}
 	st.Source = s.Name
 	st.LastAttemptAt = attemptStart.UTC().Format(time.RFC3339)
 	st.LastError = ingestErr.Error()
-	// The typed companion lands in the SAME stamp as the prose (CON-07). This is
-	// the one place every connector failure is persisted, so classifying here is
-	// what makes `sync status --json` and doctor's `sources` array carry a code
-	// rather than an empty slot.
+	// The typed companion lands in the SAME stamp as the prose (CON-07).
+	//
+	// This branch covers failures raised BEFORE or AROUND memory.Ingest — an
+	// unopenable database, a missing credential, an unknown source type. It is
+	// NOT the only place a connector failure is persisted: a failure raised
+	// INSIDE memory.Ingest stamps its own LastAttemptAt, trips the guard above,
+	// and is typed by persistSyncStatus instead. Both boundaries are needed and
+	// neither covers the other's family.
 	st.ErrorCode = connectorErrorCodeFor(ingestErr)
 	st.ErrorCount++
 	if serr := saveSyncStatusFn(path, st); serr != nil && out != nil {

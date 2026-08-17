@@ -54,6 +54,13 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		if err != nil {
 			p.Status.ErrorCount++
 			p.Status.LastError = err.Error()
+			// This package writes PROSE and never claims a typed code: the error
+			// taxonomy lives in internal/mora, which this package must not import.
+			// Clearing ErrorCode here means a code left by an EARLIER, different
+			// failure can never be read as this one's cause. internal/mora's
+			// persistSyncStatus types the record a moment later, at the boundary
+			// that owns both the status and the taxonomy.
+			p.Status.ErrorCode = ""
 			// Stamp the attempt but NOT success: a failed attempt records when it
 			// was tried while leaving LastSuccessAt untouched, so the digest (M-3 /
 			// D-03) can tell "never succeeded" from "succeeded but stale".
@@ -68,6 +75,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			if werr := p.Write(m); werr != nil {
 				p.Status.ErrorCount++
 				p.Status.LastError = werr.Error()
+				p.Status.ErrorCode = "" // prose only here; see the fetch-failure branch above
 				continue
 			}
 			p.Status.ItemCount++
@@ -106,5 +114,11 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	p.Status.LastSuccessAt = now
 	p.Status.ErrorCount = 0
 	p.Status.LastError = ""
+	// ErrorCode belongs to the SAME last-attempt reset as ErrorCount/LastError.
+	// Without this line a source that failed with connector.unauthorized and then
+	// recovered kept reporting that code on a `fresh` record — a receipt telling
+	// an agent a healthy source is broken, which inverts the very thing the typed
+	// code exists to communicate.
+	p.Status.ErrorCode = ""
 	return IngestResult{Status: p.Status}, nil
 }

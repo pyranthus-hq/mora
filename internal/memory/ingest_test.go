@@ -343,3 +343,66 @@ func TestIngestPartialFailurePreservesSuccessTimestamps(t *testing.T) {
 		t.Errorf("partial failure must still stamp a fresh LastAttemptAt, got %q", status.LastAttemptAt)
 	}
 }
+
+// TestIngestCleanSyncClearsErrorCode (01-06 review, P1 #2): ErrorCode belongs to
+// the SAME last-attempt reset as ErrorCount/LastError. It was added to SyncStatus
+// without being added to this reset, so a source that failed with a typed code
+// and then recovered kept reporting that code on a `fresh` record — a receipt
+// telling an agent a healthy source is broken.
+//
+// MUTATION: drop `p.Status.ErrorCode = ""` from the clean-completion block.
+func TestIngestCleanSyncClearsErrorCode(t *testing.T) {
+	f := twoPageFetcher()
+	res, err := Ingest(IngestParams{
+		Fetcher: f, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		// A source that failed with a typed code on a PRIOR run, then recovered.
+		Status: &SyncStatus{Source: "gmail", ErrorCount: 2, LastError: "boom", ErrorCode: "connector.unauthorized"},
+		Write:  func(m MappedMemory) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := requireStatus(t, res)
+	if status.ErrorCode != "" {
+		t.Fatalf("a recovered source must carry no error code, got %q", status.ErrorCode)
+	}
+	if status.LastError != "" || status.ErrorCount != 0 {
+		t.Fatalf("the prose reset regressed: LastError=%q ErrorCount=%d", status.LastError, status.ErrorCount)
+	}
+}
+
+// TestIngestFailureDropsStaleErrorCode (01-06 review): this package writes prose
+// and never claims a typed code — the taxonomy lives in internal/mora, which it
+// must not import. So whenever it records a NEW LastError it must drop any code
+// left by an EARLIER, different failure, or the record would name the wrong
+// cause until something re-typed it.
+func TestIngestFailureDropsStaleErrorCode(t *testing.T) {
+	t.Run("fetch failure", func(t *testing.T) {
+		f := &fakeFetcher{errOnCursor: map[string]error{"": errFetch}}
+		res, err := Ingest(IngestParams{
+			Fetcher: f, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+			Status: &SyncStatus{Source: "gmail", ErrorCode: "connector.unauthorized"},
+			Write:  func(m MappedMemory) error { return nil },
+		})
+		if err == nil {
+			t.Fatal("expected the fetch failure to surface")
+		}
+		if got := requireStatus(t, res).ErrorCode; got != "" {
+			t.Fatalf("a new failure kept the prior code %q; internal/memory must not claim a code", got)
+		}
+	})
+	t.Run("dropped item", func(t *testing.T) {
+		f := twoPageFetcher()
+		res, err := Ingest(IngestParams{
+			Fetcher: f, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+			Status: &SyncStatus{Source: "gmail", ErrorCode: "connector.unauthorized"},
+			Write:  func(m MappedMemory) error { return errWrite },
+		})
+		if err == nil {
+			t.Fatal("expected the dropped items to surface")
+		}
+		if got := requireStatus(t, res).ErrorCode; got != "" {
+			t.Fatalf("a partial-failure run kept the prior code %q", got)
+		}
+	})
+}
