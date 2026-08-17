@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -30,12 +29,6 @@ func skipOnWindows(t *testing.T, reason string) {
 // ACLs and reports 0666 for any writable file (0444 for read-only), so it can
 // never equal 0600/0640/0644. The production code still writes the correct mode
 // (security-relevant on Unix); this only relaxes the *assertion* on Windows.
-func assertPermUnix(t *testing.T, got, want os.FileMode) {
-	t.Helper()
-	if runtime.GOOS != "windows" && got.Perm() != want.Perm() {
-		t.Fatalf("mode = %v, want %v", got.Perm(), want.Perm())
-	}
-}
 
 // setTestHome points the OS home directory at dir for the duration of the test.
 // It sets BOTH HOME and USERPROFILE because os.UserHomeDir — which defaultConfig
