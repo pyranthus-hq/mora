@@ -71,6 +71,28 @@ json_get() {
   printf '%s' "$1" | "$PY" -c "import sys,json; d=json.load(sys.stdin); print($2)"
 }
 
+# json_array_len "<json>" "<key>" — length of the named top-level array.
+#
+# Phase 01's envelope moved eight commands from a bare `[ ... ]` to
+# `{"schema":..., "schema_version":..., "<key>":[ ... ]}`. The old idiom
+# `json_get "$J" 'len(d)'` still SUCCEEDS against the new shape — it returns the
+# number of ENVELOPE KEYS (3) — so every `len(d) > 0` assertion in this harness
+# silently became vacuous the day that envelope landed, including the #43
+# vault-flip data-safety guard below. Reading the named key fails loudly instead:
+# a renamed or dropped key dies here rather than passing by accident.
+json_array_len() {
+  printf '%s' "$1" | "$PY" -c "
+import sys, json
+d = json.load(sys.stdin)
+k = '$2'
+if not isinstance(d, dict) or k not in d:
+    raise SystemExit('payload has no %r array (keys: %s)' % (k, sorted(d) if isinstance(d, dict) else type(d).__name__))
+if not isinstance(d[k], list):
+    raise SystemExit('%r is not an array' % k)
+print(len(d[k]))
+" || die "json_array_len: could not read '$2' from the payload"
+}
+
 # hash_file — portable file hash (shasum ships with Perl; minimal Linux containers
 # only have coreutils' sha256sum). Used by the config tripwire.
 hash_file() { if command -v shasum >/dev/null 2>&1; then shasum "$1"; else sha256sum "$1"; fi; }
@@ -102,27 +124,40 @@ PREFIX="$WORK/bin" MORA_VAULT="$MORA_VAULT" sh "$STAGE/install.sh" >/dev/null 2>
 [ -x "$WORK/bin/mora" ] || die "install.sh did not place an executable mora in PREFIX"
 pass "install.sh placed binary at \$PREFIX/mora"
 
-VER_OUTPUT="$(mora version)" || die "mora version failed"
-VER_LINE="${VER_OUTPUT%%$'\n'*}"
-[ "$VER_LINE" = "mora $EXPECTED_VER" ] || \
-  die "version mismatch: '$VER_LINE' != 'mora $EXPECTED_VER'"
-if grep -qiw dev <<<"$VER_LINE"; then
-  die "binary reports 'dev' — release ldflags not stamped"
-fi
-pass "mora version stamped: $VER_LINE"
+# Human output is NOT a contract; `--json` is. This check used to compare the first
+# line of `mora version` against "mora $EXPECTED_VER". PR #43 changed a neighbouring
+# annotation, defeated the sibling `mora config` scrape below, and broke every tagged
+# release for a day until #46; the same hazard applies here, because a release gate
+# that reads prose fails whenever prose is edited. Both now read the versioned
+# machine payload (`mora.version` v1, key `version`). The gate's PURPOSE is unchanged:
+# fail if the binary reports "dev" because the release ldflags were not stamped.
+VER_JSON="$(mora version --json)" || die "mora version --json failed"
+VER_REPORTED="$(json_get "$VER_JSON" 'd["version"]')" || die "mora version --json has no version key"
+[ "$VER_REPORTED" = "$EXPECTED_VER" ] || \
+  die "version mismatch: '$VER_REPORTED' != '$EXPECTED_VER'"
+case "$VER_REPORTED" in
+  dev|DEV|*-dev|dev-*) die "binary reports 'dev' — release ldflags not stamped" ;;
+esac
+pass "mora version stamped: $VER_REPORTED"
 
-# `mora config` annotates the vault line for humans ("vault_dir = <path>   ← your
-# memories (back this up)"); strip the arrow + everything after it so the comparison
-# sees only the path. Anchoring on the arrow (not a bare run of spaces) avoids
-# truncating a vault path that itself contains consecutive spaces; if the annotation
-# is dropped entirely this still yields the bare path.
-ACTIVE_VAULT="$(mora config 2>/dev/null | sed -n 's/^vault_dir = //p' | sed -E 's/[[:space:]]+←.*$//')"
+# Same repointing, same reason (#43/#46). `mora config` annotates the vault line for
+# humans ("vault_dir = <path>   ← your memories (back this up)"), and the old check
+# stripped that arrow with a pair of `sed` expressions — i.e. a release gate whose
+# correctness depended on an annotation nobody thought of as a contract. Read the
+# `mora.config` v1 payload's `vault_dir` key instead. Do NOT "simplify" this back to
+# a regex over the JSON text: a regex over JSON is the same class of mistake as a
+# regex over prose.
+ACTIVE_VAULT="$(json_get "$(mora config --json)" 'd["vault_dir"]')" \
+  || die "mora config --json has no vault_dir key"
 [ "$ACTIVE_VAULT" = "$MORA_VAULT" ] || die "active vault '$ACTIVE_VAULT' != expected '$MORA_VAULT'"
 pass "init repointed vault to the sandbox"
 
 # Version-drift guard: install.sh's hardcoded VERSION drives remote-mode downloads.
 # Zero or duplicate defaults are contract failures: an empty parse must never
 # bypass the RELEASE=1 equality gate.
+# The `sed` below is NOT a Mora-output scrape — it reads a shell assignment out of
+# install.sh, which is source we own and there is no machine surface to read
+# instead. Left deliberately; do not "migrate" it to --json.
 INSTALL_VERSION_MATCHES="$(sed -n 's/^VERSION="\${VERSION:-\([0-9.]*\)}"/\1/p' "$MORA_REPO/install.sh")"
 INSTALL_VER_COUNT="$(printf '%s\n' "$INSTALL_VERSION_MATCHES" | awk 'NF { count++ } END { print count + 0 }')"
 [ "$INSTALL_VER_COUNT" -eq 1 ] || \
@@ -161,6 +196,7 @@ pass "install.sh verifies remote downloads and fails closed when verification is
 # same tag as the raw compatibility installer, use the non-colliding _app.zip
 # asset, and verify the separately signed post-staple checksum manifest.
 [ -x "$MORA_REPO/install-app.sh" ] || die "install-app.sh is missing or not executable"
+# Same as above: a shell-source read of install-app.sh, not a Mora-output scrape.
 # shellcheck disable=SC2016 # match the literal VERSION shell expression
 APP_INSTALL_VERSION_MATCHES="$(sed -n 's/^VERSION="\${VERSION:-\([0-9.]*\)}"/\1/p' "$MORA_REPO/install-app.sh")"
 APP_INSTALL_VER_COUNT="$(printf '%s\n' "$APP_INSTALL_VERSION_MATCHES" | awk 'NF { count++ } END { print count + 0 }')"
@@ -217,7 +253,7 @@ pass "uninstall-app.sh verifies the exact app and preserves user data"
 section "Tier 1b — seed a synthetic vault + smoke every command"
 run "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
   "$MORA_REPO/scripts/bench/agent-ab/world.json" "$MORA_CONFIG_DIR"
-LIST_JSON="$(mora list --json)"; COUNT="$(json_get "$LIST_JSON" 'len(d)')"
+LIST_JSON="$(mora list --json)"; COUNT="$(json_array_len "$LIST_JSON" memories)"
 [ "$COUNT" -gt 0 ] || die "seeded vault has 0 memories"
 pass "seeded vault: $COUNT memories"
 
@@ -285,8 +321,11 @@ pass "write/read/delete round-trip"
 # tasks add must PERSIST (memory: 'task added' != persisted — silent-drop bug).
 mora tasks add 'regress sentinel task' --pri P1 >/dev/null 2>&1 || die "tasks add errored"
 TASKS_JSON="$(mora tasks list --json)"
-json_true "$TASKS_JSON" 'any("regress sentinel task" in json.dumps(t) for t in (d if isinstance(d,list) else d.get("tasks",[])))' \
-  || die "tasks add did not PERSIST (re-list could not find the task)"
+# This runs the HEAD binary only, so it asserts the declared shape rather than
+# tolerating both: `d.get("tasks", [])` would report "no such task" identically to
+# "the key was renamed", and a release gate should not confuse the two.
+json_true "$TASKS_JSON" 'any("regress sentinel task" in json.dumps(t) for t in d["tasks"])' \
+  || die "tasks add did not PERSIST (re-list could not find the task), or mora.tasks.list lost its tasks array"
 mora tasks done 'regress sentinel task' >/dev/null 2>&1 || die "tasks done errored"
 pass "tasks add persisted + done"
 
@@ -327,7 +366,7 @@ mora connect filesystem "$FIX" --name regressdocs >/dev/null 2>&1 || die "connec
 mora index rebuild >/dev/null 2>&1 || die "index rebuild after fs connect failed"
 for phrase in quokka-md-marker quokka-txt-marker quokka-pdf-marker quokka-docx-marker; do
   R="$(mora search "$phrase" --json)"
-  json_true "$R" 'len(d) > 0' || die "filesystem connector did not index '$phrase'"
+  [ "$(json_array_len "$R" memories)" -gt 0 ] || die "filesystem connector did not index '$phrase'"
 done
 pass "filesystem + md + txt + PDF + DOCX extracted and indexed"
 
@@ -367,9 +406,9 @@ VIDCFG="$WORK/vid"; VIDVAULT="$VIDCFG/vault"
 # rebuilds the index, so the vault starts populated with a built, marked index.
 run env MORA_VAULT="$VIDVAULT" "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
   "$MORA_REPO/scripts/bench/agent-ab/world.json" "$VIDCFG"
-VID_N="$(json_get "$(MORA_CONFIG_DIR="$VIDCFG" mora list --json)" 'len(d)')"
+VID_N="$(json_array_len "$(MORA_CONFIG_DIR="$VIDCFG" mora list --json)" memories)"
 [ "$VID_N" -gt 0 ] || die "vid: seeded vault has 0 memories"
-json_true "$(MORA_CONFIG_DIR="$VIDCFG" mora search Northwind --json)" 'len(d) > 0' \
+[ "$(json_array_len "$(MORA_CONFIG_DIR="$VIDCFG" mora search Northwind --json)" memories)" -gt 0 ] \
   || die "vid: search found nothing on the seeded index (bad fixture)"
 # Empty the vault (simulate vault_dir moving / being lost); the dotfile marker stays.
 rm -rf "${VIDVAULT:?}"/* 2>/dev/null || true
@@ -378,7 +417,11 @@ if MORA_CONFIG_DIR="$VIDCFG" mora index rebuild >/dev/null 2>&1; then
   die "vid: rebuild from an EMPTIED vault was NOT refused (vault-flip guard regressed)"
 fi
 # ...and the populated index must survive: search still answers from the old index.
-json_true "$(MORA_CONFIG_DIR="$VIDCFG" mora search Northwind --json)" 'len(d) > 0' \
+# This is the assertion the #43 vault-flip P0 exists to protect, and it is the one
+# that had gone vacuous: `len(d) > 0` over the enveloped payload counted the 3
+# envelope keys, so it would have reported the index intact even if it had been
+# wiped. It counts the `memories` array now.
+[ "$(json_array_len "$(MORA_CONFIG_DIR="$VIDCFG" mora search Northwind --json)" memories)" -gt 0 ] \
   || die "vid: blocked rebuild wiped the index (expected it preserved untouched)"
 pass "empty-vault rebuild refused; populated index preserved ($VID_N memories)"
 # --force is the documented override: it must rebuild from the (now empty) vault.
@@ -443,6 +486,12 @@ if curl -fsI https://github.com >/dev/null 2>&1; then
     PREFIX="$UPWORK/bin" MORA_VAULT="$UP_CONFIG/vault" sh "$OLDSTAGE/install.sh" >/dev/null 2>&1 \
       || die "local install of previous version $PREV_VER failed"
     OLDMORA="$UPWORK/bin/mora"
+    # DELIBERATELY still reads human output, and must stay that way: this runs the
+    # PREVIOUSLY PUBLISHED binary (default 0.7.0), whose `cmdVersion` takes no
+    # `--json` at all. The machine contract cannot be applied retroactively to a
+    # shipped release, so the only surface an old binary offers is its human line.
+    # Do not "helpfully" migrate this to `--json` — it will break the upgrade test
+    # for every PREV_VER older than the contract.
     OLD_VERSION_OUTPUT="$("$OLDMORA" version)" || die "previous install version command failed"
     OLD_VERSION_LINE="${OLD_VERSION_OUTPUT%%$'\n'*}"
     [ "$OLD_VERSION_LINE" = "mora $PREV_VER" ] || \
@@ -451,21 +500,31 @@ if curl -fsI https://github.com >/dev/null 2>&1; then
     "$PY" "$MORA_REPO/scripts/bench/agent-ab/build_vault.py" \
       "$MORA_REPO/scripts/bench/agent-ab/world.json" "$UP_CONFIG" >/dev/null 2>&1 \
       || die "seed on previous version failed"
-    OLD_LIST="$(MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" list --json)"; OLD_COUNT="$(json_get "$OLD_LIST" 'len(d)')"
+    # Also a pre-contract binary: 0.7.0's `list --json` emits a BARE array. Accept
+    # either shape HERE ONLY, because this one call site legitimately spans the
+    # envelope boundary. Everything downstream of the upgrade runs the HEAD binary
+    # and uses the strict json_array_len reader.
+    OLD_LIST="$(MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" list --json)"
+    OLD_COUNT="$(json_get "$OLD_LIST" 'len(d if isinstance(d, list) else d["memories"])')" \
+      || die "previous release list --json was neither a bare array nor an enveloped memories array"
     # 2) upgrade IN PLACE by swapping the HEAD binary into the staging dir + reinstall
     cp "$MORA_BIN" "$STAGE/mora"
     PREFIX="$UPWORK/bin" MORA_VAULT="$UP_CONFIG/vault" sh "$STAGE/install.sh" >/dev/null 2>&1 \
       || die "in-place upgrade reinstall failed"
-    UPGRADED_VERSION_OUTPUT="$("$OLDMORA" version)" || die "post-upgrade version command failed"
-    UPGRADED_VERSION_LINE="${UPGRADED_VERSION_OUTPUT%%$'\n'*}"
-    [ "$UPGRADED_VERSION_LINE" = "mora $EXPECTED_VER" ] || \
-      die "post-upgrade version '$UPGRADED_VERSION_LINE' != 'mora $EXPECTED_VER'"
+    # $OLDMORA is the HEAD binary now (installed in place over the old one), so this
+    # reads the machine payload — same #43/#46 rationale as the Tier 1a check.
+    UPGRADED_VERSION_JSON="$("$OLDMORA" version --json)" || die "post-upgrade version command failed"
+    UPGRADED_VERSION="$(json_get "$UPGRADED_VERSION_JSON" 'd["version"]')" \
+      || die "post-upgrade version --json has no version key"
+    [ "$UPGRADED_VERSION" = "$EXPECTED_VER" ] || \
+      die "post-upgrade version '$UPGRADED_VERSION' != '$EXPECTED_VER'"
     # 3) assert old data survived + index auto-heals (static embedder floor)
     NEW_LIST="$(MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" list --json)"
-    NEW_COUNT="$(json_get "$NEW_LIST" 'len(d)')"
+    NEW_COUNT="$(json_array_len "$NEW_LIST" memories)"
     [ "$NEW_COUNT" -ge "$OLD_COUNT" ] || die "data loss on upgrade: $OLD_COUNT -> $NEW_COUNT"
     SR="$(MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" search Northwind --json)"
-    json_true "$SR" 'len(d) > 0' || die "search broken after upgrade (index did not auto-heal)"
+    [ "$(json_array_len "$SR" memories)" -gt 0 ] \
+      || die "search broken after upgrade (index did not auto-heal)"
     MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" brief --json >/dev/null 2>&1 || die "brief crashed after upgrade (schema bump not handled)"
     MORA_CONFIG_DIR="$UP_CONFIG" "$OLDMORA" doctor --json --strict >/dev/null 2>&1 || die "doctor --strict failed after upgrade"
     pass "upgrade $PREV_VER -> $EXPECTED_VER: $OLD_COUNT memories survived, index auto-healed, brief+doctor OK"
