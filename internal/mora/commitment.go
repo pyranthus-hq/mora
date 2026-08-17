@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // Direction is the shared obligation-direction vocabulary used by every
@@ -165,53 +164,11 @@ func reportedActorFor(m Memory, text string, counterparty, self govAtom) (*govAt
 }
 
 func canonicalSelfAtom(cfg Config, preferred string) govAtom {
-	if p := strings.ToLower(strings.TrimSpace(preferred)); p != "" {
-		return govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, p)}
-	}
-	self := selfEmails(cfg)
-	values := make([]string, 0, len(self))
-	for value := range self {
-		values = append(values, value)
-	}
-	sort.Strings(values)
-	if len(values) > 0 {
-		return govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, values[0])}
-	}
-	// iMessage-only installs have no configured mailbox. This explicit self atom is
-	// safer than treating an arbitrary participant as the user.
-	return govAtom{Kind: "self", Value: "self"}
+	return commitmentpkg.CanonicalSelf(selfEmails(cfg), preferred)
 }
 
 func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
-	self := selfEmails(cfg)
-	var candidates []govAtom
-	if isGmailMemory(m) {
-		seen := map[string]bool{}
-		for _, field := range []string{"from", "to", "cc"} {
-			for _, raw := range metaStrings(m.Meta[field]) {
-				value := strings.ToLower(strings.TrimSpace(raw))
-				if value == "" || self[value] || seen[mailboxKey(value)] {
-					continue
-				}
-				seen[mailboxKey(value)] = true
-				candidates = append(candidates, govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, value)})
-			}
-		}
-	} else if isIMessageMemory(m) {
-		selfTokens := meetingpkg.SelfNameTokens(self)
-		for _, pair := range participantPairs(m.Meta["participants"]) {
-			if participantNameIsSelf(pair["name"], selfTokens) {
-				continue
-			}
-			if value := strings.TrimSpace(pair["handle"]); value != "" {
-				candidates = append(candidates, govAtom{Provider: "imessage", Kind: atomHandle, Value: normalizeIdentity(atomHandle, value)})
-			}
-		}
-	}
-	if len(candidates) != 1 {
-		return govAtom{}, false
-	}
-	return candidates[0], true
+	return commitmentpkg.Counterparty(m, selfEmails(cfg))
 }
 
 // participantNameIsSelf handles imported/transcoded iMessage records that list the
@@ -219,63 +176,9 @@ func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
 // only other-party handles. We exclude a listed participant only when every
 // meaningful display-name token is independently present in a configured self
 // mailbox local-part; a partial/common-name overlap is insufficient.
-func participantNameIsSelf(name string, selfTokens map[string]bool) bool {
-	fields := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(name)), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-	if len(fields) == 0 {
-		return false
-	}
-	for _, field := range fields {
-		if len(field) < 2 || !selfTokens[field] {
-			return false
-		}
-	}
-	return true
-}
 
 func commitmentCounterpartyKeys(m Memory, counterparty govAtom) []string {
-	seen := map[string]bool{}
-	add := func(kind, value string) {
-		value = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
-		if value != "" {
-			seen[kind+":"+value] = true
-		}
-	}
-	add(counterparty.Kind, normalizeIdentity(counterparty.Kind, counterparty.Value))
-	if isGmailMemory(m) {
-		var names map[string]string
-		if body, err := json.Marshal(m.Meta["names"]); err == nil && json.Unmarshal(body, &names) == nil {
-			for raw, name := range names {
-				atom := govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, raw)}
-				if !atomEqual(atom, counterparty) {
-					continue
-				}
-				add("name", name)
-				if fields := strings.Fields(name); len(fields) > 0 {
-					add("given", fields[0])
-				}
-			}
-		}
-	}
-	if isIMessageMemory(m) {
-		for _, pair := range participantPairs(m.Meta["participants"]) {
-			atom := govAtom{Provider: "imessage", Kind: atomHandle, Value: normalizeIdentity(atomHandle, pair["handle"])}
-			if !atomEqual(atom, counterparty) {
-				continue
-			}
-			add("name", pair["name"])
-			if fields := strings.Fields(pair["name"]); len(fields) > 0 {
-				add("given", fields[0])
-			}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for key := range seen {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out
+	return commitmentpkg.CounterpartyKeys(m, counterparty)
 }
 
 func participantPairs(value any) []map[string]string {
@@ -387,32 +290,7 @@ func acceptanceRestatesRequest(existing []Commitment, candidate Commitment) (int
 }
 
 func gmailAddressee(sender govAtom, to, cc []string, self, counterparty govAtom) govAtom {
-	recipients := append(append([]string(nil), to...), cc...)
-	seenOther := map[string]bool{}
-	hasSelf := false
-	hasCounterparty := false
-	for _, raw := range recipients {
-		value := strings.ToLower(strings.TrimSpace(raw))
-		atom := govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, value)}
-		switch {
-		case atomEqual(atom, self):
-			hasSelf = true
-		case atomEqual(atom, counterparty):
-			hasCounterparty = true
-			seenOther[mailboxKey(value)] = true
-		case value != "":
-			seenOther[mailboxKey(value)] = true
-		}
-	}
-	switch {
-	case atomEqual(sender, counterparty) && hasSelf &&
-		(len(seenOther) == 0 || (len(seenOther) == 1 && hasCounterparty)):
-		return self
-	case atomEqual(sender, self) && hasCounterparty && len(seenOther) == 1:
-		return counterparty
-	default:
-		return govAtom{}
-	}
+	return commitmentpkg.GmailAddressee(sender, to, cc, self, counterparty)
 }
 
 func commitmentCitation(m Memory, commitmentID, evidenceRef, occurredAt string) []CommitmentCitation {
