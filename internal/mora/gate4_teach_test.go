@@ -340,8 +340,10 @@ func TestGate4AuthoredMemoryCorrectSupersedeRetractUndo(t *testing.T) {
 				t.Fatalf("replacement not current: %+v, %v", replacement, err)
 			}
 			historyJSON := run(t, "teach", "history", "--memory-id", original.ID, "--json")
-			var history []govEntry
-			if err := json.Unmarshal([]byte(historyJSON), &history); err != nil ||
+			var historyReceipt teachHistoryReceipt
+			err := json.Unmarshal([]byte(historyJSON), &historyReceipt)
+			history := historyReceipt.Entries
+			if err != nil ||
 				len(history) != 1 || history[0].ID != entry.ID ||
 				history[0].TargetID != original.ID ||
 				history[0].ReplacementID != entry.ReplacementID ||
@@ -438,8 +440,10 @@ func TestGate4AuthoredMemoryHistoryTraversesRevisionChainNewestFirst(t *testing.
 	second := governance.Entries[len(governance.Entries)-1]
 
 	historyJSON := run(t, "teach", "history", "--memory-id", original.ID, "--json")
-	var history []govEntry
-	if err := json.Unmarshal([]byte(historyJSON), &history); err != nil ||
+	var historyReceipt teachHistoryReceipt
+	err = json.Unmarshal([]byte(historyJSON), &historyReceipt)
+	history := historyReceipt.Entries
+	if err != nil ||
 		len(history) != 2 || history[0].ID != first.ID || history[1].ID != second.ID {
 		t.Fatalf("original-id history did not traverse A -> B -> C: %s, err=%v", historyJSON, err)
 	}

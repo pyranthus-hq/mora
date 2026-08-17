@@ -20,7 +20,10 @@ func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		if len(args) == 1 {
 			return errors.New("usage: mora teach identity <list|confirm|reject|undo>")
 		}
-		return cmdMerge(ctx, args[1:], stdout, stderr)
+		// `teach identity …` is an alias for `merge …` but publishes its own
+		// schema names, so the namespace rides the context rather than forcing a
+		// signature change on every command handler.
+		return cmdMerge(withMergeSchemaNamespace(ctx, mergeSchemaTeachIdentity), args[1:], stdout, stderr)
 	case "commitment":
 		return teachCommitment(ctx, args[1:], stdout)
 	case "memory":
@@ -377,6 +380,12 @@ func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
+// teachHistoryReceipt carries the decision log under a named key with a
+// never-null array, so an agent can iterate it without a nil check.
+type teachHistoryReceipt struct {
+	Entries []govEntry `json:"entries"`
+}
+
 func teachHistory(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("teach history", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -413,7 +422,7 @@ func teachHistory(args []string, stdout io.Writer) error {
 			}
 		}
 	}
-	var entries []govEntry
+	entries := make([]govEntry, 0, len(teaching))
 	for _, e := range teaching {
 		if *memoryID != "" {
 			switch e.Kind {
@@ -430,7 +439,7 @@ func teachHistory(args []string, stdout io.Writer) error {
 		entries = append(entries, e)
 	}
 	if *jsonOut {
-		return emit(stdout, entries, true)
+		return emitReceipt(stdout, "mora.teach.history", 1, teachHistoryReceipt{Entries: entries})
 	}
 	for _, e := range entries {
 		status := "active"

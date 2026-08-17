@@ -1358,7 +1358,7 @@ var loopValidCadence = map[string]bool{"daily": true, "hourly": true, "weekly": 
 
 // loopRegister records (or updates) a loop's cadence + command + backing OS-timer
 // job. Re-registering preserves created_at. Idempotent.
-func loopRegister(cfg Config, id, cadence string, command []string, scheduleJob string, now time.Time, stdout io.Writer) error {
+func loopRegister(cfg Config, id, cadence string, command []string, scheduleJob string, jsonOut bool, now time.Time, stdout io.Writer) error {
 	if !validLoopID(id) {
 		return fmt.Errorf("invalid loop id %q", id)
 	}
@@ -1378,8 +1378,22 @@ func loopRegister(cfg Config, id, cadence string, command []string, scheduleJob 
 	if err := saveLoopRegistration(cfg, reg, now); err != nil {
 		return err
 	}
+	if jsonOut {
+		return emitReceipt(stdout, "mora.loop.register", 1, reg)
+	}
 	okf(stdout, "registered loop %q (cadence %s)", id, cadence)
 	return nil
+}
+
+// loopPositionalID pulls the loop id out of the first positional argument. A
+// dash-led argument is refused rather than accepted as an id: `mora loop begin
+// --json` used to start a real run for a loop literally named "--json", so a
+// machine caller asking for JSON silently mutated loop state.
+func loopPositionalID(rest []string) (id string, flagArgs []string, ok bool) {
+	if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
+		return "", nil, false
+	}
+	return rest[0], rest[1:], true
 }
 
 // loopList prints every registered loop with its current health.
@@ -1432,10 +1446,10 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 	switch sub {
 	case "begin":
-		if len(rest) == 0 {
+		id, flagArgs, ok := loopPositionalID(rest)
+		if !ok {
 			return errors.New("usage: mora loop begin <id> [--json]")
 		}
-		id, flagArgs := rest[0], rest[1:]
 		fs := newFS("begin")
 		jsonOut := fs.Bool("json", false, "json output")
 		if err := fs.Parse(flagArgs); err != nil {
@@ -1444,10 +1458,10 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return loopBegin(cfg, id, *jsonOut, now, stdout)
 
 	case "heartbeat":
-		if len(rest) == 0 {
+		id, flagArgs, ok := loopPositionalID(rest)
+		if !ok {
 			return errors.New("usage: mora loop heartbeat <id> --run <run_id> [--json]")
 		}
-		id, flagArgs := rest[0], rest[1:]
 		fs := newFS("heartbeat")
 		runID := fs.String("run", "", "the active run id from `loop begin`")
 		jsonOut := fs.Bool("json", false, "json output")
@@ -1457,10 +1471,10 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return loopHeartbeat(cfg, id, *runID, *jsonOut, now, stdout)
 
 	case "done":
-		if len(rest) == 0 {
+		id, flagArgs, ok := loopPositionalID(rest)
+		if !ok {
 			return errors.New(`usage: mora loop done <id> (--ok | --fail "reason")`)
 		}
-		id, flagArgs := rest[0], rest[1:]
 		fs := newFS("done")
 		okFlag := fs.Bool("ok", false, "mark the run succeeded")
 		failReason := fs.String("fail", "", "mark the run failed with a short reason")
@@ -1477,10 +1491,10 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return loopDone(cfg, id, *runID, *okFlag, *failReason, now, stdout)
 
 	case "status":
-		if len(rest) == 0 {
+		id, flagArgs, ok := loopPositionalID(rest)
+		if !ok {
 			return errors.New("usage: mora loop status <id> [--json]")
 		}
-		id, flagArgs := rest[0], rest[1:]
 		fs := newFS("status")
 		jsonOut := fs.Bool("json", false, "json output")
 		if err := fs.Parse(flagArgs); err != nil {
@@ -1489,18 +1503,19 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return loopStatus(cfg, id, *jsonOut, now, stdout)
 
 	case "register":
-		if len(rest) == 0 {
-			return errors.New("usage: mora loop register <id> [--cadence daily] [--command \"...\"] [--schedule-job <job>]")
+		id, flagArgs, ok := loopPositionalID(rest)
+		if !ok {
+			return errors.New("usage: mora loop register <id> [--json] [--cadence daily] [--command \"...\"] [--schedule-job <job>]")
 		}
-		id, flagArgs := rest[0], rest[1:]
 		fs := newFS("register")
 		cadence := fs.String("cadence", loopDefaultCadence, "daily|hourly|weekly")
 		command := fs.String("command", "", "argv the trigger runs (whitespace-separated)")
 		scheduleJob := fs.String("schedule-job", "", "backing launchd job (e.g. pulse-daily)")
+		jsonOut := fs.Bool("json", false, "json output")
 		if err := fs.Parse(flagArgs); err != nil {
 			return err
 		}
-		return loopRegister(cfg, id, *cadence, strings.Fields(*command), *scheduleJob, now, stdout)
+		return loopRegister(cfg, id, *cadence, strings.Fields(*command), *scheduleJob, *jsonOut, now, stdout)
 
 	case "list":
 		fs := newFS("list")

@@ -215,6 +215,19 @@ mora ingest run --source acme
 `mora sources list --json` emits the `mora.sources.list` v1 receipt. Its
 configured-source array lives under `sources`, and is `[]` when none exist.
 
+The connector verbs also take `--json`:
+
+- `mora connect filesystem <path> --json` emits the `mora.connect.filesystem`
+  v1 receipt with the registered source name, the resolved path, the scope, and
+  how many files the first walk indexed.
+- `mora sync <source> --json` emits a `mora.sync.<source>` v1 receipt with the
+  source name and the item count that run pulled.
+- `mora ingest run --all --json` (or `--source <name> --json`) emits the
+  `mora.ingest.run` v1 receipt with the item count and how many sources failed.
+
+Under `--json` these commands send their progress lines and resumable-failure
+warnings to stderr, so stdout stays exactly one JSON document.
+
 ### Gmail and Google Calendar
 
 ```bash
@@ -458,7 +471,8 @@ mora brief correct --memory-id <id> --attendee <email-or-handle> --unlink --yes
 ```
 
 `--confirm` records a positive link. `--unlink` is destructive and needs
-`--yes`.
+`--yes`. Add `--json` for the `mora.brief.correct` v1 receipt: the decision, the
+memory id, the source and attendee atoms the ledger keys on, and the entry id.
 
 ### Write a memory
 
@@ -470,6 +484,11 @@ mora write --scope project:acme --type decision --title "OAuth" --text "Use PKCE
 
 Mora stores authored memories as readable Markdown in the vault. They can be
 searched, corrected, backed up, and shared. Connector data stays read-only.
+
+`mora write --json` emits the `mora.write` v1 receipt with the saved memory's
+id, path, scope, type, and title, plus `index_updated`. A `false` value means
+the vault write succeeded but the derived search index needs a later rebuild;
+the accompanying human warning stays on stderr.
 
 ### Search, read, and think
 
@@ -511,6 +530,11 @@ mora tasks sync --write
 ```
 
 These tasks live in Mora. They do not change tasks in another service.
+
+`add`, `done`, and `sync` each take `--json` and emit the matching
+`mora.tasks.add`, `mora.tasks.done`, or `mora.tasks.sync` v1 receipt. The task
+name is the first positional argument, so it can never start with `-`: `mora
+tasks add --json` is a usage error, not a task named `--json`.
 
 ### Health
 
@@ -572,6 +596,16 @@ mora teach undo <ledger-id>
 
 Identity matches are proposals until you confirm them. Connector source files
 stay unchanged. Memory revision commands apply only to memories that you wrote.
+
+`mora teach identity confirm --json` and `mora teach identity reject --json`
+emit the `mora.teach.identity.confirm` and `mora.teach.identity.reject` v1
+receipts with the decided pair, the ledger entry id, the corroborating evidence,
+and the affected memory ids. The same command under `mora merge` emits
+`mora.merge.confirm` and `mora.merge.reject`. Under `--json` the human review
+block is not printed; its facts ride the receipt instead.
+
+`mora teach history --json` emits the `mora.teach.history` v1 receipt. Its
+decision log lives under `entries`, and is `[]` when there is no history.
 
 ### Delete or forget
 
@@ -646,6 +680,11 @@ mora loop list --json
 The CLI uses `done` for finish and `status` for inspect. A run ID prevents an
 old worker from closing a newer run. A crash can leave an uncertain outside
 effect. Review the status before you repeat that effect.
+
+`mora loop register --json` emits the `mora.loop.register` v1 receipt with the
+stored registration. The loop id is the first positional argument and can never
+start with `-`: `mora loop begin --json` is a usage error, not a run of a loop
+named `--json`.
 
 ## Update
 

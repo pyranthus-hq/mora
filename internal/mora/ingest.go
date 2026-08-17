@@ -124,9 +124,14 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	fs.SetOutput(io.Discard)
 	sourceName := fs.String("source", "", "source")
 	all := fs.Bool("all", false, "all")
+	jsonOut := fs.Bool("json", false, "emit the ingest receipt as JSON")
 	if perr := fs.Parse(args[1:]); perr != nil {
-		return perr
+		return newMoraError(errCodeUsageUnknownFlag, "usage", perr, "%v", perr)
 	}
+	// Per-source progress and resumable-failure warnings are diagnostics, not
+	// results: under --json they move to stderr so stdout carries exactly one
+	// JSON document.
+	progress := progressWriter(stdout, stderr, *jsonOut)
 	// One of the two selectors is required: a bare `ingest run` used to walk the
 	// loop with sourceName=="", match nothing, and print a successful-looking
 	// "ingested 0 item(s)".
@@ -165,7 +170,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		} else if !s.IsEnabled() {
 			continue // --all silently skips disabled (D-07)
 		}
-		n, err := ingestSourceFn(cfg, s, stdout)
+		n, err := ingestSourceFn(cfg, s, progress)
 		count += n
 		if err != nil {
 			// Named-source path: the failure IS the result — but a PARTIAL run
@@ -182,7 +187,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 			// and surface an aggregate error at the end (never swallow sync
 			// errors; mirrors backfillEnabledGoogle).
 			failures++
-			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
+			warnf(progress, "%s sync incomplete (resumable): %v", s.Name, err)
 		}
 	}
 	// A named source that matched NOTHING is a typo, not a successful empty run:
@@ -200,12 +205,40 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if namedErr != nil {
 		return namedErr
 	}
-	fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
+	if *jsonOut {
+		if rerr := emitReceipt(stdout, "mora.ingest.run", 1, ingestRunReceipt{
+			Source: *sourceName, All: *all, Items: count, FailedSources: failures,
+		}); rerr != nil {
+			return rerr
+		}
+	} else {
+		fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
+	}
 	if failures > 0 {
 		return fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
 	}
 	return nil
 }
+
+// ingestRunReceipt reports what one ingest run did. Phase 2 (ISO-02) adds the
+// per-source outcome breakdown here; additions are minor, removals need a bump.
+type ingestRunReceipt struct {
+	Source        string `json:"source,omitempty"`
+	All           bool   `json:"all"`
+	Items         int    `json:"items"`
+	FailedSources int    `json:"failed_sources"`
+}
+
+// progressWriter routes a command's running commentary away from stdout when
+// the caller asked for JSON, so a machine payload is never interleaved with
+// progress prose.
+func progressWriter(stdout, stderr io.Writer, jsonOut bool) io.Writer {
+	if jsonOut {
+		return stderr
+	}
+	return stdout
+}
+
 func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && args[0] == "github" {
 		return connectGitHub(ctx, args[1:], stdout)
@@ -214,7 +247,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return connectIMessage(ctx, args[1:], stdout)
 	}
 	if len(args) >= 1 && args[0] == "filesystem" {
-		return connectFilesystem(ctx, args[1:], stdout)
+		return connectFilesystem(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) < 1 || args[0] != "google" {
 		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect github [--repo owner/repo] | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
@@ -361,6 +394,26 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		statusJSON = *jsonOut
 	}
+	// The per-source re-sync verbs share one flag surface. --json replaces the
+	// "synced N item(s)" line with a receipt and moves walk progress to stderr,
+	// so stdout carries exactly one JSON document. Routing below stays an
+	// explicit per-source chain so a typo can never fall through to a networked
+	// backfill.
+	sourceJSON := false
+	switch args[0] {
+	case "filesystem", "imessage", "applecalendar", "github", "google":
+		fs := flag.NewFlagSet("sync "+args[0], flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit the sync receipt as JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		sourceJSON = *jsonOut
+	}
+	sourceProgress := progressWriter(stdout, stderr, sourceJSON)
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -418,35 +471,63 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Routing is explicit so a typo can never fall through to a networked Google
 	// backfill, and the helper performs one final index rebuild after the walks.
 	if args[0] == "filesystem" {
-		total, err := backfillEnabledFilesystem(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, err := backfillEnabledFilesystem(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "filesystem", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	// `mora sync imessage` — re-run the gated iMessage backfill (shared seam).
 	if args[0] == "imessage" {
-		total, err := backfillEnabledIMessage(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, err := backfillEnabledIMessage(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "imessage", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	// `mora sync applecalendar` — targeted retry for the local Calendar store.
 	// Keep this separate from Google Calendar: the provider, FDA gate, status
 	// receipt, and recovery action are all independent (#266).
 	if args[0] == "applecalendar" {
-		total, err := backfillEnabledAppleCalendar(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, err := backfillEnabledAppleCalendar(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	if args[0] == "github" {
-		total, err := backfillEnabledGitHub(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d issue(s)\n", total)
+		total, err := backfillEnabledGitHub(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "github", sourceJSON, total, "synced %d issue(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	if args[0] == "google" {
-		total, err := backfillEnabledGoogle(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, err := backfillEnabledGoogle(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>)", args[0])
+}
+
+// syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
+// the typed failure fields here; additions are minor, removals need a bump.
+type syncSourceReceipt struct {
+	Source string `json:"source"`
+	Items  int    `json:"items"`
+}
+
+// emitSyncSourceResult writes the outcome of one per-source re-sync: a receipt
+// under --json, the shipped human line otherwise. It runs on the error path too,
+// because a partial sync still reports what it managed to pull.
+func emitSyncSourceResult(stdout io.Writer, source string, jsonOut bool, total int, humanFormat string) error {
+	if jsonOut {
+		return emitReceipt(stdout, "mora.sync."+source, 1, syncSourceReceipt{Source: source, Items: total})
+	}
+	_, err := fmt.Fprintf(stdout, humanFormat, total)
+	return err
 }
 
 // syncStatusReceipt is additive: Phase 2 (ISO-02) and Phase 7 (OBS-01) may add
@@ -1156,7 +1237,16 @@ func connectGitHub(ctx context.Context, args []string, stdout io.Writer) error {
 // folder here IS the consent. The default source name is the folder's base name
 // so two folders coexist without an explicit --name; re-connecting the same name
 // refreshes in place rather than stacking duplicates (mirrors addSource).
-func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) error {
+// connectFilesystemReceipt reports the registered source and the first walk it
+// performed, so an agent can tell "registered" from "registered and indexed".
+type connectFilesystemReceipt struct {
+	Source string `json:"source"`
+	Path   string `json:"path"`
+	Scope  string `json:"scope"`
+	Items  int    `json:"items"`
+}
+
+func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Pull a leading positional <path> out before flag parsing: Go's flag package
 	// stops at the first non-flag arg, so `connect filesystem ~/dir --name x` would
 	// otherwise silently drop --name. A leading flag form (`--name x ~/dir`) still
@@ -1171,9 +1261,13 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 	name := fs.String("name", "", "source name (default: the folder's base name)")
 	scope := fs.String("scope", "personal", "scope")
 	pathFlag := fs.String("path", "", "directory to index (alternative to the positional <path>)")
+	jsonOut := fs.Bool("json", false, "emit the connect receipt as JSON")
 	if err := fs.Parse(rest); err != nil {
-		return err
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 	}
+	// Registry repair notes, walk progress, and the closing setup state are
+	// diagnostics; under --json they leave stdout to the receipt.
+	progress := progressWriter(stdout, stderr, *jsonOut)
 	path := *pathFlag
 	if path == "" {
 		path = positional
@@ -1246,7 +1340,7 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 				// the hourly walk and raises a red "never synced" banner — and this
 				// command is exactly the repair the ingest error recommends, so drop
 				// it here while adding the healthy row.
-				fmt.Fprintf(stdout, "removed legacy filesystem source %q (it had no path and could never sync)\n", existing.Name)
+				fmt.Fprintf(progress, "removed legacy filesystem source %q (it had no path and could never sync)\n", existing.Name)
 				if p := syncStatusPathFor(cfg, existing); p != "" {
 					_ = os.Remove(p) // drop its failed-sync status so `sync status` stops listing it
 				}
@@ -1273,15 +1367,20 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 	// Ingest now (the named, consented convenience path — same as connect google).
 	// Surface a partial-ingest warning BEFORE the rebuild so a resumable ingest
 	// error is never masked by a later index-rebuild failure.
-	n, ingestErr := ingestSource(cfg, s, stdout)
+	n, ingestErr := ingestSource(cfg, s, progress)
 	if ingestErr != nil {
-		warnf(stdout, "%s indexed %d file(s) before stopping (resumable): %v", s.Name, n, ingestErr)
+		warnf(progress, "%s indexed %d file(s) before stopping (resumable): %v", s.Name, n, ingestErr)
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return err
 	}
 	if ingestErr != nil {
 		return ingestErr
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.connect.filesystem", 1, connectFilesystemReceipt{
+			Source: s.Name, Path: path, Scope: s.Scope, Items: n,
+		})
 	}
 	okf(stdout, "Enabled filesystem and indexed %d file(s) from %s.", n, path)
 	renderSetupState(cfg, stdout)

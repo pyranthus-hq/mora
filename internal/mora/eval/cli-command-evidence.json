@@ -129,7 +129,7 @@
       "paths": ["merge", "merge list", "merge confirm", "merge reject", "merge undo"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestMergeConfirmUnifiesEmailPhone", "TestMergeRejectKeepsSeparate", "TestMergeUndoRestoresQueue"]},
-        "json": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly"], "reason": "The queue supports JSON; decision commands render review text."},
+        "json": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly", "TestMergeDecisionJSONReceipts"], "reason": "The queue and both decision commands emit receipts; merge undo stays a text confirmation."},
         "state": {"status": "test", "tests": ["TestMergeConfirmPersistsProvenance", "TestMergeUndoRestoresQueue"]},
         "error": {"status": "test", "tests": ["TestMergeDecisionsResolvesAtoms"]},
         "refusal": {"status": "test", "tests": ["TestMergeConfirmUnifiesEmailPhone"]}
@@ -140,7 +140,7 @@
       "paths": ["teach identity", "teach identity list", "teach identity confirm", "teach identity reject", "teach identity undo"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly", "TestMergeRejectKeepsSeparate", "TestMergeUndoRestoresQueue"]},
-        "json": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly"], "reason": "Identity list supports JSON; decision commands render review text."},
+        "json": {"status": "test", "tests": ["TestMergeDuplicateNameHandleVariantsStayReviewOnly", "TestMergeDecisionJSONReceipts"], "reason": "Identity list and both decision commands emit receipts under the teach identity schema names; undo stays a text confirmation."},
         "state": {"status": "test", "tests": ["TestMergeConfirmPersistsProvenance", "TestMergeUndoRestoresQueue"]},
         "error": {"status": "test", "tests": ["TestMergeDecisionsResolvesAtoms"]},
         "refusal": {"status": "test", "tests": ["TestMergeConfirmUnifiesEmailPhone"]}
@@ -151,7 +151,7 @@
       "paths": ["teach", "teach commitment", "teach memory", "teach undo", "teach history"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestGate4EveryCommitmentVerdictRoundTripsThroughCLIRebuildAndUndo", "TestGate4AuthoredMemoryCorrectSupersedeRetractUndo", "TestGate4AuthoredMemoryHistoryTraversesRevisionChainNewestFirst"]},
-        "json": {"status": "test", "tests": ["TestGate4AuthoredMemoryHistoryTraversesRevisionChainNewestFirst"], "reason": "teach history supports JSON; mutation commands render review-oriented text."},
+        "json": {"status": "test", "tests": ["TestGate4AuthoredMemoryHistoryTraversesRevisionChainNewestFirst", "TestContractMutationJSONReceipts"], "reason": "teach history emits a receipt whose entries array is never null; commitment and memory mutations render review-oriented text."},
         "state": {"status": "test", "tests": ["TestGate4CommitmentDecisionRebuildAndUndo", "TestGate4AuthoredMemoryCorrectSupersedeRetractUndo"]},
         "error": {"status": "test", "tests": ["TestGate4ConnectorEvidenceCannotBeRevisedAsAuthoredMemory"]},
         "refusal": {"status": "test", "tests": ["TestGate4AgentAuthoredDecisionCannotAuthorizeItsOwnCorrection", "TestGate4ConnectorEvidenceCannotBeRevisedAsAuthoredMemory"]}
@@ -195,7 +195,7 @@
       "paths": ["tasks", "tasks sync", "tasks add", "tasks list", "tasks done"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestCoreA_CmdTasks"]},
-        "json": {"status": "test", "tests": ["TestCoreA_CmdTasks"], "reason": "tasks list supports JSON; mutating actions return text confirmations."},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdTasks", "TestContractMutationJSONReceipts", "TestContractDashLedPositionalsAreRefused"], "reason": "list, sync, add, and done all honor --json; a dash-led positional is refused rather than stored as a task name."},
         "state": {"status": "test", "tests": ["TestCoreA_CmdTasks", "TestSyncDoesNotResurrectDoneTask"]},
         "error": {"status": "test", "tests": ["TestCoreA_CmdTasks"]},
         "refusal": {"status": "not_applicable", "reason": "Task lifecycle mutations are explicit positional actions and do not use a destructive confirmation prompt."}
@@ -221,6 +221,17 @@
         "state": {"status": "not_applicable", "reason": "lint is read-only."},
         "error": {"status": "test", "tests": ["TestCoreA_CmdLint"]},
         "refusal": {"status": "not_applicable", "reason": "lint is read-only."}
+      }
+    },
+    {
+      "name": "capabilities",
+      "paths": ["capabilities"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCapabilitiesContract"]},
+        "json": {"status": "test", "tests": ["TestCapabilitiesContract"]},
+        "state": {"status": "not_applicable", "reason": "capabilities reports static and configured support without mutating product state."},
+        "error": {"status": "test", "tests": ["TestCapabilitiesContract"]},
+        "refusal": {"status": "not_applicable", "reason": "capabilities is read-only."}
       }
     },
     {
@@ -294,7 +305,7 @@
       "paths": ["ingest", "ingest run"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestCoreA_CmdIngest", "TestIngestRunAllContinuesPastFailingSource"]},
-        "json": {"status": "not_supported", "reason": "ingest summaries are text-only."},
+        "json": {"status": "test", "tests": ["TestContractMutationJSONReceipts"], "reason": "ingest run emits the mora.ingest.run receipt and moves progress prose to stderr."},
         "state": {"status": "test", "tests": ["TestIngestRunAllContinuesPastFailingSource", "TestNamedSourceIngestRebuildsDespitePartialFailure"]},
         "error": {"status": "test", "tests": ["TestIngestRunNamedSourceStillAborts", "TestNamedSourceIngestRebuildsDespitePartialFailure"]},
         "refusal": {"status": "test", "tests": ["TestIngestUnknownSourceErrors", "TestIngestPathlessFilesystemSourceErrorsClearly"]}
@@ -305,7 +316,7 @@
       "paths": ["connect", "connect google", "connect github", "connect imessage", "connect filesystem"],
       "evidence": {
         "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays", "TestGitHubStatusPathAndCatalogContract"], "reason": "Filesystem succeeds locally; Google, GitHub, and iMessage route through explicit credential/platform seams."},
-        "json": {"status": "not_supported", "reason": "connect flows render text."},
+        "json": {"status": "test", "tests": ["TestContractMutationJSONReceipts"], "reason": "connect filesystem emits the mora.connect.filesystem receipt; the credential-seam flows stay interactive text."},
         "state": {"status": "platform_seam", "tests": ["TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays"], "reason": "Source registration is persisted through hermetic filesystem and platform-seam tests."},
         "error": {"status": "test", "tests": ["TestConnectFilesystemMissingPathErrors", "TestConnectFilesystemPreservesCorruptSources", "TestCLIRegistryPriorityGapsUseRealRun/connect_routes"]},
         "refusal": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources"], "reason": "Credential and unsupported-platform refusal occurs before egress or state mutation."}
@@ -316,7 +327,7 @@
       "paths": ["sync", "sync status", "sync google", "sync github", "sync filesystem", "sync imessage", "sync applecalendar", "sync git"],
       "evidence": {
         "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes", "TestGitHubStatusPathAndCatalogContract"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
-        "json": {"status": "not_supported", "reason": "sync commands are text status surfaces."},
+        "json": {"status": "test", "tests": ["TestContractMutationJSONReceipts", "TestContractLeafJSONReceipts"], "reason": "sync status and every per-source re-sync verb emit receipts; sync git stays a text transport surface."},
         "state": {"status": "test", "tests": ["TestCoreA_CmdSync", "TestFailedSyncNeverAdvancesWatermark", "TestSyncDoesNotResurrectDoneTask"]},
         "error": {"status": "test", "tests": ["TestSyncFilesystemSurfacesCorruptSourceRegistry", "TestSyncGit_FailLoudOnPushError", "TestFailedSyncNeverAdvancesWatermark"]},
         "refusal": {"status": "test", "tests": ["TestSyncRequiresExplicitKnownSource", "TestSyncGit_BlocksTrackedSensitiveFiles"]}
@@ -360,7 +371,7 @@
       "paths": ["brief", "brief correct"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestCoreA_CmdBrief", "TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]},
-        "json": {"status": "test", "tests": ["TestCoreA_CmdBrief"], "reason": "brief supports JSON; brief correct is a text confirmation flow."},
+        "json": {"status": "test", "tests": ["TestCoreA_CmdBrief", "TestBriefCorrectJSONReceipt"], "reason": "brief and brief correct both emit JSON; the correction receipt carries the ledger atoms."},
         "state": {"status": "test", "tests": ["TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]},
         "error": {"status": "test", "tests": ["TestCmdBriefEntityAmbiguous", "TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]},
         "refusal": {"status": "test", "tests": ["TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed"]}
@@ -437,7 +448,7 @@
       "paths": ["loop", "loop begin", "loop heartbeat", "loop done", "loop status", "loop register", "loop list"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestCLIRegistryLoopLifecycleThroughRun", "TestLoopHeartbeatCommandDispatch"]},
-        "json": {"status": "test", "tests": ["TestCLIRegistryLoopLifecycleThroughRun", "TestCLIRegistryJSONSurfacesAreByteClean/loop/list/--json"]},
+        "json": {"status": "test", "tests": ["TestCLIRegistryLoopLifecycleThroughRun", "TestCLIRegistryJSONSurfacesAreByteClean/loop/list/--json", "TestContractMutationJSONReceipts", "TestContractDashLedPositionalsAreRefused"], "reason": "register joins begin, status, and list on --json; a dash-led positional is refused rather than treated as a loop id."},
         "state": {"status": "test", "tests": ["TestCLIRegistryLoopLifecycleThroughRun", "TestLoopDone_OkWritesJournalAndFlipsStatus"]},
         "error": {"status": "test", "tests": ["TestLoopDone_FailKeepsRetryable", "TestLoopBeginInvalidExistingRecordFailsClosed"]},
         "refusal": {"status": "test", "tests": ["TestLoopBegin_DoubleBeginSameDaySucceededSkips", "TestLoopDone_RefusesWhenLeaseMovedToNewerRun"]}

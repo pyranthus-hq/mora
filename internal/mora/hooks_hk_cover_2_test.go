@@ -143,10 +143,15 @@ func TestHk_CmdEntitiesListJSON(t *testing.T) {
 	if err := cmdEntities(context.Background(), []string{"--json"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
-	var ents []Entity
-	if err := json.Unmarshal(out.Bytes(), &ents); err != nil {
-		t.Fatalf("--json output is not a JSON entity list: %v\n%s", err, out.String())
+	// Plan 01-04 moved the list under the named `entities` key inside the
+	// receipt envelope so an empty result serializes as [] rather than null.
+	var receipt struct {
+		Entities []Entity `json:"entities"`
 	}
+	if err := json.Unmarshal(out.Bytes(), &receipt); err != nil {
+		t.Fatalf("--json output is not a JSON entity receipt: %v\n%s", err, out.String())
+	}
+	ents := receipt.Entities
 	found := false
 	for _, e := range ents {
 		if e.Kind == "link" && e.Name == "Priya" {

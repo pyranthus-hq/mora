@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -74,6 +75,205 @@ func TestContractLeafCommandsRejectUnknownFlags(t *testing.T) {
 	}
 }
 
+// TestContractMutationJSONReceipts covers the command paths whose --json
+// contract landed in Plan 05: each emits one receipt under the schema name the
+// command registry assigns it, and each keeps its progress prose off stdout.
+func TestContractMutationJSONReceipts(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.md"), []byte("# note\n\nfilesystem receipt seed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, schema, arrayKey string
+		args                   []string
+	}{
+		{name: "connect_filesystem", schema: "mora.connect.filesystem", args: []string{"connect", "filesystem", dir, "--json"}},
+		{name: "sync_filesystem", schema: "mora.sync.filesystem", args: []string{"sync", "filesystem", "--json"}},
+		{name: "ingest_run", schema: "mora.ingest.run", args: []string{"ingest", "run", "--all", "--json"}},
+		{name: "tasks_sync", schema: "mora.tasks.sync", args: []string{"tasks", "sync", "--json"}},
+		{name: "tasks_add", schema: "mora.tasks.add", args: []string{"tasks", "add", "receipt task", "--json"}},
+		{name: "tasks_done", schema: "mora.tasks.done", args: []string{"tasks", "done", "receipt task", "--json"}},
+		{name: "loop_register", schema: "mora.loop.register", args: []string{"loop", "register", "receiptloop", "--json"}},
+		{name: "teach_history", schema: "mora.teach.history", arrayKey: "entries", args: []string{"teach", "history", "--json"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, _, err := runSplit(t, tc.args...)
+			if err != nil {
+				t.Fatalf("%s returned error: %v", tc.name, err)
+			}
+			var receipt map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
+				t.Fatalf("%s stdout is not one JSON receipt: %q: %v", tc.name, stdout, err)
+			}
+			var schema string
+			if err := json.Unmarshal(receipt["schema"], &schema); err != nil || schema != tc.schema {
+				t.Fatalf("%s schema = %q, %v; want %q", tc.name, schema, err, tc.schema)
+			}
+			var version int
+			if err := json.Unmarshal(receipt["schema_version"], &version); err != nil || version != 1 {
+				t.Fatalf("%s schema_version = %d, %v; want 1", tc.name, version, err)
+			}
+			if tc.arrayKey != "" && string(receipt[tc.arrayKey]) == "null" {
+				t.Fatalf("%s %s must be [] rather than null", tc.name, tc.arrayKey)
+			}
+		})
+	}
+}
+
+// TestMergeDecisionJSONReceipts proves the shared merge-decision implementation
+// publishes the schema name the registry assigns to the path that invoked it:
+// `merge confirm` and its `teach identity confirm` alias are one code path with
+// two contracts.
+func TestMergeDecisionJSONReceipts(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	for _, tc := range []struct {
+		name, schema  string
+		args          []string
+		wantDecision  string
+		wantUndoStart string
+	}{
+		{
+			name: "merge_confirm", schema: "mora.merge.confirm", wantDecision: "confirm",
+			args: []string{"merge", "confirm", "--handle", "+14155550111", "--email", "one@example.com", "--yes", "--json"},
+		},
+		{
+			name: "merge_reject", schema: "mora.merge.reject", wantDecision: "reject",
+			args: []string{"merge", "reject", "--handle", "+14155550222", "--email", "two@example.com", "--json"},
+		},
+		{
+			name: "teach_identity_confirm", schema: "mora.teach.identity.confirm", wantDecision: "confirm",
+			args: []string{"teach", "identity", "confirm", "--handle", "+14155550333", "--email", "three@example.com", "--yes", "--json"},
+		},
+		{
+			name: "teach_identity_reject", schema: "mora.teach.identity.reject", wantDecision: "reject",
+			args: []string{"teach", "identity", "reject", "--handle", "+14155550444", "--email", "four@example.com", "--json"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, _, err := runSplit(t, tc.args...)
+			if err != nil {
+				t.Fatalf("%s returned error: %v", tc.name, err)
+			}
+			var receipt struct {
+				Schema        string   `json:"schema"`
+				SchemaVersion int      `json:"schema_version"`
+				Decision      string   `json:"decision"`
+				EntryID       string   `json:"entry_id"`
+				Affected      []string `json:"affected_items"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
+				t.Fatalf("%s stdout is not one JSON receipt: %q: %v", tc.name, stdout, err)
+			}
+			if receipt.Schema != tc.schema || receipt.SchemaVersion != 1 {
+				t.Fatalf("%s envelope = %q v%d; want %q v1", tc.name, receipt.Schema, receipt.SchemaVersion, tc.schema)
+			}
+			if receipt.Decision != tc.wantDecision || receipt.EntryID == "" {
+				t.Fatalf("%s receipt = %+v", tc.name, receipt)
+			}
+			if receipt.Affected == nil {
+				t.Fatalf("%s affected_items must be [] rather than null", tc.name)
+			}
+			if strings.Contains(stdout, "Review before confirming") {
+				t.Fatalf("%s leaked the human review block into the machine stream: %q", tc.name, stdout)
+			}
+		})
+	}
+}
+
+// TestBriefCorrectJSONReceipt checks that a citation correction reports its
+// source-native atoms, the same key the governance ledger stores.
+func TestBriefCorrectJSONReceipt(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	written := run(t, "write", "--title", "cited line", "--text", "attendee attribution seed", "--json")
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(written), &created); err != nil || created.ID == "" {
+		t.Fatalf("seed write receipt = %q, %v", written, err)
+	}
+	stdout, _, err := runSplit(t, "brief", "correct", "--memory-id", created.ID,
+		"--attendee", "sam@example.com", "--confirm", "--json")
+	if err != nil {
+		t.Fatalf("brief correct --json returned error: %v", err)
+	}
+	var receipt struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		Decision      string `json:"decision"`
+		MemoryID      string `json:"memory_id"`
+		AttendeeAtom  string `json:"attendee_atom"`
+		EntryID       string `json:"entry_id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
+		t.Fatalf("brief correct stdout is not one JSON receipt: %q: %v", stdout, err)
+	}
+	if receipt.Schema != "mora.brief.correct" || receipt.SchemaVersion != 1 {
+		t.Fatalf("envelope = %q v%d; want mora.brief.correct v1", receipt.Schema, receipt.SchemaVersion)
+	}
+	if receipt.Decision != "confirm" || receipt.MemoryID != created.ID ||
+		receipt.AttendeeAtom != "sam@example.com" || receipt.EntryID == "" {
+		t.Fatalf("brief correct receipt = %+v", receipt)
+	}
+}
+
+// TestContractDashLedPositionalsAreRefused pins the mutation guard: a bare
+// --json used to land in the positional slot, so `tasks add --json` created a
+// task called "--json" and `loop begin --json` started a run for a loop of that
+// name. A machine caller asking for JSON must never mutate state instead.
+func TestContractDashLedPositionalsAreRefused(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	for _, args := range [][]string{
+		{"tasks", "add", "--json"},
+		{"tasks", "done", "--json"},
+		{"loop", "begin", "--json"},
+		{"loop", "heartbeat", "--json"},
+		{"loop", "done", "--json"},
+		{"loop", "status", "--json"},
+		{"loop", "register", "--json"},
+	} {
+		stdout, _, err := runSplit(t, args...)
+		if err == nil {
+			t.Fatalf("%q accepted a flag as its positional argument", args)
+		}
+		if !strings.Contains(err.Error(), "usage:") {
+			t.Fatalf("%q error = %v; want a usage error", args, err)
+		}
+		if strings.TrimSpace(stdout) != "" {
+			t.Fatalf("%q wrote to stdout on a usage error: %q", args, stdout)
+		}
+	}
+	stdout, _, err := runSplit(t, "tasks", "list", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "--json") {
+		t.Fatalf("a flag was stored as a task name: %q", stdout)
+	}
+	stdout, _, err = runSplit(t, "loop", "list", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "--json") {
+		t.Fatalf("a flag was stored as a loop id: %q", stdout)
+	}
+}
+
+// contractJSONDefectStatus names every baseline classification that means a
+// command path has no usable --json contract: prose instead of a document, an
+// undefined-flag error, a JSON null, or prose with a document appended.
+var contractJSONDefectStatus = map[string]bool{
+	"prose":       true,
+	"flag_error":  true,
+	"parses_null": true,
+	"mixed":       true,
+}
+
 func TestContractStdoutIsPure(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -93,8 +293,11 @@ func TestContractStdoutIsPure(t *testing.T) {
 		statusByPath[row.Path] = row.Status
 	}
 
-	expectedSkips := map[string]bool{}
-	seenSkips := map[string]bool{}
+	// The escape hatch closes here. Plans 03 and 04 skipped whatever the
+	// committed baseline classified as an unfinished contract; every such path
+	// now has one, so a defect classification is a failure rather than a skip.
+	// A new one can only appear by regressing a shipped contract.
+	var defects []string
 	for _, row := range loadCLIRegistry(t).Commands {
 		if row.Platform != "all" || row.JSONContract == "exempt" || contractBaselineNonExecutable[row.Path] != "" {
 			continue
@@ -103,12 +306,14 @@ func TestContractStdoutIsPure(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s has no committed baseline classification", row.Path)
 		}
-		// The measured baseline also has two mixed rows (version and loop begin).
-		// They are not pure JSON yet, so they stay in the same temporary Plan 04/05
-		// exclusion set until their command contracts land.
-		if status == "prose" || status == "flag_error" || status == "mixed" {
-			expectedSkips[row.Path] = true
+		if contractJSONDefectStatus[status] {
+			defects = append(defects, row.Path+" ("+status+")")
 		}
+	}
+	if len(defects) > 0 {
+		sort.Strings(defects)
+		t.Fatalf("committed JSON baseline still classifies %d executable path(s) as an unfinished contract: %s",
+			len(defects), strings.Join(defects, ", "))
 	}
 
 	for _, row := range loadCLIRegistry(t).Commands {
@@ -117,10 +322,6 @@ func TestContractStdoutIsPure(t *testing.T) {
 			continue
 		}
 		t.Run(strings.ReplaceAll(row.Path, " ", "/"), func(t *testing.T) {
-			if expectedSkips[row.Path] {
-				seenSkips[row.Path] = true
-				t.Skipf("%s is a committed %s baseline; Plans 04 and 05 own its JSON contract", row.Path, statusByPath[row.Path])
-			}
 			args := append(strings.Fields(row.Path), "--json")
 			stdout, _, _ := runSplit(t, args...)
 			if trimmed := strings.TrimSpace(stdout); trimmed != "" && !json.Valid([]byte(trimmed)) {
@@ -128,16 +329,34 @@ func TestContractStdoutIsPure(t *testing.T) {
 			}
 		})
 	}
-
-	if diff := setDiff(expectedSkips, seenSkips); diff != "" {
-		t.Fatalf("stdout-purity skip set drift%s", diff)
-	}
 }
 
 func TestContractWriteJSONDegradedIndexKeepsStdoutPure(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	run(t, "write", "--title", "indexed stream seed", "--text", "seed the initial index")
+	healthyStdout, healthyStderr, err := runSplit(t, "write", "--title", "indexed stream seed", "--text", "seed the initial index", "--json")
+	if err != nil {
+		t.Fatalf("healthy write returned error: %v", err)
+	}
+	if healthyStderr != "" {
+		t.Fatalf("healthy write emitted stderr: %q", healthyStderr)
+	}
+	var healthy struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		ID            string `json:"id"`
+		Path          string `json:"path"`
+		Scope         string `json:"scope"`
+		Type          string `json:"type"`
+		Title         string `json:"title"`
+		IndexUpdated  bool   `json:"index_updated"`
+	}
+	if err := json.Unmarshal([]byte(healthyStdout), &healthy); err != nil {
+		t.Fatalf("healthy write stdout is not a receipt: %v", err)
+	}
+	if healthy.Schema != "mora.write" || healthy.SchemaVersion != 1 || healthy.ID == "" || healthy.Path == "" || healthy.Scope == "" || healthy.Type == "" || healthy.Title == "" || !healthy.IndexUpdated {
+		t.Fatalf("healthy write receipt = %+v", healthy)
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +369,16 @@ func TestContractWriteJSONDegradedIndexKeepsStdoutPure(t *testing.T) {
 	}
 	if !json.Valid([]byte(stdout)) {
 		t.Fatalf("degraded write stdout is not valid JSON: %q", stdout)
+	}
+	var degraded struct {
+		Schema       string `json:"schema"`
+		IndexUpdated bool   `json:"index_updated"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &degraded); err != nil {
+		t.Fatalf("degraded write stdout is not a receipt: %v", err)
+	}
+	if degraded.Schema != "mora.write" || degraded.IndexUpdated {
+		t.Fatalf("degraded write receipt = %+v, want index_updated=false", degraded)
 	}
 	const warning = "warning: memory saved but the search index was not updated"
 	if strings.Contains(stdout, warning) {

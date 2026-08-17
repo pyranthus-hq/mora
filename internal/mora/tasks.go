@@ -13,6 +13,40 @@ import (
 	"time"
 )
 
+// The `tasks` mutation receipts. Each mirrors the fact its human line prints,
+// so an agent never has to read English to learn what changed.
+type tasksSyncReceipt struct {
+	Added   int  `json:"added"`
+	Written bool `json:"written"`
+}
+
+type tasksAddReceipt struct {
+	Task    string `json:"task"`
+	Added   bool   `json:"added"`
+	Domain  string `json:"domain"`
+	Owner   string `json:"owner"`
+	Pri     string `json:"pri"`
+	Horizon string `json:"horizon"`
+	Blocker string `json:"blocker"`
+}
+
+type tasksDoneReceipt struct {
+	Task        string `json:"task"`
+	RowsUpdated int    `json:"rows_updated"`
+}
+
+// splitLeadingPositionals cuts an argument list at the first dash-led argument,
+// so a command whose positional may contain spaces can still accept trailing
+// flags without folding them into the positional.
+func splitLeadingPositionals(args []string) (positional, flags []string) {
+	for i, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return args[:i], args[i:]
+		}
+	}
+	return args, nil
+}
+
 func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora tasks <sync [--write] | add <name> [flags] | done <name> | list [--json]>")
@@ -22,8 +56,9 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fs := flag.NewFlagSet("tasks sync", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		write := fs.Bool("write", false, "write")
+		asJSON := fs.Bool("json", false, "json")
 		if err := fs.Parse(args[1:]); err != nil {
-			return err
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 		}
 		cfg, err := loadConfig()
 		if err != nil {
@@ -33,6 +68,9 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		if err != nil {
 			return err
 		}
+		if *asJSON {
+			return emitReceipt(stdout, "mora.tasks.sync", 1, tasksSyncReceipt{Added: added, Written: *write})
+		}
 		fmt.Fprintf(stdout, "tasks added: %d\n", added)
 		return nil
 	case "add":
@@ -40,8 +78,12 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// (`tasks add "<name>" [--pri ...]`). Parsing flags from args[2:] avoids
 		// Go's flag pkg stopping at the first non-flag arg, which would otherwise
 		// fold a trailing `--pri P0` into the name.
-		usage := errors.New("usage: mora tasks add <name> [--pri P1] [--domain ...] [--owner ...] [--horizon ...] [--blocker ...]")
-		if len(args) < 2 {
+		usage := errors.New("usage: mora tasks add <name> [--json] [--pri P1] [--domain ...] [--owner ...] [--horizon ...] [--blocker ...]")
+		// A flag in the name slot is a caller error, never a task name: `mora
+		// tasks add --json` used to create a live task literally called
+		// "--json", so a machine caller asking for JSON silently mutated the
+		// vault. Refuse instead.
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return usage
 		}
 		name := strings.TrimSpace(args[1])
@@ -52,8 +94,9 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		pri := fs.String("pri", "P1", "priority (P0|P1|P2)")
 		horizon := fs.String("horizon", "this week", "horizon")
 		blocker := fs.String("blocker", "None", "blocker")
+		asJSON := fs.Bool("json", false, "json")
 		if err := fs.Parse(args[2:]); err != nil {
-			return err
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 		}
 		if name == "" {
 			return usage
@@ -70,6 +113,12 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		added, err := addTask(cfg, LiveTask{Task: name, Domain: *domain, Owner: *owner, Pri: *pri, Horizon: *horizon, Blocker: *blocker})
 		if err != nil {
 			return err
+		}
+		if *asJSON {
+			return emitReceipt(stdout, "mora.tasks.add", 1, tasksAddReceipt{
+				Task: name, Added: added, Domain: *domain, Owner: *owner,
+				Pri: *pri, Horizon: *horizon, Blocker: *blocker,
+			})
 		}
 		if !added {
 			fmt.Fprintf(stdout, "task exists: %s\n", name)
@@ -106,9 +155,20 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		return nil
 	case "done":
-		name := strings.TrimSpace(strings.Join(args[1:], " "))
+		// The name is every leading positional joined (task names carry spaces),
+		// so flags start at the first dash-led argument. A bare `tasks done
+		// --json` therefore has no name and is a usage error, rather than
+		// closing a task literally called "--json".
+		positional, flagArgs := splitLeadingPositionals(args[1:])
+		fs := flag.NewFlagSet("tasks done", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		asJSON := fs.Bool("json", false, "json")
+		if err := fs.Parse(flagArgs); err != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+		}
+		name := strings.TrimSpace(strings.Join(positional, " "))
 		if name == "" {
-			return errors.New("usage: mora tasks done <name>")
+			return errors.New("usage: mora tasks done <name> [--json]")
 		}
 		cfg, err := loadConfig()
 		if err != nil {
@@ -120,6 +180,9 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		if updated == 0 {
 			return fmt.Errorf("no live task matched %q (it must already be a row in live-tasks.md — run `mora tasks sync --write` to seed P0 items first)", name)
+		}
+		if *asJSON {
+			return emitReceipt(stdout, "mora.tasks.done", 1, tasksDoneReceipt{Task: name, RowsUpdated: updated})
 		}
 		// Task name is the row identity (no task IDs; syncTasks dedups by name).
 		// Surface the count so closing multiple same-named rows is never silent.

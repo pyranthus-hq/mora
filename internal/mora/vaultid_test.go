@@ -860,8 +860,8 @@ func TestWriteDegradesWhenRebuildBlocked(t *testing.T) {
 	cfg := sandboxCfg(t)
 	seedForeignMarker(t, cfg)
 
-	var out bytes.Buffer
-	err := cmdWrite(context.Background(), []string{"--title", "new note", "--text", "do not lose me"}, &out, testStderr)
+	var out, errOut bytes.Buffer
+	err := cmdWrite(context.Background(), []string{"--title", "new note", "--text", "do not lose me"}, &out, &errOut)
 	if err != nil {
 		t.Fatalf("cmdWrite must NOT fail when the rebuild is blocked (the memory is saved): %v", err)
 	}
@@ -879,7 +879,9 @@ func TestWriteDegradesWhenRebuildBlocked(t *testing.T) {
 	if !found {
 		t.Fatalf("the new memory was not persisted to the vault; listMemories=%+v", items)
 	}
-	if !strings.Contains(out.String(), "warning") || !strings.Contains(out.String(), "index") {
-		t.Fatalf("expected a degraded-success warning about the index; got:\n%s", out.String())
+	// The advisory is a diagnostic, not a result: Plan 01-03 moved it to stderr
+	// so the stdout stream stays parseable.
+	if !strings.Contains(errOut.String(), "warning") || !strings.Contains(errOut.String(), "index") {
+		t.Fatalf("expected a degraded-success warning about the index on stderr; got:\n%s", errOut.String())
 	}
 }

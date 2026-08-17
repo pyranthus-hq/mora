@@ -66,12 +66,38 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// so the index reads dirty until a rebuild covers it (A2). Do not retire it.
 		if errors.Is(err, errRebuildBlocked) {
 			fmt.Fprintf(stderr, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
-			return emit(stdout, m, *jsonOut)
+			if *jsonOut {
+				return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, false))
+			}
+			return emit(stdout, m, false)
 		}
 		return err
 	}
 	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
-	return emit(stdout, m, *jsonOut)
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, true))
+	}
+	return emit(stdout, m, false)
+}
+
+type writeReceipt struct {
+	ID           string `json:"id"`
+	Path         string `json:"path"`
+	Scope        string `json:"scope"`
+	Type         string `json:"type"`
+	Title        string `json:"title"`
+	IndexUpdated bool   `json:"index_updated"`
+}
+
+func newWriteReceipt(m Memory, indexUpdated bool) writeReceipt {
+	return writeReceipt{
+		ID:           m.ID,
+		Path:         m.Path,
+		Scope:        m.Scope,
+		Type:         m.Type,
+		Title:        m.Title,
+		IndexUpdated: indexUpdated,
+	}
 }
 func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("read", flag.ContinueOnError)

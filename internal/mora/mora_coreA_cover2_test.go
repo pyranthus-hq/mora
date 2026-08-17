@@ -245,15 +245,17 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 		t.Fatalf("enable applecalendar; got:\n%s", out.String())
 	}
 
-	// gmail (NeedsAuth) non-interactive with NO saved token => prints the
-	// "needs authorization" note, still flips the bit.
+	// gmail (NeedsAuth) non-interactive with NO saved token => notes that it
+	// needs authorization, still flips the bit. Plan 01-03 routed that note to
+	// stderr, so the success line and the advisory land on different streams.
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "gmail", &out, testStderr, stdin); err != nil {
+	var authNote bytes.Buffer
+	if err := enableConnector(context.Background(), cfg, "gmail", &out, &authNote, stdin); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "needs Google authorization") {
-		t.Fatalf("enable gmail (no token, non-TTY) should print the auth note; got:\n%s", out.String())
+	if !strings.Contains(authNote.String(), "needs Google authorization") {
+		t.Fatalf("enable gmail (no token, non-TTY) should note the auth gap on stderr; got:\n%s", authNote.String())
 	}
 
 	// gmail with a SAVED token => reuse branch, no auth prompt.

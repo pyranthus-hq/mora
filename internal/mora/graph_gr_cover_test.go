@@ -252,11 +252,17 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var empty bytes.Buffer
-	if err := cmdGraph(context.Background(), []string{"--top", "bad", "--top"}, &empty, testStderr); err != nil {
+	if err := cmdGraph(context.Background(), nil, &empty, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if got := empty.String(); !strings.Contains(got, "No entity graph yet") {
 		t.Fatalf("empty graph message = %q", got)
+	}
+	// Plan 01-04 gave graph a real flag surface, so a malformed --top is now a
+	// usage error rather than an argument the command silently ignores.
+	var badFlag bytes.Buffer
+	if err := cmdGraph(context.Background(), []string{"--top", "bad"}, &badFlag, testStderr); err == nil {
+		t.Fatalf("malformed --top must be a usage error; got output %q", badFlag.String())
 	}
 
 	blockingFile := filepath.Join(t.TempDir(), "not-a-dir")

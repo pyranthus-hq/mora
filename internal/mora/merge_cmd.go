@@ -43,6 +43,41 @@ func cmdMerge(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 }
 
+// The two schema namespaces `mora merge` publishes under. `mora merge confirm`
+// and its `mora teach identity confirm` alias share one implementation but the
+// command registry assigns each its own payload name, so the alias records its
+// namespace on the context instead of changing handler signatures.
+const (
+	mergeSchemaMerge         = "mora.merge"
+	mergeSchemaTeachIdentity = "mora.teach.identity"
+)
+
+type mergeSchemaNamespaceKey struct{}
+
+func withMergeSchemaNamespace(ctx context.Context, namespace string) context.Context {
+	return context.WithValue(ctx, mergeSchemaNamespaceKey{}, namespace)
+}
+
+func mergeSchemaNamespace(ctx context.Context) string {
+	if namespace, ok := ctx.Value(mergeSchemaNamespaceKey{}).(string); ok && namespace != "" {
+		return namespace
+	}
+	return mergeSchemaMerge
+}
+
+// mergeDecisionReceipt is the machine-readable form of a confirm/reject: the
+// pair decided, the ledger entry that records it, and the evidence the human
+// branch prints. Phase 2 and Phase 3 may add fields; removal needs a bump.
+type mergeDecisionReceipt struct {
+	Decision string          `json:"decision"`
+	Handle   string          `json:"handle"`
+	Email    string          `json:"email"`
+	EntryID  string          `json:"entry_id"`
+	Evidence []mergeEvidence `json:"evidence"`
+	Affected []string        `json:"affected_items"`
+	UndoWith string          `json:"undo_with"`
+}
+
 // pendingMerge is one queue row for JSON/CLI rendering.
 type pendingMerge struct {
 	Name     string          `json:"name"`
@@ -135,8 +170,9 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 	handle := fs.String("handle", "", "iMessage phone handle (e.g. +14155550123)")
 	email := fs.String("email", "", "email address (e.g. person@example.com)")
 	yes := fs.Bool("yes", false, "confirm after reviewing evidence and affected items")
+	jsonOut := fs.Bool("json", false, "emit the decision receipt as JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 	}
 	if *handle == "" || *email == "" {
 		return fmt.Errorf("merge %s requires --handle <phone> and --email <address>", decision)
@@ -156,10 +192,13 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 	if err != nil {
 		return err
 	}
+	review := pendingMerge{Handle: *handle, Email: *email, Evidence: []mergeEvidence{}, Affected: []string{}}
 	if decision == mergeDecisionConfirm {
 		// A confirm is the high-impact path. Always show the exact proposal
 		// evidence and affected memories before any ledger mutation, even when the
-		// caller supplied --yes directly.
+		// caller supplied --yes directly. Under --json the same facts ride the
+		// receipt instead, because the review block is prose and stdout carries
+		// exactly one JSON document.
 		mems, lerr := loadGraphMemories(cfg)
 		if lerr != nil {
 			return lerr
@@ -168,11 +207,14 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 		if perr != nil {
 			return perr
 		}
-		fmt.Fprintf(stdout, "Review before confirming %s <-> %s:\n", pending.Handle, pending.Email)
-		for _, evidence := range pending.Evidence {
-			fmt.Fprintf(stdout, "  %s: %s\n", evidence.Kind, evidence.Detail)
+		review = pending
+		if !*jsonOut {
+			fmt.Fprintf(stdout, "Review before confirming %s <-> %s:\n", pending.Handle, pending.Email)
+			for _, evidence := range pending.Evidence {
+				fmt.Fprintf(stdout, "  %s: %s\n", evidence.Kind, evidence.Detail)
+			}
+			fmt.Fprintf(stdout, "  affected items: %s\n", mergeAffectedLabel(pending.Affected))
 		}
-		fmt.Fprintf(stdout, "  affected items: %s\n", mergeAffectedLabel(pending.Affected))
 		if !*yes {
 			return errors.New("review required; rerun the same command with --yes")
 		}
@@ -201,6 +243,17 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return err
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, mergeSchemaNamespace(ctx)+"."+decision, 1, mergeDecisionReceipt{
+			Decision: decision,
+			Handle:   *handle,
+			Email:    *email,
+			EntryID:  entry.ID,
+			Evidence: review.Evidence,
+			Affected: review.Affected,
+			UndoWith: "mora merge undo " + entry.ID,
+		})
 	}
 	if decision == mergeDecisionConfirm {
 		fmt.Fprintf(stdout, "confirmed: %s and %s are the same person (entry %s)\n", *handle, *email, entry.ID)

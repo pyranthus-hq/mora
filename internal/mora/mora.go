@@ -767,17 +767,23 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 	// persist/notify step (Task 2) so the digest, the dated artifact path, and any
 	// watermark all agree on the logical day (D13-3, determinism).
 	now := briefClock()
-	if *jsonOut {
-		return emitReceipt(stdout, "mora.pulse", 1, struct {
-			Sources []sourceHealth `json:"sources"`
-		}{Sources: sourceHealthAll(cfg, now)})
-	}
 	if *loopID != "" {
 		if err := heartbeatLoopRun(cfg, *loopID, *loopRunID, loopClock()); err != nil {
 			return fmt.Errorf("advancing pulse loop fence: %w", err)
 		}
 		stopHeartbeat := startLoopHeartbeat(cfg, *loopID, *loopRunID)
 		defer stopHeartbeat()
+	}
+	// The machine path reports source health from the SAME captured clock and
+	// returns before any watermark or digest work. It sits below the clock seam
+	// so `now := briefClock()` stays immediately followed by the loop-fence
+	// check — the contiguous `surface/direct-wall-clock` mutation anchor in
+	// scripts/eval/exam-mutation-matrix.sh, and one captured clock per
+	// TestExamSurfaceClockGuard.
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.pulse", 1, struct {
+			Sources []sourceHealth `json:"sources"`
+		}{Sources: sourceHealthAll(cfg, now)})
 	}
 	// pulse-daily producer chokepoint (HEALTH-11): --advance is the scheduled job's
 	// unique watermark-commit surface (D-02) and thus the reliable pulse-daily proxy

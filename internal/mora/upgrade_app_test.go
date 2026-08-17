@@ -271,8 +271,8 @@ func TestCmdUpgradeAppPreservesOldAppWhenRollbackFails(t *testing.T) {
 		return os.Rename(temporary, right)
 	}
 
-	var stdout strings.Builder
-	upgradeErr := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout, testStderr)
+	var stdout, stderr strings.Builder
+	upgradeErr := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout, &stderr)
 	if upgradeErr == nil || !strings.Contains(upgradeErr.Error(), "rollback failed") {
 		t.Fatalf("upgrade error = %v", upgradeErr)
 	}
@@ -286,8 +286,10 @@ func TestCmdUpgradeAppPreservesOldAppWhenRollbackFails(t *testing.T) {
 	recoveryApp := filepath.Join(stages[0], "expanded", moraAppName)
 	assertFileBody(t, filepath.Join(recoveryApp, "marker"), "old")
 	assertFileBody(t, filepath.Join(installed, "marker"), "new")
-	if !strings.Contains(upgradeErr.Error(), recoveryApp) || !strings.Contains(stdout.String(), recoveryApp) {
-		t.Fatalf("recovery path missing: error=%v output=%q", upgradeErr, stdout.String())
+	// Plan 01-03 routed the recovery advisory to stderr; the error still names
+	// the preserved bundle so neither channel can drop it silently.
+	if !strings.Contains(upgradeErr.Error(), recoveryApp) || !strings.Contains(stderr.String(), recoveryApp) {
+		t.Fatalf("recovery path missing: error=%v stderr=%q stdout=%q", upgradeErr, stderr.String(), stdout.String())
 	}
 }
 

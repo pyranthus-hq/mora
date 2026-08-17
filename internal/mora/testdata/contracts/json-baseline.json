@@ -25,7 +25,7 @@
   },
   {
     "path": "brief correct",
-    "status": "flag_error"
+    "status": "empty"
   },
   {
     "path": "capabilities",
@@ -57,7 +57,7 @@
   },
   {
     "path": "connect filesystem",
-    "status": "flag_error"
+    "status": "empty"
   },
   {
     "path": "connect github",
@@ -157,11 +157,11 @@
   },
   {
     "path": "index",
-    "status": "flag_error"
+    "status": "parses"
   },
   {
     "path": "index rebuild",
-    "status": "flag_error"
+    "status": "parses"
   },
   {
     "path": "ingest",
@@ -169,7 +169,7 @@
   },
   {
     "path": "ingest run",
-    "status": "flag_error"
+    "status": "empty"
   },
   {
     "path": "init",
@@ -189,7 +189,7 @@
   },
   {
     "path": "loop begin",
-    "status": "mixed"
+    "status": "empty"
   },
   {
     "path": "loop done",
@@ -205,11 +205,11 @@
   },
   {
     "path": "loop register",
-    "status": "prose"
+    "status": "empty"
   },
   {
     "path": "loop status",
-    "status": "prose"
+    "status": "empty"
   },
   {
     "path": "mcp",
@@ -229,7 +229,7 @@
   },
   {
     "path": "merge confirm",
-    "status": "flag_error"
+    "status": "empty"
   },
   {
     "path": "merge list",
@@ -237,7 +237,7 @@
   },
   {
     "path": "merge reject",
-    "status": "flag_error"
+    "status": "empty"
   },
   {
     "path": "merge undo",
@@ -249,7 +249,7 @@
   },
   {
     "path": "pulse",
-    "status": "flag_error"
+    "status": "parses"
   },
   {
     "path": "read",
@@ -373,7 +373,7 @@
   },
   {
     "path": "sync filesystem",
-    "status": "prose"
+    "status": "parses"
   },
   {
     "path": "sync git",
@@ -393,7 +393,7 @@
   },
   {
     "path": "sync status",
-    "status": "prose"
+    "status": "parses"
   },
   {
     "path": "tasks",
@@ -401,11 +401,11 @@
   },
   {
     "path": "tasks add",
-    "status": "prose"
+    "status": "empty"
   },
   {
     "path": "tasks done",
-    "status": "prose"
+    "status": "empty"
   },
   {
     "path": "tasks list",
@@ -413,7 +413,7 @@
   },
   {
     "path": "tasks sync",
-    "status": "flag_error"
+    "status": "parses"
   },
   {
     "path": "teach",
@@ -445,7 +445,7 @@
   },
   {
     "path": "teach history",
-    "status": "parses_null"
+    "status": "parses"
   },
   {
     "path": "teach identity",
@@ -453,7 +453,7 @@
   },
   {
     "path": "teach identity confirm",
-    "status": "flag_error"
+    "status": "empty"
   },
   {
     "path": "teach identity list",
@@ -461,7 +461,7 @@
   },
   {
     "path": "teach identity reject",
-    "status": "flag_error"
+    "status": "empty"
   },
   {
     "path": "teach identity undo",
@@ -517,7 +517,7 @@
   },
   {
     "path": "version",
-    "status": "mixed"
+    "status": "parses"
   },
   {
     "path": "write",
