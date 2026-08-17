@@ -250,7 +250,7 @@ Three `failed` sources are now distinguishable from one another without reading 
 
 ### Exit codes
 
-Three process exit codes ship, and this taxonomy grandfathered all three rather than moving any of them:
+Three non-zero process exit codes ship, and this taxonomy grandfathered all three rather than moving any of them:
 
 | Exit | Meaning | Produced by |
 |---|---|---|
