@@ -113,7 +113,6 @@ func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (govA
 func directCommitmentRequest(text string) bool {
 	return commitmentpkg.DirectRequest(text) || containsAnyPhrase(text, []string{"please bring", "needs your ", "still needs your "})
 }
-func firstPersonCommitment(text string) bool        { return commitmentpkg.FirstPersonCommitment(text) }
 func userAuthoredPromiseToAnother(text string) bool { return commitmentpkg.ManualPromise(text) }
 func userAuthoredPromiseCounterpartyLabel(text string) string {
 	return commitmentpkg.ManualPromiseCounterpartyLabel(text)
@@ -126,11 +125,7 @@ func commitmentID(messageRef, blockRef string, slot int) string {
 	return commitmentpkg.ID(messageRef, blockRef, slot)
 }
 
-func atomEqual(a, b govAtom) bool {
-	return strings.EqualFold(strings.TrimSpace(a.Provider), strings.TrimSpace(b.Provider)) &&
-		strings.EqualFold(strings.TrimSpace(a.Kind), strings.TrimSpace(b.Kind)) &&
-		strings.EqualFold(strings.TrimSpace(a.Value), strings.TrimSpace(b.Value))
-}
+func atomEqual(a, b govAtom) bool { return commitmentpkg.EqualAtom(a, b) }
 
 func atomPresent(a govAtom) bool {
 	return strings.TrimSpace(a.Kind) != "" && strings.TrimSpace(a.Value) != ""
@@ -141,18 +136,13 @@ func atomPresent(a govAtom) bool {
 // obligation only when the report also names the user as its beneficiary; otherwise
 // the work is between third parties and must be dropped.
 func reportedActorFor(m Memory, text string, counterparty, self govAtom) (*govAtom, bool) {
-	lower := strings.ToLower(oneLine(text))
-	type namedAtom struct {
-		atom govAtom
-		name string
-	}
-	var candidates []namedAtom
+	var candidates []commitmentpkg.NamedActor
 	selfNames := []string{}
 	if isIMessageMemory(m) {
 		for _, pair := range participantPairs(m.Meta["participants"]) {
 			atom := govAtom{Provider: "imessage", Kind: atomHandle, Value: normalizeIdentity(atomHandle, pair["handle"])}
 			if atomEqual(counterparty, atom) {
-				candidates = append(candidates, namedAtom{atom: atom, name: pair["name"]})
+				candidates = append(candidates, commitmentpkg.NamedActor{Atom: atom, Name: pair["name"]})
 			}
 		}
 	}
@@ -170,52 +160,11 @@ func reportedActorFor(m Memory, text string, counterparty, self govAtom) (*govAt
 					selfNames = append(selfNames, names[raw])
 					continue
 				}
-				candidates = append(candidates, namedAtom{atom: atom, name: names[raw]})
+				candidates = append(candidates, commitmentpkg.NamedActor{Atom: atom, Name: names[raw]})
 			}
 		}
 	}
-	var matched []namedAtom
-	for _, candidate := range candidates {
-		fields := strings.Fields(strings.ToLower(strings.TrimSpace(candidate.name)))
-		if len(fields) == 0 {
-			continue
-		}
-		for _, name := range []string{strings.Join(fields, " "), fields[0]} {
-			if strings.Contains(lower, name+" said ") ||
-				strings.Contains(lower, name+" said,") ||
-				strings.Contains(lower, name+" said:") ||
-				strings.Contains(lower, name+" will ") ||
-				strings.Contains(lower, name+"'ll ") {
-				matched = append(matched, candidate)
-				break
-			}
-		}
-	}
-	if len(matched) == 0 {
-		return nil, false
-	}
-	if len(matched) != 1 {
-		return nil, true
-	}
-	actor := matched[0].atom
-	if atomEqual(actor, counterparty) || textNamesPerson(lower, selfNames) {
-		return &actor, true
-	}
-	return nil, true
-}
-
-func textNamesPerson(lower string, names []string) bool {
-	for _, name := range names {
-		fields := strings.Fields(strings.ToLower(strings.TrimSpace(name)))
-		if len(fields) == 0 {
-			continue
-		}
-		if strings.Contains(lower, strings.Join(fields, " ")) ||
-			(len(fields[0]) >= 3 && strings.Contains(lower, fields[0])) {
-			return true
-		}
-	}
-	return false
+	return commitmentpkg.ReportedActor(text, counterparty, self, candidates, selfNames)
 }
 
 func canonicalSelfAtom(cfg Config, preferred string) govAtom {
@@ -598,40 +547,7 @@ func gmailFulfilledQuotedRequest(m Memory, message commitmentMessageEvidence, bo
 // a direct-request opener, and either strong object overlap or an explicit
 // anaphoric acceptance with corroborating object overlap.
 func acceptanceRestatesRequest(existing []Commitment, candidate Commitment) (int, bool) {
-	lower := strings.ToLower(oneLine(candidate.Summary))
-	if !firstPersonCommitment(lower) {
-		return -1, false
-	}
-	anaphoricAcceptance := containsAnyPhrase(lower, []string{
-		"i can take that", "i'll take that", "i will take that",
-		"i can handle that", "i'll handle that", "i will handle that",
-		"i can do that", "i'll do that", "i will do that",
-	})
-	for i := len(existing) - 1; i >= 0; i-- {
-		opener := existing[i]
-		orderedAfter := strictlyAfter(opener.OpenedBy.OccurredAt, candidate.OpenedBy.OccurredAt) ||
-			(opener.OpenedBy.MessageRef == "" && candidate.OpenedBy.MessageRef == "" &&
-				opener.OpenedBy.OccurredAt == candidate.OpenedBy.OccurredAt)
-		sameDueInstance := opener.Due == candidate.Due ||
-			(opener.Due.Kind == commitDueNone && candidate.Due.Kind != "")
-		if opener.OpenedBy.MemoryID != candidate.OpenedBy.MemoryID ||
-			(opener.OpenedBy.MessageRef != "" && opener.OpenedBy.MessageRef == candidate.OpenedBy.MessageRef) ||
-			!orderedAfter ||
-			!directCommitmentRequest(strings.ToLower(oneLine(opener.Summary))) ||
-			!sameDueInstance ||
-			!atomEqual(opener.Owner, candidate.Owner) ||
-			!atomEqual(opener.Counterparty, candidate.Counterparty) ||
-			opener.Direction != candidate.Direction ||
-			opener.State != candidate.State ||
-			opener.ClosureRef != candidate.ClosureRef {
-			continue
-		}
-		overlap := commitmentObjectOverlap(opener.Summary, candidate.Summary)
-		if commitmentDedupCandidate(opener, candidate) || (anaphoricAcceptance && overlap > 0) {
-			return i, true
-		}
-	}
-	return -1, false
+	return commitmentpkg.AcceptanceRestatesRequest(existing, candidate)
 }
 
 func gmailAddressee(sender govAtom, to, cc []string, self, counterparty govAtom) govAtom {
@@ -1117,13 +1033,7 @@ const (
 func commitmentTransition(text string) (string, commitmentTransitionVoice) {
 	return commitmentpkg.Transition(text)
 }
-func strictlyAfter(opened, evidence string) bool {
-	return commitmentpkg.StrictlyAfter(opened, evidence)
-}
 func commitmentObjectOverlap(a, b string) int { return commitmentpkg.ObjectOverlap(a, b) }
-func commitmentDedupCandidate(a, b Commitment) bool {
-	return commitmentpkg.DedupCandidate(a, b)
-}
 func commitmentEvidenceLess(a, b Commitment) bool {
 	return commitmentpkg.EvidenceLess(a, b)
 }
