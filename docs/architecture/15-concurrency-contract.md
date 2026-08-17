@@ -133,7 +133,7 @@ constant-factor win — ~59× at ~1k memories — not asymptotic. The per-write
   blocked by ours.
 - **Identity guard.** `indexUpsert` runs the SAME validate-before-commit
   vault-identity guard as `rebuildIndex` (`assessRebuild`, `vaultid.go`): a write
-  against a vault whose `.mora-vault.json` marker does not match the index rolls
+  against a vault whose `internal/index`-owned `.mora-vault.json` marker does not match the index rolls
   back and returns `errRebuildBlocked` **without touching the index**, so callers
   keep degraded-success semantics (CLI: warn + exit 0; MCP: `index_stale`
   warning, never `isError`) — failing a write that already landed on disk would
