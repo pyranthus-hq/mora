@@ -1,0 +1,527 @@
+{
+  "commands": [
+    {
+      "json_contract": "result",
+      "path": "lint",
+      "payload": "mora.lint.report"
+    }
+  ],
+  "connectors": [
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "name": "Apple Calendar",
+      "needs_auth": false,
+      "type": "applecalendar"
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "name": "Filesystem",
+      "needs_auth": false,
+      "type": "filesystem"
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "name": "GitHub Issues",
+      "needs_auth": false,
+      "type": "github"
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "name": "Gmail",
+      "needs_auth": true,
+      "type": "gmail"
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "name": "Google Calendar",
+      "needs_auth": true,
+      "type": "calendar"
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "name": "iMessage",
+      "needs_auth": false,
+      "type": "imessage"
+    }
+  ],
+  "features": {
+    "deep_link": "unsupported",
+    "repair": "unsupported"
+  },
+  "mcp": {
+    "schemas": [
+      {
+        "name": "mora.mcp.brief",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.context_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.delete_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.digest",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.get_entity",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.list_entities",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.list_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.meeting_prep",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.read_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.search_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.think",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.write_memory",
+        "version": 1
+      }
+    ],
+    "tools": [
+      "brief",
+      "context_memory",
+      "delete_memory",
+      "digest",
+      "get_entity",
+      "list_entities",
+      "list_memory",
+      "meeting_prep",
+      "read_memory",
+      "search_memory",
+      "think",
+      "write_memory"
+    ],
+    "write_policy": "open"
+  },
+  "mora_version": "dev",
+  "schema": "mora.capabilities",
+  "schema_version": 1,
+  "schemas": [
+    {
+      "name": "mora.backup",
+      "version": 1
+    },
+    {
+      "name": "mora.brief",
+      "version": 1
+    },
+    {
+      "name": "mora.brief.correct",
+      "version": 1
+    },
+    {
+      "name": "mora.capabilities",
+      "version": 1
+    },
+    {
+      "name": "mora.config",
+      "version": 1
+    },
+    {
+      "name": "mora.config.context",
+      "version": 1
+    },
+    {
+      "name": "mora.config.embedder",
+      "version": 1
+    },
+    {
+      "name": "mora.config.mcp-write-policy",
+      "version": 1
+    },
+    {
+      "name": "mora.config.mmr",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.filesystem",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.github",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.imessage",
+      "version": 1
+    },
+    {
+      "name": "mora.connectors.disable",
+      "version": 1
+    },
+    {
+      "name": "mora.connectors.enable",
+      "version": 1
+    },
+    {
+      "name": "mora.connectors.list",
+      "version": 1
+    },
+    {
+      "name": "mora.context",
+      "version": 1
+    },
+    {
+      "name": "mora.delete",
+      "version": 1
+    },
+    {
+      "name": "mora.disconnect.google",
+      "version": 1
+    },
+    {
+      "name": "mora.doctor.pulse",
+      "version": 1
+    },
+    {
+      "name": "mora.doctor.report",
+      "version": 1
+    },
+    {
+      "name": "mora.entities",
+      "version": 1
+    },
+    {
+      "name": "mora.forget",
+      "version": 1
+    },
+    {
+      "name": "mora.forget.list",
+      "version": 1
+    },
+    {
+      "name": "mora.graph",
+      "version": 1
+    },
+    {
+      "name": "mora.hook.status",
+      "version": 1
+    },
+    {
+      "name": "mora.index",
+      "version": 1
+    },
+    {
+      "name": "mora.index.rebuild",
+      "version": 1
+    },
+    {
+      "name": "mora.ingest.run",
+      "version": 1
+    },
+    {
+      "name": "mora.lint.report",
+      "version": 1
+    },
+    {
+      "name": "mora.list",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.begin",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.done",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.heartbeat",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.list",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.register",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.status",
+      "version": 1
+    },
+    {
+      "name": "mora.mcp.proposals",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.confirm",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.list",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.reject",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.undo",
+      "version": 1
+    },
+    {
+      "name": "mora.pulse",
+      "version": 1
+    },
+    {
+      "name": "mora.read",
+      "version": 1
+    },
+    {
+      "name": "mora.reingest",
+      "version": 1
+    },
+    {
+      "name": "mora.schedule.list",
+      "version": 1
+    },
+    {
+      "name": "mora.schedule.run",
+      "version": 1
+    },
+    {
+      "name": "mora.search",
+      "version": 1
+    },
+    {
+      "name": "mora.serve.http.install",
+      "version": 1
+    },
+    {
+      "name": "mora.serve.http.status",
+      "version": 1
+    },
+    {
+      "name": "mora.serve.http.uninstall",
+      "version": 1
+    },
+    {
+      "name": "mora.share.fingerprint",
+      "version": 1
+    },
+    {
+      "name": "mora.share.gc",
+      "version": 1
+    },
+    {
+      "name": "mora.share.init",
+      "version": 1
+    },
+    {
+      "name": "mora.share.keygen",
+      "version": 1
+    },
+    {
+      "name": "mora.share.list",
+      "version": 1
+    },
+    {
+      "name": "mora.share.preview",
+      "version": 1
+    },
+    {
+      "name": "mora.share.pull",
+      "version": 1
+    },
+    {
+      "name": "mora.share.push",
+      "version": 1
+    },
+    {
+      "name": "mora.share.remove",
+      "version": 1
+    },
+    {
+      "name": "mora.share.storage-limit",
+      "version": 1
+    },
+    {
+      "name": "mora.share.subscribe",
+      "version": 1
+    },
+    {
+      "name": "mora.sources.add",
+      "version": 1
+    },
+    {
+      "name": "mora.sources.list",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.applecalendar",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.filesystem",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.git",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.github",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.google",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.imessage",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.status",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.add",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.done",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.list",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.sync",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.commitment",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.consent.disable",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.consent.enable",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.consent.status",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.examples",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.history",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.confirm",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.list",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.reject",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.undo",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.memory",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.undo",
+      "version": 1
+    },
+    {
+      "name": "mora.think",
+      "version": 1
+    },
+    {
+      "name": "mora.unforget",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.off",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.on",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.queries.off",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.queries.on",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.report",
+      "version": 1
+    },
+    {
+      "name": "mora.version",
+      "version": 1
+    },
+    {
+      "name": "mora.write",
+      "version": 1
+    }
+  ]
+}

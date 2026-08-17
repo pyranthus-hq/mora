@@ -1,0 +1,10 @@
+{
+  "created_at": "\u003ctimestamp\u003e",
+  "enabled": false,
+  "name": "envelope-fs",
+  "path": ".",
+  "schema": "mora.sources.add",
+  "schema_version": 1,
+  "scope": "personal",
+  "type": "filesystem"
+}

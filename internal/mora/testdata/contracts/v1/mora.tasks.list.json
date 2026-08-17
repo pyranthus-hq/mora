@@ -1,0 +1,16 @@
+{
+  "schema": "mora.tasks.list",
+  "schema_version": 1,
+  "tasks": [
+    {
+      "blocker": "None",
+      "domain": "memory",
+      "horizon": "this week",
+      "last_touched": "\u003cdate\u003e",
+      "owner": "you",
+      "pri": "P1",
+      "status": "queued",
+      "task": "envelope probe task"
+    }
+  ]
+}

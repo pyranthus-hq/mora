@@ -1,0 +1,13 @@
+{
+  "calls_by_tool": {
+    "brief": 1,
+    "think": 1
+  },
+  "empty_result_rate_percent": 100,
+  "latency_p50_millis": 0,
+  "schema": "mora.usage.report",
+  "schema_version": 1,
+  "total_calls": 2,
+  "tracking_disabled": false,
+  "window": "all recorded usage"
+}

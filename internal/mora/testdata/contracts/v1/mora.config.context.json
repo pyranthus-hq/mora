@@ -1,0 +1,6 @@
+{
+  "key": "context",
+  "schema": "mora.config.context",
+  "schema_version": 1,
+  "value": "default"
+}

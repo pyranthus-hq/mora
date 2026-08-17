@@ -1,0 +1,7 @@
+{
+  "decision": "enable",
+  "enabled": true,
+  "entry_id": "\u003cid\u003e",
+  "schema": "mora.teach.consent.enable",
+  "schema_version": 1
+}

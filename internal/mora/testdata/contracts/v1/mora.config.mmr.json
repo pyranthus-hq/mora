@@ -1,0 +1,6 @@
+{
+  "key": "mmr",
+  "schema": "mora.config.mmr",
+  "schema_version": 1,
+  "value": "off"
+}

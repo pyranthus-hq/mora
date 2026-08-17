@@ -1,0 +1,8 @@
+{
+  "config_dir": "\u003chome\u003e/.config/mora",
+  "data_dir": "\u003chome\u003e/.local/share/mora",
+  "schema": "mora.config",
+  "schema_version": 1,
+  "state_dir": "\u003chome\u003e/.local/state/mora",
+  "vault_dir": "\u003chome\u003e/vault/mora"
+}

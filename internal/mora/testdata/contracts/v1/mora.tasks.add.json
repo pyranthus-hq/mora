@@ -1,0 +1,11 @@
+{
+  "added": true,
+  "blocker": "None",
+  "domain": "memory",
+  "horizon": "this week",
+  "owner": "you",
+  "pri": "P1",
+  "schema": "mora.tasks.add",
+  "schema_version": 1,
+  "task": "envelope probe task"
+}

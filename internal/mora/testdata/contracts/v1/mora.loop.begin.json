@@ -1,0 +1,9 @@
+{
+  "attempt": 1,
+  "loop_id": "envelope-loop",
+  "period": "\u003cdate\u003e",
+  "run_id": "\u003cid\u003e",
+  "schema": "mora.loop.begin",
+  "schema_version": 1,
+  "status": "running"
+}

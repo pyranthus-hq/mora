@@ -1,0 +1,90 @@
+{
+  "checks": [
+    {
+      "critical": false,
+      "name": "index_matches_vault",
+      "ok": true
+    },
+    {
+      "critical": false,
+      "name": "share_staging_clean",
+      "ok": true
+    },
+    {
+      "critical": false,
+      "name": "token_dir",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "index_db",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "index_embedder",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "index_fresh",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "share_disjoint_from_vault",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "shares_registry_readable",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "sources_config",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "tokens_disjoint_from_vault",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "vault",
+      "ok": true
+    }
+  ],
+  "git_sync_configured": false,
+  "healthy": true,
+  "index": {
+    "blocked": false,
+    "embedder": {
+      "configured": "static-hash-v1",
+      "dim": 256,
+      "match": true,
+      "model": "static-hash-v1"
+    },
+    "indexed_at": "\u003ctimestamp\u003e",
+    "pending_ops": 0,
+    "projections": {
+      "fts_indexed_at": "\u003ctimestamp\u003e",
+      "graph_indexed_at": "\u003ctimestamp\u003e",
+      "graph_lag_hours": 0,
+      "vectors_indexed_at": "\u003ctimestamp\u003e"
+    },
+    "schema_version": 5,
+    "state": "fresh"
+  },
+  "platform": "darwin",
+  "producers": [],
+  "schema": "mora.doctor.report",
+  "schema_version": 1,
+  "share_publishes": 0,
+  "share_subscriptions": 0,
+  "sources": [],
+  "storage_bytes": 0,
+  "storage_status": "ok",
+  "version": "dev"
+}

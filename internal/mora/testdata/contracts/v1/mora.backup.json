@@ -1,0 +1,7 @@
+{
+  "archive_path": "\u003chome\u003e/.local/state/mora/backups/mora-\u003cstamp\u003e.tar.gz",
+  "bytes": 0,
+  "created_at": "\u003ctimestamp\u003e",
+  "schema": "mora.backup",
+  "schema_version": 1
+}

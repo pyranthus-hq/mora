@@ -1,0 +1,10 @@
+{
+  "arch": "arm64",
+  "built": "unknown",
+  "commit": "none",
+  "go_version": "go1.26.3",
+  "os": "darwin",
+  "schema": "mora.version",
+  "schema_version": 1,
+  "version": "dev"
+}

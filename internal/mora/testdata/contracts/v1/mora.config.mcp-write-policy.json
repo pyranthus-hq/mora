@@ -1,0 +1,6 @@
+{
+  "key": "mcp-write-policy",
+  "schema": "mora.config.mcp-write-policy",
+  "schema_version": 1,
+  "value": "open"
+}
