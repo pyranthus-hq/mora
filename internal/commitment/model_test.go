@@ -28,3 +28,45 @@ func TestRecordJSONContract(t *testing.T) {
 		t.Fatalf("round=%+v", round)
 	}
 }
+
+func TestDeduplicateKeepsSupportingCitation(t *testing.T) {
+	opened, _ := evidence.NewCitation("notes/original", "manual", "manual", "2026-07-20T10:00:00Z")
+	copyCitation, _ := evidence.NewCitation("notes/copy", "manual", "manual", "2026-07-20T10:05:00Z")
+	canonical := Record{ID: ID("notes/original#m1", "body", 0), Owner: Atom{Kind: "address", Value: "self@example.com"}, Counterparty: Atom{Kind: "address", Value: "sam@example.org"}, CounterpartyKeys: []string{"name:sam rivera", "given:sam"}, Direction: OwedBySelf, Summary: "Send Sam the reviewer list", OpenedBy: Span{MemoryID: "notes/original", MessageRef: "notes/original#m1", BlockRef: "body", Quote: "Can you send the reviewer list?", OccurredAt: "2026-07-20T10:00:00Z"}, Due: Due{Kind: DueNone}, State: Open, ClosureRef: ClosureNone, Citations: []Citation{{Citation: opened, Role: CitationOpener}}}
+	copy := canonical
+	copy.ID = ID("notes/copy#m1", "body", 0)
+	copy.OpenedBy.MemoryID = "notes/copy"
+	copy.OpenedBy.MessageRef = "notes/copy#m1"
+	copy.OpenedBy.OccurredAt = "2026-07-20T10:05:00Z"
+	copy.OpenedBy.AncestorRefs = []string{canonical.OpenedBy.MessageRef}
+	copy.Counterparty = Atom{Provider: "imessage", Kind: "handle", Value: "+15550100123"}
+	copy.Citations = []Citation{{Citation: copyCitation, CommitmentID: copy.ID, Role: CitationOpener}}
+	got := Deduplicate([]Record{copy, canonical})
+	if len(got) != 2 {
+		t.Fatalf("len=%d", len(got))
+	}
+	byID := map[string]Record{}
+	for _, record := range got {
+		byID[record.ID] = record
+	}
+	if byID[copy.ID].DuplicateOf != canonical.ID {
+		t.Fatalf("duplicate_of=%q", byID[copy.ID].DuplicateOf)
+	}
+	found := false
+	for _, citation := range byID[canonical.ID].Citations {
+		if citation.Role == CitationSupporting && citation.Citation.MemoryID() == "notes/copy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("citations=%+v", byID[canonical.ID].Citations)
+	}
+	uncited := canonical
+	uncited.ID = ""
+	if got := Unique([]Record{uncited, uncited}); len(got) != 2 {
+		t.Fatalf("unanchored records collapsed: %d", len(got))
+	}
+	if got := Unique([]Record{canonical, canonical}); len(got) != 1 {
+		t.Fatalf("anchored duplicate not collapsed: %d", len(got))
+	}
+}
