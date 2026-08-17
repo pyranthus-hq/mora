@@ -97,7 +97,10 @@ func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		return err
 	}
 	if *jsonOut {
-		return emitReceipt(stdout, "mora.index", 1, struct {
+		// The registry assigns `index rebuild` its own payload name; Plan 01-05
+		// emitted the parent's `mora.index` here, which made one schema name
+		// cover two shapes. The subcommand field is unchanged.
+		return emitReceipt(stdout, "mora.index.rebuild", 1, struct {
 			Subcommand       string `json:"subcommand"`
 			DocumentsIndexed int    `json:"documents_indexed"`
 			DurationMS       int64  `json:"duration_ms"`

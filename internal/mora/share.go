@@ -1498,12 +1498,10 @@ func shareList(cfg Config, args []string, stdout io.Writer) error {
 		subs = append(subs, subRow{Name: s.Name, Remote: redactCredentials(s.Remote), Memories: n, Pulled: ok})
 	}
 	if *jsonOut {
-		b, err := json.MarshalIndent(map[string]any{"publishes": pubs, "subscriptions": subs}, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(stdout, string(b))
-		return nil
+		// Plan 01-07 touches share's OUTPUT ENVELOPE ONLY. No share internal,
+		// no crypto, no manifest handling, and no security property is changed
+		// by this line.
+		return emitReceipt(stdout, "mora.share.list", 1, map[string]any{"publishes": pubs, "subscriptions": subs})
 	}
 	if len(pubs)+len(subs) == 0 {
 		fmt.Fprintln(stdout, "no shares — `mora share init` to publish a scope, `mora share subscribe` to receive one.")
