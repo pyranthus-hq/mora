@@ -35,3 +35,19 @@ func MailboxKey(addr string) string {
 	}
 	return local + "@" + host
 }
+
+func SelfNameTokens(self map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for addr := range self {
+		local, _, found := strings.Cut(addr, "@")
+		if !found {
+			local = addr
+		}
+		for _, part := range strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' || r == '-' || r == '+' }) {
+			if len(part) >= 2 {
+				out[strings.ToLower(part)] = true
+			}
+		}
+	}
+	return out
+}
