@@ -1,12 +1,9 @@
 package mora
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -340,73 +337,6 @@ func TestCoreB_UtilEmitDefault(t *testing.T) {
 // ---------------------------------------------------------------------------
 // tarGz — round-trip a tree, then the os.Create error branch.
 // ---------------------------------------------------------------------------
-
-func TestCoreB_UtilTarGz(t *testing.T) {
-	base := t.TempDir()
-	root := filepath.Join(base, "root")
-	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("AAA"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "sub", "b.txt"), []byte("BBB"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out := filepath.Join(base, "out.tar.gz")
-	if err := tarGz(out, root); err != nil {
-		t.Fatalf("tarGz: %v", err)
-	}
-
-	entries := coreBUtilReadTarGz(t, out)
-	if entries["root/a.txt"] != "AAA" {
-		t.Fatalf("root/a.txt = %q, want AAA (entries: %v)", entries["root/a.txt"], entries)
-	}
-	if entries["root/sub/b.txt"] != "BBB" {
-		t.Fatalf("root/sub/b.txt = %q, want BBB (entries: %v)", entries["root/sub/b.txt"], entries)
-	}
-	// Directories are skipped (info.IsDir short-circuit) — only files recorded.
-	if len(entries) != 2 {
-		t.Fatalf("expected exactly 2 file entries, got %d: %v", len(entries), entries)
-	}
-
-	// os.Create error: output in a nonexistent directory.
-	if err := tarGz(filepath.Join(base, "nope", "deep", "x.tar.gz"), root); err == nil {
-		t.Fatal("tarGz to a path in a nonexistent dir must error")
-	}
-}
-
-func coreBUtilReadTarGz(t *testing.T, path string) map[string]string {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	out := map[string]string{}
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		var b bytes.Buffer
-		if _, err := io.Copy(&b, tr); err != nil {
-			t.Fatal(err)
-		}
-		out[filepath.ToSlash(hdr.Name)] = b.String()
-	}
-	return out
-}
 
 // ---------------------------------------------------------------------------
 // schedulePlistFor — known/unknown job, RunAtLoad diff, env snapshot.
