@@ -1,0 +1,149 @@
+[
+  {
+    "tool": "brief",
+    "ceiling": 20000,
+    "measured": 17804,
+    "headroom_tokens": 2196,
+    "headroom_pct": 10.98
+  },
+  {
+    "tool": "brief_envelope",
+    "ceiling": 20000,
+    "measured": 14554,
+    "headroom_tokens": 5446,
+    "headroom_pct": 27.23
+  },
+  {
+    "tool": "context_default",
+    "ceiling": 12000,
+    "measured": 6389,
+    "headroom_tokens": 5611,
+    "headroom_pct": 46.76
+  },
+  {
+    "tool": "context_max",
+    "ceiling": 12000,
+    "measured": 6389,
+    "headroom_tokens": 5611,
+    "headroom_pct": 46.76
+  },
+  {
+    "tool": "delete_memory",
+    "ceiling": 500,
+    "measured": 126,
+    "headroom_tokens": 374,
+    "headroom_pct": 74.8
+  },
+  {
+    "tool": "digest_default",
+    "ceiling": 20000,
+    "measured": 5342,
+    "headroom_tokens": 14658,
+    "headroom_pct": 73.29
+  },
+  {
+    "tool": "digest_envelope",
+    "ceiling": 20000,
+    "measured": 14554,
+    "headroom_tokens": 5446,
+    "headroom_pct": 27.23
+  },
+  {
+    "tool": "digest_max",
+    "ceiling": 20000,
+    "measured": 17804,
+    "headroom_tokens": 2196,
+    "headroom_pct": 10.98
+  },
+  {
+    "tool": "get_entity_found",
+    "ceiling": 12000,
+    "measured": 5806,
+    "headroom_tokens": 6194,
+    "headroom_pct": 51.62
+  },
+  {
+    "tool": "get_entity_notfound",
+    "ceiling": 12000,
+    "measured": 172,
+    "headroom_tokens": 11828,
+    "headroom_pct": 98.57
+  },
+  {
+    "tool": "get_entity_small",
+    "ceiling": 12000,
+    "measured": 3624,
+    "headroom_tokens": 8376,
+    "headroom_pct": 69.8
+  },
+  {
+    "tool": "list_entities",
+    "ceiling": 8000,
+    "measured": 7618,
+    "headroom_tokens": 382,
+    "headroom_pct": 4.78
+  },
+  {
+    "tool": "list_memory",
+    "ceiling": 10000,
+    "measured": 3226,
+    "headroom_tokens": 6774,
+    "headroom_pct": 67.74
+  },
+  {
+    "tool": "meeting_prep",
+    "ceiling": 12000,
+    "measured": 349,
+    "headroom_tokens": 11651,
+    "headroom_pct": 97.09
+  },
+  {
+    "tool": "read_memory",
+    "ceiling": 4000,
+    "measured": 3507,
+    "headroom_tokens": 493,
+    "headroom_pct": 12.32
+  },
+  {
+    "tool": "search_big",
+    "ceiling": 8000,
+    "measured": 1778,
+    "headroom_tokens": 6222,
+    "headroom_pct": 77.78
+  },
+  {
+    "tool": "search_budget_cap",
+    "ceiling": 8000,
+    "measured": 6280,
+    "headroom_tokens": 1720,
+    "headroom_pct": 21.5
+  },
+  {
+    "tool": "search_default_limit",
+    "ceiling": 8000,
+    "measured": 2733,
+    "headroom_tokens": 5267,
+    "headroom_pct": 65.84
+  },
+  {
+    "tool": "search_memory",
+    "ceiling": 8000,
+    "measured": 1876,
+    "headroom_tokens": 6124,
+    "headroom_pct": 76.55
+  },
+  {
+    "tool": "think",
+    "ceiling": 6000,
+    "measured": 3671,
+    "headroom_tokens": 2329,
+    "headroom_pct": 38.82
+  },
+  {
+    "tool": "write_memory",
+    "ceiling": 1500,
+    "measured": 1300,
+    "headroom_tokens": 200,
+    "headroom_pct": 13.33
+  }
+]
