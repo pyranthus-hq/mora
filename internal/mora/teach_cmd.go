@@ -345,6 +345,9 @@ func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) != 1 {
 		return errors.New("teach undo requires one governance entry id")
 	}
+	if err := refuseDashLedPositional("teach undo", "entry id", args[0]); err != nil {
+		return err
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

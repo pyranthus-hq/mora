@@ -206,6 +206,9 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		return nil
 	}
 	if len(args) == 2 && args[0] == "approve" {
+		if err := refuseDashLedPositional("mcp proposals approve", "proposal id", args[1]); err != nil {
+			return err
+		}
 		proposal, path, err := readMCPWriteProposal(cfg, args[1])
 		if err != nil {
 			return err
@@ -232,6 +235,9 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		return nil
 	}
 	if len(args) == 2 && args[0] == "reject" {
+		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {
+			return err
+		}
 		_, path, err := readMCPWriteProposal(cfg, args[1])
 		if err != nil {
 			return err

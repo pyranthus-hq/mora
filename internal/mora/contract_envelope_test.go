@@ -282,3 +282,75 @@ func contractSchemaNameCovered(literals map[string]bool, payload string) bool {
 	}
 	return false
 }
+
+// contractDashLedPositionalPaths is the SWEEP for the bug class Plans 01-05 and
+// 01-07 each rediscovered: `tasks add --json` created a task named "--json",
+// `loop begin --json` started a run for a loop of that name, and
+// `sources add --json` registered a live source typed and named "--json".
+// Three independent discoveries of ONE defect.
+//
+// This table is every command path that consumes a positional argument. A
+// dash-led token in that slot must be REFUSED — never stored, never used as a
+// lookup key, never mutated on. Plan 01-10's phase-wide matrix should keep this
+// table as the class-closed assertion rather than re-testing three instances.
+var contractDashLedPositionalPaths = [][]string{
+	{"read"}, {"delete"},
+	{"tasks", "add"}, {"tasks", "done"},
+	{"loop", "begin"}, {"loop", "register"}, {"loop", "status"}, {"loop", "done"},
+	{"sources", "add"}, {"connectors", "enable"}, {"connectors", "disable"},
+	{"merge", "undo"}, {"teach", "undo"}, {"teach", "identity", "undo"},
+	{"share", "remove"}, {"share", "storage-limit"}, {"schedule", "run"},
+	{"mcp", "proposals", "approve"}, {"mcp", "proposals", "reject"},
+	{"unforget"},
+}
+
+// contractDashLedQuerySlots are the two paths deliberately NOT in the table
+// above. `search` and `think` take FREE TEXT, and parseSearchArgs treats an
+// unrecognized dash-led token as part of the query rather than as an error — so
+// `mora search foo --limitt 5` silently searches for the literal string instead
+// of reporting the typo. That is the same silent-acceptance family, but it
+// mutates nothing, and changing it would break a legitimate search for a token
+// that starts with a dash. Recorded in .planning deferred-items for 01-10 to
+// decide rather than fixed here.
+var contractDashLedQuerySlots = [][]string{{"search"}, {"think"}}
+
+func TestContractDashLedQuerySlotsAreDocumentedExceptions(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	for _, path := range contractDashLedQuerySlots {
+		name := strings.Join(path, " ")
+		t.Run(name, func(t *testing.T) {
+			args := append(append([]string{}, path...), "--bogus-positional")
+			if _, _, err := runSplit(t, args...); err != nil {
+				t.Fatalf("%s now REFUSES a dash-led query token; move it into "+
+					"contractDashLedPositionalPaths and delete this exception: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestContractDashLedPositionalsAreRefusedEverywhere(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	for _, path := range contractDashLedPositionalPaths {
+		name := strings.Join(path, " ")
+		t.Run(name, func(t *testing.T) {
+			// --yes is harmless where it is not a defined flag; it only matters
+			// that a destructive path is not blocked by its own confirmation
+			// gate BEFORE the positional is examined.
+			args := append(append([]string{}, path...), "--bogus-positional", "--yes")
+			stdout, _, err := runSplit(t, args...)
+			if err == nil {
+				t.Fatalf("%s accepted a dash-led positional instead of refusing it\nstdout: %s", name, stdout)
+			}
+			if strings.Contains(err.Error(), "--bogus-positional") &&
+				!strings.Contains(err.Error(), "is a flag, not the") {
+				// The error QUOTES the dash-led token as if it were a real
+				// value, which is the signature of it having been stored or
+				// used as a lookup key.
+				t.Fatalf("%s treated a dash-led token as a value: %v", name, err)
+			}
+		})
+	}
+}

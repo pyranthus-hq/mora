@@ -291,6 +291,9 @@ func mergeUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) != 1 {
 		return errors.New("merge undo requires one governance entry id (see `mora merge list`)")
 	}
+	if err := refuseDashLedPositional("merge undo", "entry id", args[0]); err != nil {
+		return err
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
