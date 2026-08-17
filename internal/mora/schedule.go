@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/google"
 )
@@ -301,7 +302,7 @@ func scheduledEntries(cfg Config) ([]scheduleListEntry, error) {
 	}
 	for _, job := range jobs {
 		entries = append(entries, scheduleListEntry{
-			Name: job, Cadence: scheduleCadence(job), NextRun: "", Installed: installed[job],
+			Name: job, Cadence: scheduleCadence(job), NextRun: nextScheduleRun(job, producerClock()), Installed: installed[job],
 		})
 	}
 	return entries, nil
@@ -313,13 +314,45 @@ func scheduleCadence(job string) string {
 		return "hourly"
 	case "pulse-daily":
 		return "daily at 08:00"
-	case "backup-daily", "git-daily":
-		return "daily"
+	case "doctor-pulse":
+		return "daily at 09:00"
+	case "backup-daily":
+		return "daily at 02:00"
+	case "git-daily":
+		return "daily at 03:00"
 	case "lint-weekly":
 		return "weekly"
 	default:
 		return "unknown"
 	}
+}
+
+func nextScheduleRun(job string, now time.Time) string {
+	local := now.Local()
+	if job == "index-hourly" || job == "ingest-hourly" {
+		return local.Truncate(time.Hour).Add(time.Hour).Format(time.RFC3339)
+	}
+	hour := 8
+	weekday := -1
+	switch job {
+	case "doctor-pulse":
+		hour = 9
+	case "backup-daily":
+		hour = 2
+	case "git-daily":
+		hour = 3
+	case "lint-weekly":
+		hour, weekday = 9, int(time.Sunday)
+	}
+	next := time.Date(local.Year(), local.Month(), local.Day(), hour, 0, 0, 0, local.Location())
+	if weekday >= 0 {
+		for int(next.Weekday()) != weekday || !next.After(local) {
+			next = next.AddDate(0, 0, 1)
+		}
+	} else if !next.After(local) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next.Format(time.RFC3339)
 }
 func uninstallSchedule(stdout io.Writer, cfg Config, job string) error {
 	if _, ok := scheduleCommands[job]; !ok {
