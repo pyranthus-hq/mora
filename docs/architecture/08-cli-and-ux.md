@@ -171,6 +171,48 @@ sequenceDiagram
     end
 ```
 
+### The versioned JSON envelope (CON-01)
+
+Every machine payload Mora prints carries two keys:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `schema` | string | The payload's published name, e.g. `mora.doctor.report`. It equals the `payload` value the command registry assigns that path. |
+| `schema_version` | integer | A MAJOR-only version. It starts at 1. |
+
+`emitReceipt(w, schema, version, payload)` (`receipt.go`) is the single writer. It **merges** the two
+keys into the payload object rather than wrapping it, so every field a payload published before keeps
+its name, its type, and its top-level position.
+
+**Versioning rule — the whole point of MAJOR-only:**
+
+- **Adding a field is MINOR.** It does not bump `schema_version`. Phase 3's repair fields and Phase
+  7's freshness fields land on `doctor`'s report this way.
+- **Removing a field, renaming one, or changing its type is BREAKING** and requires a
+  `schema_version` bump plus a release note.
+- A consumer should read the fields it knows and ignore the rest. A payload gaining keys is normal.
+
+**Bare arrays.** A top-level JSON array cannot carry the envelope, so a command that printed one now
+prints an object with the array under a named key (`memories`, `tasks`, `loops`, `pending`,
+`connectors`, `examples`, `entries`, `sources`). That is the one breaking shape change the envelope
+forces; every such move is listed in `docs/guide.md`.
+
+**Exempt paths.** A registry row marked `json_contract: "exempt"` carries a `reason` and emits no
+document. Two families are exempt: **dispatch-only groups** (`mora share`, `mora teach`, `mora loop`
+…), where a bare invocation is a usage error and this codebase holds that *a usage error is not a
+result*; and the **Claude Code hook handlers** (`hook session-start`, `hook recall`), whose stdout is
+Claude Code's own `hookSpecificOutput` envelope rather than a Mora payload.
+
+**MCP tool results deliberately carry NO envelope.** The T0 budget gate measured `write_memory`'s
+worst-case row at 1,470 of 1,500 tokens, and the envelope costs a measured +30 tokens per object
+payload (two keys, paid twice: the indented text block plus the `structuredContent` mirror). Adding
+it would leave zero headroom on the gate whose purpose is to be the forcing function. MCP schema
+names and versions are published through `mora capabilities` (`capabilities.mcp.schemas`) instead.
+
+`TestContractEveryPayloadIsVersioned` (`contract_envelope_test.go`) proves the coverage from the
+registry: it drives every executable non-exempt row and asserts `schema` equals the registry's
+`payload`, and it fails if executed + shape-only rows do not add up to the non-exempt row count.
+
 ### The banner
 
 `printBanner(w)` (`banner.go:80`) renders the "Apocrypha eye" + `M O R A` wordmark **once**, at the top of `runSetupMenu` (`setup.go`). It is pure decoration with three independent suppressors: non-`*os.File` or non-TTY writer → prints nothing (`banner.go:82`); `MORA_NO_BANNER` set → prints nothing (`banner.go:85`). Color further gated by `bannerColor` (its own NO_COLOR/dumb/isatty check, `banner.go:69`). The raw art reads as an eye in monochrome, so NO_COLOR terminals still get the art. Only pipes/CI/`--json` get nothing. The trailing whitespace on each art line is **intentional and load-bearing** (37-column rows for centering) and the lines are backtick literals precisely so gofmt cannot strip it (`banner.go:18`).

@@ -504,6 +504,35 @@ mora context --query "auth" --scope project:acme --budget 6000 --json
 mora think "What did Sam decide about pricing?" --json
 ```
 
+Every one of these emits a document with `schema` and `schema_version`:
+`mora.read`, `mora.list`, `mora.search`, `mora.context`, and `mora.think`, all
+v1. `mora delete <id> --yes --json` emits `mora.delete` v1.
+
+**Shape change in this release.** `search --json` and `list --json` used to
+print a bare JSON array. An array cannot carry the schema envelope, so the rows
+now sit under a `memories` key:
+
+```json
+{ "schema": "mora.search", "schema_version": 1, "memories": [ … ] }
+```
+
+The same move applies to every command that printed a bare array. Old shape →
+new shape:
+
+| Command | Was | Now |
+|---|---|---|
+| `search --json`, `list --json` | `[ … ]` | `{ "memories": [ … ] }` |
+| `tasks list --json` | `[ … ]` | `{ "tasks": [ … ] }` |
+| `loop list --json` | `[ … ]` | `{ "loops": [ … ] }` |
+| `merge list --json`, `teach identity list --json` | `[ … ]` | `{ "pending": [ … ] }` |
+| `connectors list --json` | `[ … ]` | `{ "connectors": [ … ] }` |
+| `teach examples --json` | `[ … ]` | `{ "examples": [ … ] }` |
+| `teach history --json` | `[ … ]` | `{ "entries": [ … ] }` |
+
+Adding a field to any payload is a minor change and never bumps
+`schema_version`; removing or renaming one is breaking and does. Read the fields
+you know and ignore the rest.
+
 `mora think` makes no model call. It returns cited evidence, coverage gaps, and
 a prompt that your agent can use. A result may include
 `later_related_evidence`. This means a newer, strongly related record exists.
@@ -563,6 +592,21 @@ backup state, and configured shares. On macOS it also tests protected reads.
 `--strict` exits with an error when a critical check fails. `--pulse` checks
 freshness and can show a native alert on macOS.
 
+`mora doctor --json` emits the `mora.doctor.report` v1 receipt — the same report
+it always printed, now with `schema` and `schema_version` beside its existing
+fields. `mora doctor --pulse --json` emits `mora.doctor.pulse` v1. Neither
+command's exit status changed: `--pulse` still exits 2 on an unhealthy report
+and `--strict` still exits 1.
+
+Every other machine surface carries the same envelope, including
+`mora config --json`, `mora config <key> <value> --json`, the `forget`/`unforget`
+receipts, the `teach` verbs, `mora share <verb> --json`, `mora connectors
+enable|disable --json`, `mora mcp proposals … --json`, and `mora serve http
+status --json`. `mora capabilities --json` lists every published schema name in
+its `schemas` array, and its `mcp.schemas` section carries the MCP tool payload
+versions — MCP tool results themselves stay unversioned so they do not grow
+against the per-call token ceiling.
+
 For agent-facing status checks, `mora version --json` (also `mora --version
 --json` and `mora -v --json`) emits the `mora.version` v1 receipt with the
 stamped version, commit, build time, Go version, OS, and architecture. `mora
@@ -571,8 +615,8 @@ same per-source freshness facts used by Mora's health reporting. Both receipts
 include top-level `schema` and `schema_version` fields.
 
 `mora index --json` reports the current `mora.index` v1 status receipt; `mora
-index rebuild --json` also reports the rebuild subcommand, indexed document
-count, duration, and resulting index state. `mora sync status --json` emits a
+index rebuild --json` emits its own `mora.index.rebuild` v1 receipt with the
+rebuild subcommand, indexed document count, duration, and resulting index state. `mora sync status --json` emits a
 `mora.sync.status` v1 receipt with a deterministic `sources` array. Each source
 has its state (`fresh`, `stale`, `failed`, or `never`), success and attempt
 timestamps, item and error counts, and the free-text `last_error`; a future
