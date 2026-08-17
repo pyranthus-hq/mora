@@ -140,7 +140,8 @@ func mergeList(ctx context.Context, args []string, stdout io.Writer) error {
 	})
 
 	if jsonOut {
-		return emit(stdout, pending, true)
+		// Plan 01-07: the bare array moves under `pending`.
+		return emitReceipt(stdout, mergeSchemaNamespace(ctx)+".list", 1, mergeListPayload{Pending: pending})
 	}
 	if len(pending) == 0 {
 		fmt.Fprintln(stdout, "no pending email<->phone merges")
@@ -264,8 +265,29 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 	return nil
 }
 
+// mergeListPayload carries the pending merge candidates under a named key.
+type mergeListPayload struct {
+	Pending []pendingMerge `json:"pending"`
+}
+
+// mergeUndoReceipt is the machine form of a revoked merge decision.
+type mergeUndoReceipt struct {
+	EntryID string `json:"entry_id"`
+	Revoked bool   `json:"revoked"`
+}
+
 // mergeUndo revokes a prior merge_confirm entry and rebuilds so the graph reverts.
 func mergeUndo(ctx context.Context, args []string, stdout io.Writer) error {
+	jsonOut := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	args = rest
 	if len(args) != 1 {
 		return errors.New("merge undo requires one governance entry id (see `mora merge list`)")
 	}
@@ -291,6 +313,9 @@ func mergeUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return err
+	}
+	if jsonOut {
+		return emitReceipt(stdout, mergeSchemaNamespace(ctx)+".undo", 1, mergeUndoReceipt{EntryID: args[0], Revoked: true})
 	}
 	fmt.Fprintf(stdout, "undid merge decision %s\n", args[0])
 	return nil

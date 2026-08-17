@@ -727,8 +727,11 @@ func TestCLIRegistryLoopLifecycleThroughRun(t *testing.T) {
 	if err := Run(context.Background(), []string{"loop", "list", "--json"}, &listOut, &listOut, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
-	var registrations []map[string]any
-	if err := json.Unmarshal(listOut.Bytes(), &registrations); err != nil || len(registrations) != 1 {
+	// Plan 01-07: `loop list --json` carries its array under `loops`.
+	var listDoc struct {
+		Loops []map[string]any `json:"loops"`
+	}
+	if err := json.Unmarshal(listOut.Bytes(), &listDoc); err != nil || len(listDoc.Loops) != 1 {
 		t.Fatalf("loop list JSON = %q, decode=%v", listOut.String(), err)
 	}
 

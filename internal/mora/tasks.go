@@ -2,7 +2,6 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -169,12 +168,11 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 		if *asJSON {
-			b, err := json.Marshal(tasks)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(stdout, string(b))
-			return nil
+			// Plan 01-07: the bare array moves under `tasks` so the payload can
+			// carry the schema envelope.
+			out := make([]LiveTask, 0, len(tasks))
+			out = append(out, tasks...)
+			return emitReceipt(stdout, "mora.tasks.list", 1, tasksListPayload{Tasks: out})
 		}
 		printHealthBannerLine(stdout, cfg, time.Now())
 		for _, lt := range tasks {
@@ -347,6 +345,11 @@ func markTaskDone(cfg Config, name string) (int, error) {
 		return 0, err
 	}
 	return updated, nil
+}
+
+// tasksListPayload carries the live task rows under a named key.
+type tasksListPayload struct {
+	Tasks []LiveTask `json:"tasks"`
 }
 
 // listTasks parses live-tasks.md into rows (header/separator lines skipped).

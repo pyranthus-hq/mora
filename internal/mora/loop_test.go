@@ -670,7 +670,7 @@ func TestLoopDone_OkWritesJournalAndFlipsStatus(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	out.Reset()
-	if err := loopDone(cfg, "daily-brief", "", true, "", loopNow, &out); err != nil {
+	if err := loopDone(cfg, "daily-brief", "", true, "", false, loopNow, &out); err != nil {
 		t.Fatalf("done ok: %v", err)
 	}
 	rec, ok := loadRunRecord(cfg, "daily-brief")
@@ -707,7 +707,7 @@ func TestLoopDone_FailKeepsRetryable(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	out.Reset()
-	if err := loopDone(cfg, "daily-brief", "", false, "sync: token expired", loopNow, &out); err != nil {
+	if err := loopDone(cfg, "daily-brief", "", false, "sync: token expired", false, loopNow, &out); err != nil {
 		t.Fatalf("done fail: %v", err)
 	}
 	rec, _ := loadRunRecord(cfg, "daily-brief")
@@ -741,12 +741,12 @@ func TestLoopDoneRejectsDuplicateTerminalTransition(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	rec, _ := loadRunRecord(cfg, "daily-brief")
-	if err := loopDone(cfg, "daily-brief", rec.RunID, true, "", loopNow, &out); err != nil {
+	if err := loopDone(cfg, "daily-brief", rec.RunID, true, "", false, loopNow, &out); err != nil {
 		t.Fatalf("first done: %v", err)
 	}
 	journalBefore := readJournal(t, cfg, "daily-brief")
 
-	err := loopDone(cfg, "daily-brief", rec.RunID, false, "late failure", loopNow.Add(time.Minute), &out)
+	err := loopDone(cfg, "daily-brief", rec.RunID, false, "late failure", false, loopNow.Add(time.Minute), &out)
 	if err == nil || !strings.Contains(err.Error(), "already terminal") {
 		t.Fatalf("duplicate done error = %v, want already-terminal refusal", err)
 	}
@@ -974,7 +974,7 @@ func TestLoopEffectIntentClosesPostEffectCrashWindow(t *testing.T) {
 		if err := withLoopRunEffect(cfg, "daily-brief", rec.RunID, func() error { return nil }); err == nil {
 			t.Fatal("checkpoint interruption unexpectedly succeeded")
 		}
-		if err := loopDone(cfg, "daily-brief", rec.RunID, false, "checkpoint interrupted", effectAt, &out); err != nil {
+		if err := loopDone(cfg, "daily-brief", rec.RunID, false, "checkpoint interrupted", false, effectAt, &out); err != nil {
 			t.Fatalf("record failed wrapper outcome: %v", err)
 		}
 		out.Reset()
@@ -1071,7 +1071,7 @@ func TestLoopEffectEvidenceStaysDurableThroughHeartbeatAndDone(t *testing.T) {
 	}
 
 	*trace = nil
-	if err := loopDone(cfg, "daily-brief", rec.RunID, true, "", loopNow.Add(3*time.Minute), &out); err != nil {
+	if err := loopDone(cfg, "daily-brief", rec.RunID, true, "", false, loopNow.Add(3*time.Minute), &out); err != nil {
 		t.Fatalf("post-effect done: %v", err)
 	}
 	if got := strings.Join(*trace, ","); got != "fsync,dirsync" {
@@ -1272,7 +1272,7 @@ func TestLoopDoneOKRejectsUncommittedStartedEffect(t *testing.T) {
 	if err := saveRunRecord(cfg, rec, loopNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	err := loopDone(cfg, "daily-brief", rec.RunID, true, "", loopNow.Add(2*time.Minute), &out)
+	err := loopDone(cfg, "daily-brief", rec.RunID, true, "", false, loopNow.Add(2*time.Minute), &out)
 	if err == nil || !strings.Contains(err.Error(), "uncertain non-idempotent effect") {
 		t.Fatalf("done --ok over started-only effect = %v, want refusal", err)
 	}
@@ -1309,7 +1309,7 @@ func TestLoopDone_OkArchivesImmutableRunCopy(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	rec, _ := loadRunRecord(cfg, "daily-brief")
-	if err := loopDone(cfg, "daily-brief", "", true, "", loopNow, &out); err != nil {
+	if err := loopDone(cfg, "daily-brief", "", true, "", false, loopNow, &out); err != nil {
 		t.Fatalf("done ok: %v", err)
 	}
 	if _, err := os.Stat(loopRunArchivePath(cfg, "daily-brief", rec.Period, rec.RunID)); err != nil {
@@ -1328,7 +1328,7 @@ func TestLoopDone_SupersededRunRefused(t *testing.T) {
 	})
 	var out bytes.Buffer
 	// An abandoned run_R1 tries to close late.
-	err := loopDone(cfg, "daily-brief", "run_R1", true, "", loopNow, &out)
+	err := loopDone(cfg, "daily-brief", "run_R1", true, "", false, loopNow, &out)
 	if err == nil || !strings.Contains(err.Error(), "superseded") {
 		t.Fatalf("late done from superseded run: err=%v, want a 'superseded' refusal", err)
 	}
@@ -1350,7 +1350,7 @@ func TestLoopDone_RefusesWhenLeaseMovedToNewerRun(t *testing.T) {
 	// ...but the LEASE is already held by run_R2.
 	plantLock(t, cfg, "daily-brief", "run_R2", os.Getpid(), loopNow)
 	var out bytes.Buffer
-	err := loopDone(cfg, "daily-brief", "run_R1", true, "", loopNow, &out)
+	err := loopDone(cfg, "daily-brief", "run_R1", true, "", false, loopNow, &out)
 	if err == nil || !strings.Contains(err.Error(), "lease") {
 		t.Fatalf("done while lease moved to a newer run: err=%v, want a 'lease' refusal", err)
 	}
@@ -1608,7 +1608,9 @@ func TestLoopHeartbeatCommandDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop heartbeat: %v\n%s", err, heartbeatOut)
 	}
-	var heartbeat map[string]string
+	// Plan 01-07: the receipt carries schema_version as a number, so the
+	// document no longer decodes into map[string]string.
+	var heartbeat map[string]any
 	if err := json.Unmarshal([]byte(heartbeatOut), &heartbeat); err != nil {
 		t.Fatalf("heartbeat JSON: %v\n%s", err, heartbeatOut)
 	}

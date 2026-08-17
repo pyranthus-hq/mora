@@ -705,15 +705,13 @@ func loopAllowedLag(cadence string) time.Duration {
 // output helper
 // ---------------------------------------------------------------------------
 
-// loopEmit prints JSON (any payload) under --json, else a tailored human line.
-func loopEmit(stdout io.Writer, jsonOut bool, payload any, humanLine string) error {
+// loopEmit prints the versioned JSON receipt under --json, else a tailored
+// human line. Plan 01-07: the schema name is the registry payload for the loop
+// subcommand that is emitting, so a caller can tell begin from heartbeat from
+// status without inspecting field sets.
+func loopEmit(stdout io.Writer, jsonOut bool, schema string, payload any, humanLine string) error {
 	if jsonOut {
-		b, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(stdout, string(b))
-		return nil
+		return emitReceipt(stdout, schema, 1, payload)
 	}
 	fmt.Fprintln(stdout, humanLine)
 	return nil
@@ -744,7 +742,8 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 		if reason == "effect-already-committed" {
 			humanReason = "already committed its effect"
 		}
-		_ = loopEmit(stdout, jsonOut, payload,
+		// The skip document still ships; only then does the exit-10 skip return.
+		_ = loopEmit(stdout, jsonOut, "mora.loop.begin", payload,
 			fmt.Sprintf("loop %q %s for %s — nothing to do", id, humanReason, period))
 		return exitCodeError{code: loopSkipExitCode} // empty msg => no stderr noise, exit 10
 	}
@@ -835,7 +834,7 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 	}
 	// SUCCESS: keep the lease (loopDone releases by path across the process gap).
 	payload := map[string]any{"loop_id": id, "run_id": rec.RunID, "period": period, "attempt": attempt, "status": string(loopRunRunning)}
-	return loopEmit(stdout, jsonOut, payload,
+	return loopEmit(stdout, jsonOut, "mora.loop.begin", payload,
 		fmt.Sprintf("loop %q begun: run %s, period %s, attempt %d", id, rec.RunID, period, attempt))
 }
 
@@ -851,7 +850,7 @@ func loopBegin(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wri
 // refuses, so a late done from an abandoned run can never clobber a live run's
 // record or steal its lock. An empty runID closes whatever run is current
 // (manual/legacy use).
-func loopDone(cfg Config, id, runID string, ok bool, failReason string, now time.Time, stdout io.Writer) error {
+func loopDone(cfg Config, id, runID string, ok bool, failReason string, jsonOut bool, now time.Time, stdout io.Writer) error {
 	if !validLoopID(id) {
 		return fmt.Errorf("invalid loop id %q", id)
 	}
@@ -925,8 +924,24 @@ func loopDone(cfg Config, id, runID string, ok bool, failReason string, now time
 		return err
 	}
 
-	fmt.Fprintf(stdout, "loop %q done: %s (run %s)\n", id, completed.Status, completed.RunID)
-	return nil
+	return loopEmit(stdout, jsonOut, "mora.loop.done", loopDoneReceipt{
+		LoopID: id, RunID: completed.RunID, Period: completed.Period,
+		Status: string(completed.Status), LastError: completed.LastError,
+	}, fmt.Sprintf("loop %q done: %s (run %s)", id, completed.Status, completed.RunID))
+}
+
+// loopDoneReceipt is the machine form of a closed run.
+type loopDoneReceipt struct {
+	LoopID    string `json:"loop_id"`
+	RunID     string `json:"run_id"`
+	Period    string `json:"period"`
+	Status    string `json:"status"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+// loopListPayload carries the registered loops under a named key.
+type loopListPayload struct {
+	Loops []loopHealth `json:"loops"`
 }
 
 // heartbeatLoopRun refreshes one active run's durable liveness evidence. The
@@ -1134,7 +1149,7 @@ func loopHeartbeat(cfg Config, id, runID string, jsonOut bool, now time.Time, st
 		"loop_id": id, "run_id": runID, "status": string(loopRunRunning),
 		"heartbeat_at": now.UTC().Format(time.RFC3339),
 	}
-	return loopEmit(stdout, jsonOut, payload,
+	return loopEmit(stdout, jsonOut, "mora.loop.heartbeat", payload,
 		fmt.Sprintf("loop %q heartbeat: run %s", id, runID))
 }
 
@@ -1347,7 +1362,7 @@ func loopStatus(cfg Config, id string, jsonOut bool, now time.Time, stdout io.Wr
 	}
 	rec, ok := loadRunRecord(cfg, id)
 	h := classifyLoopHealth(registration, rec, ok, now)
-	return loopEmit(stdout, jsonOut, h, fmt.Sprintf("%s: %s — %s", h.LoopID, h.State, h.Message))
+	return loopEmit(stdout, jsonOut, "mora.loop.status", h, fmt.Sprintf("%s: %s — %s", h.LoopID, h.State, h.Message))
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,7 +1420,9 @@ func loopList(cfg Config, jsonOut bool, now time.Time, stdout io.Writer) error {
 		items = append(items, classifyLoopHealth(r, rec, ok, now))
 	}
 	if jsonOut {
-		return loopEmit(stdout, true, items, "")
+		// Plan 01-07: the bare array moves under `loops` so the payload is an
+		// object that can carry the envelope.
+		return loopEmit(stdout, true, "mora.loop.list", loopListPayload{Loops: items}, "")
 	}
 	if len(items) == 0 {
 		fmt.Fprintln(stdout, "no loops registered")
@@ -1476,6 +1493,7 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return errors.New(`usage: mora loop done <id> (--ok | --fail "reason")`)
 		}
 		fs := newFS("done")
+		jsonOut := fs.Bool("json", false, "json output")
 		okFlag := fs.Bool("ok", false, "mark the run succeeded")
 		failReason := fs.String("fail", "", "mark the run failed with a short reason")
 		runID := fs.String("run", "", "the run id from `loop begin` (guards against closing a superseded run)")
@@ -1488,7 +1506,7 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		if *okFlag && *failReason != "" {
 			return errors.New("mora loop done: pass --ok OR --fail, not both")
 		}
-		return loopDone(cfg, id, *runID, *okFlag, *failReason, now, stdout)
+		return loopDone(cfg, id, *runID, *okFlag, *failReason, *jsonOut, now, stdout)
 
 	case "status":
 		id, flagArgs, ok := loopPositionalID(rest)

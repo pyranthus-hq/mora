@@ -84,10 +84,10 @@ func runScheduledPulseDaily(ctx context.Context, cfg Config, stdout, stderr io.W
 		"--loop", loopID, "--loop-run", rec.RunID,
 	}
 	if err := cmdPulse(ctx, pulseArgs, stdout, stderr); err != nil {
-		closeErr := loopDone(cfg, loopID, rec.RunID, false, err.Error(), loopClock(), stdout)
+		closeErr := loopDone(cfg, loopID, rec.RunID, false, err.Error(), false, loopClock(), stdout)
 		return errors.Join(fmt.Errorf("scheduled pulse: %w", err), closeErr)
 	}
-	if err := loopDone(cfg, loopID, rec.RunID, true, "", loopClock(), stdout); err != nil {
+	if err := loopDone(cfg, loopID, rec.RunID, true, "", false, loopClock(), stdout); err != nil {
 		return fmt.Errorf("scheduled pulse completion: %w", err)
 	}
 	return nil
