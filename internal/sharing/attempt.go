@@ -43,6 +43,7 @@ type AttemptStore struct {
 	ClaimExclusive func(string, string) error
 	RenameClaim    func(string, string) error
 	Now            func() time.Time
+	ReadDir        func(string) ([]os.DirEntry, error)
 }
 
 func (s AttemptStore) root(name string) string { return SubscriptionRoot(s.DataDir, name) }
@@ -86,7 +87,11 @@ func (s AttemptStore) now() time.Time {
 
 func (s AttemptStore) ClaimPaths(name string) ([]string, error) {
 	dir := s.root(name)
-	entries, err := os.ReadDir(dir)
+	readDir := os.ReadDir
+	if s.ReadDir != nil {
+		readDir = s.ReadDir
+	}
+	entries, err := readDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

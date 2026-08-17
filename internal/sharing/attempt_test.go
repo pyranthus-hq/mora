@@ -213,22 +213,16 @@ func TestAttemptStoreStaleCompleterCannotReplaceSuccessor(t *testing.T) {
 }
 
 func TestAttemptStoreFilesystemAndRecoveryErrors(t *testing.T) {
-	bad := AttemptStore{DataDir: t.TempDir()}
-	badRoot := bad.root("x")
-	if err := os.MkdirAll(filepath.Dir(badRoot), 0700); err != nil {
+	readErr := errors.New("readdir")
+	bad := AttemptStore{DataDir: t.TempDir(), ReadDir: func(string) ([]os.DirEntry, error) { return nil, readErr }}
+	if _, err := bad.ClaimPaths("x"); !errors.Is(err, readErr) {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(badRoot, []byte("x"), 0600); err != nil {
+	if _, _, err := bad.Load("x"); !errors.Is(err, readErr) || !strings.Contains(err.Error(), "checking attempt transition debris") {
 		t.Fatal(err)
 	}
-	if _, err := bad.ClaimPaths("x"); err == nil {
-		t.Fatal("readdir error swallowed")
-	}
-	if _, _, err := bad.Load("x"); err == nil || !strings.Contains(err.Error(), "checking attempt transition debris") {
+	if err := bad.RecoverClaims("x"); !errors.Is(err, readErr) {
 		t.Fatal(err)
-	}
-	if err := bad.RecoverClaims("x"); err == nil {
-		t.Fatal("recovery readdir error swallowed")
 	}
 	s := AttemptStore{DataDir: t.TempDir()}
 	path := attemptPath(s, "x")
