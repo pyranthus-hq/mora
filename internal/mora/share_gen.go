@@ -445,27 +445,9 @@ var errRollback = errors.New("bucket share: replayed version is below the commit
 // replace-rename fallback on hardlink-unsupported volumes). Returns os.ErrExist
 // when someone already claimed dest. Exactly one claimant wins.
 func claimExclusiveDurable(temp, dest string) error {
-	err := linkPublish(temp, dest)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, os.ErrExist) {
-		return err
-	}
-	if !linkUnsupported(err) {
-		return err
-	}
-	// Fallback: claim dest with an O_CREATE|O_EXCL placeholder, then rename our
-	// own already-fsynced temp over that placeholder. The placeholder is briefly
-	// unreadable JSON, which the resolver classifies not-committed and skips.
-	claim, cerr := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if cerr != nil {
-		return cerr // EEXIST wraps os.ErrExist here too
-	}
-	if closeErr := claim.Close(); closeErr != nil {
-		return errors.Join(closeErr, os.Remove(dest))
-	}
-	return atomicio.RenameReplaceWithRetry(temp, dest)
+	return atomicio.ClaimExclusiveDurable(temp, dest, atomicio.ClaimOptions{
+		Link: linkPublish, Unsupported: linkUnsupported,
+	})
 }
 
 // shareCommitParams carries everything the claim loop needs to construct and
