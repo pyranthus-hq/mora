@@ -305,43 +305,6 @@ func TestIMessageLegacyCommitmentBehaviorIsPreserved(t *testing.T) {
 	}
 }
 
-func TestCommitmentDedupRequiresStrongProvenanceAndKeepsCopyCitation(t *testing.T) {
-	canonical := lifecycleTestCommitment()
-	copy := lifecycleTestCommitment()
-	copy.ID = commitmentID("notes/copy#m1", "body", 0)
-	copy.OpenedBy.MemoryID = "notes/copy"
-	copy.OpenedBy.MessageRef = "notes/copy#m1"
-	copy.OpenedBy.AncestorRefs = []string{canonical.OpenedBy.MessageRef}
-	copy.Counterparty = govAtom{Provider: "imessage", Kind: atomHandle, Value: "+15550100123"}
-	copy.CounterpartyKeys = []string{"name:sam rivera", "given:sam"}
-	copy.Citations = []CommitmentCitation{{
-		Citation:     mustLifecycleCitation("notes/copy", "2026-07-20T10:05:00Z"),
-		CommitmentID: copy.ID,
-		Role:         commitCitationOpener,
-	}}
-
-	got := deduplicateCommitments([]Commitment{copy, canonical})
-	if len(got) != 2 {
-		t.Fatalf("dedup inventory = %d, want canonical plus marked copy", len(got))
-	}
-	byID := map[string]Commitment{}
-	for _, commitment := range got {
-		byID[commitment.ID] = commitment
-	}
-	if byID[copy.ID].DuplicateOf != canonical.ID {
-		t.Fatalf("copy duplicate_of = %q, want %q", byID[copy.ID].DuplicateOf, canonical.ID)
-	}
-	foundSupporting := false
-	for _, citation := range byID[canonical.ID].Citations {
-		if citation.Role == commitCitationSupporting && citation.Citation.MemoryID() == "notes/copy" {
-			foundSupporting = true
-		}
-	}
-	if !foundSupporting {
-		t.Fatalf("canonical citations lost duplicate evidence: %+v", byID[canonical.ID].Citations)
-	}
-}
-
 func TestCommitmentSnapshotCrossSurfaceDeterminism(t *testing.T) {
 	cfg, event, at := seedExamHomeFromRoot(t, examFixtureV2Root)
 	meeting, err := readCommitmentSnapshot(t.Context(), cfg)

@@ -2,6 +2,7 @@ package commitment
 
 import (
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/evidence"
 	"github.com/pyranthus-hq/mora/internal/identity"
 	"sort"
 	"strings"
@@ -51,6 +52,8 @@ type Evidence struct {
 	Party                                  Party
 	Authored                               bool
 	CounterpartyKeys                       []string
+	Citation                               evidence.Citation
+	CitationEvidenceRef                    string
 }
 type LifecycleResult struct {
 	Item            Item

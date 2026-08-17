@@ -988,45 +988,10 @@ func conversationTurns(text string) []conversationTurn {
 	return turns
 }
 
-func uniqueCommitments(in []Commitment) []Commitment {
-	seen := map[string]int{}
-	out := make([]Commitment, 0, len(in))
-	for _, commitment := range in {
-		// An immutable evidence id is strong provenance. Text is deliberately not:
-		// two separately requested copies of the same sentence are two obligations.
-		if commitment.ID == "" {
-			out = append(out, commitment)
-			continue
-		}
-		if prior, ok := seen[commitment.ID]; ok {
-			out[prior].Citations = mergeCommitmentCitations(out[prior].Citations, commitment.Citations)
-			continue
-		}
-		seen[commitment.ID] = len(out)
-		out = append(out, commitment)
-	}
-	return out
-}
+func uniqueCommitments(in []Commitment) []Commitment { return commitmentpkg.Unique(in) }
 
 func mergeCommitmentCitations(a, b []CommitmentCitation) []CommitmentCitation {
-	out := append([]CommitmentCitation(nil), a...)
-	seen := map[string]bool{}
-	for _, citation := range out {
-		seen[commitmentCitationKey(citation)] = true
-	}
-	for _, citation := range b {
-		if key := commitmentCitationKey(citation); !seen[key] {
-			seen[key] = true
-			out = append(out, citation)
-		}
-	}
-	return out
-}
-
-func commitmentCitationKey(citation CommitmentCitation) string {
-	return strings.Join([]string{
-		citation.Citation.MemoryID(), citation.CommitmentID, citation.Role, citation.EvidenceRef,
-	}, "\x00")
+	return commitmentpkg.MergeCitations(a, b)
 }
 
 func commitmentEvidenceFromMemories(mems []Memory, cfg Config) []commitmentEvidence {
@@ -1157,79 +1122,31 @@ func strictlyAfter(opened, evidence string) bool {
 }
 func commitmentObjectOverlap(a, b string) int { return commitmentpkg.ObjectOverlap(a, b) }
 func commitmentDedupCandidate(a, b Commitment) bool {
-	return commitmentpkg.DedupCandidate(commitmentLifecycleItem(a), commitmentLifecycleItem(b))
+	return commitmentpkg.DedupCandidate(a, b)
 }
 func commitmentEvidenceLess(a, b Commitment) bool {
-	return commitmentpkg.EvidenceLess(commitmentLifecycleItem(a), commitmentLifecycleItem(b))
+	return commitmentpkg.EvidenceLess(a, b)
 }
 func containsStringFold(values []string, want string) bool {
 	return commitmentpkg.ContainsStringFold(values, want)
 }
-func commitmentLifecycleItem(c Commitment) commitmentpkg.Item {
-	return commitmentpkg.Item{ID: c.ID, Owner: commitmentpkg.Atom{Provider: c.Owner.Provider, Kind: c.Owner.Kind, Value: c.Owner.Value}, Counterparty: commitmentpkg.Atom{Provider: c.Counterparty.Provider, Kind: c.Counterparty.Kind, Value: c.Counterparty.Value}, CounterpartyKeys: c.CounterpartyKeys, Direction: c.Direction, Summary: c.Summary, OpenedBy: commitmentpkg.Span{MemoryID: c.OpenedBy.MemoryID, MessageRef: c.OpenedBy.MessageRef, BlockRef: c.OpenedBy.BlockRef, AncestorRefs: c.OpenedBy.AncestorRefs, Quote: c.OpenedBy.Quote, OccurredAt: c.OpenedBy.OccurredAt}, Due: c.Due, State: c.State, ClosureRef: c.ClosureRef, SupersededBy: c.SupersededBy, Gap: c.Gap, DuplicateOf: c.DuplicateOf}
-}
 func commitmentLifecycleEvidence(e commitmentEvidence) commitmentpkg.Evidence {
-	return commitmentpkg.Evidence{MemoryID: e.MemoryID, MessageRef: e.MessageRef, Text: e.Text, OccurredAt: e.OccurredAt, Party: commitmentpkg.Party(e.Party), Authored: e.Authored, CounterpartyKeys: e.CounterpartyKeys}
+	stableEvidenceRef := ""
+	if strings.HasPrefix(e.MemoryID, "imessage_chat/") && strings.HasPrefix(e.MessageRef, e.MemoryID+"#") {
+		stableEvidenceRef = e.MessageRef
+	}
+	return commitmentpkg.Evidence{MemoryID: e.MemoryID, MessageRef: e.MessageRef, Text: e.Text, OccurredAt: e.OccurredAt, Party: commitmentpkg.Party(e.Party), Authored: e.Authored, CounterpartyKeys: e.CounterpartyKeys, Citation: e.Citation, CitationEvidenceRef: stableEvidenceRef}
 }
 func applyCommitmentLifecycle(commitments []Commitment, evidence []commitmentEvidence) []Commitment {
-	sort.Slice(evidence, func(i, j int) bool {
-		if evidence[i].OccurredAt != evidence[j].OccurredAt {
-			return evidence[i].OccurredAt < evidence[j].OccurredAt
-		}
-		if evidence[i].MemoryID != evidence[j].MemoryID {
-			return evidence[i].MemoryID < evidence[j].MemoryID
-		}
-		return evidence[i].Text < evidence[j].Text
-	})
-	items := make([]commitmentpkg.Item, len(commitments))
-	for i, c := range commitments {
-		items[i] = commitmentLifecycleItem(c)
-	}
 	ev := make([]commitmentpkg.Evidence, len(evidence))
 	for i, e := range evidence {
 		ev[i] = commitmentLifecycleEvidence(e)
 	}
-	projected := commitmentpkg.ProjectLifecycle(items, ev)
-	out := append([]Commitment(nil), commitments...)
-	for i, p := range projected {
-		out[i].State = p.Item.State
-		out[i].ClosureRef = p.Item.ClosureRef
-		out[i].SupersededBy = p.Item.SupersededBy
-		out[i].Gap = p.Item.Gap
-		if p.ClosureEvidence >= 0 {
-			candidate := evidence[p.ClosureEvidence]
-			if candidate.Citation.MemoryID() != "" {
-				stableEvidenceRef := ""
-				if strings.HasPrefix(candidate.MemoryID, "imessage_chat/") && strings.HasPrefix(candidate.MessageRef, candidate.MemoryID+"#") {
-					stableEvidenceRef = candidate.MessageRef
-				}
-				out[i].Citations = mergeCommitmentCitations(out[i].Citations, []CommitmentCitation{{Citation: candidate.Citation, CommitmentID: out[i].ID, Role: commitCitationClosure, EvidenceRef: stableEvidenceRef}})
-			}
-		}
-	}
-	return out
+	return commitmentpkg.ApplyLifecycle(commitments, ev)
 }
 
 func deduplicateCommitments(commitments []Commitment) []Commitment {
-	items := make([]commitmentpkg.Item, len(commitments))
-	for i, c := range commitments {
-		items[i] = commitmentLifecycleItem(c)
-	}
-	projected := commitmentpkg.ProjectDuplicates(items)
-	out := make([]Commitment, 0, len(commitments))
-	for _, p := range projected {
-		c := commitments[p.OriginalIndex]
-		c.DuplicateOf = p.Item.DuplicateOf
-		for _, support := range p.SupportingOriginalIndexes {
-			for _, citation := range commitments[support].Citations {
-				citation.Role = commitCitationSupporting
-				citation.CommitmentID = commitments[support].ID
-				c.Citations = mergeCommitmentCitations(c.Citations, []CommitmentCitation{citation})
-			}
-		}
-		out = append(out, c)
-	}
-	return out
+	return commitmentpkg.Deduplicate(commitments)
 }
 
 func materializeCommitments(mems []Memory, cfg Config, now time.Time) []Commitment {

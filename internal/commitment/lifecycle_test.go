@@ -1,6 +1,9 @@
 package commitment
 
-import "testing"
+import (
+	"github.com/pyranthus-hq/mora/internal/evidence"
+	"testing"
+)
 
 func lifecycleItem() Item {
 	return Item{ID: "c1", Owner: Atom{Kind: "address", Value: "self@example.com"}, Counterparty: Atom{Kind: "address", Value: "sam@example.com"}, CounterpartyKeys: []string{"name:sam rivera"}, Direction: OwedBySelf, Summary: "Send the reviewer list", OpenedBy: Span{MemoryID: "gmail_thread/open", MessageRef: "gmail_thread/open#m1", BlockRef: "body", Quote: "I will send the reviewer list", OccurredAt: "2026-07-20T10:00:00Z"}, Due: Due{Kind: DueNone}, State: Open, ClosureRef: "none"}
@@ -153,5 +156,14 @@ func TestLifecycleRejectsWeakClosureEvidence(t *testing.T) {
 		if got.Item.State != Open {
 			t.Fatalf("case %d closed: %+v", i, got)
 		}
+	}
+}
+
+func TestApplyLifecycleAddsTypedClosureCitation(t *testing.T) {
+	c, _ := evidence.NewCitation("imessage_chat/closure", "imessage", "imessage", "2026-07-20T11:00:00Z")
+	item := lifecycleItem()
+	got := ApplyLifecycle([]Record{item}, []Evidence{{MemoryID: "imessage_chat/closure", MessageRef: "imessage_chat/closure#42", Text: "I sent the reviewer list.", OccurredAt: "2026-07-20T11:00:00Z", Party: PartySelf, Authored: true, CounterpartyKeys: []string{"name:sam rivera"}, Citation: c, CitationEvidenceRef: "imessage_chat/closure#42"}})
+	if got[0].State != Closed || got[0].ClosureRef != "imessage_chat/closure" || len(got[0].Citations) != 1 || got[0].Citations[0].Role != CitationClosure || got[0].Citations[0].CommitmentID != item.ID || got[0].Citations[0].EvidenceRef != "imessage_chat/closure#42" {
+		t.Fatalf("got=%+v", got[0])
 	}
 }
