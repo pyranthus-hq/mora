@@ -1,22 +1,50 @@
-package mora
+package registry
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/config"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
+func testSourceStore(cfg config.Config) SourceStore { return SourceStore{ConfigDir: cfg.ConfigDir} }
+func acquireSourcesLock(cfg config.Config, now time.Time) (func(), error) {
+	return testSourceStore(cfg).Acquire(now)
+}
+func mutateSources(cfg config.Config, fn func([]memory.Source) ([]memory.Source, error)) error {
+	return testSourceStore(cfg).Mutate(fn)
+}
+func sourcesLockPath(cfg config.Config) string { return testSourceStore(cfg).LockPath() }
+func setSourceEnabledByName(cfg config.Config, name string, enabled bool) error {
+	return testSourceStore(cfg).Mutate(func(s []memory.Source) ([]memory.Source, error) {
+		for i := range s {
+			if s[i].Name == name {
+				s[i].Enabled = genericutil.Ptr(enabled)
+				return s, nil
+			}
+		}
+		return s, fmt.Errorf("source %q not found", name)
+	})
+}
+func reapStaleLockTTL(path string, now time.Time, ttl time.Duration) (bool, error) {
+	return leasefile.Reap(path, now, ttl, leasefile.DefaultRemovalOptions())
+}
+
 // sources_lock_test.go pins the P3 fix: the sources.json read-modify-write is
 // serialized by a crash-safe cross-process lease (mutateSources /
 // acquireSourcesLock), so two concurrent writers can no longer lose an update.
 
-func sourcesNameSet(sources []Source) map[string]bool {
+func sourcesNameSet(sources []memory.Source) map[string]bool {
 	set := make(map[string]bool, len(sources))
 	for _, s := range sources {
 		set[s.Name] = true
@@ -32,8 +60,8 @@ func sourcesNameSet(sources []Source) map[string]bool {
 // deterministic regardless of scheduler timing; only the "B is still blocked"
 // guard uses a short poll (well under B's ~2s acquire budget).
 func TestSourcesLockSerializesRMW(t *testing.T) {
-	cfg := Config{ConfigDir: t.TempDir()}
-	if err := saveSources(cfg, nil); err != nil {
+	cfg := config.Config{ConfigDir: t.TempDir()}
+	if err := SaveSources(cfg, nil); err != nil {
 		t.Fatalf("seed empty registry: %v", err)
 	}
 
@@ -45,8 +73,8 @@ func TestSourcesLockSerializesRMW(t *testing.T) {
 
 	bDone := make(chan error, 1)
 	go func() {
-		bDone <- mutateSources(cfg, func(s []Source) ([]Source, error) {
-			return append(s, Source{Name: "B", Type: "filesystem", Enabled: genericutil.Ptr(true)}), nil
+		bDone <- mutateSources(cfg, func(s []memory.Source) ([]memory.Source, error) {
+			return append(s, memory.Source{Name: "B", Type: "filesystem", Enabled: genericutil.Ptr(true)}), nil
 		})
 	}()
 
@@ -61,13 +89,13 @@ func TestSourcesLockSerializesRMW(t *testing.T) {
 	}
 
 	// A does its own mutation (the interleave), saves, then releases.
-	aSources, err := loadSources(cfg)
+	aSources, err := LoadSources(cfg)
 	if err != nil {
 		relA()
 		t.Fatalf("A load: %v", err)
 	}
-	aSources = append(aSources, Source{Name: "A", Type: "filesystem", Enabled: genericutil.Ptr(true)})
-	if err := saveSources(cfg, aSources); err != nil {
+	aSources = append(aSources, memory.Source{Name: "A", Type: "filesystem", Enabled: genericutil.Ptr(true)})
+	if err := SaveSources(cfg, aSources); err != nil {
 		relA()
 		t.Fatalf("A save: %v", err)
 	}
@@ -78,7 +106,7 @@ func TestSourcesLockSerializesRMW(t *testing.T) {
 		t.Fatalf("B RMW: %v", err)
 	}
 
-	got, err := loadSources(cfg)
+	got, err := LoadSources(cfg)
 	if err != nil {
 		t.Fatalf("final load: %v", err)
 	}
@@ -93,8 +121,8 @@ func TestSourcesLockSerializesRMW(t *testing.T) {
 // abandoned lease once it is older than the TTL and proceed — a crash never
 // wedges the registry — while preserving the pre-existing row.
 func TestSourcesLockReapsStaleLock(t *testing.T) {
-	cfg := Config{ConfigDir: t.TempDir()}
-	if err := saveSources(cfg, []Source{{Name: "pre", Type: "filesystem", Enabled: genericutil.Ptr(true)}}); err != nil {
+	cfg := config.Config{ConfigDir: t.TempDir()}
+	if err := SaveSources(cfg, []memory.Source{{Name: "pre", Type: "filesystem", Enabled: genericutil.Ptr(true)}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -103,19 +131,19 @@ func TestSourcesLockReapsStaleLock(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	staleAt := time.Now().Add(-2 * sourcesLockTTL).UTC().Format(time.RFC3339)
-	body, _ := json.Marshal(loopLockBody{PID: 999999, AcquiredAt: staleAt})
+	staleAt := time.Now().Add(-2 * SourceLockTTL).UTC().Format(time.RFC3339)
+	body, _ := json.Marshal(leasefile.Body{PID: 999999, AcquiredAt: staleAt})
 	if err := os.WriteFile(lockPath, body, 0o600); err != nil {
 		t.Fatalf("plant stale lock: %v", err)
 	}
 
-	if err := mutateSources(cfg, func(s []Source) ([]Source, error) {
-		return append(s, Source{Name: "after-crash", Type: "filesystem", Enabled: genericutil.Ptr(true)}), nil
+	if err := mutateSources(cfg, func(s []memory.Source) ([]memory.Source, error) {
+		return append(s, memory.Source{Name: "after-crash", Type: "filesystem", Enabled: genericutil.Ptr(true)}), nil
 	}); err != nil {
 		t.Fatalf("mutateSources over a stale lease should reap and proceed: %v", err)
 	}
 
-	got, err := loadSources(cfg)
+	got, err := LoadSources(cfg)
 	if err != nil {
 		t.Fatalf("final load: %v", err)
 	}
@@ -135,13 +163,13 @@ func TestSourcesLockReapsStaleLock(t *testing.T) {
 // keep only the last writer's flip. Run under -race in CI. (Cross-process replay:
 // TestSourcesRMWNoLostUpdateAcrossProcesses.)
 func TestSourcesConcurrentRMWNoLostUpdate(t *testing.T) {
-	cfg := Config{ConfigDir: t.TempDir()}
+	cfg := config.Config{ConfigDir: t.TempDir()}
 	const n = 8
-	seed := make([]Source, n)
+	seed := make([]memory.Source, n)
 	for i := range seed {
-		seed[i] = Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: genericutil.Ptr(false)}
+		seed[i] = memory.Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: genericutil.Ptr(false)}
 	}
-	if err := saveSources(cfg, seed); err != nil {
+	if err := SaveSources(cfg, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -161,7 +189,7 @@ func TestSourcesConcurrentRMWNoLostUpdate(t *testing.T) {
 			t.Fatalf("s%d enable: %v", i, e)
 		}
 	}
-	got, err := loadSources(cfg)
+	got, err := LoadSources(cfg)
 	if err != nil {
 		t.Fatalf("final load: %v", err)
 	}
@@ -183,12 +211,7 @@ func TestSourcesRMWNoLostUpdateAcrossProcesses(t *testing.T) {
 	if role := os.Getenv("MORA_SOURCES_MP_ROLE"); role != "" {
 		cfgDir := os.Getenv("MORA_SOURCES_MP_CONFIG")
 		name := os.Getenv("MORA_SOURCES_MP_NAME")
-		_ = os.Setenv("MORA_CONFIG_DIR", cfgDir)
-		cfg, err := loadConfig()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "loadConfig: %v\n", err)
-			os.Exit(1)
-		}
+		cfg := config.Config{ConfigDir: cfgDir}
 		if err := setSourceEnabledByName(cfg, name, true); err != nil {
 			fmt.Fprintf(os.Stderr, "enable %s: %v\n", name, err)
 			os.Exit(1)
@@ -196,13 +219,13 @@ func TestSourcesRMWNoLostUpdateAcrossProcesses(t *testing.T) {
 		os.Exit(0)
 	}
 
-	cfg := Config{ConfigDir: t.TempDir()}
+	cfg := config.Config{ConfigDir: t.TempDir()}
 	const n = 8
-	seed := make([]Source, n)
+	seed := make([]memory.Source, n)
 	for i := range seed {
-		seed[i] = Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: genericutil.Ptr(false)}
+		seed[i] = memory.Source{Name: fmt.Sprintf("s%d", i), Type: "filesystem", Enabled: genericutil.Ptr(false)}
 	}
-	if err := saveSources(cfg, seed); err != nil {
+	if err := SaveSources(cfg, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -230,7 +253,7 @@ func TestSourcesRMWNoLostUpdateAcrossProcesses(t *testing.T) {
 			t.Fatalf("child s%d: %v\n%s", i, e, outs[i])
 		}
 	}
-	got, err := loadSources(cfg)
+	got, err := LoadSources(cfg)
 	if err != nil {
 		t.Fatalf("final load: %v", err)
 	}
@@ -248,13 +271,13 @@ func TestSourcesRMWNoLostUpdateAcrossProcesses(t *testing.T) {
 // injected now (mirrors loop_test's TIER D): an expired planted lease is reaped
 // and the lease becomes ours.
 func TestAcquireSourcesLockReapsExpired(t *testing.T) {
-	cfg := Config{ConfigDir: t.TempDir()}
+	cfg := config.Config{ConfigDir: t.TempDir()}
 	lockPath := sourcesLockPath(cfg)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	now := time.Now()
-	expired, _ := json.Marshal(loopLockBody{PID: 999999, AcquiredAt: now.Add(-sourcesLockTTL - time.Second).UTC().Format(time.RFC3339)})
+	expired, _ := json.Marshal(leasefile.Body{PID: 999999, AcquiredAt: now.Add(-SourceLockTTL - time.Second).UTC().Format(time.RFC3339)})
 	if err := os.WriteFile(lockPath, expired, 0o600); err != nil {
 		t.Fatalf("plant: %v", err)
 	}
@@ -269,7 +292,7 @@ func TestAcquireSourcesLockReapsExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read lease: %v", err)
 	}
-	var lb loopLockBody
+	var lb leasefile.Body
 	if err := json.Unmarshal(data, &lb); err != nil {
 		t.Fatalf("unmarshal lease: %v", err)
 	}
@@ -282,18 +305,107 @@ func TestAcquireSourcesLockReapsExpired(t *testing.T) {
 // (acquired_at within the TTL) is never reaped, so a live holder is not stolen —
 // liveness of the holder's pid is irrelevant, only the TTL bounds abandonment.
 func TestReapStaleSourcesLockFreshNotReaped(t *testing.T) {
-	cfg := Config{ConfigDir: t.TempDir()}
+	cfg := config.Config{ConfigDir: t.TempDir()}
 	lockPath := sourcesLockPath(cfg)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	now := time.Now()
-	fresh, _ := json.Marshal(loopLockBody{PID: 999999, AcquiredAt: now.UTC().Format(time.RFC3339)})
+	fresh, _ := json.Marshal(leasefile.Body{PID: 999999, AcquiredAt: now.UTC().Format(time.RFC3339)})
 	if err := os.WriteFile(lockPath, fresh, 0o600); err != nil {
 		t.Fatalf("plant: %v", err)
 	}
-	reaped, err := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
+	reaped, err := reapStaleLockTTL(lockPath, now, SourceLockTTL)
 	if err != nil || reaped {
 		t.Fatalf("a fresh sources lease must not be reaped: reaped=%v err=%v", reaped, err)
+	}
+}
+
+func TestSourceStoreDeadlineAndErrorBranches(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "parent")
+	if err := os.WriteFile(parent, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bad := SourceStore{ConfigDir: filepath.Join(parent, "config")}
+	if _, err := bad.Acquire(time.Now()); err == nil {
+		t.Fatal("mkdir error swallowed")
+	}
+	if err := bad.Mutate(func(s []memory.Source) ([]memory.Source, error) { return s, nil }); err == nil {
+		t.Fatal("mutate acquire error swallowed")
+	}
+	boom := errors.New("boom")
+	if _, err := (SourceStore{ConfigDir: t.TempDir(), Publish: func(string, []byte) (bool, error) { return false, boom }}).Acquire(time.Now()); !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wall := base
+	reapErr := SourceStore{ConfigDir: t.TempDir(), WallNow: func() time.Time { return wall }, Sleep: func(d time.Duration) { wall = wall.Add(d) }, Backoff: func(int) time.Duration { return time.Second }, PID: func() int { return 7 }, Publish: func(string, []byte) (bool, error) { return false, nil }, Reap: func(string, time.Time, time.Duration, leasefile.RemovalOptions) (bool, error) { return false, boom }}
+	if _, err := reapErr.Acquire(base); !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	holder := SourceStore{ConfigDir: dir}
+	release, err := holder.Acquire(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wall = base
+	waiter := SourceStore{ConfigDir: dir, WallNow: func() time.Time { return wall }, Sleep: func(d time.Duration) { wall = wall.Add(d) }, Backoff: func(int) time.Duration { return time.Second }, PID: func() int { return 8 }}
+	if _, err := waiter.Acquire(base); err == nil || !strings.Contains(err.Error(), "sources.json is locked by another mora process ("+waiter.LockPath()+"); retry in a moment") {
+		t.Fatal(err)
+	}
+	wall = base
+	oversleep := SourceStore{ConfigDir: dir, WallNow: func() time.Time { return wall }, Sleep: func(d time.Duration) { wall = wall.Add(d + 2*time.Second) }, Backoff: func(int) time.Duration { return time.Millisecond }}
+	if _, err := oversleep.Acquire(base); err == nil {
+		t.Fatal("overslept deadline retried")
+	}
+	release()
+}
+func TestSourceStoreMutationErrorBranches(t *testing.T) {
+	callback := SourceStore{ConfigDir: t.TempDir()}
+	if err := callback.Mutate(func(s []memory.Source) ([]memory.Source, error) { return s, errors.New("stop") }); err == nil {
+		t.Fatal("callback error swallowed")
+	}
+	corrupt := SourceStore{ConfigDir: t.TempDir()}
+	if err := os.MkdirAll(corrupt.ConfigDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(corrupt.ConfigDir, "sources.json"), []byte("bad"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := corrupt.Mutate(func(s []memory.Source) ([]memory.Source, error) { return s, nil }); err == nil {
+		t.Fatal("load error swallowed")
+	}
+	saveFail := SourceStore{ConfigDir: t.TempDir()}
+	if err := SaveSources(saveFail.cfg(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveFail.Mutate(func(s []memory.Source) ([]memory.Source, error) {
+		if err := os.RemoveAll(saveFail.ConfigDir); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(saveFail.ConfigDir, []byte("x"), 0600); err != nil {
+			return nil, err
+		}
+		return s, nil
+	}); err == nil {
+		t.Fatal("save error swallowed")
+	}
+	cfg := config.Config{ConfigDir: t.TempDir()}
+	if err := os.Mkdir(filepath.Join(cfg.ConfigDir, "sources.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSources(cfg); err == nil {
+		t.Fatal("read error swallowed")
+	}
+	if got := LoadSourcesOrEmpty(cfg); got != nil {
+		t.Fatal(got)
+	}
+	cfg2 := config.Config{ConfigDir: t.TempDir()}
+	if err := SaveSources(cfg2, []memory.Source{{Name: "ok"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadSourcesOrEmpty(cfg2); len(got) != 1 || got[0].Name != "ok" {
+		t.Fatal(got)
 	}
 }

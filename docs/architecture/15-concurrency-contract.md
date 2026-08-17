@@ -182,28 +182,26 @@ silently drops the other's mutation (a lost enable bit, deny-list, or persisted
 window). A manual `mora sources ...` racing the scheduled `ingest-hourly` sync is
 exactly this shape.
 
-`mutateSources`/`acquireSourcesLock` (`internal/mora/sources_lock.go`, the P3
-fix) close it with a short-lived, crash-safe **cross-process file lease** held
+`internal/registry.SourceStore.Mutate` (the P3
+fix) closes it with a short-lived, crash-safe **cross-process file lease** held
 around the WHOLE read-modify-write — and, crucially, it **reloads inside the
 lease**, so a concurrent writer's committed change is always observed, never
 clobbered. Every `load → mutate → save` on `sources.json` MUST go through it;
 `saveSources` is called directly only while already holding the lease.
 
-The lease reuses `loop.go`'s proven primitives — `publishLockFile`'s
-`os.Link`-atomic publish, TTL/corrupt reap (`sourcesLockTTL` = 30 s, far longer
-than any legitimate microsecond hold), guarded compare/remove `breakLock`, and a
-jittered, capped acquire backoff (same #74 rationale as §1: fixed backoff makes
-rivals retry in lockstep on Windows). It is a single-host, single-user lease —
-which is exactly the concurrency model. Pinned by `sources_lock_test.go`.
+The store uses `internal/leasefile`'s guarded publish, TTL/corrupt reap
+(`registry.SourceLockTTL` = 30 s, far longer than any legitimate microsecond
+hold), compare-and-remove release, and a jittered capped acquire backoff (same
+#74 rationale as §1: fixed backoff makes rivals retry in lockstep on Windows). It is a single-host, single-user lease —
+which is exactly the concurrency model. Pinned by `internal/registry/source_store_test.go`.
 
 ### Wait budgets: every lock loop is bounded by wall-clock time
 
-Four loops wait on a contended `.lock`: `acquireSourcesLock`
-(`sources_lock.go`), `governance.Store.Acquire` (`internal/governance/store.go`, adapted by Mora),
+Four loops wait on a contended `.lock`: `internal/registry.SourceStore.Acquire`, `governance.Store.Acquire` (`internal/governance/store.go`, adapted by Mora),
 `internal/health.ProducerStore.Acquire`, and the release-side
 `removeLeaseFileGuarded` (`loop.go`). Each is bounded by a **stated wall-clock
 deadline** and performs the same before-and-after-sleep check (`sleepWithinDeadline`
-in Mora; the equivalent injected-clock check in `ProducerStore`), which refuses a
+in Mora; the equivalent injected-clock checks in `registry.SourceStore` and `health.ProducerStore`), which refuses a
 pause that would run past the deadline (so a loop never overshoots its
 budget by a backoff draw, and a just-reaped lease's immediate retry is still
 deadline-checked). The deadline is always real `time.Now()` — never a caller's
@@ -214,9 +212,9 @@ convenience:
 
 | Loop | Constant | Budget | Why |
 |---|---|---|---|
-| `acquireSourcesLock` | `sourcesAcquireTimeout` | 2 s | A registry RMW must WAIT out a holder that releases in microseconds; the margin is for Windows sharing-violation retries. |
+| `registry.SourceStore.Acquire` | `registry.SourceAcquireTimeout` | 2 s | A registry RMW must WAIT out a holder that releases in microseconds; the margin is for Windows sharing-violation retries. |
 | `governance.Store.Acquire` | `governance.AcquireTimeout` | 2 s | Same shape, but contended by every item of an hourly sync (the lease spans check→write in `writeMappedMemory`), so it must be tunable on its own. |
-| `acquireProducerLock` | `producerAcquireTimeout` | 2 s | Same shape; a best-effort ledger stamp on the tail of a real job. |
+| `health.ProducerStore.Acquire` | `health.ProducerAcquireTimeout` | 2 s | Same shape; a best-effort ledger stamp on the tail of a real job. |
 | `removeLeaseFileGuarded` | `leaseRemovalTimeout` | 500 ms | **Deliberately shorter.** Removal runs at shutdown and *inside* the lease guard on the reap path, where every waiting acquirer is blocked behind it; the window it covers is one rival's in-flight `os.Link`/`os.ReadFile`. |
 
 Two rules this encodes. **Removal is not acquisition** — a release path must
