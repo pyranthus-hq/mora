@@ -62,12 +62,26 @@ func cmdLint(ctx context.Context, args []string, stdout, stderr io.Writer) (err 
 	return nil
 }
 func cmdBackup(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if parseErr := fs.Parse(args); parseErr != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+	}
+	if fs.NArg() != 0 {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	// backup-daily producer chokepoint (HEALTH-11).
-	defer stampChokepoint(cfg, stdout, args, "backup-daily", producerClock(), &err)
+	stampOutput := stdout
+	if *jsonOut {
+		stampOutput = stderr
+	}
+	now := producerClock()
+	defer stampChokepoint(cfg, stampOutput, args, "backup-daily", now, &err)
 	// A drifted config that nests data_dir/config inside the vault would tar the
 	// age share identity and DECRYPTED share corpora (plus the index's decrypted
 	// text) straight into the backup archive. Refuse rather than leak — the same
@@ -79,9 +93,20 @@ func cmdBackup(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "backups"), 0o700); err != nil {
 		return err
 	}
-	out := filepath.Join(cfg.StateDir, "backups", "mora-"+time.Now().Format("20060102-150405")+".tar.gz")
+	out := filepath.Join(cfg.StateDir, "backups", "mora-"+now.Format("20060102-150405")+".tar.gz")
 	if err := tarGz(out, cfg.VaultDir); err != nil {
 		return err
+	}
+	if *jsonOut {
+		info, statErr := os.Stat(out)
+		if statErr != nil {
+			return statErr
+		}
+		return emitReceipt(stdout, "mora.backup", 1, struct {
+			ArchivePath string `json:"archive_path"`
+			Bytes       int64  `json:"bytes"`
+			CreatedAt   string `json:"created_at"`
+		}{ArchivePath: out, Bytes: info.Size(), CreatedAt: now.UTC().Format(time.RFC3339)})
 	}
 	fmt.Fprintf(stdout, "%s\n", out)
 	return nil

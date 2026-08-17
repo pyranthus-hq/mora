@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"html"
 	"io"
@@ -27,7 +28,16 @@ func cmdSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	switch args[0] {
 	case "list":
-		return listSchedules(stdout, cfg)
+		fs := flag.NewFlagSet("schedule list", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if parseErr := fs.Parse(args[1:]); parseErr != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		return listSchedules(stdout, cfg, *jsonOut)
 	case "install":
 		if len(args) != 2 {
 			return errors.New("usage: mora schedule install <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily>")
@@ -217,7 +227,27 @@ func installSchedule(stdout io.Writer, cfg Config, job string) error {
 	fmt.Fprintf(stdout, "Linux: launchd unavailable. cron line:\n  */60 * * * * %s%s %s\nOr a systemd user timer. Or run `mora sync google` manually.\n", cronEnv, exe, cmdArgs)
 	return nil
 }
-func listSchedules(stdout io.Writer, cfg Config) error {
+
+type scheduleListEntry struct {
+	Name      string `json:"name"`
+	Cadence   string `json:"cadence"`
+	NextRun   string `json:"next_run"`
+	Installed bool   `json:"installed"`
+}
+
+type scheduleListPayload struct {
+	Entries []scheduleListEntry `json:"entries"`
+}
+
+func listSchedules(stdout io.Writer, cfg Config, jsonOutput ...bool) error {
+	jsonOut := len(jsonOutput) > 0 && jsonOutput[0]
+	if jsonOut {
+		entries, err := scheduledEntries(cfg)
+		if err != nil {
+			return err
+		}
+		return emitReceipt(stdout, "mora.schedule.list", 1, scheduleListPayload{Entries: entries})
+	}
 	if runtimeGOOS() == "windows" {
 		jobs := make([]string, 0, len(scheduleCommands))
 		for job := range scheduleCommands {
@@ -244,6 +274,52 @@ func listSchedules(stdout io.Writer, cfg Config) error {
 	}
 	fmt.Fprintln(stdout, "cron listing not implemented")
 	return nil
+}
+
+func scheduledEntries(cfg Config) ([]scheduleListEntry, error) {
+	jobs := make([]string, 0, len(scheduleCommands))
+	for job := range scheduleCommands {
+		jobs = append(jobs, job)
+	}
+	sort.Strings(jobs)
+	entries := make([]scheduleListEntry, 0, len(jobs))
+	installed := make(map[string]bool, len(jobs))
+	switch runtimeGOOS() {
+	case "windows":
+		for _, job := range jobs {
+			_, err := runScheduleCommand("schtasks", "/Query", "/TN", windowsTaskName(job))
+			installed[job] = err == nil
+		}
+	case "darwin":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		for _, job := range jobs {
+			installed[job] = fileExists(filepath.Join(home, "Library", "LaunchAgents", "com.mora."+job+".plist"))
+		}
+	}
+	for _, job := range jobs {
+		entries = append(entries, scheduleListEntry{
+			Name: job, Cadence: scheduleCadence(job), NextRun: "", Installed: installed[job],
+		})
+	}
+	return entries, nil
+}
+
+func scheduleCadence(job string) string {
+	switch job {
+	case "index-hourly", "ingest-hourly":
+		return "hourly"
+	case "pulse-daily":
+		return "daily at 08:00"
+	case "backup-daily", "git-daily":
+		return "daily"
+	case "lint-weekly":
+		return "weekly"
+	default:
+		return "unknown"
+	}
 }
 func uninstallSchedule(stdout io.Writer, cfg Config, job string) error {
 	if _, ok := scheduleCommands[job]; !ok {

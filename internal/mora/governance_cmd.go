@@ -34,7 +34,16 @@ import (
 // scope here, so no false-merge can over-reach.
 func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "list" {
-		return forgetList(stdout)
+		fs := flag.NewFlagSet("forget list", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if parseErr := fs.Parse(args[1:]); parseErr != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		return forgetList(stdout, *jsonOut)
 	}
 	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -290,7 +299,11 @@ func memoriesMatching(cfg Config, target govAtom) ([]Memory, error) {
 }
 
 // forgetList prints the active (non-revoked) suppressions.
-func forgetList(stdout io.Writer) error {
+type forgetListPayload struct {
+	Entries []govEntry `json:"entries"`
+}
+
+func forgetList(stdout io.Writer, jsonOut bool) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -300,6 +313,12 @@ func forgetList(stdout io.Writer) error {
 		return err
 	}
 	active := g.activeSuppress()
+	if jsonOut {
+		entries := make([]govEntry, 0, len(active))
+		entries = append(entries, active...)
+		sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+		return emitReceipt(stdout, "mora.forget.list", 1, forgetListPayload{Entries: entries})
+	}
 	if len(active) == 0 {
 		fmt.Fprintln(stdout, "no active suppressions")
 		return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -31,7 +32,16 @@ func cmdUsage(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	case len(args) >= 1 && args[0] == "on":
 		return os.Remove(filepath.Join(cfg.StateDir, "usage", "OFF"))
 	case len(args) >= 1 && args[0] == "report":
-		return usageReport(cfg, stdout)
+		fs := flag.NewFlagSet("usage report", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if parseErr := fs.Parse(args[1:]); parseErr != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		return usageReport(cfg, stdout, *jsonOut)
 	case len(args) >= 1 && args[0] == "queries":
 		// Opt in/out of retaining the raw query string in the local usage log
 		// (default OFF). Mirrors the OFF-marker pattern; never affects egress.
@@ -51,9 +61,25 @@ func cmdUsage(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return errors.New("usage: mora usage report|off|on|queries <on|off>")
 	}
 }
-func usageReport(cfg Config, stdout io.Writer) error {
+
+type usageReportPayload struct {
+	Window           string         `json:"window"`
+	TotalCalls       int            `json:"total_calls"`
+	CallsByTool      map[string]int `json:"calls_by_tool"`
+	EmptyResultRate  int            `json:"empty_result_rate_percent"`
+	LatencyP50Millis int64          `json:"latency_p50_millis"`
+	TrackingDisabled bool           `json:"tracking_disabled"`
+}
+
+func usageReport(cfg Config, stdout io.Writer, jsonOutput ...bool) error {
+	jsonOut := len(jsonOutput) > 0 && jsonOutput[0]
 	b, err := os.ReadFile(filepath.Join(cfg.StateDir, "usage", "events.jsonl"))
 	if err != nil {
+		if jsonOut {
+			return emitReceipt(stdout, "mora.usage.report", 1, usageReportPayload{
+				Window: "all recorded usage", CallsByTool: make(map[string]int), TrackingDisabled: !usageEnabled(cfg),
+			})
+		}
 		fmt.Fprintln(stdout, "no usage recorded")
 		return nil
 	}
@@ -74,6 +100,17 @@ func usageReport(cfg Config, stdout io.Writer) error {
 			empty++
 		}
 		latencies = append(latencies, e.Millis)
+	}
+	if jsonOut {
+		payload := usageReportPayload{
+			Window: "all recorded usage", TotalCalls: total, CallsByTool: byTool,
+			TrackingDisabled: !usageEnabled(cfg),
+		}
+		if total > 0 {
+			payload.EmptyResultRate = empty * 100 / total
+			payload.LatencyP50Millis = percentile(latencies, 50)
+		}
+		return emitReceipt(stdout, "mora.usage.report", 1, payload)
 	}
 	fmt.Fprintf(stdout, "Mora usage (content-free)\n")
 	fmt.Fprintf(stdout, "total calls: %d\n", total)
