@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	identitypkg "github.com/pyranthus-hq/mora/internal/identity"
 	"strings"
 	"time"
 
@@ -46,21 +47,7 @@ func IsMeetingNotification(m memory.Memory) bool {
 }
 
 // SelfNameTokens derives possible user-name tokens from known self addresses.
-func SelfNameTokens(self map[string]bool) map[string]bool {
-	out := map[string]bool{}
-	for addr := range self {
-		local, _, found := strings.Cut(addr, "@")
-		if !found {
-			local = addr
-		}
-		for _, part := range strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' || r == '-' || r == '+' }) {
-			if len(part) >= 2 {
-				out[strings.ToLower(part)] = true
-			}
-		}
-	}
-	return out
-}
+func SelfNameTokens(self map[string]bool) map[string]bool { return identitypkg.SelfNameTokens(self) }
 
 // AssignedToThirdParty detects an explicit assignment to someone other than self.
 func AssignedToThirdParty(text string, selfNames map[string]bool) bool {

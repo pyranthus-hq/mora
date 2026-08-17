@@ -19,4 +19,9 @@ func TestIdentityNormalization(t *testing.T) {
 			t.Errorf("MailboxKey(%q)=%q want %q", raw, got, want)
 		}
 	}
+	tokens := SelfNameTokens(map[string]bool{"Adit.Karode+work@example.com": true, "x@example.com": true, "plain_user": true})
+	if !tokens["adit"] || !tokens["karode"] || !tokens["work"] || !tokens["plain"] || !tokens["user"] || tokens["x"] {
+		t.Fatalf("tokens=%v", tokens)
+	}
+
 }
