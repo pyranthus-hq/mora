@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/previewfilter"
 	"sort"
 	"strings"
 	"time"
@@ -51,20 +52,7 @@ func resolveEntityFilter(ctx context.Context, cfg Config, name string) (map[stri
 // narrows. A since-days cutoff of <=0 is a no-op (a negative is never a future
 // cutoff — P1-D); an unparseable CreatedAt is dropped under an active cutoff.
 func filterByInstance(byInstance map[string][]Memory, opts briefOpts, now time.Time) map[string][]Memory {
-	if !opts.filtered() {
-		return byInstance
-	}
-	out := make(map[string][]Memory, len(byInstance))
-	for key, mems := range byInstance {
-		var kept []Memory
-		for _, m := range mems {
-			if memoryMatchesPreviewFilters(m, opts, now) {
-				kept = append(kept, m)
-			}
-		}
-		out[key] = kept
-	}
-	return out
+	return previewfilter.FilterByInstance(byInstance, previewfilter.Options{EntityIDs: opts.entityIDSet, Scope: opts.scope, SinceDays: opts.sinceDays}, now)
 }
 
 // memoryMatchesPreviewFilters is the per-row predicate shared by digest input
@@ -73,20 +61,7 @@ func filterByInstance(byInstance map[string][]Memory, opts briefOpts, now time.T
 // predicate prevents the evidence from claiming a match for a row the actual
 // filter later drops (or vice versa).
 func memoryMatchesPreviewFilters(m Memory, opts briefOpts, now time.Time) bool {
-	if len(opts.entityIDSet) > 0 && !memoryMentionsEntity(m, opts.entityIDSet) {
-		return false
-	}
-	if opts.scope != "" && m.Scope != opts.scope {
-		return false
-	}
-	if opts.sinceDays > 0 {
-		cutoff := now.Add(-time.Duration(opts.sinceDays) * 24 * time.Hour)
-		ts, err := time.Parse(time.RFC3339, m.CreatedAt)
-		if err != nil || ts.Before(cutoff) {
-			return false
-		}
-	}
-	return true
+	return previewfilter.Matches(m, previewfilter.Options{EntityIDs: opts.entityIDSet, Scope: opts.scope, SinceDays: opts.sinceDays}, now)
 }
 
 // filters.go — entity/scope/since-days filtering for the brief/digest surfaces
@@ -103,16 +78,7 @@ func memoryMatchesPreviewFilters(m Memory, opts briefOpts, now time.Time) bool {
 // silently dropped (P1-A). An empty set matches nothing; callers gate "no entity
 // filter" on len(idSet)==0 upstream. Pure: no I/O.
 func memoryMentionsEntity(m Memory, idSet map[string]bool) bool {
-	if len(idSet) == 0 {
-		return false
-	}
-	parts, _, _, _ := personRefs(m) // parts[i].id is already "person:<lowercased>"
-	for _, p := range parts {
-		if idSet[p.id] {
-			return true
-		}
-	}
-	return false
+	return previewfilter.MentionsEntity(m, idSet)
 }
 
 // resolveEntityID resolves a name/email/handle to one entity and returns its
@@ -210,12 +176,7 @@ func resolveEntityID(ctx context.Context, cfg Config, name string) (canonical st
 // filter (all-time), matching the established `connect --since-days` convention and
 // preventing the future-cutoff "hide everything" footgun (P1-D). Applied at every
 // CLI/MCP value-extraction seam before briefOpts is built.
-func clampSinceDays(n int) int {
-	if n < 0 {
-		return 0
-	}
-	return n
-}
+func clampSinceDays(n int) int { return previewfilter.ClampSinceDays(n) }
 
 // aliasIDSet builds the membership set for one resolved entity: the canonical
 // person id plus a personID() for every ADDRESS/HANDLE alias (an alias is an
@@ -225,15 +186,5 @@ func clampSinceDays(n int) int {
 // never emits. The stored address aliases are already lowercased; personID
 // lowercases again defensively, so the result matches personRefs' raw ids exactly.
 func aliasIDSet(canonical string, aliases []string) map[string]bool {
-	set := map[string]bool{canonical: true}
-	for _, a := range aliases {
-		a = strings.TrimSpace(a)
-		if a == "" {
-			continue
-		}
-		if strings.Contains(a, "@") || strings.HasPrefix(a, "+") {
-			set[personID(a)] = true
-		}
-	}
-	return set
+	return previewfilter.AliasIDSet(canonical, aliases)
 }
