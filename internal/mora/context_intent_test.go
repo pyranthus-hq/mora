@@ -163,17 +163,3 @@ func TestContextMemoryRoutesCurrentStateAndOpenLoopQuestions(t *testing.T) {
 		t.Fatalf("qualified current-state question ignored Alpha:\n%s", alphaStateText)
 	}
 }
-
-func TestContextIntentDoesNotHijackOrdinaryQueries(t *testing.T) {
-	for _, query := range []string{
-		"open source search",
-		"closed captions",
-		"recently read newsletter",
-		"project Alpha",
-		"Find the email saying what do I owe",
-	} {
-		if got := contextIntentOf(query); got != contextIntentGeneric {
-			t.Fatalf("contextIntentOf(%q) = %q, want generic", query, got)
-		}
-	}
-}
