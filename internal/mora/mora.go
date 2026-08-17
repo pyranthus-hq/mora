@@ -1001,64 +1001,7 @@ var linkPublish = os.Link
 // real fault and surfaces as-is — never masked as a collision or silently routed
 // through the slower fallback.
 func atomicCreate(path string, body []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	// Stage through a unique temp in the target dir (same filesystem, so the link
-	// is a cheap same-inode operation), never a fixed name, so concurrent creators
-	// never share or truncate each other's in-flight temp.
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	// Drop the temp name whether we publish it or fail; a no-op leftover name once
-	// the link/rename publishes the file under its real name.
-	defer os.Remove(tmp)
-	if _, err := f.Write(body); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	// CreateTemp opens at 0600; raise to the caller's requested mode before publish.
-	if err := os.Chmod(tmp, mode); err != nil {
-		return err
-	}
-
-	// PRIMARY: create-exclusive hard-link publish (POSIX + NTFS).
-	err = linkPublish(tmp, path)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, os.ErrExist) {
-		return err // genuine id collision → caller re-mints
-	}
-	if !linkUnsupported(err) {
-		return err // a real filesystem/IO error → surface, don't mask
-	}
-
-	// FALLBACK for filesystems without hard links (see doc above).
-	claim, cerr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if cerr != nil {
-		return cerr // EEXIST here wraps os.ErrExist → caller re-mints; else the real error
-	}
-	// Close our placeholder handle BEFORE the rename: on Windows MoveFileEx must
-	// delete the destination to replace it, and our own still-open handle would make
-	// every retry hit a sharing violation.
-	if closeErr := claim.Close(); closeErr != nil {
-		return errors.Join(closeErr, os.Remove(path))
-	}
-	// Move the staged body onto our own placeholder. renameReplaceWithRetry carries
-	// the Windows MoveFileEx jittered retry; on failure drop the empty placeholder so
-	// a failed write leaves nothing behind — and surface (join) any cleanup error so
-	// a leaked placeholder is never silently swallowed.
-	if rerr := atomicio.RenameReplaceWithRetry(tmp, path); rerr != nil {
-		return errors.Join(rerr, os.Remove(path))
-	}
-	return nil
+	return atomicio.CreateExclusive(path, body, mode, atomicio.ClaimOptions{Link: linkPublish, Unsupported: linkUnsupported})
 }
 
 // usagePhaseTimings is the compact, content-free phase breakdown for one MCP
