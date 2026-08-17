@@ -213,11 +213,14 @@ func TestAttemptStoreStaleCompleterCannotReplaceSuccessor(t *testing.T) {
 }
 
 func TestAttemptStoreFilesystemAndRecoveryErrors(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(parent, []byte("x"), 0600); err != nil {
+	bad := AttemptStore{DataDir: t.TempDir()}
+	badRoot := bad.root("x")
+	if err := os.MkdirAll(filepath.Dir(badRoot), 0700); err != nil {
 		t.Fatal(err)
 	}
-	bad := AttemptStore{DataDir: parent}
+	if err := os.WriteFile(badRoot, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := bad.ClaimPaths("x"); err == nil {
 		t.Fatal("readdir error swallowed")
 	}
