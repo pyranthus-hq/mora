@@ -267,12 +267,44 @@ func progressWriter(stdout, stderr io.Writer, jsonOut bool) io.Writer {
 	return stdout
 }
 
+// connectReceipt is the machine form of a completed connect verb.
+type connectReceipt struct {
+	Source    string `json:"source"`
+	Connected bool   `json:"connected"`
+}
+
 func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) >= 1 && args[0] == "github" {
-		return connectGitHub(ctx, args[1:], stdout)
-	}
-	if len(args) >= 1 && args[0] == "imessage" {
-		return connectIMessage(ctx, args[1:], stdout)
+	// github and imessage never defined --json; strip it here, route their setup
+	// prose to stderr, and answer with a receipt. connect filesystem already owns
+	// its own --json branch and its receipt, so it is left alone.
+	if len(args) >= 1 && (args[0] == "github" || args[0] == "imessage") {
+		source := args[0]
+		jsonOut := false
+		rest := make([]string, 0, len(args))
+		for _, a := range args[1:] {
+			if a == "--json" {
+				jsonOut = true
+				continue
+			}
+			rest = append(rest, a)
+		}
+		out := stdout
+		if jsonOut {
+			out = stderr
+		}
+		var err error
+		if source == "github" {
+			err = connectGitHub(ctx, rest, out)
+		} else {
+			err = connectIMessage(ctx, rest, out)
+		}
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return emitReceipt(stdout, "mora.connect."+source, 1, connectReceipt{Source: source, Connected: true})
+		}
+		return nil
 	}
 	if len(args) >= 1 && args[0] == "filesystem" {
 		return connectFilesystem(ctx, args[1:], stdout, stderr)

@@ -1587,6 +1587,16 @@ func shareRemove(cfg Config, args []string, stdout io.Writer) error {
 	return fmt.Errorf("no share or subscription named %q — see `mora share list`", name)
 }
 
+// shareVerbReceipt is the machine form of a completed share verb. It is
+// deliberately thin: enriching it would mean reading state out of the share
+// internals this plan is forbidden to touch. A later phase may add fields —
+// additions are minor, removals need a schema_version bump.
+type shareVerbReceipt struct {
+	Verb string `json:"verb"`
+	Name string `json:"name,omitempty"`
+	OK   bool   `json:"ok"`
+}
+
 const shareUsage = "usage: mora share <keygen | fingerprint | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | gc [<name>] | storage-limit <bytes> | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
@@ -1603,6 +1613,38 @@ func cmdShare(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	}
 	if err := shareGuardPaths(cfg); err != nil {
 		return err
+	}
+	// Plan 01-07 wraps share at the DISPATCH site ONLY. No line inside any share
+	// verb is changed by the envelope work: --json is stripped here (most verbs
+	// never defined the flag), the verb's own human prose is routed to stderr so
+	// stdout carries one document, and the receipt is emitted after the verb
+	// returns. Share internals, crypto, manifest handling, and every security
+	// property are untouched. `list` is the sole exception — it already owned a
+	// --json branch, so it keeps it and emits its own richer receipt.
+	if args[0] != "list" {
+		jsonOut := false
+		rest := make([]string, 0, len(args))
+		for _, a := range args {
+			if a == "--json" {
+				jsonOut = true
+				continue
+			}
+			rest = append(rest, a)
+		}
+		if jsonOut {
+			verbArgs := rest
+			name := ""
+			if len(verbArgs) > 1 && !strings.HasPrefix(verbArgs[1], "-") {
+				name = verbArgs[1]
+			}
+			if err := cmdShare(ctx, verbArgs, stderr, stderr, stdin); err != nil {
+				return err
+			}
+			return emitReceipt(stdout, "mora.share."+verbArgs[0], 1, shareVerbReceipt{
+				Verb: verbArgs[0], Name: name, OK: true,
+			})
+		}
+		args = rest
 	}
 	switch args[0] {
 	case "keygen":
