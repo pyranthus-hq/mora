@@ -51,12 +51,8 @@ func (c LineCorrection) Validate() error {
 	return nil
 }
 
-type CommitmentCitation struct {
-	Citation     Citation `json:"citation"`
-	CommitmentID string   `json:"commitment_id,omitempty"`
-	Role         string   `json:"role"`
-	EvidenceRef  string   `json:"evidence_ref,omitempty"`
-}
+type CommitmentCitation = commitment.Citation
+
 type CitedLine struct {
 	Text                string               `json:"text"`
 	Attendee            string               `json:"attendee,omitempty"`
