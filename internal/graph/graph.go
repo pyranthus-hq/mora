@@ -680,22 +680,7 @@ const maxNameMergeClusters = 4
 // and googlemail.com == gmail.com — these are provably the same mailbox. Every other
 // provider is left byte-exact (only Gmail has these semantics), and phone handles
 // key to themselves.
-func mailboxKey(addr string) string {
-	addr = strings.ToLower(strings.TrimSpace(addr))
-	at := strings.LastIndexByte(addr, '@')
-	if at < 0 {
-		return addr
-	}
-	local, host := addr[:at], addr[at+1:]
-	if host == "gmail.com" || host == "googlemail.com" {
-		if i := strings.IndexByte(local, '+'); i >= 0 {
-			local = local[:i]
-		}
-		local = strings.ReplaceAll(local, ".", "")
-		host = "gmail.com"
-	}
-	return local + "@" + host
-}
+func mailboxKey(addr string) string { return identitypkg.MailboxKey(addr) }
 
 // unionFind is a tiny deterministic disjoint-set over string keys.
 type unionFind struct{ parent map[string]string }
