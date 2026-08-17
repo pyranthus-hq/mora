@@ -26,39 +26,11 @@ func urgentTestMem(from, title, body string, occurred time.Time) Memory {
 	}
 }
 
-func TestIsUrgentKnownHumanDeadlineRecent(t *testing.T) {
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	m := urgentTestMem("alice@acme.com", "MSA sign-off", "Please review and sign the MSA by end of day today.", now.Add(-2*time.Hour))
-	ok, phrase := isUrgent(m, now)
-	if !ok {
-		t.Fatalf("known-human + deadline + recent must be urgent")
-	}
-	if phrase == "" {
-		t.Fatalf("must return the matched deadline phrase for the snippet anchor")
-	}
-}
-
 func TestIsUrgentServiceSenderExcluded(t *testing.T) {
 	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 	m := urgentTestMem("no-reply@marketing.com", "URGENT: act now", "Final notice — respond by today!", now.Add(-1*time.Hour))
 	if ok, _ := isUrgent(m, now); ok {
 		t.Fatalf("a service/no-reply sender must never reach the urgent shelf (spam guard)")
-	}
-}
-
-func TestIsUrgentStaleArrivalExcluded(t *testing.T) {
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	m := urgentTestMem("bob@acme.com", "Old deadline", "This was due by end of day.", now.Add(-10*24*time.Hour))
-	if ok, _ := isUrgent(m, now); ok {
-		t.Fatalf("an item that arrived long ago must not be urgent (wall-clock recency gate)")
-	}
-}
-
-func TestIsUrgentNoDeadlinePhraseExcluded(t *testing.T) {
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	m := urgentTestMem("carol@acme.com", "Lunch?", "Want to grab lunch sometime next week?", now.Add(-1*time.Hour))
-	if ok, _ := isUrgent(m, now); ok {
-		t.Fatalf("a recent human email without a deadline phrase is not urgent")
 	}
 }
 
@@ -78,34 +50,9 @@ func TestIsUrgentNoSenderExcluded(t *testing.T) {
 
 // Review finding: matchDeadlinePhrase substring-matched negations.
 
-func TestIsUrgentNegatedPhraseNotUrgent(t *testing.T) {
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	m := urgentTestMem("frank@acme.com", "Re: proposal", "No rush on this, it's not urgent — whenever you get to it.", now.Add(-1*time.Hour))
-	if ok, _ := isUrgent(m, now); ok {
-		t.Fatalf("a reassuring 'not urgent' email must not reach the shelf")
-	}
-}
-
 // Issue #62 defect 2 (enrichment): Gmail actionability labels enrich the gate. A
 // user-STARRED recent human email reaches the shelf even without a deadline phrase
 // (an explicit user signal), but UNREAD+IMPORTANT alone must not (too noisy as a gate).
-func TestIsUrgentStarredWithoutDeadlinePhrase(t *testing.T) {
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	m := urgentTestMem("dave@acme.com", "Quick question", "Can you take a look when you get a sec?", now.Add(-1*time.Hour))
-	m.Meta["labels"] = []string{"STARRED"}
-	if ok, _ := isUrgent(m, now); !ok {
-		t.Fatalf("a recent user-STARRED human email should reach the shelf without a deadline phrase")
-	}
-}
-
-func TestIsUrgentUnreadImportantAloneNotUrgent(t *testing.T) {
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	m := urgentTestMem("erin@acme.com", "FYI", "Just sharing this for your awareness.", now.Add(-1*time.Hour))
-	m.Meta["labels"] = []string{"UNREAD", "IMPORTANT"}
-	if ok, _ := isUrgent(m, now); ok {
-		t.Fatalf("UNREAD+IMPORTANT alone (no deadline phrase, not starred) must not be urgent")
-	}
-}
 
 // TestAssembleUrgentShelfHigherScoreLeads: within the shelf, a higher urgency score
 // (starred/important/unread boost) leads even at equal arrival time.

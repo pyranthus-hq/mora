@@ -99,3 +99,81 @@ func TestUrgencyHelperEdges(t *testing.T) {
 		t.Fatalf("default clip len=%d", len([]rune(got)))
 	}
 }
+
+func urgentTestMem(from, title, body string, occurred time.Time) memory.Memory {
+	return memory.Memory{
+		ID:        "id-" + title,
+		Type:      "note",
+		Title:     title,
+		Text:      body,
+		Meta:      map[string]any{"from": []string{from}, "occurred_at": occurred.UTC().Format(time.RFC3339)},
+		CreatedAt: occurred.UTC().Format(time.RFC3339),
+	}
+}
+
+func isUrgent(m memory.Memory, now time.Time) (bool, string) {
+	occurred, _ := time.Parse(time.RFC3339, m.CreatedAt)
+	_, _, starred := Labels(m)
+	return Qualifies(true, occurred, now, m.Title, m.Text, starred)
+}
+
+func TestIsUrgentKnownHumanDeadlineRecent(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("alice@acme.com", "MSA sign-off", "Please review and sign the MSA by end of day today.", now.Add(-2*time.Hour))
+	ok, phrase := isUrgent(m, now)
+	if !ok {
+		t.Fatalf("known-human + deadline + recent must be urgent")
+	}
+	if phrase == "" {
+		t.Fatalf("must return the matched deadline phrase for the snippet anchor")
+	}
+}
+
+func TestIsUrgentStaleArrivalExcluded(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("bob@acme.com", "Old deadline", "This was due by end of day.", now.Add(-10*24*time.Hour))
+	if ok, _ := isUrgent(m, now); ok {
+		t.Fatalf("an item that arrived long ago must not be urgent (wall-clock recency gate)")
+	}
+}
+
+func TestIsUrgentNoDeadlinePhraseExcluded(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("carol@acme.com", "Lunch?", "Want to grab lunch sometime next week?", now.Add(-1*time.Hour))
+	if ok, _ := isUrgent(m, now); ok {
+		t.Fatalf("a recent human email without a deadline phrase is not urgent")
+	}
+}
+
+func TestIsUrgentNegatedPhraseNotUrgent(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("frank@acme.com", "Re: proposal", "No rush on this, it's not urgent — whenever you get to it.", now.Add(-1*time.Hour))
+	if ok, _ := isUrgent(m, now); ok {
+		t.Fatalf("a reassuring 'not urgent' email must not reach the shelf")
+	}
+}
+
+func TestIsUrgentStarredWithoutDeadlinePhrase(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("dave@acme.com", "Quick question", "Can you take a look when you get a sec?", now.Add(-1*time.Hour))
+	m.Meta["labels"] = []string{"STARRED"}
+	if ok, _ := isUrgent(m, now); !ok {
+		t.Fatalf("a recent user-STARRED human email should reach the shelf without a deadline phrase")
+	}
+}
+
+func TestIsUrgentUnreadImportantAloneNotUrgent(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	m := urgentTestMem("erin@acme.com", "FYI", "Just sharing this for your awareness.", now.Add(-1*time.Hour))
+	m.Meta["labels"] = []string{"UNREAD", "IMPORTANT"}
+	if ok, _ := isUrgent(m, now); ok {
+		t.Fatalf("UNREAD+IMPORTANT alone (no deadline phrase, not starred) must not be urgent")
+	}
+}
+
+func TestQualifiesRejectsNonHuman(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	if ok, _ := Qualifies(false, now.Add(-time.Hour), now, "urgent", "due today", true); ok {
+		t.Fatal("non-human qualified")
+	}
+}
