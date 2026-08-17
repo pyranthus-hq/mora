@@ -608,103 +608,19 @@ func mergeCommitmentCitations(a, b []CommitmentCitation) []CommitmentCitation {
 }
 
 func commitmentEvidenceFromMemories(mems []Memory, cfg Config) []commitmentEvidence {
-	var out []commitmentEvidence
-	self := canonicalSelfAtom(cfg, "")
+	eligible := make([]Memory, 0, len(mems))
 	for _, m := range mems {
-		if m.DeletedAt != "" || meetingpkg.IsMeetingNotification(m) || memoryIsServiceOnly(m) {
-			continue
-		}
-		citation, err := citationForMemory(m, evidenceSource(m), validFromOf(m))
-		if err != nil {
-			continue
-		}
-		counterparty, _ := commitmentCounterparty(m, cfg)
-		counterpartyKeys := commitmentCounterpartyKeys(m, counterparty)
-		appendEvidence := func(text, messageRef, blockRef, at string, party commitmentPartyRole) {
-			evidenceCitation := citation
-			if isIMessageMemory(m) && messageRef != "" {
-				var exactErr error
-				evidenceCitation, exactErr = citationForMemory(m, evidenceSource(m), at)
-				if exactErr != nil {
-					return
-				}
-			}
-			for _, segment := range closureEvidenceSegments(text) {
-				out = append(out, commitmentEvidence{
-					MemoryID: m.ID, MessageRef: messageRef, BlockRef: blockRef,
-					Text: segment, OccurredAt: at, Party: party, Authored: true,
-					Citation: evidenceCitation, Source: evidenceSource(m),
-					CounterpartyKeys: append([]string(nil), counterpartyKeys...),
-				})
-			}
-		}
-
-		switch {
-		case isGmailMemory(m):
-			messages := gmailCommitmentMessages(m)
-			parts := gmailBodyParts(m)
-			if len(messages) > 0 && len(messages) == len(parts) {
-				for i, message := range messages {
-					author := govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, message.Sender)}
-					party := commitmentPartyUnknown
-					switch {
-					case atomEqual(author, self):
-						party = commitmentPartySelf
-					case atomEqual(author, counterparty):
-						party = commitmentPartyCounterparty
-					}
-					if party == commitmentPartyUnknown {
-						continue
-					}
-					blockRef := gmailAuthoredBlockRef(message, parts[i])
-					appendEvidence(parts[i], message.MessageRef, blockRef, message.At, party)
-				}
-				continue
-			}
-			// Legacy Gmail only proves the first sender. Later body parts lack
-			// per-message authors and times, so they cannot drive a state change.
-			sender := govAtom{Kind: atomAddress, Value: normalizeIdentity(atomAddress, firstGmailSender(m))}
-			party := commitmentPartyUnknown
-			switch {
-			case atomEqual(sender, self):
-				party = commitmentPartySelf
-			case atomEqual(sender, counterparty):
-				party = commitmentPartyCounterparty
-			}
-			if party != commitmentPartyUnknown && len(parts) > 0 {
-				appendEvidence(parts[0], "", "", validFromOf(m), party)
-			}
-		case isIMessageMemory(m):
-			if messages, present := imessageCommitmentMessages(m); present {
-				for _, message := range messages {
-					appendEvidence(message.Body, message.MessageRef, message.BlockRef, message.At, message.Party)
-				}
-				continue
-			}
-			for _, turn := range conversationTurns(m.Text) {
-				party := commitmentPartyCounterparty
-				if turn.Self {
-					party = commitmentPartySelf
-				}
-				appendEvidence(turn.Body, "", "", validFromOf(m), party)
-			}
-		case m.Provider == "" && (m.Source == "manual" || m.Source == "mcp"):
-			appendEvidence(m.Text, "", "", validFromOf(m), commitmentPartySelf)
+		if m.DeletedAt == "" && !meetingpkg.IsMeetingNotification(m) && !memoryIsServiceOnly(m) {
+			eligible = append(eligible, m)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].OccurredAt != out[j].OccurredAt {
-			return out[i].OccurredAt < out[j].OccurredAt
-		}
-		if out[i].MemoryID != out[j].MemoryID {
-			return out[i].MemoryID < out[j].MemoryID
-		}
-		return out[i].Text < out[j].Text
-	})
+	projected := commitmentpkg.EvidenceFromMemories(eligible, selfEmails(cfg))
+	out := make([]commitmentEvidence, len(projected))
+	for i, e := range projected {
+		out[i] = commitmentEvidence{MemoryID: e.MemoryID, MessageRef: e.MessageRef, BlockRef: e.BlockRef, Text: e.Text, OccurredAt: e.OccurredAt, Party: commitmentPartyRole(e.Party), Authored: e.Authored, Citation: e.Citation, Source: e.Source, CounterpartyKeys: e.CounterpartyKeys}
+	}
 	return out
 }
-
-func closureEvidenceSegments(text string) []string { return commitmentpkg.ClosureSegments(text) }
 
 func commitmentObjectOverlap(a, b string) int     { return commitmentpkg.ObjectOverlap(a, b) }
 func commitmentEvidenceLess(a, b Commitment) bool { return commitmentpkg.EvidenceLess(a, b) }
