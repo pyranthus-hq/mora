@@ -1,12 +1,13 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "issue": 205,
   "audited_at": "2026-07-29",
   "contract": {
     "real_dispatch_test": "TestCLIRegistryRealRunDispatch",
     "drift_and_mutation_test": "TestCLIRegistryMatchesProductionDispatch",
     "mutation": "Rename or remove the exact production dispatch token; the drift test and the corresponding real-Run unknown-token comparison must both fail.",
-    "platform_policy": "all means the dispatch and refusal contract runs on every OS; native side effects require a separately named platform test."
+    "platform_policy": "all means the dispatch and refusal contract runs on every OS; native side effects require a separately named platform test.",
+    "json_contract_policy": "json_contract is result, receipt, or exempt; every exempt row must state a reason."
   },
   "commands": [
     {"path": "init", "kind": "verb", "platform": "all"},
@@ -25,7 +26,7 @@
     {"path": "index", "kind": "verb", "platform": "all"},
     {"path": "tasks", "kind": "verb", "platform": "all"},
     {"path": "pulse", "kind": "verb", "platform": "all"},
-    {"path": "lint", "kind": "verb", "platform": "all"},
+    {"path": "lint", "kind": "verb", "platform": "all", "json_contract": "result", "payload": "mora.lint.report"},
     {"path": "backup", "kind": "verb", "platform": "all"},
     {"path": "doctor", "kind": "verb", "platform": "all"},
     {"path": "config", "kind": "verb", "platform": "all"},

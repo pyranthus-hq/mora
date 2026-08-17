@@ -25,14 +25,17 @@ type cliRegistry struct {
 		DriftAndMutationTest string `json:"drift_and_mutation_test"`
 		Mutation             string `json:"mutation"`
 		PlatformPolicy       string `json:"platform_policy"`
+		JSONContractPolicy   string `json:"json_contract_policy"`
 	} `json:"contract"`
 	Commands []cliRegistryRow `json:"commands"`
 }
 
 type cliRegistryRow struct {
-	Path     string `json:"path"`
-	Kind     string `json:"kind"`
-	Platform string `json:"platform"`
+	Path         string `json:"path"`
+	Kind         string `json:"kind"`
+	Platform     string `json:"platform"`
+	JSONContract string `json:"json_contract,omitempty"`
+	Payload      string `json:"payload,omitempty"`
 }
 
 type cliBehaviorEvidence struct {
@@ -88,13 +91,14 @@ func loadCLIBehaviorEvidence(t *testing.T) cliBehaviorEvidence {
 // registry and its real-Run probe row move with it.
 func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 	registry := loadCLIRegistry(t)
-	if registry.SchemaVersion != 1 || registry.Issue != 205 {
-		t.Fatalf("registry header = schema %d issue %d, want schema 1 issue 205", registry.SchemaVersion, registry.Issue)
+	if registry.SchemaVersion != 2 || registry.Issue != 205 {
+		t.Fatalf("registry header = schema %d issue %d, want schema 2 issue 205", registry.SchemaVersion, registry.Issue)
 	}
 	if registry.Contract.RealDispatchTest == "" ||
 		registry.Contract.DriftAndMutationTest == "" ||
 		registry.Contract.Mutation == "" ||
-		registry.Contract.PlatformPolicy == "" {
+		registry.Contract.PlatformPolicy == "" ||
+		registry.Contract.JSONContractPolicy == "" {
 		t.Fatal("registry evidence contract must name real dispatch, mutation, and platform policy")
 	}
 
@@ -114,6 +118,13 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		case "verb", "alias", "subcommand":
 		default:
 			t.Fatalf("%s: unknown registry kind %q", row.Path, row.Kind)
+		}
+		if row.JSONContract != "" {
+			switch row.JSONContract {
+			case "result", "receipt", "exempt":
+			default:
+				t.Fatalf("%s: unknown json contract %q", row.Path, row.JSONContract)
+			}
 		}
 	}
 

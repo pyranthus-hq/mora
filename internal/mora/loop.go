@@ -113,6 +113,10 @@ func ExitCodeFor(err error) (int, bool) {
 	if errors.As(err, &e) {
 		return e.code, true
 	}
+	var moraErr moraError
+	if errors.As(err, &moraErr) {
+		return moraErr.ExitCode(), true
+	}
 	return 0, false
 }
 

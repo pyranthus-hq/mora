@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,15 +14,28 @@ import (
 	"time"
 )
 
-func cmdLint(ctx context.Context, args []string, stdout io.Writer) (err error) {
+func cmdLint(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
+	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if parseErr := fs.Parse(args); parseErr != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+	}
+	if fs.NArg() != 0 {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	// lint-weekly producer chokepoint (HEALTH-11).
-	defer stampChokepoint(cfg, stdout, args, "lint-weekly", producerClock(), &err)
+	stampOutput := stdout
+	if *jsonOut {
+		stampOutput = stderr
+	}
+	defer stampChokepoint(cfg, stampOutput, args, "lint-weekly", producerClock(), &err)
 	required := []string{"index.md", "priority-map.md", "live-tasks.md", "heartbeat.md", "auto-resolver.md", "meetings/ledger.md", "log.md"}
-	var issues []string
+	issues := make([]string, 0)
 	for _, rel := range required {
 		if _, err := os.Stat(filepath.Join(cfg.VaultDir, rel)); err != nil {
 			issues = append(issues, "missing "+rel)
@@ -31,6 +45,12 @@ func cmdLint(ctx context.Context, args []string, stdout io.Writer) (err error) {
 		if strings.HasPrefix(filepath.Join(cfg.ConfigDir, "tokens"), cfg.VaultDir) {
 			issues = append(issues, "tokens directory is inside vault")
 		}
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.lint.report", 1, struct {
+			OK     bool     `json:"ok"`
+			Issues []string `json:"issues"`
+		}{OK: len(issues) == 0, Issues: issues})
 	}
 	if len(issues) == 0 {
 		fmt.Fprintln(stdout, "lint ok")
