@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/commitment"
+	"github.com/pyranthus-hq/mora/internal/identity"
 	"github.com/pyranthus-hq/mora/internal/leasefile"
 	"io/fs"
 	mrand "math/rand/v2"
@@ -23,11 +24,7 @@ const (
 	AcquireTimeout = 2 * time.Second
 )
 
-type Atom struct {
-	Provider string `json:"provider,omitempty"`
-	Kind     string `json:"kind"`
-	Value    string `json:"value"`
-}
+type Atom = identity.Atom
 type Entry struct {
 	ID                 string               `json:"id"`
 	Kind               string               `json:"kind"`

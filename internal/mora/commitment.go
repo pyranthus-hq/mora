@@ -34,47 +34,15 @@ const (
 	commitDueRelative     = commitmentpkg.DueRelative
 	commitDueExplicitDate = commitmentpkg.DueExplicitDate
 
-	commitClosureNone = "none"
+	commitClosureNone = commitmentpkg.ClosureNone
 
-	commitCitationOpener     = "opener"
-	commitCitationClosure    = "closure"
-	commitCitationSupporting = "supporting"
+	commitCitationOpener     = commitmentpkg.CitationOpener
+	commitCitationClosure    = commitmentpkg.CitationClosure
+	commitCitationSupporting = commitmentpkg.CitationSupporting
 )
 
-// Commitment is the typed, derived projection of immutable opening evidence.
-// It is materialized with the whole-vault index generation and is never written
-// into a vault memory.
-type Commitment struct {
-	ID           string  `json:"id,omitempty"`
-	Owner        govAtom `json:"owner"`
-	Counterparty govAtom `json:"counterparty"`
-	// CounterpartyLabel is explicit name-grain attribution, not identity. It is
-	// used only when authored text names an addressee but the source supplies no
-	// provider atom. It never enters the entity graph or merge machinery.
-	CounterpartyLabel string               `json:"counterparty_label,omitempty"`
-	CounterpartyKeys  []string             `json:"counterparty_keys,omitempty"`
-	Direction         Direction            `json:"direction"`
-	Summary           string               `json:"summary"`
-	OpenedBy          commitSpan           `json:"opened_by"`
-	Due               commitDue            `json:"due"`
-	State             string               `json:"state"`
-	ClosureRef        string               `json:"closure_ref"`
-	SupersededBy      string               `json:"superseded_by,omitempty"`
-	StateUncertain    bool                 `json:"state_uncertain,omitempty"`
-	Gap               string               `json:"gap,omitempty"`
-	Citations         []CommitmentCitation `json:"citations"`
-	DuplicateOf       string               `json:"duplicate_of,omitempty"`
-	ReviewedUseful    bool                 `json:"reviewed_useful,omitempty"`
-}
-
-type commitSpan struct {
-	MemoryID     string   `json:"memory_id"`
-	MessageRef   string   `json:"message_ref,omitempty"`
-	BlockRef     string   `json:"block_ref,omitempty"`
-	AncestorRefs []string `json:"ancestor_refs,omitempty"`
-	Quote        string   `json:"quote"`
-	OccurredAt   string   `json:"occurred_at,omitempty"`
-}
+type Commitment = commitmentpkg.Record
+type commitSpan = commitmentpkg.Span
 
 type commitDue = commitmentpkg.Due
 
@@ -94,10 +62,8 @@ type commitmentMessageEvidence struct {
 	AncestorRefs []string `json:"ancestor_refs,omitempty"`
 }
 
-// CommitmentCitation assigns an evidence role without changing BriefCitation's
-// long-standing provenance contract. Closure and duplicate evidence therefore
-// add typed citations instead of replacing the opening citation.
-type CommitmentCitation = meetingpkg.CommitmentCitation
+type CommitmentCitation = commitmentpkg.Citation
+
 type commitmentPartyRole string
 
 const (
@@ -130,10 +96,10 @@ type commitmentSpeechContext struct {
 }
 
 func commitmentSpeechAtom(a govAtom) commitmentpkg.Atom {
-	return commitmentpkg.Atom{Provider: a.Provider, Kind: a.Kind, Value: a.Value}
+	return a
 }
 func commitmentGovAtom(a commitmentpkg.Atom) govAtom {
-	return govAtom{Provider: a.Provider, Kind: a.Kind, Value: a.Value}
+	return a
 }
 func classifyCommitmentSpeech(text string, speech commitmentSpeechContext) (govAtom, Direction, bool) {
 	var reported *commitmentpkg.Atom

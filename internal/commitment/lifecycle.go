@@ -2,27 +2,42 @@ package commitment
 
 import (
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/identity"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 )
 
-type Atom struct{ Provider, Kind, Value string }
+type Atom = identity.Atom
 type Span struct {
-	MemoryID, MessageRef, BlockRef, Quote, OccurredAt string
-	AncestorRefs                                      []string
+	MemoryID     string   `json:"memory_id"`
+	MessageRef   string   `json:"message_ref,omitempty"`
+	BlockRef     string   `json:"block_ref,omitempty"`
+	AncestorRefs []string `json:"ancestor_refs,omitempty"`
+	Quote        string   `json:"quote"`
+	OccurredAt   string   `json:"occurred_at,omitempty"`
 }
 type Item struct {
-	ID                                                string
-	Owner, Counterparty                               Atom
-	CounterpartyKeys                                  []string
-	Direction                                         Direction
-	Summary                                           string
-	OpenedBy                                          Span
-	Due                                               Due
-	State, ClosureRef, SupersededBy, Gap, DuplicateOf string
+	ID                string     `json:"id,omitempty"`
+	Owner             Atom       `json:"owner"`
+	Counterparty      Atom       `json:"counterparty"`
+	CounterpartyLabel string     `json:"counterparty_label,omitempty"`
+	CounterpartyKeys  []string   `json:"counterparty_keys,omitempty"`
+	Direction         Direction  `json:"direction"`
+	Summary           string     `json:"summary"`
+	OpenedBy          Span       `json:"opened_by"`
+	Due               Due        `json:"due"`
+	State             string     `json:"state"`
+	ClosureRef        string     `json:"closure_ref"`
+	SupersededBy      string     `json:"superseded_by,omitempty"`
+	StateUncertain    bool       `json:"state_uncertain,omitempty"`
+	Gap               string     `json:"gap,omitempty"`
+	Citations         []Citation `json:"citations"`
+	DuplicateOf       string     `json:"duplicate_of,omitempty"`
+	ReviewedUseful    bool       `json:"reviewed_useful,omitempty"`
 }
+
 type Party string
 
 const (
