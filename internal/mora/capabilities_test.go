@@ -67,10 +67,11 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 			if _, duplicate := want[row.Path]; duplicate {
 				t.Fatalf("registry declares path %q twice", row.Path)
 			}
-			want[row.Path] = capabilitiesCommand{
-				Path: row.Path, Kind: row.Kind, Platform: row.Platform,
-				JSONContract: row.JSONContract, Payload: row.Payload, Reason: row.Reason,
-			}
+			// A direct conversion rather than a field-by-field literal: it makes
+			// the compiler, not this test's author, assert that the payload row
+			// and the registry row have exactly the same fields in the same
+			// order. Adding a field to one and not the other stops compiling.
+			want[row.Path] = capabilitiesCommand(row)
 		}
 		got := map[string]capabilitiesCommand{}
 		for _, command := range payload.Commands {
@@ -105,10 +106,9 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		registry := loadErrorCodeRegistry(t)
 		want := map[string]capabilitiesErrorCode{}
 		for _, row := range registry.Codes {
-			want[row.Code] = capabilitiesErrorCode{
-				Code: row.Code, Class: row.Class, ErrorClass: row.ErrorClass,
-				ExitCode: row.ExitCode, Retryable: row.Retryable, Meaning: row.Meaning,
-			}
+			// Converted, not copied field by field, for the same reason as
+			// `commands` above: field correspondence becomes a compile error.
+			want[row.Code] = capabilitiesErrorCode(row)
 		}
 		got := map[string]capabilitiesErrorCode{}
 		for _, code := range payload.ErrorCodes {
