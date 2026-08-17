@@ -7,12 +7,13 @@ const (
 	storageCeilingBytes = storage.CeilingBytes
 )
 
+func productStorageRoots(cfg Config) storage.Roots {
+	return storage.Roots{VaultDir: cfg.VaultDir, ConfigDir: cfg.ConfigDir, DataDir: cfg.DataDir, StateDir: cfg.StateDir}
+}
+
 // productStorageBytes keeps Config owned by the composition root.
 func productStorageBytes(cfg Config) (int64, error) {
-	return storage.ProductBytes(storage.Roots{
-		VaultDir: cfg.VaultDir, ConfigDir: cfg.ConfigDir,
-		DataDir: cfg.DataDir, StateDir: cfg.StateDir,
-	})
+	return storage.ProductBytes(productStorageRoots(cfg))
 }
 
 func storageStatus(bytes int64) string { return storage.Status(bytes) }

@@ -17,41 +17,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// shareStorageLimit is the durable admission opt-in at
-// ConfigDir/share/storage-limit.json. Absent ⇒ the default 15 GiB ceiling.
-type shareStorageLimit struct {
-	Bytes     int64  `json:"bytes"`
-	UpdatedAt string `json:"updated_at"`
-}
+type shareStorageLimit = sharingpkg.StorageLimit
 
-func shareStorageLimitPath(cfg Config) string {
-	return filepath.Join(cfg.ConfigDir, "share", "storage-limit.json")
-}
-
-// shareStorageLimitBytes returns the configured whole-product limit, defaulting
-// to the shipped doctor hard ceiling (15 GiB) when no opt-in file exists.
-func shareStorageLimitBytes(cfg Config) (int64, error) {
-	b, err := os.ReadFile(shareStorageLimitPath(cfg))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return storageCeilingBytes, nil
-		}
-		return 0, err
-	}
-	var lim shareStorageLimit
-	if err := json.Unmarshal(b, &lim); err != nil {
-		return 0, fmt.Errorf("%s is corrupt: %w", shareStorageLimitPath(cfg), err)
-	}
-	if lim.Bytes <= 0 {
-		return 0, fmt.Errorf("%s is corrupt: bytes must be positive", shareStorageLimitPath(cfg))
-	}
-	return lim.Bytes, nil
-}
+func shareStorageLimitPath(cfg Config) string { return sharingpkg.StorageLimitPath(cfg.ConfigDir) }
 
 // liveImportOwner returns the run-id that currently, validly holds the import
 // lease for name (within TTL), or "" if none.
@@ -230,7 +202,7 @@ func cmdShareStorageLimit(cfg Config, args []string, stdout io.Writer, now time.
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		return errors.New("usage: mora share storage-limit <bytes|15GiB>")
 	}
-	bytes, err := parseByteSize(args[0])
+	bytes, err := sharingpkg.ParseByteSize(args[0])
 	if err != nil {
 		return err
 	}
@@ -242,91 +214,30 @@ func cmdShareStorageLimit(cfg Config, args []string, stdout io.Writer, now time.
 		return err
 	}
 	defer rel()
-	lim := shareStorageLimit{Bytes: bytes, UpdatedAt: now.UTC().Format(time.RFC3339)}
-	body, merr := json.MarshalIndent(lim, "", "  ")
-	if merr != nil {
-		return merr
-	}
-	if werr := atomicio.WriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); werr != nil {
-		return werr
+	if err := sharingpkg.WriteStorageLimit(cfg.ConfigDir, bytes, now); err != nil {
+		return err
 	}
 	fmt.Fprintf(stdout, "share storage limit set to %s (%d bytes). Doctor's recommended ceiling stays 15 GiB.\n", formatBytes(bytes), bytes)
 	return nil
 }
 
-// shareStorageAdmission holds the one stable limit read while storage.lock is
-// held. Every check re-accounts the actual product footprint, so prior corpus
-// writes, transport staging, SQLite sidecars, and every other subscription are
-// included rather than tracked by a lossy local counter.
-type shareStorageAdmission struct {
-	cfg   Config
-	name  string
-	limit int64
-}
+type shareStorageAdmission struct{ inner *sharingpkg.StorageAdmission }
 
 func newShareStorageAdmission(cfg Config, name string) (*shareStorageAdmission, error) {
-	limit, err := shareStorageLimitBytes(cfg)
+	a, err := sharingpkg.NewStorageAdmission(productStorageRoots(cfg), cfg.ConfigDir, name, storageCeilingBytes)
 	if err != nil {
 		return nil, err
 	}
-	return &shareStorageAdmission{cfg: cfg, name: name, limit: limit}, nil
+	return &shareStorageAdmission{inner: a}, nil
 }
-
-func (a *shareStorageAdmission) used() (int64, error) {
-	used, uerr := productStorageBytes(a.cfg)
-	if uerr != nil {
-		return 0, fmt.Errorf("share %q: storage accounting failed (fail-closed): %w", a.name, uerr)
-	}
-	return used, nil
-}
-
 func (a *shareStorageAdmission) checkAdditional(next int64) error {
-	if next < 0 {
-		return fmt.Errorf("share %q: invalid negative storage reservation %d", a.name, next)
-	}
-	used, err := a.used()
-	if err != nil {
-		return err
-	}
-	if used > math.MaxInt64-next {
-		return fmt.Errorf("share %q: storage reservation overflows int64", a.name)
-	}
-	return a.checkNeeded(used + next)
+	return a.inner.CheckAdditional(next)
 }
-
-func (a *shareStorageAdmission) checkCurrent() error {
-	return a.checkAdditional(0)
-}
-
-func (a *shareStorageAdmission) remaining() (int64, error) {
-	used, err := a.used()
-	if err != nil {
-		return 0, err
-	}
-	if err := a.checkNeeded(used); err != nil {
-		return 0, err
-	}
-	return a.limit - used, nil
-}
-
-func (a *shareStorageAdmission) checkNeeded(needed int64) error {
-	if needed <= a.limit {
-		return nil
-	}
-	// The opt-in file itself is part of whole-product accounting. Reserve a page
-	// of headroom so replacing a short limit (for example 16) with the printed
-	// multi-digit value cannot make the immediate retry miss by a few bytes.
-	const decisionFileHeadroom = int64(4 << 10)
-	required := needed
-	if required <= math.MaxInt64-decisionFileHeadroom {
-		required += decisionFileHeadroom
-	}
-	return fmt.Errorf("share %q needs at least %d whole-product bytes; configured limit is %d (doctor ceiling 15 GiB). Run 'mora share storage-limit %d' to opt in, free space/run 'mora share gc', or unsubscribe.", a.name, required, a.limit, required)
-}
+func (a *shareStorageAdmission) checkCurrent() error       { return a.inner.CheckCurrent() }
+func (a *shareStorageAdmission) remaining() (int64, error) { return a.inner.Remaining() }
 
 // admitShareGeneration refuses a build whose whole-product footprint would cross
-// the configured limit. The refusal is an explicit oversubscription DECISION
-// (never a dead end): it names the required bytes and the storage-limit command.
+// the configured limit. Mora owns entry conversion; sharing owns admission.
 func admitShareGeneration(cfg Config, name string, entries []shareBlobEntry) error {
 	var genBytes int64
 	for _, e := range entries {
@@ -336,63 +247,5 @@ func admitShareGeneration(cfg Config, name string, entries []shareBlobEntry) err
 		}
 		genBytes += n
 	}
-	return admitShareGenerationBytes(cfg, name, genBytes, len(entries))
-}
-
-// admitShareGenerationBytes is the metadata-only form used for the protocol's
-// legal 50,000 x 4 MiB upper-bound decision without allocating a 195 GiB slice.
-// Production's entry-based path delegates here after checked summation.
-func admitShareGenerationBytes(cfg Config, name string, corpusBytes int64, entries int) error {
-	// The index stores each body in the ordinary table and again in FTS5's
-	// content/index structures. A corpus-sized guess is not a sufficient retry
-	// decision. Reserve a deliberately conservative bounded expansion plus fixed
-	// SQLite/page and per-row overhead so the printed storage-limit value admits
-	// the same input instead of leading to a second SQLITE_FULL refusal.
-	const (
-		generationExpansion = int64(8)        // corpus + content table + FTS/index headroom
-		generationBaseBytes = int64(64 << 10) // schema and minimum SQLite pages
-		generationRowBytes  = int64(4 << 10)  // row/page/term metadata headroom
-	)
-	if corpusBytes < 0 || entries < 0 || corpusBytes > (math.MaxInt64-generationBaseBytes)/generationExpansion {
-		return fmt.Errorf("share %q: generation reservation overflows int64", name)
-	}
-	entryCount := int64(entries)
-	reserve := corpusBytes*generationExpansion + generationBaseBytes
-	if entryCount > (math.MaxInt64-reserve)/generationRowBytes {
-		return fmt.Errorf("share %q: generation reservation overflows int64", name)
-	}
-	reserve += entryCount * generationRowBytes
-	a, err := newShareStorageAdmission(cfg, name)
-	if err != nil {
-		return err
-	}
-	return a.checkAdditional(reserve)
-}
-
-// parseByteSize accepts a plain byte count or a binary-unit suffix (KiB/MiB/GiB/
-// TiB, case-insensitive; a bare number is bytes).
-func parseByteSize(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	up := strings.ToUpper(s)
-	mult := int64(1)
-	// Longest suffix first, in a DETERMINISTIC order, so "15GIB" is not matched by
-	// the bare "B" unit.
-	for _, u := range []struct {
-		suf string
-		m   int64
-	}{{"TIB", 1 << 40}, {"GIB", 1 << 30}, {"MIB", 1 << 20}, {"KIB", 1 << 10}, {"B", 1}} {
-		if strings.HasSuffix(up, u.suf) {
-			mult = u.m
-			up = strings.TrimSpace(strings.TrimSuffix(up, u.suf))
-			break
-		}
-	}
-	n, err := strconv.ParseInt(up, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid size %q — use a byte count or a binary unit like 15GiB", s)
-	}
-	if n < 0 || (mult != 0 && n > math.MaxInt64/mult) {
-		return 0, fmt.Errorf("invalid size %q — value is out of range", s)
-	}
-	return n * mult, nil
+	return sharingpkg.AdmitGenerationBytes(productStorageRoots(cfg), cfg.ConfigDir, name, storageCeilingBytes, genBytes, len(entries))
 }

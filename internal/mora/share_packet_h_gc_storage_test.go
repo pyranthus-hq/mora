@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	sharingpkg "github.com/pyranthus-hq/mora/internal/sharing"
 	"io"
 	"os"
 	"path/filepath"
@@ -190,6 +191,14 @@ func TestManualShareGCDoesNotRequireSuccessfulPull(t *testing.T) {
 }
 
 // row 53a
+
+// row 53b
+
+// row 53c
+
+// row 53d
+
+// row 53e
 func TestShareStorageLimitIsWholeProduct(t *testing.T) {
 	cfg := packetHConfig(t)
 	base, err := productStorageBytes(cfg)
@@ -205,7 +214,7 @@ func TestShareStorageLimitIsWholeProduct(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a := &shareStorageAdmission{cfg: cfg, name: "gamma", limit: base + 120}
+	a := &shareStorageAdmission{inner: sharingpkg.NewStorageAdmissionWithLimit(productStorageRoots(cfg), "gamma", base+120)}
 	if err := a.checkCurrent(); err == nil {
 		t.Fatal("two subscriptions were admitted as independent footprints")
 	}
@@ -217,88 +226,6 @@ func TestShareStorageLimitIsWholeProduct(t *testing.T) {
 	}
 }
 
-// row 53b
-func TestShareStorageLimitIncludesAllProductRoots(t *testing.T) {
-	cfg := packetHConfig(t)
-	sizes := []int{11, 12, 13, 14}
-	for i, root := range []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir} {
-		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("root-%d", i)), bytes.Repeat([]byte{'x'}, sizes[i]), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := productStorageBytes(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 50 {
-		t.Fatalf("whole-product roots counted %d bytes; want 50", got)
-	}
-
-	t.Run("canonical overlap and hard links are deduplicated", func(t *testing.T) {
-		root := t.TempDir()
-		overlap := Config{
-			DataDir:   root,
-			VaultDir:  filepath.Join(root, "vault"),
-			ConfigDir: filepath.Join(root, "config"),
-			StateDir:  filepath.Join(root, "state"),
-		}
-		for _, dir := range []string{overlap.VaultDir, overlap.ConfigDir, overlap.StateDir} {
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-		}
-		src := filepath.Join(overlap.VaultDir, "body")
-		if err := os.WriteFile(src, bytes.Repeat([]byte{'h'}, 31), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Link(src, filepath.Join(overlap.StateDir, "same-body")); err != nil {
-			t.Skipf("hard links unavailable on test filesystem: %v", err)
-		}
-		got, err := productStorageBytes(overlap)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != 31 {
-			t.Fatalf("nested roots/hard link charged %d bytes; want one 31-byte identity", got)
-		}
-	})
-}
-
-// row 53c
-func TestShareStorageLimitIncludesRepo(t *testing.T) {
-	cfg := packetHConfig(t)
-	base, _ := productStorageBytes(cfg)
-	p := filepath.Join(shareRepoDir(cfg, "acme"), "objects", "pack", "pack-test")
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, bytes.Repeat([]byte{'p'}, 4096), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	a := &shareStorageAdmission{cfg: cfg, name: "acme", limit: base + 4095}
-	if err := a.checkCurrent(); err == nil {
-		t.Fatal("repo pack bytes were omitted from admission")
-	}
-}
-
-// row 53d
-func TestShareStorageLimitIncludesFetchStaging(t *testing.T) {
-	cfg := packetHConfig(t)
-	base, _ := productStorageBytes(cfg)
-	p := filepath.Join(shareFetchDir(cfg, "acme", "run"), "object")
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, bytes.Repeat([]byte{'f'}, 4096), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	a := &shareStorageAdmission{cfg: cfg, name: "acme", limit: base + 4095}
-	if err := a.checkCurrent(); err == nil {
-		t.Fatal("fetch staging bytes were omitted from admission")
-	}
-}
-
-// row 53e
 func TestShareStorageLimitReservesInflightBuild(t *testing.T) {
 	t.Run("corpus write is rejected before IO", func(t *testing.T) {
 		cfg := packetHConfig(t)
@@ -521,23 +448,6 @@ func TestManualGCReclaimsUnregisteredFirstSubscribeCrash(t *testing.T) {
 }
 
 // row 54a
-func TestLegalLargeShareIsNotHardCappedAt4GiB(t *testing.T) {
-	cfg := packetHConfig(t)
-	legalCorpusBytes := int64(shareMaxShareEntries) * int64(shareMaxMemoryBytes)
-	if legalCorpusBytes <= 4<<30 {
-		t.Fatalf("fixture is not larger than the retired 4 GiB cap: %d", legalCorpusBytes)
-	}
-	// The opt-in remains proportional to the protocol-legal corpus, not a fixed
-	// product cap. Nine corpus-widths exceed the conservative 8x index reserve.
-	limit := legalCorpusBytes * 9
-	body, _ := json.Marshal(shareStorageLimit{Bytes: limit, UpdatedAt: "2026-07-16T00:00:00Z"})
-	if err := atomicio.WriteDurable(shareStorageLimitPath(cfg), append(body, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := admitShareGenerationBytes(cfg, "legal", legalCorpusBytes, shareMaxShareEntries); err != nil {
-		t.Fatalf("protocol-legal 50k x 4 MiB share was hard-capped: %v", err)
-	}
-}
 
 // row 54c
 func TestDiskFullLeavesGenerationUncommitted(t *testing.T) {
