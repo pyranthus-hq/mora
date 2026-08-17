@@ -200,10 +200,11 @@ which is exactly the concurrency model. Pinned by `sources_lock_test.go`.
 
 Four loops wait on a contended `.lock`: `acquireSourcesLock`
 (`sources_lock.go`), `governance.Store.Acquire` (`internal/governance/store.go`, adapted by Mora),
-`acquireProducerLock` (`producer_lock.go`), and the release-side
+`internal/health.ProducerStore.Acquire`, and the release-side
 `removeLeaseFileGuarded` (`loop.go`). Each is bounded by a **stated wall-clock
-deadline**, checked through the shared `sleepWithinDeadline` helper, which
-refuses a pause that would run past the deadline (so a loop never overshoots its
+deadline** and performs the same before-and-after-sleep check (`sleepWithinDeadline`
+in Mora; the equivalent injected-clock check in `ProducerStore`), which refuses a
+pause that would run past the deadline (so a loop never overshoots its
 budget by a backoff draw, and a just-reaped lease's immediate retry is still
 deadline-checked). The deadline is always real `time.Now()` — never a caller's
 injected logical `now`, which governs only TTL and stamp decisions.
