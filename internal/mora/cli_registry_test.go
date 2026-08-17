@@ -26,6 +26,13 @@ type cliRegistry struct {
 		Mutation             string `json:"mutation"`
 		PlatformPolicy       string `json:"platform_policy"`
 		JSONContractPolicy   string `json:"json_contract_policy"`
+		// ProseAssertionExemptions names the test files that pin HUMAN text on
+		// purpose and are therefore outside CON-06's scope (adopted default C5).
+		// JSONSubstringAssertionBacklog names the files that assert a substring
+		// over --json stdout instead of decoding. Both are enforced by
+		// TestCLIContractProseExemptionsAreDeclared.
+		ProseAssertionExemptions      []string          `json:"prose_assertion_exemptions"`
+		JSONSubstringAssertionBacklog map[string]string `json:"json_substring_assertion_backlog"`
 	} `json:"contract"`
 	Commands []cliRegistryRow `json:"commands"`
 }

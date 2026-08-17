@@ -7,7 +7,25 @@
     "drift_and_mutation_test": "TestCLIRegistryMatchesProductionDispatch",
     "mutation": "Rename or remove the exact production dispatch token; the drift test and the corresponding real-Run unknown-token comparison must both fail.",
     "platform_policy": "all means the dispatch and refusal contract runs on every OS; native side effects require a separately named platform test.",
-    "json_contract_policy": "TestCLIRegistryJSONContractComplete requires every row to be result, receipt, or exempt; removing json_contract from any row must fail that test; exempt rows require reason and all other rows require payload."
+    "json_contract_policy": "TestCLIRegistryJSONContractComplete requires every row to be result, receipt, or exempt; removing json_contract from any row must fail that test; exempt rows require reason and all other rows require payload.",
+    "prose_assertion_policy": "CON-06 covers BEHAVIORAL consumers, which read --json. Two lists keep that boundary reviewable, and TestCLIContractProseExemptionsAreDeclared enforces both. prose_assertion_exemptions names the test files that pin HUMAN text on purpose (adopted default C5); the test proves the exemption is honest by requiring each of them to contain NO --json call site at all, so a blanket exemption cannot be used to hide a machine-surface assertion. json_substring_assertion_backlog names the files that DO assert a substring over --json stdout instead of decoding the document; that is the same defect family as `len(d) > 0` over an enveloped payload, which passes whatever the shape becomes. The backlog is closed forward: a NEW file joining it fails the test, and a listed file that stops offending must be removed.",
+    "prose_assertion_exemptions": [
+      "mora_help_guards_test.go",
+      "mora_usage_test.go",
+      "render_test.go",
+      "progress_test.go",
+      "digest_surface_test.go"
+    ],
+    "json_substring_assertion_backlog": {
+      "contract_stream_test.go": "asserts the dash-led refusal and degraded-index stdout by substring; the surrounding assertions already decode",
+      "gate4_teach_test.go": "checks consent-gated example content by substring over the examples payload",
+      "merge_cmd_test.go": "compares the CLI entity document against the MCP one by substring",
+      "mora_coreA_cover2_test.go": "coverage test; asserts a doctor block by substring",
+      "mora_coreA_cover_test.go": "coverage tests; assert read/list/search/tasks/think payload content by substring",
+      "mora_docx_fs_test.go": "asserts an extracted DOCX phrase appears in the search payload",
+      "mora_search_context_test.go": "asserts a natural-language hit appears in the search payload",
+      "share_test.go": "asserts share state and attribution appear in doctor/read/search payloads"
+    }
   },
   "commands": [
     {
