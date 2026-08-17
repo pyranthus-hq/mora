@@ -3,6 +3,7 @@ package commitment
 import (
 	"encoding/json"
 	"github.com/pyranthus-hq/mora/internal/evidence"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"testing"
 )
 
@@ -108,5 +109,25 @@ func TestAcceptanceAndReportedActorPolicies(t *testing.T) {
 	}
 	if actor, attributed := ReportedActor("Sam said Alex will send", other, self, []NamedActor{sam, alex}, nil); !attributed || actor != nil {
 		t.Fatalf("ambiguous=%+v,%v", actor, attributed)
+	}
+}
+
+func TestNewRecordAndOpenerCitation(t *testing.T) {
+	m := memory.Memory{ID: "gmail_thread/t1", Provider: "gmail", Source: "gmail:me", CreatedAt: "2026-01-01T10:00:00Z", Meta: map[string]any{"from": []string{"sam@example.com"}}}
+	ancestors := []string{"m0"}
+	record := NewRecord(m, "  I will send   tomorrow. ", "gmail_thread/t1#m1", "body", "2026-01-01T10:00:00Z", ancestors, 2, Atom{Kind: AtomAddress, Value: "me@example.com"}, Atom{Kind: AtomAddress, Value: "sam@example.com"}, OwedBySelf)
+	ancestors[0] = "mutated"
+	if record.ID == "" || record.Summary != "I will send tomorrow." || record.OpenedBy.Quote != record.Summary || record.OpenedBy.AncestorRefs[0] != "m0" || record.State != Open || record.ClosureRef != ClosureNone || record.Due.Kind != DueRelative || len(record.Citations) != 1 || record.Citations[0].EvidenceRef != "" || record.Citations[0].Citation.Date() != "2026-01-01T10:00:00Z" {
+		t.Fatalf("record=%+v", record)
+	}
+	im := memory.Memory{ID: "imessage_chat/t1", Provider: "imessage", Source: "chat", CreatedAt: "2026-01-01T09:00:00Z"}
+	citations := OpenerCitations(im, "c1", "imessage_chat/t1#m1", "2026-01-01T11:00:00Z")
+	if len(citations) != 1 || citations[0].EvidenceRef != "imessage_chat/t1#m1" || citations[0].Citation.Date() != "2026-01-01T11:00:00Z" {
+		t.Fatalf("im citations=%+v", citations)
+	}
+	bad := m
+	bad.ID = ""
+	if got := OpenerCitations(bad, "c", "m", "2026-01-01T10:00:00Z"); len(got) != 0 {
+		t.Fatalf("bad=%+v", got)
 	}
 }

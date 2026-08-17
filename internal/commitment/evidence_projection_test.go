@@ -57,27 +57,27 @@ func TestEvidenceFromMemoriesIMessage(t *testing.T) {
 }
 func TestEvidenceProjectionHelpers(t *testing.T) {
 	m := gmailEvidenceMemory()
-	if len(gmailMessages(m)) != 2 || len(gmailBodyParts(m)) != 2 || firstGmailSender(m) != "sam@example.com" {
+	if len(GmailMessages(m)) != 2 || len(GmailBodyParts(m)) != 2 || FirstGmailSender(m) != "sam@example.com" {
 		t.Fatal("gmail helpers")
 	}
-	if gmailMessages(memory.Memory{Meta: map[string]any{"messages": make(chan int)}}) != nil || gmailMessages(memory.Memory{Meta: map[string]any{"messages": "bad"}}) != nil {
+	if GmailMessages(memory.Memory{Meta: map[string]any{"messages": make(chan int)}}) != nil || GmailMessages(memory.Memory{Meta: map[string]any{"messages": "bad"}}) != nil {
 		t.Fatal("malformed messages")
 	}
-	if gmailAuthoredBlockRef(gmailMessage{}, "body") != "" || gmailAuthoredBlockRef(gmailMessage{BlockRefs: []string{"x"}}, "On Tue, Sam wrote:\n> quote") != "" {
+	if GmailAuthoredBlockRef(GmailMessage{}, "body") != "" || GmailAuthoredBlockRef(GmailMessage{BlockRefs: []string{"x"}}, "On Tue, Sam wrote:\n> quote") != "" {
 		t.Fatal("authored block")
 	}
-	if firstGmailSender(memory.Memory{Text: "Subject: x", Meta: map[string]any{"from": []string{"a@x"}}}) != "" || firstGmailSender(memory.Memory{Text: "From: Bob", Meta: map[string]any{"from": []string{"a@x"}}}) != "" {
+	if FirstGmailSender(memory.Memory{Text: "Subject: x", Meta: map[string]any{"from": []string{"a@x"}}}) != "" || FirstGmailSender(memory.Memory{Text: "From: Bob", Meta: map[string]any{"from": []string{"a@x"}}}) != "" {
 		t.Fatal("sender guard")
 	}
-	turns := conversationTurns("\n# heading\n* system\nno colon\nLucia:\nLucia: hello\nMe: yes")
-	if !reflect.DeepEqual(turns, []turn{{Body: "hello"}, {Self: true, Body: "yes"}}) {
+	turns := ConversationTurns("\n# heading\n* system\nno colon\nLucia:\nLucia: hello\nMe: yes")
+	if !reflect.DeepEqual(turns, []Turn{{Body: "hello"}, {Self: true, Body: "yes"}}) {
 		t.Fatalf("turns=%+v", turns)
 	}
 	for _, tt := range []struct {
 		m    memory.Memory
 		want string
 	}{{memory.Memory{Source: "s", Provider: "p", Type: "t"}, "s"}, {memory.Memory{Provider: "p", Type: "t"}, "p"}, {memory.Memory{Type: "t"}, "t"}} {
-		if got := sourceOf(tt.m); got != tt.want {
+		if got := SourceOf(tt.m); got != tt.want {
 			t.Errorf("source=%q", got)
 		}
 	}

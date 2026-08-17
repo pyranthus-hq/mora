@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-type gmailMessage struct {
+type GmailMessage struct {
 	MessageRef   string   `json:"message_ref"`
 	Sender       string   `json:"sender,omitempty"`
 	To           []string `json:"to,omitempty"`
@@ -23,27 +23,27 @@ type gmailMessage struct {
 	AncestorRefs []string `json:"ancestor_refs,omitempty"`
 }
 
-func gmailMessages(m memory.Memory) []gmailMessage {
+func GmailMessages(m memory.Memory) []GmailMessage {
 	body, err := json.Marshal(m.Meta["messages"])
 	if err != nil {
 		return nil
 	}
-	var messages []gmailMessage
+	var messages []GmailMessage
 	if json.Unmarshal(body, &messages) != nil {
 		return nil
 	}
 	return messages
 }
-func gmailBodyParts(m memory.Memory) []string {
+func GmailBodyParts(m memory.Memory) []string {
 	return strings.Split(urgency.StripFromLine(m.Text), "\n\n---\n\n")
 }
-func gmailAuthoredBlockRef(message gmailMessage, body string) string {
+func GmailAuthoredBlockRef(message GmailMessage, body string) string {
 	if len(message.BlockRefs) == 0 || strings.TrimSpace(evidencetext.SenderAuthoredBody(body)) == "" {
 		return ""
 	}
 	return message.BlockRefs[0]
 }
-func firstGmailSender(m memory.Memory) string {
+func FirstGmailSender(m memory.Memory) string {
 	first := strings.TrimSpace(strings.SplitN(m.Text, "\n", 2)[0])
 	if !strings.HasPrefix(strings.ToLower(first), "from:") {
 		return ""
@@ -57,13 +57,13 @@ func firstGmailSender(m memory.Memory) string {
 	return ""
 }
 
-type turn struct {
+type Turn struct {
 	Self bool
 	Body string
 }
 
-func conversationTurns(text string) []turn {
-	var turns []turn
+func ConversationTurns(text string) []Turn {
+	var turns []Turn
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "*") {
@@ -73,11 +73,11 @@ func conversationTurns(text string) []turn {
 		if !ok || strings.TrimSpace(body) == "" {
 			continue
 		}
-		turns = append(turns, turn{Self: strings.EqualFold(strings.TrimSpace(label), "me"), Body: strings.TrimSpace(body)})
+		turns = append(turns, Turn{Self: strings.EqualFold(strings.TrimSpace(label), "me"), Body: strings.TrimSpace(body)})
 	}
 	return turns
 }
-func sourceOf(m memory.Memory) string {
+func SourceOf(m memory.Memory) string {
 	if m.Source != "" {
 		return m.Source
 	}
@@ -96,7 +96,7 @@ func EvidenceFromMemories(mems []memory.Memory, selfEmails map[string]bool) []Ev
 			continue
 		}
 		at := graph.ValidFrom(m)
-		citation, err := evidence.ForMemory(m, sourceOf(m), at)
+		citation, err := evidence.ForMemory(m, SourceOf(m), at)
 		if err != nil {
 			continue
 		}
@@ -104,18 +104,18 @@ func EvidenceFromMemories(mems []memory.Memory, selfEmails map[string]bool) []Ev
 		keys := CounterpartyKeys(m, counterparty)
 		appendEvidence := func(text, messageRef, blockRef, occurredAt string, party Party) {
 			evidenceCitation := citation
-			if isIMessage(m) && messageRef != "" {
+			if IsIMessage(m) && messageRef != "" {
 				// Connector admission already proved the message timestamp and the base citation proved identity/source fields.
-				evidenceCitation, _ = evidence.ForMemory(m, sourceOf(m), occurredAt)
+				evidenceCitation, _ = evidence.ForMemory(m, SourceOf(m), occurredAt)
 			}
 			for _, segment := range ClosureSegments(text) {
-				out = append(out, Evidence{MemoryID: m.ID, MessageRef: messageRef, BlockRef: blockRef, Text: segment, OccurredAt: occurredAt, Party: party, Authored: true, Citation: evidenceCitation, Source: sourceOf(m), CounterpartyKeys: append([]string(nil), keys...)})
+				out = append(out, Evidence{MemoryID: m.ID, MessageRef: messageRef, BlockRef: blockRef, Text: segment, OccurredAt: occurredAt, Party: party, Authored: true, Citation: evidenceCitation, Source: SourceOf(m), CounterpartyKeys: append([]string(nil), keys...)})
 			}
 		}
 		switch {
-		case isGmail(m):
-			messages := gmailMessages(m)
-			parts := gmailBodyParts(m)
+		case IsGmail(m):
+			messages := GmailMessages(m)
+			parts := GmailBodyParts(m)
 			if len(messages) > 0 && len(messages) == len(parts) {
 				for i, message := range messages {
 					author := Atom{Kind: AtomAddress, Value: identity.Normalize(AtomAddress, message.Sender)}
@@ -129,11 +129,11 @@ func EvidenceFromMemories(mems []memory.Memory, selfEmails map[string]bool) []Ev
 					if party == PartyUnknown {
 						continue
 					}
-					appendEvidence(parts[i], message.MessageRef, gmailAuthoredBlockRef(message, parts[i]), message.At, party)
+					appendEvidence(parts[i], message.MessageRef, GmailAuthoredBlockRef(message, parts[i]), message.At, party)
 				}
 				continue
 			}
-			sender := Atom{Kind: AtomAddress, Value: identity.Normalize(AtomAddress, firstGmailSender(m))}
+			sender := Atom{Kind: AtomAddress, Value: identity.Normalize(AtomAddress, FirstGmailSender(m))}
 			party := PartyUnknown
 			switch {
 			case EqualAtom(sender, self):
@@ -144,7 +144,7 @@ func EvidenceFromMemories(mems []memory.Memory, selfEmails map[string]bool) []Ev
 			if party != PartyUnknown && len(parts) > 0 {
 				appendEvidence(parts[0], "", "", at, party)
 			}
-		case isIMessage(m):
+		case IsIMessage(m):
 			if messages, present := imessage.CommitmentMessages(m); present {
 				for _, message := range messages {
 					party := PartyCounterparty
@@ -155,7 +155,7 @@ func EvidenceFromMemories(mems []memory.Memory, selfEmails map[string]bool) []Ev
 				}
 				continue
 			}
-			for _, turn := range conversationTurns(m.Text) {
+			for _, turn := range ConversationTurns(m.Text) {
 				party := PartyCounterparty
 				if turn.Self {
 					party = PartySelf
