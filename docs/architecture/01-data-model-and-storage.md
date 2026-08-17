@@ -18,7 +18,7 @@ the Markdown. The vault is the source of truth. The database is a cache.
 | `internal/memory/mapped.go` | 154 | `MappedMemory` hand-off struct; `MapItem` (Item→MappedMemory, byte budget, content-hash fold); `CanonicalMeta`. Kind→(type,provider) registry |
 | `internal/memory/ids.go` | 25 | `StableID` (provider identity), `ContentHash` (provider change-detect, sha256/16), `SafeFilename` (`/`,`:`,` ` → `_`) |
 | `internal/memory/types.go` | 70 | `Item`, `ItemKind`, `Attachment` (metadata + in-transit `Path`), `FetchWindow`, `Page`, `Fetcher` — the connector-agnostic fetch types feeding `MapItem` |
-| `internal/mora/pdf.go` | 129 | `extractPDFText` (pinned `ledongthuc/pdf`, recover-wrapped, capped); `writeAttachmentMemories` — one derived `att_…` memory per readable iMessage PDF attachment |
+| `internal/pdftext`; `internal/mora/pdf.go` | — | `pdftext.Extract` owns pinned pure-Go, recover-wrapped, bounded extraction; Mora owns PDF attachment selection, governance, and one derived `att_…` memory write per readable attachment. |
 | `internal/mora/render.go` | 122 | Human-facing TTY styling (`colorEnabled`, `styler`, `styleDigestTTY`). **Not** part of the persisted data path — gated so ANSI never reaches `--json`/MCP/files |
 
 ## The `Memory` model
@@ -153,17 +153,17 @@ All three derived fields are **read-time only and never persisted** — `renderM
 
 ### Filesystem sources: extract-don't-read formats
 
-`curatedExtractExt` (`ingest.go`) names the non-plain-text formats a filesystem source ingests by **extracting** text rather than indexing raw bytes — today `.docx` and `.pdf`. `ingestFilesystem` branches on it (`ingest.go`): `.pdf` goes through `extractPDFText`, everything else in the set through `extractDocxText`. An extraction error or empty result skips the file — unreadable/empty/oversized is never indexed as garbage. The extracted text then flows through the normal filesystem path: ids stay `src_<FNV>` (`ingest.go`), nothing else about filesystem identity changes.
+`curatedExtractExt` (`ingest.go`) names the non-plain-text formats a filesystem source ingests by **extracting** text rather than indexing raw bytes — today `.docx` and `.pdf`. `ingestFilesystem` branches on it (`ingest.go`): `.pdf` goes through the Mora `extractPDFText` adapter over `pdftext.Extract`, everything else in the set through `extractDocxText`. An extraction error or empty result skips the file — unreadable/empty/oversized is never indexed as garbage. The extracted text then flows through the normal filesystem path: ids stay `src_<FNV>` (`ingest.go`), nothing else about filesystem identity changes.
 
-`extractPDFText` (`pdf.go:32-77`) uses the pinned, audited `ledongthuc/pdf` (pure Go — the no-CGO constraint holds). The library panics on malformed input by design, so the entire parse is **recover-wrapped**: any panic becomes an error and the caller skips the file — a bad PDF must never crash a sync (`pdf.go:33-37`). Caps (`pdf.go:20-23`, package vars so tests can lower them):
+`pdftext.Extract` (`internal/pdftext/pdftext.go`) uses the pinned, audited `ledongthuc/pdf` (pure Go — the no-CGO constraint holds). The library panics on malformed input by design, so the entire parse is **recover-wrapped**: any panic becomes an error and the caller skips the file — a bad PDF must never crash a sync (`internal/pdftext/pdftext.go`). Caps are explicit `pdftext.Options` (Mora preserves test-adjustable adapter values):
 
 | Cap | Value | Where enforced |
 |---|---|---|
-| File size | 20 MiB (`pdfMaxFileSize`) | rejected pre-parse, `pdf.go:42-44` |
-| Pages | 500 (`pdfMaxPages`) | extraction truncates, `pdf.go:52-55` |
-| Extracted text | 512 KiB | the existing index bound at every call site — over ⇒ the whole file is skipped (`pdf.go:72-74`, `pdf.go:102`) |
+| File size | 20 MiB | rejected before parsing |
+| Pages | 500 | extraction truncates after the bounded prefix |
+| Extracted text | 512 KiB | extraction stops after the page crossing the bound; Mora skips an over-bound final body |
 
-A scanned/image-only PDF extracts to `""` with a nil error and is skipped — there is no OCR (it would break the single-binary/no-CGO constraint), and Mora never fabricates text it can't read. A single garbled page is skipped without losing the rest of the document (`pdf.go:66-69`).
+A scanned/image-only PDF extracts to `""` with a nil error and is skipped — there is no OCR (it would break the single-binary/no-CGO constraint), and Mora never fabricates text it can't read. A single garbled page is skipped without losing the rest of the document (`internal/pdftext/pdftext.go`).
 
 ### `Attachment.Path` and the derived-memory shape
 
