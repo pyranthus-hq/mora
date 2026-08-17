@@ -209,7 +209,7 @@ kill_mutant "production/stripNoiseTokens" \
 
 kill_mutant "production/gmailActionableAsk" \
   internal/meeting/classify.go \
-  'return ContainsAnyPhrase(lower, interrogativeOpeners) || ContainsAnyPhrase(lower, directRequestPhrases)' \
+  'return ContainsAnyPhrase(lower, interrogativeOpeners) || DirectRequest(lower)' \
   'return true' \
   ./internal/meeting '^TestGmailActionableAsk_StrictForEmail$'
 
