@@ -2,7 +2,6 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -140,13 +139,11 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout, stderr io.W
 	defer func() { _ = withProducerStamp(cfg, "doctor-pulse", now, !writerIsTTY(stdout), nil) }()
 
 	if jsonOut {
-		b, err := json.MarshalIndent(struct {
+		if err := emitReceipt(stdout, "mora.doctor.pulse", 1, struct {
 			Sources []sourceHealth `json:"sources"`
-		}{Sources: srcHealth}, "", "  ")
-		if err != nil {
+		}{Sources: srcHealth}); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, string(b))
 	}
 
 	if banner == "" {
@@ -348,11 +345,16 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
 		}
-		b, err := json.MarshalIndent(rep, "", "  ")
-		if err != nil {
+		// The envelope MERGES into doctorReport, so every field the report
+		// carried before keeps its name, type, and top-level position. Phase 3
+		// adds observed/diagnosis/repairable/repair_plan/verification and Phase 7
+		// adds the freshness fields ON TOP of this shape: additions are MINOR and
+		// need no schema_version bump; removing or retyping a field requires one.
+		if err := emitReceipt(stdout, "mora.doctor.report", 1, rep); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, string(b))
+		// --strict's return path is deliberately untouched: an unhealthy report
+		// still exits 1, the shipped contract Plan 01-06's checkpoint reaffirmed.
 		if *strict && !healthy {
 			return fmt.Errorf("doctor: %s", doctorFailSummary(checks))
 		}

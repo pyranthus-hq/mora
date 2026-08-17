@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,8 +50,9 @@ func TestConnectFilesystemOneShot(t *testing.T) {
 
 	// The directory's contents were ingested and are searchable.
 	res := run(t, "search", "ziggurat", "--json")
-	var got []Memory
-	if err := json.Unmarshal([]byte(res), &got); err != nil {
+	// Plan 01-07: `search --json` carries its array under `memories`.
+	got, err := decodeMemoriesJSON(t, res)
+	if err != nil {
 		t.Fatalf("search json: %v\n%s", err, res)
 	}
 	if len(got) == 0 {
@@ -304,8 +304,9 @@ func TestConnectFilesystemTwoFoldersCoexist(t *testing.T) {
 	}
 	for _, term := range []string{"xylophone", "kumquat"} {
 		res := run(t, "search", term, "--json")
-		var got []Memory
-		if err := json.Unmarshal([]byte(res), &got); err != nil {
+		// Plan 01-07: `search --json` carries its array under `memories`.
+		got, err := decodeMemoriesJSON(t, res)
+		if err != nil {
 			t.Fatalf("search json: %v\n%s", err, res)
 		}
 		if len(got) == 0 {
@@ -393,8 +394,9 @@ func TestConnectFilesystemFollowsSymlinkedDir(t *testing.T) {
 
 	// The file inside the symlinked dir must actually be searchable.
 	res := run(t, "search", "ziggurat", "--json")
-	var got []Memory
-	if err := json.Unmarshal([]byte(res), &got); err != nil {
+	// Plan 01-07: `search --json` carries its array under `memories`.
+	got, err := decodeMemoriesJSON(t, res)
+	if err != nil {
 		t.Fatalf("search json: %v\n%s", err, res)
 	}
 	if len(got) == 0 {

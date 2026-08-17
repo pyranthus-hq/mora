@@ -77,8 +77,9 @@ func TestSmokeInitWriteSearch(t *testing.T) {
 		"--title", "OAuth auth path", "--text", "Use OAuth 2.0 for Wink API auth")
 
 	out := run(t, "search", "OAuth", "--scope", "project:wink", "--json")
-	var got []Memory
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
+	// Plan 01-07: `search --json` carries its array under `memories`.
+	got, err := decodeMemoriesJSON(t, out)
+	if err != nil {
 		t.Fatalf("search json: %v\n%s", err, out)
 	}
 	if len(got) != 1 || got[0].Title != "OAuth auth path" {

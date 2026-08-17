@@ -3,7 +3,6 @@ package mora
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,8 +57,9 @@ func TestInitPreservesExistingConfig(t *testing.T) {
 	if err := Run(context.Background(), []string{"search", "precious", "--json"}, &sout, &sout, strings.NewReader("")); err != nil {
 		t.Fatalf("search: %v\n%s", err, sout.String())
 	}
-	var got []Memory
-	if err := json.Unmarshal(sout.Bytes(), &got); err != nil {
+	// Plan 01-07: `search --json` carries its array under `memories`.
+	got, err := decodeMemoriesJSON(t, sout.String())
+	if err != nil {
 		t.Fatalf("search json: %v\n%s", err, sout.String())
 	}
 	if len(got) != 1 || got[0].ID != "precious-001" {

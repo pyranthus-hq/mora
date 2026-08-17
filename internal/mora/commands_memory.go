@@ -118,17 +118,37 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		// Read-only fallback: ids from subscribed share corpora are searchable,
 		// so they must be readable too. Delete paths never take this fallback.
 		if sm, ok := findSharedMemory(cfg, fs.Arg(0)); ok {
-			if !*jsonOut {
-				printHealthBannerLine(stdout, cfg, time.Now())
+			if *jsonOut {
+				return emitReceipt(stdout, "mora.read", 1, sm)
 			}
-			return emit(stdout, sm, *jsonOut)
+			printHealthBannerLine(stdout, cfg, time.Now())
+			return emit(stdout, sm, false)
 		}
 		return err
 	}
-	if !*jsonOut {
-		printHealthBannerLine(stdout, cfg, time.Now())
+	if *jsonOut {
+		// The envelope MERGES into the memory object, so every field `read
+		// --json` published before stays at its top-level location (CON-05).
+		return emitReceipt(stdout, "mora.read", 1, m)
 	}
-	return emit(stdout, m, *jsonOut)
+	printHealthBannerLine(stdout, cfg, time.Now())
+	return emit(stdout, m, false)
+}
+
+// memoriesPayload carries a memory list under a named key. `list --json` and
+// `search --json` published a bare top-level array before Plan 01-07; an
+// envelope needs an object, so the array moved under `memories` — the same
+// move Plan 01-04 made for `entities`, `graph`, and `sources list`.
+type memoriesPayload struct {
+	Memories []Memory `json:"memories"`
+}
+
+// newMemoriesPayload keeps the array `[]` and never `null`, the phase-wide rule
+// for every emitted slice.
+func newMemoriesPayload(items []Memory) memoriesPayload {
+	out := make([]Memory, 0, len(items))
+	out = append(out, items...)
+	return memoriesPayload{Memories: out}
 }
 func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
@@ -147,10 +167,11 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return err
 	}
-	if !*jsonOut {
-		printHealthBannerLine(stdout, cfg, time.Now())
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.list", 1, newMemoriesPayload(items))
 	}
-	return emit(stdout, items, *jsonOut)
+	printHealthBannerLine(stdout, cfg, time.Now())
+	return emit(stdout, items, false)
 }
 func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && isHelpFlag(args[0]) {
@@ -172,15 +193,17 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	if !jsonOut {
-		printHealthBannerLine(stdout, cfg, time.Now())
+	if jsonOut {
+		return emitReceipt(stdout, "mora.search", 1, newMemoriesPayload(items))
 	}
-	return emit(stdout, items, jsonOut)
+	printHealthBannerLine(stdout, cfg, time.Now())
+	return emit(stdout, items, false)
 }
 func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	yes := fs.Bool("yes", false, "yes")
+	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(flagsFirst(args)); err != nil {
 		return err
 	}
@@ -213,11 +236,23 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
+		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
+		// delete_memory asymmetry: serving deleted content warrants the error,
+		// and the retry is harmless. Do not soften this into a receipt.
 		return fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.delete", 1, deleteReceipt{ID: m.ID, Deleted: true})
 	}
 	fmt.Fprintf(stdout, "deleted %s\n", m.ID)
 	return nil
 }
+
+type deleteReceipt struct {
+	ID      string `json:"id"`
+	Deleted bool   `json:"deleted"`
+}
+
 func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("context", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -251,13 +286,17 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		receipts := contextReceipts(items, charBudget)
 		text := buildContext(cfg, items, charBudget-jsonLen(receipts), *query != "")
 		used := estimateTokensUsed(len(text) + jsonLen(receipts))
-		return emit(stdout, map[string]any{
+		// Issue #69 was VERIFIED CLOSED (fixed by 469efcd, 2026-07-10): --budget
+		// is a TOKEN budget resolved through resolveContextBudgetTokens, items is
+		// bounded by contextReceipts, and budget_unit is therefore truthful. Plan
+		// 01-07 adds the envelope ONLY — no budget semantics were touched.
+		return emitReceipt(stdout, "mora.context", 1, map[string]any{
 			"context":     text,
 			"items":       receipts,
 			"budget_unit": budgetUnitTokens,
 			"budget":      tokenBudget,
 			"used":        used,
-		}, true)
+		})
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
 	fmt.Fprint(stdout, buildContext(cfg, items, charBudget, *query != ""))
@@ -307,7 +346,7 @@ func cmdThink(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	logUsage(cfg, usageEvent{Tool: "think", Query: query, Scope: scope, Results: len(res.Evidence)})
 	if jsonOut {
-		return emit(stdout, res, true)
+		return emitReceipt(stdout, "mora.think", 1, res)
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
 	printThink(stdout, res)

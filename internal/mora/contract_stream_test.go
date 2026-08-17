@@ -11,6 +11,26 @@ import (
 	"testing"
 )
 
+// decodeMemoriesJSON decodes the `search --json` / `list --json` document.
+// Plan 01-07 moved their bare top-level array under the `memories` key so the
+// payload could carry the schema envelope; callers that used to unmarshal
+// straight into []Memory go through here.
+func decodeMemoriesJSON(t *testing.T, raw string) ([]Memory, error) {
+	t.Helper()
+	var doc struct {
+		Schema        string   `json:"schema"`
+		SchemaVersion int      `json:"schema_version"`
+		Memories      []Memory `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return nil, err
+	}
+	if doc.SchemaVersion == 0 || doc.Schema == "" {
+		t.Fatalf("payload is missing its schema envelope: %s", raw)
+	}
+	return doc.Memories, nil
+}
+
 func TestContractLeafJSONReceipts(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")

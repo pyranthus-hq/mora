@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,8 +65,9 @@ func TestSyncFilesystemReindexesOnlyEnabledFilesystemSources(t *testing.T) {
 	assertSearchCount := func(query string, want int) {
 		t.Helper()
 		raw := run(t, "search", query, "--json")
-		var got []Memory
-		if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		// Plan 01-07: `search --json` carries its array under `memories`.
+		got, err := decodeMemoriesJSON(t, raw)
+		if err != nil {
 			t.Fatalf("decode search %q: %v\n%s", query, err, raw)
 		}
 		if len(got) != want {
@@ -121,8 +121,8 @@ func TestSyncFilesystemContinuesAfterSourceWalkError(t *testing.T) {
 	}
 
 	raw := run(t, "search", "healthyaftermissingmarker", "--json")
-	var got []Memory
-	if err := json.Unmarshal([]byte(raw), &got); err != nil || len(got) != 1 {
+	got, err := decodeMemoriesJSON(t, raw) // Plan 01-07: array under `memories`
+	if err != nil || len(got) != 1 {
 		t.Fatalf("healthy source was not indexed after the earlier walk error: got=%+v err=%v\n%s", got, err, raw)
 	}
 	failedStatus, err := memory.LoadStatus(syncStatusPathFor(cfg, missing))
@@ -185,8 +185,8 @@ func TestSyncFilesystemUnreadableSelectedFilePreservesLastSuccess(t *testing.T) 
 		t.Fatalf("failed file read was not surfaced in status: %+v", after)
 	}
 
-	var got []Memory
-	if err := json.Unmarshal([]byte(run(t, "search", "priorreadablemarker", "--json")), &got); err != nil || len(got) != 1 {
+	got, err := decodeMemoriesJSON(t, run(t, "search", "priorreadablemarker", "--json")) // Plan 01-07
+	if err != nil || len(got) != 1 {
 		t.Fatalf("last-good memory should remain searchable under failed health: got=%+v err=%v", got, err)
 	}
 }
