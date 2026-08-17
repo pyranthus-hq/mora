@@ -58,7 +58,6 @@ func sourceHealthFor(cfg Config, s Source, key string, now time.Time) sourceHeal
 	}
 	return healthpkg.Classify(key, s.Type, fact, now)
 }
-func healthStateRank(state string) int                      { return healthpkg.StateRank(state) }
 func healthBannerFromSources(sources []sourceHealth) string { return healthpkg.Banner(sources) }
 func worstSource(sources []sourceHealth) *sourceHealth      { return healthpkg.Worst(sources) }
 func sanitizeHealthError(s string) string                   { return healthpkg.SanitizeError(s) }
