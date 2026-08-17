@@ -215,16 +215,7 @@ func (s Store) Revoke(id string) (bool, error) {
 func ItemAtom(provider, stableID string) Atom {
 	return Atom{Provider: provider, Kind: "stable_id", Value: stableID}
 }
-func NormalizeIdentity(kind, raw string) string {
-	v := strings.TrimSpace(raw)
-	if v == "" {
-		return ""
-	}
-	if kind == "address" || strings.Contains(v, "@") {
-		return strings.ToLower(v)
-	}
-	return v
-}
+func NormalizeIdentity(kind, raw string) string { return identity.Normalize(kind, raw) }
 func ProviderMatches(entryProvider, memoryProvider string) bool {
 	return entryProvider == "" || entryProvider == memoryProvider
 }
