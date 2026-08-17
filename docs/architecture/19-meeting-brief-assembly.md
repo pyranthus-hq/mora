@@ -6,6 +6,8 @@ Without `event_id`, it selects the next event or one that just started. This
 keeps earlier behavior. Both surfaces use the same gated assembly pipeline.
 They do not have separate CLI paths.
 
+`internal/meeting` owns the cited event/line/section/brief DTOs, strict JSON citation validation, correction command construction, typed commitment-line validation, zero-egress envelope validation, and dated-historical rail. `internal/mora` supplies health snapshots and owns evidence attribution, governance decisions, vault/graph loading, ranking/budgeting, rendering, and CLI/MCP assembly.
+
 ## Assembly pipeline
 
 1. Resolve the event by exact memory/provider id. A missing, non-event, or

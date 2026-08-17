@@ -2,7 +2,6 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
@@ -22,317 +21,24 @@ const (
 	meetingBriefDefaultPerGuest = 3
 )
 
-var meetingBriefSectionTitles = map[string]string{
-	meetingBriefOpenLoops:     "Your open loops and obligations",
-	meetingBriefUnresolved:    "Unresolved decisions and threads",
-	meetingBriefStaleness:     "Staleness guards",
-	meetingBriefSharedContext: "Material shared context",
-}
+var meetingBriefSectionTitles = meetingpkg.SectionTitles
+var meetingBriefSectionOrder = meetingpkg.SectionOrder
 
-var meetingBriefSectionOrder = []string{
-	meetingBriefOpenLoops,
-	meetingBriefUnresolved,
-	meetingBriefStaleness,
-	meetingBriefSharedContext,
-}
-
-// BriefCitation is the provenance rail for every surfaced meeting-brief line.
-// A line cannot be built or rendered without a complete local-memory citation.
-type BriefCitation struct {
-	memoryID string
-	channel  string
-	source   string
-	date     string
-}
-
-type briefCitationJSON struct {
-	MemoryID string `json:"memory_id"`
-	Channel  string `json:"channel"`
-	Source   string `json:"source"`
-	Date     string `json:"date"`
-}
+type BriefCitation = meetingpkg.Citation
+type BriefLineCorrection = meetingpkg.LineCorrection
+type CitedBriefLine = meetingpkg.CitedLine
+type CitedMeetingEvent = meetingpkg.CitedEvent
+type MeetingBriefSection = meetingpkg.BriefSection
+type MeetingBrief = meetingpkg.Brief
 
 func newBriefCitation(memoryID, channel, source, date string) (BriefCitation, error) {
-	c := BriefCitation{
-		memoryID: strings.TrimSpace(memoryID),
-		channel:  strings.TrimSpace(channel),
-		source:   strings.TrimSpace(source),
-		date:     strings.TrimSpace(date),
-	}
-	if err := c.validate(); err != nil {
-		return BriefCitation{}, err
-	}
-	return c, nil
+	return meetingpkg.NewCitation(memoryID, channel, source, date)
 }
-
-func (c BriefCitation) MemoryID() string { return c.memoryID }
-func (c BriefCitation) Channel() string  { return c.channel }
-func (c BriefCitation) Source() string   { return c.source }
-func (c BriefCitation) Date() string     { return c.date }
-
-func (c BriefCitation) MarshalJSON() ([]byte, error) {
-	return json.Marshal(briefCitationJSON{
-		MemoryID: c.memoryID,
-		Channel:  c.channel,
-		Source:   c.source,
-		Date:     c.date,
-	})
-}
-
-func (c *BriefCitation) UnmarshalJSON(b []byte) error {
-	var raw briefCitationJSON
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
-	}
-	parsed, err := newBriefCitation(raw.MemoryID, raw.Channel, raw.Source, raw.Date)
-	if err != nil {
-		return err
-	}
-	*c = parsed
-	return nil
-}
-
-func (c BriefCitation) validate() error {
-	if c.memoryID == "" {
-		return errors.New("missing memory_id")
-	}
-	if c.channel == "" {
-		return errors.New("missing channel")
-	}
-	if c.source == "" {
-		return errors.New("missing source")
-	}
-	if c.date == "" {
-		return errors.New("missing date")
-	}
-	if _, err := time.Parse(time.RFC3339, c.date); err != nil {
-		return fmt.Errorf("invalid date %q: %w", c.date, err)
-	}
-	return nil
-}
-
-// BriefLineCorrection is the one-action correction payload attached to each cited
-// line. Both actions write stable-atom keyed decisions to the governance confirm
-// queue:
-//   - correct (decision=confirm) keeps/pins this source line to the attendee;
-//   - unlink (decision=reject) removes this source line from this attendee's brief.
-//
-// Unlink is destructive and therefore requires explicit confirmation (`--yes`).
-type BriefLineCorrection struct {
-	StableAtom     govAtom `json:"stable_atom"`
-	AttendeeAtom   govAtom `json:"attendee_atom"`
-	CorrectCommand string  `json:"correct_command"`
-	UnlinkCommand  string  `json:"unlink_command"`
-}
-
 func newBriefLineCorrection(stableAtom, attendeeAtom govAtom) (BriefLineCorrection, error) {
-	c := BriefLineCorrection{
-		StableAtom:   stableAtom,
-		AttendeeAtom: attendeeAtom,
-		CorrectCommand: fmt.Sprintf(
-			"mora brief correct --memory-id %s --attendee %s --confirm",
-			stableAtom.Value, attendeeAtom.Value,
-		),
-		UnlinkCommand: fmt.Sprintf(
-			"mora brief correct --memory-id %s --attendee %s --unlink --yes",
-			stableAtom.Value, attendeeAtom.Value,
-		),
-	}
-	if err := c.validate(); err != nil {
-		return BriefLineCorrection{}, err
-	}
-	return c, nil
+	return meetingpkg.NewLineCorrection(stableAtom, attendeeAtom)
 }
-
-func (c BriefLineCorrection) validate() error {
-	if c.StableAtom.Kind != atomStableID || strings.TrimSpace(c.StableAtom.Value) == "" {
-		return errors.New("missing stable source atom")
-	}
-	if c.AttendeeAtom.Kind != atomHandle && c.AttendeeAtom.Kind != atomAddress {
-		return errors.New("missing attendee atom kind")
-	}
-	if strings.TrimSpace(c.AttendeeAtom.Value) == "" {
-		return errors.New("missing attendee atom value")
-	}
-	if strings.TrimSpace(c.CorrectCommand) == "" || strings.TrimSpace(c.UnlinkCommand) == "" {
-		return errors.New("missing correction commands")
-	}
-	return nil
-}
-
-// CitedBriefLine is the only renderable evidence atom. Text is a compact extract
-// from the cited memory, never an inferred conclusion.
-type CitedBriefLine struct {
-	Text                string               `json:"text"`
-	Attendee            string               `json:"attendee,omitempty"`
-	Citation            BriefCitation        `json:"citation"`
-	Correction          BriefLineCorrection  `json:"correction"`
-	Direction           Direction            `json:"direction,omitempty"`
-	Owner               govAtom              `json:"owner,omitzero"`
-	Counterparty        govAtom              `json:"counterparty,omitzero"`
-	CounterpartyLabel   string               `json:"counterparty_label,omitempty"`
-	CommitmentID        string               `json:"commitment_id,omitempty"`
-	Lifecycle           string               `json:"lifecycle,omitempty"`
-	ClosureRef          string               `json:"closure_ref,omitempty"`
-	DuplicateOf         string               `json:"duplicate_of,omitempty"`
-	StateUncertain      bool                 `json:"state_uncertain,omitempty"`
-	CommitmentCitations []CommitmentCitation `json:"commitment_citations,omitempty"`
-	DueAt               string               `json:"due_at,omitempty"`
-}
-
 func newCitedBriefLine(text, attendee string, citation BriefCitation, correction BriefLineCorrection, asOf time.Time) (CitedBriefLine, error) {
-	line := CitedBriefLine{
-		Attendee:   strings.TrimSpace(attendee),
-		Citation:   citation,
-		Correction: correction,
-	}
-	raw := oneLine(text)
-	if raw == "" {
-		return CitedBriefLine{}, errors.New("empty cited line")
-	}
-	if err := line.Citation.validate(); err != nil {
-		return CitedBriefLine{}, err
-	}
-	if err := line.Correction.validate(); err != nil {
-		return CitedBriefLine{}, err
-	}
-	line.Text = meetingBriefHistoricalText(asOf, line.Citation.Date(), line.Attendee, raw)
-	return line, nil
-}
-
-func (l CitedBriefLine) validate() error {
-	if strings.TrimSpace(l.Text) == "" {
-		return errors.New("empty text")
-	}
-	if err := l.Citation.validate(); err != nil {
-		return err
-	}
-	if err := l.Correction.validate(); err != nil {
-		return err
-	}
-	if l.Direction == "" {
-		return nil
-	}
-	if l.Direction != commitOwedBySelf && l.Direction != commitOwedByCounterparty {
-		return fmt.Errorf("invalid commitment direction %q", l.Direction)
-	}
-	if !atomPresent(l.Owner) || !atomPresent(l.Counterparty) {
-		return errors.New("typed commitment line is missing owner or counterparty")
-	}
-	if (l.Direction == commitOwedByCounterparty) != atomEqual(l.Owner, l.Counterparty) {
-		return errors.New("commitment owner and direction disagree")
-	}
-	switch l.DueAt {
-	case commitDueNone, commitDueRelative:
-	case "":
-		return errors.New("typed commitment line is missing due classification")
-	default:
-		if _, err := time.Parse("2006-01-02", l.DueAt); err != nil {
-			return fmt.Errorf("invalid commitment due value %q", l.DueAt)
-		}
-	}
-	return nil
-}
-
-// CitedMeetingEvent carries one event memory citation covering all event fields,
-// including the attendee roster from that memory's structured metadata.
-type CitedMeetingEvent struct {
-	ID        string        `json:"id"`
-	Title     string        `json:"title"`
-	StartsAt  string        `json:"starts_at"`
-	Attendees []string      `json:"attendees"`
-	Citation  BriefCitation `json:"citation"`
-}
-
-func (e CitedMeetingEvent) validate() error {
-	if strings.TrimSpace(e.ID) == "" || strings.TrimSpace(e.Title) == "" || strings.TrimSpace(e.StartsAt) == "" {
-		return errors.New("meeting event is incomplete")
-	}
-	if _, err := time.Parse(time.RFC3339, e.StartsAt); err != nil {
-		return fmt.Errorf("invalid event starts_at %q: %w", e.StartsAt, err)
-	}
-	return e.Citation.validate()
-}
-
-type MeetingBriefSection struct {
-	Kind  string           `json:"kind"`
-	Title string           `json:"title"`
-	Lines []CitedBriefLine `json:"lines"`
-}
-
-// MeetingBrief is the shared CLI/MCP P14 shape. EgressCalls is an explicit meter:
-// assembly reads only the local vault/index and therefore always reports zero.
-type MeetingBrief struct {
-	AsOf     string                `json:"as_of"`
-	Event    *CitedMeetingEvent    `json:"event"`
-	Sections []MeetingBriefSection `json:"sections"`
-	// Gaps are honest, user-facing statements of what this brief could NOT establish.
-	// A gap suppresses a CLAIM; it never fabricates one and never hides the artifact.
-	Gaps []string `json:"gaps,omitempty"`
-	// SelfUnresolved reports that Mora could not tell which invitee is the user, so it
-	// attributed nothing: any of the invited addresses could BE the user, and citing a
-	// record to the user as if it were a counterparty's is wrong-person attribution.
-	SelfUnresolved bool `json:"self_unresolved,omitempty"`
-	// NameFallback is true only when a name-filtered request found no matching
-	// upcoming event and returned the next general event instead.
-	NameFallback bool `json:"name_fallback,omitempty"`
-	EgressCalls  int  `json:"egress_calls"`
-	// SourceHealth is the per-connector freshness snapshot (HEALTH-02), computed
-	// ONCE at build time so MCP meeting_prep — which returns this struct
-	// directly — stops being confidently silent over a dead corpus. A brief
-	// that renders confidently over dead data is a WRONG brief; this is a
-	// correctness signal, not ops telemetry.
-	SourceHealth []sourceHealth `json:"source_health,omitempty"`
-	// idxHealth is the index arm snapshot (Gate 2), pinned at build time next to
-	// SourceHealth for the aggregate banner. UNEXPORTED — the CLI render path
-	// (renderMeetingBrief) reads it directly; the MCP/HTTP payload gets the
-	// bounded projection via Health below instead of this raw arm.
-	idxHealth indexHealth
-	// producerHealth is the producer-liveness arm snapshot (Gate 2 / HEALTH-11),
-	// pinned at build time so a dead automation reaches the meeting brief's banner.
-	producerHealth []producerHealth
-	// Health is the BOUNDED envelope (Packet C1) — meeting_prep returns this
-	// struct directly (no digestMCPPayload-style wrapper to inject into), so the
-	// compact state/banner is a field on the struct itself, computed once at
-	// build time from the SAME SourceHealth/idxHealth/producerHealth snapshot above.
-	Health compactHealth `json:"health"`
-}
-
-func (b MeetingBrief) validate() error {
-	asOf, err := time.Parse(time.RFC3339, b.AsOf)
-	if err != nil {
-		return fmt.Errorf("invalid as_of %q: %w", b.AsOf, err)
-	}
-	if b.EgressCalls != 0 {
-		return fmt.Errorf("meeting brief egress meter is %d, want 0", b.EgressCalls)
-	}
-	if b.Event == nil {
-		if len(b.Sections) != 0 {
-			return errors.New("meeting brief has sections without an event")
-		}
-		return nil
-	}
-	if err := b.Event.validate(); err != nil {
-		return fmt.Errorf("event citation: %w", err)
-	}
-	for _, section := range b.Sections {
-		title, known := meetingBriefSectionTitles[section.Kind]
-		if !known || title != section.Title {
-			return fmt.Errorf("unknown meeting brief section %q", section.Kind)
-		}
-		if len(section.Lines) == 0 {
-			return fmt.Errorf("meeting brief section %q is empty", section.Kind)
-		}
-		for i, line := range section.Lines {
-			if err := line.validate(); err != nil {
-				return fmt.Errorf("%s line %d is uncited: %w", section.Kind, i, err)
-			}
-			if err := line.validateHistorical(asOf); err != nil {
-				return fmt.Errorf("%s line %d violates the dated-historical rail: %w", section.Kind, i, err)
-			}
-		}
-	}
-	return nil
+	return meetingpkg.NewCitedLine(text, attendee, citation, correction, asOf)
 }
 
 type meetingBriefCandidate struct {
@@ -362,8 +68,8 @@ func buildNextMeetingBrief(ctx context.Context, cfg Config, at time.Time, attend
 		Sections:       []MeetingBriefSection{},
 		EgressCalls:    0,
 		SourceHealth:   hSnap.Sources,
-		idxHealth:      hSnap.Index,
-		producerHealth: hSnap.Producers,
+		IndexHealth:    hSnap.Index,
+		ProducerHealth: hSnap.Producers,
 		Health:         compactHealthFrom(hSnap),
 	}
 	mems, err := meetingBriefMemories(cfg)
@@ -430,8 +136,8 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 		Sections:       []MeetingBriefSection{},
 		EgressCalls:    0,
 		SourceHealth:   hSnap.Sources,
-		idxHealth:      hSnap.Index,
-		producerHealth: hSnap.Producers,
+		IndexHealth:    hSnap.Index,
+		ProducerHealth: hSnap.Producers,
 		Health:         compactHealthFrom(hSnap),
 	}
 	// Refuse-to-GAP, not refuse-to-error. If Mora cannot pick the user out of the
@@ -652,7 +358,7 @@ func buildMeetingBriefFromEvent(ctx context.Context, cfg Config, eventMemory Mem
 	}
 
 	brief = meetingBriefWithCandidates(brief, candidates)
-	if err := brief.validate(); err != nil {
+	if err := brief.Validate(); err != nil {
 		return MeetingBrief{}, err
 	}
 	return brief, nil
@@ -816,10 +522,6 @@ func latestMeetingBriefEvidenceDate(mems []Memory, at time.Time) string {
 	return latest.UTC().Format(time.RFC3339)
 }
 
-func meetingBriefHistoricalText(asOf time.Time, date, attendee, raw string) string {
-	return meetingpkg.HistoricalText(asOf, date, attendee, raw)
-}
-
 // meetingBriefHistoricalPrefix stamps every line with its age and the person it
 // concerns. The DATED framing is the P15 invariant — a fact from ten months ago must
 // never read as true now — and it is load-bearing, not decoration.
@@ -828,17 +530,6 @@ func meetingBriefHistoricalText(asOf time.Time, date, attendee, raw string) stri
 // memory is one this person is INVOLVED in, and Mora does not always know they
 // authored it. Claiming authorship it cannot prove would be its own wrong-person bug.
 // What it can say honestly is when, who it involves, and the exact words.
-func meetingBriefHistoricalPrefix(asOf time.Time, date, attendee string) string {
-	return meetingpkg.HistoricalPrefix(asOf, date, attendee)
-}
-
-func (l CitedBriefLine) validateHistorical(asOf time.Time) error {
-	prefix := meetingBriefHistoricalPrefix(asOf, l.Citation.Date(), l.Attendee)
-	if prefix == "" || !strings.HasPrefix(l.Text, prefix) || !strings.HasSuffix(l.Text, "”") {
-		return errors.New("evidence must be rendered as a dated, past-tense cited record")
-	}
-	return nil
-}
 
 type meetingBriefAttendee struct {
 	identity string
@@ -1233,7 +924,7 @@ func containsAnyPhrase(text string, phrases []string) bool {
 }
 
 func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
-	if err := brief.validate(); err != nil {
+	if err := brief.Validate(); err != nil {
 		return fmt.Errorf("refusing to render uncited meeting brief: %w", err)
 	}
 	// The red health banner (HEALTH-02) renders FIRST, unconditionally — even
@@ -1241,7 +932,7 @@ func renderMeetingBrief(w io.Writer, brief MeetingBrief) error {
 	// is worth surfacing regardless of whether there happens to be an upcoming
 	// event. Pure over the pre-built brief.SourceHealth (no cfg/now at render
 	// time — D-03).
-	if banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.idxHealth, Producers: brief.producerHealth}); banner != "" {
+	if banner := healthBannerFrom(Health{Sources: brief.SourceHealth, Index: brief.IndexHealth, Producers: brief.ProducerHealth}); banner != "" {
 		fmt.Fprintln(w, banner)
 		fmt.Fprintln(w)
 	}
