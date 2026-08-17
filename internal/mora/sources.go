@@ -9,11 +9,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+// sourcesListPayload keeps the source-list contract deterministic and non-null:
+// [] on an empty vault, never null, so a JSON consumer never needs a nil-check.
+type sourcesListPayload struct {
+	Sources []Source `json:"sources"`
+}
 
 // IsEnabled centralizes the nil-sentinel handling for Source.Enabled so no
 // caller dereferences the raw pointer. nil (legacy/unset) is normalized to true
@@ -61,9 +68,29 @@ func cmdSources(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	switch args[0] {
 	case "list":
+		fs := flag.NewFlagSet("sources list", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if parseErr := fs.Parse(args[1:]); parseErr != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
 		sources, err := loadSources(cfg)
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			entries := make([]Source, 0, len(sources))
+			entries = append(entries, sources...)
+			sort.Slice(entries, func(i, j int) bool {
+				if entries[i].Name != entries[j].Name {
+					return entries[i].Name < entries[j].Name
+				}
+				return entries[i].Type < entries[j].Type
+			})
+			return emitReceipt(stdout, "mora.sources.list", 1, sourcesListPayload{Sources: entries})
 		}
 		return emit(stdout, sources, true)
 	case "add":

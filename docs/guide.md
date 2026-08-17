@@ -207,9 +207,13 @@ The longer form can add a source before it runs:
 
 ```bash
 mora sources add filesystem --name acme --path ~/code/acme --scope project:acme
+mora sources list --json
 mora connectors enable filesystem
 mora ingest run --source acme
 ```
+
+`mora sources list --json` emits the `mora.sources.list` v1 receipt. Its
+configured-source array lives under `sources`, and is `[]` when none exist.
 
 ### Gmail and Google Calendar
 
@@ -407,6 +411,7 @@ Scheduler on Windows. The status command checks both install state and the
 ```bash
 mora hook install
 mora hook status
+mora hook status --json
 ```
 
 The installer adds two commands to `~/.claude/settings.json`:
@@ -420,6 +425,9 @@ or invalid JSON settings file. Remove only Mora's managed hooks with:
 ```bash
 mora hook uninstall
 ```
+
+`mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
+`harnesses` field is always an array, including when no hook is installed.
 
 ## Daily use
 
@@ -561,11 +569,14 @@ mora forget --chat imessage_chat/<guid> --yes
 mora forget --handle +14155550123 --yes
 mora forget --email sam@example.com --yes
 mora forget list
+mora forget list --json
 mora unforget <entry-id> --yes
 ```
 
 Run `--dry-run` first. Forget removes matching local memories and blocks their
 return. It never deletes source data from Google, Apple, or GitHub.
+`mora forget list --json` emits the `mora.forget.list` v1 receipt with active
+entries under `entries`.
 
 ## Schedules and durable loops
 
@@ -581,6 +592,7 @@ mora schedule install backup-daily
 mora schedule install git-daily
 mora schedule install lint-weekly
 mora schedule list
+mora schedule list --json
 ```
 
 Run or remove a job with:
@@ -589,6 +601,9 @@ Run or remove a job with:
 mora schedule run pulse-daily
 mora schedule uninstall pulse-daily
 ```
+
+`mora schedule list --json` emits the `mora.schedule.list` v1 receipt with
+schedule entries, cadence, next run, and installed state.
 
 Only `pulse-daily` has a direct `schedule run` command. It uses a durable loop
 so a second run for the same day does not advance the brief twice.
@@ -702,6 +717,7 @@ These commands solve different problems.
 
 ```bash
 mora backup
+mora backup --json
 ```
 
 This creates a timestamped `.tar.gz` of the vault under
@@ -709,6 +725,8 @@ This creates a timestamped `.tar.gz` of the vault under
 closing it succeeded, then publishes it and prints the path. It does not leave
 the computer. The archive is plaintext and is not a full config backup. Copy it
 to safe storage yourself if you need an off-device copy.
+`mora backup --json` emits the `mora.backup` v1 receipt with the archive path,
+byte size, and creation time.
 
 Install a daily local archive job with:
 
@@ -925,6 +943,7 @@ you safely, it does not guess.
 
 ```bash
 mora usage report
+mora usage report --json
 mora usage queries on
 mora usage queries off
 mora usage off
@@ -935,6 +954,8 @@ The log stays at `<state_dir>/usage/events.jsonl`. By default it keeps command
 names, times, counts, sizes, and timing data. It does not keep query text,
 memory text, IDs, excerpts, attachment paths, or vault paths. Query logging is
 a separate opt-in. Mora does not send the usage log anywhere.
+`mora usage report --json` emits the `mora.usage.report` v1 receipt, including
+whether tracking is disabled.
 
 ## How search works
 
@@ -992,10 +1013,14 @@ mora entities
 mora entities "Sam"
 mora graph
 mora graph "Sam"
+mora entities --json
+mora graph --json
 ```
 
 Mora uses strict rules for identity merges. Address Book evidence can create a
 proposal, but only `mora teach identity confirm` applies it.
+The JSON receipts are `mora.entities` v1 and `mora.graph` v1; their arrays now
+live under the named `entities` key alongside `schema` and `schema_version`.
 
 ## Privacy boundary
 

@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"regexp"
@@ -25,6 +26,12 @@ type Entity struct {
 	// it); the existing read leaves it 0, so structural entities and the current
 	// surfaces are unaffected. omitempty keeps it out of JSON for non-person entities.
 	Salience int64 `json:"salience,omitempty"`
+}
+
+// entitiesPayload keeps the graph contract deterministic and non-null: [] on an
+// empty vault, never null, so a JSON consumer never needs a nil-check.
+type entitiesPayload struct {
+	Entities []Entity `json:"entities"`
 }
 
 var (
@@ -109,18 +116,16 @@ func isCheckboxMarker(s string) bool {
 // vault's entity graph. With a name, it filters to memories referencing that
 // entity (matched by name across any kind).
 func cmdEntities(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	// The optional entity name is positional and may sit before OR after --json
-	// (Go's flag package stops at the first positional), so split flags out by hand.
-	jsonOut := false
-	var positional []string
-	for _, a := range args {
-		switch a {
-		case "--json", "-json", "--json=true":
-			jsonOut = true
-		default:
-			positional = append(positional, a)
-		}
+	// The optional entity name may sit before or after --json, so move the
+	// boolean flag first before parsing. This keeps flexible ordering while still
+	// rejecting unknown flags rather than silently treating them as an entity.
+	fs := flag.NewFlagSet("entities", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if parseErr := fs.Parse(flagsFirst(args)); parseErr != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
 	}
+	positional := fs.Args()
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -133,11 +138,13 @@ func cmdEntities(ctx context.Context, args []string, stdout, stderr io.Writer) e
 
 	if len(positional) > 0 {
 		name := strings.Join(positional, " ")
-		return entityDetailGraph(ctx, cfg, stdout, entities, name, jsonOut)
+		return entityDetailGraph(ctx, cfg, stdout, entities, name, *jsonOut)
 	}
 
-	if jsonOut {
-		return emit(stdout, entities, true)
+	if *jsonOut {
+		entries := make([]Entity, 0, len(entities))
+		entries = append(entries, entities...)
+		return emitReceipt(stdout, "mora.entities", 1, entitiesPayload{Entities: entries})
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
 	if len(entities) == 0 {

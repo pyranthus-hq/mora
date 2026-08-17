@@ -17,7 +17,7 @@
   },
   {
     "path": "backup",
-    "status": "prose"
+    "status": "parses"
   },
   {
     "path": "brief",
@@ -113,7 +113,7 @@
   },
   {
     "path": "entities",
-    "status": "parses_null"
+    "status": "parses"
   },
   {
     "path": "forget",
@@ -121,11 +121,11 @@
   },
   {
     "path": "forget list",
-    "status": "prose"
+    "status": "parses"
   },
   {
     "path": "graph",
-    "status": "parses_null"
+    "status": "parses"
   },
   {
     "path": "help",
@@ -245,7 +245,7 @@
   },
   {
     "path": "prep",
-    "status": "prose"
+    "status": "empty"
   },
   {
     "path": "pulse",
@@ -269,7 +269,7 @@
   },
   {
     "path": "schedule list",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "schedule run",
@@ -361,7 +361,7 @@
   },
   {
     "path": "sources list",
-    "status": "parses_null"
+    "status": "parses"
   },
   {
     "path": "sync",
@@ -513,7 +513,7 @@
   },
   {
     "path": "usage report",
-    "status": "prose"
+    "status": "parses"
   },
   {
     "path": "version",
