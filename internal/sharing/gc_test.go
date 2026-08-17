@@ -329,7 +329,7 @@ func TestSweepPreservesFreshAndLiveOwnedWork(t *testing.T) {
 	}
 }
 
-func TestSweepFailsClosedOnCorruptHeadAndBadRoot(t *testing.T) {
+func TestSweepFailsClosedOnCorruptHead(t *testing.T) {
 	cfg := packetHConfig(t)
 	store := GenerationStore{DataDir: cfg.DataDir}
 	if err := os.MkdirAll(store.CommitsDir("bad"), 0o700); err != nil {
@@ -341,12 +341,33 @@ func TestSweepFailsClosedOnCorruptHeadAndBadRoot(t *testing.T) {
 	if err := Sweep(store, "bad", "", time.Now(), GCOptions{}); err == nil {
 		t.Fatal("corrupt head accepted")
 	}
-	blocked := filepath.Join(cfg.DataDir, "blocked")
-	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+	if err := os.MkdirAll(store.Root("blocked"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sweep(GenerationStore{DataDir: blocked}, "name", "", time.Now(), GCOptions{}); err == nil {
-		t.Fatal("invalid root accepted")
+	gensErr := errors.New("generation scan failed")
+	blocked := GenerationStore{DataDir: cfg.DataDir, ReadDir: func(path string) ([]os.DirEntry, error) {
+		if path == store.GensDir("blocked") {
+			return nil, gensErr
+		}
+		return os.ReadDir(path)
+	}}
+	if err := Sweep(blocked, "blocked", "", time.Now(), GCOptions{}); !errors.Is(err, gensErr) {
+		t.Fatalf("generation scan error = %v", err)
+	}
+	if err := os.MkdirAll(store.Root("records"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	readErr := errors.New("commit scan failed")
+	failing := GenerationStore{DataDir: cfg.DataDir, ReadDir: func(string) ([]os.DirEntry, error) {
+		reads++
+		if reads == 2 {
+			return nil, readErr
+		}
+		return nil, nil
+	}}
+	if err := Sweep(failing, "records", "", time.Now(), GCOptions{}); !errors.Is(err, readErr) {
+		t.Fatalf("commit scan error = %v", err)
 	}
 }
 

@@ -90,7 +90,7 @@ func Sweep(store GenerationStore, name, owner string, now time.Time, ops GCOptio
 	}
 
 	// Sweep the generation directories.
-	if gens, gerr := os.ReadDir(store.GensDir(name)); gerr == nil {
+	if gens, gerr := store.readDir(store.GensDir(name)); gerr == nil {
 		for _, e := range gens {
 			if !e.IsDir() || !strings.HasPrefix(e.Name(), "gen-") {
 				continue
@@ -131,7 +131,7 @@ func Sweep(store GenerationStore, name, owner string, now time.Time, ops GCOptio
 	}
 
 	// Stale bucket staging: fetch-* dirs older than TTL not owned by the live lease.
-	if subs, serr := os.ReadDir(root); serr == nil {
+	if subs, serr := store.readDir(root); serr == nil {
 		for _, e := range subs {
 			if !e.IsDir() || !strings.HasPrefix(e.Name(), "fetch-") {
 				continue
