@@ -84,15 +84,15 @@
       "path": "merge",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "receipt",
-      "payload": "mora.merge"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "teach",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.teach"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "context",
@@ -112,8 +112,8 @@
       "path": "tasks",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.tasks"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "pulse",
@@ -161,29 +161,29 @@
       "path": "schedule",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.schedule"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "sources",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.sources"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "connectors",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.connectors"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "ingest",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "receipt",
-      "payload": "mora.ingest"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "connect",
@@ -196,15 +196,15 @@
       "path": "sync",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "receipt",
-      "payload": "mora.sync"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "share",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.share"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "reingest",
@@ -238,8 +238,8 @@
       "path": "usage",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.usage"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "disconnect",
@@ -266,15 +266,15 @@
       "path": "hook",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.hook"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "loop",
       "kind": "verb",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.loop"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "upgrade",
@@ -415,8 +415,8 @@
       "path": "teach identity",
       "kind": "subcommand",
       "platform": "all",
-      "json_contract": "receipt",
-      "payload": "mora.teach.identity"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "teach commitment",
@@ -450,8 +450,8 @@
       "path": "teach consent",
       "kind": "subcommand",
       "platform": "all",
-      "json_contract": "result",
-      "payload": "mora.teach.consent"
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "teach examples",

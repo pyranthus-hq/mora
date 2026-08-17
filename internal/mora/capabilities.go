@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"sort"
 )
 
 const (
@@ -41,9 +42,15 @@ type capabilitiesSchema struct {
 	Version int    `json:"version"`
 }
 
+// capabilitiesMCP publishes the MCP surface. Plan 01-07 Task 1 chose option-a:
+// MCP tool RESULTS carry no schema/schema_version, because the envelope costs a
+// measured +30 tokens per object payload and write_memory's worst-case row has
+// exactly 30 tokens of headroom against its T0 ceiling. `schemas` here is
+// therefore the ONLY place an MCP consumer learns a tool payload's version.
 type capabilitiesMCP struct {
-	WritePolicy string   `json:"write_policy"`
-	Tools       []string `json:"tools"`
+	WritePolicy string               `json:"write_policy"`
+	Tools       []string             `json:"tools"`
+	Schemas     []capabilitiesSchema `json:"schemas"`
 }
 
 type capabilitiesPayload struct {
@@ -74,6 +81,56 @@ func capabilitiesCommands() ([]capabilitiesCommand, error) {
 		}
 	}
 	return commands, nil
+}
+
+// capabilitiesSchemas derives the published CLI schema list from the embedded
+// command registry, so a schema can never appear in the registry and be missing
+// here. Exempt rows carry no payload and contribute nothing. moraExtraSchemas
+// covers the documents a command emits that the registry does not name as a
+// path of its own.
+var moraExtraSchemas = []string{
+	// `doctor --pulse` is a FLAG on the doctor path, not a registry row, but it
+	// emits its own document with its own shape.
+	"mora.doctor.pulse",
+}
+
+func capabilitiesSchemas() ([]capabilitiesSchema, error) {
+	var registry capabilitiesRegistry
+	if err := json.Unmarshal(embeddedCLICommandRegistry, &registry); err != nil {
+		return nil, fmt.Errorf("parse embedded CLI command registry: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, command := range registry.Commands {
+		if command.JSONContract == "exempt" || command.Payload == "" {
+			continue
+		}
+		seen[command.Payload] = true
+	}
+	for _, name := range moraExtraSchemas {
+		seen[name] = true
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	schemas := make([]capabilitiesSchema, 0, len(names))
+	for _, name := range names {
+		schemas = append(schemas, capabilitiesSchema{Name: name, Version: 1})
+	}
+	return schemas, nil
+}
+
+// capabilitiesMCPSchemas names one payload schema per MCP tool. The names are
+// published here and NOT inside the tool results themselves (Task 1, option-a).
+func capabilitiesMCPSchemas() []capabilitiesSchema {
+	tools := mcpToolNames()
+	schemas := make([]capabilitiesSchema, 0, len(tools))
+	for _, tool := range tools {
+		schemas = append(schemas, capabilitiesSchema{Name: "mora.mcp." + tool, Version: 1})
+	}
+	sort.Slice(schemas, func(i, j int) bool { return schemas[i].Name < schemas[j].Name })
+	return schemas
 }
 
 func capabilitiesConnectors() []capabilitiesConnector {
@@ -112,17 +169,19 @@ func cmdCapabilities(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
+	schemas, err := capabilitiesSchemas()
+	if err != nil {
+		return err
+	}
 	payload := capabilitiesPayload{
 		MoraVersion: BuildVersion,
 		Commands:    commands,
 		Connectors:  capabilitiesConnectors(),
-		Schemas: []capabilitiesSchema{
-			{Name: "mora.lint.report", Version: 1},
-			{Name: "mora.capabilities", Version: 1},
-		},
+		Schemas:     schemas,
 		MCP: capabilitiesMCP{
 			WritePolicy: cfg.mcpWritePolicy(),
 			Tools:       mcpToolNames(),
+			Schemas:     capabilitiesMCPSchemas(),
 		},
 		Features: capabilitiesFeatures{Repair: featureUnsupported, DeepLink: featureUnsupported},
 	}
