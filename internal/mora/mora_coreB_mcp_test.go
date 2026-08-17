@@ -791,7 +791,7 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	if brief.Event == nil || brief.Event.Title != "Acme sync" {
 		t.Fatalf("meeting_prep must resolve the Acme sync event, got %+v", brief.Event)
 	}
-	if err := brief.validate(); err != nil {
+	if err := brief.Validate(); err != nil {
 		t.Fatalf("meeting_prep must be fully cited: %v", err)
 	}
 }
@@ -890,7 +890,7 @@ func TestCoreB_McpCallMeetingPrep(t *testing.T) {
 	if mp.Event != nil {
 		t.Fatalf("expected a nil event with no calendar connected, got %+v", mp.Event)
 	}
-	if err := mp.validate(); err != nil {
+	if err := mp.Validate(); err != nil {
 		t.Fatalf("nil-event shape must remain valid: %v", err)
 	}
 }

@@ -177,7 +177,7 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 		kinds[section.Kind] = true
 		for _, line := range section.Lines {
 			lines++
-			if err := line.validate(); err != nil {
+			if err := line.Validate(); err != nil {
 				t.Fatalf("uncited line rendered: %+v: %v", line, err)
 			}
 		}
@@ -574,14 +574,6 @@ func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("fail-closed renderer wrote partial output: %q", out.String())
-	}
-}
-
-func TestBriefCitationRejectsUncitedJSON(t *testing.T) {
-	var c BriefCitation
-	err := json.Unmarshal([]byte(`{"memory_id":"gmail_thread/t1","channel":"gmail","date":"2026-07-10T13:00:00Z"}`), &c)
-	if err == nil || !strings.Contains(err.Error(), "missing source") {
-		t.Fatalf("partial citation JSON should fail closed with missing source, got: %v", err)
 	}
 }
 

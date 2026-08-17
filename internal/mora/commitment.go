@@ -97,13 +97,7 @@ type commitmentMessageEvidence struct {
 // CommitmentCitation assigns an evidence role without changing BriefCitation's
 // long-standing provenance contract. Closure and duplicate evidence therefore
 // add typed citations instead of replacing the opening citation.
-type CommitmentCitation struct {
-	Citation     BriefCitation `json:"citation"`
-	CommitmentID string        `json:"commitment_id,omitempty"`
-	Role         string        `json:"role"`
-	EvidenceRef  string        `json:"evidence_ref,omitempty"`
-}
-
+type CommitmentCitation = meetingpkg.CommitmentCitation
 type commitmentPartyRole string
 
 const (

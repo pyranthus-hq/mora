@@ -714,7 +714,7 @@ func mcpMeetingPrep(ctx context.Context, cfg Config, args map[string]any) (any, 
 	if err != nil {
 		return nil, humanizeIndexBusy(err)
 	}
-	if verr := brief.validate(); verr != nil {
+	if verr := brief.Validate(); verr != nil {
 		return nil, fmt.Errorf("refusing uncited meeting_prep payload: %w", verr)
 	}
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "meeting_prep", Results: meetingBriefLineCount(brief), Millis: time.Since(start).Milliseconds()})
