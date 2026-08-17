@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -347,6 +348,19 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if len(args) == 0 {
 		return errors.New("usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 	}
+	var statusJSON bool
+	if args[0] == "status" {
+		fs := flag.NewFlagSet("sync status", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		statusJSON = *jsonOut
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -362,6 +376,9 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if args[0] == "status" {
 		dir := filepath.Join(cfg.StateDir, "sync")
 		entries, _ := os.ReadDir(dir)
+		if statusJSON {
+			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{Sources: syncStatusReceiptSources(entries, dir, time.Now())})
+		}
 		if len(entries) == 0 {
 			fmt.Fprintln(stdout, "no sources synced yet")
 			return nil
@@ -430,6 +447,44 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>)", args[0])
+}
+
+// syncStatusReceipt is additive: Phase 2 (ISO-02) and Phase 7 (OBS-01) may add
+// fields in a minor release; removal or retyping requires a schema_version bump.
+type syncStatusReceipt struct {
+	Sources []syncStatusReceiptSource `json:"sources"`
+}
+
+type syncStatusReceiptSource struct {
+	Source        string `json:"source"`
+	State         string `json:"state"`
+	LastSuccessAt string `json:"last_success_at"`
+	LastAttemptAt string `json:"last_attempt_at"`
+	ItemCount     int    `json:"item_count"`
+	ErrorCount    int    `json:"error_count"`
+	LastError     string `json:"last_error,omitempty"`
+	ErrorCode     string `json:"error_code,omitempty"`
+}
+
+func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) []syncStatusReceiptSource {
+	sources := make([]syncStatusReceiptSource, 0, len(entries))
+	for _, entry := range entries {
+		st, err := memory.LoadStatus(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		sources = append(sources, syncStatusReceiptSource{
+			Source:        st.Source,
+			State:         syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
+			LastSuccessAt: st.LastSuccessAt,
+			LastAttemptAt: st.LastAttemptAt,
+			ItemCount:     st.ItemCount,
+			ErrorCount:    st.ErrorCount,
+			LastError:     st.LastError,
+		})
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Source < sources[j].Source })
+	return sources
 }
 
 // syncStatusFileThreshold infers the freshness threshold for a raw sync/

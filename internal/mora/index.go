@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,26 +17,60 @@ import (
 func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) (err error) {
 	fs := flag.NewFlagSet("index", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
 	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")
 	if perr := fs.Parse(flagsFirst(args)); perr != nil {
-		return perr
+		return newMoraError(errCodeUsageUnknownFlag, "usage", perr, "%v", perr)
+	}
+	if fs.NArg() == 0 && *jsonOut {
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		return emitReceipt(stdout, "mora.index", 1, struct {
+			Subcommand       string `json:"subcommand"`
+			DocumentsIndexed int    `json:"documents_indexed"`
+			DurationMS       int64  `json:"duration_ms"`
+			State            string `json:"state"`
+		}{
+			Subcommand: "status",
+			State:      indexHealthOf(cfg, indexClock()).State,
+		})
 	}
 	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" {
-		return errors.New("usage: mora index rebuild [--force]")
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "usage: mora index rebuild [--force]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	// index-hourly producer chokepoint (HEALTH-11): stamp the rebuild's own outcome.
-	defer stampChokepoint(cfg, stdout, args, "index-hourly", producerClock(), &err)
+	stampOutput := stdout
+	if *jsonOut {
+		stampOutput = stderr
+	}
+	defer stampChokepoint(cfg, stampOutput, args, "index-hourly", producerClock(), &err)
 	policy := policyEnforce
 	if *force {
 		policy = policyAllow
 	}
+	started := time.Now()
 	count, err := rebuildIndexWithPolicy(ctx, cfg, policy)
 	if err != nil {
 		return err
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.index", 1, struct {
+			Subcommand       string `json:"subcommand"`
+			DocumentsIndexed int    `json:"documents_indexed"`
+			DurationMS       int64  `json:"duration_ms"`
+			State            string `json:"state"`
+		}{
+			Subcommand:       "rebuild",
+			DocumentsIndexed: count,
+			DurationMS:       time.Since(started).Milliseconds(),
+			State:            indexHealthOf(cfg, indexClock()).State,
+		})
 	}
 	// vault/index.md is refreshed inside rebuildIndexWithPolicy's commit path now
 	// (B5), so every rebuild caller keeps it honest — not just this CLI one.

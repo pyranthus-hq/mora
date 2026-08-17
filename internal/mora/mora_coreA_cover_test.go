@@ -8,6 +8,7 @@ package mora
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -586,12 +587,32 @@ func TestCoreA_CmdThink(t *testing.T) {
 func TestCoreA_CmdIndex(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	var statusReceipt struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		Subcommand    string `json:"subcommand"`
+		State         string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "index", "--json")), &statusReceipt); err != nil {
+		t.Fatalf("index --json must emit one receipt: %v", err)
+	}
+	if statusReceipt.Schema != "mora.index" || statusReceipt.SchemaVersion != 1 || statusReceipt.Subcommand != "status" || statusReceipt.State == "" {
+		t.Fatalf("index --json receipt = %+v", statusReceipt)
+	}
 	// Bad usage.
 	if _, err := runErr(t, "index"); err == nil {
 		t.Fatal("index with no subcommand must error")
 	}
 	if _, err := runErr(t, "index", "wat"); err == nil {
 		t.Fatal("index with a bad subcommand must error")
+	}
+	if _, err := runErr(t, "index", "--bogusflag"); err == nil {
+		t.Fatal("index with an unknown flag must error")
+	} else {
+		var typed moraError
+		if !errors.As(err, &typed) || typed.Code != errCodeUsageUnknownFlag {
+			t.Fatalf("index unknown flag error = %v, want usage.unknown_flag", err)
+		}
 	}
 	// rebuild + rebuild --force.
 	if out := run(t, "index", "rebuild"); !strings.Contains(out, "indexed") {

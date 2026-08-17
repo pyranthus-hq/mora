@@ -534,6 +534,14 @@ pulse --json` emits the `mora.pulse` v1 receipt with a `sources` array of the
 same per-source freshness facts used by Mora's health reporting. Both receipts
 include top-level `schema` and `schema_version` fields.
 
+`mora index --json` reports the current `mora.index` v1 status receipt; `mora
+index rebuild --json` also reports the rebuild subcommand, indexed document
+count, duration, and resulting index state. `mora sync status --json` emits a
+`mora.sync.status` v1 receipt with a deterministic `sources` array. Each source
+has its state (`fresh`, `stale`, `failed`, or `never`), success and attempt
+timestamps, item and error counts, and the free-text `last_error`; a future
+typed `error_code` can be added without changing the schema major version.
+
 Mora shows failed, never-run, or stale sources in briefs and read paths. It
 does not turn missing current data into a clean empty answer.
 

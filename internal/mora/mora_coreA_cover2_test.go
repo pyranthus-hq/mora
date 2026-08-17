@@ -557,6 +557,32 @@ func TestCoreA_CmdSync(t *testing.T) {
 	if !strings.Contains(out, "(STALE)") {
 		t.Fatalf("sync status should mark the error-free >48h source STALE; got:\n%s", out)
 	}
+	var receipt struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		Sources       []struct {
+			Source    string `json:"source"`
+			State     string `json:"state"`
+			LastError string `json:"last_error"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "sync", "status", "--json")), &receipt); err != nil {
+		t.Fatalf("sync status --json must emit one receipt: %v", err)
+	}
+	if receipt.Schema != "mora.sync.status" || receipt.SchemaVersion != 1 || len(receipt.Sources) != 3 {
+		t.Fatalf("sync status --json receipt = %+v", receipt)
+	}
+	for i, source := range receipt.Sources {
+		if source.State != healthFresh && source.State != healthStale && source.State != healthFailed && source.State != healthNever {
+			t.Fatalf("source state = %q, want established health vocabulary", source.State)
+		}
+		if i > 0 && receipt.Sources[i-1].Source > source.Source {
+			t.Fatalf("sources must be sorted by source: %+v", receipt.Sources)
+		}
+	}
+	if receipt.Sources[2].Source != "imessage" || receipt.Sources[2].State != healthFailed {
+		t.Fatalf("sync status receipt must retain the persisted health state: %+v", receipt.Sources)
+	}
 
 	// Provider backfills with no enabled sources => 0 items, no error.
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
