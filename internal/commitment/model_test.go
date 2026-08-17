@@ -70,3 +70,43 @@ func TestDeduplicateKeepsSupportingCitation(t *testing.T) {
 		t.Fatalf("anchored duplicate not collapsed: %d", len(got))
 	}
 }
+
+func TestAcceptanceAndReportedActorPolicies(t *testing.T) {
+	self := Atom{Kind: "address", Value: "me@example.com"}
+	other := Atom{Kind: "address", Value: "sam@example.com"}
+	opener := Record{Owner: self, Counterparty: other, Direction: OwedBySelf, Summary: "Can you send the reviewer list?", OpenedBy: Span{MemoryID: "thread", MessageRef: "m1", OccurredAt: "2026-01-01T10:00:00Z"}, Due: Due{Kind: DueNone}, State: Open, ClosureRef: ClosureNone}
+	accepted := opener
+	accepted.Summary = "I'll send the reviewer list"
+	accepted.OpenedBy.MessageRef = "m2"
+	accepted.OpenedBy.OccurredAt = "2026-01-01T10:01:00Z"
+	if i, ok := AcceptanceRestatesRequest([]Record{opener}, accepted); !ok || i != 0 {
+		t.Fatalf("acceptance=%d,%v", i, ok)
+	}
+	same := accepted
+	same.OpenedBy.MessageRef = "m1"
+	if _, ok := AcceptanceRestatesRequest([]Record{opener}, same); ok {
+		t.Fatal("same-message acceptance merged")
+	}
+	unrelated := accepted
+	unrelated.Summary = "I'll book the venue"
+	if _, ok := AcceptanceRestatesRequest([]Record{opener}, unrelated); ok {
+		t.Fatal("unrelated acceptance merged")
+	}
+	sam := NamedActor{Atom: other, Name: "Sam Rivera"}
+	if actor, attributed := ReportedActor("Sam said: I'll send it", other, self, []NamedActor{sam}, nil); !attributed || actor == nil || !EqualAtom(*actor, other) {
+		t.Fatalf("counterparty actor=%+v,%v", actor, attributed)
+	}
+	alex := NamedActor{Atom: Atom{Kind: "address", Value: "alex@example.com"}, Name: "Alex Chen"}
+	if actor, attributed := ReportedActor("Alex will send it to Adit", other, self, []NamedActor{alex}, []string{"Adit Karode"}); !attributed || actor == nil || actor.Value != "alex@example.com" {
+		t.Fatalf("beneficiary actor=%+v,%v", actor, attributed)
+	}
+	if actor, attributed := ReportedActor("Alex will send it", other, self, []NamedActor{alex}, []string{"Adit Karode"}); !attributed || actor != nil {
+		t.Fatalf("third-party actor=%+v,%v", actor, attributed)
+	}
+	if actor, attributed := ReportedActor("No attribution", other, self, []NamedActor{sam}, nil); attributed || actor != nil {
+		t.Fatalf("unattributed=%+v,%v", actor, attributed)
+	}
+	if actor, attributed := ReportedActor("Sam said Alex will send", other, self, []NamedActor{sam, alex}, nil); !attributed || actor != nil {
+		t.Fatalf("ambiguous=%+v,%v", actor, attributed)
+	}
+}
