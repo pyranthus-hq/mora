@@ -43,6 +43,27 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: agent plugin package contract
+        run: |
+          go test ./internal/mora -run 'TestAgentPlugin|TestMCPInstructionsTreatRetrievedContent' -count=1
+          archive="$RUNNER_TEMP/mora-agent-plugin-test.tar.gz"
+          bash scripts/package-agent-plugin.sh 0.0.0-test "$archive"
+          checksum="${archive}.sha256"
+          (cd "$(dirname "$archive")" && shasum -a 256 "$(basename "$archive")" > "$(basename "$checksum")")
+          (cd "$(dirname "$archive")" && shasum -a 256 -c "$(basename "$checksum")")
+          tar -tzf "$archive" | grep -qx './plugin.json'
+          tar -tzf "$archive" | grep -qx './mcp.json'
+          staged="$RUNNER_TEMP/mora-agent-plugin-test"
+          mkdir "$staged"
+          tar -xzf "$archive" -C "$staged"
+          MORA_PLUGIN_CONTRACT_ROOT="$staged" \
+            go test ./internal/mora -run '^TestAgentPlugin(Package|Skills)Contract$' -count=1
+          python3 - "$staged/plugin.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as f:
+              manifest = json.load(f)
+          assert manifest["version"] == "0.0.0-test", manifest
+          PY
       - name: exam schema, ledger, and identity validation
         run: |
           go test ./internal/mora/exam -run 'TestLedgerValidator|TestCommittedLedgerIsValid|TestManifest|TestExamNoRealIdentities' -count=1
@@ -127,7 +148,7 @@ jobs:
         # The .golangci.yml is v2 format; action @v6 only installs golangci-lint
         # v1 (can't read a v2 config, and its go1.24 build < our go1.25 target).
         # @v8 installs v2; pin the exact build verified locally at 0 issues.
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.12.2
           args: --timeout=5m
@@ -183,7 +204,7 @@ jobs:
             exit 1
           fi
       - name: size diff vs main
-        uses: jacobras/size-diff-action@v1
+        uses: jacobras/size-diff-action@d4a2264a6dedc401de581823b3fb8c90667f7a38 # v1
         continue-on-error: true # advisory only — a size hiccup must never block merge
         with:
           path: mora # the action's input is `path`, not `files`

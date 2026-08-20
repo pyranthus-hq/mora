@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
-)
 
-// rrfK is the Reciprocal Rank Fusion constant (k=60 is the standard from the
-// original RRF paper). It dampens the head so a single list can't dominate.
-const rrfK = 60.0
+	searchpkg "github.com/pyranthus-hq/mora/internal/search"
+)
 
 // fusionParams are the per-arm weights + the RRF damping constant used to fuse the
 // FTS/vector/graph arms. They exist because equal-weight RRF at k=60 is too flat for
@@ -46,23 +44,12 @@ var defaultFusion = fusionParams{fts: 1.5, vec: 1, graph: 1, k: 10}
 // nil one) defaults that arm to weight 1.0, so equal/nil weights reduce to plain RRF.
 // Rank-based (not score-based), so it fuses BM25's unbounded scores and cosine's
 // [0,1] without normalization.
-func rrfWeighted(lists [][]string, weights []float64, k float64) map[string]float64 {
-	score := map[string]float64{}
-	for li, list := range lists {
-		w := 1.0
-		if li < len(weights) {
-			w = weights[li]
-		}
-		for rank, id := range list {
-			score[id] += w / (k + float64(rank+1))
-		}
-	}
-	return score
-}
 
 // rrf is plain (equal-weight) RRF — retained for callers/tests that don't tune arms.
-func rrf(lists [][]string, k float64) map[string]float64 {
-	return rrfWeighted(lists, nil, k)
+
+// rrfWeighted is the composition adapter used by non-search retrieval surfaces.
+func rrfWeighted(lists [][]string, weights []float64, k float64) map[string]float64 {
+	return searchpkg.FuseScores(lists, weights, k)
 }
 
 // retrievalTrace exposes the per-arm ranked lists hybridSearch computes and
@@ -169,7 +156,7 @@ func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, l
 	// Run the same conservative pass once over the final union so a newer related
 	// row from a subscribed corpus (or the personal vault) can warn an older row
 	// from the other side without erasing any deeper-pool hint already attached.
-	out.Results = annotateLaterRelatedEvidence(out.Results, out.Results)
+	out.Results = searchpkg.AnnotateLaterRelatedEvidence(out.Results, out.Results)
 	out.ScoreFused = out.ScoreFused || sharedFused
 	return out, err
 }
@@ -306,24 +293,14 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		return nil, tr, nil
 	}
 
-	fp := cfg.fusion()
+	fp := configFusion(cfg)
 	fusionWeights := append(append([]float64{}, fp.weights()...), gmailSegmentArmWeight)
-	fused := rrfWeighted([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
-	ids := make([]string, 0, len(fused))
-	for id := range fused {
-		ids = append(ids, id)
-	}
-	// Deterministic order: fused score desc, then id asc (stable tie-break).
-	sort.Slice(ids, func(i, j int) bool {
-		if fused[ids[i]] != fused[ids[j]] {
-			return fused[ids[i]] > fused[ids[j]]
-		}
-		return ids[i] < ids[j]
-	})
+	// Deterministic score-desc/ID-asc fusion is package-owned.
+	ids, fused := searchpkg.FuseRanked([][]string{ftsIDs, vecIDs, graphIDs, segIDs}, fusionWeights, fp.k)
 	tr.Fused = append([]string(nil), ids...) // PURE fused ranking (pre-limit) for §6 attribution — MMR never touches it
 
 	// W2/B1a: optional greedy MMR rerank of the fused pool before the top-k truncate.
-	// Default-OFF (cfg.mmr()==nil ⇒ skipped ⇒ byte-identical to the pre-W2 fused order).
+	// Default-OFF (configMMR(cfg)==nil ⇒ skipped ⇒ byte-identical to the pre-W2 fused order).
 	// Runs only when a semantic embedder is live (useVec) or the eval seam forces it;
 	// emb is the same model the arms used (set in the vecOK block), avoiding a second
 	// chooseEmbedderFor that could mismatch the index model. A pure permutation, so it
@@ -331,7 +308,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 	// vecOK gates it: with no stored vectors (a pre-I2 index) there is nothing to
 	// rerank on AND emb is unset, so MMR must no-op rather than deref a nil Embedder
 	// (the force seam bypasses the useVec/semantic gate, never the vectors-exist gate).
-	if mp := cfg.mmr(); mp != nil && vecOK && emb != nil && mmrActive(useVec, mp) && len(ids) > 1 {
+	if mp := configMMR(cfg); mp != nil && vecOK && emb != nil && mmrActive(useVec, mp) && len(ids) > 1 {
 		vecByID, err := loadVectorsByID(ctx, db, emb.ModelID(), ids)
 		if err != nil {
 			return nil, tr, err
@@ -410,7 +387,7 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
 	}
-	if pc, pargs := f.sqlPredicate(); pc != "" {
+	if pc, pargs := f.SQLPredicate(); pc != "" {
 		q += pc
 		args = append(args, pargs...)
 	}
@@ -445,7 +422,7 @@ func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope
 	// query's result set entirely — BEFORE the cosine loop below ever sees
 	// it, satisfying "exclude before the cosine/top-k loop" by construction
 	// rather than a Go-side per-row skip.
-	if pc, pargs := f.sqlPredicate(); pc != "" {
+	if pc, pargs := f.SQLPredicate(); pc != "" {
 		q += pc
 		args = append(args, pargs...)
 	}
@@ -534,7 +511,7 @@ func graphExpandIDs(ctx context.Context, db *sql.DB, query, scope string, pool i
 		// #241: the SQL WHERE predicate (provider/account/created_at_unix)
 		// excludes a filtered-out row from THIS per-person query's result set
 		// entirely, before ORDER BY/LIMIT — never a Go-side post-filter.
-		if pc, pargs := f.sqlPredicate(); pc != "" {
+		if pc, pargs := f.SQLPredicate(); pc != "" {
 			q += pc
 			args = append(args, pargs...)
 		}

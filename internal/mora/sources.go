@@ -2,18 +2,17 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/registry"
 )
 
 // sourcesListPayload keeps the source-list contract deterministic and non-null:
@@ -25,39 +24,13 @@ type sourcesListPayload struct {
 // IsEnabled centralizes the nil-sentinel handling for Source.Enabled so no
 // caller dereferences the raw pointer. nil (legacy/unset) is normalized to true
 // by loadSources before callers ever see it; an explicit *false stays disabled (D-12).
-func (s Source) IsEnabled() bool { return s.Enabled != nil && *s.Enabled }
 
 // lookupCatalog returns the catalog entry for ctype. The bool is false for any
 // type not in the static catalog — callers MUST reject unknown types with an
 // error (D-03 / ASVS V5), never silently no-op.
-func lookupCatalog(ctype string) (connectorInfo, bool) {
-	for _, c := range connectorCatalog {
-		if c.Type == ctype {
-			return c, true
-		}
-	}
-	return connectorInfo{}, false
-}
-func macOSOnlyConnector(ctype string) bool {
-	switch ctype {
-	case "imessage", "applecalendar", "addressbook":
-		return true
-	default:
-		return false
-	}
-}
-func connectorCatalogForGOOS(goos string) []connectorInfo {
-	if goos != "windows" {
-		return connectorCatalog
-	}
-	out := make([]connectorInfo, 0, len(connectorCatalog))
-	for _, c := range connectorCatalog {
-		if !macOSOnlyConnector(c.Type) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
+func lookupCatalog(t string) (connectorInfo, bool)        { return registry.Lookup(t) }
+func macOSOnlyConnector(t string) bool                    { return registry.MacOSOnly(t) }
+func connectorCatalogForGOOS(goos string) []connectorInfo { return registry.CatalogForGOOS(goos) }
 func cmdSources(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add|list")
@@ -118,7 +91,7 @@ func setSourceEnabledByName(cfg Config, name string, enabled bool) error {
 	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
 		for i := range sources {
 			if sources[i].Name == name {
-				sources[i].Enabled = ptr(enabled)
+				sources[i].Enabled = genericutil.Ptr(enabled)
 				return sources, nil
 			}
 		}
@@ -162,7 +135,7 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 				// older binaries). Disabling one is still allowed.
 				continue
 			}
-			sources[i].Enabled = ptr(enabled)
+			sources[i].Enabled = genericutil.Ptr(enabled)
 			found = true
 		}
 		if !found && enabled && ctype != "filesystem" {
@@ -178,7 +151,7 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 				Name:      ctype,
 				Type:      ctype,
 				Scope:     "personal",
-				Enabled:   ptr(enabled),
+				Enabled:   genericutil.Ptr(enabled),
 				CreatedAt: time.Now().Format(time.RFC3339),
 			})
 		}
@@ -191,46 +164,12 @@ func setSourceEnabled(cfg Config, ctype string, enabled bool) error {
 // phantom minted by older binaries on `connectors enable filesystem`) does not
 // count: it can never ingest, so enable must guide the user to configure a
 // folder rather than flip it.
-func hasConfiguredFilesystemSource(sources []Source) bool {
-	for _, s := range sources {
-		if s.Type == "filesystem" && s.Path != "" {
-			return true
-		}
-	}
-	return false
-}
 
 // containsType reports whether types contains t.
-func containsType(types []string, t string) bool {
-	for _, x := range types {
-		if x == t {
-			return true
-		}
-	}
-	return false
-}
 
 // withoutTypes returns types with each of drop removed (preserving order).
-func withoutTypes(types []string, drop ...string) []string {
-	out := types[:0:0]
-	for _, x := range types {
-		if !containsType(drop, x) {
-			out = append(out, x)
-		}
-	}
-	return out
-}
 
 // parseCSVList splits a comma-separated input into trimmed, non-empty entries.
-func parseCSVList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if t := strings.TrimSpace(part); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
 
 // setIMessageDenyList persists the deny-list onto the imessage source row in
 // sources.json (creating the row if needed), so every future `mora sync imessage`
@@ -248,7 +187,7 @@ func setIMessageDenyList(cfg Config, contacts, conversations []string) error {
 		if !found {
 			sources = append(sources, Source{
 				Name: "imessage", Type: "imessage", Scope: "personal",
-				Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
+				Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
 				DenyContacts: contacts, DenyConversations: conversations,
 			})
 		}
@@ -272,10 +211,10 @@ func ensureGoogleSources(cfg Config, account string) error {
 		gmailName, calName := googleSourceNames(account)
 		now := time.Now().Format(time.RFC3339)
 		if !have[gmailName] {
-			sources = append(sources, Source{Name: gmailName, Type: "gmail", Scope: "personal", Account: account, Enabled: ptr(false), CreatedAt: now})
+			sources = append(sources, Source{Name: gmailName, Type: "gmail", Scope: "personal", Account: account, Enabled: genericutil.Ptr(false), CreatedAt: now})
 		}
 		if !have[calName] {
-			sources = append(sources, Source{Name: calName, Type: "calendar", Scope: "personal", Calendar: "primary", Account: account, Enabled: ptr(false), CreatedAt: now})
+			sources = append(sources, Source{Name: calName, Type: "calendar", Scope: "personal", Calendar: "primary", Account: account, Enabled: genericutil.Ptr(false), CreatedAt: now})
 		}
 		return sources, nil
 	})
@@ -284,29 +223,26 @@ func ensureGoogleSources(cfg Config, account string) error {
 // loadSourcesOrEmpty is loadSources with the error collapsed to "no sources" —
 // for guard paths where a missing/corrupt sources file should mean "no
 // conflict", never an abort.
-func loadSourcesOrEmpty(cfg Config) []Source {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return nil
-	}
-	return sources
-}
 
 // googleAccountForEmail reports which existing account label a Google address
 // is already connected under. The re-auth guard: connecting the SAME mailbox
 // under a SECOND label would double-ingest it (every thread twice, distinct
 // @account StableIDs), so connect exits gracefully instead.
-func googleAccountForEmail(sources []Source, email string) (label string, found bool) {
-	if email == "" {
-		return "", false
-	}
-	for _, s := range sources {
-		if (s.Type == "gmail" || s.Type == "calendar") && s.Email != "" && strings.EqualFold(s.Email, email) {
-			return s.Account, true
-		}
-	}
-	return "", false
+func hasConfiguredFilesystemSource(s []Source) bool { return registry.HasConfiguredFilesystemSource(s) }
+func containsType(types []string, t string) bool    { return registry.ContainsType(types, t) }
+func withoutTypes(types []string, drop ...string) []string {
+	return registry.WithoutTypes(types, drop...)
 }
+func parseCSVList(s string) []string                    { return registry.ParseCSVList(s) }
+func isValidAccountLabel(s string) bool                 { return registry.ValidAccountLabel(s) }
+func googleSourceNames(account string) (string, string) { return registry.GoogleSourceNames(account) }
+func googleAccountForEmail(s []Source, email string) (string, bool) {
+	return registry.GoogleAccountForEmail(s, email)
+}
+
+func loadSources(cfg Config) ([]Source, error)       { return registry.LoadSources(cfg) }
+func saveSources(cfg Config, sources []Source) error { return registry.SaveSources(cfg, sources) }
+func loadSourcesOrEmpty(cfg Config) []Source         { return registry.LoadSourcesOrEmpty(cfg) }
 
 // setSourceEmailByAccount stamps the signed-in address onto an account's
 // gmail/calendar rows (the guard's lookup data).
@@ -340,22 +276,8 @@ func sourceFreshlySynced(cfg Config, s Source, within time.Duration, now time.Ti
 // isValidAccountLabel gates `--account`: lowercase letters, digits, hyphens —
 // the label lands in filenames (tokens/google-<label>.json, source names,
 // sync-status paths), so it must be path-safe by construction.
-func isValidAccountLabel(label string) bool {
-	for _, r := range label {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
-			return false
-		}
-	}
-	return label != ""
-}
 
 // googleSourceNames maps an account label to its gmail/calendar source names.
-func googleSourceNames(account string) (gmail, calendar string) {
-	if account == "" {
-		return "gmail", "calendar"
-	}
-	return "gmail-" + account, "calendar-" + account
-}
 func addSource(cfg Config, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add <filesystem|gmail|calendar|gdrive> [flags]")
@@ -390,7 +312,7 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	// explicitly (never nil) so the grandfather migration in loadSources (which
 	// normalizes nil => true for pre-Enabled legacy sources) cannot silently
 	// auto-enable a freshly added source on the next load.
-	s := Source{Name: *name, Type: stype, Scope: *scope, Path: expandHome(*path), Label: *label, Calendar: *cal, FolderID: *folder, CreatedAt: time.Now().Format(time.RFC3339)}
+	s := Source{Name: *name, Type: stype, Scope: *scope, Path: genericutil.ExpandHome(*path), Label: *label, Calendar: *cal, FolderID: *folder, CreatedAt: time.Now().Format(time.RFC3339)}
 	if s.Type == "filesystem" && s.Path == "" {
 		return errors.New("filesystem source requires --path")
 	}
@@ -411,7 +333,7 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 				next = append(next, existing)
 			}
 		}
-		s.Enabled = ptr(typeEnabled)
+		s.Enabled = genericutil.Ptr(typeEnabled)
 		next = append(next, s)
 		return next, nil
 	}); err != nil {
@@ -422,30 +344,6 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	// appears. --json is accepted and is a no-op for the same reason.
 	return emitReceipt(stdout, "mora.sources.add", 1, s)
 }
-func loadSources(cfg Config) ([]Source, error) {
-	path := filepath.Join(cfg.ConfigDir, "sources.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var sources []Source
-	if err := json.Unmarshal(b, &sources); err != nil {
-		return nil, err
-	}
-	// Grandfather migration (D-12): a missing `enabled` key means a pre-Enabled
-	// binary wrote this source, i.e. the user had already explicitly added it —
-	// treat absence as prior consent and normalize nil => true. An explicit
-	// `false` is preserved as disabled (it is non-nil, so the loop skips it).
-	for i := range sources {
-		if sources[i].Enabled == nil {
-			sources[i].Enabled = ptr(true)
-		}
-	}
-	return sources, nil
-}
 
 // saveSources persists the source registry. atomicWrite stages through a unique
 // temp per writer, so this is safe against the temp-collision race (two writers
@@ -455,10 +353,3 @@ func loadSources(cfg Config) ([]Source, error) {
 // mutateSources / acquireSourcesLock (sources_lock.go); every load → mutate →
 // save on sources.json MUST go through one of them. Call saveSources directly
 // only while already holding the sources lease (mutateSources does).
-func saveSources(cfg Config, sources []Source) error {
-	b, err := json.MarshalIndent(sources, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWrite(filepath.Join(cfg.ConfigDir, "sources.json"), append(b, '\n'), 0o600)
-}

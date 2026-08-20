@@ -17,24 +17,27 @@ it from durable state and carries it as data, like Gate 1's `sourceHealth`.
 | File | Responsibility |
 |---|---|
 | `internal/mora/pending.go` | The **pending-ops ledger**: `pendingOp` (write \| delete \| rebuild), `markIndexDirty`/`unmarkIndexDirty`, `listPendingOps`, the A3 clearing rules (`clearCoveredPendingOps`/`shouldClearOp`), `pendingDeleteIDs`/`suppressPendingDeletes` (the B4 read-path suppression). `indexClock` is the injectable clock all of Gate 2's stamps resolve against. |
-| `internal/mora/atomicio.go` | `atomicWriteDurable` — `atomicWrite` plus two crash barriers (`f.Sync` before rename, `syncDir` after), behind the `markerSyncFn`/`syncDirFn` seams so the durability call-trace is testable. `testHookPostMarkerWrite` fires after a marker is durably on disk (the crash-window seam). |
-| `internal/mora/sync_notwindows.go` / `sync_windows.go` | The `syncDir` build-tag pair — a real parent-dir fsync on POSIX/darwin (`F_FULLFSYNC`), a documented no-op on Windows (NTFS `MoveFileEx` is metadata-journaled). Mirrors `rename_*windows.go`. |
-| `internal/mora/ingest_journal.go` | The **durable ingest journal** (`StateDir/ingest/<source>/journal.log`): a durable `run <op_id> <marked_at>` header written before the first connector publish, best-effort per-path lines, `ingestJournalStatus` (the B1-rule-4 read), and `recoverIngestJournals` (post-rebuild compaction). |
-| `internal/mora/indexhealth.go` | The **typed health kernel**: `Health`/`indexHealth`/`projectionHealth`/`embedderProvenance`/`producerHealth`, `indexHealthOf` (the seven-rule first-match-wins predicate), `healthOf` (the one public entry), `aggregateHealthState` (the B1b worst-of collapse), and the no-probe embedder-provenance comparison. |
-| `internal/mora/health_banner.go` | `healthBannerFrom(Health)` — the **one-line aggregate banner** across sources/index/producers, `indexBannerLine`, `healthBannerLineCap`. |
+| `internal/atomicio/atomicio.go` | `atomicio.WriteDurable` — `atomicio.Write` plus two crash barriers (`f.Sync` before rename, `atomicio.SyncDir` after), behind the `atomicio.MarkerSyncFn`/`atomicio.SyncDirFn` seams so the durability call-trace is testable. |
+| `internal/mora/pending.go` | `testHookPostMarkerWrite` fires inside `markIndexDirty` after a marker is durably on disk (the crash-window seam) — declared here (not in `internal/atomicio`) since it is set and read entirely from this file. |
+| `internal/atomicio/sync_notwindows.go` / `sync_windows.go` | The `atomicio.SyncDir` build-tag pair — a real parent-dir fsync on POSIX/darwin (`F_FULLFSYNC`), a documented no-op on Windows (NTFS `MoveFileEx` is metadata-journaled). Mirrors `internal/atomicio/rename_*windows.go`. |
+| `internal/mora/ingest_journal.go` | The **durable ingest journal** (`StateDir/ingest/<source>/journal.log`): a durable `run <op_id> <marked_at>` header written before the first connector publish, best-effort per-path lines, `ingestJournalStatus` (the B1-rule-4 read), and `recoverIngestJournals` (error-returning post-commit compaction + retired run ids). |
+| `internal/mora/operation_activity.go` | The bounded, content-free operation receipt primitive under `StateDir/operations/`: owner-fenced begin/heartbeat/finish writes plus read-only running/stalled/failed/completed classification for ingest and index-rebuild work. |
+| `internal/health` | The canonical typed health DTOs/state vocabulary, projection-lag relation, B1b fail-closed worst-of collapse, and bounded one-line aggregate banner across sources, personal/share indexes, producers, and operation activities. |
+| `internal/mora/indexhealth.go` | I/O-backed health fact assembly: `indexHealthOf` (the seven-rule first-match-wins predicate), `healthOf` (the composition entry), index database/journal/block-record reads, and no-probe embedder-provenance comparison. |
+| `internal/mora/health_banner.go` | Thin compatibility adapters from Mora surfaces to `internal/health.BannerAll` and its fixed byte cap. |
 | `internal/mora/indexstamp.go` | The `index_meta` stamps written inside the rebuild commit tx + the content-manifest helpers (`manifestLine`/`manifestDigestOf`, `indexManifestAlgo`), and `stampIndexAttemptFailure`. |
 | `internal/mora/doctor_index.go` | Doctor-side helpers: the `sources_config` predicate (`enabledSourceCount`/`vaultHasConnectorMemories`), `disabledCorpusTypes`, and `indexMatchesVault` (the B1a manifest recompute). |
-| `internal/mora/index.go` | `rebuildIndexWithPolicy` marks itself, snapshots `listing_started_at`, computes the manifest for free from the parse bytes, stamps the projections + embedder + manifest inside the commit tx, and clears covered ops + journals after commit. |
-| `internal/mora/index_upsert.go` | The incremental path advances `indexed_at` + `fts_indexed_at` only (never graph/vectors) and invalidates the manifest. |
+| `internal/mora/index.go` | `rebuildIndexWithPolicy` marks itself, snapshots `listing_started_at`, computes the manifest for free from the parse bytes, stamps the projections + embedder + manifest inside the commit tx, and clears covered ops + journals after commit, fails visibly on partial cleanup, and only then completes operation receipts. |
+| `internal/mora/index_upsert.go` + `index_reconcile.go` | Upsert makes FTS immediate; one coalesced elected rebuild then reconciles graph, vectors, commitments, and the manifest. |
 
 ## The core invariant: mark before visible, clear only on commit
 
-Every vault mutation writes a **crash-durable pending-op file** *before* the vault byte becomes visible, and only a successfully-committed rebuild/upsert transaction may retire it. A pending op — or a non-empty ingest journal — makes the index read **dirty** on every surface. So a memory that landed in the vault but not the index can never masquerade as indexed.
+Every vault mutation writes a **crash-durable pending-op file** *before* the vault byte becomes visible, and only a successfully-committed covering rebuild may retire it for an authored write (an upsert makes its FTS row visible but does not cover every projection). A pending op — or a non-empty ingest journal — makes the index read **dirty** on every surface. So a memory that landed in the vault but not the index can never masquerade as indexed.
 
 ```
 mutate(memory m):
-  1. markIndexDirty(cfg, op)   — atomicWriteDurable StateDir/pending/<op_id>.json
-        (f.Sync + syncDir; MUST fully return before step 2). On a real I/O fault:
+  1. markIndexDirty(cfg, op)   — atomicio.WriteDurable StateDir/pending/<op_id>.json
+        (f.Sync + atomicio.SyncDir; MUST fully return before step 2). On a real I/O fault:
         ABORT before a single vault byte changes (errIndexUnmarkable) — a retry
         then cannot mint a duplicate memory, preserving the MCP isError asymmetry.
   2. write the vault file                          — the mutation becomes VISIBLE
@@ -48,7 +51,7 @@ mutate(memory m):
 
 **Why files, not an index table.** The first design put pending ops in an `index.db` table. Adversarial review killed it: it would brick every existing v2 install (the upsert fast-path's readiness check would fail on the new table) and **deadlock against the rebuild's own `_txlock=immediate` write transaction** — a rebuild of thousands of memories against Ollama holds that lock for minutes, and a second immediate transaction (the mark) would block and die on `busy_timeout`. Files never contend on the writer lock, never fail on a locked/corrupt/missing index, and need **no schema bump** (`indexSchemaVersion` stays 2, shared with every subscriber's share index).
 
-**Durability is the hard requirement.** Plain `atomicWrite` gives neither data nor directory-entry durability on POSIX (a bare `os.Rename`), so a power loss could persist the vault publish while losing the earlier marker — the forbidden **false-clean**. `atomicWriteDurable` fsyncs the temp file *before* the rename and fsyncs the parent directory *after*, both propagating their errors. Because `StateDir` and `VaultDir` are independently settable (and the vault is often an external/synced volume), ordering — the marker fully returning before the vault publish — is the invariant, not a shared journal.
+**Durability is the hard requirement.** Plain `atomicio.Write` gives neither data nor directory-entry durability on POSIX (a bare `os.Rename`), so a power loss could persist the vault publish while losing the earlier marker — the forbidden **false-clean**. `atomicio.WriteDurable` fsyncs the temp file *before* the rename and fsyncs the parent directory *after*, both propagating their errors. Because `StateDir` and `VaultDir` are independently settable (and the vault is often an external/synced volume), ordering — the marker fully returning before the vault publish — is the invariant, not a shared journal.
 
 ## The clearing rules (A3)
 
@@ -77,7 +80,7 @@ Ingest uses a **crash-recoverable journal** instead of one pathless op, because 
 
 The **fail-closed rule**, enforced everywhere: any state Mora cannot *compute* is `unhealthy`, never `healthy`. There is no "assume fine" branch.
 
-**Three projections, three freshnesses (Finding 2).** A full rebuild advances `fts_indexed_at`, `graph_indexed_at`, and `vectors_indexed_at`. An incremental `indexUpsert` advances only `fts_indexed_at`. So an authored write is findable by FTS immediately but its graph/vector projections lag until the next rebuild. Projection lag is therefore a **relation** between two stamps, never wall-clock age: an idle vault has `fts == graph` and never reddens by aging. The alarm fires only when an authored write has genuinely advanced FTS past the graph and a rebuild is owed.
+**Three projections, three freshnesses (Finding 2).** A full rebuild advances `fts_indexed_at`, `graph_indexed_at`, and `vectors_indexed_at`; incremental `indexUpsert` advances FTS first, making an authored memory immediately searchable. The write then elects one short-lived, StateDir-leased reconciler. It coalesces concurrent writes and invokes the ordinary atomic full rebuild, which is the only operation allowed to retire their pending markers. A losing concurrent writer leaves its marker intact while the elected process catches it up. If election/rebuild fails or the process crashes, health remains honestly dirty and the next write/process may reclaim the expired lease; nothing claims false freshness. Projection lag is therefore a **relation** between two stamps, never wall-clock age.
 
 **Minimal embedder provenance (HEALTH-12 mismatch arm).** The rebuild stamps `embedder_model`/`embedder_dim` (what *ran*) inside its commit tx. `indexHealthOf` compares that against what the config *asks for*, resolved **without probing Ollama** (so doctor stays fast/offline), and reports `degraded` on a mismatch — the recorded incident where the config said `ollama` but the index was silently rebuilt static. Absent provenance (a legacy index) is treated as a match, so an upgrade does not redden every existing user's first doctor.
 
@@ -95,20 +98,64 @@ The **banner** (`healthBannerFrom`) is now the single worst arm across sources, 
 
 Finally, `vault/index.md` (injected verbatim into every `context_memory` payload) is refreshed from the *same* stamp the rebuild wrote into `index_meta`, so the page an agent trusts can never claim a freshness the index does not have (B5).
 
+## Subordinate operation activity
+
+`Health.Activities` explains *why* a dirty index may currently be changing without
+weakening the freshness floor. Each sanitized record has only the operation kind
+(`ingest` or `index_rebuild`), lifecycle state, run id, timestamps, phase, and
+bounded counts. It contains no provider/account label, memory path/id, query, or
+source content. Doctor JSON returns a non-null `activities` array and human doctor
+renders the same fields. A live activity does not make health green: `index.state`
+remains `dirty`, aggregate health remains unhealthy, and strict doctor still fails.
+The banner may instead explain that refresh is in progress and the last committed
+snapshot is being served.
+
+The durable record is `StateDir/operations/<kind>/<run_id>.json` (0600,
+crash-durable atomic replacement). A heartbeat update is authorized by the tuple
+(kind, run id, owner pid) under one bounded persistent OS lease guard per kind. PID existence is
+only corroboration: a record is `running` only while its heartbeat is within the
+15-minute TTL and its owner is live. Writers refuse a heartbeat or terminal stamp
+that moves backward. A dead owner or expired heartbeat is classified `stalled`;
+path/record identity mismatch, unknown JSON fields or trailing values, a future
+schema, an invalid phase/timestamp, or incoherent lifecycle fields classify
+`failed`. Classification is strictly read-only — plain doctor and health surfaces
+never repair, reap, or delete markers. Health exposes only the newest valid terminal receipt per kind (plus every
+active/stalled/corrupt receipt), so an old failure cannot keep health red after a
+newer success. On-disk terminal retention is bounded to 16 per kind and pruned only
+by a terminal writer.
+
+Every `ingestSource` begins its receipt and a run-id-bound journal header before
+provider dispatch can publish a vault byte. A bounded heartbeat keeps long fetches and batch-wait time
+live; clean ingest stops at `awaiting_rebuild`. It becomes `completed` only when a
+committed rebuild actually retires that run's journal. Failed ingest is terminal
+`failed`, and concurrent sources retain separate anonymous receipts (the source key
+exists only in the pre-existing journal layout, never the activity projection).
+
+`rebuildIndexWithPolicy` similarly begins before its pending dirty marker and
+advances through choosing-embedder, open, list, parse, graph, vectors, commitments,
+commit, marker retirement, and finalization phases. Its success transition happens
+only after the SQLite commit, covered pending-op removal, relevant journal removal,
+and covered-ingest completion. A cleanup failure after commit is returned as a
+visible partial failure (`post_commit_cleanup_failed`): the committed database is
+preserved, the uncleared marker keeps the index dirty, and no completed rebuild
+receipt is written. Setup/connect flows already call this rebuild synchronously, so
+they naturally wait for this terminal result; there is no separate setup-status
+surface.
+
 ## Producer liveness (HEALTH-11) — the watchman
 
-A healthy source and a clean index prove data *arrived* and is *indexed* — not that any **product surface** was ever produced from it. The 7-day dead-automation SEV was exactly this: every arm green while the brief had not run in a month. The producer arm convicts that state. It lives in two **disjoint** files under `StateDir/producers/` (`producer.go`, `producer_lock.go`):
+A healthy source and a clean index prove data *arrived* and is *indexed* — not that any **product surface** was ever produced from it. The 7-day dead-automation SEV was exactly this: every arm green while the brief had not run in a month. The producer arm convicts that state. `internal/health.ProducerStore` owns its two **disjoint** files under `StateDir/producers/`; Mora owns the command chokepoints, expectation/adoption authorization, and orchestration:
 
 - **`status.json` — evidence.** One row per producer, stamped at each producer command's **own chokepoint** (`withProducerStamp`), so launchd, cron, an external orchestrator, and a human all record identically — never the scheduler (a broken scheduler must not look like a healthy producer). Wrapped sites: `pulse --advance` (pulse-daily), `index rebuild`, `ingest run --all`, `backup`, `lint`, `sync git`, and `doctor --pulse`. Each keeps a bounded ring of raw success timestamps.
 - **`expected.json` — expectation.** What *should* run. It is a **separate file on purpose**: the deleted-worktree incident is modeled by deleting the stamp, and an expectation inferred from the stamp would be erased by the very event it must detect (the alarm would delete itself). A producer is expected when **adopted** — ≥3 non-interactive successes whose consecutive gaps are each ≥1h and which span ≥3 distinct UTC days. The interval is the **median inter-run gap**, clamped to [1h, 7d]. Adoption is gated on non-interactive runs so a human running `mora index rebuild` three times while debugging cannot pin a ~2-minute cadence and redden the product forever. `mora doctor --forget-producer <name>` retires one (removes both files' rows) — an adoption you regret is never a permanent red banner.
 
-**Health:** `producerHealthAll` reports one record per *expected* producer — `never` (no success), `stale` (newest success older than **2× interval**), `failed` (latest attempt errored), else `fresh`. A never-expected producer is simply **absent**, so a user who scheduled nothing is never nagged. `producer_live:<name>` is a **critical** doctor check (OK only when `fresh`). Known producer liveness issues (`prodStale`, `prodFailed`, `prodNever`) yield a `degraded` (yellow) state in `aggregateHealthState` (`indexhealth.go`) and render as yellow banners (`🟡 MORA HEALTH: <producer> has not been produced...`, `health_banner.go`) when sources and index are sound, distinguishing ops attention for background jobs from red data staleness (`🔴 MORA HEALTH:`). An unreadable or corrupt producer ledger emits an explicit typed `subject:"ledger"` record and the critical `producer_ledger_readable` doctor check; it remains fail-closed `unhealthy` (red). This metadata, not a reserved producer name, distinguishes ledger failure, so a legitimate producer named `producers` still receives ordinary yellow liveness treatment. Source, personal-index, and subscription-index (`h.Index.Shares`) data-integrity alarms outrank producer warnings in `healthBannerFrom` so yellow never hides red. A consumer-side detector, `brief_artifact_fresh`, needs no registration at all: if a dated `briefs/*-brief.md` artifact exists but the newest is older than 2× the daily cadence, the surface is stale even if nothing was ever registered.
+**Health:** `producerHealthAll` reports one record per *expected* producer — `never` (no success), `stale` (newest success older than **2× interval**), `failed` (latest attempt errored), else `fresh`. A never-expected producer is simply **absent**, so a user who scheduled nothing is never nagged. `producer_live:<name>` is a **critical** doctor check (OK only when `fresh`). Known producer liveness issues (`prodStale`, `prodFailed`, `prodNever`) yield a `degraded` (yellow) state in `internal/health.AggregateState` and render as yellow banners (`🟡 MORA HEALTH: <producer> has not been produced...`) from the same pure package when sources and index are sound, distinguishing ops attention for background jobs from red data staleness (`🔴 MORA HEALTH:`). An unreadable or corrupt producer ledger emits an explicit typed `subject:"ledger"` record and the critical `producer_ledger_readable` doctor check; it remains fail-closed `unhealthy` (red). This metadata, not a reserved producer name, distinguishes ledger failure, so a legitimate producer named `producers` still receives ordinary yellow liveness treatment. Source, personal-index, and subscription-index (`h.Index.Shares`) data-integrity alarms outrank producer warnings in `healthBannerFrom` so yellow never hides red. A consumer-side detector, `brief_artifact_fresh`, needs no registration at all: if a dated `briefs/*-brief.md` artifact exists but the newest is older than 2× the daily cadence, the surface is stale even if nothing was ever registered.
 
 **Filesystem health identity:** each configured filesystem folder owns its own status file, so health uses the local key `filesystem:<source-name>` (for example, `filesystem:docs` and `filesystem:notes`). This prevents a fresh folder from deduplicating a failed one. The helper is intentionally health-only: filesystem memories still have no `Provider`, digest/watermark identity remains unchanged, and `briefHashSchemaVersion` remains 2.
 
 **The watchman does not deadlock on its own stamp.** `doctor --pulse` stamps producer `doctor-pulse`, so it monitors *itself*. The stamp rule is **read-then-write**: it classifies the *prior* stamp (Phase 1) **before** writing, then stamps `LastSuccessAt = now` **unconditionally on the completion path — including the exit-2 path** (Phase 2). "The pulse succeeded" means *it ran to completion*, **not** "everything is healthy" — so a legitimately-failing gmail can never rot the watchman arm to stale and make doctor scream "the watchman is dead" while it runs every hour. This self-recovers in exactly one cadence: run N (stale stamp) reports the missed cadence, exits 2, **stamps**. Run N+1 sees a fresh stamp and exits 0. A plain `mora doctor` (not `--pulse`) never stamps, so a developer running it once cannot silence the watchman for a cadence.
 
-**The ledger RMW is cross-process safe.** `status.json` is a single shared file every producer appends to, so a manual `mora index rebuild` racing the scheduled `index-hourly` would lose an update under a plain `atomicWrite` (last rename wins). `producer_lock.go` is a **sibling of `mutateSources`**: it holds the same crash-safe, Windows-CI-green file lease (`publishLockFile`/`reapStaleLockTTL`/`loopLockReleaser`) around the whole read-modify-write and **reloads inside the lease** so a concurrent writer's committed change is always observed. The lease is held only for the microsecond stamp — never across a producer's actual work.
+**The ledger RMW is cross-process safe.** `status.json` is a single shared file every producer appends to, so a manual `mora index rebuild` racing the scheduled `index-hourly` would lose an update under a plain `atomicio.Write` (last rename wins). `internal/health.ProducerStore` holds the crash-safe, Windows-CI-green `internal/leasefile` publish/reap/CAS lease around the whole read-modify-write and **reloads inside the lease** so a concurrent writer's committed change is always observed. The lease is held only for the microsecond stamp — never across a producer's actual work.
 
 Identity is **argv-derived** at each chokepoint (`pulse --advance` ⇒ pulse-daily, `index rebuild` ⇒ index-hourly, …), which keeps a legacy pre-flag plist's alarm alive. A `--producer=<job>` token overrides it when present.
 

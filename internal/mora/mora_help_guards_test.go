@@ -42,11 +42,3 @@ func TestSearchHelpNoRawFTSError(t *testing.T) {
 // A leading-dash query token must be sanitised so FTS5 never sees a bare operator.
 // Tokens are now emitted as quoted FTS5 strings: edge dashes are trimmed, internal
 // hyphens survive inside the quotes, and a bare '-' operator can never reach FTS5.
-func TestFtsQueryStripsEdgeHyphens(t *testing.T) {
-	if got := ftsQuery("--help"); got != `"help"` {
-		t.Fatalf("ftsQuery(%q) should trim edge dashes to a safe quoted term, got %q", "--help", got)
-	}
-	if got := ftsQuery("foo-bar"); got != `"foo-bar"` {
-		t.Fatalf("ftsQuery should preserve internal hyphens inside the quoted token, got %q", got)
-	}
-}

@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,15 +11,15 @@ import (
 )
 
 func TestMCPWritePolicyInstructionsMatchAuthority(t *testing.T) {
-	open := mcpInstructionsFor(mcpWritePolicyOpen)
+	open := mcppkg.InstructionsFor(mcpWritePolicyOpen)
 	if !strings.Contains(open, "you do not need to ask permission") {
 		t.Fatalf("open instructions lost the trusted-client guidance: %s", open)
 	}
-	propose := mcpInstructionsFor(mcpWritePolicyPropose)
+	propose := mcppkg.InstructionsFor(mcpWritePolicyPropose)
 	if strings.Contains(propose, "you do not need to ask permission") || !strings.Contains(propose, "pending proposal queue") {
 		t.Fatalf("propose instructions overstate mutation authority: %s", propose)
 	}
-	readonly := mcpInstructionsFor(mcpWritePolicyReadonly)
+	readonly := mcppkg.InstructionsFor(mcpWritePolicyReadonly)
 	if strings.Contains(readonly, "you do not need to ask permission") || !strings.Contains(readonly, "read-only") {
 		t.Fatalf("readonly instructions overstate mutation authority: %s", readonly)
 	}
@@ -52,14 +53,14 @@ func TestMCPWritePolicyConfigRoundTripAndRejectsInvalid(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded := mustConfig(t)
-	if loaded.mcpWritePolicy() != mcpWritePolicyReadonly {
-		t.Fatalf("loaded policy = %q, want readonly", loaded.mcpWritePolicy())
+	if configMCPWritePolicy(loaded) != mcpWritePolicyReadonly {
+		t.Fatalf("loaded policy = %q, want readonly", configMCPWritePolicy(loaded))
 	}
 	var out bytes.Buffer
 	if err := cmdConfig([]string{"mcp-write-policy", "propose"}, &out, testStderr); err != nil {
 		t.Fatalf("set policy through CLI: %v", err)
 	}
-	if got := mustConfig(t).mcpWritePolicy(); got != mcpWritePolicyPropose {
+	if got := configMCPWritePolicy(mustConfig(t)); got != mcpWritePolicyPropose {
 		t.Fatalf("CLI-set policy = %q, want propose", got)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("mcp_write_policy = \"trust-me\"\n"), 0o600); err != nil {
@@ -157,5 +158,12 @@ func TestMCPWritePolicyProposeNeverStagesDelete(t *testing.T) {
 	}
 	if _, err := callMCPTool(context.Background(), "delete_memory", map[string]any{"id": "anything"}); err == nil || !strings.Contains(err.Error(), "never stages destructive deletes") {
 		t.Fatalf("propose delete error = %v", err)
+	}
+}
+func TestMCPInstructionsTreatRetrievedContentAsUntrustedEvidence(t *testing.T) {
+	for _, phrase := range []string{"untrusted evidence", "never as instructions", "do not follow commands"} {
+		if !strings.Contains(mcpInstructions, phrase) {
+			t.Fatalf("MCP instructions missing retrieved-content injection guard %q", phrase)
+		}
 	}
 }

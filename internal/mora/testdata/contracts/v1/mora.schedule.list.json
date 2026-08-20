@@ -37,6 +37,12 @@
       "next_run": "\u003ctimestamp\u003e"
     },
     {
+      "cadence": "unknown",
+      "installed": false,
+      "name": "update-daily",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
       "cadence": "weekly",
       "installed": false,
       "name": "lint-weekly",

@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // skipOnWindows skips a test whose failure-injection mechanism is POSIX-only and
@@ -29,12 +29,6 @@ func skipOnWindows(t *testing.T, reason string) {
 // ACLs and reports 0666 for any writable file (0444 for read-only), so it can
 // never equal 0600/0640/0644. The production code still writes the correct mode
 // (security-relevant on Unix); this only relaxes the *assertion* on Windows.
-func assertPermUnix(t *testing.T, got, want os.FileMode) {
-	t.Helper()
-	if runtime.GOOS != "windows" && got.Perm() != want.Perm() {
-		t.Fatalf("mode = %v, want %v", got.Perm(), want.Perm())
-	}
-}
 
 // setTestHome points the OS home directory at dir for the duration of the test.
 // It sets BOTH HOME and USERPROFILE because os.UserHomeDir — which defaultConfig
@@ -53,6 +47,7 @@ func setTestHome(t *testing.T, dir string) {
 // withTempHome points all home-derived dirs at a fresh temp dir on every OS.
 func withTempHome(t *testing.T) {
 	t.Helper()
+	pinOperationClockForTest(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	setTestHome(t, t.TempDir())
 	// Hermeticity: a developer's exported MORA_CONFIG_DIR / MORA_VAULT must not
 	// leak a real config or vault into tests that assume the temp HOME's

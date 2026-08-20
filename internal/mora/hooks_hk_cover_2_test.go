@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,8 +78,8 @@ func TestHk_IngestingConnectorsSkipsUnknownEnabled(t *testing.T) {
 	run(t, "init")
 	cfg := mustConfig(t)
 	src := []Source{
-		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "mystery", Type: "mystery-connector", Scope: "personal", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "mystery", Type: "mystery-connector", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
 	}
 	if err := saveSources(cfg, src); err != nil {
 		t.Fatal(err)
@@ -100,8 +101,8 @@ func TestHk_IngestingConnectorsDedupesInstanceKey(t *testing.T) {
 	run(t, "init")
 	cfg := mustConfig(t)
 	src := []Source{
-		{Name: "gmail-a", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
-		{Name: "gmail-b", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: "2026-01-02T00:00:00Z"},
+		{Name: "gmail-a", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-01T00:00:00Z"},
+		{Name: "gmail-b", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: "2026-01-02T00:00:00Z"},
 	}
 	if err := saveSources(cfg, src); err != nil {
 		t.Fatal(err)

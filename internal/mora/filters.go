@@ -2,9 +2,8 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
+	"github.com/pyranthus-hq/mora/internal/previewfilter"
 	"strings"
 	"time"
 )
@@ -51,20 +50,7 @@ func resolveEntityFilter(ctx context.Context, cfg Config, name string) (map[stri
 // narrows. A since-days cutoff of <=0 is a no-op (a negative is never a future
 // cutoff — P1-D); an unparseable CreatedAt is dropped under an active cutoff.
 func filterByInstance(byInstance map[string][]Memory, opts briefOpts, now time.Time) map[string][]Memory {
-	if !opts.filtered() {
-		return byInstance
-	}
-	out := make(map[string][]Memory, len(byInstance))
-	for key, mems := range byInstance {
-		var kept []Memory
-		for _, m := range mems {
-			if memoryMatchesPreviewFilters(m, opts, now) {
-				kept = append(kept, m)
-			}
-		}
-		out[key] = kept
-	}
-	return out
+	return previewfilter.FilterByInstance(byInstance, previewfilter.Options{EntityIDs: opts.entityIDSet, Scope: opts.scope, SinceDays: opts.sinceDays}, now)
 }
 
 // memoryMatchesPreviewFilters is the per-row predicate shared by digest input
@@ -73,20 +59,7 @@ func filterByInstance(byInstance map[string][]Memory, opts briefOpts, now time.T
 // predicate prevents the evidence from claiming a match for a row the actual
 // filter later drops (or vice versa).
 func memoryMatchesPreviewFilters(m Memory, opts briefOpts, now time.Time) bool {
-	if len(opts.entityIDSet) > 0 && !memoryMentionsEntity(m, opts.entityIDSet) {
-		return false
-	}
-	if opts.scope != "" && m.Scope != opts.scope {
-		return false
-	}
-	if opts.sinceDays > 0 {
-		cutoff := now.Add(-time.Duration(opts.sinceDays) * 24 * time.Hour)
-		ts, err := time.Parse(time.RFC3339, m.CreatedAt)
-		if err != nil || ts.Before(cutoff) {
-			return false
-		}
-	}
-	return true
+	return previewfilter.Matches(m, previewfilter.Options{EntityIDs: opts.entityIDSet, Scope: opts.scope, SinceDays: opts.sinceDays}, now)
 }
 
 // filters.go — entity/scope/since-days filtering for the brief/digest surfaces
@@ -103,16 +76,7 @@ func memoryMatchesPreviewFilters(m Memory, opts briefOpts, now time.Time) bool {
 // silently dropped (P1-A). An empty set matches nothing; callers gate "no entity
 // filter" on len(idSet)==0 upstream. Pure: no I/O.
 func memoryMentionsEntity(m Memory, idSet map[string]bool) bool {
-	if len(idSet) == 0 {
-		return false
-	}
-	parts, _, _, _ := personRefs(m) // parts[i].id is already "person:<lowercased>"
-	for _, p := range parts {
-		if idSet[p.id] {
-			return true
-		}
-	}
-	return false
+	return previewfilter.MentionsEntity(m, idSet)
 }
 
 // resolveEntityID resolves a name/email/handle to one entity and returns its
@@ -131,91 +95,20 @@ func memoryMentionsEntity(m Memory, idSet map[string]bool) bool {
 // briefOpts.entityIDSet / the meeting-prep attendee filter; the canonical id is
 // the edges key for evidence assembly. One indexed query; buildDigest stays DB-free.
 func resolveEntityID(ctx context.Context, cfg Config, name string) (canonical string, idSet map[string]bool, ok bool, ambiguous []string, err error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", nil, false, nil, nil
-	}
 	db, err := ensureIndexDB(ctx, cfg)
 	if err != nil {
 		return "", nil, false, nil, err
 	}
 	defer db.Close()
-
-	rows, err := db.QueryContext(ctx, `SELECT id, display_name, aliases, mention_count FROM entities WHERE id NOT LIKE 'memory:%'`)
-	if err != nil {
-		return "", nil, false, nil, err
-	}
-	type cand struct {
-		id, display, aliasesJSON string
-		aliases                  []string
-	}
-	isAddr := strings.Contains(name, "@") || strings.HasPrefix(name, "+")
-	wantID := personID(name)
-	var aliasHit *cand
-	var byName []cand
-	for rows.Next() {
-		var c cand
-		var mention int
-		if err := rows.Scan(&c.id, &c.display, &c.aliasesJSON, &mention); err != nil {
-			rows.Close()
-			return "", nil, false, nil, err
-		}
-		if c.aliasesJSON != "" {
-			_ = json.Unmarshal([]byte(c.aliasesJSON), &c.aliases)
-		}
-		if isAddr && aliasIDSet(c.id, c.aliases)[wantID] {
-			cc := c
-			aliasHit = &cc // exact address/handle match is unique to a cluster
-		}
-		if strings.EqualFold(c.display, name) || aliasMatches(c.aliasesJSON, name) {
-			byName = append(byName, c)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return "", nil, false, nil, err
-	}
-
-	if aliasHit != nil {
-		return aliasHit.id, aliasIDSet(aliasHit.id, aliasHit.aliases), true, nil, nil
-	}
-	uniq := map[string]cand{}
-	for _, c := range byName {
-		uniq[c.id] = c
-	}
-	switch len(uniq) {
-	case 0:
-		return "", nil, false, nil, nil
-	case 1:
-		for _, c := range uniq {
-			return c.id, aliasIDSet(c.id, c.aliases), true, nil, nil
-		}
-	}
-	ids := make([]string, 0, len(uniq))
-	for id := range uniq {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		disp := uniq[id].display
-		if disp == "" {
-			disp = strings.TrimPrefix(id, "person:")
-		}
-		ambiguous = append(ambiguous, disp+" <"+strings.TrimPrefix(id, "person:")+">")
-	}
-	return "", nil, false, ambiguous, nil
+	resolved, err := previewfilter.ResolveEntity(ctx, db, name)
+	return resolved.Canonical, resolved.IDSet, resolved.OK, resolved.Ambiguous, err
 }
 
 // clampSinceDays normalizes a since-days flag value: a negative is treated as no
 // filter (all-time), matching the established `connect --since-days` convention and
 // preventing the future-cutoff "hide everything" footgun (P1-D). Applied at every
 // CLI/MCP value-extraction seam before briefOpts is built.
-func clampSinceDays(n int) int {
-	if n < 0 {
-		return 0
-	}
-	return n
-}
+func clampSinceDays(n int) int { return previewfilter.ClampSinceDays(n) }
 
 // aliasIDSet builds the membership set for one resolved entity: the canonical
 // person id plus a personID() for every ADDRESS/HANDLE alias (an alias is an
@@ -225,15 +118,5 @@ func clampSinceDays(n int) int {
 // never emits. The stored address aliases are already lowercased; personID
 // lowercases again defensively, so the result matches personRefs' raw ids exactly.
 func aliasIDSet(canonical string, aliases []string) map[string]bool {
-	set := map[string]bool{canonical: true}
-	for _, a := range aliases {
-		a = strings.TrimSpace(a)
-		if a == "" {
-			continue
-		}
-		if strings.Contains(a, "@") || strings.HasPrefix(a, "+") {
-			set[personID(a)] = true
-		}
-	}
-	return set
+	return previewfilter.AliasIDSet(canonical, aliases)
 }

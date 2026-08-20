@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	indexpkg "github.com/pyranthus-hq/mora/internal/index"
 )
 
 // The error taxonomy is a published contract (CON-03/CON-07). These tests are
@@ -402,8 +404,8 @@ func TestMoraErrorUnwrapsPackageSentinels(t *testing.T) {
 		sentinel error
 		other    error
 	}{
-		{"index unmarkable", errCodeIndexUnavailable, errIndexUnmarkable, errEmbedderUnavailable},
-		{"embedder unavailable", errCodeConnectorUnavailable, errEmbedderUnavailable, errIndexUnmarkable},
+		{"index unmarkable", errCodeIndexUnavailable, indexpkg.ErrUnmarkable, errEmbedderUnavailable},
+		{"embedder unavailable", errCodeConnectorUnavailable, errEmbedderUnavailable, indexpkg.ErrUnmarkable},
 		{"rebuild blocked", errCodeDataCorrupt, errRebuildBlocked, errLoopLockHeld},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

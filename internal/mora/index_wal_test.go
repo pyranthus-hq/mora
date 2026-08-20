@@ -3,6 +3,9 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"os"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +60,50 @@ func TestIndexUpsertKeepsWAL(t *testing.T) {
 	}
 	if mode := persistedJournalMode(t, cfg); mode != "wal" {
 		t.Fatalf("after user write, index.db journal_mode = %q, want \"wal\"", mode)
+	}
+}
+
+// TestReadOnlyIndexNeedsNoDirectoryWriteAccess pins the sandboxed-agent case:
+// callers may read index.db while the containing data directory is not writable.
+// The reader must not request journal-mode changes or sidecar creation.
+func TestWritableIndexDSNNeverUsesImmutableSnapshot(t *testing.T) {
+	cfg := Config{DataDir: t.TempDir()}
+	if err := os.WriteFile(dbPath(cfg), []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if dsn := roIndexDSN(cfg); strings.Contains(dsn, "immutable=1") {
+		t.Fatalf("writable live index DSN must not use immutable snapshot: %s", dsn)
+	}
+}
+
+func TestReadOnlyIndexNeedsNoDirectoryWriteAccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory mode bits do not model Windows ACL write denial")
+	}
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	if err := os.Chmod(cfg.DataDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cfg.DataDir, 0o700) })
+
+	prevHeal := indexAutoHeal
+	indexAutoHeal = func(Config) bool { return false }
+	t.Cleanup(func() { indexAutoHeal = prevHeal })
+
+	db, err := openIndexRO(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("read-only open required directory write access: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM memories`).Scan(&n); err != nil {
+		t.Fatalf("read from index in a non-writable directory: %v", err)
 	}
 }
 

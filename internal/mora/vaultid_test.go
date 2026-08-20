@@ -12,10 +12,26 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func pinOperationClockForTest(t *testing.T, base time.Time) {
+	t.Helper()
+	original := operationClock
+	var mu sync.Mutex
+	var tick int64
+	operationClock = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		tick++
+		return base.Add(time.Duration(tick))
+	}
+	t.Cleanup(func() { operationClock = original })
+}
 
 func sandboxCfg(t *testing.T) Config {
 	t.Helper()
+	pinOperationClockForTest(t, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
 	dir := t.TempDir()
 	t.Setenv("MORA_CONFIG_DIR", dir)
 	cfg := defaultConfig()
@@ -27,61 +43,6 @@ func sandboxCfg(t *testing.T) Config {
 	return cfg
 }
 
-func TestVaultMarkerWriteOnce(t *testing.T) {
-	cfg := sandboxCfg(t)
-
-	got, err := createVaultMarkerIfAbsent(cfg, "v_first")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "v_first" {
-		t.Fatalf("first create: got id %q, want v_first", got)
-	}
-	if _, err := os.Stat(markerPath(cfg)); err != nil {
-		t.Fatalf("marker not written: %v", err)
-	}
-
-	// Second create must NOT overwrite — returns the existing id.
-	got2, err := createVaultMarkerIfAbsent(cfg, "v_second")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got2 != "v_first" {
-		t.Fatalf("second create returned %q, want existing v_first (write-once)", got2)
-	}
-
-	m, present, err := readVaultMarker(cfg)
-	if err != nil || !present {
-		t.Fatalf("read: present=%v err=%v", present, err)
-	}
-	if m.VaultID != "v_first" || m.Schema != 1 {
-		t.Fatalf("marker = %+v", m)
-	}
-
-	// B6: the atomic (temp→fsync→rename) write must leave a VALID, complete JSON
-	// file on disk — never a torn fragment — and no temp files lying around.
-	raw, err := os.ReadFile(markerPath(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var probe vaultMarker
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		t.Fatalf("marker on disk is not valid JSON: %v\n%s", err, raw)
-	}
-	if probe.VaultID != "v_first" {
-		t.Fatalf("on-disk marker id = %q, want v_first", probe.VaultID)
-	}
-	entries, err := os.ReadDir(cfg.VaultDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json.tmp") {
-			t.Fatalf("a temp marker file was left behind: %s", e.Name())
-		}
-	}
-}
-
 // TestCorruptMarkerFailsLoud covers F2: a corrupt marker must fail loud (it is
 // identity-critical), not be silently treated as absent — which would disable
 // the rebuild guard exactly when the vault's identity is in doubt.
@@ -90,66 +51,11 @@ func TestCorruptMarkerFailsLoud(t *testing.T) {
 	if err := os.WriteFile(markerPath(cfg), []byte("{bad json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := readVaultMarker(cfg)
-	if err == nil {
-		t.Fatal("readVaultMarker must return an error for a corrupt marker")
-	}
-	if !strings.Contains(err.Error(), "corrupt") {
-		t.Fatalf("error should mention 'corrupt'; got: %v", err)
-	}
-	// The guidance must NOT tell the user to delete the marker: a regenerated
-	// marker gets a fresh id that no longer matches the index, blocking every
-	// future rebuild. It must point at restoring the backup instead.
-	if strings.Contains(err.Error(), "delete it and re-run") {
-		t.Fatalf("corrupt-marker message must not advise deleting the marker; got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "restore") {
-		t.Fatalf("corrupt-marker message should point at restoring from backup; got: %v", err)
-	}
-	// A rebuild must surface the corrupt-marker error rather than swallow it.
 	if err := writeMemory(cfg, Memory{ID: newID(), Scope: "global", Type: "insight", Title: "x", Source: "manual", CreatedAt: nowRFC3339(), Text: "y"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, rerr := rebuildIndex(context.Background(), cfg); rerr == nil || !strings.Contains(rerr.Error(), "corrupt") {
-		t.Fatalf("rebuild should surface the corrupt-marker error; got: %v", rerr)
-	}
-}
-
-// TestReadIndexVaultIDNoIndex covers F3: reading the index vault id when no index
-// exists must return ("", nil), not a hard error. Two flavors: a never-built
-// index in an existing data_dir (surfaces as "no such table"), and a data_dir
-// that does not exist at all (surfaces as "unable to open database file" — the
-// branch the fix adds).
-func TestReadIndexVaultIDNoIndex(t *testing.T) {
-	cfg := sandboxCfg(t)
-	id, err := readIndexVaultID(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("readIndexVaultID on a never-built index must not error; got: %v", err)
-	}
-	if id != "" {
-		t.Fatalf("readIndexVaultID = %q, want empty", id)
-	}
-
-	// data_dir missing entirely (e.g. wiped) → the open itself fails.
-	gone := cfg
-	gone.DataDir = filepath.Join(t.TempDir(), "does-not-exist")
-	id, err = readIndexVaultID(context.Background(), gone)
-	if err != nil {
-		t.Fatalf("readIndexVaultID with a missing data_dir must not error; got: %v", err)
-	}
-	if id != "" {
-		t.Fatalf("readIndexVaultID = %q, want empty", id)
-	}
-}
-
-func TestVaultMarkerAbsent(t *testing.T) {
-	cfg := sandboxCfg(t)
-	_, present, err := readVaultMarker(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if present {
-		t.Fatal("expected no marker in a fresh sandbox")
+	if _, err := rebuildIndex(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("rebuild should surface the corrupt-marker error; got: %v", err)
 	}
 }
 
@@ -687,35 +593,6 @@ func TestInitRepointDeclinedKeepsVault(t *testing.T) {
 	}
 	if filepath.Clean(reloaded.VaultDir) != filepath.Clean(aVault) {
 		t.Fatalf("config vault_dir = %q, want unchanged %q after a declined repoint", reloaded.VaultDir, aVault)
-	}
-}
-
-func TestAssessRebuild(t *testing.T) {
-	cases := []struct {
-		name               string
-		oldCount, newCount int
-		markerID           string
-		markerPresent      bool
-		indexID            string
-		want               rebuildDecision
-	}{
-		{"first build empty index", 0, 0, "", false, "", decProceed},
-		{"first build populating", 0, 5, "", false, "", decProceed},
-		{"the incident: populated->empty, no marker", 2823, 0, "", false, "", decBlockEmpty},
-		{"populated->empty, marker matches index", 2823, 0, "v_a", true, "v_a", decBlockEmpty},
-		{"adopt: legacy vault, no ids anywhere", 2823, 2820, "", false, "", decAdopt},
-		{"adopt: marker present, index has no id yet", 10, 10, "v_a", true, "", decAdopt},
-		{"block: index knows its id, marker vanished", 10, 10, "", false, "v_a", decBlockIdentity},
-		{"block: different vault", 10, 9, "v_b", true, "v_a", decBlockIdentity},
-		{"normal rebuild, ids match", 10, 11, "v_a", true, "v_a", decProceed},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := assessRebuild(c.oldCount, c.newCount, c.markerID, c.markerPresent, c.indexID)
-			if got != c.want {
-				t.Fatalf("assessRebuild = %v, want %v", got, c.want)
-			}
-		})
 	}
 }
 

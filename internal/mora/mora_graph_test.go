@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -214,22 +213,6 @@ func TestGraphBiTemporalStamps(t *testing.T) {
 	p := get("memory:plain|ABOUT|tag:gamma|plain")
 	wantSet(p.observedAt, "2026-03-01T00:00:00Z", "plain.observed_at(falls back to created_at)")
 	wantNull(p.invalidatedAt, "plain.invalidated_at")
-}
-
-func TestBuildGraphDeterministic(t *testing.T) {
-	mems := []Memory{
-		{ID: "a", Scope: "project:x", Tags: []string{"t2", "t1"}, Title: "[[Zeta]]", Text: "[[Alpha]] and [[Zeta]]\n- [Cat]", CreatedAt: "2026-01-02T00:00:00Z"},
-		{ID: "b", Scope: "personal", Tags: []string{"t1"}, Text: "[[Alpha]]", CreatedAt: "2026-01-01T00:00:00Z", LastSynced: "2026-01-03T00:00:00Z"},
-		{ID: "c", Scope: "project:x", Text: "no entities", CreatedAt: "2026-01-04T00:00:00Z"},
-	}
-	e1, g1, _ := buildGraph(mems)
-	e2, g2, _ := buildGraph(mems)
-	if !reflect.DeepEqual(e1, e2) {
-		t.Fatalf("entities nondeterministic:\n%+v\n%+v", e1, e2)
-	}
-	if !reflect.DeepEqual(g1, g2) {
-		t.Fatalf("edges nondeterministic:\n%+v\n%+v", g1, g2)
-	}
 }
 
 func TestListEntitiesIsGraphBacked(t *testing.T) {

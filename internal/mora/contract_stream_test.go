@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 )
 
 // decodeMemoriesJSON decodes the `search --json` / `list --json` document.
@@ -362,7 +364,7 @@ func TestContractIngestRunReceiptSurvivesFailure(t *testing.T) {
 		return 3, errString("kaboom")
 	}
 	if err := saveSources(cfg, []Source{
-		{Name: "boom", Type: "filesystem", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "boom", Type: "filesystem", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
 	}); err != nil {
 		t.Fatal(err)
 	}

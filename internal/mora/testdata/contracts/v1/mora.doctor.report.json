@@ -1,4 +1,19 @@
 {
+  "activities": [
+    {
+      "counts": {
+        "files": 2,
+        "items": 2
+      },
+      "finished_at": "\u003ctimestamp\u003e",
+      "kind": "index_rebuild",
+      "last_heartbeat": "\u003ctimestamp\u003e",
+      "phase": "completed",
+      "run_id": "\u003cid\u003e",
+      "started_at": "\u003ctimestamp\u003e",
+      "state": "completed"
+    }
+  ],
   "checks": [
     {
       "critical": false,
@@ -28,6 +43,11 @@
     {
       "critical": true,
       "name": "index_fresh",
+      "ok": true
+    },
+    {
+      "critical": true,
+      "name": "operation_healthy:index_rebuild:\u003cid\u003e",
       "ok": true
     },
     {

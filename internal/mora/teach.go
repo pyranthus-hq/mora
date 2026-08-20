@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	governancepkg "github.com/pyranthus-hq/mora/internal/governance"
 )
 
 const (
@@ -30,14 +32,6 @@ const (
 
 // DecisionValidity makes the conditions under which a decision remains useful
 // first-class data rather than prose an agent can accidentally omit.
-type DecisionValidity struct {
-	AsOf           string   `json:"as_of"`
-	Durability     string   `json:"durability"`
-	FlipConditions []string `json:"flip_conditions"`
-	ReviewBy       string   `json:"review_by,omitempty"`
-	Complete       bool     `json:"complete"`
-}
-
 func normalizeDecisionValidity(m Memory) *DecisionValidity {
 	if m.Type != "decision" {
 		return nil
@@ -146,34 +140,7 @@ func teachMemoryDecisionValid(decision string) bool {
 // authorizing correction/supersession remains active; undo restores the original
 // without leaking both revisions into current-state reads.
 func (g governance) memoryVisible(id string) bool {
-	hidden := map[string]bool{}
-	replacementEver := map[string]bool{}
-	activeReplacement := map[string]bool{}
-	for _, e := range g.Entries {
-		if e.Kind != govKindTeachMemory || e.Action != govActionRecord ||
-			!teachMemoryDecisionValid(e.Decision) {
-			continue
-		}
-		if e.ReplacementID != "" {
-			replacementEver[e.ReplacementID] = true
-		}
-		if e.revoked() {
-			continue
-		}
-		if e.TargetID != "" {
-			hidden[e.TargetID] = true
-		}
-		if e.ReplacementID != "" {
-			activeReplacement[e.ReplacementID] = true
-		}
-	}
-	if hidden[id] {
-		return false
-	}
-	if replacementEver[id] && !activeReplacement[id] {
-		return false
-	}
-	return true
+	return governancepkg.MemoryVisible(toGovernanceLedger(g), id)
 }
 
 func filterCurrentMemories(g governance, in []Memory) []Memory {
@@ -199,42 +166,15 @@ func currentMemories(cfg Config, in []Memory, now time.Time) ([]Memory, error) {
 }
 
 func (g governance) teachingEntries() []govEntry {
-	var out []govEntry
-	for _, e := range g.Entries {
-		if e.Kind == govKindTeachCommitment || e.Kind == govKindTeachMemory ||
-			e.Kind == govKindEvalConsent {
-			out = append(out, e)
-		}
-	}
-	return out
+	return governancepkg.TeachingEntries(toGovernanceLedger(g))
 }
 
 func (g governance) evalConsentEnabled() bool {
-	enabled := false
-	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindEvalConsent || e.Action != govActionRecord {
-			continue
-		}
-		switch e.Decision {
-		case "enable":
-			enabled = true
-		case "disable":
-			enabled = false
-		}
-	}
-	return enabled
+	return governancepkg.EvalConsentEnabled(toGovernanceLedger(g))
 }
 
 func (g governance) activeTeachCommitments() []govEntry {
-	var out []govEntry
-	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindTeachCommitment ||
-			e.Action != govActionRecord || !teachDecisionValid(e.Decision) {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
+	return governancepkg.ActiveTeachCommitments(toGovernanceLedger(g))
 }
 
 func teachEntryMatchesCommitment(e govEntry, c Commitment) bool {

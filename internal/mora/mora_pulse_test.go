@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"io"
 	"os"
 	"path/filepath"
@@ -408,11 +409,11 @@ func TestScheduledPulseDailyDurableLifecycle(t *testing.T) {
 
 	origLoopClock, origBriefClock := loopClock, briefClock
 	origG, origI, origNotify := backfillGoogleFn, backfillIMessageFn, notifyBriefFn
-	origMarkerSync, origDirSync := markerSyncFn, syncDirFn
+	origMarkerSync, origDirSync := atomicio.MarkerSyncFn, atomicio.SyncDirFn
 	t.Cleanup(func() {
 		loopClock, briefClock = origLoopClock, origBriefClock
 		backfillGoogleFn, backfillIMessageFn, notifyBriefFn = origG, origI, origNotify
-		markerSyncFn, syncDirFn = origMarkerSync, origDirSync
+		atomicio.MarkerSyncFn, atomicio.SyncDirFn = origMarkerSync, origDirSync
 	})
 	loopClock = func() time.Time { return now }
 	briefClock = func() time.Time { return now }
@@ -433,11 +434,11 @@ func TestScheduledPulseDailyDurableLifecycle(t *testing.T) {
 			return "other"
 		}
 	}
-	markerSyncFn = func(f *os.File) error {
+	atomicio.MarkerSyncFn = func(f *os.File) error {
 		durabilityTrace = append(durabilityTrace, classifyDurableDir(filepath.Dir(f.Name()))+":fsync")
 		return origMarkerSync(f)
 	}
-	syncDirFn = func(dir string) error {
+	atomicio.SyncDirFn = func(dir string) error {
 		durabilityTrace = append(durabilityTrace, classifyDurableDir(dir)+":dirsync")
 		return origDirSync(dir)
 	}

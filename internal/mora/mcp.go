@@ -1,17 +1,39 @@
 package mora
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
-	"strconv"
 	"time"
+
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
+
+func strArg(args map[string]any, key, def string) string     { return mcppkg.StringArg(args, key, def) }
+func intArg(args map[string]any, key string, def int) int    { return mcppkg.IntArg(args, key, def) }
+func boolArg(args map[string]any, key string, def bool) bool { return mcppkg.BoolArg(args, key, def) }
+
+func contextDefaultTokens(c Config) int { return mcppkg.ContextDefaultTokens(c.ContextProfile) }
+func contextMaxTokens(c Config) int     { return mcppkg.ContextMaxTokens(c.ContextProfile) }
+func digestSnippetChars(c Config) int {
+	return mcppkg.DigestSnippetChars(c.ContextProfile, digestSnippetLen)
+}
+func resolveContextBudgetTokens(c Config, n int) (int, int) {
+	return mcppkg.ResolveContextBudgetTokens(c.ContextProfile, n)
+}
+func resolveContextBudget(c Config, n int) int {
+	return mcppkg.ResolveContextBudget(c.ContextProfile, n)
+}
+func estimateTokensUsed(bytes int) int { return mcppkg.EstimateTokensUsed(bytes) }
+func mcpEntityBudgetChars(c Config, n int) int {
+	return mcppkg.EnvelopeBudgetChars(c.ContextProfile, n)
+}
+func mcpDigestBudgetChars(c Config, n int) int {
+	return mcppkg.EnvelopeBudgetChars(c.ContextProfile, n)
+}
 
 func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 1 && args[0] == "serve" {
@@ -23,74 +45,22 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	return errors.New("usage: mora mcp serve | mora mcp proposals <list|approve ID|reject ID>")
 }
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
-	scanner := bufio.NewScanner(stdin)
-	scanner.Buffer(make([]byte, 64*1024), mcpMaxRequestBytes)
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-		// JSON-RPC notifications carry no "id" and MUST NOT be answered. The
-		// post-initialize `notifications/initialized` is the common one; replying
-		// to it (with a stray -32601 frame) makes strict MCP clients — notably
-		// Antigravity's official go-sdk — abort the session and drop every tool
-		// ("tools/list: invalid request"). Lenient clients (Claude Code, Codex)
-		// tolerate the stray frame, which is why this hid. Ignore notifications.
-		if req.ID == nil {
-			continue
-		}
-		resp := handleMCP(ctx, req)
-		b, _ := json.Marshal(resp)
-		fmt.Fprintln(stdout, string(b))
-	}
-	if err := scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			return fmt.Errorf("MCP request line exceeded the %d-byte cap: %w", mcpMaxRequestBytes, err)
-		}
-		return err
-	}
-	return nil
+	return mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
 }
 
 // contextDefaultTokens resolves the ContextProfile to the default token budget
 // used when a caller passes no max_tokens: small=3000, default=6000,
 // large=12000. Unknown values fall back to the default (never zero).
-func (c Config) contextDefaultTokens() int {
-	switch c.ContextProfile {
-	case "small":
-		return defaultContextTokens / 2
-	case "large":
-		return defaultContextTokens * 2
-	default:
-		return defaultContextTokens
-	}
-}
 
 // contextMaxTokens resolves the ContextProfile to the per-call max_tokens
 // ceiling: small/default keep the 20k guardrail (one tool result must not
 // dominate a normal agent window); large opts into 50k — the user choosing
 // "large" is explicitly trading window headroom for denser single-call context.
-func (c Config) contextMaxTokens() int {
-	if c.ContextProfile == "large" {
-		return largeContextMaxTokens
-	}
-	return maxContextTokens
-}
 
 // digestSnippetChars resolves the ContextProfile to the digest per-item
 // snippet length: small=120, default=200 (digestSnippetLen), large=400. The
 // large profile exists precisely so conversation tails (the user's own
 // replies) survive the clip — see digestItemFor.
-func (c Config) digestSnippetChars() int {
-	switch c.ContextProfile {
-	case "small":
-		return 120
-	case "large":
-		return 400
-	default:
-		return digestSnippetLen
-	}
-}
 
 // budgetUnitTokens is stamped on every budget-bounded MCP/CLI JSON envelope so
 // consumers can verify the knob unit (#69).
@@ -101,36 +71,14 @@ const budgetUnitTokens = "tokens"
 // profile default; over-ceiling requests clamp to contextMaxTokens. Clamping
 // happens BEFORE the *charsPerToken conversion so an arbitrarily large max_tokens
 // cannot overflow.
-func resolveContextBudgetTokens(cfg Config, maxTokens int) (tokens int, charBudget int) {
-	if maxTokens <= 0 {
-		maxTokens = cfg.contextDefaultTokens()
-	}
-	if ceiling := cfg.contextMaxTokens(); maxTokens > ceiling {
-		maxTokens = ceiling
-	}
-	return maxTokens, maxTokens * charsPerToken
-}
 
 // resolveContextBudget converts a requested token budget (the context_memory
 // max_tokens arg) into a character budget for buildContext.
-func resolveContextBudget(cfg Config, maxTokens int) int {
-	_, chars := resolveContextBudgetTokens(cfg, maxTokens)
-	return chars
-}
 
 // estimateTokensUsed converts a byte count to the codebase's token heuristic.
-func estimateTokensUsed(bytes int) int {
-	if bytes <= 0 {
-		return 0
-	}
-	return (bytes + charsPerToken - 1) / charsPerToken
-}
 
 // mcpEntityBudgetChars converts max_tokens into a compact dossier byte budget,
 // accounting for the CallToolResult envelope inflation (same divisor as digest).
-func mcpEntityBudgetChars(cfg Config, maxTokens int) int {
-	return resolveContextBudget(cfg, maxTokens) / mcpDigestEnvelopeDivisor
-}
 
 // mcpDigestBudgetChars converts a requested max_tokens into a COMPACT-payload byte
 // budget for digestMCPPayload such that the doubled+indented envelope stays under
@@ -138,37 +86,17 @@ func mcpEntityBudgetChars(cfg Config, maxTokens int) int {
 // tokens; we divide by the envelope inflation factor so the on-the-wire envelope
 // (what the T0 gate measures) respects the ceiling while the knob still scales
 // (a 20k request yields a strictly larger compact budget than the 6k default).
-func mcpDigestBudgetChars(cfg Config, maxTokens int) int {
-	return resolveContextBudget(cfg, maxTokens) / mcpDigestEnvelopeDivisor
-}
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
-	resp := jsonRPCResponse{JSONRPC: "2.0", ID: req.ID}
-	switch req.Method {
-	case "initialize":
-		var instructions string
-		if cfg, err := loadConfig(); err == nil {
-			instructions = mcpInstructionsFor(cfg.mcpWritePolicy())
-		} else {
-			instructions = "Mora could not load its configuration, so tools are unavailable and no mutation will be attempted. Fix config.toml and reconnect."
-		}
-		resp.Result = map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "mora", "version": BuildVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": instructions}
-	case "tools/list":
-		tools := make([]map[string]any, 0, len(mcpToolRegistry))
-		for _, def := range mcpToolRegistry {
-			tools = append(tools, mcpTool(def.Name, def.Description, def.Params...))
-		}
-		resp.Result = map[string]any{"tools": tools}
-	case "tools/call":
-		var p struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		_ = json.Unmarshal(req.Params, &p)
-		resp.Result = invokeMCPTool(ctx, p.Name, p.Arguments).result()
-	default:
-		resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-	}
-	return resp
+	return mcppkg.Dispatch(ctx, req,
+		func() any {
+			cfg, err := loadConfig()
+			return mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil)
+		},
+		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcppkg.ToolCatalog())} },
+		func(ctx context.Context, name string, args map[string]any) any {
+			return invokeMCPTool(ctx, name, args).result()
+		},
+	)
 }
 
 // toCallToolResult wraps a tool's native return value in a spec-compliant MCP
@@ -178,29 +106,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 // structuredContent for clients that consume machine-readable output. A tool
 // error is returned as isError:true content rather than a JSON-RPC error, so the
 // calling agent's tool loop stays alive and can react to the message.
-func toCallToolResult(v any, err error) map[string]any {
-	if err != nil {
-		return map[string]any{
-			"content": []map[string]any{{"type": "text", "text": err.Error()}},
-			"isError": true,
-		}
-	}
-	text, mErr := json.MarshalIndent(v, "", "  ")
-	if mErr != nil {
-		text = []byte(fmt.Sprintf("%v", v))
-	}
-	res := map[string]any{
-		"content": []map[string]any{{"type": "text", "text": string(text)}},
-		"isError": false,
-	}
-	// structuredContent must be a JSON object per the MCP spec; only attach it
-	// when the marshaled value is object-shaped. Tools that return arrays still
-	// carry the full payload via the text block above.
-	if len(text) > 0 && text[0] == '{' {
-		res["structuredContent"] = v
-	}
-	return res
-}
+func toCallToolResult(v any, err error) map[string]any { return mcppkg.CallToolResult(v, err) }
 
 // mcpToolDef is one MCP tool's registry entry — the SINGLE source both
 // tools/list (via mcpTool) and callMCPTool derive from (C3 ▸R2: MCP had THREE
@@ -219,130 +125,45 @@ type mcpToolDef struct {
 // mcpToolRegistry is the derived source of truth for every MCP tool. Order is
 // preserved in tools/list for readability; callMCPTool derives its dispatch map
 // from this slice (mcpToolIndex), so a tool added here needs no second edit.
-var mcpToolRegistry = []mcpToolDef{
-	{
-		Name: "write_memory", Description: "Write a durable memory to the vault",
-		Params: []mcpParam{
-			{"title", "string", "Short human-readable title for the memory", true},
-			{"text", "string", "The memory body (Markdown allowed)", true},
-			{"scope", "string", `Scope/namespace, e.g. "global" or "project:acme" (default "global")`, false},
-			{"type", "string", `Memory type: insight|fact|decision|task (default "insight")`, false},
-			{"source", "string", `Origin label (default "mcp")`, false},
-			{"as_of", "string", "Decision validity instant (RFC3339; decision memories only)", false},
-			{"durability", "string", "Decision durability: provisional|working|standing", false},
-			{"flip_conditions", "string", "Semicolon-separated conditions that would reverse the decision", false},
-			{"review_by", "string", "Optional decision review deadline (RFC3339)", false},
-		},
-		Handler: mcpWriteMemory,
-	},
-	{
-		Name: "read_memory", Description: "Read a single memory by its id",
-		Params: []mcpParam{
-			{"id", "string", "The memory id (as returned by search_memory/list_memory)", true},
-			{"match", "string", "Optional literal phrase to center a bounded excerpt on (omit for the full body)", false},
-			{"max_tokens", "integer", "Optional excerpt budget in tokens for bounded reads (default ~800)", false},
-			{"occurrence", "integer", "Optional 1-indexed match occurrence to center the excerpt on (default 1)", false},
-			{"evidence_ref", "string", "Optional Gmail or iMessage evidence ref (from search_memory's evidence.evidence_ref) to read ONLY that message's derived segment, bounded, with a receipt naming its sender/time and iMessage direction; a ref that does not belong to this memory id is rejected", false},
-		},
-		Handler: mcpReadMemory,
-	},
-	{
-		Name: "search_memory", Description: "Search the vault for the most relevant memories (hybrid semantic+keyword when Ollama embeddings are enabled, full-text otherwise)",
-		Params: []mcpParam{
-			{"query", "string", "Search query (words are OR-matched against the index)", true},
-			{"scope", "string", `Optional scope filter, e.g. "project:acme"`, false},
-			{"limit", "integer", "Max results to return (default 8)", false},
-			{"confidence", "boolean", "Opt-in: return confidence with ranking scores, direct answer coverage, freshness, and missing/unhealthy sources (default false)", false},
-			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", "github", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm. An unrecognized value is a tool error.`, false},
-			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm.", false},
-		},
-		Handler: mcpSearchMemory,
-	},
-	{
-		Name: "list_memory", Description: "Browse the memories Mora wrote most recently, newest first. Ordered by `indexed_at` (when Mora recorded the memory), never by event time, so a future calendar event cannot lead the list. Each row splits the timestamps `created_at` conflated: `event_start` (when a calendar event happens), `source_created_at` (when the source object was created at its provider), and `indexed_at`; a field Mora cannot derive honestly is omitted rather than filled in",
-		Params: []mcpParam{
-			{"scope", "string", "Optional scope filter", false},
-			{"limit", "integer", "Max memories to return (default 10)", false},
-		},
-		Handler: mcpListMemory,
-	},
-	{
-		Name: "delete_memory", Description: "Delete a memory by its id",
-		Params:  []mcpParam{{"id", "string", "The memory id to delete", true}},
-		Handler: mcpDeleteMemory,
-	},
-	{
-		Name: "context_memory", Description: "Assemble one dense, budget-bounded context block for a query (or a session-start briefing when no query is given)",
-		Params: []mcpParam{
-			{"query", "string", "Topic to assemble context for; omit for a recency briefing", false},
-			{"scope", "string", "Optional scope filter", false},
-			{"max_tokens", "integer", "Approximate token budget for the response (default ~6000, max ~20000)", false},
-			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", "github", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm, including the no-query recency fallback. An unrecognized value is a tool error.`, false},
-			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm, including the no-query recency fallback.", false},
-		},
-		Handler: mcpContextMemory,
-	},
-	{
-		Name: "think", Description: "Synthesis envelope for a question: cited evidence + a deterministic 'what the vault does NOT know' gap analysis + a prompt to compose a cited answer",
-		Params: []mcpParam{
-			{"query", "string", "The question to synthesize an answer for", true},
-			{"scope", "string", "Optional scope filter", false},
-			{"limit", "integer", "Max evidence memories to gather (default 8)", false},
-			{"confidence", "boolean", "Opt-in: return confidence with ranking scores, direct answer coverage, freshness, and missing/unhealthy sources (default false)", false},
-		},
-		Handler: mcpThink,
-	},
-	{
-		Name: "list_entities", Description: "List the entities (people, scopes, tags, [[links]], categories) referenced across memory, with counts, ranked by salience",
-		Params: []mcpParam{
-			{"kind", "string", `Optional kind filter: "person", "service", "scope", "tag", "link", or "category"`, false},
-			{"limit", "integer", "Max entities to return, ranked by salience (default 150)", false},
-		},
-		Handler: mcpListEntities,
-	},
-	{
-		Name: "get_entity", Description: "Get a budget-bounded, fully-cited dossier for a named entity (merged identities, typed neighbors, top evidence by salience)",
-		Params: []mcpParam{
-			{"name", "string", "The entity name (person, tag, scope, or [[link]]) to fetch", true},
-			{"max_tokens", "integer", "Approximate token budget for the dossier (default ~6000, max ~20000)", false},
-		},
-		Handler: mcpGetEntity,
-	},
-	{
-		Name: "digest", Description: "Assemble a daily cross-source digest (recent emails, texts, calendar items, and stale open tasks), grouped by source, cited, and budget-bounded; opt into `envelope` to also get a synthesis_prompt for composing a grounded, cited brief",
-		Params: []mcpParam{
-			{"since_hours", "integer", "Look-back window in hours (default 24)", false},
-			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", "github", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Use with since_hours for asks like "my texts from the past week" — without it, earlier-ranked sources can consume the byte budget`, false},
-			{"max_tokens", "integer", "Approximate token budget for the digest (default ~6000, max ~20000)", false},
-			{"envelope", "boolean", "Opt-in: also return a synthesis_prompt instructing the agent to write a grounded, cited brief over the digest items (default false; Mora makes no model call)", false},
-			{"entity", "string", `Filter to memories referencing one person (display name or email/handle, e.g. "Riya" or "riya@example.com"). A no-match or ambiguous name returns an error rather than an empty digest. Preview-only.`, false},
-			{"scope", "string", `Filter to one memory scope/namespace, e.g. "project:acme". Preview-only.`, false},
-			{"since_days", "integer", "Additional look-back: only memories created in the last N days (negative is treated as no filter). Preview-only.", false},
-		},
-		Handler: mcpDigest,
-	},
-	{
-		Name: "brief", Description: "Return the latest what-changed/what-matters brief for session start — the same budgeted, cited, source-grouped daily brief as `digest`, resolved to the freshest available; call this FIRST at the start of a session. Opt into `envelope` for a synthesis_prompt to compose a grounded, cited brief.",
-		Params: []mcpParam{
-			{"max_tokens", "integer", "Approximate token budget for the brief (default ~6000, max ~20000)", false},
-			{"envelope", "boolean", "Opt-in: also return a synthesis_prompt for composing a grounded, cited brief over the items (default false; Mora makes no model call)", false},
-			{"entity", "string", `Filter the brief to memories referencing one person (display name or email/handle). A no-match or ambiguous name returns an error. Preview-only.`, false},
-			{"scope", "string", `Filter the brief to one memory scope/namespace, e.g. "project:acme". Preview-only.`, false},
-			{"since_days", "integer", "Additional look-back: only memories created in the last N days (negative = no filter). Preview-only.", false},
-		},
-		Handler: mcpBrief,
-	},
-	{
-		Name: "meeting_prep", Description: "Assemble the same fully-cited unfinished-business brief as `mora brief --event-id`: user-owned obligations, unresolved threads, staleness guards, and material shared context. Every evidence line carries memory_id, channel/source, and date. Local, deterministic, and model-free.",
-		Params: []mcpParam{
-			{"event_id", "string", "Calendar memory id to brief; omit to use the next (or in-progress) event", false},
-			{"at", "string", "RFC3339 as-of time for reproducible assembly (default now)", false},
-			{"name", "string", `Optional attendee name/email/handle: prep the next meeting WITH this person (falls back to the next meeting if they have none). Omit for the next meeting on the calendar.`, false},
-			{"limit", "integer", "Max actionable cited lines per attendee (default 8)", false},
-			{"max_tokens", "integer", "Approximate token budget for the pack (default ~6000, max ~20000)", false},
-		},
-		Handler: mcpMeetingPrep,
-	},
+var mcpToolHandlers = map[string]func(context.Context, Config, map[string]any) (any, error){
+	"write_memory":    mcpWriteMemory,
+	"read_memory":     mcpReadMemory,
+	"search_memory":   mcpSearchMemory,
+	"calendar_events": mcpCalendarEvents,
+	"list_memory":     mcpListMemory,
+	"delete_memory":   mcpDeleteMemory,
+	"context_memory":  mcpContextMemory,
+	"think":           mcpThink,
+	"list_entities":   mcpListEntities,
+	"get_entity":      mcpGetEntity,
+	"digest":          mcpDigest,
+	"brief":           mcpBrief,
+	"meeting_prep":    mcpMeetingPrep,
+}
+
+// mcpToolRegistry binds package-owned public metadata to Mora-owned handlers.
+var mcpToolRegistry = bindMCPTools(mcppkg.ToolCatalog(), mcpToolHandlers)
+
+func bindMCPTools(catalog []mcppkg.ToolDefinition, handlers map[string]func(context.Context, Config, map[string]any) (any, error)) []mcpToolDef {
+	defs := make([]mcpToolDef, 0, len(catalog))
+	seen := make(map[string]bool, len(catalog))
+	for _, meta := range catalog {
+		if seen[meta.Name] {
+			panic("duplicate MCP tool metadata: " + meta.Name)
+		}
+		seen[meta.Name] = true
+		handler, ok := handlers[meta.Name]
+		if !ok {
+			panic("missing MCP tool handler: " + meta.Name)
+		}
+		defs = append(defs, mcpToolDef{Name: meta.Name, Description: meta.Description, Params: meta.Params, Handler: handler})
+	}
+	for name := range handlers {
+		if !seen[name] {
+			panic("MCP tool handler has no metadata: " + name)
+		}
+	}
+	return defs
 }
 
 // mcpToolIndex is the name->def lookup callMCPTool dispatches through, built
@@ -393,8 +214,7 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	// same id never clobber each other (os.Link fails EEXIST → re-mint). This
 	// is the server's most concurrent write path — N agents writing at once.
 	// createMemory sets m.ID and m.Path.
-	var op pendingOp
-	if m, op, err = createMemory(ctx, cfg, m); err != nil {
+	if m, _, err = createMemory(ctx, cfg, m); err != nil {
 		return nil, err
 	}
 	m = decorateDecision(m, now)
@@ -423,7 +243,15 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 			"health":      compactHealthOf(cfg, now),
 		}, nil
 	}
-	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
+	// Keep the marker until the elected full reconciliation commits. FTS is already
+	// current, but the full rebuild is what reconciles graph/vector/commitment arms.
+	if rerr := reconcileAuthoredWrites(ctx, cfg); rerr != nil {
+		return map[string]any{
+			"memory": m, "index_stale": true,
+			"warning": fmt.Sprintf("memory %s saved and text search updated, but full index reconciliation is pending: %v", m.ID, rerr),
+			"health":  compactHealthOf(cfg, now),
+		}, nil
+	}
 	return map[string]any{"memory": m, "health": compactHealthOf(cfg, now)}, nil
 }
 
@@ -432,23 +260,7 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 // persists a pending candidate, so approval cannot reveal a second, looser
 // interpretation of the request.
 func mcpMemoryFromArgs(args map[string]any, now time.Time) (Memory, error) {
-	m := Memory{Scope: strArg(args, "scope", "global"), Type: strArg(args, "type", "insight"), Title: strArg(args, "title", ""), Text: strArg(args, "text", ""), Source: strArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
-	if m.Title == "" || m.Text == "" {
-		return Memory{}, errors.New("title and text required")
-	}
-	if m.Type == "decision" {
-		m.Decision = decisionValidityFromFlags(
-			m.CreatedAt,
-			strArg(args, "as_of", ""),
-			strArg(args, "durability", ""),
-			strArg(args, "flip_conditions", ""),
-			strArg(args, "review_by", ""),
-		)
-	} else if strArg(args, "as_of", "") != "" || strArg(args, "durability", "") != "" ||
-		strArg(args, "flip_conditions", "") != "" || strArg(args, "review_by", "") != "" {
-		return Memory{}, errors.New("decision validity fields require type=decision")
-	}
-	return m, nil
+	return mcppkg.MemoryFromArgs(args, now, decisionValidityFromFlags)
 }
 
 func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
@@ -515,7 +327,7 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 // path (no match/max_tokens/occurrence) stays byte-identical to pre-#242
 // behavior: exactly {"memory","health"}, memory.text the full untouched
 // body. Any of the three #242 knobs being present opts into bounded mode
-// (read_bounded.go), which replaces memory.text with a centred excerpt and
+// (internal/mcp/read_bounded.go), which replaces memory.text with a centred excerpt and
 // adds the sibling "receipt" key — never a second "excerpt" field, so every
 // caller keeps reading the body from memory.text.
 func mcpReadMemoryResult(cfg Config, m Memory, args map[string]any) map[string]any {
@@ -616,7 +428,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// #241: the "filters" receipt appears ONLY when at least one filter was
 	// actually supplied — omitted params stay byte-identical to pre-#241
 	// output (filters_contract_test.go's ByteIdenticalWhenOmitted pins).
-	if r := filters.receipt(); r != nil {
+	if r := filters.Receipt(); r != nil {
 		out["filters"] = r
 	}
 	// #241 acceptance: "Health/confidence output distinguishes
@@ -704,7 +516,7 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 		"used":        used,
 		"health":      health,
 	}
-	if r := filters.receipt(); r != nil {
+	if r := filters.Receipt(); r != nil {
 		out["filters"] = r
 	}
 	// #241 acceptance: explicit excluded_by_filter marker — see
@@ -902,7 +714,7 @@ func mcpMeetingPrep(ctx context.Context, cfg Config, args map[string]any) (any, 
 	if err != nil {
 		return nil, humanizeIndexBusy(err)
 	}
-	if verr := brief.validate(); verr != nil {
+	if verr := brief.Validate(); verr != nil {
 		return nil, fmt.Errorf("refusing uncited meeting_prep payload: %w", verr)
 	}
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "meeting_prep", Results: meetingBriefLineCount(brief), Millis: time.Since(start).Milliseconds()})
@@ -944,48 +756,12 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 // tools/list. Agents (Codex, Claude Code) read this to learn exactly what to
 // pass — without it the tools sit unused (the pilot's "commands aren't useful
 // directly" report).
-type mcpParam struct {
-	Name     string
-	Type     string // JSON Schema type: "string" | "integer"
-	Desc     string
-	Required bool
-}
+type mcpParam = mcppkg.Param
 
 // mcpTool builds a tools/list entry with a precise inputSchema. additionalProperties
 // is false so strict clients (Codex) know the arg set is closed; tools with no
 // params still publish an explicit empty object schema rather than the old
 // catch-all that gave agents zero guidance.
-func mcpTool(name, desc string, params ...mcpParam) map[string]any {
-	properties := map[string]any{}
-	var required []string
-	for _, p := range params {
-		properties[p.Name] = map[string]any{"type": p.Type, "description": p.Desc}
-		if p.Required {
-			required = append(required, p.Name)
-		}
-	}
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return map[string]any{"name": name, "description": desc, "inputSchema": schema}
-}
-func strArg(args map[string]any, key, def string) string {
-	if v, ok := args[key].(string); ok {
-		return v
-	}
-	return def
-}
-func intArg(args map[string]any, key string, def int) int {
-	if v, ok := args[key].(float64); ok {
-		return int(v)
-	}
-	return def
-}
 
 // boolArg reads an MCP tool arg as a bool. MCP arguments arrive as map[string]any
 // from json.Unmarshal, so we accept a native JSON bool directly and ALSO a
@@ -993,14 +769,3 @@ func intArg(args map[string]any, key string, def int) int {
 // malformed string) falls back to def. This mirrors strArg/intArg's defensive
 // type-switch — an untrusted/absent value never crashes and never silently flips
 // the safe default (the opt-in envelope arg must default OFF, 15-02 T-15-04).
-func boolArg(args map[string]any, key string, def bool) bool {
-	switch v := args[key].(type) {
-	case bool:
-		return v
-	case string:
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
-	}
-	return def
-}

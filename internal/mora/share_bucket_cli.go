@@ -28,16 +28,6 @@ func bucketOf(t *transportRef) *bucketConfig {
 }
 
 // display is a human-readable, credential-free rendering of the destination.
-func (c bucketConfig) display() string {
-	loc := c.Bucket
-	if p := strings.Trim(c.Prefix, "/"); p != "" {
-		loc += "/" + p
-	}
-	if c.Endpoint != "" {
-		loc = strings.TrimRight(c.Endpoint, "/") + "/" + loc
-	}
-	return loc
-}
 
 // transportFlags registers the shared --via/bucket flags on a FlagSet.
 type transportFlags struct {
@@ -107,7 +97,7 @@ func shareInitBucket(cfg Config, name, scope string, recipients []string, owner 
 		return err
 	}
 	fmt.Fprintf(stdout, "share %q initialized — scope %s, %d recipient key(s), bucket %s. Publish with `mora share push %s`.\n",
-		name, scope, len(recipients), redactCredentials(bucketOf(tref).display()), name)
+		name, scope, len(recipients), redactCredentials(bucketOf(tref).Display()), name)
 	fmt.Fprintln(stdout, shareInitDisclosure)
 	fmt.Fprintln(stdout, "    Publish from ONE machine at a time — concurrent pushes to the same bucket can")
 	fmt.Fprintln(stdout, "    corrupt the share (single-writer).")
@@ -118,7 +108,7 @@ func shareInitBucket(cfg Config, name, scope string, recipients []string, owner 
 // confirm), then publishes to the bucket.
 func sharePushBucket(ctx context.Context, cfg Config, pub sharePublish, mems []Memory, recips []age.Recipient, bc bucketConfig, stdout io.Writer, stdin io.Reader, yes bool) error {
 	fmt.Fprintf(stdout, "share %q — scope %s: %d memories → %s (age-encrypted to %d recipient key(s))\n",
-		pub.Name, pub.Scope, len(mems), redactCredentials(bc.display()), len(recips))
+		pub.Name, pub.Scope, len(mems), redactCredentials(bc.Display()), len(recips))
 	for _, m := range mems {
 		fmt.Fprintf(stdout, "  • %s\t%s\n", m.ID, m.Title)
 	}

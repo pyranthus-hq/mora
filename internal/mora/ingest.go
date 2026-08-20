@@ -8,6 +8,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"io/fs"
 	"net"
@@ -24,8 +26,62 @@ import (
 	"github.com/pyranthus-hq/mora/internal/githubissues"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/imessage"
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+func syncStatusFileThreshold(name string) time.Duration { return ingestpkg.StatusFileThreshold(name) }
+func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now time.Time) string {
+	return ingestpkg.StatusFileState(st, threshold, now)
+}
+func persistSyncStatus(out io.Writer, path string, st *memory.SyncStatus, ingErr error) error {
+	// A failure raised INSIDE memory.Ingest is typed HERE, not at ingestSource.
+	// memory.Ingest stamps its own LastAttemptAt, which correctly trips
+	// stampSyncAttemptFailure's inner-path guard (health.go) — that guard exists
+	// so the outer stamp can never clobber a checkpoint or counter the inner path
+	// already persisted, and two tests pin it. The outer stamp therefore never
+	// runs for this family, and without this line the whole dropped-item and
+	// fetch-failure family would persist prose with no code (or, worse, keep a
+	// code left by an earlier and different failure). Every memory.Ingest call
+	// site routes through this function, so this is the complete boundary for it.
+	if ingErr != nil {
+		st.ErrorCode = connectorErrorCode(ingErr)
+	}
+	saveErr, result := ingestpkg.PersistStatus(path, st, ingErr)
+	if saveErr != nil && out != nil {
+		warnf(out, "could not persist sync status (%s): %v", path, saveErr)
+	}
+	return result
+}
+func googleStatusPath(cfg Config, name string) string {
+	return ingestpkg.StatusPath(cfg, "google", name)
+}
+func imessageStatusPath(cfg Config, name string) string {
+	return ingestpkg.StatusPath(cfg, "imessage", name)
+}
+func appleCalStatusPath(cfg Config, name string) string {
+	return ingestpkg.StatusPath(cfg, "applecal", name)
+}
+func sourceFreshness(cfg Config) map[string]string { return ingestpkg.SourceFreshness(cfg) }
+
+func ingestOperationSourceKey(s Source) string { return ingestpkg.OperationSourceKey(s) }
+func windowForSource(s Source, k google.ItemKind) google.FetchWindow {
+	return ingestpkg.GoogleWindow(s, k, time.Now())
+}
+func googleTokenPathFor(cfg Config, account string) string {
+	return ingestpkg.GoogleTokenPath(cfg, account)
+}
+func iMessageLookbackDays(s Source) int             { return ingestpkg.IMessageLookbackDays(s) }
+func windowForIMessage(s Source) memory.FetchWindow { return ingestpkg.IMessageWindow(s, time.Now()) }
+func windowForAppleCal(s Source, now time.Time) memory.FetchWindow {
+	return ingestpkg.AppleCalendarWindow(s, now)
+}
+func defaultFilesystemSourceName(path string) string {
+	return ingestpkg.DefaultFilesystemSourceName(path)
+}
+func curatedAllowedExt(ext string) bool    { return ingestpkg.CuratedAllowedExt(ext) }
+func curatedExtractExt(ext string) bool    { return ingestpkg.CuratedExtractExt(ext) }
+func curatedMetadataFile(name string) bool { return ingestpkg.CuratedMetadataFile(name) }
 
 func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
 	sources, _ := loadSources(cfg)
@@ -426,7 +482,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	return nil
 }
 func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) >= 1 && isHelpFlag(args[0]) {
+	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
 		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
@@ -437,6 +493,23 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		fmt.Fprintln(stdout, "  git       back up the vault to a private git remote (off-device)")
 		fmt.Fprintln(stdout, "            --init [--remote URL | --github [--name repo]] [-m msg]")
 		return nil
+	}
+	if len(args) == 0 {
+		return newCodedError(errCodeUsageMissingArgument, nil,
+			"usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+	}
+	// Strip the relay receipt token BEFORE any flag parsing. --mora-app-receipt
+	// is a private argument of the signed-app relay protocol, not part of a
+	// per-verb flag surface, so the --json flag sets below would reject it as an
+	// unknown flag — which both hid the "only valid" guard and broke the relay
+	// child (`mora sync imessage --mora-app-receipt <token>`).
+	receiptToken, cleanedArgs, err := protectedSyncReceiptArg(args)
+	if err != nil {
+		return err
+	}
+	args = cleanedArgs
+	if receiptToken != "" && (len(args) == 0 || !protectedSyncSource(args[0])) {
+		return fmt.Errorf("%s is only valid for imessage or applecalendar sync", protectedSyncReceiptFlag)
 	}
 	if len(args) == 0 {
 		return newCodedError(errCodeUsageMissingArgument, nil,
@@ -478,6 +551,17 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	// Route protected local-store reads through the signed application when this
+	// invocation came from another host. The launched child carries a receipt token
+	// and runs this same command directly, preventing relay recursion.
+	if receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
+		if rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
+			fmt.Fprintf(stdout, "synced %s via Mora.app\n", args[0])
+			return nil
+		} else if rerr != errProtectedSyncDirect {
+			return rerr
+		}
 	}
 	// `mora sync git` — one-way, push-only, fail-loud off-device backup to a
 	// private git remote (opt-in; the vault otherwise never leaves the device).
@@ -540,21 +624,44 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	// `mora sync imessage` — re-run the gated iMessage backfill (shared seam).
 	if args[0] == "imessage" {
-		total, err := backfillEnabledIMessage(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(stdout, "imessage", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+		total, syncErr := backfillEnabledIMessage(ctx, cfg, sourceProgress)
+		rerr := emitSyncSourceResult(stdout, "imessage", sourceJSON, total, "synced %d item(s)\n")
+		// The relay receipt is written even when the stdout emit failed: the
+		// launching host is waiting on it, and a broken pipe must not strand it.
+		if receiptToken != "" {
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			if syncErr != nil {
+				r.Error = syncErr.Error()
+			}
+			if err := writeProtectedSyncReceipt(cfg, r); err != nil {
+				return err
+			}
+		}
+		if rerr != nil {
 			return rerr
 		}
-		return err
+		return syncErr
 	}
 	// `mora sync applecalendar` — targeted retry for the local Calendar store.
 	// Keep this separate from Google Calendar: the provider, FDA gate, status
 	// receipt, and recovery action are all independent (#266).
 	if args[0] == "applecalendar" {
-		total, err := backfillEnabledAppleCalendar(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+		total, syncErr := backfillEnabledAppleCalendar(ctx, cfg, sourceProgress)
+		rerr := emitSyncSourceResult(stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n")
+		// Same rule as imessage above: the relay receipt outlives a stdout failure.
+		if receiptToken != "" {
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			if syncErr != nil {
+				r.Error = syncErr.Error()
+			}
+			if err := writeProtectedSyncReceipt(cfg, r); err != nil {
+				return err
+			}
+		}
+		if rerr != nil {
 			return rerr
 		}
-		return err
+		return syncErr
 	}
 	if args[0] == "github" {
 		total, err := backfillEnabledGitHub(ctx, cfg, sourceProgress)
@@ -642,40 +749,12 @@ func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) 
 // source being disabled/removed), so it cannot resolve a full Source struct —
 // but the filename prefix is enough to pick the SAME threshold family
 // sourceHealthThreshold does, which is all classification needs.
-func syncStatusFileThreshold(fileName string) time.Duration {
-	switch {
-	case strings.HasPrefix(fileName, "google-"), strings.HasPrefix(fileName, "applecal-"), strings.HasPrefix(fileName, "github-"):
-		return sourceHealthGoogleThreshold
-	default: // imessage-, filesystem-, and any future/unknown prefix
-		return sourceHealthLocalThreshold
-	}
-}
 
 // syncStatusFileState classifies one raw sync/ status file with the EXACT same
 // worst-first precedence as sourceHealthFor (never > failed > stale > fresh),
 // so `mora sync status`'s per-line verdict can never again disagree with the
 // health banner (C3 ▸R2: the old flat-48h/LastSynced check ignored ErrorCount
 // and used a single threshold for every connector type).
-func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now time.Time) string {
-	if st.LastSuccessAt == "" {
-		return healthNever
-	}
-	if st.LastError != "" || st.ErrorCount > 0 {
-		return healthFailed
-	}
-	t, err := time.Parse(time.RFC3339, st.LastSuccessAt)
-	if err != nil {
-		return healthNever
-	}
-	age := now.Sub(t)
-	if age < 0 {
-		age = 0
-	}
-	if age > threshold {
-		return healthStale
-	}
-	return healthFresh
-}
 
 // cmdReingest re-fetches enabled sources and rewrites memories with the latest
 // structured metadata (the Meta-in-content-hash change means a normal sync already
@@ -774,24 +853,69 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 // stampSyncAttemptFailure can tell "the inner path stamped this attempt" from
 // "a previous attempt failed" by timing, not by comparing error text (a
 // repeated identical failure must still advance LastAttemptAt every time).
-func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
-	// Release any ingest lease this run took (A3 rule d / Finding 2) once the run
-	// ends: no more files land for it, so cmdIngest's terminal rebuild may retire the
-	// covered journal instead of waiting for process exit. A hard SIGKILL skips this;
-	// the lease then names a dead pid and the next rebuild reclaims it.
-	defer releaseIngestLeasesOwnedHere(cfg)
+// testHookIngestActivityStarted fires after the durable activity+journal marks
+// exist and before provider dispatch can publish. Tests use it as an ordering and
+// concurrency failpoint; production leaves it nil.
+var testHookIngestActivityStarted func(Config, Source, operationHandle)
+
+func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
+	// attemptStart is captured before ANY step that can fail, so every failure at
+	// this chokepoint — activity bookkeeping included — stamps the same attempt.
 	attemptStart := time.Now()
-	n, err := ingestSourceDispatch(cfg, s, out)
+	// The activity receipt and matching journal header are both durable before
+	// dispatch can publish a vault file. Even a zero-item run gets a header, so
+	// its success can be closed only by the covering committed rebuild.
+	h, err := beginOperation(cfg, operationKindIngest, "starting", operationClock())
 	if err != nil {
 		// The connector failure boundary (CON-07). Every source failure passes
 		// through here exactly once, so this is where an untyped one acquires a
 		// published code. The message is preserved byte-for-byte and the cause
 		// stays reachable through errors.Is/errors.As — this adds a label; it does
 		// not change what failed or what the user reads.
-		err = classifyConnectorError(err)
+		err = classifyConnectorError(fmt.Errorf("starting ingest activity: %w", err))
 		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return 0, err
 	}
-	return n, err
+	cfg.SetOperationRunID(h.RunID)
+	finishFailed := func(code string, cause error) error {
+		finishErr := finishOperation(cfg, h, operationFailed, "failed", operationCounts{Items: n, Errors: 1}, code, operationClock())
+		return errors.Join(cause, finishErr)
+	}
+	sourceKey := ingestOperationSourceKey(s)
+	if err := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); err != nil {
+		return 0, finishFailed("journal_start_failed", err)
+	}
+	// Release only this source's lease. Concurrent in-process ingests share a PID;
+	// releasing every lease here would abandon the still-running sibling.
+	defer ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
+
+	progress := startOperationProgress(cfg, h, "ingesting")
+	if err := progress.Update("ingesting", operationCounts{}); err != nil {
+		_ = progress.Stop()
+		return 0, finishFailed("heartbeat_failed", err)
+	}
+	if testHookIngestActivityStarted != nil {
+		testHookIngestActivityStarted(cfg, s, h)
+	}
+	n, dispatchErr := ingestSourceDispatch(cfg, s, out)
+	if dispatchErr == nil {
+		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{Items: n})
+	}
+	if dispatchErr != nil {
+		// CON-07: the untyped failure acquires its published connector code here,
+		// before the operation bookkeeping joins in, so the typed cause stays
+		// reachable through errors.As for the sync-status stamp below.
+		dispatchErr = classifyConnectorError(dispatchErr)
+		progressErr := progress.Stop()
+		err = errors.Join(dispatchErr, progressErr)
+		err = finishFailed("ingest_failed", err)
+		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return n, err
+	}
+	// Success deliberately remains running/awaiting_rebuild, and its bounded
+	// heartbeat stays live while sibling sources finish. The committed rebuild
+	// that retires this run's journal stops it and owns the terminal transition.
+	return n, nil
 }
 
 // classifyConnectorError attaches a CON-07 discrimination to a connector
@@ -896,25 +1020,16 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	if sup, _ := g.suppresses(mm); sup {
 		return nil
 	}
-	m := Memory{
-		ID: mm.StableID, Scope: mm.Scope, Type: mm.Type, Title: mm.Title,
-		Tags: mm.Tags, Source: mm.Source, CreatedAt: mm.CreatedAt, Text: mm.Body,
-		Provider: mm.Provider, Account: mm.Account, ProviderID: mm.ProviderID, ContentHash: mm.ContentHash,
-		LastSynced: mm.LastSynced, Truncated: mm.Truncated, DeletedAt: mm.DeletedAt,
-		Meta: mm.Meta,
+	// Derive the canonical record/path and skip decision inside the held lease so
+	// the whole check→skip→write remains one critical section.
+	out := ingestpkg.MappedTargetPath(cfg, mm)
+	var existing *Memory
+	if parsed, err := parseMemory(out); err == nil {
+		existing = &parsed
 	}
-	// SafeFilename maps / : and space, but a StableID can still carry Windows
-	// reserved characters (? * " < > |); osSafeBase finishes the job on Windows
-	// and is a no-op elsewhere, so this stays byte-identical on macOS/Linux.
-	out := filepath.Join(sourcesRoot(cfg), mm.Provider, osSafeBase(memory.SafeFilename(mm.StableID))+".md")
-	// Skip rewrite if content unchanged (preserve created_at). This read stays
-	// inside the lease so the whole check→skip→write is one critical section.
-	if existing, err := parseMemory(out); err == nil {
-		evidenceMigration := mm.Provider == "imessage" && existing.Meta["message_evidence_schema"] == nil && mm.Meta["message_evidence_schema"] != nil
-		if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" && !evidenceMigration {
-			return nil
-		}
-		m.CreatedAt = existing.CreatedAt // preserve original
+	m, skip := ingestpkg.PrepareMapped(mm, existing)
+	if skip {
+		return nil
 	}
 	body, err := renderMemory(m)
 	if err != nil {
@@ -928,11 +1043,11 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// still reads the index dirty and the next rebuild recovers the memory. Only an
 	// ACTUAL publish is journaled — the content-hash-unchanged / suppressed early
 	// returns above wrote no new file and reach neither line.
-	sourceKey := ingestSourceKey(mm.Provider, mm.Account)
-	if jerr := ensureIngestJournalHeader(cfg, sourceKey); jerr != nil {
+	sourceKey := ingestpkg.SourceKey(mm.Provider, mm.Account)
+	if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 		return jerr
 	}
-	if err := atomicWrite(out, body, 0o644); err != nil {
+	if err := atomicio.Write(out, body, 0o644); err != nil {
 		return err
 	}
 	if testHookPostConnectorPublish != nil {
@@ -942,7 +1057,7 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 		// so removing it is a false-clean. Nil in production.
 		testHookPostConnectorPublish()
 	}
-	journalPublishedPath(cfg, sourceKey, out)
+	ingestpkg.RecordPublishedPath(cfg, sourceKey, out, ingestPublishSeams())
 	return nil
 }
 
@@ -1025,72 +1140,16 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 // losing it silently turns a real outcome into permanent "unavailable"/stale
 // readings. ingErr (the sync's own error) stays primary; the save error is
 // returned only when the sync itself succeeded.
-func persistSyncStatus(out io.Writer, statusPath string, st *memory.SyncStatus, ingErr error) error {
-	// A failure raised INSIDE memory.Ingest is typed HERE, not at ingestSource.
-	// memory.Ingest stamps its own LastAttemptAt, which correctly trips
-	// stampSyncAttemptFailure's inner-path guard (health.go) — that guard exists
-	// so the outer stamp can never clobber a checkpoint or counter the inner path
-	// already persisted, and two tests pin it. The outer stamp therefore never
-	// runs for this family, and without this line the whole dropped-item and
-	// fetch-failure family would persist prose with no code (or, worse, keep a
-	// code left by an earlier and different failure). Every memory.Ingest call
-	// site routes through this function, so this is the complete boundary for it.
-	if ingErr != nil {
-		st.ErrorCode = connectorErrorCode(ingErr)
-	}
-	if serr := memory.SaveStatus(statusPath, st); serr != nil {
-		if out != nil {
-			warnf(out, "could not persist sync status (%s): %v", statusPath, serr)
-		}
-		if ingErr == nil {
-			return fmt.Errorf("persisting sync status: %w", serr)
-		}
-	}
-	return ingErr
-}
-func windowForSource(s Source, kind google.ItemKind) google.FetchWindow {
-	now := time.Now()
-	w := google.FetchWindow{Labels: s.LabelIDs, CalendarID: s.Calendar}
-	switch kind {
-	case google.KindGmailThread:
-		// Default to a lean 90-day window: a year of mail is mostly low-signal
-		// noise for a memory index (~6.7k threads vs ~1.6k here). Override with
-		// `mora connect google --since-days N` (persisted on the source, so
-		// future `sync google` reuses it).
-		days := s.SinceDays
-		if days == 0 {
-			days = 90
-		}
-		w.Since = now.AddDate(0, 0, -days)
-	case google.KindCalEvent:
-		w.Since = now.AddDate(0, -6, 0)
-		w.Until = now.AddDate(0, 3, 0)
-	}
-	return w
-}
 
 // googleTokenPathFor maps an account label to its token file. The unlabeled
 // default keeps the legacy tokens/google.json (existing installs untouched);
 // a labeled account (a second mailbox, e.g. personal vs business) gets its own
 // tokens/google-<label>.json so two Google identities never clobber each
 // other's refresh tokens.
-func googleTokenPathFor(cfg Config, account string) string {
-	name := "google.json"
-	if account != "" {
-		name = "google-" + account + ".json"
-	}
-	return filepath.Join(cfg.ConfigDir, "tokens", name)
-}
 func googleTokenPath(cfg Config) string { return googleTokenPathFor(cfg, "") }
-func googleStatusPath(cfg Config, name string) string {
-	return filepath.Join(cfg.StateDir, "sync", "google-"+name+".json")
-}
 
 // imessageStatusPath mirrors googleStatusPath so `mora sync status` reads the
 // honest-snapshot freshness for iMessage generically (no special-casing).
-func imessageStatusPath(cfg Config, name string) string {
-	return filepath.Join(cfg.StateDir, "sync", "imessage-"+name+".json")
-}
 
 // chatDBPath is the default local iMessage database location. macOS-only; the
 // caller gates on runtime.GOOS before reading it.
@@ -1108,16 +1167,10 @@ func addressBookRoot() string {
 // windowForIMessage builds the lookback window: a lean 90-day default (D-06),
 // overridable per source via SinceDays (0 ⇒ 90; a negative SinceDays means all-time,
 // matching the Gmail since-days ergonomic). Zero Since = all-time at the SQL bound.
-func windowForIMessage(s Source) memory.FetchWindow {
-	days := s.SinceDays
-	switch {
-	case days < 0:
-		return memory.FetchWindow{} // all-time (Since zero ⇒ no lower bound)
-	case days == 0:
-		days = 90
-	}
-	return memory.FetchWindow{Since: time.Now().AddDate(0, 0, -days)}
-}
+const defaultIMessageLookbackDays = ingestpkg.DefaultIMessageLookbackDays
+
+// iMessageLookbackDays reports the configured effective lookback. A negative
+// override means all available history; zero retains the documented default.
 
 // iMessageFetcher is the injectable open+close seam for chat.db (Packet G2 /
 // HEALTH-08). Production uses imessage.NewLiveFetcher; tests inject a denial or
@@ -1179,8 +1232,13 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 	st.Source = s.Name
 	win := windowForIMessage(s)
 
-	if out != nil && s.SinceDays < 0 {
-		fmt.Fprintf(out, "  %s: lookback set to all-time (since-days 0)\n", s.Name)
+	if out != nil {
+		days := iMessageLookbackDays(s)
+		if days < 0 {
+			fmt.Fprintf(out, "  %s: lookback set to all available history (since-days < 0)\n", s.Name)
+		} else {
+			fmt.Fprintf(out, "  %s: ingesting the last %d days; use --since-days to change this window.\n", s.Name, days)
+		}
 	}
 	prog := newProgress(out, s.Name, "conversations")
 	write := func(mm memory.MappedMemory) error {
@@ -1211,9 +1269,6 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 }
 
 // appleCalStatusPath mirrors imessageStatusPath for the Apple Calendar store.
-func appleCalStatusPath(cfg Config, name string) string {
-	return filepath.Join(cfg.StateDir, "sync", "applecal-"+name+".json")
-}
 
 // appleCalDBPath probes the modern group-container store first, then the
 // legacy ~/Library/Calendars location; returns the modern default when neither
@@ -1224,7 +1279,7 @@ func appleCalDBPath() string {
 	if _, err := os.Stat(modern); err == nil {
 		return modern
 	}
-	if legacy := applecal.LegacyDBPath(home); fileExists(legacy) {
+	if legacy := applecal.LegacyDBPath(home); genericutil.FileExists(legacy) {
 		return legacy
 	}
 	return modern
@@ -1234,16 +1289,6 @@ func appleCalDBPath() string {
 // negative = all-time past) and a FIXED 180-day forward bound — Apple Calendar
 // stores subscribed-holiday events YEARS out, and an unbounded Until would
 // flood the vault (and the digest's upcoming-events section) with them.
-func windowForAppleCal(s Source, now time.Time) memory.FetchWindow {
-	days := s.SinceDays
-	switch {
-	case days < 0:
-		return memory.FetchWindow{Until: now.AddDate(0, 0, 180)}
-	case days == 0:
-		days = 90
-	}
-	return memory.FetchWindow{Since: now.AddDate(0, 0, -days), Until: now.AddDate(0, 0, 180)}
-}
 
 // ingestAppleCal reads the local Apple Calendar store read-only and writes one
 // memory per event. macOS-gated like iMessage (same Full Disk Access story —
@@ -1387,13 +1432,13 @@ func connectGitHub(ctx context.Context, args []string, stdout io.Writer) error {
 		for i := range sources {
 			if sources[i].Type == "github" {
 				sources[i].Repositories = clean
-				sources[i].Enabled = ptr(true)
+				sources[i].Enabled = genericutil.Ptr(true)
 				return sources, nil
 			}
 		}
 		return append(sources, Source{
 			Name: "github", Type: "github", Scope: "personal", Repositories: clean,
-			Enabled: ptr(true), CreatedAt: now,
+			Enabled: genericutil.Ptr(true), CreatedAt: now,
 		}), nil
 	}); err != nil {
 		return err
@@ -1462,7 +1507,7 @@ func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Wri
 	if path == "" {
 		return errors.New("usage: mora connect filesystem <path> [--name <name>] [--scope <scope>]")
 	}
-	path = expandHome(path)
+	path = genericutil.ExpandHome(path)
 	// Canonicalize to absolute: the scheduled `ingest --all` job runs from
 	// launchd's cwd, not the user's shell, so a persisted relative path would
 	// target the wrong (or no) folder.
@@ -1497,7 +1542,7 @@ func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Wri
 	if srcName == "" {
 		srcName = defaultFilesystemSourceName(path)
 	}
-	s := Source{Name: srcName, Type: "filesystem", Scope: *scope, Path: path, Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
+	s := Source{Name: srcName, Type: "filesystem", Scope: *scope, Path: path, Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
 	// Serialize the read-modify-write (P3) directly (not via mutateSources) so the
 	// custom "cannot read existing sources" error survives. The lease covers ONLY
 	// load->mutate->save and is released BEFORE the (potentially multi-minute)
@@ -1575,17 +1620,10 @@ func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Wri
 // directory path (its base name), so `connect filesystem ~/notes` and `connect
 // filesystem ~/docs` coexist without an explicit --name. Falls back to
 // "filesystem" for degenerate paths (root, ".", empty base).
-func defaultFilesystemSourceName(path string) string {
-	base := filepath.Base(filepath.Clean(path))
-	if base == "." || base == string(filepath.Separator) || base == "" {
-		return "filesystem"
-	}
-	return base
-}
 func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 90; negative = all-time)")
+	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 365; negative = all-time)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1601,7 +1639,7 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 		return err
 	}
 	// Persist an explicit window override so this and future `sync imessage` runs
-	// reuse it (0 keeps the 90-day default in windowForIMessage; negative = all-time).
+	// reuse it (0 keeps the 365-day default in windowForIMessage; negative = all-time).
 	// Mirrors `connect google --since-days`.
 	if *sinceDays != 0 {
 		if err := setSourceSinceDays(cfg, "imessage", *sinceDays); err != nil {
@@ -1609,6 +1647,15 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 		}
 	}
 	okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
+	if *sinceDays < 0 {
+		fmt.Fprintln(stdout, "iMessage will ingest all available history.")
+	} else {
+		days := *sinceDays
+		if days == 0 {
+			days = defaultIMessageLookbackDays
+		}
+		fmt.Fprintf(stdout, "iMessage will ingest the last %d days; use --since-days to change this window.\n", days)
+	}
 	ready := printIMessageReadiness(stdout, true)
 	if !ready {
 		// Honest stop: readiness guidance already printed the next steps.
@@ -1759,8 +1806,8 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		// journal it here too (miss it and every filesystem memory is silently
 		// unrecoverable after a killed ingest). Durable header BEFORE the write is
 		// visible; path line after a real publish.
-		sourceKey := ingestSourceKey("filesystem", s.Name)
-		if jerr := ensureIngestJournalHeader(cfg, sourceKey); jerr != nil {
+		sourceKey := ingestpkg.SourceKey("filesystem", s.Name)
+		if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 			return jerr
 		}
 		// Suppression re-check + write, atomic under the governance lease so a
@@ -1770,7 +1817,7 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 			return werr
 		}
 		if wrote {
-			journalPublishedPath(cfg, sourceKey, dest)
+			ingestpkg.RecordPublishedPath(cfg, sourceKey, dest, ingestPublishSeams())
 			count++
 		}
 		return nil
@@ -1816,35 +1863,6 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 // LastSynced=="") is INCLUDED with an empty value so it can read "unavailable"
 // downstream (SC#3 gap) rather than being silently dropped, which hid a broken
 // source.
-func sourceFreshness(cfg Config) map[string]string {
-	out := map[string]string{}
-	dir := filepath.Join(cfg.StateDir, "sync")
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
-		if err != nil || st == nil {
-			continue
-		}
-		key := st.Source
-		if key == "" {
-			// Fall back to the filename stem (sans the known prefixes) only when the
-			// status carries no Source — never invent a mangled key.
-			key = strings.TrimSuffix(e.Name(), ".json")
-			key = strings.TrimPrefix(key, "google-")
-			key = strings.TrimPrefix(key, "imessage-")
-		}
-		out[key] = st.LastSynced // "" for a never-synced source — surfaced, not dropped.
-	}
-	return out
-}
-func curatedAllowedExt(ext string) bool {
-	switch strings.ToLower(ext) {
-	case ".md", ".markdown", ".txt", ".text", ".rst", ".json", ".yaml", ".yml", ".toml", ".csv":
-		return true
-	default:
-		return false
-	}
-}
 
 // curatedExtractExt reports whether ext is a non-plain-text format Mora ingests by
 // EXTRACTING its text (vs reading raw bytes). Today: .docx (stdlib zip+xml) and
@@ -1852,14 +1870,6 @@ func curatedAllowedExt(ext string) bool {
 // PDF extraction is lossy on exotic font encodings and yields nothing on scanned
 // documents (no OCR — that would break the no-CGO/single-binary constraint); such
 // files are skipped, never indexed as garbage.
-func curatedExtractExt(ext string) bool {
-	switch strings.ToLower(ext) {
-	case ".docx", ".pdf":
-		return true
-	default:
-		return false
-	}
-}
 
 // extractDocxText returns the visible text of a .docx by reading word/document.xml
 // (the main body) and concatenating its <w:t> runs, breaking paragraphs on </w:p>.
@@ -1923,12 +1933,4 @@ func extractDocxText(path string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
-}
-func curatedMetadataFile(name string) bool {
-	switch name {
-	case "go.mod", "go.sum", "Makefile", "Dockerfile", "CLAUDE.md", "AGENTS.md",
-		"README", "package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "CHANGELOG.md":
-		return true
-	}
-	return false
 }

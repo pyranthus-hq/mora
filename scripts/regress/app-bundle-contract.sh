@@ -655,8 +655,38 @@ pass "workflow orders the app lane and FDA migration note before publish"
 # The raw-CLI archives are a frozen contract; the app lane must not have
 # touched their GoReleaser name template or added an ad-hoc/quarantine bypass.
 GORELEASER="$ROOT/.goreleaser.yaml"
+GENCASK="$ROOT/cmd/gencask"
 require_text "$GORELEASER" '\{\{ \.ProjectName \}\}_\{\{ \.Version \}\}_\{\{ \.Os \}\}_\{\{ \.Arch \}\}' \
 	"raw archive name_template must stay frozen for legacy self-update"
+if grep -Eq 'homebrew_casks:|HOMEBREW_TAP_TOKEN' "$GORELEASER" "$WORKFLOW"; then
+	die "GoReleaser/release workflow still carries unsafe raw-Cask publication wiring"
+fi
+[ -d "$GENCASK" ] || die "missing deterministic Cask generator: $GENCASK"
+CASK_MANIFEST="$WORK/checksums-app.txt"
+CASK_ONE="$WORK/mora-one.rb"
+CASK_TWO="$WORK/mora-two.rb"
+printf '%064d  mora_0.11.9_darwin_amd64_app.zip\n' 0 >"$CASK_MANIFEST"
+printf '%064d  mora_0.11.9_darwin_arm64_app.zip\n' 1 >>"$CASK_MANIFEST"
+(
+	cd "$ROOT"
+	go run ./cmd/gencask --tag v0.11.9 --checksums "$CASK_MANIFEST" --out "$CASK_ONE" >/dev/null
+	go run ./cmd/gencask --tag v0.11.9 --checksums "$CASK_MANIFEST" --out "$CASK_TWO" >/dev/null
+)
+cmp -s "$CASK_ONE" "$CASK_TWO" || die "identical Cask inputs produced different bytes"
+for required in '_app\.zip' 'app "Mora\.app"' 'Contents/MacOS/mora'; do
+	require_text "$CASK_ONE" "$required" "generated Cask must install the signed app artifact"
+done
+if grep -Eq 'xattr|quarantine|postflight|zap[[:space:]]|\.tar\.gz|auto_updates[[:space:]]+true|^[[:space:]]*license[[:space:]]' "$CASK_ONE"; then
+	die "dormant generated Cask mutates trust state, deletes user data, uses a raw archive, or advertises premature self-update"
+fi
+if (
+	cd "$ROOT"
+	go run ./cmd/gencask --tag v0.11.9 --checksums "$CASK_MANIFEST" --out - --auto-updates >/dev/null 2>&1
+); then
+	die "Cask generator advertised auto_updates before #291"
+fi
+command -v ruby >/dev/null 2>&1 && ruby -c "$CASK_ONE" >/dev/null
+pass "deterministic dormant Cask uses only signed app assets and refuses premature auto_updates"
 for surface in "$ASSEMBLE" "$APP_RELEASE" "$VERIFY_ZIP"; do
 	if grep -En -- 'codesign[^#]*--sign(=|[[:space:]])-' "$surface" >"$WORK/forbidden"; then
 		cat "$WORK/forbidden" >&2

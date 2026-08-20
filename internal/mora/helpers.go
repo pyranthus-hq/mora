@@ -4,52 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
-	"unicode/utf8"
 )
 
-// ptr returns a pointer to b. Used to set Source.Enabled on freshly-constructed
-// literals — leaving Enabled nil would grandfather to true on next load (D-11).
-func ptr(b bool) *bool { return &b }
-
-// isInteractive reports whether r is a real terminal (character device). It uses
-// only the stdlib: in production stdin is *os.File (os.Stdin) and we check for
-// ModeCharDevice; in tests/pipes stdin is a strings.Reader or a redirected file,
-// so this returns false. This keeps interactive consent/menus from blocking on a
-// non-TTY without adding a go-isatty dependency (deferred to Plan 04).
-func isInteractive(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
-}
-
-// truncateRunes returns s clipped to at most max bytes, never splitting a
-// multi-byte UTF-8 rune (a raw s[:max] could leave an invalid trailing byte).
-func truncateRunes(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if len(s) <= max {
-		return s
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
-}
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
-}
 func emit(w io.Writer, v any, jsonOut bool) error {
 	if jsonOut {
 		b, err := json.MarshalIndent(v, "", "  ")
@@ -88,29 +45,6 @@ func emit(w io.Writer, v any, jsonOut bool) error {
 		fmt.Fprintf(w, "%v\n", v)
 	}
 	return nil
-}
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-func expandHome(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, p[2:])
-	}
-	return p
-}
-
-// isHelpFlag reports whether a subcommand arg is a help request. Used by subcommands
-// (sync, search) that otherwise treat a leading flag as data and act on it.
-func isHelpFlag(s string) bool {
-	return s == "--help" || s == "-h" || s == "help"
 }
 
 // refuseDashLedPositional closes the bug class Plans 01-05 and 01-07 each found

@@ -424,9 +424,9 @@ func TestRebuildStampsEmbedderDigest(t *testing.T) {
 // was unreachable. This runs on every OS in CI (unlike a shell `git grep`), so a
 // reintroduced fabrication is caught on Windows too.
 func TestNoFabricatedZeroVector(t *testing.T) {
-	src, err := os.ReadFile("embed_ollama.go")
+	src, err := os.ReadFile("../embed/ollama.go")
 	if err != nil {
-		t.Fatalf("read embed_ollama.go: %v", err)
+		t.Fatalf("read internal/embed/ollama.go: %v", err)
 	}
 	// The dim-sized allocation is the fabrication signature: a REAL Ollama vector is
 	// sized to the response length (len(out.Embedding)), never e.dim.

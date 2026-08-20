@@ -4,8 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
+	graphpkg "github.com/pyranthus-hq/mora/internal/graph"
 	"io"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -34,87 +35,25 @@ type entitiesPayload struct {
 	Entities []Entity `json:"entities"`
 }
 
-var (
-	wikilinkRe = regexp.MustCompile(`\[\[([^\[\]]+)\]\]`)
-	categoryRe = regexp.MustCompile(`(?m)^\s*-\s*\[([^\[\]]+)\]`)
-)
-
 // extractEntities aggregates entities across the given memories. Counts are
 // distinct-memory counts (a [[link]] used twice in one memory counts once).
 // Sorted by Count desc, then Kind, then Name — stable and demo-friendly.
-func extractEntities(mems []Memory) []Entity {
-	type key struct{ kind, name string }
-	seen := map[key]map[string]bool{} // (kind,name) -> set of memory IDs
-
-	add := func(kind, name, id string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return
-		}
-		k := key{kind, name}
-		if seen[k] == nil {
-			seen[k] = map[string]bool{}
-		}
-		seen[k][id] = true
-	}
-
-	for _, m := range mems {
-		add("scope", m.Scope, m.ID)
-		for _, t := range m.Tags {
-			add("tag", t, m.ID)
-		}
-		hay := m.Title + "\n" + m.Text
-		for _, mm := range wikilinkRe.FindAllStringSubmatch(hay, -1) {
-			add("link", mm[1], m.ID)
-		}
-		for _, loc := range categoryRe.FindAllStringSubmatchIndex(m.Text, -1) {
-			name := m.Text[loc[2]:loc[3]]
-			if isCheckboxMarker(name) {
-				continue
-			}
-			// "- [Title](url)" is a Markdown link, not a category: skip when the
-			// closing ] is immediately followed by (.
-			if loc[1] < len(m.Text) && m.Text[loc[1]] == '(' {
-				continue
-			}
-			add("category", name, m.ID)
-		}
-	}
-
-	out := make([]Entity, 0, len(seen))
-	for k, ids := range seen {
-		idList := make([]string, 0, len(ids))
-		for id := range ids {
-			idList = append(idList, id)
-		}
-		sort.Strings(idList)
-		out = append(out, Entity{Name: k.name, Kind: k.kind, Count: len(idList), MemoryIDs: idList})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Count != out[j].Count {
-			return out[i].Count > out[j].Count
-		}
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind < out[j].Kind
-		}
-		return out[i].Name < out[j].Name
-	})
-	return out
-}
 
 // isCheckboxMarker reports whether a "- [x]" bracket body is a task checkbox
 // (empty, space, or x/X) rather than a real category name.
-func isCheckboxMarker(s string) bool {
-	switch strings.TrimSpace(s) {
-	case "", "x", "X":
-		return true
-	}
-	return false
-}
 
 // cmdEntities implements `mora entities [name] [--json]`: a read-only view of the
 // vault's entity graph. With a name, it filters to memories referencing that
 // entity (matched by name across any kind).
+func extractEntities(mems []Memory) []Entity {
+	in := graphpkg.StructuralEntities(mems)
+	out := make([]Entity, len(in))
+	for i, e := range in {
+		out[i] = Entity{Name: e.Name, Kind: e.Kind, Count: e.Count, MemoryIDs: e.MemoryIDs}
+	}
+	return out
+}
+
 func cmdEntities(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// The optional entity name may sit before or after --json, so move the
 	// boolean flag first before parsing. This keeps flexible ordering while still
@@ -452,19 +391,19 @@ func fitEntityEvidence(e EntityEvidence, maxBytes int) (EntityEvidence, bool) {
 	}
 	out := e
 	for jsonLen(out) > maxBytes && len(out.Snippet) > 0 {
-		out.Snippet = truncateRunes(out.Snippet, len(out.Snippet)-1)
+		out.Snippet = genericutil.TruncateRunes(out.Snippet, len(out.Snippet)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.Title) > 0 {
-		out.Title = truncateRunes(out.Title, len(out.Title)-1)
+		out.Title = genericutil.TruncateRunes(out.Title, len(out.Title)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.CreatedAt) > 0 {
-		out.CreatedAt = truncateRunes(out.CreatedAt, len(out.CreatedAt)-1)
+		out.CreatedAt = genericutil.TruncateRunes(out.CreatedAt, len(out.CreatedAt)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.Source) > 0 {
-		out.Source = truncateRunes(out.Source, len(out.Source)-1)
+		out.Source = genericutil.TruncateRunes(out.Source, len(out.Source)-1)
 	}
 	for jsonLen(out) > maxBytes && len(out.ID) > 0 {
-		out.ID = truncateRunes(out.ID, len(out.ID)-1)
+		out.ID = genericutil.TruncateRunes(out.ID, len(out.ID)-1)
 	}
 	return out, jsonLen(out) <= maxBytes
 }

@@ -3,12 +3,11 @@ package mora
 import (
 	"io"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/mattn/go-isatty"
+	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 )
 
 // Producer liveness (Packet E / HEALTH-11): the arm that convicts a healthy vault
@@ -25,22 +24,6 @@ import (
 // and then stopped IS surfaced — that is the recorded 7-day dead-automation SEV.
 
 const (
-	// producerSuccessRing bounds the raw success-time sample list kept per producer.
-	// The adoption predicate needs the raw (un-deduped) samples to derive the median
-	// inter-run gap, so the ring is truncated (never day-deduped) inside the lease.
-	producerSuccessRing = 10
-	// producerStaleMultiplier: a producer is stale once its newest success is older
-	// than N x its interval. 2x matches E3's artifact rule and E5's replay (stale at
-	// interval x2 + eps) and gives a scheduled job one full missed cycle of grace
-	// before it reddens, so it never flaps at the cadence boundary.
-	producerStaleMultiplier = 2
-
-	producerAdoptMinSuccesses    = 3
-	producerAdoptMinGap          = time.Hour
-	producerAdoptMinDistinctDays = 3
-	producerIntervalFloor        = time.Hour
-	producerIntervalCeil         = 7 * 24 * time.Hour
-
 	producerSourceScheduled = "scheduled"
 	producerSourceAdopted   = "adopted"
 )
@@ -48,24 +31,11 @@ const (
 // producerStatus is one producer's evidence row in status.json. SuccessTimes is
 // the RAW ring the adoption predicate reads (do not pre-dedupe by day — that would
 // destroy the inter-run-gap distribution the median is computed over).
-type producerStatus struct {
-	Name            string   `json:"name"`
-	LastAttemptAt   string   `json:"last_attempt_at,omitempty"`
-	LastSuccessAt   string   `json:"last_success_at,omitempty"`
-	LastError       string   `json:"last_error,omitempty"`
-	SuccessTimes    []string `json:"success_times"`
-	IntervalSeconds int      `json:"interval_seconds"`
-	Source          string   `json:"source"`
-}
+type producerStatus = healthpkg.ProducerStatus
 
 // expectedProducer is one expectation row in expected.json — the durable "we
 // expect this to keep running" state that survives a deleted stamp (E2).
-type expectedProducer struct {
-	Name            string `json:"name"`
-	IntervalSeconds int    `json:"interval_seconds"`
-	Source          string `json:"source"` // declared | scheduled | adopted
-	AdoptedAt       string `json:"adopted_at,omitempty"`
-}
+type expectedProducer = healthpkg.ExpectedProducer
 
 // jobDefaultIntervalSeconds is the scheduled cadence of each known job (from
 // launchdSchedule / windowsScheduleCadenceArgs), used as the expectation interval
@@ -205,11 +175,7 @@ func stampChokepoint(cfg Config, stdout io.Writer, args []string, derived string
 }
 
 func appendSuccessTime(times []string, now time.Time) []string {
-	times = append(times, now.UTC().Format(time.RFC3339))
-	if len(times) > producerSuccessRing {
-		times = times[len(times)-producerSuccessRing:]
-	}
-	return times
+	return healthpkg.AppendSuccessTime(times, now)
 }
 
 // maybeAdoptProducer records an adopted expectation when the raw success history
@@ -245,54 +211,7 @@ func maybeAdoptProducer(cfg Config, name string, ps producerStatus, now time.Tim
 // when there are >=3 successes whose consecutive gaps are each >=1h and which span
 // >=3 distinct UTC days. The interval is the MEDIAN inter-run gap, clamped to
 // [1h,7d]. A sub-1h gap anywhere means an interactive burst, not a cadence.
-func adoptInterval(rawTimes []string) (int, bool) {
-	ts := make([]time.Time, 0, len(rawTimes))
-	for _, s := range rawTimes {
-		if t, err := time.Parse(time.RFC3339, s); err == nil {
-			ts = append(ts, t.UTC())
-		}
-	}
-	if len(ts) < producerAdoptMinSuccesses {
-		return 0, false
-	}
-	sort.Slice(ts, func(i, j int) bool { return ts[i].Before(ts[j]) })
-	days := map[string]struct{}{}
-	gaps := make([]time.Duration, 0, len(ts)-1)
-	for i, t := range ts {
-		days[t.Format("2006-01-02")] = struct{}{}
-		if i > 0 {
-			g := t.Sub(ts[i-1])
-			if g < producerAdoptMinGap {
-				return 0, false
-			}
-			gaps = append(gaps, g)
-		}
-	}
-	if len(days) < producerAdoptMinDistinctDays {
-		return 0, false
-	}
-	med := medianDuration(gaps)
-	if med < producerIntervalFloor {
-		med = producerIntervalFloor
-	}
-	if med > producerIntervalCeil {
-		med = producerIntervalCeil
-	}
-	return int(med.Seconds()), true
-}
-
-func medianDuration(ds []time.Duration) time.Duration {
-	if len(ds) == 0 {
-		return 0
-	}
-	s := append([]time.Duration(nil), ds...)
-	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
-	n := len(s)
-	if n%2 == 1 {
-		return s[n/2]
-	}
-	return (s[n/2-1] + s[n/2]) / 2
-}
+func adoptInterval(raw []string) (int, bool) { return healthpkg.AdoptInterval(raw) }
 
 // producerHealthAll computes the producer arm: one record per EXPECTED producer,
 // state derived from the evidence ledger over the injected now. Fail-closed: an
@@ -301,91 +220,25 @@ func medianDuration(ds []time.Duration) time.Duration {
 func producerHealthAll(cfg Config, now time.Time) []producerHealth {
 	expected, err := loadExpectedProducers(cfg)
 	if err != nil {
-		return []producerHealth{{State: prodFailed, LastError: err.Error(), Subject: producerHealthSubjectLedger}}
+		return healthpkg.ProducerLedgerFailure(err)
 	}
-	status, serr := loadProducerStatus(cfg)
-	if serr != nil {
-		return []producerHealth{{State: prodFailed, LastError: serr.Error(), Subject: producerHealthSubjectLedger}}
+	status, err := loadProducerStatus(cfg)
+	if err != nil {
+		return healthpkg.ProducerLedgerFailure(err)
 	}
-	names := make([]string, 0, len(expected))
-	for n := range expected {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	out := make([]producerHealth, 0, len(names))
-	for _, name := range names {
-		exp := expected[name]
-		interval := exp.IntervalSeconds
-		if interval <= 0 {
-			interval = producerDefaultInterval(name)
-		}
-		ph := producerHealth{Name: name, IntervalSeconds: interval, Source: exp.Source, Subject: producerHealthSubjectProducer}
-		st, ok := status[name]
-		ph.LastSuccessAt = st.LastSuccessAt
-		ph.LastAttemptAt = st.LastAttemptAt
-		ph.LastError = st.LastError
-		last, lerr := time.Parse(time.RFC3339, st.LastSuccessAt)
-		if !ok || st.LastSuccessAt == "" || lerr != nil {
-			ph.State = prodNever
-			out = append(out, ph)
-			continue
-		}
-		age := now.UTC().Sub(last.UTC())
-		if age < 0 {
-			age = 0
-		}
-		ph.AgeHours = int(age.Hours())
-		switch {
-		case st.LastError != "" && attemptAfterSuccess(st):
-			ph.State = prodFailed
-		case age >= time.Duration(interval)*time.Second*producerStaleMultiplier:
-			ph.State = prodStale
-		default:
-			ph.State = prodFresh
-		}
-		out = append(out, ph)
-	}
-	return out
+	return healthpkg.ClassifyProducers(expected, status, now, producerDefaultInterval)
 }
 
 // attemptAfterSuccess reports whether the latest ATTEMPT postdates the latest
 // success — i.e. the most recent run failed, so the recorded LastError is live.
-func attemptAfterSuccess(st producerStatus) bool {
-	a, aerr := time.Parse(time.RFC3339, st.LastAttemptAt)
-	s, serr := time.Parse(time.RFC3339, st.LastSuccessAt)
-	if aerr != nil {
-		return st.LastError != ""
-	}
-	if serr != nil {
-		return true
-	}
-	return a.After(s)
-}
 
 // briefArtifactFresh is the consumer-side detector (E3): it needs no registration.
 // If >=1 dated brief artifact exists (proving the user uses the surface) and the
 // newest is older than 2x the daily brief cadence, the surface is stale even if no
 // producer was ever registered. This alone would have caught the SEV with zero
 // configuration. Returns (ok, present).
-func briefArtifactFresh(cfg Config, now time.Time) (ok bool, present bool) {
-	matches, _ := filepath.Glob(filepath.Join(cfg.VaultDir, "briefs", "*-brief.md"))
-	newest := time.Time{}
-	for _, m := range matches {
-		datePart := strings.TrimSuffix(filepath.Base(m), "-brief.md")
-		d, derr := time.Parse("2006-01-02", datePart)
-		if derr != nil {
-			continue
-		}
-		present = true
-		if d.After(newest) {
-			newest = d
-		}
-	}
-	if !present {
-		return true, false
-	}
-	stale := now.UTC().Sub(newest.UTC()) >= producerStaleMultiplier*24*time.Hour
-	return !stale, true
+func briefArtifactFresh(cfg Config, now time.Time) (bool, bool) {
+	return healthpkg.BriefArtifactFresh(cfg.VaultDir, now)
 }
 
 // forgetProducerLedger retires a producer (`mora doctor --forget-producer <name>`):

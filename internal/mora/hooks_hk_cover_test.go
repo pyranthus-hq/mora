@@ -3,14 +3,12 @@ package mora
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // hkSetExecutable swaps the hookExecutable seam for the duration of a test and
@@ -50,34 +48,9 @@ func hkSetSearch(t *testing.T, fn func(context.Context, Config, string, string, 
 
 // TestHk_ClaudeCommandHookUnmarshalError asserts the custom UnmarshalJSON
 // surfaces a decode error when a typed field carries the wrong JSON type.
-func TestHk_ClaudeCommandHookUnmarshalError(t *testing.T) {
-	var h claudeCommandHook
-	if err := json.Unmarshal([]byte(`{"type":123}`), &h); err == nil {
-		t.Fatal("claudeCommandHook.UnmarshalJSON must reject a non-string type")
-	}
-	// A well-formed object with an unknown field must round-trip through Extra.
-	if err := json.Unmarshal([]byte(`{"type":"command","command":"x","weird":true}`), &h); err != nil {
-		t.Fatalf("valid hook must decode: %v", err)
-	}
-	if _, ok := h.Extra["weird"]; !ok {
-		t.Fatalf("unknown field must be preserved in Extra, got %#v", h.Extra)
-	}
-}
 
 // TestHk_ClaudeHookGroupUnmarshalError asserts the group decoder rejects a
 // wrong-typed matcher and preserves unknown group-level fields.
-func TestHk_ClaudeHookGroupUnmarshalError(t *testing.T) {
-	var g claudeHookGroup
-	if err := json.Unmarshal([]byte(`{"matcher":123}`), &g); err == nil {
-		t.Fatal("claudeHookGroup.UnmarshalJSON must reject a non-string matcher")
-	}
-	if err := json.Unmarshal([]byte(`{"matcher":"Bash","hooks":[],"extraKey":1}`), &g); err != nil {
-		t.Fatalf("valid group must decode: %v", err)
-	}
-	if _, ok := g.Extra["extraKey"]; !ok {
-		t.Fatalf("unknown group field must survive in Extra, got %#v", g.Extra)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // cmdHook dispatch
@@ -194,19 +167,6 @@ func TestHk_HookRecallSearchError(t *testing.T) {
 // TestHk_SkipRecallPromptStopwordAfterLength asserts a stopword padded past the
 // 12-rune floor still short-circuits via the lowercase/trim switch (the branch
 // the cheap-prompt test cannot reach because its stopwords are all < 12 runes).
-func TestHk_SkipRecallPromptStopwordAfterLength(t *testing.T) {
-	if !skipRecallPrompt("      continue      ") {
-		t.Fatal("a padded stopword must still be skipped via the trim/lowercase switch")
-	}
-	// A genuine question of the same length must NOT be skipped (the default arm).
-	if skipRecallPrompt("what should we do about the migration") {
-		t.Fatal("a real prompt must not be skipped")
-	}
-	// Long slash-command still skipped by the leading-slash guard.
-	if !skipRecallPrompt("/compact the whole conversation now") {
-		t.Fatal("a slash command must be skipped")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // formatRecallContext / recallLine / clipRunes / memoryAge
@@ -214,107 +174,16 @@ func TestHk_SkipRecallPromptStopwordAfterLength(t *testing.T) {
 
 // TestHk_FormatRecallContextSkipsBlankLine asserts a memory that renders to an
 // empty line (no text and no title) is skipped while a real one is kept.
-func TestHk_FormatRecallContextSkipsBlankLine(t *testing.T) {
-	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
-	mems := []Memory{
-		{ID: "blank", Source: "test", CreatedAt: now.Format(time.RFC3339), Score: -1}, // no text/title -> blank line
-		{ID: "real", Title: "Real one", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: "keep me", Score: -1},
-	}
-	got := formatRecallContext(mems, 0, now)
-	if strings.Contains(got, "id: blank") {
-		t.Fatalf("blank-line memory must be skipped, got:\n%s", got)
-	}
-	if !strings.Contains(got, "id: real") {
-		t.Fatalf("real memory must be included, got:\n%s", got)
-	}
-}
 
 // TestHk_FormatRecallContextByteLimit asserts the running byte cap stops
 // appending once the next line would exceed hookRecallByteLimit, while keeping
 // at least the first line.
-func TestHk_FormatRecallContextByteLimit(t *testing.T) {
-	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
-	bigTitle := strings.Repeat("A", 420) // ~420 bytes/line, so line 2 blows the 800 cap
-	body := strings.Repeat("word ", 80)
-	mems := []Memory{
-		{ID: "first", Title: bigTitle, Source: "test", CreatedAt: now.Format(time.RFC3339), Text: body, Score: -1},
-		{ID: "second", Title: bigTitle, Source: "test", CreatedAt: now.Format(time.RFC3339), Text: body, Score: -1},
-		{ID: "third", Title: bigTitle, Source: "test", CreatedAt: now.Format(time.RFC3339), Text: body, Score: -1},
-	}
-	got := formatRecallContext(mems, 0, now)
-	if len(got) > hookRecallByteLimit {
-		t.Fatalf("output %d bytes exceeds cap %d", len(got), hookRecallByteLimit)
-	}
-	if !strings.Contains(got, "id: first") {
-		t.Fatalf("first line must always fit, got:\n%s", got)
-	}
-	if strings.Contains(got, "id: second") {
-		t.Fatalf("second line must be dropped by the byte cap, got:\n%s", got)
-	}
-}
 
 // TestHk_RecallLineFallbacks exercises every fallback branch of recallLine.
-func TestHk_RecallLineFallbacks(t *testing.T) {
-	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
-	created := now.Format(time.RFC3339)
-
-	// Empty text -> title becomes the snippet.
-	line := recallLine(Memory{ID: "a", Title: "Only a title", Source: "manual", CreatedAt: created}, now)
-	if !strings.Contains(line, "Only a title") {
-		t.Fatalf("empty-text line should fall back to title, got %q", line)
-	}
-
-	// Empty text AND empty title -> no line at all.
-	if got := recallLine(Memory{ID: "b", CreatedAt: created}, now); got != "" {
-		t.Fatalf("text-less, title-less memory must render empty, got %q", got)
-	}
-
-	// Empty title -> id is used as the title; empty source -> "memory"; scope appended.
-	line = recallLine(Memory{ID: "xyz", Source: "", Scope: "proj", CreatedAt: created, Text: "some body"}, now)
-	if !strings.Contains(line, "- xyz [memory/proj,") {
-		t.Fatalf("title/source fallbacks wrong, got %q", line)
-	}
-	if !strings.Contains(line, "id: xyz") || !strings.Contains(line, "some body") {
-		t.Fatalf("recallLine missing id/snippet, got %q", line)
-	}
-}
 
 // TestHk_ClipRunes covers the truncation loop and trailing-space trim.
-func TestHk_ClipRunes(t *testing.T) {
-	if got := clipRunes("short", 100); got != "short" {
-		t.Fatalf("under-limit string must be unchanged, got %q", got)
-	}
-	if got := clipRunes("abcdefghij", 3); got != "abc..." {
-		t.Fatalf("clipRunes truncation = %q, want %q", got, "abc...")
-	}
-	if got := clipRunes("ab cdef", 3); got != "ab..." {
-		t.Fatalf("clipRunes must trim trailing space before the ellipsis, got %q", got)
-	}
-	// Multi-byte runes must be counted by rune, not byte.
-	if got := clipRunes("héllo wörld", 4); got != "héll..." {
-		t.Fatalf("clipRunes rune counting = %q, want %q", got, "héll...")
-	}
-}
 
 // TestHk_MemoryAge covers every arm of the age formatter.
-func TestHk_MemoryAge(t *testing.T) {
-	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
-	cases := []struct {
-		created string
-		want    string
-	}{
-		{"not-a-timestamp", "unknown"},
-		{now.Add(48 * time.Hour).Format(time.RFC3339), "in the future"},
-		{now.Format(time.RFC3339), "today"},
-		{now.Add(-25 * time.Hour).Format(time.RFC3339), "1d"},
-		{now.Add(-72 * time.Hour).Format(time.RFC3339), "3d"},
-	}
-	for _, c := range cases {
-		if got := memoryAge(c.created, now); got != c.want {
-			t.Fatalf("memoryAge(%q) = %q, want %q", c.created, got, c.want)
-		}
-	}
-}
 
 // ---------------------------------------------------------------------------
 // hookInstall / hookUninstall / hookStatus error paths
@@ -417,10 +286,3 @@ func TestHk_HookStatusMalformedHooks(t *testing.T) {
 // not valid JSON at all surfaces a parse error instead of being silently
 // treated as empty settings. (Treating it as empty is exactly the wipe hazard:
 // install would then rewrite the file with only mora hooks.)
-func TestHk_LoadClaudeSettingsMalformedTopLevel(t *testing.T) {
-	tmp := withTempHookHome(t)
-	writeClaudeSettingsFixture(t, tmp, "not json at all\n")
-	if err := hookStatus(io.Discard); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
-		t.Fatalf("status must surface an unparseable settings file, got: %v", err)
-	}
-}

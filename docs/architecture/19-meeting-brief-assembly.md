@@ -6,6 +6,8 @@ Without `event_id`, it selects the next event or one that just started. This
 keeps earlier behavior. Both surfaces use the same gated assembly pipeline.
 They do not have separate CLI paths.
 
+`internal/meeting` owns the cited event/line/section/brief DTOs, strict JSON citation validation, correction command construction, typed commitment-line validation, zero-egress envelope validation, and dated-historical rail. `internal/mora` supplies health snapshots and owns evidence attribution, governance decisions, vault/graph loading, ranking/budgeting, health-banner derivation, and CLI/MCP assembly. `internal/meeting` also owns fail-closed Markdown rendering, section ordering, and the pure confirm/reject/sender attribution resolver.
+
 ## Assembly pipeline
 
 1. Resolve the event by exact memory/provider id. A missing, non-event, or
@@ -53,7 +55,7 @@ They do not have separate CLI paths.
    explicit staleness guards, and load-bearing shared work context. Personal
    trivia without an actionable relationship to the user is dropped. Rendering
    extracts the qualifying sentence/clause itself, so trivia elsewhere in an
-   otherwise-actionable thread cannot ride along in the cited line.
+   otherwise-actionable thread cannot ride along in the cited line. `internal/meeting` owns the pure sender-authored text and historical-framing mechanics (quote/forward/signature exclusion, URL/noise removal, hard-wrap repair, segmentation, and phrase boundaries) and the deterministic classification policy (notification and third-party exclusion, provider-specific ownership, genuine-question gates, unresolved threads, staleness guards, and material context). Mora supplies the self-identity set plus service/occurrence facts and retains attendee attribution, commitment/governance authority, loading, ranking, budgeting, and assembly.
 5. Hydrate `forgettabilityCandidate` values and call `rankForgettability` once
    over the global cross-attendee pool. Selection is `value_micros` descending,
    then dated evidence and stable id, with a three-line per-attendee cap and a

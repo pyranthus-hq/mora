@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	digestpkg "github.com/pyranthus-hq/mora/internal/digest"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -851,7 +853,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 		return Digest{}, "", fmt.Errorf("an explicit --since-hours window is watermark-independent and cannot --advance")
 	}
 	if budgetChars <= 0 {
-		budgetChars = cfg.contextDefaultTokens() * charsPerToken
+		budgetChars = contextDefaultTokens(cfg) * charsPerToken
 	}
 
 	// Hold the brief lock across the WHOLE transaction (build → budget → persist →
@@ -1028,7 +1030,7 @@ func urgentItemFor(cfg Config, m Memory, key, change, phrase string) DigestItem 
 		Title:     m.Title,
 		Source:    key,
 		CreatedAt: m.CreatedAt,
-		Snippet:   urgentSnippet(m.Text, cfg.digestSnippetChars(), phrase),
+		Snippet:   urgentSnippet(m.Text, digestSnippetChars(cfg), phrase),
 		Change:    change,
 	}
 }
@@ -1195,81 +1197,63 @@ func recurringSeriesID(m Memory) string {
 // Non-recurring items pass through untouched. Output order is the representative's
 // best position; capRecency re-sorts afterward, so order here only needs to be
 // deterministic.
+func digestSelection(ti tsItem) digestpkg.Selection {
+	return digestpkg.Selection{ID: ti.item.ID, Title: ti.item.Title, Change: ti.item.Change, Series: ti.series, At: ti.ts, Salience: ti.sal, LowSignal: ti.item.LowSignal}
+}
 func collapseRecurringSeries(tis []tsItem, now time.Time) []tsItem {
-	// Bucket COLLAPSIBLE indices by series; preserve first-seen order for
-	// determinism. An "updated" instance is NEVER folded: a single rescheduled
-	// occurrence is a real, instance-specific change the reader must see (and, in
-	// delta mode, folding it would mark its update acknowledged without ever
-	// surfacing it). Only new/window instances — the actual flood — collapse.
-	collapsible := func(ti tsItem) bool { return ti.series != "" && ti.item.Change != "updated" }
-	groups := map[string][]int{}
-	var order []string
+	in := make([]digestpkg.Selection, len(tis))
 	for i, ti := range tis {
-		if !collapsible(ti) {
-			continue
-		}
-		if _, seen := groups[ti.series]; !seen {
-			order = append(order, ti.series)
-		}
-		groups[ti.series] = append(groups[ti.series], i)
+		in[i] = digestSelection(ti)
 	}
-	if len(groups) == 0 {
-		return tis // nothing collapsible — fast path, byte-identical.
-	}
-
-	out := make([]tsItem, 0, len(tis))
-	// Pass-through every item that is NOT part of a multi-instance collapsible
-	// group: non-recurring items, individually-changed (updated) instances, and a
-	// lone instance whose series has just one member this run.
-	for _, ti := range tis {
-		if !collapsible(ti) || len(groups[ti.series]) == 1 {
-			out = append(out, ti)
-		}
-	}
-	// One representative per multi-instance series.
-	for _, sid := range order {
-		idxs := groups[sid]
-		if len(idxs) < 2 {
-			continue
-		}
-		rep := idxs[0]
-		var last time.Time
-		var bestSal int64
-		members := make([]string, 0, len(idxs))
-		for _, k := range idxs {
-			members = append(members, tis[k].item.ID)
-			if tis[k].ts.After(last) {
-				last = tis[k].ts
-			}
-			if tis[k].sal > bestSal {
-				bestSal = tis[k].sal
-			}
-			if betterSeriesRep(tis[k].ts, tis[rep].ts, now) {
-				rep = k
-			}
-		}
-		rti := tis[rep]
-		rti.sal = bestSal // a series leads on its most-salient instance.
-		rti.members = members
-		rti.item.Title = fmt.Sprintf("%s (×%d through %s)", rti.item.Title, len(idxs), last.UTC().Format("Jan 2"))
-		out = append(out, rti)
+	projected := digestpkg.CollapseRecurring(in, now)
+	out := make([]tsItem, 0, len(projected))
+	for _, p := range projected {
+		ti := tis[p.OriginalIndex]
+		ti.item.Title = p.Title
+		ti.sal = p.Salience
+		ti.members = p.Members
+		out = append(out, ti)
 	}
 	return out
+}
+func betterSeriesRep(a, b, now time.Time) bool {
+	return digestpkg.BetterSeriesRepresentative(a, b, now)
+}
+func capRecency(tis []tsItem, cap int, upcoming bool) (items []DigestItem, more int) {
+	in := make([]digestpkg.Selection, len(tis))
+	for i, ti := range tis {
+		in[i] = digestSelection(ti)
+	}
+	order, _ := digestpkg.OrderSelections(in, len(in), upcoming)
+	sorted := make([]tsItem, len(tis))
+	for i, original := range order {
+		sorted[i] = tis[original]
+	}
+	copy(tis, sorted) // preserve the former in-place stable sort behavior.
+	if len(tis) > cap {
+		more = len(tis) - cap
+		tis = tis[:cap]
+	}
+	for _, ti := range tis {
+		items = append(items, ti.item)
+	}
+	return items, more
+}
+func collapseLowSignal(items []DigestItem) (displayed []DigestItem, collapsed int) {
+	in := make([]digestpkg.Selection, len(items))
+	for i, it := range items {
+		in[i] = digestpkg.Selection{ID: it.ID, LowSignal: it.LowSignal}
+	}
+	kept, collapsed := digestpkg.CollapseLowSignal(in, digestLowSignalFloor)
+	for _, i := range kept {
+		displayed = append(displayed, items[i])
+	}
+	return displayed, collapsed
 }
 
 // betterSeriesRep reports whether instant a is a better series representative than
 // b relative to now: the nearest future occurrence wins; if both are future the
 // EARLIER wins; if neither is future the LATER (most recent past) wins.
-func betterSeriesRep(a, b, now time.Time) bool {
-	aFut, bFut := !a.Before(now), !b.Before(now)
-	if aFut != bFut {
-		return aFut // a future instance beats a past one.
-	}
-	if aFut { // both future: soonest.
-		return a.Before(b)
-	}
-	return a.After(b) // both past: most recent.
-}
 
 // capRecency orders items SALIENCE-FIRST then most-recent (the existing instant +
 // id tie-break) and keeps the first cap, returning the kept items and the count
@@ -1287,29 +1271,6 @@ func betterSeriesRep(a, b, now time.Time) bool {
 // EARLIEST-instant-first instead of most-recent-first. Past-oriented sources keep
 // most-recent-first. (Bug: a 48h brief used to rank the farthest-future event of a
 // calendar section first.)
-func capRecency(tis []tsItem, cap int, upcoming bool) (items []DigestItem, more int) {
-	sort.SliceStable(tis, func(i, j int) bool {
-		if tis[i].sal != tis[j].sal {
-			return tis[i].sal > tis[j].sal // salience DESC is the primary key (SC#3).
-		}
-		if !tis[i].ts.Equal(tis[j].ts) {
-			if upcoming {
-				return tis[i].ts.Before(tis[j].ts) // nearest-future-first for events.
-			}
-			return tis[i].ts.After(tis[j].ts) // then most-recent-first.
-		}
-		return tis[i].item.ID < tis[j].item.ID // deterministic tie-break on exact-instant ties.
-	})
-	if len(tis) > cap {
-		more = len(tis) - cap
-		tis = tis[:cap]
-	}
-	out := make([]DigestItem, len(tis))
-	for i, ti := range tis {
-		out[i] = ti.item
-	}
-	return out, more
-}
 
 // digestLowSignalFloor is how many of a section's MOST-RECENT zero-salience items
 // stay visible before the rest collapse into the "+N more" count. Keeping a small
@@ -1325,20 +1286,6 @@ const digestLowSignalFloor = 2
 // tail. It is DISPLAY-only: the caller still marks the full capped set as
 // acknowledged for the Phase-12 watermark, so collapsed items are counted (never
 // re-surfaced), not silently dropped.
-func collapseLowSignal(items []DigestItem) (displayed []DigestItem, collapsed int) {
-	kept := 0
-	for _, it := range items {
-		if it.LowSignal {
-			if kept >= digestLowSignalFloor {
-				collapsed++
-				continue
-			}
-			kept++
-		}
-		displayed = append(displayed, it)
-	}
-	return displayed, collapsed
-}
 
 // digestItemFor builds a DigestItem from a memory, stamping the instance key as
 // the section Source and the typed Change. The snippet is TAIL-biased:
@@ -1353,21 +1300,14 @@ func digestItemFor(cfg Config, m Memory, key, change string) DigestItem {
 		Title:     m.Title,
 		Source:    key,
 		CreatedAt: m.CreatedAt,
-		Snippet:   snippetTail(m.Text, cfg.digestSnippetChars()),
+		Snippet:   snippetTail(m.Text, digestSnippetChars(cfg)),
 		Change:    change,
 	}
 }
 
 // snippetTail is snippet's end-anchored twin: it keeps the LAST n content runes
 // and marks the elision at the start. Short bodies pass through whole.
-func snippetTail(text string, n int) string {
-	text = strings.Join(strings.Fields(text), " ")
-	r := []rune(text)
-	if len(r) <= n {
-		return text
-	}
-	return "…" + strings.TrimSpace(string(r[len(r)-n:]))
-}
+func snippetTail(text string, n int) string { return digestpkg.SnippetTail(text, n) }
 
 // inColdStartWindow reports whether a memory's instant falls in the cold-start
 // courtesy window: the last 7 days for gmail/imessage (by created_at), or the
@@ -1375,12 +1315,7 @@ func snippetTail(text string, n int) string {
 // Window math stays now.Add(±N*time.Hour) + parsed-instant compare (DST-safe;
 // not converted to calendar arithmetic). (D-04)
 func inColdStartWindow(ts, now time.Time, isCalendar bool) bool {
-	if isCalendar {
-		end := now.Add(time.Duration(digestColdStartDays) * 24 * time.Hour)
-		return !ts.Before(now) && !ts.After(end)
-	}
-	start := now.Add(-time.Duration(digestColdStartDays) * 24 * time.Hour)
-	return !ts.Before(start)
+	return digestpkg.InColdStartWindow(ts, now, isCalendar, digestColdStartDays)
 }
 
 // loadConnectorSyncStatus loads the on-disk SyncStatus for an enumerated
@@ -1470,12 +1405,55 @@ func sortSections(sections []DigestSection) {
 // item the budgeter reports as a survivor is fully present in the rendered brief.
 
 // renderDigestHeader renders the brief's first line.
-func renderDigestHeader(d Digest) string {
-	if d.SinceHours > 0 {
-		return fmt.Sprintf("# Mora digest — %s (last %dh)\n", d.Generated, d.SinceHours)
+func digestRenderItem(it DigestItem) digestpkg.Item {
+	out := digestpkg.Item{ID: it.ID, Title: it.Title, Source: it.Source, CreatedAt: it.CreatedAt, Snippet: it.Snippet, Change: it.Change, Owner: digestpkg.Atom{Kind: it.Owner.Kind, Value: it.Owner.Value}, Direction: string(it.Direction), CounterpartyLabel: it.CounterpartyLabel, DueAt: it.DueAt, Lifecycle: it.Lifecycle, ClosureRef: it.ClosureRef}
+	for _, o := range it.Obligations {
+		ro := digestpkg.Obligation{CommitmentID: o.CommitmentID, Summary: o.Summary, Owner: digestpkg.Atom{Kind: o.Owner.Kind, Value: o.Owner.Value}, Direction: string(o.Direction), CounterpartyLabel: o.CounterpartyLabel, DueAt: o.DueAt, Lifecycle: o.Lifecycle, ClosureRef: o.ClosureRef}
+		for _, c := range o.Citations {
+			ro.Citations = append(ro.Citations, digestpkg.Citation{Role: c.Role, MemoryID: c.Citation.MemoryID(), CommitmentID: c.CommitmentID})
+		}
+		out.Obligations = append(out.Obligations, ro)
 	}
-	return fmt.Sprintf("# Mora digest — %s (since last brief)\n", d.Generated)
+	return out
 }
+func digestRenderSection(s DigestSection) digestpkg.Section {
+	out := digestpkg.Section{Source: s.Source, Label: digestSourceLabel(s.Source), State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated, ElidedByBudget: s.ElidedByBudget}
+	for _, it := range s.Items {
+		out.Items = append(out.Items, digestRenderItem(it))
+	}
+	if s.Items != nil && out.Items == nil {
+		out.Items = []digestpkg.Item{}
+	}
+	return out
+}
+func digestRenderModel(d Digest) digestpkg.Model {
+	out := digestpkg.Model{Generated: d.Generated, SinceHours: d.SinceHours, UrgentMore: d.UrgentMore, Freshness: d.Freshness, StaleTasks: d.StaleTasks, EmptyExplanation: d.EmptyExplanation, HealthBanner: strings.TrimSuffix(renderDigestHealthBanner(d), "\n")}
+	for _, it := range d.Urgent {
+		out.Urgent = append(out.Urgent, digestRenderItem(it))
+	}
+	for _, section := range d.Sections {
+		out.Sections = append(out.Sections, digestRenderSection(section))
+	}
+	return out
+}
+func digestFromBudgetModel(original Digest, projected digestpkg.Model) Digest {
+	out := original
+	out.EmptyExplanation = projected.EmptyExplanation
+	out.UrgentMore = projected.UrgentMore
+	out.Urgent = append([]DigestItem(nil), original.Urgent[:len(projected.Urgent)]...)
+	out.Sections = make([]DigestSection, 0, len(original.Sections))
+	for i, p := range projected.Sections {
+		s := original.Sections[i]
+		s.Items = append([]DigestItem{}, s.Items[:len(p.Items)]...)
+		s.MoreCount = p.MoreCount
+		s.Truncated = p.Truncated
+		s.ElidedByBudget = p.ElidedByBudget
+		out.Sections = append(out.Sections, s)
+	}
+	return out
+}
+
+func renderDigestHeader(d Digest) string { return digestpkg.Header(digestRenderModel(d)) }
 
 // renderDigestHealthBanner renders the red health-alarm line (HEALTH-02), or ""
 // when every enabled source is fresh. Pure over d.SourceHealth — no cfg/now
@@ -1495,136 +1473,46 @@ func renderDigestHealthBanner(d Digest) string {
 }
 
 // renderDigestFreshness renders the "Fresh as of:" line, or "" when absent.
-func renderDigestFreshness(d Digest) string {
-	if len(d.Freshness) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(d.Freshness))
-	for k := range d.Freshness {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+" "+d.Freshness[k])
-	}
-	return fmt.Sprintf("Fresh as of: %s\n", strings.Join(parts, " · "))
-}
+func renderDigestFreshness(d Digest) string { return digestpkg.Freshness(digestRenderModel(d)) }
 
 // renderDigestSectionHeading renders the "\n## <heading>\n" fragment.
 func renderDigestSectionHeading(s DigestSection) string {
-	return "\n## " + sectionHeading(s) + "\n"
+	return digestpkg.SectionHeading(digestRenderSection(s))
 }
 
 func renderDigestArtifactLine(it DigestItem) string {
-	return fmt.Sprintf("- %s%s — %s (id: %s)\n", changePrefix(it.Change), it.Title, it.Snippet, it.ID)
+	return digestpkg.ArtifactLine(digestRenderItem(it))
 }
 
-func renderDigestObligationRow(obligation DigestObligation) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "  obligation: commitment_id=%s · owner=%s:%s · direction=%s%s · due=%s · lifecycle=%s · closure=%s · summary=%s\n",
-		obligation.CommitmentID, obligation.Owner.Kind, obligation.Owner.Value, obligation.Direction,
-		renderCounterpartyLabel(obligation.CounterpartyLabel),
-		obligation.DueAt, obligation.Lifecycle, obligation.ClosureRef, oneLine(obligation.Summary))
-	for _, citation := range obligation.Citations {
-		fmt.Fprintf(&b, "    citation: role=%s · memory_id=%s · commitment_id=%s\n",
-			citation.Role, citation.Citation.MemoryID(), citation.CommitmentID)
-	}
-	return b.String()
+func renderDigestObligationRow(o DigestObligation) string {
+	it := DigestItem{Obligations: []DigestObligation{o}}
+	return digestpkg.ObligationRow(digestRenderItem(it).Obligations[0])
 }
 
 // renderDigestItemLine renders one artifact and all of its nested commitment rows.
 // The budgeter treats the complete block as one indivisible artifact-grain item.
-func renderDigestItemLine(it DigestItem) string {
-	line := renderDigestArtifactLine(it)
-	if len(it.Obligations) > 0 {
-		var b strings.Builder
-		b.WriteString(line)
-		for _, obligation := range it.Obligations {
-			b.WriteString(renderDigestObligationRow(obligation))
-		}
-		return b.String()
-	}
-	if it.Direction == "" {
-		return line
-	}
-	return line + fmt.Sprintf("  obligation: owner=%s:%s · direction=%s%s · due=%s · lifecycle=%s · closure=%s\n",
-		it.Owner.Kind, it.Owner.Value, it.Direction, renderCounterpartyLabel(it.CounterpartyLabel),
-		it.DueAt, it.Lifecycle, it.ClosureRef)
-}
-
-func renderCounterpartyLabel(label string) string {
-	if label = strings.TrimSpace(label); label != "" {
-		return " · counterparty=" + label
-	}
-	return ""
-}
+func renderDigestItemLine(it DigestItem) string { return digestpkg.ItemLine(digestRenderItem(it)) }
 
 // renderDigestMoreLine renders the "+N more since last brief" guard line.
-func renderDigestMoreLine(n int) string {
-	return fmt.Sprintf("- +%d more since last brief\n", n)
-}
+func renderDigestMoreLine(n int) string { return digestpkg.MoreLine(n) }
 
 // renderDigestStaleTasks renders the open-tasks block, or "" when there are none.
-func renderDigestStaleTasks(d Digest) string {
-	if len(d.StaleTasks) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "\n## Open tasks (%d stale)\n", len(d.StaleTasks))
-	for _, task := range d.StaleTasks {
-		fmt.Fprintf(&b, "- %s\n", task)
-	}
-	return b.String()
-}
+func renderDigestStaleTasks(d Digest) string { return digestpkg.StaleTasks(digestRenderModel(d)) }
 
 // renderDigestUrgentShelf renders the "⚠ Urgent" shelf ABOVE the sections, or "" when
 // empty. The shelf is budget-protected (reserved by budgetDigestForMarkdown), so its
 // deadline items always render regardless of how tight the byte budget is (issue #62
 // defect 2).
-func renderDigestUrgentShelf(d Digest) string {
-	if len(d.Urgent) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(renderDigestUrgentHeading(len(d.Urgent)))
-	for _, it := range d.Urgent {
-		b.WriteString(renderDigestItemLine(it))
-	}
-	if d.UrgentMore > 0 {
-		fmt.Fprintf(&b, "- +%d more urgent\n", d.UrgentMore)
-	}
-	return b.String()
-}
+func renderDigestUrgentShelf(d Digest) string { return digestpkg.UrgentShelf(digestRenderModel(d)) }
 
 // renderDigestUrgentHeading renders the shelf heading; factored so the budgeter can
 // cost it exactly when fitting shelf items to the budget.
-func renderDigestUrgentHeading(n int) string {
-	return fmt.Sprintf("\n## ⚠ Urgent (%d)\n", n)
-}
 
 // renderDigestBody renders a digest to Markdown with NO budget clip — the digest is
 // assumed already budgeted (budgetDigestForMarkdown). It composes the fragment
 // helpers so the output is byte-identical to the legacy inline renderer (plus the
 // Urgent shelf when present).
-func renderDigestBody(d Digest) string {
-	var b strings.Builder
-	b.WriteString(renderDigestHeader(d))
-	b.WriteString(renderDigestHealthBanner(d))
-	b.WriteString(renderDigestFreshness(d))
-	b.WriteString(renderDigestUrgentShelf(d))
-	for _, s := range d.Sections {
-		b.WriteString(renderDigestSectionHeading(s))
-		for _, it := range s.Items {
-			b.WriteString(renderDigestItemLine(it))
-		}
-		if s.MoreCount > 0 {
-			b.WriteString(renderDigestMoreLine(s.MoreCount))
-		}
-	}
-	b.WriteString(renderDigestStaleTasks(d))
-	return b.String()
-}
+func renderDigestBody(d Digest) string { return digestpkg.RenderBody(digestRenderModel(d)) }
 
 // renderDigest renders the brief as Markdown, STRUCTURALLY budgeted to budgetChars:
 // the time-sensitive sections lead, and truncation drops whole tail ITEMS/SECTIONS
@@ -1637,7 +1525,7 @@ func renderDigest(d Digest, budgetChars int) string {
 		budgetChars = defaultContextTokens * charsPerToken
 	}
 	bd, _ := budgetDigestForMarkdown(d, budgetChars)
-	return truncateRunes(renderDigestBody(bd), budgetChars)
+	return genericutil.TruncateRunes(renderDigestBody(bd), budgetChars)
 }
 
 // budgetDigestForMarkdown structurally budgets a digest to budgetChars of RENDERED
@@ -1654,120 +1542,8 @@ func renderDigest(d Digest, budgetChars int) string {
 // was suppressed, not absent. Deterministic + byte-stable: section order is
 // preserved and each cut is a pure prefix of a section's items.
 func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
-	survived := map[string]bool{}
-	if budget <= 0 {
-		budget = defaultContextTokens * charsPerToken
-	}
-	out := d
-
-	// The Urgent shelf leads and is highest-priority, but still budget-bounded so the
-	// "survived ⟹ rendered" invariant holds even when the shelf ALONE overflows the
-	// budget: fit as many shelf items as the header/freshness/open-tasks frame leaves
-	// room for, mark ONLY those as survivors, and fold the rest into UrgentMore
-	// (unrendered => NOT committed => re-surfaces next run). At the normal budget the
-	// whole shelf (≤ urgentShelfCap items) fits and nothing is trimmed.
-	// The health banner (▸CX budget accounting) is reserved in the SAME frame as
-	// header/freshness/tasks: it renders unconditionally as the first content
-	// line, outside any section, so its bytes must be accounted for here — a
-	// banner rendered outside this frame would let final truncation cut an item
-	// already marked as a budget survivor (the watermark/render invariant).
-	frame := len(renderDigestHeader(d)) + len(renderDigestHealthBanner(d)) + len(renderDigestFreshness(d)) + len(renderDigestStaleTasks(d))
-	if len(d.Urgent) > 0 {
-		// Reserve the shelf heading (costed exactly at the full count, an over-estimate
-		// of the possibly-fewer fitted count). No "+N more urgent" reserve: if trimming
-		// makes that line render, the only possible overshoot lands in the tail
-		// section-shells (no survived ids), never the front-rendered shelf.
-		used := frame + len(renderDigestUrgentHeading(len(d.Urgent)))
-		fit := 0
-		for _, it := range d.Urgent {
-			c := len(renderDigestItemLine(it))
-			if used+c > budget {
-				break
-			}
-			used += c
-			survived[it.ID] = true
-			fit++
-		}
-		if fit < len(d.Urgent) {
-			out.Urgent = append([]DigestItem(nil), d.Urgent[:fit]...)
-			out.UrgentMore = d.UrgentMore + (len(d.Urgent) - fit)
-		}
-	}
-
-	// Sections budget against what remains after the frame + the (now bounded) shelf +
-	// each section's CHROME (heading + a possible "+N more" line, charged at the full
-	// count so the reservation is never an under-estimate). This keeps the budget a
-	// trade-off of item BODIES only, so a survivor's line is never clipped by overshoot.
-	reserve := frame + len(renderDigestUrgentShelf(out))
-	for _, s := range d.Sections {
-		reserve += len(renderDigestSectionHeading(s)) + len(renderDigestMoreLine(len(s.Items)+s.MoreCount))
-	}
-	remaining := budget - reserve
-	if remaining < 0 {
-		remaining = 0
-	}
-
-	n := len(d.Sections)
-	kept := make([]int, n) // items kept per section — always a pure prefix.
-	used := 0
-	add := func(i, j int) bool {
-		it := d.Sections[i].Items[j]
-		cost := len(renderDigestItemLine(it))
-		if used+cost > remaining {
-			return false
-		}
-		used += cost
-		kept[i]++
-		survived[it.ID] = true
-		return true
-	}
-
-	// Pass 1 (fair floor, issue #62 defect 3): give each section up to budgetSourceFloor
-	// items in rank order, so a noisy high-rank source (calendar subscriptions) can't
-	// starve a lower-rank one (Emails) below its floor.
-	for i := range d.Sections {
-		for j := 0; j < len(d.Sections[i].Items) && j < budgetSourceFloor; j++ {
-			if !add(i, j) {
-				break
-			}
-		}
-	}
-	// Pass 2 (greedy): fill the remaining items highest-rank-first until spent.
-	for i := range d.Sections {
-		for j := kept[i]; j < len(d.Sections[i].Items); j++ {
-			if !add(i, j) {
-				break
-			}
-		}
-	}
-
-	preBudgetCount := briefSurfacedItemCount(d)
-	out.Sections = make([]DigestSection, 0, n)
-	for i, s := range d.Sections {
-		switch {
-		case len(s.Items) == 0:
-			ns := s
-			if ns.Items == nil {
-				ns.Items = []DigestItem{}
-			}
-			out.Sections = append(out.Sections, ns) // empty section: state only.
-		case kept[i] == 0:
-			out.Sections = append(out.Sections, truncatedShell(s)) // suppressed for budget.
-		default:
-			ns := DigestSection{Source: s.Source, State: s.State, MoreCount: s.MoreCount, Truncated: s.Truncated, ElidedByBudget: s.ElidedByBudget}
-			ns.Items = append([]DigestItem{}, s.Items[:kept[i]]...)
-			if dropped := len(s.Items) - kept[i]; dropped > 0 {
-				ns.MoreCount += dropped
-				ns.Truncated = true
-				ns.ElidedByBudget += dropped
-			}
-			out.Sections = append(out.Sections, ns)
-		}
-	}
-	if out.EmptyExplanation == "" && preBudgetCount > 0 && briefSurfacedItemCount(out) == 0 {
-		out.EmptyExplanation = deriveEmptyExplanation(out, briefOpts{}, true)
-	}
-	return out, survived
+	projected, survived := digestpkg.Budget(digestRenderModel(d), budget, defaultContextTokens*charsPerToken, budgetSourceFloor)
+	return digestFromBudgetModel(d, projected), survived
 }
 
 // deriveEmptyExplanation returns a human-readable explanation when a brief has
@@ -1876,34 +1652,11 @@ const budgetSourceFloor = 2
 // sectionHeading renders the per-section heading: the human label plus, in DELTA
 // mode, the three-state sentinel (no-changes / stale / unavailable) or the item
 // count for a live delta.
-func sectionHeading(s DigestSection) string {
-	label := digestSourceLabel(s.Source)
-	switch s.State {
-	case stateNoChanges:
-		return label + " — no changes since last brief"
-	case stateStale:
-		return label + " — stale (no recent sync)"
-	case stateUnavailable:
-		return label + " — unavailable (sync error)"
-	case stateColdStart:
-		return fmt.Sprintf("%s — baseline (%d)", label, len(s.Items)+s.MoreCount)
-	default: // stateDelta or plain-window
-		return fmt.Sprintf("%s (%d)", label, len(s.Items)+s.MoreCount)
-	}
-}
+func sectionHeading(s DigestSection) string { return digestpkg.Heading(digestRenderSection(s)) }
 
 // changePrefix renders the typed Change as a styled line prefix the human brief
 // reads ([new] / [updated]); the plain-window path emits no prefix.
-func changePrefix(change string) string {
-	switch change {
-	case "new":
-		return "[new] "
-	case "updated":
-		return "[updated] "
-	default:
-		return ""
-	}
-}
+func changePrefix(change string) string { return digestpkg.ChangePrefix(change) }
 
 // --- Plan 12-05 D-05: ONE budgeted MCP digest payload --------------------------
 

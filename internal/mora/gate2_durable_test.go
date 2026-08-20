@@ -7,64 +7,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-// gate2_durable_test.go — the durable-marker call-trace gates (matrix rows 33/33b),
-// the crash-window acceptance test, and the ingest-journal recovery gates (rows
-// 34a/34b). fsync is unobservable from userspace (a process crash preserves
-// page-cache data), so the durability rows are CALL-TRACE assertions through the
-// markerSyncFn/syncDirFn seams; the MUTATION is deleting the production call in
-// atomicWriteDurable's body, not flipping the seam.
+// gate2_durable_test.go — the crash-window acceptance test and the
+// ingest-journal recovery gates (rows 34a/34b). The durable-marker call-trace
+// gates themselves (matrix rows 33/33b) moved with atomicio.WriteDurable to
+// internal/atomicio/atomicio_test.go.
 
-// recordingSync wraps the real barriers and appends an event to a shared trace so a
-// test can assert the ORDER of fsync / rename / dir-sync.
+// withMarkerTrace wraps the real durability barriers and appends an event to a
+// shared trace so a test can assert the ORDER of fsync / rename / dir-sync.
 func withMarkerTrace(t *testing.T) *[]string {
 	t.Helper()
 	trace := &[]string{}
-	origMarker, origDir := markerSyncFn, syncDirFn
-	markerSyncFn = func(f *os.File) error { *trace = append(*trace, "fsync"); return origMarker(f) }
-	syncDirFn = func(dir string) error { *trace = append(*trace, "dirsync"); return origDir(dir) }
-	t.Cleanup(func() { markerSyncFn, syncDirFn = origMarker, origDir })
+	origMarker, origDir := atomicio.MarkerSyncFn, atomicio.SyncDirFn
+	atomicio.MarkerSyncFn = func(f *os.File) error { *trace = append(*trace, "fsync"); return origMarker(f) }
+	atomicio.SyncDirFn = func(dir string) error { *trace = append(*trace, "dirsync"); return origDir(dir) }
+	t.Cleanup(func() { atomicio.MarkerSyncFn, atomicio.SyncDirFn = origMarker, origDir })
 	return trace
-}
-
-// TestDurableMarkerFsyncsBeforeRename (matrix row 33) — the temp file's f.Sync fires
-// BEFORE the rename. MUTATION: delete the markerSyncFn(f) call in atomicWriteDurable
-// => no "fsync" event => RED.
-func TestDurableMarkerFsyncsBeforeRename(t *testing.T) {
-	dir := t.TempDir()
-	trace := withMarkerTrace(t)
-	if err := atomicWriteDurable(filepath.Join(dir, "marker.json"), []byte(`{"x":1}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join(*trace, ",")
-	if !strings.Contains(got, "fsync") {
-		t.Fatalf("no data fsync in the durable-write trace %q", got)
-	}
-	// fsync must be the FIRST event (before the rename, which precedes dirsync).
-	if (*trace)[0] != "fsync" {
-		t.Fatalf("trace = %q, want fsync first (data synced before the rename)", got)
-	}
-}
-
-// TestDurableMarkerSyncsDirBeforeReturn (matrix row 33b) — the parent-dir sync fires
-// before atomicWriteDurable returns (i.e. before any vault publish may begin).
-// MUTATION: delete the syncDirFn(dir) call => no "dirsync" event => RED.
-func TestDurableMarkerSyncsDirBeforeReturn(t *testing.T) {
-	dir := t.TempDir()
-	trace := withMarkerTrace(t)
-	if err := atomicWriteDurable(filepath.Join(dir, "marker.json"), []byte(`{"x":1}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join(*trace, ",")
-	if !strings.Contains(got, "dirsync") {
-		t.Fatalf("no parent-dir sync in the durable-write trace %q", got)
-	}
-	// dirsync is the LAST barrier, and it must fire before return: fsync before dirsync.
-	if (*trace)[len(*trace)-1] != "dirsync" {
-		t.Fatalf("trace = %q, want dirsync last (dir synced before return)", got)
-	}
 }
 
 // TestMarkerSurvivesCrashBeforeVaultPublish (acceptance) — a crash between the

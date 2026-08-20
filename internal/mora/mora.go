@@ -3,22 +3,32 @@ package mora
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	configstore "github.com/pyranthus-hq/mora/internal/config"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
+	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/registry"
 	"io"
-	mrand "math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+type Config = configstore.Config
+type DecisionValidity = memory.DecisionValidity
+type Memory = memory.Memory
+type CorroboratingRef = memory.CorroboratingRef
+type LaterRelatedEvidence = memory.LaterRelatedEvidence
+type GmailSegmentEvidence = memory.GmailSegmentEvidence
+type Source = memory.Source
 
 // Build info, injected at release time via -ldflags -X. Defaults keep `go run`
 // and source builds honest about being unversioned.
@@ -28,187 +38,15 @@ var (
 	BuildDate    = "unknown"
 )
 
-type Config struct {
-	VaultDir  string
-	ConfigDir string
-	DataDir   string
-	StateDir  string
-	// MCPWritePolicy controls the mutation authority granted to MCP clients.
-	// Empty means "open" for backward compatibility. "propose" stages writes
-	// for local approval, while "readonly" refuses both writes and deletes.
-	MCPWritePolicy string
-	// Embedder is the durable embedder opt-in from config.toml (`embedder = "ollama"`).
-	// It is the persistent way to turn on semantic retrieval for BOTH the CLI and the
-	// MCP server (which the agent uses) without per-host env wiring. The MORA_EMBEDDER
-	// env var, when SET, still wins (it is the CI-determinism + power-user override);
-	// this is the fallback consulted only when the env is unset. Empty ⇒ static floor.
-	Embedder string
-	// ContextProfile is the durable quality/size knob from config.toml
-	// (`context = "small"|"large"`; empty ⇒ default). It scales the DEFAULT
-	// token budget of every budget-bounded surface (context_memory, digest,
-	// brief, the persisted brief artifact) and the digest per-item snippet
-	// length — small for lean agent windows, large for denser context. It
-	// NEVER moves the 20k per-call ceiling, and an explicit max_tokens from
-	// the caller always wins. Set via `mora config context <profile>`.
-	ContextProfile string
-	// SelfEmails are the user's OWN additional addresses, from config.toml
-	// (`self_emails = "you@work.com, you@alias.com"`). Mora derives self from the
-	// mailbox Google OAuth was granted on (Source.Email), but a calendar routinely
-	// invites a different alias — a Workspace address, a custom domain. An alias it
-	// cannot recognize as self fails self-exclusion, so the user becomes an
-	// "attendee" of their own meeting and their own records get cited back to them
-	// as the counterparty's unfinished business (wrong-person attribution).
-	// Declared, never guessed: Mora will not infer self from a display name.
-	SelfEmails []string
-	// fusionOv overrides the production RRF arm weights / k (retrieval tuning + the
-	// TestEvalWeightSweep grid). nil ⇒ defaultFusion. Unexported and NOT loaded from
-	// TOML — it is a code/eval seam, not a user knob.
-	fusionOv *fusionParams
-	// MMR opts the hybrid path into a greedy Maximal Marginal Relevance rerank of the
-	// fused candidates (a diversity-aware reorder) before the top-k truncate. Durable,
-	// from config.toml `mmr = true`; default false ⇒ fused order unchanged (the
-	// production default path stays byte-identical). Only takes effect when the vector
-	// arm is live (a semantic embedder), since MMR reranks on cosine. Mirrors Embedder;
-	// there is deliberately no MORA_MMR env var (the eval forces via mmrOv, not env).
-	MMR bool
-	// mmrOv overrides the MMR params (the W2 regression gate + the unit tests). nil ⇒
-	// derive from Config.MMR with defaultLambda. Unexported and NOT loaded from TOML —
-	// a code/eval seam exactly like fusionOv, and the ONLY path that can set
-	// mmrParams.force (so the user MMR bool can never run MMR under static-hash).
-	mmrOv *mmrParams
-	// vaultDirCfg is the pre-MORA_VAULT vault_dir (defaults/config.toml), stashed
-	// by applyEnvOverrides when the env var repoints VaultDir for this process.
-	// It is what writeConfig persists: the env override is runtime-only, and a
-	// read-modify-write of an unrelated key (or a scripted re-init) must never
-	// silently repoint the durable vault — that orphans the configured one, the
-	// incident class cmdInit's repoint confirmation exists to prevent. A pointer,
-	// NOT an empty-string sentinel: a malformed-but-preserved `vault_dir = ""` in
-	// config.toml stashes as a valid (empty) persisted value, which a sentinel
-	// would misread as "no override" and persist the env vault. nil ⇒ no override
-	// active ⇒ persist VaultDir as-is. Unexported and NOT loaded from TOML, like
-	// fusionOv/mmrOv.
-	vaultDirCfg *string
-}
-
-type Memory struct {
-	ID          string   `json:"id"`
-	Scope       string   `json:"scope"`
-	Type        string   `json:"type"`
-	Title       string   `json:"title"`
-	Tags        []string `json:"tags"`
-	Source      string   `json:"source"`
-	CreatedAt   string   `json:"created_at"`
-	Path        string   `json:"path"`
-	Text        string   `json:"text,omitempty"`
-	Score       float64  `json:"score,omitempty"`
-	Provider    string   `json:"provider,omitempty"`
-	Account     string   `json:"account,omitempty"` // multi-account label; composes the "provider:account" instance key
-	ProviderID  string   `json:"provider_id,omitempty"`
-	ContentHash string   `json:"content_hash,omitempty"`
-	LastSynced  string   `json:"last_synced,omitempty"`
-	Truncated   bool     `json:"truncated,omitempty"`
-	DeletedAt   string   `json:"deleted_at,omitempty"`
-	// EventStart, SourceCreatedAt, and IndexedAt split the three distinct instants
-	// `created_at` conflated on a browse row (#218): when the thing happens, when
-	// the source object was created at its provider, and when Mora wrote the
-	// memory into the vault. They are DERIVED at read time by decorateBrowseRecency
-	// (`recency.go`), never persisted (renderMemory writes no such frontmatter),
-	// and populated only on the MCP `list_memory` rows — omitempty therefore keeps
-	// every other payload byte-identical, which the MCP budget gate depends on. An
-	// absent field means Mora cannot derive that instant honestly, never that it
-	// substituted another one.
-	EventStart      string `json:"event_start,omitempty"`
-	SourceCreatedAt string `json:"source_created_at,omitempty"`
-	IndexedAt       string `json:"indexed_at,omitempty"`
-	// Decision carries the validity contract for a decision memory. It is
-	// persisted in Markdown frontmatter and remains visible on local read
-	// surfaces. Legacy decisions are represented as incomplete/provisional
-	// rather than silently treated as current law.
-	Decision *DecisionValidity `json:"decision,omitempty"`
-	// DecisionStatus is derived at read time. It is not persisted: an expired
-	// review_by becomes needs_review as the clock advances without a vault write.
-	DecisionStatus string `json:"decision_status,omitempty"`
-	// Owner attributes a result from a SHARED corpus (`mora share subscribe`)
-	// with the subscriber-chosen subscription name. Never persisted to disk and
-	// always empty for the user's own memories — omitempty keeps local-only
-	// payloads byte-identical (the MCP budget gate depends on that).
-	Owner string `json:"owner,omitempty"`
-	// Meta is structured identity/frontmatter (participants, from/to, occurred_at),
-	// persisted as one canonical JSON line (`meta: {...}`). Powers the entity graph;
-	// the graph compiler reads it deterministically (no NER).
-	Meta map[string]any `json:"meta,omitempty"`
-	// Corroborating holds compact refs to other memories the vault believes
-	// describe the SAME real-world event as this one (issue #237). Populated
-	// at result-assembly time by the shared retrieval primitives
-	// (clusterAndTruncate, cluster.go) — search_memory, think, context_memory,
-	// and CLI `mora context` all propagate it from there to their own output
-	// shapes (see think.go's ThinkEvidence.Corroborating, mcp.go's top-level
-	// context_memory "corroborating", and entities.go's
-	// contextItemJSON.Corroborating). Never persisted and never set on
-	// read_memory/list_memory — omitempty keeps every other read surface
-	// byte-identical.
-	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
-	// LaterRelatedEvidence is a derived retrieval hint, never persisted. It
-	// points from an older result to the newest deeper-pool record with a
-	// strongly matching title in the same scope. It deliberately says related,
-	// not superseded: only Teach governance may assert an actual supersession.
-	LaterRelatedEvidence *LaterRelatedEvidence `json:"later_related_evidence,omitempty"`
-	// Evidence is the compact Gmail evidence-segment receipt (issue #243,
-	// DQ5 §2): the STRONGEST query-matching derived segment's identity +
-	// snippet, attached at search_memory result-assembly time
-	// (gmail_segments_search.go's attachGmailSegmentEvidence) when the row's
-	// underlying parent has at least one query-matching segment. Never
-	// persisted and never set on read_memory/list_memory — omitempty keeps
-	// every other read surface and every non-participating memory's search
-	// row byte-identical (frozen interface #5).
-	Evidence *GmailSegmentEvidence `json:"evidence,omitempty"`
-}
-
 // CorroboratingRef is the compact citation a cluster head's "corroborating"
 // array carries for one other member of its corroborating-record cluster —
 // exactly id/title/source/created_at (Memory's own JSON field names), nothing
 // more, so a citation is stable and read_memory'able unchanged (issue #237).
-type CorroboratingRef struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Source    string `json:"source"`
-	CreatedAt string `json:"created_at"`
-}
 
 // LaterRelatedEvidence is an honest, read_memory-able warning that retrieval
 // found a newer strongly-related record. IndexedAt is the later record's
 // validated write clock; records without an honest write clock cannot be used
 // as a "later" hint.
-type LaterRelatedEvidence struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Source    string `json:"source"`
-	IndexedAt string `json:"indexed_at"`
-}
-
-type Source struct {
-	Name      string   `json:"name"`
-	Type      string   `json:"type"`
-	Scope     string   `json:"scope"`
-	Path      string   `json:"path,omitempty"`
-	Label     string   `json:"label,omitempty"`
-	Calendar  string   `json:"calendar,omitempty"`
-	FolderID  string   `json:"folder_id,omitempty"`
-	SinceDays int      `json:"since_days,omitempty"` // 0 => default per type
-	LabelIDs  []string `json:"label_ids,omitempty"`
-	DocsOnly  bool     `json:"docs_only,omitempty"` // filesystem: docs/metadata only
-	Account   string   `json:"account,omitempty"`   // google: account label for multi-mailbox (empty = the default/legacy account)
-	Email     string   `json:"email,omitempty"`     // google: the signed-in address, stamped at connect — the same-account re-auth guard reads it
-	Enabled   *bool    `json:"enabled,omitempty"`   // nil => legacy source, grandfather to true (D-12); *false => opt-in disabled (D-11)
-	CreatedAt string   `json:"created_at"`
-
-	// DenyContacts / DenyConversations scope iMessage ingest (IMSG-06/D-07/D-08).
-	// Persisted on the imessage source row in sources.json (no new config file),
-	// matching Phase 1's no-new-file precedent. Empty = include everyone.
-	DenyContacts      []string `json:"deny_contacts,omitempty"`
-	DenyConversations []string `json:"deny_conversations,omitempty"`
-	Repositories      []string `json:"repositories,omitempty"` // github: explicit owner/repo allowlist
-}
 
 // connectorInfo is a static catalog entry describing a user-enableable connector
 // type. NeedsAuth marks types that require an OAuth consent moment on enable.
@@ -224,27 +62,7 @@ type Source struct {
 //     hardcoded sourceDigestRank / digestSourceLabel switch DATA onto the
 //     descriptor so an Nth connector is not silently truncated-first or rendered
 //     as an ugly title-cased raw provider. connectorDisplay is the single reader.
-type connectorInfo struct {
-	Type        string
-	DisplayName string
-	NeedsAuth   bool
-	Ingesting   bool
-	Rank        int
-	Label       string
-	// Provider is the memory-side Provider this connector's mapper mints in
-	// frontmatter when it differs from Type (applecalendar mints "applecal").
-	// Empty means Provider == Type. The alias is applied at LOOKUP boundaries
-	// only (providerToType / sourceInstanceKey in connectors.go) — on-disk
-	// frontmatter is never rewritten to "fix" a mismatch.
-	// TestConnectorProviderKeysReconcile enforces the round-trip for every
-	// ingesting entry.
-	Provider string
-	// Upcoming marks connectors whose items are future-dated events: cold-start
-	// courtesy windows look FORWARD (next 7d) instead of back. Capability DATA
-	// here, never a provider-string heuristic in digest code (the old
-	// HasPrefix(key, "calendar") silently missed applecalendar).
-	Upcoming bool
-}
+type connectorInfo = registry.Info
 
 // connectorCatalog is the static, exhaustive catalog of user-enableable connector
 // types (D-01 static catalog, D-02 per-type granularity). gmail and calendar are
@@ -256,22 +74,7 @@ type connectorInfo struct {
 // preserve the legacy digest intent: calendar=(0,"Calendar"), imessage=(1,
 // "Texts"), gmail=(2,"Emails"); filesystem gets a real rank (3) + clean label
 // ("Files") rather than the old default-rank-3 / title-cased fallback.
-var connectorCatalog = []connectorInfo{
-	{Type: "gmail", DisplayName: "Gmail", NeedsAuth: true, Ingesting: true, Rank: 2, Label: "Emails"},
-	{Type: "calendar", DisplayName: "Google Calendar", NeedsAuth: true, Ingesting: true, Rank: 0, Label: "Calendar", Upcoming: true},
-	{Type: "filesystem", DisplayName: "Filesystem", NeedsAuth: false, Ingesting: true, Rank: 3, Label: "Files"},
-	// iMessage: default-disabled, no OAuth — the real gate is macOS Full Disk
-	// Access (surfaced by `mora doctor`), not a login (D-11, Surface 1).
-	{Type: "imessage", DisplayName: "iMessage", NeedsAuth: false, Ingesting: true, Rank: 1, Label: "Texts"},
-	// Apple Calendar: same gate story as iMessage (local store + Full Disk
-	// Access, no login). Rank ties with Google Calendar break on the key, so
-	// both calendar sections lead the digest together. Its mapper mints
-	// Provider "applecal" (internal/applecal), so the entry carries the alias —
-	// without it, applecal memories never reconcile with this instance and
-	// silently vanish from the delta brief.
-	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)", Provider: "applecal", Upcoming: true},
-	{Type: "github", DisplayName: "GitHub Issues", NeedsAuth: false, Ingesting: true, Rank: 4, Label: "GitHub Issues"},
-}
+var connectorCatalog = registry.Entries()
 
 // catalogRow is the per-type view emitted by `connectors list`. Enabled joins the
 // static catalog against the user's sources.json consent state.
@@ -282,19 +85,9 @@ type catalogRow struct {
 	NeedsAuth bool   `json:"needs_auth"`
 }
 
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+type jsonRPCRequest = mcppkg.Request
 
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id,omitempty"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
+type jsonRPCResponse = mcppkg.Response
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
@@ -495,7 +288,10 @@ USAGE:
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora hook install|uninstall|status
-  mora upgrade                     # self-update to the latest release (brew installs: brew upgrade)
+  mora upgrade                     # manually self-update to the latest release
+  mora upgrade --check             # check + cache published stable release availability
+  mora upgrade --policy auto|notify|off
+  mora upgrade --status [--json]   # cached policy/check/notification status; no network
   mora version`)
 }
 
@@ -801,7 +597,7 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 	}
 	line := fmt.Sprintf("- [%s] pulse | tasks_added:%d | stale:%d\n", now.Format(time.RFC3339), added, len(stale))
 	if *write {
-		if err := appendFile(filepath.Join(cfg.VaultDir, "log.md"), line); err != nil {
+		if err := atomicio.AppendFile(filepath.Join(cfg.VaultDir, "log.md"), line); err != nil {
 			return err
 		}
 	}
@@ -851,7 +647,7 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 		if opts.advance {
 			// Budget stdout, the artifact, and the commit at the SAME persist budget so
 			// all three agree on exactly which items were shown.
-			budgetChars := cfg.contextDefaultTokens() * charsPerToken
+			budgetChars := contextDefaultTokens(cfg) * charsPerToken
 			var bd Digest
 			var path string
 			advance := func() error {
@@ -923,13 +719,6 @@ func resolveReal(p string) string {
 		return r
 	}
 	return filepath.Clean(p)
-}
-
-func plural(n int, unit string) string {
-	if n == 1 {
-		return unit
-	}
-	return unit + "s"
 }
 
 // backfillEnabledGoogle re-runs the gated google backfill (the `mora sync google`
@@ -1132,31 +921,6 @@ const (
 	searchMemoryResultsBudgetBytes = 11000
 )
 
-var p0Re = regexp.MustCompile(`^(\d+\.|-)\s+\*\*([^*]+)\*\*`)
-
-// terminalTaskStatuses are the Status (col 4) values that close a task. A row in
-// any of these states is finished work and must never resurface as "stale"
-// (issue #19), regardless of its Last-touched date.
-var terminalTaskStatuses = map[string]bool{
-	"done":      true,
-	"completed": true,
-	"cancelled": true,
-	"canceled":  true,
-	"wontfix":   true,
-}
-
-// LiveTask is one row of live-tasks.md (the 8-column task table).
-type LiveTask struct {
-	Task        string `json:"task"`
-	Domain      string `json:"domain"`
-	Owner       string `json:"owner"`
-	Pri         string `json:"pri"`
-	Status      string `json:"status"`
-	Blocker     string `json:"blocker"`
-	Horizon     string `json:"horizon"`
-	LastTouched string `json:"last_touched"`
-}
-
 // mcpMaxRequestBytes caps one JSON-RPC request line. bufio.Scanner's 64KB
 // default is too small for real tool calls (a write_memory body or a think
 // query with pasted context), and overflowing it doesn't drop the request —
@@ -1169,7 +933,7 @@ const mcpMaxRequestBytes = 4 << 20
 // it is how a fresh agent learns Mora exists and when to reach for it — without
 // it the tools sit unused and the agent keeps starting cold. Keep it tight and
 // imperative.
-const mcpInstructions = `Mora is the user's persistent, local memory across sessions — you do NOT start cold. Before answering anything about the user's past work, people, projects, meetings, decisions, or commitments, call search_memory (or context_memory at the start of a task) and answer from what you retrieve. "I don't have that context" is usually a bug: search first. Call brief at the START of a session for the latest what-changed / what-matters brief (the same daily cross-source briefing, resolved to the freshest available) before doing anything else. Use list_memory to browse recent memories, list_entities/get_entity to explore the people-and-topics graph, digest for a daily cross-source briefing (recent emails, texts, calendar, and open tasks), and think for a cited synthesis with an explicit "what the vault does NOT know" gap analysis. Write durable facts and decisions back with write_memory as they emerge — you do not need to ask permission. Always prefer the user's own memories over assumptions, cite what you recalled, surface stale or missing context honestly, and never invent a memory you did not retrieve. search_memory and context_memory both accept optional source (a connector family like "gmail" or "imessage", or a family:account instance like "gmail:work" — the same vocabulary digest uses; filesystem is not supported as a source filter) and since_hours (a positive-integer look-back window in hours; a memory created exactly at the cutoff is included) filters, applied BEFORE ranking in every retrieval arm — including a subscribed shared corpus — never as a post-hoc filter over an already-ranked page, so a trusted-source or time-window ask is honored exactly rather than approximately. An unrecognized or malformed source value (an unknown connector, a trailing colon, more than one colon, or filesystem) is an explicit tool error, never a silent no-filter. When either is set, the response echoes it back under a top-level "filters" key so you can cite the retrieval boundary in your answer, and any enabled source your filter excluded is named under "excluded_by_filter" rather than being misreported as unavailable or unhealthy. When a search_memory row carries an "evidence" object, that names the exact Gmail message inside the thread that matched — pass its evidence_ref to read_memory to read ONLY that message (bounded, with a sender/at receipt) instead of the whole thread.`
+const mcpInstructions = mcppkg.OpenInstructions
 
 // MCP context_memory budget. Agents speak tokens (Neil's pilot asked for a
 // ~20k-token per-call ceiling — the 2k-char default was too sparse to be useful
@@ -1177,13 +941,10 @@ const mcpInstructions = `Mora is the user's persistent, local memory across sess
 // buildContext truncates in runes and a pure-Go tokenizer would be a dependency
 // we don't need for a guardrail, so we approximate ~charsPerToken chars/token.
 const (
-	charsPerToken        = 4     // rough English heuristic; budget guardrail, not exact accounting
-	defaultContextTokens = 6000  // denser than the old ~4k-token default
-	maxContextTokens     = 20000 // Neil's ceiling; one tool result must not dominate the window
-	// largeContextMaxTokens is the raised one-call ceiling the "large" context
-	// profile opts into (contextMaxTokens) — an explicit user trade of agent
-	// window headroom for denser context.
-	largeContextMaxTokens = 50000
+	charsPerToken         = mcppkg.CharsPerToken
+	defaultContextTokens  = mcppkg.DefaultContextTokens
+	maxContextTokens      = mcppkg.MaxContextTokens
+	largeContextMaxTokens = mcppkg.LargeContextMaxTokens
 )
 
 // mcpDigestEnvelopeDivisor budgets the COMPACT digest payload so the full
@@ -1195,7 +956,7 @@ const (
 // the compact sections to budgetChars/divisor so digest_max lands under 20000 and
 // digest_default under its 6000-token budget with headroom. It is a guardrail
 // constant, not exact accounting (the codebase's whole budget unit is approximate).
-const mcpDigestEnvelopeDivisor = 3
+const mcpDigestEnvelopeDivisor = mcppkg.EnvelopeDivisor
 
 // mcpDigestMaxItems is the GENEROUS per-source cap the MCP digest surfaces so the
 // byte budget (not the human-brief cap of digestDefaultCap=8) governs how many
@@ -1225,6 +986,7 @@ var scheduleCommands = map[string]string{
 	"lint-weekly":   "lint",
 	"ingest-hourly": "ingest run --all",
 	"git-daily":     "sync git",
+	"update-daily":  "upgrade --scheduled-check",
 	// doctor-pulse (HEALTH-02 delivery): the freshness-only alarm, run daily
 	// AFTER the 08:00 brief so a source that went dark overnight is caught
 	// within the day rather than waiting for the next time someone reads a brief.
@@ -1235,36 +997,6 @@ type scheduleCommandRunner func(name string, args ...string) ([]byte, error)
 
 var runScheduleCommand scheduleCommandRunner = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
-}
-
-// renameReplaceWithRetry publishes tmp onto path via os.Rename, replacing any
-// existing target. On POSIX this is a single atomic rename(2) and the loop runs
-// exactly once. On Windows, os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_
-// EXISTING): replacing an existing target requires deleting it, so concurrent
-// writers racing to rename onto the SAME target transiently fail with
-// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION. Retry those with JITTERED, capped
-// backoff — deterministic backoff makes racing writers retry in lockstep and keep
-// colliding, so the jitter is what lets them de-correlate — up to a deadline. Only
-// the error path pays this; a permanent error (or any non-Windows error) surfaces
-// on the first attempt.
-func renameReplaceWithRetry(tmp, path string) error {
-	var deadline time.Time
-	for attempt := 0; ; attempt++ {
-		rerr := os.Rename(tmp, path)
-		if rerr == nil {
-			return nil
-		}
-		if !renameReplaceRetryable(rerr) {
-			return rerr
-		}
-		if deadline.IsZero() {
-			deadline = time.Now().Add(5 * time.Second)
-		} else if !time.Now().Before(deadline) {
-			return rerr
-		}
-		capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
-		time.Sleep(time.Duration(1+mrand.IntN(capMs)) * time.Millisecond)
-	}
 }
 
 // linkPublish is the create-exclusive publish primitive (defaults to os.Link).
@@ -1309,95 +1041,12 @@ var linkPublish = os.Link
 // real fault and surfaces as-is — never masked as a collision or silently routed
 // through the slower fallback.
 func atomicCreate(path string, body []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	// Stage through a unique temp in the target dir (same filesystem, so the link
-	// is a cheap same-inode operation), never a fixed name, so concurrent creators
-	// never share or truncate each other's in-flight temp.
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	// Drop the temp name whether we publish it or fail; a no-op leftover name once
-	// the link/rename publishes the file under its real name.
-	defer os.Remove(tmp)
-	if _, err := f.Write(body); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	// CreateTemp opens at 0600; raise to the caller's requested mode before publish.
-	if err := os.Chmod(tmp, mode); err != nil {
-		return err
-	}
-
-	// PRIMARY: create-exclusive hard-link publish (POSIX + NTFS).
-	err = linkPublish(tmp, path)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, os.ErrExist) {
-		return err // genuine id collision → caller re-mints
-	}
-	if !linkUnsupported(err) {
-		return err // a real filesystem/IO error → surface, don't mask
-	}
-
-	// FALLBACK for filesystems without hard links (see doc above).
-	claim, cerr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if cerr != nil {
-		return cerr // EEXIST here wraps os.ErrExist → caller re-mints; else the real error
-	}
-	// Close our placeholder handle BEFORE the rename: on Windows MoveFileEx must
-	// delete the destination to replace it, and our own still-open handle would make
-	// every retry hit a sharing violation.
-	if closeErr := claim.Close(); closeErr != nil {
-		return errors.Join(closeErr, os.Remove(path))
-	}
-	// Move the staged body onto our own placeholder. renameReplaceWithRetry carries
-	// the Windows MoveFileEx jittered retry; on failure drop the empty placeholder so
-	// a failed write leaves nothing behind — and surface (join) any cleanup error so
-	// a leaked placeholder is never silently swallowed.
-	if rerr := renameReplaceWithRetry(tmp, path); rerr != nil {
-		return errors.Join(rerr, os.Remove(path))
-	}
-	return nil
+	return atomicio.CreateExclusive(path, body, mode, atomicio.ClaimOptions{Link: linkPublish, Unsupported: linkUnsupported})
 }
 
 // usagePhaseTimings is the compact, content-free phase breakdown for one MCP
 // tools/call. Retrieval/assembly are pointers because they are emitted only for
 // handlers (currently read_memory) whose phases are already cleanly separable.
-type usagePhaseTimings struct {
-	ConfigMillis    int64  `json:"config_ms"`
-	RetrievalMillis *int64 `json:"retrieval_ms,omitempty"`
-	AssemblyMillis  *int64 `json:"assembly_ms,omitempty"`
-	EnvelopeMillis  int64  `json:"envelope_ms"`
-}
-
-// usageEvent records one local tool invocation without response or argument
-// content. The read-only pointers are present on read_memory events even for
-// zero/false values and omitted from other tool events.
-type usageEvent struct {
-	TS              string             `json:"ts"`
-	Tool            string             `json:"tool"`
-	Query           string             `json:"query,omitempty"` // stripped by default; retained only when query logging is opted in; never sent off-machine
-	Scope           string             `json:"scope,omitempty"`
-	Results         int                `json:"results"`
-	Millis          int64              `json:"millis"`
-	OutputBytes     int                `json:"output_bytes,omitempty"`
-	Mode            string             `json:"mode,omitempty"`
-	Truncated       *bool              `json:"truncated,omitempty"`
-	MatchCount      *int               `json:"match_count,omitempty"`
-	BudgetRequested *int               `json:"budget_requested,omitempty"`
-	BudgetUsed      *int               `json:"budget_used,omitempty"`
-	Phases          *usagePhaseTimings `json:"phases,omitempty"`
-}
-
 // randRead is the entropy seam (defaults to crypto/rand.Read). Tests override it
 // to simulate an unavailable OS CSPRNG and exercise newID's fallback branch.
 var randRead = rand.Read

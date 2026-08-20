@@ -1288,6 +1288,10 @@
         "version": 1
       },
       {
+        "name": "mora.mcp.calendar_events",
+        "version": 1
+      },
+      {
         "name": "mora.mcp.context_memory",
         "version": 1
       },
@@ -1334,6 +1338,7 @@
     ],
     "tools": [
       "brief",
+      "calendar_events",
       "context_memory",
       "delete_memory",
       "digest",

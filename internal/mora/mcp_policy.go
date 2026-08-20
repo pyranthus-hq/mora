@@ -2,71 +2,31 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	configstore "github.com/pyranthus-hq/mora/internal/config"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"io"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 )
 
 const (
-	mcpWritePolicyOpen     = "open"
-	mcpWritePolicyPropose  = "propose"
-	mcpWritePolicyReadonly = "readonly"
+	mcpWritePolicyOpen     = mcppkg.WritePolicyOpen
+	mcpWritePolicyPropose  = mcppkg.WritePolicyPropose
+	mcpWritePolicyReadonly = mcppkg.WritePolicyReadonly
 )
 
-func parseMCPWritePolicy(raw string) (string, error) {
-	policy := strings.ToLower(strings.TrimSpace(raw))
-	switch policy {
-	case mcpWritePolicyOpen, mcpWritePolicyPropose, mcpWritePolicyReadonly:
-		return policy, nil
-	default:
-		return "", fmt.Errorf("invalid mcp_write_policy %q (want open, propose, or readonly)", raw)
-	}
-}
+func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
+func configMCPWritePolicy(c Config) string           { return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy) }
 
-func (c Config) mcpWritePolicy() string {
-	if c.MCPWritePolicy == "" {
-		return mcpWritePolicyOpen
-	}
-	return c.MCPWritePolicy
-}
+type mcpWriteProposal = mcppkg.Proposal
 
-const openWriteInstruction = "Write durable facts and decisions back with write_memory as they emerge — you do not need to ask permission."
-
-func mcpInstructionsFor(policy string) string {
-	var replacement string
-	switch policy {
-	case mcpWritePolicyPropose:
-		replacement = "You may submit durable facts and decisions with write_memory, but they enter a pending proposal queue and are NOT part of the vault until the owner approves them locally. delete_memory is unavailable in this mode."
-	case mcpWritePolicyReadonly:
-		replacement = "This connection is read-only: do not call write_memory or delete_memory; both will refuse without changing the vault."
-	default:
-		replacement = openWriteInstruction
-	}
-	return strings.Replace(mcpInstructions, openWriteInstruction, replacement, 1)
+func mcpProposalDir(cfg Config) string { return mcppkg.ProposalDir(cfg) }
+func readMCPWriteProposal(cfg Config, id string) (mcpWriteProposal, string, error) {
+	return mcppkg.ReadProposal(cfg, id)
 }
-
-type mcpWriteProposal struct {
-	ID         string         `json:"id"`
-	ProposedAt string         `json:"proposed_at"`
-	Arguments  map[string]any `json:"arguments"`
-}
-
-func mcpProposalDir(cfg Config) string {
-	return filepath.Join(cfg.ConfigDir, "mcp-proposals")
-}
-
-func mcpProposalPath(cfg Config, id string) (string, error) {
-	if !strings.HasPrefix(id, "p_") || strings.ContainsAny(id, `/\\`) || filepath.Base(id) != id {
-		return "", fmt.Errorf("invalid MCP proposal id %q", id)
-	}
-	return filepath.Join(mcpProposalDir(cfg), id+".json"), nil
-}
+func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) { return mcppkg.ListProposals(cfg) }
 
 func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 	now := mcpWriteClock()
@@ -74,18 +34,7 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 		return nil, err
 	}
 	proposal := mcpWriteProposal{ID: "p_" + newID(), ProposedAt: now.Format(time.RFC3339), Arguments: args}
-	path, err := mcpProposalPath(cfg, proposal.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	b, err := json.MarshalIndent(proposal, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := atomicWrite(path, append(b, '\n'), 0o600); err != nil {
+	if _, err := mcppkg.SaveProposal(cfg, proposal); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -93,57 +42,6 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 		"message":  fmt.Sprintf("not written to the vault; the owner can inspect and approve with `mora mcp proposals approve %s`", proposal.ID),
 		"health":   compactHealthOf(cfg, now),
 	}, nil
-}
-
-func readMCPWriteProposal(cfg Config, id string) (mcpWriteProposal, string, error) {
-	path, err := mcpProposalPath(cfg, id)
-	if err != nil {
-		return mcpWriteProposal{}, "", err
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return mcpWriteProposal{}, "", fmt.Errorf("MCP proposal %q not found", id)
-		}
-		return mcpWriteProposal{}, "", err
-	}
-	var proposal mcpWriteProposal
-	if err := json.Unmarshal(b, &proposal); err != nil {
-		return mcpWriteProposal{}, "", fmt.Errorf("parse MCP proposal %q: %w", id, err)
-	}
-	if proposal.ID != id {
-		return mcpWriteProposal{}, "", fmt.Errorf("MCP proposal id mismatch: file %q contains %q", id, proposal.ID)
-	}
-	return proposal, path, nil
-}
-
-func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) {
-	entries, err := os.ReadDir(mcpProposalDir(cfg))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	proposals := make([]mcpWriteProposal, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		proposal, _, err := readMCPWriteProposal(cfg, id)
-		if err != nil {
-			return nil, err
-		}
-		proposals = append(proposals, proposal)
-	}
-	sort.Slice(proposals, func(i, j int) bool {
-		if proposals[i].ProposedAt == proposals[j].ProposedAt {
-			return proposals[i].ID < proposals[j].ID
-		}
-		return proposals[i].ProposedAt < proposals[j].ProposedAt
-	})
-	return proposals, nil
 }
 
 // mcpProposalRow is one pending propose-mode write, projected for machines.

@@ -62,6 +62,12 @@ The installer checks the release before it installs
 `~/Applications/Mora.app`. It links the `mora` command to the app. It does not
 clear quarantine or sign the app again.
 
+Homebrew installation is not public yet. The repository can deterministically
+generate a signed-app Cask, but publishing remains blocked on the scheduled
+update policy in [#291](https://github.com/pyranthus-hq/mora/issues/291) and the
+release canary in [#294](https://github.com/pyranthus-hq/mora/issues/294). Do
+not use the private legacy Cask; it installs the obsolete raw-binary shape.
+
 Linux and older standalone installs can use:
 
 ```bash
@@ -79,6 +85,12 @@ Source builds report version `dev`. They do not update themselves. Google also
 needs your own OAuth client when you build from source.
 
 ### 2. Start with one source
+
+Mora is the local evidence store; your agent is the conversational interface. After
+connecting a source, try: **“what did Sam and I decide about the launch?”** or
+**“what's on my calendar next week?”** Reading and search retrieve local evidence;
+saving a durable memory requires explicit write consent. You can disable a connector
+or delete a saved memory at any time.
 
 A folder is the quickest start. It needs no account login.
 
@@ -132,6 +144,12 @@ Other MCP clients can start the same command:
 Mora has 12 MCP tools for search, reading, writing, briefs, meetings, and the
 person graph. The command line covers the same core jobs and also manages setup
 and maintenance.
+
+Mora also publishes an experimental [Agent Plugins 1.0 package](plugins/mora/README.md)
+that bundles the stdio MCP declaration with portable Agent Skills. It does not
+install Mora, grant source permissions, or sandbox the client. Enabling it may
+auto-start the local MCP server, so review the client's data policy and choose
+`mora config mcp-write-policy propose` or `readonly` before first use.
 
 ### 4. Check health and add a schedule
 
@@ -326,6 +344,8 @@ uncertain. Inspect it before you repeat an outside action.
 ## Update or uninstall
 
 ```bash
+mora upgrade --policy auto|notify|off
+mora upgrade --status --json
 mora upgrade --check
 mora upgrade
 mora schedule list
@@ -333,6 +353,13 @@ mora schedule uninstall <each-job-name-shown>
 mora hook uninstall
 mora serve http uninstall
 ```
+
+The internal scheduled-check path now honors the selected policy: `notify`
+checks and posts restrained reminders, `off` performs no network, notification,
+or state write, and `auto` may replace only a writable, verified `Mora.app` after
+strict health and a second identity check. It records rollback/rebuild outcomes
+locally. No update schedule is installed yet, so bare `mora upgrade` remains the
+normal explicit update command until the scheduling PR lands.
 
 For the signed macOS app, use the checked `uninstall-app.sh` command in the
 [guide](docs/guide.md#uninstall). The uninstaller keeps the vault, settings,

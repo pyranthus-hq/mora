@@ -14,12 +14,13 @@ matching comes first, and each rebuild gives the same bytes.
 | `internal/mora/salience.go` | 294 | **Phase 14** — the pure, clock-free person-ranking kernel: `S = HumanGate × Recency × Core` (D14-1..D14-4). `sat`/`channelScale`/`recencyDecay`/`salienceMicros` primitives, `scoreSalience`, `metaMessageCount`, and the shared `aggregatePersonSalience([]Memory) map[string]int64` seam BOTH `buildGraph` (here) and the digest consume. No I/O, no `time.Now`, no new deps. |
 | `internal/mora/gazetteer.go` | 252 | S5 body-matching: build a gazetteer from trusted person aliases (`buildGazetteer`), scan message/email bodies on word boundaries (`gazetteerScan`, `tokenizeForScan`), emit `MENTIONS` edges. High-precision stoplists and join-only matching |
 | `internal/mora/entities.go` | 212 | Structural entity extraction (`extractEntities`: scopes/tags/`[[wikilinks]]`/`- [categories]`), the `mora entities` CLI command, MCP entity adapters |
-| `internal/mora/graph_read.go` | 376 | Read path over the materialized tables: `listKind` (person/service surfacing), `graphListEntities`, `graphGetEntity` (provenance, aliases, degree, co-occurring neighbors) |
+| `internal/graphstore/store.go` | 239 | Transaction-bound SQL persistence plus low-level live evidence/entity/edge/co-occurrence/indexed-memory reads; never opens, commits, or rebuilds a database. |
+| `internal/mora/graph_read.go` | composition | Index readiness/auto-heal, public kind and legacy response shaping, pending-delete and Teach visibility, neighbor fallback, and CLI/MCP integration. |
 | `internal/mora/graph_cmd.go` | 193 | `mora graph` CLI: terminal overview with mention bars (`renderGraphOverview`) + per-entity drill-down (`graphDetailView`) |
 
 Mora **derives** the graph and does not store it as source data. Each
 `rebuildIndex` builds it from the start. `buildGraph` is pure and does no I/O.
-`writeGraph` (`internal/mora/index.go`) writes its output to the
+Mora’s thin `writeGraph` adapter compiles after governance loading, then `graphstore.Write` writes its output to the
 `entities`/`edges` tables. It uses the same transaction as the FTS and memories
 index. Thus, a graph error rolls back the full rebuild.
 
@@ -163,7 +164,7 @@ Core  = 0.70·Volume + 0.15·Reciprocity + 0.10·ChannelAffinity + 0.05·Breadth
 - The kernel keys by **pre-merge** person id, so its output is remapped through `canon` (the A3 union-find map), **max-folding** any collision (`internal/mora/graph.go:517-526`): two mailboxes of one human are the strongest single signal, never the sum (per-channel volume is already saturated, so summing would reward identity fragmentation past the `[0,1]` ceiling).
 - The graph's A1 classification is **authoritative for the HumanGate** (`internal/mora/graph.go:540-543`): a `service`-classified entity keeps `Salience = 0` even when its address-only kernel score was positive — a *trusted display-name suffix* (e.g. "… Receipts") can flip an address-only "person" to a `service` at emission, and that service must never carry a positive ranking score (D14-1/D14-6). Structural/hub entities keep 0.
 - **Byte-identical invariant extended to salience:** the fold iterates **sorted** keys (`internal/mora/graph.go:512-516`), the score is an `int64`, recency is vault-relative, and `max` is order-independent — `grep` confirms `graph.go` has no `time.Now` in the pass. The final entity sort is still by `id` — `salience_micros` is a **stored column, not a `buildGraph` sort key** (the read/ranking surface sorts on it). This is proven end-to-end by `TestSalienceRebuildAuditByteIdentical` (`internal/mora/mora_salience_audit_test.go`), which runs `rebuildIndex` **twice** over a seeded multi-source vault and diffs the ordered person rows + every `salience_micros` straight from the persisted table — the full file→parse→buildGraph→persist→read pipeline, not just `buildGraph` in memory.
-- `salience_micros` is **additive-by-rebuild**: the entities `CREATE` carries it for fresh DBs (`internal/mora/mora.go:2151`) and a duplicate-column-tolerant `ALTER TABLE entities ADD COLUMN salience_micros INTEGER` (`internal/mora/mora.go:2175-2178`, tolerating ONLY "duplicate column name", fatal on anything else) upgrades a pre-column DB on its next `index rebuild` inside the atomic tx — no manual migration. `writeGraph` binds `e.Salience` in the INSERT (`internal/mora/index.go`). Every rebuild does `DELETE FROM entities` then reinserts, so the column is always freshly written.
+- `salience_micros` is **additive-by-rebuild**: the entities `CREATE` carries it for fresh DBs (`internal/mora/mora.go:2151`) and a duplicate-column-tolerant `ALTER TABLE entities ADD COLUMN salience_micros INTEGER` (`internal/mora/mora.go:2175-2178`, tolerating ONLY "duplicate column name", fatal on anything else) upgrades a pre-column DB on its next `index rebuild` inside the atomic tx — no manual migration. `writeGraph` binds `e.Salience` in the INSERT (`internal/graphstore/store.go`). Every rebuild does `DELETE FROM entities` then reinserts, so the column is always freshly written.
 
 ### A1 precision fixes (Phase 14) — shortcodes + brand send-subdomains
 
@@ -181,7 +182,7 @@ Beyond people, `buildGraph` also emits the structural graph already present in t
 - One **hub node** per memory (`hubID` = `memory:<raw StableID>`, NOT `SafeFilename` — `internal/mora/graph.go:18-20`), so distinct memories never collapse to one node.
 - Person edges: `PARTICIPATED_IN` (or `ATTENDED` for events) hub→person for every participant; `EMAILED` sender→recipient for mail only, within the fan-out-capped set (`internal/mora/graph.go:431-446`).
 
-**Fan-out cap**: `maxParticipantFanout = 64` (`internal/mora/graph.go:13`). A 200-recipient blast is truncated to 64, a warning is emitted (honesty rule: never silently drop), and `capParticipants` (`internal/mora/graph.go:530-550`) guarantees self-presenters (`senderSet`) are retained — they are the highest-value nodes. Co-occurrence is **never materialized**. It's a query-time self-join (`coOccurringPeople`, `internal/mora/graph_read.go:203-229`), so an N-participant memory costs O(N) rows, not O(N²).
+**Fan-out cap**: `maxParticipantFanout = 64` (`internal/mora/graph.go:13`). A 200-recipient blast is truncated to 64, a warning is emitted (honesty rule: never silently drop), and `capParticipants` (`internal/mora/graph.go:530-550`) guarantees self-presenters (`senderSet`) are retained — they are the highest-value nodes. Co-occurrence is **never materialized**. It's a query-time self-join (`graphstore.CoOccurringPeople`, `internal/graphstore/store.go`), so an N-participant memory costs O(N) rows, not O(N²).
 
 Bi-temporal stamps come from free signals only: `valid_from` = `occurred_at` else `created_at` (`validFromOf`), `observed_at` = `last_synced` else `created_at` (`observedAtOf`), `invalidated_at` = `deleted_at` for tombstones. Tombstoned edges are still emitted but excluded from live stats (`internal/mora/graph.go:418`, `332`).
 
@@ -212,7 +213,7 @@ erDiagram
     entities ||--o{ edges : "dst references"
 ```
 
-The read path filters `invalidated_at IS NULL` everywhere (`liveEvidenceByEntity`, `internal/mora/graph_read.go:88-110`; `graphGetEntity`, `internal/mora/graph_read.go:297`), so stats mirror live reads. An entity with zero live evidence is dropped (`internal/mora/graph_read.go:138`, `327-329`) so `list_entities` and `get_entity` agree.
+The read path filters `invalidated_at IS NULL` everywhere (`graphstore.LiveEvidenceByEntity` and `graphstore.IncomingEdges` in `internal/graphstore/store.go`), so stats mirror live reads. An entity with zero live evidence is dropped (`internal/mora/graph_read.go:138`, `327-329`) so `list_entities` and `get_entity` agree.
 
 ### person vs service surfacing (graph_read.go)
 
@@ -264,5 +265,5 @@ Person ids all carry the `person:` prefix, but their *stored* `kind` column hold
 
 ## Open questions / unverified
 
-- `edges.valid_to` is declared in the schema (`internal/mora/mora.go:2040`) but `writeGraph` always inserts it `NULL` (`internal/mora/index.go`) and no read path I own consults it — it appears reserved for a future bi-temporal close, unused in v1.
-- The `link`/`scope`/`tag`/`category` count surfaced by `mora graph`/`mora entities` is the **live distinct-evidence** count from `liveEvidenceByEntity` (`internal/mora/graph_read.go:141`), which can differ from the stored `mention_count` written by `buildGraph` (the stored value excludes tombstones too, so they should agree, but only the live-query value is displayed). Not a correctness bug, but worth confirming the two never diverge after partial tombstoning.
+- `edges.valid_to` is declared in the schema (`internal/mora/mora.go:2040`) but `graphstore.Write` always inserts it `NULL` (`internal/graphstore/store.go`) and no read path I own consults it — it appears reserved for a future bi-temporal close, unused in v1.
+- The `link`/`scope`/`tag`/`category` count surfaced by `mora graph`/`mora entities` is the **live distinct-evidence** count from `graphstore.LiveEvidenceByEntity` (`internal/graphstore/store.go`), which can differ from the stored `mention_count` written by `buildGraph` (the stored value excludes tombstones too, so they should agree, but only the live-query value is displayed). Not a correctness bug, but worth confirming the two never diverge after partial tombstoning.

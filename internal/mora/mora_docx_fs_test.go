@@ -3,6 +3,7 @@ package mora
 import (
 	"archive/zip"
 	"context"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +50,7 @@ func writeDocxRaw(t *testing.T, path, documentXML string) {
 }
 
 func fsSource(name, path, scope string) Source {
-	return Source{Name: name, Type: "filesystem", Scope: scope, Path: path, Enabled: ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
+	return Source{Name: name, Type: "filesystem", Scope: scope, Path: path, Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339)}
 }
 
 // --- Feature 1: .docx text extraction ------------------------------------------

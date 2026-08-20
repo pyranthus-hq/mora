@@ -192,10 +192,19 @@ jobs:
           APPLE_SIGNING_IDENTITY: "Developer ID Application: ADIT ABHIJIT KARODE (VS8M5VJBZ5)"
           APPLE_BUNDLE_ID: com.pyranthus.mora
           APPLE_TEAM_ID: VS8M5VJBZ5
-          # Fine-grained PAT with contents:write on pyranthus-hq/homebrew-tap.
-          # Cask publishing is skip_upload: true in .goreleaser.yaml until the
-          # token exists and the tap is public.
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Package Agent Plugins directory
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archive="dist/mora-agent-plugin-${version}.tar.gz"
+          checksum="${archive}.sha256"
+          bash scripts/package-agent-plugin.sh "$version" "$archive"
+          (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$checksum")")
+          gh release upload "$GITHUB_REF_NAME" "$archive" "$checksum" \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
       # Raw command-line executables cannot carry a stapled ticket. Submit an
       # archive containing each already-signed Darwin binary, require Apple's

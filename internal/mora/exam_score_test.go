@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -679,7 +680,7 @@ func examScoreRenderedLedger(t *testing.T, l exam.Ledger) exam.Scorecard {
 	run(t, "init")
 	cfg := mustConfig(t)
 	event, at := loadExamEvent(t)
-	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Email: "alex@example.com", Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z"}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Email: "alex@example.com", Enabled: genericutil.Ptr(true), CreatedAt: "2026-07-01T00:00:00Z"}}); err != nil {
 		t.Fatal(err)
 	}
 	for rel, body := range files {

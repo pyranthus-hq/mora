@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -47,9 +48,9 @@ func TestSyncFilesystemReindexesOnlyEnabledFilesystemSources(t *testing.T) {
 	if err := saveSources(cfg, []Source{
 		// An enabled network source makes the regression observable: the old
 		// fallthrough attempted Google instead of walking the filesystem source.
-		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
-		{Name: "docs", Type: "filesystem", Path: enabledDir, Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
-		{Name: "archive", Type: "filesystem", Path: disabledDir, Scope: "personal", Enabled: ptr(false), CreatedAt: nowRFC3339()},
+		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "docs", Type: "filesystem", Path: enabledDir, Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "archive", Type: "filesystem", Path: disabledDir, Scope: "personal", Enabled: genericutil.Ptr(false), CreatedAt: nowRFC3339()},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,11 +103,11 @@ func TestSyncFilesystemContinuesAfterSourceWalkError(t *testing.T) {
 	}
 	missing := Source{
 		Name: "gone", Type: "filesystem", Path: filepath.Join(t.TempDir(), "does-not-exist"),
-		Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339(),
+		Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339(),
 	}
 	healthy := Source{
 		Name: "healthy", Type: "filesystem", Path: healthyDir,
-		Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339(),
+		Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339(),
 	}
 	if err := saveSources(cfg, []Source{missing, healthy}); err != nil {
 		t.Fatal(err)
@@ -153,7 +154,7 @@ func TestSyncFilesystemUnreadableSelectedFilePreservesLastSuccess(t *testing.T) 
 	if err := os.WriteFile(path, []byte("priorreadablemarker\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := Source{Name: "docs", Type: "filesystem", Path: root, Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()}
+	source := Source{Name: "docs", Type: "filesystem", Path: root, Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()}
 	if err := saveSources(cfg, []Source{source}); err != nil {
 		t.Fatal(err)
 	}

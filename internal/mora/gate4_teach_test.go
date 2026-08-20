@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,7 +40,7 @@ func gate4CommitmentCfg(t *testing.T) (Config, Commitment) {
 	cfg := mustConfig(t)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "self@example.com",
-		Enabled: ptr(false), CreatedAt: "2026-07-01T00:00:00Z",
+		Enabled: genericutil.Ptr(false), CreatedAt: "2026-07-01T00:00:00Z",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +729,7 @@ func TestGate4TeachMutationsAreNotMCPTools(t *testing.T) {
 	}
 
 	server := &httpServer{token: "tok", port: 7777}
-	handler := server.hostGuard(server.auth(server.routes()))
+	handler := server.handler()
 	request := httptest.NewRequest(http.MethodPost, "/call",
 		strings.NewReader(`{"name":"teach_commitment","arguments":{"decision":"useful","yes":true,"authorized_by":"agent"}}`))
 	request.Host = "127.0.0.1:7777"

@@ -8,235 +8,80 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 )
 
 // vecPool is a tiny helper: ordered ids + their fused scores + their vectors, the
 // three inputs mmrRerank takes. Vectors are hand-built UNIT vectors so cosine (a raw
 // dot product of L2-normalized vectors) yields the exact similarities the assertions
 // rely on.
-func relMap(pairs ...any) map[string]float64 {
-	m := map[string]float64{}
-	for i := 0; i < len(pairs); i += 2 {
-		m[pairs[i].(string)] = pairs[i+1].(float64)
-	}
-	return m
-}
 
 // TestMMRRerankNoOpAtLambdaOne: λ=1 zeroes the diversity term, so greedy MMR reduces
 // to pure relevance order — which IS the incoming fused order. Output == input.
-func TestMMRRerankNoOpAtLambdaOne(t *testing.T) {
-	ids := []string{"a", "b", "c"}
-	rel := relMap("a", 1.0, "b", 0.6, "c", 0.2)
-	vec := map[string][]float32{"a": {1, 0}, "b": {1, 0}, "c": {0, 1}} // dups present, but λ=1 ignores them
-	got := mmrRerank(ids, rel, vec, mmrParams{lambda: 1.0})
-	if !reflect.DeepEqual(got, ids) {
-		t.Fatalf("λ=1 must equal fused order, got %v want %v", got, ids)
-	}
-}
 
 // TestMMRRerankSingleAndEmpty: trivial pools and a pool with fewer than two
 // vector-backed candidates are clean no-ops (nothing to diversify against).
-func TestMMRRerankSingleAndEmpty(t *testing.T) {
-	if got := mmrRerank(nil, nil, nil, mmrParams{lambda: 0.7}); len(got) != 0 {
-		t.Fatalf("empty ⇒ empty, got %v", got)
-	}
-	if got := mmrRerank([]string{"x"}, relMap("x", 0.5), map[string][]float32{"x": {1, 0}}, mmrParams{lambda: 0.7}); !reflect.DeepEqual(got, []string{"x"}) {
-		t.Fatalf("single ⇒ unchanged, got %v", got)
-	}
-	// Two candidates but only one has a vector ⇒ <2 in the diversify pool ⇒ unchanged.
-	ids := []string{"a", "b"}
-	got := mmrRerank(ids, relMap("a", 1.0, "b", 0.5), map[string][]float32{"a": {1, 0}}, mmrParams{lambda: 0.7})
-	if !reflect.DeepEqual(got, ids) {
-		t.Fatalf("<2 vectors ⇒ unchanged, got %v", got)
-	}
-}
 
 // TestMMRRerankAllEqualRelevance: an all-equal pool has span≤ε; relNorm falls back to
 // 1.0 for all (no divide-by-zero, no NaN, no panic), the fused-rank-0 doc seeds, and
 // the result is a valid permutation.
-func TestMMRRerankAllEqualRelevance(t *testing.T) {
-	ids := []string{"a", "b", "c"}
-	rel := relMap("a", 0.5, "b", 0.5, "c", 0.5)
-	vec := map[string][]float32{"a": {1, 0}, "b": {0, 1}, "c": {0, 1}}
-	got := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.7})
-	if got[0] != "a" {
-		t.Fatalf("all-equal relevance ⇒ seed is fused-rank-0 (a), got %v", got)
-	}
-	assertPermutation(t, ids, got)
-}
 
 // TestClampPosNegativeCosine locks the signed-cosine bug fix. Unit: clampPos floors
 // negatives at 0. Integration: an anti-similar low-relevance doc (cos=-1 to the seed)
 // must NOT be promoted above a more-relevant orthogonal doc — without the clamp the
 // negative cosine would flip into a +0.5 novelty BONUS and wrongly win.
-func TestClampPosNegativeCosine(t *testing.T) {
-	for _, c := range []struct {
-		in, want float64
-	}{{-1, 0}, {-1e-9, 0}, {0, 0}, {0.5, 0.5}, {1, 1}} {
-		if got := clampPos(c.in); got != c.want {
-			t.Fatalf("clampPos(%v)=%v want %v", c.in, got, c.want)
-		}
-	}
-	// A=seed (rel 1.0), Z=orthogonal & more relevant (rel 0.8), Y=anti-similar & less
-	// relevant (rel 0.3). Correct order after A: Z then Y. Raw (unclamped) cosine would
-	// give Y a +0.5 bonus and pick Y before Z.
-	ids := []string{"A", "Z", "Y"}
-	rel := relMap("A", 1.0, "Z", 0.8, "Y", 0.3)
-	vec := map[string][]float32{"A": {1, 0}, "Z": {0, 1}, "Y": {-1, 0}}
-	got := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.5})
-	if rankOf("Z", got) > rankOf("Y", got) {
-		t.Fatalf("clamp failed: anti-similar Y promoted above more-relevant Z, got %v", got)
-	}
-}
 
 // TestMMRRerankDiversifies: with a redundant duplicate and a novel-but-less-relevant
 // doc, MMR selects the novel doc before the duplicate (the core diversity behavior).
-func TestMMRRerankDiversifies(t *testing.T) {
-	ids := []string{"A", "dup", "B"}
-	rel := relMap("A", 1.0, "dup", 0.7, "B", 0.4)
-	vec := map[string][]float32{"A": {1, 0}, "dup": {1, 0}, "B": {0, 1}} // dup is a perfect copy of A
-	got := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.5})
-	if rankOf("B", got) > rankOf("dup", got) {
-		t.Fatalf("MMR should select novel B before redundant dup, got %v", got)
-	}
-}
 
 // TestMMRRerankMissingVectorPinned: a candidate with no stored vector keeps its exact
 // fused index while the vector-backed docs around it reorder.
-func TestMMRRerankMissingVectorPinned(t *testing.T) {
-	ids := []string{"a", "gOnly", "b", "c"}
-	rel := relMap("a", 1.0, "gOnly", 0.5, "b", 0.8, "c", 0.6)
-	vec := map[string][]float32{"a": {1, 0, 0}, "b": {1, 0, 0}, "c": {0, 1, 0}} // gOnly absent
-	got := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.5})
-	if got[1] != "gOnly" {
-		t.Fatalf("missing-vector doc must stay pinned at index 1, got %v", got)
-	}
-	if rankOf("c", got) > rankOf("b", got) {
-		t.Fatalf("vector-backed c (novel) should be promoted over redundant b, got %v", got)
-	}
-	assertPermutation(t, ids, got)
-}
 
 // TestMMRRerankMixedVecAndPinnedTopK: a vector-backed doc promoted from a low fused
 // rank can cross OVER a pinned (no-vector) doc's position; the pinned doc keeps its
 // absolute index and the output is a valid permutation.
-func TestMMRRerankMixedVecAndPinnedTopK(t *testing.T) {
-	ids := []string{"a", "b", "gPinned", "c"}
-	rel := relMap("a", 1.0, "b", 0.9, "gPinned", 0.7, "c", 0.5)
-	vec := map[string][]float32{"a": {1, 0, 0}, "b": {1, 0, 0}, "c": {0, 1, 0}} // gPinned absent
-	got := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.5})
-	if got[2] != "gPinned" {
-		t.Fatalf("pinned doc must keep absolute index 2, got %v", got)
-	}
-	if rankOf("c", got) > rankOf("b", got) {
-		t.Fatalf("novel c should cross redundant b, got %v", got)
-	}
-	assertPermutation(t, ids, got)
-}
 
 // TestMMRRerankPinnedDocDoesNotRescalePool locks the fix for the relNorm-domain bug:
 // a pinned (no-vector) doc with an EXTREME fused score must not change the relative MMR
 // order of the vector-backed pool. relNorm is min-maxed over the pool only, so adding a
 // pinned outlier (low or high) cannot stretch the span and silently rescale effective λ.
-func TestMMRRerankPinnedDocDoesNotRescalePool(t *testing.T) {
-	rel := relMap("A", 1.0, "dup", 0.92, "B", 0.80)
-	vec := map[string][]float32{"A": {1, 0}, "dup": {1, 0}, "B": {0, 1}} // dup is a perfect copy of A
-	base := mmrRerank([]string{"A", "dup", "B"}, rel, vec, mmrParams{lambda: 0.7})
-
-	// A pinned doc at the LOW extreme (fused 0.0) appended to the tail.
-	relLo := relMap("A", 1.0, "dup", 0.92, "B", 0.80, "P", 0.0)
-	gotLo := mmrRerank([]string{"A", "dup", "B", "P"}, relLo, vec, mmrParams{lambda: 0.7})
-	if gotLo[3] != "P" {
-		t.Fatalf("pinned doc must stay at its fused index 3, got %v", gotLo)
-	}
-	if !reflect.DeepEqual(gotLo[:3], base) {
-		t.Fatalf("low-extreme pinned doc rescaled the pool order: %v (pool %v) vs base %v", gotLo, gotLo[:3], base)
-	}
-
-	// A pinned doc at the HIGH extreme (fused 2.0) prepended to the head.
-	relHi := relMap("A", 1.0, "dup", 0.92, "B", 0.80, "P", 2.0)
-	gotHi := mmrRerank([]string{"P", "A", "dup", "B"}, relHi, vec, mmrParams{lambda: 0.7})
-	if gotHi[0] != "P" {
-		t.Fatalf("pinned doc must stay at its fused index 0, got %v", gotHi)
-	}
-	if !reflect.DeepEqual(gotHi[1:], base) {
-		t.Fatalf("high-extreme pinned doc rescaled the pool order: %v (pool %v) vs base %v", gotHi, gotHi[1:], base)
-	}
-}
 
 // TestMMRRerankTieBreakFusedRank: candidates with identical MMR scores resolve to the
 // earlier fused rank (deterministic, no map-order leak).
-func TestMMRRerankTieBreakFusedRank(t *testing.T) {
-	ids := []string{"A", "t1", "t2"}
-	rel := relMap("A", 1.0, "t1", 0.5, "t2", 0.5)
-	vec := map[string][]float32{"A": {1, 0}, "t1": {0, 1}, "t2": {0, 1}} // t1,t2 identical ⇒ tie
-	got := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.7})
-	if !reflect.DeepEqual(got, []string{"A", "t1", "t2"}) {
-		t.Fatalf("tie must resolve to fused order, got %v", got)
-	}
-}
 
 // TestMMRRerankDeterminismCrossRun: same input, 50 runs, byte-identical output.
-func TestMMRRerankDeterminismCrossRun(t *testing.T) {
-	ids := []string{"a", "dup", "b", "c", "d"}
-	rel := relMap("a", 1.0, "dup", 0.9, "b", 0.7, "c", 0.5, "d", 0.3)
-	vec := map[string][]float32{"a": {1, 0, 0}, "dup": {1, 0, 0}, "b": {0, 1, 0}, "c": {0, 0, 1}, "d": {0, 1, 0}}
-	first := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.6})
-	for i := 0; i < 50; i++ {
-		if got := mmrRerank(ids, rel, vec, mmrParams{lambda: 0.6}); !reflect.DeepEqual(got, first) {
-			t.Fatalf("run %d differs: %v vs %v", i, got, first)
-		}
-	}
-}
 
 // TestMMRRerankDoesNotMutateInput: the input ids slice and rel map are untouched.
-func TestMMRRerankDoesNotMutateInput(t *testing.T) {
-	ids := []string{"a", "dup", "b"}
-	idsCopy := append([]string(nil), ids...)
-	rel := relMap("a", 1.0, "dup", 0.7, "b", 0.4)
-	vec := map[string][]float32{"a": {1, 0}, "dup": {1, 0}, "b": {0, 1}}
-	_ = mmrRerank(ids, rel, vec, mmrParams{lambda: 0.5})
-	if !reflect.DeepEqual(ids, idsCopy) {
-		t.Fatalf("input ids mutated: %v want %v", ids, idsCopy)
-	}
-	if rel["a"] != 1.0 || rel["dup"] != 0.7 || rel["b"] != 0.4 {
-		t.Fatalf("input rel mutated: %v", rel)
-	}
-}
 
 // TestConfigMMRGating locks mmr() precedence: off by default; the MMR bool yields
 // default params with force=false; the mmrOv seam always wins and is the ONLY source
 // of force.
+func configWithMMROverride(enabled bool, override *mmrParams) Config {
+	cfg := Config{MMR: enabled}
+	cfg.SetMMROverride(override)
+	return cfg
+}
+
 func TestConfigMMRGating(t *testing.T) {
-	if p := (Config{}).mmr(); p != nil {
+	if p := configMMR(Config{}); p != nil {
 		t.Fatalf("default Config ⇒ MMR off (nil), got %+v", p)
 	}
-	p := (Config{MMR: true}).mmr()
+	p := configMMR(Config{MMR: true})
 	if p == nil || p.lambda != defaultLambda || p.force {
 		t.Fatalf("MMR:true ⇒ {λ=%v, force=false}, got %+v", defaultLambda, p)
 	}
 	ov := &mmrParams{lambda: 0.3, force: true}
-	if got := (Config{mmrOv: ov}).mmr(); got != ov {
+	if got := configMMR(configWithMMROverride(false, ov)); got != ov {
 		t.Fatalf("mmrOv must win, got %+v", got)
 	}
-	if got := (Config{MMR: true, mmrOv: ov}).mmr(); got != ov {
+	if got := configMMR(configWithMMROverride(true, ov)); got != ov {
 		t.Fatalf("mmrOv must win over MMR bool, got %+v", got)
 	}
 }
 
 // TestMMRActivePredicate: MMR runs under a semantic embedder (useVec) or the forced
 // eval seam, never under static-hash from a production (force=false) config.
-func TestMMRActivePredicate(t *testing.T) {
-	if mmrActive(false, &mmrParams{force: false}) {
-		t.Fatal("static-hash + production params ⇒ MMR must NOT run")
-	}
-	if !mmrActive(false, &mmrParams{force: true}) {
-		t.Fatal("forced seam ⇒ MMR runs even under static-hash")
-	}
-	if !mmrActive(true, &mmrParams{force: false}) {
-		t.Fatal("semantic embedder ⇒ MMR runs")
-	}
-}
 
 // TestLoadVectorsByID: present ids return decoded vectors under the active model;
 // absent ids and a wrong model id are simply missing from the map (caller pins them).
@@ -277,7 +122,7 @@ func TestLoadVectorsByID(t *testing.T) {
 // CGO=0 CI (no Ollama).
 func forcedMMR(base Config, lambda float64) Config {
 	c := base
-	c.mmrOv = &mmrParams{lambda: lambda, force: true}
+	c.SetMMROverride(&mmrParams{lambda: lambda, force: true})
 	return c
 }
 
@@ -582,7 +427,7 @@ func TestEvalMMRAB(t *testing.T) {
 				vi, oi := vecs[ids[i]]
 				vj, oj := vecs[ids[j]]
 				if oi && oj {
-					sum += clampPos(cosine(vi, vj))
+					sum += searchpkg.ClampPositive(cosine(vi, vj))
 					n++
 				}
 			}
@@ -616,7 +461,7 @@ func TestEvalMMRAB(t *testing.T) {
 	t.Logf("MMR off            Recall@%d=%.4f MRR=%.4f intra-list-redundancy=%.4f", kHybrid, rOff, mOff, dOff)
 	for _, lambda := range []float64{0.5, 0.7, 0.9} {
 		c := cfg
-		c.mmrOv = &mmrParams{lambda: lambda} // force=false: real useVec under Ollama
+		c.SetMMROverride(&mmrParams{lambda: lambda}) // force=false: real useVec under Ollama
 		r, m, d, rf := measure(c)
 		t.Logf("MMR on  (λ=%.1f)    Recall@%d=%.4f MRR=%.4f intra-list-redundancy=%.4f (reordered %.0f%% of queries vs off)",
 			lambda, kHybrid, r, m, d, rf*100)
@@ -624,19 +469,3 @@ func TestEvalMMRAB(t *testing.T) {
 }
 
 // assertPermutation fails unless got is a permutation of want (same multiset of ids).
-func assertPermutation(t *testing.T, want, got []string) {
-	t.Helper()
-	if len(want) != len(got) {
-		t.Fatalf("length changed: got %v want a permutation of %v", got, want)
-	}
-	cw, cg := map[string]int{}, map[string]int{}
-	for _, x := range want {
-		cw[x]++
-	}
-	for _, x := range got {
-		cg[x]++
-	}
-	if !reflect.DeepEqual(cw, cg) {
-		t.Fatalf("not a permutation: got %v want a permutation of %v", got, want)
-	}
-}

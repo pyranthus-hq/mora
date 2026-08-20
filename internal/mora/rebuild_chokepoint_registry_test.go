@@ -154,11 +154,12 @@ func funcBody(t *testing.T, src, sig string) string {
 // embedder's own accumulator may allocate a dim-sized float32 vector to hand back as
 // an embedding. Pairs with TestNoFabricatedZeroVector.
 func TestNoEmbedderPathFabricatesZeroVector(t *testing.T) {
-	src := packageGoSources(t)
-	// The only legitimate make([]float32, <dim>) allocations are: staticEmbedder's
-	// accumulator (embed.go) and decodeVec's exact-size restore (embed.go). Any
-	// occurrence in embed_ollama.go is the fabrication idiom.
-	if strings.Contains(src["embed_ollama.go"], "make([]float32, e.dim)") {
+	src, err := os.ReadFile("../embed/ollama.go")
+	if err != nil {
+		t.Fatalf("read internal/embed/ollama.go: %v", err)
+	}
+	// A real Ollama vector is response-sized; a dim-sized allocation is fabrication.
+	if strings.Contains(string(src), "make([]float32, e.dim)") {
 		t.Fatal("embed_ollama.go must not fabricate a dim-length zero vector")
 	}
 }

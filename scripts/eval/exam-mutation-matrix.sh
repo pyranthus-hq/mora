@@ -106,24 +106,24 @@ PY
 }
 
 kill_mutant "production/classifyMeetingBriefEvidence" \
-  internal/mora/meetingbrief.go \
-  'kind := classifyMeetingBriefEvidence(m, cfg, at)' \
-  'kind := meetingBriefOpenLoops' \
-  ./internal/mora '^TestExamRealPredictionsPin$'
+  internal/meeting/classify.go \
+  'return Unresolved' \
+  'return OpenLoops' \
+  ./internal/meeting '^TestClassifyEvidencePolicy$'
 
 
 kill_mutant "production/isMeetingNotification" \
-  internal/mora/meetingbrief.go \
-  $'if isMeetingNotification(m) {\n\t\treturn ""\n\t}' \
-  $'if false {\n\t\treturn ""\n\t}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'return ContainsAnyPhrase(strings.ToLower(m.Text), meetingNotificationBodyMarkers)' \
+  'return false' \
+  ./internal/meeting '^TestMeetingNotificationMailIsNotEvidence$'
 
 
 kill_mutant "production/assignedToThirdParty" \
-  internal/mora/meetingbrief.go \
-  $'if assignedToThirdParty(signalText(m), selfNameTokens(selfEmails(cfg))) {\n\t\treturn ""\n\t}' \
-  $'if false {\n\t\treturn ""\n\t}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'if !selfNames[assignee[0]] {' \
+  'if false {' \
+  ./internal/meeting '^TestThirdPartyActionItemIsNotTheUsersOpenLoop$'
 
 
 kill_mutant "production/memoryIsServiceOnly" \
@@ -133,17 +133,17 @@ kill_mutant "production/memoryIsServiceOnly" \
   ./internal/mora '^TestExamServiceOnlyGateIsAssembled$'
 
 kill_mutant "production/userOwnedOpenLoop" \
-  internal/mora/meetingbrief.go \
-  $'if userOwnedOpenLoop(m, cfg) {\n\t\treturn meetingBriefOpenLoops\n\t}' \
-  $'if true {\n\t\treturn meetingBriefOpenLoops\n\t}' \
-  ./internal/mora '^TestExamRealPredictionsPin$'
+  internal/meeting/classify.go \
+  'if UserOwnedOpenLoop(m, in.SignalText, in.Self) {' \
+  'if false {' \
+  ./internal/meeting '^TestClassifyEvidencePolicy$'
 
 
 kill_mutant "production/meetingBriefIsTwoPartyExchange" \
-  internal/mora/meetingbrief.go \
-  $'if isGmailMemory(m) && !meetingBriefIsTwoPartyExchange(m, self, roster...) {\n\t\t\t\tcontinue\n\t\t\t}' \
-  $'if false {\n\t\t\t\tcontinue\n\t\t\t}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'if key != "" && !inRoom[key] {' \
+  'if false {' \
+  ./internal/meeting '^TestInboundGroupThreadIsNotTwoPartyBusiness$'
 
 
 kill_mutant "production/relationalEvidenceIDs" \
@@ -161,64 +161,64 @@ kill_mutant "production/meetingBriefResolveAttribution" \
 
 
 kill_mutant "production/stripURLs" \
-  internal/mora/meetingbrief.go \
-  'text = unwrapHardWraps(stripURLs(text))' \
-  'text = unwrapHardWraps(text)' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/evidencetext/text.go \
+  'text = UnwrapHardWraps(StripURLs(text))' \
+  'text = UnwrapHardWraps(text)' \
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/unwrapHardWraps" \
-  internal/mora/meetingbrief.go \
-  $'func unwrapHardWraps(text string) string {\n\tlines := strings.Split(text, "\\n")\n\tvar out strings.Builder\n\tfor i, line := range lines {\n\t\tout.WriteString(line)\n\t\tif i == len(lines)-1 {\n\t\t\tbreak\n\t\t}\n\t\ttrimmed := strings.TrimRight(line, " \\t")\n\t\tnext := strings.TrimLeft(lines[i+1], " \\t")\n\t\tif continuesSentence(trimmed, next) {\n\t\t\tout.WriteByte(\' \')\n\t\t\tcontinue\n\t\t}\n\t\tout.WriteByte(\'\\n\')\n\t}\n\treturn out.String()\n}' \
-  $'func unwrapHardWraps(text string) string {\n\treturn text\n}' \
-  ./internal/mora '^TestExamHardWrapJoinsBeforeSegmenting$'
+  internal/evidencetext/text.go \
+  'if ContinuesSentence(trimmed, next) {' \
+  'if false {' \
+  ./internal/evidencetext '^TestEvidenceSegmentsDoNotTruncateMidClause$'
 
 kill_mutant "production/senderAuthoredBody" \
-  internal/mora/meetingbrief.go \
-  'body := senderAuthoredBody(stripFromLine(m.Text))' \
-  'body := stripFromLine(m.Text)' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/evidencetext/text.go \
+  'if quotedReplyLine.MatchString(line) || isSignatureDelimiter(line) {' \
+  'if false {' \
+  ./internal/evidencetext '^TestForwardedAndQuotedContentIsNotTheSendersWords$'
 
 
 kill_mutant "production/stripSpeakerPrefix" \
-  internal/mora/meetingbrief.go \
-  $'func stripSpeakerPrefix(segment string) string {\n\treturn strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))\n}' \
-  $'func stripSpeakerPrefix(segment string) string {\n\treturn segment\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/evidencetext/text.go \
+  'return strings.TrimSpace(speakerPrefix.ReplaceAllString(segment, ""))' \
+  'return segment' \
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/isForwardedSubject" \
-  internal/mora/meetingbrief.go \
-  $'func isForwardedSubject(title string) bool {\n\tlower := strings.ToLower(strings.TrimSpace(title))\n\treturn strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")\n}' \
-  $'func isForwardedSubject(title string) bool {\n\treturn false\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/evidencetext/text.go \
+  'return strings.HasPrefix(lower, "fwd:") || strings.HasPrefix(lower, "fw:")' \
+  'return false' \
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/isLeadInFragment" \
-  internal/mora/meetingbrief.go \
-  $'func isLeadInFragment(text string) bool {\n\tt := strings.TrimSpace(text)\n\tif t == "" {\n\t\treturn true\n\t}\n\tif strings.HasSuffix(t, ":") {\n\t\treturn true\n\t}\n\t// A "sentence" of one or two words is a header, not a statement.\n\treturn len(strings.Fields(t)) < 3\n}' \
-  $'func isLeadInFragment(text string) bool {\n\treturn false\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/evidencetext/text.go \
+  'return len(strings.Fields(t)) < 3' \
+  'return false' \
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "production/stripNoiseTokens" \
-  internal/mora/meetingbrief.go \
-  'segment := stripNoiseTokens(rawSegment)' \
-  'segment := strings.TrimSpace(rawSegment)' \
-  ./internal/mora '^TestExamCorrectionFlywheel$'
+  internal/evidencetext/text.go \
+  'if !TokenIsNoise(tok) {' \
+  'if true {' \
+  ./internal/evidencetext '^TestStripNoiseTokens$'
 
 kill_mutant "production/gmailActionableAsk" \
-  internal/mora/meetingbrief.go \
-  $'func gmailActionableAsk(text string) bool {\n\tif !actionableQuestion(text) {\n\t\treturn false\n\t}\n\tlower := strings.ToLower(text)\n\treturn containsAnyPhrase(lower, interrogativeOpeners) || containsAnyPhrase(lower, directRequestPhrases)\n}' \
-  $'func gmailActionableAsk(text string) bool {\n\treturn actionableQuestion(text)\n}' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/meeting/classify.go \
+  'return ContainsAnyPhrase(lower, interrogativeOpeners) || DirectRequest(lower)' \
+  'return true' \
+  ./internal/meeting '^TestGmailActionableAsk_StrictForEmail$'
 
 
 kill_mutant "production/containsPhrase" \
-  internal/mora/meetingbrief.go \
-  $'func containsPhrase(text, phrase string) bool {\n\tif phrase == ""' \
-  $'func containsPhrase(text, phrase string) bool {\n\treturn strings.Contains(text, phrase)\n\tif phrase == ""' \
-  ./internal/mora '^TestExamIntegrityExit$'
+  internal/evidencetext/text.go \
+  'if okBefore && okAfter {' \
+  'if true {' \
+  ./internal/evidencetext '^TestEvidenceTextHelpers$'
 
 
 kill_mutant "surface/direct-wall-clock" \
@@ -243,7 +243,7 @@ kill_mutant "flywheel/delete-governance-arm" \
   ./internal/mora '^TestExamCorrectionFlywheel$'
 
 kill_mutant "flywheel/neuter-rule-3" \
-  internal/mora/graph.go \
+  internal/graph/graph.go \
   'for _, cm := range confirmedSorted {' \
   'for _, cm := range []confirmedMerge{} {' \
   ./internal/mora '^TestExamCorrectionFlywheel$'

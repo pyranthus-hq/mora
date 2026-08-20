@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,7 +138,7 @@ func TestIngestGoogleRoutesAccountToken(t *testing.T) {
 	}
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", creds)
 
-	s := Source{Name: "gmail-work", Type: "gmail", Account: "work", Enabled: ptr(true)}
+	s := Source{Name: "gmail-work", Type: "gmail", Account: "work", Enabled: genericutil.Ptr(true)}
 	_, err = ingestGoogle(cfg, s, google.KindGmailThread, nil)
 	if err == nil {
 		t.Fatalf("expected not-connected error for missing work token")

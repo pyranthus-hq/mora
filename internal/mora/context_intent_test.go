@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestContextMemoryRoutesCurrentStateAndOpenLoopQuestions(t *testing.T) {
 	gate2PinClock(t, now)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "self@example.com",
-		Enabled: ptr(true), CreatedAt: now.Add(-24 * time.Hour).Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Add(-24 * time.Hour).Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,14 @@ func TestContextMemoryRoutesCurrentStateAndOpenLoopQuestions(t *testing.T) {
 		t.Fatal(err)
 	}
 	loopText := loops.(map[string]any)["context"].(string)
-	if !strings.Contains(loopText, "cedar review notes") || !strings.Contains(loopText, "[open; owed_by_self]") {
+	var cedarLine string
+	for _, line := range strings.Split(loopText, "\n") {
+		if strings.Contains(line, "cedar review notes") {
+			cedarLine = line
+			break
+		}
+	}
+	if !strings.Contains(cedarLine, "[open;") || !strings.Contains(cedarLine, "owed_by_self]") {
 		t.Fatalf("open-loop context missed the typed open commitment:\n%s", loopText)
 	}
 	if strings.Contains(loopText, "basalt budget") || strings.Contains(loopText, "closed-review") {
@@ -162,19 +170,5 @@ func TestContextMemoryRoutesCurrentStateAndOpenLoopQuestions(t *testing.T) {
 	alphaStateText := alphaState.(map[string]any)["context"].(string)
 	if !strings.Contains(alphaStateText, "Alpha launch path changed") || strings.Contains(alphaStateText, "Beta release request") {
 		t.Fatalf("qualified current-state question ignored Alpha:\n%s", alphaStateText)
-	}
-}
-
-func TestContextIntentDoesNotHijackOrdinaryQueries(t *testing.T) {
-	for _, query := range []string{
-		"open source search",
-		"closed captions",
-		"recently read newsletter",
-		"project Alpha",
-		"Find the email saying what do I owe",
-	} {
-		if got := contextIntentOf(query); got != contextIntentGeneric {
-			t.Fatalf("contextIntentOf(%q) = %q, want generic", query, got)
-		}
 	}
 }

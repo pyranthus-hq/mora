@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,15 +133,15 @@ func TestMigratedLatchExistsBeforeLegacyRetirement(t *testing.T) {
 	packetHSeedLegacyFlat(t, cfg, name)
 	dir := packetHFixtureDir(t, cfg, []Memory{fixtureMemory("mem_20260702_000000_cccccccc", "Clean", "trusted")})
 
-	origSync := syncDirFn
-	syncDirFn = func(dir string) error {
+	origSync := atomicio.SyncDirFn
+	atomicio.SyncDirFn = func(dir string) error {
 		if filepath.Clean(dir) == filepath.Clean(shareSubRoot(cfg, name)) {
 			return errors.New("injected latch directory-sync failure")
 		}
 		return origSync(dir)
 	}
 	_, err := importFixtureGeneration(context.Background(), cfg, shareSubscription{Name: name, Remote: "r"}, dir)
-	syncDirFn = origSync
+	atomicio.SyncDirFn = origSync
 	if err == nil || !strings.Contains(err.Error(), "migrated latch") {
 		t.Fatalf("latch directory-sync failure = %v; want surfaced migration error", err)
 	}
@@ -173,20 +174,20 @@ func TestMigratedLatchWriteIsCrashDurable(t *testing.T) {
 	dir := packetHFixtureDir(t, cfg, []Memory{fixtureMemory("mem_20260703_000000_cccccccc", "Clean", "trusted")})
 
 	var trace []string
-	origFileSync, origDirSync := markerSyncFn, syncDirFn
-	markerSyncFn = func(f *os.File) error {
+	origFileSync, origDirSync := atomicio.MarkerSyncFn, atomicio.SyncDirFn
+	atomicio.MarkerSyncFn = func(f *os.File) error {
 		if strings.HasPrefix(filepath.Base(f.Name()), ".migrated-") {
 			trace = append(trace, "latch-file-sync")
 		}
 		return origFileSync(f)
 	}
-	syncDirFn = func(dir string) error {
+	atomicio.SyncDirFn = func(dir string) error {
 		if filepath.Clean(dir) == filepath.Clean(shareSubRoot(cfg, name)) {
 			trace = append(trace, "latch-dir-sync")
 		}
 		return origDirSync(dir)
 	}
-	t.Cleanup(func() { markerSyncFn, syncDirFn = origFileSync, origDirSync })
+	t.Cleanup(func() { atomicio.MarkerSyncFn, atomicio.SyncDirFn = origFileSync, origDirSync })
 
 	if _, err := importFixtureGeneration(context.Background(), cfg, shareSubscription{Name: name, Remote: "r"}, dir); err != nil {
 		t.Fatal(err)
@@ -217,7 +218,7 @@ func TestEmptyCommitsWithLatchFailsClosed(t *testing.T) {
 	cfg := mustConfig(t)
 	name := "neil"
 	stale, torn := packetHSeedLegacyFlat(t, cfg, name)
-	if err := atomicWriteDurable(shareMigratedLatchPath(cfg, name), []byte("1\n"), 0o644); err != nil {
+	if err := atomicio.WriteDurable(shareMigratedLatchPath(cfg, name), []byte("1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.RemoveAll(shareCommitsDir(cfg, name))
@@ -414,7 +415,7 @@ func TestShareAttemptPreflightRecoversClaimDebris(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := shareAttemptPath(cfg, name) + ".claim-dead-run"
-	if err := renameReplaceWithRetry(shareAttemptPath(cfg, name), claim); err != nil {
+	if err := atomicio.RenameReplaceWithRetry(shareAttemptPath(cfg, name), claim); err != nil {
 		t.Fatal(err)
 	}
 

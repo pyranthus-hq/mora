@@ -23,9 +23,10 @@ before it creates data.
 
 | File | Responsibility |
 |---|---|
-| `internal/mora/governance.go` | The whole primitive: the ledger types, load/save/append/revoke (serialized under `acquireGovernanceLock`), the stable-atom key derivation from `Meta`, the suppression decision, and the shared lease-held write primitive `governanceWriteLease` (behind `writeUnlessForgotten`, `writeMappedMemory`, and derived attachment writes). |
+| `internal/governance` | Canonical DTOs; exact vault JSON/lease mechanics; pure source-atom extraction; suppression and derived-parent decisions; brief-line redaction, merge, Teach-memory/commitment, and eval-consent projections. It never renders or deletes Markdown and never imports Mora. |
+| `internal/mora/governance.go` | Composition adapters: stable-atom derivation from loaded memories, attachment provenance stamping, application of lower-package projections, and the lease-held Markdown write primitive used by connectors. |
 | `internal/mora/governance_cmd.go` | The CLI: `cmdForget` / `cmdUnforget` / `forget list`, the lease-held vault scan and suppression append, and the confirm/dry-run gating. |
-| `internal/mora/ingest.go` | Two lease-held guards: `writeMappedMemory` (the connector write chokepoint) holds the governance lease across its suppression check **and** its `atomicWrite`, and `ingestFilesystem` — which renders directly and bypasses `writeMappedMemory` — does the same per file via `writeUnlessForgotten` (see gotcha below). |
+| `internal/mora/ingest.go` | Two lease-held guards: `writeMappedMemory` (the connector write chokepoint) holds the governance lease across its suppression check **and** its `atomicio.Write`, and `ingestFilesystem` — which renders directly and bypasses `writeMappedMemory` — does the same per file via `writeUnlessForgotten` (see gotcha below). |
 | `internal/mora/pdf.go` | The derived-attachment path: parent provenance is stamped onto each attachment memory, and every derived write rechecks parent suppression under the governance lease. |
 
 ## The stable-atom key (why the key shape matters)
@@ -45,7 +46,7 @@ Normalization is deliberately minimal (lowercase addresses/email-shaped handles,
 
 ## The write-chokepoint guard
 
-`writeMappedMemory` (the one boundary every connector routes through) consults the ledger before persisting anything — and does so while **holding the governance lease across the check and the write** (`governanceWriteLease`), so a concurrent `mora forget` cannot commit its suppression between the check and the `atomicWrite` (the connector-path half of the #113 TOCTOU fix — see gotcha below):
+`writeMappedMemory` (the one boundary every connector routes through) consults the ledger before persisting anything — and does so while **holding the governance lease across the check and the write** (`governanceWriteLease`), so a concurrent `mora forget` cannot commit its suppression between the check and the `atomicio.Write` (the connector-path half of the #113 TOCTOU fix — see gotcha below):
 
 ```mermaid
 flowchart LR
@@ -53,7 +54,7 @@ flowchart LR
     L --> G{ledger suppresses<br/>an atom of it?}
     G -->|corrupt ledger| ERR[return error<br/>fail-closed]
     G -->|yes| SKIP[return nil<br/>never persist]
-    G -->|no| W[content-hash skip<br/>→ renderMemory → atomicWrite<br/>all under the held lease]
+    G -->|no| W[content-hash skip<br/>→ renderMemory → atomicio.Write<br/>all under the held lease]
 ```
 
 The decision (`governance.decideSuppress`, pure over `(ledger, provider, stableID, meta)`):
@@ -63,12 +64,12 @@ The decision (`governance.decideSuppress`, pure over `(ledger, provider, stableI
 
 ## Invariants & gotchas
 
-- **The primary guard cannot be bypassed by a new sync, and its check-and-write is atomic against `forget`.** It lives inside `writeMappedMemory`, so all connector call sites (gmail/imessage/applecal) are covered without per-site edits, and it holds the governance lease (`governanceWriteLease`) across the suppression check *and* the `atomicWrite`. *Why:* a suppression the sync path doesn't read is silently reverted every hour — and a suppression that commits between an *unlocked* check and the write is missed and resurrects the atom (the connector-path TOCTOU, sibling of the filesystem #113 bug). A once-per-item fresh load alone closes only the stale-snapshot variant. Holding the lease across check→write closes the check-to-write window too.
+- **The primary guard cannot be bypassed by a new sync, and its check-and-write is atomic against `forget`.** It lives inside `writeMappedMemory`, so all connector call sites (gmail/imessage/applecal) are covered without per-site edits, and it holds the governance lease (`governanceWriteLease`) across the suppression check *and* the `atomicio.Write`. *Why:* a suppression the sync path doesn't read is silently reverted every hour — and a suppression that commits between an *unlocked* check and the write is missed and resurrects the atom (the connector-path TOCTOU, sibling of the filesystem #113 bug). A once-per-item fresh load alone closes only the stale-snapshot variant. Holding the lease across check→write closes the check-to-write window too.
 - **Direct and derived write paths carry the same guard.** `ingestFilesystem` bypasses `writeMappedMemory`, so it uses `writeUnlessForgotten` per file. PDF attachment extraction stamps the parent stable id, provider, and source atoms into each derived memory, then uses the same lease-held check-and-write primitive. A parent forget therefore removes already-written children and prevents a child whose extraction raced the forget from being published. For attachment files written by a pre-#115 binary, the removal scan reconstructs the legacy `att_<hash(parent-id:path)>` relation from the child's retained source path, so an upgrade followed immediately by forget also cascades without first requiring re-ingest. The early parent check remains only an extraction-cost optimization; correctness is decided at each derived write.
 - **Forget's scan and suppression append are atomic against writers.** For an actual `--yes` operation, `cmdForget` acquires the governance lease, reloads the ledger, computes the exact removal set, and appends the suppression before releasing the lease. Connector, filesystem, or attachment writes can land before the scan and be removed, or after the suppression and be refused; none can land in between and linger.
 - **Ledger writes are serialized across processes.** `appendGovernanceEntry` / `revokeGovernanceEntry` take a crash-safe file lease (`acquireGovernanceLock`, the same primitive as the `sources.json` lease — see [15 — Concurrency contract](./15-concurrency-contract.md)) and **reload inside the lease**, so two racing `mora forget`s (or a future scheduled `prune`) can never clobber each other's entry. The `.mora-governance.json.lock` lease is a `*.lock` file, excluded by the vault `.gitignore`, so a leftover lock never rides `mora sync git`. *Why:* a dropped suppression whose files were already removed is a silent resurrection — the exact lost-update the concurrency campaign closed for `sources.json`.
 - **A corrupt ledger fails closed.** `loadGovernance` returns an error on unparseable JSON (never treats it as empty). The write path surfaces it — an item write fails, and the [honest-snapshot rule](./11-sync-and-freshness.md) means the sync does not stamp success. *Why:* silently ignoring the ledger would resurrect forgotten (possibly abusive) content — a privacy violation worse than a loud sync failure.
-- **The ledger is vault-resident and rides `mora sync git`.** `<VaultDir>/.mora-governance.json` sits beside the `.mora-vault.json` identity marker. Being a **dotfile, not `*.md`**, `rebuildIndexWithPolicy` never parses it as a memory. Being outside the vault `.gitignore` (index.db/tokens/identity*/share/), it syncs to a user's other devices, so a forget on the laptop is not undone by the desktop (#52). Written 0600 via `atomicWrite`.
+- **The ledger is vault-resident and rides `mora sync git`.** `<VaultDir>/.mora-governance.json` sits beside the `.mora-vault.json` identity marker. Being a **dotfile, not `*.md`**, `rebuildIndexWithPolicy` never parses it as a memory. Being outside the vault `.gitignore` (index.db/tokens/identity*/share/), it syncs to a user's other devices, so a forget on the laptop is not undone by the desktop (#52). Written 0600 via `atomicio.Write`.
 - **Local-only. Never touches the source.** `forget` removes the local copy and records a suppression. It issues no Gmail/Apple/Calendar write — the read-only-at-source guarantee ([AGENTS.md R3](./00-overview.md)) is intact. The CLI says so plainly.
 - **Byte-identical rebuild is preserved.** The ledger writes nothing to the index. The removal set is a deterministic (sorted) scan. The suppression decision is an order-independent OR over active entries. A rebuild with the ledger present is identical to one without it (the dotfile is skipped).
 

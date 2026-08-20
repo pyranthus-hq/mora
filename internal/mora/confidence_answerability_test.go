@@ -133,55 +133,6 @@ func TestConfidenceThinkDirectMultiSourceEvidenceCanStayStrong(t *testing.T) {
 	}
 }
 
-func TestStrictLexicalCoverageIsWholeRowAndDeterministic(t *testing.T) {
-	rows := []lexicalEvidence{
-		{Source: "gmail", Text: "Atlas beta readiness"},
-		{Source: "calendar", Text: "Readiness complete launch"},
-	}
-	query := "atlas beta readiness complete launch"
-	a := strictLexicalCoverage(query, rows)
-	b := strictLexicalCoverage(query, rows)
-	if a != b {
-		t.Fatalf("lexical coverage changed across identical calls: first=%+v second=%+v", a, b)
-	}
-	if a.FullRows != 0 || a.FullSources != 0 {
-		t.Fatalf("split terms fabricated whole-row support: %+v", a)
-	}
-}
-
-func TestConfidenceExactWordCheckUsesEveryQueryTerm(t *testing.T) {
-	query := "alpha bravo charlie delta echo foxtrot golf hotel juliet kilo lima mike november"
-	terms := confidenceQueryTerms(query)
-	if len(terms) != 13 {
-		t.Fatalf("confidenceQueryTerms returned %d terms, want all 13: %v", len(terms), terms)
-	}
-
-	firstTwelve := []lexicalEvidence{{Source: "gmail", Text: "alpha bravo charlie delta echo foxtrot golf hotel juliet kilo lima mike"}}
-	if got := strictLexicalCoverage(query, firstTwelve); got.FullRows != 0 {
-		t.Fatalf("a row missing term 13 passed the exact-word check: %+v", got)
-	}
-	allThirteen := []lexicalEvidence{{Source: "gmail", Text: query}}
-	if got := strictLexicalCoverage(query, allThirteen); got.FullRows != 1 {
-		t.Fatalf("a row containing all 13 terms failed the exact-word check: %+v", got)
-	}
-}
-
-func TestConfidenceExactWordCheckKeepsCapitalizedStopwordNames(t *testing.T) {
-	query := "Will approve launch"
-	terms := confidenceQueryTerms(query)
-	if len(terms) != 3 || terms[0] != "will" {
-		t.Fatalf("confidenceQueryTerms(%q)=%v, want capitalized Will preserved", query, terms)
-	}
-	withoutName := []lexicalEvidence{{Source: "gmail", Text: "approve launch"}}
-	if got := strictLexicalCoverage(query, withoutName); got.FullRows != 0 {
-		t.Fatalf("row missing capitalized name Will passed: %+v", got)
-	}
-	withName := []lexicalEvidence{{Source: "gmail", Text: "Will approve launch"}}
-	if got := strictLexicalCoverage(query, withName); got.FullRows != 1 {
-		t.Fatalf("row containing Will failed: %+v", got)
-	}
-}
-
 func TestConfidenceSearchCoverageUsesOnlyBudgetedReturnedRows(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")

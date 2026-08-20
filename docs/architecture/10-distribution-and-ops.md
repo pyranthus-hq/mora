@@ -8,16 +8,19 @@ boundary described in the [README](../../README.md#privacy-boundary).
 
 | File | Responsibility |
 |---|---|
-| `.goreleaser.yaml` | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, archives, checksums, cosign keyless signing, SBOM, disabled-by-default Homebrew cask upload, and a draft GitHub Release. |
+| `.goreleaser.yaml` | Release pipeline config (v2 schema): CGO-free cross-compile matrix (darwin/linux/windows), macOS signing hook, archives, checksums, cosign keyless signing, SBOM, and a draft GitHub Release. It contains no Homebrew publisher because GoReleaser cannot describe the signed app artifact. |
 | `.github/workflows/ci.yml` | PR/push gate: macOS secret-free Mora.app release-contract sabotage, gofmt, `go vet`, `go test -race`, a Windows portability job, golangci-lint, five-target build matrix, advisory size diff, and gitleaks. |
 | `.github/workflows/release.yml` | Tag-triggered (`v*`), macOS-hosted signed/notarized release workflow; it publishes only after the artifact and Tier-1 gates pass. |
-| `cmd/genicns` + `internal/appbundle` | Deterministic stdlib-only `Mora.icns` generator from the committed pixel-art SVG. |
+| `cmd/genicns` + `internal/appbundle` | Deterministic stdlib-only `Mora.icns` generator from the committed pixel-art SVG, plus the dormant signed-app Homebrew Cask renderer. |
+| `cmd/gencask` | Deterministically renders (but never publishes) a Cask from a canonical release tag and `checksums-app.txt`. It refuses `auto_updates` until #291 lands. |
 | `scripts/assemble-darwin-app.sh` | Deterministic `Mora.app` assembly from an already-signed CLI and generated icon; assembly only, no signing. |
 | `scripts/appbundle-darwin-release.sh` | Checksum-verified assembly, whole-bundle Developer ID signing, notarization, stapling, Gatekeeper validation, packaging, and final ZIP re-verification. |
 | `scripts/verify-app-zip.sh` | Fail-closed path and layout validation for app ZIP assets. |
 | `scripts/regress/app-bundle-contract.sh` | Secret-free adversarial contract for app layout, identity, seal, staple, Gatekeeper, hostile ZIPs, and release ordering. |
 | `install-app.sh` / `uninstall-app.sh` | Fail-closed macOS app install/migration and uninstall paths that preserve user data. |
-| `internal/mora/upgrade.go` | Checksum-validated, Homebrew-aware self-update, including whole-app replacement on macOS. |
+| `internal/mora/upgrade.go` | Checksum-validated, Homebrew-aware manual self-update, including whole-app replacement on macOS. |
+| `internal/mora/update_policy.go` | Context-sensitive `auto|notify|off` check policy, strict sanitized state-dir receipt, published-stable release selection, restrained checked notifications, and network-free status. |
+| `internal/update/unattended.go` | Single-host leased automatic whole-app apply: identity/health fences, signed-asset staging, same-path atomic swap, rollback, conditional one-shot schema rebuild, and typed fallback. It does not install a schedule. |
 | `cmd/mora/main.go` | Thin entrypoint that forwards linker-supplied version metadata into `internal/mora`. |
 | `install.sh` | POSIX installer; on macOS it verifies the fixed Developer ID identity and notarized-code requirement without changing quarantine or the signature. |
 | `install.ps1` | Windows installer with checksum verification and User PATH setup. |
@@ -100,13 +103,83 @@ flowchart TD
 6. **Mora.app lane.** After the raw artifacts pass their notary gate, `appbundle-darwin-release.sh` builds both branded app bundles from the same checksum-verified signed CLIs, signs each **whole bundle**, notarizes, staples, validates (stapler + codesign + Gatekeeper), and packages post-staple `_app.zip` assets with `checksums-app.txt`. The workflow then cosign-signs that manifest (keyless, like `checksums.txt`) and uploads everything to the still-draft release. The lane runs before credential cleanup (it needs the ephemeral keychain) and before publish. See [Standalone bridge, then `Mora.app`](#standalone-bridge-then-moraapp).
 7. **Draft, then publish.** GoReleaser creates a draft release. OAuth embedding, Windows archive, checksums, macOS signing/notarization, the Mora.app lane, and Tier-1 regression gates all run while it is invisible to `mora upgrade`. Only their success publishes the draft. A signing or notary failure therefore cannot become the latest installable release.
 
-## `mora upgrade` — self-update flow
+## Update policy and cached checks (issue #291, stage 1)
 
-`mora upgrade` is the in-place self-update path from the latest GitHub release.
+`mora upgrade --policy auto|notify|off` persists `update_policy` through the
+normal read-modify-write config path. With no configured value, a released
+binary whose resolved path matches `Mora.app/Contents/MacOS/mora` resolves to
+`auto`, other released binaries to `notify`, and source/git-describe builds to
+`off`. The typed reason is `mora_app_path`: path shape is not signature
+verification, and this stage makes no such identity claim. In this stage,
+`notify` remains check-and-notify only. `auto` enters the verified whole-app
+apply path described below. Interactive connector setup records the user-selected policy and installs `update-daily` for active policies; on macOS it follows the existing LaunchServices-aware Mora.app scheduling route.
+
+`mora upgrade --check` and the internal `--scheduled-check` seam list GitHub
+releases and select only public, non-draft, non-prerelease stable semver tags.
+The latter may post a macOS notification when an update is available, at most
+once per version every 72 hours. Notification execution is checked; failure is
+recorded without clearing availability. Policy `off` returns before the network
+or notifier seams. Source/dev builds default off and no stage-1 path applies an
+update.
+
+Every attempt atomically writes mode-0600
+`<StateDir>/update/status.json`. The receipt contains schema version, release
+versions, availability, timestamps, and typed error codes only. It never stores
+tokens, URLs, private paths, connector/source data, queries, or raw errors. The
+reader rejects unknown/trailing JSON, unknown error tokens, incoherent fields,
+non-canonical versions, malformed/far-future timestamps, oversized files, and
+future schemas. A future notification timestamp never suppresses a reminder.
+Writes validate first and use the crash-durable atomic file primitive. A failed
+check updates the attempt/error fields but preserves the last successful
+availability. `mora upgrade --status [--json]` reads only config plus that local
+receipt and performs no network or notification call.
+
+### Leased automatic whole-app apply
+
+`internal/update` owns the typed lease/apply/rollback state machine. `internal/mora` retains configured policy, release credentials, app primitive adapters, doctor/index composition, notification policy, and CLI/status presentation.
+
+Every scheduled `notify` or `auto` check acquires one state-dir host lease before
+network access; `off` returns before even creating the lease. `auto` mutation is
+available only on Darwin for a supported architecture and an executable with
+the frozen `Mora.app/Contents/MacOS/mora` layout. Path recognition alone grants
+nothing: `appupdate.VerifyBundle` proves the currently installed version,
+architecture, bundle ID, Developer ID team, hardened/notarized signature,
+staple, Gatekeeper result, and launch before staging and again immediately
+before swap. `doctor --strict --json` is the conservative dirty/corrupt-state
+gate at both boundaries. A live rival update lease is an active-state refusal.
+
+The apply phase re-lists releases and requires the exact canonical version found
+by the leased check. It downloads only that architecture's `_app.zip` and
+`checksums-app.txt`, enforces the existing checksum/ZIP-path trust chain, and
+runs the full bundle verifier on the staged app. The stage lives beside the
+installed app so `appupdate.AtomicSwap` preserves the exact app path and
+volume. An unwritable parent records `deferred/app_unwritable`, not a failed
+swap, and the same version is not attempted again automatically.
+
+After swap, the new bundle must verify and launch at the expected version. The
+new executable runs `index rebuild --if-needed`: it rebuilds only when its own
+schema stamp differs, and the updater invokes that forward decision exactly
+once. The newly installed executable—not the old orchestrating process—then
+runs strict health against its own schema before success. Any version/launch/signature, rebuild,
+or post-health failure swaps the old app back and verifies it; rollback failure
+preserves the recovery bundle. No path or raw error enters the receipt.
+
+The strict receipt adds canonical apply version/timestamps plus typed
+`apply_outcome`, `apply_error_code`, `rollback_outcome`, and `rebuild_outcome`.
+`in_progress` is persisted before staging, so a crash never becomes an
+unconditional success claim. Failpoints pin every pre-swap and post-swap
+ordering boundary. `mora upgrade --status [--json]` surfaces the last evidence.
+
+## `mora upgrade` — manual self-update flow
+
+Bare `mora upgrade` remains the consented in-place self-update path from the
+latest GitHub release and reuses the existing verified binary/whole-app updater.
+The policy work does not weaken or replace its checksum, signing, rollback, or
+post-upgrade rebuild gates.
 
 ```mermaid
 flowchart TD
-    start["mora upgrade [--check]"] --> dev{"BuildVersion == 'dev' or ''?"}
+    start["bare mora upgrade"] --> dev{"BuildVersion == 'dev' or ''?"}
     dev -- yes --> refuse["refuse:<br/>'this is a source build…<br/>use git pull && go build'"]
     dev -- no --> exe["os.Executable()<br/>+ EvalSymlinks → real path"]
     exe --> brew{"path contains<br/>/Cellar/ or /Caskroom/ ?"}
@@ -130,7 +203,7 @@ flowchart TD
 Key behaviors, each grounded:
 
 - **Source builds are refused** (`upgrade.go:32-35`). If `BuildVersion` is `"dev"` or empty, upgrade errors out and tells the user to `git pull && go build`. This is why the ldflags version-stamp (above) is a hard dependency of self-update.
-- **Homebrew installs defer to brew** (`upgrade.go:45-49`). After resolving symlinks (`upgrade.go:41-43`), `isHomebrewManaged` (`upgrade.go:107-110`) checks whether the *resolved* path contains `/Cellar/` or `/Caskroom/`. The symlink-resolve-first step matters: a binary that merely *sits in* `/opt/homebrew/bin` via `install.sh` is a real file there, not a Homebrew symlink, so it is **not** flagged (`upgrade.go:102-106`) and self-update proceeds normally.
+- **Install routes are classified before update** (`classifyUpgradeInstall`, `upgrade.go`). After resolving symlinks, an executable inside `Mora.app/Contents/MacOS/mora` wins the **app** route even when the path also includes Homebrew Caskroom; it uses the verified whole-app updater. A raw `/Cellar/` or legacy `/Caskroom/` binary takes the **Homebrew** route, prints `brew upgrade pyranthus-hq/tap/mora`, and never mutates itself. `dev`/local source builds take the **source** route and refuse self-update; released standalone archives retain the checksum-validated direct route. A real `install.sh` file in `/opt/homebrew/bin` is not Homebrew-managed.
 - **Token discovery** (`upgrade.go:52`). The repo is public, so no token is required. When one of `MORA_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` is set it is used (rate limits, forks of the private lineage). On detection failure with no token the error still hints `export GITHUB_TOKEN=$(gh auth token)`.
 - **Post-upgrade reindex** (`postUpgradeRebuild`). After `UpdateTo` succeeds, upgrade execs the swapped-in binary as `<exe> index rebuild` — the running process is still the old code; `indexSchemaVersion` knowledge lives in the new executable. Failure warns and prints the manual command. It never fails the upgrade (the swap already happened). Belt-and-braces with `indexAutoHeal`: static-floor vaults would self-heal at first read anyway. This hook is what spares semantic-embedder vaults the actionable error.
 - **Checksum validation before swap** (`upgrade.go:60-63`). The updater is built with `&selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"}` — the downloaded archive is verified against the release's published `checksums.txt` (the same file GoReleaser/`build-release.sh` emit) before the binary is swapped. The comment is explicit: "don't trust TLS + the GitHub API alone."
@@ -298,11 +371,28 @@ flowchart LR
 
 ---
 
+## Dormant Homebrew Cask generator
+
+`cmd/gencask` is the repository-owned, stdlib-only renderer for the future
+signed-app Cask. Given a canonical `vMAJOR.MINOR.PATCH` tag and the release's
+`checksums-app.txt`, it requires exactly the AMD64 and ARM64 post-staple
+`*_app.zip` entries and emits byte-stable Ruby. The Cask installs `Mora.app` and
+links `Contents/MacOS/mora`; it has no `xattr`, re-signing, `postflight`, or
+`zap` hook. A preflight refuses a second copy at `~/Applications/Mora.app`, and
+normal Homebrew artifact conflicts remain fail-closed.
+
+This is intentionally **generation only**. Neither GoReleaser nor the release
+workflow carries a tap token or publishes a Cask. `--auto-updates` is an
+explicit generator option, but it fails closed while `CaskAutoUpdatesReady` is
+false. Issue #291 must land and prove scheduled update/check/notification
+behavior before that gate changes. Issue #294's later post-publish job must
+also verify the release is public before it may update the tap.
+
 ## License — Apache-2.0
 
-The repository ships under **Apache-2.0**, and the GoReleaser cask metadata
-declares the same SPDX identifier. Cask upload is currently disabled with
-`skip_upload: true`; the release workflow does not publish a Homebrew cask.
+The repository ships under **Apache-2.0**. Homebrew's current Cask DSL has no
+`license` stanza, so the generated Ruby does not invent one; its homepage points
+to this repository and its committed license.
 
 ---
 
@@ -332,7 +422,7 @@ behind a blanket "zero egress" claim.
 
 3. **The archive `name_template` is a contract shared by installers and self-update.** POSIX assets use `mora_{Version}_{Os}_{Arch}.tar.gz`; Windows uses `mora_{Version}_windows_amd64.zip`. GoReleaser produces the archives, `install.sh` / `install.ps1` reconstruct the names, and `go-selfupdate` matches them. WHY: change the template in one place and self-update or install scripts silently stop finding assets. Treat the templates as frozen.
 
-4. **The binary must live at the archive root (no nested directory).** Both `build-release.sh:38` and GoReleaser's default do this. WHY: go-selfupdate and the Homebrew cask resolve `mora` at the archive root. A nested path breaks both.
+4. **The raw binary must live at the archive root (no nested directory).** Both `build-release.sh:38` and GoReleaser's default do this. WHY: legacy `go-selfupdate` resolves `mora` there. The future Cask is a separate app artifact and links `Mora.app/Contents/MacOS/mora`.
 
 5. **The ldflags version stamp gates self-update.** A build without `-X main.version` reports `dev`, and `mora upgrade` refuses dev builds (`upgrade.go:32-35`). WHY: self-update on an unversioned binary has no baseline to compare against and would loop/misfire. Releases MUST carry the stamp.
 
@@ -357,6 +447,8 @@ behind a blanket "zero egress" claim.
 15. **The raw bridge and app bundle are different update contracts.** The existing archive keeps `mora` at its root. The app asset name `mora_<version>_darwin_<arch>_app.zip` does not end in a `<os><sep><arch><ext>` suffix, so the legacy `go-selfupdate` matcher can never select it (locked by the packaging-time name guard and the contract harness's suffix sabotage), and app updates replace the whole signed bundle. WHY: an old `go-selfupdate` client otherwise selects the app archive and extracts the wrong executable, while an inner-binary-only swap invalidates the app seal.
 
 16. **The app bundle is signed, notarized, stapled, and zipped — in that order.** `appbundle-darwin-release.sh` signs the whole bundle (never only `Contents/MacOS/mora`), staples after Apple accepts, verifies the ticket file and Gatekeeper's verdict, and only then produces the published `_app.zip`. WHY: a zip cut before stapling ships an app that cannot validate offline, and an inner-binary-only signature leaves the resource seal unverified. The contract test asserts the ordering from the mock call log.
+
+17. **GoReleaser never generates or publishes the Homebrew Cask.** Its OSS Cask pipe models the raw archive, not the signed application artifact. `cmd/gencask` accepts only the two post-staple `_app.zip` checksums and currently refuses `auto_updates`. WHY: flipping a disabled raw-Cask stanza could publish an unsigned package shape or promise an updater before #291 exists.
 
 ---
 

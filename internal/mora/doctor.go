@@ -5,42 +5,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	doctorpkg "github.com/pyranthus-hq/mora/internal/doctor"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/imessage"
 )
-
-func disjointRealPaths(vault, tokenDir string) bool {
-	rv := resolveReal(vault)
-	rt := resolveReal(tokenDir)
-	return !strings.HasPrefix(rt+string(os.PathSeparator), rv+string(os.PathSeparator)) && rt != rv
-}
-
-func looksSynced(p string) bool {
-	markers := []string{"com~apple~CloudDocs", "Dropbox", "Google Drive", "OneDrive", "Sync"}
-	for _, m := range markers {
-		if strings.Contains(p, m) {
-			return true
-		}
-	}
-	return false
-}
 
 // doctorCheck is one named health probe. Critical checks gate `--strict` (and
 // the JSON report's `healthy`); non-critical ones are advisory only — notably
 // the iMessage/macOS surfaces, which "warn" off-darwin without meaning Mora is
 // broken, so a Linux regression run still reports healthy.
-type doctorCheck struct {
-	Name     string `json:"name"`
-	OK       bool   `json:"ok"`
-	Critical bool   `json:"critical"`
-}
+type doctorCheck = doctorpkg.Check
 
 // doctorReport is the machine-readable shape emitted by `mora doctor --json`,
 // designed so a release regression harness can gate on `.healthy` (and inspect
@@ -67,8 +47,9 @@ type doctorReport struct {
 	// `[]` when nothing is expected (a user who scheduled nothing is never nagged),
 	// one record per expected producer in the normal case, or one typed ledger
 	// failure matching producer_ledger_readable when the ledger cannot be read.
-	Index     indexHealth      `json:"index"`
-	Producers []producerHealth `json:"producers"`
+	Index      indexHealth         `json:"index"`
+	Producers  []producerHealth    `json:"producers"`
+	Activities []operationActivity `json:"activities"`
 }
 
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
@@ -85,6 +66,14 @@ var doctorNotifyRunner notifyRunner = osascriptRunner
 
 // sourceHealthDetailLine renders one unhealthy source's human-readable line,
 // e.g. "gmail        FAILED — last success 52h ago — database or disk is full (13)".
+func disjointRealPaths(vault, tokenDir string) bool { return doctorpkg.PathsDisjoint(vault, tokenDir) }
+func looksSynced(path string) bool                  { return doctorpkg.LooksSynced(path) }
+func doctorFailSummary(checks []doctorCheck) string { return doctorpkg.FailSummary(checks) }
+func humanizeAgo(d time.Duration) string            { return doctorpkg.HumanizeAgo(d) }
+func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
+	return doctorpkg.PrintIMessageReadiness(stdout, setupVariant, doctorpkg.IMessageSeams{GOOS: runtimeGOOS, ChatDBPath: chatDBPath, Stat: os.Stat, ProbeReadable: imessage.ProbeReadable})
+}
+
 func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
 	var status string
 	switch h.State {
@@ -123,9 +112,10 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout, stderr io.W
 	// AND producer liveness; still freshness-only in spirit (no O(vault) walk).
 	srcHealth := sourceHealthAll(cfg, now)
 	banner := healthBannerFrom(Health{
-		Sources:   srcHealth,
-		Index:     indexHealthOf(cfg, now),
-		Producers: producerHealthAll(cfg, now),
+		Sources:    srcHealth,
+		Index:      indexHealthOf(cfg, now),
+		Producers:  producerHealthAll(cfg, now),
+		Activities: operationActivities(cfg, now, operationProcessAlive),
 	})
 
 	// Phase 2 (stamp): AFTER evaluation, record that THIS pulse ran to COMPLETION —
@@ -164,15 +154,6 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout, stderr io.W
 }
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
-func doctorFailSummary(checks []doctorCheck) string {
-	var failed []string
-	for _, c := range checks {
-		if c.Critical && !c.OK {
-			failed = append(failed, c.Name)
-		}
-	}
-	return fmt.Sprintf("%d critical check(s) failed: %s", len(failed), strings.Join(failed, ", "))
-}
 
 func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -253,6 +234,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	idxH := indexHealthOf(cfg, now)
 	checks = append(checks, doctorCheck{Name: "index_fresh", OK: idxH.State == idxFresh, Critical: true})
 	checks = append(checks, doctorCheck{Name: "index_embedder", OK: idxH.Embedder.Match, Critical: true})
+	activities := operationActivities(cfg, now, operationProcessAlive)
+	for _, a := range activities {
+		ok := a.State != operationStalled && a.State != operationFailed
+		checks = append(checks, doctorCheck{Name: "operation_healthy:" + string(a.Kind) + ":" + a.RunID, OK: ok, Critical: true})
+	}
 	// ▸R per source TYPE with a corpus but no ENABLED instance: the zero-sources
 	// case is the extreme; the realistic one is disabling ONE connector and silently
 	// losing its alarm while the others keep doctor green.
@@ -335,6 +321,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Platform:           runtimeGOOS(),
 			Sources:            srcHealth,
 			Index:              idxH,
+			Activities:         activities,
 			// The typed producer arm, not PR 1's empty placeholder: with it hardcoded
 			// empty, `doctor --json` reported "producers": [] while its own
 			// producer_live:* checks were failing — the report contradicted the checks
@@ -377,6 +364,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			continue
 		}
 		fmt.Fprintf(stdout, "     %s\n", sourceHealthDetailLine(h, now))
+	}
+	for _, a := range activities {
+		fmt.Fprintf(stdout, "     operation %-13s %-9s run=%s phase=%s started=%s heartbeat=%s items=%d files=%d errors=%d\n",
+			a.Kind, a.State, a.RunID, a.Phase, a.StartedAt, a.LastHeartbeat,
+			a.Counts.Items, a.Counts.Files, a.Counts.Errors)
 	}
 	if rec, present, _ := readBlockRecord(cfg); present {
 		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — fix vault_dir in config.toml then `mora index rebuild`; `--force` only if the current vault is correct (it discards the %d indexed memories)\n",
@@ -456,91 +448,6 @@ func printGoogleAuthRecency(cfg Config, stdout io.Writer, now time.Time) {
 // humanizeAgo renders a duration as a coarse "N <unit> ago" string for the
 // doctor auth line. Sub-day durations collapse to hours/minutes so a fresh
 // reauth doesn't read as "0 days ago".
-func humanizeAgo(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		m := int(d / time.Minute)
-		return fmt.Sprintf("%d %s ago", m, plural(m, "minute"))
-	case d < 24*time.Hour:
-		h := int(d / time.Hour)
-		return fmt.Sprintf("%d %s ago", h, plural(h, "hour"))
-	default:
-		days := int(d / (24 * time.Hour))
-		return fmt.Sprintf("%d %s ago", days, plural(days, "day"))
-	}
-}
-
-// Storage budget thresholds from Neil's pilot ask: a 2-3 GB target and a 10-15 GB
-// hard ceiling. `mora doctor` reports the live footprint against these so the user
-// has the visibility he wanted; Mora never deletes or caps automatically.
-const (
-	storageTargetBytes  = 3 * (1 << 30)  // 3 GiB soft target
-	storageCeilingBytes = 15 * (1 << 30) // 15 GiB hard ceiling
-)
-
-// dirBytes returns the total size of regular files under root (recursive,
-// best-effort: a missing root and unreadable entries contribute 0).
-func dirBytes(root string) int64 {
-	var total int64
-	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if info, e := d.Info(); e == nil {
-			total += info.Size()
-		}
-		return nil
-	})
-	return total
-}
-
-// vaultStorageBytes is Mora's on-disk footprint: the human-readable vault plus
-// the SQLite index (static embeddings live inside the index DB). The DB is added
-// only when it lives OUTSIDE the vault — if data_dir is configured inside
-// vault_dir, dirBytes already walked it and adding it again would double-count.
-func vaultStorageBytes(cfg Config) int64 {
-	total := dirBytes(cfg.VaultDir)
-	db := dbPath(cfg)
-	if info, err := os.Stat(db); err == nil {
-		rv := resolveReal(cfg.VaultDir)
-		if !strings.HasPrefix(resolveReal(db), rv+string(os.PathSeparator)) {
-			total += info.Size()
-		}
-	}
-	return total
-}
-
-// storageStatus classifies a footprint: ok up to the target, warn between target
-// and ceiling, over past the ceiling.
-func storageStatus(b int64) string {
-	switch {
-	case b > storageCeilingBytes:
-		return "over"
-	case b > storageTargetBytes:
-		return "warn"
-	default:
-		return "ok"
-	}
-}
-
-// formatBytes renders a byte count as a human-readable binary unit (B, KiB, …).
-func formatBytes(n int64) string {
-	const unit = 1 << 10
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
-}
 
 // printIMessageReadiness probes and prints the three iMessage readiness checks plus
 // the Full Disk Access guidance per UI-SPEC Surface 3 (IMSG-08). The FDA signal is a
@@ -548,57 +455,3 @@ func formatBytes(n int64) string {
 // present-but-unreadable chat.db is exactly the FDA-denied case. setupVariant points
 // the recovery loop's final step all the way to data (`mora sync imessage`) when shown
 // inline during `connectors setup`. Returns true only when all three checks pass.
-func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
-	if runtimeGOOS() != "darwin" {
-		fmt.Fprintln(stdout, "warn imessage_macos")
-		fmt.Fprintf(stdout, "iMessage ingest only runs on macOS — skipping chat.db checks on %s.\n", runtimeGOOS())
-		return false
-	}
-	fmt.Fprintln(stdout, "ok   imessage_macos")
-
-	path := chatDBPath()
-	dbExists := false
-	if _, err := os.Stat(path); err == nil {
-		dbExists = true
-	}
-	if dbExists {
-		fmt.Fprintln(stdout, "ok   imessage_chat_db")
-	} else {
-		fmt.Fprintln(stdout, "warn imessage_chat_db")
-	}
-
-	readable := false
-	if dbExists {
-		readable, _ = imessage.ProbeReadable(path)
-	}
-	if readable {
-		fmt.Fprintln(stdout, "ok   imessage_full_disk_access")
-		fmt.Fprintln(stdout, "iMessage is ready to sync. Run `mora sync imessage`.")
-		return true
-	}
-
-	fmt.Fprintln(stdout, "warn imessage_full_disk_access")
-	fmt.Fprintln(stdout)
-	if !dbExists {
-		// No chat.db at all (e.g. Messages never set up). Honest about the cause.
-		fmt.Fprintln(stdout, "No Messages database found at ~/Library/Messages/chat.db.")
-		fmt.Fprintln(stdout, "Open the Messages app and sign in to iMessage, then re-run `mora doctor`.")
-		return false
-	}
-	finalStep := "  4. Re-run `mora doctor` to confirm."
-	if setupVariant {
-		finalStep = "  4. Re-run `mora doctor` to confirm, then `mora sync imessage`."
-	}
-	fmt.Fprintln(stdout, "iMessage needs Full Disk Access to read your Messages database.")
-	fmt.Fprintln(stdout, "chat.db exists but could not be read (permission denied) — Full Disk Access is not granted.")
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "To grant it:")
-	fmt.Fprintln(stdout, "  1. Open System Settings → Privacy & Security → Full Disk Access.")
-	fmt.Fprintln(stdout, "  2. Click the + button and add your terminal app (Terminal, iTerm, or your editor).")
-	fmt.Fprintln(stdout, "     If it is already listed, toggle it OFF and back ON.")
-	fmt.Fprintln(stdout, "  3. Fully quit and reopen that terminal app.")
-	fmt.Fprintln(stdout, finalStep)
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Mora only ever READS the database — it never writes to or modifies your Messages.")
-	return false
-}

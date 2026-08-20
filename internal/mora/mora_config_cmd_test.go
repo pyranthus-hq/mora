@@ -40,7 +40,7 @@ func TestContextProfileScalesBudgets(t *testing.T) {
 		if got := resolveContextBudget(cfg, 999999); got != c.wantCeiling*charsPerToken {
 			t.Errorf("profile %q: ceiling = %d tokens, want %d", c.profile, got/charsPerToken, c.wantCeiling)
 		}
-		if got := cfg.digestSnippetChars(); got != c.wantSnip {
+		if got := digestSnippetChars(cfg); got != c.wantSnip {
 			t.Errorf("profile %q: digestSnippetChars = %d, want %d", c.profile, got, c.wantSnip)
 		}
 	}

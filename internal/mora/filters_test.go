@@ -212,19 +212,6 @@ func TestBuildDigestEntityFilter(t *testing.T) {
 	}
 }
 
-func idsOf(mems []Memory) []string {
-	out := make([]string, 0, len(mems))
-	for _, m := range mems {
-		out = append(out, m.ID)
-	}
-	return out
-}
-
-func filterMem(id, scope, from, createdAt string) Memory {
-	return Memory{ID: id, Scope: scope, Type: "email", CreatedAt: createdAt,
-		Meta: map[string]any{"from": []string{from}, "to": []string{"x@y.com"}}}
-}
-
 func TestBriefOptsFiltered(t *testing.T) {
 	if (briefOpts{}).filtered() {
 		t.Error("empty opts must not be filtered")
@@ -246,131 +233,6 @@ func TestBriefOptsFiltered(t *testing.T) {
 	// P1-E: sinceHours is pulse-only and is NOT part of the brief's filtered() set.
 	if (briefOpts{sinceHours: 24}).filtered() {
 		t.Error("sinceHours must not register as filtered (pulse-only)")
-	}
-}
-
-func TestFilterByInstance(t *testing.T) {
-	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
-	in := map[string][]Memory{"gmail": {
-		filterMem("m1", "personal", "riya@a.com", "2026-06-13T00:00:00Z"),
-		filterMem("m2", "personal", "bob@z.com", "2026-06-13T00:00:00Z"),
-		filterMem("m3", "project:acme", "riya@a.com", "2026-06-13T00:00:00Z"),
-		filterMem("m4", "personal", "riya@a.com", "2026-05-01T00:00:00Z"), // 44d old
-	}}
-	riya := map[string]bool{"person:riya@a.com": true}
-
-	cases := []struct {
-		name string
-		opts briefOpts
-		want []string
-	}{
-		{"identity (empty)", briefOpts{}, []string{"m1", "m2", "m3", "m4"}},
-		{"entity", briefOpts{entityIDSet: riya}, []string{"m1", "m3", "m4"}},
-		{"scope", briefOpts{scope: "project:acme"}, []string{"m3"}},
-		{"since-days 7", briefOpts{sinceDays: 7}, []string{"m1", "m2", "m3"}},
-		{"entity AND since-days", briefOpts{entityIDSet: riya, sinceDays: 7}, []string{"m1", "m3"}},
-		{"P1-D negative since-days is a no-op", briefOpts{sinceDays: -7}, []string{"m1", "m2", "m3", "m4"}},
-	}
-	for _, c := range cases {
-		got := filterByInstance(in, c.opts, now)
-		if ids := idsOf(got["gmail"]); !reflect.DeepEqual(ids, c.want) {
-			t.Errorf("%s: got %v, want %v", c.name, ids, c.want)
-		}
-	}
-	// Never mutates input.
-	if len(in["gmail"]) != 4 {
-		t.Errorf("filterByInstance mutated its input: %d", len(in["gmail"]))
-	}
-}
-
-func TestResolveEntityID_ByDisplayName(t *testing.T) {
-	withTempHome(t)
-	run(t, "init")
-	cfg := mustConfig(t)
-	ctx := context.Background()
-	if err := writeMemory(cfg, senderEmail("t1", "neil@example.com", "Neil Patel", "x@y.com")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		t.Fatal(err)
-	}
-	canon, set, ok, amb, err := resolveEntityID(ctx, cfg, "Neil Patel")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || len(amb) != 0 {
-		t.Fatalf("ok=%v amb=%v, want a unique match", ok, amb)
-	}
-	if canon != "person:neil@example.com" {
-		t.Errorf("canonical = %q, want person:neil@example.com", canon)
-	}
-	if !set[canon] {
-		t.Errorf("idSet %v must contain the canonical id", set)
-	}
-}
-
-func TestResolveEntityID_ByAlias(t *testing.T) {
-	withTempHome(t)
-	run(t, "init")
-	cfg := mustConfig(t)
-	ctx := context.Background()
-	if err := writeMemory(cfg, senderEmail("t1", "neil@example.com", "Neil Patel", "x@y.com")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		t.Fatal(err)
-	}
-	canon, _, ok, _, err := resolveEntityID(ctx, cfg, "neil@example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || canon != "person:neil@example.com" {
-		t.Fatalf("by-alias resolve: canon=%q ok=%v, want person:neil@example.com", canon, ok)
-	}
-}
-
-func TestResolveEntityID_NoMatch(t *testing.T) {
-	withTempHome(t)
-	run(t, "init")
-	cfg := mustConfig(t)
-	ctx := context.Background()
-	if err := writeMemory(cfg, senderEmail("t1", "neil@example.com", "Neil Patel", "x@y.com")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		t.Fatal(err)
-	}
-	_, _, ok, amb, err := resolveEntityID(ctx, cfg, "Nobody Here")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || len(amb) != 0 {
-		t.Fatalf("no-match: ok=%v amb=%v, want ok=false and no ambiguity", ok, amb)
-	}
-}
-
-func TestResolveEntityID_Ambiguous(t *testing.T) {
-	withTempHome(t)
-	run(t, "init")
-	cfg := mustConfig(t)
-	ctx := context.Background()
-	// Two different single-token "Riya"s, different domains, no full-name echo => NOT
-	// merged by A3 => the display name resolves to two distinct entities.
-	if err := writeMemory(cfg, senderEmail("r1", "riya.k@alpha.com", "Riya", "x@y.com")); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeMemory(cfg, senderEmail("r2", "riya.s@beta.com", "Riya", "x@y.com")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		t.Fatal(err)
-	}
-	_, _, ok, amb, err := resolveEntityID(ctx, cfg, "Riya")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || len(amb) < 2 {
-		t.Fatalf("ambiguous: ok=%v amb=%v, want ok=false with >=2 candidates", ok, amb)
 	}
 }
 
@@ -412,64 +274,14 @@ func TestResolveEntityID_ReturnsAliasIDSet(t *testing.T) {
 // TestAliasIDSet pins the set builder: canonical id ∪ personID(alias) for every
 // ADDRESS/HANDLE alias (contains '@' or starts with '+'); plain display-name
 // aliases are excluded ("person:Alex Owner" is a dead key personRefs never emits).
-func TestAliasIDSet(t *testing.T) {
-	got := aliasIDSet("person:alex.owner+promos@gmail.com",
-		[]string{"alex.owner@gmail.com", "alexowner@gmail.com", "alex.owner+promos@gmail.com", "Alex Owner"})
-	want := map[string]bool{
-		"person:alex.owner+promos@gmail.com": true,
-		"person:alex.owner@gmail.com":        true,
-		"person:alexowner@gmail.com":         true,
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("aliasIDSet = %v, want %v", got, want)
-	}
-}
 
 // TestAliasIDSetPhoneHandleAndEmptyAliases: '+' phone handles count; display names
 // are dropped; nil aliases yield just the canonical id.
-func TestAliasIDSetPhoneHandleAndEmptyAliases(t *testing.T) {
-	got := aliasIDSet("person:+15551230000", []string{"+15551230000", "Mom"})
-	if want := map[string]bool{"person:+15551230000": true}; !reflect.DeepEqual(got, want) {
-		t.Errorf("phone handle: aliasIDSet = %v, want %v", got, want)
-	}
-	if got := aliasIDSet("person:riya@a.com", nil); !reflect.DeepEqual(got, map[string]bool{"person:riya@a.com": true}) {
-		t.Errorf("nil aliases: aliasIDSet = %v, want just the canonical id", got)
-	}
-}
 
 // TestMemoryMentionsEntity pins the P1-A fix: membership is tested against the
 // resolved alias-id SET (canonical id ∪ every address/handle alias id), NOT a
 // scalar canonical id. personRefs emits RAW pre-merge ids, so a memory that
 // references the person under a merged-away address must still match.
-func TestMemoryMentionsEntity(t *testing.T) {
-	// idSet = canonical (riya@a.com) ∪ a merged-away alias (riya@b.com).
-	idSet := map[string]bool{"person:riya@a.com": true, "person:riya@b.com": true}
-	cases := []struct {
-		name string
-		m    Memory
-		want bool
-	}{
-		{"sender", Memory{Type: "email", Meta: map[string]any{"from": []string{"riya@a.com"}, "to": []string{"x@y.com"}}}, true},
-		{"recipient", Memory{Type: "email", Meta: map[string]any{"from": []string{"x@y.com"}, "to": []string{"riya@a.com"}}}, true},
-		{"cc", Memory{Type: "email", Meta: map[string]any{"from": []string{"x@y.com"}, "cc": []string{"riya@a.com"}}}, true},
-		{"attendee", Memory{Type: "event", Meta: map[string]any{"attendees": []string{"riya@a.com"}}}, true},
-		{"participant", Memory{Type: "imessage", Meta: map[string]any{"participants": []map[string]string{{"handle": "riya@a.com", "name": "Riya"}}}}, true},
-		{"merged-away alias (P1-A bug pin)", Memory{Type: "email", Meta: map[string]any{"from": []string{"riya@b.com"}}}, true},
-		{"unrelated", Memory{Type: "email", Meta: map[string]any{"from": []string{"bob@z.com"}, "to": []string{"x@y.com"}}}, false},
-		{"empty meta", Memory{Type: "email"}, false},
-	}
-	for _, c := range cases {
-		if got := memoryMentionsEntity(c.m, idSet); got != c.want {
-			t.Errorf("%s: memoryMentionsEntity = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
 
 // TestMemoryMentionsEntityEmptySetMatchesNothing: the function itself returns
 // false for an empty set; the caller gates "no entity filter" on len(set)==0.
-func TestMemoryMentionsEntityEmptySetMatchesNothing(t *testing.T) {
-	m := Memory{Type: "email", Meta: map[string]any{"from": []string{"riya@a.com"}}}
-	if memoryMentionsEntity(m, map[string]bool{}) {
-		t.Error("empty idSet should match nothing")
-	}
-}

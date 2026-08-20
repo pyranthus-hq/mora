@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func taskTestTableCols(line string) []string {
+	raw := strings.Split(strings.Trim(line, "|"), "|")
+	out := make([]string, 0, len(raw))
+	for _, col := range raw {
+		out = append(out, strings.TrimSpace(col))
+	}
+	return out
+}
+
 // Task lifecycle (issue #19): completed work must stop resurfacing as "stale".
 // The schema is | Task | Domain | Owner | Pri | Status | Blocker | Horizon | Last touched |.
 
@@ -22,7 +31,7 @@ func liveTasksRow(t *testing.T, cfg Config, taskName string) string {
 		if !strings.HasPrefix(line, "| ") || strings.Contains(line, "Last touched") || strings.Contains(line, "---") {
 			continue
 		}
-		cols := tableCols(line)
+		cols := taskTestTableCols(line)
 		if len(cols) >= 1 && cols[0] == taskName {
 			return line
 		}
@@ -57,7 +66,7 @@ func TestTasksAddCreatesQueuedRow(t *testing.T) {
 	if row == "" {
 		t.Fatalf("expected `tasks add` to create a live-tasks row")
 	}
-	cols := tableCols(row)
+	cols := taskTestTableCols(row)
 	if cols[4] != "queued" {
 		t.Fatalf("expected new task Status=queued, got %q", cols[4])
 	}
@@ -104,7 +113,7 @@ func TestTasksAddFlagsAfterName(t *testing.T) {
 	if row == "" {
 		t.Fatalf("expected row named exactly 'Urgent reply' (flags must not be folded into the name)")
 	}
-	if cols := tableCols(row); cols[3] != "P0" {
+	if cols := taskTestTableCols(row); cols[3] != "P0" {
 		t.Fatalf("expected --pri P0 applied, got Pri=%q", cols[3])
 	}
 }
@@ -211,7 +220,7 @@ func TestTasksDoneMarksRowDone(t *testing.T) {
 	if row == "" {
 		t.Fatalf("Ship X row vanished after `tasks done` (it must be kept as the closed-record)")
 	}
-	cols := tableCols(row)
+	cols := taskTestTableCols(row)
 	if cols[4] != "done" {
 		t.Fatalf("expected Status=done, got %q (row: %s)", cols[4], row)
 	}
@@ -273,7 +282,7 @@ func TestSyncDoesNotResurrectDoneTask(t *testing.T) {
 	if n := strings.Count(string(b), "| Set up Mora |"); n != 1 {
 		t.Fatalf("expected 'Set up Mora' to appear exactly once after sync, got %d:\n%s", n, b)
 	}
-	cols := tableCols(liveTasksRow(t, cfg, "Set up Mora"))
+	cols := taskTestTableCols(liveTasksRow(t, cfg, "Set up Mora"))
 	if cols[4] != "done" {
 		t.Fatalf("sync resurrected a completed task to Status=%q", cols[4])
 	}

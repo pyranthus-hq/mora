@@ -21,20 +21,20 @@ a one-host file lease. These controls fit one machine's Mora processes.
 
 | # | Guarantee | Mechanism | Anchor |
 |---|---|---|---|
-| G1 | **No lost writes** — a write reported as saved is on disk exactly once. A same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicCreate` |
-| G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicWrite`, `atomicCreate` |
+| G1 | **No lost writes** — a write reported as saved is on disk exactly once. A same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicio.CreateExclusive` |
+| G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicio.Write`, `atomicio.CreateExclusive` |
 | G3 | **No surfaced `database is locked`** — concurrent reader *processes* never block a writer, and a contended writer waits out its rival's commit instead of erroring | `journal_mode(WAL)` on the index (readers read a snapshot, never hold a lock a writer must wait for) + `busy_timeout(15000)` on every writer and read-only DSN + `_txlock=immediate` on writers | `rwIndexDSN`, `roIndexDSN`, `rebuildIndexWithPolicy`, `indexUpsert` |
 | G4 | **Bounded eventual consistency** — the vault is the source of truth. The index converges | Tiny synchronous upsert on the write path. Serialized full rebuilds reconcile the rest | `indexUpsert`, `rebuildIndexWithPolicy` |
 
 ## 1. Per-memory atomic files
 
 The vault is the source of truth (invariant I1). Every durable write goes
-through one of two publish primitives in `internal/mora/mora.go`, and both are
-**content-atomic** — the target name only ever appears with the full body behind
+through one of two publish primitives — `atomicio.Write` (`internal/atomicio`)
+or `atomicio.CreateExclusive` (through Mora’s thin `atomicCreate` adapter) — and both are **content-atomic** — the target name only ever appears with the full body behind
 it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
 `digest`, `meetingprep`, share) never observes a partial file.
 
-- **`atomicWrite(path, body, mode)`** — the general persistence primitive
+- **`atomicio.Write(path, body, mode)`** — the general persistence primitive
   (updates, connector re-writes, status files, watermarks, `sources.json`,
   control files). It stages through a **unique** temp (`os.CreateTemp(dir,
   "."+base+"-*.tmp")`, never a fixed `<path>.tmp` — a fixed name once let two
@@ -45,12 +45,12 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
   - Windows wrinkle: `os.Rename` → `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`;
     concurrent writers racing onto the SAME target transiently fail with sharing
     violations, so the rename retries with **jittered**, capped backoff up to a
-    5 s deadline (`renameReplaceWithRetry`/`renameReplaceRetryable`. Always a
+    5 s deadline (`atomicio.RenameReplaceWithRetry`/`renameReplaceRetryable`. Always a
     single attempt off Windows). Deterministic backoff made 16 goroutines retry
     in lockstep and keep colliding — the jitter is load-bearing (#73/#74).
 
-- **`atomicCreate(path, body, mode)`** — the **create-exclusive** primitive for
-  brand-new authored memories. Unlike `atomicWrite`, it MUST NOT clobber: it
+- **`atomicio.CreateExclusive(path, body, mode, …)`** — the **create-exclusive** primitive behind Mora’s `atomicCreate` adapter for
+  brand-new authored memories. Unlike `atomicio.Write`, it MUST NOT clobber: it
   stages a unique temp and `os.Link`s it onto the target. `os.Link` is both
   create-exclusive (fails `os.ErrExist` on a present target, never replaces) and
   content-atomic, so a racing second writer gets `EEXIST` — exactly one wins.
@@ -59,7 +59,7 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
   `MoveFileEx` retry because it never replaces).
   - Fallback: some filesystems (exFAT/FAT32, some SMB/NFS) refuse hard links
     (`EPERM`/`ENOTSUP`, never `EEXIST`). Since `vault_dir` is user-configurable,
-    `atomicCreate` preserves the no-clobber guarantee there via
+    `atomicio.CreateExclusive` preserves the no-clobber guarantee there via
     `os.OpenFile(O_CREATE|O_EXCL)` to claim the path, then renames its temp onto
     its **own** claimed placeholder. Documented tradeoff: only on this branch can
     a concurrent reader briefly observe an EMPTY placeholder — which every
@@ -72,7 +72,7 @@ it, so a concurrent reader (`rebuildIndex`, `findMemory`, `listMemories`,
 Authored ids are minted by `newID`: `mem_<yyyymmdd_hhmmss>_<8 hex>` — a
 **second-granularity** timestamp plus 4 `crypto/rand` bytes. Two authored writes
 in the same second can therefore mint the same id and thus the same
-`memoryPath`. Under the old `atomicWrite` publish, the second writer's
+`memoryPath`. Under the old `atomicio.Write` publish, the second writer's
 `os.Rename` would replace the first's file: both callers report success, but one
 memory is silently lost.
 
@@ -80,7 +80,7 @@ memory is silently lost.
 `write_memory`):
 
 1. mint an id (`newIDFn`, a test seam over `newID`),
-2. render, `atomicCreate` it,
+2. render, publish it through `atomicio.CreateExclusive`,
 3. on `os.ErrExist` (a real id collision), **re-mint and retry**, bounded by
    `maxCreateAttempts` (8) — a liveness backstop, since each retry draws fresh
    entropy so exhausting it is astronomically improbable.
@@ -93,7 +93,7 @@ Two correctness details reinforce it:
   stall the re-mint loop.
 - Only **new** authored memories use `createMemory`. Updates and connector
   re-writes deliberately keep `writeMemory`/`writeMappedMemory` →
-  `atomicWrite`, because re-rendering an existing memory onto its own **stable**
+  `atomicio.Write`, because re-rendering an existing memory onto its own **stable**
   path is a correct idempotent overwrite, not a collision.
 
 The re-mint-on-collision mechanism itself is pinned by `createexclusive_test.go`,
@@ -133,7 +133,7 @@ constant-factor win — ~59× at ~1k memories — not asymptotic. The per-write
   blocked by ours.
 - **Identity guard.** `indexUpsert` runs the SAME validate-before-commit
   vault-identity guard as `rebuildIndex` (`assessRebuild`, `vaultid.go`): a write
-  against a vault whose `.mora-vault.json` marker does not match the index rolls
+  against a vault whose `internal/index`-owned `.mora-vault.json` marker does not match the index rolls
   back and returns `errRebuildBlocked` **without touching the index**, so callers
   keep degraded-success semantics (CLI: warn + exit 0; MCP: `index_stale`
   warning, never `isError`) — failing a write that already landed on disk would
@@ -162,7 +162,7 @@ transaction**:
   snapshot. (A memory written AFTER the surviving rebuild's listing is ordinary
   until-next-reconcile staleness — see §6 — not this race.) This is the P1 fix.
 - **One transaction for the whole rebuild** (schema, DELETEs, `memories`+FTS,
-  `writeGraph`, `writeVectors`) so a mid-rebuild failure rolls back to the prior
+  Mora’s graph compile + `graphstore.Write(tx, result)`, `writeVectors`) so a mid-rebuild failure rolls back to the prior
   committed index rather than leaving a half-empty one.
 
 Interaction with the write path: a full rebuild can never drop a committed
@@ -175,35 +175,34 @@ lock is held at listing time) and the G4 assertion in the contract stress test.
 ## 5. The `sources.json` lease
 
 `sources.json` (the consent/source registry in `ConfigDir`) is the one piece of
-state mutated by a **read-modify-write**, not a single write. `atomicWrite`
+state mutated by a **read-modify-write**, not a single write. `atomicio.Write`
 makes each `saveSources` durable and temp-collision-free, but two callers each
 doing `loadSources → mutate → saveSources` still race: the last rename wins and
 silently drops the other's mutation (a lost enable bit, deny-list, or persisted
 window). A manual `mora sources ...` racing the scheduled `ingest-hourly` sync is
 exactly this shape.
 
-`mutateSources`/`acquireSourcesLock` (`internal/mora/sources_lock.go`, the P3
-fix) close it with a short-lived, crash-safe **cross-process file lease** held
+`internal/registry.SourceStore.Mutate` (the P3
+fix) closes it with a short-lived, crash-safe **cross-process file lease** held
 around the WHOLE read-modify-write — and, crucially, it **reloads inside the
 lease**, so a concurrent writer's committed change is always observed, never
 clobbered. Every `load → mutate → save` on `sources.json` MUST go through it;
 `saveSources` is called directly only while already holding the lease.
 
-The lease reuses `loop.go`'s proven primitives — `publishLockFile`'s
-`os.Link`-atomic publish, TTL/corrupt reap (`sourcesLockTTL` = 30 s, far longer
-than any legitimate microsecond hold), guarded compare/remove `breakLock`, and a
-jittered, capped acquire backoff (same #74 rationale as §1: fixed backoff makes
-rivals retry in lockstep on Windows). It is a single-host, single-user lease —
-which is exactly the concurrency model. Pinned by `sources_lock_test.go`.
+The store uses `internal/leasefile`'s guarded publish, TTL/corrupt reap
+(`registry.SourceLockTTL` = 30 s, far longer than any legitimate microsecond
+hold), compare-and-remove release, and a jittered capped acquire backoff (same
+#74 rationale as §1: fixed backoff makes rivals retry in lockstep on Windows). It is a single-host, single-user lease —
+which is exactly the concurrency model. Pinned by `internal/registry/source_store_test.go`.
 
 ### Wait budgets: every lock loop is bounded by wall-clock time
 
-Four loops wait on a contended `.lock`: `acquireSourcesLock`
-(`sources_lock.go`), `acquireGovernanceLock` (`governance.go`),
-`acquireProducerLock` (`producer_lock.go`), and the release-side
+Four loops wait on a contended `.lock`: `internal/registry.SourceStore.Acquire`, `governance.Store.Acquire` (`internal/governance/store.go`, adapted by Mora),
+`internal/health.ProducerStore.Acquire`, and the release-side
 `removeLeaseFileGuarded` (`loop.go`). Each is bounded by a **stated wall-clock
-deadline**, checked through the shared `sleepWithinDeadline` helper, which
-refuses a pause that would run past the deadline (so a loop never overshoots its
+deadline** and performs the same before-and-after-sleep check (`sleepWithinDeadline`
+in Mora; the equivalent injected-clock checks in `registry.SourceStore` and `health.ProducerStore`), which refuses a
+pause that would run past the deadline (so a loop never overshoots its
 budget by a backoff draw, and a just-reaped lease's immediate retry is still
 deadline-checked). The deadline is always real `time.Now()` — never a caller's
 injected logical `now`, which governs only TTL and stamp decisions.
@@ -213,9 +212,9 @@ convenience:
 
 | Loop | Constant | Budget | Why |
 |---|---|---|---|
-| `acquireSourcesLock` | `sourcesAcquireTimeout` | 2 s | A registry RMW must WAIT out a holder that releases in microseconds; the margin is for Windows sharing-violation retries. |
-| `acquireGovernanceLock` | `governanceAcquireTimeout` | 2 s | Same shape, but contended by every item of an hourly sync (the lease spans check→write in `writeMappedMemory`), so it must be tunable on its own. |
-| `acquireProducerLock` | `producerAcquireTimeout` | 2 s | Same shape; a best-effort ledger stamp on the tail of a real job. |
+| `registry.SourceStore.Acquire` | `registry.SourceAcquireTimeout` | 2 s | A registry RMW must WAIT out a holder that releases in microseconds; the margin is for Windows sharing-violation retries. |
+| `governance.Store.Acquire` | `governance.AcquireTimeout` | 2 s | Same shape, but contended by every item of an hourly sync (the lease spans check→write in `writeMappedMemory`), so it must be tunable on its own. |
+| `health.ProducerStore.Acquire` | `health.ProducerAcquireTimeout` | 2 s | Same shape; a best-effort ledger stamp on the tail of a real job. |
 | `removeLeaseFileGuarded` | `leaseRemovalTimeout` | 500 ms | **Deliberately shorter.** Removal runs at shutdown and *inside* the lease guard on the reap path, where every waiting acquirer is blocked behind it; the window it covers is one rival's in-flight `os.Link`/`os.ReadFile`. |
 
 Two rules this encodes. **Removal is not acquisition** — a release path must
@@ -241,6 +240,25 @@ ignores them. Failure to create the one deterministic guard fails closed.
 > Scope note: `shares.json` (the share grant registry) has the same RMW shape
 > and is not yet routed through a lease. It is out of scope here and gated by the
 > share subsystem's separate security review.
+
+## 5a. Operation activity owner fences
+
+Operation receipts use the same persistent OS-backed guard domain as file leases
+but deliberately do not reuse loop cadence or period-idempotency. Begin publishes
+a unique run id; heartbeat and finish re-read the record under the guard and must
+match kind, run id, and owner pid before replacement. A reused PID therefore does
+not acquire an abandoned run, and an expired heartbeat becomes `stalled` even if
+the PID happens to exist. Health readers take no lock that mutates state and never
+reap receipts.
+
+Ingest publishes its receipt and journal header before provider dispatch and
+releases only that source's lease, not every lease sharing the process PID (two
+in-process sources may run concurrently). A successful ingest remains
+`awaiting_rebuild`; the rebuild may complete it cross-process only with the run id
+from a journal it has actually retired. Rebuild itself heartbeats across every
+expensive phase. Its SQLite commit and StateDir cleanup cannot be one filesystem
+transaction, so cleanup failure is an explicit partial result: keep the committed
+DB, retain dirty evidence, return nonzero, and terminal-fail the rebuild receipt.
 
 ## 6. The eventual-consistency window of the index
 
@@ -348,7 +366,7 @@ beside `BenchmarkIndexUpsert1k` (flip-condition: >2× regression).
   removal retry).
 
 See also: [data model & storage](./01-data-model-and-storage.md) (memory file
-anatomy, `atomicWrite`, the vault-identity guard), [MCP server](./06-mcp-server.md)
+anatomy, `atomicio.Write`, the vault-identity guard), [MCP server](./06-mcp-server.md)
 (the write_memory/read/search tool surface), [index health](./20-index-health.md)
 (Gate 2 pending-ops ledger), and [sync &
 freshness](./11-sync-and-freshness.md) (honest-snapshot sync, the scheduled

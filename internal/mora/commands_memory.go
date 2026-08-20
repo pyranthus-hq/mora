@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"strconv"
@@ -39,7 +40,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
-	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: splitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
+	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
 	if m.Type == "decision" {
 		m.Decision = decisionValidityFromFlags(m.CreatedAt, *asOf, *durability, *flip, *reviewBy)
 	} else if *asOf != "" || *durability != "" || *flip != "" || *reviewBy != "" {
@@ -48,7 +49,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	// Create-exclusive publish: a colliding newID can never clobber an existing
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
-	m, op, err := createMemory(ctx, cfg, m)
+	m, _, err = createMemory(ctx, cfg, m)
 	if err != nil {
 		return err
 	}
@@ -73,7 +74,13 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		return err
 	}
-	_ = unmarkIndexDirty(cfg, op.OpID) // the committed upsert covers this write
+	// Keep the marker until the elected full reconciliation has committed: indexUpsert
+	// makes FTS immediately visible, but only rebuildIndex can make graph, vectors,
+	// and commitments byte-identical to the vault. The warning is a diagnostic and
+	// rides stderr so it can never share stdout with the --json receipt (CON-02).
+	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
+		fmt.Fprintf(stderr, "warning: memory saved and text search updated, but full index reconciliation is pending: %v\n", err)
+	}
 	if *jsonOut {
 		return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, true))
 	}
@@ -174,7 +181,7 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	return emit(stdout, items, false)
 }
 func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) >= 1 && isHelpFlag(args[0]) {
+	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
 		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--limit N] [--json]")
 		return nil
 	}
@@ -357,7 +364,7 @@ func printThink(w io.Writer, res ThinkResult) {
 	for _, e := range res.Evidence {
 		fmt.Fprintf(w, "  [%s] %s — %s\n", e.StableID, e.Title, e.Snippet)
 	}
-	if res.Gaps.empty() {
+	if res.Gaps.Empty() {
 		fmt.Fprintln(w, "\nGaps: none detected.")
 	} else {
 		fmt.Fprintln(w, "\nWhat the vault does NOT know:")

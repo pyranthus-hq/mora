@@ -1,5 +1,15 @@
 {
-  "entities": [],
+  "entities": [
+    {
+      "count": 2,
+      "kind": "scope",
+      "memory_ids": [
+        "\u003cid\u003e",
+        "\u003cid\u003e"
+      ],
+      "name": "global"
+    }
+  ],
   "schema": "mora.entities",
   "schema_version": 1
 }

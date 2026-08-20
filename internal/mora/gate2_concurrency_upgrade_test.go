@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,7 +45,7 @@ func TestUpgradePreservesState(t *testing.T) {
 		t.Fatalf("vault marker missing: %v", err)
 	}
 	if err := saveSources(cfg, []Source{
-		{Name: "gmail", Type: "gmail", Enabled: ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "gmail", Type: "gmail", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +181,7 @@ func TestFDALossNeverStampsSuccess(t *testing.T) {
 	})
 	runtimeGOOS = func() string { return "darwin" }
 
-	src := Source{Name: "im", Type: "imessage", Enabled: ptr(true), CreatedAt: nowRFC3339()}
+	src := Source{Name: "im", Type: "imessage", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()}
 	if err := saveSources(cfg, []Source{src}); err != nil {
 		t.Fatal(err)
 	}

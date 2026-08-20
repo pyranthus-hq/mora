@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -243,13 +244,13 @@ func ledgerQuoteCases(l exam.Ledger) []ledgerQuoteCase {
 
 func renderLedgerQuote(span exam.Span) (string, error) {
 	if span.MessageID == "" {
-		return truncateRunes(stripNoiseTokens(oneLine(span.Quote)), 360), nil
+		return genericutil.TruncateRunes(stripNoiseTokens(oneLine(span.Quote)), 360), nil
 	}
 	segments := meetingBriefEvidenceSegments(senderAuthoredBody(span.Quote))
 	if len(segments) != 1 {
 		return "", fmt.Errorf("split into %d segments: %q", len(segments), segments)
 	}
-	return truncateRunes(stripNoiseTokens(stripSpeakerPrefix(segments[0])), 360), nil
+	return genericutil.TruncateRunes(stripNoiseTokens(stripSpeakerPrefix(segments[0])), 360), nil
 }
 
 func TestExamCorpusNoRealIdentities(t *testing.T) {
@@ -348,7 +349,7 @@ func seedExamHomeFromRoot(t *testing.T, root string) (Config, examEventFixture, 
 	if len(ledger.Self.Emails) == 0 {
 		t.Fatal("exam ledger self identity has no email")
 	}
-	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Email: ledger.Self.Emails[0], Enabled: ptr(true), CreatedAt: "2026-07-01T00:00:00Z"}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Email: ledger.Self.Emails[0], Enabled: genericutil.Ptr(true), CreatedAt: "2026-07-01T00:00:00Z"}}); err != nil {
 		t.Fatal(err)
 	}
 	src := filepath.Join(root, "vault")

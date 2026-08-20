@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"strings"
@@ -143,7 +144,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 		// pipes, the Plan-04 non-TTY menu path) — there we just flip the bit and
 		// hint the user to authorize separately. Token reuse on re-enable.
 		if _, err := google.LoadToken(googleTokenPath(cfg)); err != nil {
-			if isInteractive(stdin) {
+			if genericutil.IsInteractive(stdin) {
 				printGoogleAuthPreamble(stdout)
 				oc, err := google.ResolveOAuthConfig(google.Scopes)
 				if err != nil {
@@ -197,7 +198,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 	if ctype == "imessage" {
 		// No-auth path: the real gate is Full Disk Access, not a login (Surface 1).
 		okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
-		fmt.Fprintln(stdout, "Next: grant Full Disk Access, then pull data with `mora sync imessage`.")
+		fmt.Fprintln(stdout, "Next: grant Full Disk Access once to ~/Applications/Mora.app, then run `mora sync imessage` from any host app.")
 		fmt.Fprintln(stdout, "Check readiness anytime with `mora doctor`.")
 		if runtimeGOOS() != "darwin" {
 			fmt.Fprintf(stderr, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
@@ -292,6 +293,12 @@ func renderSetupState(cfg Config, w io.Writer) {
 	fmt.Fprintln(w, "  2. Wire Mora into your agent, once →  mora mcp serve")
 	fmt.Fprintf(w, "%s\n", sty.dim("     Claude Code:  claude mcp add mora -s user -- mora mcp serve"))
 	fmt.Fprintf(w, "%s\n", sty.dim("     Codex:        codex mcp add mora -- mora mcp serve"))
+	fmt.Fprintf(w, "\n%s\n", sty.accent("Use Mora with your agent"))
+	fmt.Fprintln(w, "  Mora is your local evidence store; your agent is the conversational interface.")
+	fmt.Fprintln(w, "  First question: \"what did Sam and I decide about the launch?\"")
+	fmt.Fprintln(w, "  For dates, ask: \"what's on my calendar next week?\"")
+	fmt.Fprintln(w, "  Reading/searching only retrieves local evidence. Saving a durable memory requires explicit write_memory consent or a deliberate CLI write action.")
+	fmt.Fprintln(w, "  You can disable a connector or delete a saved memory at any time.")
 }
 
 // applySetupSelection is the pure, TTY-free consequential half of the setup menu
@@ -338,6 +345,8 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stde
 
 	// The Apocrypha eye — shown once at the top of interactive setup (TTY only).
 	printBanner(stdout)
+	fmt.Fprintln(stdout, "Mora reads only the connectors you select, stores evidence locally, and never writes back to those sources.")
+	fmt.Fprintln(stdout, "Each connector has separate consent: Gmail/Google Calendar use read-only access; iMessage and Apple Calendar use local Full Disk Access; files and GitHub use only the paths or repositories you choose.")
 
 	catalog := connectorCatalogForGOOS(runtimeGOOS())
 	options := make([]huh.Option[string], 0, len(catalog))
@@ -368,6 +377,39 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stde
 	}
 
 	imessageSelected := containsType(selected, "imessage")
+
+	// Update policy is explicit consent for the product's GitHub-release egress.
+	// App installs default to verified automatic apply; released CLI installs
+	// default to notification; source builds resolve to off.
+	resolvedPolicy := resolveUpdatePolicy(cfg)
+	selectedPolicy := string(resolvedPolicy.Policy)
+	policyForm := huh.NewForm(
+		huh.NewGroup(huh.NewSelect[string]().
+			Title("How should Mora keep itself updated?").
+			Description("Automatic updates verify and replace only signed Mora.app. Notify checks daily but waits for your approval. Off makes no update checks.").
+			Options(
+				huh.NewOption("Automatic updates (recommended for Mora.app)", string(updatePolicyAuto)),
+				huh.NewOption("Notify only", string(updatePolicyNotify)),
+				huh.NewOption("Off", string(updatePolicyOff)),
+			).
+			Value(&selectedPolicy)),
+	).WithInput(stdin).WithOutput(stdout)
+	if err := policyForm.Run(); err != nil {
+		return err
+	}
+	policy, err := parseUpdatePolicy(selectedPolicy)
+	if err != nil {
+		return err
+	}
+	cfg.UpdatePolicy = string(policy)
+	if err := writeConfig(cfg); err != nil {
+		return err
+	}
+	if policy != updatePolicyOff {
+		if err := installSchedule(stdout, cfg, "update-daily"); err != nil {
+			return fmt.Errorf("install update-daily schedule: %w", err)
+		}
+	}
 
 	// Canonical guided order (UI-SPEC §B): multi-select → (if iMessage) readiness →
 	// Google detect-and-skip → deny-list → backfill confirm → enable → backfill.
@@ -408,7 +450,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stde
 		denyContacts = parseCSVList(contactsStr)
 		denyConvos = parseCSVList(convosStr)
 		if len(denyContacts) == 0 && len(denyConvos) == 0 {
-			fmt.Fprintln(stdout, "Deny-list: none — all contacts and conversations will be ingested (within the 90-day lookback).")
+			fmt.Fprintln(stdout, "Deny-list: none — all contacts and conversations will be ingested (within the 365-day lookback).")
 		} else {
 			fmt.Fprintln(stdout, "Deny-list saved:")
 			fmt.Fprintf(stdout, "  contacts:      %s\n", strings.Join(denyContacts, ", "))

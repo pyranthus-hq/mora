@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,8 +35,8 @@ func TestCoreA_SetSourceHelpers(t *testing.T) {
 	}
 	// Seed a two-account google registry.
 	seed := []Source{
-		{Name: "gmail", Type: "gmail", Scope: "personal", Account: "", Enabled: ptr(false), CreatedAt: nowRFC3339()},
-		{Name: "calendar", Type: "calendar", Scope: "personal", Account: "", Enabled: ptr(false), CreatedAt: nowRFC3339()},
+		{Name: "gmail", Type: "gmail", Scope: "personal", Account: "", Enabled: genericutil.Ptr(false), CreatedAt: nowRFC3339()},
+		{Name: "calendar", Type: "calendar", Scope: "personal", Account: "", Enabled: genericutil.Ptr(false), CreatedAt: nowRFC3339()},
 	}
 	if err := saveSources(cfg, seed); err != nil {
 		t.Fatal(err)
@@ -482,7 +483,7 @@ func TestCoreA_CmdIngest(t *testing.T) {
 
 	// A named DISABLED source errors before any ingest.
 	cfg := mustConfig(t)
-	if err := saveSources(cfg, []Source{{Name: "off", Type: "filesystem", Scope: "personal", Enabled: ptr(false), CreatedAt: nowRFC3339()}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "off", Type: "filesystem", Scope: "personal", Enabled: genericutil.Ptr(false), CreatedAt: nowRFC3339()}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runErr(t, "ingest", "run", "--source", "off"); err == nil {
@@ -499,8 +500,8 @@ func TestCoreA_CmdIngest(t *testing.T) {
 		return 2, nil
 	}
 	if err := saveSources(cfg, []Source{
-		{Name: "boom", Type: "filesystem", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
-		{Name: "ok", Type: "filesystem", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "boom", Type: "filesystem", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "ok", Type: "filesystem", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -623,8 +624,8 @@ func TestCoreA_CmdReingest(t *testing.T) {
 	// lookback switch + resumable-failure aggregation.
 	cfg := mustConfig(t)
 	if err := saveSources(cfg, []Source{
-		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
-		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
+		{Name: "imessage", Type: "imessage", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},
 	}); err != nil {
 		t.Fatal(err)
 	}

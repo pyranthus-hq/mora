@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	embedpkg "github.com/pyranthus-hq/mora/internal/embed"
+	graphpkg "github.com/pyranthus-hq/mora/internal/graph"
+	"github.com/pyranthus-hq/mora/internal/graphstore"
+	indexstore "github.com/pyranthus-hq/mora/internal/index"
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -56,6 +59,7 @@ func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "emit JSON")
 	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")
+	ifNeeded := fs.Bool("if-needed", false, "rebuild only when this binary's index schema differs")
 	if perr := fs.Parse(flagsFirst(args)); perr != nil {
 		return newMoraError(errCodeUsageUnknownFlag, "usage", perr, "%v", perr)
 	}
@@ -74,19 +78,31 @@ func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 			State:      indexHealthOf(cfg, indexClock()).State,
 		})
 	}
-	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" {
-		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "usage: mora index rebuild [--force]")
+	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" || (*force && *ifNeeded) {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "usage: mora index rebuild [--force | --if-needed]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	// index-hourly producer chokepoint (HEALTH-11): stamp the rebuild's own outcome.
-	stampOutput := stdout
+	// Diagnostics never share stdout with a --json receipt (CON-02).
+	diagOutput := stdout
 	if *jsonOut {
-		stampOutput = stderr
+		diagOutput = stderr
 	}
-	defer stampChokepoint(cfg, stampOutput, args, "index-hourly", producerClock(), &err)
+	if *ifNeeded {
+		current, err := indexSchemaMatches(ctx, cfg)
+		if err == nil && current {
+			fmt.Fprintln(diagOutput, "index schema current; rebuild not needed")
+			return nil
+		}
+	}
+	// index-hourly producer chokepoint (HEALTH-11): stamp the rebuild's own outcome.
+	// The updater's --if-needed probe owns its outcome in the update receipt; it
+	// must not masquerade as the scheduled index-hourly producer.
+	if !*ifNeeded {
+		defer stampChokepoint(cfg, diagOutput, args, "index-hourly", producerClock(), &err)
+	}
 	policy := policyEnforce
 	if *force {
 		policy = policyAllow
@@ -117,54 +133,17 @@ func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	fmt.Fprintf(stdout, "indexed %d memories\n", count)
 	return nil
 }
-func dbPath(cfg Config) string { return filepath.Join(cfg.DataDir, "index.db") }
-
-// roIndexDSN is the DSN every read-only index open uses. journal_mode(WAL) is the
-// load-bearing setting for MULTI-PROCESS safety: with N long-lived `mora mcp serve`
-// reader processes (one per agent session), the default rollback journal makes a
-// writer's EXCLUSIVE lock wait for every reader's SHARED lock, so a rebuild/write
-// blows past busy_timeout and surfaces "database is locked". In WAL, readers read
-// the last committed snapshot and are never blocked by an in-flight rebuild, and the
-// single writer proceeds concurrently. busy_timeout(15000) still covers the brief
-// windows a writer holds the WAL write lock or a checkpoint runs — and stops
-// openIndexRO from misreading a transient SQLITE_BUSY as a stale schema and firing a
-// spurious rebuild; humanizeIndexBusy gives an actionable message if a read still
-// outlasts it. (TestReadOnlyIndexWaitsOnWriteLock pins the wait; TestIndexIsWAL pins
-// the mode.)
-//
-// Note: with modernc.org/sqlite, mode=ro on a non-"file:" DSN is parsed out but NOT
-// enforced (connections open read-write) — which is exactly why a "read-only" open
-// can still create the -wal/-shm sidecars WAL requires, so there is no read-only-WAL
-// breakage here.
-func roIndexDSN(cfg Config) string {
-	return dbPath(cfg) + "?mode=ro&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)"
+func dbPath(cfg Config) string { return indexstore.Path(cfg) }
+func indexSchemaMatches(ctx context.Context, cfg Config) (bool, error) {
+	return indexstore.SchemaMatches(ctx, cfg, indexSchemaVersion)
+}
+func roIndexDSN(cfg Config) string      { return indexstore.ReadOnlyDSN(cfg) }
+func rwIndexDSN(cfg Config) string      { return indexstore.ReadWriteDSN(cfg) }
+func checkIndexSchema(db *sql.DB) error { return indexstore.CheckSchema(db, indexSchemaVersion) }
+func indexUpsertSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
+	return indexstore.UpsertSchemaComplete(ctx, db)
 }
 
-// rwIndexDSN is the DSN every WRITER of the live index (full rebuild + incremental
-// upsert) uses. Two pragmas carry the concurrency contract:
-//   - _txlock=immediate grabs the writer lock at BeginTx (not lazily mid-tx), so
-//     two concurrent rebuilds serialize instead of both starting and one hitting an
-//     un-retryable SQLITE_BUSY inside an open transaction.
-//   - journal_mode(WAL) is what lets N long-lived `mora mcp serve` READER processes
-//     coexist with a writer. In the default rollback journal a writer's EXCLUSIVE
-//     lock is incompatible with every reader's SHARED lock, so under real
-//     multi-process load (each agent session holds one mcp serve) a write waits for
-//     ALL readers, blows past busy_timeout, and surfaces "database is locked". In
-//     WAL readers and the single writer never block each other. WAL persists in the
-//     db header, so the first open of THIS or the RO DSN converts a legacy
-//     delete-mode index in place; thereafter the pragma is a no-op. modernc opens
-//     even mode=ro connections read-write, so a reader can create the -wal/-shm
-//     sidecars — there is no read-only-WAL breakage here.
-func rwIndexDSN(cfg Config) string {
-	return dbPath(cfg) + "?_txlock=immediate&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)"
-}
-
-// openIndexRO opens the index read-only, refusing to serve a schema this
-// binary doesn't understand (a swapped binary otherwise reads missing columns
-// or zeroed salience silently). A stale index self-heals inline when
-// indexAutoHeal allows; otherwise the error names the exact fix, and
-// `mora upgrade` runs the rebuild at the moment the user consented to a slow
-// step.
 func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
@@ -191,57 +170,30 @@ func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	}
 	return db, nil
 }
-func checkIndexSchema(db *sql.DB) error {
-	var v int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
-		return err
-	}
-	if v != indexSchemaVersion {
-		return fmt.Errorf("the search index was built by a different mora version (index schema v%d, this binary expects v%d) — run `mora index rebuild`", v, indexSchemaVersion)
-	}
-	return nil
-}
-
-// indexUpsertSchemaComplete is the physical readiness probe for the
-// incremental-write boundary. It deliberately verifies the union of D and E's
-// schema changes: the legacy readiness contract already required memories,
-// memories_fts, and index_meta; v5 adds D's three memories columns and E's
-// three segment tables. Version fencing still protects ordinary read opens.
-func indexUpsertSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
-		 ('memories','memories_fts','index_meta','gmail_segments','gmail_segments_fts','gmail_segment_diagnostics')`).Scan(&n); err != nil {
-		return false, err
-	}
-	if n != 6 {
-		return false, nil
-	}
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(memories)`)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	columns := map[string]bool{}
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var name, typ string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
-			return false, err
-		}
-		columns[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	return columns["provider"] && columns["account"] && columns["created_at_unix"], nil
-}
-
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
 }
 func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolicy) (count int, err error) {
+	activity, err := beginOperation(cfg, operationKindIndexRebuild, "preparing", operationClock())
+	if err != nil {
+		return 0, fmt.Errorf("starting index rebuild activity: %w", err)
+	}
+	progress := startOperationProgress(cfg, activity, "preparing")
+	activityCompleted := false
+	committed := false
+	defer func() {
+		if activityCompleted {
+			return
+		}
+		progressErr := progress.Stop()
+		err = errors.Join(err, progressErr)
+		code := "rebuild_failed"
+		if committed {
+			code = "post_commit_cleanup_failed"
+		}
+		finishErr := finishOperation(cfg, activity, operationFailed, "failed", operationCounts{Items: count, Errors: 1}, code, operationClock())
+		err = errors.Join(err, finishErr)
+	}()
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return 0, err
 	}
@@ -251,8 +203,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// deferred tx.Rollback below). Its own op is cleared by the covering commit
 	// (rule a: marked_at <= listing_started_at). A no-op on a cold-start index
 	// (indexReadyForUpsert==false): the state is already `never`, worse than dirty.
-	selfOp, _ := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild})
-	_ = selfOp
+	if _, markErr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild}); markErr != nil {
+		return 0, fmt.Errorf("marking index rebuild dirty: %w", markErr)
+	}
 	// On ANY failed return, best-effort stamp the reason in a separate tx (after the
 	// writer lock below is released — this defer is registered first, so LIFO runs
 	// it last). The pending op is deliberately NOT cleared on failure.
@@ -269,6 +222,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// errEmbedderUnavailable and this HARD-FAILS: the self-op above stays (index reads
 	// dirty), the previous vectors are untouched (no tx was ever opened), and NOTHING
 	// is silently re-embedded with the static fallback (the recorded incident).
+	if err := progress.Update("choosing_embedder", operationCounts{}); err != nil {
+		return 0, err
+	}
 	emb, err := chooseEmbedderFor(cfg)
 	if err != nil {
 		return 0, err
@@ -278,6 +234,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// would otherwise both start, then one hits SQLITE_BUSY on the first write and
 	// cannot retry inside an open tx. The 15s busy_timeout matches the RO DSN so a
 	// rebuild waits out a contending writer rather than failing fast.
+	if err := progress.Update("opening_index", operationCounts{}); err != nil {
+		return 0, err
+	}
 	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
 	if err != nil {
 		return 0, err
@@ -308,6 +267,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// Snapshot the wall clock the instant BEFORE listing (A3): a pending op whose
 	// marked_at is at or before this instant is demonstrably covered by this
 	// rebuild's listing; one marked AFTER it raced in and is NOT cleared here.
+	if err := progress.Update("listing", operationCounts{}); err != nil {
+		return 0, err
+	}
 	listingStartedAt := indexClock()
 	files, err := listRebuildFiles(cfg)
 	if err != nil {
@@ -442,6 +404,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// the parse uses (parseMemoryBytes) — zero extra I/O. An unreadable file is
 	// skipped here and counts toward `unparseable` (listed − parsed) below.
 	var manifestLines []string
+	if err := progress.Update("parsing", operationCounts{Files: len(files)}); err != nil {
+		return 0, err
+	}
 	for _, path := range files {
 		b, rerr := os.ReadFile(path)
 		if rerr != nil {
@@ -496,6 +461,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// transaction — a graph failure rolls back the whole index too (atomic). cfg
 	// carries the vault dir so the graph can apply the governance ledger's confirmed
 	// cross-channel merges (a corrupt ledger fails the rebuild loud, never silently).
+	if err := progress.Update("graph", operationCounts{Items: count, Files: len(files)}); err != nil {
+		return count, err
+	}
 	if err := writeGraph(ctx, tx, cfg, parsed); err != nil {
 		return count, err
 	}
@@ -505,6 +473,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// `embedder = "ollama"` opt-in indexes semantic vectors the query path will match,
 	// and a mid-rebuild daemon death now surfaces as a real error from Embed (rolling
 	// this whole tx back) instead of committing zero vectors.
+	if err := progress.Update("vectors", operationCounts{Items: count, Files: len(files)}); err != nil {
+		return count, err
+	}
 	if err := writeVectors(ctx, tx, emb, live); err != nil {
 		return count, err
 	}
@@ -513,6 +484,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// and vectors. Their generation also binds the injected rebuild instant and
 	// source-health snapshot because state_uncertain is a material input: two
 	// different health snapshots must never share one generation id.
+	if err := progress.Update("commitments", operationCounts{Items: count, Files: len(files)}); err != nil {
+		return count, err
+	}
 	stampNow := indexClock().UTC()
 	commitmentGeneration := commitmentGenerationOf(manifestLines, cfg, stampNow)
 	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg, stampNow); err != nil {
@@ -593,9 +567,13 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, effID); err != nil {
 		return count, err
 	}
+	if err := progress.Update("committing", operationCounts{Items: count, Files: len(files)}); err != nil {
+		return count, err
+	}
 	if err := tx.Commit(); err != nil {
 		return count, err
 	}
+	committed = true
 	// A full rebuild reinserts the entire index into the WAL in one transaction, so
 	// the -wal file is now ~db-sized. Fold it back into index.db and reset the -wal
 	// to keep it from staying huge between the periodic auto-checkpoints. Best-effort:
@@ -604,11 +582,26 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	_, _ = db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 	_ = clearBlockRecord(cfg) // best-effort: a stale block record must not fail a good rebuild
 
-	// A3 — retire the pending ops this committed rebuild demonstrably covered, and
-	// truncate the ingest journal lines whose file it listed. Best-effort: a failed
-	// removal only leaves a false-dirty the next rebuild clears (never a false-clean).
-	clearCoveredPendingOps(cfg, listingStartedAt, files, memoryPaths(parsed))
-	recoverIngestJournals(cfg, files)
+	// A3 — terminal success is forbidden until every covered pending marker and
+	// journal actually retires. The database commit above is preserved on cleanup
+	// failure, but the command returns a visible partial failure and its activity is
+	// terminal `failed`, never a false `completed`.
+	if err := progress.Update("retiring_markers", operationCounts{Items: count, Files: len(files)}); err != nil {
+		return count, err
+	}
+	if err := clearCoveredPendingOps(cfg, listingStartedAt, files, memoryPaths(parsed)); err != nil {
+		return count, fmt.Errorf("index committed but pending-marker retirement failed: %w", err)
+	}
+	recovery, recoveryErr := ingestpkg.RecoverJournals(cfg, files, ingestRecoverySeams())
+	var completionErr error
+	for _, runID := range recovery.RetiredRunIDs {
+		if err := completeOperationAfterCoverage(cfg, runID, operationClock()); err != nil {
+			completionErr = errors.Join(completionErr, fmt.Errorf("completing covered ingest %s: %w", runID, err))
+		}
+	}
+	if err := errors.Join(recoveryErr, completionErr); err != nil {
+		return count, fmt.Errorf("index committed but ingest-journal retirement failed: %w", err)
+	}
 
 	// B5 — refresh vault/index.md from the SAME stamp written into index_meta, so
 	// the page buildContext injects into every context payload cannot disagree with
@@ -617,6 +610,16 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if werr := writeWikiIndex(cfg, count, stampNowText); werr != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not refresh vault/index.md: %v\n", werr)
 	}
+	if err := progress.Update("finalizing", operationCounts{Items: count, Files: len(files)}); err != nil {
+		return count, err
+	}
+	if err := progress.Stop(); err != nil {
+		return count, err
+	}
+	if err := finishOperation(cfg, activity, operationCompleted, "completed", operationCounts{Items: count, Files: len(files)}, "", operationClock()); err != nil {
+		return count, err
+	}
+	activityCompleted = true
 	return count, nil
 }
 
@@ -625,61 +628,20 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 // timestamps persist as SQL NULL. Statements are prepared once and reused — a
 // real vault is ~10^5 edges, so per-row SQL re-parsing dominated the rebuild.
 func writeGraph(ctx context.Context, tx *sql.Tx, cfg Config, mems []Memory) error {
-	// Resolve the confirm-queue's confirmed cross-channel merges (RULE 3). An absent
-	// ledger is the common case (no confirms); a corrupt one fails loud so a rebuild
-	// can never silently drop a user's confirmed unification.
 	g, err := loadGovernance(cfg)
 	if err != nil {
 		return err
 	}
 	confirmed, _ := g.mergeDecisions()
-	res := buildGraphResult(mems, confirmed)
-	ents, edges, warnings := res.entities, res.edges, res.warnings
-	for _, w := range warnings {
-		fmt.Fprintln(os.Stderr, w)
+	merges := make([]graphpkg.ConfirmedMerge, len(confirmed))
+	for i, m := range confirmed {
+		merges[i] = graphpkg.ConfirmedMerge{A: m.A, B: m.B, GovID: m.GovID}
 	}
-	entStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO entities (id, kind, display_name, aliases, mention_count, first_seen, last_seen, salience_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return err
+	result := graphpkg.Build(mems, merges)
+	for _, warning := range result.Warnings {
+		fmt.Fprintln(os.Stderr, warning)
 	}
-	defer entStmt.Close()
-	for _, e := range ents {
-		aliases := e.Aliases
-		if aliases == nil {
-			aliases = []string{}
-		}
-		aj, err := json.Marshal(aliases)
-		if err != nil {
-			return err
-		}
-		if _, err := entStmt.ExecContext(ctx, e.ID, e.Kind, e.DisplayName, string(aj), e.MentionCount, nullStr(e.FirstSeen), nullStr(e.LastSeen), e.Salience); err != nil {
-			return err
-		}
-	}
-	edgeStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO edges (src, rel, dst, evidence_id, valid_from, valid_to, observed_at, invalidated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer edgeStmt.Close()
-	for _, ed := range edges {
-		if _, err := edgeStmt.ExecContext(ctx, ed.Src, ed.Rel, ed.Dst, ed.EvidenceID, nullStr(ed.ValidFrom), nullStr(ed.ObservedAt), nullStr(ed.InvalidatedAt)); err != nil {
-			return err
-		}
-	}
-	// Merge provenance (P13): one row per applied fusion, so "why is X the same as Y"
-	// is durable and auditable (feeds the trust model). Deterministic, so it keeps the
-	// rebuild byte-identical for a fixed vault + ledger.
-	mergeStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO person_merges (member_a, member_b, signal, detail) VALUES (?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer mergeStmt.Close()
-	for _, m := range res.merges {
-		if _, err := mergeStmt.ExecContext(ctx, m.A, m.B, m.Signal, m.Detail); err != nil {
-			return err
-		}
-	}
-	return nil
+	return graphstore.Write(ctx, tx, result)
 }
 
 // writeVectors embeds each memory (title + body) and inserts its vector on the
@@ -711,9 +673,4 @@ func writeVectors(ctx context.Context, tx *sql.Tx, emb Embedder, mems []Memory) 
 // embedderDigestOf extracts the semantic model digest an embedder carries (D3),
 // via an optional Digest() method so the Embedder interface stays minimal. The
 // static floor has no digest and returns "".
-func embedderDigestOf(emb Embedder) string {
-	if d, ok := emb.(interface{ Digest() string }); ok {
-		return d.Digest()
-	}
-	return ""
-}
+func embedderDigestOf(emb Embedder) string { return embedpkg.DigestOf(emb) }

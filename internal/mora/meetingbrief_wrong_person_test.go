@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func TestSelfEmailsIncludesConfiguredAliases(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting(t *testing.T) {
 
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation(t *testing.T) {
 
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +263,7 @@ func TestMeetingBriefExcludesSelfFromEventSelfEmail(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +308,7 @@ func TestMeetingBriefGapsWhenSelfIsNotAmongAttendees(t *testing.T) {
 	// seen, and the event predates the connector's self_email capture.
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}

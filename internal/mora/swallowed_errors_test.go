@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -221,7 +222,7 @@ func TestNamedSourceIngestRebuildsDespitePartialFailure(t *testing.T) {
 	if err := writeMemory(cfg, Memory{ID: "fresh1", Scope: "global", Type: "insight", Title: "Fresh", Text: "alphapartialtoken"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveSources(cfg, []Source{{Name: "docs", Type: "filesystem", Path: t.TempDir(), Scope: "global", Enabled: ptr(true), CreatedAt: "2026-06-11T00:00:00Z"}}); err != nil {
+	if err := saveSources(cfg, []Source{{Name: "docs", Type: "filesystem", Path: t.TempDir(), Scope: "global", Enabled: genericutil.Ptr(true), CreatedAt: "2026-06-11T00:00:00Z"}}); err != nil {
 		t.Fatal(err)
 	}
 	prev := ingestSourceFn

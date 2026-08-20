@@ -16,197 +16,70 @@ package mora
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	sharingpkg "github.com/pyranthus-hq/mora/internal/sharing"
 )
 
-// shareGenSeqWidth zero-pads commit sequence numbers so lexical max == numeric
-// max in a plain directory listing (e.g. "0000000006").
-const shareGenSeqWidth = 10
+const (
+	shareGenSeqWidth = sharingpkg.GenSeqWidth
+	shareGenRetain   = sharingpkg.GenRetain
+)
 
-// shareGenRetain is how many superseded generations GC keeps for in-flight
-// readers before reclaiming older ones (K).
-const shareGenRetain = 3
-
-// shareImportTTL is the import lease's abandonment bound — the fifth threshold
-// family (Landmine 13). Generous (10 min vs sourcesLockTTL's 30s) because a real
-// decrypt+rebuild of a large share can dominate, so a live-but-slow import must
-// not be spuriously reaped. Overridable in tests to force reap windows.
+// shareImportTTL is the import lease abandonment bound; orchestration owns it.
 var shareImportTTL = 10 * time.Minute
 
-// shareCommit is one published generation's commit record, linked atomically
-// into commits/<seq>. It binds BOTH served artifacts (the corpus the read path
-// serves and the index.db the search path serves) to this generation.
-type shareCommit struct {
-	Seq          int    `json:"seq"`
-	Gen          string `json:"gen"`                    // "gen-<run_id>" — the generation dir this seq publishes
-	RunID        string `json:"run_id"`                 // == the import lease run_id that committed it
-	SourceRev    string `json:"source_rev"`             // the immutable input this gen was built from (git tip sha or bucket version)
-	BucketFloor  int    `json:"bucket_floor,omitempty"` // monotonic replay floor inherited by every derivative commit
-	BuiltAt      string `json:"built_at"`               // RFC3339 — the sub's freshness clock
-	CorpusDigest string `json:"corpus_digest"`          // sha256 over sorted "<hex>  <relpath>" lines of this gen's frozen corpus
-	IndexDigest  string `json:"index_digest"`           // sha256 of the checkpointed+closed index.db file
-	Count        int    `json:"count"`
-}
+type shareCommit = sharingpkg.Commit
 
-// ---- layout paths (all under one subscription root, one filesystem) ----
-
-func shareGensDir(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "gens")
+func shareGenerationStore(cfg Config) sharingpkg.GenerationStore {
+	return sharingpkg.GenerationStore{DataDir: cfg.DataDir}
 }
+func shareGensDir(cfg Config, name string) string { return shareGenerationStore(cfg).GensDir(name) }
 func shareGenDir(cfg Config, name, gen string) string {
-	return filepath.Join(shareGensDir(cfg, name), gen)
+	return shareGenerationStore(cfg).GenDir(name, gen)
 }
 func shareGenCorpusDir(cfg Config, name, gen string) string {
-	return filepath.Join(shareGenDir(cfg, name, gen), "corpus")
+	return shareGenerationStore(cfg).CorpusDir(name, gen)
 }
 func shareGenIndexPath(cfg Config, name, gen string) string {
-	return filepath.Join(shareGenDir(cfg, name, gen), "index.db")
+	return shareGenerationStore(cfg).IndexPath(name, gen)
 }
 func shareCommitsDir(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "commits")
+	return shareGenerationStore(cfg).CommitsDir(name)
 }
 func shareCommitPath(cfg Config, name string, seq int) string {
-	return filepath.Join(shareCommitsDir(cfg, name), fmt.Sprintf("%0*d", shareGenSeqWidth, seq))
+	return shareGenerationStore(cfg).CommitPath(name, seq)
 }
 func shareAttemptPath(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "attempt.json")
+	return shareGenerationStore(cfg).AttemptPath(name)
 }
 func shareImportLockPath(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "import.lock")
+	return shareGenerationStore(cfg).ImportLockPath(name)
 }
 func shareMigratedLatchPath(cfg Config, name string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "migrated")
+	return shareGenerationStore(cfg).MigratedLatchPath(name)
 }
 func shareFetchDir(cfg Config, name, runID string) string {
-	return filepath.Join(shareSubRoot(cfg, name), "fetch-"+runID)
+	return shareGenerationStore(cfg).FetchDir(name, runID)
 }
-func genRunID(gen string) string { return strings.TrimPrefix(gen, "gen-") }
-
-// ---- resolver: serving resolves the highest committed generation ----
-
-// resolvePublishedCommit lists commits/, picks the maximum seq, and returns its
-// shareCommit. ok=false when commits/ is empty or absent (fail-closed: nothing
-// resolves). An unreadable commits/ dir or an unreadable/corrupt max-seq record
-// is an ERROR (fail closed — the sourceHealthUnreadable pattern), never a
-// silent healthy-empty. This reads a directory listing, never a mutable
-// pointer, so a reader can never observe an "absent pointer" served as healthy.
+func genRunID(gen string) string { return sharingpkg.RunID(gen) }
 func resolvePublishedCommit(cfg Config, name string) (shareCommit, bool, error) {
-	dir := shareCommitsDir(cfg, name)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return shareCommit{}, false, nil
-		}
-		return shareCommit{}, false, err
-	}
-	maxSeq := -1
-	var maxName string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		n, perr := strconv.Atoi(strings.TrimSpace(e.Name()))
-		if perr != nil {
-			continue // ignore non-numeric debris (e.g. an O_EXCL placeholder mid-claim)
-		}
-		if n > maxSeq {
-			maxSeq, maxName = n, e.Name()
-		}
-	}
-	if maxSeq < 0 {
-		return shareCommit{}, false, nil
-	}
-	b, err := os.ReadFile(filepath.Join(dir, maxName))
-	if err != nil {
-		return shareCommit{}, false, err
-	}
-	var c shareCommit
-	if err := json.Unmarshal(b, &c); err != nil {
-		return shareCommit{}, false, fmt.Errorf("share %q: commit record %s is corrupt: %w", name, maxName, err)
-	}
-	return c, true, nil
+	return shareGenerationStore(cfg).Resolve(name)
 }
-
-// readAllCommits reads every parseable commit record (used by the claim loop and
-// GC). Non-numeric or unparseable entries are skipped for the seq scan; a truly
-// unreadable directory is an error.
 func readAllCommits(cfg Config, name string) ([]shareCommit, error) {
-	dir := shareCommitsDir(cfg, name)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var out []shareCommit
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if _, perr := strconv.Atoi(strings.TrimSpace(e.Name())); perr != nil {
-			continue
-		}
-		b, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
-		if rerr != nil {
-			return nil, rerr
-		}
-		var c shareCommit
-		if json.Unmarshal(b, &c) != nil {
-			// A briefly-unreadable placeholder (O_EXCL claim mid-fallback) — skip
-			// it for the seq scan; the resolver treats it as not-yet-committed.
-			continue
-		}
-		out = append(out, c)
-	}
-	return out, nil
+	return shareGenerationStore(cfg).ReadAll(name)
 }
-
-// ---- digests ----
-
-// corpusDigestOf hashes a generation's frozen corpus into its committed content
-// identity: sha256 over the sorted "<hex>  <relpath>" lines, relpath being the
-// bare "<id>.md" file name (the corpus dir is flat). Mirrors manifestDigestOf.
-func corpusDigestOf(corpusDir string) (string, error) {
-	entries, err := os.ReadDir(corpusDir)
-	if err != nil {
-		return "", err
-	}
-	var lines []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		b, rerr := os.ReadFile(filepath.Join(corpusDir, e.Name()))
-		if rerr != nil {
-			return "", rerr
-		}
-		sum := sha256.Sum256(b)
-		lines = append(lines, hex.EncodeToString(sum[:])+"  "+e.Name())
-	}
-	return manifestDigestOf(lines), nil
-}
-
-// fileDigestOf returns the sha256 of a whole file (the index.db integrity stamp).
-func fileDigestOf(path string) (string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), nil
-}
+func corpusDigestOf(corpusDir string) (string, error) { return sharingpkg.CorpusDigest(corpusDir) }
+func fileDigestOf(path string) (string, error)        { return sharingpkg.FileDigest(path) }
 
 // ---- generation build (crash-durable ordering) ----
 
@@ -355,14 +228,14 @@ var testHookPreCommitClaim func()
 // the commits directory entry is durable. Production always uses syncDir; the
 // row-51d mutation is deleting the call at the publish site, not replacing this
 // seam.
-var shareCommitSyncDirFn = syncDir
+var shareCommitSyncDirFn = atomicio.SyncDir
 
 // shareAdmitFn is an optional per-write byte admitter: it rejects a corpus write
 // that would push the whole-product footprint over the configured limit.
 type shareAdmitFn func(nextBytes int64) error
 
 // buildShareGenerationFromEntries writes a new immutable generation (durable
-// corpus → index → syncDir(gen) → syncDir(gens)) from an already-decrypted,
+// corpus → index → atomicio.SyncDir(gen) → atomicio.SyncDir(gens)) from an already-decrypted,
 // validated entry set and returns the frozen digests. It never touches a
 // published generation; nothing observes the generation until the commit link.
 func buildShareGenerationFromEntries(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry) (corpusDigest, indexDigest string, err error) {
@@ -388,7 +261,7 @@ func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen stri
 				return "", "", aerr
 			}
 		}
-		if werr := atomicWriteDurable(dst, entries[i].body, 0o644); werr != nil {
+		if werr := atomicio.WriteDurable(dst, entries[i].body, 0o644); werr != nil {
 			return "", "", werr
 		}
 		mems[i] = entries[i].mem
@@ -426,10 +299,10 @@ func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen stri
 	}
 	// Both the generation's own entries and its dir entry in the parent gens/
 	// must be durable before the gen can be referenced by a commit record.
-	if err := syncDir(shareGenDir(cfg, name, gen)); err != nil {
+	if err := atomicio.SyncDir(shareGenDir(cfg, name, gen)); err != nil {
 		return "", "", err
 	}
-	if err := syncDir(shareGensDir(cfg, name)); err != nil {
+	if err := atomicio.SyncDir(shareGensDir(cfg, name)); err != nil {
 		return "", "", err
 	}
 	return corpusDigest, indexDigest, nil
@@ -444,27 +317,9 @@ var errRollback = errors.New("bucket share: replayed version is below the commit
 // replace-rename fallback on hardlink-unsupported volumes). Returns os.ErrExist
 // when someone already claimed dest. Exactly one claimant wins.
 func claimExclusiveDurable(temp, dest string) error {
-	err := linkPublish(temp, dest)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, os.ErrExist) {
-		return err
-	}
-	if !linkUnsupported(err) {
-		return err
-	}
-	// Fallback: claim dest with an O_CREATE|O_EXCL placeholder, then rename our
-	// own already-fsynced temp over that placeholder. The placeholder is briefly
-	// unreadable JSON, which the resolver classifies not-committed and skips.
-	claim, cerr := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if cerr != nil {
-		return cerr // EEXIST wraps os.ErrExist here too
-	}
-	if closeErr := claim.Close(); closeErr != nil {
-		return errors.Join(closeErr, os.Remove(dest))
-	}
-	return renameReplaceWithRetry(temp, dest)
+	return atomicio.ClaimExclusiveDurable(temp, dest, atomicio.ClaimOptions{
+		Link: linkPublish, Unsupported: linkUnsupported,
+	})
 }
 
 // shareCommitParams carries everything the claim loop needs to construct and
@@ -577,7 +432,7 @@ func publishShareGeneration(cfg Config, p shareCommitParams) (int, error) {
 		if errors.Is(claimErr, os.ErrExist) {
 			continue // someone claimed this seq; re-verify ownership at the top
 		}
-		if sharingViolationRetryable(claimErr) {
+		if atomicio.SharingViolationRetryable(claimErr) {
 			continue
 		}
 		return 0, claimErr

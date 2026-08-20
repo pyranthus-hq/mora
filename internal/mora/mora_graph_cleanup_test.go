@@ -317,45 +317,8 @@ func TestA1RecipientLabelDoesNotMisclassify(t *testing.T) {
 // TestA2FanoutPreservesSender proves the fan-out cap retains the sender even when
 // more than maxParticipantFanout recipients sort before it — the sender keeps its
 // edge and its trusted alias.
-func TestA2FanoutPreservesSender(t *testing.T) {
-	// Sender id "person:zzz-sender@x.com" sorts AFTER all the "p###@x.com" recipients.
-	var to []string
-	for i := 0; i < maxParticipantFanout+20; i++ {
-		to = append(to, fmt.Sprintf("p%03d@x.com", i))
-	}
-	m := Memory{
-		ID: "gmail_thread/big", Type: "email", Title: "blast", CreatedAt: "2026-05-01T00:00:00Z",
-		Meta: map[string]any{
-			"from":  []any{"zzz-sender@x.com"},
-			"to":    toAnySlice(to),
-			"names": map[string]any{"zzz-sender@x.com": "Zed Sender"},
-		},
-	}
-	ents, edges, warnings := buildGraph([]Memory{m})
-	if len(warnings) == 0 {
-		t.Fatal("expected a fan-out cap warning")
-	}
-	if !hasEdgeSlice(edges, "memory:gmail_thread/big", "PARTICIPATED_IN", "person:zzz-sender@x.com") {
-		t.Fatal("sender was capped away — fan-out must retain self-presenters")
-	}
-	for _, e := range ents {
-		if e.ID == "person:zzz-sender@x.com" {
-			if !contains(e.Aliases, "Zed Sender") {
-				t.Errorf("sender aliases = %v, want trusted self-presented name", e.Aliases)
-			}
-		}
-	}
-}
 
 // hasEdgeSlice reports whether any edge with the given src/rel/dst exists.
-func hasEdgeSlice(edges []graphEdge, src, rel, dst string) bool {
-	for _, e := range edges {
-		if e.Src == src && e.Rel == rel && e.Dst == dst {
-			return true
-		}
-	}
-	return false
-}
 
 // TestA1GetEntityServiceConsistency proves get_entity reports kind="service" for a
 // service entity (consistent with list_entities), not the legacy "person" prefix.

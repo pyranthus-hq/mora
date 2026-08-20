@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,7 +205,7 @@ func TestCoreB_McpHandleInitialize(t *testing.T) {
 	}
 }
 
-// TestCoreB_McpHandleToolsList covers the tools/list arm: exactly the 12 tools we
+// TestCoreB_McpHandleToolsList covers the tools/list arm: exactly the 13 tools we
 // publish, each a JSON-Schema object with the required properties.
 func TestCoreB_McpHandleToolsList(t *testing.T) {
 	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(2), Method: "tools/list"})
@@ -216,14 +217,14 @@ func TestCoreB_McpHandleToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("tools must be a slice of maps, got %T", res["tools"])
 	}
-	if len(tools) != 12 {
-		t.Fatalf("expected 12 published tools, got %d", len(tools))
+	if len(tools) != 13 {
+		t.Fatalf("expected 13 published tools, got %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl["name"].(string)] = true
 	}
-	for _, want := range []string{"write_memory", "read_memory", "search_memory", "list_memory",
+	for _, want := range []string{"write_memory", "read_memory", "search_memory", "calendar_events", "list_memory",
 		"delete_memory", "context_memory", "think", "list_entities", "get_entity", "digest", "brief", "meeting_prep"} {
 		if !names[want] {
 			t.Fatalf("tools/list is missing %q; got %v", want, names)
@@ -768,7 +769,7 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	pinPrepClock(t, now)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@a.com",
-		Enabled: ptr(true), CreatedAt: now.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatalf("save self source: %v", err)
 	}
@@ -790,7 +791,7 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	if brief.Event == nil || brief.Event.Title != "Acme sync" {
 		t.Fatalf("meeting_prep must resolve the Acme sync event, got %+v", brief.Event)
 	}
-	if err := brief.validate(); err != nil {
+	if err := brief.Validate(); err != nil {
 		t.Fatalf("meeting_prep must be fully cited: %v", err)
 	}
 }
@@ -889,7 +890,7 @@ func TestCoreB_McpCallMeetingPrep(t *testing.T) {
 	if mp.Event != nil {
 		t.Fatalf("expected a nil event with no calendar connected, got %+v", mp.Event)
 	}
-	if err := mp.validate(); err != nil {
+	if err := mp.Validate(); err != nil {
 		t.Fatalf("nil-event shape must remain valid: %v", err)
 	}
 }

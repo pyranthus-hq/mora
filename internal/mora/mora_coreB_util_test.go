@@ -1,12 +1,9 @@
 package mora
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -101,31 +98,6 @@ func TestCoreB_UtilSourceFreshlySynced(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// expandHome — only a leading "~/" is expanded.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilExpandHome(t *testing.T) {
-	withTempHome(t)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := expandHome("~/x/y"); got != filepath.Join(home, "x", "y") {
-		t.Fatalf("expandHome(~/x/y) = %q, want %q", got, filepath.Join(home, "x", "y"))
-	}
-	if got := expandHome("~/x/y"); !strings.HasPrefix(got, home) {
-		t.Fatalf("expanded path %q must be rooted at HOME %q", got, home)
-	}
-	// Unchanged: absolute, relative, bare ~, and ~user (no "~/" prefix).
-	for _, p := range []string{"/abs/path", "rel/path", "~", "~otheruser", "./x", "a~/b"} {
-		if got := expandHome(p); got != p {
-			t.Errorf("expandHome(%q) = %q, want unchanged", p, got)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // parseSearchArgs — every flag/error branch.
 // ---------------------------------------------------------------------------
 
@@ -178,99 +150,8 @@ func TestCoreB_UtilParseSearchArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// atomicWrite — content + mode + MkdirAll-fail branch.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilAtomicWrite(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "deep", "f.txt")
-	body := []byte("hello atomic\n")
-	if err := atomicWrite(path, body, 0o640); err != nil {
-		t.Fatalf("atomicWrite: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, body) {
-		t.Fatalf("content = %q, want %q", got, body)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertPermUnix(t, info.Mode(), 0o640)
-
-	// MkdirAll-fail: make the parent a regular FILE, then write to file/child.
-	fileAsDir := filepath.Join(dir, "iamafile")
-	if err := os.WriteFile(fileAsDir, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWrite(filepath.Join(fileAsDir, "child.txt"), []byte("no"), 0o644); err == nil {
-		t.Fatal("atomicWrite into a path whose parent is a file must error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// appendFile — appends, creates parent, MkdirAll-fail branch.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilAppendFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sub", "log.jsonl")
-	if err := appendFile(path, "line-a\n"); err != nil {
-		t.Fatalf("appendFile 1: %v", err)
-	}
-	if err := appendFile(path, "line-b\n"); err != nil {
-		t.Fatalf("appendFile 2: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "line-a\nline-b\n" {
-		t.Fatalf("appended content = %q, want two concatenated lines", got)
-	}
-
-	// MkdirAll-fail: parent is a file.
-	fileAsDir := filepath.Join(dir, "afile")
-	if err := os.WriteFile(fileAsDir, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := appendFile(filepath.Join(fileAsDir, "child.log"), "z\n"); err == nil {
-		t.Fatal("appendFile whose parent is a file must error")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // queryLoggingEnabled — env + marker gates.
 // ---------------------------------------------------------------------------
-
-func TestCoreB_UtilQueryLoggingEnabled(t *testing.T) {
-	cfg := testCfg(t)
-	t.Setenv("MORA_LOG_QUERIES", "")
-
-	if queryLoggingEnabled(cfg) {
-		t.Fatal("query logging must default OFF")
-	}
-
-	t.Setenv("MORA_LOG_QUERIES", "1")
-	if !queryLoggingEnabled(cfg) {
-		t.Fatal("MORA_LOG_QUERIES=1 must enable query logging")
-	}
-	t.Setenv("MORA_LOG_QUERIES", "")
-
-	// Marker file also enables it.
-	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "usage"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cfg.StateDir, "usage", "QUERIES"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !queryLoggingEnabled(cfg) {
-		t.Fatal("usage/QUERIES marker must enable query logging")
-	}
-}
 
 func coreBUtilReadEvent(t *testing.T, cfg Config) usageEvent {
 	t.Helper()
@@ -457,136 +338,8 @@ func TestCoreB_UtilEmitDefault(t *testing.T) {
 // tarGz — round-trip a tree, then the os.Create error branch.
 // ---------------------------------------------------------------------------
 
-func TestCoreB_UtilTarGz(t *testing.T) {
-	base := t.TempDir()
-	root := filepath.Join(base, "root")
-	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("AAA"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "sub", "b.txt"), []byte("BBB"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out := filepath.Join(base, "out.tar.gz")
-	if err := tarGz(out, root); err != nil {
-		t.Fatalf("tarGz: %v", err)
-	}
-
-	entries := coreBUtilReadTarGz(t, out)
-	if entries["root/a.txt"] != "AAA" {
-		t.Fatalf("root/a.txt = %q, want AAA (entries: %v)", entries["root/a.txt"], entries)
-	}
-	if entries["root/sub/b.txt"] != "BBB" {
-		t.Fatalf("root/sub/b.txt = %q, want BBB (entries: %v)", entries["root/sub/b.txt"], entries)
-	}
-	// Directories are skipped (info.IsDir short-circuit) — only files recorded.
-	if len(entries) != 2 {
-		t.Fatalf("expected exactly 2 file entries, got %d: %v", len(entries), entries)
-	}
-
-	// os.Create error: output in a nonexistent directory.
-	if err := tarGz(filepath.Join(base, "nope", "deep", "x.tar.gz"), root); err == nil {
-		t.Fatal("tarGz to a path in a nonexistent dir must error")
-	}
-}
-
-func coreBUtilReadTarGz(t *testing.T, path string) map[string]string {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	out := map[string]string{}
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		var b bytes.Buffer
-		if _, err := io.Copy(&b, tr); err != nil {
-			t.Fatal(err)
-		}
-		out[filepath.ToSlash(hdr.Name)] = b.String()
-	}
-	return out
-}
-
 // ---------------------------------------------------------------------------
 // schedulePlistFor — known/unknown job, RunAtLoad diff, env snapshot.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilSchedulePlistFor(t *testing.T) {
-	cfg := testCfg(t)
-	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
-	t.Setenv("MORA_CONFIG_DIR", "")
-
-	// Unknown job → ("", false).
-	if plist, ok := schedulePlistFor(cfg, "does-not-exist"); ok || plist != "" {
-		t.Fatalf("unknown job = (%q,%v), want (\"\",false)", plist, ok)
-	}
-
-	// Known job: label + program args + RunAtLoad + schedule fragment.
-	plist, ok := schedulePlistFor(cfg, "index-hourly")
-	if !ok {
-		t.Fatal("index-hourly must be a known job")
-	}
-	for _, want := range []string{
-		"<string>com.mora.index-hourly</string>",
-		"<string>index</string><string>rebuild</string>",
-		"<key>RunAtLoad</key><true/>",
-		"<key>StartInterval</key><integer>3600</integer>",
-	} {
-		if !strings.Contains(plist, want) {
-			t.Fatalf("index-hourly plist missing %q:\n%s", want, plist)
-		}
-	}
-	// No env vars set → no EnvironmentVariables dict.
-	if strings.Contains(plist, "EnvironmentVariables") {
-		t.Fatalf("plist must omit EnvironmentVariables when no env set:\n%s", plist)
-	}
-
-	// pulse-daily drops RunAtLoad and uses a calendar interval.
-	pulse, ok := schedulePlistFor(cfg, "pulse-daily")
-	if !ok {
-		t.Fatal("pulse-daily must be a known job")
-	}
-	if strings.Contains(pulse, "RunAtLoad") {
-		t.Fatalf("pulse-daily must NOT set RunAtLoad:\n%s", pulse)
-	}
-	if !strings.Contains(pulse, "StartCalendarInterval") {
-		t.Fatalf("pulse-daily must use StartCalendarInterval:\n%s", pulse)
-	}
-
-	// Env snapshot: both PATHs embedded into an EnvironmentVariables dict.
-	t.Setenv("MORA_GOOGLE_CREDENTIALS", "/creds/g.json")
-	t.Setenv("MORA_CONFIG_DIR", "/scratch/mora")
-	withEnv, _ := schedulePlistFor(cfg, "index-hourly")
-	if !strings.Contains(withEnv, "<key>EnvironmentVariables</key>") {
-		t.Fatalf("plist missing EnvironmentVariables dict:\n%s", withEnv)
-	}
-	if !strings.Contains(withEnv, "<key>MORA_GOOGLE_CREDENTIALS</key><string>/creds/g.json</string>") {
-		t.Fatalf("plist missing creds env:\n%s", withEnv)
-	}
-	if !strings.Contains(withEnv, "<key>MORA_CONFIG_DIR</key><string>/scratch/mora</string>") {
-		t.Fatalf("plist missing config-dir env:\n%s", withEnv)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// installSchedule + listSchedules (launchd assertions are darwin-only).
 // ---------------------------------------------------------------------------
 
 func TestCoreB_UtilInstallAndListSchedule(t *testing.T) {
@@ -655,34 +408,6 @@ func TestCoreB_UtilInstallScheduleWriteError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // launchdSchedule — per-job calendar/interval fragment.
-// ---------------------------------------------------------------------------
-
-func TestCoreB_UtilLaunchdSchedule(t *testing.T) {
-	cases := map[string]string{
-		"index-hourly":  "<key>StartInterval</key><integer>3600</integer>",
-		"ingest-hourly": "<key>StartInterval</key><integer>3600</integer>",
-		"pulse-daily":   "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>",
-		"backup-daily":  "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>",
-		"git-daily":     "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>",
-		"lint-weekly":   "<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>",
-		"unknown-job":   "<key>StartInterval</key><integer>3600</integer>", // default
-	}
-	for job, want := range cases {
-		if got := launchdSchedule(job); got != want {
-			t.Errorf("launchdSchedule(%q) = %q, want %q", job, got, want)
-		}
-	}
-	// The calendar jobs must differ from the interval jobs.
-	if launchdSchedule("pulse-daily") == launchdSchedule("index-hourly") {
-		t.Fatal("pulse-daily and index-hourly schedules must differ")
-	}
-	if launchdSchedule("backup-daily") == launchdSchedule("git-daily") {
-		t.Fatal("backup-daily and git-daily schedules must differ (different Hour)")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// extractDocxText — happy path + tab/br/cr + error branches.
 // ---------------------------------------------------------------------------
 
 func coreBUtilWriteZip(t *testing.T, path string, files map[string]string) {

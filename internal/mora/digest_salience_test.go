@@ -141,9 +141,6 @@ func TestDigestMemorySalienceDeterministic(t *testing.T) {
 // ---- Task 2: salience-primary ordering + cap selection in capRecency ----
 
 // salItem is a tiny helper to build a tsItem with an explicit salience + ts.
-func salItem(id string, sal int64, ts time.Time) tsItem {
-	return tsItem{item: DigestItem{ID: id, Title: id}, ts: ts, sal: sal}
-}
 
 func mustTime(t *testing.T, s string) time.Time {
 	t.Helper()
@@ -152,118 +149,6 @@ func mustTime(t *testing.T, s string) time.Time {
 		t.Fatalf("parse %q: %v", s, err)
 	}
 	return ts
-}
-
-// TestCapRecencySalienceLeadsSection pins SC#3: within a section, a HIGHER-salience
-// item leads even when a DIFFERENT item is more recent.
-func TestCapRecencySalienceLeadsSection(t *testing.T) {
-	older := mustTime(t, "2026-06-01T00:00:00Z")
-	newer := mustTime(t, "2026-06-08T00:00:00Z")
-	// "recent_noise" is the most RECENT but low salience; "salient_old" is older but
-	// the most salient — it must lead.
-	tis := []tsItem{
-		salItem("recent_noise", 100, newer),
-		salItem("salient_old", 900_000, older),
-	}
-	items, more := capRecency(tis, 8, false)
-	if more != 0 {
-		t.Fatalf("more=%d, want 0", more)
-	}
-	if items[0].ID != "salient_old" {
-		t.Fatalf("section leader=%q, want salient_old (salience must beat recency)", items[0].ID)
-	}
-	if items[1].ID != "recent_noise" {
-		t.Fatalf("second=%q, want recent_noise", items[1].ID)
-	}
-}
-
-// TestCapRecencySalienceSurvivesCap pins that the most-salient item is KEPT through
-// truncation even when it is NOT the most recent — the SC#3 inversion guard. Under
-// pure recency it would have been dropped past the cap.
-func TestCapRecencySalienceSurvivesCap(t *testing.T) {
-	base := mustTime(t, "2026-06-01T00:00:00Z")
-	// cap=2. Two very recent but LOW-salience items, plus one older HIGH-salience
-	// item. Pure recency would drop the salient one; salience ordering keeps it.
-	tis := []tsItem{
-		salItem("recent_a", 10, base.Add(48*time.Hour)),
-		salItem("recent_b", 20, base.Add(24*time.Hour)),
-		salItem("salient_old", 900_000, base),
-	}
-	items, more := capRecency(tis, 2, false)
-	if more != 1 {
-		t.Fatalf("more=%d, want 1 (one item past the cap)", more)
-	}
-	if items[0].ID != "salient_old" {
-		t.Fatalf("kept[0]=%q, want salient_old (must survive the cap)", items[0].ID)
-	}
-	// The kept set must CONTAIN the salient item; the dropped one is the least salient.
-	kept := map[string]bool{}
-	for _, it := range items {
-		kept[it.ID] = true
-	}
-	if !kept["salient_old"] {
-		t.Fatalf("salient_old was truncated — the exact SC#3 failure this guards against")
-	}
-	if kept["recent_a"] {
-		t.Fatalf("recent_a (least salient) should have been the one dropped, but it was kept")
-	}
-}
-
-// TestCapRecencyZeroSalienceSinksToBottom pins that 0-salience items (services /
-// no-participant) fall BELOW salient ones, while preserving recency order AMONG the
-// equal-salience zeros.
-func TestCapRecencyZeroSalienceSinksToBottom(t *testing.T) {
-	base := mustTime(t, "2026-06-01T00:00:00Z")
-	tis := []tsItem{
-		salItem("zero_old", 0, base),
-		salItem("zero_new", 0, base.Add(24*time.Hour)),
-		salItem("human", 500_000, base.Add(-72*time.Hour)), // oldest, but salient
-	}
-	items, _ := capRecency(tis, 8, false)
-	if items[0].ID != "human" {
-		t.Fatalf("leader=%q, want human (salient leads the zeros)", items[0].ID)
-	}
-	// Among the zeros, recency order is preserved: zero_new (more recent) before zero_old.
-	if items[1].ID != "zero_new" || items[2].ID != "zero_old" {
-		t.Fatalf("zero order=[%s,%s], want [zero_new,zero_old] (recency preserved among zeros)", items[1].ID, items[2].ID)
-	}
-}
-
-// TestCapRecencyEqualSalienceRecencyTieBreak pins the existing recency tie-break is
-// preserved when salience is equal: more recent leads, then id< on exact-instant ties.
-func TestCapRecencyEqualSalienceRecencyTieBreak(t *testing.T) {
-	t0 := mustTime(t, "2026-06-01T00:00:00Z")
-	t1 := mustTime(t, "2026-06-02T00:00:00Z")
-	tis := []tsItem{
-		salItem("b_same_instant", 500, t0),
-		salItem("a_same_instant", 500, t0), // same salience + instant → id< decides
-		salItem("recent", 500, t1),         // same salience, more recent → leads
-	}
-	items, _ := capRecency(tis, 8, false)
-	want := []string{"recent", "a_same_instant", "b_same_instant"}
-	for i, w := range want {
-		if items[i].ID != w {
-			t.Fatalf("order[%d]=%q, want %q (recency then id< tie-break under equal salience)", i, items[i].ID, w)
-		}
-	}
-}
-
-// TestCapRecencyDeterministic pins byte-identical ordering across two passes.
-func TestCapRecencyDeterministic(t *testing.T) {
-	base := mustTime(t, "2026-06-01T00:00:00Z")
-	build := func() []tsItem {
-		return []tsItem{
-			salItem("c", 100, base),
-			salItem("a", 100, base),
-			salItem("b", 900_000, base.Add(time.Hour)),
-			salItem("d", 0, base.Add(2*time.Hour)),
-		}
-	}
-	first, _ := capRecency(build(), 8, false)
-	second, _ := capRecency(build(), 8, false)
-	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("capRecency not deterministic:\n first=%v\n second=%v", first, second)
-	}
 }
 
 // TestBuildDigestSalienceFileBased asserts buildDigest threads salience into the
@@ -316,42 +201,5 @@ func TestBuildDigestSalienceWindowOrdering(t *testing.T) {
 	}
 	if sec.Items[0].ID != "em_heavy" {
 		t.Fatalf("section leader=%q, want em_heavy (higher-volume thread must lead by salience)", sec.Items[0].ID)
-	}
-}
-
-// TestCollapseLowSignal pins the digest noise-collapse: salient items always survive,
-// at most digestLowSignalFloor low-signal items stay visible, and the rest are counted
-// (never silently dropped). Pure function → deterministic.
-func TestCollapseLowSignal(t *testing.T) {
-	items := []DigestItem{
-		{ID: "h1"},                  // salient
-		{ID: "h2"},                  // salient
-		{ID: "s1", LowSignal: true}, // floor keeps s1, s2
-		{ID: "s2", LowSignal: true},
-		{ID: "s3", LowSignal: true}, // collapsed
-		{ID: "s4", LowSignal: true}, // collapsed
-	}
-	displayed, collapsed := collapseLowSignal(items)
-	if collapsed != 2 {
-		t.Fatalf("collapsed = %d, want 2 (4 low-signal − floor %d)", collapsed, digestLowSignalFloor)
-	}
-	if len(displayed) != 4 {
-		t.Fatalf("displayed = %d items, want 4 (2 salient + %d floor)", len(displayed), digestLowSignalFloor)
-	}
-	// Both salient items must survive, in order, and never be collapsed.
-	if displayed[0].ID != "h1" || displayed[1].ID != "h2" {
-		t.Fatalf("salient items dropped/reordered: %+v", displayed)
-	}
-	// An all-salient section is untouched.
-	allHuman := []DigestItem{{ID: "a"}, {ID: "b"}, {ID: "c"}}
-	d2, c2 := collapseLowSignal(allHuman)
-	if c2 != 0 || len(d2) != 3 {
-		t.Fatalf("all-salient section must be untouched: displayed=%d collapsed=%d", len(d2), c2)
-	}
-	// A pure-noise section keeps exactly the floor and counts the rest.
-	noise := []DigestItem{{ID: "n1", LowSignal: true}, {ID: "n2", LowSignal: true}, {ID: "n3", LowSignal: true}}
-	d3, c3 := collapseLowSignal(noise)
-	if len(d3) != digestLowSignalFloor || c3 != 1 {
-		t.Fatalf("pure-noise section: displayed=%d (want %d) collapsed=%d (want 1)", len(d3), digestLowSignalFloor, c3)
 	}
 }

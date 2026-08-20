@@ -96,7 +96,7 @@ import (
 //     ONLY on the path where its Score is also RRF-fused.
 //
 // health_impact severity mirrors this repo's EXISTING worst-first precedence
-// for unhealthy states (health.go's healthStateRank / worstSource doc comment:
+// for unhealthy states (health.StateRank / health.Worst doc comment:
 // "failed (an active error) outranks never (no data point at all) outranks
 // stale (data exists, just aging)"): failed > never > stale. This contract
 // reuses that precedent rather than freezing a new one.
@@ -164,10 +164,10 @@ import (
 //     no results (Evidence/mems empty)      -> "weak"     (CoverageHoles fires
 //                                                            for think; search_memory
 //                                                            has no results to bucket)
-//     results present AND !Gaps.empty()      -> "moderate" (Stale/ThinCoverage/
+//     results present AND !Gaps.Empty()      -> "moderate" (Stale/ThinCoverage/
 //                                                            CoverageHoles/
 //                                                            RetrievalCaveats)
-//     results present AND  Gaps.empty()      -> "strong"
+//     results present AND  Gaps.Empty()      -> "strong"
 //
 // OPEN QUESTIONS / RISKS FOR THE INTEGRATOR (repeated in the final report):
 //  1. search_memory's absolute bm25 thresholds (FTS-only path only, post-#238)

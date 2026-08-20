@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"go/parser"
 	"go/token"
 	"strings"
@@ -53,7 +54,7 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 		kinds[section.Kind] = true
 		for _, line := range section.Lines {
 			lines++
-			if err := line.validate(); err != nil {
+			if err := line.Validate(); err != nil {
 				t.Fatalf("uncited line rendered: %+v: %v", line, err)
 			}
 		}
@@ -197,7 +198,7 @@ func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +259,7 @@ func TestMeetingBriefDropsAmbiguousSharedThread(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +314,7 @@ func TestMeetingBriefDropsAmbiguousOutboundGroupAttribution(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +369,7 @@ func TestMeetingBriefRendersActionablePassageNotTriviaFromMixedThread(t *testing
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +422,7 @@ func TestMeetingBriefMaxTokensBudgetsSerializedPayload(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +478,7 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -548,42 +549,6 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 	}
 }
 
-func TestRenderMeetingBriefFailsClosedOnUncitedLine(t *testing.T) {
-	brief := MeetingBrief{
-		AsOf: "2026-07-10T15:00:00Z",
-		Event: &CitedMeetingEvent{
-			ID:       "calendar_event/e1",
-			Title:    "Sync",
-			StartsAt: "2026-07-10T17:00:00Z",
-			Citation: mustBriefCitationForTest(t, "calendar_event/e1", "calendar", "calendar_event/e1", "2026-07-10T17:00:00Z"),
-		},
-		Sections: []MeetingBriefSection{{
-			Kind:  meetingBriefOpenLoops,
-			Title: meetingBriefSectionTitles[meetingBriefOpenLoops],
-			Lines: []CitedBriefLine{{
-				Text:     "Send the deck",
-				Citation: BriefCitation{},
-			}},
-		}},
-	}
-	var out bytes.Buffer
-	err := renderMeetingBrief(&out, brief)
-	if err == nil || !strings.Contains(err.Error(), "refusing to render uncited") {
-		t.Fatalf("render error = %v, want fail-closed uncited error", err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("fail-closed renderer wrote partial output: %q", out.String())
-	}
-}
-
-func TestBriefCitationRejectsUncitedJSON(t *testing.T) {
-	var c BriefCitation
-	err := json.Unmarshal([]byte(`{"memory_id":"gmail_thread/t1","channel":"gmail","date":"2026-07-10T13:00:00Z"}`), &c)
-	if err == nil || !strings.Contains(err.Error(), "missing source") {
-		t.Fatalf("partial citation JSON should fail closed with missing source, got: %v", err)
-	}
-}
-
 func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -592,7 +557,7 @@ func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +608,7 @@ func TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed(t *testing.T
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +680,7 @@ func TestBriefEventCLIAndMCPReturnSameShape(t *testing.T) {
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -795,7 +760,7 @@ func TestMeetingBriefUsesExactAttendeeIdentityNotSharedDisplayName(t *testing.T)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
-		Enabled: ptr(true), CreatedAt: at.Format(time.RFC3339),
+		Enabled: genericutil.Ptr(true), CreatedAt: at.Format(time.RFC3339),
 	}}); err != nil {
 		t.Fatal(err)
 	}

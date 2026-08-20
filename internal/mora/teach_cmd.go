@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
 	"sort"
@@ -277,7 +278,7 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 			replacement.Type = *mtype
 		}
 		if *tags != "" {
-			replacement.Tags = splitCSV(*tags)
+			replacement.Tags = genericutil.SplitCSV(*tags)
 		}
 		if replacement.Type == "decision" {
 			replacement.Decision = decisionValidityFromFlags(replacement.CreatedAt, *asOf, *durability, *flip, *reviewBy)
@@ -358,7 +359,7 @@ func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	var target *govEntry
 	for i := range g.Entries {
-		if g.Entries[i].ID == args[0] && !g.Entries[i].revoked() {
+		if g.Entries[i].ID == args[0] && !govEntryRevoked(g.Entries[i]) {
 			target = &g.Entries[i]
 			break
 		}
@@ -368,7 +369,7 @@ func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	if target.ReplacementID != "" {
 		for _, e := range g.Entries {
-			if !e.revoked() && e.Kind == govKindTeachMemory && e.TargetID == target.ReplacementID {
+			if !govEntryRevoked(e) && e.Kind == govKindTeachMemory && e.TargetID == target.ReplacementID {
 				return fmt.Errorf("cannot undo %s while later revision %s is active; undo newest first", target.ID, e.ID)
 			}
 		}
@@ -465,7 +466,7 @@ func teachHistory(args []string, stdout io.Writer) error {
 	}
 	for _, e := range entries {
 		status := "active"
-		if e.revoked() {
+		if govEntryRevoked(e) {
 			status = "undone"
 		}
 		fmt.Fprintf(stdout, "%s  %s  %s  target=%s  %s\n", e.ID, status, e.Decision, e.TargetID, e.CreatedAt)
@@ -573,7 +574,7 @@ func teachExamples(args []string, stdout io.Writer) error {
 			Ref:      fmt.Sprintf("example-%04d", i+1),
 			Kind:     e.Kind,
 			Decision: e.Decision,
-			Undone:   e.revoked(),
+			Undone:   govEntryRevoked(e),
 		})
 	}
 	// Plan 01-07: the bare array moves under `examples`.

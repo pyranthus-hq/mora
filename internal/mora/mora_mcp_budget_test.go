@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"strings"
 	"testing"
@@ -226,6 +227,22 @@ func seedBudgetFixture(t *testing.T) Config {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
+	// Exact calendar range enumeration must remain budget-safe at its public
+	// maximum limit. These intentionally long records prove it snippets and
+	// aggregate-caps the full CallToolResult envelope.
+	for i := 0; i < calendarEventsMaxLimit; i++ {
+		at := time.Date(2026, 9, 1, 0, i, 0, 0, time.UTC)
+		if err := writeMemory(cfg, Memory{
+			ID: fmt.Sprintf("calendar_event/%03d", i), Scope: "personal", Type: "event",
+			Title: fmt.Sprintf("Calendar event %03d", i), CreatedAt: at.Format(time.RFC3339),
+			Source: "calendar", Provider: "calendar", ProviderID: fmt.Sprintf("event-%03d", i),
+			Text: strings.Repeat("calendar event body padding ", 190),
+			Meta: map[string]any{"occurred_at": at.Format(time.RFC3339)},
+		}); err != nil {
+			t.Fatalf("seed calendar event %d: %v", i, err)
+		}
+	}
+
 	return cfg
 }
 
@@ -380,6 +397,8 @@ func budgetCases() []budgetCase {
 		{tool: "search_budget_cap", line: budgetCall("search_memory", `{"query":"lorem","limit":50}`), ceil: 8000,
 			note: "B2: aggregate byte budget trims a large limit on Memory boundaries to hold the search ceiling"},
 		{tool: "list_memory", line: budgetCall("list_memory", `{"limit":10}`), ceil: 10000, note: "FIXED: snippetMemories caps each row at searchSnippetLen=240, so even long bodies stay well under budget."},
+		{tool: "calendar_events", line: budgetCall("calendar_events", `{"start":"2026-09-01","end":"2026-09-02","limit":200}`), ceil: 8000,
+			note: "Exact range enumeration snippets rows and aggregate-caps the 200-event maximum without raising the T0 ceiling."},
 
 		// graph reads — the headline blowups
 		{tool: "list_entities", line: budgetCall("list_entities", `{}`), ceil: 8000,
@@ -640,10 +659,10 @@ func seedMaxCapUnhealthyBudgetFixture(t *testing.T, now time.Time, prodName stri
 	cfg := seedBudgetFixture(t)
 
 	sources := []Source{
-		{Name: "applecalendar-x", Type: "applecalendar", Account: "x", Enabled: ptr(true)},
-		{Name: "calendar-office", Type: "calendar", Account: "office", Enabled: ptr(true)},
-		{Name: "gmail-personalxx", Type: "gmail", Account: "personalxx", Enabled: ptr(true)},
-		{Name: "imessage", Type: "imessage", Enabled: ptr(true)},
+		{Name: "applecalendar-x", Type: "applecalendar", Account: "x", Enabled: genericutil.Ptr(true)},
+		{Name: "calendar-office", Type: "calendar", Account: "office", Enabled: genericutil.Ptr(true)},
+		{Name: "gmail-personalxx", Type: "gmail", Account: "personalxx", Enabled: genericutil.Ptr(true)},
+		{Name: "imessage", Type: "imessage", Enabled: genericutil.Ptr(true)},
 	}
 	if err := saveSources(cfg, sources); err != nil {
 		t.Fatalf("saveSources: %v", err)

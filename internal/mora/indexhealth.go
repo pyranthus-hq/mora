@@ -3,6 +3,9 @@ package mora
 import (
 	"database/sql"
 	"errors"
+
+	healthpkg "github.com/pyranthus-hq/mora/internal/health"
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"os"
 	"strconv"
 	"strings"
@@ -20,101 +23,36 @@ import (
 // The fail-closed rule, once: any state Mora cannot COMPUTE is unhealthy, never
 // healthy. There is no "assume fine" branch anywhere in this kernel.
 
-// Aggregate Health.State vocabulary.
+// Canonical health DTOs and state vocabularies live in internal/health. Mora
+// computes I/O-backed facts and passes those values to the pure health kernel.
 const (
-	healthHealthy   = "healthy"
-	healthDegraded  = "degraded"
-	healthUnhealthy = "unhealthy"
+	healthHealthy   = healthpkg.Healthy
+	healthDegraded  = healthpkg.Degraded
+	healthUnhealthy = healthpkg.Unhealthy
+	idxFresh        = healthpkg.IndexFresh
+	idxDirty        = healthpkg.IndexDirty
+	idxFailed       = healthpkg.IndexFailed
+	idxDegraded     = healthpkg.IndexDegraded
+	idxNever        = healthpkg.IndexNever
+	prodFresh       = healthpkg.ProducerFresh
+	prodStale       = healthpkg.ProducerStale
+	prodFailed      = healthpkg.ProducerFailed
+	prodNever       = healthpkg.ProducerNever
 )
 
-// indexHealth.State vocabulary.
-const (
-	idxFresh    = "fresh"
-	idxDirty    = "dirty"
-	idxFailed   = "failed"
-	idxDegraded = "degraded"
-	idxNever    = "never"
-)
-
-// producerHealth.State vocabulary (populated by Packet E / PR 4; defined here so
-// the kernel type is complete and PR 4 only adds the logic).
-const (
-	prodFresh  = "fresh"
-	prodStale  = "stale"
-	prodFailed = "failed"
-	prodNever  = "never"
-)
-
-// indexProjectionLagThreshold is the fifth freshness family (Landmine 13 — do not
-// unify it with the four source/digest thresholds). It is a RELATION, not a
-// wall-clock age: an idle vault has fts_indexed_at == graph_indexed_at and never
-// reddens by aging; the alarm fires only when an authored write has advanced FTS
-// past the graph and a rebuild is genuinely owed (B1 rule 6 / Landmine 14).
 const indexProjectionLagThreshold = 6 * time.Hour
 
-// Health is the typed kernel every surface consults — Gate 1's sourceHealth
-// extended with the two states it never had (index, producers).
-type Health struct {
-	State     string           `json:"state"`     // healthy | degraded | unhealthy (worst-of; UNKNOWN => unhealthy)
-	Sources   []sourceHealth   `json:"sources"`   // Gate 1, unchanged
-	Index     indexHealth      `json:"index"`     // HEALTH-09/-10/-12
-	Producers []producerHealth `json:"producers"` // HEALTH-11 (PR 4)
-}
-
-type indexHealth struct {
-	State         string             `json:"state"` // fresh | dirty | failed | degraded | never
-	IndexedAt     string             `json:"indexed_at,omitempty"`
-	DirtySince    string             `json:"dirty_since,omitempty"`
-	PendingOps    int                `json:"pending_ops"`
-	LastAttemptAt string             `json:"last_attempt_at,omitempty"`
-	LastError     string             `json:"last_error,omitempty"`
-	SchemaVersion int                `json:"schema_version"`
-	Blocked       bool               `json:"blocked"`
-	Embedder      embedderProvenance `json:"embedder"`
-	Projections   projectionHealth   `json:"projections"`
-	// Shares is the per-subscription index-health sub-arm (Packet H4): the
-	// aggregate is worst-of across the personal index AND every subscription.
-	// Populated only on the top-level Health.Index (healthOf); nested entries
-	// never carry their own Shares.
-	Shares []indexHealth `json:"shares,omitempty"`
-}
-
-type projectionHealth struct { // Finding 2: three projections, three stamps
-	FTSIndexedAt     string `json:"fts_indexed_at,omitempty"`     // upsert + rebuild
-	GraphIndexedAt   string `json:"graph_indexed_at,omitempty"`   // rebuild only
-	VectorsIndexedAt string `json:"vectors_indexed_at,omitempty"` // rebuild only
-	GraphLagHours    int    `json:"graph_lag_hours"`
-}
-
-type embedderProvenance struct { // HEALTH-12 (mismatch arm — PR 1; semantic digest — PR 3)
-	Model      string `json:"model"` // recorded at index-commit time, e.g. "static-hash-v1"
-	Dim        int    `json:"dim"`
-	Digest     string `json:"digest,omitempty"` // the ollama model digest (PR 3)
-	Configured string `json:"configured"`       // what the config ASKS for, resolved WITHOUT probing
-	Match      bool   `json:"match"`            // false => indexHealth.State = "degraded"
-}
-
-type producerHealthSubject string
+type Health = healthpkg.Health
+type indexHealth = healthpkg.Index
+type projectionHealth = healthpkg.Projection
+type embedderProvenance = healthpkg.Embedder
 
 const (
-	producerHealthSubjectProducer producerHealthSubject = "producer"
-	producerHealthSubjectLedger   producerHealthSubject = "ledger"
+	producerHealthSubjectProducer = healthpkg.ProducerSubjectProducer
+	producerHealthSubjectLedger   = healthpkg.ProducerSubjectLedger
 )
 
-type producerHealth struct { // HEALTH-11 (PR 4)
-	Name            string `json:"name"`
-	State           string `json:"state"`
-	LastSuccessAt   string `json:"last_success_at,omitempty"`
-	LastAttemptAt   string `json:"last_attempt_at,omitempty"`
-	LastError       string `json:"last_error,omitempty"`
-	IntervalSeconds int    `json:"interval_seconds"`
-	AgeHours        int    `json:"age_hours"`
-	Source          string `json:"source"`
-	// Subject distinguishes a real producer named "producers" from the
-	// synthetic fail-closed record emitted when either producer ledger is
-	// unreadable. Never infer this type from Name.
-	Subject producerHealthSubject `json:"subject"`
-}
+type producerHealth = healthpkg.Producer
 
 // indexHealthOf computes the index arm. First match wins; `now` is injected (never
 // time.Now()) so a check and its test agree on the same clock.
@@ -191,7 +129,7 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		h.LastError = operr.Error()
 		return h
 	}
-	journalDirty, journalPaths, journalOldest, jerr := ingestJournalStatus(cfg)
+	journalDirty, journalPaths, journalOldest, jerr := ingestpkg.JournalStatus(cfg)
 	if jerr != nil {
 		h.State = idxFailed
 		h.LastError = jerr.Error()
@@ -396,18 +334,7 @@ func mixedVectorProvenance(db *sql.DB, recorded string) (bool, error) {
 
 // projectionLagHours is the honest graph-lag signal: fts_indexed_at −
 // graph_indexed_at, in whole hours (never negative). Both empty or unparseable => 0.
-func projectionLagHours(p projectionHealth) int {
-	fts, ferr := time.Parse(time.RFC3339, p.FTSIndexedAt)
-	graph, gerr := time.Parse(time.RFC3339, p.GraphIndexedAt)
-	if ferr != nil || gerr != nil {
-		return 0
-	}
-	d := fts.Sub(graph)
-	if d < 0 {
-		return 0
-	}
-	return int(d / time.Hour)
-}
+func projectionLagHours(p projectionHealth) int { return healthpkg.ProjectionLagHours(p) }
 
 // oldestPendingStamp returns the earliest marked_at across the pending ops and the
 // oldest ingest-journal header, for indexHealth.DirtySince.
@@ -429,9 +356,10 @@ func oldestPendingStamp(ops []pendingOp, journalOldest string) string {
 // collapses them worst-of. Nothing recomputes a sub-arm on its own.
 func healthOf(cfg Config, now time.Time) Health {
 	h := Health{
-		Sources:   sourceHealthAll(cfg, now),
-		Index:     indexHealthOf(cfg, now),
-		Producers: producerHealthAll(cfg, now), // PR 4: producer liveness (HEALTH-11)
+		Sources:    sourceHealthAll(cfg, now),
+		Index:      indexHealthOf(cfg, now),
+		Producers:  producerHealthAll(cfg, now), // PR 4: producer liveness (HEALTH-11)
+		Activities: operationActivities(cfg, now, operationProcessAlive),
 	}
 	// Packet H4: fold every subscription's index health into the aggregate arm.
 	h.Index.Shares = shareIndexHealthAll(cfg, now)
@@ -442,47 +370,4 @@ func healthOf(cfg Config, now time.Time) Health {
 // aggregateHealthState is B1b's collapse, stated once so no surface invents its
 // own. "Could not compute" is captured as failed by each arm, so it lands in
 // unhealthy — never healthy.
-func aggregateHealthState(h Health) string {
-	unhealthy, degraded := false, false
-	for _, s := range h.Sources {
-		switch s.State {
-		case healthFailed, healthNever:
-			unhealthy = true
-		case healthStale:
-			degraded = true
-		}
-	}
-	switch h.Index.State {
-	case idxFailed, idxNever, idxDirty:
-		unhealthy = true
-	case idxDegraded:
-		degraded = true
-	}
-	// Worst-of across every subscription's index arm (Packet H4).
-	for _, s := range h.Index.Shares {
-		switch s.State {
-		case idxFailed, idxNever, idxDirty:
-			unhealthy = true
-		case idxDegraded:
-			degraded = true
-		}
-	}
-	for _, p := range h.Producers {
-		if p.Subject == producerHealthSubjectLedger {
-			unhealthy = true
-			continue
-		}
-		switch p.State {
-		case prodFailed, prodNever, prodStale:
-			degraded = true
-		}
-	}
-	switch {
-	case unhealthy:
-		return healthUnhealthy
-	case degraded:
-		return healthDegraded
-	default:
-		return healthHealthy
-	}
-}
+func aggregateHealthState(h Health) string { return healthpkg.AggregateState(h) }

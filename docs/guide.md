@@ -46,6 +46,15 @@ the app again.
 The app is the Full Disk Access target for iMessage and Apple Calendar. Install
 it before you grant that permission.
 
+#### Homebrew status
+
+The signed-app Homebrew Cask is not published yet. `cmd/gencask` exists so the
+future Cask can be reproduced exactly from a release tag and
+`checksums-app.txt`, but it does not publish anything and currently refuses to
+declare `auto_updates true`. That declaration remains blocked until #291 ships
+scheduled update checks and notification behavior. The private legacy Cask is
+not a supported workaround: it installs a raw binary and strips quarantine.
+
 `mora upgrade` replaces the whole app bundle. It checks the new bundle before
 the swap and checks it again after the swap. It restores the old bundle if the
 post-swap check fails. Never replace only
@@ -147,6 +156,13 @@ command's exit code. Mora therefore records source and producer receipts. Use
 Mora does not write to either source database.
 
 ## First setup
+
+Mora is your local evidence store and your agent is the conversational interface.
+After you connect a source, ask a concrete question such as **“what did Sam and I
+decide about the launch?”** or **“what's on my calendar next week?”** Reading and
+searching retrieve evidence only. Saving a durable memory requires explicit write
+consent; you can disable a connector or delete a saved memory whenever you choose.
+
 
 ```bash
 mora init
@@ -305,7 +321,9 @@ mora connect imessage
 mora connect imessage --since-days 365
 ```
 
-A negative `--since-days` asks for all available history. This can be large.
+By default, Mora ingests the last **365 days**. Connect and sync output state the effective
+window; pass `--since-days N` to choose another value. A negative `--since-days` asks for
+all available history, which can be large.
 Mora reads one conversation into one memory. It uses Address Book locally to
 map handles to names. It sends no message data.
 
@@ -364,8 +382,30 @@ Or add this to another MCP client:
 }
 ```
 
-Mora provides 12 tools: write, read, search, list, delete, context, think,
-entity list, entity detail, digest, brief, and meeting prep.
+Mora provides 13 tools: write, read, search, list, calendar events, delete, context,
+think, entity list, entity detail, digest, brief, and meeting prep. Use
+`calendar_events` for exact date, day, and week questions rather than keyword search.
+
+### Agent Plugins package
+
+Release assets include a portable Agent Plugins 1.0 archive. It contributes the
+Mora stdio MCP declaration plus first-party skills for read-only recall, explicit
+memory capture, dining recommendations, and the advanced daily brief operator
+loop. The package does not contain a Mora binary, credentials, vault data, state,
+or generated memories.
+
+Install `mora` separately and make it visible on the client's `PATH`. GUI clients
+can inherit a different `PATH` than a terminal; if MCP startup says the `mora`
+command is unavailable, fix that executable discovery rather than putting a
+machine-specific path in the package.
+
+Read the client's enable screen before installing: a compatible client may start
+`mora mcp serve` from `mcp.json`, and retrieved results may be processed by that
+client's configured model provider. Prefer `propose` or `readonly` until you are
+comfortable with the client's tool-approval UX. Agent skills activate on user
+requests; they do not guarantee a session-start brief. The Claude marketplace
+wrapper intentionally keeps MCP setup explicit rather than adding an automatic
+`.mcp.json` startup declaration.
 
 ### Ask Mora what it can do
 
@@ -595,7 +635,10 @@ mora brief --event-id calendar_event/abc --at 2026-07-10T15:00:00Z
 ```
 
 The event view shows cited prior context, open items, and source age. `--at`
-makes the time-dependent view repeatable for a test or review.
+makes the time-dependent view repeatable for a test or review. MCP clients may
+request `meeting_prep` by person name. When no upcoming event matches but a
+general next event exists, the response sets `name_fallback: true`; clients
+must disclose the fallback instead of presenting it as the named meeting.
 
 ### Tasks
 
@@ -805,7 +848,47 @@ mora reingest --full
 `reingest --full` rewrites current memories with the latest extraction logic
 and rebuilds the graph. Use it after an update that changes extraction.
 
-Update the installed release:
+Choose the automatic-check policy and inspect its local receipt:
+
+```bash
+mora upgrade --policy auto    # Mora.app-path default; PR #291 currently checks/notifies only
+mora upgrade --policy notify
+mora upgrade --policy off     # scheduled checks make zero network or notification calls
+mora upgrade --status
+mora upgrade --status --json
+```
+
+The default is `auto` for a released binary whose resolved executable has the
+`Mora.app/Contents/MacOS/mora` path shape, `notify` for another released binary,
+and `off` for source/local builds. The status reason is `mora_app_path`: this
+stage recognizes layout only and does not claim the app signature was verified.
+PR #291's pre-apply stage must verify the real bundle identity before any swap.
+The policy and cached status are local. Check receipts live under Mora's state
+directory and contain versions, timestamps, and typed outcome codes only—not
+GitHub tokens, private paths, source content, or raw error text. A failed check
+keeps the last known available version. Update notifications are restrained to
+one per version every 72 hours, and a notification failure leaves the cached
+warning visible.
+
+`mora schedule install update-daily` installs the daily policy check (including
+LaunchServices routing on macOS). `notify` remains check plus notification and
+`off` returns before any network, notification, receipt, or lease write. `auto`
+can apply only when the running executable resolves inside `Mora.app`, the
+installed bundle passes its exact version/architecture/Developer ID/notarization
+checks, strict product health passes, the app parent is writable, and those
+identity and health observations still pass immediately before swap.
+
+Automatic application downloads the canonical architecture-specific `_app.zip`
+and `checksums-app.txt`, verifies the checksum and staged bundle through the
+same trust chain as manual whole-app upgrade, and atomically swaps at the same
+app path. Launch/version/signature, conditional index-schema rebuild, and strict
+health must then pass. A failure rolls the app back; rollback and rebuild
+outcomes remain visible in `upgrade --status`. An unwritable app is recorded as
+`deferred [app_unwritable]`, falls back to the restrained notification, and is
+not retried for the same version. Use the printed Homebrew/manual recovery
+command instead. No receipt stores raw errors or recovery paths.
+
+Check or manually update the installed release:
 
 ```bash
 mora upgrade --check
@@ -813,8 +896,9 @@ mora upgrade
 ```
 
 A signed app install downloads the app ZIP and replaces the full checked
-bundle. A standalone install uses the raw release archive. Homebrew installs
-are sent to `brew upgrade`. Source builds do not self-update.
+bundle. A standalone install uses the raw release archive. Legacy Homebrew
+installs are sent to `brew upgrade`; the new signed-app Cask is not public yet.
+Source builds do not self-update.
 
 After update, check:
 

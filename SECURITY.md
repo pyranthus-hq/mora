@@ -20,6 +20,15 @@ vault archive, or unredacted `mora doctor --json` output.
 Security fixes target the latest release and `main`. Older releases may be asked
 to upgrade before a report can be reproduced or fixed.
 
+
+## What to expect
+
+Maintainers will acknowledge the private report, reproduce it against a
+supported version, and coordinate remediation and disclosure. Please do not
+publish exploit details before a fix and release plan are agreed. Some fixes
+may require a signed macOS canary or provider-specific verification before
+public disclosure.
+
 ## Security boundaries
 
 Reports are especially useful when they involve:

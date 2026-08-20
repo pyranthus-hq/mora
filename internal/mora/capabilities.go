@@ -322,7 +322,7 @@ func cmdCapabilities(ctx context.Context, args []string, stdout, stderr io.Write
 		ErrorCodes:  capabilitiesErrorCodes(errorRegistry),
 		ExitCodes:   capabilitiesExitCodeTable(errorRegistry),
 		MCP: capabilitiesMCP{
-			WritePolicy: cfg.mcpWritePolicy(),
+			WritePolicy: configMCPWritePolicy(cfg),
 			Tools:       mcpToolNames(),
 			Schemas:     capabilitiesMCPSchemas(),
 		},

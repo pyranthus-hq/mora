@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,7 +96,7 @@ func (g *gitTransport) publish(ctx context.Context, set shareSet) error {
 
 	memDir := filepath.Join(g.dir, "memories")
 	for name, ct := range set.put {
-		if err := atomicWrite(filepath.Join(memDir, name), ct, 0o644); err != nil {
+		if err := atomicio.Write(filepath.Join(memDir, name), ct, 0o644); err != nil {
 			return err
 		}
 	}

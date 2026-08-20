@@ -172,39 +172,6 @@ func TestSourceStatesCountIncludesMore(t *testing.T) {
 // Bug B / Codex P1: a single rescheduled instance (Change=="updated") must NOT be
 // folded into the series representative — folding it would mark its update
 // acknowledged in the delta watermark without ever surfacing the change.
-func TestCollapseRecurringSeriesPreservesUpdatedInstance(t *testing.T) {
-	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
-	mk := func(id string, fromNow time.Duration, change string) tsItem {
-		return tsItem{
-			item: DigestItem{ID: id, Title: id, Change: change},
-			ts:   now.Add(fromNow),
-			sal:  0,
-			// series id shared by all four.
-		}
-	}
-	tis := []tsItem{mk("a", 6*time.Hour, "new"), mk("b", 12*time.Hour, "new"), mk("c", 18*time.Hour, "new"), mk("u", 3*time.Hour, "updated")}
-	for i := range tis {
-		tis[i].series = "s1"
-	}
-	out := collapseRecurringSeries(tis, now)
-	if len(out) != 2 {
-		t.Fatalf("want 2 lines (1 collapsed-new + 1 updated); got %d", len(out))
-	}
-	var sawUpdated bool
-	for _, ti := range out {
-		if ti.item.ID == "u" {
-			sawUpdated = true
-			if len(ti.members) > 1 {
-				t.Errorf("updated instance must not absorb sibling members; got %v", ti.members)
-			}
-		} else if len(ti.members) != 3 {
-			t.Errorf("collapsed-new representative should fold the 3 new instances; got members %v", ti.members)
-		}
-	}
-	if !sawUpdated {
-		t.Errorf("updated instance must surface as its own line")
-	}
-}
 
 // --- tiny local helpers (kept test-local to avoid colliding with prod helpers) --
 

@@ -711,8 +711,22 @@ func TestContractCompatAdditiveIsSafe(t *testing.T) {
 			seen := contractPinnedConsumerView(t, golden, live[schema])
 			if diff, differs := contractFirstDifference("", golden, seen); differs {
 				field := strings.TrimPrefix(diff, ".")
-				t.Fatalf("a consumer pinned to %s v1 no longer sees %s.\n%s",
-					schema, field, contractRemovalRemedy(schema, field))
+				// contractFirstDifference reports the first path at which the
+				// two documents diverge, for ANY reason — a removal, a retype,
+				// a changed scalar, or an array that grew a row. Routing all
+				// four into contractRemovalRemedy would tell a maintainer to
+				// bump schema_version over a value that simply moved, which is
+				// the opposite of the remedy. Ask the shape walk what KIND of
+				// divergence this is and answer with the matching one.
+				if findings := contractCompareShapes(schema, golden, seen); len(findings) > 0 {
+					t.Fatalf("a consumer pinned to %s v1 no longer sees %s.\n%s",
+						schema, field, strings.Join(findings, "\n"))
+				}
+				t.Fatalf("%s drifted at %s without losing a v1 field; "+
+					"the field set is intact and the value moved. Confirm the new value is "+
+					"correct, then regenerate the corpus with %s=1\nwant:\n%s\ngot:\n%s",
+					schema, field, contractGoldenUpdateEnv, want,
+					contractMarshalGolden(t, seen))
 			}
 
 			extended := contractAddFutureFields(live[schema])

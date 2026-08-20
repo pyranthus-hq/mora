@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // coreADirsCfg returns a Config with every dir rooted under one temp dir — for the
@@ -37,59 +36,14 @@ func coreADirsCfg(t *testing.T) Config {
 func TestCoreA_Fusion(t *testing.T) {
 	// Default path: no override => production defaultFusion.
 	var c Config
-	if got := c.fusion(); got != defaultFusion {
+	if got := configFusion(c); got != defaultFusion {
 		t.Fatalf("fusion() default = %+v, want %+v", got, defaultFusion)
 	}
 	// Override path: the eval/test seam wins.
 	ov := fusionParams{fts: 2, vec: 3, graph: 4, k: 5}
-	c.fusionOv = &ov
-	if got := c.fusion(); got != ov {
+	c.SetFusionOverride(&ov)
+	if got := configFusion(c); got != ov {
 		t.Fatalf("fusion() override = %+v, want %+v", got, ov)
-	}
-}
-
-func TestCoreA_ParseConfigValue(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{`"/home/x/vault"`, "/home/x/vault"}, // plain quoted
-		{`"/x" # inline comment`, "/x"},      // inline comment after close quote ignored
-		{`"/tmp/a\tb"`, "/tmp/a\tb"},         // escape honored via Unquote
-		{`"a\qb"`, `a\qb`},                   // invalid escape: Unquote fails => lenient Trim
-		{`"unterminated`, "unterminated"},    // unterminated quote: legacy lenient read
-		{`/plain/path`, "/plain/path"},       // unquoted
-		{`/plain # note`, "/plain"},          // unquoted cut at '#'
-		{`  spaced  `, "spaced"},             // trimmed
-	}
-	for _, tc := range cases {
-		if got := parseConfigValue(tc.in); got != tc.want {
-			t.Errorf("parseConfigValue(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestCoreA_HumanizeAgoAndPlural(t *testing.T) {
-	cases := []struct {
-		d    time.Duration
-		want string
-	}{
-		{-5 * time.Second, "just now"},
-		{30 * time.Second, "just now"},
-		{time.Minute, "1 minute ago"},
-		{5 * time.Minute, "5 minutes ago"},
-		{time.Hour, "1 hour ago"},
-		{3 * time.Hour, "3 hours ago"},
-		{24 * time.Hour, "1 day ago"},
-		{72 * time.Hour, "3 days ago"},
-	}
-	for _, tc := range cases {
-		if got := humanizeAgo(tc.d); got != tc.want {
-			t.Errorf("humanizeAgo(%v) = %q, want %q", tc.d, got, tc.want)
-		}
-	}
-	if got := plural(1, "row"); got != "row" {
-		t.Errorf("plural(1) = %q, want row", got)
-	}
-	if got := plural(0, "row"); got != "rows" {
-		t.Errorf("plural(0) = %q, want rows", got)
 	}
 }
 
@@ -108,25 +62,6 @@ func TestCoreA_FormatBytes(t *testing.T) {
 		if got := formatBytes(tc.n); got != tc.want {
 			t.Errorf("formatBytes(%d) = %q, want %q", tc.n, got, tc.want)
 		}
-	}
-}
-
-func TestCoreA_Percentile(t *testing.T) {
-	if got := percentile(nil, 50); got != 0 {
-		t.Errorf("percentile(empty) = %d, want 0", got)
-	}
-	if got := percentile([]int64{5}, 50); got != 5 {
-		t.Errorf("percentile([5],50) = %d, want 5", got)
-	}
-	v := []int64{5, 1, 4, 2, 3} // unsorted on purpose
-	if got := percentile(v, 50); got != 3 {
-		t.Errorf("percentile(p50) = %d, want 3", got)
-	}
-	if got := percentile(v, 0); got != 1 {
-		t.Errorf("percentile(p0) = %d, want 1", got)
-	}
-	if got := percentile(v, 100); got != 5 {
-		t.Errorf("percentile(p100) = %d, want 5", got)
 	}
 }
 
@@ -153,31 +88,6 @@ func TestCoreA_ParseCSVList(t *testing.T) {
 	}
 	if got := parseCSVList("   "); got != nil {
 		t.Errorf("parseCSVList(all blank) = %v, want nil", got)
-	}
-}
-
-func TestCoreA_IsInteractive(t *testing.T) {
-	// A non-*os.File reader is never interactive.
-	if isInteractive(strings.NewReader("")) {
-		t.Error("strings.Reader must not be interactive")
-	}
-	// A real regular file is an *os.File but not a char device => false.
-	f, err := os.CreateTemp(t.TempDir(), "notty")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if isInteractive(f) {
-		t.Error("regular file must not be interactive")
-	}
-	// A closed *os.File makes Stat fail => the Stat-error branch returns false.
-	f2, err := os.CreateTemp(t.TempDir(), "closed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f2.Close()
-	if isInteractive(f2) {
-		t.Error("closed file (Stat error) must not be interactive")
 	}
 }
 
@@ -219,51 +129,6 @@ func TestCoreA_RunDispatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 // config: load (all keys + read error), show, set, write-preserve
 // ---------------------------------------------------------------------------
-
-func TestCoreA_LoadConfigAllKeys(t *testing.T) {
-	withTempHome(t)
-	dir := configDirFor(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	body := strings.Join([]string{
-		"# a comment line",
-		"", // blank line
-		"vault_dir = \"/v/dir\"",
-		"data_dir = \"/d/dir\"",
-		"state_dir = \"/s/dir\"",
-		"embedder = \"ollama\"",
-		"context = \"large\"",
-		"mmr = true",
-		"unknown_key = \"ignored\"",
-		"no_equals_line", // len(parts)!=2 => skipped
-	}, "\n")
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.VaultDir != "/v/dir" || cfg.DataDir != "/d/dir" || cfg.StateDir != "/s/dir" {
-		t.Fatalf("dirs not loaded: %+v", cfg)
-	}
-	if cfg.Embedder != "ollama" || cfg.ContextProfile != "large" || !cfg.MMR {
-		t.Fatalf("embedder/context/mmr not loaded: %+v", cfg)
-	}
-}
-
-func TestCoreA_LoadConfigReadError(t *testing.T) {
-	withTempHome(t)
-	dir := configDirFor(t)
-	// Make config.toml a DIRECTORY so os.ReadFile returns a non-ErrNotExist error.
-	if err := os.MkdirAll(filepath.Join(dir, "config.toml"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadConfig(); err == nil {
-		t.Fatal("loadConfig should surface a non-ErrNotExist read error")
-	}
-}
 
 func TestCoreA_CmdConfigShowAndSet(t *testing.T) {
 	withTempHome(t)

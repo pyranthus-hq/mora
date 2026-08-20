@@ -1,14 +1,9 @@
 package mora
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io/fs"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+	governancepkg "github.com/pyranthus-hq/mora/internal/governance"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -29,27 +24,25 @@ import (
 // at the single connector write chokepoint (`writeMappedMemory`), so re-ingest
 // cannot defeat it.
 
-const governanceSchema = 1
+const governanceSchema = governancepkg.SchemaVersion
 
 // governanceFile is the ledger's on-disk name inside the vault. A dotfile so the
 // index rebuild (which parses `*.md`) ignores it; NOT matched by the vault
 // `.gitignore` (index.db/tokens/identity*/share/) so it survives `mora sync git`.
-const governanceFile = ".mora-governance.json"
-
 const (
-	governanceParentStableIDKey = "governance_parent_stable_id"
-	governanceParentProviderKey = "governance_parent_provider"
-	governanceParentAtomsKey    = "governance_parent_atoms"
+	governanceParentStableIDKey = governancepkg.ParentStableIDKey
+	governanceParentProviderKey = governancepkg.ParentProviderKey
+	governanceParentAtomsKey    = governancepkg.ParentAtomsKey
 )
 
 // Atom kinds — the source-native identity the ledger keys on. "host" is reserved
 // for a future connector field (no source populates it yet), so it is accepted
 // in the schema but derived from no Meta.
 const (
-	atomStableID = "stable_id" // one whole memory (a chat/thread/event)
-	atomHandle   = "handle"    // an iMessage participant handle (+1…, or an email)
-	atomAddress  = "address"   // a Gmail/Calendar email address
-	atomHost     = "host"      // reserved; no source field yet
+	atomStableID = governancepkg.AtomStableID // one whole memory (a chat/thread/event)
+	atomHandle   = governancepkg.AtomHandle   // an iMessage participant handle (+1…, or an email)
+	atomAddress  = governancepkg.AtomAddress  // a Gmail/Calendar email address
+	atomHost     = governancepkg.AtomHost     // reserved; no source field yet
 )
 
 // Entry kinds — the governance operations that ride the one ledger. Only the
@@ -57,23 +50,23 @@ const (
 // the rest are durable records later phases consume (redact = P16 graph-compile
 // participant filter; merge_confirm = P13 confirm-queue; archive reserved).
 const (
-	govKindForget          = "forget"
-	govKindPrune           = "prune"
-	govKindSourceScope     = "source_scope"
-	govKindRedact          = "redact"
-	govKindMergeConfirm    = "merge_confirm"
-	govKindArchive         = "archive"
-	govKindTeachCommitment = "teach_commitment"
-	govKindTeachMemory     = "teach_memory"
-	govKindEvalConsent     = "eval_consent"
+	govKindForget          = governancepkg.KindForget
+	govKindPrune           = governancepkg.KindPrune
+	govKindSourceScope     = governancepkg.KindSourceScope
+	govKindRedact          = governancepkg.KindRedact
+	govKindMergeConfirm    = governancepkg.KindMergeConfirm
+	govKindArchive         = governancepkg.KindArchive
+	govKindTeachCommitment = governancepkg.KindTeachCommitment
+	govKindTeachMemory     = governancepkg.KindTeachMemory
+	govKindEvalConsent     = governancepkg.KindEvalConsent
 )
 
 // Actions — what an entry DOES at the write chokepoint. "suppress" skips the
 // write entirely (never persist); "record" is an inert durable note (corrections)
 // with no write-time effect.
 const (
-	govActionSuppress = "suppress"
-	govActionRecord   = "record"
+	govActionSuppress = governancepkg.ActionSuppress
+	govActionRecord   = governancepkg.ActionRecord
 )
 
 // merge_confirm decisions — the two verdicts the P13 one-tap confirm-queue records
@@ -81,46 +74,17 @@ const (
 // "reject" pins them apart (never re-proposed, never merged). A later entry on the
 // same pair supersedes an earlier one (last-writer-wins).
 const (
-	mergeDecisionConfirm = "confirm"
-	mergeDecisionReject  = "reject"
+	mergeDecisionConfirm = governancepkg.DecisionConfirm
+	mergeDecisionReject  = governancepkg.DecisionReject
 )
 
 // govAtom is a stable-atom key. Provider "" is a cross-provider wildcard (e.g.
 // forget an email address across gmail AND calendar); a concrete provider scopes
 // the match to that connector (e.g. an iMessage handle).
-type govAtom struct {
-	Provider string `json:"provider,omitempty"`
-	Kind     string `json:"kind"`
-	Value    string `json:"value"`
-}
+type govAtom = governancepkg.Atom
+type govEntry = governancepkg.Entry
 
-// govEntry is one durable governance decision.
-type govEntry struct {
-	ID     string  `json:"id"`
-	Kind   string  `json:"kind"`
-	Atom   govAtom `json:"atom"`
-	Action string  `json:"action"`
-	Reason string  `json:"reason,omitempty"`
-	// Atom2/Decision carry a two-atom correction (merge_confirm): "these two
-	// source-native identities are (confirm) / are not (reject) the same person".
-	// Keyed by atoms, never a person: id — the #52 trap.
-	Atom2    *govAtom `json:"atom2,omitempty"`
-	Decision string   `json:"decision,omitempty"`
-	// Teach decisions key product corrections on stable memory/commitment
-	// identity. ReplacementID links an authored-memory revision while retaining
-	// the original Markdown evidence.
-	TargetID           string    `json:"target_id,omitempty"`
-	CommitmentID       string    `json:"commitment_id,omitempty"`
-	ReplacementID      string    `json:"replacement_id,omitempty"`
-	CorrectedAtom      *govAtom  `json:"corrected_atom,omitempty"`
-	CorrectedDirection Direction `json:"corrected_direction,omitempty"`
-	DuplicateOf        string    `json:"duplicate_of,omitempty"`
-	CreatedAt          string    `json:"created_at"`
-	CreatedBy          string    `json:"created_by"`
-	RevokedAt          string    `json:"revoked_at,omitempty"` // set by unforget/undo; a revoked entry is inert
-}
-
-func (e govEntry) revoked() bool { return e.RevokedAt != "" }
+func govEntryRevoked(e govEntry) bool { return e.RevokedAt != "" }
 
 // governance is the whole ledger.
 type governance struct {
@@ -131,20 +95,26 @@ type governance struct {
 // activeSuppress returns the live entries that gate the write chokepoint (the
 // suppression kinds, action=suppress, not revoked).
 func (g governance) activeSuppress() []govEntry {
-	var out []govEntry
-	for _, e := range g.Entries {
-		if e.revoked() || e.Action != govActionSuppress {
-			continue
-		}
-		switch e.Kind {
-		case govKindForget, govKindPrune, govKindSourceScope:
-			out = append(out, e)
-		}
-	}
-	return out
+	return governancepkg.ActiveSuppress(toGovernanceLedger(g))
 }
 
-func governancePath(cfg Config) string { return filepath.Join(cfg.VaultDir, governanceFile) }
+func toGovernanceEntry(e govEntry) governancepkg.Entry   { return e }
+func fromGovernanceEntry(e governancepkg.Entry) govEntry { return e }
+func toGovernanceLedger(g governance) governancepkg.Ledger {
+	return governancepkg.Ledger{Schema: g.Schema, Entries: g.Entries}
+}
+func fromGovernanceLedger(g governancepkg.Ledger) governance {
+	return governance{Schema: g.Schema, Entries: g.Entries}
+}
+func governanceStore(cfg Config) governancepkg.Store {
+	return governancepkg.Store{VaultDir: cfg.VaultDir, NewID: newID, Now: time.Now, CreatedBy: func() string { return "mora " + BuildVersion }, PostLoad: func() {
+		if testHookGovAppendPostLoad != nil {
+			testHookGovAppendPostLoad()
+		}
+	}}
+}
+
+func governancePath(cfg Config) string { return governanceStore(cfg).Path() }
 
 // loadGovernance reads the ledger. An ABSENT ledger is the common case and reads
 // as an empty ledger (no error). A CORRUPT ledger FAILS LOUD: treating it as
@@ -152,38 +122,17 @@ func governancePath(cfg Config) string { return filepath.Join(cfg.VaultDir, gove
 // error is surfaced to the write path, which counts it as a failed write
 // (honest-snapshot) rather than laundering a partial/wrong sync into success.
 func loadGovernance(cfg Config) (governance, error) {
-	b, err := os.ReadFile(governancePath(cfg))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return governance{Schema: governanceSchema}, nil
-		}
-		return governance{}, err
-	}
-	var g governance
-	if err := json.Unmarshal(b, &g); err != nil {
-		return governance{}, fmt.Errorf("governance ledger %s is unreadable (corrupt JSON) — restore it from your vault backup (e.g. `mora sync git`) rather than deleting it: %w", governancePath(cfg), err)
-	}
-	return g, nil
+	g, err := governanceStore(cfg).Load()
+	return fromGovernanceLedger(g), err
 }
 
 // saveGovernance persists the ledger via atomicWrite (temp+rename). Mode 0600 —
 // it names identities the user chose to forget, mildly sensitive; and the vault
 // may leave the machine via `mora sync git`.
-func saveGovernance(cfg Config, g governance) error {
-	if g.Schema == 0 {
-		g.Schema = governanceSchema
-	}
-	b, err := json.MarshalIndent(g, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWrite(governancePath(cfg), append(b, '\n'), 0o600)
-}
-
 // governanceLockPath is the ledger's cross-process lease file. Both it and the
 // persistent OS guard selected by leaseGuardPath end in `*.lock`, so vault Git
 // excludes them from `mora sync git`.
-func governanceLockPath(cfg Config) string { return governancePath(cfg) + ".lock" }
+func governanceLockPath(cfg Config) string { return governanceStore(cfg).LockPath() }
 
 // governanceAcquireTimeout is the WALL-CLOCK budget for the governance lease's
 // contention spin. It matches sourcesAcquireTimeout's envelope because the hold
@@ -205,35 +154,8 @@ const governanceAcquireTimeout = 2 * time.Second
 // single-host, single-user model (a manual `mora forget` racing another forget,
 // or the forward-declared scheduled prune #53). It returns a real error, never a
 // silent no-op, if the lease cannot be taken; the returned release is idempotent.
-func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error) {
-	if err := os.MkdirAll(cfg.VaultDir, 0o700); err != nil {
-		return nil, err
-	}
-	lockPath := governanceLockPath(cfg)
-	body, _ := json.Marshal(loopLockBody{PID: os.Getpid(), AcquiredAt: now.UTC().Format(time.RFC3339)})
-	deadline := time.Now().Add(governanceAcquireTimeout)
-	for attempt := 0; ; attempt++ {
-		published, perr := publishLockFile(lockPath, body)
-		wait := sourcesAcquireBackoff(attempt)
-		switch {
-		case perr == nil && published:
-			return loopLockReleaser(lockPath, body), nil
-		case perr != nil && !sharingViolationRetryable(perr):
-			return nil, perr // a real, non-contention fs error: never interleave a partial write.
-		case perr == nil:
-			reaped, rerr := reapStaleLockTTL(lockPath, now, sourcesLockTTL)
-			if rerr != nil && !sharingViolationRetryable(rerr) {
-				return nil, rerr
-			}
-			if rerr == nil && reaped {
-				wait = 0 // cleared an abandoned lease; retry publish immediately.
-			}
-		}
-		if !sleepWithinDeadline(wait, deadline) {
-			break
-		}
-	}
-	return nil, fmt.Errorf("governance ledger is locked by another mora process (%s); retry in a moment", lockPath)
+func acquireGovernanceLock(cfg Config, now time.Time) (func(), error) {
+	return governanceStore(cfg).Acquire(now)
 }
 
 // appendGovernanceEntry mints id/created_at/created_by, appends, and persists.
@@ -242,23 +164,8 @@ func acquireGovernanceLock(cfg Config, now time.Time) (release func(), err error
 // and RELOADS inside the lease, so two concurrent writers can never clobber each
 // other's entry — a dropped forget suppression would silently resurrect content.
 func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
-	release, err := acquireGovernanceLock(cfg, time.Now())
-	if err != nil {
-		return govEntry{}, err
-	}
-	defer release()
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		return govEntry{}, err
-	}
-	if testHookGovAppendPostLoad != nil {
-		// Test seam (nil in production): widen the read-modify-write window between
-		// load and save. Under the lease this merely slows one serialized writer; if
-		// the lease were removed it lets concurrent writers overlap their RMW and drop
-		// an append — the lost-update the ConcurrentAppendsNoLostUpdate test forces.
-		testHookGovAppendPostLoad()
-	}
-	return appendGovernanceEntryLocked(cfg, g, e)
+	stored, err := governanceStore(cfg).Append(toGovernanceEntry(e))
+	return fromGovernanceEntry(stored), err
 }
 
 // appendGovernanceEntryLocked appends to a ledger already loaded while the caller
@@ -266,52 +173,21 @@ func appendGovernanceEntry(cfg Config, e govEntry) (govEntry, error) {
 // append are one critical section; calling appendGovernanceEntry there would try
 // to reacquire the same cross-process lease.
 func appendGovernanceEntryLocked(cfg Config, g governance, e govEntry) (govEntry, error) {
-	if e.ID == "" {
-		e.ID = "gov_" + strings.TrimPrefix(newID(), "mem_")
-	}
-	if e.CreatedAt == "" {
-		e.CreatedAt = nowRFC3339()
-	}
-	if e.CreatedBy == "" {
-		e.CreatedBy = "mora " + BuildVersion
-	}
-	g.Entries = append(g.Entries, e)
-	if err := saveGovernance(cfg, g); err != nil {
-		return govEntry{}, err
-	}
-	return e, nil
+	stored, err := governanceStore(cfg).AppendLocked(toGovernanceLedger(g), toGovernanceEntry(e))
+	return fromGovernanceEntry(stored), err
 }
 
 // revokeGovernanceEntry marks an entry inert (unforget/undo). Returns whether an
 // active entry with that id was found. Serialized + reloaded under the same lease
 // as appendGovernanceEntry so a concurrent append is never clobbered by a revoke.
 func revokeGovernanceEntry(cfg Config, id string) (bool, error) {
-	release, err := acquireGovernanceLock(cfg, time.Now())
-	if err != nil {
-		return false, err
-	}
-	defer release()
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		return false, err
-	}
-	found := false
-	for i := range g.Entries {
-		if g.Entries[i].ID == id && !g.Entries[i].revoked() {
-			g.Entries[i].RevokedAt = nowRFC3339()
-			found = true
-		}
-	}
-	if !found {
-		return false, nil
-	}
-	return true, saveGovernance(cfg, g)
+	return governanceStore(cfg).Revoke(id)
 }
 
 // itemAtom is a memory's whole-item stable-atom key (exact StableID — never with
 // the `@account` suffix stripped, which would over-match across accounts).
 func itemAtom(provider, stableID string) govAtom {
-	return govAtom{Provider: provider, Kind: atomStableID, Value: stableID}
+	return governancepkg.ItemAtom(provider, stableID)
 }
 
 // counterpartyAtoms is the memory's set of EXTERNAL identity atoms, coerced from
@@ -321,43 +197,7 @@ func itemAtom(provider, stableID string) govAtom {
 // from/to/cc/attendees/organizer (these INCLUDE self, which is why identity
 // suppression is gated on a sole counterparty — see decideSuppress).
 func counterpartyAtoms(provider string, meta map[string]any) []govAtom {
-	if meta == nil {
-		return nil
-	}
-	seen := map[string]govAtom{}
-	add := func(kind, raw string) {
-		v := normalizeIdentity(kind, raw)
-		if v == "" {
-			return
-		}
-		seen[kind+"\x00"+v] = govAtom{Provider: provider, Kind: kind, Value: v}
-	}
-	switch provider {
-	case "imessage":
-		for _, p := range metaPairs(meta["participants"]) {
-			add(atomHandle, p.handle)
-		}
-	default: // gmail / calendar (email-addressed connectors)
-		for _, key := range []string{"from", "to", "cc", "attendees"} {
-			for _, a := range metaStrings(meta[key]) {
-				add(atomAddress, a)
-			}
-		}
-		if org, ok := meta["organizer"].(string); ok {
-			add(atomAddress, org)
-		}
-	}
-	out := make([]govAtom, 0, len(seen))
-	for _, a := range seen {
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind < out[j].Kind
-		}
-		return out[i].Value < out[j].Value
-	})
-	return out
+	return governancepkg.CounterpartyAtoms(provider, meta)
 }
 
 // normalizeIdentity applies the MINIMAL normalization a stable-atom key needs.
@@ -365,22 +205,10 @@ func counterpartyAtoms(provider string, meta map[string]any) []govAtom {
 // only trimmed. Deliberately NOT phone/email canonicalization — that lives in
 // canonicalizePersons and coupling to it would risk a false merge (precision-first:
 // under-match rather than over-match).
-func normalizeIdentity(kind, raw string) string {
-	v := strings.TrimSpace(raw)
-	if v == "" {
-		return ""
-	}
-	if kind == atomAddress || strings.Contains(v, "@") {
-		return strings.ToLower(v)
-	}
-	return v
-}
+func normalizeIdentity(kind, raw string) string { return governancepkg.NormalizeIdentity(kind, raw) }
 
 // providerMatches reports whether an entry's atom provider matches a memory's
 // provider. "" on the entry is a cross-provider wildcard.
-func providerMatches(entryProvider, memProvider string) bool {
-	return entryProvider == "" || entryProvider == memProvider
-}
 
 // decideSuppress is the write-chokepoint decision, pure over (ledger, memory
 // fields). Returns the id of the first matching active suppression entry, or "".
@@ -392,87 +220,17 @@ func providerMatches(entryProvider, memProvider string) bool {
 //     "layoff email" guard); its per-participant redaction is deferred to the
 //     P16 graph-compile-time filter, recorded via a `redact` entry.
 func (g governance) decideSuppress(provider, stableID string, meta map[string]any) (bool, string) {
-	item := itemAtom(provider, stableID)
-	cps := counterpartyAtoms(provider, meta)
-	sole := len(cps) == 1
-	parentProvider, parentID, parentCps := governanceParentContext(meta)
-	parentSole := len(parentCps) == 1
-	for _, e := range g.activeSuppress() {
-		a := e.Atom
-		switch a.Kind {
-		case atomStableID:
-			if providerMatches(a.Provider, provider) && a.Value == item.Value {
-				return true, e.ID
-			}
-			if parentID != "" && providerMatches(a.Provider, parentProvider) && a.Value == parentID {
-				return true, e.ID
-			}
-		case atomHandle, atomAddress:
-			if sole && cps[0].Kind == a.Kind && providerMatches(a.Provider, provider) && cps[0].Value == a.Value {
-				return true, e.ID
-			}
-			if parentSole && parentCps[0].Kind == a.Kind &&
-				providerMatches(a.Provider, parentProvider) && parentCps[0].Value == a.Value {
-				return true, e.ID
-			}
-		}
-	}
-	return false, ""
+	return governancepkg.DecideSuppress(toGovernanceLedger(g), provider, stableID, meta)
 }
 
 // governanceParentContext decodes the source-native parent identity stamped on a
 // derived attachment. These keys are intentionally separate from graph Meta so an
 // attachment does not double-count the parent's participants, but the governance
 // write/removal chokepoints can still cascade a parent forget.
-func governanceParentContext(meta map[string]any) (provider, stableID string, atoms []govAtom) {
-	if meta == nil {
-		return "", "", nil
-	}
-	provider, _ = meta[governanceParentProviderKey].(string)
-	stableID, _ = meta[governanceParentStableIDKey].(string)
-	add := func(kind, value string) {
-		value = normalizeIdentity(kind, value)
-		if (kind == atomHandle || kind == atomAddress) && value != "" {
-			atoms = append(atoms, govAtom{Provider: provider, Kind: kind, Value: value})
-		}
-	}
-	switch rows := meta[governanceParentAtomsKey].(type) {
-	case []map[string]string:
-		for _, row := range rows {
-			add(row["kind"], row["value"])
-		}
-	case []any:
-		for _, raw := range rows {
-			switch row := raw.(type) {
-			case map[string]any:
-				kind, _ := row["kind"].(string)
-				value, _ := row["value"].(string)
-				add(kind, value)
-			case map[string]string:
-				add(row["kind"], row["value"])
-			}
-		}
-	}
-	sort.Slice(atoms, func(i, j int) bool {
-		if atoms[i].Kind != atoms[j].Kind {
-			return atoms[i].Kind < atoms[j].Kind
-		}
-		return atoms[i].Value < atoms[j].Value
-	})
-	dedup := atoms[:0]
-	for _, atom := range atoms {
-		if len(dedup) > 0 && dedup[len(dedup)-1].Kind == atom.Kind &&
-			dedup[len(dedup)-1].Value == atom.Value {
-			continue
-		}
-		dedup = append(dedup, atom)
-	}
-	return provider, stableID, dedup
-}
 
 // suppresses is the MappedMemory-typed decision (the connector write path).
 func (g governance) suppresses(mm memory.MappedMemory) (bool, string) {
-	return g.decideSuppress(mm.Provider, mm.StableID, mm.Meta)
+	return governancepkg.Suppresses(toGovernanceLedger(g), mm)
 }
 
 // shouldSuppressWrite is the guard entry point: load the ledger (fail-closed on
@@ -493,77 +251,26 @@ func shouldSuppressWrite(cfg Config, mm memory.MappedMemory) (bool, string, erro
 // source-native ledger key and the graph's identity space — and it maps to the
 // pre-merge id, never a post-merge canonical (the #52 trap): the canonical moves as
 // identities cluster, the source atom does not.
-func atomPersonID(a govAtom) string {
-	switch a.Kind {
-	case atomHandle, atomAddress:
-		if a.Value == "" {
-			return ""
-		}
-		return personID(a.Value)
-	}
-	return ""
-}
+func atomPersonID(a govAtom) string { return governancepkg.AtomPersonID(a) }
 
 // mergePairKey is the order-independent key of a source-atom person pair, used to
 // dedup decisions and to filter already-decided candidates out of the confirm-queue.
-func mergePairKey(a, b string) string {
-	if a > b {
-		a, b = b, a
-	}
-	return a + "\x00" + b
-}
+func mergePairKey(a, b string) string { return governancepkg.MergePairKey(a, b) }
 
 // briefLineDecisionKey is the stable key for one meeting-brief attribution decision:
 // "this cited source memory (stable atom) is / is not linked to this attendee atom".
 // Last writer wins by key.
-func briefLineDecisionKey(stableAtom, attendeeAtom govAtom) string {
-	return stableAtom.Provider + "\x00" +
-		stableAtom.Value + "\x00" +
-		attendeeAtom.Provider + "\x00" +
-		attendeeAtom.Kind + "\x00" +
-		attendeeAtom.Value
-}
+func briefLineDecisionKey(a, b govAtom) string { return governancepkg.BriefLineDecisionKey(a, b) }
 
 // briefLineDecisions resolves P16 click-to-correct entries from the governance
 // ledger: redact entries keyed by (stable_id atom, attendee atom) with decision
 // confirm/reject. Returned map uses briefLineDecisionKey and applies last-writer-
 // wins semantics.
 func (g governance) briefLineDecisions() map[string]string {
-	decisions := map[string]string{}
-	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindRedact || e.Action != govActionRecord || e.Atom2 == nil {
-			continue
-		}
-		if e.Atom.Kind != atomStableID || strings.TrimSpace(e.Atom.Value) == "" {
-			continue
-		}
-		attendee := *e.Atom2
-		if attendee.Kind != atomHandle && attendee.Kind != atomAddress {
-			continue
-		}
-		attendee.Value = normalizeIdentity(attendee.Kind, attendee.Value)
-		if attendee.Value == "" {
-			continue
-		}
-		if e.Decision != mergeDecisionConfirm && e.Decision != mergeDecisionReject {
-			continue
-		}
-		decisions[briefLineDecisionKey(e.Atom, attendee)] = e.Decision
-	}
-	return decisions
+	return governancepkg.BriefLineDecisions(toGovernanceLedger(g))
 }
 
 // activeMergeConfirms returns the non-revoked, two-atom merge_confirm entries.
-func (g governance) activeMergeConfirms() []govEntry {
-	var out []govEntry
-	for _, e := range g.Entries {
-		if e.revoked() || e.Kind != govKindMergeConfirm || e.Atom2 == nil {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
 
 // mergeDecisions resolves the ledger's merge_confirm entries into what P13 consumes:
 //   - confirmed: same-person pairs (as pre-merge person ids) the graph build unifies;
@@ -574,33 +281,10 @@ func (g governance) activeMergeConfirms() []govEntry {
 // Last-writer-wins per pair (entries are chronological), so a reject after a confirm
 // (or vice-versa) takes effect. Deterministic: confirmed is sorted.
 func (g governance) mergeDecisions() (confirmed []confirmedMerge, decided map[string]bool) {
-	decided = map[string]bool{}
-	verdict := map[string]string{} // pairKey -> latest decision
-	ids := map[string][2]string{}  // pairKey -> (personA, personB)
-	govOf := map[string]string{}   // pairKey -> authorizing ledger id
-	for _, e := range g.activeMergeConfirms() {
-		a, b := atomPersonID(e.Atom), atomPersonID(*e.Atom2)
-		if a == "" || b == "" || a == b {
-			continue
-		}
-		key := mergePairKey(a, b)
-		verdict[key] = e.Decision
-		ids[key] = [2]string{a, b}
-		govOf[key] = e.ID
-		decided[key] = true
+	items, decided := governancepkg.MergeDecisions(toGovernanceLedger(g))
+	for _, m := range items {
+		confirmed = append(confirmed, confirmedMerge{A: m.A, B: m.B, GovID: m.GovID})
 	}
-	for key, d := range verdict {
-		if d == mergeDecisionConfirm {
-			p := ids[key]
-			confirmed = append(confirmed, confirmedMerge{A: p[0], B: p[1], GovID: govOf[key]})
-		}
-	}
-	sort.Slice(confirmed, func(i, j int) bool {
-		if confirmed[i].A != confirmed[j].A {
-			return confirmed[i].A < confirmed[j].A
-		}
-		return confirmed[i].B < confirmed[j].B
-	})
 	return confirmed, decided
 }
 
@@ -652,7 +336,7 @@ func writeUnlessForgotten(cfg Config, provider, id, dest string, body []byte, mo
 	if testHookInWriteCritical != nil {
 		testHookInWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
 	}
-	if err := atomicWrite(dest, body, mode); err != nil {
+	if err := atomicio.Write(dest, body, mode); err != nil {
 		return false, err
 	}
 	return true, nil

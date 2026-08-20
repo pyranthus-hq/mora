@@ -309,8 +309,13 @@ func TestCapabilitiesContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("mcp = %#v", payload["mcp"])
 	}
-	if tools, ok := mcp["tools"].([]any); !ok || len(tools) != 12 {
-		t.Fatalf("mcp.tools = %#v, want 12 entries", mcp["tools"])
+	// Bound to the tool registry rather than to a literal. A hard-coded count
+	// reds this test every time a tool is legitimately added — it did, when
+	// calendar_events landed — while proving nothing the mcp_tools drift
+	// subtest above does not already prove exactly.
+	wantTools := len(mcpToolNames())
+	if tools, ok := mcp["tools"].([]any); !ok || len(tools) != wantTools {
+		t.Fatalf("mcp.tools = %#v, want %d entries", mcp["tools"], wantTools)
 	}
 	for _, connector := range payload["connectors"].([]any) {
 		if connector.(map[string]any)["type"] == "gdrive" {
