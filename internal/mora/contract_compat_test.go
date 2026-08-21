@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -31,6 +32,21 @@ import (
 // place to accommodate a removed field: that requires bumping the schema's
 // `schema_version` and adding testdata/contracts/v2/.
 const contractGoldenDir = "testdata/contracts/v1"
+
+// contractGoldenGOOSDir holds the per-platform overrides. Almost every payload
+// is identical on every host, and those live in the shared corpus above. A few
+// are platform contracts in their own right: `mora connectors list` publishes
+// registry.CatalogForGOOS, which drops the macOS-only connectors on Windows, so
+// a Windows consumer legitimately sees four rows where a macOS or Linux
+// consumer sees six. Freezing one of those as THE contract reds the other
+// platform on a difference that is the product working as designed.
+//
+// A schema that varies gets one file per platform that differs, at
+// <goos>/<schema>.json; contractGoldenPath prefers it and falls back to the
+// shared corpus. The fallback is what keeps this from becoming a
+// three-copies-of-everything scheme: only the genuinely divergent payload has
+// an override, and the shared file stays the contract everywhere else.
+const contractGoldenGOOSDir = contractGoldenDir + "/goos"
 
 // contractGoldenUpdateEnv regenerates the corpus. It is deliberately
 // ADDITIVE-ONLY: regeneration refuses to write a document that has lost a key
@@ -80,6 +96,17 @@ var contractVolatileLeaves = map[string]any{
 	"mora.version.arch":           "<goarch>",
 	"mora.version.go_version":     "<go-version>",
 	"mora.doctor.report.platform": "<goos>",
+
+	// The token estimate for the context pack. It is computed over the RAW
+	// payload, whose timestamps carry the machine's zone offset: the same two
+	// memories render as `...T03:55:23-07:00` (25 bytes) in a developer's local
+	// zone and `...T10:55:23Z` (20 bytes) on a UTC CI runner. Three timestamps
+	// across the blob and its receipts move the estimate by a couple of tokens,
+	// which is why a corpus frozen on a laptop reds the first CI run. The
+	// estimate's presence, its type, and its `used <= budget` relation are the
+	// contract — `used == 392` never was. That relation is asserted where it
+	// belongs, against live output, in the MCP usability tests.
+	"mora.context.used": float64(0),
 }
 
 // contractNormalize replaces the classes of value that legitimately differ
@@ -237,6 +264,18 @@ func contractLiveDocuments(t *testing.T) map[string]any {
 }
 
 func contractGoldenPath(schema string) string {
+	return contractGoldenPathFor(schema, runtime.GOOS)
+}
+
+// contractGoldenPathFor resolves a schema to the file this platform compares
+// against: the per-platform override when one exists, the shared corpus
+// otherwise. Taking goos as an argument is what lets the selection itself be
+// tested from any host.
+func contractGoldenPathFor(schema, goos string) string {
+	override := filepath.Join(contractGoldenGOOSDir, goos, schema+".json")
+	if _, err := os.Stat(override); err == nil {
+		return override
+	}
 	return filepath.Join(contractGoldenDir, schema+".json")
 }
 
@@ -341,7 +380,14 @@ func contractRegenerateCorpus(t *testing.T, live map[string]any) {
 	}
 	for _, schema := range contractSortedKeys(live) {
 		body := contractMarshalGolden(t, live[schema])
-		if err := os.WriteFile(contractGoldenPath(schema), body, 0o644); err != nil {
+		// Regeneration writes wherever this platform READS, so running the
+		// generator on Windows refreshes the Windows override and never
+		// overwrites the shared corpus with a platform-specific document.
+		path := contractGoldenPath(schema)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
 			t.Fatalf("write golden %s: %v", schema, err)
 		}
 	}
@@ -388,6 +434,12 @@ func TestContractGoldenCorpusIsComplete(t *testing.T) {
 	goldens := map[string]bool{}
 	for _, entry := range entries {
 		name := entry.Name()
+		// The per-platform override tree lives inside the corpus directory;
+		// its contents are reconciled through contractGoldenPath, not listed
+		// here, because an override never introduces a schema of its own.
+		if entry.IsDir() && filepath.Join(contractGoldenDir, name) == filepath.Clean(contractGoldenGOOSDir) {
+			continue
+		}
 		if !strings.HasSuffix(name, ".json") {
 			t.Errorf("%s holds a non-JSON file %q", contractGoldenDir, name)
 			continue
@@ -878,4 +930,70 @@ func TestContractCompatRemedyMessage(t *testing.T) {
 			t.Fatalf("adding a field must not be a breaking change: %v", findings)
 		}
 	})
+}
+
+// TestContractGoldenPathPrefersGOOSOverride pins the selection rule itself. It
+// runs on every host, so a broken fallback cannot hide until the one platform
+// that owns an override happens to build.
+func TestContractGoldenPathPrefersGOOSOverride(t *testing.T) {
+	windowsOverride := filepath.Join(contractGoldenGOOSDir, "windows", "mora.connectors.list.json")
+	if _, err := os.Stat(windowsOverride); err != nil {
+		t.Fatalf("the Windows connector-catalog override is missing: %v", err)
+	}
+	cases := []struct {
+		name   string
+		schema string
+		goos   string
+		want   string
+	}{
+		{"override wins where one exists", "mora.connectors.list", "windows", windowsOverride},
+		{"shared corpus elsewhere", "mora.connectors.list", "darwin", filepath.Join(contractGoldenDir, "mora.connectors.list.json")},
+		{"shared corpus for schemas with no override", "mora.context", "windows", filepath.Join(contractGoldenDir, "mora.context.json")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := contractGoldenPathFor(c.schema, c.goos); got != c.want {
+				t.Errorf("contractGoldenPathFor(%q, %q) = %q, want %q", c.schema, c.goos, got, c.want)
+			}
+		})
+	}
+}
+
+// TestContractGoldenWindowsCatalogMatchesLiveOutput verifies the Windows
+// override against the command that produces it, from any host, by driving the
+// same GOOS seam the product reads (runtimeGOOS). Without this the override
+// would be an assertion about Windows that only Windows could check, and a
+// wrong file would sit green on every developer machine until CI ran.
+func TestContractGoldenWindowsCatalogMatchesLiveOutput(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	origGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
+	runtimeGOOS = func() string { return "windows" }
+
+	stdout, stderr, err := runSplit(t, "connectors", "list", "--json")
+	if err != nil {
+		t.Fatalf("connectors list --json: %v\nstderr: %s", err, stderr)
+	}
+	var live any
+	if err := json.Unmarshal([]byte(stdout), &live); err != nil {
+		t.Fatalf("decode connectors list receipt: %v\n%s", err, stdout)
+	}
+
+	body, err := os.ReadFile(contractGoldenPathFor("mora.connectors.list", "windows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden any
+	if err := json.Unmarshal(body, &golden); err != nil {
+		t.Fatal(err)
+	}
+
+	home, _ := os.UserHomeDir()
+	got := contractMarshalGolden(t, contractNormalize(live, home, "mora.connectors.list"))
+	want := contractMarshalGolden(t, contractNormalize(golden, home, "mora.connectors.list"))
+	if !bytes.Equal(want, got) {
+		t.Fatalf("the Windows connector-catalog override no longer matches what the command emits under GOOS=windows.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

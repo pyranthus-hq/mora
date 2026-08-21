@@ -314,8 +314,17 @@ load-bearing are the ones whose source is Go: `connectors`, `mcp.tools`, `mcp.wr
   type, and keeps its top-level position, for the life of version N.
 - New fields will appear. Ignore the ones you do not know.
 - An array-valued field is never `null`. An empty collection is `[]`.
-- Values that are inherently variable — ids, timestamps, absolute paths, byte counts — are variable.
-  Do not pin them.
+- Values that are inherently variable — ids, timestamps, absolute paths, byte counts, size estimates
+  — are variable. Do not pin them. `mora context`'s `used` is one: it is a token estimate over a
+  payload whose timestamps carry the host's zone offset, so the same two memories cost a couple of
+  tokens more in a local zone than in UTC. Its presence, its type, and `used <= budget` hold; its
+  exact number does not.
+- **A few payloads are platform contracts.** `mora connectors list` publishes the catalog for the
+  host: Windows drops the macOS-only connectors (iMessage, Apple Calendar, Address Book), so a
+  Windows consumer sees four rows where macOS and Linux see six. The field set and the row shape are
+  identical everywhere; only membership differs. Those payloads carry one frozen document per
+  platform that differs, under `testdata/contracts/v1/goos/<goos>/`, and the shared corpus stays the
+  contract for every other host.
 - **Collection ordering is not part of the contract.** The frozen corpus normalizes array order, so a
   reordering will not fail the gate and is not guaranteed to you. If you need a stable order, sort.
 
@@ -334,7 +343,9 @@ payload, and `internal/mora/contract_compat_test.go` decodes it in **both** dire
 | `TestContractCompatAdditiveIsSafe` | today's output → a type built from the v1 golden | Every v1 field still populates. It then injects a field nothing emits today and asserts the pinned consumer's view is byte-identical, so "adding is safe" is measured rather than assumed. |
 | `TestContractCompatRemovalIsCaught` | the v1 golden → a type built from today's payload, unknown fields disallowed | A removed or renamed field is an unknown field in that direction and fails. A key-by-key walk runs alongside it for what strict decoding cannot see: inside an array that is empty today, and scalar retypes. |
 | `TestContractGoldenCorpusIsComplete` | registry → corpus | A new payload with no golden fails, so nothing escapes the gate. |
-| `TestContractGoldenCorpusIsFrozen` | corpus → live output | The committed document must still match what the command emits. |
+| `TestContractGoldenCorpusIsFrozen` | corpus → live output | The committed document must still match what the command emits, comparing against the platform's override where one exists. |
+| `TestContractGoldenPathPrefersGOOSOverride` | selection rule | An override is preferred for the platform that owns it; every other schema and platform falls back to the shared corpus. |
+| `TestContractGoldenWindowsCatalogMatchesLiveOutput` | Windows override → live output under `GOOS=windows` | The Windows connector catalog is checked from any host, not only on Windows. |
 | `TestContractCompatRemedyMessage` | — | Covers the failure text itself, and proves the detector fires on a synthetic removal. |
 
 **Regeneration cannot be used to drop a field.** The generator refuses to write a document that lost a
@@ -354,8 +365,10 @@ platform-gated, and fabricating documents for them would freeze shapes no comman
 carry only `TestContractEveryPayloadIsVersioned`'s schema-name assertion. A later phase that makes one
 of them executable in a test must add its golden in the same change.
 
-The corpus has also never been executed on Linux or Windows; GOOS-gated variance was measured by
-injecting the platform string, not by running those checkouts.
+The corpus is generated on macOS and verified on macOS, Linux, and Windows in CI. Where a payload
+varies by platform, the platform's own frozen document is verified from any host by driving the same
+GOOS seam the product reads (`TestContractGoldenWindowsCatalogMatchesLiveOutput`), so a wrong Windows
+document fails on a developer's laptop rather than waiting for the Windows runner.
 
 ### Contract tests read machine output, never prose
 
