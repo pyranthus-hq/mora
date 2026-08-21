@@ -23,7 +23,7 @@ a one-host file lease. These controls fit one machine's Mora processes.
 |---|---|---|---|
 | G1 | **No lost writes** — a write reported as saved is on disk exactly once. A same-instant id collision never silently overwrites a rival's memory | Create-exclusive publish (`os.Link`, fails `EEXIST`) + bounded id re-mint | `createMemory`, `atomicio.CreateExclusive` |
 | G2 | **No torn reads** — no reader ever parses half-written frontmatter | Every memory file is published fully-formed via an atomic link/rename of a staged temp | `atomicio.Write`, `atomicio.CreateExclusive` |
-| G3 | **No surfaced `database is locked`** — concurrent reader *processes* never block a writer, and a contended writer waits out its rival's commit instead of erroring | `journal_mode(WAL)` on the index (readers read a snapshot, never hold a lock a writer must wait for) + `busy_timeout(15000)` on every writer and read-only DSN + `_txlock=immediate` on writers | `rwIndexDSN`, `roIndexDSN`, `rebuildIndexWithPolicy`, `indexUpsert` |
+| G3 | **No surfaced `database is locked`** — concurrent reader *processes* never block a writer, and a contended writer waits out its rival's commit instead of erroring | `journal_mode(WAL)` on the index (readers read a snapshot, never hold a lock a writer must wait for) + `busy_timeout(15000)` on every writer and read-only DSN + `_txlock=immediate` on writers + a bounded fresh-transaction retry on the write path | `rwIndexDSN`, `roIndexDSN`, `rebuildIndexWithPolicy`, `indexUpsert`, `retryWhileIndexBusy` |
 | G4 | **Bounded eventual consistency** — the vault is the source of truth. The index converges | Tiny synchronous upsert on the write path. Serialized full rebuilds reconcile the rest | `indexUpsert`, `rebuildIndexWithPolicy` |
 
 ## 1. Per-memory atomic files
@@ -152,7 +152,31 @@ transaction**:
   upgrading a deferred read lock mid-transaction — two concurrent rebuilds would
   otherwise both start, then one hits `SQLITE_BUSY` on its first write with no
   way to retry inside an open tx. Immediate + `busy_timeout(15000)` means the
-  second rebuild simply **waits** for the first to commit.
+  second rebuild simply **waits** for the first to commit. (Verified rather than
+  assumed: the driver honors the DSN parameter and issues `begin immediate` for
+  every non-read-only transaction — `modernc.org/sqlite@v1.29.0/sqlite.go`,
+  `beginMode`.)
+
+- **`busy_timeout` is a per-WAIT budget, not a per-CALLER guarantee**, and the
+  difference is what G3 promises. A writer that queues behind a long rebuild can
+  exhaust its 15s wait and hand the caller the raw `database is locked` the
+  contract says it will never see. That was observed once, on the Windows CI
+  runner under `TestConcurrencyContractStress`, and did not reproduce on a rerun
+  of the same commit — an unlucky stall, not a lock-handling bug. The write path
+  therefore closes the gap itself: `retryWhileIndexBusy` re-enters `indexUpsert`
+  in a FRESH transaction, with jittered backoff, until a 5s deadline. A
+  transaction that lost the race is finished; only a new one can take the writer
+  lock. Repetition is safe because the upsert deletes and reinserts the rows for
+  ONE memory id, so a rolled-back attempt leaves nothing to reconcile. Worst-case
+  surfacing latency is the deadline plus one in-SQLite wait, because the two
+  budgets compose.
+
+  The mechanism was proven by shrinking the DSN's `busy_timeout` to 150 ms under
+  the stress test, which reproduces the CI failure verbatim, and then re-running
+  it with the retry in place: the `write_memory` lock errors disappear. Full
+  rebuilds are deliberately NOT retried — they never surfaced this at the real
+  timeout, and repeating whole-vault work under contention would add load to the
+  thing already contending.
 - **List the vault INSIDE the tx** (`listRebuildFiles`, after the lock is held).
   Listing before the lock let two rebuilds interleave: rebuild A lists, rebuild B
   (fired by a newer write) lists + commits, then A commits LAST carrying its
