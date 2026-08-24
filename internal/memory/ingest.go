@@ -83,17 +83,17 @@ func retryableFetchError(err error) bool {
 	return errors.As(err, &temporary) && temporary.Temporary()
 }
 
-func fetchPageBounded(ctx context.Context, p IngestParams, window FetchWindow, cursor string, maxRetries int) (Page, error, int) {
+func fetchPageBounded(ctx context.Context, p IngestParams, window FetchWindow, cursor string, maxRetries int) (Page, int, error) {
 	for attempt := 0; ; attempt++ {
 		page, err := fetchPageContext(ctx, p.Fetcher, p.Kind, window, cursor)
 		if err == nil || attempt >= maxRetries || !retryableFetchError(err) {
-			return page, err, attempt
+			return page, attempt, err
 		}
 		timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return Page{}, ctx.Err(), attempt
+			return Page{}, attempt, ctx.Err()
 		case <-timer.C:
 		}
 	}
@@ -180,7 +180,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			return finish(), fmt.Errorf("ingest page limit exceeded (%d)", limits.MaxPages)
 		}
 		fetchStarted := time.Now()
-		page, err, retries := fetchPageBounded(ctx, p, p.Window, cursor, limits.MaxRetries)
+		page, retries, err := fetchPageBounded(ctx, p, p.Window, cursor, limits.MaxRetries)
 		result.Stages.Retries += retries
 		result.Stages.FetchMS += time.Since(fetchStarted).Milliseconds()
 		if err != nil && !fallbackUsed && p.Window.SyncCursor != "" && errors.Is(err, ErrIncrementalCursorExpired) {
