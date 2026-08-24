@@ -672,12 +672,21 @@ mora doctor
 mora doctor --strict
 mora doctor --json
 mora doctor --pulse
+mora doctor --repair --dry-run --json
+mora doctor --repair --yes --json
 ```
 
 `doctor` checks paths, the vault, index, source age, token placement, storage,
 backup state, and configured shares. On macOS it also tests protected reads.
 `--strict` exits with an error when a critical check fails. `--pulse` checks
 freshness and can show a native alert on macOS.
+
+The JSON report separates raw `observed` probe results from typed `diagnosis`.
+When Mora cannot prove a cause, it reports `cause_unverified`; it does not infer
+a permission problem from connector error prose. `--repair --dry-run --json`
+returns the exact safe mutation plan without changing state. Applying that plan
+requires `--yes`, records before/after verification for every action, and is
+idempotent. Doctor never applies unsafe or destructive repairs.
 
 `mora doctor --json` emits the `mora.doctor.report` v1 receipt — the same report
 it always printed, now with `schema` and `schema_version` beside its existing

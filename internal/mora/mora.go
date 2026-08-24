@@ -257,7 +257,9 @@ USAGE:
   mora sources add filesystem --name docs --path ~/Documents --scope personal
   mora ingest run --source docs
   mora doctor                      # health checks, incl. per-source freshness (HEALTH-01)
-  mora doctor --json               # machine-readable report; --strict also exits non-zero on a critical failure
+  mora doctor --json               # machine-readable evidence, diagnosis, and repair plan
+  mora doctor --repair --dry-run --json # preview exact safe repair mutations
+  mora doctor --repair --yes --json     # approve, apply, and verify safe repairs
   mora doctor --pulse              # freshness-only check: exit 2 + a native toast when any source is unhealthy, exit 0 when all fresh
   mora doctor --pulse --json       # --pulse combined with --json emits ONLY the sources array (no banner text)
   mora schedule install pulse-daily
