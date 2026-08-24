@@ -30,12 +30,6 @@ type gmailMessageEvidence struct {
 	BlockRefs  []string `json:"block_refs,omitempty"`
 }
 
-// fetchGmailPage lists one page of threads, fetches each thread, and maps it to
-// a single Item (thread-level). Quote-stripping keeps bodies lean.
-func (f *LiveFetcher) fetchGmailPage(w FetchWindow, cursor string) (Page, error) {
-	return f.fetchGmailPageContext(context.Background(), w, cursor)
-}
-
 func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, cursor string) (Page, error) {
 	call := f.gmail.Users.Threads.List("me").MaxResults(gmailPageSize).Context(ctx)
 	if q := buildGmailQuery(w); q != "" {
