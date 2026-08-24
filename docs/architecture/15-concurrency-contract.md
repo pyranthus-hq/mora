@@ -11,6 +11,24 @@ The rules below apply to the full system. Focused unit tests pin each rule.
 `internal/mora/concurrency_contract_test.go` tests them together. It runs an
 N-writer, concurrent-reader, and full-rebuild storm under `-race`.
 
+## Source-run isolation
+
+Multi-source work is planned before connector construction and runs through one
+bounded coordinator. At most four sources execute concurrently, and each started
+source receives its own 15-minute deadline. A source deadline produces only that
+source's failed, retryable receipt; healthy siblings continue.
+
+Global cancellation is different: it stops new scheduling, marks every unfinished
+planned source cancelled, preserves already completed outcomes, and makes the
+command fail even if those completed outcomes are usable. Receipts remain in the
+immutable planned-source order, independent of completion timing.
+
+The coordinator returns only after all started workers have stopped. Network
+requests and SQLite queries carry the source context; protected app processes get
+an interrupt, bounded forced cleanup, and a completed `Wait`. Consequently no
+provider request, vault writer, or protected child may continue after its source
+receipt or the aggregate command returns.
+
 Concurrency follows one principle: **one host, one user, many short processes
 and in-process goroutines.** Cross-host and multi-user work belongs to a durable
 execution runtime, a formally rejected direction. See the

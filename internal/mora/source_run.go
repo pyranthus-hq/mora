@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -28,11 +29,33 @@ type sourceRunNotice struct {
 }
 
 type sourceRunResult struct {
-	Plans    []sourceRunPlan
-	Notices  []sourceRunNotice
-	Trace    []string
-	Items    int
-	Failures int
+	Plans     []sourceRunPlan
+	Notices   []sourceRunNotice
+	Trace     []string
+	Items     int
+	Failures  int
+	Outcomes  []sourceRunOutcome
+	Aggregate sourceRunAggregate
+}
+
+const defaultSourceRunConcurrency = 4
+const defaultSourceTimeout = 15 * time.Minute
+
+type sourceRunOptions struct {
+	Concurrency   int
+	SourceTimeout time.Duration
+	Run           func(context.Context, sourceRunPlan) sourceRunOutcome
+}
+
+type synchronizedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *synchronizedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
 }
 
 const (
@@ -133,8 +156,6 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		}
 		receipts = append(receipts, receipt)
 	}
-	sort.Slice(receipts, func(i, j int) bool { return receipts[i].Source < receipts[j].Source })
-
 	aggregate := sourceRunAggregate{Sources: receipts, SystemNotices: notices}
 	for _, receipt := range receipts {
 		switch receipt.Status {
@@ -188,6 +209,71 @@ func hasPartialSource(receipts []sourceRunReceipt) bool {
 type sourceRunCoordinatorFunc func(context.Context, sourceRunRequest) (sourceRunResult, error)
 
 var sourceRunCoordinatorFn sourceRunCoordinatorFunc = sourceRunCoordinator
+
+// runSourcePlan executes immutable plan slots through a bounded worker pool.
+// Slots begin cancelled and are replaced only by a terminal worker outcome, so
+// global cancellation accounts for both started and never-started sources in
+// plan order. The function does not return until every started worker has exited.
+func runSourcePlan(ctx context.Context, plans []sourceRunPlan, opts sourceRunOptions) []sourceRunOutcome {
+	results := make([]sourceRunOutcome, len(plans))
+	for i := range plans {
+		results[i] = sourceRunOutcome{Key: plans[i].Key, Cancelled: true, Err: context.Canceled}
+	}
+	if len(plans) == 0 || opts.Run == nil {
+		return results
+	}
+	workers := opts.Concurrency
+	if workers <= 0 {
+		workers = defaultSourceRunConcurrency
+	}
+	if workers > len(plans) {
+		workers = len(plans)
+	}
+	timeout := opts.SourceTimeout
+	if timeout <= 0 {
+		timeout = defaultSourceTimeout
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				sourceCtx, cancel := context.WithTimeout(ctx, timeout)
+				outcome := opts.Run(sourceCtx, plans[index])
+				sourceErr := sourceCtx.Err()
+				cancel()
+				outcome.Key = plans[index].Key
+				switch {
+				case ctx.Err() != nil:
+					outcome.Cancelled = true
+					outcome.TimedOut = false
+					outcome.Err = ctx.Err()
+				case errors.Is(sourceErr, context.DeadlineExceeded):
+					outcome.TimedOut = true
+					outcome.Err = context.DeadlineExceeded
+				}
+				results[index] = outcome
+			}
+		}()
+	}
+
+schedule:
+	for index := range plans {
+		select {
+		case jobs <- index:
+		case <-ctx.Done():
+			break schedule
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return results
+}
 
 func planSourceRuns(cfg Config, selector string, filtered bool, now time.Time) ([]sourceRunPlan, []sourceRunNotice, error) {
 	selected := ""
@@ -248,31 +334,52 @@ func sourceRunCoordinator(ctx context.Context, req sourceRunRequest) (sourceRunR
 		result.Trace = append(result.Trace, "planned:"+plan.Key)
 	}
 	run := req.run
+	output := req.Output
+	if output != nil {
+		output = &synchronizedWriter{w: output}
+	}
 	if run == nil {
 		run = func(runCtx context.Context, cfg Config, source Source, output io.Writer) (int, error) {
 			result, err := ingestSourceFn(runCtx, cfg, source, output)
 			return result.Materialized, err
 		}
 	}
-	for _, plan := range plans {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
+	var traceMu sync.Mutex
+	result.Outcomes = runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
+		traceMu.Lock()
 		result.Trace = append(result.Trace, "constructed:"+plan.Key, "started:"+plan.Key)
-		n, runErr := run(ctx, req.Config, plan.Source, req.Output)
+		traceMu.Unlock()
+		n, runErr := run(runCtx, req.Config, plan.Source, output)
+		outcome := sourceRunOutcome{Key: plan.Key, Items: n, Materialized: n, Err: runErr}
+		traceMu.Lock()
 		result.Items += n
 		if runErr != nil {
 			result.Failures++
-			warnf(req.Output, "%s sync incomplete; the brief reflects last good data (run `mora sync status`): %v", plan.Key, runErr)
-			continue
+			warnf(output, "%s sync incomplete; the brief reflects last good data (run `mora sync status`): %v", plan.Key, runErr)
+		} else {
+			result.Trace = append(result.Trace, "completed:"+plan.Key)
 		}
-		result.Trace = append(result.Trace, "completed:"+plan.Key)
+		traceMu.Unlock()
+		return outcome
+	}})
+	var rebuildErr error
+	if sourceOutcomesMaterialized(result.Outcomes) > 0 && ctx.Err() == nil {
+		_, rebuildErr = rebuildIndex(ctx, req.Config)
 	}
-	if _, rebuildErr := rebuildIndex(ctx, req.Config); rebuildErr != nil {
-		return result, rebuildErr
+	for _, notice := range notices {
+		warnf(output, "source health notice: %s is %s", notice.Source, notice.Status)
 	}
-	if result.Failures > 0 {
-		return result, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", result.Failures)
+	result.Aggregate, err = aggregateSourceRuns(plans, result.Outcomes, notices, rebuildErr)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
 	}
-	return result, nil
+	return result, err
+}
+
+func sourceOutcomesMaterialized(outcomes []sourceRunOutcome) int {
+	total := 0
+	for _, outcome := range outcomes {
+		total += outcome.Materialized
+	}
+	return total
 }
