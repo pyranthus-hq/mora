@@ -9,6 +9,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -37,8 +38,11 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
 	var calls []string
+	var callsMu sync.Mutex
 	ingestSourceFn = func(_ context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+		callsMu.Lock()
 		calls = append(calls, s.Name)
+		callsMu.Unlock()
 		if s.Name == "bad" {
 			return sourceIngestResult{}, errors.New("boom: connector down")
 		}
@@ -50,7 +54,9 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("usable partial success must exit successfully: %v; output:\n%s", err, buf.String())
 	}
-	if len(calls) != 2 || calls[1] != "good" {
+	callsMu.Lock()
+	defer callsMu.Unlock()
+	if len(calls) != 2 || !containsString(calls, "good") {
 		t.Fatalf("later sources must still ingest after an earlier failure; calls=%v", calls)
 	}
 	if !strings.Contains(buf.String(), "warn") || !strings.Contains(buf.String(), "bad") {
@@ -136,7 +142,7 @@ func TestIsolationIngestReceiptCarriesStaleProvenance(t *testing.T) {
 	attempt := "2026-08-24T09:00:00Z"
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(cfg Config, source Source, _ io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(_ context.Context, cfg Config, source Source, _ io.Writer) (sourceIngestResult, error) {
 		if err := memory.SaveStatus(syncStatusPathFor(cfg, source), &memory.SyncStatus{
 			Source: source.Name, LastSynced: success, LastSuccessAt: success, LastAttemptAt: attempt,
 			LastError: "offline", ErrorCode: errCodeConnectorUnavailable, ErrorCount: 1,

@@ -84,37 +84,18 @@ func curatedExtractExt(ext string) bool    { return ingestpkg.CuratedExtractExt(
 func curatedMetadataFile(name string) bool { return ingestpkg.CuratedMetadataFile(name) }
 
 func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
-	sources, _ := loadSources(cfg)
-	total := 0
-	failures := 0
-	for _, s := range sources {
-		if s.Type != "gmail" && s.Type != "calendar" {
-			continue
+	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool {
+		return s.Type == "gmail" || s.Type == "calendar"
+	}, func(s Source, e error) {
+		if isGoogleAuthError(e) {
+			// CROSS-PHASE TOUCH (UI-SPEC §C): name the real cause + fix for the
+			// 7-day Testing-mode refresh-token trap instead of a bare resumable warn.
+			warnf(stdout, "%s sync incomplete: Google sign-in expired — run `mora connect google` to sign in again.", s.Name)
+			fmt.Fprintln(stdout, "(If this keeps happening every ~7 days, your Google app is in \"Testing\" mode; switch it to \"Production\" for durable access.)")
+		} else {
+			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, e)
 		}
-		if !s.IsEnabled() {
-			continue // gated backfill skips disabled sources (D-07)
-		}
-		n, e := ingestSource(cfg, s, stdout)
-		total += n
-		if e != nil {
-			failures++
-			if isGoogleAuthError(e) {
-				// CROSS-PHASE TOUCH (UI-SPEC §C): name the real cause + fix for the
-				// 7-day Testing-mode refresh-token trap instead of a bare resumable warn.
-				warnf(stdout, "%s sync incomplete: Google sign-in expired — run `mora connect google` to sign in again.", s.Name)
-				fmt.Fprintln(stdout, "(If this keeps happening every ~7 days, your Google app is in \"Testing\" mode; switch it to \"Production\" for durable access.)")
-			} else {
-				warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, e)
-			}
-		}
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		return total, err
-	}
-	if failures > 0 {
-		return total, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
-	}
-	return total, nil
+	})
 }
 
 // backfillEnabledFilesystem re-walks every enabled filesystem source, then
@@ -123,56 +104,48 @@ func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (i
 // skip the rebuild, but it is still returned at the end: a partial snapshot must
 // never be reported as wholly fresh.
 func backfillEnabledFilesystem(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
+	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool { return s.Type == "filesystem" }, func(s Source, err error) {
+		warnf(stdout, "%s sync incomplete: %v", s.Name, err)
+	})
+}
+
+func backfillEnabledGitHub(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
+	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool { return s.Type == "github" }, func(s Source, err error) {
+		warnf(stdout, "%s sync incomplete (prior evidence preserved): %v", s.Name, err)
+	})
+}
+
+func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer, selected func(Source) bool, report func(Source, error)) (int, error) {
 	sources, err := loadSources(cfg)
 	if err != nil {
 		return 0, fmt.Errorf("load sources: %w", err)
 	}
-	total := 0
-	failures := 0
+	var plans []sourceRunPlan
 	for _, s := range sources {
-		if s.Type != "filesystem" || !s.IsEnabled() {
+		if !s.IsEnabled() || !selected(s) {
 			continue
 		}
-		n, ingestErr := ingestSource(cfg, s, stdout)
-		total += n
-		if ingestErr != nil {
-			failures++
-			warnf(stdout, "%s sync incomplete: %v", s.Name, ingestErr)
+		plans = append(plans, sourceRunPlan{Key: healthInstanceKeyForSource(s), Source: s})
+	}
+	output := io.Writer(&synchronizedWriter{w: stdout})
+	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
+		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, output)
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr}
+	}})
+	for i, outcome := range outcomes {
+		if outcome.Err != nil && !outcome.Cancelled && report != nil {
+			report(plans[i].Source, outcome.Err)
 		}
 	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		return total, err
+	_, rebuildErr := rebuildIndex(ctx, cfg)
+	aggregate, aggregateErr := aggregateSourceRuns(plans, outcomes, nil, rebuildErr)
+	if ctx.Err() != nil {
+		return sourceOutcomesMaterialized(outcomes), ctx.Err()
 	}
-	if failures > 0 {
-		return total, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
+	if aggregateErr != nil && rebuildErr == nil && aggregate.FailedSources > 0 {
+		aggregateErr = fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`): %w", aggregate.FailedSources, aggregateErr)
 	}
-	return total, nil
-}
-
-func backfillEnabledGitHub(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return 0, err
-	}
-	total, failures := 0, 0
-	for _, s := range sources {
-		if s.Type != "github" || !s.IsEnabled() {
-			continue
-		}
-		n, syncErr := ingestSource(cfg, s, stdout)
-		total += n
-		if syncErr != nil {
-			failures++
-			warnf(stdout, "%s sync incomplete (prior evidence preserved): %v", s.Name, syncErr)
-		}
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		return total, err
-	}
-	if failures > 0 {
-		return total, fmt.Errorf("%d GitHub source(s) failed to sync; prior evidence is preserved and source health is degraded", failures)
-	}
-	return total, nil
+	return sourceOutcomesMaterialized(outcomes), aggregateErr
 }
 
 func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
@@ -191,6 +164,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	// results: under --json they move to stderr so stdout carries exactly one
 	// JSON document.
 	progress := progressWriter(stdout, stderr, *jsonOut)
+	progress = &synchronizedWriter{w: progress}
 	// One of the two selectors is required: a bare `ingest run` used to walk the
 	// loop with sourceName=="", match nothing, and print a successful-looking
 	// "ingested 0 item(s)".
@@ -214,7 +188,6 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	named := false
 	var namedErr error
 	var plans []sourceRunPlan
-	var outcomes []sourceRunOutcome
 	for _, s := range sources {
 		// Enabled gate (D-07): a named disabled source ERRORS before the skip so
 		// the user is never silently no-op'd; `--all` silently skips disabled.
@@ -232,37 +205,6 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		}
 		key := healthInstanceKeyForSource(s)
 		plans = append(plans, sourceRunPlan{Key: key, Source: s})
-		result, runErr := ingestSourceFn(ctx, cfg, s, progress)
-		count += result.Materialized
-		outcome := sourceRunOutcome{
-			Key: key, Items: result.Materialized, Examined: result.Examined,
-			Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr,
-		}
-		if path := syncStatusPathFor(cfg, s); path != "" {
-			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
-				outcome.LastSuccessAt = status.LastSuccessAt
-				outcome.LastAttemptAt = status.LastAttemptAt
-				health := sourceHealthFor(cfg, s, key, briefClock())
-				outcome.Stale = health.State != healthFresh
-			}
-		}
-		outcomes = append(outcomes, outcome)
-		if runErr != nil {
-			// Named-source path: the failure IS the result — but a PARTIAL run
-			// (Ingest's dropped-item contract) has already written memories to
-			// the vault, so the final rebuild below must still run before the
-			// error surfaces; returning here left them unsearchable with no
-			// auto-heal (the schema check only heals version mismatches).
-			if !*all {
-				namedErr = runErr
-				break
-			}
-			// --all (the scheduled ingest-hourly job): one broken connector must
-			// not starve the rest or skip the final rebuild — warn, keep going,
-			// and surface an aggregate error at the end (never swallow sync
-			// errors; mirrors backfillEnabledGoogle).
-			warnf(progress, "%s sync incomplete (resumable): %v", s.Name, runErr)
-		}
 	}
 	// A named source that matched NOTHING is a typo, not a successful empty run:
 	// error (exit 1) before the rebuild — no ingest happened, so there is nothing
@@ -270,7 +212,36 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if !*all && !named {
 		return fmt.Errorf("no source named %q — run `mora sources list` to see configured sources", *sourceName)
 	}
-	_, rebuildErr := rebuildIngestIndexFn(ctx, cfg)
+	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
+		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
+		outcome := sourceRunOutcome{
+			Key: plan.Key, Items: result.Materialized, Examined: result.Examined,
+			Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr,
+		}
+		if path := syncStatusPathFor(cfg, plan.Source); path != "" {
+			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
+				outcome.LastSuccessAt = status.LastSuccessAt
+				outcome.LastAttemptAt = status.LastAttemptAt
+				health := sourceHealthFor(cfg, plan.Source, plan.Key, briefClock())
+				outcome.Stale = health.State != healthFresh
+			}
+		}
+		return outcome
+	}})
+	for _, outcome := range outcomes {
+		count += outcome.Materialized
+		if outcome.Err != nil && !outcome.Cancelled && !outcome.TimedOut {
+			if !*all {
+				namedErr = outcome.Err
+			} else {
+				warnf(progress, "%s sync incomplete (resumable): %v", outcome.Key, outcome.Err)
+			}
+		}
+	}
+	var rebuildErr error
+	if sourceOutcomesMaterialized(outcomes) > 0 && ctx.Err() == nil {
+		_, rebuildErr = rebuildIngestIndexFn(ctx, cfg)
+	}
 	aggregate, aggregateErr := aggregateSourceRuns(plans, outcomes, nil, rebuildErr)
 	// CON-02: every --json path that got as far as writing memories owes stdout
 	// exactly one JSON document saying what landed. A partial named-source
@@ -305,6 +276,9 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	}
 	if namedErr != nil {
 		return namedErr
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	if !*jsonOut {
 		fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
@@ -791,22 +765,27 @@ type reingestReceipt struct {
 	Full          bool `json:"full"`
 	Items         int  `json:"items"`
 	FailedSources int  `json:"failed_sources"`
+	sourceRunAggregate
 }
 
 func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	full := false
 	jsonOut := false
+	retryFailed := false
 	for _, a := range args {
 		switch a {
 		case "--full":
 			full = true
 		case "--json":
 			jsonOut = true
+		case "--failed":
+			retryFailed = true
 		case "-h", "--help":
 			fmt.Fprintln(stdout, "usage: mora reingest [--full]")
 			fmt.Fprintln(stdout, "  re-fetch enabled sources, rewrite memories with the latest")
 			fmt.Fprintln(stdout, "  structured identity metadata, and rebuild the entity graph.")
 			fmt.Fprintln(stdout, "  --full  extend the lookback to all-time (backfill older memories)")
+			fmt.Fprintln(stdout, "  --failed  retry only sources whose last failure is retryable")
 			return nil
 		default:
 			return fmt.Errorf("unknown flag %q (usage: mora reingest [--full])", a)
@@ -819,11 +798,25 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	// Per-source progress is a diagnostic, not the result: under --json it moves
 	// to stderr so stdout carries exactly one document (CON-06).
 	progress := progressWriter(stdout, stderr, jsonOut)
-	sources, _ := loadSources(cfg)
-	total, failures := 0, 0
+	progress = &synchronizedWriter{w: progress}
+	sources, loadErr := loadSources(cfg)
+	if loadErr != nil {
+		return loadErr
+	}
+	var plans []sourceRunPlan
 	for _, s := range sources {
 		if !s.IsEnabled() {
 			continue
+		}
+		if retryFailed {
+			status, statusErr := memory.LoadStatus(syncStatusPathFor(cfg, s))
+			if statusErr != nil {
+				return statusErr
+			}
+			code := syncErrorCodeOrUnclassified(status.ErrorCode, status.LastError)
+			if status.LastError == "" || !retryableForErrorCode(code) {
+				continue
+			}
 		}
 		if full {
 			switch s.Type {
@@ -833,39 +826,40 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 				s.SinceDays = -1 // all-time (windowForIMessage)
 			}
 		}
-		n, e := ingestSource(cfg, s, progress)
-		total += n
-		if e != nil {
-			failures++
-			warnf(progress, "%s reingest incomplete (resumable): %v", s.Name, e)
+		plans = append(plans, sourceRunPlan{Key: healthInstanceKeyForSource(s), Source: s})
+	}
+	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
+		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr}
+	}})
+	total := sourceOutcomesMaterialized(outcomes)
+	for _, outcome := range outcomes {
+		if outcome.Err != nil && !outcome.Cancelled {
+			warnf(progress, "%s reingest incomplete (resumable): %v", outcome.Key, outcome.Err)
 		}
 	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		return err
+	_, rebuildErr := rebuildIndex(ctx, cfg)
+	aggregate, aggregateErr := aggregateSourceRuns(plans, outcomes, nil, rebuildErr)
+	if ctx.Err() != nil {
+		aggregateErr = ctx.Err()
 	}
 	if jsonOut {
 		// The receipt ships BEFORE the aggregate failure return, so a partial
 		// reingest never hands a caller exit 1 with an empty stdout — the same
 		// rule `ingest run` follows.
 		if eerr := emitReceipt(stdout, "mora.reingest", 1, reingestReceipt{
-			Full: full, Items: total, FailedSources: failures,
+			Full: full, Items: total, FailedSources: aggregate.FailedSources, sourceRunAggregate: aggregate,
 		}); eerr != nil {
 			return eerr
 		}
-		if failures > 0 {
-			return fmt.Errorf("%d source(s) failed to reingest; data may be stale (run `mora sync status`)", failures)
-		}
-		return nil
+		return aggregateErr
 	}
 	suffix := ""
 	if full {
 		suffix = " (full lookback)"
 	}
 	fmt.Fprintf(stdout, "reingested %d item(s)%s\n", total, suffix)
-	if failures > 0 {
-		return fmt.Errorf("%d source(s) failed to reingest; data may be stale (run `mora sync status`)", failures)
-	}
-	return nil
+	return aggregateErr
 }
 
 // ingestSource is the single dispatch chokepoint every caller (backfillEnabledGoogle,
@@ -1741,26 +1735,9 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 // imessage source, then rebuilds the index. Mirrors backfillEnabledGoogle: disabled
 // sources are skipped (D-07), sync errors are surfaced (never swallowed).
 func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
-	sources, _ := loadSources(cfg)
-	total, failures := 0, 0
-	for _, s := range sources {
-		if s.Type != "imessage" || !s.IsEnabled() {
-			continue
-		}
-		n, e := ingestSource(cfg, s, stdout)
-		total += n
-		if e != nil {
-			failures++
-			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, e)
-		}
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		return total, err
-	}
-	if failures > 0 {
-		return total, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
-	}
-	return total, nil
+	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool { return s.Type == "imessage" }, func(s Source, err error) {
+		warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
+	})
 }
 
 // backfillEnabledAppleCalendar runs the local Apple Calendar backfill for every
@@ -1768,29 +1745,9 @@ func backfillEnabledIMessage(ctx context.Context, cfg Config, stdout io.Writer) 
 // seam for `mora sync applecalendar` and mirrors the iMessage contract: disabled
 // sources are skipped and every source failure remains loud.
 func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
-	sources, err := loadSources(cfg)
-	if err != nil {
-		return 0, err
-	}
-	total, failures := 0, 0
-	for _, s := range sources {
-		if s.Type != "applecalendar" || !s.IsEnabled() {
-			continue
-		}
-		n, ingestErr := ingestSource(cfg, s, stdout)
-		total += n
-		if ingestErr != nil {
-			failures++
-			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, ingestErr)
-		}
-	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		return total, err
-	}
-	if failures > 0 {
-		return total, fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
-	}
-	return total, nil
+	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool { return s.Type == "applecalendar" }, func(s Source, err error) {
+		warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
+	})
 }
 
 // testHookFSPreWrite, when non-nil (tests only), fires just before each per-file

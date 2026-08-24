@@ -45,20 +45,16 @@ func TestPulseSyncFirstRunsRefreshBeforeBuild(t *testing.T) {
 	digestSeed(t, cfg, "gmail", "Quarterly review", 2*time.Hour, now)
 
 	var calls []string
-	origG, origI := backfillGoogleFn, backfillIMessageFn
-	t.Cleanup(func() { backfillGoogleFn, backfillIMessageFn = origG, origI })
-	backfillGoogleFn = func(ctx context.Context, c Config, w io.Writer) (int, error) {
-		calls = append(calls, "google")
-		return 0, nil
-	}
-	backfillIMessageFn = func(ctx context.Context, c Config, w io.Writer) (int, error) {
-		calls = append(calls, "imessage")
-		return 0, nil
+	origCoordinator := sourceRunCoordinatorFn
+	t.Cleanup(func() { sourceRunCoordinatorFn = origCoordinator })
+	sourceRunCoordinatorFn = func(context.Context, sourceRunRequest) (sourceRunResult, error) {
+		calls = append(calls, "coordinator")
+		return sourceRunResult{}, nil
 	}
 
 	out := runPulse(t, "--digest", "--sync")
-	if len(calls) != 2 || calls[0] != "google" || calls[1] != "imessage" {
-		t.Fatalf("--sync must refresh google then imessage before the build; got call order %v", calls)
+	if len(calls) != 1 || calls[0] != "coordinator" {
+		t.Fatalf("--sync must refresh through the shared coordinator before the build; got call order %v", calls)
 	}
 	if !strings.Contains(out, "Mora digest") {
 		t.Fatalf("--sync must still render the digest; got:\n%s", out)
@@ -77,10 +73,12 @@ func TestPulseSyncFirstNoSyncSkipsRefresh(t *testing.T) {
 	digestSeed(t, cfg, "gmail", "Weekly sync", 1*time.Hour, now)
 
 	called := false
-	origG, origI := backfillGoogleFn, backfillIMessageFn
-	t.Cleanup(func() { backfillGoogleFn, backfillIMessageFn = origG, origI })
-	backfillGoogleFn = func(ctx context.Context, c Config, w io.Writer) (int, error) { called = true; return 0, nil }
-	backfillIMessageFn = func(ctx context.Context, c Config, w io.Writer) (int, error) { called = true; return 0, nil }
+	origCoordinator := sourceRunCoordinatorFn
+	t.Cleanup(func() { sourceRunCoordinatorFn = origCoordinator })
+	sourceRunCoordinatorFn = func(context.Context, sourceRunRequest) (sourceRunResult, error) {
+		called = true
+		return sourceRunResult{}, nil
+	}
 
 	runPulse(t, "--digest")
 	if called {
@@ -103,11 +101,12 @@ func TestPulseHonestErrorDoesNotAbortAndSurfacesUnavailable(t *testing.T) {
 	seedSyncStatus(t, cfg, "gmail", now.Add(-1*time.Hour))
 	digestSeed(t, cfg, "gmail", "Board deck", 1*time.Hour, now)
 
-	origG, origI := backfillGoogleFn, backfillIMessageFn
-	t.Cleanup(func() { backfillGoogleFn, backfillIMessageFn = origG, origI })
+	origCoordinator := sourceRunCoordinatorFn
+	t.Cleanup(func() { sourceRunCoordinatorFn = origCoordinator })
 	// The failing backfill records the error into SyncStatus (mirroring the real
 	// ingest path) and returns an error — cmdPulse must swallow it.
-	backfillGoogleFn = func(ctx context.Context, c Config, w io.Writer) (int, error) {
+	sourceRunCoordinatorFn = func(ctx context.Context, req sourceRunRequest) (sourceRunResult, error) {
+		c := req.Config
 		seedSyncStatusFull(t, c, "gmail", &memory.SyncStatus{
 			Source:        "gmail",
 			LastSynced:    now.Add(-1 * time.Hour).UTC().Format(time.RFC3339),
@@ -115,9 +114,8 @@ func TestPulseHonestErrorDoesNotAbortAndSurfacesUnavailable(t *testing.T) {
 			LastError:     "boom: transient network failure",
 			ErrorCount:    1,
 		})
-		return 0, errBackfillStub
+		return sourceRunResult{}, errBackfillStub
 	}
-	backfillIMessageFn = func(ctx context.Context, c Config, w io.Writer) (int, error) { return 0, nil }
 
 	// Must NOT abort: runPulse fails the test if Run returns a non-nil error.
 	out := runPulse(t, "--digest", "--sync")
@@ -338,15 +336,17 @@ func TestInstalledLegacyPulseDailyRoutesThroughDurableGate(t *testing.T) {
 	digestSeed(t, cfg, "gmail", "Legacy scheduled first item", time.Hour, now)
 
 	origLoopClock, origBriefClock := loopClock, briefClock
-	origG, origI, origNotify := backfillGoogleFn, backfillIMessageFn, notifyBriefFn
+	origG, origI, origNotify, origCoordinator := backfillGoogleFn, backfillIMessageFn, notifyBriefFn, sourceRunCoordinatorFn
 	t.Cleanup(func() {
 		loopClock, briefClock = origLoopClock, origBriefClock
 		backfillGoogleFn, backfillIMessageFn, notifyBriefFn = origG, origI, origNotify
+		sourceRunCoordinatorFn = origCoordinator
 	})
 	loopClock = func() time.Time { return now }
 	briefClock = func() time.Time { return now }
 	backfillGoogleFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
 	backfillIMessageFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
+	sourceRunCoordinatorFn = func(context.Context, sourceRunRequest) (sourceRunResult, error) { return sourceRunResult{}, nil }
 	notifyBriefFn = func(string, *urgentNote) error { return nil }
 
 	legacyArgs := []string{"pulse", "--write", "--digest", "--advance", "--sync", "--brief-file", "--notify"}
@@ -408,17 +408,19 @@ func TestScheduledPulseDailyDurableLifecycle(t *testing.T) {
 	digestSeed(t, cfg, "gmail", "Durable scheduler item", time.Hour, now)
 
 	origLoopClock, origBriefClock := loopClock, briefClock
-	origG, origI, origNotify := backfillGoogleFn, backfillIMessageFn, notifyBriefFn
+	origG, origI, origNotify, origCoordinator := backfillGoogleFn, backfillIMessageFn, notifyBriefFn, sourceRunCoordinatorFn
 	origMarkerSync, origDirSync := atomicio.MarkerSyncFn, atomicio.SyncDirFn
 	t.Cleanup(func() {
 		loopClock, briefClock = origLoopClock, origBriefClock
 		backfillGoogleFn, backfillIMessageFn, notifyBriefFn = origG, origI, origNotify
+		sourceRunCoordinatorFn = origCoordinator
 		atomicio.MarkerSyncFn, atomicio.SyncDirFn = origMarkerSync, origDirSync
 	})
 	loopClock = func() time.Time { return now }
 	briefClock = func() time.Time { return now }
 	backfillGoogleFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
 	backfillIMessageFn = func(context.Context, Config, io.Writer) (int, error) { return 0, nil }
+	sourceRunCoordinatorFn = func(context.Context, sourceRunRequest) (sourceRunResult, error) { return sourceRunResult{}, nil }
 	notifyBriefFn = func(string, *urgentNote) error { return nil }
 	var durabilityTrace []string
 	classifyDurableDir := func(dir string) string {

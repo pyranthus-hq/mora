@@ -10,12 +10,131 @@ import (
 	"math/rand"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+func TestIsolationConcurrencyBound(t *testing.T) {
+	plans := make([]sourceRunPlan, 20)
+	for i := range plans {
+		plans[i].Key = fmt.Sprintf("source-%02d", i)
+	}
+	var active, maximum atomic.Int32
+	outcomes := runSourcePlan(context.Background(), plans, sourceRunOptions{
+		SourceTimeout: time.Second,
+		Run: func(context.Context, sourceRunPlan) sourceRunOutcome {
+			n := active.Add(1)
+			defer active.Add(-1)
+			for {
+				old := maximum.Load()
+				if n <= old || maximum.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+			return sourceRunOutcome{Items: 1, Materialized: 1}
+		},
+	})
+	if len(outcomes) != len(plans) || maximum.Load() > defaultSourceRunConcurrency {
+		t.Fatalf("outcomes=%d maximum=%d, bound=%d", len(outcomes), maximum.Load(), defaultSourceRunConcurrency)
+	}
+}
+
+func TestIsolationSourceTimeoutDoesNotCancelSibling(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "blocked"}, {Key: "healthy"}}
+	outcomes := runSourcePlan(context.Background(), plans, sourceRunOptions{
+		Concurrency: 2, SourceTimeout: 25 * time.Millisecond,
+		Run: func(ctx context.Context, plan sourceRunPlan) sourceRunOutcome {
+			if plan.Key == "blocked" {
+				<-ctx.Done()
+				return sourceRunOutcome{Err: ctx.Err()}
+			}
+			return sourceRunOutcome{Items: 1, Materialized: 1}
+		},
+	})
+	if !outcomes[0].TimedOut || outcomes[0].Cancelled || outcomes[1].Err != nil || outcomes[1].Materialized != 1 {
+		t.Fatalf("outcomes = %+v", outcomes)
+	}
+}
+
+func TestIsolationGlobalCancellationStopsScheduling(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "started"}, {Key: "queued-a"}, {Key: "queued-b"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	var started atomic.Int32
+	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{
+		Concurrency: 1, SourceTimeout: time.Second,
+		Run: func(ctx context.Context, _ sourceRunPlan) sourceRunOutcome {
+			started.Add(1)
+			cancel()
+			<-ctx.Done()
+			return sourceRunOutcome{Err: ctx.Err()}
+		},
+	})
+	if started.Load() != 1 {
+		t.Fatalf("started %d sources after global cancellation", started.Load())
+	}
+	for _, outcome := range outcomes {
+		if !outcome.Cancelled {
+			t.Fatalf("unfinished source not cancelled: %+v", outcomes)
+		}
+	}
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err == nil || aggregate.Status != sourceRunStatusCancelled {
+		t.Fatalf("aggregate=%+v err=%v", aggregate, err)
+	}
+}
+
+func TestIsolationStableReceiptOrderForSimultaneousCompletion(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "z"}, {Key: "a"}, {Key: "m"}}
+	ready := sync.WaitGroup{}
+	ready.Add(len(plans))
+	release := make(chan struct{})
+	go func() {
+		ready.Wait()
+		close(release)
+	}()
+	outcomes := runSourcePlan(context.Background(), plans, sourceRunOptions{
+		Concurrency: len(plans), SourceTimeout: time.Second,
+		Run: func(context.Context, sourceRunPlan) sourceRunOutcome {
+			ready.Done()
+			<-release
+			return sourceRunOutcome{Items: 1, Materialized: 1}
+		},
+	})
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, receipt := range aggregate.Sources {
+		if receipt.Source != plans[i].Key {
+			t.Fatalf("receipt order = %+v, want plan order", aggregate.Sources)
+		}
+	}
+}
+
+func TestIsolationNoWorkAfterReturn(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "a"}, {Key: "b"}, {Key: "c"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	var active atomic.Int32
+	time.AfterFunc(20*time.Millisecond, cancel)
+	runSourcePlan(ctx, plans, sourceRunOptions{
+		Concurrency: 3, SourceTimeout: time.Second,
+		Run: func(ctx context.Context, _ sourceRunPlan) sourceRunOutcome {
+			active.Add(1)
+			defer active.Add(-1)
+			<-ctx.Done()
+			return sourceRunOutcome{Err: ctx.Err()}
+		},
+	})
+	if active.Load() != 0 {
+		t.Fatalf("%d source workers remained active after return", active.Load())
+	}
+}
 
 type isolationPageFetcher struct{ items []memory.Item }
 

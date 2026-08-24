@@ -114,8 +114,8 @@ func TestSyncFilesystemContinuesAfterSourceWalkError(t *testing.T) {
 	}
 
 	out, err := runErr(t, "sync", "filesystem")
-	if err == nil || !strings.Contains(err.Error(), "1 source(s) failed to sync") {
-		t.Fatalf("mixed filesystem sync must return the aggregate failure, got %v\n%s", err, out)
+	if err != nil {
+		t.Fatalf("usable partial filesystem sync must exit zero, got %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "gone sync incomplete") || !strings.Contains(out, "synced 1 item(s)") {
 		t.Fatalf("mixed filesystem sync did not warn and continue:\n%s", out)
