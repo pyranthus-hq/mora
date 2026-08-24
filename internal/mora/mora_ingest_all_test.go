@@ -36,12 +36,12 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
 	var calls []string
-	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (int, error) {
+	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 		calls = append(calls, s.Name)
 		if s.Name == "bad" {
-			return 0, errors.New("boom: connector down")
+			return sourceIngestResult{}, errors.New("boom: connector down")
 		}
-		return 2, nil
+		return sourceIngestResult{Examined: 2, Materialized: 2}, nil
 	}
 
 	var buf bytes.Buffer
@@ -72,11 +72,11 @@ func TestIsolationPartialSuccessReceiptThroughIngestAll(t *testing.T) {
 	}
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (int, error) {
+	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (sourceIngestResult, error) {
 		if source.Name == "bad" {
-			return 0, newCodedError(errCodeConnectorUnavailable, nil, "offline")
+			return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, nil, "offline")
 		}
-		return 2, nil
+		return sourceIngestResult{Examined: 2, Materialized: 2}, nil
 	}
 	var stdout, stderr bytes.Buffer
 	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, &stderr); err != nil {
@@ -88,6 +88,38 @@ func TestIsolationPartialSuccessReceiptThroughIngestAll(t *testing.T) {
 	}
 	if receipt.Status != sourceRunStatusPartial || !receipt.Usable || receipt.SuccessfulSources != 1 || receipt.FailedSources != 1 || len(receipt.Sources) != 2 || receipt.Items != 2 {
 		t.Fatalf("receipt = %+v", receipt)
+	}
+}
+
+func TestIsolationPartialAttemptCountsThroughIngestAll(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := saveSources(cfg, []Source{{
+		Name: "mail", Type: "gmail", Scope: "global", Enabled: genericutil.Ptr(true),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	orig := ingestSourceFn
+	t.Cleanup(func() { ingestSourceFn = orig })
+	ingestSourceFn = func(Config, Source, io.Writer) (sourceIngestResult, error) {
+		return sourceIngestResult{Examined: 100, Materialized: 73, Failed: 27, Missing: 27},
+			newCodedError(errCodeConnectorMalformed, nil, "27 malformed items")
+	}
+	var stdout bytes.Buffer
+	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("usable partial attempt: %v\n%s", err, stdout.String())
+	}
+	var receipt ingestRunReceipt
+	if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != sourceRunStatusPartial || !receipt.Usable || receipt.Items != 73 || len(receipt.Sources) != 1 {
+		t.Fatalf("aggregate = %+v", receipt)
+	}
+	source := receipt.Sources[0]
+	if source.Status != sourceRunStatusPartial || source.Examined != 100 || source.Materialized != 73 || source.Failed != 27 || source.Missing != 27 {
+		t.Fatalf("source = %+v", source)
 	}
 }
 
@@ -103,8 +135,8 @@ func TestIngestRunAllFailedEmitsEveryReceiptBeforeError(t *testing.T) {
 	}
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (int, error) {
-		return 0, newCodedError(errCodeConnectorUnavailable, nil, "%s offline", source.Name)
+	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (sourceIngestResult, error) {
+		return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, nil, "%s offline", source.Name)
 	}
 	var stdout bytes.Buffer
 	err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard)
@@ -129,7 +161,9 @@ func TestIngestRunSharedRebuildFailureIsNotUsable(t *testing.T) {
 	}
 	origIngest, origRebuild := ingestSourceFn, rebuildIngestIndexFn
 	t.Cleanup(func() { ingestSourceFn, rebuildIngestIndexFn = origIngest, origRebuild })
-	ingestSourceFn = func(Config, Source, io.Writer) (int, error) { return 2, nil }
+	ingestSourceFn = func(Config, Source, io.Writer) (sourceIngestResult, error) {
+		return sourceIngestResult{Examined: 2, Materialized: 2}, nil
+	}
 	rebuildIngestIndexFn = func(context.Context, Config) (int, error) { return 0, errors.New("shared rebuild failed") }
 	var stdout bytes.Buffer
 	err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard)
@@ -162,8 +196,8 @@ func TestIngestRunNamedSourceStillAborts(t *testing.T) {
 	}
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (int, error) {
-		return 0, errors.New("boom")
+	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+		return sourceIngestResult{}, errors.New("boom")
 	}
 	var buf bytes.Buffer
 	if err := cmdIngest(context.Background(), []string{"run", "--source", "bad"}, &buf, testStderr); err == nil {

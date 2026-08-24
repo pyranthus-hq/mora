@@ -232,9 +232,12 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		}
 		key := healthInstanceKeyForSource(s)
 		plans = append(plans, sourceRunPlan{Key: key, Source: s})
-		n, runErr := ingestSourceFn(cfg, s, progress)
-		count += n
-		outcomes = append(outcomes, sourceRunOutcome{Key: key, Items: n, Err: runErr})
+		result, runErr := ingestSourceFn(cfg, s, progress)
+		count += result.Materialized
+		outcomes = append(outcomes, sourceRunOutcome{
+			Key: key, Items: result.Materialized, Examined: result.Examined,
+			Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr,
+		})
 		if runErr != nil {
 			// Named-source path: the failure IS the result — but a PARTIAL run
 			// (Ingest's dropped-item contract) has already written memories to
@@ -871,7 +874,26 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 // concurrency failpoint; production leaves it nil.
 var testHookIngestActivityStarted func(Config, Source, operationHandle)
 
-func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
+type sourceIngestResult struct {
+	Examined     int
+	Materialized int
+	Failed       int
+	Missing      int
+}
+
+func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult {
+	return sourceIngestResult{
+		Examined: result.Examined, Materialized: result.Materialized,
+		Failed: result.Failed, Missing: result.Missing,
+	}
+}
+
+func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
+	result, err := ingestSourceDetailed(cfg, s, out)
+	return result.Materialized, err
+}
+
+func ingestSourceDetailed(cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
 	// attemptStart is captured before ANY step that can fail, so every failure at
 	// this chokepoint — activity bookkeeping included — stamps the same attempt.
 	attemptStart := time.Now()
@@ -887,16 +909,23 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 		// not change what failed or what the user reads.
 		err = classifyConnectorError(fmt.Errorf("starting ingest activity: %w", err))
 		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
-		return 0, err
+		return result, err
 	}
 	cfg.SetOperationRunID(h.RunID)
 	finishFailed := func(code string, cause error) error {
-		finishErr := finishOperation(cfg, h, operationFailed, "failed", operationCounts{Items: n, Errors: 1}, code, operationClock())
+		errorCount := result.Failed
+		if errorCount == 0 {
+			errorCount = 1
+		}
+		finishErr := finishOperation(cfg, h, operationFailed, "failed", operationCounts{
+			Items: result.Materialized, Errors: errorCount, Examined: result.Examined,
+			Materialized: result.Materialized, Missing: result.Missing,
+		}, code, operationClock())
 		return errors.Join(cause, finishErr)
 	}
 	sourceKey := ingestOperationSourceKey(s)
 	if err := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); err != nil {
-		return 0, finishFailed("journal_start_failed", err)
+		return result, finishFailed("journal_start_failed", err)
 	}
 	// Release only this source's lease. Concurrent in-process ingests share a PID;
 	// releasing every lease here would abandon the still-running sibling.
@@ -905,14 +934,17 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	progress := startOperationProgress(cfg, h, "ingesting")
 	if err := progress.Update("ingesting", operationCounts{}); err != nil {
 		_ = progress.Stop()
-		return 0, finishFailed("heartbeat_failed", err)
+		return result, finishFailed("heartbeat_failed", err)
 	}
 	if testHookIngestActivityStarted != nil {
 		testHookIngestActivityStarted(cfg, s, h)
 	}
-	n, dispatchErr := ingestSourceDispatch(cfg, s, out)
+	result, dispatchErr := ingestSourceDispatchFn(cfg, s, out)
 	if dispatchErr == nil {
-		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{Items: n})
+		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{
+			Items: result.Materialized, Errors: result.Failed, Examined: result.Examined,
+			Materialized: result.Materialized, Missing: result.Missing,
+		})
 	}
 	if dispatchErr != nil {
 		// CON-07: the untyped failure acquires its published connector code here,
@@ -923,12 +955,12 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 		err = errors.Join(dispatchErr, progressErr)
 		err = finishFailed("ingest_failed", err)
 		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
-		return n, err
+		return result, err
 	}
 	// Success deliberately remains running/awaiting_rebuild, and its bounded
 	// heartbeat stays live while sibling sources finish. The committed rebuild
 	// that retires this run's journal stops it and owns the terminal transition.
-	return n, nil
+	return result, nil
 }
 
 // classifyConnectorError attaches a CON-07 discrimination to a connector
@@ -982,23 +1014,30 @@ func connectorCodeForCause(err error) string {
 }
 
 func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {
+	result, err := ingestSourceDispatchDetailed(cfg, s, out)
+	return result.Materialized, err
+}
+
+var ingestSourceDispatchFn = ingestSourceDispatchDetailed
+
+func ingestSourceDispatchDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	switch s.Type {
 	case "filesystem":
-		return ingestFilesystem(cfg, s, out)
+		return ingestFilesystemDetailed(cfg, s, out)
 	case "gmail":
-		return ingestGoogle(cfg, s, google.KindGmailThread, out)
+		return ingestGoogleDetailed(cfg, s, google.KindGmailThread, out)
 	case "calendar":
-		return ingestGoogle(cfg, s, google.KindCalEvent, out)
+		return ingestGoogleDetailed(cfg, s, google.KindCalEvent, out)
 	case "imessage":
-		return ingestIMessage(cfg, s, out)
+		return ingestIMessageDetailed(cfg, s, out)
 	case "applecalendar":
-		return ingestAppleCal(cfg, s, out)
+		return ingestAppleCalDetailed(cfg, s, out)
 	case "github":
-		return ingestGitHub(cfg, s, out)
+		return ingestGitHubDetailed(cfg, s, out)
 	case "gdrive":
-		return 0, nil // deferred to week 2
+		return sourceIngestResult{}, nil // deferred to week 2
 	default:
-		return 0, fmt.Errorf("unknown source type %q", s.Type)
+		return sourceIngestResult{}, fmt.Errorf("unknown source type %q", s.Type)
 	}
 }
 
@@ -1080,10 +1119,15 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 var testHookPostConnectorPublish func()
 
 func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (int, error) {
+	result, err := ingestGoogleDetailed(cfg, s, kind, out)
+	return result.Materialized, err
+}
+
+func ingestGoogleDetailed(cfg Config, s Source, kind google.ItemKind, out io.Writer) (sourceIngestResult, error) {
 	ctx := context.Background()
 	oc, err := google.ResolveOAuthConfig(google.Scopes)
 	if err != nil {
-		return 0, err
+		return sourceIngestResult{}, err
 	}
 	tok, err := google.LoadToken(googleTokenPathFor(cfg, s.Account))
 	if err != nil {
@@ -1096,12 +1140,12 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 		// deliberately not derived from isGoogleAuthError's prose markers ("token",
 		// "expired", "oauth"), which are a good enough hint for a human sentence but
 		// would be an inference if they typed a published code.
-		return 0, newCodedError(errCodeConnectorUnauthorized, err,
+		return sourceIngestResult{}, newCodedError(errCodeConnectorUnauthorized, err,
 			"not connected to google (run `%s`): %v", connectCmd, err)
 	}
 	fetcher, err := google.NewLiveFetcher(ctx, oc, tok)
 	if err != nil {
-		return 0, err
+		return sourceIngestResult{}, err
 	}
 	statusPath := googleStatusPath(cfg, s.Name)
 	st, _ := memory.LoadStatus(statusPath)
@@ -1143,7 +1187,7 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 		Status: st, Write: write,
 	})
 	prog.done()
-	return res.Status.ItemCount, persistSyncStatus(out, statusPath, res.Status, ingErr)
+	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)
 }
 
 // persistSyncStatus writes a sync path's final SyncStatus to disk — the single
@@ -1209,11 +1253,16 @@ var newIMessageFetcher = func(path string, deny imessage.DenyList) (iMessageFetc
 // through the shared resumable Ingest loop via the Map hook — the writeMappedMemory
 // boundary is reused, never reimplemented.
 func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
+	result, err := ingestIMessageDetailed(cfg, s, out)
+	return result.Materialized, err
+}
+
+func ingestIMessageDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtimeGOOS() != "darwin" {
 		if out != nil {
 			fmt.Fprintf(out, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
-		return 0, nil
+		return sourceIngestResult{}, nil
 	}
 
 	path := chatDBPath()
@@ -1232,7 +1281,7 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 		// is true, rather than "denied", which is a guess. When DOC-03 lands a real
 		// probe, an observed refusal becomes connector.unauthorized here and the
 		// English can finally say what it means.
-		return 0, newCodedError(errCodeConnectorUnavailable, err,
+		return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, err,
 			"cannot read your Messages database (Full Disk Access not granted?) — run `mora doctor`: %v", err)
 	}
 	defer fetcher.Close()
@@ -1276,9 +1325,9 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 		if out != nil {
 			warnf(out, "imessage sync incomplete: %v", ingErr)
 		}
-		return res.Status.ItemCount, ingErr
+		return sourceIngestResultFromMemory(res), ingErr
 	}
-	return res.Status.ItemCount, nil
+	return sourceIngestResultFromMemory(res), nil
 }
 
 // appleCalStatusPath mirrors imessageStatusPath for the Apple Calendar store.
@@ -1308,18 +1357,23 @@ func appleCalDBPath() string {
 // chat.db's TCC lesson applies verbatim: launchd grants are per-binary), and
 // routed through the shared resumable Ingest loop + writeMappedMemory boundary.
 func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
+	result, err := ingestAppleCalDetailed(cfg, s, out)
+	return result.Materialized, err
+}
+
+func ingestAppleCalDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtime.GOOS != "darwin" {
 		if out != nil {
 			fmt.Fprintf(out, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtime.GOOS)
 		}
-		return 0, nil
+		return sourceIngestResult{}, nil
 	}
 	fetcher, err := applecal.NewLiveFetcher(appleCalDBPath())
 	if err != nil {
 		// Same PHASE 3 HANDOFF (DOC-03) as ingestIMessage: the Full Disk Access
 		// sentence is an inference this plan preserves verbatim, and the typed code
 		// beside it reports only what Mora actually observed — the open failed.
-		return 0, newCodedError(errCodeConnectorUnavailable, err,
+		return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, err,
 			"cannot read your Calendar database (Full Disk Access not granted?) — run `mora doctor`: %v", err)
 	}
 	defer fetcher.Close()
@@ -1345,22 +1399,27 @@ func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
 		if out != nil {
 			warnf(out, "applecalendar sync incomplete: %v", ingErr)
 		}
-		return res.Status.ItemCount, ingErr
+		return sourceIngestResultFromMemory(res), ingErr
 	}
-	return res.Status.ItemCount, nil
+	return sourceIngestResultFromMemory(res), nil
 }
 
 // ingestGitHub snapshots source records immutably before reconciling their
 // stable searchable projections. GitHub remains evidence: this path never calls
 // the task ledger, selects work, or launches an agent.
 func ingestGitHub(cfg Config, s Source, out io.Writer) (int, error) {
+	result, err := ingestGitHubDetailed(cfg, s, out)
+	return result.Materialized, err
+}
+
+func ingestGitHubDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	repos := s.Repositories
 	if len(repos) == 0 {
 		repos = githubissues.DefaultRepositories
 	}
 	fetcher, err := githubissues.NewLiveFetcher(repos, os.Getenv("MORA_GITHUB_TOKEN"))
 	if err != nil {
-		return 0, err
+		return sourceIngestResult{}, err
 	}
 	statusPath := syncStatusPathFor(cfg, s)
 	st, _ := memory.LoadStatus(statusPath)
@@ -1400,7 +1459,7 @@ func ingestGitHub(cfg Config, s Source, out io.Writer) (int, error) {
 		Status: st, Map: mapIssue, Write: writeChecked,
 	})
 	prog.done()
-	return res.Status.ItemCount, persistSyncStatus(out, statusPath, res.Status, ingErr)
+	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)
 }
 
 func writeGitHubSnapshot(cfg Config, payload githubissues.Payload) error {
@@ -1743,6 +1802,11 @@ func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Wri
 var testHookFSPreWrite func(id string)
 
 func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
+	result, err := ingestFilesystemDetailed(cfg, s, out)
+	return result.Materialized, err
+}
+
+func ingestFilesystemDetailed(cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
 	// Governance chokepoint (#52): filesystem re-ingest renders directly and does
 	// NOT route through writeMappedMemory, so consult the ledger here too —
 	// otherwise `mora forget --chat <src-id>` removes a filesystem memory that the
@@ -1756,11 +1820,10 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	// one on `connectors enable filesystem`). Walking "" yields the useless
 	// `lstat : no such file or directory` — name the real problem and the fix.
 	if s.Path == "" {
-		return 0, fmt.Errorf("filesystem source %q has no path — re-add it with `mora connect filesystem <path>` (or remove the row from sources.json)", s.Name)
+		return result, fmt.Errorf("filesystem source %q has no path — re-add it with `mora connect filesystem <path>` (or remove the row from sources.json)", s.Name)
 	}
-	count := 0
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
-	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			// WalkDir reports a missing root and unreadable directories through the
 			// callback. Returning nil here used to convert both into a clean empty
@@ -1807,6 +1870,7 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		if len(text) > 512*1024 {
 			return nil // keep the index lean — same bound as the raw-read path.
 		}
+		result.Examined++
 		rel, _ := filepath.Rel(s.Path, path)
 		id := "src_" + ContentHash(s.Name+":"+rel)
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
@@ -1821,17 +1885,24 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		// visible; path line after a real publish.
 		sourceKey := ingestpkg.SourceKey("filesystem", s.Name)
 		if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
+			result.Failed++
+			result.Missing++
 			return jerr
 		}
 		// Suppression re-check + write, atomic under the governance lease so a
 		// `mora forget` that commits mid-walk is honored, never resurrected (#113).
 		wrote, werr := writeUnlessForgotten(cfg, "", id, dest, body, 0o644)
 		if werr != nil {
+			result.Failed++
+			result.Missing++
 			return werr
 		}
 		if wrote {
 			ingestpkg.RecordPublishedPath(cfg, sourceKey, dest, ingestPublishSeams())
-			count++
+			result.Materialized++
+		} else {
+			// Governance suppression is intentional exclusion, not missing work.
+			result.Examined--
 		}
 		return nil
 	})
@@ -1854,7 +1925,7 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		st.Source = s.Name
 		st.LastAttemptAt = now
 		if err == nil {
-			st.ItemCount = count
+			st.ItemCount = result.Materialized
 			st.LastSynced = now
 			st.LastSuccessAt = now
 			st.ErrorCount = 0
@@ -1865,7 +1936,7 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 		}
 		err = persistSyncStatus(out, p, st, err)
 	}
-	return count, err
+	return result, err
 }
 
 // sourceFreshness maps each synced source to its last-synced timestamp, scanning

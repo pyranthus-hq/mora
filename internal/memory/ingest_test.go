@@ -103,6 +103,31 @@ func TestIngestEmptyCounts(t *testing.T) {
 	}
 }
 
+func TestIngestPartialCounts(t *testing.T) {
+	items := make([]Item, 100)
+	for i := range items {
+		items[i] = Item{Kind: kindGmailThread, ProviderID: string(rune(i + 1)), OccurredAt: time.Now()}
+	}
+	fetcher := &fakeFetcher{pages: map[string]Page{"": {Items: items}}}
+	attempted := 0
+	res, err := Ingest(IngestParams{
+		Fetcher: fetcher, Kind: kindGmailThread, Status: &SyncStatus{Source: "gmail"},
+		Write: func(MappedMemory) error {
+			attempted++
+			if attempted <= 27 {
+				return errWrite
+			}
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("partial write attempt must remain non-nil")
+	}
+	if res.Examined != 100 || res.Materialized != 73 || res.Failed != 27 || res.Missing != 27 {
+		t.Fatalf("counts = %d/%d/%d/%d, want 100/73/27/27", res.Examined, res.Materialized, res.Failed, res.Missing)
+	}
+}
+
 func TestIngestWriteErrorContinues(t *testing.T) {
 	f := twoPageFetcher()
 	var written []string
