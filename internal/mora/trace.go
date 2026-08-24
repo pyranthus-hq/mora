@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
@@ -43,4 +44,12 @@ func appendTraceEvent(cfg Config, event traceEvent) error {
 	return atomicio.AppendFile(filepath.Join(cfg.StateDir, "observability", "traces.jsonl"), string(b)+"\n")
 }
 
-func queryCorrelationID() string { return newRunID(time.Now()) }
+func queryCorrelationID(seed string, links []string) string {
+	ordered := append([]string(nil), links...)
+	sort.Strings(ordered)
+	hash := ContentHash(seed + "\x00" + strings.Join(ordered, "\x00"))
+	if len(hash) > 16 {
+		hash = hash[:16]
+	}
+	return "query_" + hash
+}

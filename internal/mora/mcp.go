@@ -404,13 +404,13 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": health}
 	manifest := evidenceManifest(budgeted, res)
 	out["evidence_manifest"] = manifest
-	queryID := queryCorrelationID()
 	links := make([]string, 0, len(manifest))
 	for _, entry := range manifest {
 		if entry.IngestCorrelationID != "" {
 			links = append(links, entry.IngestCorrelationID)
 		}
 	}
+	queryID := queryCorrelationID(query, links)
 	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: queryID, Stage: traceStageQuery, Status: "completed", Links: links})
 	out["query_correlation_id"] = queryID
 	out["ranking"] = rankingReceipts(budgeted, sr.Trace, sr.ScoreFused)
