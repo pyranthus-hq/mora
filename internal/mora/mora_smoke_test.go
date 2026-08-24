@@ -72,8 +72,9 @@ func TestSmokeInitWriteSearch(t *testing.T) {
 		"--title", "OAuth auth path", "--text", "Use OAuth 2.0 for Wink API auth")
 
 	out := run(t, "search", "OAuth", "--scope", "project:wink", "--json")
-	var got []Memory
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
+	// Plan 01-07: `search --json` carries its array under `memories`.
+	got, err := decodeMemoriesJSON(t, out)
+	if err != nil {
 		t.Fatalf("search json: %v\n%s", err, out)
 	}
 	if len(got) != 1 || got[0].Title != "OAuth auth path" {
@@ -119,7 +120,7 @@ func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 	runtimeGOOS = func() string { return "windows" }
 
 	var js bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &js); err != nil {
+	if err := cmdDoctor(context.Background(), []string{"--json"}, &js, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var rep doctorReport
@@ -131,7 +132,7 @@ func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 	}
 
 	var text bytes.Buffer
-	if err := cmdDoctor(context.Background(), nil, &text); err != nil {
+	if err := cmdDoctor(context.Background(), nil, &text, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(text.String(), "skipping chat.db checks on windows") {

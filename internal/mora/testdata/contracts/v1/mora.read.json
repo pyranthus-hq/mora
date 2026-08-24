@@ -1,0 +1,13 @@
+{
+  "created_at": "\u003ctimestamp\u003e",
+  "id": "\u003cid\u003e",
+  "path": "\u003chome\u003e/vault/mora/memories/global/\u003cid\u003e.md",
+  "schema": "mora.read",
+  "schema_version": 1,
+  "scope": "global",
+  "source": "manual",
+  "tags": null,
+  "text": "envelope probe seed",
+  "title": "envelope seed",
+  "type": "insight"
+}

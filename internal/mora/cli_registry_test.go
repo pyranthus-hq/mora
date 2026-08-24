@@ -25,14 +25,25 @@ type cliRegistry struct {
 		DriftAndMutationTest string `json:"drift_and_mutation_test"`
 		Mutation             string `json:"mutation"`
 		PlatformPolicy       string `json:"platform_policy"`
+		JSONContractPolicy   string `json:"json_contract_policy"`
+		// ProseAssertionExemptions names the test files that pin HUMAN text on
+		// purpose and are therefore outside CON-06's scope (adopted default C5).
+		// JSONSubstringAssertionBacklog names the files that assert a substring
+		// over --json stdout instead of decoding. Both are enforced by
+		// TestCLIContractProseExemptionsAreDeclared.
+		ProseAssertionExemptions      []string          `json:"prose_assertion_exemptions"`
+		JSONSubstringAssertionBacklog map[string]string `json:"json_substring_assertion_backlog"`
 	} `json:"contract"`
 	Commands []cliRegistryRow `json:"commands"`
 }
 
 type cliRegistryRow struct {
-	Path     string `json:"path"`
-	Kind     string `json:"kind"`
-	Platform string `json:"platform"`
+	Path         string `json:"path"`
+	Kind         string `json:"kind"`
+	Platform     string `json:"platform"`
+	JSONContract string `json:"json_contract,omitempty"`
+	Payload      string `json:"payload,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type cliBehaviorEvidence struct {
@@ -88,17 +99,19 @@ func loadCLIBehaviorEvidence(t *testing.T) cliBehaviorEvidence {
 // registry and its real-Run probe row move with it.
 func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 	registry := loadCLIRegistry(t)
-	if registry.SchemaVersion != 1 || registry.Issue != 205 {
-		t.Fatalf("registry header = schema %d issue %d, want schema 1 issue 205", registry.SchemaVersion, registry.Issue)
+	if registry.SchemaVersion != 2 || registry.Issue != 205 {
+		t.Fatalf("registry header = schema %d issue %d, want schema 2 issue 205", registry.SchemaVersion, registry.Issue)
 	}
 	if registry.Contract.RealDispatchTest == "" ||
 		registry.Contract.DriftAndMutationTest == "" ||
 		registry.Contract.Mutation == "" ||
-		registry.Contract.PlatformPolicy == "" {
+		registry.Contract.PlatformPolicy == "" ||
+		registry.Contract.JSONContractPolicy == "" {
 		t.Fatal("registry evidence contract must name real dispatch, mutation, and platform policy")
 	}
 
 	seen := map[string]bool{}
+	payloadContracts := map[string]string{}
 	for _, row := range registry.Commands {
 		if strings.TrimSpace(row.Path) != row.Path || row.Path == "" {
 			t.Fatalf("non-canonical registry path %q", row.Path)
@@ -114,6 +127,25 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		case "verb", "alias", "subcommand":
 		default:
 			t.Fatalf("%s: unknown registry kind %q", row.Path, row.Kind)
+		}
+		switch row.JSONContract {
+		case "result", "receipt":
+			if row.Payload == "" {
+				t.Fatalf("%s: %s contract is missing payload", row.Path, row.JSONContract)
+			}
+			if prior, ok := payloadContracts[row.Payload]; ok && prior != row.JSONContract {
+				t.Fatalf("%s: payload %q has conflicting contracts %q and %q", row.Path, row.Payload, prior, row.JSONContract)
+			}
+			payloadContracts[row.Payload] = row.JSONContract
+		case "exempt":
+			if row.Reason == "" {
+				t.Fatalf("%s: exempt contract is missing reason", row.Path)
+			}
+			if row.Payload != "" {
+				t.Fatalf("%s: exempt contract must not declare payload %q", row.Path, row.Payload)
+			}
+		default:
+			t.Fatalf("%s: missing or unknown json contract %q", row.Path, row.JSONContract)
 		}
 	}
 
@@ -476,8 +508,24 @@ func TestCLIRegistryRealRunDispatch(t *testing.T) {
 			if current == unknown {
 				t.Fatalf("registered token is behaviorally indistinguishable from an unknown token:\ncurrent=%+v\nunknown=%+v", current, unknown)
 			}
-			if row.Kind == "alias" && current.HasError {
-				t.Fatalf("documented alias failed: %s", current.Error)
+			if row.Kind == "alias" {
+				alias := normalizeCLIProbe(runCLIRegistryProbe(t, fields), normalizers...)
+				if alias.HasError {
+					t.Fatalf("documented alias failed: %s", alias.Error)
+				}
+				if row.Path == "--version" || row.Path == "-v" {
+					jsonAlias := runCLIRegistryProbe(t, append(append([]string(nil), fields...), "--json"))
+					if jsonAlias.HasError {
+						t.Fatalf("version JSON alias failed: %s", jsonAlias.Error)
+					}
+					var receipt receiptEnvelope
+					if err := json.Unmarshal([]byte(jsonAlias.Stdout), &receipt); err != nil {
+						t.Fatalf("version JSON alias output must decode: %v\n%s", err, jsonAlias.Stdout)
+					}
+					if receipt.Schema != "mora.version" || receipt.SchemaVersion != 1 {
+						t.Fatalf("version JSON alias receipt = %+v", receipt)
+					}
+				}
 			}
 		})
 	}
@@ -686,8 +734,11 @@ func TestCLIRegistryLoopLifecycleThroughRun(t *testing.T) {
 	if err := Run(context.Background(), []string{"loop", "list", "--json"}, &listOut, &listOut, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
-	var registrations []map[string]any
-	if err := json.Unmarshal(listOut.Bytes(), &registrations); err != nil || len(registrations) != 1 {
+	// Plan 01-07: `loop list --json` carries its array under `loops`.
+	var listDoc struct {
+		Loops []map[string]any `json:"loops"`
+	}
+	if err := json.Unmarshal(listOut.Bytes(), &listDoc); err != nil || len(listDoc.Loops) != 1 {
 		t.Fatalf("loop list JSON = %q, decode=%v", listOut.String(), err)
 	}
 

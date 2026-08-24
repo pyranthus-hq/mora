@@ -686,7 +686,7 @@ func TestCoreB_IngestConnectFilesystemHappy(t *testing.T) {
 	coreBIngestWriteFile(t, filepath.Join(dir, "readme.md"), "# hello")
 
 	var out bytes.Buffer
-	if err := connectFilesystem(context.Background(), []string{dir}, &out); err != nil {
+	if err := connectFilesystem(context.Background(), []string{dir}, &out, testStderr); err != nil {
 		t.Fatalf("connectFilesystem: %v\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "Enabled filesystem and indexed 1 file(s) from") {
@@ -714,7 +714,7 @@ func TestCoreB_IngestConnectFilesystemReconnectAndConflict(t *testing.T) {
 	coreBIngestWriteFile(t, filepath.Join(dir1, "a.md"), "# a")
 
 	var out bytes.Buffer
-	if err := connectFilesystem(context.Background(), []string{dir1, "--name", "shared"}, &out); err != nil {
+	if err := connectFilesystem(context.Background(), []string{dir1, "--name", "shared"}, &out, testStderr); err != nil {
 		t.Fatalf("first connect: %v", err)
 	}
 	cfg, _ := loadConfig()
@@ -731,7 +731,7 @@ func TestCoreB_IngestConnectFilesystemReconnectAndConflict(t *testing.T) {
 
 	// Re-connect the SAME name + SAME path => refresh in place, CreatedAt preserved.
 	out.Reset()
-	if err := connectFilesystem(context.Background(), []string{dir1, "--name", "shared"}, &out); err != nil {
+	if err := connectFilesystem(context.Background(), []string{dir1, "--name", "shared"}, &out, testStderr); err != nil {
 		t.Fatalf("re-connect: %v", err)
 	}
 	sources, _ = loadSources(cfg)
@@ -752,7 +752,7 @@ func TestCoreB_IngestConnectFilesystemReconnectAndConflict(t *testing.T) {
 	dir2 := t.TempDir()
 	coreBIngestWriteFile(t, filepath.Join(dir2, "b.md"), "# b")
 	out.Reset()
-	err := connectFilesystem(context.Background(), []string{dir2, "--name", "shared"}, &out)
+	err := connectFilesystem(context.Background(), []string{dir2, "--name", "shared"}, &out, testStderr)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("name-collision err = %v, want 'already exists'", err)
 	}
@@ -770,7 +770,7 @@ func TestCoreB_IngestConnectFilesystemCorruptRegistry(t *testing.T) {
 	dir := t.TempDir()
 	coreBIngestWriteFile(t, filepath.Join(dir, "a.md"), "# a")
 	var out bytes.Buffer
-	err := connectFilesystem(context.Background(), []string{dir}, &out)
+	err := connectFilesystem(context.Background(), []string{dir}, &out, testStderr)
 	if err == nil || !strings.Contains(err.Error(), "cannot read existing sources") {
 		t.Fatalf("corrupt-registry err = %v", err)
 	}
@@ -782,18 +782,18 @@ func TestCoreB_IngestConnectFilesystemErrors(t *testing.T) {
 	var out bytes.Buffer
 
 	// No path at all -> usage error.
-	if err := connectFilesystem(context.Background(), nil, &out); err == nil || !strings.Contains(err.Error(), "usage: mora connect filesystem") {
+	if err := connectFilesystem(context.Background(), nil, &out, testStderr); err == nil || !strings.Contains(err.Error(), "usage: mora connect filesystem") {
 		t.Fatalf("no-path err = %v", err)
 	}
 	// A path that does not exist -> cannot read.
 	missing := filepath.Join(t.TempDir(), "nope")
-	if err := connectFilesystem(context.Background(), []string{missing}, &out); err == nil || !strings.Contains(err.Error(), "cannot read") {
+	if err := connectFilesystem(context.Background(), []string{missing}, &out, testStderr); err == nil || !strings.Contains(err.Error(), "cannot read") {
 		t.Fatalf("missing-path err = %v", err)
 	}
 	// A file (not a directory) -> is not a directory.
 	f := filepath.Join(t.TempDir(), "file.txt")
 	coreBIngestWriteFile(t, f, "x")
-	if err := connectFilesystem(context.Background(), []string{f}, &out); err == nil || !strings.Contains(err.Error(), "is not a directory") {
+	if err := connectFilesystem(context.Background(), []string{f}, &out, testStderr); err == nil || !strings.Contains(err.Error(), "is not a directory") {
 		t.Fatalf("file-path err = %v", err)
 	}
 }

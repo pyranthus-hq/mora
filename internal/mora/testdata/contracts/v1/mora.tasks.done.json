@@ -1,0 +1,6 @@
+{
+  "rows_updated": 1,
+  "schema": "mora.tasks.done",
+  "schema_version": 1,
+  "task": "envelope probe task"
+}

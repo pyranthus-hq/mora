@@ -26,6 +26,12 @@ type Source struct {
 	LastSuccessAt string `json:"last_success_at,omitempty"`
 	AgeHours      int    `json:"age_hours"`
 	LastError     string `json:"last_error,omitempty"`
+	// ErrorCode is the typed companion to LastError (CON-07), carried beside the
+	// prose rather than replacing it. Empty on a fresh source. See
+	// internal/mora/eval/error-code-registry.json for the published values and
+	// docs/architecture/08-cli-and-ux.md for the error_class -> State mapping.
+	// Classify never sets it — the caller owns the error-code taxonomy.
+	ErrorCode string `json:"error_code,omitempty"`
 }
 type Status struct {
 	LastSuccessAt string

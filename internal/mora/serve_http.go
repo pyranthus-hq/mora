@@ -33,11 +33,31 @@ var httpCallAllowed = map[string]bool{
 	"write_memory":   true,
 }
 
-func cmdServe(ctx context.Context, args []string, stdout io.Writer) error {
+// cmdServe dispatches `mora serve <subcommand>`. Today only `http` exists; the
+// verb is deliberately generic so future transports (e.g. an SSE MCP endpoint)
+// can slot in beside it without a new top-level command.
+// serveHTTPServiceReceipt is the machine form of an install/uninstall/status
+// service action.
+type serveHTTPServiceReceipt struct {
+	Action string `json:"action"`
+	OK     bool   `json:"ok"`
+}
+
+func cmdServe(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] != "http" {
 		return errors.New("usage: mora serve http [install|uninstall|status] [--port 7777] [--print-token]")
 	}
 	rest := args[1:]
+	jsonOut := false
+	filtered := make([]string, 0, len(rest))
+	for _, a := range rest {
+		if a == "--json" {
+			jsonOut = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	rest = filtered
 	if len(rest) > 0 {
 		switch rest[0] {
 		case "install", "uninstall", "status":
@@ -45,8 +65,27 @@ func cmdServe(ctx context.Context, args []string, stdout io.Writer) error {
 			if err != nil {
 				return err
 			}
-			return serveHTTPService(cfg, rest[0], stdout)
+			// The service verb's prose moves to stderr under --json so stdout
+			// carries exactly one document.
+			out := stdout
+			if jsonOut {
+				out = stderr
+			}
+			if err := serveHTTPService(cfg, rest[0], out); err != nil {
+				return err
+			}
+			if jsonOut {
+				return emitReceipt(stdout, "mora.serve.http."+rest[0], 1, serveHTTPServiceReceipt{
+					Action: rest[0], OK: true,
+				})
+			}
+			return nil
 		}
+	}
+	if jsonOut {
+		// The long-running server itself has no document to emit; refuse rather
+		// than start a blocking server that a machine caller is waiting to parse.
+		return newCodedError(errCodeUsageUnknownFlag, nil, "mora serve http does not support --json (it runs a server); use `mora serve http status --json`")
 	}
 	return serveLoopbackHTTP(ctx, rest, stdout)
 }

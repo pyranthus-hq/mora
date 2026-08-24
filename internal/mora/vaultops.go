@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -12,15 +13,28 @@ import (
 	"github.com/pyranthus-hq/mora/internal/vaultarchive"
 )
 
-func cmdLint(ctx context.Context, args []string, stdout io.Writer) (err error) {
+func cmdLint(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
+	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if parseErr := fs.Parse(args); parseErr != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+	}
+	if fs.NArg() != 0 {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	// lint-weekly producer chokepoint (HEALTH-11).
-	defer stampChokepoint(cfg, stdout, args, "lint-weekly", producerClock(), &err)
+	stampOutput := stdout
+	if *jsonOut {
+		stampOutput = stderr
+	}
+	defer stampChokepoint(cfg, stampOutput, args, "lint-weekly", producerClock(), &err)
 	required := []string{"index.md", "priority-map.md", "live-tasks.md", "heartbeat.md", "auto-resolver.md", "meetings/ledger.md", "log.md"}
-	var issues []string
+	issues := make([]string, 0)
 	for _, rel := range required {
 		if _, err := os.Stat(filepath.Join(cfg.VaultDir, rel)); err != nil {
 			issues = append(issues, "missing "+rel)
@@ -31,6 +45,12 @@ func cmdLint(ctx context.Context, args []string, stdout io.Writer) (err error) {
 			issues = append(issues, "tokens directory is inside vault")
 		}
 	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.lint.report", 1, struct {
+			OK     bool     `json:"ok"`
+			Issues []string `json:"issues"`
+		}{OK: len(issues) == 0, Issues: issues})
+	}
 	if len(issues) == 0 {
 		fmt.Fprintln(stdout, "lint ok")
 		return nil
@@ -40,13 +60,27 @@ func cmdLint(ctx context.Context, args []string, stdout io.Writer) (err error) {
 	}
 	return nil
 }
-func cmdBackup(ctx context.Context, args []string, stdout io.Writer) (err error) {
+func cmdBackup(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if parseErr := fs.Parse(args); parseErr != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+	}
+	if fs.NArg() != 0 {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	// backup-daily producer chokepoint (HEALTH-11).
-	defer stampChokepoint(cfg, stdout, args, "backup-daily", producerClock(), &err)
+	stampOutput := stdout
+	if *jsonOut {
+		stampOutput = stderr
+	}
+	now := producerClock()
+	defer stampChokepoint(cfg, stampOutput, args, "backup-daily", now, &err)
 	// A drifted config that nests data_dir/config inside the vault would tar the
 	// age share identity and DECRYPTED share corpora (plus the index's decrypted
 	// text) straight into the backup archive. Refuse rather than leak — the same
@@ -58,9 +92,20 @@ func cmdBackup(ctx context.Context, args []string, stdout io.Writer) (err error)
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "backups"), 0o700); err != nil {
 		return err
 	}
-	out := filepath.Join(cfg.StateDir, "backups", "mora-"+time.Now().Format("20060102-150405")+".tar.gz")
+	out := filepath.Join(cfg.StateDir, "backups", "mora-"+now.Format("20060102-150405")+".tar.gz")
 	if err := tarGz(out, cfg.VaultDir); err != nil {
 		return err
+	}
+	if *jsonOut {
+		info, statErr := os.Stat(out)
+		if statErr != nil {
+			return statErr
+		}
+		return emitReceipt(stdout, "mora.backup", 1, struct {
+			ArchivePath string `json:"archive_path"`
+			Bytes       int64  `json:"bytes"`
+			CreatedAt   string `json:"created_at"`
+		}{ArchivePath: out, Bytes: info.Size(), CreatedAt: now.UTC().Format(time.RFC3339)})
 	}
 	fmt.Fprintf(stdout, "%s\n", out)
 	return nil

@@ -40,7 +40,7 @@ func classifyUpgradeInstall(exe string) upgradeInstallRoute {
 // cmdUpgrade implements `mora upgrade [--check]`: in-place self-update from the
 // latest GitHub release, mirroring how Claude Code keeps itself current. Homebrew
 // installs are deferred to `brew upgrade`; source/dev builds are refused.
-func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdUpgrade(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	checkOnly := fs.Bool("check", false, "only report whether an update is available; don't install")
@@ -108,7 +108,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	switch classifyUpgradeInstall(exe) {
 	case upgradeRouteApp:
 		appRoot, _ := moraAppRoot(exe)
-		return cmdUpgradeApp(ctx, current, appRoot, *checkOnly, token, stdout)
+		return cmdUpgradeApp(ctx, current, appRoot, *checkOnly, token, stdout, stderr)
 	case upgradeRouteHomebrew:
 		fmt.Fprintln(stdout, "mora was installed via Homebrew. Update it with:")
 		fmt.Fprintln(stdout, "  brew upgrade pyranthus-hq/tap/mora")
@@ -116,7 +116,7 @@ func cmdUpgrade(ctx context.Context, args []string, stdout io.Writer) error {
 	case upgradeRouteSource:
 		return fmt.Errorf("this is a source build (version %q) — self-update is disabled; use `git pull && go build`, or install a release", current)
 	}
-	return binupdatepkg.Run(ctx, binupdatepkg.Options{Current: current, Executable: exe, Token: token, GOOS: runtimeGOOS(), CheckOnly: *checkOnly, Stdout: stdout, PostRebuild: postUpgradeRebuild})
+	return binupdatepkg.Run(ctx, binupdatepkg.Options{Current: current, Executable: exe, Token: token, GOOS: runtimeGOOS(), CheckOnly: *checkOnly, Stdout: stdout, Stderr: stderr, PostRebuild: postUpgradeRebuild})
 }
 
 // postUpgradeRebuild rebuilds the search index by exec-ing the freshly

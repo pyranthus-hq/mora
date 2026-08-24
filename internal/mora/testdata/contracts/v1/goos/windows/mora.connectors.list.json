@@ -1,0 +1,30 @@
+{
+  "connectors": [
+    {
+      "enabled": false,
+      "name": "Filesystem",
+      "needs_auth": false,
+      "type": "filesystem"
+    },
+    {
+      "enabled": false,
+      "name": "GitHub Issues",
+      "needs_auth": false,
+      "type": "github"
+    },
+    {
+      "enabled": false,
+      "name": "Gmail",
+      "needs_auth": true,
+      "type": "gmail"
+    },
+    {
+      "enabled": false,
+      "name": "Google Calendar",
+      "needs_auth": true,
+      "type": "calendar"
+    }
+  ],
+  "schema": "mora.connectors.list",
+  "schema_version": 1
+}

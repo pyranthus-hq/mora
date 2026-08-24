@@ -2,7 +2,6 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -52,7 +51,14 @@ func writeConfig(cfg Config) error    { return configstore.Write(cfg) }
 // `mora config embedder <ollama|static>` is the same durable seam the retrieval
 // docs point at. "default"/"static" reset by DROPPING the key rather than
 // persisting a redundant value, so config.toml stays minimal.
-func cmdConfig(args []string, stdout io.Writer) error {
+// configSetReceipt is the machine form of `key = value`, the line the human
+// branch prints when a setting is written.
+type configSetReceipt struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func cmdConfig(args []string, stdout, stderr io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -84,18 +90,30 @@ func cmdConfig(args []string, stdout io.Writer) error {
 	// instead of scraping the human output, which truncated paths with double
 	// spaces and mojibake'd non-ASCII paths under PowerShell 5.1's OEM decoding).
 	if len(args) == 1 && args[0] == "--json" {
-		b, err := json.MarshalIndent(map[string]string{
+		// The four path keys keep their names and types; the envelope is added
+		// beside them. uninstall.ps1 reads $j.vault_dir and friends by name, so
+		// the addition is safe. The HUMAN branch above is untouched — install.sh
+		// and scripts/regress/regression.sh:119 scrape it with sed.
+		return emitReceipt(stdout, "mora.config", 1, map[string]string{
 			"vault_dir":  cfg.VaultDir,
 			"data_dir":   cfg.DataDir,
 			"state_dir":  cfg.StateDir,
 			"config_dir": cfg.ConfigDir,
-		}, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(stdout, string(b))
-		return nil
+		})
 	}
+	// The setter path takes --json anywhere among its arguments (`mora config
+	// mmr on --json`); the flag is stripped before the positional count so the
+	// usage contract below is unchanged for a human caller.
+	jsonOut := false
+	positional := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+			continue
+		}
+		positional = append(positional, a)
+	}
+	args = positional
 	if len(args) != 2 {
 		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off> | mcp-write-policy <open|propose|readonly>]")
 	}
@@ -148,9 +166,17 @@ func cmdConfig(args []string, stdout io.Writer) error {
 			shown = "on"
 		}
 	}
+	if jsonOut {
+		// The advisory note stays on stderr for both branches; only the setting
+		// itself is the document (CON-06: stdout carries the document alone).
+		if key == "mmr" && cfg.MMR && cfg.Embedder != "ollama" {
+			fmt.Fprintln(stderr, "note: MMR reranks on vector similarity, so it only takes effect under a semantic embedder — run `mora config embedder ollama`.")
+		}
+		return emitReceipt(stdout, "mora.config."+key, 1, configSetReceipt{Key: key, Value: shown})
+	}
 	fmt.Fprintf(stdout, "%s = %s\n", key, shown)
 	if key == "mmr" && cfg.MMR && cfg.Embedder != "ollama" {
-		fmt.Fprintln(stdout, "note: MMR reranks on vector similarity, so it only takes effect under a semantic embedder — run `mora config embedder ollama`.")
+		fmt.Fprintln(stderr, "note: MMR reranks on vector similarity, so it only takes effect under a semantic embedder — run `mora config embedder ollama`.")
 	}
 	if key == "context" {
 		fmt.Fprintf(stdout, "(default budget %d tokens, digest snippets %d chars; per-call max_tokens still wins, ceiling %d)\n",
@@ -168,7 +194,7 @@ func cmdConfig(args []string, stdout io.Writer) error {
 // keeping config.toml minimal); an empty DIR value is broken either way but
 // is preserved verbatim — dropping it would silently repoint the install to
 // the defaults via an unrelated rewrite.
-func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	vault := fs.String("vault", "", "vault directory")
@@ -249,7 +275,7 @@ func cmdInit(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	fmt.Fprintf(stdout, "  Layout: mora config\n\n")
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
-	return runSetupMenu(ctx, cfg, stdin, stdout)
+	return runSetupMenu(ctx, cfg, stdin, stdout, stderr)
 }
 
 // configFileExists reports whether a config.toml is already on disk —

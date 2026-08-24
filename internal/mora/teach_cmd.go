@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-func cmdTeach(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora teach <identity|commitment|memory|undo|history|consent|examples>")
 	}
@@ -21,7 +21,10 @@ func cmdTeach(ctx context.Context, args []string, stdout io.Writer) error {
 		if len(args) == 1 {
 			return errors.New("usage: mora teach identity <list|confirm|reject|undo>")
 		}
-		return cmdMerge(ctx, args[1:], stdout)
+		// `teach identity …` is an alias for `merge …` but publishes its own
+		// schema names, so the namespace rides the context rather than forcing a
+		// signature change on every command handler.
+		return cmdMerge(withMergeSchemaNamespace(ctx, mergeSchemaTeachIdentity), args[1:], stdout, stderr)
 	case "commitment":
 		return teachCommitment(ctx, args[1:], stdout)
 	case "memory":
@@ -121,7 +124,7 @@ func teachCommitment(ctx context.Context, args []string, stdout io.Writer) error
 		return err
 	}
 	if *jsonOut {
-		return emit(stdout, stored, true)
+		return emitReceipt(stdout, "mora.teach.commitment", 1, stored)
 	}
 	fmt.Fprintf(stdout, "recorded %s for commitment %s in %s (entry %s)\n",
 		decision, displayCommitmentID(target), *memoryID, stored.ID)
@@ -299,7 +302,7 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	if *jsonOut {
-		return emit(stdout, map[string]any{"decision": stored, "replacement": replacement}, true)
+		return emitReceipt(stdout, "mora.teach.memory", 1, map[string]any{"decision": stored, "replacement": replacement})
 	}
 	if replacement.ID != "" {
 		fmt.Fprintf(stdout, "%s %s with revision %s (entry %s)\n", decision, original.ID, replacement.ID, stored.ID)
@@ -330,8 +333,21 @@ func decisionValidityFromFlags(createdAt, asOf, durability, flip, reviewBy strin
 }
 
 func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
+	jsonOut := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	args = rest
 	if len(args) != 1 {
 		return errors.New("teach undo requires one governance entry id")
+	}
+	if err := refuseDashLedPositional("teach undo", "entry id", args[0]); err != nil {
+		return err
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -374,8 +390,23 @@ func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return err
 	}
+	if jsonOut {
+		return emitReceipt(stdout, "mora.teach.undo", 1, teachUndoReceipt{EntryID: args[0], Revoked: true})
+	}
 	fmt.Fprintf(stdout, "undid Teach decision %s\n", args[0])
 	return nil
+}
+
+// teachUndoReceipt is the machine form of a revoked Teach decision.
+type teachUndoReceipt struct {
+	EntryID string `json:"entry_id"`
+	Revoked bool   `json:"revoked"`
+}
+
+// teachHistoryReceipt carries the decision log under a named key with a
+// never-null array, so an agent can iterate it without a nil check.
+type teachHistoryReceipt struct {
+	Entries []govEntry `json:"entries"`
 }
 
 func teachHistory(args []string, stdout io.Writer) error {
@@ -414,7 +445,7 @@ func teachHistory(args []string, stdout io.Writer) error {
 			}
 		}
 	}
-	var entries []govEntry
+	entries := make([]govEntry, 0, len(teaching))
 	for _, e := range teaching {
 		if *memoryID != "" {
 			switch e.Kind {
@@ -431,7 +462,7 @@ func teachHistory(args []string, stdout io.Writer) error {
 		entries = append(entries, e)
 	}
 	if *jsonOut {
-		return emit(stdout, entries, true)
+		return emitReceipt(stdout, "mora.teach.history", 1, teachHistoryReceipt{Entries: entries})
 	}
 	for _, e := range entries {
 		status := "active"
@@ -460,12 +491,21 @@ func teachConsent(args []string, stdout io.Writer) error {
 	}
 	switch args[0] {
 	case "status":
-		return emit(stdout, map[string]any{
+		return emitReceipt(stdout, "mora.teach.consent.status", 1, map[string]any{
 			"evaluation_examples": g.evalConsentEnabled(),
 			"privacy":             "structural fields only; raw memory text and identities are never exported",
-		}, true)
+		})
 	case "enable", "disable":
-		if len(args) != 2 || args[1] != "--yes" {
+		jsonOut := false
+		rest := make([]string, 0, len(args))
+		for _, a := range args[1:] {
+			if a == "--json" {
+				jsonOut = true
+				continue
+			}
+			rest = append(rest, a)
+		}
+		if len(rest) != 1 || rest[0] != "--yes" {
 			return errors.New("consent change requires --yes")
 		}
 		entry, err := appendGovernanceEntry(cfg, govEntry{
@@ -476,6 +516,11 @@ func teachConsent(args []string, stdout io.Writer) error {
 		})
 		if err != nil {
 			return err
+		}
+		if jsonOut {
+			return emitReceipt(stdout, "mora.teach.consent."+args[0], 1, teachConsentReceipt{
+				Decision: args[0], Enabled: args[0] == "enable", EntryID: entry.ID,
+			})
 		}
 		fmt.Fprintf(stdout, "evaluation-example consent %sd (entry %s)\n", args[0], entry.ID)
 		return nil
@@ -504,7 +549,11 @@ func teachExamples(args []string, stdout io.Writer) error {
 		return err
 	}
 	if !g.evalConsentEnabled() {
-		return errors.New("evaluation examples are disabled; enable explicitly with `mora teach consent enable --yes`")
+		// A typed refusal: an agent detects "consent required" from the code
+		// instead of parsing this sentence. Mora observed the closed gate in its
+		// own governance ledger, so the code states a fact, not an inference.
+		return newCodedError(errCodeConsentRequired, nil,
+			"evaluation examples are disabled; enable explicitly with `mora teach consent enable --yes`")
 	}
 	var entries []govEntry
 	for _, e := range g.teachingEntries() {
@@ -528,5 +577,18 @@ func teachExamples(args []string, stdout io.Writer) error {
 			Undone:   govEntryRevoked(e),
 		})
 	}
-	return emit(stdout, out, true)
+	// Plan 01-07: the bare array moves under `examples`.
+	return emitReceipt(stdout, "mora.teach.examples", 1, teachExamplesPayload{Examples: out})
+}
+
+// teachExamplesPayload carries the privacy-minimized examples under a named key.
+type teachExamplesPayload struct {
+	Examples []teachExample `json:"examples"`
+}
+
+// teachConsentReceipt is the machine form of a consent change.
+type teachConsentReceipt struct {
+	Decision string `json:"decision"`
+	Enabled  bool   `json:"enabled"`
+	EntryID  string `json:"entry_id"`
 }

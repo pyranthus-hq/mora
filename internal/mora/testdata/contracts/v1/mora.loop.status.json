@@ -1,0 +1,11 @@
+{
+  "attempt": 1,
+  "last_run_at": "\u003ctimestamp\u003e",
+  "loop_id": "envelope-loop",
+  "message": "run \u003cid\u003e in progress (period \u003cdate\u003e, attempt 1) (scheduler missing)",
+  "period": "\u003cdate\u003e",
+  "scheduled": false,
+  "schema": "mora.loop.status",
+  "schema_version": 1,
+  "state": "running"
+}

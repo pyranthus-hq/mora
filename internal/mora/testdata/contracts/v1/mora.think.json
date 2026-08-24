@@ -1,0 +1,20 @@
+{
+  "evidence": [],
+  "gaps": {
+    "checks_applied": [
+      "entity_coverage",
+      "evidence_density",
+      "retrieval_support",
+      "source_coverage",
+      "staleness",
+      "temporal_state"
+    ],
+    "coverage_holes": [
+      "No memory matched this query."
+    ]
+  },
+  "query": "what happened",
+  "schema": "mora.think",
+  "schema_version": 1,
+  "synthesis_prompt": "Answer the question using ONLY the evidence below. Cite every claim with its [stable_id]. If the evidence is insufficient, say so plainly rather than guessing.\n\nQUESTION: what happened\n\nEVIDENCE:\n(none found)\n\nKNOWN GAPS (surface these honestly in a 'What the vault does not know' section):\n- No memory matched this query.\n"
+}

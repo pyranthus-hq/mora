@@ -90,7 +90,7 @@ func TestUpgradePolicyPersistsWithoutDroppingUnknownConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--policy", "off"}, &out); err != nil {
+	if err := cmdUpgrade(context.Background(), []string{"--policy", "off"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(configPath)
@@ -118,7 +118,7 @@ func TestOffScheduledCheckMakesZeroNetworkAndNotifierCalls(t *testing.T) {
 	updateNotificationRun = func(...string) error { notifications++; return nil }
 	runtimeGOOS = func() string { return "darwin" }
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--scheduled-check"}, &out); err != nil {
+	if err := cmdUpgrade(context.Background(), []string{"--scheduled-check"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	// Explicit user-requested `--check` remains allowed under policy off; only
@@ -240,7 +240,7 @@ func TestUpgradeStatusJSONIsCachedAndMakesNoCalls(t *testing.T) {
 	updateCheckLatest = func(context.Context) (stableReleaseResult, error) { checks++; return stableReleaseResult{}, nil }
 	updateNotificationRun = func(...string) error { notifications++; return nil }
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--status", "--json"}, &out); err != nil {
+	if err := cmdUpgrade(context.Background(), []string{"--status", "--json"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if checks != 0 || notifications != 0 {

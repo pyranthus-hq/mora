@@ -1,0 +1,1741 @@
+{
+  "commands": [
+    {
+      "json_contract": "exempt",
+      "kind": "alias",
+      "path": "--help",
+      "payload": "",
+      "platform": "all",
+      "reason": "human help text is a deliberate, tested contract (C5)"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "alias",
+      "path": "-h",
+      "payload": "",
+      "platform": "all",
+      "reason": "human help text is a deliberate, tested contract (C5)"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "connect google",
+      "payload": "",
+      "platform": "network-seam",
+      "reason": "browser OAuth handoff"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "connectors setup",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "interactive menu"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook install",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook recall",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook session-start",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook uninstall",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "mcp serve",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "schedule install",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "schedule uninstall",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "serve http",
+      "payload": "",
+      "platform": "loopback-seam",
+      "reason": "long-running loopback HTTP server"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "teach consent",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "teach identity",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "usage queries",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "connect",
+      "payload": "",
+      "platform": "all",
+      "reason": "browser OAuth handoff"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "connectors",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "disconnect",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "help",
+      "payload": "",
+      "platform": "all",
+      "reason": "human help text is a deliberate, tested contract (C5)"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "hook",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "ingest",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "init",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive first-run wizard; prompts on stdin"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "loop",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "mcp",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "merge",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "prep",
+      "payload": "",
+      "platform": "all",
+      "reason": "removed in #137; tombstone row retained so the dispatch drift test still pins the token"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "schedule",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "serve",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running loopback HTTP server"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "share",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "sources",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "sync",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "tasks",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "teach",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "upgrade",
+      "payload": "",
+      "platform": "all",
+      "reason": "self-replacing binary; the process is gone before it could emit"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "usage",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "brief correct",
+      "payload": "mora.brief.correct",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "config context",
+      "payload": "mora.config.context",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "config embedder",
+      "payload": "mora.config.embedder",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "config mcp-write-policy",
+      "payload": "mora.config.mcp-write-policy",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "config mmr",
+      "payload": "mora.config.mmr",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "connect filesystem",
+      "payload": "mora.connect.filesystem",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "connect github",
+      "payload": "mora.connect.github",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "connect imessage",
+      "payload": "mora.connect.imessage",
+      "platform": "darwin-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "connectors disable",
+      "payload": "mora.connectors.disable",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "connectors enable",
+      "payload": "mora.connectors.enable",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "disconnect google",
+      "payload": "mora.disconnect.google",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "ingest run",
+      "payload": "mora.ingest.run",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "loop begin",
+      "payload": "mora.loop.begin",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "loop done",
+      "payload": "mora.loop.done",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "loop heartbeat",
+      "payload": "mora.loop.heartbeat",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "loop register",
+      "payload": "mora.loop.register",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "merge confirm",
+      "payload": "mora.merge.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "merge reject",
+      "payload": "mora.merge.reject",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "merge undo",
+      "payload": "mora.merge.undo",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "schedule run",
+      "payload": "mora.schedule.run",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "serve http install",
+      "payload": "mora.serve.http.install",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "serve http uninstall",
+      "payload": "mora.serve.http.uninstall",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "share gc",
+      "payload": "mora.share.gc",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "share init",
+      "payload": "mora.share.init",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "share keygen",
+      "payload": "mora.share.keygen",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "share pull",
+      "payload": "mora.share.pull",
+      "platform": "git-or-bucket-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "share push",
+      "payload": "mora.share.push",
+      "platform": "git-or-bucket-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "share remove",
+      "payload": "mora.share.remove",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "share subscribe",
+      "payload": "mora.share.subscribe",
+      "platform": "git-or-bucket-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sources add",
+      "payload": "mora.sources.add",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync applecalendar",
+      "payload": "mora.sync.applecalendar",
+      "platform": "darwin-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync filesystem",
+      "payload": "mora.sync.filesystem",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync git",
+      "payload": "mora.sync.git",
+      "platform": "git-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync github",
+      "payload": "mora.sync.github",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync google",
+      "payload": "mora.sync.google",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync imessage",
+      "payload": "mora.sync.imessage",
+      "platform": "darwin-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "tasks add",
+      "payload": "mora.tasks.add",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "tasks done",
+      "payload": "mora.tasks.done",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "tasks sync",
+      "payload": "mora.tasks.sync",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach commitment",
+      "payload": "mora.teach.commitment",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach consent disable",
+      "payload": "mora.teach.consent.disable",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach consent enable",
+      "payload": "mora.teach.consent.enable",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach identity confirm",
+      "payload": "mora.teach.identity.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach identity reject",
+      "payload": "mora.teach.identity.reject",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach identity undo",
+      "payload": "mora.teach.identity.undo",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach memory",
+      "payload": "mora.teach.memory",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "teach undo",
+      "payload": "mora.teach.undo",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "usage off",
+      "payload": "mora.usage.off",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "usage on",
+      "payload": "mora.usage.on",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "usage queries off",
+      "payload": "mora.usage.queries.off",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "usage queries on",
+      "payload": "mora.usage.queries.on",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "backup",
+      "payload": "mora.backup",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "delete",
+      "payload": "mora.delete",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "forget",
+      "payload": "mora.forget",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "index",
+      "payload": "mora.index",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "reingest",
+      "payload": "mora.reingest",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "unforget",
+      "payload": "mora.unforget",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "write",
+      "payload": "mora.write",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "alias",
+      "path": "--version",
+      "payload": "mora.version",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "alias",
+      "path": "-v",
+      "payload": "mora.version",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "connectors list",
+      "payload": "mora.connectors.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "forget list",
+      "payload": "mora.forget.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "hook status",
+      "payload": "mora.hook.status",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "index rebuild",
+      "payload": "mora.index.rebuild",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "loop list",
+      "payload": "mora.loop.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "loop status",
+      "payload": "mora.loop.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "mcp proposals",
+      "payload": "mora.mcp.proposals",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "merge list",
+      "payload": "mora.merge.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "schedule list",
+      "payload": "mora.schedule.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "serve http status",
+      "payload": "mora.serve.http.status",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share fingerprint",
+      "payload": "mora.share.fingerprint",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share list",
+      "payload": "mora.share.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share preview",
+      "payload": "mora.share.preview",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share storage-limit",
+      "payload": "mora.share.storage-limit",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "sources list",
+      "payload": "mora.sources.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "sync status",
+      "payload": "mora.sync.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "tasks list",
+      "payload": "mora.tasks.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach consent status",
+      "payload": "mora.teach.consent.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach examples",
+      "payload": "mora.teach.examples",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach history",
+      "payload": "mora.teach.history",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach identity list",
+      "payload": "mora.teach.identity.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "usage report",
+      "payload": "mora.usage.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "brief",
+      "payload": "mora.brief",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "capabilities",
+      "payload": "mora.capabilities",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "config",
+      "payload": "mora.config",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "context",
+      "payload": "mora.context",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "doctor",
+      "payload": "mora.doctor.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "entities",
+      "payload": "mora.entities",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "graph",
+      "payload": "mora.graph",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "lint",
+      "payload": "mora.lint.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "list",
+      "payload": "mora.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "pulse",
+      "payload": "mora.pulse",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "read",
+      "payload": "mora.read",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "search",
+      "payload": "mora.search",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "think",
+      "payload": "mora.think",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "version",
+      "payload": "mora.version",
+      "platform": "all",
+      "reason": ""
+    }
+  ],
+  "connectors": [
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "Calendar (Apple)",
+      "name": "Apple Calendar",
+      "needs_auth": false,
+      "type": "applecalendar",
+      "upcoming": true
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "Calendar",
+      "name": "Google Calendar",
+      "needs_auth": true,
+      "type": "calendar",
+      "upcoming": true
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "Emails",
+      "name": "Gmail",
+      "needs_auth": true,
+      "type": "gmail",
+      "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "Files",
+      "name": "Filesystem",
+      "needs_auth": false,
+      "type": "filesystem",
+      "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "GitHub Issues",
+      "name": "GitHub Issues",
+      "needs_auth": false,
+      "type": "github",
+      "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "Texts",
+      "name": "iMessage",
+      "needs_auth": false,
+      "type": "imessage",
+      "upcoming": false
+    }
+  ],
+  "error_codes": [
+    {
+      "class": "connector",
+      "code": "connector.empty",
+      "error_class": "empty",
+      "exit_code": 1,
+      "meaning": "A source was read successfully and returned zero items — distinct from fresh-with-data and from failed. Defined here; emitted on a live per-source receipt in Phase 2 (ISO-02).",
+      "retryable": false
+    },
+    {
+      "class": "connector",
+      "code": "connector.malformed_response",
+      "error_class": "malformed",
+      "exit_code": 1,
+      "meaning": "A connector process, API, or local database returned a payload Mora could not parse. Retrying the same request reproduces it.",
+      "retryable": false
+    },
+    {
+      "class": "connector",
+      "code": "connector.stale",
+      "error_class": "stale",
+      "exit_code": 1,
+      "meaning": "A source last succeeded longer ago than its freshness budget allows. The data on hand is real but old.",
+      "retryable": true
+    },
+    {
+      "class": "connector",
+      "code": "connector.unauthorized",
+      "error_class": "unauthorized",
+      "exit_code": 1,
+      "meaning": "A connector was refused by an authentication or permission failure Mora DIRECTLY OBSERVED — an expired token, a refused credential. Never an inference from an error string.",
+      "retryable": false
+    },
+    {
+      "class": "connector",
+      "code": "connector.unavailable",
+      "error_class": "unavailable",
+      "exit_code": 1,
+      "meaning": "A connector's process, binary, database, or network endpoint could not be reached.",
+      "retryable": true
+    },
+    {
+      "class": "connector",
+      "code": "connector.unclassified",
+      "error_class": "unclassified",
+      "exit_code": 1,
+      "meaning": "A connector failure with no typed cause. Also the read-time backfill value for every sync record persisted before this taxonomy shipped: an empty error_code beside a non-empty last_error reads as unclassified rather than as success.",
+      "retryable": false
+    },
+    {
+      "class": "consent",
+      "code": "consent.required",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "An operation needs an explicit local consent that is not enabled. Producer: `mora teach examples`, which refuses until `mora teach consent enable --yes` records consent.",
+      "retryable": false
+    },
+    {
+      "class": "data",
+      "code": "data.corrupt",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "A vault or state file exists but could not be decoded.",
+      "retryable": false
+    },
+    {
+      "class": "data",
+      "code": "data.not_found",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "A requested memory, entity, or record does not exist.",
+      "retryable": false
+    },
+    {
+      "class": "index",
+      "code": "index.schema_mismatch",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "The index database exists but its tables or columns do not match what this build expects.",
+      "retryable": false
+    },
+    {
+      "class": "index",
+      "code": "index.unavailable",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "The search index database could not be opened. The vault is intact; `mora index rebuild` is the repair.",
+      "retryable": true
+    },
+    {
+      "class": "internal",
+      "code": "internal.unexpected",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "A failure Mora could not attribute to the caller, a connector, or the data. A Mora bug; report it.",
+      "retryable": false
+    },
+    {
+      "class": "usage",
+      "code": "usage.missing_argument",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "A required positional argument was absent.",
+      "retryable": false
+    },
+    {
+      "class": "usage",
+      "code": "usage.unknown_flag",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "An unknown or malformed flag was passed to a command.",
+      "retryable": false
+    },
+    {
+      "class": "usage",
+      "code": "usage.unknown_value",
+      "error_class": "",
+      "exit_code": 1,
+      "meaning": "A flag or positional argument carried a value the command does not accept.",
+      "retryable": false
+    }
+  ],
+  "exit_codes": {
+    "allocated": [
+      {
+        "code": 1,
+        "meaning": "Generic failure. Every error class maps here today, including `doctor --strict` on an unhealthy report.",
+        "status": "grandfathered"
+      },
+      {
+        "code": 10,
+        "meaning": "`loop begin`: this period already succeeded. The idempotent skip, distinct from a real failure.",
+        "status": "grandfathered"
+      },
+      {
+        "code": 2,
+        "meaning": "`doctor --pulse`: a source, the index, or a producer is unhealthy. Sick, not broken.",
+        "status": "grandfathered"
+      }
+    ],
+    "first_allocatable": 11,
+    "reserved": {
+      "from": 3,
+      "reason": "Low single-digit statuses are widely squatted by shells, test runners, and wrapper scripts. Leaving 3 through 9 permanently unallocated means a future Mora code can never be confused with one of those conventions.",
+      "status": "permanently reserved-unused",
+      "to": 9
+    }
+  },
+  "features": {
+    "deep_link": "unsupported",
+    "repair": "unsupported"
+  },
+  "mcp": {
+    "schemas": [
+      {
+        "name": "mora.mcp.brief",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.calendar_events",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.context_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.delete_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.digest",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.get_entity",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.list_entities",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.list_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.meeting_prep",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.read_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.search_memory",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.think",
+        "version": 1
+      },
+      {
+        "name": "mora.mcp.write_memory",
+        "version": 1
+      }
+    ],
+    "tools": [
+      "brief",
+      "calendar_events",
+      "context_memory",
+      "delete_memory",
+      "digest",
+      "get_entity",
+      "list_entities",
+      "list_memory",
+      "meeting_prep",
+      "read_memory",
+      "search_memory",
+      "think",
+      "write_memory"
+    ],
+    "write_policy": "open"
+  },
+  "mora_version": "dev",
+  "schema": "mora.capabilities",
+  "schema_version": 1,
+  "schemas": [
+    {
+      "name": "mora.backup",
+      "version": 1
+    },
+    {
+      "name": "mora.brief",
+      "version": 1
+    },
+    {
+      "name": "mora.brief.correct",
+      "version": 1
+    },
+    {
+      "name": "mora.capabilities",
+      "version": 1
+    },
+    {
+      "name": "mora.config",
+      "version": 1
+    },
+    {
+      "name": "mora.config.context",
+      "version": 1
+    },
+    {
+      "name": "mora.config.embedder",
+      "version": 1
+    },
+    {
+      "name": "mora.config.mcp-write-policy",
+      "version": 1
+    },
+    {
+      "name": "mora.config.mmr",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.filesystem",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.github",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.imessage",
+      "version": 1
+    },
+    {
+      "name": "mora.connectors.disable",
+      "version": 1
+    },
+    {
+      "name": "mora.connectors.enable",
+      "version": 1
+    },
+    {
+      "name": "mora.connectors.list",
+      "version": 1
+    },
+    {
+      "name": "mora.context",
+      "version": 1
+    },
+    {
+      "name": "mora.delete",
+      "version": 1
+    },
+    {
+      "name": "mora.disconnect.google",
+      "version": 1
+    },
+    {
+      "name": "mora.doctor.pulse",
+      "version": 1
+    },
+    {
+      "name": "mora.doctor.report",
+      "version": 1
+    },
+    {
+      "name": "mora.entities",
+      "version": 1
+    },
+    {
+      "name": "mora.forget",
+      "version": 1
+    },
+    {
+      "name": "mora.forget.list",
+      "version": 1
+    },
+    {
+      "name": "mora.graph",
+      "version": 1
+    },
+    {
+      "name": "mora.hook.status",
+      "version": 1
+    },
+    {
+      "name": "mora.index",
+      "version": 1
+    },
+    {
+      "name": "mora.index.rebuild",
+      "version": 1
+    },
+    {
+      "name": "mora.ingest.run",
+      "version": 1
+    },
+    {
+      "name": "mora.lint.report",
+      "version": 1
+    },
+    {
+      "name": "mora.list",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.begin",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.done",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.heartbeat",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.list",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.register",
+      "version": 1
+    },
+    {
+      "name": "mora.loop.status",
+      "version": 1
+    },
+    {
+      "name": "mora.mcp.proposals",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.confirm",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.list",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.reject",
+      "version": 1
+    },
+    {
+      "name": "mora.merge.undo",
+      "version": 1
+    },
+    {
+      "name": "mora.pulse",
+      "version": 1
+    },
+    {
+      "name": "mora.read",
+      "version": 1
+    },
+    {
+      "name": "mora.reingest",
+      "version": 1
+    },
+    {
+      "name": "mora.schedule.list",
+      "version": 1
+    },
+    {
+      "name": "mora.schedule.run",
+      "version": 1
+    },
+    {
+      "name": "mora.search",
+      "version": 1
+    },
+    {
+      "name": "mora.serve.http.install",
+      "version": 1
+    },
+    {
+      "name": "mora.serve.http.status",
+      "version": 1
+    },
+    {
+      "name": "mora.serve.http.uninstall",
+      "version": 1
+    },
+    {
+      "name": "mora.share.fingerprint",
+      "version": 1
+    },
+    {
+      "name": "mora.share.gc",
+      "version": 1
+    },
+    {
+      "name": "mora.share.init",
+      "version": 1
+    },
+    {
+      "name": "mora.share.keygen",
+      "version": 1
+    },
+    {
+      "name": "mora.share.list",
+      "version": 1
+    },
+    {
+      "name": "mora.share.preview",
+      "version": 1
+    },
+    {
+      "name": "mora.share.pull",
+      "version": 1
+    },
+    {
+      "name": "mora.share.push",
+      "version": 1
+    },
+    {
+      "name": "mora.share.remove",
+      "version": 1
+    },
+    {
+      "name": "mora.share.storage-limit",
+      "version": 1
+    },
+    {
+      "name": "mora.share.subscribe",
+      "version": 1
+    },
+    {
+      "name": "mora.sources.add",
+      "version": 1
+    },
+    {
+      "name": "mora.sources.list",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.applecalendar",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.filesystem",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.git",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.github",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.google",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.imessage",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.status",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.add",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.done",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.list",
+      "version": 1
+    },
+    {
+      "name": "mora.tasks.sync",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.commitment",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.consent.disable",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.consent.enable",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.consent.status",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.examples",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.history",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.confirm",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.list",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.reject",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.identity.undo",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.memory",
+      "version": 1
+    },
+    {
+      "name": "mora.teach.undo",
+      "version": 1
+    },
+    {
+      "name": "mora.think",
+      "version": 1
+    },
+    {
+      "name": "mora.unforget",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.off",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.on",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.queries.off",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.queries.on",
+      "version": 1
+    },
+    {
+      "name": "mora.usage.report",
+      "version": 1
+    },
+    {
+      "name": "mora.version",
+      "version": 1
+    },
+    {
+      "name": "mora.write",
+      "version": 1
+    }
+  ]
+}

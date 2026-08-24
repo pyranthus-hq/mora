@@ -68,9 +68,10 @@ type DedupResult struct {
 type transitionVoice string
 
 const (
-	voiceDelivery transitionVoice = "delivery"
-	voiceAck      transitionVoice = "ack"
-	voiceEither   transitionVoice = "either"
+	voiceDelivery      transitionVoice = "delivery"
+	voiceAck           transitionVoice = "ack"
+	voiceAttendanceAck transitionVoice = "attendance_ack"
+	voiceEither        transitionVoice = "either"
 )
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -93,10 +94,23 @@ func transition(text string) (string, transitionVoice) {
 	if containsAnyPhrase(lower, []string{"no longer needed", "cancelled", "canceled"}) {
 		return Closed, voiceEither
 	}
+	if containsAnyPhrase(lower, []string{"thanks for coming", "thank you for coming", "thanks for joining", "thank you for joining"}) {
+		// Attendance/joining acknowledgements are generic thread noise: they close a
+		// commitment only when the event/object it names actually overlaps, even in
+		// the same memory, so an unrelated "thanks for coming" can't sweep the thread.
+		return Closed, voiceAttendanceAck
+	}
 	if containsAnyPhrase(lower, []string{"got it", "got the ", "received ", "i found ", "we found ", "opens correctly", "arrived"}) {
 		return Closed, voiceAck
 	}
-	if containsAnyPhrase(lower, []string{"i sent ", "we sent ", "sent the ", "sent it", "i delivered ", "we delivered ", "was delivered", "i attached ", "we attached ", "attached the ", "i uploaded ", "we uploaded ", "completed ", "finished ", "all set"}) || lower == "done" || strings.HasPrefix(lower, "done ") || strings.Contains(lower, " done ") {
+	if containsAnyPhrase(lower, []string{"i sent ", "we sent ", "sent the ", "sent it", "i delivered ", "we delivered ", "was delivered", "i attached ", "we attached ", "attached the ", "i uploaded ", "we uploaded ", "completed ", "finished ", "all set", "as promised",
+		// Colloquial self-confirmation: a same-object "already" report is delivery
+		// evidence, not a fresh promise, even without one of the verbs above.
+		"already sent", "already delivered", "already uploaded", "already attached",
+		"already did", "already done", "already finished",
+		"already handled", "already took care of", "took care of it already",
+		"alr sent", "alr delivered", "alr uploaded", "alr attached",
+		"alr did", "alr done", "alr finished", "alr handled"}) || lower == "done" || strings.HasPrefix(lower, "done ") || strings.Contains(lower, " done ") {
 		return Closed, voiceDelivery
 	}
 	return "", voiceEither
@@ -177,13 +191,18 @@ func closureScore(c Item, e Evidence, tr string, voice transitionVoice) int {
 	if voice == voiceDelivery && e.Party != owner {
 		return 0
 	}
-	if voice == voiceAck && e.Party == owner {
+	if (voice == voiceAck || voice == voiceAttendanceAck) && e.Party == owner {
 		return 0
 	}
 	overlap := objectOverlap(c.Summary+" "+c.OpenedBy.Quote, e.Text)
 	same := c.OpenedBy.MemoryID == e.MemoryID
-	if overlap == 0 && !same {
-		return 0
+	if overlap == 0 {
+		// Attendance/joining acknowledgements are broad thread noise (any
+		// commitment can share a MemoryID with a "thanks for coming"), so they
+		// never get the same-memory pass that delivery/receipt evidence gets.
+		if voice == voiceAttendanceAck || !same {
+			return 0
+		}
 	}
 	score := overlap * 10
 	if same {
@@ -349,9 +368,10 @@ func ProjectDuplicates(items []Item) []DedupResult {
 type TransitionVoice = transitionVoice
 
 const (
-	VoiceDelivery = voiceDelivery
-	VoiceAck      = voiceAck
-	VoiceEither   = voiceEither
+	VoiceDelivery      = voiceDelivery
+	VoiceAck           = voiceAck
+	VoiceAttendanceAck = voiceAttendanceAck
+	VoiceEither        = voiceEither
 )
 
 func Transition(text string) (string, TransitionVoice)     { return transition(text) }

@@ -56,13 +56,13 @@ func TestCounterpartyPolicies(t *testing.T) {
 func TestGmailAddresseePolicy(t *testing.T) {
 	self := Atom{Kind: AtomAddress, Value: "me@example.com"}
 	other := Atom{Kind: AtomAddress, Value: "sam@example.com"}
-	if got := GmailAddressee(other, []string{"me@example.com"}, nil, self, other); !EqualAtom(got, self) {
+	if got := GmailAddressee(other, []string{"me@example.com"}, nil, self, other, false); !EqualAtom(got, self) {
 		t.Fatalf("inbound=%+v", got)
 	}
-	if got := GmailAddressee(self, []string{"sam@example.com"}, nil, self, other); !EqualAtom(got, other) {
+	if got := GmailAddressee(self, []string{"sam@example.com"}, nil, self, other, false); !EqualAtom(got, other) {
 		t.Fatalf("outbound=%+v", got)
 	}
-	for _, got := range []Atom{GmailAddressee(other, []string{"me@example.com", "bob@example.com"}, nil, self, other), GmailAddressee(self, []string{"sam@example.com", "bob@example.com"}, nil, self, other), GmailAddressee(Atom{}, nil, nil, self, other)} {
+	for _, got := range []Atom{GmailAddressee(other, []string{"me@example.com", "bob@example.com"}, nil, self, other, false), GmailAddressee(self, []string{"sam@example.com", "bob@example.com"}, nil, self, other, false), GmailAddressee(Atom{}, nil, nil, self, other, false)} {
 		if got.Kind != "" {
 			t.Fatalf("ambiguous=%+v", got)
 		}

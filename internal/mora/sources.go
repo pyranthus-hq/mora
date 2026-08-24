@@ -7,11 +7,19 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/registry"
 )
+
+// sourcesListPayload keeps the source-list contract deterministic and non-null:
+// [] on an empty vault, never null, so a JSON consumer never needs a nil-check.
+type sourcesListPayload struct {
+	Sources []Source `json:"sources"`
+}
 
 // IsEnabled centralizes the nil-sentinel handling for Source.Enabled so no
 // caller dereferences the raw pointer. nil (legacy/unset) is normalized to true
@@ -23,7 +31,7 @@ import (
 func lookupCatalog(t string) (connectorInfo, bool)        { return registry.Lookup(t) }
 func macOSOnlyConnector(t string) bool                    { return registry.MacOSOnly(t) }
 func connectorCatalogForGOOS(goos string) []connectorInfo { return registry.CatalogForGOOS(goos) }
-func cmdSources(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdSources(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add|list")
 	}
@@ -33,9 +41,29 @@ func cmdSources(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	switch args[0] {
 	case "list":
+		fs := flag.NewFlagSet("sources list", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if parseErr := fs.Parse(args[1:]); parseErr != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
 		sources, err := loadSources(cfg)
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			entries := make([]Source, 0, len(sources))
+			entries = append(entries, sources...)
+			sort.Slice(entries, func(i, j int) bool {
+				if entries[i].Name != entries[j].Name {
+					return entries[i].Name < entries[j].Name
+				}
+				return entries[i].Type < entries[j].Type
+			})
+			return emitReceipt(stdout, "mora.sources.list", 1, sourcesListPayload{Sources: entries})
 		}
 		return emit(stdout, sources, true)
 	case "add":
@@ -254,10 +282,18 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add <filesystem|gmail|calendar|gdrive> [flags]")
 	}
+	// A dash-led argument in the TYPE slot is a usage error, not a source type.
+	// `mora sources add --json` used to register a live source literally named
+	// and typed "--json" — the same silent-mutation class Plan 01-05 closed for
+	// `tasks add` and `loop begin`.
 	stype := args[0]
+	if strings.HasPrefix(stype, "-") {
+		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora sources add <filesystem|gmail|calendar|gdrive> [flags]")
+	}
 	fs := flag.NewFlagSet("sources add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	name := fs.String("name", stype, "source name")
+	_ = fs.Bool("json", false, "emit JSON (this command always emits JSON)")
 	scope := fs.String("scope", "personal", "scope")
 	path := fs.String("path", "", "path")
 	label := fs.String("label", "", "gmail label")
@@ -303,7 +339,10 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	}); err != nil {
 		return err
 	}
-	return emit(stdout, s, true)
+	// `sources add` has always answered with the stored source as JSON on both
+	// branches; Plan 01-07 versions that document rather than changing when it
+	// appears. --json is accepted and is a no-op for the same reason.
+	return emitReceipt(stdout, "mora.sources.add", 1, s)
 }
 
 // saveSources persists the source registry. atomicWrite stages through a unique

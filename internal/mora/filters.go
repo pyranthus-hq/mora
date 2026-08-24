@@ -14,14 +14,27 @@ import (
 // flush) should tell the user to retry, not surface a driver code. Non-busy errors
 // pass through unchanged.
 func humanizeIndexBusy(err error) error {
+	if !isIndexBusyErr(err) {
+		return err
+	}
+	return fmt.Errorf("the index is busy (the hourly ingest is rebuilding it) — retry in a few seconds: %w", err)
+}
+
+// isIndexBusyErr reports whether err is SQLite's contention signal. The driver
+// returns it as a formatted string ("database is locked (5) (SQLITE_BUSY)")
+// rather than a typed sentinel, so substring matching is the only available
+// classification; both spellings are matched because the wording differs
+// between the extended-code and legacy paths. Kept in one place so the caller
+// that RETRIES on it and the caller that REWORDS it can never disagree about
+// what counts as busy.
+func isIndexBusyErr(err error) bool {
 	if err == nil {
-		return nil
+		return false
 	}
 	s := strings.ToLower(err.Error())
-	if strings.Contains(s, "sqlite_busy") || strings.Contains(s, "database is locked") {
-		return fmt.Errorf("the index is busy (the hourly ingest is rebuilding it) — retry in a few seconds: %w", err)
-	}
-	return err
+	return strings.Contains(s, "sqlite_busy") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "database table is locked")
 }
 
 // resolveEntityFilter resolves a --entity/name value to its alias-id set, returning

@@ -1,0 +1,526 @@
+[
+  {
+    "path": "--help",
+    "status": "static_only"
+  },
+  {
+    "path": "--version",
+    "status": "static_only"
+  },
+  {
+    "path": "-h",
+    "status": "static_only"
+  },
+  {
+    "path": "-v",
+    "status": "static_only"
+  },
+  {
+    "path": "backup",
+    "status": "parses"
+  },
+  {
+    "path": "brief",
+    "status": "parses"
+  },
+  {
+    "path": "brief correct",
+    "status": "empty"
+  },
+  {
+    "path": "capabilities",
+    "status": "parses"
+  },
+  {
+    "path": "config",
+    "status": "parses"
+  },
+  {
+    "path": "config context",
+    "status": "empty"
+  },
+  {
+    "path": "config embedder",
+    "status": "empty"
+  },
+  {
+    "path": "config mcp-write-policy",
+    "status": "empty"
+  },
+  {
+    "path": "config mmr",
+    "status": "empty"
+  },
+  {
+    "path": "connect",
+    "status": "static_only"
+  },
+  {
+    "path": "connect filesystem",
+    "status": "empty"
+  },
+  {
+    "path": "connect github",
+    "status": "static_only"
+  },
+  {
+    "path": "connect google",
+    "status": "static_only"
+  },
+  {
+    "path": "connect imessage",
+    "status": "static_only"
+  },
+  {
+    "path": "connectors",
+    "status": "empty"
+  },
+  {
+    "path": "connectors disable",
+    "status": "empty"
+  },
+  {
+    "path": "connectors enable",
+    "status": "static_only"
+  },
+  {
+    "path": "connectors list",
+    "status": "parses"
+  },
+  {
+    "path": "connectors setup",
+    "status": "static_only"
+  },
+  {
+    "path": "context",
+    "status": "parses"
+  },
+  {
+    "path": "delete",
+    "status": "static_only"
+  },
+  {
+    "path": "disconnect",
+    "status": "static_only"
+  },
+  {
+    "path": "disconnect google",
+    "status": "static_only"
+  },
+  {
+    "path": "doctor",
+    "status": "parses"
+  },
+  {
+    "path": "entities",
+    "status": "parses"
+  },
+  {
+    "path": "forget",
+    "status": "static_only"
+  },
+  {
+    "path": "forget list",
+    "status": "parses"
+  },
+  {
+    "path": "graph",
+    "status": "parses"
+  },
+  {
+    "path": "help",
+    "status": "static_only"
+  },
+  {
+    "path": "hook",
+    "status": "empty"
+  },
+  {
+    "path": "hook install",
+    "status": "static_only"
+  },
+  {
+    "path": "hook recall",
+    "status": "empty"
+  },
+  {
+    "path": "hook session-start",
+    "status": "empty"
+  },
+  {
+    "path": "hook status",
+    "status": "static_only"
+  },
+  {
+    "path": "hook uninstall",
+    "status": "static_only"
+  },
+  {
+    "path": "index",
+    "status": "parses"
+  },
+  {
+    "path": "index rebuild",
+    "status": "parses"
+  },
+  {
+    "path": "ingest",
+    "status": "empty"
+  },
+  {
+    "path": "ingest run",
+    "status": "empty"
+  },
+  {
+    "path": "init",
+    "status": "static_only"
+  },
+  {
+    "path": "lint",
+    "status": "parses"
+  },
+  {
+    "path": "list",
+    "status": "parses"
+  },
+  {
+    "path": "loop",
+    "status": "empty"
+  },
+  {
+    "path": "loop begin",
+    "status": "empty"
+  },
+  {
+    "path": "loop done",
+    "status": "empty"
+  },
+  {
+    "path": "loop heartbeat",
+    "status": "empty"
+  },
+  {
+    "path": "loop list",
+    "status": "parses"
+  },
+  {
+    "path": "loop register",
+    "status": "empty"
+  },
+  {
+    "path": "loop status",
+    "status": "empty"
+  },
+  {
+    "path": "mcp",
+    "status": "static_only"
+  },
+  {
+    "path": "mcp proposals",
+    "status": "empty"
+  },
+  {
+    "path": "mcp serve",
+    "status": "static_only"
+  },
+  {
+    "path": "merge",
+    "status": "empty"
+  },
+  {
+    "path": "merge confirm",
+    "status": "empty"
+  },
+  {
+    "path": "merge list",
+    "status": "parses"
+  },
+  {
+    "path": "merge reject",
+    "status": "empty"
+  },
+  {
+    "path": "merge undo",
+    "status": "empty"
+  },
+  {
+    "path": "prep",
+    "status": "empty"
+  },
+  {
+    "path": "pulse",
+    "status": "parses"
+  },
+  {
+    "path": "read",
+    "status": "empty"
+  },
+  {
+    "path": "reingest",
+    "status": "parses"
+  },
+  {
+    "path": "schedule",
+    "status": "empty"
+  },
+  {
+    "path": "schedule install",
+    "status": "static_only"
+  },
+  {
+    "path": "schedule list",
+    "status": "parses"
+  },
+  {
+    "path": "schedule run",
+    "status": "empty"
+  },
+  {
+    "path": "schedule uninstall",
+    "status": "static_only"
+  },
+  {
+    "path": "search",
+    "status": "empty"
+  },
+  {
+    "path": "serve",
+    "status": "static_only"
+  },
+  {
+    "path": "serve http",
+    "status": "static_only"
+  },
+  {
+    "path": "serve http install",
+    "status": "static_only"
+  },
+  {
+    "path": "serve http status",
+    "status": "static_only"
+  },
+  {
+    "path": "serve http uninstall",
+    "status": "static_only"
+  },
+  {
+    "path": "share",
+    "status": "empty"
+  },
+  {
+    "path": "share fingerprint",
+    "status": "parses"
+  },
+  {
+    "path": "share gc",
+    "status": "parses"
+  },
+  {
+    "path": "share init",
+    "status": "empty"
+  },
+  {
+    "path": "share keygen",
+    "status": "parses"
+  },
+  {
+    "path": "share list",
+    "status": "parses"
+  },
+  {
+    "path": "share preview",
+    "status": "empty"
+  },
+  {
+    "path": "share pull",
+    "status": "static_only"
+  },
+  {
+    "path": "share push",
+    "status": "static_only"
+  },
+  {
+    "path": "share remove",
+    "status": "empty"
+  },
+  {
+    "path": "share storage-limit",
+    "status": "empty"
+  },
+  {
+    "path": "share subscribe",
+    "status": "static_only"
+  },
+  {
+    "path": "sources",
+    "status": "empty"
+  },
+  {
+    "path": "sources add",
+    "status": "empty"
+  },
+  {
+    "path": "sources list",
+    "status": "parses"
+  },
+  {
+    "path": "sync",
+    "status": "empty"
+  },
+  {
+    "path": "sync applecalendar",
+    "status": "static_only"
+  },
+  {
+    "path": "sync filesystem",
+    "status": "parses"
+  },
+  {
+    "path": "sync git",
+    "status": "static_only"
+  },
+  {
+    "path": "sync github",
+    "status": "static_only"
+  },
+  {
+    "path": "sync google",
+    "status": "static_only"
+  },
+  {
+    "path": "sync imessage",
+    "status": "static_only"
+  },
+  {
+    "path": "sync status",
+    "status": "parses"
+  },
+  {
+    "path": "tasks",
+    "status": "empty"
+  },
+  {
+    "path": "tasks add",
+    "status": "empty"
+  },
+  {
+    "path": "tasks done",
+    "status": "empty"
+  },
+  {
+    "path": "tasks list",
+    "status": "parses"
+  },
+  {
+    "path": "tasks sync",
+    "status": "parses"
+  },
+  {
+    "path": "teach",
+    "status": "empty"
+  },
+  {
+    "path": "teach commitment",
+    "status": "empty"
+  },
+  {
+    "path": "teach consent",
+    "status": "empty"
+  },
+  {
+    "path": "teach consent disable",
+    "status": "empty"
+  },
+  {
+    "path": "teach consent enable",
+    "status": "empty"
+  },
+  {
+    "path": "teach consent status",
+    "status": "parses"
+  },
+  {
+    "path": "teach examples",
+    "status": "empty"
+  },
+  {
+    "path": "teach history",
+    "status": "parses"
+  },
+  {
+    "path": "teach identity",
+    "status": "empty"
+  },
+  {
+    "path": "teach identity confirm",
+    "status": "empty"
+  },
+  {
+    "path": "teach identity list",
+    "status": "parses"
+  },
+  {
+    "path": "teach identity reject",
+    "status": "empty"
+  },
+  {
+    "path": "teach identity undo",
+    "status": "empty"
+  },
+  {
+    "path": "teach memory",
+    "status": "empty"
+  },
+  {
+    "path": "teach undo",
+    "status": "empty"
+  },
+  {
+    "path": "think",
+    "status": "empty"
+  },
+  {
+    "path": "unforget",
+    "status": "static_only"
+  },
+  {
+    "path": "upgrade",
+    "status": "static_only"
+  },
+  {
+    "path": "usage",
+    "status": "empty"
+  },
+  {
+    "path": "usage off",
+    "status": "parses"
+  },
+  {
+    "path": "usage on",
+    "status": "parses"
+  },
+  {
+    "path": "usage queries",
+    "status": "empty"
+  },
+  {
+    "path": "usage queries off",
+    "status": "parses"
+  },
+  {
+    "path": "usage queries on",
+    "status": "parses"
+  },
+  {
+    "path": "usage report",
+    "status": "parses"
+  },
+  {
+    "path": "version",
+    "status": "parses"
+  },
+  {
+    "path": "write",
+    "status": "empty"
+  }
+]

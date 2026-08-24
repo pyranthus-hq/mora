@@ -1,0 +1,54 @@
+{
+  "entries": [
+    {
+      "cadence": "daily at 02:00",
+      "installed": false,
+      "name": "backup-daily",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
+      "cadence": "daily at 03:00",
+      "installed": false,
+      "name": "git-daily",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
+      "cadence": "daily at 08:00",
+      "installed": false,
+      "name": "pulse-daily",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
+      "cadence": "daily at 09:00",
+      "installed": false,
+      "name": "doctor-pulse",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
+      "cadence": "hourly",
+      "installed": false,
+      "name": "index-hourly",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
+      "cadence": "hourly",
+      "installed": false,
+      "name": "ingest-hourly",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
+      "cadence": "unknown",
+      "installed": false,
+      "name": "update-daily",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
+      "cadence": "weekly",
+      "installed": false,
+      "name": "lint-weekly",
+      "next_run": "\u003ctimestamp\u003e"
+    }
+  ],
+  "schema": "mora.schedule.list",
+  "schema_version": 1
+}

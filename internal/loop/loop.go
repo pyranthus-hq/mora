@@ -90,10 +90,14 @@ const (
 	DefaultCadence        = loopDefaultCadence
 )
 
-// errLoopLockHeld is returned by acquireLoopLock when a LIVE, non-expired holder
+// ErrLockHeld is returned by acquireLoopLock when a LIVE, non-expired holder
 // owns the lease — the caller no-ops and re-runs next period (the idempotency
-// gate makes the skip safe).
-var errLoopLockHeld = errors.New("loop lock held by a live run")
+// gate makes the skip safe). It is exported so the CLI layer can name the same
+// sentinel value in its error taxonomy rather than a look-alike copy.
+var ErrLockHeld = errors.New("loop lock held by a live run")
+
+// errLoopLockHeld is the in-package spelling this file already uses.
+var errLoopLockHeld = ErrLockHeld
 
 // loopClock is the real liveness clock for begin/done/heartbeat and the
 // scheduled wrapper. It is a seam only so end-to-end scheduler tests can pin a
@@ -1201,17 +1205,19 @@ func Status(cfg config.Config, id string, jsonOut bool, now time.Time, stdout io
 var loopValidCadence = map[string]bool{"daily": true, "hourly": true, "weekly": true}
 
 // Register records (or updates) a loop's cadence + command + backing OS-timer
-// job. Re-registering preserves created_at. Idempotent.
-func Register(cfg config.Config, id, cadence string, command []string, scheduleJob string, now time.Time) error {
+// job. Re-registering preserves created_at. Idempotent. It returns the
+// registration AS CONSTRUCTED so the CLI layer can publish it as the command's
+// receipt without rebuilding the same struct from its own copy of these rules.
+func Register(cfg config.Config, id, cadence string, command []string, scheduleJob string, now time.Time) (Registration, error) {
 	if !ValidID(id) {
-		return fmt.Errorf("invalid loop id %q", id)
+		return Registration{}, fmt.Errorf("invalid loop id %q", id)
 	}
 	cadence = strings.TrimSpace(cadence)
 	if cadence == "" {
 		cadence = loopDefaultCadence
 	}
 	if !loopValidCadence[cadence] {
-		return fmt.Errorf("invalid cadence %q (want daily|hourly|weekly)", cadence)
+		return Registration{}, fmt.Errorf("invalid cadence %q (want daily|hourly|weekly)", cadence)
 	}
 	existing, _ := LoadRegistration(cfg, id) // preserve created_at on re-register
 	reg := Registration{
@@ -1220,9 +1226,9 @@ func Register(cfg config.Config, id, cadence string, command []string, scheduleJ
 		CreatedAt: existing.CreatedAt,
 	}
 	if err := saveLoopRegistration(cfg, reg, now); err != nil {
-		return err
+		return Registration{}, err
 	}
-	return nil
+	return reg, nil
 }
 
 // List prints every registered loop with its current health.

@@ -59,7 +59,7 @@ func TestCoreA_ApplySetupSelectionEnableError(t *testing.T) {
 	cfg := coreADirsCfg(t)
 	coreACorruptSources(t, cfg)
 	var out bytes.Buffer
-	err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, false, &out, strings.NewReader(""))
+	err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, false, &out, testStderr, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("applySetupSelection must propagate an enableConnector failure")
 	}

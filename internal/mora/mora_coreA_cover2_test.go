@@ -203,13 +203,13 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 	var out bytes.Buffer
 	stdin := strings.NewReader("") // non-TTY
 
-	if err := enableConnector(context.Background(), cfg, "nope", &out, stdin); err == nil {
+	if err := enableConnector(context.Background(), cfg, "nope", &out, testStderr, stdin); err == nil {
 		t.Fatal("enableConnector must reject an unknown type")
 	}
 
 	// filesystem with NO configured folder: guidance, no phantom row, no error.
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "filesystem", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "filesystem", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "mora connect filesystem") {
@@ -221,7 +221,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "filesystem", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "filesystem", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "enabled filesystem") {
@@ -230,7 +230,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 
 	// imessage: no login, Full-Disk-Access guidance.
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "imessage", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "imessage", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "enabled imessage") {
@@ -239,22 +239,24 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 
 	// applecalendar: same no-login gate.
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "applecalendar", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "applecalendar", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "enabled applecalendar") {
 		t.Fatalf("enable applecalendar; got:\n%s", out.String())
 	}
 
-	// gmail (NeedsAuth) non-interactive with NO saved token => prints the
-	// "needs authorization" note, still flips the bit.
+	// gmail (NeedsAuth) non-interactive with NO saved token => notes that it
+	// needs authorization, still flips the bit. Plan 01-03 routed that note to
+	// stderr, so the success line and the advisory land on different streams.
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "gmail", &out, stdin); err != nil {
+	var authNote bytes.Buffer
+	if err := enableConnector(context.Background(), cfg, "gmail", &out, &authNote, stdin); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "needs Google authorization") {
-		t.Fatalf("enable gmail (no token, non-TTY) should print the auth note; got:\n%s", out.String())
+	if !strings.Contains(authNote.String(), "needs Google authorization") {
+		t.Fatalf("enable gmail (no token, non-TTY) should note the auth gap on stderr; got:\n%s", authNote.String())
 	}
 
 	// gmail with a SAVED token => reuse branch, no auth prompt.
@@ -262,7 +264,7 @@ func TestCoreA_EnableConnectorVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := enableConnector(context.Background(), cfg, "gmail", &out, stdin); err != nil {
+	if err := enableConnector(context.Background(), cfg, "gmail", &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Reusing your saved Google sign-in") {
@@ -314,7 +316,7 @@ func TestCoreA_ApplySetupSelection(t *testing.T) {
 	}
 
 	// doBackfill=false: enable only, ZERO ingest.
-	if err := applySetupSelection(context.Background(), cfg, []string{"imessage", "filesystem"}, false, &out, stdin); err != nil {
+	if err := applySetupSelection(context.Background(), cfg, []string{"imessage", "filesystem"}, false, &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := loadSources(cfg)
@@ -330,7 +332,7 @@ func TestCoreA_ApplySetupSelection(t *testing.T) {
 
 	// doBackfill=true with no google sources => backfill runs, reports 0.
 	out.Reset()
-	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, true, &out, stdin); err != nil {
+	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, true, &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "backfilled 0 item(s)") {
@@ -378,10 +380,14 @@ func TestCoreA_CmdConnectors(t *testing.T) {
 		t.Fatalf("connectors list; got:\n%s", out)
 	}
 	listJSON := run(t, "connectors", "list", "--json")
-	var rows []catalogRow
-	if err := json.Unmarshal([]byte(listJSON), &rows); err != nil {
+	// Plan 01-07: the rows move under `connectors` inside the schema envelope.
+	var listDoc struct {
+		Connectors []catalogRow `json:"connectors"`
+	}
+	if err := json.Unmarshal([]byte(listJSON), &listDoc); err != nil {
 		t.Fatalf("connectors list --json: %v\n%s", err, listJSON)
 	}
+	rows := listDoc.Connectors
 	if len(rows) == 0 {
 		t.Fatal("connectors list --json should return the catalog")
 	}
@@ -557,6 +563,32 @@ func TestCoreA_CmdSync(t *testing.T) {
 	}
 	if !strings.Contains(out, "(STALE)") {
 		t.Fatalf("sync status should mark the error-free >48h source STALE; got:\n%s", out)
+	}
+	var receipt struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		Sources       []struct {
+			Source    string `json:"source"`
+			State     string `json:"state"`
+			LastError string `json:"last_error"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "sync", "status", "--json")), &receipt); err != nil {
+		t.Fatalf("sync status --json must emit one receipt: %v", err)
+	}
+	if receipt.Schema != "mora.sync.status" || receipt.SchemaVersion != 1 || len(receipt.Sources) != 3 {
+		t.Fatalf("sync status --json receipt = %+v", receipt)
+	}
+	for i, source := range receipt.Sources {
+		if source.State != healthFresh && source.State != healthStale && source.State != healthFailed && source.State != healthNever {
+			t.Fatalf("source state = %q, want established health vocabulary", source.State)
+		}
+		if i > 0 && receipt.Sources[i-1].Source > source.Source {
+			t.Fatalf("sources must be sorted by source: %+v", receipt.Sources)
+		}
+	}
+	if receipt.Sources[2].Source != "imessage" || receipt.Sources[2].State != healthFailed {
+		t.Fatalf("sync status receipt must retain the persisted health state: %+v", receipt.Sources)
 	}
 
 	// Provider backfills with no enabled sources => 0 items, no error.

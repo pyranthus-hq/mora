@@ -20,7 +20,24 @@ import (
 // `mora connectors list|enable|disable|setup`. It mirrors cmdSources' shape
 // (arg-0 switch, loadConfig up front). stdin is threaded for the Plan-04 setup
 // menu; the OAuth consent path reads NO stdin (browser loopback).
-func cmdConnectors(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+// connectorsListPayload carries the connector catalog under a named key.
+type connectorsListPayload struct {
+	Connectors []catalogRow `json:"connectors"`
+}
+
+// connectorStateReceipt is the machine form of an enable/disable outcome.
+type connectorStateReceipt struct {
+	Type    string `json:"type"`
+	Enabled bool   `json:"enabled"`
+}
+
+// disconnectReceipt is the machine form of a revoked connector credential.
+type disconnectReceipt struct {
+	Provider string `json:"provider"`
+	Revoked  bool   `json:"revoked"`
+}
+
+func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora connectors list|enable|disable|setup")
 	}
@@ -58,20 +75,50 @@ func cmdConnectors(ctx context.Context, args []string, stdout io.Writer, stdin i
 				NeedsAuth: c.NeedsAuth,
 			})
 		}
-		return emit(stdout, rows, *jsonOut)
-	case "enable":
-		if len(args) != 2 {
-			return errors.New("usage: mora connectors enable <type>")
+		if *jsonOut {
+			// Plan 01-07: the bare array moves under `connectors`.
+			return emitReceipt(stdout, "mora.connectors.list", 1, connectorsListPayload{Connectors: rows})
 		}
-		return enableConnector(ctx, cfg, args[1], stdout, stdin)
-	case "disable":
-		if len(args) != 2 {
-			return errors.New("usage: mora connectors disable <type>")
+		return emit(stdout, rows, false)
+	case "enable", "disable":
+		verb := args[0]
+		fs := flag.NewFlagSet("connectors "+verb, flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "json output")
+		// flagsFirst so `connectors disable gmail --json` parses the flag that
+		// follows the positional; Go's flag package stops at the first non-flag.
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 		}
-		return disableConnector(cfg, args[1], stdout)
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: mora connectors %s <type>", verb)
+		}
+		ctype := fs.Arg(0)
+		// Under --json the connector's setup guidance is diagnostics, not the
+		// result: it moves to stderr so stdout carries exactly one document.
+		guide := stdout
+		if *jsonOut {
+			guide = stderr
+		}
+		if verb == "enable" {
+			if err := enableConnector(ctx, cfg, ctype, guide, stderr, stdin); err != nil {
+				return err
+			}
+			if *jsonOut {
+				return emitReceipt(stdout, "mora.connectors.enable", 1, connectorStateReceipt{Type: ctype, Enabled: true})
+			}
+			return nil
+		}
+		if err := disableConnector(cfg, ctype, guide); err != nil {
+			return err
+		}
+		if *jsonOut {
+			return emitReceipt(stdout, "mora.connectors.disable", 1, connectorStateReceipt{Type: ctype, Enabled: false})
+		}
+		return nil
 	case "setup":
 		// D-08: re-open the same interactive setup menu anytime.
-		return runSetupMenu(ctx, cfg, stdin, stdout)
+		return runSetupMenu(ctx, cfg, stdin, stdout, stderr)
 	default:
 		return errors.New("usage: mora connectors list|enable|disable|setup")
 	}
@@ -81,7 +128,7 @@ func cmdConnectors(ctx context.Context, args []string, stdout io.Writer, stdin i
 // consent if the type needs it, flips the Enabled bit, then STOPS — it pulls
 // ZERO data (REG-03 / D-04). Backfill is a separate, explicit step (sync/ingest).
 // Unknown types are rejected (D-03 / ASVS V5), never silently no-op'd.
-func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Writer, stdin io.Reader) error {
+func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stderr io.Writer, stdin io.Reader) error {
 	info, ok := lookupCatalog(ctype)
 	if !ok {
 		return fmt.Errorf("unknown connector %q; run `mora connectors list`", ctype)
@@ -111,7 +158,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 					return err
 				}
 			} else {
-				fmt.Fprintf(stdout, "note: %s needs Google authorization — run `mora connect google` (or `mora connectors enable %s` in a terminal) to grant consent.\n", ctype, ctype)
+				fmt.Fprintf(stderr, "note: %s needs Google authorization — run `mora connect google` (or `mora connectors enable %s` in a terminal) to grant consent.\n", ctype, ctype)
 			}
 		} else {
 			// CROSS-PHASE TOUCH (UI-SPEC §C): a saved token means the browser step is
@@ -154,7 +201,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access once to ~/Applications/Mora.app, then run `mora sync imessage` from any host app.")
 		fmt.Fprintln(stdout, "Check readiness anytime with `mora doctor`.")
 		if runtimeGOOS() != "darwin" {
-			fmt.Fprintf(stdout, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
+			fmt.Fprintf(stderr, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -163,7 +210,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout io.Wr
 		okf(stdout, "enabled applecalendar. Apple Calendar reads your local Calendar database — no login needed.")
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access (the same toggle iMessage uses), then pull data with `mora ingest run --source applecalendar`.")
 		if runtimeGOOS() != "darwin" {
-			fmt.Fprintf(stdout, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
+			fmt.Fprintf(stderr, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
 		return nil
 	}
@@ -262,9 +309,9 @@ func renderSetupState(cfg Config, w io.Writer) {
 // makes the headline consent guarantee ("no affirmative confirm ⇒ zero ingest",
 // D-09) assertable in a unit test without a TTY or huh. It sits ON TOP of
 // enableConnector — it never reimplements enable/auth (T-04-03).
-func applySetupSelection(ctx context.Context, cfg Config, selected []string, doBackfill bool, stdout io.Writer, stdin io.Reader) error {
+func applySetupSelection(ctx context.Context, cfg Config, selected []string, doBackfill bool, stdout, stderr io.Writer, stdin io.Reader) error {
 	for _, ctype := range selected {
-		if err := enableConnector(ctx, cfg, ctype, stdout, stdin); err != nil {
+		if err := enableConnector(ctx, cfg, ctype, stdout, stderr, stdin); err != nil {
 			return err
 		}
 	}
@@ -287,7 +334,7 @@ func applySetupSelection(ctx context.Context, cfg Config, selected []string, doB
 // empty stdin) it prints a hint and returns immediately — it NEVER blocks. The
 // menu only gathers selection + confirm; the consequential actions are delegated
 // to the pure applySetupSelection seam.
-func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Writer) error {
+func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stderr io.Writer) error {
 	f, ok := stdin.(*os.File)
 	if !ok || !isatty.IsTerminal(f.Fd()) {
 		// Non-interactive (pipe / CI / test). Do NOT block (T-04-01).
@@ -440,7 +487,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 		}
 	}
 	// Enable + (if confirmed) google backfill via the shared consent seam.
-	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stdin); err != nil {
+	if err := applySetupSelection(ctx, cfg, selected, doBackfill, stdout, stderr, stdin); err != nil {
 		return err
 	}
 	if imessageSelected {
@@ -452,7 +499,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Wr
 				}
 				fmt.Fprintf(stdout, "backfilled %d iMessage conversation(s).\n", total)
 			} else {
-				fmt.Fprintln(stdout, "note: iMessage isn't ready yet (Full Disk Access) — skipped. Run `mora doctor`, then `mora sync imessage`.")
+				fmt.Fprintln(stderr, "note: iMessage isn't ready yet (Full Disk Access) — skipped. Run `mora doctor`, then `mora sync imessage`.")
 			}
 		}
 	}
@@ -493,7 +540,17 @@ func disableConnector(cfg Config, ctype string, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "%s disabled. Ingest stopped; existing memories kept and searchable. Re-enable instantly with `mora connectors enable %s`.\n", ctype, ctype)
 	return nil
 }
-func cmdDisconnect(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdDisconnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	jsonOut := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	args = rest
 	if len(args) < 1 || args[0] != "google" {
 		return errors.New("usage: mora disconnect google")
 	}
@@ -507,6 +564,9 @@ func cmdDisconnect(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	if err := os.Remove(tokPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if jsonOut {
+		return emitReceipt(stdout, "mora.disconnect.google", 1, disconnectReceipt{Provider: "google", Revoked: true})
 	}
 	fmt.Fprintln(stdout, "disconnected google; token revoked and removed")
 	return nil

@@ -3,6 +3,7 @@ package mora
 import (
 	"archive/zip"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"flag"
@@ -11,9 +12,12 @@ import (
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"io/fs"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +35,18 @@ func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now tim
 	return ingestpkg.StatusFileState(st, threshold, now)
 }
 func persistSyncStatus(out io.Writer, path string, st *memory.SyncStatus, ingErr error) error {
+	// A failure raised INSIDE memory.Ingest is typed HERE, not at ingestSource.
+	// memory.Ingest stamps its own LastAttemptAt, which correctly trips
+	// stampSyncAttemptFailure's inner-path guard (health.go) — that guard exists
+	// so the outer stamp can never clobber a checkpoint or counter the inner path
+	// already persisted, and two tests pin it. The outer stamp therefore never
+	// runs for this family, and without this line the whole dropped-item and
+	// fetch-failure family would persist prose with no code (or, worse, keep a
+	// code left by an earlier and different failure). Every memory.Ingest call
+	// site routes through this function, so this is the complete boundary for it.
+	if ingErr != nil {
+		st.ErrorCode = connectorErrorCode(ingErr)
+	}
 	saveErr, result := ingestpkg.PersistStatus(path, st, ingErr)
 	if saveErr != nil && out != nil {
 		warnf(out, "could not persist sync status (%s): %v", path, saveErr)
@@ -159,22 +175,27 @@ func backfillEnabledGitHub(ctx context.Context, cfg Config, stdout io.Writer) (i
 	return total, nil
 }
 
-func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error) {
+func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	if len(args) == 0 || args[0] != "run" {
-		return errors.New("usage: mora ingest run --source <name>|--all")
+		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora ingest run --source <name>|--all")
 	}
 	fs := flag.NewFlagSet("ingest run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	sourceName := fs.String("source", "", "source")
 	all := fs.Bool("all", false, "all")
+	jsonOut := fs.Bool("json", false, "emit the ingest receipt as JSON")
 	if perr := fs.Parse(args[1:]); perr != nil {
-		return perr
+		return newMoraError(errCodeUsageUnknownFlag, "usage", perr, "%v", perr)
 	}
+	// Per-source progress and resumable-failure warnings are diagnostics, not
+	// results: under --json they move to stderr so stdout carries exactly one
+	// JSON document.
+	progress := progressWriter(stdout, stderr, *jsonOut)
 	// One of the two selectors is required: a bare `ingest run` used to walk the
 	// loop with sourceName=="", match nothing, and print a successful-looking
 	// "ingested 0 item(s)".
 	if !*all && *sourceName == "" {
-		return errors.New("usage: mora ingest run --source <name>|--all")
+		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora ingest run --source <name>|--all")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -208,7 +229,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 		} else if !s.IsEnabled() {
 			continue // --all silently skips disabled (D-07)
 		}
-		n, err := ingestSourceFn(cfg, s, stdout)
+		n, err := ingestSourceFn(cfg, s, progress)
 		count += n
 		if err != nil {
 			// Named-source path: the failure IS the result — but a PARTIAL run
@@ -225,7 +246,7 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 			// and surface an aggregate error at the end (never swallow sync
 			// errors; mirrors backfillEnabledGoogle).
 			failures++
-			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, err)
+			warnf(progress, "%s sync incomplete (resumable): %v", s.Name, err)
 		}
 	}
 	// A named source that matched NOTHING is a typo, not a successful empty run:
@@ -234,30 +255,115 @@ func cmdIngest(ctx context.Context, args []string, stdout io.Writer) (err error)
 	if !*all && !named {
 		return fmt.Errorf("no source named %q — run `mora sources list` to see configured sources", *sourceName)
 	}
-	if _, err := rebuildIndex(ctx, cfg); err != nil {
-		if namedErr != nil {
-			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, err)
+	// A named source that failed is one failed source; `failures` stays the
+	// --all-only counter so the aggregate error below keeps its meaning.
+	failedSources := failures
+	if namedErr != nil {
+		failedSources = 1
+	}
+	// CON-02: every --json path that got as far as writing memories owes stdout
+	// exactly one JSON document saying what landed. A partial named-source
+	// failure and a failed rebuild both leave items in the vault, so returning
+	// their error without the receipt handed an agent exit 1 and an empty
+	// stdout — the one outcome it cannot act on. --all already emitted before
+	// its aggregate error; these two paths did not.
+	//
+	// Errors raised BEFORE any ingest work (unknown source, disabled source,
+	// missing selector) still emit nothing: a usage error is not a result.
+	//
+	// Human output is unchanged — the prose line still prints only on success.
+	emitRunReceipt := func() error {
+		if !*jsonOut {
+			return nil
 		}
-		return err
+		return emitReceipt(stdout, "mora.ingest.run", 1, ingestRunReceipt{
+			Source: *sourceName, All: *all, Items: count, FailedSources: failedSources,
+		})
+	}
+	if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+		if eerr := emitRunReceipt(); eerr != nil {
+			return eerr
+		}
+		if namedErr != nil {
+			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, rerr)
+		}
+		return rerr
+	}
+	if eerr := emitRunReceipt(); eerr != nil {
+		return eerr
 	}
 	if namedErr != nil {
 		return namedErr
 	}
-	fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
+	if !*jsonOut {
+		fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
+	}
 	if failures > 0 {
 		return fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
 	}
 	return nil
 }
-func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) >= 1 && args[0] == "github" {
-		return connectGitHub(ctx, args[1:], stdout)
+
+// ingestRunReceipt reports what one ingest run did. Phase 2 (ISO-02) adds the
+// per-source outcome breakdown here; additions are minor, removals need a bump.
+type ingestRunReceipt struct {
+	Source        string `json:"source,omitempty"`
+	All           bool   `json:"all"`
+	Items         int    `json:"items"`
+	FailedSources int    `json:"failed_sources"`
+}
+
+// progressWriter routes a command's running commentary away from stdout when
+// the caller asked for JSON, so a machine payload is never interleaved with
+// progress prose.
+func progressWriter(stdout, stderr io.Writer, jsonOut bool) io.Writer {
+	if jsonOut {
+		return stderr
 	}
-	if len(args) >= 1 && args[0] == "imessage" {
-		return connectIMessage(ctx, args[1:], stdout)
+	return stdout
+}
+
+// connectReceipt is the machine form of a completed connect verb.
+type connectReceipt struct {
+	Source    string `json:"source"`
+	Connected bool   `json:"connected"`
+}
+
+func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// github and imessage never defined --json; strip it here, route their setup
+	// prose to stderr, and answer with a receipt. connect filesystem already owns
+	// its own --json branch and its receipt, so it is left alone.
+	if len(args) >= 1 && (args[0] == "github" || args[0] == "imessage") {
+		source := args[0]
+		jsonOut := false
+		rest := make([]string, 0, len(args))
+		for _, a := range args[1:] {
+			if a == "--json" {
+				jsonOut = true
+				continue
+			}
+			rest = append(rest, a)
+		}
+		out := stdout
+		if jsonOut {
+			out = stderr
+		}
+		var err error
+		if source == "github" {
+			err = connectGitHub(ctx, rest, out)
+		} else {
+			err = connectIMessage(ctx, rest, out)
+		}
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return emitReceipt(stdout, "mora.connect."+source, 1, connectReceipt{Source: source, Connected: true})
+		}
+		return nil
 	}
 	if len(args) >= 1 && args[0] == "filesystem" {
-		return connectFilesystem(ctx, args[1:], stdout)
+		return connectFilesystem(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) < 1 || args[0] != "google" {
 		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect github [--repo owner/repo] | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
@@ -375,7 +481,7 @@ func cmdConnect(ctx context.Context, args []string, stdout io.Writer) error {
 	renderSetupState(cfg, stdout)
 	return nil
 }
-func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
 		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
@@ -389,12 +495,14 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 		return nil
 	}
 	if len(args) == 0 {
-		return errors.New("usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+		return newCodedError(errCodeUsageMissingArgument, nil,
+			"usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
 	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
+	// Strip the relay receipt token BEFORE any flag parsing. --mora-app-receipt
+	// is a private argument of the signed-app relay protocol, not part of a
+	// per-verb flag surface, so the --json flag sets below would reject it as an
+	// unknown flag — which both hid the "only valid" guard and broke the relay
+	// child (`mora sync imessage --mora-app-receipt <token>`).
 	receiptToken, cleanedArgs, err := protectedSyncReceiptArg(args)
 	if err != nil {
 		return err
@@ -403,14 +511,67 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	if receiptToken != "" && (len(args) == 0 || !protectedSyncSource(args[0])) {
 		return fmt.Errorf("%s is only valid for imessage or applecalendar sync", protectedSyncReceiptFlag)
 	}
+	if len(args) == 0 {
+		return newCodedError(errCodeUsageMissingArgument, nil,
+			"usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+	}
+	var statusJSON bool
+	if args[0] == "status" {
+		fs := flag.NewFlagSet("sync status", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		statusJSON = *jsonOut
+	}
+	// The per-source re-sync verbs share one flag surface. --json replaces the
+	// "synced N item(s)" line with a receipt and moves walk progress to stderr,
+	// so stdout carries exactly one JSON document. Routing below stays an
+	// explicit per-source chain so a typo can never fall through to a networked
+	// backfill.
+	sourceJSON := false
+	switch args[0] {
+	case "filesystem", "imessage", "applecalendar", "github", "google":
+		fs := flag.NewFlagSet("sync "+args[0], flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit the sync receipt as JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		sourceJSON = *jsonOut
+	}
+	sourceProgress := progressWriter(stdout, stderr, sourceJSON)
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
 	// Route protected local-store reads through the signed application when this
 	// invocation came from another host. The launched child carries a receipt token
 	// and runs this same command directly, preventing relay recursion.
 	if receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
-		if rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
+		if relayReceipt, rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
+			if sourceJSON {
+				return emitSyncSourceResult(stdout, args[0], true, relayReceipt.Items, "")
+			}
 			fmt.Fprintf(stdout, "synced %s via Mora.app\n", args[0])
 			return nil
 		} else if rerr != errProtectedSyncDirect {
+			// A child sync can fail after materializing some items. Match the direct
+			// path's contract: publish the deterministic receipt before returning the
+			// failure, while launch/protocol failures without a child receipt remain
+			// plain command errors.
+			if sourceJSON && relayReceipt.Source != "" {
+				if emitErr := emitSyncSourceResult(stdout, args[0], true, relayReceipt.Items, ""); emitErr != nil {
+					return emitErr
+				}
+			}
 			return rerr
 		}
 	}
@@ -425,6 +586,9 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	if args[0] == "status" {
 		dir := filepath.Join(cfg.StateDir, "sync")
 		entries, _ := os.ReadDir(dir)
+		if statusJSON {
+			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{Sources: syncStatusReceiptSources(entries, dir, time.Now())})
+		}
 		if len(entries) == 0 {
 			fmt.Fprintln(stdout, "no sources synced yet")
 			return nil
@@ -464,22 +628,29 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	// Routing is explicit so a typo can never fall through to a networked Google
 	// backfill, and the helper performs one final index rebuild after the walks.
 	if args[0] == "filesystem" {
-		total, err := backfillEnabledFilesystem(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, err := backfillEnabledFilesystem(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "filesystem", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	// `mora sync imessage` — re-run the gated iMessage backfill (shared seam).
 	if args[0] == "imessage" {
-		total, syncErr := backfillEnabledIMessage(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, syncErr := backfillEnabledIMessage(ctx, cfg, sourceProgress)
+		rerr := emitSyncSourceResult(stdout, "imessage", sourceJSON, total, "synced %d item(s)\n")
+		// The relay receipt is written even when the stdout emit failed: the
+		// launching host is waiting on it, and a broken pipe must not strand it.
 		if receiptToken != "" {
-			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], Items: total, CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
 			if syncErr != nil {
 				r.Error = syncErr.Error()
 			}
 			if err := writeProtectedSyncReceipt(cfg, r); err != nil {
 				return err
 			}
+		}
+		if rerr != nil {
+			return rerr
 		}
 		return syncErr
 	}
@@ -487,10 +658,11 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 	// Keep this separate from Google Calendar: the provider, FDA gate, status
 	// receipt, and recovery action are all independent (#266).
 	if args[0] == "applecalendar" {
-		total, syncErr := backfillEnabledAppleCalendar(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, syncErr := backfillEnabledAppleCalendar(ctx, cfg, sourceProgress)
+		rerr := emitSyncSourceResult(stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n")
+		// Same rule as imessage above: the relay receipt outlives a stdout failure.
 		if receiptToken != "" {
-			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], Items: total, CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
 			if syncErr != nil {
 				r.Error = syncErr.Error()
 			}
@@ -498,19 +670,88 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 				return err
 			}
 		}
+		if rerr != nil {
+			return rerr
+		}
 		return syncErr
 	}
 	if args[0] == "github" {
-		total, err := backfillEnabledGitHub(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d issue(s)\n", total)
+		total, err := backfillEnabledGitHub(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "github", sourceJSON, total, "synced %d issue(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	if args[0] == "google" {
-		total, err := backfillEnabledGoogle(ctx, cfg, stdout)
-		fmt.Fprintf(stdout, "synced %d item(s)\n", total)
+		total, err := backfillEnabledGoogle(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+			return rerr
+		}
 		return err
 	}
 	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>)", args[0])
+}
+
+// syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
+// the typed failure fields here; additions are minor, removals need a bump.
+type syncSourceReceipt struct {
+	Source string `json:"source"`
+	Items  int    `json:"items"`
+}
+
+// emitSyncSourceResult writes the outcome of one per-source re-sync: a receipt
+// under --json, the shipped human line otherwise. It runs on the error path too,
+// because a partial sync still reports what it managed to pull.
+func emitSyncSourceResult(stdout io.Writer, source string, jsonOut bool, total int, humanFormat string) error {
+	if jsonOut {
+		return emitReceipt(stdout, "mora.sync."+source, 1, syncSourceReceipt{Source: source, Items: total})
+	}
+	_, err := fmt.Fprintf(stdout, humanFormat, total)
+	return err
+}
+
+// syncStatusReceipt is additive: Phase 2 (ISO-02) and Phase 7 (OBS-01) may add
+// fields in a minor release; removal or retyping requires a schema_version bump.
+type syncStatusReceipt struct {
+	Sources []syncStatusReceiptSource `json:"sources"`
+}
+
+type syncStatusReceiptSource struct {
+	Source        string `json:"source"`
+	State         string `json:"state"`
+	LastSuccessAt string `json:"last_success_at"`
+	LastAttemptAt string `json:"last_attempt_at"`
+	ItemCount     int    `json:"item_count"`
+	ErrorCount    int    `json:"error_count"`
+	LastError     string `json:"last_error,omitempty"`
+	ErrorCode     string `json:"error_code,omitempty"`
+}
+
+func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) []syncStatusReceiptSource {
+	sources := make([]syncStatusReceiptSource, 0, len(entries))
+	for _, entry := range entries {
+		st, err := memory.LoadStatus(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		sources = append(sources, syncStatusReceiptSource{
+			Source:        st.Source,
+			State:         syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
+			LastSuccessAt: st.LastSuccessAt,
+			LastAttemptAt: st.LastAttemptAt,
+			ItemCount:     st.ItemCount,
+			ErrorCount:    st.ErrorCount,
+			LastError:     st.LastError,
+			// The typed companion CON-07 needs. A record persisted before the
+			// taxonomy shipped has no code on disk and is NOT rewritten; it reads
+			// as connector.unclassified here instead.
+			ErrorCode: syncErrorCodeForState(
+				syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
+				st.ErrorCode, st.LastError),
+		})
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Source < sources[j].Source })
+	return sources
 }
 
 // syncStatusFileThreshold infers the freshness threshold for a raw sync/
@@ -531,12 +772,23 @@ func cmdSync(ctx context.Context, args []string, stdout io.Writer) error {
 // structured metadata (the Meta-in-content-hash change means a normal sync already
 // rewrites within the window; --full extends the lookback to all-time so the
 // rewrite reaches memories older than the default window), then rebuilds the graph.
-func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
+// reingestReceipt reports what one reingest run did. Phase 2 (ISO-02) may add
+// the per-source breakdown; additions are minor, removals need a bump.
+type reingestReceipt struct {
+	Full          bool `json:"full"`
+	Items         int  `json:"items"`
+	FailedSources int  `json:"failed_sources"`
+}
+
+func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	full := false
+	jsonOut := false
 	for _, a := range args {
 		switch a {
 		case "--full":
 			full = true
+		case "--json":
+			jsonOut = true
 		case "-h", "--help":
 			fmt.Fprintln(stdout, "usage: mora reingest [--full]")
 			fmt.Fprintln(stdout, "  re-fetch enabled sources, rewrite memories with the latest")
@@ -551,6 +803,9 @@ func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Per-source progress is a diagnostic, not the result: under --json it moves
+	// to stderr so stdout carries exactly one document (CON-06).
+	progress := progressWriter(stdout, stderr, jsonOut)
 	sources, _ := loadSources(cfg)
 	total, failures := 0, 0
 	for _, s := range sources {
@@ -565,15 +820,29 @@ func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
 				s.SinceDays = -1 // all-time (windowForIMessage)
 			}
 		}
-		n, e := ingestSource(cfg, s, stdout)
+		n, e := ingestSource(cfg, s, progress)
 		total += n
 		if e != nil {
 			failures++
-			warnf(stdout, "%s reingest incomplete (resumable): %v", s.Name, e)
+			warnf(progress, "%s reingest incomplete (resumable): %v", s.Name, e)
 		}
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return err
+	}
+	if jsonOut {
+		// The receipt ships BEFORE the aggregate failure return, so a partial
+		// reingest never hands a caller exit 1 with an empty stdout — the same
+		// rule `ingest run` follows.
+		if eerr := emitReceipt(stdout, "mora.reingest", 1, reingestReceipt{
+			Full: full, Items: total, FailedSources: failures,
+		}); eerr != nil {
+			return eerr
+		}
+		if failures > 0 {
+			return fmt.Errorf("%d source(s) failed to reingest; data may be stale (run `mora sync status`)", failures)
+		}
+		return nil
 	}
 	suffix := ""
 	if full {
@@ -602,12 +871,22 @@ func cmdReingest(ctx context.Context, args []string, stdout io.Writer) error {
 var testHookIngestActivityStarted func(Config, Source, operationHandle)
 
 func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
+	// attemptStart is captured before ANY step that can fail, so every failure at
+	// this chokepoint — activity bookkeeping included — stamps the same attempt.
+	attemptStart := time.Now()
 	// The activity receipt and matching journal header are both durable before
 	// dispatch can publish a vault file. Even a zero-item run gets a header, so
 	// its success can be closed only by the covering committed rebuild.
 	h, err := beginOperation(cfg, operationKindIngest, "starting", operationClock())
 	if err != nil {
-		return 0, fmt.Errorf("starting ingest activity: %w", err)
+		// The connector failure boundary (CON-07). Every source failure passes
+		// through here exactly once, so this is where an untyped one acquires a
+		// published code. The message is preserved byte-for-byte and the cause
+		// stays reachable through errors.Is/errors.As — this adds a label; it does
+		// not change what failed or what the user reads.
+		err = classifyConnectorError(fmt.Errorf("starting ingest activity: %w", err))
+		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return 0, err
 	}
 	cfg.SetOperationRunID(h.RunID)
 	finishFailed := func(code string, cause error) error {
@@ -630,12 +909,15 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	if testHookIngestActivityStarted != nil {
 		testHookIngestActivityStarted(cfg, s, h)
 	}
-	attemptStart := time.Now()
 	n, dispatchErr := ingestSourceDispatch(cfg, s, out)
 	if dispatchErr == nil {
 		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{Items: n})
 	}
 	if dispatchErr != nil {
+		// CON-07: the untyped failure acquires its published connector code here,
+		// before the operation bookkeeping joins in, so the typed cause stays
+		// reachable through errors.As for the sync-status stamp below.
+		dispatchErr = classifyConnectorError(dispatchErr)
 		progressErr := progress.Stop()
 		err = errors.Join(dispatchErr, progressErr)
 		err = finishFailed("ingest_failed", err)
@@ -646,6 +928,56 @@ func ingestSource(cfg Config, s Source, out io.Writer) (n int, err error) {
 	// heartbeat stays live while sibling sources finish. The committed rebuild
 	// that retires this run's journal stops it and owns the terminal transition.
 	return n, nil
+}
+
+// classifyConnectorError attaches a CON-07 discrimination to a connector
+// failure. A failure already typed at its own boundary keeps that code — the
+// site that RAISED it knows more than this function can infer.
+//
+// Every rule below is STRUCTURAL: a decoder type, a sentinel, an interface. None
+// matches on error prose. That restraint is deliberate. The live Doctor
+// misdiagnosis Phase 3 (DOC-03) exists to kill was produced by exactly that
+// habit — inferring a permission state from an error string — and a typed
+// taxonomy that re-encodes a guess is worse than none, because it makes the
+// guess look like a fact. An unrecognized failure is honestly unclassified.
+func classifyConnectorError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var typed moraError
+	if errors.As(err, &typed) && classForErrorCode(typed.Code) == errClassConnector {
+		return err
+	}
+	return newCodedError(connectorCodeForCause(err), err, "%v", err)
+}
+
+// connectorErrorCode returns the published code a connector failure resolves to,
+// applying the SAME classification the ingestSource boundary applies. It exists
+// so a failure raised inside memory.Ingest can be typed at the moment it is
+// persisted: internal/memory writes prose and never claims a code, because the
+// taxonomy lives here and that package must not import this one.
+func connectorErrorCode(err error) string {
+	return connectorErrorCodeFor(classifyConnectorError(err))
+}
+
+// connectorCodeForCause is classifyConnectorError's structural rule table, split
+// out so a test can drive every branch with a synthetic cause.
+func connectorCodeForCause(err error) string {
+	// A payload the connector returned but Mora could not decode.
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return errCodeConnectorMalformed
+	}
+	// The connector's process, binary, endpoint, or backing file is not there.
+	var execErr *exec.Error
+	var exitErr *exec.ExitError
+	var netErr net.Error
+	if errors.Is(err, fs.ErrNotExist) || errors.As(err, &execErr) || errors.As(err, &exitErr) ||
+		errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) {
+		return errCodeConnectorUnavailable
+	}
+	return errCodeConnectorUnclassified
 }
 
 func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {
@@ -758,7 +1090,13 @@ func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (in
 		if s.Account != "" {
 			connectCmd += " --account " + s.Account
 		}
-		return 0, fmt.Errorf("not connected to google (run `%s`): %w", connectCmd, err)
+		// connector.unauthorized is honest here and nowhere else in this file: the
+		// credential itself could not be loaded, which Mora DIRECTLY observed. It is
+		// deliberately not derived from isGoogleAuthError's prose markers ("token",
+		// "expired", "oauth"), which are a good enough hint for a human sentence but
+		// would be an inference if they typed a published code.
+		return 0, newCodedError(errCodeConnectorUnauthorized, err,
+			"not connected to google (run `%s`): %v", connectCmd, err)
 	}
 	fetcher, err := google.NewLiveFetcher(ctx, oc, tok)
 	if err != nil {
@@ -883,7 +1221,18 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 	if err != nil {
 		// A present-but-unreadable chat.db is the FDA-denied case — point the user at
 		// the doctor guidance rather than dumping a raw sqlite error.
-		return 0, fmt.Errorf("cannot read your Messages database (Full Disk Access not granted?) — run `mora doctor`: %w", err)
+		//
+		// PHASE 3 HANDOFF (DOC-03). The prose above INFERS Full Disk Access from a
+		// failed open; Mora never observed a permission refusal. This plan does not
+		// remove that claim — it supplies the typed alternative so DOC-03 has
+		// something to switch to. The code is connector.unavailable, NOT
+		// connector.unauthorized, precisely because the permission state is
+		// unverified: a machine reading this receipt learns "could not open", which
+		// is true, rather than "denied", which is a guess. When DOC-03 lands a real
+		// probe, an observed refusal becomes connector.unauthorized here and the
+		// English can finally say what it means.
+		return 0, newCodedError(errCodeConnectorUnavailable, err,
+			"cannot read your Messages database (Full Disk Access not granted?) — run `mora doctor`: %v", err)
 	}
 	defer fetcher.Close()
 
@@ -966,7 +1315,11 @@ func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
 	}
 	fetcher, err := applecal.NewLiveFetcher(appleCalDBPath())
 	if err != nil {
-		return 0, fmt.Errorf("cannot read your Calendar database (Full Disk Access not granted?) — run `mora doctor`: %w", err)
+		// Same PHASE 3 HANDOFF (DOC-03) as ingestIMessage: the Full Disk Access
+		// sentence is an inference this plan preserves verbatim, and the typed code
+		// beside it reports only what Mora actually observed — the open failed.
+		return 0, newCodedError(errCodeConnectorUnavailable, err,
+			"cannot read your Calendar database (Full Disk Access not granted?) — run `mora doctor`: %v", err)
 	}
 	defer fetcher.Close()
 
@@ -1125,7 +1478,16 @@ func connectGitHub(ctx context.Context, args []string, stdout io.Writer) error {
 // folder here IS the consent. The default source name is the folder's base name
 // so two folders coexist without an explicit --name; re-connecting the same name
 // refreshes in place rather than stacking duplicates (mirrors addSource).
-func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) error {
+// connectFilesystemReceipt reports the registered source and the first walk it
+// performed, so an agent can tell "registered" from "registered and indexed".
+type connectFilesystemReceipt struct {
+	Source string `json:"source"`
+	Path   string `json:"path"`
+	Scope  string `json:"scope"`
+	Items  int    `json:"items"`
+}
+
+func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Pull a leading positional <path> out before flag parsing: Go's flag package
 	// stops at the first non-flag arg, so `connect filesystem ~/dir --name x` would
 	// otherwise silently drop --name. A leading flag form (`--name x ~/dir`) still
@@ -1140,9 +1502,13 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 	name := fs.String("name", "", "source name (default: the folder's base name)")
 	scope := fs.String("scope", "personal", "scope")
 	pathFlag := fs.String("path", "", "directory to index (alternative to the positional <path>)")
+	jsonOut := fs.Bool("json", false, "emit the connect receipt as JSON")
 	if err := fs.Parse(rest); err != nil {
-		return err
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 	}
+	// Registry repair notes, walk progress, and the closing setup state are
+	// diagnostics; under --json they leave stdout to the receipt.
+	progress := progressWriter(stdout, stderr, *jsonOut)
 	path := *pathFlag
 	if path == "" {
 		path = positional
@@ -1215,7 +1581,7 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 				// the hourly walk and raises a red "never synced" banner — and this
 				// command is exactly the repair the ingest error recommends, so drop
 				// it here while adding the healthy row.
-				fmt.Fprintf(stdout, "removed legacy filesystem source %q (it had no path and could never sync)\n", existing.Name)
+				fmt.Fprintf(progress, "removed legacy filesystem source %q (it had no path and could never sync)\n", existing.Name)
 				if p := syncStatusPathFor(cfg, existing); p != "" {
 					_ = os.Remove(p) // drop its failed-sync status so `sync status` stops listing it
 				}
@@ -1242,15 +1608,20 @@ func connectFilesystem(ctx context.Context, args []string, stdout io.Writer) err
 	// Ingest now (the named, consented convenience path — same as connect google).
 	// Surface a partial-ingest warning BEFORE the rebuild so a resumable ingest
 	// error is never masked by a later index-rebuild failure.
-	n, ingestErr := ingestSource(cfg, s, stdout)
+	n, ingestErr := ingestSource(cfg, s, progress)
 	if ingestErr != nil {
-		warnf(stdout, "%s indexed %d file(s) before stopping (resumable): %v", s.Name, n, ingestErr)
+		warnf(progress, "%s indexed %d file(s) before stopping (resumable): %v", s.Name, n, ingestErr)
 	}
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		return err
 	}
 	if ingestErr != nil {
 		return ingestErr
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.connect.filesystem", 1, connectFilesystemReceipt{
+			Source: s.Name, Path: path, Scope: s.Scope, Items: n,
+		})
 	}
 	okf(stdout, "Enabled filesystem and indexed %d file(s) from %s.", n, path)
 	renderSetupState(cfg, stdout)

@@ -549,15 +549,35 @@ if grep -En -- '(^|[[:space:]|;&(<])([^[:space:]|;&()<>]*/)?head([[:space:]|;&)>
 	die "Tier 1 must not invoke the early-closing head command under pipefail"
 fi
 # Contract regexes intentionally match literal shell variables.
+#
+# The HEAD-binary version gates read `mora version --json` rather than the human
+# first line: a release gate that parses prose breaks whenever prose is edited,
+# which is exactly how #43 broke every tagged release until #46. These regexes
+# track that change, and they still do the job they were written for — pinning the
+# EXACT equality comparison so nobody relaxes it to a substring or a prefix.
 # shellcheck disable=SC2016
-require_text "$TIER1_REGRESSION" '\[ "\$VER_LINE" = "mora \$EXPECTED_VER" \]' \
+require_text "$TIER1_REGRESSION" 'mora version --json' \
+	"Tier 1 must read the current artifact version from the machine payload"
+# shellcheck disable=SC2016
+require_text "$TIER1_REGRESSION" '\[ "\$VER_REPORTED" = "\$EXPECTED_VER" \]' \
 	"Tier 1 must compare the current artifact version exactly"
+# The PREVIOUS release predates the JSON contract (0.7.0's cmdVersion has no
+# --json), so this one gate legitimately reads the old binary's human line.
 # shellcheck disable=SC2016
 require_text "$TIER1_REGRESSION" '\[ "\$OLD_VERSION_LINE" = "mora \$PREV_VER" \]' \
 	"Tier 1 must compare the previous artifact version exactly"
 # shellcheck disable=SC2016
-require_text "$TIER1_REGRESSION" '\[ "\$UPGRADED_VERSION_LINE" = "mora \$EXPECTED_VER" \]' \
+require_text "$TIER1_REGRESSION" '\[ "\$UPGRADED_VERSION" = "\$EXPECTED_VER" \]' \
 	"Tier 1 must compare the upgraded artifact version exactly"
+# The vault-flip (#43) and upgrade data-loss gates must count a NAMED array, never
+# len(d) over an enveloped payload — that counts envelope keys and passes vacuously.
+# shellcheck disable=SC2016
+require_text "$TIER1_REGRESSION" 'json_array_len "\$SR" memories' \
+	"Tier 1 must count search results from the named array after an upgrade"
+if grep -n "json_true .* 'len(d) > 0'" "$TIER1_REGRESSION" >"$WORK/vacuous"; then
+	cat "$WORK/vacuous" >&2
+	die "Tier 1 must not assert len(d) > 0 over an enveloped payload (counts envelope keys, never fails)"
+fi
 # shellcheck disable=SC2016
 require_text "$TIER1_REGRESSION" '\[ "\$INSTALL_VER_COUNT" -eq 1 \]' \
 	"Tier 1 must reject a missing or duplicate installer VERSION default"

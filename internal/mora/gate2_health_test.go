@@ -88,7 +88,7 @@ func TestDoctorStrictNonzeroOnDirtyIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf)
+	err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr)
 	if err == nil {
 		t.Fatal("doctor --strict exited 0 on a dirty index")
 	}
@@ -212,7 +212,7 @@ func TestOutOfBandVaultEditIsDirty(t *testing.T) {
 			t.Fatal(err)
 		}
 		var buf bytes.Buffer
-		err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf)
+		err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr)
 		if err == nil {
 			t.Fatal("doctor --strict exited 0 despite an out-of-band vault edit")
 		}
@@ -327,7 +327,7 @@ func TestDisabledSourceWithCorpusIsNotHealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &buf); err != nil {
+	if err := cmdDoctor(context.Background(), []string{"--json"}, &buf, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var rep doctorReport

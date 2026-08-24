@@ -45,6 +45,34 @@ func TestCommitmentDirectionTable(t *testing.T) {
 			name: "ambiguous addressee refuses", text: "Could you send the receipt?",
 			author: other, wantExists: false,
 		},
+		{
+			name: "hypothetical question is not a request", text: "What would you do if I asked you to send the outline?",
+			author: self, addressee: other, wantExists: false,
+		},
+		{
+			name: "product research prompt is not a request", text: "If we added a sharing feature, what would you use it for?",
+			author: other, addressee: self, wantExists: false,
+		},
+		{
+			name: "discourse add-that is not a promise", text: "I should add that the vendor already confirmed the shipment.",
+			author: self, addressee: other, wantExists: false,
+		},
+		{
+			name: "retrospective problem analysis is not a promise", text: "I should share the problems we have had with the old uploader in this analysis.",
+			author: self, addressee: other, wantExists: false,
+		},
+		{
+			name: "explicit future repair remains a promise", text: "I will fix the uploader and send the patch tomorrow.",
+			author: self, addressee: other, wantOwner: self, wantDir: OwedBySelf, wantExists: true,
+		},
+		{
+			name: "action-verb add still promises", text: "I'll add the invoice to the folder.",
+			author: self, addressee: other, wantOwner: self, wantDir: OwedBySelf, wantExists: true,
+		},
+		{
+			name: "quoted excerpt is not authored speech", text: "\"Could you send the signed contract by Friday?\"",
+			author: other, addressee: self, wantExists: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

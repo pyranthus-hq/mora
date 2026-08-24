@@ -2,13 +2,19 @@ package mora
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
+
+// graphPayload keeps the graph contract deterministic and non-null: [] on an
+// empty vault, never null, so a JSON consumer never needs a nil-check.
+type graphPayload struct {
+	Entities []Entity `json:"entities"`
+}
 
 // cmdGraph renders the entity graph visually in the terminal — the fast way to
 // see (and debug) the shape of the graph the connectors built from real data.
@@ -19,29 +25,17 @@ import (
 //	mora graph "Sam"           # drill into one entity (connections + evidence)
 //	mora graph --top 20        # widen the overview
 //	mora graph --json          # structured output (entities, or the entity record)
-func cmdGraph(ctx context.Context, args []string, stdout io.Writer) error {
-	top := 12
-	jsonOut := false
-	var positional []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--json" || a == "-json":
-			jsonOut = true
-		case a == "--top" || a == "-top":
-			if i+1 < len(args) {
-				i++
-				if n, err := strconv.Atoi(args[i]); err == nil && n > 0 {
-					top = n
-				}
-			}
-		case strings.HasPrefix(a, "--top="):
-			if n, err := strconv.Atoi(strings.TrimPrefix(a, "--top=")); err == nil && n > 0 {
-				top = n
-			}
-		default:
-			positional = append(positional, a)
-		}
+func cmdGraph(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	top := fs.Int("top", 12, "number of entities to show")
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	flagArgs, positional := graphFlagArgs(args)
+	if parseErr := fs.Parse(flagArgs); parseErr != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+	}
+	if *top <= 0 {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--top must be positive")
 	}
 
 	cfg, err := loadConfig()
@@ -50,23 +44,48 @@ func cmdGraph(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 
 	if len(positional) > 0 {
-		return graphDetailView(ctx, cfg, stdout, strings.Join(positional, " "), jsonOut)
+		return graphDetailView(ctx, cfg, stdout, strings.Join(positional, " "), *jsonOut)
 	}
 
 	entities, err := graphListEntities(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	if jsonOut {
-		return emit(stdout, entities, true)
+	if *jsonOut {
+		entries := make([]Entity, 0, len(entities))
+		entries = append(entries, entities...)
+		return emitReceipt(stdout, "mora.graph", 1, graphPayload{Entities: entries})
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
 	if len(entities) == 0 {
 		fmt.Fprintln(stdout, "No entity graph yet. Connect a source (mora connect google / mora connect imessage), sync, then try again.")
 		return nil
 	}
-	renderGraphOverview(stdout, entities, top)
+	renderGraphOverview(stdout, entities, *top)
 	return nil
+}
+
+// graphFlagArgs preserves graph's flexible ordering for a named entity while
+// handing every flag to flag.FlagSet for strict validation.
+func graphFlagArgs(args []string) ([]string, []string) {
+	flags := make([]string, 0, len(args))
+	positional := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--top" || a == "-top":
+			flags = append(flags, a)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+		case strings.HasPrefix(a, "-"):
+			flags = append(flags, a)
+		default:
+			positional = append(positional, a)
+		}
+	}
+	return flags, positional
 }
 
 // renderGraphOverview prints the kinds of entities present, each kind's top

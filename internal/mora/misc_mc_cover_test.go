@@ -585,7 +585,7 @@ func TestMc_StyleChangeItemFallback(t *testing.T) {
 // TestMc_CmdUpgradeFlagParseError: an unknown flag surfaces flag.Parse's error.
 func TestMc_CmdUpgradeFlagParseError(t *testing.T) {
 	var buf bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--nonexistent-flag"}, &buf); err == nil {
+	if err := cmdUpgrade(context.Background(), []string{"--nonexistent-flag"}, &buf, testStderr); err == nil {
 		t.Fatal("an unknown flag must return a parse error")
 	}
 }
@@ -601,7 +601,7 @@ func TestMc_CmdUpgradeRefusesSourceBuild(t *testing.T) {
 	for _, v := range []string{"dev", ""} {
 		BuildVersion = v
 		var buf bytes.Buffer
-		err := cmdUpgrade(context.Background(), nil, &buf)
+		err := cmdUpgrade(context.Background(), nil, &buf, testStderr)
 		if err == nil {
 			t.Fatalf("BuildVersion %q must refuse self-update", v)
 		}

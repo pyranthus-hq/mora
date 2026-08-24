@@ -1,0 +1,8 @@
+{
+  "documents_indexed": 0,
+  "duration_ms": 0,
+  "schema": "mora.index",
+  "schema_version": 1,
+  "state": "fresh",
+  "subcommand": "status"
+}

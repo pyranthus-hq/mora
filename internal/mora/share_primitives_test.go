@@ -347,7 +347,7 @@ func TestLegalLargeShareHasExplicitOversubscriptionPath(t *testing.T) {
 	registerSub(t, cfg, "neil")
 	// Set a tiny limit so even a small share is refused.
 	var buf bytes.Buffer
-	if err := cmdShareStorageLimit(cfg, []string{"16"}, &buf, time.Now()); err != nil {
+	if err := cmdShareStorageLimit(cfg, []string{"16"}, &buf, testStderr, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	buildShareRepoFixture(t, shareRepoDir(cfg, "neil"), id.Recipient(),
@@ -368,7 +368,7 @@ func TestLegalLargeShareHasExplicitOversubscriptionPath(t *testing.T) {
 		t.Fatalf("refusal did not print required storage-limit bytes: %v", err)
 	}
 	required := strings.Trim(fields[0], "'\"")
-	if err := cmdShareStorageLimit(cfg, []string{required}, &buf, time.Now()); err != nil {
+	if err := cmdShareStorageLimit(cfg, []string{required}, &buf, testStderr, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := importFixtureGeneration(context.Background(), cfg, shareSubscription{Name: "neil", Remote: "r"}, shareRepoDir(cfg, "neil")); err != nil {

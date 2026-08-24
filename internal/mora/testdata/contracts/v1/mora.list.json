@@ -1,0 +1,28 @@
+{
+  "memories": [
+    {
+      "created_at": "\u003ctimestamp\u003e",
+      "id": "\u003cid\u003e",
+      "path": "\u003chome\u003e/vault/mora/memories/global/\u003cid\u003e.md",
+      "scope": "global",
+      "source": "manual",
+      "tags": null,
+      "text": "envelope probe body",
+      "title": "envelope probe",
+      "type": "insight"
+    },
+    {
+      "created_at": "\u003ctimestamp\u003e",
+      "id": "\u003cid\u003e",
+      "path": "\u003chome\u003e/vault/mora/memories/global/\u003cid\u003e.md",
+      "scope": "global",
+      "source": "manual",
+      "tags": null,
+      "text": "envelope probe seed",
+      "title": "envelope seed",
+      "type": "insight"
+    }
+  ],
+  "schema": "mora.list",
+  "schema_version": 1
+}

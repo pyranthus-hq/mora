@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	mrand "math/rand/v2"
 	"os"
 	"strings"
 	"time"
@@ -60,6 +61,58 @@ import (
 // never isError). Cold-start and legacy/unbound states delegate to the full
 // rebuildIndex, which creates the complete schema and binds identity.
 func indexUpsert(ctx context.Context, cfg Config, m Memory) error {
+	return retryWhileIndexBusy(ctx, func() error { return indexUpsertOnce(ctx, cfg, m) })
+}
+
+// indexUpsertBusyDeadline bounds how long indexUpsert keeps re-entering its
+// transaction while the index is contended. It composes with the DSN's 15s
+// busy_timeout rather than replacing it: an attempt can itself block for that
+// long inside SQLite's busy handler, so the worst-case surfacing latency is
+// this deadline plus one wait, not this deadline.
+const indexUpsertBusyDeadline = 5 * time.Second
+
+// retryWhileIndexBusy re-runs op while it reports SQLite contention, until the
+// deadline. It exists because busy_timeout is a per-WAIT budget, not a
+// per-CALLER guarantee: a writer that queues behind a long rebuild can exhaust
+// its wait and surface a raw "database is locked" to a caller the concurrency
+// contract promises will never see one. That was observed exactly once, on the
+// Windows CI runner under TestConcurrencyContractStress, and did not reproduce
+// on a rerun of the same commit — which is the shape of a budget exhausted
+// under an unlucky stall, not a lock-handling bug.
+//
+// Re-entering means a FRESH transaction every attempt, never a retried
+// statement inside a failed one: a transaction that lost the race is finished,
+// and only a new one can take the writer lock. This is safe to repeat because
+// the upsert is idempotent by construction — it deletes and reinserts the rows
+// for ONE memory id, so a partial attempt that rolled back leaves nothing for
+// the next attempt to reconcile.
+//
+// The backoff is jittered for the reason atomicio.RenameReplaceWithRetry
+// jitters: deterministic sleeps make contending writers retry in lockstep and
+// keep colliding. A non-busy error surfaces on the first attempt and pays
+// nothing.
+func retryWhileIndexBusy(ctx context.Context, op func() error) error {
+	var deadline time.Time
+	for attempt := 0; ; attempt++ {
+		err := op()
+		if !isIndexBusyErr(err) {
+			return err
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(indexUpsertBusyDeadline)
+		} else if !time.Now().Before(deadline) {
+			return err
+		}
+		capMs := 1 << min(attempt, 5) // backoff ceiling grows 1,2,4,8,16,32,32… ms
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(1+mrand.IntN(capMs)) * time.Millisecond):
+		}
+	}
+}
+
+func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return err
 	}

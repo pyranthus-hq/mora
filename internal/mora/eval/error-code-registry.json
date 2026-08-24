@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "issue": 416,
+  "audited_at": "2026-08-17",
+  "contract": {
+    "drift_and_mutation_test": "TestErrorCodeRegistryMatchesSource",
+    "exit_code_test": "TestExitCodeAllocationIsGrandfathered",
+    "sweep": "TestErrorCodeRegistryMatchesSource parses every non-test internal/mora/*.go with go/ast and collects each string literal bound to an identifier named errCode*. That set must equal the `code` set in `codes` exactly, in both directions.",
+    "mutation": "Add `errCodeFoo = \"foo.bar\"` to internal/mora/errors.go without a row here, OR delete any row from `codes`. TestErrorCodeRegistryMatchesSource must fail in each case; it names the offending code in the failure message.",
+    "class_policy": "Every code belongs to exactly one class from `classes`. Connector rows additionally carry CON-07's `error_class`, which is an orthogonal axis, not a fourth state vocabulary. The many-to-one mapping into sourceHealth.state is in docs/architecture/08-cli-and-ux.md.",
+    "exit_code_policy": "Exit codes 1, 2, and 10 are grandfathered with their exact shipped meanings and are never re-allocated. 3 through 9 are permanently reserved-unused. 11 and above are available to a future phase. No exit code changed in the plan that created this file: 01-06 Task 1 chose option-a, so `doctor --strict` unhealthy still exits 1.",
+    "additive_policy": "Adding a code or a class is additive and does not bump schema_version. Renaming or removing a code, or changing the exit_code of an existing one, is breaking and requires a schema_version bump plus a release note."
+  },
+  "classes": [
+    {
+      "class": "usage",
+      "exit_code": 1,
+      "meaning": "The caller's invocation was wrong: an unknown flag, an unacceptable value, or a missing argument."
+    },
+    {
+      "class": "connector",
+      "exit_code": 1,
+      "meaning": "A source could not be read, or was read but produced nothing usable. Carries CON-07's error_class."
+    },
+    {
+      "class": "permission",
+      "exit_code": 1,
+      "meaning": "A directly observed operating-system permission refusal. Declared with no code yet on purpose: Mora currently INFERS Full Disk Access from an error string rather than observing it, and Phase 3 (DOC-03) owns replacing that inference. Minting a permission code here would publish the same unverified claim in typed form."
+    },
+    {
+      "class": "consent",
+      "exit_code": 1,
+      "meaning": "A locally recorded consent gate is closed. Mora read its own governance ledger and observed the refusal, so this is a fact rather than an inference; it is deliberately NOT the permission class, which is reserved for a directly observed operating-system refusal."
+    },
+    {
+      "class": "data",
+      "exit_code": 1,
+      "meaning": "A vault or state record is missing or undecodable."
+    },
+    {
+      "class": "index",
+      "exit_code": 1,
+      "meaning": "The search index could not be opened or does not match this build's schema."
+    },
+    {
+      "class": "internal",
+      "exit_code": 1,
+      "meaning": "A failure Mora cannot attribute to the caller, a connector, or the data. A Mora bug."
+    }
+  ],
+  "exit_codes": [
+    {
+      "code": 1,
+      "status": "grandfathered",
+      "meaning": "Generic failure. Every error class maps here today, including `doctor --strict` on an unhealthy report.",
+      "source": "cmd/mora/main.go fallback; internal/mora/errors.go exitCodeForClass",
+      "witness": "TestExitCodeFor_MatchesOnlyMoraSentinel"
+    },
+    {
+      "code": 2,
+      "status": "grandfathered",
+      "meaning": "`doctor --pulse`: a source, the index, or a producer is unhealthy. Sick, not broken.",
+      "source": "internal/mora/doctor.go cmdDoctorPulse",
+      "witness": "TestDoctorPulseExit2AndNotifies"
+    },
+    {
+      "code": 10,
+      "status": "grandfathered",
+      "meaning": "`loop begin`: this period already succeeded. The idempotent skip, distinct from a real failure.",
+      "source": "internal/mora/loop.go loopSkipExitCode",
+      "witness": "TestExitCodeFor_MatchesOnlyMoraSentinel"
+    }
+  ],
+  "reserved_exit_codes": {
+    "from": 3,
+    "to": 9,
+    "status": "permanently reserved-unused",
+    "reason": "Low single-digit statuses are widely squatted by shells, test runners, and wrapper scripts. Leaving 3 through 9 permanently unallocated means a future Mora code can never be confused with one of those conventions."
+  },
+  "first_allocatable_exit_code": 11,
+  "codes": [
+    {
+      "code": "usage.unknown_flag",
+      "class": "usage",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "An unknown or malformed flag was passed to a command."
+    },
+    {
+      "code": "usage.unknown_value",
+      "class": "usage",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A flag or positional argument carried a value the command does not accept."
+    },
+    {
+      "code": "usage.missing_argument",
+      "class": "usage",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A required positional argument was absent."
+    },
+    {
+      "code": "connector.malformed_response",
+      "class": "connector",
+      "error_class": "malformed",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A connector process, API, or local database returned a payload Mora could not parse. Retrying the same request reproduces it."
+    },
+    {
+      "code": "connector.unavailable",
+      "class": "connector",
+      "error_class": "unavailable",
+      "exit_code": 1,
+      "retryable": true,
+      "meaning": "A connector's process, binary, database, or network endpoint could not be reached."
+    },
+    {
+      "code": "connector.unauthorized",
+      "class": "connector",
+      "error_class": "unauthorized",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A connector was refused by an authentication or permission failure Mora DIRECTLY OBSERVED \u2014 an expired token, a refused credential. Never an inference from an error string."
+    },
+    {
+      "code": "connector.stale",
+      "class": "connector",
+      "error_class": "stale",
+      "exit_code": 1,
+      "retryable": true,
+      "meaning": "A source last succeeded longer ago than its freshness budget allows. The data on hand is real but old."
+    },
+    {
+      "code": "connector.empty",
+      "class": "connector",
+      "error_class": "empty",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A source was read successfully and returned zero items \u2014 distinct from fresh-with-data and from failed. Defined here; emitted on a live per-source receipt in Phase 2 (ISO-02)."
+    },
+    {
+      "code": "connector.unclassified",
+      "class": "connector",
+      "error_class": "unclassified",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A connector failure with no typed cause. Also the read-time backfill value for every sync record persisted before this taxonomy shipped: an empty error_code beside a non-empty last_error reads as unclassified rather than as success."
+    },
+    {
+      "code": "consent.required",
+      "class": "consent",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "An operation needs an explicit local consent that is not enabled. Producer: `mora teach examples`, which refuses until `mora teach consent enable --yes` records consent."
+    },
+    {
+      "code": "data.not_found",
+      "class": "data",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A requested memory, entity, or record does not exist."
+    },
+    {
+      "code": "data.corrupt",
+      "class": "data",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A vault or state file exists but could not be decoded."
+    },
+    {
+      "code": "index.unavailable",
+      "class": "index",
+      "exit_code": 1,
+      "retryable": true,
+      "meaning": "The search index database could not be opened. The vault is intact; `mora index rebuild` is the repair."
+    },
+    {
+      "code": "index.schema_mismatch",
+      "class": "index",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "The index database exists but its tables or columns do not match what this build expects."
+    },
+    {
+      "code": "internal.unexpected",
+      "class": "internal",
+      "exit_code": 1,
+      "retryable": false,
+      "meaning": "A failure Mora could not attribute to the caller, a connector, or the data. A Mora bug; report it."
+    }
+  ]
+}

@@ -57,7 +57,7 @@ func protectedSyncAppRoot(exe string) (string, bool) {
 	return "", false
 }
 
-func relayProtectedSync(ctx context.Context, cfg Config, source string) error {
+func relayProtectedSync(ctx context.Context, cfg Config, source string) (protectedSyncReceipt, error) {
 	return protectedsyncpkg.Relay(ctx, protectedsyncpkg.Options{StateDir: cfg.StateDir, Source: source, GOOS: runtimeGOOS(), Executable: protectedSyncExecutable, AppRoot: protectedSyncAppRoot, RunOpen: protectedSyncRunOpen})
 }
 func protectedSyncReceiptArg(args []string) (string, []string, error) {

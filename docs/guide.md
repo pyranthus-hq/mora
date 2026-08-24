@@ -223,9 +223,30 @@ The longer form can add a source before it runs:
 
 ```bash
 mora sources add filesystem --name acme --path ~/code/acme --scope project:acme
+mora sources list --json
 mora connectors enable filesystem
 mora ingest run --source acme
 ```
+
+`mora sources list --json` emits the `mora.sources.list` v1 receipt. Its
+configured-source array lives under `sources`, and is `[]` when none exist.
+
+The connector verbs also take `--json`:
+
+- `mora connect filesystem <path> --json` emits the `mora.connect.filesystem`
+  v1 receipt with the registered source name, the resolved path, the scope, and
+  how many files the first walk indexed.
+- `mora sync <source> --json` emits a `mora.sync.<source>` v1 receipt with the
+  source name and the item count that run pulled.
+- `mora ingest run --all --json` (or `--source <name> --json`) emits the
+  `mora.ingest.run` v1 receipt with the item count and how many sources failed.
+  A run that ingests some items and then fails still emits the receipt before it
+  exits non-zero, so the count of what landed is never lost to an error. A run
+  that fails before ingesting anything — an unknown source, a disabled source, a
+  missing selector — emits no receipt, because a usage error is not a result.
+
+Under `--json` these commands send their progress lines and resumable-failure
+warnings to stderr, so stdout stays exactly one JSON document.
 
 ### Gmail and Google Calendar
 
@@ -386,6 +407,43 @@ requests; they do not guarantee a session-start brief. The Claude marketplace
 wrapper intentionally keeps MCP setup explicit rather than adding an automatic
 `.mcp.json` startup declaration.
 
+### Ask Mora what it can do
+
+An agent does not have to guess. One command answers it:
+
+```bash
+mora capabilities --json
+```
+
+The reply is a single document with these field groups:
+
+| Field | What it holds |
+|---|---|
+| `mora_version` | The build you are talking to. |
+| `commands` | Every command path, with its `kind`, its `platform`, its `json_contract` (`result`, `receipt`, or `exempt`), its `payload` schema name, and, on exempt rows, the `reason` it emits no result document. |
+| `connectors` | Every connector Mora can ingest, with its display name, its label, whether it needs a login, whether it is ingesting, whether its items are future-dated, and its feature block. |
+| `schemas` | Every published CLI payload schema name and its version. |
+| `error_codes` | Every published error code, its class, its connector `error_class` where it has one, its exit code, whether a retry can succeed, and its meaning. |
+| `exit_codes` | The allocated process exit codes (1, 2, and 10), the reserved range, and the first code a future release may allocate. |
+| `mcp` | The write policy in force on this machine, the 12 MCP tool names, and the payload schema version for each tool. |
+| `features` | Top-level support for repair and deep links. |
+
+Support is reported with three words and only three: `supported`, `unsupported`,
+and `planned`. Read the word, not the presence of the field.
+
+Two things are reported `unsupported` today, at the top level and for every
+connector: **repair** and **deep links**. Neither exists yet. Repair becomes
+supported when Phase 3 lands it; deep links when Phase 5 does. Per-connector
+`incremental_sync` is also `unsupported` today — every connector re-reads a time
+window rather than resuming from a stored position.
+
+Exit codes 3 through 9 are permanently reserved and will never be used, so a
+wrapper script can tell a Mora status from one invented by a shell or a test
+runner. The next code Mora may allocate is 11.
+
+The document is built from Mora's own registries, so it cannot describe a
+command, error code, or schema that the binary does not have.
+
 ### MCP write policy
 
 Choose how much authority the agent gets:
@@ -447,6 +505,7 @@ Scheduler on Windows. The status command checks both install state and the
 ```bash
 mora hook install
 mora hook status
+mora hook status --json
 ```
 
 The installer adds two commands to `~/.claude/settings.json`:
@@ -460,6 +519,9 @@ or invalid JSON settings file. Remove only Mora's managed hooks with:
 ```bash
 mora hook uninstall
 ```
+
+`mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
+`harnesses` field is always an array, including when no hook is installed.
 
 ## Daily use
 
@@ -490,7 +552,8 @@ mora brief correct --memory-id <id> --attendee <email-or-handle> --unlink --yes
 ```
 
 `--confirm` records a positive link. `--unlink` is destructive and needs
-`--yes`.
+`--yes`. Add `--json` for the `mora.brief.correct` v1 receipt: the decision, the
+memory id, the source and attendee atoms the ledger keys on, and the entry id.
 
 ### Write a memory
 
@@ -503,6 +566,11 @@ mora write --scope project:acme --type decision --title "OAuth" --text "Use PKCE
 Mora stores authored memories as readable Markdown in the vault. They can be
 searched, corrected, backed up, and shared. Connector data stays read-only.
 
+`mora write --json` emits the `mora.write` v1 receipt with the saved memory's
+id, path, scope, type, and title, plus `index_updated`. A `false` value means
+the vault write succeeded but the derived search index needs a later rebuild;
+the accompanying human warning stays on stderr.
+
 ### Search, read, and think
 
 ```bash
@@ -512,6 +580,42 @@ mora list --scope project:acme --json
 mora context --query "auth" --scope project:acme --budget 6000 --json
 mora think "What did Sam decide about pricing?" --json
 ```
+
+Every one of these emits a document with `schema` and `schema_version`:
+`mora.read`, `mora.list`, `mora.search`, `mora.context`, and `mora.think`, all
+v1. `mora delete <id> --yes --json` emits `mora.delete` v1.
+
+**Shape change in this release.** `search --json` and `list --json` used to
+print a bare JSON array. An array cannot carry the schema envelope, so the rows
+now sit under a `memories` key:
+
+```json
+{ "schema": "mora.search", "schema_version": 1, "memories": [ … ] }
+```
+
+The same move applies to every command that printed a bare array. Old shape →
+new shape:
+
+| Command | Was | Now |
+|---|---|---|
+| `search --json`, `list --json` | `[ … ]` | `{ "memories": [ … ] }` |
+| `tasks list --json` | `[ … ]` | `{ "tasks": [ … ] }` |
+| `loop list --json` | `[ … ]` | `{ "loops": [ … ] }` |
+| `merge list --json`, `teach identity list --json` | `[ … ]` | `{ "pending": [ … ] }` |
+| `connectors list --json` | `[ … ]` | `{ "connectors": [ … ] }` |
+| `teach examples --json` | `[ … ]` | `{ "examples": [ … ] }` |
+| `teach history --json` | `[ … ]` | `{ "entries": [ … ] }` |
+
+Adding a field to any payload is a minor change and never bumps
+`schema_version`; removing or renaming one is breaking and does. Read the fields
+you know and ignore the rest.
+
+These rules are the same for every command, so they are stated once here rather
+than repeated per verb. If you are writing a program against Mora, read
+[the machine contract](architecture/22-cli-contracts.md): the envelope, the
+stdout/stderr split, the exit codes, the full error-code table, which commands
+have no `--json` document and why, and exactly what a pinned consumer may rely
+on — with the test that enforces each claim named.
 
 `mora think` makes no model call. It returns cited evidence, coverage gaps, and
 a prompt that your agent can use. A result may include
@@ -547,6 +651,19 @@ mora tasks sync --write
 
 These tasks live in Mora. They do not change tasks in another service.
 
+`add`, `done`, and `sync` each take `--json` and emit the matching
+`mora.tasks.add`, `mora.tasks.done`, or `mora.tasks.sync` v1 receipt. The task
+name is the first positional argument, so it can never start with `-`: `mora
+tasks add --json` is a usage error, not a task named `--json`.
+
+Two rules follow from that:
+
+- Quote a name that contains spaces. An unquoted extra word is a usage error,
+  not a silently shortened name — `mora tasks done alpha beta --json junk` fails
+  rather than closing `alpha beta` and dropping `junk`.
+- Pass a name that really does start with `-` after `--`: `mora tasks add --
+  -urgent` and `mora tasks done --json -- -urgent`.
+
 ### Health
 
 ```bash
@@ -561,6 +678,36 @@ mora doctor --pulse
 backup state, and configured shares. On macOS it also tests protected reads.
 `--strict` exits with an error when a critical check fails. `--pulse` checks
 freshness and can show a native alert on macOS.
+
+`mora doctor --json` emits the `mora.doctor.report` v1 receipt — the same report
+it always printed, now with `schema` and `schema_version` beside its existing
+fields. `mora doctor --pulse --json` emits `mora.doctor.pulse` v1. Neither
+command's exit status changed: `--pulse` still exits 2 on an unhealthy report
+and `--strict` still exits 1.
+
+Every other machine surface carries the same envelope, including
+`mora config --json`, `mora config <key> <value> --json`, the `forget`/`unforget`
+receipts, the `teach` verbs, `mora share <verb> --json`, `mora connectors
+enable|disable --json`, `mora mcp proposals … --json`, and `mora serve http
+status --json`. `mora capabilities --json` lists every published schema name in
+its `schemas` array, and its `mcp.schemas` section carries the MCP tool payload
+versions — MCP tool results themselves stay unversioned so they do not grow
+against the per-call token ceiling.
+
+For agent-facing status checks, `mora version --json` (also `mora --version
+--json` and `mora -v --json`) emits the `mora.version` v1 receipt with the
+stamped version, commit, build time, Go version, OS, and architecture. `mora
+pulse --json` emits the `mora.pulse` v1 receipt with a `sources` array of the
+same per-source freshness facts used by Mora's health reporting. Both receipts
+include top-level `schema` and `schema_version` fields.
+
+`mora index --json` reports the current `mora.index` v1 status receipt; `mora
+index rebuild --json` emits its own `mora.index.rebuild` v1 receipt with the
+rebuild subcommand, indexed document count, duration, and resulting index state. `mora sync status --json` emits a
+`mora.sync.status` v1 receipt with a deterministic `sources` array. Each source
+has its state (`fresh`, `stale`, `failed`, or `never`), success and attempt
+timestamps, item and error counts, and the free-text `last_error`; a future
+typed `error_code` can be added without changing the schema major version.
 
 Mora shows failed, never-run, or stale sources in briefs and read paths. It
 does not turn missing current data into a clean empty answer.
@@ -593,6 +740,16 @@ mora teach undo <ledger-id>
 Identity matches are proposals until you confirm them. Connector source files
 stay unchanged. Memory revision commands apply only to memories that you wrote.
 
+`mora teach identity confirm --json` and `mora teach identity reject --json`
+emit the `mora.teach.identity.confirm` and `mora.teach.identity.reject` v1
+receipts with the decided pair, the ledger entry id, the corroborating evidence,
+and the affected memory ids. The same command under `mora merge` emits
+`mora.merge.confirm` and `mora.merge.reject`. Under `--json` the human review
+block is not printed; its facts ride the receipt instead.
+
+`mora teach history --json` emits the `mora.teach.history` v1 receipt. Its
+decision log lives under `entries`, and is `[]` when there is no history.
+
 ### Delete or forget
 
 `mora delete <id> --yes` removes one local memory. A connector can create it
@@ -604,11 +761,14 @@ mora forget --chat imessage_chat/<guid> --yes
 mora forget --handle +14155550123 --yes
 mora forget --email sam@example.com --yes
 mora forget list
+mora forget list --json
 mora unforget <entry-id> --yes
 ```
 
 Run `--dry-run` first. Forget removes matching local memories and blocks their
 return. It never deletes source data from Google, Apple, or GitHub.
+`mora forget list --json` emits the `mora.forget.list` v1 receipt with active
+entries under `entries`.
 
 ## Schedules and durable loops
 
@@ -624,6 +784,7 @@ mora schedule install backup-daily
 mora schedule install git-daily
 mora schedule install lint-weekly
 mora schedule list
+mora schedule list --json
 ```
 
 Run or remove a job with:
@@ -632,6 +793,9 @@ Run or remove a job with:
 mora schedule run pulse-daily
 mora schedule uninstall pulse-daily
 ```
+
+`mora schedule list --json` emits the `mora.schedule.list` v1 receipt with
+schedule entries, cadence, next run, and installed state.
 
 Only `pulse-daily` has a direct `schedule run` command. It uses a durable loop
 so a second run for the same day does not advance the brief twice.
@@ -659,6 +823,11 @@ mora loop list --json
 The CLI uses `done` for finish and `status` for inspect. A run ID prevents an
 old worker from closing a newer run. A crash can leave an uncertain outside
 effect. Review the status before you repeat that effect.
+
+`mora loop register --json` emits the `mora.loop.register` v1 receipt with the
+stored registration. The loop id is the first positional argument and can never
+start with `-`: `mora loop begin --json` is a usage error, not a run of a loop
+named `--json`.
 
 ## Update
 
@@ -786,6 +955,7 @@ These commands solve different problems.
 
 ```bash
 mora backup
+mora backup --json
 ```
 
 This creates a timestamped `.tar.gz` of the vault under
@@ -793,6 +963,8 @@ This creates a timestamped `.tar.gz` of the vault under
 closing it succeeded, then publishes it and prints the path. It does not leave
 the computer. The archive is plaintext and is not a full config backup. Copy it
 to safe storage yourself if you need an off-device copy.
+`mora backup --json` emits the `mora.backup` v1 receipt with the archive path,
+byte size, and creation time.
 
 Install a daily local archive job with:
 
@@ -1009,6 +1181,7 @@ you safely, it does not guess.
 
 ```bash
 mora usage report
+mora usage report --json
 mora usage queries on
 mora usage queries off
 mora usage off
@@ -1019,6 +1192,8 @@ The log stays at `<state_dir>/usage/events.jsonl`. By default it keeps command
 names, times, counts, sizes, and timing data. It does not keep query text,
 memory text, IDs, excerpts, attachment paths, or vault paths. Query logging is
 a separate opt-in. Mora does not send the usage log anywhere.
+`mora usage report --json` emits the `mora.usage.report` v1 receipt, including
+whether tracking is disabled.
 
 ## How search works
 
@@ -1076,10 +1251,14 @@ mora entities
 mora entities "Sam"
 mora graph
 mora graph "Sam"
+mora entities --json
+mora graph --json
 ```
 
 Mora uses strict rules for identity merges. Address Book evidence can create a
 proposal, but only `mora teach identity confirm` applies it.
+The JSON receipts are `mora.entities` v1 and `mora.graph` v1; their arrays now
+live under the named `entities` key alongside `schema` and `schema_version`.
 
 ## Privacy boundary
 

@@ -97,84 +97,86 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	cmd := args[0]
 	switch cmd {
 	case "init":
-		return cmdInit(ctx, args[1:], stdout, stdin)
+		return cmdInit(ctx, args[1:], stdout, stderr, stdin)
 	case "write":
-		return cmdWrite(ctx, args[1:], stdout)
+		return cmdWrite(ctx, args[1:], stdout, stderr)
 	case "read":
-		return cmdRead(ctx, args[1:], stdout)
+		return cmdRead(ctx, args[1:], stdout, stderr)
 	case "list":
-		return cmdList(ctx, args[1:], stdout)
+		return cmdList(ctx, args[1:], stdout, stderr)
 	case "search":
-		return cmdSearch(ctx, args[1:], stdout)
+		return cmdSearch(ctx, args[1:], stdout, stderr)
 	case "entities":
-		return cmdEntities(ctx, args[1:], stdout)
+		return cmdEntities(ctx, args[1:], stdout, stderr)
 	case "graph":
-		return cmdGraph(ctx, args[1:], stdout)
+		return cmdGraph(ctx, args[1:], stdout, stderr)
 	case "delete":
-		return cmdDelete(ctx, args[1:], stdout)
+		return cmdDelete(ctx, args[1:], stdout, stderr)
 	case "forget":
-		return cmdForget(ctx, args[1:], stdout)
+		return cmdForget(ctx, args[1:], stdout, stderr)
 	case "unforget":
-		return cmdUnforget(ctx, args[1:], stdout)
+		return cmdUnforget(ctx, args[1:], stdout, stderr)
 	case "merge":
-		return cmdMerge(ctx, args[1:], stdout)
+		return cmdMerge(ctx, args[1:], stdout, stderr)
 	case "teach":
-		return cmdTeach(ctx, args[1:], stdout)
+		return cmdTeach(ctx, args[1:], stdout, stderr)
 	case "context":
-		return cmdContext(ctx, args[1:], stdout)
+		return cmdContext(ctx, args[1:], stdout, stderr)
 	case "index":
-		return cmdIndex(ctx, args[1:], stdout, stdin)
+		return cmdIndex(ctx, args[1:], stdout, stderr, stdin)
 	case "tasks":
-		return cmdTasks(ctx, args[1:], stdout)
+		return cmdTasks(ctx, args[1:], stdout, stderr)
 	case "pulse":
-		return cmdPulse(ctx, args[1:], stdout)
+		return cmdPulse(ctx, args[1:], stdout, stderr)
 	case "lint":
-		return cmdLint(ctx, args[1:], stdout)
+		return cmdLint(ctx, args[1:], stdout, stderr)
+	case "capabilities":
+		return cmdCapabilities(ctx, args[1:], stdout, stderr)
 	case "backup":
-		return cmdBackup(ctx, args[1:], stdout)
+		return cmdBackup(ctx, args[1:], stdout, stderr)
 	case "doctor":
-		return cmdDoctor(ctx, args[1:], stdout)
+		return cmdDoctor(ctx, args[1:], stdout, stderr)
 	case "config":
-		return cmdConfig(args[1:], stdout)
+		return cmdConfig(args[1:], stdout, stderr)
 	case "schedule":
-		return cmdSchedule(ctx, args[1:], stdout)
+		return cmdSchedule(ctx, args[1:], stdout, stderr)
 	case "sources":
-		return cmdSources(ctx, args[1:], stdout)
+		return cmdSources(ctx, args[1:], stdout, stderr)
 	case "connectors":
-		return cmdConnectors(ctx, args[1:], stdout, stdin)
+		return cmdConnectors(ctx, args[1:], stdout, stderr, stdin)
 	case "ingest":
-		return cmdIngest(ctx, args[1:], stdout)
+		return cmdIngest(ctx, args[1:], stdout, stderr)
 	case "connect":
-		return cmdConnect(ctx, args[1:], stdout)
+		return cmdConnect(ctx, args[1:], stdout, stderr)
 	case "sync":
-		return cmdSync(ctx, args[1:], stdout)
+		return cmdSync(ctx, args[1:], stdout, stderr)
 	case "share":
-		return cmdShare(ctx, args[1:], stdout, stdin)
+		return cmdShare(ctx, args[1:], stdout, stderr, stdin)
 	case "reingest":
-		return cmdReingest(ctx, args[1:], stdout)
+		return cmdReingest(ctx, args[1:], stdout, stderr)
 	case "think":
-		return cmdThink(ctx, args[1:], stdout)
+		return cmdThink(ctx, args[1:], stdout, stderr)
 	case "brief":
-		return cmdBrief(ctx, args[1:], stdout)
+		return cmdBrief(ctx, args[1:], stdout, stderr)
 	case "prep":
-		fmt.Fprintln(stdout, "mora prep was removed (#137): use 'mora brief --event-id <id>' — same engine as MCP meeting_prep")
+		fmt.Fprintln(stderr, "mora prep was removed (#137): use 'mora brief --event-id <id>' — same engine as MCP meeting_prep")
 		return errors.New("usage: mora brief --event-id <id>")
 	case "usage":
-		return cmdUsage(ctx, args[1:], stdout)
+		return cmdUsage(ctx, args[1:], stdout, stderr)
 	case "disconnect":
-		return cmdDisconnect(ctx, args[1:], stdout)
+		return cmdDisconnect(ctx, args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
 	case "serve":
-		return cmdServe(ctx, args[1:], stdout)
+		return cmdServe(ctx, args[1:], stdout, stderr)
 	case "hook":
-		return cmdHook(ctx, args[1:], stdout, stdin)
+		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
 	case "loop":
-		return cmdLoop(ctx, args[1:], stdout)
+		return cmdLoop(ctx, args[1:], stdout, stderr)
 	case "upgrade":
-		return cmdUpgrade(ctx, args[1:], stdout)
+		return cmdUpgrade(ctx, args[1:], stdout, stderr)
 	case "version", "--version", "-v":
-		return cmdVersion(stdout)
+		return cmdVersion(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -183,11 +185,37 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	}
 }
 
-func cmdVersion(w io.Writer) error {
-	fmt.Fprintf(w, "mora %s\n", BuildVersion)
-	fmt.Fprintf(w, "  commit: %s\n", BuildCommit)
-	fmt.Fprintf(w, "  built:  %s\n", BuildDate)
-	fmt.Fprintf(w, "  go:     %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+func cmdVersion(_ context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+	}
+	if fs.NArg() != 0 {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.version", 1, struct {
+			Version   string `json:"version"`
+			Commit    string `json:"commit"`
+			Built     string `json:"built"`
+			GoVersion string `json:"go_version"`
+			OS        string `json:"os"`
+			Arch      string `json:"arch"`
+		}{
+			Version:   BuildVersion,
+			Commit:    BuildCommit,
+			Built:     BuildDate,
+			GoVersion: runtime.Version(),
+			OS:        runtime.GOOS,
+			Arch:      runtime.GOARCH,
+		})
+	}
+	fmt.Fprintf(stdout, "mora %s\n", BuildVersion)
+	fmt.Fprintf(stdout, "  commit: %s\n", BuildCommit)
+	fmt.Fprintf(stdout, "  built:  %s\n", BuildDate)
+	fmt.Fprintf(stdout, "  go:     %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	return nil
 }
 
@@ -347,9 +375,9 @@ var producerClock = time.Now
 // it. styleDigestTTY is byte-identical off-TTY, so piped/redirected output and
 // the test harness see raw Markdown either way; the skin only appears on a real
 // terminal for a freshly-generated brief.
-func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "correct" {
-		return cmdBriefCorrect(ctx, args[1:], stdout)
+		return cmdBriefCorrect(ctx, args[1:], stdout, stderr)
 	}
 	fs := flag.NewFlagSet("brief", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -386,7 +414,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		logUsage(cfg, usageEvent{Tool: "brief", Results: meetingBriefLineCount(brief)})
 		if *jsonOut {
-			return emit(stdout, brief, true)
+			return emitReceipt(stdout, "mora.brief", 1, brief)
 		}
 		return renderMeetingBrief(stdout, brief)
 	}
@@ -414,7 +442,7 @@ func cmdBrief(ctx context.Context, args []string, stdout io.Writer) error {
 	if *jsonOut {
 		// Byte-clean structured result; --envelope has no effect on --json (the
 		// envelope is a human-stdout addition, like pulse --digest --envelope).
-		return emit(stdout, briefResult{Generated: generated, Body: body}, *jsonOut)
+		return emitReceipt(stdout, "mora.brief", 1, briefResult{Generated: generated, Body: body})
 	}
 	if generated {
 		// Freshly generated: apply the TTY skin (off-TTY this is a no-op, byte-clean).
@@ -461,9 +489,10 @@ func legacyPulseDailyInvocation(args []string) bool {
 	return true
 }
 
-func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) {
+func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	fs := flag.NewFlagSet("pulse", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
 	write := fs.Bool("write", false, "write")
 	digest := fs.Bool("digest", false, "digest")
 	// --since-hours (SC#2): the explicit ad-hoc window. A positive value renders
@@ -527,7 +556,7 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 		return err
 	}
 	if legacyPulseDailyInvocation(args) {
-		return runScheduledPulseDaily(ctx, cfg, stdout)
+		return runScheduledPulseDaily(ctx, cfg, stdout, stderr)
 	}
 	// One clock: compute now ONCE through the shared brief-surface seam and thread
 	// the SAME value into buildDigest and the
@@ -540,6 +569,17 @@ func cmdPulse(ctx context.Context, args []string, stdout io.Writer) (err error) 
 		}
 		stopHeartbeat := startLoopHeartbeat(cfg, *loopID, *loopRunID)
 		defer stopHeartbeat()
+	}
+	// The machine path reports source health from the SAME captured clock and
+	// returns before any watermark or digest work. It sits below the clock seam
+	// so `now := briefClock()` stays immediately followed by the loop-fence
+	// check — the contiguous `surface/direct-wall-clock` mutation anchor in
+	// scripts/eval/exam-mutation-matrix.sh, and one captured clock per
+	// TestExamSurfaceClockGuard.
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.pulse", 1, struct {
+			Sources []sourceHealth `json:"sources"`
+		}{Sources: sourceHealthAll(cfg, now)})
 	}
 	// pulse-daily producer chokepoint (HEALTH-11): --advance is the scheduled job's
 	// unique watermark-commit surface (D-02) and thus the reliable pulse-daily proxy

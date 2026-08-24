@@ -15,7 +15,7 @@ func TestCommitmentLifecycleGuards(t *testing.T) {
 		keys       []string
 		authored   bool
 		want       string
-	}{{"negation", "I haven't sent the reviewer list.", PartySelf, nil, true, Open}, {"modality", "I will send the reviewer list.", PartySelf, nil, true, Open}, {"question", "Did you send the reviewer list?", PartyCounterparty, nil, true, Open}, {"question no punctuation", "Did you send the reviewer list", PartyCounterparty, nil, true, Open}, {"staged", "The reviewer list is staged.", PartySelf, nil, true, Open}, {"quoted", "I sent the reviewer list.", PartySelf, nil, false, Open}, {"wrong counterparty", "I sent the reviewer list.", PartySelf, []string{"name:bob jones"}, true, Open}, {"delivered", "I sent the reviewer list.", PartySelf, nil, true, Closed}, {"done", "Done with the reviewer list.", PartySelf, nil, true, Closed}, {"ack", "Got the reviewer list, thanks.", PartyCounterparty, nil, true, Closed}}
+	}{{"negation", "I haven't sent the reviewer list.", PartySelf, nil, true, Open}, {"modality", "I will send the reviewer list.", PartySelf, nil, true, Open}, {"question", "Did you send the reviewer list?", PartyCounterparty, nil, true, Open}, {"question no punctuation", "Did you send the reviewer list", PartyCounterparty, nil, true, Open}, {"staged", "The reviewer list is staged.", PartySelf, nil, true, Open}, {"quoted", "I sent the reviewer list.", PartySelf, nil, false, Open}, {"wrong counterparty", "I sent the reviewer list.", PartySelf, []string{"name:bob jones"}, true, Open}, {"delivered", "I sent the reviewer list.", PartySelf, nil, true, Closed}, {"done", "Done with the reviewer list.", PartySelf, nil, true, Closed}, {"ack", "Got the reviewer list, thanks.", PartyCounterparty, nil, true, Closed}, {"colloquial already did", "I already did the reviewer list.", PartySelf, nil, true, Closed}, {"abbreviated already did", "I alr did the reviewer list.", PartySelf, nil, true, Closed}, {"colloquial already handled", "I already handled the reviewer list.", PartySelf, nil, true, Closed}, {"delivery as promised", "Here is the reviewer list, as promised.", PartySelf, nil, true, Closed}, {"attendance thank you closes matching", "Thanks for coming to walk through the reviewer list.", PartyCounterparty, nil, true, Closed}, {"unrelated thank you stays open", "Thanks for coming to the birthday party.", PartyCounterparty, nil, true, Open}, {"objectless already did stays open across threads", "I already did it.", PartySelf, nil, true, Open}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			keys := tt.keys
@@ -25,6 +25,43 @@ func TestCommitmentLifecycleGuards(t *testing.T) {
 			got := ProjectLifecycle([]Item{lifecycleItem()}, []Evidence{{MemoryID: "imessage_chat/closure", Text: tt.text, OccurredAt: "2026-07-20T11:00:00Z", Party: tt.party, Authored: tt.authored, CounterpartyKeys: keys}})
 			if got[0].Item.State != tt.want {
 				t.Fatalf("state=%q want=%q", got[0].Item.State, tt.want)
+			}
+		})
+	}
+}
+
+func TestAttendanceAcknowledgementSameThreadRequiresObjectOverlap(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "unrelated attendance thank-you in same thread stays open",
+			text: "Thanks for joining the call today, it was great to catch up.",
+			want: Open,
+		},
+		{
+			name: "attendance thank-you naming the same object closes",
+			text: "Thanks for joining to walk through the reviewer list.",
+			want: Closed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := lifecycleItem()
+			// Same MemoryID as the opener: evidence lands in the same thread/memory
+			// the commitment was opened in, which used to bypass overlap entirely.
+			got := ProjectLifecycle([]Item{item}, []Evidence{{
+				MemoryID:         item.OpenedBy.MemoryID,
+				Text:             tt.text,
+				OccurredAt:       "2026-07-20T11:00:00Z",
+				Party:            PartyCounterparty,
+				Authored:         true,
+				CounterpartyKeys: []string{"name:sam rivera"},
+			}})
+			if len(got) != 1 || got[0].Item.State != tt.want {
+				t.Fatalf("state = %+v, want %s", got, tt.want)
 			}
 		})
 	}

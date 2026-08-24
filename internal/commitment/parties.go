@@ -141,11 +141,35 @@ func CounterpartyKeys(m memory.Memory, counterparty Atom) []string {
 	sort.Strings(out)
 	return out
 }
-func GmailAddressee(sender Atom, to, cc []string, self, counterparty Atom) Atom {
+
+// GmailThreadCounterparty uses immutable per-message authorship to establish the
+// correspondent for a thread. Recipient lists can contain relay Reply-To aliases
+// and observers; a single distinct non-self sender is stronger evidence than
+// guessing among those recipients. Multiple non-self senders remain ambiguous.
+func GmailThreadCounterparty(m memory.Memory, self map[string]bool) (Atom, bool) {
+	seen := map[string]Atom{}
+	for _, message := range GmailMessages(m) {
+		value := strings.ToLower(strings.TrimSpace(message.Sender))
+		if value == "" || self[value] {
+			continue
+		}
+		key := identity.MailboxKey(value)
+		seen[key] = Atom{Kind: AtomAddress, Value: identity.Normalize(AtomAddress, value)}
+	}
+	if len(seen) != 1 {
+		return Atom{}, false
+	}
+	for _, counterparty := range seen {
+		return counterparty, true
+	}
+	return Atom{}, false
+}
+func GmailAddressee(sender Atom, to, cc []string, self, counterparty Atom, threadCounterparty bool) Atom {
 	recipients := append(append([]string(nil), to...), cc...)
 	seenOther := map[string]bool{}
+	seenOtherTo := map[string]bool{}
 	hasSelf, hasCounterparty := false, false
-	for _, raw := range recipients {
+	for i, raw := range recipients {
 		value := strings.ToLower(strings.TrimSpace(raw))
 		atom := Atom{Kind: AtomAddress, Value: identity.Normalize(AtomAddress, value)}
 		switch {
@@ -157,11 +181,19 @@ func GmailAddressee(sender Atom, to, cc []string, self, counterparty Atom) Atom 
 		case value != "":
 			seenOther[identity.MailboxKey(value)] = true
 		}
+		if i < len(to) && value != "" && !EqualAtom(atom, self) {
+			seenOtherTo[identity.MailboxKey(value)] = true
+		}
 	}
 	switch {
 	case EqualAtom(sender, counterparty) && hasSelf && (len(seenOther) == 0 || (len(seenOther) == 1 && hasCounterparty)):
 		return self
 	case EqualAtom(sender, self) && hasCounterparty && len(seenOther) == 1:
+		return counterparty
+	case EqualAtom(sender, self) && threadCounterparty && !hasCounterparty && len(seenOtherTo) == 1:
+		// A single primary recipient on a reply to a thread with one proven
+		// correspondent may be that provider's opaque Reply-To alias. CCs are
+		// observers and never select the owner; multiple primary recipients fail.
 		return counterparty
 	default:
 		return Atom{}

@@ -16,6 +16,15 @@ func TestContextMemoryRoutesCurrentStateAndOpenLoopQuestions(t *testing.T) {
 	oldClock := briefClock
 	briefClock = func() time.Time { return now }
 	t.Cleanup(func() { briefClock = oldClock })
+	// Commitments are materialized during the index rebuild, and that path stamps
+	// itself from indexClock (index.go, rebuildIndex's stampNow), NOT from
+	// briefClock. materializeCommitments passes that instant to
+	// commitmentSnapshotUncertain, which marks EVERY commitment
+	// "source freshness uncertain" once the seeded gmail sync status is older
+	// than sourceHealthGoogleThreshold. Pinning only briefClock left the fixture
+	// aging against the wall clock: the test passed on the day it was written and
+	// went permanently red 24 hours later. Pin both clocks to the same instant.
+	gate2PinClock(t, now)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "self@example.com",
 		Enabled: genericutil.Ptr(true), CreatedAt: now.Add(-24 * time.Hour).Format(time.RFC3339),

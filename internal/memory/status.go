@@ -29,6 +29,18 @@ type SyncStatus struct {
 	// JSON round-trips (LoadStatus zero-values them).
 	LastAttemptAt string `json:"last_attempt_at,omitempty"`
 	LastSuccessAt string `json:"last_success_at,omitempty"`
+
+	// ErrorCode is the typed companion to LastError (CON-07). LastError stays
+	// free-text prose in the same record, unchanged in name, type, and meaning —
+	// it is persisted on disk and CON-05 forbids retyping it. ErrorCode carries a
+	// published code from internal/mora/eval/error-code-registry.json so a machine
+	// can tell a malformed response from unavailable, unauthorized, stale, or
+	// empty without matching English.
+	//
+	// Appended, so a record written before this field existed decodes with an
+	// empty ErrorCode. Mora never rewrites those files to backfill: an empty code
+	// beside a non-empty LastError READS as connector.unclassified.
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 func LoadStatus(path string) (*SyncStatus, error) {

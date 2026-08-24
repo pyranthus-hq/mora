@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "schema": "mora.usage.queries.on",
+  "schema_version": 1,
+  "setting": "queries.on"
+}

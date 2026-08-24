@@ -15,7 +15,7 @@ var (
 	unattendedUpdateApply = runUnattendedAppUpdate
 	unattendedVerifyApp   = verifyMoraAppBundle
 	unattendedHealthCheck = func(ctx context.Context, cfg Config) error {
-		return cmdDoctor(ctx, []string{"--strict", "--json"}, io.Discard)
+		return cmdDoctor(ctx, []string{"--strict", "--json"}, io.Discard, io.Discard)
 	}
 	unattendedPostHealthCheck = updatepkg.HealthCheckWithNewBinary
 	unattendedAppWritable     = updatepkg.AppParentWritable

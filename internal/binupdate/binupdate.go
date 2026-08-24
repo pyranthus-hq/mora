@@ -50,6 +50,7 @@ type Options struct {
 	Current, Executable, Token, GOOS string
 	CheckOnly                        bool
 	Stdout                           io.Writer
+	Stderr                           io.Writer
 	PostRebuild                      func(context.Context, string, io.Writer) error
 	Detect                           func(context.Context) (Release, bool, error)
 	Apply                            func(context.Context, Release, string) error
@@ -129,6 +130,12 @@ func FirstNonEmpty(vals ...string) string {
 }
 func Run(ctx context.Context, o Options) error {
 	current, exe, token, stdout, checkOnly := o.Current, o.Executable, o.Token, o.Stdout, o.CheckOnly
+	// Diagnostics go to stderr (Phase 1 contract): warnings and notes must never
+	// pollute the machine-readable stdout stream.
+	stderr := o.Stderr
+	if stderr == nil {
+		stderr = stdout
+	}
 	detect, apply := o.Detect, o.Apply
 	if detect == nil || apply == nil {
 		source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{APIToken: token})
@@ -173,7 +180,7 @@ func Run(ctx context.Context, o Options) error {
 
 	fmt.Fprintf(stdout, "update available: %s → %s\n", current, latest.Version)
 	if isLocalBuild {
-		fmt.Fprintf(stdout, "note: this replaces your local source build (%s) with the released binary\n", current)
+		fmt.Fprintf(stderr, "note: this replaces your local source build (%s) with the released binary\n", current)
 	}
 	if checkOnly {
 		fmt.Fprintln(stdout, "run `mora upgrade` to install it")
@@ -190,7 +197,7 @@ func Run(ctx context.Context, o Options) error {
 	// slow moment to pay the rebuild). Warn-don't-fail: the swap already
 	// succeeded, and the index error message names the same fix.
 	if err := o.PostRebuild(ctx, exe, stdout); err != nil {
-		fmt.Fprintf(stdout, "warning: index rebuild failed: %v\n", err)
+		fmt.Fprintf(stderr, "warning: index rebuild failed: %v\n", err)
 		fmt.Fprintln(stdout, "  finish the upgrade with: mora index rebuild")
 	}
 	fmt.Fprintln(stdout, "  run `mora version` to confirm")

@@ -19,7 +19,7 @@ func TestHookSessionStart(t *testing.T) {
 	defer restore()
 
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"session-start"}, &out, strings.NewReader(`{"hook_event_name":"SessionStart"}`)); err != nil {
+	if err := cmdHook(context.Background(), []string{"session-start"}, &out, testStderr, strings.NewReader(`{"hook_event_name":"SessionStart"}`)); err != nil {
 		t.Fatal(err)
 	}
 	got := decodeHookOutput(t, out.String())
@@ -33,7 +33,7 @@ func TestHookSessionStart(t *testing.T) {
 
 func TestHookSessionStartCompactEmitsNothing(t *testing.T) {
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"session-start"}, &out, strings.NewReader(`{"source":"compact"}`)); err != nil {
+	if err := cmdHook(context.Background(), []string{"session-start"}, &out, testStderr, strings.NewReader(`{"source":"compact"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "" {
@@ -51,7 +51,7 @@ func TestHookSessionStartFailOpen(t *testing.T) {
 	t.Cleanup(func() { hookResolveBrief = prev })
 
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"session-start"}, &out, strings.NewReader(`{}`)); err != nil {
+	if err := cmdHook(context.Background(), []string{"session-start"}, &out, testStderr, strings.NewReader(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "" {
@@ -63,7 +63,7 @@ func TestHookRecallSkipsCheapPrompts(t *testing.T) {
 	for _, prompt := range []string{"tiny", "/compact please", "yes", "no", "ok", "y", "n", "continue", "go", "k"} {
 		t.Run(prompt, func(t *testing.T) {
 			var out bytes.Buffer
-			if err := cmdHook(context.Background(), []string{"recall"}, &out, strings.NewReader(`{"prompt":`+quoteJSON(prompt)+`}`)); err != nil {
+			if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader(`{"prompt":`+quoteJSON(prompt)+`}`)); err != nil {
 				t.Fatal(err)
 			}
 			if out.String() != "" {
@@ -81,7 +81,7 @@ func TestHookRecallInjectsSeededMemory(t *testing.T) {
 
 	var out bytes.Buffer
 	input := `{"prompt":"What did we decide about eelpout recall token alpha?"}`
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, strings.NewReader(input)); err != nil {
+	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader(input)); err != nil {
 		t.Fatal(err)
 	}
 	got := decodeHookOutput(t, out.String())
@@ -111,7 +111,7 @@ func TestHookRecallNoMatchEmitsNothing(t *testing.T) {
 
 	var out bytes.Buffer
 	input := `{"prompt":"zzzznomatch uniquely absent query terms"}`
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, strings.NewReader(input)); err != nil {
+	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader(input)); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "" {
@@ -127,7 +127,7 @@ func TestHookRecallThresholdRespected(t *testing.T) {
 
 	var out bytes.Buffer
 	input := `{"prompt":"What did we decide about eelpout recall token alpha?"}`
-	if err := cmdHook(context.Background(), []string{"recall", "--threshold", "-999"}, &out, strings.NewReader(input)); err != nil {
+	if err := cmdHook(context.Background(), []string{"recall", "--threshold", "-999"}, &out, testStderr, strings.NewReader(input)); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "" {

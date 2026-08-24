@@ -361,7 +361,7 @@ func TestLoopDone_OkWritesJournalAndFlipsStatus(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	out.Reset()
-	if err := loopDone(cfg, "daily-brief", "", true, "", loopNow, &out); err != nil {
+	if err := loopDone(cfg, "daily-brief", "", true, "", false, loopNow, &out); err != nil {
 		t.Fatalf("done ok: %v", err)
 	}
 	rec, ok := loadRunRecord(cfg, "daily-brief")
@@ -398,7 +398,7 @@ func TestLoopDone_FailKeepsRetryable(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	out.Reset()
-	if err := loopDone(cfg, "daily-brief", "", false, "sync: token expired", loopNow, &out); err != nil {
+	if err := loopDone(cfg, "daily-brief", "", false, "sync: token expired", false, loopNow, &out); err != nil {
 		t.Fatalf("done fail: %v", err)
 	}
 	rec, _ := loadRunRecord(cfg, "daily-brief")
@@ -475,7 +475,7 @@ func TestLoopDone_RefusesWhenLeaseMovedToNewerRun(t *testing.T) {
 	// ...but the LEASE is already held by run_R2.
 	plantLock(t, cfg, "daily-brief", "run_R2", os.Getpid(), loopNow)
 	var out bytes.Buffer
-	err := loopDone(cfg, "daily-brief", "run_R1", true, "", loopNow, &out)
+	err := loopDone(cfg, "daily-brief", "run_R1", true, "", false, loopNow, &out)
 	if err == nil || !strings.Contains(err.Error(), "lease") {
 		t.Fatalf("done while lease moved to a newer run: err=%v, want a 'lease' refusal", err)
 	}
@@ -551,7 +551,9 @@ func TestLoopHeartbeatCommandDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop heartbeat: %v\n%s", err, heartbeatOut)
 	}
-	var heartbeat map[string]string
+	// Plan 01-07: the receipt carries schema_version as a number, so the
+	// document no longer decodes into map[string]string.
+	var heartbeat map[string]any
 	if err := json.Unmarshal([]byte(heartbeatOut), &heartbeat); err != nil {
 		t.Fatalf("heartbeat JSON: %v\n%s", err, heartbeatOut)
 	}

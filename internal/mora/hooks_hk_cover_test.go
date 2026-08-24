@@ -60,11 +60,11 @@ func hkSetSearch(t *testing.T, fn func(context.Context, Config, string, string, 
 // usage errors.
 func TestHk_CmdHookUsageErrors(t *testing.T) {
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), nil, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
+	if err := cmdHook(context.Background(), nil, &out, testStderr, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
 		t.Fatalf("empty args must return a usage error, got: %v", err)
 	}
 	out.Reset()
-	if err := cmdHook(context.Background(), []string{"frobnicate"}, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
+	if err := cmdHook(context.Background(), []string{"frobnicate"}, &out, testStderr, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
 		t.Fatalf("unknown subcommand must return a usage error, got: %v", err)
 	}
 }
@@ -78,7 +78,7 @@ func TestHk_CmdHookUsageErrors(t *testing.T) {
 func TestHk_HookSessionStartInvalidJSON(t *testing.T) {
 	withTempHome(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"session-start"}, &out, strings.NewReader("this is not json")); err != nil {
+	if err := cmdHook(context.Background(), []string{"session-start"}, &out, testStderr, strings.NewReader("this is not json")); err != nil {
 		t.Fatalf("invalid stdin must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -90,7 +90,7 @@ func TestHk_HookSessionStartInvalidJSON(t *testing.T) {
 func TestHk_HookSessionStartLoadConfigError(t *testing.T) {
 	hkBreakLoadConfig(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"session-start"}, &out, strings.NewReader(`{"source":"startup"}`)); err != nil {
+	if err := cmdHook(context.Background(), []string{"session-start"}, &out, testStderr, strings.NewReader(`{"source":"startup"}`)); err != nil {
 		t.Fatalf("unreadable config must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -108,7 +108,7 @@ func TestHk_HookRecallBadFlag(t *testing.T) {
 	withTempHome(t)
 	var out bytes.Buffer
 	err := cmdHook(context.Background(), []string{"recall", "--threshold", "not-a-float"}, &out,
-		strings.NewReader(`{"prompt":"a sufficiently long prompt here"}`))
+		testStderr, strings.NewReader(`{"prompt":"a sufficiently long prompt here"}`))
 	if err != nil {
 		t.Fatalf("bad flag must be swallowed, got: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestHk_HookRecallBadFlag(t *testing.T) {
 func TestHk_HookRecallInvalidJSON(t *testing.T) {
 	withTempHome(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, strings.NewReader("{not json")); err != nil {
+	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader("{not json")); err != nil {
 		t.Fatalf("invalid stdin must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -135,7 +135,7 @@ func TestHk_HookRecallInvalidJSON(t *testing.T) {
 func TestHk_HookRecallLoadConfigError(t *testing.T) {
 	hkBreakLoadConfig(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, strings.NewReader(`{"prompt":"remember the eelpout decision please"}`)); err != nil {
+	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader(`{"prompt":"remember the eelpout decision please"}`)); err != nil {
 		t.Fatalf("unreadable config must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -152,7 +152,7 @@ func TestHk_HookRecallSearchError(t *testing.T) {
 		return nil, errors.New("index unavailable")
 	})
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, strings.NewReader(`{"prompt":"what did we decide about the launch"}`)); err != nil {
+	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader(`{"prompt":"what did we decide about the launch"}`)); err != nil {
 		t.Fatalf("search error must fail open, got: %v", err)
 	}
 	if out.String() != "" {

@@ -48,7 +48,7 @@ func TestCoreA_SourceHelpersLoadError(t *testing.T) {
 	var out bytes.Buffer
 	// enableConnector for a no-auth type goes straight to setSourceEnabled, which
 	// hits the corrupt file.
-	if err := enableConnector(context.Background(), cfg, "filesystem", &out, strings.NewReader("")); err == nil {
+	if err := enableConnector(context.Background(), cfg, "filesystem", &out, testStderr, strings.NewReader("")); err == nil {
 		t.Error("enableConnector must surface the setSourceEnabled/loadSources error")
 	}
 	if err := disableConnector(cfg, "gmail", &out); err == nil {

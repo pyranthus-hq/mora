@@ -335,12 +335,12 @@ func TestIndexRebuildForceOverridesBlock(t *testing.T) {
 	}
 	// Without --force: blocked.
 	var out bytes.Buffer
-	if err := cmdIndex(context.Background(), []string{"rebuild"}, &out, bytes.NewReader(nil)); !errors.Is(err, errRebuildBlocked) {
+	if err := cmdIndex(context.Background(), []string{"rebuild"}, &out, testStderr, bytes.NewReader(nil)); !errors.Is(err, errRebuildBlocked) {
 		t.Fatalf("want blocked without --force, got %v", err)
 	}
 	// With --force: succeeds, index empties.
 	out.Reset()
-	if err := cmdIndex(context.Background(), []string{"rebuild", "--force"}, &out, bytes.NewReader(nil)); err != nil {
+	if err := cmdIndex(context.Background(), []string{"rebuild", "--force"}, &out, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatalf("force rebuild failed: %v", err)
 	}
 	if indexCount(t, cfg) != 0 {
@@ -352,7 +352,7 @@ func TestInitCreatesMarkerAndPrintsSummary(t *testing.T) {
 	cfg := sandboxCfg(t)
 	var out bytes.Buffer
 	// non-TTY stdin (bytes.Reader) -> setup menu is skipped, summary still prints.
-	if err := cmdInit(context.Background(), nil, &out, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(context.Background(), nil, &out, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(markerPath(cfg)); err != nil {
@@ -501,7 +501,7 @@ func TestInitRepointConfirmedEndToEnd(t *testing.T) {
 	// Establish vault A as a real install: init writes config.toml + marker, then
 	// seed two memories and bind the index to A.
 	var initOut bytes.Buffer
-	if err := cmdInit(context.Background(), nil, &initOut, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(context.Background(), nil, &initOut, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -527,7 +527,7 @@ func TestInitRepointConfirmedEndToEnd(t *testing.T) {
 
 	bDir := t.TempDir() // brand-new empty vault location
 	var out bytes.Buffer
-	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatalf("confirmed repoint must succeed end-to-end, got %v", err)
 	}
 
@@ -571,7 +571,7 @@ func TestInitRepointConfirmedEndToEnd(t *testing.T) {
 func TestInitRepointDeclinedKeepsVault(t *testing.T) {
 	cfg := sandboxCfg(t)
 	var initOut bytes.Buffer
-	if err := cmdInit(context.Background(), nil, &initOut, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(context.Background(), nil, &initOut, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatal(err)
 	}
 	aVault := cfg.VaultDir
@@ -584,7 +584,7 @@ func TestInitRepointDeclinedKeepsVault(t *testing.T) {
 
 	bDir := t.TempDir()
 	var out bytes.Buffer
-	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, bytes.NewReader(nil)); err == nil {
+	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, testStderr, bytes.NewReader(nil)); err == nil {
 		t.Fatal("declined repoint must return an error")
 	}
 	reloaded, err := loadConfig()
@@ -615,7 +615,7 @@ func TestDeleteLastMemoryNotBlocked(t *testing.T) {
 		t.Fatalf("seed index count = %d, want 1", got)
 	}
 	var out bytes.Buffer
-	if err := cmdDelete(context.Background(), []string{"--yes", id}, &out); err != nil {
+	if err := cmdDelete(context.Background(), []string{"--yes", id}, &out, testStderr); err != nil {
 		t.Fatalf("deleting the last memory must not error: %v", err)
 	}
 	if got := indexCount(t, cfg); got != 0 {
@@ -667,7 +667,7 @@ func TestDoctorShowsBlockRecord(t *testing.T) {
 	}
 
 	var txt bytes.Buffer
-	if err := cmdDoctor(context.Background(), nil, &txt); err != nil {
+	if err := cmdDoctor(context.Background(), nil, &txt, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(txt.String(), "BLOCKED") {
@@ -675,7 +675,7 @@ func TestDoctorShowsBlockRecord(t *testing.T) {
 	}
 
 	var js bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &js); err != nil {
+	if err := cmdDoctor(context.Background(), []string{"--json"}, &js, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var rep doctorReport
@@ -693,7 +693,7 @@ func TestDoctorShowsBlockRecord(t *testing.T) {
 func TestConfigShowsPathAnnotations(t *testing.T) {
 	cfg := sandboxCfg(t)
 	var out bytes.Buffer
-	if err := cmdConfig(nil, &out); err != nil {
+	if err := cmdConfig(nil, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
@@ -737,8 +737,8 @@ func TestWriteDegradesWhenRebuildBlocked(t *testing.T) {
 	cfg := sandboxCfg(t)
 	seedForeignMarker(t, cfg)
 
-	var out bytes.Buffer
-	err := cmdWrite(context.Background(), []string{"--title", "new note", "--text", "do not lose me"}, &out)
+	var out, errOut bytes.Buffer
+	err := cmdWrite(context.Background(), []string{"--title", "new note", "--text", "do not lose me"}, &out, &errOut)
 	if err != nil {
 		t.Fatalf("cmdWrite must NOT fail when the rebuild is blocked (the memory is saved): %v", err)
 	}
@@ -756,7 +756,9 @@ func TestWriteDegradesWhenRebuildBlocked(t *testing.T) {
 	if !found {
 		t.Fatalf("the new memory was not persisted to the vault; listMemories=%+v", items)
 	}
-	if !strings.Contains(out.String(), "warning") || !strings.Contains(out.String(), "index") {
-		t.Fatalf("expected a degraded-success warning about the index; got:\n%s", out.String())
+	// The advisory is a diagnostic, not a result: Plan 01-03 moved it to stderr
+	// so the stdout stream stays parseable.
+	if !strings.Contains(errOut.String(), "warning") || !strings.Contains(errOut.String(), "index") {
+		t.Fatalf("expected a degraded-success warning about the index on stderr; got:\n%s", errOut.String())
 	}
 }

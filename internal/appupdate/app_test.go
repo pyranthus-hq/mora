@@ -22,8 +22,12 @@ import (
 var runtimeGOOS = func() string { return runtime.GOOS }
 var postAppUpgradeRebuild = func(context.Context, string, io.Writer) error { return nil }
 
-func cmdUpgradeApp(ctx context.Context, current, root string, check bool, token string, out io.Writer) error {
-	return Run(ctx, Options{CurrentVersion: current, AppRoot: root, CheckOnly: check, Token: token, Stdout: out, GOOS: runtimeGOOS(), Arch: runtime.GOARCH, RepoOwner: "pyranthus-hq", RepoName: "mora", Decide: func(current, latest string) (Decision, bool, error) {
+// testStderr is the throwaway advisory sink for cases that assert only on
+// stdout; cases that assert on the recovery advisory pass their own buffer.
+var testStderr io.Writer = io.Discard
+
+func cmdUpgradeApp(ctx context.Context, current, root string, check bool, token string, stdout, stderr io.Writer) error {
+	return Run(ctx, Options{CurrentVersion: current, AppRoot: root, CheckOnly: check, Token: token, Stdout: stdout, Stderr: stderr, GOOS: runtimeGOOS(), Arch: runtime.GOARCH, RepoOwner: "pyranthus-hq", RepoName: "mora", Decide: func(current, latest string) (Decision, bool, error) {
 		c, err := semver.NewVersion(current)
 		if err != nil {
 			return "", false, err
@@ -223,7 +227,7 @@ func TestCmdUpgradeAppReplacesWholeBundle(t *testing.T) {
 	}
 
 	var stdout strings.Builder
-	if err := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout); err != nil {
+	if err := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if downloads != 2 || swaps != 1 || verifications != 3 || rebuilds != 1 {
@@ -313,8 +317,8 @@ func TestCmdUpgradeAppPreservesOldAppWhenRollbackFails(t *testing.T) {
 		return os.Rename(temporary, right)
 	}
 
-	var stdout strings.Builder
-	upgradeErr := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout)
+	var stdout, stderr strings.Builder
+	upgradeErr := cmdUpgradeApp(context.Background(), "0.12.0", installed, false, "", &stdout, &stderr)
 	if upgradeErr == nil || !strings.Contains(upgradeErr.Error(), "rollback failed") {
 		t.Fatalf("upgrade error = %v", upgradeErr)
 	}
@@ -328,8 +332,10 @@ func TestCmdUpgradeAppPreservesOldAppWhenRollbackFails(t *testing.T) {
 	recoveryApp := filepath.Join(stages[0], "expanded", moraAppName)
 	assertFileBody(t, filepath.Join(recoveryApp, "marker"), "old")
 	assertFileBody(t, filepath.Join(installed, "marker"), "new")
-	if !strings.Contains(upgradeErr.Error(), recoveryApp) || !strings.Contains(stdout.String(), recoveryApp) {
-		t.Fatalf("recovery path missing: error=%v output=%q", upgradeErr, stdout.String())
+	// Plan 01-03 routed the recovery advisory to stderr; the error still names
+	// the preserved bundle so neither channel can drop it silently.
+	if !strings.Contains(upgradeErr.Error(), recoveryApp) || !strings.Contains(stderr.String(), recoveryApp) {
+		t.Fatalf("recovery path missing: error=%v stderr=%q stdout=%q", upgradeErr, stderr.String(), stdout.String())
 	}
 }
 

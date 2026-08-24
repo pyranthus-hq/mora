@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "schema": "mora.connectors.disable",
+  "schema_version": 1,
+  "type": "gmail"
+}

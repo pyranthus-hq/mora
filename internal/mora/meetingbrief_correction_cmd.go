@@ -16,7 +16,7 @@ import (
 //
 // The key is ALWAYS source-native atoms (stable_id + handle/address), never a
 // canonical person id, so the correction persists across connector re-sync.
-func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdBriefCorrect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("brief correct", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	memoryID := fs.String("memory-id", "", "cited source memory id")
@@ -24,8 +24,9 @@ func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error
 	confirm := fs.Bool("confirm", false, "confirm this source↔attendee attribution")
 	unlink := fs.Bool("unlink", false, "unlink this source↔attendee attribution (destructive)")
 	yes := fs.Bool("yes", false, "confirm destructive unlink")
+	jsonOut := fs.Bool("json", false, "emit the correction receipt as JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", fs.Args())
@@ -86,6 +87,15 @@ func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error
 		// The op REMAINS -> the index reads dirty until a rebuild covers the change.
 		return fmt.Errorf("recorded correction, but the search index could not be updated: %w — run `mora index rebuild`", err)
 	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.brief.correct", 1, briefCorrectReceipt{
+			Decision:     decision,
+			MemoryID:     m.ID,
+			SourceAtom:   stableAtom.Value,
+			AttendeeAtom: attendeeAtom.Value,
+			EntryID:      entry.ID,
+		})
+	}
 	if decision == mergeDecisionConfirm {
 		fmt.Fprintf(stdout, "confirmed citation link: %s ↔ %s (entry %s)\n", stableAtom.Value, attendeeAtom.Value, entry.ID)
 		fmt.Fprintln(stdout, "this line attribution is pinned and will persist across re-sync")
@@ -94,4 +104,14 @@ func cmdBriefCorrect(ctx context.Context, args []string, stdout io.Writer) error
 	fmt.Fprintf(stdout, "unlinked citation: %s ↔ %s (entry %s)\n", stableAtom.Value, attendeeAtom.Value, entry.ID)
 	fmt.Fprintln(stdout, "future briefs will suppress this line for that attendee (persists across re-sync)")
 	return nil
+}
+
+// briefCorrectReceipt records one citation decision by its source-native atoms,
+// the same key the governance ledger stores, so the receipt survives re-sync.
+type briefCorrectReceipt struct {
+	Decision     string `json:"decision"`
+	MemoryID     string `json:"memory_id"`
+	SourceAtom   string `json:"source_atom"`
+	AttendeeAtom string `json:"attendee_atom"`
+	EntryID      string `json:"entry_id"`
 }

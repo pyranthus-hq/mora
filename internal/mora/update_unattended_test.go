@@ -545,7 +545,7 @@ func TestIndexRebuildIfNeededNoOpsOnCurrentSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := cmdIndex(context.Background(), []string{"rebuild", "--if-needed"}, &out, bytes.NewBuffer(nil)); err != nil {
+	if err := cmdIndex(context.Background(), []string{"rebuild", "--if-needed"}, &out, testStderr, bytes.NewBuffer(nil)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "rebuild not needed") {

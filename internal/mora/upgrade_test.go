@@ -38,7 +38,7 @@ func TestCmdUpgradeRoutesHomebrewWithoutNetwork(t *testing.T) {
 	BuildVersion = "1.2.3"
 	upgradeExecutable = func() (string, error) { return "/opt/homebrew/Cellar/mora/1.2.3/bin/mora", nil }
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--check"}, &out); err != nil {
+	if err := cmdUpgrade(context.Background(), []string{"--check"}, &out, testStderr); err != nil {
 		t.Fatalf("cmdUpgrade: %v", err)
 	}
 	if !strings.Contains(out.String(), "brew upgrade pyranthus-hq/tap/mora") {

@@ -40,5 +40,13 @@ func rebuildBlockMessage(d rebuildDecision, vaultDir string, oldCount int) strin
 	return indexpkg.RebuildBlockMessage(d, vaultDir, oldCount)
 }
 func readIndexVaultID(ctx context.Context, cfg Config) (string, error) {
-	return indexpkg.ReadVaultID(ctx, cfg)
+	v, err := indexpkg.ReadVaultID(ctx, cfg)
+	if err != nil {
+		// The "no id" outcomes (missing db, missing table, no row) come back as
+		// err == nil from indexpkg. Anything left is a real read failure, which
+		// gains the published code here (sqliteErrorCode, index.go) — the CLI
+		// error-code contract lives on this side of the extraction seam.
+		return "", newCodedError(sqliteErrorCode(err), err, "%v", err)
+	}
+	return v, nil
 }

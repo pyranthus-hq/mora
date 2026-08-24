@@ -130,7 +130,7 @@ func TestCoreA_ApplySetupSelectionBackfillError(t *testing.T) {
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 
 	var out bytes.Buffer
-	err := applySetupSelection(context.Background(), cfg, []string{"gmail"}, true, &out, strings.NewReader(""))
+	err := applySetupSelection(context.Background(), cfg, []string{"gmail"}, true, &out, testStderr, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("applySetupSelection with a failing confirmed backfill must return the error")
 	}

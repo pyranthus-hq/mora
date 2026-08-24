@@ -126,7 +126,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := cmdDelete(context.Background(), []string{"--yes", "mem_del"}, &buf); err != nil {
+		if err := cmdDelete(context.Background(), []string{"--yes", "mem_del"}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if !fileStillPresentAtMark || !sawDeleteOp {
@@ -152,7 +152,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := cmdUnforget(context.Background(), []string{"--yes", seed.ID}, &buf); err != nil {
+		if err := cmdUnforget(context.Background(), []string{"--yes", seed.ID}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if !ledgerUnchangedAtMark {
@@ -172,7 +172,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := cmdBriefCorrect(context.Background(), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf); err != nil {
+		if err := cmdBriefCorrect(context.Background(), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if !ledgerUnchangedAtMark {
@@ -249,7 +249,7 @@ func TestFailedUpsertLeavesIndexDirty(t *testing.T) {
 	idxUpsertStampVaultID(t, cfg, "v_someone_else")
 
 	var buf bytes.Buffer
-	if err := cmdWrite(context.Background(), []string{"--title", "Blocked", "--text", "blockedbody"}, &buf); err != nil {
+	if err := cmdWrite(context.Background(), []string{"--title", "Blocked", "--text", "blockedbody"}, &buf, testStderr); err != nil {
 		t.Fatalf("cmdWrite should degrade-succeed on a blocked upsert, got %v", err)
 	}
 	ops, _ := listPendingOps(cfg)

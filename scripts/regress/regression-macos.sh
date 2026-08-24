@@ -293,10 +293,19 @@ grep -q '<key>RunAtLoad</key>' "$PP" \
   && die "pulse-daily plist must NOT set RunAtLoad (would consume the morning watermark on boot)"
 pass "pulse-daily plist: calendar Hour 8, RunAtLoad correctly absent"
 
-# schedule list (HOME-redirected) globs the sandbox LaunchAgents.
-LIST="$(HOME="$SBHOME" "$MORA" schedule list 2>/dev/null || true)"
-echo "$LIST" | grep -q 'com.mora.index-hourly.plist' || die "schedule list missed index-hourly"
-echo "$LIST" | grep -q 'com.mora.pulse-daily.plist'  || die "schedule list missed pulse-daily"
+# schedule list (HOME-redirected) globs the sandbox LaunchAgents. Read the
+# `mora.schedule.list` v1 payload rather than grepping the human rendering for a
+# plist filename: human output is not a contract, and #43 broke every tagged
+# release for a day (until #46) by editing prose a release gate was parsing.
+# The machine surface is also a STRONGER assertion — it reports `installed` per
+# job by name, where the old grep only proved a filename appeared somewhere.
+LIST_JSON="$(HOME="$SBHOME" "$MORA" schedule list --json 2>/dev/null)" \
+  || die "schedule list --json failed"
+for job in index-hourly pulse-daily; do
+  # json_true dies with the failed predicate, which names the job.
+  json_true "$LIST_JSON" \
+    "any(e['name'] == '$job' and e['installed'] is True for e in d['entries'])"
+done
 pass "schedule list reflects both installed jobs"
 
 # Guard: the redirect worked — the REAL LaunchAgents was not touched.

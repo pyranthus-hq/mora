@@ -31,10 +31,18 @@ func TestMergeDuplicateNameHandleVariantsStayReviewOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := run(t, "teach", "identity", "list", "--json")
-	var pending []pendingMerge
-	if err := json.Unmarshal([]byte(raw), &pending); err != nil {
+	// Plan 01-07: the queue moves under `pending` inside the schema envelope.
+	var doc struct {
+		Schema  string         `json:"schema"`
+		Pending []pendingMerge `json:"pending"`
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		t.Fatalf("typed identity queue: %v\n%s", err, raw)
 	}
+	if doc.Schema != "mora.teach.identity.list" {
+		t.Fatalf("teach identity list schema = %q, want mora.teach.identity.list", doc.Schema)
+	}
+	pending := doc.Pending
 	if len(pending) != 2 {
 		t.Fatalf("duplicate handle variants should produce two review rows, not an auto-merge: %+v", pending)
 	}

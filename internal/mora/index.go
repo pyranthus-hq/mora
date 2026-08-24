@@ -13,45 +13,120 @@ import (
 	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
 )
 
-func cmdIndex(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) (err error) {
+// sqliteErrorCode classifies one sqlite failure into a published index.* code.
+//
+// The match is on error prose because the driver gives nothing better: modernc's
+// sqlite reports a missing table, a duplicate column, and an unopenable file as
+// text, with no error number or sentinel to test against. Replacing that is out
+// of scope here. What this function buys is that every such match now lives in
+// ONE named place: a future phase that gains a structured signal rewrites this
+// body, and the published taxonomy above it does not move.
+//
+// It is deliberately NOT folded into the call sites' own strings.Contains
+// checks. Those gate CONTROL FLOW — which errors the rebuild transaction
+// tolerates — and merging them into this classifier would widen what gets
+// swallowed. This function only LABELS an error that is already being returned.
+func sqliteErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return errCodeIndexUnavailable
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "unable to open database file"):
+		return errCodeIndexUnavailable
+	case strings.Contains(msg, "duplicate column name"),
+		strings.Contains(msg, "no such table"),
+		strings.Contains(msg, "no such column"):
+		return errCodeIndexSchemaMismatch
+	default:
+		// Attributable to neither the index's shape nor its availability. An
+		// unexplained sqlite failure is a Mora bug until proven otherwise.
+		return errCodeInternalUnexpected
+	}
+}
+
+func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) (err error) {
 	fs := flag.NewFlagSet("index", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
 	force := fs.Bool("force", false, "rebuild even if the vault looks empty or unfamiliar")
 	ifNeeded := fs.Bool("if-needed", false, "rebuild only when this binary's index schema differs")
 	if perr := fs.Parse(flagsFirst(args)); perr != nil {
-		return perr
+		return newMoraError(errCodeUsageUnknownFlag, "usage", perr, "%v", perr)
+	}
+	if fs.NArg() == 0 && *jsonOut {
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		return emitReceipt(stdout, "mora.index", 1, struct {
+			Subcommand       string `json:"subcommand"`
+			DocumentsIndexed int    `json:"documents_indexed"`
+			DurationMS       int64  `json:"duration_ms"`
+			State            string `json:"state"`
+		}{
+			Subcommand: "status",
+			State:      indexHealthOf(cfg, indexClock()).State,
+		})
 	}
 	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" || (*force && *ifNeeded) {
-		return errors.New("usage: mora index rebuild [--force | --if-needed]")
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "usage: mora index rebuild [--force | --if-needed]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	// Diagnostics never share stdout with a --json receipt (CON-02).
+	diagOutput := stdout
+	if *jsonOut {
+		diagOutput = stderr
+	}
 	if *ifNeeded {
 		current, err := indexSchemaMatches(ctx, cfg)
 		if err == nil && current {
-			fmt.Fprintln(stdout, "index schema current; rebuild not needed")
+			fmt.Fprintln(diagOutput, "index schema current; rebuild not needed")
 			return nil
 		}
 	}
+	// index-hourly producer chokepoint (HEALTH-11): stamp the rebuild's own outcome.
 	// The updater's --if-needed probe owns its outcome in the update receipt; it
 	// must not masquerade as the scheduled index-hourly producer.
 	if !*ifNeeded {
-		defer stampChokepoint(cfg, stdout, args, "index-hourly", producerClock(), &err)
+		defer stampChokepoint(cfg, diagOutput, args, "index-hourly", producerClock(), &err)
 	}
 	policy := policyEnforce
 	if *force {
 		policy = policyAllow
 	}
+	started := time.Now()
 	count, err := rebuildIndexWithPolicy(ctx, cfg, policy)
 	if err != nil {
 		return err
+	}
+	if *jsonOut {
+		// The registry assigns `index rebuild` its own payload name; Plan 01-05
+		// emitted the parent's `mora.index` here, which made one schema name
+		// cover two shapes. The subcommand field is unchanged.
+		return emitReceipt(stdout, "mora.index.rebuild", 1, struct {
+			Subcommand       string `json:"subcommand"`
+			DocumentsIndexed int    `json:"documents_indexed"`
+			DurationMS       int64  `json:"duration_ms"`
+			State            string `json:"state"`
+		}{
+			Subcommand:       "rebuild",
+			DocumentsIndexed: count,
+			DurationMS:       time.Since(started).Milliseconds(),
+			State:            indexHealthOf(cfg, indexClock()).State,
+		})
 	}
 	// vault/index.md is refreshed inside rebuildIndexWithPolicy's commit path now
 	// (B5), so every rebuild caller keeps it honest — not just this CLI one.
@@ -286,7 +361,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// never aborted by this idempotent ALTER. Any OTHER error is fatal.
 	if _, err := tx.ExecContext(ctx, `ALTER TABLE entities ADD COLUMN salience_micros INTEGER`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column name") {
-		return 0, err
+		return 0, newCodedError(sqliteErrorCode(err), err, "%v", err)
 	}
 	// v4 (#241): same idempotent-ALTER migration for memories.provider/account/
 	// created_at_unix — tolerated as a no-op ("duplicate column name") on a
@@ -297,7 +372,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		`ALTER TABLE memories ADD COLUMN created_at_unix INTEGER`,
 	} {
 		if _, err := tx.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return 0, err
+			return 0, newCodedError(sqliteErrorCode(err), err, "%v", err)
 		}
 	}
 	memStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)

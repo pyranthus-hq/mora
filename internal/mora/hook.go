@@ -49,7 +49,7 @@ type recallHookInput struct {
 	Prompt string `json:"prompt"`
 }
 
-func cmdHook(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora hook session-start|recall|install|uninstall|status")
 	}
@@ -63,7 +63,16 @@ func cmdHook(ctx context.Context, args []string, stdout io.Writer, stdin io.Read
 	case "uninstall":
 		return hookUninstall(stdout)
 	case "status":
-		return hookStatus(stdout)
+		fs := flag.NewFlagSet("hook status", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		jsonOut := fs.Bool("json", false, "emit JSON")
+		if parseErr := fs.Parse(args[1:]); parseErr != nil {
+			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
+		}
+		if fs.NArg() != 0 {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		return hookStatus(stdout, *jsonOut)
 	default:
 		return errors.New("usage: mora hook session-start|recall|install|uninstall|status")
 	}
@@ -204,7 +213,20 @@ func hookUninstall(stdout io.Writer) error {
 	return nil
 }
 
-func hookStatus(stdout io.Writer) error {
+type hookStatusHarness struct {
+	Name      string   `json:"name"`
+	Installed bool     `json:"installed"`
+	Events    []string `json:"events"`
+}
+
+type hookStatusPayload struct {
+	Installed bool                `json:"installed"`
+	Path      string              `json:"path"`
+	Harnesses []hookStatusHarness `json:"harnesses"`
+}
+
+func hookStatus(stdout io.Writer, jsonOutput ...bool) error {
+	jsonOut := len(jsonOutput) > 0 && jsonOutput[0]
 	path, err := claudeSettingsPath()
 	if err != nil {
 		return err
@@ -212,6 +234,20 @@ func hookStatus(stdout io.Writer) error {
 	start, recall, err := hookspkg.Status(path)
 	if err != nil {
 		return err
+	}
+	if jsonOut {
+		events := make([]string, 0, 2)
+		if start == "installed" {
+			events = append(events, "SessionStart")
+		}
+		if recall == "installed" {
+			events = append(events, "UserPromptSubmit")
+		}
+		harnesses := make([]hookStatusHarness, 0, 1)
+		harnesses = append(harnesses, hookStatusHarness{Name: "claude", Installed: len(events) > 0, Events: events})
+		return emitReceipt(stdout, "mora.hook.status", 1, hookStatusPayload{
+			Installed: len(events) > 0, Path: path, Harnesses: harnesses,
+		})
 	}
 	fmt.Fprintf(stdout, "SessionStart: %s\n", start)
 	fmt.Fprintf(stdout, "UserPromptSubmit: %s\n", recall)

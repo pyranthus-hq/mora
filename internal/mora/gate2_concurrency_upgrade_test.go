@@ -224,7 +224,7 @@ func TestFDALossNeverStampsSuccess(t *testing.T) {
 
 	// Doctor / banner go red on the aged frozen success.
 	var js bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &js); err == nil {
+	if err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &js, testStderr); err == nil {
 		t.Fatal("doctor --strict must be nonzero with a failed FDA source")
 	}
 	banner := healthBannerFrom(healthOf(cfg, time.Now()))
@@ -300,7 +300,7 @@ func TestAccidentalVaultFlipIsBlockedAndVisible(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := cmdIndex(ctx, []string{"rebuild"}, &out, strings.NewReader(""))
+	err := cmdIndex(ctx, []string{"rebuild"}, &out, testStderr, strings.NewReader(""))
 	if !errors.Is(err, errRebuildBlocked) {
 		t.Fatalf("unattended rebuild after vault flip: err=%v want errRebuildBlocked\nout=%s", err, out.String())
 	}
@@ -315,7 +315,7 @@ func TestAccidentalVaultFlipIsBlockedAndVisible(t *testing.T) {
 	_ = origVault
 
 	var js bytes.Buffer
-	if err := cmdDoctor(ctx, []string{"--json", "--strict"}, &js); err == nil {
+	if err := cmdDoctor(ctx, []string{"--json", "--strict"}, &js, testStderr); err == nil {
 		t.Fatal("doctor --strict must be nonzero after an accidental vault flip")
 	}
 

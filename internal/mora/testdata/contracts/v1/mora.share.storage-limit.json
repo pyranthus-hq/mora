@@ -1,0 +1,7 @@
+{
+  "name": "1000000",
+  "ok": true,
+  "schema": "mora.share.storage-limit",
+  "schema_version": 1,
+  "verb": "storage-limit"
+}

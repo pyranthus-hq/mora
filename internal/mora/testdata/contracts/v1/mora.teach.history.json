@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "action": "record",
+      "atom": {
+        "kind": "",
+        "value": ""
+      },
+      "created_at": "\u003ctimestamp\u003e",
+      "created_by": "mora dev",
+      "decision": "enable",
+      "id": "\u003cid\u003e",
+      "kind": "eval_consent",
+      "reason": "explicit local consent for privacy-minimized evaluation examples"
+    }
+  ],
+  "schema": "mora.teach.history",
+  "schema_version": 1
+}

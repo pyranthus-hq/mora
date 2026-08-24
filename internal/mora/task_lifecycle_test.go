@@ -149,10 +149,14 @@ func TestTasksListJSON(t *testing.T) {
 	run(t, "tasks", "add", "Task B")
 	out := run(t, "tasks", "list", "--json")
 
-	var got []LiveTask
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
+	// Plan 01-07: `tasks list --json` carries its array under `tasks`.
+	var doc struct {
+		Tasks []LiveTask `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("tasks list --json: %v\n%s", err, out)
 	}
+	got := doc.Tasks
 	names := map[string]bool{}
 	for _, lt := range got {
 		names[lt.Task] = true

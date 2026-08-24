@@ -1,0 +1,6 @@
+{
+  "key": "embedder",
+  "schema": "mora.config.embedder",
+  "schema_version": 1,
+  "value": "static"
+}

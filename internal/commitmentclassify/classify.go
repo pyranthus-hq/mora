@@ -107,6 +107,13 @@ func Classify(m memory.Memory, opts Options) []commitment.Record {
 		return commitment.Unique(out)
 	}
 	counterparty, ok := commitment.Counterparty(m, opts.SelfEmails)
+	threadCounterpartyProven := false
+	if commitment.IsGmail(m) {
+		if established, found := commitment.GmailThreadCounterparty(m, opts.SelfEmails); found {
+			counterparty, ok = established, true
+			threadCounterpartyProven = true
+		}
+	}
 	if !ok && commitment.IsGmail(m) {
 		sender := strings.ToLower(strings.TrimSpace(commitment.FirstGmailSender(m)))
 		if sender != "" && !opts.SelfEmails[sender] {
@@ -120,6 +127,9 @@ func Classify(m memory.Memory, opts Options) []commitment.Record {
 	if commitment.IsIMessage(m) {
 		if messages, present := imessage.CommitmentMessages(m); present {
 			for _, message := range messages {
+				if commitment.PastedCorrespondence(message.Body) {
+					continue
+				}
 				author, addressee := counterparty, self
 				if message.Self {
 					author, addressee = self, counterparty
@@ -148,6 +158,9 @@ func Classify(m memory.Memory, opts Options) []commitment.Record {
 			return out
 		}
 		for _, turn := range commitment.ConversationTurns(m.Text) {
+			if commitment.PastedCorrespondence(turn.Body) {
+				continue
+			}
 			author, addressee := counterparty, self
 			if turn.Self {
 				author, addressee = self, counterparty
@@ -189,7 +202,7 @@ func Classify(m memory.Memory, opts Options) []commitment.Record {
 				if !commitment.EqualAtom(author, self) && !commitment.EqualAtom(author, counterparty) {
 					continue
 				}
-				addressee := commitment.GmailAddressee(author, message.To, message.Cc, self, counterparty)
+				addressee := commitment.GmailAddressee(author, message.To, message.Cc, self, counterparty, threadCounterpartyProven)
 				blockRef := commitment.GmailAuthoredBlockRef(message, parts[i])
 				slot := 0
 				for _, segment := range commitment.Segments(parts[i]) {
@@ -243,7 +256,7 @@ func Classify(m memory.Memory, opts Options) []commitment.Record {
 			if sender != "" {
 				author = commitment.Atom{Kind: commitment.AtomAddress, Value: identity.Normalize(commitment.AtomAddress, sender)}
 			}
-			addressee := commitment.GmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), self, counterparty)
+			addressee := commitment.GmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), self, counterparty, threadCounterpartyProven)
 			first := ""
 			if len(parts) > 0 {
 				first = parts[0]
@@ -272,7 +285,7 @@ func Classify(m memory.Memory, opts Options) []commitment.Record {
 			if sender != "" {
 				author = commitment.Atom{Kind: commitment.AtomAddress, Value: identity.Normalize(commitment.AtomAddress, sender)}
 			}
-			addressee := commitment.GmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), self, counterparty)
+			addressee := commitment.GmailAddressee(author, metaStrings(m.Meta["to"]), metaStrings(m.Meta["cc"]), self, counterparty, threadCounterpartyProven)
 			reported, attributed := reportedActorFor(m, m.Title, counterparty, self)
 			if attributed && reported == nil {
 				return commitment.Unique(out)

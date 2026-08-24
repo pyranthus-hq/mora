@@ -78,7 +78,7 @@ func TestCmdConfigContextRoundTrip(t *testing.T) {
 		t.Fatalf("ContextProfile = %q after reset, want empty", cfg.ContextProfile)
 	}
 
-	if err := cmdConfig([]string{"context", "huge"}, io.Discard); err == nil {
+	if err := cmdConfig([]string{"context", "huge"}, io.Discard, testStderr); err == nil {
 		t.Fatalf("invalid profile must error")
 	}
 }
@@ -127,7 +127,7 @@ func TestCmdConfigMMRRoundTrip(t *testing.T) {
 		t.Fatalf("mmr off must drop the line, config.toml still has it:\n%s", b)
 	}
 
-	if err := cmdConfig([]string{"mmr", "maybe"}, io.Discard); err == nil {
+	if err := cmdConfig([]string{"mmr", "maybe"}, io.Discard, testStderr); err == nil {
 		t.Fatalf("invalid mmr setting must error")
 	}
 }

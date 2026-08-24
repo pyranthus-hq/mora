@@ -26,8 +26,8 @@ func moraAppRoot(exe string) (string, bool) { return appupdatepkg.Root(exe) }
 func moraAppAssetName(version, arch string) (string, error) {
 	return appupdatepkg.AssetName(version, arch)
 }
-func cmdUpgradeApp(ctx context.Context, current, root string, check bool, token string, out io.Writer) error {
-	return appupdatepkg.Run(ctx, appupdatepkg.Options{CurrentVersion: current, AppRoot: root, CheckOnly: check, Token: token, Stdout: out, GOOS: runtimeGOOS(), Arch: runtime.GOARCH, RepoOwner: upgradeRepoOwner, RepoName: upgradeRepoName, Decide: func(current, latest string) (appupdatepkg.Decision, bool, error) {
+func cmdUpgradeApp(ctx context.Context, current, root string, check bool, token string, stdout, stderr io.Writer) error {
+	return appupdatepkg.Run(ctx, appupdatepkg.Options{CurrentVersion: current, AppRoot: root, CheckOnly: check, Token: token, Stdout: stdout, Stderr: stderr, GOOS: runtimeGOOS(), Arch: runtime.GOARCH, RepoOwner: upgradeRepoOwner, RepoName: upgradeRepoName, Decide: func(current, latest string) (appupdatepkg.Decision, bool, error) {
 		v, local, err := decideUpgrade(current, latest)
 		if err != nil {
 			return "", local, err

@@ -199,7 +199,7 @@ func TestGr_CmdGraphOverviewJSONAndDetail(t *testing.T) {
 	ctx := context.Background()
 
 	var overview bytes.Buffer
-	if err := cmdGraph(ctx, []string{"--top", "1"}, &overview); err != nil {
+	if err := cmdGraph(ctx, []string{"--top", "1"}, &overview, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	out := overview.String()
@@ -213,7 +213,7 @@ func TestGr_CmdGraphOverviewJSONAndDetail(t *testing.T) {
 	}
 
 	var listJSON bytes.Buffer
-	if err := cmdGraph(ctx, []string{"--json", "--top=2"}, &listJSON); err != nil {
+	if err := cmdGraph(ctx, []string{"--json", "--top=2"}, &listJSON, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if got := listJSON.String(); !strings.Contains(got, `"name": "Alice Example"`) || !strings.Contains(got, `"kind": "person"`) {
@@ -221,7 +221,7 @@ func TestGr_CmdGraphOverviewJSONAndDetail(t *testing.T) {
 	}
 
 	var detail bytes.Buffer
-	if err := cmdGraph(ctx, []string{"Alice", "Example"}, &detail); err != nil {
+	if err := cmdGraph(ctx, []string{"Alice", "Example"}, &detail, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	detailOut := detail.String()
@@ -232,7 +232,7 @@ func TestGr_CmdGraphOverviewJSONAndDetail(t *testing.T) {
 	}
 
 	var detailJSON bytes.Buffer
-	if err := cmdGraph(ctx, []string{"--json", "alice@example.com"}, &detailJSON); err != nil {
+	if err := cmdGraph(ctx, []string{"--json", "alice@example.com"}, &detailJSON, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if got := detailJSON.String(); !strings.Contains(got, `"found": true`) || !strings.Contains(got, `"aliases"`) {
@@ -240,7 +240,7 @@ func TestGr_CmdGraphOverviewJSONAndDetail(t *testing.T) {
 	}
 
 	var missing bytes.Buffer
-	if err := cmdGraph(ctx, []string{"Nobody"}, &missing); err != nil {
+	if err := cmdGraph(ctx, []string{"Nobody"}, &missing, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if got := missing.String(); !strings.Contains(got, `No entity named "Nobody"`) {
@@ -252,11 +252,17 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var empty bytes.Buffer
-	if err := cmdGraph(context.Background(), []string{"--top", "bad", "--top"}, &empty); err != nil {
+	if err := cmdGraph(context.Background(), nil, &empty, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if got := empty.String(); !strings.Contains(got, "No entity graph yet") {
 		t.Fatalf("empty graph message = %q", got)
+	}
+	// Plan 01-04 gave graph a real flag surface, so a malformed --top is now a
+	// usage error rather than an argument the command silently ignores.
+	var badFlag bytes.Buffer
+	if err := cmdGraph(context.Background(), []string{"--top", "bad"}, &badFlag, testStderr); err == nil {
+		t.Fatalf("malformed --top must be a usage error; got output %q", badFlag.String())
 	}
 
 	blockingFile := filepath.Join(t.TempDir(), "not-a-dir")
@@ -265,7 +271,7 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	}
 	t.Setenv("MORA_CONFIG_DIR", blockingFile)
 	var out bytes.Buffer
-	if err := cmdGraph(context.Background(), nil, &out); err == nil {
+	if err := cmdGraph(context.Background(), nil, &out, testStderr); err == nil {
 		t.Fatal("cmdGraph should return loadConfig error when MORA_CONFIG_DIR is a file")
 	}
 
@@ -279,7 +285,7 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	}
 	t.Setenv("MORA_CONFIG_DIR", cfgRoot)
 	out.Reset()
-	if err := cmdGraph(context.Background(), nil, &out); err == nil {
+	if err := cmdGraph(context.Background(), nil, &out, testStderr); err == nil {
 		t.Fatal("cmdGraph should return graphListEntities error for an invalid configured vault")
 	}
 }

@@ -301,6 +301,104 @@ func TestClassifierEligibilityAndLegacyGmail(t *testing.T) {
 	}
 }
 
+func TestIMessagePastedCorrespondenceIsNotAttributedToChatParticipant(t *testing.T) {
+	opts := Options{SelfEmails: map[string]bool{"self@example.com": true}}
+	makeMemory := func(message string) memory.Memory {
+		const id = "imessage_chat/invented-paste"
+		body := "## 2026-08-01\nMe: " + message
+		start := strings.Index(body, "Me:")
+		return memory.Memory{
+			ID: id, Type: "imessage", Provider: "imessage", Source: "invented-paste",
+			CreatedAt: "2026-08-01T10:00:00Z", Text: body,
+			Meta: map[string]any{
+				"message_count": "1",
+				"participants": []map[string]string{{
+					"handle": "+15550100120", "name": "Lucia",
+				}},
+				"message_evidence_schema": 1,
+				"message_evidence": []map[string]any{{
+					"evidence_ref": id + "#outgoing", "at": "2026-08-01T10:00:00Z",
+					"from_me": true, "sender": "Me", "block_start": start, "block_end": len(body),
+				}},
+			},
+		}
+	}
+
+	pasted := "Hi Morgan,\n\nCould you send the corrected invoice by Friday?\n\nBest,\nAvery"
+	if got := Classify(makeMemory(pasted), opts); len(got) != 0 {
+		t.Fatalf("pasted correspondence was attributed to the chat participant: %+v", got)
+	}
+	if got := Classify(makeMemory("Could you send the corrected invoice by Friday?"), opts); len(got) != 1 || got[0].Direction != commitment.OwedByCounterparty {
+		t.Fatalf("ordinary direct chat request was suppressed: %+v", got)
+	}
+}
+
+func TestGmailOpaqueReplyAliasUsesProvenThreadCounterparty(t *testing.T) {
+	opts := Options{SelfEmails: map[string]bool{"self@example.com": true}}
+	m := memory.Memory{
+		ID: "gmail_thread/invented-opaque-reply", Type: "email", Provider: "gmail",
+		Source: "invented-opaque-reply", CreatedAt: "2026-08-01T10:05:00Z",
+		Text: "From: Ledger Team <ledger@example.test>\n\nHere are the account details.\n\n---\n\n" +
+			"Could you send the corrected ledger?",
+		Meta: map[string]any{
+			"from": []string{"ledger@example.test", "self@example.com"},
+			"to":   []string{"self@example.com", "7f24c91d@relay.example.test"},
+			"cc":   []string{"observer.one@example.test", "observer.two@example.test"},
+			"messages": []commitment.GmailMessage{
+				{
+					MessageRef: "gmail_thread/invented-opaque-reply#incoming",
+					Sender:     "ledger@example.test", To: []string{"self@example.com"},
+					At: "2026-08-01T10:00:00Z", BlockRefs: []string{"incoming-body"},
+				},
+				{
+					MessageRef: "gmail_thread/invented-opaque-reply#request",
+					Sender:     "self@example.com", To: []string{"7f24c91d@relay.example.test"},
+					Cc: []string{"observer.one@example.test", "observer.two@example.test"},
+					At: "2026-08-01T10:05:00Z", BlockRefs: []string{"request-body"},
+				},
+			},
+		},
+	}
+	got := Classify(m, opts)
+	if len(got) != 1 {
+		t.Fatalf("commitments = %+v, want the self-authored request", got)
+	}
+	if got[0].Direction != commitment.OwedByCounterparty ||
+		got[0].Owner.Value != "ledger@example.test" ||
+		got[0].Counterparty.Value != "ledger@example.test" {
+		t.Fatalf("commitment = %+v, want the proven thread correspondent to owe the request", got[0])
+	}
+}
+
+func TestGmailOpaqueReplyAliasMultiplePrimaryRecipientsFailsClosed(t *testing.T) {
+	opts := Options{SelfEmails: map[string]bool{"self@example.com": true}}
+	m := memory.Memory{
+		ID: "gmail_thread/invented-ambiguous-reply", Type: "email", Provider: "gmail",
+		Source: "invented-ambiguous-reply", CreatedAt: "2026-08-01T10:05:00Z",
+		Text: "From: Ledger Team <ledger@example.test>\n\nHere are the account details.\n\n---\n\n" +
+			"Could you send the corrected ledger?",
+		Meta: map[string]any{
+			"from": []string{"ledger@example.test", "self@example.com"},
+			"to":   []string{"self@example.com", "first-relay@example.test", "second-relay@example.test"},
+			"messages": []commitment.GmailMessage{
+				{
+					MessageRef: "gmail_thread/invented-ambiguous-reply#incoming",
+					Sender:     "ledger@example.test", To: []string{"self@example.com"},
+					At: "2026-08-01T10:00:00Z", BlockRefs: []string{"incoming-body"},
+				},
+				{
+					MessageRef: "gmail_thread/invented-ambiguous-reply#request",
+					Sender:     "self@example.com", To: []string{"first-relay@example.test", "second-relay@example.test"},
+					At: "2026-08-01T10:05:00Z", BlockRefs: []string{"request-body"},
+				},
+			},
+		},
+	}
+	if got := Classify(m, opts); len(got) != 0 {
+		t.Fatalf("multiple primary recipients resolved to a guessed commitment %+v", got)
+	}
+}
+
 func structuredIMessage(times []string) memory.Memory {
 	const id = "imessage_chat/same-thread-review"
 	lines := []string{"Lucia: Can you send the review notes?", "Me: I sent the review notes.", "Lucia: Got the review notes, thanks."}

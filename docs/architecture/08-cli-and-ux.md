@@ -17,6 +17,30 @@ clean data to a machine or agent.
 
 `main.main()` (`cmd/mora/main.go:18`) is intentionally tiny: it copies the three release-injected vars (`version`, `commit`, `date`) into the package globals (`mora.BuildVersion` etc., declared at `internal/mora/mora.go:38`) and hands everything else to `mora.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Stdin)`. **The streams are passed as parameters, never read from `os.*` inside the package** — that is the seam that makes every command testable with a `bytes.Buffer` and is also the foundation of the byte-clean invariant (a buffer is not a `*os.File`, so styling auto-disables in tests). If `Run` returns an error, `main` prints it to stderr and exits 1. There is no other exit path.
 
+## `mora capabilities`
+
+`mora capabilities --json` emits the `mora.capabilities` v1 receipt. Its top-level payload names the build version, every command path with its JSON contract and payload schema, the static connector catalog, every published error code, the allocated and reserved process exit codes, registered MCP tools and configured MCP write policy, and known receipt schemas. Connector and global `repair` / `deep_link` support use the stable tri-state values `supported`, `unsupported`, or `planned`; Phase 3 and Phase 5 change those values when the features land rather than revising the receipt schema. The deliberately omitted `gdrive` connector remains absent because it is not a user-enableable catalog entry.
+
+### `capabilities` is derived, so edit the registry and not the payload
+
+**Do not hand-edit `internal/mora/capabilities.go` to describe a command, an error code, or an exit code.** Four of its sections are projections of a source that already has its own drift test:
+
+| Section | Source | Mechanism |
+|---|---|---|
+| `commands` | `internal/mora/eval/cli-command-registry.json` | `go:embed`, one payload row per registry row |
+| `schemas` | the same registry's distinct non-exempt `payload` values, plus `moraExtraSchemas` | derived at runtime |
+| `error_codes` | `internal/mora/eval/error-code-registry.json` | `go:embed` |
+| `exit_codes` | the same file's `exit_codes`, `reserved_exit_codes`, and `first_allocatable_exit_code` | `go:embed` |
+| `connectors` | `connectorCatalog` (`internal/mora/mora.go`) | walked at runtime |
+| `mcp.tools` / `mcp.schemas` | `mcpToolNames()` | walked at runtime |
+| `mcp.write_policy` | `Config.mcpWritePolicy()` | read per invocation, never a constant |
+
+`TestCapabilitiesMatchesRegistries` asserts set equality both ways for each section, and `TestCapabilitiesWritePolicyFollowsConfig` drives the config through all three policy values to prove the field is live.
+
+Two honest limits, stated so nobody over-trusts the test. First, because the two registries are embedded, an edit to either file moves the payload and the test's expectation together — that test therefore catches a **projection** bug (a filtered, truncated, or field-dropping copy), not registry drift. Registry drift is caught by `TestCLIRegistryMatchesProductionDispatch`, `TestContractEveryPayloadIsVersioned`, `TestErrorCodeRegistryMatchesSource`, and the golden corpus. Second, per-connector `incremental_sync` has no registry behind it: it is asserted in `capabilitiesIncrementalSync`, which carries the evidence for today's `unsupported` value in its comment. Phase 4 (ING-01) flips it, and nothing automatic will catch it if that phase forgets.
+
+Every element of `commands` and `error_codes` carries the same key set, with `reason` and `error_class` emitted empty rather than omitted. The compatibility gate walks arrays index-wise, so uneven key sets can report a false removal once an array reorders.
+
 The machine-readable command contract is
 `internal/mora/eval/cli-command-registry.json`, with row behavior evidence in
 `internal/mora/eval/cli-command-evidence.json`. The registry covers canonical
@@ -167,6 +191,47 @@ sequenceDiagram
     end
 ```
 
+### The versioned JSON envelope (CON-01)
+
+**The consumer-facing rules — the two keys, MAJOR-only semantics, the bare-array shape moves, the
+exempt families, and why MCP results carry no envelope — are published in
+[22 — The Mora machine contract](./22-cli-contracts.md), §1.** They are not repeated here. What
+follows is the implementation a contributor needs.
+
+`emitReceipt(w, schema, version, payload)` (`receipt.go`) is the single writer. It **merges** the two
+keys into the payload object rather than wrapping it, which is what keeps every pre-existing field at
+its own name, type, and top-level position — the property the compatibility gate then freezes.
+
+A payload's schema name is not chosen at the call site: it must equal the `payload` value
+`internal/mora/eval/cli-command-registry.json` assigns that path.
+`TestContractEveryPayloadIsVersioned` (`contract_envelope_test.go`) drives every executable non-exempt
+row and fails if executed plus shape-only rows do not add up to the non-exempt row count, so a new
+command cannot be added without a payload name and a classification.
+
+### The frozen v1 corpus and the compatibility gate (CON-05)
+
+**The guarantee itself — what a pinned consumer may rely on, the exact remedy for a removal, the
+corpus's 50/45 scope limit, and the fact that ordering is not frozen — is published in
+[22 — The Mora machine contract](./22-cli-contracts.md), §7.** The contributor-facing mechanics:
+
+`internal/mora/testdata/contracts/v1/<schema>.json` holds one frozen document per executable versioned
+payload. `contract_compat_test.go` decodes each in both directions
+(`TestContractCompatAdditiveIsSafe`, `TestContractCompatRemovalIsCaught`), reconciles the corpus
+against the registry (`TestContractGoldenCorpusIsComplete`), and re-drives every command
+(`TestContractGoldenCorpusIsFrozen`).
+
+Two things worth knowing before you touch it:
+
+- **Regenerate with `MORA_UPDATE_CONTRACT_GOLDENS=1` only for an ADDITION.** The generator refuses to
+  write a document that lost a key, and the failure message for a dropped key deliberately never
+  mentions the env var — otherwise the gate would be bypassable by following its own advice.
+- **Volatility is normalized, not excluded.** `contractNormalize` and `contractVolatileLeaves`
+  (`contract_compat_test.go`) replace ids, timestamps, absolute paths, bare dates, and two inherently
+  variable byte counts with typed placeholders, and sort every array. Generation runs the whole
+  command sequence twice and fails on any divergence, so a missed pattern is a hard generation failure
+  rather than a CI flap. If CI reds on `ubuntu-latest` or `windows-latest`, `contractNormalizeString`
+  and `contractVolatileLeaves` are where to look — the corpus has only ever been generated on darwin.
+
 ### The banner
 
 `printBanner(w)` (`banner.go:80`) renders the "Apocrypha eye" + `M O R A` wordmark **once**, at the top of `runSetupMenu` (`setup.go`). It is pure decoration with three independent suppressors: non-`*os.File` or non-TTY writer → prints nothing (`banner.go:82`); `MORA_NO_BANNER` set → prints nothing (`banner.go:85`). Color further gated by `bannerColor` (its own NO_COLOR/dumb/isatty check, `banner.go:69`). The raw art reads as an eye in monochrome, so NO_COLOR terminals still get the art. Only pipes/CI/`--json` get nothing. The trailing whitespace on each art line is **intentional and load-bearing** (37-column rows for centering) and the lines are backtick literals precisely so gofmt cannot strip it (`banner.go:18`).
@@ -190,6 +255,38 @@ Checks are collected into an ordered slice (not a map) precisely so both the JSO
 
 `--pulse` skips every check above and runs ONLY the per-source freshness classification: all fresh → one `ok` line, exit 0. Any source `stale`/`failed`/`never` → prints the red banner (`healthBannerFromSources`, shared with the daily/meeting brief — see [sync & freshness](./11-sync-and-freshness.md)), posts a best-effort native toast (`notifyHealthAlarm`, the same GOOS/`MORA_NO_NOTIFY`-gated seam as the brief's toast), and returns the TYPED `exitCodeError{code: 2}` (`loop.go`) so `cmd/mora/main.go` exits 2 — distinct from `--strict`'s generic non-zero, so a caller can tell "sick" (`--pulse`) from "broken" (`--strict`). `--pulse --json` emits ONLY `{"sources": [...]}`. No banner text reaches the JSON stream. Meant to be scheduled: `mora schedule install doctor-pulse` installs a daily 09:00 job.
 
+## Error codes and exit codes (CON-03 / CON-07)
+
+Mora publishes a machine-checked error taxonomy so an unattended agent can branch on a code instead of matching English. `internal/mora/errors.go` declares it; `internal/mora/eval/error-code-registry.json` (`schema_version: 1`, issue 416) publishes it; `TestErrorCodeRegistryMatchesSource` parses the source with `go/ast` and fails if the two drift in either direction — a code declared but not registered, or registered with no constant behind it.
+
+A failure reaches a caller as a `moraError` carrying `Code`, `Class`, `Source`, and `Msg`. `moraError.Unwrap` returns the cause, so `errors.Is(err, errIndexUnmarkable)` and the other package sentinels still match through the wrap.
+
+### The codes
+
+**The full table — fifteen codes, seven classes, retryability, the `error_class` axis, the
+many-to-one mapping into `state`, and why the `permission` class deliberately has no code — is
+published in [22 — The Mora machine contract](./22-cli-contracts.md), §4.** Edit
+`internal/mora/errors.go` and `internal/mora/eval/error-code-registry.json` together; the `go/ast`
+sweep fails if they disagree in either direction.
+
+### Where a code is attached
+
+- **`stampSyncAttemptFailure` (`health.go`)** is the single boundary every connector failure is persisted through, so it is where the code lands on disk.
+- **`classifyConnectorError` / `connectorCodeForCause` (`ingest.go`)** classify an untyped failure at `ingestSource`. Every rule is **structural** — a decoder type, a sentinel, an interface — and none matches on error prose. A failure whose message merely says "unauthorized" is `connector.unclassified`, deliberately: re-encoding a guess as a typed code makes the guess look like a fact, which is the exact habit Phase 3 (DOC-03) exists to remove.
+- **`sqliteErrorCode` (`index.go`)** classifies index failures. The sqlite driver reports a missing table, a duplicate column, and an unopenable file only as prose, so the match is on strings by necessity. Every such match now lives in that one function; the call sites keep their own `strings.Contains` checks because those gate *control flow* (which errors the rebuild tolerates), not labeling.
+- The `Full Disk Access not granted?` sentences in `ingest.go` are **unchanged** by this taxonomy and carry `connector.unavailable`, not `connector.unauthorized` — Mora observed a failed open, not a refusal. Phase 3 (DOC-03) owns removing the inference; the typed code is what it will switch to.
+
+### Exit codes
+
+**The published table — 1, 2, and 10 grandfathered, 3 through 9 permanently reserved-unused, 11 the
+first allocatable, and the reasoning behind `doctor --strict` staying 1 — is published in
+[22 — The Mora machine contract](./22-cli-contracts.md), §3.**
+
+Implementation: `exitCodeForClass` (`errors.go`) maps a class to a status,
+`cmd/mora/main.go` applies the fallback, `cmdDoctorPulse` (`doctor.go`) produces 2, and
+`loopSkipExitCode` (`loop.go`) produces 10. `TestExitCodeAllocationIsGrandfathered` fails if any
+status lands in the reserved band, or below 11 without being 1, 2, or 10.
+
 ## `init` config-preservation
 
 `cmdInit` (`config.go`) **never resets an existing install's config.** It calls `loadConfig()` (`config.go`) first, which returns defaults only when no `config.toml` exists. An existing file is parsed and its `vault_dir`/`data_dir`/`state_dir` preserved. A re-run of `init` therefore cannot repoint Mora away from a custom vault and orphan it (the failure that `bba2c6c fix(init)` corrected). `--vault` is the only override, applied on top of the loaded config (`config.go`). It then `MkdirAll`s all dirs (0700), writes config (atomic, 0600), scaffolds control files (`scaffoldControlFiles` skips files that already exist, `config.go`), rebuilds the index, and finally launches `runSetupMenu` — which itself is TTY-guarded (`setup.go`): on a non-TTY stdin it prints a hint and returns immediately, never blocking CI/scripts.
@@ -199,6 +296,10 @@ Checks are collected into an ordered slice (not a map) precisely so both the JSO
 `cmdConnect google` (`ingest.go`) is the deliberate enable+backfill convenience: it runs loopback OAuth consent, persists+validates the token (an `AuthedLabels` round-trip), then `ensureGoogleSources` (creates gmail/calendar **disabled**), flips both Enabled bits, and runs an **ungated** backfill loop over gmail/calendar. The loop is ungated on purpose — it is the named, consented path, not a silent backfill. `--since-days N` persists a window override onto the gmail source. `connect imessage` delegates to `connectIMessage`. Contrast with `sync google` (`backfillEnabledGoogle`, `ingest.go`) which IS gated — it skips disabled sources and surfaces a specific "sign-in expired" message on a Google auth error (the 7-day Testing-mode refresh-token trap). See [google connector](./04-connectors-google.md) and [sync & freshness](./11-sync-and-freshness.md).
 
 ## Invariants & gotchas
+
+### Stdout/stderr contract
+
+Command results belong on stdout. Diagnostics, including advisory `note:` and `warning:` messages, belong on stderr. With `--json`, stdout is exactly one valid JSON document (or empty when the command has no result); callers never need to strip human prose before decoding it. Doctor check rows remain stdout report content rather than diagnostics.
 
 - **Byte-clean: ANSI never reaches a machine stream.** Every styled write goes through `colorEnabled`/`styler`. `--json` short-circuits color first (`render.go:22`). The MCP stdio path and any pipe/redirect fail the `isTTYWriter` test. *Why:* a stray escape corrupts JSON parsing, bloats agent token cost, and garbles CI/redirect output. Pinned by `TestColorEnabledGate` + `TestDigestByteCleanOnNonTTY`.
 - **TTY detection for OUTPUT uses go-isatty, not `os.ModeCharDevice`.** `/dev/null` is a character device that would pass `ModeCharDevice` but is not a terminal. *Why:* `mora … > /dev/null` with `TERM` set must not enable color. Pinned by `TestColorDisabledForDevNull`. (Stdin/`genericutil.IsInteractive` may keep the stdlib stat because its failure mode is benign blocking, not byte leakage.)

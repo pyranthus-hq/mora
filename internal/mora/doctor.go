@@ -2,7 +2,6 @@ package mora
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -106,7 +105,7 @@ func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
 // could never distinguish "sick" from "broken" for a caller/automation.
 // --pulse --json emits ONLY the sources array (no banner text, no other
 // checks); --pulse --strict is a no-op (--pulse already exits 2 on its own).
-func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) error {
+func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout, stderr io.Writer) error {
 	// Phase 1 (evaluate): classify the PRIOR ledger — INCLUDING the watchman's own
 	// prior doctor-pulse stamp — before writing anything, so a genuinely-missed
 	// cadence is honestly reported (E4). --pulse now covers sources, the index arm
@@ -130,13 +129,11 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) e
 	defer func() { _ = withProducerStamp(cfg, "doctor-pulse", now, !writerIsTTY(stdout), nil) }()
 
 	if jsonOut {
-		b, err := json.MarshalIndent(struct {
+		if err := emitReceipt(stdout, "mora.doctor.pulse", 1, struct {
 			Sources []sourceHealth `json:"sources"`
-		}{Sources: srcHealth}, "", "  ")
-		if err != nil {
+		}{Sources: srcHealth}); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, string(b))
 	}
 
 	if banner == "" {
@@ -158,7 +155,7 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout io.Writer) e
 
 // doctorFailSummary lists the failing critical checks for the --strict error.
 
-func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report (with --pulse: only the sources array)")
@@ -184,7 +181,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 
 	if *pulse {
-		return cmdDoctorPulse(cfg, now, *jsonOut, stdout)
+		return cmdDoctorPulse(cfg, now, *jsonOut, stdout, stderr)
 	}
 
 	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
@@ -335,11 +332,16 @@ func cmdDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
 		}
-		b, err := json.MarshalIndent(rep, "", "  ")
-		if err != nil {
+		// The envelope MERGES into doctorReport, so every field the report
+		// carried before keeps its name, type, and top-level position. Phase 3
+		// adds observed/diagnosis/repairable/repair_plan/verification and Phase 7
+		// adds the freshness fields ON TOP of this shape: additions are MINOR and
+		// need no schema_version bump; removing or retyping a field requires one.
+		if err := emitReceipt(stdout, "mora.doctor.report", 1, rep); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, string(b))
+		// --strict's return path is deliberately untouched: an unhealthy report
+		// still exits 1, the shipped contract Plan 01-06's checkpoint reaffirmed.
 		if *strict && !healthy {
 			return fmt.Errorf("doctor: %s", doctorFailSummary(checks))
 		}

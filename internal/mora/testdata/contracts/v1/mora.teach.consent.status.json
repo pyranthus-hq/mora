@@ -1,0 +1,6 @@
+{
+  "evaluation_examples": true,
+  "privacy": "structural fields only; raw memory text and identities are never exported",
+  "schema": "mora.teach.consent.status",
+  "schema_version": 1
+}

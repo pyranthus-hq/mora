@@ -125,7 +125,7 @@ func TestCoreB_GapConnectIMessagePersistsSinceDays(t *testing.T) {
 func TestCoreB_GapConnectFilesystemRejectsBadFlag(t *testing.T) {
 	coreBGapInitCfg(t)
 	dir := t.TempDir()
-	err := connectFilesystem(context.Background(), []string{dir, "--this-flag-does-not-exist"}, io.Discard)
+	err := connectFilesystem(context.Background(), []string{dir, "--this-flag-does-not-exist"}, io.Discard, testStderr)
 	if err == nil {
 		t.Fatal("expected connectFilesystem to reject an unknown flag, got nil error")
 	}

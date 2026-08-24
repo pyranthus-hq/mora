@@ -12,3 +12,12 @@ internal/mora/eval/** text eol=lf
 # The real-output pin is also compared as raw bytes against json.MarshalIndent,
 # which emits LF on every platform. Keep Windows checkout conversion out of it.
 internal/mora/exam/testdata/** text eol=lf
+
+# Contract baseline fixtures are compared byte-for-byte against json.MarshalIndent
+# output. Keep checkout conversion from producing Windows-only baseline drift.
+internal/mora/testdata/contracts/*.json text eol=lf
+
+# The frozen v1 contract corpus sits one directory deeper, and `*` does not
+# cross a separator, so the rule above never reached it. windows-latest runs the
+# full suite and a CRLF golden fails the byte compare.
+internal/mora/testdata/contracts/**/*.json text eol=lf
