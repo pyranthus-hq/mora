@@ -234,10 +234,19 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		plans = append(plans, sourceRunPlan{Key: key, Source: s})
 		result, runErr := ingestSourceFn(cfg, s, progress)
 		count += result.Materialized
-		outcomes = append(outcomes, sourceRunOutcome{
+		outcome := sourceRunOutcome{
 			Key: key, Items: result.Materialized, Examined: result.Examined,
 			Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr,
-		})
+		}
+		if path := syncStatusPathFor(cfg, s); path != "" {
+			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
+				outcome.LastSuccessAt = status.LastSuccessAt
+				outcome.LastAttemptAt = status.LastAttemptAt
+				health := sourceHealthFor(cfg, s, key, briefClock())
+				outcome.Stale = health.State != healthFresh
+			}
+		}
+		outcomes = append(outcomes, outcome)
 		if runErr != nil {
 			// Named-source path: the failure IS the result — but a PARTIAL run
 			// (Ingest's dropped-item contract) has already written memories to

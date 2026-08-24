@@ -470,15 +470,12 @@ func TestConfidenceSearchMemoryStrongEvidenceHealthySource(t *testing.T) {
 	if conf["freshest_source_at"] != "2026-07-29T00:00:00Z" {
 		t.Fatalf("freshest_source_at = %v, want the healthy-baseline memory's CreatedAt", conf["freshest_source_at"])
 	}
-	// AMENDED: missing_sources is call-scoped over ALL enabled instances, not
-	// just this query's contributors. This fixture always has imessage enabled
-	// and stale (seedConfidenceFixture), so even a query whose only match is a
-	// healthy gmail row still surfaces imessage's incomplete coverage.
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
-		t.Fatalf("missing_sources = %v, want [imessage] (call-scoped: imessage is enabled+stale fixture-wide, regardless of whether this query's match came from gmail)", got)
+	// Generic/historical relevance is not demoted by an unrelated stale source.
+	if got := confidenceMissingSources(conf); len(got) != 0 {
+		t.Fatalf("missing_sources = %v, want none for generic intent", got)
 	}
-	if conf["health_impact"] != "stale" {
-		t.Fatalf("health_impact = %v, want stale (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
+	if conf["health_impact"] != "none" {
+		t.Fatalf("health_impact = %v, want none for generic intent", conf["health_impact"])
 	}
 }
 
@@ -512,11 +509,11 @@ func TestConfidenceSearchMemoryWeakEvidenceUnhealthySource(t *testing.T) {
 	// this query's only contributor AND is fixture-wide stale), but the
 	// reasoning is now call-scoped, not contribution-scoped: imessage would
 	// appear here even if this query had matched nothing at all.
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
-		t.Fatalf("missing_sources = %v, want [imessage] (imessage is enabled+stale fixture-wide, call-scoped)", got)
+	if got := confidenceMissingSources(conf); len(got) != 0 {
+		t.Fatalf("missing_sources = %v, want none for generic intent", got)
 	}
-	if conf["health_impact"] != "stale" {
-		t.Fatalf("health_impact = %v, want stale (imessage's sourceHealth state)", conf["health_impact"])
+	if conf["health_impact"] != "none" {
+		t.Fatalf("health_impact = %v, want none for generic intent", conf["health_impact"])
 	}
 }
 
@@ -550,11 +547,11 @@ func TestConfidenceSearchMemoryModerateEvidenceFreshestIsMax(t *testing.T) {
 	// missing_sources is call-scoped over ALL enabled instances (see the
 	// FROZEN SHAPE doc comment), so the fixture-wide-stale imessage instance
 	// still surfaces here even though it contributed nothing to this query.
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
-		t.Fatalf("missing_sources = %v, want [imessage] (call-scoped: imessage is enabled+stale fixture-wide, regardless of the vantrex rows' own gmail source)", got)
+	if got := confidenceMissingSources(conf); len(got) != 0 {
+		t.Fatalf("missing_sources = %v, want none for generic intent", got)
 	}
-	if conf["health_impact"] != "stale" {
-		t.Fatalf("health_impact = %v, want stale (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
+	if conf["health_impact"] != "none" {
+		t.Fatalf("health_impact = %v, want none for generic intent", conf["health_impact"])
 	}
 }
 
@@ -585,11 +582,11 @@ func TestConfidenceSearchMemoryNoResults(t *testing.T) {
 	if conf["freshest_source_at"] != "" {
 		t.Fatalf("freshest_source_at = %v, want \"\" for zero results", conf["freshest_source_at"])
 	}
-	if got := confidenceMissingSources(conf); !strSlicesEqual(got, []string{"imessage"}) {
-		t.Fatalf("missing_sources = %v, want [imessage] for zero results (call-scoped over sourceHealthAll: imessage is enabled+stale fixture-wide even though nothing was retrieved)", got)
+	if got := confidenceMissingSources(conf); len(got) != 0 {
+		t.Fatalf("missing_sources = %v, want none for generic intent", got)
 	}
-	if conf["health_impact"] != "stale" {
-		t.Fatalf("health_impact = %v, want stale for zero results (imessage's sourceHealth state, call-scoped)", conf["health_impact"])
+	if conf["health_impact"] != "none" {
+		t.Fatalf("health_impact = %v, want none for generic intent", conf["health_impact"])
 	}
 }
 

@@ -69,6 +69,69 @@ func TestSourceHealthStates(t *testing.T) {
 	}
 }
 
+func TestIsolationLastKnownGoodStaleProvenance(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail", "calendar")
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	success := now.Add(-2 * time.Hour).Format(time.RFC3339)
+	attempt := now.Add(-time.Hour).Format(time.RFC3339)
+	seedSyncStatusFull(t, cfg, "gmail", &memory.SyncStatus{
+		Source: "gmail", LastSynced: success, LastSuccessAt: success, LastAttemptAt: attempt,
+		LastError: "typed failure", ErrorCode: errCodeConnectorUnavailable, ErrorCount: 1, ItemCount: 3,
+	})
+	seedSyncStatusFull(t, cfg, "calendar", &memory.SyncStatus{
+		Source: "calendar", LastSynced: success, LastSuccessAt: success, LastAttemptAt: attempt,
+		LastError: "typed failure", ErrorCode: errCodeConnectorUnavailable, ErrorCount: 1,
+	})
+	states := buildSourceStates(cfg, Digest{Sections: []DigestSection{
+		{Source: "gmail", State: stateStale}, {Source: "calendar", State: stateStale},
+	}})
+	if len(states) != 2 || states[0].Instance != "calendar" || states[1].Instance != "gmail" {
+		t.Fatalf("states = %+v", states)
+	}
+	state := states[1]
+	if state.State != "stale" || state.LastSuccessAt != success || state.LastAttemptAt != attempt || state.ErrorCode != errCodeConnectorUnavailable || !state.Errored {
+		t.Fatalf("stale provenance = %+v", state)
+	}
+	if state.LastSynced != success {
+		t.Fatalf("last-known-good alias changed: %+v", state)
+	}
+}
+
+func TestIsolationRecoveryPreservesFailureHistory(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	handle, err := beginOperation(cfg, operationKindIngest, "ingesting", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finishOperation(cfg, handle, operationFailed, "failed", operationCounts{Errors: 1}, "ingest_failed", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	failedPath := filepath.Join(operationRoot(cfg), string(operationKindIngest), handle.RunID+".json")
+	clean := now.Add(-10 * time.Minute).Format(time.RFC3339)
+	seedSyncStatusFull(t, cfg, "gmail", &memory.SyncStatus{
+		Source: "gmail", LastSynced: clean, LastSuccessAt: clean, LastAttemptAt: clean, ItemCount: 4,
+	})
+	health := sourceHealthFor(cfg, Source{Name: "gmail", Type: "gmail"}, "gmail", now)
+	if health.State != healthFresh || health.ErrorCode != "" {
+		t.Fatalf("recovered health = %+v", health)
+	}
+	body, err := os.ReadFile(failedPath)
+	if err != nil {
+		t.Fatalf("failed history removed: %v", err)
+	}
+	var record operationRecord
+	if err := json.Unmarshal(body, &record); err != nil || record.RunID != handle.RunID || record.State != operationFailed {
+		t.Fatalf("failed history = %+v, err %v", record, err)
+	}
+}
+
 // TestSourceHealthAllNonNilWhenEmpty (▸CX JSON contract discipline): with no
 // enabled sources, sourceHealthAll must return a non-nil empty slice, not nil —
 // the doctor JSON report's `sources` field must marshal as `[]`, never `null`.

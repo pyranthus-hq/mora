@@ -413,16 +413,14 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// TestConfidenceSearchMemoryKnobOffByteIdentical). Scoped over `budgeted`
 	// — the actual RETURNED set — per the frozen contract.
 	if boolArg(args, "confidence", false) {
-		conf := searchConfidence(ctx, cfg, budgeted, sr.ScoreFused, sr.Results, sr.Local, sr.Trace, query, now)
+		conf := searchConfidenceFor(ctx, cfg, budgeted, sr.ScoreFused, sr.Results, sr.Local, sr.Trace,
+			query, now, filters.NormalizedSource(), contextIntentOf(query) == contextIntentCurrentState)
 		// #241/#238 interaction: a source excluded by an active source filter
 		// is a caller choice, not a coverage gap — recompute missing_sources/
 		// health_impact over the filter-narrowed population (confidence.go's
 		// confidenceSourceGaps/searchConfidence are UNTOUCHED; this overwrites
 		// the two fields after the fact, search_filters.go's filteredMissingSources).
 		// SAME captured `now` as above.
-		if filters.Source != "" {
-			conf.MissingSources, conf.HealthImpact = filteredMissingSources(cfg, now, filters)
-		}
 		out["confidence"] = conf
 	}
 	// #241: the "filters" receipt appears ONLY when at least one filter was

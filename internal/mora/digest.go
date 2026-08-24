@@ -1665,11 +1665,14 @@ func changePrefix(change string) string { return digestpkg.ChangePrefix(change) 
 // unavailable state without parsing the Markdown. It is derived from the SAME
 // typed Digest the human brief renders (one source of truth — M-5).
 type sourceState struct {
-	Instance   string `json:"instance"`    // the sourceInstanceKey ("gmail", …)
-	State      string `json:"state"`       // new | no_change | stale | unavailable
-	Count      int    `json:"count"`       // in-window/in-delta total (shown items + more_count)
-	LastSynced string `json:"last_synced"` // "" when never synced
-	Errored    bool   `json:"errored"`     // a recorded sync error (LastError/ErrorCount)
+	Instance      string `json:"instance"`        // the sourceInstanceKey ("gmail", …)
+	State         string `json:"state"`           // new | no_change | stale | unavailable
+	Count         int    `json:"count"`           // in-window/in-delta total (shown items + more_count)
+	LastSynced    string `json:"last_synced"`     // legacy alias; "" when never synced
+	LastSuccessAt string `json:"last_success_at"` // last verified clean attempt
+	LastAttemptAt string `json:"last_attempt_at"` // latest attempt, including failure
+	ErrorCode     string `json:"error_code,omitempty"`
+	Errored       bool   `json:"errored"` // a recorded sync error (LastError/ErrorCount)
 }
 
 // mcpStateLabel maps the typed DigestSection.State (the human-brief sentinel) to
@@ -1709,10 +1712,14 @@ func buildSourceStates(cfg Config, d Digest) []sourceState {
 		}
 		if st := loadConnectorSyncStatus(cfg, s.Source); st != nil {
 			ss.LastSynced = st.LastSynced
+			ss.LastSuccessAt = st.LastSuccessAt
+			ss.LastAttemptAt = st.LastAttemptAt
+			ss.ErrorCode = st.ErrorCode
 			ss.Errored = st.LastError != "" || st.ErrorCount > 0
 		}
 		out = append(out, ss)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Instance < out[j].Instance })
 	return out
 }
 
