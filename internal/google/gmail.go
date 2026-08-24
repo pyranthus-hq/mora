@@ -38,6 +38,16 @@ func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, 
 	if w.SyncCursor != "" {
 		return f.fetchGmailHistoryPage(ctx, w, cursor)
 	}
+	syncCursor := ""
+	if cursor == "" {
+		// Capture BEFORE the initial snapshot. Changes racing pagination then
+		// replay through history on the next run instead of falling into a gap.
+		profile, err := f.gmail.Users.GetProfile("me").Context(ctx).Do()
+		if err != nil {
+			return Page{}, err
+		}
+		syncCursor = strconv.FormatUint(profile.HistoryId, 10)
+	}
 	call := f.gmail.Users.Threads.List("me").MaxResults(gmailPageSize).Context(ctx)
 	if q := buildGmailQuery(w); q != "" {
 		call = call.Q(q)
@@ -62,14 +72,6 @@ func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, 
 			continue // per-thread failure: skip
 		}
 		items = append(items, gmailThreadToItem(full))
-	}
-	syncCursor := ""
-	if res.NextPageToken == "" {
-		profile, err := f.gmail.Users.GetProfile("me").Context(ctx).Do()
-		if err != nil {
-			return Page{}, err
-		}
-		syncCursor = strconv.FormatUint(profile.HistoryId, 10)
 	}
 	return Page{Items: items, NextCursor: res.NextPageToken, SyncCursor: syncCursor}, nil
 }

@@ -75,8 +75,12 @@ func (g *ggFakeGoogle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	status, body := http.StatusNotFound, `{"error":{"code":404,"message":"unrouted"}}`
 	switch {
-	case strings.Contains(path, "/profile") && g.profile != nil:
-		status, body = g.profile(r)
+	case strings.Contains(path, "/profile"):
+		if g.profile != nil {
+			status, body = g.profile(r)
+		} else {
+			status, body = http.StatusOK, `{"historyId":"1"}`
+		}
 	case strings.Contains(path, "/history") && g.history != nil:
 		status, body = g.history(r)
 	case strings.Contains(path, "/labels") && g.labels != nil:
@@ -175,7 +179,7 @@ func TestGg_FetchPageContextCancelsGmailThreadDetail(t *testing.T) {
 		t.Fatalf("gmail detail cancellation = %v", err)
 	}
 	<-observed
-	if got := len(fake.recorded()); got != 2 {
+	if got := len(fake.recorded()); got != 3 { // profile snapshot + list + first detail
 		t.Fatalf("requests = %v, remaining detail loop continued", fake.recorded())
 	}
 }
@@ -1130,6 +1134,22 @@ func TestGg_FetchGmailIncrementalHistory(t *testing.T) {
 	}
 	if req := g.lastMatching("/history"); !strings.Contains(req, "startHistoryId=42") {
 		t.Fatalf("history request omitted durable cursor: %q", req)
+	}
+}
+
+func TestGg_GmailInitialSnapshotCapturesHistoryBeforeList(t *testing.T) {
+	g := &ggFakeGoogle{
+		profile:     func(*http.Request) (int, string) { return 200, `{"historyId":"42"}` },
+		threadsList: func(*http.Request) (int, string) { return 200, `{"threads":[]}` },
+	}
+	f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+	page, err := f.FetchPage(KindGmailThread, FetchWindow{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := g.recorded()
+	if len(requests) != 2 || !strings.Contains(requests[0], "/profile") || !strings.Contains(requests[1], "/threads") || page.SyncCursor != "42" {
+		t.Fatalf("snapshot ordering=%v cursor=%q", requests, page.SyncCursor)
 	}
 }
 
