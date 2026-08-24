@@ -26,6 +26,9 @@ func TestSourceProcessHelper(t *testing.T) {
 		os.Exit(0)
 	}
 	signal.Ignore(os.Interrupt)
+	if ready := os.Getenv("MORA_SOURCE_PROCESS_READY"); ready != "" {
+		_ = os.WriteFile(ready, []byte("ready"), 0o600)
+	}
 	for {
 		time.Sleep(time.Hour)
 	}
@@ -81,9 +84,18 @@ func TestSourceProcessCancellationForcesUncooperativeChild(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("protected-source launcher is macOS-only")
 	}
-	runner, captured, _ := helperProcessRunner(t, "uncooperative")
+	runner, captured, ready := helperProcessRunner(t, "uncooperative")
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(50*time.Millisecond, cancel)
+	go func() {
+		for i := 0; i < 200; i++ {
+			if _, err := os.Stat(ready); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
 	err := runSourceProcess(ctx, runner, "helper")
 	var processErr *sourceProcessError
 	if !errors.As(err, &processErr) || !processErr.Forced || !errors.Is(err, context.Canceled) {
