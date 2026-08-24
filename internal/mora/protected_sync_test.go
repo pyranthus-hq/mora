@@ -4,12 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	protectedsyncpkg "github.com/pyranthus-hq/mora/internal/protectedsync"
 )
+
+func TestProtectedSyncRunOpenUsesBoundedRunner(t *testing.T) {
+	original := protectedSyncProcessRunner
+	t.Cleanup(func() { protectedSyncProcessRunner = original })
+	var gotName string
+	var gotArgs []string
+	protectedSyncProcessRunner = sourceProcessRunner{
+		grace: time.Second,
+		command: func(name string, args ...string) *exec.Cmd {
+			gotName = name
+			gotArgs = append([]string(nil), args...)
+			return exec.Command(os.Args[0], "-test.run=^$")
+		},
+	}
+	args := []string{"-n", "-W", "-a", "/Applications/Mora.app", "--args", "sync", "imessage", protectedSyncReceiptFlag, protectedSyncTestToken()}
+	if err := protectedSyncRunOpen(context.Background(), args...); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "/usr/bin/open" || !sameStrings(gotArgs, args) {
+		t.Fatalf("launcher = %q %v, want /usr/bin/open %v", gotName, gotArgs, args)
+	}
+}
 
 func protectedSyncTestToken() string { return "0123456789abcdef" + "0123456789abcdef" }
 

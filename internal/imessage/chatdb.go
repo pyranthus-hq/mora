@@ -1,6 +1,7 @@
 package imessage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -18,6 +19,10 @@ const chatPageSize = 50
 var requiredMessageColumns = []string{
 	"guid", "date", "text", "attributedBody", "is_from_me", "handle_id", "associated_message_type",
 }
+
+// testHookAfterChatList lets cancellation tests stop the fetch between the
+// page query and the per-conversation queries. It is nil in production.
+var testHookAfterChatList func()
 
 // optionalMessageColumns enrich rendering when present but are NOT required (their
 // names/availability vary by macOS version): item_type distinguishes system events
@@ -146,6 +151,10 @@ func probeMessageSchema(db *sql.DB) (map[string]bool, error) {
 // its structured convInput as Payload for the mapper. Denied conversations are
 // skipped here so they never reach rendering (IMSG-06).
 func (f *LiveFetcher) FetchPage(kind ItemKind, w FetchWindow, cursor string) (Page, error) {
+	return f.FetchPageContext(context.Background(), kind, w, cursor)
+}
+
+func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w FetchWindow, cursor string) (Page, error) {
 	if kind != KindIMessageChat {
 		return Page{}, fmt.Errorf("unsupported kind %q", kind)
 	}
@@ -159,7 +168,7 @@ func (f *LiveFetcher) FetchPage(kind ItemKind, w FetchWindow, cursor string) (Pa
 	sinceNanos := timeToCocoaNanos(w.Since)
 
 	// List the next page of chat ROWIDs.
-	chatRows, err := f.db.Query(
+	chatRows, err := f.db.QueryContext(ctx,
 		`SELECT ROWID, guid, display_name, chat_identifier
 		   FROM chat
 		  WHERE ROWID > ?
@@ -190,13 +199,19 @@ func (f *LiveFetcher) FetchPage(kind ItemKind, w FetchWindow, cursor string) (Pa
 		return Page{}, fmt.Errorf("iterate chats: %w", err)
 	}
 	chatRows.Close()
+	if testHookAfterChatList != nil {
+		testHookAfterChatList()
+	}
 
 	var items []Item
 	var lastROWID int64
 	for _, c := range chats {
 		lastROWID = c.rowid
-		it, ok, err := f.assembleConversation(c.guid, c.display, c.identifier, c.rowid, sinceNanos)
+		it, ok, err := f.assembleConversationContext(ctx, c.guid, c.display, c.identifier, c.rowid, sinceNanos)
 		if err != nil {
+			if ctx.Err() != nil {
+				return Page{}, ctx.Err()
+			}
 			// Per-conversation failure: skip, never abort the page (schema-defensive,
 			// honest-snapshot — the caller's Ingest loop counts the gap).
 			continue
@@ -217,7 +232,11 @@ func (f *LiveFetcher) FetchPage(kind ItemKind, w FetchWindow, cursor string) (Pa
 // chat_handle_join (the authoritative roster, independent of who spoke in the
 // window). Used for group/1:1 classification and the sole-counterparty deny rule.
 func (f *LiveFetcher) chatParticipants(chatROWID int64) ([]string, error) {
-	rows, err := f.db.Query(
+	return f.chatParticipantsContext(context.Background(), chatROWID)
+}
+
+func (f *LiveFetcher) chatParticipantsContext(ctx context.Context, chatROWID int64) ([]string, error) {
+	rows, err := f.db.QueryContext(ctx,
 		`SELECT h.id
 		   FROM chat_handle_join chj
 		   JOIN handle h ON h.ROWID = chj.handle_id
@@ -276,7 +295,11 @@ func (f *LiveFetcher) denySkipConversation(display, identifier sql.NullString, p
 // resolution happens in the mapper) and wraps it in an Item. ok is false when the
 // conversation is denied or has no renderable messages in the window.
 func (f *LiveFetcher) assembleConversation(guid string, display, identifier sql.NullString, chatROWID, sinceNanos int64) (Item, bool, error) {
-	participants, err := f.chatParticipants(chatROWID)
+	return f.assembleConversationContext(context.Background(), guid, display, identifier, chatROWID, sinceNanos)
+}
+
+func (f *LiveFetcher) assembleConversationContext(ctx context.Context, guid string, display, identifier sql.NullString, chatROWID, sinceNanos int64) (Item, bool, error) {
+	participants, err := f.chatParticipantsContext(ctx, chatROWID)
 	if err != nil {
 		return Item{}, false, err
 	}
@@ -285,7 +308,7 @@ func (f *LiveFetcher) assembleConversation(guid string, display, identifier sql.
 	}
 	isGroup := len(participants) > 1
 
-	msgs, atts, latest, err := f.conversationMessages(chatROWID, sinceNanos)
+	msgs, atts, latest, err := f.conversationMessagesContext(ctx, chatROWID, sinceNanos)
 	if err != nil {
 		return Item{}, false, err
 	}
@@ -323,6 +346,10 @@ func (f *LiveFetcher) assembleConversation(guid string, display, identifier sql.
 // date (Cocoa-epoch). It filters tapbacks (associated_message_type != 0, D-12) and
 // classifies system/retracted messages from the optional columns when present.
 func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]renderMessage, []Attachment, int64, error) {
+	return f.conversationMessagesContext(context.Background(), chatROWID, sinceNanos)
+}
+
+func (f *LiveFetcher) conversationMessagesContext(ctx context.Context, chatROWID, sinceNanos int64) ([]renderMessage, []Attachment, int64, error) {
 	// Optional columns become literal 0 when the live schema lacks them, keeping the
 	// SELECT arity fixed and the scan simple (schema-defensive). The identifier
 	// check mirrors pragmaTableInfo: the names are package constants today, and the
@@ -345,7 +372,7 @@ func (f *LiveFetcher) conversationMessages(chatROWID, sinceNanos int64) ([]rende
 	  WHERE cmj.chat_id = ? AND m.date >= ?
 	  ORDER BY m.date ASC, m.ROWID ASC`, itemTypeExpr, retractedExpr)
 
-	rows, err := f.db.Query(query, chatROWID, sinceNanos)
+	rows, err := f.db.QueryContext(ctx, query, chatROWID, sinceNanos)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("conversation query: %w", err)
 	}

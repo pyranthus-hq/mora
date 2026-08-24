@@ -14,7 +14,10 @@ const protectedSyncReceiptFlag = protectedsyncpkg.ReceiptFlag
 type protectedSyncReceipt = protectedsyncpkg.Receipt
 
 var protectedSyncExecutable = os.Executable
-var protectedSyncRunOpen = func(ctx context.Context, args ...string) error { return realRun(ctx, "/usr/bin/open", args...) }
+var protectedSyncProcessRunner = defaultSourceProcessRunner()
+var protectedSyncRunOpen = func(ctx context.Context, args ...string) error {
+	return runSourceProcess(ctx, protectedSyncProcessRunner, "/usr/bin/open", args...)
+}
 var protectedSyncNow = time.Now
 var protectedSyncUserHomeDir = os.UserHomeDir
 var errProtectedSyncDirect = protectedsyncpkg.ErrDirect
@@ -64,6 +67,5 @@ func protectedSyncReceiptArg(args []string) (string, []string, error) {
 	return protectedsyncpkg.ParseArgs(args)
 }
 func realRun(ctx context.Context, name string, args ...string) error {
-	_, err := realExec(ctx, "", name, args...)
-	return err
+	return runSourceProcess(ctx, defaultSourceProcessRunner(), name, args...)
 }
