@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -32,6 +33,116 @@ type sourceRunResult struct {
 	Trace    []string
 	Items    int
 	Failures int
+}
+
+const (
+	sourceRunStatusSuccess   = "success"
+	sourceRunStatusPartial   = "partial"
+	sourceRunStatusEmpty     = "empty"
+	sourceRunStatusFailed    = "failed"
+	sourceRunStatusCancelled = "cancelled"
+)
+
+type sourceRunOutcome struct {
+	Key           string
+	Items         int
+	Err           error
+	Cancelled     bool
+	LastSuccessAt string
+	LastAttemptAt string
+	Stale         bool
+}
+
+type sourceRunReceipt struct {
+	Source        string `json:"source"`
+	Status        string `json:"status"`
+	Usable        bool   `json:"usable"`
+	Items         int    `json:"items"`
+	ErrorCode     string `json:"error_code,omitempty"`
+	ErrorClass    string `json:"error_class,omitempty"`
+	Retryable     bool   `json:"retryable"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
+	LastAttemptAt string `json:"last_attempt_at,omitempty"`
+	Stale         bool   `json:"stale"`
+}
+
+type sourceRunAggregate struct {
+	Status            string             `json:"status"`
+	Usable            bool               `json:"usable"`
+	SuccessfulSources int                `json:"successful_sources"`
+	FailedSources     int                `json:"failed_sources"`
+	CancelledSources  int                `json:"cancelled_sources"`
+	Sources           []sourceRunReceipt `json:"sources"`
+	SystemNotices     []sourceRunNotice  `json:"system_notices,omitempty"`
+}
+
+func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, notices []sourceRunNotice, infrastructureErr error) (sourceRunAggregate, error) {
+	byKey := make(map[string]sourceRunOutcome, len(outcomes))
+	for _, outcome := range outcomes {
+		byKey[outcome.Key] = outcome
+	}
+	receipts := make([]sourceRunReceipt, 0, len(plans))
+	for _, plan := range plans {
+		outcome, found := byKey[plan.Key]
+		if !found {
+			outcome = sourceRunOutcome{Key: plan.Key, Err: errors.New("source produced no terminal outcome")}
+		}
+		receipt := sourceRunReceipt{
+			Source: plan.Key, Items: outcome.Items, LastSuccessAt: outcome.LastSuccessAt,
+			LastAttemptAt: outcome.LastAttemptAt, Stale: outcome.Stale,
+		}
+		switch {
+		case outcome.Cancelled:
+			receipt.Status = sourceRunStatusCancelled
+		case outcome.Err != nil:
+			receipt.Status = sourceRunStatusFailed
+			receipt.ErrorCode = connectorErrorCodeFor(outcome.Err)
+			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
+			receipt.Retryable = retryableForErrorCode(receipt.ErrorCode)
+		case outcome.Items == 0:
+			receipt.Status = sourceRunStatusEmpty
+			receipt.Usable = true
+			receipt.ErrorCode = errCodeConnectorEmpty
+			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
+			receipt.Retryable = retryableForErrorCode(receipt.ErrorCode)
+		default:
+			receipt.Status = sourceRunStatusSuccess
+			receipt.Usable = true
+		}
+		receipts = append(receipts, receipt)
+	}
+	sort.Slice(receipts, func(i, j int) bool { return receipts[i].Source < receipts[j].Source })
+
+	aggregate := sourceRunAggregate{Sources: receipts, SystemNotices: notices}
+	for _, receipt := range receipts {
+		switch receipt.Status {
+		case sourceRunStatusSuccess, sourceRunStatusEmpty:
+			aggregate.SuccessfulSources++
+		case sourceRunStatusFailed:
+			aggregate.FailedSources++
+		case sourceRunStatusCancelled:
+			aggregate.CancelledSources++
+		}
+	}
+	aggregate.Usable = aggregate.SuccessfulSources > 0
+	switch {
+	case infrastructureErr != nil:
+		aggregate.Status = sourceRunStatusFailed
+		aggregate.Usable = false
+		return aggregate, infrastructureErr
+	case aggregate.CancelledSources > 0:
+		aggregate.Status = sourceRunStatusCancelled
+		return aggregate, fmt.Errorf("source run cancelled")
+	case aggregate.FailedSources > 0 && aggregate.SuccessfulSources > 0:
+		aggregate.Status = sourceRunStatusPartial
+		return aggregate, nil
+	case aggregate.FailedSources > 0:
+		aggregate.Status = sourceRunStatusFailed
+		return aggregate, fmt.Errorf("every requested source failed")
+	default:
+		aggregate.Status = sourceRunStatusSuccess
+		return aggregate, nil
+	}
 }
 
 type sourceRunCoordinatorFunc func(context.Context, sourceRunRequest) (sourceRunResult, error)

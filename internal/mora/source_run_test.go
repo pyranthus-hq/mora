@@ -87,7 +87,7 @@ func TestIsolationTypedSourceFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			plans := []sourceRunPlan{{Key: "failed"}, {Key: "healthy"}}
 			outcomes := []sourceRunOutcome{
-				{Key: "failed", Err: newCodedError(tc.code, nil, tc.name)},
+				{Key: "failed", Err: newCodedError(tc.code, nil, "%s", tc.name)},
 				{Key: "healthy", Items: 2},
 			}
 			aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)

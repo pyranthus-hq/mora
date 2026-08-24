@@ -142,6 +142,30 @@ var connectorErrorClassByCode = map[string]string{
 	errCodeConnectorUnclassified: connectorClassUnclassified,
 }
 
+// retryableByErrorCode is the machine retry policy published beside each code
+// in error-code-registry.json. Keeping the complete table here makes a drift in
+// either direction fail TestErrorCodeRegistryMatchesSource instead of leaving
+// receipt retry advice as duplicated prose.
+var retryableByErrorCode = map[string]bool{
+	errCodeUsageUnknownFlag:      false,
+	errCodeUsageUnknownValue:     false,
+	errCodeUsageMissingArgument:  false,
+	errCodeConnectorMalformed:    false,
+	errCodeConnectorUnavailable:  true,
+	errCodeConnectorUnauthorized: false,
+	errCodeConnectorStale:        true,
+	errCodeConnectorEmpty:        false,
+	errCodeConnectorUnclassified: false,
+	errCodeConsentRequired:       false,
+	errCodeDataNotFound:          false,
+	errCodeDataCorrupt:           false,
+	errCodeIndexUnavailable:      true,
+	errCodeIndexSchemaMismatch:   false,
+	errCodeInternalUnexpected:    false,
+}
+
+func retryableForErrorCode(code string) bool { return retryableByErrorCode[code] }
+
 // exitCodeByClass is the class -> process exit code table the registry
 // publishes. Every class maps to the generic failure status today; the entries
 // are written out one per class rather than collapsed to a single return so that

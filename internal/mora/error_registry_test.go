@@ -223,6 +223,9 @@ func TestErrorCodeRegistryMatchesSource(t *testing.T) {
 		if got := exitCodeForClass(row.Class); got != row.ExitCode {
 			t.Errorf("%s: registry exit_code %d, exitCodeForClass(%q) %d", row.Code, row.ExitCode, row.Class, got)
 		}
+		if got := retryableForErrorCode(row.Code); got != row.Retryable {
+			t.Errorf("%s: registry retryable %v, retryableForErrorCode %v", row.Code, row.Retryable, got)
+		}
 		if row.Class == errClassConnector {
 			if row.ErrorClass == "" {
 				t.Errorf("%s: a connector row must carry a CON-07 error_class", row.Code)
