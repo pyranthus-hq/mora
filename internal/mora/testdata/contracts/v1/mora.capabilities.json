@@ -1052,7 +1052,7 @@
   "connectors": [
     {
       "features": {
-        "deep_link": "unsupported",
+        "deep_link": "supported",
         "incremental_sync": "supported",
         "repair": "unsupported"
       },
@@ -1065,7 +1065,7 @@
     },
     {
       "features": {
-        "deep_link": "unsupported",
+        "deep_link": "supported",
         "incremental_sync": "supported",
         "repair": "unsupported"
       },
@@ -1074,6 +1074,19 @@
       "name": "Gmail",
       "needs_auth": true,
       "type": "gmail",
+      "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "supported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "GitHub Issues",
+      "name": "GitHub Issues",
+      "needs_auth": false,
+      "type": "github",
       "upcoming": false
     },
     {
@@ -1101,19 +1114,6 @@
       "needs_auth": false,
       "type": "applecalendar",
       "upcoming": true
-    },
-    {
-      "features": {
-        "deep_link": "unsupported",
-        "incremental_sync": "unsupported",
-        "repair": "unsupported"
-      },
-      "ingesting": true,
-      "label": "GitHub Issues",
-      "name": "GitHub Issues",
-      "needs_auth": false,
-      "type": "github",
-      "upcoming": false
     },
     {
       "features": {
@@ -1278,7 +1278,7 @@
     }
   },
   "features": {
-    "deep_link": "unsupported",
+    "deep_link": "supported",
     "repair": "unsupported"
   },
   "mcp": {
