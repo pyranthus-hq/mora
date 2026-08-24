@@ -122,6 +122,25 @@ func TestMapConversationMetaParticipants(t *testing.T) {
 	}
 }
 
+func TestGroupConversationPreservesAuthorWithoutInventingDirectRecipient(t *testing.T) {
+	r := resolver1to1()
+	c := convInput{
+		guid: "group-chat", chat: conversation{isGroup: true, participants: []string{"+14155551234", "+19998887777"}},
+		messages: []renderMessage{{guid: "message-1", date: localDate(2026, 8, 24, 9, 0), sender: "+14155551234", text: "status for the room"}},
+	}
+	mm := mapConversation(c, r, 0)
+	if group, ok := mm.Meta["is_group"].(bool); !ok || !group {
+		t.Fatalf("group attribution missing: %+v", mm.Meta)
+	}
+	evidence := mm.Meta["message_evidence"].([]map[string]any)
+	if len(evidence) != 1 || evidence[0]["sender"] == "" {
+		t.Fatalf("message author missing: %+v", evidence)
+	}
+	if _, invented := evidence[0]["recipient"]; invented {
+		t.Fatalf("ambient group participation was rewritten as a direct recipient: %+v", evidence[0])
+	}
+}
+
 // TestMapConversationTruncationInverted proves the mapper propagates the renderer's
 // newest-first bounding result honestly (D-03/D-04): a tight budget truncates,
 // IngestedSize < OriginalSize, and the newest message survives while the oldest is

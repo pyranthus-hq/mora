@@ -63,7 +63,7 @@ func WinnerQuery(ctx context.Context, db *sql.DB, query, scope string, pool int,
 		}
 		var refs []string
 		_ = json.Unmarshal([]byte(refsJSON), &refs)
-		evidence[id] = memory.GmailSegmentEvidence{EvidenceRef: ref, Sender: sender, At: at, Direction: Direction(refs), Snippet: searchpkg.MatchSnippet(text, query, snippetLen)}
+		evidence[id] = memory.GmailSegmentEvidence{EvidenceRef: ref, Sender: sender, At: at, Direction: Direction(refs), Audience: Audience(refs), Snippet: searchpkg.MatchSnippet(text, query, snippetLen)}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {

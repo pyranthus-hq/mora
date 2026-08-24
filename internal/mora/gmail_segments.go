@@ -28,6 +28,7 @@ func deriveIMessageSegments(m Memory) ([]gmailSegmentRow, *gmailSegmentDiagnosti
 	return segmentspkg.Derive(m)
 }
 func imessageDirection(refs []string) string { return segmentspkg.Direction(refs) }
+func imessageAudience(refs []string) string  { return segmentspkg.Audience(refs) }
 func prepareGmailSegStmts(ctx context.Context, tx *sql.Tx) (*gmailSegStmts, error) {
 	return segmentspkg.Prepare(ctx, tx)
 }
