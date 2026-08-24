@@ -63,7 +63,7 @@ var contractVolatileTimestamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2
 // prefix, a date, a time, and a random hex suffix (`mem_20260817_035523_a59425fe`,
 // `run_20260817_105523_31bb45a4`, `gov_...`). They also appear embedded in
 // filesystem paths, which is why normalization runs over the whole string.
-var contractVolatileID = regexp.MustCompile(`[a-z]+_\d{8}_\d{6}_[0-9a-f]{8}`)
+var contractVolatileID = regexp.MustCompile(`(?:[a-z]+_\d{8}_\d{6}_[0-9a-f]{8}|(?:ret|recovery)_[0-9a-f]{16})`)
 
 // contractVolatileStamp matches the date-time stamp in generated file names
 // (`mora-20260817-035523.tar.gz`).

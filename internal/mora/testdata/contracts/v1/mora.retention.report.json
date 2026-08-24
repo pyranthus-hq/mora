@@ -1,0 +1,9 @@
+{
+  "candidates": null,
+  "created_at": "\u003ctimestamp\u003e",
+  "older_than_days": 365,
+  "recovery_days": 30,
+  "report_id": "\u003cid\u003e",
+  "schema": "mora.retention.report",
+  "schema_version": 1
+}

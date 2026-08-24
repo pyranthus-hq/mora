@@ -1,0 +1,10 @@
+{
+  "dangling_graph_edges": null,
+  "healthy": true,
+  "index_count": 2,
+  "missing_index_ids": null,
+  "orphan_index_ids": null,
+  "schema": "mora.retention.integrity",
+  "schema_version": 1,
+  "vault_count": 2
+}
