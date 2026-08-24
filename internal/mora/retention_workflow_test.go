@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -32,6 +33,83 @@ func TestRetentionReportIsReadOnlyAndDecisionsAreExplicit(t *testing.T) {
 	updated, err := decideRetentionCandidate(cfg, report.ReportID, m.ID, retentionDecision{Action: "compact", Summary: "durable summary"})
 	if err != nil || updated.Candidates[0].Decision == nil || updated.Candidates[0].Decision.Action != "compact" {
 		t.Fatalf("decision=%+v err=%v", updated, err)
+	}
+}
+
+func TestRetentionExecutionUsesPreviewTargetsAndCompactsWithProvenance(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	for _, m := range []Memory{
+		{ID: "keep-old", Scope: "personal", Type: "note", Title: "Keep", Text: "keep", CreatedAt: "2024-01-01T00:00:00Z", ContentHash: "keep"},
+		{ID: "compact-old", Scope: "personal", Type: "email", Title: "Compact", Text: "long source", Provider: "gmail", ProviderID: "thread/old", CreatedAt: "2024-01-02T00:00:00Z", ContentHash: "compact"},
+	} {
+		if err := writeMemory(cfg, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	report, err := buildRetentionReport(cfg, now, 365, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decideRetentionCandidate(cfg, report.ReportID, "keep-old", retentionDecision{Action: "keep"}); err != nil {
+		t.Fatal(err)
+	}
+	report, err = decideRetentionCandidate(cfg, report.ReportID, "compact-old", retentionDecision{Action: "compact", Summary: "Durable compact fact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := validateRetentionReport(cfg, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := executeRetentionReport(context.Background(), cfg, report.ReportID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview) != 1 || len(receipt.TargetIDs) != 1 || preview[0] != receipt.TargetIDs[0] || receipt.TargetIDs[0] != "compact-old" {
+		t.Fatalf("preview=%v execution=%+v", preview, receipt)
+	}
+	if _, err := findMemoryRaw(cfg, "compact-old"); err == nil {
+		t.Fatal("compacted source still exists")
+	}
+	memories, err := listMemories(cfg, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retained *Memory
+	for i := range memories {
+		if memories[i].Type == "durable" {
+			retained = &memories[i]
+		}
+	}
+	if retained == nil || retained.Text != "Durable compact fact" {
+		t.Fatalf("retained memory=%+v", retained)
+	}
+	sources, _ := retained.Meta["retention_source_ids"].([]any)
+	if len(sources) != 1 || sources[0] != "compact-old" {
+		t.Fatalf("retention provenance=%+v", retained.Meta)
+	}
+}
+
+func TestRetentionExecutionRefusesCandidateChangedAfterPreview(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	if err := writeMemory(cfg, Memory{ID: "changed", Scope: "personal", Type: "note", Title: "Old", Text: "one", CreatedAt: "2024-01-01T00:00:00Z", ContentHash: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := buildRetentionReport(cfg, time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC), 365, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err = decideRetentionCandidate(cfg, report.ReportID, "changed", retentionDecision{Action: "delete"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := retentionCandidatePath(cfg, report.Candidates[0])
+	if err := os.WriteFile(path, []byte("changed after preview"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeRetentionReport(context.Background(), cfg, report.ReportID, time.Now()); err == nil {
+		t.Fatal("changed candidate executed")
 	}
 }
 

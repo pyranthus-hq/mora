@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -76,6 +77,19 @@ type encryptedRecoveryManifest struct {
 	ExpiresAt     string `json:"expires_at"`
 	Nonce         string `json:"nonce"`
 	Ciphertext    string `json:"ciphertext"`
+}
+
+type retentionExecutionReceipt struct {
+	SchemaVersion int      `json:"schema_version"`
+	ReportID      string   `json:"report_id"`
+	ManifestID    string   `json:"manifest_id"`
+	TargetIDs     []string `json:"target_ids"`
+	KeptIDs       []string `json:"kept_ids"`
+	ChangedIDs    []string `json:"changed_ids"`
+	CompactedIDs  []string `json:"compacted_ids"`
+	DeletedIDs    []string `json:"deleted_ids"`
+	ExecutedAt    string   `json:"executed_at"`
+	IndexCount    int      `json:"index_count"`
 }
 
 func retentionRoot(cfg Config) string { return filepath.Join(cfg.StateDir, "retention") }
@@ -280,4 +294,155 @@ func decryptRecoveryManifest(cfg Config, encrypted encryptedRecoveryManifest) (r
 		return recoveryPlaintext{}, errors.New("recovery manifest identity mismatch")
 	}
 	return plain, nil
+}
+
+func retentionCandidatePath(cfg Config, candidate retentionCandidate) (string, error) {
+	path := filepath.Clean(filepath.Join(cfg.VaultDir, filepath.FromSlash(candidate.Path)))
+	rel, err := filepath.Rel(cfg.VaultDir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("retention path escapes vault: %q", candidate.Path)
+	}
+	return path, nil
+}
+
+func validateRetentionReport(cfg Config, report retentionReport) ([]string, error) {
+	var targets []string
+	for _, candidate := range report.Candidates {
+		if candidate.Decision == nil {
+			return nil, fmt.Errorf("candidate %q has no decision", candidate.ID)
+		}
+		path, err := retentionCandidatePath(cfg, candidate)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("candidate %q changed since report: %w", candidate.ID, err)
+		}
+		if sha256Hex(raw) != candidate.ContentSHA {
+			return nil, fmt.Errorf("candidate %q changed since report; generate a new preview", candidate.ID)
+		}
+		if candidate.Decision.Action != "keep" {
+			targets = append(targets, candidate.ID)
+		}
+	}
+	sort.Strings(targets)
+	return targets, nil
+}
+
+func writeEncryptedRecovery(cfg Config, plain recoveryPlaintext) error {
+	encrypted, err := encryptRecoveryManifest(cfg, plain)
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(encrypted, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicio.Write(recoveryManifestPath(cfg, plain.ManifestID), append(b, '\n'), 0o600)
+}
+
+func executeRetentionReport(ctx context.Context, cfg Config, reportID string, now time.Time) (retentionExecutionReceipt, error) {
+	report, err := loadRetentionReport(cfg, reportID)
+	if err != nil {
+		return retentionExecutionReceipt{}, err
+	}
+	targets, err := validateRetentionReport(cfg, report)
+	if err != nil {
+		return retentionExecutionReceipt{}, err
+	}
+	var entries []recoveryEntry
+	for _, candidate := range report.Candidates {
+		if candidate.Decision.Action == "keep" {
+			continue
+		}
+		path, _ := retentionCandidatePath(cfg, candidate)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return retentionExecutionReceipt{}, err
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return retentionExecutionReceipt{}, err
+		}
+		entries = append(entries, recoveryEntry{ID: candidate.ID, Path: candidate.Path, Mode: uint32(info.Mode().Perm()), Data: raw, ContentSHA: candidate.ContentSHA})
+	}
+	stamp := now.UTC().Format(time.RFC3339)
+	manifestIdentity, _ := json.Marshal(struct {
+		ReportID string   `json:"report_id"`
+		Targets  []string `json:"targets"`
+		At       string   `json:"at"`
+	}{report.ReportID, targets, stamp})
+	manifestID := retentionID("recovery", manifestIdentity)
+	plain := recoveryPlaintext{SchemaVersion: retentionSchemaVersion, ManifestID: manifestID, ReportID: report.ReportID, CreatedAt: stamp, ExpiresAt: now.Add(time.Duration(report.RecoveryDays) * 24 * time.Hour).UTC().Format(time.RFC3339), Entries: entries}
+	if err := writeEncryptedRecovery(cfg, plain); err != nil {
+		return retentionExecutionReceipt{}, err
+	}
+	receipt := retentionExecutionReceipt{SchemaVersion: retentionSchemaVersion, ReportID: report.ReportID, ManifestID: manifestID, TargetIDs: targets, ExecutedAt: stamp}
+	var dirtyOps []pendingOp
+	for _, candidate := range report.Candidates {
+		decision := candidate.Decision
+		if decision.Action == "keep" {
+			receipt.KeptIDs = append(receipt.KeptIDs, candidate.ID)
+			continue
+		}
+		path, _ := retentionCandidatePath(cfg, candidate)
+		m, err := parseMemory(path)
+		if err != nil {
+			return retentionExecutionReceipt{}, err
+		}
+		op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: path, MemoryID: candidate.ID})
+		if err != nil {
+			return retentionExecutionReceipt{}, err
+		}
+		dirtyOps = append(dirtyOps, op)
+		switch decision.Action {
+		case "change-class":
+			m.Type = strings.TrimSpace(decision.Class)
+			b, err := renderMemory(m)
+			if err != nil {
+				return retentionExecutionReceipt{}, err
+			}
+			if err := atomicio.Write(path, b, 0o644); err != nil {
+				return retentionExecutionReceipt{}, err
+			}
+			receipt.ChangedIDs = append(receipt.ChangedIDs, candidate.ID)
+		case "compact":
+			compactID := "retained_" + sha256Hex([]byte(report.ReportID + ":" + candidate.ID))[:16]
+			compact := Memory{ID: compactID, Scope: m.Scope, Type: "durable", Title: "Retained: " + m.Title, Text: strings.TrimSpace(decision.Summary), Source: "retention:" + report.ReportID, CreatedAt: stamp, ContentHash: ContentHash(decision.Summary), Meta: map[string]any{"retention_source_ids": []string{candidate.ID}, "retention_manifest_id": manifestID}}
+			if err := writeMemory(cfg, compact); err != nil {
+				return retentionExecutionReceipt{}, err
+			}
+			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention compact " + report.ReportID}); err != nil {
+				return retentionExecutionReceipt{}, err
+			}
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return retentionExecutionReceipt{}, err
+			}
+			receipt.CompactedIDs = append(receipt.CompactedIDs, candidate.ID)
+		case "delete":
+			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention delete " + report.ReportID}); err != nil {
+				return retentionExecutionReceipt{}, err
+			}
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return retentionExecutionReceipt{}, err
+			}
+			receipt.DeletedIDs = append(receipt.DeletedIDs, candidate.ID)
+		}
+	}
+	count, err := rebuildIndex(ctx, cfg)
+	if err != nil {
+		return retentionExecutionReceipt{}, err
+	}
+	for _, op := range dirtyOps {
+		if err := unmarkIndexDirty(cfg, op.OpID); err != nil {
+			return retentionExecutionReceipt{}, err
+		}
+	}
+	receipt.IndexCount = count
+	b, _ := json.MarshalIndent(receipt, "", "  ")
+	if err := atomicio.Write(filepath.Join(retentionRoot(cfg), "audit", manifestID+".json"), append(b, '\n'), 0o600); err != nil {
+		return retentionExecutionReceipt{}, err
+	}
+	return receipt, nil
 }
