@@ -15,8 +15,8 @@ type SyncStatus struct {
 	ItemCount    int    `json:"item_count"`
 	ErrorCount   int    `json:"error_count"`
 	LastError    string `json:"last_error,omitempty"`
-	Checkpoint   string `json:"checkpoint,omitempty"`    // in-progress page token (resume)
-	GmailHistory string `json:"gmail_history,omitempty"` // legacy reserved field; retained for compatibility
+	Checkpoint   string `json:"checkpoint,omitempty"`     // in-progress page token (resume)
+	GmailHistory string `json:"gmail_history,omitempty"`  // legacy reserved field; retained for compatibility
 	CalSyncToken string `json:"cal_sync_token,omitempty"` // legacy reserved field; retained for compatibility
 	// IncrementalCursor is the provider-native between-run position. Checkpoint
 	// remains the in-progress page token and is cleared only after completion.
