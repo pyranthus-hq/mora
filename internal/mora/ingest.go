@@ -1799,6 +1799,12 @@ func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 }
 
 func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
+	started := time.Now()
+	result.Stages.Pages = 1
+	defer func() {
+		result.Stages.TotalMS = time.Since(started).Milliseconds()
+		result.Stages.MapWriteMS = result.Stages.TotalMS
+	}()
 	// Governance chokepoint (#52): filesystem re-ingest renders directly and does
 	// NOT route through writeMappedMemory, so consult the ledger here too —
 	// otherwise `mora forget --chat <src-id>` removes a filesystem memory that the
@@ -1878,6 +1884,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		if len(text) > 512*1024 {
 			return nil // keep the index lean — same bound as the raw-read path.
 		}
+		result.Stages.Bytes += int64(len(text))
 		result.Examined++
 		id := "src_" + ContentHash(s.Name+":"+rel)
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
