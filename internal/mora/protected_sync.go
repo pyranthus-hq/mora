@@ -66,6 +66,3 @@ func relayProtectedSync(ctx context.Context, cfg Config, source string) (protect
 func protectedSyncReceiptArg(args []string) (string, []string, error) {
 	return protectedsyncpkg.ParseArgs(args)
 }
-func realRun(ctx context.Context, name string, args ...string) error {
-	return runSourceProcess(ctx, defaultSourceProcessRunner(), name, args...)
-}

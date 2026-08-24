@@ -231,10 +231,6 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 // chatParticipants returns the conversation's non-self participant handles from
 // chat_handle_join (the authoritative roster, independent of who spoke in the
 // window). Used for group/1:1 classification and the sole-counterparty deny rule.
-func (f *LiveFetcher) chatParticipants(chatROWID int64) ([]string, error) {
-	return f.chatParticipantsContext(context.Background(), chatROWID)
-}
-
 func (f *LiveFetcher) chatParticipantsContext(ctx context.Context, chatROWID int64) ([]string, error) {
 	rows, err := f.db.QueryContext(ctx,
 		`SELECT h.id
@@ -294,10 +290,6 @@ func (f *LiveFetcher) denySkipConversation(display, identifier sql.NullString, p
 // assembleConversation builds the structured convInput for one chat (raw handles;
 // resolution happens in the mapper) and wraps it in an Item. ok is false when the
 // conversation is denied or has no renderable messages in the window.
-func (f *LiveFetcher) assembleConversation(guid string, display, identifier sql.NullString, chatROWID, sinceNanos int64) (Item, bool, error) {
-	return f.assembleConversationContext(context.Background(), guid, display, identifier, chatROWID, sinceNanos)
-}
-
 func (f *LiveFetcher) assembleConversationContext(ctx context.Context, guid string, display, identifier sql.NullString, chatROWID, sinceNanos int64) (Item, bool, error) {
 	participants, err := f.chatParticipantsContext(ctx, chatROWID)
 	if err != nil {

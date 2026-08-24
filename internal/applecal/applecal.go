@@ -310,11 +310,6 @@ func (f *LiveFetcher) participantsContext(ctx context.Context, eventROWID int64)
 }
 
 // hasSelfColumn reports whether this Calendar.sqlitedb exposes Participant.is_self.
-func (f *LiveFetcher) hasSelfColumn() bool {
-	has, _ := f.hasSelfColumnContext(context.Background())
-	return has
-}
-
 func (f *LiveFetcher) hasSelfColumnContext(ctx context.Context) (bool, error) {
 	rows, err := f.db.QueryContext(ctx, `SELECT 1 FROM pragma_table_info('Participant') WHERE name = 'is_self'`)
 	if err != nil {
