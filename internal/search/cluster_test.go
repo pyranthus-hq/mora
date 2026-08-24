@@ -21,6 +21,19 @@ func TestClusterProviderAnchorAndBackfill(t *testing.T) {
 		t.Fatalf("got=%+v", got)
 	}
 }
+
+func TestClusterRollingDigestCopiesByContentHash(t *testing.T) {
+	first, repeated := mem("digest-window-1"), mem("digest-window-2")
+	first.Provider, first.ProviderID = "filesystem", "rollup/2026-08-23"
+	repeated.Provider, repeated.ProviderID = "filesystem", "rollup/2026-08-24"
+	first.ContentHash, repeated.ContentHash = "sha256:canonical-observation", "sha256:canonical-observation"
+
+	got := ClusterAndTruncate([]string{first.ID, repeated.ID}, []memory.Memory{first, repeated}, 2, noAnnotate)
+	if len(got) != 1 || got[0].ID != first.ID || len(got[0].Corroborating) != 1 || got[0].Corroborating[0].ID != repeated.ID {
+		t.Fatalf("rolling digest was not collapsed with lineage: %+v", got)
+	}
+}
+
 func TestClusterPersonTimeStrictWindowAndNoFallback(t *testing.T) {
 	at := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
 	makeAt := func(id string, d time.Duration, explicit bool) memory.Memory {
