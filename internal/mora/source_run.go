@@ -351,24 +351,28 @@ func sourceRunCoordinator(ctx context.Context, req sourceRunRequest) (sourceRunR
 	if output != nil {
 		output = &synchronizedWriter{w: output}
 	}
-	if run == nil {
-		run = func(runCtx context.Context, cfg Config, source Source, output io.Writer) (int, error) {
-			result, err := ingestSourceFn(runCtx, cfg, source, output)
-			return result.Materialized, err
-		}
-	}
 	var traceMu sync.Mutex
 	result.Outcomes = runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		traceMu.Lock()
 		result.Trace = append(result.Trace, "constructed:"+plan.Key, "started:"+plan.Key)
 		traceMu.Unlock()
-		n, runErr := run(runCtx, req.Config, plan.Source, output)
-		outcome := sourceRunOutcome{Key: plan.Key, Items: n, Materialized: n, Err: runErr}
+		var outcome sourceRunOutcome
+		if run != nil {
+			n, runErr := run(runCtx, req.Config, plan.Source, output)
+			outcome = sourceRunOutcome{Key: plan.Key, Items: n, Materialized: n, Err: runErr}
+		} else {
+			ingested, runErr := ingestSourceFn(runCtx, req.Config, plan.Source, output)
+			outcome = sourceRunOutcome{
+				Key: plan.Key, Items: ingested.Materialized, Examined: ingested.Examined,
+				Materialized: ingested.Materialized, Failed: ingested.Failed, Unchanged: ingested.Unchanged,
+				Missing: ingested.Missing, Stages: ingested.Stages, Incremental: ingested.Incremental, Err: runErr,
+			}
+		}
 		traceMu.Lock()
-		result.Items += n
-		if runErr != nil {
+		result.Items += outcome.Items
+		if outcome.Err != nil {
 			result.Failures++
-			warnf(output, "%s sync incomplete; the brief reflects last good data (run `mora sync status`): %v", plan.Key, runErr)
+			warnf(output, "%s sync incomplete; the brief reflects last good data (run `mora sync status`): %v", plan.Key, outcome.Err)
 		} else {
 			result.Trace = append(result.Trace, "completed:"+plan.Key)
 		}
