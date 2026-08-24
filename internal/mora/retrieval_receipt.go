@@ -60,9 +60,7 @@ func diversifyEvidence(in []Memory) []Memory {
 	seen := map[string]bool{}
 	for len(remaining) > 0 {
 		best, bestNovelty := 0, -1
-		if len(out) == 0 {
-			bestNovelty = 0 // pin strongest result
-		} else {
+		if len(out) != 0 { // the first iteration keeps best=0 and pins strongest
 			for i, candidate := range remaining {
 				novelty := 0
 				for _, key := range diversityKeys(candidate) {
