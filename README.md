@@ -412,6 +412,15 @@ calendar will work.
 The fixtures and scores are in [`internal/mora/eval/`](internal/mora/eval/).
 The method is in [evaluation and testing](docs/architecture/09-eval-and-testing.md).
 
+Source receipts include the observation and attempt times, last success, next
+expected run, duration, freshness budget, consecutive failures, and a
+correlation ID. A source cannot report `fresh` unless its observation and last
+success both fall inside that budget. Search evidence manifests carry the
+ingest correlation ID for each cited memory plus a deterministic query ID;
+sanitized stage events live only in Mora's state directory under
+`observability/traces.jsonl`. Doctor uses the same ID as its diagnostic evidence
+link. Trace events never contain source content or local paths.
+
 ## More
 
 - [Guide](docs/guide.md) — commands, connectors, and upkeep.

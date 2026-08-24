@@ -387,6 +387,21 @@ Get live numbers with `MORA_EMBEDDER=ollama MORA_EVAL_LIVE=1 go test ./internal/
 
 - **The budget gate measures the FULL envelope, not just the text block.** `measureEnvelope` marshals the whole result map including the `structuredContent` mirror (`mora_mcp_budget_test.go:68-76`). WHY: the doubling bug lives in `toCallToolResult` (`mcp.go`). Measuring only the text block would hide half the cost the agent actually pays.
 
+## Production-readiness observability gate
+
+`TestProductionReadinessConnectorFixtures` freezes six sanitized scenarios:
+fresh, stale, unavailable, malformed, duplicate, and high-volume. The CI gate
+runs it with the `TestObservability*` acceptance suite, while the existing
+`ingest-performance` job owns the corpus-scale latency and memory budgets.
+
+Source status is fail-closed: `fresh` requires both a successful sync and an
+observation inside `freshness_budget_seconds`. Connector ingestion, index
+coverage, scheduled work, and queries append content-free `gen_ai.*` stage
+events to the state directory. Evidence manifests connect query events to the
+ingest correlation IDs persisted on cited memories, and Doctor publishes that
+same ID as `diagnostic_evidence_id`. These traces contain no source bodies,
+credentials, account labels, or local paths.
+
 ## Related
 
 - [retrieval & search](./02-retrieval-search.md) — `hybridSearchTrace`, RRF, the arms (FTS/Vec/Graph/Segment), `defaultSearch`/`embedderIsSemantic` routing, and the static-hash vs Ollama embedder choice the T2 eval measures.
