@@ -60,8 +60,6 @@ jobs:
       - name: agent plugin package contract
         run: |
           go test ./internal/mora -run 'TestAgentPlugin|TestMCPInstructionsTreatRetrievedContent' -count=1
-      - name: production readiness faults and traceability
-        run: go test ./internal/mora -run 'TestProductionReadinessConnectorFixtures|TestObservability' -count=1
           archive="$RUNNER_TEMP/mora-agent-plugin-test.tar.gz"
           bash scripts/package-agent-plugin.sh 0.0.0-test "$archive"
           checksum="${archive}.sha256"
@@ -80,6 +78,8 @@ jobs:
               manifest = json.load(f)
           assert manifest["version"] == "0.0.0-test", manifest
           PY
+      - name: production readiness faults and traceability
+        run: go test ./internal/mora -run 'TestProductionReadinessConnectorFixtures|TestObservability' -count=1
       - name: exam schema, ledger, and identity validation
         run: |
           go test ./internal/mora/exam -run 'TestLedgerValidator|TestCommittedLedgerIsValid|TestManifest|TestExamNoRealIdentities' -count=1
