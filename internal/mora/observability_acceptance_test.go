@@ -32,7 +32,7 @@ func TestObservabilitySourceReceiptCarriesCompleteSLO(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(dir)
-	rows := syncStatusReceiptSources(entries, dir, now)
+	rows := syncStatusReceiptSources(nil, entries, dir, now)
 	if len(rows) != 1 || rows[0].ObservedAt == "" || rows[0].LastSuccessAt == "" || rows[0].LastAttemptAt == "" || rows[0].NextScheduledAt == "" || rows[0].DurationMS != 42 || rows[0].FreshnessBudgetSeconds != 3600 || rows[0].CorrelationID != "op_trace" {
 		t.Fatalf("incomplete source SLO receipt: %+v", rows)
 	}

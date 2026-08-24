@@ -591,7 +591,11 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		dir := filepath.Join(cfg.StateDir, "sync")
 		entries, _ := os.ReadDir(dir)
 		if statusJSON {
-			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{Sources: syncStatusReceiptSources(entries, dir, time.Now())})
+			configured, err := loadSources(cfg)
+			if err != nil {
+				return err
+			}
+			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{Sources: syncStatusReceiptSources(configured, entries, dir, time.Now())})
 		}
 		if len(entries) == 0 {
 			fmt.Fprintln(stdout, "no sources synced yet")
@@ -719,7 +723,8 @@ func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut b
 		receipt := syncSourceReceipt{Source: source, Items: total, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
 		dir := filepath.Join(cfg.StateDir, "sync")
 		if entries, err := os.ReadDir(dir); err == nil {
-			for _, row := range syncStatusReceiptSources(entries, dir, time.Now()) {
+			configured, _ := loadSources(cfg)
+			for _, row := range syncStatusReceiptSources(configured, entries, dir, time.Now()) {
 				if row.Source != source && (source != "google" || (row.Source != "gmail" && row.Source != "calendar")) {
 					continue
 				}
@@ -758,6 +763,11 @@ type syncStatusReceipt struct {
 
 type syncStatusReceiptSource struct {
 	Source                  string `json:"source"`
+	InstanceID              string `json:"instance_id"`
+	Type                    string `json:"type,omitempty"`
+	Account                 string `json:"account,omitempty"`
+	Enabled                 bool   `json:"enabled"`
+	Configured              bool   `json:"configured"`
 	State                   string `json:"state"`
 	LastSuccessAt           string `json:"last_success_at"`
 	LastAttemptAt           string `json:"last_attempt_at"`
@@ -773,37 +783,66 @@ type syncStatusReceiptSource struct {
 	CorrelationID           string `json:"correlation_id,omitempty"`
 }
 
-func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) []syncStatusReceiptSource {
-	sources := make([]syncStatusReceiptSource, 0, len(entries))
-	for _, entry := range entries {
-		st, err := memory.LoadStatus(filepath.Join(dir, entry.Name()))
+func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir string, now time.Time) []syncStatusReceiptSource {
+	sources := make([]syncStatusReceiptSource, 0, len(configured)+len(entries))
+	seenPaths := make(map[string]bool, len(configured))
+	for _, source := range configured {
+		path := syncStatusPathFor(Config{StateDir: filepath.Dir(dir)}, source)
+		if path == "" {
+			continue
+		}
+		seenPaths[path] = true
+		st, err := memory.LoadStatus(path)
 		if err != nil {
 			continue
 		}
-		sources = append(sources, syncStatusReceiptSource{
-			Source:                  st.Source,
-			State:                   syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
-			LastSuccessAt:           st.LastSuccessAt,
-			LastAttemptAt:           st.LastAttemptAt,
-			ItemCount:               st.ItemCount,
-			ErrorCount:              st.ErrorCount,
-			LastError:               st.LastError,
-			ObservedAt:              st.ObservedAt,
-			DurationMS:              st.DurationMS,
-			FreshnessBudgetSeconds:  st.FreshnessBudgetSeconds,
-			NextScheduledAt:         st.NextScheduledAt,
-			ConsecutiveFailureCount: st.ConsecutiveFailureCount,
-			CorrelationID:           st.CorrelationID,
-			// The typed companion CON-07 needs. A record persisted before the
-			// taxonomy shipped has no code on disk and is NOT rewritten; it reads
-			// as connector.unclassified here instead.
-			ErrorCode: syncErrorCodeForState(
-				syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
-				st.ErrorCode, st.LastError),
-		})
+		sources = append(sources, syncStatusReceiptRow(st, source.Name, source.Type, source.Account, source.IsEnabled(), true, filepath.Base(path), now))
 	}
-	sort.Slice(sources, func(i, j int) bool { return sources[i].Source < sources[j].Source })
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if seenPaths[path] {
+			continue
+		}
+		st, err := memory.LoadStatus(path)
+		if err != nil {
+			continue
+		}
+		instanceID := st.Source
+		if instanceID == "" {
+			instanceID = strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		}
+		sources = append(sources, syncStatusReceiptRow(st, instanceID, "", "", true, false, entry.Name(), now))
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].InstanceID < sources[j].InstanceID })
 	return sources
+}
+
+func syncStatusReceiptRow(st *memory.SyncStatus, instanceID, sourceType, account string, enabled, configured bool, fileName string, now time.Time) syncStatusReceiptSource {
+	state := syncStatusFileState(st, syncStatusFileThreshold(fileName), now)
+	return syncStatusReceiptSource{
+		Source:                  instanceID,
+		InstanceID:              instanceID,
+		Type:                    sourceType,
+		Account:                 account,
+		Enabled:                 enabled,
+		Configured:              configured,
+		State:                   state,
+		LastSuccessAt:           st.LastSuccessAt,
+		LastAttemptAt:           st.LastAttemptAt,
+		ItemCount:               st.ItemCount,
+		ErrorCount:              st.ErrorCount,
+		LastError:               st.LastError,
+		ObservedAt:              st.ObservedAt,
+		DurationMS:              st.DurationMS,
+		FreshnessBudgetSeconds:  st.FreshnessBudgetSeconds,
+		NextScheduledAt:         st.NextScheduledAt,
+		ConsecutiveFailureCount: st.ConsecutiveFailureCount,
+		CorrelationID:           st.CorrelationID,
+		// The typed companion CON-07 needs. A record persisted before the
+		// taxonomy shipped has no code on disk and is NOT rewritten; it reads
+		// as connector.unclassified here instead.
+		ErrorCode: syncErrorCodeForState(state, st.ErrorCode, st.LastError),
+	}
 }
 
 // syncStatusFileThreshold infers the freshness threshold for a raw sync/

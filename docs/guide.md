@@ -716,10 +716,16 @@ include top-level `schema` and `schema_version` fields.
 `mora index --json` reports the current `mora.index` v1 status receipt; `mora
 index rebuild --json` emits its own `mora.index.rebuild` v1 receipt with the
 rebuild subcommand, indexed document count, duration, and resulting index state. `mora sync status --json` emits a
-`mora.sync.status` v1 receipt with a deterministic `sources` array. Each source
-has its state (`fresh`, `stale`, `failed`, or `never`), success and attempt
-timestamps, item and error counts, and the free-text `last_error`; a future
-typed `error_code` can be added without changing the schema major version.
+`mora.sync.status` v1 receipt with a deterministic `sources` array. Every
+configured source instance appears, including disabled and never-synced
+instances, and can be reconciled one-to-one with `mora sources list --json` by
+`instance_id`/`name`. Each row keeps the stable instance name in `source` and
+`instance_id`, identifies its logical `type` and non-secret account label, and
+reports whether it is configured and enabled. It also carries state (`fresh`,
+`stale`, `failed`, or `never`), success and attempt timestamps, item and error
+counts, and the current typed `error_code` plus free-text `last_error`. Legacy
+status files whose configured source was removed remain visible with
+`configured: false` instead of being mistaken for current configuration.
 
 Mora shows failed, never-run, or stale sources in briefs and read paths. It
 does not turn missing current data into a clean empty answer.

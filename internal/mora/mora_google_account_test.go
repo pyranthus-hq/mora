@@ -1,14 +1,70 @@
 package mora
 
 import (
+	"encoding/json"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/google"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+func TestSyncStatusJSONReconcilesConfiguredGoogleInstances(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := ensureGoogleSources(cfg, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGoogleSources(cfg, "work"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"gmail", "calendar", "gmail-work", "calendar-work"} {
+		if err := setSourceEnabledByName(cfg, name, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := memory.SaveStatus(syncStatusPathFor(cfg, Source{Name: "gmail", Type: "gmail"}), &memory.SyncStatus{Source: "gmail", LastAttemptAt: now, LastSuccessAt: now, ItemCount: 12}); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.SaveStatus(syncStatusPathFor(cfg, Source{Name: "calendar", Type: "calendar"}), &memory.SyncStatus{Source: "calendar", LastAttemptAt: now, LastSuccessAt: now, ItemCount: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.SaveStatus(syncStatusPathFor(cfg, Source{Name: "gmail-work", Type: "gmail", Account: "work"}), &memory.SyncStatus{Source: "gmail-work", LastAttemptAt: now, LastSuccessAt: now, LastError: "offline", ErrorCode: errCodeConnectorUnavailable, ErrorCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	var receipt struct {
+		Sources []syncStatusReceiptSource `json:"sources"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "sync", "status", "--json")), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.Sources) != 4 {
+		t.Fatalf("status rows=%d, want one per configured instance: %+v", len(receipt.Sources), receipt.Sources)
+	}
+	byID := map[string]syncStatusReceiptSource{}
+	for _, row := range receipt.Sources {
+		byID[row.InstanceID] = row
+		if !row.Configured || !row.Enabled || row.InstanceID != row.Source {
+			t.Fatalf("configured identity contract: %+v", row)
+		}
+	}
+	if byID["gmail"].State != healthFresh || byID["gmail-work"].State != healthFailed {
+		t.Fatalf("sibling states collapsed: %+v", byID)
+	}
+	if got := byID["gmail-work"]; got.Type != "gmail" || got.Account != "work" || got.ErrorCode != errCodeConnectorUnavailable {
+		t.Fatalf("work receipt lost instance/error identity: %+v", got)
+	}
+	if got := byID["calendar-work"]; got.State != healthNever || got.LastAttemptAt != "" {
+		t.Fatalf("never-synced configured instance omitted or fabricated: %+v", got)
+	}
+}
 
 // TestGoogleTokenPathPerAccount locks the multi-account token layout: the
 // default (unlabeled) account keeps the legacy tokens/google.json — existing
