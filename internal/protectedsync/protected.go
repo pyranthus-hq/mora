@@ -22,6 +22,7 @@ var ErrDirect = errors.New("protected sync should run directly")
 type Receipt struct {
 	Token       string `json:"token"`
 	Source      string `json:"source"`
+	Items       int    `json:"items"`
 	CompletedAt string `json:"completed_at"`
 	Error       string `json:"error,omitempty"`
 }
@@ -80,13 +81,13 @@ func ReadReceipt(stateDir, token, source string) (Receipt, error) {
 	}
 	return r, nil
 }
-func Relay(ctx context.Context, o Options) error {
+func Relay(ctx context.Context, o Options) (Receipt, error) {
 	if o.GOOS != "darwin" {
-		return ErrDirect
+		return Receipt{}, ErrDirect
 	}
 	exe, err := o.Executable()
 	if err != nil {
-		return ErrDirect
+		return Receipt{}, ErrDirect
 	}
 	eval := o.EvalSymlinks
 	if eval == nil {
@@ -97,23 +98,23 @@ func Relay(ctx context.Context, o Options) error {
 	}
 	app, ok := o.AppRoot(exe)
 	if !ok {
-		return ErrDirect
+		return Receipt{}, ErrDirect
 	}
 	token, err := NewToken(o.Rand)
 	if err != nil {
-		return err
+		return Receipt{}, err
 	}
 	if err := o.RunOpen(ctx, "-n", "-W", "-a", app, "--args", "sync", o.Source, ReceiptFlag, token); err != nil {
-		return fmt.Errorf("launching Mora.app for protected sync: %w", err)
+		return Receipt{}, fmt.Errorf("launching Mora.app for protected sync: %w", err)
 	}
 	r, err := ReadReceipt(o.StateDir, token, o.Source)
 	if err != nil {
-		return err
+		return Receipt{}, err
 	}
 	if r.Error != "" {
-		return fmt.Errorf("Mora.app %s sync failed: %s", o.Source, r.Error)
+		return r, fmt.Errorf("Mora.app %s sync failed: %s", o.Source, r.Error)
 	}
-	return nil
+	return r, nil
 }
 func ParseArgs(args []string) (token string, rest []string, err error) {
 	for i := 0; i < len(args); i++ {

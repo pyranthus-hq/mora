@@ -556,10 +556,22 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// invocation came from another host. The launched child carries a receipt token
 	// and runs this same command directly, preventing relay recursion.
 	if receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
-		if rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
+		if relayReceipt, rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
+			if sourceJSON {
+				return emitSyncSourceResult(stdout, args[0], true, relayReceipt.Items, "")
+			}
 			fmt.Fprintf(stdout, "synced %s via Mora.app\n", args[0])
 			return nil
 		} else if rerr != errProtectedSyncDirect {
+			// A child sync can fail after materializing some items. Match the direct
+			// path's contract: publish the deterministic receipt before returning the
+			// failure, while launch/protocol failures without a child receipt remain
+			// plain command errors.
+			if sourceJSON && relayReceipt.Source != "" {
+				if emitErr := emitSyncSourceResult(stdout, args[0], true, relayReceipt.Items, ""); emitErr != nil {
+					return emitErr
+				}
+			}
 			return rerr
 		}
 	}
@@ -629,7 +641,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		// The relay receipt is written even when the stdout emit failed: the
 		// launching host is waiting on it, and a broken pipe must not strand it.
 		if receiptToken != "" {
-			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], Items: total, CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
 			if syncErr != nil {
 				r.Error = syncErr.Error()
 			}
@@ -650,7 +662,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		rerr := emitSyncSourceResult(stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n")
 		// Same rule as imessage above: the relay receipt outlives a stdout failure.
 		if receiptToken != "" {
-			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
+			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], Items: total, CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
 			if syncErr != nil {
 				r.Error = syncErr.Error()
 			}
