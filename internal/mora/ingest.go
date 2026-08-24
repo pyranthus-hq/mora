@@ -948,6 +948,15 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		testHookIngestActivityStarted(cfg, s, h)
 	}
 	result, dispatchErr := ingestSourceDispatchFn(ctx, cfg, s, out)
+	if dispatchErr == nil && result.Materialized == 0 {
+		ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
+		_, retireErr := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
+		progressErr := progress.Stop()
+		finishErr := finishOperation(cfg, h, operationCompleted, "no_changes", operationCounts{
+			Items: 0, Examined: result.Examined, Materialized: 0, Missing: result.Missing,
+		}, "", operationClock())
+		return result, errors.Join(retireErr, progressErr, finishErr)
+	}
 	if dispatchErr == nil {
 		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{
 			Items: result.Materialized, Errors: result.Failed, Examined: result.Examined,
