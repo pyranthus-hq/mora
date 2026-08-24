@@ -508,10 +508,11 @@ func TestCoreA_CmdIngest(t *testing.T) {
 	if _, err := runErr(t, "ingest", "run", "--source", "boom"); err == nil {
 		t.Fatal("a failing named source must surface its error")
 	}
-	// --all: one broken source warns and keeps going, aggregate error at the end.
+	// --all: one broken source warns and keeps going. A usable partial result
+	// succeeds; callers inspect the aggregate receipt for the failed source.
 	out, err := runErr(t, "ingest", "run", "--all")
-	if err == nil {
-		t.Fatal("ingest --all with a broken source must surface an aggregate error")
+	if err != nil {
+		t.Fatalf("ingest --all with a usable partial result: %v", err)
 	}
 	if !strings.Contains(out, "sync incomplete") {
 		t.Fatalf("ingest --all should warn about the broken source; got:\n%s", out)
