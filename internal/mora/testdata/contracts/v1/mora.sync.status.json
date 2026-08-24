@@ -1,5 +1,23 @@
 {
   "schema": "mora.sync.status",
   "schema_version": 1,
-  "sources": []
+  "sources": [
+    {
+      "configured": true,
+      "consecutive_failure_count": 0,
+      "duration_ms": 0,
+      "enabled": false,
+      "error_count": 0,
+      "freshness_budget_seconds": 0,
+      "instance_id": "envelope-fs",
+      "item_count": 0,
+      "last_attempt_at": "",
+      "last_success_at": "",
+      "next_scheduled_at": "",
+      "observed_at": "",
+      "source": "envelope-fs",
+      "state": "never",
+      "type": "filesystem"
+    }
+  ]
 }
