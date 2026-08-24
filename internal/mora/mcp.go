@@ -363,7 +363,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	retrievalStarted := time.Now()
 	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit, filters)
 	retrieval := time.Since(retrievalStarted)
-	res := sr.Results
+	res := diversifyEvidence(sr.Results)
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
 		recordMCPPhases(ctx, retrieval, 0)

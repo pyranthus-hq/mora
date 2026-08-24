@@ -31,3 +31,15 @@ func TestRankingReceiptExplainsLanesAndCollapse(t *testing.T) {
 		t.Fatalf("receipt=%+v", receipts)
 	}
 }
+
+func TestDiversifyEvidencePreservesStrongestAndPromotesNovelFacets(t *testing.T) {
+	rows := []Memory{
+		{ID: "strong", Provider: "gmail", Type: "email", CreatedAt: "2026-08-01T00:00:00Z", Meta: map[string]any{"from": "alex"}},
+		{ID: "repeat", Provider: "gmail", Type: "email", CreatedAt: "2026-08-02T00:00:00Z", Meta: map[string]any{"from": "alex"}},
+		{ID: "novel", Provider: "calendar", Type: "event", CreatedAt: "2026-07-02T00:00:00Z", Meta: map[string]any{"organizer": "sam"}},
+	}
+	got := diversifyEvidence(rows)
+	if got[0].ID != "strong" || got[1].ID != "novel" || got[2].ID != "repeat" {
+		t.Fatalf("diversified order=%v", []string{got[0].ID, got[1].ID, got[2].ID})
+	}
+}

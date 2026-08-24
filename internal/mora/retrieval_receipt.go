@@ -6,6 +6,85 @@ import (
 	"strings"
 )
 
+func diversityKeys(m Memory) []string {
+	keys := []string{"source:" + canonicalSourceID(m), "type:" + m.Type}
+	if ts := evidenceTimestamp(m); len(ts) >= 7 {
+		keys = append(keys, "month:"+ts[:7])
+	}
+	for id := range clusterIdentitySetForReceipt(m) {
+		keys = append(keys, "entity:"+id)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func clusterIdentitySetForReceipt(m Memory) map[string]bool {
+	set := map[string]bool{}
+	var add func(any)
+	add = func(v any) {
+		switch value := v.(type) {
+		case string:
+			if normalized := strings.ToLower(strings.TrimSpace(value)); normalized != "" {
+				set[normalized] = true
+			}
+		case []string:
+			for _, item := range value {
+				add(item)
+			}
+		case []any:
+			for _, item := range value {
+				add(item)
+			}
+		case []map[string]string:
+			for _, pair := range value {
+				add(pair["handle"])
+			}
+		}
+	}
+	for _, field := range []string{"from", "to", "cc", "attendees", "organizer", "participants"} {
+		add(m.Meta[field])
+	}
+	return set
+}
+
+// diversifyEvidence preserves the strongest result, then greedily promotes
+// unseen source, entity, month, and evidence-type facets. It is a permutation:
+// repeated evidence remains available and can still corroborate; only the
+// presentation and byte-budget survival order changes.
+func diversifyEvidence(in []Memory) []Memory {
+	if len(in) < 2 {
+		return in
+	}
+	remaining := append([]Memory(nil), in...)
+	out := make([]Memory, 0, len(in))
+	seen := map[string]bool{}
+	for len(remaining) > 0 {
+		best, bestNovelty := 0, -1
+		if len(out) == 0 {
+			bestNovelty = 0 // pin strongest result
+		} else {
+			for i, candidate := range remaining {
+				novelty := 0
+				for _, key := range diversityKeys(candidate) {
+					if !seen[key] {
+						novelty++
+					}
+				}
+				if novelty > bestNovelty {
+					best, bestNovelty = i, novelty
+				}
+			}
+		}
+		chosen := remaining[best]
+		out = append(out, chosen)
+		for _, key := range diversityKeys(chosen) {
+			seen[key] = true
+		}
+		remaining = append(remaining[:best], remaining[best+1:]...)
+	}
+	return out
+}
+
 type evidenceManifestEntry struct {
 	EvidenceID        string `json:"evidence_id"`
 	CanonicalSourceID string `json:"canonical_source_id"`
