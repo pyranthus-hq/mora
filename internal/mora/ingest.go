@@ -130,7 +130,7 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 	output := io.Writer(&synchronizedWriter{w: stdout})
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, output)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
 	}})
 	for i, outcome := range outcomes {
 		if outcome.Err != nil && !outcome.Cancelled && report != nil {
@@ -216,7 +216,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
 		outcome := sourceRunOutcome{
 			Key: plan.Key, Items: result.Materialized, Examined: result.Examined,
-			Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr,
+			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr,
 		}
 		if path := syncStatusPathFor(cfg, plan.Source); path != "" {
 			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
@@ -830,7 +830,7 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
 	}})
 	total := sourceOutcomesMaterialized(outcomes)
 	for _, outcome := range outcomes {
@@ -881,13 +881,18 @@ type sourceIngestResult struct {
 	Examined     int
 	Materialized int
 	Failed       int
+	Unchanged    int
 	Missing      int
+	Stages       memory.IngestStages
+	Incremental  bool
 }
 
 func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult {
 	return sourceIngestResult{
 		Examined: result.Examined, Materialized: result.Materialized,
-		Failed: result.Failed, Missing: result.Missing,
+		Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing,
+		Stages:      result.Stages,
+		Incremental: result.Incremental,
 	}
 }
 
@@ -943,6 +948,15 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		testHookIngestActivityStarted(cfg, s, h)
 	}
 	result, dispatchErr := ingestSourceDispatchFn(ctx, cfg, s, out)
+	if dispatchErr == nil && result.Materialized == 0 {
+		ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
+		_, retireErr := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
+		progressErr := progress.Stop()
+		finishErr := finishOperation(cfg, h, operationCompleted, "no_changes", operationCounts{
+			Items: 0, Examined: result.Examined, Materialized: 0, Missing: result.Missing,
+		}, "", operationClock())
+		return result, errors.Join(retireErr, progressErr, finishErr)
+	}
 	if dispatchErr == nil {
 		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{
 			Items: result.Materialized, Errors: result.Failed, Examined: result.Examined,
@@ -1047,6 +1061,11 @@ func ingestSourceDispatchDetailed(ctx context.Context, cfg Config, s Source, out
 var testHookMappedWriteCritical func()
 
 func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
+	_, err := writeMappedMemoryDetailed(cfg, mm)
+	return err
+}
+
+func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error) {
 	// Governance chokepoint (#52/#53): consult the vault-resident ledger before
 	// persisting ANY connector memory. A suppressed stable-atom (forgotten chat,
 	// forgotten 1:1 person, pruned item) is silently skipped so the hourly,
@@ -1064,11 +1083,11 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// returns an error (fail-closed) rather than resurrecting.
 	g, release, err := governanceWriteLease(cfg)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer release()
 	if sup, _ := g.suppresses(mm); sup {
-		return nil
+		return false, nil
 	}
 	// Derive the canonical record/path and skip decision inside the held lease so
 	// the whole check→skip→write remains one critical section.
@@ -1079,11 +1098,11 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	}
 	m, skip := ingestpkg.PrepareMapped(mm, existing)
 	if skip {
-		return nil
+		return false, nil
 	}
 	body, err := renderMemory(m)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if testHookMappedWriteCritical != nil {
 		testHookMappedWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
@@ -1095,10 +1114,10 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// returns above wrote no new file and reach neither line.
 	sourceKey := ingestpkg.SourceKey(mm.Provider, mm.Account)
 	if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
-		return jerr
+		return false, jerr
 	}
 	if err := atomicio.Write(out, body, 0o644); err != nil {
-		return err
+		return false, err
 	}
 	if testHookPostConnectorPublish != nil {
 		// Test seam (matrix 34a): a SIGKILL in the publish->journal-line window. The
@@ -1108,7 +1127,7 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 		testHookPostConnectorPublish()
 	}
 	ingestpkg.RecordPublishedPath(cfg, sourceKey, out, ingestPublishSeams())
-	return nil
+	return true, nil
 }
 
 // testHookPostConnectorPublish fires inside writeMappedMemory AFTER the vault publish
@@ -1160,7 +1179,7 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 		noun = "events"
 	}
 	prog := newProgress(out, s.Name, noun)
-	write := func(mm memory.MappedMemory) error {
+	write := func(mm memory.MappedMemory) (bool, error) {
 		// Account-scoped provenance (the sourceInstanceKey multi-account seam):
 		// a labeled account stamps Account so the instance key composes
 		// "gmail:work" — separate watermark, digest section, and three-state per
@@ -1172,16 +1191,19 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 			mm.Account = s.Account
 			mm.StableID = mm.StableID + "@" + s.Account
 		}
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		prog.tick()
-		return nil
+		if wrote {
+			prog.tick()
+		}
+		return wrote, nil
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
-		Status: st, Write: write,
+		Status: st, WriteResult: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
 	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1300,21 +1322,25 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		}
 	}
 	prog := newProgress(out, s.Name, "conversations")
-	write := func(mm memory.MappedMemory) error {
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+	write := func(mm memory.MappedMemory) (bool, error) {
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		if _, err := writeAttachmentMemories(cfg, mm); err != nil {
-			return err
+		if wrote {
+			if _, err := writeAttachmentMemories(cfg, mm); err != nil {
+				return false, err
+			}
+			prog.tick()
 		}
-		prog.tick()
-		return nil
+		return wrote, nil
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, Write: write,
-		Map: imessage.MapConversationFn(resolver),
+		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
+		Map:        imessage.MapConversationFn(resolver),
 	})
 	prog.done()
 	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1379,16 +1405,20 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	st, _ := memory.LoadStatus(statusPath)
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "events")
-	write := func(mm memory.MappedMemory) error {
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+	write := func(mm memory.MappedMemory) (bool, error) {
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		prog.tick()
-		return nil
+		if wrote {
+			prog.tick()
+		}
+		return wrote, nil
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
-		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, Write: write,
+		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
 	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1417,14 +1447,17 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	st, _ := memory.LoadStatus(statusPath)
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "issues")
-	write := func(mm memory.MappedMemory) error {
+	write := func(mm memory.MappedMemory) (bool, error) {
 		// Snapshot bytes are attached to Meta only by the connector-private mapper
 		// seam, never rendered or logged. The immutable write happens in Map below.
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		prog.tick()
-		return nil
+		if wrote {
+			prog.tick()
+		}
+		return wrote, nil
 	}
 	mapIssue := func(it memory.Item, scope string, budget int) memory.MappedMemory {
 		mm := githubissues.MapIssue(it, scope, budget)
@@ -1440,15 +1473,16 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		}
 		return mm
 	}
-	writeChecked := func(mm memory.MappedMemory) error {
+	writeChecked := func(mm memory.MappedMemory) (bool, error) {
 		if msg, ok := mm.Meta["snapshot_error"].(string); ok && msg != "" {
-			return errors.New(msg)
+			return false, errors.New(msg)
 		}
 		return write(mm)
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: githubissues.KindIssue, Scope: s.Scope, BodyBudget: 64 * 1024,
-		Status: st, Map: mapIssue, Write: writeChecked,
+		Status: st, Map: mapIssue, WriteResult: writeChecked,
+		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
 	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1756,12 +1790,50 @@ func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Wri
 // walk never resurrects an atom forgotten mid-walk (#113). Nil in production.
 var testHookFSPreWrite func(id string)
 
+type filesystemManifestEntry struct {
+	Size    int64 `json:"size"`
+	ModTime int64 `json:"mod_time_unix_nano"`
+}
+
+func filesystemManifestPath(cfg Config, source string) string {
+	return filepath.Join(cfg.StateDir, "sync", "filesystem-"+memory.SafeFilename(source)+".manifest.json")
+}
+
+func loadFilesystemManifest(path string) map[string]filesystemManifestEntry {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]filesystemManifestEntry{}
+	}
+	var manifest map[string]filesystemManifestEntry
+	if json.Unmarshal(body, &manifest) != nil || manifest == nil {
+		return map[string]filesystemManifestEntry{}
+	}
+	return manifest
+}
+
+func saveFilesystemManifest(path string, manifest map[string]filesystemManifestEntry) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicio.WriteDurable(path, append(body, '\n'), 0o600)
+}
+
 func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
 	result, err := ingestFilesystemDetailed(context.Background(), cfg, s, out)
 	return result.Materialized, err
 }
 
 func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
+	started := time.Now()
+	result.Stages.Pages = 1
+	defer func() {
+		result.Stages.TotalMS = time.Since(started).Milliseconds()
+		result.Stages.MapWriteMS = result.Stages.TotalMS
+	}()
 	// Governance chokepoint (#52): filesystem re-ingest renders directly and does
 	// NOT route through writeMappedMemory, so consult the ledger here too —
 	// otherwise `mora forget --chat <src-id>` removes a filesystem memory that the
@@ -1777,6 +1849,9 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 	if s.Path == "" {
 		return result, fmt.Errorf("filesystem source %q has no path — re-add it with `mora connect filesystem <path>` (or remove the row from sources.json)", s.Name)
 	}
+	manifestPath := filesystemManifestPath(cfg, s.Name)
+	priorManifest := loadFilesystemManifest(manifestPath)
+	nextManifest := make(map[string]filesystemManifestEntry, len(priorManifest))
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err = filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -1798,6 +1873,19 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		base := d.Name()
 		ext := filepath.Ext(path)
 		if !curatedMetadataFile(base) && !curatedAllowedExt(ext) && !curatedExtractExt(ext) {
+			return nil
+		}
+		rel, _ := filepath.Rel(s.Path, path)
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return fmt.Errorf("stat filesystem source %q file %q: %w", s.Name, path, infoErr)
+		}
+		entry := filesystemManifestEntry{Size: info.Size(), ModTime: info.ModTime().UnixNano()}
+		if prior, ok := priorManifest[rel]; ok && prior == entry {
+			nextManifest[rel] = entry
+			result.Examined++
+			result.Unchanged++
+			result.Incremental = true
 			return nil
 		}
 		var text string
@@ -1828,8 +1916,8 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		if len(text) > 512*1024 {
 			return nil // keep the index lean — same bound as the raw-read path.
 		}
+		result.Stages.Bytes += int64(len(text))
 		result.Examined++
-		rel, _ := filepath.Rel(s.Path, path)
 		id := "src_" + ContentHash(s.Name+":"+rel)
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
@@ -1863,12 +1951,40 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		if wrote {
 			ingestpkg.RecordPublishedPath(cfg, sourceKey, dest, ingestPublishSeams())
 			result.Materialized++
+			nextManifest[rel] = entry
 		} else {
 			// Governance suppression is intentional exclusion, not missing work.
 			result.Examined--
 		}
 		return nil
 	})
+	if err == nil {
+		for rel := range priorManifest {
+			if _, present := nextManifest[rel]; present {
+				continue
+			}
+			id := "src_" + ContentHash(s.Name+":"+rel)
+			dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
+			removeErr := os.Remove(dest)
+			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = fmt.Errorf("remove deleted filesystem record %q: %w", rel, removeErr)
+				break
+			}
+			if removeErr == nil {
+				if syncErr := atomicio.SyncDir(filepath.Dir(dest)); syncErr != nil {
+					err = syncErr
+					break
+				}
+				result.Examined++
+				result.Materialized++
+			}
+		}
+	}
+	if err == nil {
+		if manifestErr := saveFilesystemManifest(manifestPath, nextManifest); manifestErr != nil {
+			err = fmt.Errorf("persist filesystem incremental manifest: %w", manifestErr)
+		}
+	}
 	// Record freshness so the brief/digest classifies this source by its real sync
 	// health (new/no-changes/stale) instead of "unavailable (sync error)". Filesystem
 	// has no fetcher Status of its own, so the walk persists one here — mirroring what
@@ -1888,7 +2004,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		st.Source = s.Name
 		st.LastAttemptAt = now
 		if err == nil {
-			st.ItemCount = result.Materialized
+			st.ItemCount = len(nextManifest)
 			st.LastSynced = now
 			st.LastSuccessAt = now
 			st.ErrorCount = 0

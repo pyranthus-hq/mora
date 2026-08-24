@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 type sourceRunRequest struct {
@@ -72,6 +74,7 @@ type sourceRunOutcome struct {
 	Examined      int
 	Materialized  int
 	Failed        int
+	Unchanged     int
 	Missing       int
 	Err           error
 	Cancelled     bool
@@ -79,23 +82,28 @@ type sourceRunOutcome struct {
 	LastSuccessAt string
 	LastAttemptAt string
 	Stale         bool
+	Stages        memory.IngestStages
+	Incremental   bool
 }
 
 type sourceRunReceipt struct {
-	Source        string `json:"source"`
-	Status        string `json:"status"`
-	Usable        bool   `json:"usable"`
-	Items         int    `json:"items"`
-	Examined      int    `json:"examined"`
-	Materialized  int    `json:"materialized"`
-	Failed        int    `json:"failed"`
-	Missing       int    `json:"missing"`
-	ErrorCode     string `json:"error_code,omitempty"`
-	ErrorClass    string `json:"error_class,omitempty"`
-	Retryable     bool   `json:"retryable"`
-	LastSuccessAt string `json:"last_success_at,omitempty"`
-	LastAttemptAt string `json:"last_attempt_at,omitempty"`
-	Stale         bool   `json:"stale"`
+	Source        string              `json:"source"`
+	Status        string              `json:"status"`
+	Usable        bool                `json:"usable"`
+	Items         int                 `json:"items"`
+	Examined      int                 `json:"examined"`
+	Materialized  int                 `json:"materialized"`
+	Failed        int                 `json:"failed"`
+	Unchanged     int                 `json:"unchanged"`
+	Missing       int                 `json:"missing"`
+	ErrorCode     string              `json:"error_code,omitempty"`
+	ErrorClass    string              `json:"error_class,omitempty"`
+	Retryable     bool                `json:"retryable"`
+	LastSuccessAt string              `json:"last_success_at,omitempty"`
+	LastAttemptAt string              `json:"last_attempt_at,omitempty"`
+	Stale         bool                `json:"stale"`
+	Stages        memory.IngestStages `json:"stages"`
+	Incremental   bool                `json:"incremental"`
 }
 
 type sourceRunAggregate struct {
@@ -121,9 +129,11 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		}
 		receipt := sourceRunReceipt{
 			Source: plan.Key, Items: outcome.Items, Examined: outcome.Examined,
-			Materialized: outcome.Materialized, Failed: outcome.Failed, Missing: outcome.Missing,
+			Materialized: outcome.Materialized, Failed: outcome.Failed, Unchanged: outcome.Unchanged, Missing: outcome.Missing,
 			LastSuccessAt: outcome.LastSuccessAt,
 			LastAttemptAt: outcome.LastAttemptAt, Stale: outcome.Stale,
+			Stages:      outcome.Stages,
+			Incremental: outcome.Incremental,
 		}
 		switch {
 		case outcome.Cancelled:
@@ -144,6 +154,9 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			receipt.ErrorCode = connectorErrorCodeFor(outcome.Err)
 			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
 			receipt.Retryable = retryableForErrorCode(receipt.ErrorCode)
+		case outcome.Incremental || outcome.Unchanged > 0:
+			receipt.Status = sourceRunStatusSuccess
+			receipt.Usable = true
 		case outcome.Items == 0:
 			receipt.Status = sourceRunStatusEmpty
 			receipt.Usable = true
@@ -338,24 +351,28 @@ func sourceRunCoordinator(ctx context.Context, req sourceRunRequest) (sourceRunR
 	if output != nil {
 		output = &synchronizedWriter{w: output}
 	}
-	if run == nil {
-		run = func(runCtx context.Context, cfg Config, source Source, output io.Writer) (int, error) {
-			result, err := ingestSourceFn(runCtx, cfg, source, output)
-			return result.Materialized, err
-		}
-	}
 	var traceMu sync.Mutex
 	result.Outcomes = runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		traceMu.Lock()
 		result.Trace = append(result.Trace, "constructed:"+plan.Key, "started:"+plan.Key)
 		traceMu.Unlock()
-		n, runErr := run(runCtx, req.Config, plan.Source, output)
-		outcome := sourceRunOutcome{Key: plan.Key, Items: n, Materialized: n, Err: runErr}
+		var outcome sourceRunOutcome
+		if run != nil {
+			n, runErr := run(runCtx, req.Config, plan.Source, output)
+			outcome = sourceRunOutcome{Key: plan.Key, Items: n, Materialized: n, Err: runErr}
+		} else {
+			ingested, runErr := ingestSourceFn(runCtx, req.Config, plan.Source, output)
+			outcome = sourceRunOutcome{
+				Key: plan.Key, Items: ingested.Materialized, Examined: ingested.Examined,
+				Materialized: ingested.Materialized, Failed: ingested.Failed, Unchanged: ingested.Unchanged,
+				Missing: ingested.Missing, Stages: ingested.Stages, Incremental: ingested.Incremental, Err: runErr,
+			}
+		}
 		traceMu.Lock()
-		result.Items += n
-		if runErr != nil {
+		result.Items += outcome.Items
+		if outcome.Err != nil {
 			result.Failures++
-			warnf(output, "%s sync incomplete; the brief reflects last good data (run `mora sync status`): %v", plan.Key, runErr)
+			warnf(output, "%s sync incomplete; the brief reflects last good data (run `mora sync status`): %v", plan.Key, outcome.Err)
 		} else {
 			result.Trace = append(result.Trace, "completed:"+plan.Key)
 		}

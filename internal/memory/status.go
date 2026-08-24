@@ -8,17 +8,19 @@ import (
 )
 
 // SyncStatus is the per-source state surfaced by `mora sync status` and used to
-// resume an interrupted backfill. Cursors are stored for a future incremental
-// upgrade but are not the v1 refresh path.
+// resume an interrupted backfill and continue provider-native incremental sync.
 type SyncStatus struct {
 	Source       string `json:"source"`
 	LastSynced   string `json:"last_synced"`
 	ItemCount    int    `json:"item_count"`
 	ErrorCount   int    `json:"error_count"`
 	LastError    string `json:"last_error,omitempty"`
-	Checkpoint   string `json:"checkpoint,omitempty"`    // in-progress page token (resume)
-	GmailHistory string `json:"gmail_history,omitempty"` // future incremental
-	CalSyncToken string `json:"cal_sync_token,omitempty"`
+	Checkpoint   string `json:"checkpoint,omitempty"`     // in-progress page token (resume)
+	GmailHistory string `json:"gmail_history,omitempty"`  // legacy reserved field; retained for compatibility
+	CalSyncToken string `json:"cal_sync_token,omitempty"` // legacy reserved field; retained for compatibility
+	// IncrementalCursor is the provider-native between-run position. Checkpoint
+	// remains the in-progress page token and is cleared only after completion.
+	IncrementalCursor string `json:"incremental_cursor,omitempty"`
 
 	// Last-attempt health (M-3). Health is the LAST attempt's outcome, not a
 	// sticky lifetime tally: a clean sync resets ErrorCount/LastError and stamps

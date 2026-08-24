@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -11,6 +12,31 @@ import (
 type cancellingContextFetcher struct {
 	secondStarted chan struct{}
 	calls         int
+}
+
+type cursorExpiryFetcher struct{ windows []FetchWindow }
+
+type temporaryFetchError struct{}
+
+func (temporaryFetchError) Error() string   { return "temporary" }
+func (temporaryFetchError) Temporary() bool { return true }
+
+type retryFetcher struct{ calls int }
+
+func (f *retryFetcher) FetchPage(ItemKind, FetchWindow, string) (Page, error) {
+	f.calls++
+	if f.calls < 3 {
+		return Page{}, temporaryFetchError{}
+	}
+	return Page{}, nil
+}
+
+func (f *cursorExpiryFetcher) FetchPage(_ ItemKind, window FetchWindow, _ string) (Page, error) {
+	f.windows = append(f.windows, window)
+	if window.SyncCursor != "" {
+		return Page{}, ErrIncrementalCursorExpired
+	}
+	return Page{SyncCursor: "fresh-43"}, nil
 }
 
 func (f *cancellingContextFetcher) FetchPage(ItemKind, FetchWindow, string) (Page, error) {
@@ -88,6 +114,109 @@ func TestIngestResumesFromCheckpoint(t *testing.T) {
 		t.Fatalf("resume should request cursor p2 first, got %v", f.calls)
 	}
 	requireStatus(t, res)
+}
+
+func TestIngestDurablyCheckpointsEachCompletedPage(t *testing.T) {
+	statusPath := filepath.Join(t.TempDir(), "status.json")
+	interrupted := twoPageFetcher()
+	interrupted.errOnCursor = map[string]error{"p2": errors.New("interrupted")}
+	var ids []string
+	res, err := Ingest(IngestParams{
+		Fetcher: interrupted, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		Status:     &SyncStatus{Source: "gmail"},
+		Write:      func(m MappedMemory) error { ids = append(ids, m.ProviderID); return nil },
+		Checkpoint: func(status *SyncStatus) error { return SaveStatus(statusPath, status) },
+	})
+	if err == nil || res.Status.Checkpoint != "p2" {
+		t.Fatalf("interrupted run = checkpoint %q, err %v", res.Status.Checkpoint, err)
+	}
+	persisted, err := LoadStatus(statusPath)
+	if err != nil || persisted.Checkpoint != "p2" {
+		t.Fatalf("durable checkpoint = %+v, err %v", persisted, err)
+	}
+
+	resumed := twoPageFetcher()
+	if _, err := Ingest(IngestParams{
+		Fetcher: resumed, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		Status:     persisted,
+		Write:      func(m MappedMemory) error { ids = append(ids, m.ProviderID); return nil },
+		Checkpoint: func(status *SyncStatus) error { return SaveStatus(statusPath, status) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(ids, ","); got != "t1,t2,t3" {
+		t.Fatalf("resume duplicated or lost records: %s", got)
+	}
+}
+
+func TestIngestCommitsIncrementalCursorOnlyOnCleanCompletion(t *testing.T) {
+	f := &fakeFetcher{pages: map[string]Page{"": {SyncCursor: "next-42"}}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "prior-41"}
+	res, err := Ingest(IngestParams{Fetcher: f, Kind: kindGmailThread, Status: status, Write: func(MappedMemory) error { return nil }})
+	if err != nil || res.Status.IncrementalCursor != "next-42" {
+		t.Fatalf("clean incremental cursor = %q, err %v", res.Status.IncrementalCursor, err)
+	}
+
+	failed := &fakeFetcher{pages: map[string]Page{}, errOnCursor: map[string]error{"": errors.New("offline")}}
+	status = &SyncStatus{Source: "gmail", IncrementalCursor: "prior-41"}
+	res, err = Ingest(IngestParams{Fetcher: failed, Kind: kindGmailThread, Status: status, Write: func(MappedMemory) error { return nil }})
+	if err == nil || res.Status.IncrementalCursor != "prior-41" {
+		t.Fatalf("failed run advanced incremental cursor = %q, err %v", res.Status.IncrementalCursor, err)
+	}
+}
+
+func TestIngestExpiredIncrementalCursorFallsBackOnce(t *testing.T) {
+	f := &cursorExpiryFetcher{}
+	status := &SyncStatus{IncrementalCursor: "expired-42"}
+	res, err := Ingest(IngestParams{Fetcher: f, Kind: kindGmailThread, Status: status, Write: func(MappedMemory) error { return nil }})
+	if err != nil || res.Status.IncrementalCursor != "fresh-43" || len(f.windows) != 2 {
+		t.Fatalf("fallback result=%+v windows=%+v err=%v", res.Status, f.windows, err)
+	}
+	if f.windows[0].SyncCursor != "expired-42" || f.windows[1].SyncCursor != "" {
+		t.Fatalf("fallback did not clear expired cursor: %+v", f.windows)
+	}
+}
+
+func TestIngestResourceAndRetryBudgets(t *testing.T) {
+	t.Run("oversized record is rejected", func(t *testing.T) {
+		f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{ProviderID: "huge", Body: strings.Repeat("x", 20)}}}}}
+		res, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { t.Fatal("oversized record reached writer"); return nil }, Limits: IngestLimits{MaxRecordBytes: 10}})
+		if err == nil || res.Failed != 1 || res.Stages.Bytes < 20 {
+			t.Fatalf("oversize result=%+v err=%v", res, err)
+		}
+	})
+	t.Run("batch cap fails closed", func(t *testing.T) {
+		f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{}, {}}}}}
+		_, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil }, Limits: IngestLimits{MaxBatchItems: 1}})
+		if err == nil || !strings.Contains(err.Error(), "batch limit") {
+			t.Fatalf("batch error=%v", err)
+		}
+	})
+	t.Run("batch byte cap fails closed", func(t *testing.T) {
+		f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{Body: strings.Repeat("x", 20)}}}}}
+		_, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil }, Limits: IngestLimits{MaxBatchBytes: 10}})
+		if err == nil || !strings.Contains(err.Error(), "batch memory limit") {
+			t.Fatalf("batch memory error=%v", err)
+		}
+	})
+	t.Run("temporary retries are bounded", func(t *testing.T) {
+		f := &retryFetcher{}
+		res, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil }, Limits: IngestLimits{MaxRetries: 2}})
+		if err != nil || f.calls != 3 || res.Stages.Retries != 2 {
+			t.Fatalf("retry result=%+v calls=%d err=%v", res, f.calls, err)
+		}
+	})
+}
+
+func TestIngestUnchangedWriteIsNotMaterialized(t *testing.T) {
+	f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{ProviderID: "same", Body: "unchanged"}}}}}
+	res, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, WriteResult: func(MappedMemory) (bool, error) { return false, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Examined != 1 || res.Materialized != 0 || res.Unchanged != 1 || res.Missing != 0 || res.Failed != 0 {
+		t.Fatalf("unchanged result = %+v", res)
+	}
 }
 
 func TestIngestWriteErrorIsCounted(t *testing.T) {

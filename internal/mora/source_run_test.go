@@ -169,7 +169,8 @@ func TestIsolationPartialWriteCounts(t *testing.T) {
 	plans := []sourceRunPlan{{Key: "gmail:work"}}
 	outcomes := []sourceRunOutcome{{
 		Key: "gmail:work", Items: 73, Examined: 100, Materialized: 73, Failed: 27, Missing: 27,
-		Err: newCodedError(errCodeConnectorMalformed, nil, "27 malformed items"),
+		Stages: memory.IngestStages{FetchMS: 12, MapWriteMS: 34, TotalMS: 46, Pages: 2, Bytes: 8192, Retries: 1},
+		Err:    newCodedError(errCodeConnectorMalformed, nil, "27 malformed items"),
 	}}
 	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
 	if err != nil {
@@ -181,6 +182,19 @@ func TestIsolationPartialWriteCounts(t *testing.T) {
 	receipt := aggregate.Sources[0]
 	if receipt.Status != sourceRunStatusPartial || !receipt.Usable || receipt.Examined != 100 || receipt.Materialized != 73 || receipt.Failed != 27 || receipt.Missing != 27 {
 		t.Fatalf("receipt = %+v", receipt)
+	}
+	if receipt.Stages.TotalMS != 46 || receipt.Stages.Pages != 2 || receipt.Stages.Bytes != 8192 || receipt.Stages.Retries != 1 {
+		t.Fatalf("stage receipt = %+v", receipt.Stages)
+	}
+}
+
+func TestIncrementalNoChangesIsSuccessNotEmptyCorpus(t *testing.T) {
+	aggregate, err := aggregateSourceRuns([]sourceRunPlan{{Key: "gmail"}}, []sourceRunOutcome{{Key: "gmail", Incremental: true}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.Sources) != 1 || aggregate.Sources[0].Status != sourceRunStatusSuccess || aggregate.Sources[0].ErrorCode != "" || !aggregate.Sources[0].Incremental {
+		t.Fatalf("no-change incremental receipt = %+v", aggregate.Sources)
 	}
 }
 

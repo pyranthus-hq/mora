@@ -450,6 +450,11 @@ func TestGovernance_FilesystemForgetDuringWalkNoResurrection(t *testing.T) {
 		run(t, "forget", "--chat", id, "--yes")
 	}
 	t.Cleanup(func() { testHookFSPreWrite = nil })
+	// Phase 4 skips unchanged files by manifest. Change the provider record so the
+	// second incremental walk enters the same suppress-check/write window.
+	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note, updated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Second walk: with a once-per-walk snapshot this resurrects the memory; the
 	// per-file re-check under the lease must honor the mid-walk forget instead.

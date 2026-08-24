@@ -85,6 +85,36 @@ func TestIngestActivityMarkedBeforeVisibleAndCompletesAfterCoveredRebuild(t *tes
 	}
 }
 
+func TestIncrementalNoChangesRetiresJournalWithoutRebuild(t *testing.T) {
+	cfg := gate2Vault(t)
+	src, _ := writeIngestFixture(t, "nochange")
+	if _, err := ingestSource(cfg, src, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := ingestSource(cfg, src, &bytes.Buffer{}); err != nil || n != 0 {
+		t.Fatalf("no-change ingest n=%d err=%v", n, err)
+	}
+	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	found := false
+	for _, activity := range acts {
+		if activity.Kind == operationKindIngest && activity.State == operationCompleted && activity.Phase == "no_changes" {
+			found = true
+		}
+		if activity.Kind == operationKindIngest && activity.State == operationRunning {
+			t.Fatalf("no-change activity remained running: %+v", activity)
+		}
+	}
+	if !found {
+		t.Fatalf("no completed no-change activity: %+v", acts)
+	}
+	if _, err := os.Stat(ingestJournalPath(cfg, ingestOperationSourceKey(src))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("no-change journal remained: %v", err)
+	}
+}
+
 func TestIngestFailureWritesTerminalReceipt(t *testing.T) {
 	cfg := gate2Vault(t)
 	_, err := ingestSource(cfg, Source{Type: "bogus", Name: "private-source-name"}, &bytes.Buffer{})

@@ -1053,20 +1053,7 @@
     {
       "features": {
         "deep_link": "unsupported",
-        "incremental_sync": "unsupported",
-        "repair": "unsupported"
-      },
-      "ingesting": true,
-      "label": "Calendar (Apple)",
-      "name": "Apple Calendar",
-      "needs_auth": false,
-      "type": "applecalendar",
-      "upcoming": true
-    },
-    {
-      "features": {
-        "deep_link": "unsupported",
-        "incremental_sync": "unsupported",
+        "incremental_sync": "supported",
         "repair": "unsupported"
       },
       "ingesting": true,
@@ -1079,7 +1066,7 @@
     {
       "features": {
         "deep_link": "unsupported",
-        "incremental_sync": "unsupported",
+        "incremental_sync": "supported",
         "repair": "unsupported"
       },
       "ingesting": true,
@@ -1092,7 +1079,7 @@
     {
       "features": {
         "deep_link": "unsupported",
-        "incremental_sync": "unsupported",
+        "incremental_sync": "supported",
         "repair": "unsupported"
       },
       "ingesting": true,
@@ -1101,6 +1088,19 @@
       "needs_auth": false,
       "type": "filesystem",
       "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "Calendar (Apple)",
+      "name": "Apple Calendar",
+      "needs_auth": false,
+      "type": "applecalendar",
+      "upcoming": true
     },
     {
       "features": {

@@ -243,25 +243,17 @@ func capabilitiesMCPSchemas() []capabilitiesSchema {
 	return schemas
 }
 
-// capabilitiesIncrementalSync reports whether a connector can fetch only what
-// changed since its last successful run. Today every connector answers
-// `unsupported`, and that is a measured claim, not a placeholder:
-//
-//   - Every ingest path fetches a TIME WINDOW (windowForSource, windowForIMessage,
-//     windowForAppleCal) recomputed from the clock on each run, never from a
-//     stored position.
-//   - memory.SyncStatus.Checkpoint is a WITHIN-RUN page-resume token: ingest.go
-//     clears it (`p.Status.Checkpoint = ""`) once a run completes, so the next run
-//     starts from the beginning of the window.
-//   - SyncStatus.GmailHistory and SyncStatus.CalSyncToken are declared and
-//     commented "future incremental". Nothing outside their declaration in
-//     internal/memory/status.go reads or writes either field.
-//   - ingestFilesystem walks the whole tree every run.
-//
-// This is the one value in the payload with no registry behind it. Phase 4
-// (ING-01) flips it, and when it does, this function is where the evidence for
-// the new value belongs.
-func capabilitiesIncrementalSync(connectorInfo) string { return featureUnsupported }
+// Gmail History IDs and Calendar sync tokens are provider-native between-run
+// cursors. Other connectors still re-read their configured window/tree and
+// therefore remain explicitly unsupported rather than overstating capability.
+func capabilitiesIncrementalSync(connector connectorInfo) string {
+	switch connector.Type {
+	case "gmail", "calendar", "filesystem":
+		return featureSupported
+	default:
+		return featureUnsupported
+	}
+}
 
 func capabilitiesConnectors() []capabilitiesConnector {
 	connectors := make([]capabilitiesConnector, 0, len(connectorCatalog))
