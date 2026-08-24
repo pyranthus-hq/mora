@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
@@ -16,8 +17,8 @@ import (
 // Full Disk Access under launchd) was killing the whole run — later sources
 // never synced and the final rebuildIndex never ran, so even the sources that
 // DID ingest stayed invisible to search. The fix mirrors backfillEnabledGoogle:
-// warn per failure, keep going, always rebuild, return an aggregate error
-// (honest non-zero exit — never swallow sync errors).
+// warn per failure, keep going, always rebuild, and return a usable partial
+// result (exit 0) when at least one source succeeded and the rebuild is trusted.
 func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -45,8 +46,8 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 
 	var buf bytes.Buffer
 	err = cmdIngest(context.Background(), []string{"run", "--all"}, &buf, testStderr)
-	if err == nil {
-		t.Fatalf("expected an aggregate error when a source fails (never swallow sync errors); output:\n%s", buf.String())
+	if err != nil {
+		t.Fatalf("usable partial success must exit successfully: %v; output:\n%s", err, buf.String())
 	}
 	if len(calls) != 2 || calls[1] != "good" {
 		t.Fatalf("later sources must still ingest after an earlier failure; calls=%v", calls)
@@ -56,6 +57,91 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "ingested 2 item(s)") {
 		t.Fatalf("expected the run to complete (count + rebuild) despite the failure, got:\n%s", buf.String())
+	}
+}
+
+func TestIsolationPartialSuccessReceiptThroughIngestAll(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := saveSources(cfg, []Source{
+		{Name: "bad", Type: "filesystem", Scope: "global", Path: t.TempDir(), Enabled: genericutil.Ptr(true)},
+		{Name: "good", Type: "filesystem", Scope: "global", Path: t.TempDir(), Enabled: genericutil.Ptr(true)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orig := ingestSourceFn
+	t.Cleanup(func() { ingestSourceFn = orig })
+	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (int, error) {
+		if source.Name == "bad" {
+			return 0, newCodedError(errCodeConnectorUnavailable, nil, "offline")
+		}
+		return 2, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("mixed run: %v\nstderr=%s", err, stderr.String())
+	}
+	var receipt ingestRunReceipt
+	if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil {
+		t.Fatalf("decode one receipt: %v\n%s", err, stdout.String())
+	}
+	if receipt.Status != sourceRunStatusPartial || !receipt.Usable || receipt.SuccessfulSources != 1 || receipt.FailedSources != 1 || len(receipt.Sources) != 2 || receipt.Items != 2 {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+}
+
+func TestIngestRunAllFailedEmitsEveryReceiptBeforeError(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := saveSources(cfg, []Source{
+		{Name: "a", Type: "filesystem", Scope: "global", Path: t.TempDir(), Enabled: genericutil.Ptr(true)},
+		{Name: "b", Type: "filesystem", Scope: "global", Path: t.TempDir(), Enabled: genericutil.Ptr(true)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orig := ingestSourceFn
+	t.Cleanup(func() { ingestSourceFn = orig })
+	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (int, error) {
+		return 0, newCodedError(errCodeConnectorUnavailable, nil, "%s offline", source.Name)
+	}
+	var stdout bytes.Buffer
+	err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("all-failed run must return nonzero")
+	}
+	var receipt ingestRunReceipt
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &receipt); decodeErr != nil {
+		t.Fatalf("decode receipt before error: %v\n%s", decodeErr, stdout.String())
+	}
+	if receipt.Status != sourceRunStatusFailed || receipt.Usable || receipt.FailedSources != 2 || len(receipt.Sources) != 2 {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+}
+
+func TestIngestRunSharedRebuildFailureIsNotUsable(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := saveSources(cfg, []Source{{Name: "good", Type: "filesystem", Path: t.TempDir(), Enabled: genericutil.Ptr(true)}}); err != nil {
+		t.Fatal(err)
+	}
+	origIngest, origRebuild := ingestSourceFn, rebuildIngestIndexFn
+	t.Cleanup(func() { ingestSourceFn, rebuildIngestIndexFn = origIngest, origRebuild })
+	ingestSourceFn = func(Config, Source, io.Writer) (int, error) { return 2, nil }
+	rebuildIngestIndexFn = func(context.Context, Config) (int, error) { return 0, errors.New("shared rebuild failed") }
+	var stdout bytes.Buffer
+	err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("shared rebuild failure must return nonzero")
+	}
+	var receipt ingestRunReceipt
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &receipt); decodeErr != nil {
+		t.Fatalf("decode receipt: %v\n%s", decodeErr, stdout.String())
+	}
+	if receipt.Status != sourceRunStatusFailed || receipt.Usable || len(receipt.Sources) != 1 || receipt.Sources[0].Usable {
+		t.Fatalf("shared failure receipt = %+v", receipt)
 	}
 }
 

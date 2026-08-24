@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +15,127 @@ import (
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+func TestIsolationPartialSuccessReceipt(t *testing.T) {
+	plans := make([]sourceRunPlan, 8)
+	outcomes := make([]sourceRunOutcome, 8)
+	for i := range plans {
+		key := string(rune('a' + i))
+		plans[i] = sourceRunPlan{Key: key, Source: Source{Name: key, Type: "gmail"}}
+		outcomes[i] = sourceRunOutcome{Key: key, Items: 1}
+	}
+	outcomes[7].Items = 0
+	outcomes[7].Err = newCodedError(errCodeConnectorUnavailable, errors.New("offline"), "offline")
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err != nil {
+		t.Fatalf("usable partial result returned error: %v", err)
+	}
+	if aggregate.Status != sourceRunStatusPartial || !aggregate.Usable || aggregate.SuccessfulSources != 7 || aggregate.FailedSources != 1 || len(aggregate.Sources) != 8 {
+		t.Fatalf("aggregate = %+v", aggregate)
+	}
+	failed := aggregate.Sources[7]
+	if failed.Source != "h" || failed.ErrorCode != errCodeConnectorUnavailable || !failed.Retryable {
+		t.Fatalf("failed receipt = %+v", failed)
+	}
+}
+
+func TestIsolationAggregateEdges(t *testing.T) {
+	plans := []sourceRunPlan{
+		{Key: "gmail", Source: Source{Name: "gmail", Type: "gmail"}},
+		{Key: "imessage", Source: Source{Name: "imessage", Type: "imessage"}},
+	}
+	t.Run("all failed", func(t *testing.T) {
+		outcomes := []sourceRunOutcome{
+			{Key: "gmail", Err: newCodedError(errCodeConnectorUnavailable, nil, "offline")},
+			{Key: "imessage", Err: newCodedError(errCodeConnectorMalformed, nil, "bad payload")},
+		}
+		aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+		if err == nil || aggregate.Status != sourceRunStatusFailed || aggregate.Usable || aggregate.FailedSources != 2 || len(aggregate.Sources) != 2 {
+			t.Fatalf("aggregate=%+v err=%v", aggregate, err)
+		}
+	})
+	t.Run("clean empty", func(t *testing.T) {
+		aggregate, err := aggregateSourceRuns(plans[:1], []sourceRunOutcome{{Key: "gmail"}}, nil, nil)
+		if err != nil || !aggregate.Usable || aggregate.FailedSources != 0 || len(aggregate.Sources) != 1 {
+			t.Fatalf("aggregate=%+v err=%v", aggregate, err)
+		}
+		receipt := aggregate.Sources[0]
+		if receipt.Status != sourceRunStatusEmpty || receipt.ErrorCode != errCodeConnectorEmpty || receipt.ErrorClass != connectorClassEmpty || receipt.Retryable {
+			t.Fatalf("empty receipt = %+v", receipt)
+		}
+	})
+	t.Run("failed zero is not empty", func(t *testing.T) {
+		aggregate, err := aggregateSourceRuns(plans[:1], []sourceRunOutcome{{Key: "gmail", Err: errors.New("boom")}}, nil, nil)
+		if err == nil || aggregate.Sources[0].Status != sourceRunStatusFailed || aggregate.Sources[0].ErrorCode != errCodeConnectorUnclassified {
+			t.Fatalf("aggregate=%+v err=%v", aggregate, err)
+		}
+	})
+}
+
+func TestIsolationTypedSourceFailures(t *testing.T) {
+	cases := []struct {
+		name, code, class string
+		retryable         bool
+	}{
+		{"timeout", errCodeConnectorUnavailable, connectorClassUnavailable, true},
+		{"malformed", errCodeConnectorMalformed, connectorClassMalformed, false},
+		{"unauthorized", errCodeConnectorUnauthorized, connectorClassUnauthorized, false},
+		{"database", errCodeConnectorUnavailable, connectorClassUnavailable, true},
+		{"unclassified", errCodeConnectorUnclassified, connectorClassUnclassified, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plans := []sourceRunPlan{{Key: "failed"}, {Key: "healthy"}}
+			outcomes := []sourceRunOutcome{
+				{Key: "failed", Err: newCodedError(tc.code, nil, "%s", tc.name)},
+				{Key: "healthy", Items: 2},
+			}
+			aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+			if err != nil {
+				t.Fatalf("healthy peer should keep result usable: %v", err)
+			}
+			var failed, healthy sourceRunReceipt
+			for _, receipt := range aggregate.Sources {
+				switch receipt.Source {
+				case "failed":
+					failed = receipt
+				case "healthy":
+					healthy = receipt
+				}
+			}
+			if failed.ErrorCode != tc.code || failed.ErrorClass != tc.class || failed.Retryable != tc.retryable || failed.Status != sourceRunStatusFailed {
+				t.Fatalf("failed receipt = %+v", failed)
+			}
+			if healthy.Status != sourceRunStatusSuccess || !healthy.Usable || healthy.ErrorCode != "" {
+				t.Fatalf("healthy receipt contaminated by peer = %+v", healthy)
+			}
+		})
+	}
+}
+
+func TestIsolationReceiptOrdering(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "a"}, {Key: "b"}, {Key: "c"}, {Key: "d"}}
+	base := []sourceRunOutcome{{Key: "a", Items: 1}, {Key: "b", Items: 1}, {Key: "c", Items: 1}, {Key: "d", Items: 1}}
+	var want []byte
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 100; i++ {
+		outcomes := append([]sourceRunOutcome(nil), base...)
+		rng.Shuffle(len(outcomes), func(i, j int) { outcomes[i], outcomes[j] = outcomes[j], outcomes[i] })
+		aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(aggregate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			want = raw
+		} else if !bytes.Equal(raw, want) {
+			t.Fatalf("permutation %d changed receipt order:\n%s\n%s", i, want, raw)
+		}
+	}
+}
 
 func TestIsolationSourceSelectorPlanning(t *testing.T) {
 	withTempHome(t)

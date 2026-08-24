@@ -93,6 +93,12 @@ flowchart TD
 | `doctor` | Environment + storage + iMessage-readiness checks. | `cmdDoctor` `doctor.go` |
 | `schedule install/list` | Install a scheduled job through launchd on macOS, Task Scheduler on Windows, or a printed cron line on Linux. | `cmdSchedule` `schedule.go` |
 | `sources add … / ingest run` | Register / run a filesystem source. | `cmdSources` `sources.go`, `cmdIngest` `ingest.go` |
+
+`ingest run --all --json` is explicitly partial-success aware. One failed source does not
+make completed peer work unusable: with a successful covering rebuild it emits a typed
+`partial` aggregate and exits 0. All-source failure, shared rebuild failure, and global
+cancellation emit their available per-source receipts before returning nonzero. Each failed
+receipt carries its own retry instruction; a clean zero-item source is `empty`, not failed.
 | `connectors list\|enable\|disable\|setup` | Catalog + per-type consent state. | `cmdConnectors` `setup.go` |
 | `connect google\|imessage [--since-days N]` | OAuth/FDA consent **then** backfill. | `cmdConnect` `ingest.go` |
 | `sync status\|google\|filesystem\|imessage` | Per-source freshness (no fetch) / re-backfill. A source is required. Unknown names fail closed. | `cmdSync` `ingest.go` |
