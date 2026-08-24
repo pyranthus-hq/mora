@@ -360,8 +360,8 @@ func TestContractIngestRunReceiptSurvivesFailure(t *testing.T) {
 	origFn := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = origFn })
 	// Partial run: three items land, then the connector fails.
-	ingestSourceFn = func(_ Config, _ Source, _ io.Writer) (int, error) {
-		return 3, errString("kaboom")
+	ingestSourceFn = func(_ Config, _ Source, _ io.Writer) (sourceIngestResult, error) {
+		return sourceIngestResult{Examined: 4, Materialized: 3, Failed: 1, Missing: 1}, errString("kaboom")
 	}
 	if err := saveSources(cfg, []Source{
 		{Name: "boom", Type: "filesystem", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: nowRFC3339()},

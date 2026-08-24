@@ -24,7 +24,11 @@ type IngestParams struct {
 }
 
 type IngestResult struct {
-	Status *SyncStatus
+	Status       *SyncStatus
+	Examined     int
+	Materialized int
+	Failed       int
+	Missing      int
 }
 
 // Ingest pages through the Fetcher from the checkpoint cursor, maps each Item,
@@ -49,6 +53,11 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// write errors is not a clean attempt and keeps its errors (M-3: health is the
 	// last attempt's outcome, not a "paging finished" signal).
 	errorsBefore := p.Status.ErrorCount
+	result := IngestResult{Status: p.Status}
+	finish := func() IngestResult {
+		result.Missing = result.Examined - result.Materialized
+		return result
+	}
 	for {
 		page, err := p.Fetcher.FetchPage(p.Kind, p.Window, cursor)
 		if err != nil {
@@ -67,17 +76,20 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
 			// Keep checkpoint = cursor so the next run resumes this page.
 			p.Status.Checkpoint = cursor
-			return IngestResult{Status: p.Status}, err
+			return finish(), err
 		}
 		for _, it := range page.Items {
+			result.Examined++
 			m := mapFn(it, p.Scope, p.BodyBudget)
 			m.LastSynced = time.Now().UTC().Format(time.RFC3339)
 			if werr := p.Write(m); werr != nil {
+				result.Failed++
 				p.Status.ErrorCount++
 				p.Status.LastError = werr.Error()
 				p.Status.ErrorCode = "" // prose only here; see the fetch-failure branch above
 				continue
 			}
+			result.Materialized++
 			p.Status.ItemCount++
 		}
 		if page.NextCursor == "" {
@@ -101,7 +113,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// from the start and re-attempts the dropped items. The caller decides how
 	// loudly to surface the returned error.
 	if dropped := p.Status.ErrorCount - errorsBefore; dropped > 0 {
-		return IngestResult{Status: p.Status}, fmt.Errorf("%d item(s) failed to write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
+		return finish(), fmt.Errorf("%d item(s) failed to write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
 	}
 
 	// Clean completion: model health as a LAST-ATTEMPT outcome (M-3). One instant
@@ -120,5 +132,5 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// an agent a healthy source is broken, which inverts the very thing the typed
 	// code exists to communicate.
 	p.Status.ErrorCode = ""
-	return IngestResult{Status: p.Status}, nil
+	return finish(), nil
 }

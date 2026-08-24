@@ -88,6 +88,44 @@ func TestIngestWriteErrorIsCounted(t *testing.T) {
 	if status.ErrorCount != 1 {
 		t.Fatalf("expected 1 error counted, got %d", status.ErrorCount)
 	}
+	if res.Examined != 3 || res.Materialized != 2 || res.Failed != 1 || res.Missing != 1 {
+		t.Fatalf("partial counts = %d/%d/%d/%d, want 3/2/1/1", res.Examined, res.Materialized, res.Failed, res.Missing)
+	}
+}
+
+func TestIngestEmptyCounts(t *testing.T) {
+	res, err := Ingest(IngestParams{
+		Fetcher: &fakeFetcher{pages: map[string]Page{"": {}}}, Kind: kindGmailThread,
+		Status: &SyncStatus{Source: "gmail"}, Write: func(MappedMemory) error { return nil },
+	})
+	if err != nil || res.Examined != 0 || res.Materialized != 0 || res.Failed != 0 || res.Missing != 0 {
+		t.Fatalf("empty result = %+v, err %v", res, err)
+	}
+}
+
+func TestIngestPartialCounts(t *testing.T) {
+	items := make([]Item, 100)
+	for i := range items {
+		items[i] = Item{Kind: kindGmailThread, ProviderID: string(rune(i + 1)), OccurredAt: time.Now()}
+	}
+	fetcher := &fakeFetcher{pages: map[string]Page{"": {Items: items}}}
+	attempted := 0
+	res, err := Ingest(IngestParams{
+		Fetcher: fetcher, Kind: kindGmailThread, Status: &SyncStatus{Source: "gmail"},
+		Write: func(MappedMemory) error {
+			attempted++
+			if attempted <= 27 {
+				return errWrite
+			}
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("partial write attempt must remain non-nil")
+	}
+	if res.Examined != 100 || res.Materialized != 73 || res.Failed != 27 || res.Missing != 27 {
+		t.Fatalf("counts = %d/%d/%d/%d, want 100/73/27/27", res.Examined, res.Materialized, res.Failed, res.Missing)
+	}
 }
 
 func TestIngestWriteErrorContinues(t *testing.T) {
@@ -143,6 +181,9 @@ func TestIngestFetchErrorPreservesCheckpoint(t *testing.T) {
 	}
 	if len(written) != 2 {
 		t.Fatalf("expected first page items written before fetch error, got %d", len(written))
+	}
+	if res.Examined != 2 || res.Materialized != 2 || res.Failed != 0 || res.Missing != 0 {
+		t.Fatalf("fetch-error counts = %d/%d/%d/%d, want 2/2/0/0", res.Examined, res.Materialized, res.Failed, res.Missing)
 	}
 }
 

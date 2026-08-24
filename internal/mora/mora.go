@@ -769,7 +769,7 @@ var notifyBriefFn = notifyBriefDefault
 // through (defaults to ingestSource); tests swap it (t.Cleanup-restore, never
 // t.Parallel) to assert --all's warn-and-continue ordering without real
 // connectors.
-var ingestSourceFn = ingestSource
+var ingestSourceFn = ingestSourceDetailed
 
 // reingestFullDays is the Gmail lookback used by `reingest --full` — ~100 years,
 // effectively all-time (windowForSource computes Since = now - days; Gmail does not

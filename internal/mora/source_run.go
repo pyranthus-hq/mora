@@ -46,6 +46,10 @@ const (
 type sourceRunOutcome struct {
 	Key           string
 	Items         int
+	Examined      int
+	Materialized  int
+	Failed        int
+	Missing       int
 	Err           error
 	Cancelled     bool
 	LastSuccessAt string
@@ -58,6 +62,10 @@ type sourceRunReceipt struct {
 	Status        string `json:"status"`
 	Usable        bool   `json:"usable"`
 	Items         int    `json:"items"`
+	Examined      int    `json:"examined"`
+	Materialized  int    `json:"materialized"`
+	Failed        int    `json:"failed"`
+	Missing       int    `json:"missing"`
 	ErrorCode     string `json:"error_code,omitempty"`
 	ErrorClass    string `json:"error_class,omitempty"`
 	Retryable     bool   `json:"retryable"`
@@ -88,12 +96,20 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			outcome = sourceRunOutcome{Key: plan.Key, Err: errors.New("source produced no terminal outcome")}
 		}
 		receipt := sourceRunReceipt{
-			Source: plan.Key, Items: outcome.Items, LastSuccessAt: outcome.LastSuccessAt,
+			Source: plan.Key, Items: outcome.Items, Examined: outcome.Examined,
+			Materialized: outcome.Materialized, Failed: outcome.Failed, Missing: outcome.Missing,
+			LastSuccessAt: outcome.LastSuccessAt,
 			LastAttemptAt: outcome.LastAttemptAt, Stale: outcome.Stale,
 		}
 		switch {
 		case outcome.Cancelled:
 			receipt.Status = sourceRunStatusCancelled
+		case outcome.Err != nil && outcome.Materialized > 0:
+			receipt.Status = sourceRunStatusPartial
+			receipt.Usable = true
+			receipt.ErrorCode = connectorErrorCodeFor(outcome.Err)
+			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
+			receipt.Retryable = retryableForErrorCode(receipt.ErrorCode)
 		case outcome.Err != nil:
 			receipt.Status = sourceRunStatusFailed
 			receipt.ErrorCode = connectorErrorCodeFor(outcome.Err)
@@ -118,6 +134,12 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		switch receipt.Status {
 		case sourceRunStatusSuccess, sourceRunStatusEmpty:
 			aggregate.SuccessfulSources++
+		case sourceRunStatusPartial:
+			// A partial source contributed usable materialized work and also had a
+			// failed attempt. Preserve both aggregate facts; the source receipt is
+			// still the canonical one-per-source terminal classification.
+			aggregate.SuccessfulSources++
+			aggregate.FailedSources++
 		case sourceRunStatusFailed:
 			aggregate.FailedSources++
 		case sourceRunStatusCancelled:
@@ -136,7 +158,7 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 	case aggregate.CancelledSources > 0:
 		aggregate.Status = sourceRunStatusCancelled
 		return aggregate, fmt.Errorf("source run cancelled")
-	case aggregate.FailedSources > 0 && aggregate.SuccessfulSources > 0:
+	case aggregate.FailedSources > 0 && aggregate.SuccessfulSources > 0 || hasPartialSource(receipts):
 		aggregate.Status = sourceRunStatusPartial
 		return aggregate, nil
 	case aggregate.FailedSources > 0:
@@ -146,6 +168,15 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		aggregate.Status = sourceRunStatusSuccess
 		return aggregate, nil
 	}
+}
+
+func hasPartialSource(receipts []sourceRunReceipt) bool {
+	for _, receipt := range receipts {
+		if receipt.Status == sourceRunStatusPartial {
+			return true
+		}
+	}
+	return false
 }
 
 type sourceRunCoordinatorFunc func(context.Context, sourceRunRequest) (sourceRunResult, error)
@@ -212,7 +243,10 @@ func sourceRunCoordinator(ctx context.Context, req sourceRunRequest) (sourceRunR
 	}
 	run := req.run
 	if run == nil {
-		run = ingestSourceFn
+		run = func(cfg Config, source Source, output io.Writer) (int, error) {
+			result, err := ingestSourceFn(cfg, source, output)
+			return result.Materialized, err
+		}
 	}
 	for _, plan := range plans {
 		if err := ctx.Err(); err != nil {

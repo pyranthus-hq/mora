@@ -20,7 +20,7 @@ func TestOperationActivityLifecycleAndSanitizedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Heartbeat(cfg, h, "writing", Counts{Items: 7, Files: 3}, operationTestNow.Add(time.Minute)); err != nil {
+	if err := Heartbeat(cfg, h, "writing", Counts{Items: 7, Files: 3, Examined: 10, Materialized: 7, Missing: 3, Errors: 3}, operationTestNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -42,7 +42,7 @@ func TestOperationActivityLifecycleAndSanitizedProjection(t *testing.T) {
 		}
 	}
 
-	if err := Finish(cfg, h, Completed, "retired", Counts{Items: 7, Files: 3}, "", operationTestNow.Add(3*time.Minute)); err != nil {
+	if err := Finish(cfg, h, Completed, "retired", Counts{Items: 7, Files: 3, Examined: 10, Materialized: 7, Missing: 3, Errors: 3}, "", operationTestNow.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	acts = Activities(cfg, operationTestNow.Add(4*time.Minute), func(int) bool { return false })
@@ -303,6 +303,9 @@ func TestWriterValidationAndProgressUpdate(t *testing.T) {
 	}
 	if err := Heartbeat(cfg, h, "next", Counts{Items: -1}, operationTestNow); err == nil {
 		t.Fatal("negative counts")
+	}
+	if err := Heartbeat(cfg, h, "next", Counts{Examined: 1, Materialized: -1}, operationTestNow); err == nil {
+		t.Fatal("negative additive counts")
 	}
 	if err := Finish(cfg, h, Running, "end", Counts{}, "", operationTestNow); err == nil {
 		t.Fatal("nonterminal finish")

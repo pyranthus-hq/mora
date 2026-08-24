@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"reflect"
@@ -15,6 +16,12 @@ import (
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+type isolationPageFetcher struct{ items []memory.Item }
+
+func (f isolationPageFetcher) FetchPage(memory.ItemKind, memory.FetchWindow, string) (memory.Page, error) {
+	return memory.Page{Items: f.items}, nil
+}
 
 func TestIsolationPartialSuccessReceipt(t *testing.T) {
 	plans := make([]sourceRunPlan, 8)
@@ -36,6 +43,97 @@ func TestIsolationPartialSuccessReceipt(t *testing.T) {
 	failed := aggregate.Sources[7]
 	if failed.Source != "h" || failed.ErrorCode != errCodeConnectorUnavailable || !failed.Retryable {
 		t.Fatalf("failed receipt = %+v", failed)
+	}
+}
+
+func TestIsolationPartialWriteCounts(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "gmail:work"}}
+	outcomes := []sourceRunOutcome{{
+		Key: "gmail:work", Items: 73, Examined: 100, Materialized: 73, Failed: 27, Missing: 27,
+		Err: newCodedError(errCodeConnectorMalformed, nil, "27 malformed items"),
+	}}
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err != nil {
+		t.Fatalf("usable partial source: %v", err)
+	}
+	if aggregate.Status != sourceRunStatusPartial || !aggregate.Usable || len(aggregate.Sources) != 1 {
+		t.Fatalf("aggregate = %+v", aggregate)
+	}
+	receipt := aggregate.Sources[0]
+	if receipt.Status != sourceRunStatusPartial || !receipt.Usable || receipt.Examined != 100 || receipt.Materialized != 73 || receipt.Failed != 27 || receipt.Missing != 27 {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+}
+
+func TestIsolationPartialWriteSearchableAfterRebuild(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	items := make([]memory.Item, 100)
+	for i := range items {
+		items[i] = memory.Item{
+			Kind: "gmail_thread", ProviderID: fmt.Sprintf("partial-%03d", i),
+			Title: fmt.Sprintf("Partial %03d", i), Body: "partialwrite73token", OccurredAt: time.Now(),
+		}
+	}
+	attempted := 0
+	result, ingestErr := memory.Ingest(memory.IngestParams{
+		Fetcher: isolationPageFetcher{items: items}, Kind: "gmail_thread", Scope: "global",
+		Status: &memory.SyncStatus{Source: "gmail"},
+		Write: func(mapped memory.MappedMemory) error {
+			attempted++
+			if attempted <= 27 {
+				return errors.New("injected item failure")
+			}
+			return writeMappedMemory(cfg, mapped)
+		},
+	})
+	if ingestErr == nil {
+		t.Fatal("partial attempt must remain non-nil")
+	}
+	if result.Examined != 100 || result.Materialized != 73 || result.Failed != 27 || result.Missing != 27 {
+		t.Fatalf("counts = %+v", result)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatalf("covering rebuild: %v", err)
+	}
+	hits, err := searchMemories(context.Background(), cfg, "partialwrite73token", "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 73 {
+		t.Fatalf("searchable materialized records = %d, want 73", len(hits))
+	}
+}
+
+func TestIsolationPartialAttemptCountsPersistInState(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	original := ingestSourceDispatchFn
+	t.Cleanup(func() { ingestSourceDispatchFn = original })
+	ingestSourceDispatchFn = func(Config, Source, io.Writer) (sourceIngestResult, error) {
+		return sourceIngestResult{Examined: 100, Materialized: 73, Failed: 27, Missing: 27},
+			newCodedError(errCodeConnectorMalformed, nil, "partial mapping failure")
+	}
+	result, err := ingestSourceDetailed(cfg, Source{Name: "mail", Type: "gmail", Scope: "global"}, io.Discard)
+	if err == nil || result.Materialized != 73 {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+	activities := operationActivities(cfg, time.Now().Add(time.Second), func(int) bool { return false })
+	var counts operationCounts
+	found := false
+	for _, activity := range activities {
+		if activity.Kind == operationKindIngest {
+			counts = activity.Counts
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ingest activity absent: %+v", activities)
+	}
+	if counts.Examined != 100 || counts.Materialized != 73 || counts.Errors != 27 || counts.Missing != 27 {
+		t.Fatalf("durable counts = %+v", counts)
 	}
 }
 

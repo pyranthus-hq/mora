@@ -51,9 +51,17 @@ const (
 // account labels, paths, memory ids, and source text have no place in a health
 // receipt and cannot be smuggled in through arbitrary map keys.
 type Counts struct {
-	Items  int `json:"items,omitempty"`
-	Files  int `json:"files,omitempty"`
-	Errors int `json:"errors,omitempty"`
+	Items        int `json:"items,omitempty"`
+	Files        int `json:"files,omitempty"`
+	Errors       int `json:"errors,omitempty"`
+	Examined     int `json:"examined,omitempty"`
+	Materialized int `json:"materialized,omitempty"`
+	Missing      int `json:"missing,omitempty"`
+}
+
+func validCounts(counts Counts) bool {
+	return counts.Items >= 0 && counts.Files >= 0 && counts.Errors >= 0 &&
+		counts.Examined >= 0 && counts.Materialized >= 0 && counts.Missing >= 0
 }
 
 // Record is the durable writer-owned shape. OwnerPID is used only as
@@ -242,7 +250,7 @@ func Heartbeat(cfg config.Config, h Handle, phase string, counts Counts, now tim
 	if !validOperationToken(phase) {
 		return fmt.Errorf("invalid operation phase %q", phase)
 	}
-	if counts.Items < 0 || counts.Files < 0 || counts.Errors < 0 {
+	if !validCounts(counts) {
 		return errors.New("operation counts cannot be negative")
 	}
 	return mutateOperation(cfg, h, func(rec *Record) error {
@@ -271,7 +279,7 @@ func Finish(cfg config.Config, h Handle, state State, phase string, counts Count
 	if !validOperationToken(phase) {
 		return fmt.Errorf("invalid operation phase %q", phase)
 	}
-	if counts.Items < 0 || counts.Files < 0 || counts.Errors < 0 {
+	if !validCounts(counts) {
 		return errors.New("operation counts cannot be negative")
 	}
 	if state == Completed && failureCode != "" {

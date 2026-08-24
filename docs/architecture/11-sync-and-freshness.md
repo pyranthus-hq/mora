@@ -51,6 +51,20 @@ Two scheduled-run hardenings (2026-06-10), both born from a live failure where t
 
 - **The plist snapshots `MORA_GOOGLE_CREDENTIALS`.** launchd jobs do NOT inherit the user's shell profile, so a BYO-creds setup hit the embedded `DEV_PLACEHOLDER` OAuth client on every scheduled Google sync and the vault went stale with no visible error. `schedulePlistFor` now writes the var (a path, not a secret) into an `EnvironmentVariables` dict at install time, and omits the dict when the var is unset (`mora_schedule_env_test.go`).
 - **Ingest activity is mark-before-visible and anonymous.** `ingestSource` durably creates a content-free operation receipt and run-id-bound journal header before provider dispatch. Long work, including the wait for sibling sources in a batch, heartbeats every five minutes. A clean fetch remains `awaiting_rebuild` until the covering rebuild commits and retires its journal; source/account identity never enters the health projection.
+- **Attempt counts are local and honest.** Every source attempt reports `examined`
+  (items actually returned and considered), `materialized` (verified vault writes),
+  `failed` (observed mapping/write failures), and `missing` (`examined - materialized`).
+  A provider failure cannot invent counts for items Mora never saw. Clean empty attempts
+  report four zeros and remain `connector.empty`. These content-free integers and the
+  terminal failure code live under `StateDir/operations`; item ids, paths, provider
+  labels, and source content never enter an operation receipt.
+- **Partial writes are not rolled back.** Valid records from a partial attempt remain in
+  the vault. Exactly one covering rebuild after all source attempts makes those records
+  searchable. Until that rebuild commits, the attempt is not globally usable; if the
+  rebuild fails, the aggregate is `usable:false` and exits nonzero without rewriting the
+  source-local failure as an index failure. A successful rebuild permits a source receipt
+  such as 100 examined / 73 materialized / 27 failed / 27 missing to remain explicitly
+  `partial` while its 73 valid records are searchable.
 - **`ingest run --all` is warn-and-continue, not abort-on-first-error.** A single broken connector (e.g. iMessage without Full Disk Access under launchd — TCC grants are per-binary, so a terminal grant does not cover the launchd-spawned process) used to kill the whole run: later sources never synced and the final `rebuildIndex` never ran, leaving even successfully-ingested sources invisible to search. `cmdIngest` now mirrors `backfillEnabledGoogle`: per-source warn, keep going, always rebuild, aggregate error at the end (honest non-zero exit). The named `--source` path still aborts — there, the failure IS the result (`mora_ingest_all_test.go`).
 
 Agent-facing freshness rides on the query surfaces themselves: `search_memory` and `context_memory` both return the `sourceFreshness` per-source `last_synced` map alongside results (see [mcp-server](./06-mcp-server.md)), so an agent can qualify every answer with its data age.
