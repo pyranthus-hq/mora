@@ -545,6 +545,17 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	sourceFlagSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "source" {
+			sourceFlagSet = true
+		}
+	})
+	if sourceFlagSet {
+		if _, filterErr := parseSearchFilters(map[string]any{"source": *srcFilter}, time.Time{}); filterErr != nil {
+			return filterErr
+		}
+	}
 	if (*loopID == "") != (*loopRunID == "") {
 		return errors.New("mora pulse: --loop and --loop-run must be passed together")
 	}
@@ -627,11 +638,20 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 			// the point: a partial honest brief beats no brief (T-13-09/T-13-12). An
 			// explicit --since-hours window is ad-hoc and is intentionally not synced.
 			if *syncFirst {
-				if _, gerr := backfillGoogleFn(ctx, cfg, stdout); gerr != nil {
-					warnf(stdout, "google sync incomplete; the brief reflects last good data (run `mora sync status`): %v", gerr)
-				}
-				if _, ierr := backfillIMessageFn(ctx, cfg, stdout); ierr != nil {
-					warnf(stdout, "imessage sync incomplete; the brief reflects last good data (run `mora sync status`): %v", ierr)
+				if sourceFlagSet {
+					_, syncErr := sourceRunCoordinatorFn(ctx, sourceRunRequest{
+						Config: cfg, Selector: *srcFilter, Filtered: true, Output: stdout,
+					})
+					if syncErr != nil {
+						warnf(stdout, "source sync incomplete; the brief reflects last good data (run `mora sync status`): %v", syncErr)
+					}
+				} else {
+					if _, gerr := backfillGoogleFn(ctx, cfg, stdout); gerr != nil {
+						warnf(stdout, "google sync incomplete; the brief reflects last good data (run `mora sync status`): %v", gerr)
+					}
+					if _, ierr := backfillIMessageFn(ctx, cfg, stdout); ierr != nil {
+						warnf(stdout, "imessage sync incomplete; the brief reflects last good data (run `mora sync status`): %v", ierr)
+					}
 				}
 			}
 		}
