@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -68,6 +69,11 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		mapFn = MapItem
 	}
 	cursor := p.Status.Checkpoint
+	if cursor == "" {
+		p.Window.SyncCursor = p.Status.IncrementalCursor
+	}
+	nextSyncCursor := p.Status.IncrementalCursor
+	fallbackUsed := false
 	// Snapshot the prior error tally so the clean-completion reset only clears
 	// errors carried in from a PRIOR run — a run that itself accumulates per-item
 	// write errors is not a clean attempt and keeps its errors (M-3: health is the
@@ -80,6 +86,15 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	}
 	for {
 		page, err := fetchPageContext(ctx, p.Fetcher, p.Kind, p.Window, cursor)
+		if err != nil && !fallbackUsed && p.Window.SyncCursor != "" && errors.Is(err, ErrIncrementalCursorExpired) {
+			fallbackUsed = true
+			p.Window.SyncCursor = ""
+			p.Status.IncrementalCursor = ""
+			nextSyncCursor = ""
+			cursor = ""
+			p.Status.Checkpoint = ""
+			continue
+		}
 		if err != nil {
 			p.Status.ErrorCount++
 			p.Status.LastError = err.Error()
@@ -97,6 +112,9 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			// Keep checkpoint = cursor so the next run resumes this page.
 			p.Status.Checkpoint = cursor
 			return finish(), err
+		}
+		if page.SyncCursor != "" {
+			nextSyncCursor = page.SyncCursor
 		}
 		for _, it := range page.Items {
 			result.Examined++
@@ -136,6 +154,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		}
 	}
 	p.Status.Checkpoint = ""
+	p.Status.IncrementalCursor = nextSyncCursor
 	// Paging finished. Every completed attempt — clean OR partial — stamps
 	// LastAttemptAt (when it was tried). The SUCCESS timestamps are stamped only
 	// below, and only on a genuinely clean run, so a partial-failure run never

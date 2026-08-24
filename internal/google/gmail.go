@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -9,6 +10,9 @@ import (
 	"time"
 
 	gmail "google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 const gmailPageSize = 50
@@ -31,6 +35,9 @@ type gmailMessageEvidence struct {
 }
 
 func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, cursor string) (Page, error) {
+	if w.SyncCursor != "" {
+		return f.fetchGmailHistoryPage(ctx, w, cursor)
+	}
 	call := f.gmail.Users.Threads.List("me").MaxResults(gmailPageSize).Context(ctx)
 	if q := buildGmailQuery(w); q != "" {
 		call = call.Q(q)
@@ -56,7 +63,76 @@ func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, 
 		}
 		items = append(items, gmailThreadToItem(full))
 	}
-	return Page{Items: items, NextCursor: res.NextPageToken}, nil
+	syncCursor := ""
+	if res.NextPageToken == "" {
+		profile, err := f.gmail.Users.GetProfile("me").Context(ctx).Do()
+		if err != nil {
+			return Page{}, err
+		}
+		syncCursor = strconv.FormatUint(profile.HistoryId, 10)
+	}
+	return Page{Items: items, NextCursor: res.NextPageToken, SyncCursor: syncCursor}, nil
+}
+
+func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, cursor string) (Page, error) {
+	start, err := strconv.ParseUint(w.SyncCursor, 10, 64)
+	if err != nil {
+		return Page{}, fmt.Errorf("gmail: invalid history cursor %q: %w", w.SyncCursor, err)
+	}
+	call := f.gmail.Users.History.List("me").StartHistoryId(start).HistoryTypes("messageAdded", "messageDeleted", "labelAdded", "labelRemoved").Context(ctx)
+	if cursor != "" {
+		call = call.PageToken(cursor)
+	}
+	res, err := call.Do()
+	if err != nil {
+		var apiErr *googleapi.Error
+		if errors.As(err, &apiErr) && apiErr.Code == 404 {
+			return Page{}, fmt.Errorf("%w: gmail history %s", memory.ErrIncrementalCursorExpired, w.SyncCursor)
+		}
+		return Page{}, err
+	}
+	changed := map[string]bool{}
+	deleted := map[string]bool{}
+	for _, history := range res.History {
+		for _, message := range history.Messages {
+			if message.ThreadId != "" {
+				changed[message.ThreadId] = true
+			}
+		}
+		for _, row := range history.MessagesDeleted {
+			if row.Message != nil && row.Message.ThreadId != "" {
+				deleted[row.Message.ThreadId] = true
+			}
+		}
+	}
+	ids := make([]string, 0, len(changed)+len(deleted))
+	for id := range changed {
+		ids = append(ids, id)
+	}
+	for id := range deleted {
+		if !changed[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	items := make([]Item, 0, len(ids))
+	for _, id := range ids {
+		full, getErr := f.gmail.Users.Threads.Get("me", id).Format("full").Context(ctx).Do()
+		if getErr == nil {
+			items = append(items, gmailThreadToItem(full))
+			continue
+		}
+		if apiErr, ok := getErr.(*googleapi.Error); ok && apiErr.Code == 404 {
+			items = append(items, Item{Kind: KindGmailThread, ProviderID: id, Deleted: true, Tags: []string{"gmail"}})
+			continue
+		}
+		return Page{}, getErr
+	}
+	syncCursor := ""
+	if res.NextPageToken == "" {
+		syncCursor = strconv.FormatUint(res.HistoryId, 10)
+	}
+	return Page{Items: items, NextCursor: res.NextPageToken, SyncCursor: syncCursor}, nil
 }
 
 func buildGmailQuery(w FetchWindow) string {

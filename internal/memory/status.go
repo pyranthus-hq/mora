@@ -19,6 +19,9 @@ type SyncStatus struct {
 	Checkpoint   string `json:"checkpoint,omitempty"`    // in-progress page token (resume)
 	GmailHistory string `json:"gmail_history,omitempty"` // future incremental
 	CalSyncToken string `json:"cal_sync_token,omitempty"`
+	// IncrementalCursor is the provider-native between-run position. Checkpoint
+	// remains the in-progress page token and is cleared only after completion.
+	IncrementalCursor string `json:"incremental_cursor,omitempty"`
 
 	// Last-attempt health (M-3). Health is the LAST attempt's outcome, not a
 	// sticky lifetime tally: a clean sync resets ErrorCount/LastError and stamps

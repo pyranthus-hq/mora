@@ -14,6 +14,16 @@ type cancellingContextFetcher struct {
 	calls         int
 }
 
+type cursorExpiryFetcher struct{ windows []FetchWindow }
+
+func (f *cursorExpiryFetcher) FetchPage(_ ItemKind, window FetchWindow, _ string) (Page, error) {
+	f.windows = append(f.windows, window)
+	if window.SyncCursor != "" {
+		return Page{}, ErrIncrementalCursorExpired
+	}
+	return Page{SyncCursor: "fresh-43"}, nil
+}
+
 func (f *cancellingContextFetcher) FetchPage(ItemKind, FetchWindow, string) (Page, error) {
 	return Page{}, errors.New("legacy fetch must not be used")
 }
@@ -121,6 +131,34 @@ func TestIngestDurablyCheckpointsEachCompletedPage(t *testing.T) {
 	}
 	if got := strings.Join(ids, ","); got != "t1,t2,t3" {
 		t.Fatalf("resume duplicated or lost records: %s", got)
+	}
+}
+
+func TestIngestCommitsIncrementalCursorOnlyOnCleanCompletion(t *testing.T) {
+	f := &fakeFetcher{pages: map[string]Page{"": {SyncCursor: "next-42"}}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "prior-41"}
+	res, err := Ingest(IngestParams{Fetcher: f, Kind: kindGmailThread, Status: status, Write: func(MappedMemory) error { return nil }})
+	if err != nil || res.Status.IncrementalCursor != "next-42" {
+		t.Fatalf("clean incremental cursor = %q, err %v", res.Status.IncrementalCursor, err)
+	}
+
+	failed := &fakeFetcher{pages: map[string]Page{}, errOnCursor: map[string]error{"": errors.New("offline")}}
+	status = &SyncStatus{Source: "gmail", IncrementalCursor: "prior-41"}
+	res, err = Ingest(IngestParams{Fetcher: failed, Kind: kindGmailThread, Status: status, Write: func(MappedMemory) error { return nil }})
+	if err == nil || res.Status.IncrementalCursor != "prior-41" {
+		t.Fatalf("failed run advanced incremental cursor = %q, err %v", res.Status.IncrementalCursor, err)
+	}
+}
+
+func TestIngestExpiredIncrementalCursorFallsBackOnce(t *testing.T) {
+	f := &cursorExpiryFetcher{}
+	status := &SyncStatus{IncrementalCursor: "expired-42"}
+	res, err := Ingest(IngestParams{Fetcher: f, Kind: kindGmailThread, Status: status, Write: func(MappedMemory) error { return nil }})
+	if err != nil || res.Status.IncrementalCursor != "fresh-43" || len(f.windows) != 2 {
+		t.Fatalf("fallback result=%+v windows=%+v err=%v", res.Status, f.windows, err)
+	}
+	if f.windows[0].SyncCursor != "expired-42" || f.windows[1].SyncCursor != "" {
+		t.Fatalf("fallback did not clear expired cursor: %+v", f.windows)
 	}
 }
 

@@ -2,11 +2,15 @@ package google
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 const calPageSize = 100
@@ -16,30 +20,34 @@ func (f *LiveFetcher) fetchCalendarPageContext(ctx context.Context, w FetchWindo
 	if calID == "" {
 		calID = "primary"
 	}
-	call := f.cal.Events.List(calID).
-		SingleEvents(true).
-		MaxResults(calPageSize).
-		ShowDeleted(true).
-		OrderBy("startTime").
-		Context(ctx)
-	if !w.Since.IsZero() {
-		call = call.TimeMin(w.Since.Format(time.RFC3339))
-	}
-	if !w.Until.IsZero() {
-		call = call.TimeMax(w.Until.Format(time.RFC3339))
+	call := f.cal.Events.List(calID).MaxResults(calPageSize).ShowDeleted(true).Context(ctx)
+	if w.SyncCursor != "" {
+		call = call.SyncToken(w.SyncCursor)
+	} else {
+		call = call.SingleEvents(true).OrderBy("startTime")
+		if !w.Since.IsZero() {
+			call = call.TimeMin(w.Since.Format(time.RFC3339))
+		}
+		if !w.Until.IsZero() {
+			call = call.TimeMax(w.Until.Format(time.RFC3339))
+		}
 	}
 	if cursor != "" {
 		call = call.PageToken(cursor)
 	}
 	res, err := call.Do()
 	if err != nil {
+		var apiErr *googleapi.Error
+		if w.SyncCursor != "" && errors.As(err, &apiErr) && apiErr.Code == 410 {
+			return Page{}, fmt.Errorf("%w: calendar sync token", memory.ErrIncrementalCursorExpired)
+		}
 		return Page{}, err
 	}
 	var items []Item
 	for _, ev := range res.Items {
 		items = append(items, calEventToItem(calID, ev))
 	}
-	return Page{Items: items, NextCursor: res.NextPageToken}, nil
+	return Page{Items: items, NextCursor: res.NextPageToken, SyncCursor: res.NextSyncToken}, nil
 }
 
 func calEventToItem(calID string, ev *calendar.Event) Item {

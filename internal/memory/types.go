@@ -6,8 +6,13 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrIncrementalCursorExpired asks the shared loop to perform one bounded full
+// snapshot and establish a fresh provider cursor.
+var ErrIncrementalCursorExpired = errors.New("incremental cursor expired")
 
 // ItemKind is the provider object kind a fetched Item represents. It is a
 // neutral, connector-extensible string: each connector defines its own kind
@@ -57,12 +62,14 @@ type FetchWindow struct {
 	Query      string    // provider query (gmail q=); optional
 	Labels     []string  // gmail label IDs to include; optional
 	CalendarID string    // calendar id; default "primary"
+	SyncCursor string    // provider-native position from the prior clean run
 }
 
 // Page is one page of fetched items plus a cursor for resume.
 type Page struct {
 	Items      []Item
 	NextCursor string // provider page token; "" when no more pages
+	SyncCursor string // provider-native position to commit after clean completion
 }
 
 // Fetcher is the unit-test seam. Live impls live in each connector package; the

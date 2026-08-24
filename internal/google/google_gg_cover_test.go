@@ -42,6 +42,7 @@ func ggB64URL(s string) string {
 type ggFakeGoogle struct {
 	threadsList func(r *http.Request) (int, string)
 	threadGet   func(id string, r *http.Request) (int, string)
+	history     func(r *http.Request) (int, string)
 	profile     func(r *http.Request) (int, string)
 	labels      func(r *http.Request) (int, string)
 	events      func(r *http.Request) (int, string)
@@ -76,6 +77,8 @@ func (g *ggFakeGoogle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.Contains(path, "/profile") && g.profile != nil:
 		status, body = g.profile(r)
+	case strings.Contains(path, "/history") && g.history != nil:
+		status, body = g.history(r)
 	case strings.Contains(path, "/labels") && g.labels != nil:
 		status, body = g.labels(r)
 	case strings.Contains(path, "/threads/") && g.threadGet != nil:
@@ -1103,6 +1106,49 @@ func TestGg_FetchGmailPage(t *testing.T) {
 			t.Fatal("a threads-list API error must propagate")
 		}
 	})
+}
+
+func TestGg_FetchGmailIncrementalHistory(t *testing.T) {
+	g := &ggFakeGoogle{
+		history: func(r *http.Request) (int, string) {
+			return 200, `{"history":[{"messages":[{"threadId":"changed"}]},{"messagesDeleted":[{"message":{"threadId":"gone"}}]}],"historyId":"43"}`
+		},
+		threadGet: func(id string, r *http.Request) (int, string) {
+			if id == "gone" {
+				return 404, `{"error":{"code":404,"message":"not found"}}`
+			}
+			return 200, `{"id":"changed","messages":[]}`
+		},
+	}
+	f := ggNewLiveFetcher(ggGmailSvc(t, ggServe(t, g)), nil)
+	page, err := f.FetchPage(KindGmailThread, FetchWindow{SyncCursor: "42"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.SyncCursor != "43" || len(page.Items) != 2 || page.Items[1].ProviderID != "gone" || !page.Items[1].Deleted {
+		t.Fatalf("incremental history page = %+v", page)
+	}
+	if req := g.lastMatching("/history"); !strings.Contains(req, "startHistoryId=42") {
+		t.Fatalf("history request omitted durable cursor: %q", req)
+	}
+}
+
+func TestGg_FetchCalendarIncrementalToken(t *testing.T) {
+	g := &ggFakeGoogle{events: func(r *http.Request) (int, string) {
+		return 200, `{"items":[],"nextSyncToken":"cal-43"}`
+	}}
+	f := ggNewLiveFetcher(nil, ggCalSvc(t, ggServe(t, g)))
+	page, err := f.FetchPage(KindCalEvent, FetchWindow{CalendarID: "primary", SyncCursor: "cal-42", Since: time.Now()}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.SyncCursor != "cal-43" {
+		t.Fatalf("calendar sync cursor = %q", page.SyncCursor)
+	}
+	req := g.lastMatching("/events")
+	if !strings.Contains(req, "syncToken=cal-42") || strings.Contains(req, "timeMin=") || strings.Contains(req, "orderBy=") {
+		t.Fatalf("incremental calendar request = %q", req)
+	}
 }
 
 // ============================================================================
