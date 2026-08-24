@@ -68,6 +68,7 @@ func cmdSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		if err := runScheduledPulseDaily(ctx, cfg, out, stderr); err != nil {
 			return err
 		}
+		_ = appendTraceEvent(cfg, traceEvent{CorrelationID: queryCorrelationID(), Stage: traceStageSchedule, Status: "completed"})
 		if jsonOut {
 			return emitReceipt(stdout, "mora.schedule.run", 1, scheduleRunReceipt{Job: args[1], Ran: true})
 		}

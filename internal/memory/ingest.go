@@ -181,6 +181,8 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// last attempt's outcome, not a "paging finished" signal).
 	errorsBefore := p.Status.ErrorCount
 	finish := func() IngestResult {
+		p.Status.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+		p.Status.DurationMS = time.Since(started).Milliseconds()
 		result.Missing = result.Examined - result.Materialized - result.Unchanged
 		result.Stages.TotalMS = time.Since(started).Milliseconds()
 		return result
@@ -314,6 +316,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// from the start and re-attempts the dropped items. The caller decides how
 	// loudly to surface the returned error.
 	if dropped := p.Status.ErrorCount - errorsBefore; dropped > 0 {
+		p.Status.ConsecutiveFailureCount++
 		return finish(), fmt.Errorf("%d item(s) failed to write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
 	}
 
@@ -333,5 +336,6 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// an agent a healthy source is broken, which inverts the very thing the typed
 	// code exists to communicate.
 	p.Status.ErrorCode = ""
+	p.Status.ConsecutiveFailureCount = 0
 	return finish(), nil
 }

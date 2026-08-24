@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {"name": "fresh", "status": "success", "observed_offset_seconds": -60, "records": 2},
+    {"name": "stale", "status": "success", "observed_offset_seconds": -172800, "records": 2},
+    {"name": "unavailable", "status": "failed", "error_code": "connector.unavailable", "records": 0},
+    {"name": "malformed", "status": "failed", "error_code": "connector.malformed", "records": 0},
+    {"name": "duplicate", "status": "success", "records": 2, "unique_records": 1},
+    {"name": "high-volume", "status": "success", "records": 100000, "bounded": true}
+  ]
+}

@@ -69,41 +69,53 @@ const (
 )
 
 type sourceRunOutcome struct {
-	Key           string
-	Items         int
-	Examined      int
-	Materialized  int
-	Failed        int
-	Unchanged     int
-	Missing       int
-	Err           error
-	Cancelled     bool
-	TimedOut      bool
-	LastSuccessAt string
-	LastAttemptAt string
-	Stale         bool
-	Stages        memory.IngestStages
-	Incremental   bool
+	Key                     string
+	Items                   int
+	Examined                int
+	Materialized            int
+	Failed                  int
+	Unchanged               int
+	Missing                 int
+	Err                     error
+	Cancelled               bool
+	TimedOut                bool
+	LastSuccessAt           string
+	LastAttemptAt           string
+	Stale                   bool
+	Stages                  memory.IngestStages
+	Incremental             bool
+	ObservedAt              string
+	DurationMS              int64
+	FreshnessBudgetSeconds  int64
+	NextScheduledAt         string
+	ConsecutiveFailureCount int
+	CorrelationID           string
 }
 
 type sourceRunReceipt struct {
-	Source        string              `json:"source"`
-	Status        string              `json:"status"`
-	Usable        bool                `json:"usable"`
-	Items         int                 `json:"items"`
-	Examined      int                 `json:"examined"`
-	Materialized  int                 `json:"materialized"`
-	Failed        int                 `json:"failed"`
-	Unchanged     int                 `json:"unchanged"`
-	Missing       int                 `json:"missing"`
-	ErrorCode     string              `json:"error_code,omitempty"`
-	ErrorClass    string              `json:"error_class,omitempty"`
-	Retryable     bool                `json:"retryable"`
-	LastSuccessAt string              `json:"last_success_at,omitempty"`
-	LastAttemptAt string              `json:"last_attempt_at,omitempty"`
-	Stale         bool                `json:"stale"`
-	Stages        memory.IngestStages `json:"stages"`
-	Incremental   bool                `json:"incremental"`
+	Source                  string              `json:"source"`
+	Status                  string              `json:"status"`
+	Usable                  bool                `json:"usable"`
+	Items                   int                 `json:"items"`
+	Examined                int                 `json:"examined"`
+	Materialized            int                 `json:"materialized"`
+	Failed                  int                 `json:"failed"`
+	Unchanged               int                 `json:"unchanged"`
+	Missing                 int                 `json:"missing"`
+	ErrorCode               string              `json:"error_code,omitempty"`
+	ErrorClass              string              `json:"error_class,omitempty"`
+	Retryable               bool                `json:"retryable"`
+	LastSuccessAt           string              `json:"last_success_at,omitempty"`
+	LastAttemptAt           string              `json:"last_attempt_at,omitempty"`
+	Stale                   bool                `json:"stale"`
+	Stages                  memory.IngestStages `json:"stages"`
+	Incremental             bool                `json:"incremental"`
+	ObservedAt              string              `json:"observed_at"`
+	DurationMS              int64               `json:"duration_ms"`
+	FreshnessBudgetSeconds  int64               `json:"freshness_budget_seconds"`
+	NextScheduledAt         string              `json:"next_scheduled_at"`
+	ConsecutiveFailureCount int                 `json:"consecutive_failure_count"`
+	CorrelationID           string              `json:"correlation_id,omitempty"`
 }
 
 type sourceRunAggregate struct {
@@ -134,6 +146,11 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			LastAttemptAt: outcome.LastAttemptAt, Stale: outcome.Stale,
 			Stages:      outcome.Stages,
 			Incremental: outcome.Incremental,
+			ObservedAt:  outcome.ObservedAt, DurationMS: outcome.DurationMS,
+			FreshnessBudgetSeconds:  outcome.FreshnessBudgetSeconds,
+			NextScheduledAt:         outcome.NextScheduledAt,
+			ConsecutiveFailureCount: outcome.ConsecutiveFailureCount,
+			CorrelationID:           outcome.CorrelationID,
 		}
 		switch {
 		case outcome.Cancelled:

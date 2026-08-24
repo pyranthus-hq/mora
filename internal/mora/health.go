@@ -95,7 +95,7 @@ func sourceHealthFor(cfg Config, s Source, key string, now time.Time) sourceHeal
 	}
 	var fact *healthpkg.Status
 	if st != nil {
-		fact = &healthpkg.Status{LastSuccessAt: st.LastSuccessAt, LastError: st.LastError, ErrorCount: st.ErrorCount}
+		fact = &healthpkg.Status{LastSuccessAt: st.LastSuccessAt, ObservedAt: st.ObservedAt, FreshnessBudgetSeconds: st.FreshnessBudgetSeconds, LastError: st.LastError, ErrorCount: st.ErrorCount}
 	}
 	h := healthpkg.Classify(key, s.Type, fact, now)
 	if st != nil {
@@ -103,6 +103,7 @@ func sourceHealthFor(cfg Config, s Source, key string, now time.Time) sourceHeal
 		// state Classify assigned plus the persisted record. A nil record carries
 		// nothing — never-synced with no status file is not an error.
 		h.ErrorCode = syncErrorCodeForState(h.State, st.ErrorCode, st.LastError)
+		h.DiagnosticEvidenceID = st.CorrelationID
 	}
 	return h
 }
@@ -140,6 +141,12 @@ func stampSyncAttemptFailure(cfg Config, s Source, ingestErr error, attemptStart
 	// neither covers the other's family.
 	st.ErrorCode = connectorErrorCodeFor(ingestErr)
 	st.ErrorCount++
+	st.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	st.DurationMS = time.Since(attemptStart).Milliseconds()
+	st.FreshnessBudgetSeconds = int64(healthpkg.Threshold(s.Type).Seconds())
+	st.NextScheduledAt = attemptStart.Add(healthpkg.Threshold(s.Type)).UTC().Format(time.RFC3339)
+	st.ConsecutiveFailureCount++
+	st.CorrelationID = cfg.OperationRunID()
 	if serr := saveSyncStatusFn(path, st); serr != nil && out != nil {
 		warnf(out, "could not stamp sync failure (%s): %v", path, serr)
 	}

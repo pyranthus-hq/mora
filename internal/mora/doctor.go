@@ -59,10 +59,11 @@ type doctorReport struct {
 }
 
 type doctorObservation struct {
-	Subject      string `json:"subject"`
-	Status       string `json:"status"`
-	ObservedAt   string `json:"observed_at"`
-	EvidenceCode string `json:"evidence_code,omitempty"`
+	Subject              string `json:"subject"`
+	Status               string `json:"status"`
+	ObservedAt           string `json:"observed_at"`
+	EvidenceCode         string `json:"evidence_code,omitempty"`
+	DiagnosticEvidenceID string `json:"diagnostic_evidence_id,omitempty"`
 }
 
 type doctorDiagnosis struct {
@@ -99,7 +100,7 @@ func buildDoctorDiagnostics(checks []doctorCheck, sources []sourceHealth, now ti
 		observed = append(observed, doctorObservation{Subject: check.Name, Status: status, ObservedAt: at})
 	}
 	for _, source := range sources {
-		observed = append(observed, doctorObservation{Subject: "source:" + source.Key, Status: source.State, ObservedAt: at, EvidenceCode: source.ErrorCode})
+		observed = append(observed, doctorObservation{Subject: "source:" + source.Key, Status: source.State, ObservedAt: at, EvidenceCode: source.ErrorCode, DiagnosticEvidenceID: source.DiagnosticEvidenceID})
 		code := ""
 		switch source.State {
 		case healthNever:

@@ -25,6 +25,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/applecal"
 	"github.com/pyranthus-hq/mora/internal/githubissues"
 	"github.com/pyranthus-hq/mora/internal/google"
+	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 	"github.com/pyranthus-hq/mora/internal/imessage"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -224,6 +225,12 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 				outcome.LastAttemptAt = status.LastAttemptAt
 				health := sourceHealthFor(cfg, plan.Source, plan.Key, briefClock())
 				outcome.Stale = health.State != healthFresh
+				outcome.ObservedAt = status.ObservedAt
+				outcome.DurationMS = status.DurationMS
+				outcome.FreshnessBudgetSeconds = status.FreshnessBudgetSeconds
+				outcome.NextScheduledAt = status.NextScheduledAt
+				outcome.ConsecutiveFailureCount = status.ConsecutiveFailureCount
+				outcome.CorrelationID = status.CorrelationID
 			}
 		}
 		return outcome
@@ -241,6 +248,16 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	var rebuildErr error
 	if sourceOutcomesMaterialized(outcomes) > 0 && ctx.Err() == nil {
 		_, rebuildErr = rebuildIngestIndexFn(ctx, cfg)
+		for _, outcome := range outcomes {
+			if outcome.CorrelationID == "" {
+				continue
+			}
+			status := "completed"
+			if rebuildErr != nil {
+				status = "failed"
+			}
+			_ = appendTraceEvent(cfg, traceEvent{CorrelationID: outcome.CorrelationID, Stage: traceStageIndex, Source: outcome.Key, Status: status})
+		}
 	}
 	aggregate, aggregateErr := aggregateSourceRuns(plans, outcomes, nil, rebuildErr)
 	// CON-02: every --json path that got as far as writing memories owes stdout
@@ -704,14 +721,20 @@ type syncStatusReceipt struct {
 }
 
 type syncStatusReceiptSource struct {
-	Source        string `json:"source"`
-	State         string `json:"state"`
-	LastSuccessAt string `json:"last_success_at"`
-	LastAttemptAt string `json:"last_attempt_at"`
-	ItemCount     int    `json:"item_count"`
-	ErrorCount    int    `json:"error_count"`
-	LastError     string `json:"last_error,omitempty"`
-	ErrorCode     string `json:"error_code,omitempty"`
+	Source                  string `json:"source"`
+	State                   string `json:"state"`
+	LastSuccessAt           string `json:"last_success_at"`
+	LastAttemptAt           string `json:"last_attempt_at"`
+	ItemCount               int    `json:"item_count"`
+	ErrorCount              int    `json:"error_count"`
+	LastError               string `json:"last_error,omitempty"`
+	ErrorCode               string `json:"error_code,omitempty"`
+	ObservedAt              string `json:"observed_at"`
+	DurationMS              int64  `json:"duration_ms"`
+	FreshnessBudgetSeconds  int64  `json:"freshness_budget_seconds"`
+	NextScheduledAt         string `json:"next_scheduled_at"`
+	ConsecutiveFailureCount int    `json:"consecutive_failure_count"`
+	CorrelationID           string `json:"correlation_id,omitempty"`
 }
 
 func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) []syncStatusReceiptSource {
@@ -722,13 +745,19 @@ func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) 
 			continue
 		}
 		sources = append(sources, syncStatusReceiptSource{
-			Source:        st.Source,
-			State:         syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
-			LastSuccessAt: st.LastSuccessAt,
-			LastAttemptAt: st.LastAttemptAt,
-			ItemCount:     st.ItemCount,
-			ErrorCount:    st.ErrorCount,
-			LastError:     st.LastError,
+			Source:                  st.Source,
+			State:                   syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
+			LastSuccessAt:           st.LastSuccessAt,
+			LastAttemptAt:           st.LastAttemptAt,
+			ItemCount:               st.ItemCount,
+			ErrorCount:              st.ErrorCount,
+			LastError:               st.LastError,
+			ObservedAt:              st.ObservedAt,
+			DurationMS:              st.DurationMS,
+			FreshnessBudgetSeconds:  st.FreshnessBudgetSeconds,
+			NextScheduledAt:         st.NextScheduledAt,
+			ConsecutiveFailureCount: st.ConsecutiveFailureCount,
+			CorrelationID:           st.CorrelationID,
 			// The typed companion CON-07 needs. A record persisted before the
 			// taxonomy shipped has no code on disk and is NOT rewritten; it reads
 			// as connector.unclassified here instead.
@@ -920,6 +949,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		return result, err
 	}
 	cfg.SetOperationRunID(h.RunID)
+	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: h.RunID, Stage: traceStageConnector, Source: ingestOperationSourceKey(s), Status: "started"})
 	finishFailed := func(code string, cause error) error {
 		errorCount := result.Failed
 		if errorCount == 0 {
@@ -948,6 +978,12 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		testHookIngestActivityStarted(cfg, s, h)
 	}
 	result, dispatchErr := ingestSourceDispatchFn(ctx, cfg, s, out)
+	traceStatus := "completed"
+	if dispatchErr != nil {
+		traceStatus = "failed"
+	}
+	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: h.RunID, Stage: traceStageIngestion, Source: ingestOperationSourceKey(s), Status: traceStatus})
+	enrichSyncObservation(cfg, s, attemptStart, result.Stages.TotalMS, dispatchErr)
 	if dispatchErr == nil && result.Materialized == 0 {
 		ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
 		_, retireErr := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
@@ -978,6 +1014,29 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// heartbeat stays live while sibling sources finish. The committed rebuild
 	// that retires this run's journal stops it and owns the terminal transition.
 	return result, nil
+}
+
+func enrichSyncObservation(cfg Config, s Source, attemptStart time.Time, durationMS int64, runErr error) {
+	path := syncStatusPathFor(cfg, s)
+	if path == "" {
+		return
+	}
+	st, err := memory.LoadStatus(path)
+	if err != nil || st == nil {
+		return
+	}
+	budget := healthpkg.Threshold(s.Type)
+	st.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	st.DurationMS = durationMS
+	st.FreshnessBudgetSeconds = int64(budget.Seconds())
+	st.NextScheduledAt = attemptStart.Add(budget).UTC().Format(time.RFC3339)
+	st.CorrelationID = cfg.OperationRunID()
+	if runErr == nil {
+		st.ConsecutiveFailureCount = 0
+	} else if st.ConsecutiveFailureCount == 0 {
+		st.ConsecutiveFailureCount = 1
+	}
+	_ = memory.SaveStatus(path, st)
 }
 
 // classifyConnectorError attaches a CON-07 discrimination to a connector
@@ -1066,6 +1125,12 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 }
 
 func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error) {
+	if runID := cfg.OperationRunID(); runID != "" {
+		if mm.Meta == nil {
+			mm.Meta = map[string]any{}
+		}
+		mm.Meta["ingest_correlation_id"] = runID
+	}
 	// Governance chokepoint (#52/#53): consult the vault-resident ledger before
 	// persisting ANY connector memory. A suppressed stable-atom (forgotten chat,
 	// forgotten 1:1 person, pruned item) is silently skipped so the hourly,
@@ -1919,7 +1984,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		result.Stages.Bytes += int64(len(text))
 		result.Examined++
 		id := "src_" + ContentHash(s.Name+":"+rel)
-		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
+		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text, Meta: map[string]any{"ingest_correlation_id": cfg.OperationRunID()}}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
 		body, _ := renderMemory(m)
 		if testHookFSPreWrite != nil {
