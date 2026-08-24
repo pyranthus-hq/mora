@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -123,6 +124,68 @@ func buildDoctorDiagnostics(checks []doctorCheck, sources []sourceHealth, now ti
 	return observed, diagnoses
 }
 
+func doctorCheckFailed(checks []doctorCheck, name string) bool {
+	for _, check := range checks {
+		if check.Name == name {
+			return !check.OK
+		}
+	}
+	return false
+}
+
+func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string) []doctorRepairAction {
+	actions := make([]doctorRepairAction, 0, 2)
+	if doctorCheckFailed(checks, "token_dir") && disjointRealPaths(cfg.VaultDir, tokenDir) {
+		if _, err := os.Stat(tokenDir); errors.Is(err, os.ErrNotExist) {
+			actions = append(actions, doctorRepairAction{
+				ID: "create_token_dir", Mutation: "mkdir", Target: tokenDir,
+				Safe: true, ApprovalRequired: true,
+			})
+		}
+	}
+	if doctorCheckFailed(checks, "index_db") || doctorCheckFailed(checks, "index_fresh") || doctorCheckFailed(checks, "index_matches_vault") {
+		actions = append(actions, doctorRepairAction{
+			ID: "rebuild_index", Mutation: "rebuild_derived_index", Target: dbPath(cfg),
+			Safe: true, ApprovalRequired: true,
+		})
+	}
+	return actions
+}
+
+func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairAction) ([]doctorVerification, error) {
+	verification := make([]doctorVerification, 0, len(actions))
+	for _, action := range actions {
+		if !action.Safe {
+			continue
+		}
+		result := doctorVerification{ActionID: action.ID, Before: "failed", After: "failed"}
+		var err error
+		switch action.ID {
+		case "create_token_dir":
+			err = os.MkdirAll(action.Target, 0o700)
+			if err == nil {
+				_, err = os.Stat(action.Target)
+			}
+		case "rebuild_index":
+			_, err = rebuildIndex(ctx, cfg)
+			if err == nil {
+				_, err = os.Stat(action.Target)
+			}
+		default:
+			err = fmt.Errorf("unknown doctor repair action %q", action.ID)
+		}
+		if err == nil {
+			result.After = "passed"
+			result.Verified = true
+		}
+		verification = append(verification, result)
+		if err != nil {
+			return verification, fmt.Errorf("doctor repair %s: %w", action.ID, err)
+		}
+	}
+	return verification, nil
+}
+
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
 // against — a var (mirrors briefClock/prepClock) so tests can pin "now" instead
 // of racing the real clock (D-03 determinism invariant: no time.Now() in a
@@ -232,9 +295,21 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report (with --pulse: only the sources array)")
 	strict := fs.Bool("strict", false, "exit non-zero if a critical health check fails (a no-op alongside --pulse, which already exits 2 on any unhealthy source)")
 	pulse := fs.Bool("pulse", false, "run ONLY the per-source freshness checks; post a native toast and exit 2 when any source is unhealthy, exit 0 when all are fresh")
+	repair := fs.Bool("repair", false, "plan or apply safe Doctor repairs")
+	dryRun := fs.Bool("dry-run", false, "preview exact repair mutations without applying them")
+	yes := fs.Bool("yes", false, "approve safe repair mutations")
 	forgetProducer := fs.String("forget-producer", "", "retire a producer by name: remove its expectation and evidence so a stopped or wrongly-adopted job stops reddening health")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if (*dryRun || *yes) && !*repair {
+		return fmt.Errorf("--dry-run/--yes require --repair")
+	}
+	if *repair && !*jsonOut {
+		return fmt.Errorf("doctor --repair requires --json")
+	}
+	if *repair && !*dryRun && !*yes {
+		return fmt.Errorf("refusing to repair without --yes (use --dry-run --json to preview)")
 	}
 
 	cfg, err := loadConfig()
@@ -381,6 +456,15 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	if *jsonOut {
 		observed, diagnoses := buildDoctorDiagnostics(checks, srcHealth, now)
+		repairPlan := []doctorRepairAction{}
+		verification := []doctorVerification{}
+		var repairErr error
+		if *repair {
+			repairPlan = planDoctorRepairs(checks, cfg, tokenDir)
+			if !*dryRun {
+				verification, repairErr = applyDoctorRepairs(ctx, cfg, repairPlan)
+			}
+		}
 		rep := doctorReport{
 			Healthy:            healthy,
 			Checks:             checks,
@@ -401,7 +485,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			// (`doctor --json | jq '.producers[]'`) could never show anything.
 			Producers: prodHealth,
 			Observed:  observed, Diagnosis: diagnoses,
-			RepairPlan: []doctorRepairAction{}, Verification: []doctorVerification{},
+			Repairable: len(repairPlan) > 0, RepairPlan: repairPlan, Verification: verification,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -413,6 +497,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		// need no schema_version bump; removing or retyping a field requires one.
 		if err := emitReceipt(stdout, "mora.doctor.report", 1, rep); err != nil {
 			return err
+		}
+		if repairErr != nil {
+			return repairErr
 		}
 		// --strict's return path is deliberately untouched: an unhealthy report
 		// still exits 1, the shipped contract Plan 01-06's checkpoint reaffirmed.
