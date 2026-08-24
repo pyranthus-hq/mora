@@ -9,6 +9,7 @@
 package applecal
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -35,6 +36,10 @@ func init() {
 // appleEpoch is the Core Data reference date (2001-01-01T00:00:00Z). All
 // Calendar.sqlitedb timestamps are seconds since this instant.
 var appleEpoch = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// testHookBeforeParticipantLookup lets cancellation tests stop the fetch after
+// event paging but before the dependent participant lookup. It is nil in production.
+var testHookBeforeParticipantLookup func()
 
 // appleTime converts a Core Data timestamp to UTC time.
 func appleTime(sec float64) time.Time {
@@ -166,6 +171,10 @@ func probeSchema(db *sql.DB) error {
 // unbounded Until would flood the vault with every subscribed-holiday event
 // years out.
 func (f *LiveFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, cursor string) (memory.Page, error) {
+	return f.FetchPageContext(context.Background(), kind, w, cursor)
+}
+
+func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind memory.ItemKind, w memory.FetchWindow, cursor string) (memory.Page, error) {
 	if kind != KindAppleCalEvent {
 		return memory.Page{}, fmt.Errorf("applecal: unsupported kind %q", kind)
 	}
@@ -197,7 +206,7 @@ func (f *LiveFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, curs
 	q += " ORDER BY ci.ROWID LIMIT ?"
 	args = append(args, pageSize)
 
-	rows, err := f.db.Query(q, args...)
+	rows, err := f.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return memory.Page{}, fmt.Errorf("applecal: query events: %w", err)
 	}
@@ -226,7 +235,13 @@ func (f *LiveFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, curs
 	last := after
 	for _, e := range evs {
 		last = e.rowid
-		attendees, organizer, self := f.participants(e.rowid)
+		if testHookBeforeParticipantLookup != nil {
+			testHookBeforeParticipantLookup()
+		}
+		attendees, organizer, self, participantErr := f.participantsContext(ctx, e.rowid)
+		if participantErr != nil && ctx.Err() != nil {
+			return memory.Page{}, ctx.Err()
+		}
 		items = append(items, eventItem(e.rowid, e.summary, e.desc, e.cal, e.locStr, e.uuid,
 			appleTime(e.start), appleTime(e.end), e.allDay != 0, attendees, organizer, self))
 	}
@@ -252,14 +267,21 @@ func (f *LiveFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, curs
 // is_self is read defensively: an older/foreign schema without the column must keep
 // working (attendees + organizer as before, no self signal) rather than fail the sync.
 func (f *LiveFetcher) participants(eventROWID int64) (attendees []string, organizer, self string) {
+	attendees, organizer, self, _ = f.participantsContext(context.Background(), eventROWID)
+	return attendees, organizer, self
+}
+
+func (f *LiveFetcher) participantsContext(ctx context.Context, eventROWID int64) (attendees []string, organizer, self string, err error) {
 	selfExpr := "0"
-	if f.hasSelfColumn() {
+	if hasSelf, probeErr := f.hasSelfColumnContext(ctx); probeErr != nil {
+		return nil, "", "", probeErr
+	} else if hasSelf {
 		selfExpr = "COALESCE(is_self, 0)"
 	}
-	rows, err := f.db.Query(
+	rows, err := f.db.QueryContext(ctx,
 		`SELECT COALESCE(email, ''), COALESCE(role, 0), `+selfExpr+` FROM Participant WHERE owner_id = ?`, eventROWID)
 	if err != nil {
-		return nil, "", ""
+		return nil, "", "", err
 	}
 	defer rows.Close()
 	seen := map[string]bool{}
@@ -267,7 +289,7 @@ func (f *LiveFetcher) participants(eventROWID int64) (attendees []string, organi
 		var email string
 		var role, isSelf int
 		if err := rows.Scan(&email, &role, &isSelf); err != nil {
-			return nil, "", ""
+			return nil, "", "", err
 		}
 		email = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(email, "mailto:")))
 		if email == "" || seen[email] {
@@ -284,17 +306,17 @@ func (f *LiveFetcher) participants(eventROWID int64) (attendees []string, organi
 		attendees = append(attendees, email)
 	}
 	sort.Strings(attendees)
-	return attendees, organizer, self
+	return attendees, organizer, self, rows.Err()
 }
 
 // hasSelfColumn reports whether this Calendar.sqlitedb exposes Participant.is_self.
-func (f *LiveFetcher) hasSelfColumn() bool {
-	rows, err := f.db.Query(`SELECT 1 FROM pragma_table_info('Participant') WHERE name = 'is_self'`)
+func (f *LiveFetcher) hasSelfColumnContext(ctx context.Context) (bool, error) {
+	rows, err := f.db.QueryContext(ctx, `SELECT 1 FROM pragma_table_info('Participant') WHERE name = 'is_self'`)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer rows.Close()
-	return rows.Next()
+	return rows.Next(), rows.Err()
 }
 
 // eventItem renders one event as a provider-agnostic Item. Meta mirrors the
