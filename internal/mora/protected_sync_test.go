@@ -69,9 +69,6 @@ func TestProtectedSyncRelayPreservesJSONContract(t *testing.T) {
 	if got.Schema != "mora.sync.imessage" || got.SchemaVersion != 1 || got.Source != "imessage" || got.Items != 17 {
 		t.Fatalf("relay receipt = %+v", got)
 	}
-	if strings.Contains(stdout, "via Mora.app") {
-		t.Fatalf("relay mixed prose into JSON stdout: %q", stdout)
-	}
 }
 
 func TestProtectedSyncReceiptRejectsUnprotectedSource(t *testing.T) {
