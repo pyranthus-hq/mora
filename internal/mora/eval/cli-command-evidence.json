@@ -455,6 +455,17 @@
       }
     },
     {
+      "name": "retention",
+      "paths": ["retention", "retention report", "retention decide", "retention execute", "retention recover", "retention verify"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestRetentionCLIRequiresReviewAndExplicitConfirmation", "TestRetentionExecutionUsesPreviewTargetsAndCompactsWithProvenance", "TestRetentionRecoveryRestoresRecordAndIndexIntegrity"]},
+        "json": {"status": "test", "tests": ["TestRetentionCLIRequiresReviewAndExplicitConfirmation"], "reason": "Every retention operation emits a versioned JSON review or audit receipt."},
+        "state": {"status": "test", "tests": ["TestRetentionExecutionUsesPreviewTargetsAndCompactsWithProvenance", "TestRetentionRecoveryRestoresRecordAndIndexIntegrity"]},
+        "error": {"status": "test", "tests": ["TestRetentionExecutionRefusesCandidateChangedAfterPreview", "TestRetentionRecoveryRefusesExpiredWindow", "TestRetentionIntegrityDetectsMissingIndexAndDanglingGraphEdge"]},
+        "refusal": {"status": "test", "tests": ["TestRetentionCLIRequiresReviewAndExplicitConfirmation", "TestRetentionReportIsReadOnlyAndDecisionsAreExplicit"], "reason": "Execution and recovery require explicit confirmation; execution refuses incomplete or stale reviewed reports."}
+      }
+    },
+    {
       "name": "self upgrade",
       "paths": ["upgrade"],
       "evidence": {

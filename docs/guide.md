@@ -782,6 +782,29 @@ return. It never deletes source data from Google, Apple, or GitHub.
 `mora forget list --json` emits the `mora.forget.list` v1 receipt with active
 entries under `entries`.
 
+## Reviewed retention
+
+Retention is a report-first workflow. The report is read-only and defaults to
+memories older than 365 days with a 30-day encrypted local recovery window.
+Every candidate needs an explicit decision before execution:
+
+```bash
+mora retention report --json
+mora retention decide <report-id> <memory-id> --action keep
+mora retention decide <report-id> <memory-id> --action change-class --class durable
+mora retention decide <report-id> <memory-id> --action compact --summary "Durable conclusion"
+mora retention decide <report-id> <memory-id> --action delete
+mora retention execute <report-id> --yes --json
+mora retention verify --json
+mora retention recover <manifest-id> --yes --json
+```
+
+Execution refuses incomplete decisions, changed files, or a target set that no
+longer matches the reviewed report. Before mutation it writes an AES-GCM
+encrypted recovery manifest under Mora's state directory, then rebuilds and
+checks the index and graph. Recovery refuses expired manifests and changed
+targets. It restores only suppressions created by that retention report.
+
 ## Schedules and durable loops
 
 Mora uses launchd on macOS and Task Scheduler on Windows. On Linux it prints a

@@ -260,6 +260,30 @@
     "status": "parses"
   },
   {
+    "path": "retention",
+    "status": "empty"
+  },
+  {
+    "path": "retention decide",
+    "status": "empty"
+  },
+  {
+    "path": "retention execute",
+    "status": "empty"
+  },
+  {
+    "path": "retention recover",
+    "status": "empty"
+  },
+  {
+    "path": "retention report",
+    "status": "parses"
+  },
+  {
+    "path": "retention verify",
+    "status": "parses"
+  },
+  {
     "path": "schedule",
     "status": "empty"
   },

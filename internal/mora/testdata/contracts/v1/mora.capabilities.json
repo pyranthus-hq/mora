@@ -211,6 +211,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "retention",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "schedule",
       "payload": "",
       "platform": "all",
@@ -429,6 +437,30 @@
       "kind": "subcommand",
       "path": "merge undo",
       "payload": "mora.merge.undo",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "retention decide",
+      "payload": "mora.retention.decision",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "retention execute",
+      "payload": "mora.retention.execution",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "retention recover",
+      "payload": "mora.retention.recovery",
       "platform": "all",
       "reason": ""
     },
@@ -821,6 +853,22 @@
       "kind": "subcommand",
       "path": "merge list",
       "payload": "mora.merge.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "retention report",
+      "payload": "mora.retention.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "retention verify",
+      "payload": "mora.retention.integrity",
       "platform": "all",
       "reason": ""
     },
@@ -1531,6 +1579,26 @@
     },
     {
       "name": "mora.reingest",
+      "version": 1
+    },
+    {
+      "name": "mora.retention.decision",
+      "version": 1
+    },
+    {
+      "name": "mora.retention.execution",
+      "version": 1
+    },
+    {
+      "name": "mora.retention.integrity",
+      "version": 1
+    },
+    {
+      "name": "mora.retention.recovery",
+      "version": 1
+    },
+    {
+      "name": "mora.retention.report",
       "version": 1
     },
     {

@@ -114,6 +114,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdDelete(ctx, args[1:], stdout, stderr)
 	case "forget":
 		return cmdForget(ctx, args[1:], stdout, stderr)
+	case "retention":
+		return cmdRetention(ctx, args[1:], stdout, stderr)
 	case "unforget":
 		return cmdUnforget(ctx, args[1:], stdout, stderr)
 	case "merge":
