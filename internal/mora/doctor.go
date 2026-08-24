@@ -134,7 +134,13 @@ func doctorCheckFailed(checks []doctorCheck, name string) bool {
 }
 
 func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string) []doctorRepairAction {
-	actions := make([]doctorRepairAction, 0, 2)
+	actions := make([]doctorRepairAction, 0, 3)
+	if doctorCheckFailed(checks, "tokens_disjoint_from_vault") {
+		actions = append(actions, doctorRepairAction{
+			ID: "relocate_token_dir", Mutation: "relocate_outside_vault", Target: tokenDir,
+			Safe: false, ApprovalRequired: true,
+		})
+	}
 	if doctorCheckFailed(checks, "token_dir") && disjointRealPaths(cfg.VaultDir, tokenDir) {
 		if _, err := os.Stat(tokenDir); errors.Is(err, os.ErrNotExist) {
 			actions = append(actions, doctorRepairAction{
@@ -150,6 +156,15 @@ func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string) []doct
 		})
 	}
 	return actions
+}
+
+func hasSafeDoctorRepair(actions []doctorRepairAction) bool {
+	for _, action := range actions {
+		if action.Safe {
+			return true
+		}
+	}
+	return false
 }
 
 func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairAction) ([]doctorVerification, error) {
@@ -485,7 +500,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			// (`doctor --json | jq '.producers[]'`) could never show anything.
 			Producers: prodHealth,
 			Observed:  observed, Diagnosis: diagnoses,
-			Repairable: len(repairPlan) > 0, RepairPlan: repairPlan, Verification: verification,
+			Repairable: hasSafeDoctorRepair(repairPlan), RepairPlan: repairPlan, Verification: verification,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec

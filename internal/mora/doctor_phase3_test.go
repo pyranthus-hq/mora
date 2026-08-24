@@ -152,3 +152,16 @@ func TestDoctorRepairApplyVerifiesAndIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorUnsafeRepairIsProposalOnly(t *testing.T) {
+	cfg := Config{VaultDir: filepath.Join(string(filepath.Separator), "vault")}
+	tokenDir := filepath.Join(cfg.VaultDir, "tokens")
+	plan := planDoctorRepairs([]doctorCheck{{Name: "tokens_disjoint_from_vault", OK: false, Critical: true}}, cfg, tokenDir)
+	if len(plan) != 1 || plan[0].ID != "relocate_token_dir" || plan[0].Safe || !plan[0].ApprovalRequired {
+		t.Fatalf("unsafe relocation plan = %+v", plan)
+	}
+	verification, err := applyDoctorRepairs(context.Background(), cfg, plan)
+	if err != nil || len(verification) != 0 {
+		t.Fatalf("unsafe proposal was executed: verification=%+v err=%v", verification, err)
+	}
+}
