@@ -36,7 +36,7 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
 	var calls []string
-	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(_ context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 		calls = append(calls, s.Name)
 		if s.Name == "bad" {
 			return sourceIngestResult{}, errors.New("boom: connector down")
@@ -72,7 +72,7 @@ func TestIsolationPartialSuccessReceiptThroughIngestAll(t *testing.T) {
 	}
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(_ context.Context, _ Config, source Source, _ io.Writer) (sourceIngestResult, error) {
 		if source.Name == "bad" {
 			return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, nil, "offline")
 		}
@@ -102,7 +102,7 @@ func TestIsolationPartialAttemptCountsThroughIngestAll(t *testing.T) {
 	}
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(Config, Source, io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(context.Context, Config, Source, io.Writer) (sourceIngestResult, error) {
 		return sourceIngestResult{Examined: 100, Materialized: 73, Failed: 27, Missing: 27},
 			newCodedError(errCodeConnectorMalformed, nil, "27 malformed items")
 	}
@@ -135,7 +135,7 @@ func TestIngestRunAllFailedEmitsEveryReceiptBeforeError(t *testing.T) {
 	}
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(_ Config, source Source, _ io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(_ context.Context, _ Config, source Source, _ io.Writer) (sourceIngestResult, error) {
 		return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, nil, "%s offline", source.Name)
 	}
 	var stdout bytes.Buffer
@@ -161,7 +161,7 @@ func TestIngestRunSharedRebuildFailureIsNotUsable(t *testing.T) {
 	}
 	origIngest, origRebuild := ingestSourceFn, rebuildIngestIndexFn
 	t.Cleanup(func() { ingestSourceFn, rebuildIngestIndexFn = origIngest, origRebuild })
-	ingestSourceFn = func(Config, Source, io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(context.Context, Config, Source, io.Writer) (sourceIngestResult, error) {
 		return sourceIngestResult{Examined: 2, Materialized: 2}, nil
 	}
 	rebuildIngestIndexFn = func(context.Context, Config) (int, error) { return 0, errors.New("shared rebuild failed") }
@@ -196,7 +196,7 @@ func TestIngestRunNamedSourceStillAborts(t *testing.T) {
 	}
 	orig := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = orig })
-	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(context.Context, Config, Source, io.Writer) (sourceIngestResult, error) {
 		return sourceIngestResult{}, errors.New("boom")
 	}
 	var buf bytes.Buffer

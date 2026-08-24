@@ -112,11 +112,11 @@ func TestIsolationPartialAttemptCountsPersistInState(t *testing.T) {
 	cfg := mustConfig(t)
 	original := ingestSourceDispatchFn
 	t.Cleanup(func() { ingestSourceDispatchFn = original })
-	ingestSourceDispatchFn = func(Config, Source, io.Writer) (sourceIngestResult, error) {
+	ingestSourceDispatchFn = func(context.Context, Config, Source, io.Writer) (sourceIngestResult, error) {
 		return sourceIngestResult{Examined: 100, Materialized: 73, Failed: 27, Missing: 27},
 			newCodedError(errCodeConnectorMalformed, nil, "partial mapping failure")
 	}
-	result, err := ingestSourceDetailed(cfg, Source{Name: "mail", Type: "gmail", Scope: "global"}, io.Discard)
+	result, err := ingestSourceDetailed(context.Background(), cfg, Source{Name: "mail", Type: "gmail", Scope: "global"}, io.Discard)
 	if err == nil || result.Materialized != 73 {
 		t.Fatalf("result = %+v, err = %v", result, err)
 	}
@@ -321,7 +321,7 @@ func TestIsolationZeroEnabledSourcesIsSuccessfulEmptyPlan(t *testing.T) {
 	called := false
 	result, err := sourceRunCoordinator(context.Background(), sourceRunRequest{
 		Config: cfg,
-		run: func(Config, Source, io.Writer) (int, error) {
+		run: func(context.Context, Config, Source, io.Writer) (int, error) {
 			called = true
 			return 0, nil
 		},
@@ -360,7 +360,7 @@ func TestIsolationFilteredPulseConstructsOnlyRequestedSource(t *testing.T) {
 	t.Cleanup(func() { sourceRunCoordinatorFn = orig })
 	var trace []string
 	sourceRunCoordinatorFn = func(ctx context.Context, req sourceRunRequest) (sourceRunResult, error) {
-		req.run = func(_ Config, source Source, _ io.Writer) (int, error) {
+		req.run = func(_ context.Context, _ Config, source Source, _ io.Writer) (int, error) {
 			if source.Type == "applecalendar" {
 				return 0, errors.New("apple calendar constructor must remain unreachable")
 			}
@@ -400,7 +400,7 @@ func TestIsolationIssue381GmailDigestExcludesAppleCalendar(t *testing.T) {
 	t.Cleanup(func() { sourceRunCoordinatorFn = orig })
 	var ran []string
 	sourceRunCoordinatorFn = func(ctx context.Context, req sourceRunRequest) (sourceRunResult, error) {
-		req.run = func(_ Config, source Source, _ io.Writer) (int, error) {
+		req.run = func(_ context.Context, _ Config, source Source, _ io.Writer) (int, error) {
 			ran = append(ran, instanceKeyForSource(source))
 			if source.Type != "gmail" {
 				return 0, errors.New("excluded provider sibling was accessed")
@@ -416,6 +416,55 @@ func TestIsolationIssue381GmailDigestExcludesAppleCalendar(t *testing.T) {
 	}
 	if !reflect.DeepEqual(ran, []string{"gmail"}) {
 		t.Fatalf("constructed/started sources = %v, want only gmail", ran)
+	}
+}
+
+func TestIsolationSourceContextReachesIngest(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	if err := saveSources(cfg, []Source{{Name: "gmail", Type: "gmail", Enabled: genericutil.Ptr(true)}}); err != nil {
+		t.Fatal(err)
+	}
+	type contextKey string
+	deadline := time.Now().Add(time.Minute)
+	ctx, cancel := context.WithDeadline(context.WithValue(context.Background(), contextKey("source"), "gmail"), deadline)
+	defer cancel()
+	seen := false
+	_, err := sourceRunCoordinator(ctx, sourceRunRequest{
+		Config: cfg,
+		run: func(runCtx context.Context, _ Config, _ Source, _ io.Writer) (int, error) {
+			gotDeadline, ok := runCtx.Deadline()
+			seen = ok && runCtx.Value(contextKey("source")) == "gmail" && gotDeadline.Equal(deadline)
+			return 0, nil
+		},
+	})
+	if err != nil || !seen {
+		t.Fatalf("context reached source=%v err=%v", seen, err)
+	}
+}
+
+func TestIsolationCancelledSourceReturnsTypedOutcome(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "done"}, {Key: "cancelled"}, {Key: "timeout"}}
+	outcomes := []sourceRunOutcome{
+		{Key: "done", Items: 2}, {Key: "cancelled", Cancelled: true}, {Key: "timeout", TimedOut: true},
+	}
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err == nil || aggregate.Status != sourceRunStatusCancelled {
+		t.Fatalf("aggregate=%+v err=%v", aggregate, err)
+	}
+	bySource := map[string]sourceRunReceipt{}
+	for _, receipt := range aggregate.Sources {
+		bySource[receipt.Source] = receipt
+	}
+	if !bySource["done"].Usable || bySource["done"].Items != 2 {
+		t.Fatalf("completed sibling changed=%+v", bySource["done"])
+	}
+	if bySource["cancelled"].Status != sourceRunStatusCancelled {
+		t.Fatalf("cancelled receipt=%+v", bySource["cancelled"])
+	}
+	if timeout := bySource["timeout"]; timeout.Status != sourceRunStatusFailed || timeout.ErrorCode != errCodeConnectorUnavailable || !timeout.Retryable {
+		t.Fatalf("timeout receipt=%+v", timeout)
 	}
 }
 

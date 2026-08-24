@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -360,7 +361,7 @@ func TestContractIngestRunReceiptSurvivesFailure(t *testing.T) {
 	origFn := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = origFn })
 	// Partial run: three items land, then the connector fails.
-	ingestSourceFn = func(_ Config, _ Source, _ io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(context.Context, Config, Source, io.Writer) (sourceIngestResult, error) {
 		return sourceIngestResult{Examined: 4, Materialized: 3, Failed: 1, Missing: 1}, errString("kaboom")
 	}
 	if err := saveSources(cfg, []Source{

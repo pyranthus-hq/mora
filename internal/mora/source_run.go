@@ -14,7 +14,7 @@ type sourceRunRequest struct {
 	Selector string
 	Filtered bool
 	Output   io.Writer
-	run      func(Config, Source, io.Writer) (int, error)
+	run      func(context.Context, Config, Source, io.Writer) (int, error)
 }
 
 type sourceRunPlan struct {
@@ -52,6 +52,7 @@ type sourceRunOutcome struct {
 	Missing       int
 	Err           error
 	Cancelled     bool
+	TimedOut      bool
 	LastSuccessAt string
 	LastAttemptAt string
 	Stale         bool
@@ -104,6 +105,11 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		switch {
 		case outcome.Cancelled:
 			receipt.Status = sourceRunStatusCancelled
+		case outcome.TimedOut:
+			receipt.Status = sourceRunStatusFailed
+			receipt.ErrorCode = connectorErrorCode(context.DeadlineExceeded)
+			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
+			receipt.Retryable = retryableForErrorCode(receipt.ErrorCode)
 		case outcome.Err != nil && outcome.Materialized > 0:
 			receipt.Status = sourceRunStatusPartial
 			receipt.Usable = true
@@ -243,8 +249,8 @@ func sourceRunCoordinator(ctx context.Context, req sourceRunRequest) (sourceRunR
 	}
 	run := req.run
 	if run == nil {
-		run = func(cfg Config, source Source, output io.Writer) (int, error) {
-			result, err := ingestSourceFn(cfg, source, output)
+		run = func(runCtx context.Context, cfg Config, source Source, output io.Writer) (int, error) {
+			result, err := ingestSourceFn(runCtx, cfg, source, output)
 			return result.Materialized, err
 		}
 	}
@@ -253,7 +259,7 @@ func sourceRunCoordinator(ctx context.Context, req sourceRunRequest) (sourceRunR
 			return result, err
 		}
 		result.Trace = append(result.Trace, "constructed:"+plan.Key, "started:"+plan.Key)
-		n, runErr := run(req.Config, plan.Source, req.Output)
+		n, runErr := run(ctx, req.Config, plan.Source, req.Output)
 		result.Items += n
 		if runErr != nil {
 			result.Failures++

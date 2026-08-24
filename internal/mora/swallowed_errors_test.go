@@ -226,7 +226,7 @@ func TestNamedSourceIngestRebuildsDespitePartialFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	prev := ingestSourceFn
-	ingestSourceFn = func(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(context.Context, Config, Source, io.Writer) (sourceIngestResult, error) {
 		return sourceIngestResult{Examined: 5, Materialized: 3, Failed: 2, Missing: 2}, errors.New("2 item(s) failed to write and were dropped")
 	}
 	t.Cleanup(func() { ingestSourceFn = prev })
