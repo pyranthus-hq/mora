@@ -107,7 +107,6 @@ func sourceHealthFor(cfg Config, s Source, key string, now time.Time) sourceHeal
 	return h
 }
 func healthBannerFromSources(sources []sourceHealth) string { return healthpkg.Banner(sources) }
-func worstSource(sources []sourceHealth) *sourceHealth      { return healthpkg.Worst(sources) }
 func sanitizeHealthError(s string) string                   { return healthpkg.SanitizeError(s) }
 func healthBanner(cfg Config, now time.Time) string {
 	return healthBannerFrom(healthOf(cfg, now))

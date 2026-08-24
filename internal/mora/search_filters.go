@@ -264,40 +264,6 @@ func excludedByFilterSources(cfg Config, now time.Time, filters searchFilters) [
 	return excluded
 }
 
-// filteredMissingSources is confidence.go's confidenceSourceGaps recomputed
-// with the population narrowed to sources an ACTIVE source filter did not
-// exclude — the #241/#238 interaction: a source excluded by the caller's OWN
-// filter is a caller choice, not an incomplete-coverage signal, so it must
-// never appear in confidence.missing_sources or move health_impact.
-// confidence.go itself is UNTOUCHED (frozen): this is a standalone recompute
-// over the same sourceHealthAll/worstSource primitives, called only from
-// mcp.go's search_memory handler when a source filter is active, and used to
-// OVERWRITE the frozen searchConfidence's MissingSources/HealthImpact fields
-// after the fact — never by parameterizing confidenceSourceGaps itself.
-// filters MUST be the parsed searchFilters (never a raw source string) —
-// see excludedByFilterSources' identical note / normalizedSource's doc
-// comment.
-func filteredMissingSources(cfg Config, now time.Time, filters searchFilters) ([]string, string) {
-	source := filters.NormalizedSource()
-	all := sourceHealthAll(cfg, now)
-	kept := make([]sourceHealth, 0, len(all))
-	missing := make([]string, 0, len(all))
-	for _, h := range all {
-		if !digestSourceMatches(h.Key, source) {
-			continue // excluded by the caller's own filter — not a coverage gap
-		}
-		kept = append(kept, h)
-		if h.State != healthFresh {
-			missing = append(missing, h.Key)
-		}
-	}
-	impact := "none"
-	if worst := worstSource(kept); worst != nil {
-		impact = worst.State
-	}
-	return missing, impact
-}
-
 // compactHealthFiltered is compactHealthOf recomputed with h.Sources narrowed
 // the SAME way filteredMissingSources narrows confidence's population: a
 // source excluded by an active source filter must not drag the ALWAYS-PRESENT
