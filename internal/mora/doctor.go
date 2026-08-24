@@ -47,9 +47,80 @@ type doctorReport struct {
 	// `[]` when nothing is expected (a user who scheduled nothing is never nagged),
 	// one record per expected producer in the normal case, or one typed ledger
 	// failure matching producer_ledger_readable when the ledger cannot be read.
-	Index      indexHealth         `json:"index"`
-	Producers  []producerHealth    `json:"producers"`
-	Activities []operationActivity `json:"activities"`
+	Index        indexHealth          `json:"index"`
+	Producers    []producerHealth     `json:"producers"`
+	Activities   []operationActivity  `json:"activities"`
+	Observed     []doctorObservation  `json:"observed"`
+	Diagnosis    []doctorDiagnosis    `json:"diagnosis"`
+	Repairable   bool                 `json:"repairable"`
+	RepairPlan   []doctorRepairAction `json:"repair_plan"`
+	Verification []doctorVerification `json:"verification"`
+}
+
+type doctorObservation struct {
+	Subject      string `json:"subject"`
+	Status       string `json:"status"`
+	ObservedAt   string `json:"observed_at"`
+	EvidenceCode string `json:"evidence_code,omitempty"`
+}
+
+type doctorDiagnosis struct {
+	Subject   string `json:"subject"`
+	Code      string `json:"code"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+type doctorRepairAction struct {
+	ID               string `json:"id"`
+	Mutation         string `json:"mutation"`
+	Target           string `json:"target"`
+	Safe             bool   `json:"safe"`
+	ApprovalRequired bool   `json:"approval_required"`
+}
+
+type doctorVerification struct {
+	ActionID string `json:"action_id"`
+	Before   string `json:"before"`
+	After    string `json:"after"`
+	Verified bool   `json:"verified"`
+}
+
+func buildDoctorDiagnostics(checks []doctorCheck, sources []sourceHealth, now time.Time) ([]doctorObservation, []doctorDiagnosis) {
+	observed := make([]doctorObservation, 0, len(checks)+len(sources))
+	diagnoses := make([]doctorDiagnosis, 0)
+	at := now.UTC().Format(time.RFC3339)
+	for _, check := range checks {
+		status := "passed"
+		if !check.OK {
+			status = "failed"
+			diagnoses = append(diagnoses, doctorDiagnosis{Subject: check.Name, Code: "check_failed"})
+		}
+		observed = append(observed, doctorObservation{Subject: check.Name, Status: status, ObservedAt: at})
+	}
+	for _, source := range sources {
+		observed = append(observed, doctorObservation{Subject: "source:" + source.Key, Status: source.State, ObservedAt: at, EvidenceCode: source.ErrorCode})
+		code := ""
+		switch source.State {
+		case healthNever:
+			if source.ErrorCode != "" || source.LastError != "" {
+				code = "cause_unverified"
+			} else {
+				code = "source_unobserved"
+			}
+		case healthStale:
+			code = "source_stale"
+		case healthFailed:
+			if source.ErrorCode == errCodeConnectorUnauthorized {
+				code = "authorization_failed"
+			} else {
+				code = "cause_unverified"
+			}
+		}
+		if code != "" {
+			diagnoses = append(diagnoses, doctorDiagnosis{Subject: "source:" + source.Key, Code: code, ErrorCode: source.ErrorCode})
+		}
+	}
+	return observed, diagnoses
 }
 
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
@@ -309,6 +380,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	if *jsonOut {
+		observed, diagnoses := buildDoctorDiagnostics(checks, srcHealth, now)
 		rep := doctorReport{
 			Healthy:            healthy,
 			Checks:             checks,
@@ -328,6 +400,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			// computed three lines above it, and the documented live proof
 			// (`doctor --json | jq '.producers[]'`) could never show anything.
 			Producers: prodHealth,
+			Observed:  observed, Diagnosis: diagnoses,
+			RepairPlan: []doctorRepairAction{}, Verification: []doctorVerification{},
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
