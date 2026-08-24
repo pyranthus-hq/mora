@@ -36,7 +36,8 @@ func TestRetentionCLIAllowsDocumentedPositionalFirstFlags(t *testing.T) {
 		t.Fatalf("report: %v candidates=%d", err, len(report.Candidates))
 	}
 	out := run(t, "retention", "decide", report.ReportID, report.Candidates[0].ID, "--action", "keep", "--json")
-	if !strings.Contains(out, `"schema": "mora.retention.decision"`) {
-		t.Fatalf("decision receipt: %s", out)
+	var receipt map[string]any
+	if err := json.Unmarshal([]byte(out), &receipt); err != nil || receipt["schema"] != "mora.retention.decision" {
+		t.Fatalf("decision receipt: %s err=%v", out, err)
 	}
 }
