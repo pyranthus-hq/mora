@@ -92,6 +92,24 @@ type retentionExecutionReceipt struct {
 	IndexCount    int      `json:"index_count"`
 }
 
+type retentionIntegrityReceipt struct {
+	SchemaVersion      int      `json:"schema_version"`
+	VaultCount         int      `json:"vault_count"`
+	IndexCount         int      `json:"index_count"`
+	MissingIndexIDs    []string `json:"missing_index_ids"`
+	OrphanIndexIDs     []string `json:"orphan_index_ids"`
+	DanglingGraphEdges []string `json:"dangling_graph_edges"`
+	Healthy            bool     `json:"healthy"`
+}
+
+type retentionRecoveryReceipt struct {
+	SchemaVersion int                       `json:"schema_version"`
+	ManifestID    string                    `json:"manifest_id"`
+	RestoredIDs   []string                  `json:"restored_ids"`
+	RecoveredAt   string                    `json:"recovered_at"`
+	Integrity     retentionIntegrityReceipt `json:"integrity"`
+}
+
 func retentionRoot(cfg Config) string { return filepath.Join(cfg.StateDir, "retention") }
 func retentionReportPath(cfg Config, id string) string {
 	return filepath.Join(retentionRoot(cfg), "reports", id+".json")
@@ -445,4 +463,174 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 		return retentionExecutionReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func loadEncryptedRecovery(cfg Config, manifestID string) (encryptedRecoveryManifest, error) {
+	b, err := os.ReadFile(recoveryManifestPath(cfg, manifestID))
+	if err != nil {
+		return encryptedRecoveryManifest{}, err
+	}
+	var encrypted encryptedRecoveryManifest
+	if err := json.Unmarshal(b, &encrypted); err != nil {
+		return encryptedRecoveryManifest{}, err
+	}
+	if encrypted.SchemaVersion != retentionSchemaVersion || encrypted.ManifestID != manifestID {
+		return encryptedRecoveryManifest{}, errors.New("unsupported or mismatched recovery manifest")
+	}
+	return encrypted, nil
+}
+
+func verifyRetentionIntegrity(ctx context.Context, cfg Config) (retentionIntegrityReceipt, error) {
+	receipt := retentionIntegrityReceipt{SchemaVersion: retentionSchemaVersion}
+	files, err := allMemoryFiles(cfg)
+	if err != nil {
+		return receipt, err
+	}
+	vaultIDs := map[string]bool{}
+	for _, path := range files {
+		m, err := parseMemory(path)
+		if err != nil || m.DeletedAt != "" {
+			continue
+		}
+		vaultIDs[m.ID] = true
+	}
+	receipt.VaultCount = len(vaultIDs)
+	db, err := openIndexRO(ctx, cfg)
+	if err != nil {
+		return receipt, err
+	}
+	defer db.Close()
+	indexIDs := map[string]bool{}
+	rows, err := db.QueryContext(ctx, `SELECT id FROM memories ORDER BY id`)
+	if err != nil {
+		return receipt, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return receipt, err
+		}
+		indexIDs[id] = true
+	}
+	if err := rows.Close(); err != nil {
+		return receipt, err
+	}
+	receipt.IndexCount = len(indexIDs)
+	for id := range vaultIDs {
+		if !indexIDs[id] {
+			receipt.MissingIndexIDs = append(receipt.MissingIndexIDs, id)
+		}
+	}
+	for id := range indexIDs {
+		if !vaultIDs[id] {
+			receipt.OrphanIndexIDs = append(receipt.OrphanIndexIDs, id)
+		}
+	}
+	entityIDs := map[string]bool{}
+	entityRows, err := db.QueryContext(ctx, `SELECT id FROM entities`)
+	if err != nil {
+		return receipt, err
+	}
+	for entityRows.Next() {
+		var id string
+		if err := entityRows.Scan(&id); err != nil {
+			entityRows.Close()
+			return receipt, err
+		}
+		entityIDs[id] = true
+	}
+	if err := entityRows.Close(); err != nil {
+		return receipt, err
+	}
+	edges, err := db.QueryContext(ctx, `SELECT src, rel, dst, evidence_id FROM edges ORDER BY src, rel, dst, evidence_id`)
+	if err != nil {
+		return receipt, err
+	}
+	for edges.Next() {
+		var src, rel, dst, evidence string
+		if err := edges.Scan(&src, &rel, &dst, &evidence); err != nil {
+			edges.Close()
+			return receipt, err
+		}
+		if (!indexIDs[src] && !entityIDs[src]) || (!indexIDs[dst] && !entityIDs[dst]) || (evidence != "" && !indexIDs[evidence]) {
+			receipt.DanglingGraphEdges = append(receipt.DanglingGraphEdges, src+"|"+rel+"|"+dst+"|"+evidence)
+		}
+	}
+	if err := edges.Close(); err != nil {
+		return receipt, err
+	}
+	sort.Strings(receipt.MissingIndexIDs)
+	sort.Strings(receipt.OrphanIndexIDs)
+	receipt.Healthy = len(receipt.MissingIndexIDs) == 0 && len(receipt.OrphanIndexIDs) == 0 && len(receipt.DanglingGraphEdges) == 0
+	return receipt, nil
+}
+
+func recoverRetentionManifest(ctx context.Context, cfg Config, manifestID string, now time.Time) (retentionRecoveryReceipt, error) {
+	encrypted, err := loadEncryptedRecovery(cfg, manifestID)
+	if err != nil {
+		return retentionRecoveryReceipt{}, err
+	}
+	plain, err := decryptRecoveryManifest(cfg, encrypted)
+	if err != nil {
+		return retentionRecoveryReceipt{}, err
+	}
+	expires, err := time.Parse(time.RFC3339, plain.ExpiresAt)
+	if err != nil || now.After(expires) {
+		return retentionRecoveryReceipt{}, fmt.Errorf("recovery window expired at %s", plain.ExpiresAt)
+	}
+	for _, entry := range plain.Entries {
+		if sha256Hex(entry.Data) != entry.ContentSHA {
+			return retentionRecoveryReceipt{}, fmt.Errorf("recovery entry %q failed integrity", entry.ID)
+		}
+		path := filepath.Clean(filepath.Join(cfg.VaultDir, filepath.FromSlash(entry.Path)))
+		rel, err := filepath.Rel(cfg.VaultDir, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return retentionRecoveryReceipt{}, fmt.Errorf("recovery path escapes vault: %q", entry.Path)
+		}
+		if existing, err := os.ReadFile(path); err == nil && sha256Hex(existing) != entry.ContentSHA {
+			return retentionRecoveryReceipt{}, fmt.Errorf("refusing to overwrite changed recovery target %q", entry.ID)
+		}
+	}
+	for _, entry := range plain.Entries {
+		path := filepath.Join(cfg.VaultDir, filepath.FromSlash(entry.Path))
+		mode := os.FileMode(entry.Mode)
+		if mode == 0 {
+			mode = 0o644
+		}
+		if err := atomicio.Write(path, entry.Data, mode); err != nil {
+			return retentionRecoveryReceipt{}, err
+		}
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		return retentionRecoveryReceipt{}, err
+	}
+	restoredSet := map[string]bool{}
+	for _, entry := range plain.Entries {
+		restoredSet[entry.ID] = true
+	}
+	for _, entry := range g.activeSuppress() {
+		if entry.Kind == govKindPrune && entry.Atom.Kind == atomStableID && restoredSet[entry.Atom.Value] {
+			if _, err := revokeGovernanceEntry(cfg, entry.ID); err != nil {
+				return retentionRecoveryReceipt{}, err
+			}
+		}
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		return retentionRecoveryReceipt{}, err
+	}
+	integrity, err := verifyRetentionIntegrity(ctx, cfg)
+	if err != nil {
+		return retentionRecoveryReceipt{}, err
+	}
+	if !integrity.Healthy {
+		return retentionRecoveryReceipt{}, fmt.Errorf("recovery integrity verification failed: %+v", integrity)
+	}
+	restored := make([]string, 0, len(plain.Entries))
+	for _, entry := range plain.Entries {
+		restored = append(restored, entry.ID)
+	}
+	sort.Strings(restored)
+	return retentionRecoveryReceipt{SchemaVersion: retentionSchemaVersion, ManifestID: manifestID, RestoredIDs: restored, RecoveredAt: now.UTC().Format(time.RFC3339), Integrity: integrity}, nil
 }
