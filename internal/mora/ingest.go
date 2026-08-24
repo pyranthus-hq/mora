@@ -720,7 +720,7 @@ func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut b
 		dir := filepath.Join(cfg.StateDir, "sync")
 		if entries, err := os.ReadDir(dir); err == nil {
 			for _, row := range syncStatusReceiptSources(entries, dir, time.Now()) {
-				if row.Source != source && !(source == "google" && (row.Source == "gmail" || row.Source == "calendar")) {
+				if row.Source != source && (source != "google" || (row.Source != "gmail" && row.Source != "calendar")) {
 					continue
 				}
 				if row.LastSuccessAt > receipt.LastSuccessAt {
