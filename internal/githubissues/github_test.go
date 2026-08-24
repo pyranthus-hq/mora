@@ -1,7 +1,9 @@
 package githubissues
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,48 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+func TestFetchPageContextCancellation(t *testing.T) {
+	started, observed := make(chan struct{}), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+		close(observed)
+	}))
+	defer srv.Close()
+	fetcher, err := NewFetcher(srv.Client(), srv.URL, []string{"o/r"}, "", func() time.Time { return fixedNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := fetcher.FetchPageContext(ctx, KindIssue, memory.FetchWindow{}, ""); done <- err }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation = %v", err)
+	}
+	select {
+	case <-observed:
+	case <-time.After(time.Second):
+		t.Fatal("GitHub handler did not observe request cancellation")
+	}
+}
+
+func TestFetchPageCompatibilityWrapper(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"number":1,"title":"Issue","body":"body","state":"open","html_url":"https://github.com/o/r/issues/1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-02-01T00:00:00Z"}]`))
+	}))
+	defer srv.Close()
+	fetcher, err := NewFetcher(srv.Client(), srv.URL, []string{"o/r"}, "", func() time.Time { return fixedNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fetcher.FetchPage(KindIssue, memory.FetchWindow{}, "")
+	if err != nil || len(page.Items) != 1 || page.Items[0].ProviderID != "o/r#1" || page.NextCursor != "" {
+		t.Fatalf("compatibility page=%+v err=%v", page, err)
+	}
+}
 
 var fixedNow = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 
