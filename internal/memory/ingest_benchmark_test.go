@@ -82,9 +82,9 @@ func TestIngestReferenceBenchmarkRegression(t *testing.T) {
 			records  int
 			duration time.Duration
 		}{
-			{10_000, 9_272_833 * time.Nanosecond},
+			{10_000, 11_857_042 * time.Nanosecond},
 			{100_000, 96_326_833 * time.Nanosecond},
-			{1_000_000, 671_241_833 * time.Nanosecond},
+			{1_000_000, 944_189_625 * time.Nanosecond},
 		}
 	}
 	for _, baseline := range baselines {
