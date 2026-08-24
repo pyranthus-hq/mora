@@ -130,6 +130,9 @@ func calEventToItem(calID string, ev *calendar.Event) Item {
 	if created, ok := rfc3339Instant(ev.Created); ok {
 		meta["source_created_at"] = created.UTC().Format(time.RFC3339)
 	}
+	if strings.HasPrefix(ev.HtmlLink, "https://") || strings.HasPrefix(ev.HtmlLink, "http://") {
+		meta["html_link"] = ev.HtmlLink
+	}
 	return Item{
 		Kind:       KindCalEvent,
 		ProviderID: calID + "/" + ev.Id,

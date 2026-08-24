@@ -255,6 +255,15 @@ func capabilitiesIncrementalSync(connector connectorInfo) string {
 	}
 }
 
+func capabilitiesDeepLink(connector connectorInfo) string {
+	switch connector.Type {
+	case "gmail", "calendar", "github":
+		return featureSupported
+	default:
+		return featureUnsupported
+	}
+}
+
 func capabilitiesConnectors() []capabilitiesConnector {
 	connectors := make([]capabilitiesConnector, 0, len(connectorCatalog))
 	for _, connector := range connectorCatalog {
@@ -266,11 +275,8 @@ func capabilitiesConnectors() []capabilitiesConnector {
 			Label:     connector.Label,
 			Upcoming:  connector.Upcoming,
 			Features: capabilitiesConnectorFeatures{
-				Repair:   featureUnsupported,
-				DeepLink: featureUnsupported,
-				// Verified by grep rather than assumed: no `deep_link`, `DeepLink`,
-				// `permalink`, `message://`, or `x-apple` appears in any non-test Go
-				// file outside this one.
+				Repair:          featureUnsupported,
+				DeepLink:        capabilitiesDeepLink(connector),
 				IncrementalSync: capabilitiesIncrementalSync(connector),
 			},
 		})
@@ -318,7 +324,7 @@ func cmdCapabilities(ctx context.Context, args []string, stdout, stderr io.Write
 			Tools:       mcpToolNames(),
 			Schemas:     capabilitiesMCPSchemas(),
 		},
-		Features: capabilitiesFeatures{Repair: featureUnsupported, DeepLink: featureUnsupported},
+		Features: capabilitiesFeatures{Repair: featureUnsupported, DeepLink: featureSupported},
 	}
 	if *jsonOut {
 		return emitReceipt(stdout, "mora.capabilities", 1, payload)
