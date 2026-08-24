@@ -160,6 +160,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"config", "cmdConfig", []string{"key"}},
 		{"index", "cmdIndex", []string{"fs.Arg(0)"}},
 		{"forget", "cmdForget", []string{"args[0]"}},
+		{"retention", "cmdRetention", []string{"args[0]"}},
 		{"merge", "cmdMerge", []string{"args[0]"}},
 		{"teach", "cmdTeach", []string{"args[0]"}},
 		{"tasks", "cmdTasks", []string{"args[0]"}},

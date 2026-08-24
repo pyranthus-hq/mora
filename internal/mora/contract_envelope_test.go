@@ -107,6 +107,9 @@ var contractEnvelopeNonExecutable = map[string]string{
 	"index rebuild":          "covered by the index rebuild receipt tests",
 	"loop heartbeat":         "needs a live run id from a begin in the same process",
 	"share list":             "covered directly by the share tests",
+	"retention decide":       "needs a persisted retention report and candidate id",
+	"retention execute":      "destructive mutation requiring a reviewed report",
+	"retention recover":      "needs an encrypted recovery manifest from an execution",
 }
 
 // TestContractEveryPayloadIsVersioned is CON-01's proof: every non-exempt

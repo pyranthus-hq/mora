@@ -92,6 +92,13 @@
       "payload": "mora.forget"
     },
     {
+      "path": "retention",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "path": "unforget",
       "kind": "verb",
       "platform": "all",
@@ -400,6 +407,41 @@
       "platform": "all",
       "json_contract": "result",
       "payload": "mora.forget.list"
+    },
+    {
+      "path": "retention report",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.retention.report"
+    },
+    {
+      "path": "retention decide",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.retention.decision"
+    },
+    {
+      "path": "retention execute",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.retention.execution"
+    },
+    {
+      "path": "retention recover",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.retention.recovery"
+    },
+    {
+      "path": "retention verify",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.retention.integrity"
     },
     {
       "path": "merge list",
