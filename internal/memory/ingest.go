@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -8,6 +9,7 @@ import (
 // IngestParams drives a snapshot ingestion. Write persists one memory (the mora
 // wiring supplies it). A nil-safe Status is required.
 type IngestParams struct {
+	Context    context.Context
 	Fetcher    Fetcher
 	Kind       ItemKind
 	Window     FetchWindow
@@ -21,6 +23,16 @@ type IngestParams struct {
 	// connector needing different mapping (e.g. iMessage's newest-first truncation via
 	// its own mapConversation over Item.Payload) supplies it here.
 	Map func(Item, string, int) MappedMemory
+}
+
+func fetchPageContext(ctx context.Context, fetcher Fetcher, kind ItemKind, window FetchWindow, cursor string) (Page, error) {
+	if err := ctx.Err(); err != nil {
+		return Page{}, err
+	}
+	if contextual, ok := fetcher.(ContextFetcher); ok {
+		return contextual.FetchPageContext(ctx, kind, window, cursor)
+	}
+	return fetcher.FetchPage(kind, window, cursor)
 }
 
 type IngestResult struct {
@@ -40,6 +52,10 @@ type IngestResult struct {
 // paging (so a re-run re-attempts dropped items from the start). Page-fetch
 // errors stop the run but preserve the checkpoint for resume.
 func Ingest(p IngestParams) (IngestResult, error) {
+	ctx := p.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if p.Status == nil {
 		p.Status = &SyncStatus{}
 	}
@@ -59,7 +75,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		return result
 	}
 	for {
-		page, err := p.Fetcher.FetchPage(p.Kind, p.Window, cursor)
+		page, err := fetchPageContext(ctx, p.Fetcher, p.Kind, p.Window, cursor)
 		if err != nil {
 			p.Status.ErrorCount++
 			p.Status.LastError = err.Error()
@@ -82,6 +98,14 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			result.Examined++
 			m := mapFn(it, p.Scope, p.BodyBudget)
 			m.LastSynced = time.Now().UTC().Format(time.RFC3339)
+			if err := ctx.Err(); err != nil {
+				p.Status.ErrorCount++
+				p.Status.LastError = err.Error()
+				p.Status.ErrorCode = ""
+				p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
+				p.Status.Checkpoint = cursor
+				return finish(), err
+			}
 			if werr := p.Write(m); werr != nil {
 				result.Failed++
 				p.Status.ErrorCount++

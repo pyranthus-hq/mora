@@ -4,7 +4,10 @@
 // except as a type.
 package memory
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ItemKind is the provider object kind a fetched Item represents. It is a
 // neutral, connector-extensible string: each connector defines its own kind
@@ -67,4 +70,10 @@ type Page struct {
 type Fetcher interface {
 	// FetchPage returns one page starting at cursor ("" = first page).
 	FetchPage(kind ItemKind, w FetchWindow, cursor string) (Page, error)
+}
+
+// ContextFetcher is an optional extension for connectors that can interrupt an
+// in-flight provider request. Ingest keeps legacy Fetcher implementations valid.
+type ContextFetcher interface {
+	FetchPageContext(context.Context, ItemKind, FetchWindow, string) (Page, error)
 }
