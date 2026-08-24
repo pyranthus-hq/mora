@@ -6,6 +6,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/openloops"
 	"github.com/pyranthus-hq/mora/internal/search"
+	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -17,17 +18,61 @@ const (
 )
 
 type Evidence struct {
-	StableID         string                    `json:"stable_id"`
-	Title            string                    `json:"title"`
-	Scope            string                    `json:"scope"`
-	CreatedAt        string                    `json:"created_at"`
-	Score            float64                   `json:"score"`
-	Snippet          string                    `json:"snippet"`
-	Owner            string                    `json:"owner,omitempty"`
-	Corroborating    []memory.CorroboratingRef `json:"corroborating,omitempty"`
-	confidenceTitle  string
-	confidenceText   string
-	confidenceSource string
+	StableID          string                    `json:"stable_id"`
+	Title             string                    `json:"title"`
+	Scope             string                    `json:"scope"`
+	CreatedAt         string                    `json:"created_at"`
+	Score             float64                   `json:"score"`
+	Snippet           string                    `json:"snippet"`
+	Owner             string                    `json:"owner,omitempty"`
+	CanonicalSourceID string                    `json:"canonical_source_id"`
+	Timestamp         string                    `json:"timestamp,omitempty"`
+	DeepLink          string                    `json:"deep_link,omitempty"`
+	Corroborating     []memory.CorroboratingRef `json:"corroborating,omitempty"`
+	confidenceTitle   string
+	confidenceText    string
+	confidenceSource  string
+}
+
+func evidenceCanonicalSource(m memory.Memory) string {
+	if m.Owner != "" {
+		return "share:" + m.Owner
+	}
+	if m.Provider != "" {
+		if m.Account != "" {
+			return m.Provider + ":" + m.Account
+		}
+		return m.Provider
+	}
+	if m.Source != "" {
+		return m.Source
+	}
+	return "vault"
+}
+
+func evidenceTime(m memory.Memory) string {
+	if s, ok := m.Meta["occurred_at"].(string); ok && s != "" {
+		return s
+	}
+	return m.CreatedAt
+}
+
+func evidenceLink(m memory.Memory) string {
+	for _, key := range []string{"canonical_url", "html_link", "url"} {
+		if s, ok := m.Meta[key].(string); ok && (strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")) {
+			return s
+		}
+	}
+	if m.Provider == "gmail" && m.ProviderID != "" {
+		id := m.ProviderID
+		if slash := strings.LastIndexByte(id, '/'); slash >= 0 {
+			id = id[slash+1:]
+		}
+		if id != "" {
+			return "https://mail.google.com/mail/#all/" + url.PathEscape(id)
+		}
+	}
+	return ""
 }
 
 func (e Evidence) ConfidenceFacts() (string, string, string) {
@@ -59,7 +104,7 @@ func EvidenceFromMemories(mems []memory.Memory, query string) []Evidence {
 		if source == "" {
 			source = m.Type
 		}
-		out = append(out, Evidence{StableID: m.ID, Title: m.Title, Scope: m.Scope, CreatedAt: m.CreatedAt, Score: m.Score, Snippet: search.MatchSnippet(m.Text, query, SnippetLen), Owner: m.Owner, Corroborating: m.Corroborating, confidenceTitle: m.Title, confidenceText: m.Text, confidenceSource: source})
+		out = append(out, Evidence{StableID: m.ID, Title: m.Title, Scope: m.Scope, CreatedAt: m.CreatedAt, Score: m.Score, Snippet: search.MatchSnippet(m.Text, query, SnippetLen), Owner: m.Owner, CanonicalSourceID: evidenceCanonicalSource(m), Timestamp: evidenceTime(m), DeepLink: evidenceLink(m), Corroborating: m.Corroborating, confidenceTitle: m.Title, confidenceText: m.Text, confidenceSource: source})
 	}
 	return out
 }
