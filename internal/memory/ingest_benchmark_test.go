@@ -87,7 +87,7 @@ func TestIngestReferenceBenchmarkRegression(t *testing.T) {
 		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
 		limit := baseline.duration + baseline.duration/5
 		if samples[1] > limit {
-			t.Fatalf("%d-memory median %s exceeds baseline %s by more than 20%%", baseline.records, samples[1], baseline.duration)
+			t.Errorf("%d-memory median %s exceeds baseline %s by more than 20%%", baseline.records, samples[1], baseline.duration)
 		}
 	}
 }
