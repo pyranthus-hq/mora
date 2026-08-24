@@ -96,9 +96,10 @@ func TestIsolationTypedSourceFailures(t *testing.T) {
 			}
 			var failed, healthy sourceRunReceipt
 			for _, receipt := range aggregate.Sources {
-				if receipt.Source == "failed" {
+				switch receipt.Source {
+				case "failed":
 					failed = receipt
-				} else if receipt.Source == "healthy" {
+				case "healthy":
 					healthy = receipt
 				}
 			}
