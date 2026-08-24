@@ -74,6 +74,7 @@ type sourceRunOutcome struct {
 	Examined      int
 	Materialized  int
 	Failed        int
+	Unchanged     int
 	Missing       int
 	Err           error
 	Cancelled     bool
@@ -82,6 +83,7 @@ type sourceRunOutcome struct {
 	LastAttemptAt string
 	Stale         bool
 	Stages        memory.IngestStages
+	Incremental   bool
 }
 
 type sourceRunReceipt struct {
@@ -92,6 +94,7 @@ type sourceRunReceipt struct {
 	Examined      int                 `json:"examined"`
 	Materialized  int                 `json:"materialized"`
 	Failed        int                 `json:"failed"`
+	Unchanged     int                 `json:"unchanged"`
 	Missing       int                 `json:"missing"`
 	ErrorCode     string              `json:"error_code,omitempty"`
 	ErrorClass    string              `json:"error_class,omitempty"`
@@ -100,6 +103,7 @@ type sourceRunReceipt struct {
 	LastAttemptAt string              `json:"last_attempt_at,omitempty"`
 	Stale         bool                `json:"stale"`
 	Stages        memory.IngestStages `json:"stages"`
+	Incremental   bool                `json:"incremental"`
 }
 
 type sourceRunAggregate struct {
@@ -125,10 +129,11 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		}
 		receipt := sourceRunReceipt{
 			Source: plan.Key, Items: outcome.Items, Examined: outcome.Examined,
-			Materialized: outcome.Materialized, Failed: outcome.Failed, Missing: outcome.Missing,
+			Materialized: outcome.Materialized, Failed: outcome.Failed, Unchanged: outcome.Unchanged, Missing: outcome.Missing,
 			LastSuccessAt: outcome.LastSuccessAt,
 			LastAttemptAt: outcome.LastAttemptAt, Stale: outcome.Stale,
-			Stages: outcome.Stages,
+			Stages:      outcome.Stages,
+			Incremental: outcome.Incremental,
 		}
 		switch {
 		case outcome.Cancelled:
@@ -149,6 +154,9 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			receipt.ErrorCode = connectorErrorCodeFor(outcome.Err)
 			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
 			receipt.Retryable = retryableForErrorCode(receipt.ErrorCode)
+		case outcome.Incremental || outcome.Unchanged > 0:
+			receipt.Status = sourceRunStatusSuccess
+			receipt.Usable = true
 		case outcome.Items == 0:
 			receipt.Status = sourceRunStatusEmpty
 			receipt.Usable = true

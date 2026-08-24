@@ -130,7 +130,7 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 	output := io.Writer(&synchronizedWriter{w: stdout})
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, output)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Stages: result.Stages, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
 	}})
 	for i, outcome := range outcomes {
 		if outcome.Err != nil && !outcome.Cancelled && report != nil {
@@ -216,7 +216,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
 		outcome := sourceRunOutcome{
 			Key: plan.Key, Items: result.Materialized, Examined: result.Examined,
-			Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Stages: result.Stages, Err: runErr,
+			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr,
 		}
 		if path := syncStatusPathFor(cfg, plan.Source); path != "" {
 			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
@@ -830,7 +830,7 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Missing: result.Missing, Stages: result.Stages, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
 	}})
 	total := sourceOutcomesMaterialized(outcomes)
 	for _, outcome := range outcomes {
@@ -881,15 +881,18 @@ type sourceIngestResult struct {
 	Examined     int
 	Materialized int
 	Failed       int
+	Unchanged    int
 	Missing      int
 	Stages       memory.IngestStages
+	Incremental  bool
 }
 
 func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult {
 	return sourceIngestResult{
 		Examined: result.Examined, Materialized: result.Materialized,
-		Failed: result.Failed, Missing: result.Missing,
-		Stages: result.Stages,
+		Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing,
+		Stages:      result.Stages,
+		Incremental: result.Incremental,
 	}
 }
 
@@ -1049,6 +1052,11 @@ func ingestSourceDispatchDetailed(ctx context.Context, cfg Config, s Source, out
 var testHookMappedWriteCritical func()
 
 func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
+	_, err := writeMappedMemoryDetailed(cfg, mm)
+	return err
+}
+
+func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error) {
 	// Governance chokepoint (#52/#53): consult the vault-resident ledger before
 	// persisting ANY connector memory. A suppressed stable-atom (forgotten chat,
 	// forgotten 1:1 person, pruned item) is silently skipped so the hourly,
@@ -1066,11 +1074,11 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// returns an error (fail-closed) rather than resurrecting.
 	g, release, err := governanceWriteLease(cfg)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer release()
 	if sup, _ := g.suppresses(mm); sup {
-		return nil
+		return false, nil
 	}
 	// Derive the canonical record/path and skip decision inside the held lease so
 	// the whole check→skip→write remains one critical section.
@@ -1081,11 +1089,11 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	}
 	m, skip := ingestpkg.PrepareMapped(mm, existing)
 	if skip {
-		return nil
+		return false, nil
 	}
 	body, err := renderMemory(m)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if testHookMappedWriteCritical != nil {
 		testHookMappedWriteCritical() // test seam: assert the lease is held ACROSS the write (#113).
@@ -1097,10 +1105,10 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 	// returns above wrote no new file and reach neither line.
 	sourceKey := ingestpkg.SourceKey(mm.Provider, mm.Account)
 	if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
-		return jerr
+		return false, jerr
 	}
 	if err := atomicio.Write(out, body, 0o644); err != nil {
-		return err
+		return false, err
 	}
 	if testHookPostConnectorPublish != nil {
 		// Test seam (matrix 34a): a SIGKILL in the publish->journal-line window. The
@@ -1110,7 +1118,7 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 		testHookPostConnectorPublish()
 	}
 	ingestpkg.RecordPublishedPath(cfg, sourceKey, out, ingestPublishSeams())
-	return nil
+	return true, nil
 }
 
 // testHookPostConnectorPublish fires inside writeMappedMemory AFTER the vault publish
@@ -1162,7 +1170,7 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 		noun = "events"
 	}
 	prog := newProgress(out, s.Name, noun)
-	write := func(mm memory.MappedMemory) error {
+	write := func(mm memory.MappedMemory) (bool, error) {
 		// Account-scoped provenance (the sourceInstanceKey multi-account seam):
 		// a labeled account stamps Account so the instance key composes
 		// "gmail:work" — separate watermark, digest section, and three-state per
@@ -1174,16 +1182,19 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 			mm.Account = s.Account
 			mm.StableID = mm.StableID + "@" + s.Account
 		}
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		prog.tick()
-		return nil
+		if wrote {
+			prog.tick()
+		}
+		return wrote, nil
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
-		Status: st, Write: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
+		Status: st, WriteResult: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
 	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1302,20 +1313,23 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		}
 	}
 	prog := newProgress(out, s.Name, "conversations")
-	write := func(mm memory.MappedMemory) error {
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+	write := func(mm memory.MappedMemory) (bool, error) {
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		if _, err := writeAttachmentMemories(cfg, mm); err != nil {
-			return err
+		if wrote {
+			if _, err := writeAttachmentMemories(cfg, mm); err != nil {
+				return false, err
+			}
+			prog.tick()
 		}
-		prog.tick()
-		return nil
+		return wrote, nil
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, Write: write,
+		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 		Map:        imessage.MapConversationFn(resolver),
 	})
@@ -1382,16 +1396,19 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	st, _ := memory.LoadStatus(statusPath)
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "events")
-	write := func(mm memory.MappedMemory) error {
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+	write := func(mm memory.MappedMemory) (bool, error) {
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		prog.tick()
-		return nil
+		if wrote {
+			prog.tick()
+		}
+		return wrote, nil
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
-		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, Write: write,
+		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
@@ -1421,14 +1438,17 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	st, _ := memory.LoadStatus(statusPath)
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "issues")
-	write := func(mm memory.MappedMemory) error {
+	write := func(mm memory.MappedMemory) (bool, error) {
 		// Snapshot bytes are attached to Meta only by the connector-private mapper
 		// seam, never rendered or logged. The immutable write happens in Map below.
-		if err := writeMappedMemory(cfg, mm); err != nil {
-			return err
+		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		if err != nil {
+			return false, err
 		}
-		prog.tick()
-		return nil
+		if wrote {
+			prog.tick()
+		}
+		return wrote, nil
 	}
 	mapIssue := func(it memory.Item, scope string, budget int) memory.MappedMemory {
 		mm := githubissues.MapIssue(it, scope, budget)
@@ -1444,15 +1464,15 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		}
 		return mm
 	}
-	writeChecked := func(mm memory.MappedMemory) error {
+	writeChecked := func(mm memory.MappedMemory) (bool, error) {
 		if msg, ok := mm.Meta["snapshot_error"].(string); ok && msg != "" {
-			return errors.New(msg)
+			return false, errors.New(msg)
 		}
 		return write(mm)
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: githubissues.KindIssue, Scope: s.Scope, BodyBudget: 64 * 1024,
-		Status: st, Map: mapIssue, Write: writeChecked,
+		Status: st, Map: mapIssue, WriteResult: writeChecked,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
@@ -1854,6 +1874,9 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		entry := filesystemManifestEntry{Size: info.Size(), ModTime: info.ModTime().UnixNano()}
 		if prior, ok := priorManifest[rel]; ok && prior == entry {
 			nextManifest[rel] = entry
+			result.Examined++
+			result.Unchanged++
+			result.Incremental = true
 			return nil
 		}
 		var text string

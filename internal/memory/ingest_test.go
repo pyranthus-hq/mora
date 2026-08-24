@@ -201,6 +201,17 @@ func TestIngestResourceAndRetryBudgets(t *testing.T) {
 	})
 }
 
+func TestIngestUnchangedWriteIsNotMaterialized(t *testing.T) {
+	f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{ProviderID: "same", Body: "unchanged"}}}}}
+	res, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, WriteResult: func(MappedMemory) (bool, error) { return false, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Examined != 1 || res.Materialized != 0 || res.Unchanged != 1 || res.Missing != 0 || res.Failed != 0 {
+		t.Fatalf("unchanged result = %+v", res)
+	}
+}
+
 func TestIngestWriteErrorIsCounted(t *testing.T) {
 	f := twoPageFetcher()
 	res, err := Ingest(IngestParams{

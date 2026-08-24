@@ -188,6 +188,16 @@ func TestIsolationPartialWriteCounts(t *testing.T) {
 	}
 }
 
+func TestIncrementalNoChangesIsSuccessNotEmptyCorpus(t *testing.T) {
+	aggregate, err := aggregateSourceRuns([]sourceRunPlan{{Key: "gmail"}}, []sourceRunOutcome{{Key: "gmail", Incremental: true}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.Sources) != 1 || aggregate.Sources[0].Status != sourceRunStatusSuccess || aggregate.Sources[0].ErrorCode != "" || !aggregate.Sources[0].Incremental {
+		t.Fatalf("no-change incremental receipt = %+v", aggregate.Sources)
+	}
+}
+
 func TestIsolationPartialWriteSearchableAfterRebuild(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")

@@ -22,7 +22,7 @@ func TestFilesystemIncrementalManifestSkipsUnchangedRecords(t *testing.T) {
 		t.Fatalf("first incremental ingest=%+v err=%v", first, err)
 	}
 	second, err := ingestFilesystemDetailed(context.Background(), cfg, source, io.Discard)
-	if err != nil || second.Examined != 0 || second.Materialized != 0 {
+	if err != nil || second.Examined != 1 || second.Unchanged != 1 || second.Materialized != 0 {
 		t.Fatalf("no-op incremental ingest=%+v err=%v", second, err)
 	}
 

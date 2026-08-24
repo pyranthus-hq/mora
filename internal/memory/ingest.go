@@ -19,6 +19,10 @@ type IngestParams struct {
 	BodyBudget int
 	Status     *SyncStatus
 	Write      func(MappedMemory) error
+	// WriteResult reports whether the mapped record actually changed durable
+	// state. When set it supersedes Write, so unchanged content-hash skips do not
+	// inflate materialized counts or trigger unnecessary rebuild work.
+	WriteResult func(MappedMemory) (bool, error)
 	// Checkpoint durably publishes an advanced page cursor before the next page
 	// is fetched. A failure stops ingestion, preserving resumability rather than
 	// claiming progress that only existed in memory.
@@ -114,8 +118,10 @@ type IngestResult struct {
 	Examined     int
 	Materialized int
 	Failed       int
+	Unchanged    int
 	Missing      int
 	Stages       IngestStages
+	Incremental  bool
 }
 
 func itemApproxBytes(item Item) int {
@@ -159,6 +165,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		mapFn = MapItem
 	}
 	cursor := p.Status.Checkpoint
+	result := IngestResult{Status: p.Status, Incremental: cursor == "" && p.Status.IncrementalCursor != ""}
 	if cursor == "" {
 		p.Window.SyncCursor = p.Status.IncrementalCursor
 	}
@@ -169,9 +176,8 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// write errors is not a clean attempt and keeps its errors (M-3: health is the
 	// last attempt's outcome, not a "paging finished" signal).
 	errorsBefore := p.Status.ErrorCount
-	result := IngestResult{Status: p.Status}
 	finish := func() IngestResult {
-		result.Missing = result.Examined - result.Materialized
+		result.Missing = result.Examined - result.Materialized - result.Unchanged
 		result.Stages.TotalMS = time.Since(started).Milliseconds()
 		return result
 	}
@@ -242,15 +248,26 @@ func Ingest(p IngestParams) (IngestResult, error) {
 				p.Status.Checkpoint = cursor
 				return finish(), err
 			}
-			if werr := p.Write(m); werr != nil {
+			wrote := true
+			var werr error
+			if p.WriteResult != nil {
+				wrote, werr = p.WriteResult(m)
+			} else if p.Write != nil {
+				werr = p.Write(m)
+			}
+			if werr != nil {
 				result.Failed++
 				p.Status.ErrorCount++
 				p.Status.LastError = werr.Error()
 				p.Status.ErrorCode = "" // prose only here; see the fetch-failure branch above
 				continue
 			}
-			result.Materialized++
-			p.Status.ItemCount++
+			if wrote {
+				result.Materialized++
+				p.Status.ItemCount++
+			} else {
+				result.Unchanged++
+			}
 		}
 		result.Stages.MapWriteMS += time.Since(mapStarted).Milliseconds()
 		if page.NextCursor == "" {
