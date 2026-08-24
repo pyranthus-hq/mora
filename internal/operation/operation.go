@@ -177,6 +177,14 @@ func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, e
 	}
 	path := Path(cfg, kind, runID)
 	if err := leasefile.WithGuard(operationGuardPath(cfg, kind), func() error {
+		// A terminal writer normally prunes its own receipt, but a crashed writer
+		// never reaches that path. The next writer of the same kind owns cleanup:
+		// it already holds the per-kind guard, so it cannot race another receipt
+		// transition. Require BOTH an expired heartbeat and a dead owner; a slow
+		// live writer, PID reuse, and corrupt evidence all fail closed.
+		if err := pruneDeadOwnerRecordsLocked(cfg, kind, now, ProcessAlive); err != nil {
+			return err
+		}
 		if _, err := os.Stat(path); err == nil {
 			return errors.New("operation run id collision")
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -187,6 +195,46 @@ func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, e
 		return Handle{}, err
 	}
 	return h, nil
+}
+
+// pruneDeadOwnerRecordsLocked removes abandoned running receipts before a new
+// writer starts. The caller must hold operationGuardPath(cfg, kind). It does not
+// repair or reinterpret malformed records; those remain visible to Activities.
+func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, live Liveness) error {
+	if live == nil {
+		live = ProcessAlive
+	}
+	dir := filepath.Join(operationRoot(cfg), string(kind))
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		rec, err := LoadRecord(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || rec.State != Running || rec.OwnerPID <= 0 {
+			continue
+		}
+		activity := classifyOperationRecord(rec, kind, runID, now, live)
+		heartbeat, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
+		if err != nil || activity.State != Stalled || now.Sub(heartbeat) <= HeartbeatTTL || live(rec.OwnerPID) {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func Heartbeat(cfg config.Config, h Handle, phase string, counts Counts, now time.Time) error {

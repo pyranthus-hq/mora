@@ -3,6 +3,7 @@ package operation
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"github.com/pyranthus-hq/mora/internal/config"
 	"os"
 	"path/filepath"
@@ -92,6 +93,49 @@ func TestOperationActivityLivenessRequiresRunAndHeartbeat(t *testing.T) {
 	for _, a := range acts {
 		if a.RunID == "op_live" && (a.State != Stalled || a.FailureCode != "owner_dead") {
 			t.Fatalf("dead owner = %+v", a)
+		}
+	}
+}
+
+func TestBeginPrunesOnlyExpiredDeadOwnerRecords(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	oldProcessAlive := ProcessAlive
+	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
+	ProcessAlive = func(pid int) bool { return pid == 4343 }
+
+	writeRunning := func(runID string, pid int, heartbeat time.Time) {
+		t.Helper()
+		rec := Record{
+			SchemaVersion: SchemaVersion,
+			Kind:          KindIngest,
+			State:         Running,
+			RunID:         runID,
+			OwnerPID:      pid,
+			StartedAt:     heartbeat.Add(-time.Minute).Format(time.RFC3339Nano),
+			HeartbeatAt:   heartbeat.Format(time.RFC3339Nano),
+			Phase:         "awaiting_rebuild",
+		}
+		if err := SaveRecord(Path(cfg, KindIngest, runID), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeRunning("op_dead_expired", 4242, operationTestNow.Add(-HeartbeatTTL-time.Second))
+	writeRunning("op_live_expired", 4343, operationTestNow.Add(-HeartbeatTTL-time.Second))
+	writeRunning("op_dead_recent", 4444, operationTestNow.Add(-time.Minute))
+	if err := os.WriteFile(Path(cfg, KindIngest, "op_corrupt"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Begin(cfg, KindIngest, "fetching", operationTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Path(cfg, KindIngest, "op_dead_expired")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired dead-owner receipt survived: %v", err)
+	}
+	for _, runID := range []string{"op_live_expired", "op_dead_recent", "op_corrupt"} {
+		if _, err := os.Stat(Path(cfg, KindIngest, runID)); err != nil {
+			t.Fatalf("receipt %s was pruned: %v", runID, err)
 		}
 	}
 }
