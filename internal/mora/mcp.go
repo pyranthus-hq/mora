@@ -380,7 +380,11 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// trim the total to searchMemoryResultsBudgetBytes on whole-Memory
 	// boundaries, and report the cut honestly (results_truncated) rather than
 	// silently dropping matches.
-	budgeted, dropped := budgetSearchResults(snippetMemories(res, query), searchMemoryResultsBudgetBytes)
+	// Reserve room inside the same 8K-token envelope for the evidence manifest
+	// and ranking receipt. Those receipts must cover every kept row, so trimming
+	// the row prefix is the only honest way to enforce the aggregate ceiling.
+	const evidenceAwareResultsBudgetBytes = 6000
+	budgeted, dropped := budgetSearchResults(snippetMemories(res, query), evidenceAwareResultsBudgetBytes)
 	// freshness (Gate 1) stays as a documented deprecated alias for one
 	// release alongside the new typed `health` (C1/C4, Open Q1) — health.index
 	// is what freshness never had: a dirty/failed INDEX distinct from a stale
@@ -398,6 +402,8 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		health = compactHealthFiltered(cfg, now, filters)
 	}
 	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": health}
+	out["evidence_manifest"] = evidenceManifest(budgeted, res)
+	out["ranking"] = rankingReceipts(budgeted, sr.Trace, sr.ScoreFused)
 	if dropped > 0 {
 		out["results_truncated"] = dropped
 	}
