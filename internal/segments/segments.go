@@ -141,7 +141,11 @@ func deriveIMessage(m memory.Memory) ([]Row, *Diagnostic) {
 		}
 		seen[e.EvidenceRef] = true
 		lastEnd = e.BlockEnd
-		rows = append(rows, Row{EvidenceRef: e.EvidenceRef, MemoryID: m.ID, Sender: e.Sender, At: e.At, BlockRefs: []string{fmt.Sprintf("bytes:%d-%d", e.BlockStart, e.BlockEnd), fmt.Sprintf("from_me:%t", *e.FromMe)}, Text: m.Text[e.BlockStart:e.BlockEnd]})
+		audience := "direct"
+		if group, _ := m.Meta["is_group"].(bool); group {
+			audience = "group"
+		}
+		rows = append(rows, Row{EvidenceRef: e.EvidenceRef, MemoryID: m.ID, Sender: e.Sender, At: e.At, BlockRefs: []string{fmt.Sprintf("bytes:%d-%d", e.BlockStart, e.BlockEnd), fmt.Sprintf("from_me:%t", *e.FromMe), "audience:" + audience}, Text: m.Text[e.BlockStart:e.BlockEnd]})
 	}
 	return rows, nil
 }
@@ -153,6 +157,18 @@ func Direction(blockRefs []string) string {
 			return "outgoing"
 		case "from_me:false":
 			return "incoming"
+		}
+	}
+	return ""
+}
+
+func Audience(blockRefs []string) string {
+	for _, ref := range blockRefs {
+		if ref == "audience:group" {
+			return "group"
+		}
+		if ref == "audience:direct" {
+			return "direct"
 		}
 	}
 	return ""

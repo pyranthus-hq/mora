@@ -300,9 +300,9 @@ switched off:
 | Field | Today | Owner |
 |---|---|---|
 | `features.repair` | `unsupported` | Phase 3 (DOC-04, DOC-05) |
-| `features.deep_link` | `unsupported` | Phase 5 (RET-01) |
-| `connectors[].features.deep_link` | `unsupported` for all six connectors | Phase 5 (RET-01) |
-| `connectors[].features.incremental_sync` | `unsupported` for all six connectors | Phase 4 (ING-01) |
+| `features.deep_link` | `supported` | Phase 5 (RET-01) |
+| `connectors[].features.deep_link` | `supported` for Gmail, Google Calendar, and GitHub; `unsupported` otherwise | Phase 5 (RET-01) |
+| `connectors[].features.incremental_sync` | `supported` for Gmail, Google Calendar, and filesystem; `unsupported` otherwise | Phase 4 (ING-01) |
 
 Flipping one of these changes a **value**, not a schema. The shape is a tri-state in every case, so
 the compatibility gate stays green.

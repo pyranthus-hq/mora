@@ -9,7 +9,7 @@ import (
 // Issue #237 — corroborating-record clustering. Runs at result-assembly time,
 // post-fusion/pre-truncate, on both the hybrid (hybrid.go) and FTS-only
 // (search.go) search paths. See internal/mora/cluster_contract_test.go for the
-// frozen (AMENDED) contract this file implements: two minimal OR'd anchor
+// frozen (AMENDED) contract this file implements: minimal OR'd anchor
 // rules, a star topology anchored on each cluster's head (no transitive
 // closure for Rule 2), and a whole-candidate refusal cap at >5 members.
 
@@ -115,6 +115,14 @@ func clusterProviderLinked(a, b memory.Memory) bool {
 	return a.Provider == b.Provider && a.ProviderID == b.ProviderID
 }
 
+// clusterContentLinked collapses exact and digest-derived copies even when a
+// rolling export assigned them different provider ids. ContentHash is computed
+// from the normalized durable record, so equality is evidence, not a fuzzy
+// semantic guess. Empty hashes never link legacy records.
+func clusterContentLinked(a, b memory.Memory) bool {
+	return a.ContentHash != "" && a.ContentHash == b.ContentHash
+}
+
 // clusterPersonTimeLinked is Rule 2 (person-entity + time-window overlap,
 // NARROWED): both records carry an explicit meta.occurred_at (no fallback),
 // their participant-identity sets intersect, and their occurred_at instants
@@ -198,6 +206,7 @@ func ClusterAndTruncate(rawIDs []string, visible []memory.Memory, limit int, ann
 				continue
 			}
 			if clusterProviderLinked(visible[i], visible[j]) ||
+				clusterContentLinked(visible[i], visible[j]) ||
 				clusterPersonTimeLinked(idents[i], idents[j], occurred[i], occurred[j], occurredOK[i], occurredOK[j]) {
 				candidates = append(candidates, j)
 			}

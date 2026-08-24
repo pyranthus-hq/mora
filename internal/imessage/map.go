@@ -206,6 +206,9 @@ func conversationMeta(c convInput, r *Resolver) map[string]any {
 		"participants":  pairs,
 		"message_count": strconv.Itoa(len(c.messages)),
 	}
+	if c.chat.isGroup {
+		meta["is_group"] = true
+	}
 	if t := newestMessageTime(c.messages); !t.IsZero() {
 		meta["occurred_at"] = t.UTC().Format(time.RFC3339)
 	}

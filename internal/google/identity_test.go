@@ -150,3 +150,10 @@ func TestCalendarMetaCapturesSelfAttendee(t *testing.T) {
 		t.Fatalf("meta[self_email] = %q, want lowercased self attendee %q", got, "adit@adisamconsulting.com")
 	}
 }
+
+func TestCalendarMetaCarriesProviderDeepLink(t *testing.T) {
+	it := calEventToItem("primary", &calendar.Event{Id: "ev1", Summary: "Sync", HtmlLink: "https://calendar.google.com/calendar/event?eid=abc", Start: &calendar.EventDateTime{DateTime: "2026-08-24T17:00:00Z"}})
+	if got, _ := it.Meta["html_link"].(string); got != "https://calendar.google.com/calendar/event?eid=abc" {
+		t.Fatalf("html_link=%q", got)
+	}
+}

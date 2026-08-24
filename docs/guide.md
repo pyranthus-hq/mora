@@ -431,9 +431,9 @@ The reply is a single document with these field groups:
 Support is reported with three words and only three: `supported`, `unsupported`,
 and `planned`. Read the word, not the presence of the field.
 
-Two things are reported `unsupported` today, at the top level and for every
-connector: **repair** and **deep links**. Neither exists yet. Repair becomes
-supported when Phase 3 lands it; deep links when Phase 5 does. Per-connector
+Repair remains `unsupported`. Deep-link delivery is `supported` at the top
+level and for Gmail, Google Calendar, and GitHub; connectors without a stable
+provider link remain honestly `unsupported`. Per-connector
 `incremental_sync` is `supported` for Gmail, Google Calendar, and filesystem sources. A clean initial
 snapshot commits Gmail's History ID or Calendar's sync token in state; later runs
 request only provider-reported changes. Expired tokens trigger one bounded full

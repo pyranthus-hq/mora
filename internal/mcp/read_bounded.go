@@ -33,6 +33,7 @@ type BoundedReadReceipt struct {
 	Sender      string `json:"sender,omitempty"`
 	At          string `json:"at,omitempty"`
 	Direction   string `json:"direction,omitempty"`
+	Audience    string `json:"audience,omitempty"`
 }
 
 const (

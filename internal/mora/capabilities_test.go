@@ -179,7 +179,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 				Ingesting: connector.Ingesting, Label: connector.Label, Upcoming: connector.Upcoming,
 				Features: capabilitiesConnectorFeatures{
 					Repair:          featureUnsupported,
-					DeepLink:        featureUnsupported,
+					DeepLink:        capabilitiesDeepLink(connector),
 					IncrementalSync: capabilitiesIncrementalSync(connector),
 				},
 			}
@@ -250,8 +250,8 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		if payload.Features.Repair != featureUnsupported {
 			t.Errorf("features.repair = %q, want %q until Phase 3 lands repair", payload.Features.Repair, featureUnsupported)
 		}
-		if payload.Features.DeepLink != featureUnsupported {
-			t.Errorf("features.deep_link = %q, want %q until Phase 5 lands deep links", payload.Features.DeepLink, featureUnsupported)
+		if payload.Features.DeepLink != featureSupported {
+			t.Errorf("features.deep_link = %q, want supported", payload.Features.DeepLink)
 		}
 		for _, connector := range payload.Connectors {
 			for name, value := range map[string]string{
@@ -263,8 +263,12 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 					t.Errorf("connector %q feature %s = %q, not one of supported|unsupported|planned", connector.Type, name, value)
 				}
 			}
-			if connector.Features.DeepLink != featureUnsupported {
-				t.Errorf("connector %q publishes deep_link %q; no deep-link code exists", connector.Type, connector.Features.DeepLink)
+			wantDeepLink := featureUnsupported
+			if connector.Type == "gmail" || connector.Type == "calendar" || connector.Type == "github" {
+				wantDeepLink = featureSupported
+			}
+			if connector.Features.DeepLink != wantDeepLink {
+				t.Errorf("connector %q deep_link = %q, want %q", connector.Type, connector.Features.DeepLink, wantDeepLink)
 			}
 		}
 	})
@@ -302,7 +306,7 @@ func TestCapabilitiesContract(t *testing.T) {
 		}
 	}
 	features, ok := payload["features"].(map[string]any)
-	if !ok || features["repair"] != featureUnsupported || features["deep_link"] != featureUnsupported {
+	if !ok || features["repair"] != featureUnsupported || features["deep_link"] != featureSupported {
 		t.Fatalf("features = %#v", payload["features"])
 	}
 	mcp, ok := payload["mcp"].(map[string]any)

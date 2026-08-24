@@ -97,6 +97,7 @@ type GmailSegmentEvidence struct {
 	Sender      string `json:"sender"`
 	At          string `json:"at"`
 	Direction   string `json:"direction,omitempty"`
+	Audience    string `json:"audience,omitempty"`
 	Snippet     string `json:"snippet"`
 }
 

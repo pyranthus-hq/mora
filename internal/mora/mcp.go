@@ -363,7 +363,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	retrievalStarted := time.Now()
 	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit, filters)
 	retrieval := time.Since(retrievalStarted)
-	res := sr.Results
+	res := diversifyEvidence(sr.Results)
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
 		recordMCPPhases(ctx, retrieval, 0)
@@ -380,7 +380,11 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// trim the total to searchMemoryResultsBudgetBytes on whole-Memory
 	// boundaries, and report the cut honestly (results_truncated) rather than
 	// silently dropping matches.
-	budgeted, dropped := budgetSearchResults(snippetMemories(res, query), searchMemoryResultsBudgetBytes)
+	// Reserve room inside the same 8K-token envelope for the evidence manifest
+	// and ranking receipt. Those receipts must cover every kept row, so trimming
+	// the row prefix is the only honest way to enforce the aggregate ceiling.
+	const evidenceAwareResultsBudgetBytes = 6000
+	budgeted, dropped := budgetSearchResults(snippetMemories(res, query), evidenceAwareResultsBudgetBytes)
 	// freshness (Gate 1) stays as a documented deprecated alias for one
 	// release alongside the new typed `health` (C1/C4, Open Q1) — health.index
 	// is what freshness never had: a dirty/failed INDEX distinct from a stale
@@ -398,6 +402,8 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		health = compactHealthFiltered(cfg, now, filters)
 	}
 	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": health}
+	out["evidence_manifest"] = evidenceManifest(budgeted, res)
+	out["ranking"] = rankingReceipts(budgeted, sr.Trace, sr.ScoreFused)
 	if dropped > 0 {
 		out["results_truncated"] = dropped
 	}
@@ -536,6 +542,9 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	}
 	if len(corroborating) > 0 {
 		out["corroborating"] = corroborating
+	}
+	if intent != contextIntentOpenLoops {
+		out["evidence_manifest"] = evidenceManifest(items, items)
 	}
 	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil
