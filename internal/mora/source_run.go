@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 type sourceRunRequest struct {
@@ -79,23 +81,25 @@ type sourceRunOutcome struct {
 	LastSuccessAt string
 	LastAttemptAt string
 	Stale         bool
+	Stages        memory.IngestStages
 }
 
 type sourceRunReceipt struct {
-	Source        string `json:"source"`
-	Status        string `json:"status"`
-	Usable        bool   `json:"usable"`
-	Items         int    `json:"items"`
-	Examined      int    `json:"examined"`
-	Materialized  int    `json:"materialized"`
-	Failed        int    `json:"failed"`
-	Missing       int    `json:"missing"`
-	ErrorCode     string `json:"error_code,omitempty"`
-	ErrorClass    string `json:"error_class,omitempty"`
-	Retryable     bool   `json:"retryable"`
-	LastSuccessAt string `json:"last_success_at,omitempty"`
-	LastAttemptAt string `json:"last_attempt_at,omitempty"`
-	Stale         bool   `json:"stale"`
+	Source        string              `json:"source"`
+	Status        string              `json:"status"`
+	Usable        bool                `json:"usable"`
+	Items         int                 `json:"items"`
+	Examined      int                 `json:"examined"`
+	Materialized  int                 `json:"materialized"`
+	Failed        int                 `json:"failed"`
+	Missing       int                 `json:"missing"`
+	ErrorCode     string              `json:"error_code,omitempty"`
+	ErrorClass    string              `json:"error_class,omitempty"`
+	Retryable     bool                `json:"retryable"`
+	LastSuccessAt string              `json:"last_success_at,omitempty"`
+	LastAttemptAt string              `json:"last_attempt_at,omitempty"`
+	Stale         bool                `json:"stale"`
+	Stages        memory.IngestStages `json:"stages"`
 }
 
 type sourceRunAggregate struct {
@@ -124,6 +128,7 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			Materialized: outcome.Materialized, Failed: outcome.Failed, Missing: outcome.Missing,
 			LastSuccessAt: outcome.LastSuccessAt,
 			LastAttemptAt: outcome.LastAttemptAt, Stale: outcome.Stale,
+			Stages: outcome.Stages,
 		}
 		switch {
 		case outcome.Cancelled:

@@ -26,7 +26,7 @@ data as a product invariant and always shows it.
 
 ## The honest-snapshot model
 
-**Sync is NOT live and NOT incremental.** Every sync is a full re-pull of the configured window from page one. The product never claims "you are seeing everything as of right now". It claims "this is a snapshot, and here is exactly how old it is." Freshness *is* the value proposition, so the staleness is measured and surfaced rather than hidden.
+**Sync is snapshot-based, with provider-native incrementality where verified.** Gmail and Google Calendar perform one initial windowed snapshot, commit a provider cursor only after clean completion, and request only changed records thereafter. Expired cursors cause one bounded full snapshot. Other connectors still re-pull their configured window. Freshness remains measured and surfaced rather than inferred.
 
 Concretely, each `Ingest` run:
 
@@ -119,8 +119,7 @@ type SyncStatus struct {
     ErrorCount   int    `json:"error_count"`
     LastError    string `json:"last_error,omitempty"`
     Checkpoint   string `json:"checkpoint,omitempty"`    // in-progress page token (resume)
-    GmailHistory string `json:"gmail_history,omitempty"` // future incremental — UNUSED in v1
-    CalSyncToken string `json:"cal_sync_token,omitempty"`// future incremental — UNUSED in v1
+    IncrementalCursor string `json:"incremental_cursor,omitempty"` // provider-native between-run position
 
     // Last-attempt health (M-3, Phase 12). Appended so prior on-disk JSON
     // round-trips with no migration (LoadStatus zero-values them).
@@ -150,14 +149,13 @@ So the precise reading of the fields after Phase 12: `LastSuccessAt==""` ⇒ nev
 
 So a source's `LastSynced` advancing is itself a signal: it means the last run reached the end of pagination without a fatal fetch error. A run that aborts mid-pagination saves a status whose `LastSynced` is unchanged but whose `ErrorCount` ticked up, whose `LastAttemptAt` advanced (but NOT `LastSuccessAt`), and whose `Checkpoint` is non-empty (see below).
 
-### The cursor fields: present, but unused in v1
+### The two cursor lifetimes
 
-Three cursor-shaped fields exist. Only one does anything today:
-
-- **`Checkpoint`** — the *only* live cursor. It is the provider page token for resuming an interrupted backfill (next section).
-- **`GmailHistory`** / **`CalSyncToken`** — declared for a *future* incremental-sync upgrade (Gmail `historyId`, Calendar `syncToken`). They are **read and written nowhere outside the struct definition and the serialization round-trip test** (verified: the only references are `internal/memory/status.go:20-21` and `internal/memory/status_test.go`). Do not assume they carry state. The struct comment says exactly this (`internal/memory/status.go:11-12`): *"Cursors are stored for a future incremental upgrade but are not the v1 refresh path."*
-
-This is the deliberate v1 honesty: the schema reserves room for incremental sync, but v1 ships full re-pull only. If you wire incremental, those two fields are your slots — and you must add pruning logic, because the current upsert-only path has no delete-on-vanish.
+- **`Checkpoint`** is the within-run page token. It is durably saved after every
+  completed page and cleared only on clean completion.
+- **`IncrementalCursor`** is the between-run provider position. Gmail stores a
+  History ID and Calendar stores a sync token. It advances only after the final
+  page succeeds. Provider tombstones flow through the ordinary deletion mapping.
 
 ## The checkpoint resume mechanism
 

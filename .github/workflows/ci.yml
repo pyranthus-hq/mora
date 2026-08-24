@@ -19,6 +19,20 @@ env:
   RAPID_SEED: "20260714"
 
 jobs:
+  ingest-performance:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: 10K, 100K, and 1M ingest regression budgets
+        env:
+          MORA_ENFORCE_INGEST_BENCH: "1"
+        run: go test ./internal/memory -run 'TestIngestReferenceBenchmarkRegression|TestIncremental1000RecordsUnder500MB|TestIngestNoOpUnderTwoSeconds' -count=1
+
   app-bundle-contract:
     # Apple plist/archive tools are part of the contract, but signing, notary,
     # stapler, and Gatekeeper are deterministic PATH fixtures. This gate needs

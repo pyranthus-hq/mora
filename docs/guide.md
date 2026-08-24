@@ -434,8 +434,10 @@ and `planned`. Read the word, not the presence of the field.
 Two things are reported `unsupported` today, at the top level and for every
 connector: **repair** and **deep links**. Neither exists yet. Repair becomes
 supported when Phase 3 lands it; deep links when Phase 5 does. Per-connector
-`incremental_sync` is also `unsupported` today — every connector re-reads a time
-window rather than resuming from a stored position.
+`incremental_sync` is `supported` for Gmail and Google Calendar. A clean initial
+snapshot commits Gmail's History ID or Calendar's sync token in state; later runs
+request only provider-reported changes. Expired tokens trigger one bounded full
+snapshot and establish a fresh cursor. Other connectors remain `unsupported`.
 
 Exit codes 3 through 9 are permanently reserved and will never be used, so a
 wrapper script can tell a Mora status from one invented by a shell or a test

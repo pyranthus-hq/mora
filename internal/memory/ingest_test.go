@@ -16,6 +16,21 @@ type cancellingContextFetcher struct {
 
 type cursorExpiryFetcher struct{ windows []FetchWindow }
 
+type temporaryFetchError struct{}
+
+func (temporaryFetchError) Error() string   { return "temporary" }
+func (temporaryFetchError) Temporary() bool { return true }
+
+type retryFetcher struct{ calls int }
+
+func (f *retryFetcher) FetchPage(ItemKind, FetchWindow, string) (Page, error) {
+	f.calls++
+	if f.calls < 3 {
+		return Page{}, temporaryFetchError{}
+	}
+	return Page{}, nil
+}
+
 func (f *cursorExpiryFetcher) FetchPage(_ ItemKind, window FetchWindow, _ string) (Page, error) {
 	f.windows = append(f.windows, window)
 	if window.SyncCursor != "" {
@@ -160,6 +175,30 @@ func TestIngestExpiredIncrementalCursorFallsBackOnce(t *testing.T) {
 	if f.windows[0].SyncCursor != "expired-42" || f.windows[1].SyncCursor != "" {
 		t.Fatalf("fallback did not clear expired cursor: %+v", f.windows)
 	}
+}
+
+func TestIngestResourceAndRetryBudgets(t *testing.T) {
+	t.Run("oversized record is rejected", func(t *testing.T) {
+		f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{ProviderID: "huge", Body: strings.Repeat("x", 20)}}}}}
+		res, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { t.Fatal("oversized record reached writer"); return nil }, Limits: IngestLimits{MaxRecordBytes: 10}})
+		if err == nil || res.Failed != 1 || res.Stages.Bytes < 20 {
+			t.Fatalf("oversize result=%+v err=%v", res, err)
+		}
+	})
+	t.Run("batch cap fails closed", func(t *testing.T) {
+		f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{}, {}}}}}
+		_, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil }, Limits: IngestLimits{MaxBatchItems: 1}})
+		if err == nil || !strings.Contains(err.Error(), "batch limit") {
+			t.Fatalf("batch error=%v", err)
+		}
+	})
+	t.Run("temporary retries are bounded", func(t *testing.T) {
+		f := &retryFetcher{}
+		res, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil }, Limits: IngestLimits{MaxRetries: 2}})
+		if err != nil || f.calls != 3 || res.Stages.Retries != 2 {
+			t.Fatalf("retry result=%+v calls=%d err=%v", res, f.calls, err)
+		}
+	})
 }
 
 func TestIngestWriteErrorIsCounted(t *testing.T) {

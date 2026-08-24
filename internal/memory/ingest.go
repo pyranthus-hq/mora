@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -22,12 +23,80 @@ type IngestParams struct {
 	// is fetched. A failure stops ingestion, preserving resumability rather than
 	// claiming progress that only existed in memory.
 	Checkpoint func(*SyncStatus) error
+	Limits     IngestLimits
 
 	// Map optionally overrides how a fetched Item becomes a MappedMemory. When nil,
 	// the shared MapItem (start-keep truncation) is used — Gmail/Calendar behavior. A
 	// connector needing different mapping (e.g. iMessage's newest-first truncation via
 	// its own mapConversation over Item.Payload) supplies it here.
 	Map func(Item, string, int) MappedMemory
+}
+
+type IngestLimits struct {
+	MaxRecordBytes int
+	MaxBatchItems  int
+	MaxRecords     int
+	MaxPages       int
+	MaxRetries     int
+	MaxRuntime     time.Duration
+}
+
+func (l IngestLimits) bounded() IngestLimits {
+	if l.MaxRecordBytes <= 0 {
+		l.MaxRecordBytes = 4 << 20
+	}
+	if l.MaxBatchItems <= 0 {
+		l.MaxBatchItems = 500
+	}
+	if l.MaxRecords <= 0 {
+		l.MaxRecords = 1_000_000
+	}
+	if l.MaxPages <= 0 {
+		l.MaxPages = 100_000
+	}
+	if l.MaxRetries < 0 {
+		l.MaxRetries = 0
+	} else if l.MaxRetries == 0 {
+		l.MaxRetries = 2
+	}
+	if l.MaxRuntime <= 0 {
+		l.MaxRuntime = 15 * time.Minute
+	}
+	return l
+}
+
+type IngestStages struct {
+	FetchMS    int64 `json:"fetch_ms"`
+	MapWriteMS int64 `json:"map_write_ms"`
+	TotalMS    int64 `json:"total_ms"`
+	Pages      int   `json:"pages"`
+	Bytes      int64 `json:"bytes"`
+	Retries    int   `json:"retries"`
+}
+
+func retryableFetchError(err error) bool {
+	var retryable interface{ Retryable() bool }
+	if errors.As(err, &retryable) {
+		return retryable.Retryable()
+	}
+	var temporary interface{ Temporary() bool }
+	return errors.As(err, &temporary) && temporary.Temporary()
+}
+
+func fetchPageBounded(ctx context.Context, p IngestParams, window FetchWindow, cursor string, maxRetries int) (Page, error, int) {
+	for attempt := 0; ; attempt++ {
+		page, err := fetchPageContext(ctx, p.Fetcher, p.Kind, window, cursor)
+		if err == nil || attempt >= maxRetries || !retryableFetchError(err) {
+			return page, err, attempt
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Page{}, ctx.Err(), attempt
+		case <-timer.C:
+		}
+	}
 }
 
 func fetchPageContext(ctx context.Context, fetcher Fetcher, kind ItemKind, window FetchWindow, cursor string) (Page, error) {
@@ -46,6 +115,23 @@ type IngestResult struct {
 	Materialized int
 	Failed       int
 	Missing      int
+	Stages       IngestStages
+}
+
+func itemApproxBytes(item Item) int {
+	n := len(item.ProviderID) + len(item.Title) + len(item.Body)
+	for _, tag := range item.Tags {
+		n += len(tag)
+	}
+	for _, attachment := range item.Attachments {
+		n += len(attachment.Filename) + len(attachment.MimeType) + len(attachment.Path)
+	}
+	if item.Meta != nil {
+		if b, err := json.Marshal(item.Meta); err == nil {
+			n += len(b)
+		}
+	}
+	return n
 }
 
 // Ingest pages through the Fetcher from the checkpoint cursor, maps each Item,
@@ -61,6 +147,10 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	limits := p.Limits.bounded()
+	ctx, cancel := context.WithTimeout(ctx, limits.MaxRuntime)
+	defer cancel()
+	started := time.Now()
 	if p.Status == nil {
 		p.Status = &SyncStatus{}
 	}
@@ -82,10 +172,17 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	result := IngestResult{Status: p.Status}
 	finish := func() IngestResult {
 		result.Missing = result.Examined - result.Materialized
+		result.Stages.TotalMS = time.Since(started).Milliseconds()
 		return result
 	}
 	for {
-		page, err := fetchPageContext(ctx, p.Fetcher, p.Kind, p.Window, cursor)
+		if result.Stages.Pages >= limits.MaxPages {
+			return finish(), fmt.Errorf("ingest page limit exceeded (%d)", limits.MaxPages)
+		}
+		fetchStarted := time.Now()
+		page, err, retries := fetchPageBounded(ctx, p, p.Window, cursor, limits.MaxRetries)
+		result.Stages.Retries += retries
+		result.Stages.FetchMS += time.Since(fetchStarted).Milliseconds()
 		if err != nil && !fallbackUsed && p.Window.SyncCursor != "" && errors.Is(err, ErrIncrementalCursorExpired) {
 			fallbackUsed = true
 			p.Window.SyncCursor = ""
@@ -113,11 +210,28 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			p.Status.Checkpoint = cursor
 			return finish(), err
 		}
+		result.Stages.Pages++
+		if len(page.Items) > limits.MaxBatchItems {
+			return finish(), fmt.Errorf("ingest batch limit exceeded: %d > %d", len(page.Items), limits.MaxBatchItems)
+		}
+		if result.Examined+len(page.Items) > limits.MaxRecords {
+			return finish(), fmt.Errorf("ingest record limit exceeded (%d)", limits.MaxRecords)
+		}
+		mapStarted := time.Now()
 		if page.SyncCursor != "" {
 			nextSyncCursor = page.SyncCursor
 		}
 		for _, it := range page.Items {
 			result.Examined++
+			itemBytes := itemApproxBytes(it)
+			result.Stages.Bytes += int64(itemBytes)
+			if itemBytes > limits.MaxRecordBytes {
+				result.Failed++
+				p.Status.ErrorCount++
+				p.Status.LastError = fmt.Sprintf("record %s exceeds %d-byte ingest limit", it.ProviderID, limits.MaxRecordBytes)
+				p.Status.ErrorCode = ""
+				continue
+			}
 			m := mapFn(it, p.Scope, p.BodyBudget)
 			m.LastSynced = time.Now().UTC().Format(time.RFC3339)
 			if err := ctx.Err(); err != nil {
@@ -138,6 +252,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			result.Materialized++
 			p.Status.ItemCount++
 		}
+		result.Stages.MapWriteMS += time.Since(mapStarted).Milliseconds()
 		if page.NextCursor == "" {
 			break
 		}
