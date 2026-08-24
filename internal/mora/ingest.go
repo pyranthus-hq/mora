@@ -1013,11 +1013,6 @@ func connectorCodeForCause(err error) string {
 	return errCodeConnectorUnclassified
 }
 
-func ingestSourceDispatch(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestSourceDispatchDetailed(cfg, s, out)
-	return result.Materialized, err
-}
-
 var ingestSourceDispatchFn = ingestSourceDispatchDetailed
 
 func ingestSourceDispatchDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
@@ -1407,11 +1402,6 @@ func ingestAppleCalDetailed(cfg Config, s Source, out io.Writer) (sourceIngestRe
 // ingestGitHub snapshots source records immutably before reconciling their
 // stable searchable projections. GitHub remains evidence: this path never calls
 // the task ledger, selects work, or launches an agent.
-func ingestGitHub(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestGitHubDetailed(cfg, s, out)
-	return result.Materialized, err
-}
-
 func ingestGitHubDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	repos := s.Repositories
 	if len(repos) == 0 {
