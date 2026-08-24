@@ -493,7 +493,7 @@ func TestCoreA_CmdIngest(t *testing.T) {
 	// Named-source failure surfaces after the final rebuild (ingestSourceFn seam).
 	origFn := ingestSourceFn
 	t.Cleanup(func() { ingestSourceFn = origFn })
-	ingestSourceFn = func(_ Config, s Source, _ io.Writer) (sourceIngestResult, error) {
+	ingestSourceFn = func(_ context.Context, _ Config, s Source, _ io.Writer) (sourceIngestResult, error) {
 		if s.Name == "boom" {
 			return sourceIngestResult{}, errString("kaboom")
 		}

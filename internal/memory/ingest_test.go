@@ -1,10 +1,31 @@
 package memory
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type cancellingContextFetcher struct {
+	secondStarted chan struct{}
+	calls         int
+}
+
+func (f *cancellingContextFetcher) FetchPage(ItemKind, FetchWindow, string) (Page, error) {
+	return Page{}, errors.New("legacy fetch must not be used")
+}
+
+func (f *cancellingContextFetcher) FetchPageContext(ctx context.Context, _ ItemKind, _ FetchWindow, cursor string) (Page, error) {
+	f.calls++
+	if cursor == "" {
+		return Page{Items: []Item{{Kind: kindGmailThread, ProviderID: "first"}}, NextCursor: "p2"}, nil
+	}
+	close(f.secondStarted)
+	<-ctx.Done()
+	return Page{}, ctx.Err()
+}
 
 func twoPageFetcher() *fakeFetcher {
 	return &fakeFetcher{pages: map[string]Page{
@@ -125,6 +146,53 @@ func TestIngestPartialCounts(t *testing.T) {
 	}
 	if res.Examined != 100 || res.Materialized != 73 || res.Failed != 27 || res.Missing != 27 {
 		t.Fatalf("counts = %d/%d/%d/%d, want 100/73/27/27", res.Examined, res.Materialized, res.Failed, res.Missing)
+	}
+}
+
+func TestIngestContextCancellationStopsBeforeNextFetch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fetcher := &cancellingContextFetcher{secondStarted: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Ingest(IngestParams{
+			Context: ctx, Fetcher: fetcher, Kind: kindGmailThread, Status: &SyncStatus{},
+			Write: func(MappedMemory) error { return nil },
+		})
+		done <- err
+	}()
+	<-fetcher.secondStarted
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel error = %v", err)
+	}
+	if fetcher.calls != 2 {
+		t.Fatalf("fetch calls = %d, want first page plus interrupted second page", fetcher.calls)
+	}
+}
+
+func TestIngestContextCancellationStopsBeforeWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	writes := 0
+	res, err := Ingest(IngestParams{
+		Context: ctx, Fetcher: twoPageFetcher(), Kind: kindGmailThread, Status: &SyncStatus{},
+		Map: func(item Item, scope string, budget int) MappedMemory {
+			cancel()
+			return MapItem(item, scope, budget)
+		},
+		Write: func(MappedMemory) error { writes++; return nil },
+	})
+	if !errors.Is(err, context.Canceled) || writes != 0 || res.Materialized != 0 {
+		t.Fatalf("result=%+v writes=%d err=%v", res, writes, err)
+	}
+}
+
+func TestIngestLegacyFetcherStillWorks(t *testing.T) {
+	res, err := Ingest(IngestParams{
+		Context: context.Background(), Fetcher: twoPageFetcher(), Kind: kindGmailThread,
+		Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil },
+	})
+	if err != nil || res.Examined != 3 || res.Materialized != 3 {
+		t.Fatalf("legacy result=%+v err=%v", res, err)
 	}
 }
 

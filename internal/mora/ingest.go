@@ -232,7 +232,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		}
 		key := healthInstanceKeyForSource(s)
 		plans = append(plans, sourceRunPlan{Key: key, Source: s})
-		result, runErr := ingestSourceFn(cfg, s, progress)
+		result, runErr := ingestSourceFn(ctx, cfg, s, progress)
 		count += result.Materialized
 		outcomes = append(outcomes, sourceRunOutcome{
 			Key: key, Items: result.Materialized, Examined: result.Examined,
@@ -889,11 +889,11 @@ func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult
 }
 
 func ingestSource(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestSourceDetailed(cfg, s, out)
+	result, err := ingestSourceDetailed(context.Background(), cfg, s, out)
 	return result.Materialized, err
 }
 
-func ingestSourceDetailed(cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
+func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
 	// attemptStart is captured before ANY step that can fail, so every failure at
 	// this chokepoint — activity bookkeeping included — stamps the same attempt.
 	attemptStart := time.Now()
@@ -939,7 +939,7 @@ func ingestSourceDetailed(cfg Config, s Source, out io.Writer) (result sourceIng
 	if testHookIngestActivityStarted != nil {
 		testHookIngestActivityStarted(cfg, s, h)
 	}
-	result, dispatchErr := ingestSourceDispatchFn(cfg, s, out)
+	result, dispatchErr := ingestSourceDispatchFn(ctx, cfg, s, out)
 	if dispatchErr == nil {
 		dispatchErr = progress.Update("awaiting_rebuild", operationCounts{
 			Items: result.Materialized, Errors: result.Failed, Examined: result.Examined,
@@ -1015,20 +1015,20 @@ func connectorCodeForCause(err error) string {
 
 var ingestSourceDispatchFn = ingestSourceDispatchDetailed
 
-func ingestSourceDispatchDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+func ingestSourceDispatchDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	switch s.Type {
 	case "filesystem":
-		return ingestFilesystemDetailed(cfg, s, out)
+		return ingestFilesystemDetailed(ctx, cfg, s, out)
 	case "gmail":
-		return ingestGoogleDetailed(cfg, s, google.KindGmailThread, out)
+		return ingestGoogleDetailed(ctx, cfg, s, google.KindGmailThread, out)
 	case "calendar":
-		return ingestGoogleDetailed(cfg, s, google.KindCalEvent, out)
+		return ingestGoogleDetailed(ctx, cfg, s, google.KindCalEvent, out)
 	case "imessage":
-		return ingestIMessageDetailed(cfg, s, out)
+		return ingestIMessageDetailed(ctx, cfg, s, out)
 	case "applecalendar":
-		return ingestAppleCalDetailed(cfg, s, out)
+		return ingestAppleCalDetailed(ctx, cfg, s, out)
 	case "github":
-		return ingestGitHubDetailed(cfg, s, out)
+		return ingestGitHubDetailed(ctx, cfg, s, out)
 	case "gdrive":
 		return sourceIngestResult{}, nil // deferred to week 2
 	default:
@@ -1114,12 +1114,11 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 var testHookPostConnectorPublish func()
 
 func ingestGoogle(cfg Config, s Source, kind google.ItemKind, out io.Writer) (int, error) {
-	result, err := ingestGoogleDetailed(cfg, s, kind, out)
+	result, err := ingestGoogleDetailed(context.Background(), cfg, s, kind, out)
 	return result.Materialized, err
 }
 
-func ingestGoogleDetailed(cfg Config, s Source, kind google.ItemKind, out io.Writer) (sourceIngestResult, error) {
-	ctx := context.Background()
+func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google.ItemKind, out io.Writer) (sourceIngestResult, error) {
 	oc, err := google.ResolveOAuthConfig(google.Scopes)
 	if err != nil {
 		return sourceIngestResult{}, err
@@ -1178,7 +1177,7 @@ func ingestGoogleDetailed(cfg Config, s Source, kind google.ItemKind, out io.Wri
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
+		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
 		Status: st, Write: write,
 	})
 	prog.done()
@@ -1248,11 +1247,11 @@ var newIMessageFetcher = func(path string, deny imessage.DenyList) (iMessageFetc
 // through the shared resumable Ingest loop via the Map hook — the writeMappedMemory
 // boundary is reused, never reimplemented.
 func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestIMessageDetailed(cfg, s, out)
+	result, err := ingestIMessageDetailed(context.Background(), cfg, s, out)
 	return result.Materialized, err
 }
 
-func ingestIMessageDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtimeGOOS() != "darwin" {
 		if out != nil {
 			fmt.Fprintf(out, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
@@ -1310,7 +1309,7 @@ func ingestIMessageDetailed(cfg Config, s Source, out io.Writer) (sourceIngestRe
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
+		Context: ctx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
 		BodyBudget: 16 * 1024, Status: st, Write: write,
 		Map: imessage.MapConversationFn(resolver),
 	})
@@ -1352,11 +1351,11 @@ func appleCalDBPath() string {
 // chat.db's TCC lesson applies verbatim: launchd grants are per-binary), and
 // routed through the shared resumable Ingest loop + writeMappedMemory boundary.
 func ingestAppleCal(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestAppleCalDetailed(cfg, s, out)
+	result, err := ingestAppleCalDetailed(context.Background(), cfg, s, out)
 	return result.Materialized, err
 }
 
-func ingestAppleCalDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtime.GOOS != "darwin" {
 		if out != nil {
 			fmt.Fprintf(out, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtime.GOOS)
@@ -1385,7 +1384,7 @@ func ingestAppleCalDetailed(cfg Config, s Source, out io.Writer) (sourceIngestRe
 		return nil
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
+		Context: ctx, Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
 		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, Write: write,
 	})
 	prog.done()
@@ -1402,7 +1401,7 @@ func ingestAppleCalDetailed(cfg Config, s Source, out io.Writer) (sourceIngestRe
 // ingestGitHub snapshots source records immutably before reconciling their
 // stable searchable projections. GitHub remains evidence: this path never calls
 // the task ledger, selects work, or launches an agent.
-func ingestGitHubDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
+func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	repos := s.Repositories
 	if len(repos) == 0 {
 		repos = githubissues.DefaultRepositories
@@ -1445,7 +1444,7 @@ func ingestGitHubDetailed(cfg Config, s Source, out io.Writer) (sourceIngestResu
 		return write(mm)
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Fetcher: fetcher, Kind: githubissues.KindIssue, Scope: s.Scope, BodyBudget: 64 * 1024,
+		Context: ctx, Fetcher: fetcher, Kind: githubissues.KindIssue, Scope: s.Scope, BodyBudget: 64 * 1024,
 		Status: st, Map: mapIssue, Write: writeChecked,
 	})
 	prog.done()
@@ -1792,11 +1791,11 @@ func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Wri
 var testHookFSPreWrite func(id string)
 
 func ingestFilesystem(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestFilesystemDetailed(cfg, s, out)
+	result, err := ingestFilesystemDetailed(context.Background(), cfg, s, out)
 	return result.Materialized, err
 }
 
-func ingestFilesystemDetailed(cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
+func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (result sourceIngestResult, err error) {
 	// Governance chokepoint (#52): filesystem re-ingest renders directly and does
 	// NOT route through writeMappedMemory, so consult the ledger here too —
 	// otherwise `mora forget --chat <src-id>` removes a filesystem memory that the
@@ -1814,6 +1813,9 @@ func ingestFilesystemDetailed(cfg Config, s Source, out io.Writer) (result sourc
 	}
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err = filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			// WalkDir reports a missing root and unreadable directories through the
 			// callback. Returning nil here used to convert both into a clean empty
@@ -1868,6 +1870,11 @@ func ingestFilesystemDetailed(cfg Config, s Source, out io.Writer) (result sourc
 		body, _ := renderMemory(m)
 		if testHookFSPreWrite != nil {
 			testHookFSPreWrite(id)
+		}
+		if err := ctx.Err(); err != nil {
+			result.Failed++
+			result.Missing++
+			return err
 		}
 		// A3 rule d: the filesystem path does NOT route through writeMappedMemory, so
 		// journal it here too (miss it and every filesystem memory is silently
