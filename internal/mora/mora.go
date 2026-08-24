@@ -569,6 +569,11 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 	// persist/notify step (Task 2) so the digest, the dated artifact path, and any
 	// watermark all agree on the logical day (D13-3, determinism).
 	now := briefClock()
+	if sourceFlagSet {
+		if _, filterErr := parseSearchFilters(map[string]any{"source": *srcFilter}, now); filterErr != nil {
+			return filterErr
+		}
+	}
 	if *loopID != "" {
 		if err := heartbeatLoopRun(cfg, *loopID, *loopRunID, loopClock()); err != nil {
 			return fmt.Errorf("advancing pulse loop fence: %w", err)
