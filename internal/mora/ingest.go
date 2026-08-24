@@ -1181,7 +1181,7 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
-		Status: st, Write: write,
+		Status: st, Write: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
 	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1314,7 +1314,8 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
 		BodyBudget: 16 * 1024, Status: st, Write: write,
-		Map: imessage.MapConversationFn(resolver),
+		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
+		Map:        imessage.MapConversationFn(resolver),
 	})
 	prog.done()
 	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1389,6 +1390,7 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
 		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, Write: write,
+		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
 	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -1449,6 +1451,7 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: githubissues.KindIssue, Scope: s.Scope, BodyBudget: 64 * 1024,
 		Status: st, Map: mapIssue, Write: writeChecked,
+		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
 	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)

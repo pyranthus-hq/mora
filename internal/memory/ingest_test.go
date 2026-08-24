@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,6 +89,39 @@ func TestIngestResumesFromCheckpoint(t *testing.T) {
 		t.Fatalf("resume should request cursor p2 first, got %v", f.calls)
 	}
 	requireStatus(t, res)
+}
+
+func TestIngestDurablyCheckpointsEachCompletedPage(t *testing.T) {
+	statusPath := filepath.Join(t.TempDir(), "status.json")
+	interrupted := twoPageFetcher()
+	interrupted.errOnCursor = map[string]error{"p2": errors.New("interrupted")}
+	var ids []string
+	res, err := Ingest(IngestParams{
+		Fetcher: interrupted, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		Status:     &SyncStatus{Source: "gmail"},
+		Write:      func(m MappedMemory) error { ids = append(ids, m.ProviderID); return nil },
+		Checkpoint: func(status *SyncStatus) error { return SaveStatus(statusPath, status) },
+	})
+	if err == nil || res.Status.Checkpoint != "p2" {
+		t.Fatalf("interrupted run = checkpoint %q, err %v", res.Status.Checkpoint, err)
+	}
+	persisted, err := LoadStatus(statusPath)
+	if err != nil || persisted.Checkpoint != "p2" {
+		t.Fatalf("durable checkpoint = %+v, err %v", persisted, err)
+	}
+
+	resumed := twoPageFetcher()
+	if _, err := Ingest(IngestParams{
+		Fetcher: resumed, Kind: kindGmailThread, Scope: "personal", BodyBudget: 1000,
+		Status:     persisted,
+		Write:      func(m MappedMemory) error { ids = append(ids, m.ProviderID); return nil },
+		Checkpoint: func(status *SyncStatus) error { return SaveStatus(statusPath, status) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(ids, ","); got != "t1,t2,t3" {
+		t.Fatalf("resume duplicated or lost records: %s", got)
+	}
 }
 
 func TestIngestWriteErrorIsCounted(t *testing.T) {

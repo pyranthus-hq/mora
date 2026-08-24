@@ -17,6 +17,10 @@ type IngestParams struct {
 	BodyBudget int
 	Status     *SyncStatus
 	Write      func(MappedMemory) error
+	// Checkpoint durably publishes an advanced page cursor before the next page
+	// is fetched. A failure stops ingestion, preserving resumability rather than
+	// claiming progress that only existed in memory.
+	Checkpoint func(*SyncStatus) error
 
 	// Map optionally overrides how a fetched Item becomes a MappedMemory. When nil,
 	// the shared MapItem (start-keep truncation) is used — Gmail/Calendar behavior. A
@@ -121,6 +125,15 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		}
 		cursor = page.NextCursor
 		p.Status.Checkpoint = cursor // advance checkpoint per page
+		if p.Checkpoint != nil {
+			if err := p.Checkpoint(p.Status); err != nil {
+				p.Status.ErrorCount++
+				p.Status.LastError = err.Error()
+				p.Status.ErrorCode = ""
+				p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
+				return finish(), fmt.Errorf("persist ingest checkpoint: %w", err)
+			}
+		}
 	}
 	p.Status.Checkpoint = ""
 	// Paging finished. Every completed attempt — clean OR partial — stamps
