@@ -192,6 +192,13 @@ func TestIngestResourceAndRetryBudgets(t *testing.T) {
 			t.Fatalf("batch error=%v", err)
 		}
 	})
+	t.Run("batch byte cap fails closed", func(t *testing.T) {
+		f := &fakeFetcher{pages: map[string]Page{"": {Items: []Item{{Body: strings.Repeat("x", 20)}}}}}
+		_, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil }, Limits: IngestLimits{MaxBatchBytes: 10}})
+		if err == nil || !strings.Contains(err.Error(), "batch memory limit") {
+			t.Fatalf("batch memory error=%v", err)
+		}
+	})
 	t.Run("temporary retries are bounded", func(t *testing.T) {
 		f := &retryFetcher{}
 		res, err := Ingest(IngestParams{Fetcher: f, Status: &SyncStatus{}, Write: func(MappedMemory) error { return nil }, Limits: IngestLimits{MaxRetries: 2}})

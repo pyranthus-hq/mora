@@ -39,6 +39,7 @@ type IngestParams struct {
 type IngestLimits struct {
 	MaxRecordBytes int
 	MaxBatchItems  int
+	MaxBatchBytes  int
 	MaxRecords     int
 	MaxPages       int
 	MaxRetries     int
@@ -51,6 +52,9 @@ func (l IngestLimits) bounded() IngestLimits {
 	}
 	if l.MaxBatchItems <= 0 {
 		l.MaxBatchItems = 500
+	}
+	if l.MaxBatchBytes <= 0 {
+		l.MaxBatchBytes = 64 << 20
 	}
 	if l.MaxRecords <= 0 {
 		l.MaxRecords = 1_000_000
@@ -220,6 +224,15 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		if len(page.Items) > limits.MaxBatchItems {
 			return finish(), fmt.Errorf("ingest batch limit exceeded: %d > %d", len(page.Items), limits.MaxBatchItems)
 		}
+		batchBytes := 0
+		itemSizes := make([]int, len(page.Items))
+		for i, item := range page.Items {
+			itemSizes[i] = itemApproxBytes(item)
+			batchBytes += itemSizes[i]
+		}
+		if batchBytes > limits.MaxBatchBytes {
+			return finish(), fmt.Errorf("ingest batch memory limit exceeded: %d > %d bytes", batchBytes, limits.MaxBatchBytes)
+		}
 		if result.Examined+len(page.Items) > limits.MaxRecords {
 			return finish(), fmt.Errorf("ingest record limit exceeded (%d)", limits.MaxRecords)
 		}
@@ -227,9 +240,9 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		if page.SyncCursor != "" {
 			nextSyncCursor = page.SyncCursor
 		}
-		for _, it := range page.Items {
+		for itemIndex, it := range page.Items {
 			result.Examined++
-			itemBytes := itemApproxBytes(it)
+			itemBytes := itemSizes[itemIndex]
 			result.Stages.Bytes += int64(itemBytes)
 			if itemBytes > limits.MaxRecordBytes {
 				result.Failed++
