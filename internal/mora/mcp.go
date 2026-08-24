@@ -543,6 +543,9 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	if len(corroborating) > 0 {
 		out["corroborating"] = corroborating
 	}
+	if intent != contextIntentOpenLoops {
+		out["evidence_manifest"] = evidenceManifest(items, items)
+	}
 	recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
 	return out, nil
 }
