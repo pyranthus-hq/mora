@@ -248,7 +248,7 @@ func capabilitiesMCPSchemas() []capabilitiesSchema {
 // therefore remain explicitly unsupported rather than overstating capability.
 func capabilitiesIncrementalSync(connector connectorInfo) string {
 	switch connector.Type {
-	case "gmail", "calendar":
+	case "gmail", "calendar", "filesystem":
 		return featureSupported
 	default:
 		return featureUnsupported
