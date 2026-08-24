@@ -124,6 +124,19 @@ func TestIMessageEvidenceDirectionReceipt(t *testing.T) {
 	}
 }
 
+func TestIMessageAskDirectionalityDistinguishesAuthorship(t *testing.T) {
+	m := Memory{ID: "imessage_chat/asks", Type: "imessage", Provider: "imessage", Text: "Me: can you review?\nAlex: can you send it?", Meta: map[string]any{
+		"message_evidence": []map[string]any{
+			{"evidence_ref": "imessage_chat/asks#mine", "at": "2026-08-24T09:00:00Z", "from_me": true, "sender": "Me", "block_start": 0, "block_end": 19},
+			{"evidence_ref": "imessage_chat/asks#theirs", "at": "2026-08-24T09:01:00Z", "from_me": false, "sender": "Alex", "block_start": 20, "block_end": 42},
+		},
+	}}
+	rows, diag := deriveIMessageSegments(m)
+	if diag != nil || len(rows) != 2 || imessageDirection(rows[0].BlockRefs) != "outgoing" || imessageDirection(rows[1].BlockRefs) != "incoming" || rows[0].Sender != "Me" || rows[1].Sender != "Alex" {
+		t.Fatalf("ask authorship rows=%+v diag=%+v", rows, diag)
+	}
+}
+
 func TestIMessageGroupAudienceDoesNotBecomeDirectMessage(t *testing.T) {
 	m := Memory{ID: "imessage_chat/group", Type: "imessage", Provider: "imessage", Text: "Alex: hello team", Meta: map[string]any{
 		"is_group":         true,
