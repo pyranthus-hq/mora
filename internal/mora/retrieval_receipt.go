@@ -84,10 +84,11 @@ func diversifyEvidence(in []Memory) []Memory {
 }
 
 type evidenceManifestEntry struct {
-	EvidenceID        string `json:"evidence_id"`
-	CanonicalSourceID string `json:"canonical_source_id"`
-	Timestamp         string `json:"timestamp,omitempty"`
-	DeepLink          string `json:"deep_link,omitempty"`
+	EvidenceID          string `json:"evidence_id"`
+	CanonicalSourceID   string `json:"canonical_source_id"`
+	Timestamp           string `json:"timestamp,omitempty"`
+	DeepLink            string `json:"deep_link,omitempty"`
+	IngestCorrelationID string `json:"ingest_correlation_id,omitempty"`
 }
 
 type rankingReceipt struct {
@@ -140,6 +141,11 @@ func evidenceDeepLink(m Memory) string {
 	return ""
 }
 
+func ingestCorrelationID(m Memory) string {
+	value, _ := m.Meta["ingest_correlation_id"].(string)
+	return value
+}
+
 func evidenceManifest(returned, originals []Memory) []evidenceManifestEntry {
 	byID := make(map[string]Memory, len(originals))
 	for _, m := range originals {
@@ -159,7 +165,7 @@ func evidenceManifest(returned, originals []Memory) []evidenceManifestEntry {
 		if original, ok := byID[shaped.ID]; ok {
 			m = original
 		}
-		add(evidenceManifestEntry{EvidenceID: m.ID, CanonicalSourceID: canonicalSourceID(m), Timestamp: evidenceTimestamp(m), DeepLink: evidenceDeepLink(m)})
+		add(evidenceManifestEntry{EvidenceID: m.ID, CanonicalSourceID: canonicalSourceID(m), Timestamp: evidenceTimestamp(m), DeepLink: evidenceDeepLink(m), IngestCorrelationID: ingestCorrelationID(m)})
 		for _, ref := range shaped.Corroborating {
 			add(evidenceManifestEntry{EvidenceID: ref.ID, CanonicalSourceID: ref.Source, Timestamp: ref.CreatedAt})
 		}

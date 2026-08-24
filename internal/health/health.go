@@ -31,12 +31,15 @@ type Source struct {
 	// internal/mora/eval/error-code-registry.json for the published values and
 	// docs/architecture/08-cli-and-ux.md for the error_class -> State mapping.
 	// Classify never sets it — the caller owns the error-code taxonomy.
-	ErrorCode string `json:"error_code,omitempty"`
+	ErrorCode            string `json:"error_code,omitempty"`
+	DiagnosticEvidenceID string `json:"diagnostic_evidence_id,omitempty"`
 }
 type Status struct {
-	LastSuccessAt string
-	LastError     string
-	ErrorCount    int
+	LastSuccessAt          string
+	ObservedAt             string
+	FreshnessBudgetSeconds int64
+	LastError              string
+	ErrorCount             int
 }
 
 func Threshold(sourceType string) time.Duration {
@@ -68,10 +71,23 @@ func Classify(key, sourceType string, st *Status, now time.Time) Source {
 		age = 0
 	}
 	h.AgeHours = int(age / time.Hour)
+	observed := st.ObservedAt
+	if observed == "" {
+		observed = st.LastSuccessAt
+	}
+	observation, observationErr := time.Parse(time.RFC3339, observed)
+	budget := Threshold(sourceType)
+	if st.FreshnessBudgetSeconds > 0 {
+		budget = time.Duration(st.FreshnessBudgetSeconds) * time.Second
+	}
+	observationAge := now.Sub(observation)
+	if observationAge < 0 {
+		observationAge = 0
+	}
 	switch {
 	case st.LastError != "" || st.ErrorCount > 0:
 		h.State = Failed
-	case age > Threshold(sourceType):
+	case observationErr != nil || observationAge > budget || age > budget:
 		h.State = Stale
 	default:
 		h.State = Fresh

@@ -25,6 +25,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/applecal"
 	"github.com/pyranthus-hq/mora/internal/githubissues"
 	"github.com/pyranthus-hq/mora/internal/google"
+	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 	"github.com/pyranthus-hq/mora/internal/imessage"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -224,6 +225,12 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 				outcome.LastAttemptAt = status.LastAttemptAt
 				health := sourceHealthFor(cfg, plan.Source, plan.Key, briefClock())
 				outcome.Stale = health.State != healthFresh
+				outcome.ObservedAt = status.ObservedAt
+				outcome.DurationMS = status.DurationMS
+				outcome.FreshnessBudgetSeconds = status.FreshnessBudgetSeconds
+				outcome.NextScheduledAt = status.NextScheduledAt
+				outcome.ConsecutiveFailureCount = status.ConsecutiveFailureCount
+				outcome.CorrelationID = status.CorrelationID
 			}
 		}
 		return outcome
@@ -241,6 +248,16 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	var rebuildErr error
 	if sourceOutcomesMaterialized(outcomes) > 0 && ctx.Err() == nil {
 		_, rebuildErr = rebuildIngestIndexFn(ctx, cfg)
+		for _, outcome := range outcomes {
+			if outcome.CorrelationID == "" {
+				continue
+			}
+			status := "completed"
+			if rebuildErr != nil {
+				status = "failed"
+			}
+			_ = appendTraceEvent(cfg, traceEvent{CorrelationID: outcome.CorrelationID, Stage: traceStageIndex, Source: outcome.Key, Status: status})
+		}
 	}
 	aggregate, aggregateErr := aggregateSourceRuns(plans, outcomes, nil, rebuildErr)
 	// CON-02: every --json path that got as far as writing memories owes stdout
@@ -545,7 +562,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
 		if relayReceipt, rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
 			if sourceJSON {
-				return emitSyncSourceResult(stdout, args[0], true, relayReceipt.Items, "")
+				return emitSyncSourceResult(cfg, stdout, args[0], true, relayReceipt.Items, "")
 			}
 			fmt.Fprintf(stdout, "synced %s via Mora.app\n", args[0])
 			return nil
@@ -555,7 +572,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			// failure, while launch/protocol failures without a child receipt remain
 			// plain command errors.
 			if sourceJSON && relayReceipt.Source != "" {
-				if emitErr := emitSyncSourceResult(stdout, args[0], true, relayReceipt.Items, ""); emitErr != nil {
+				if emitErr := emitSyncSourceResult(cfg, stdout, args[0], true, relayReceipt.Items, ""); emitErr != nil {
 					return emitErr
 				}
 			}
@@ -616,7 +633,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// backfill, and the helper performs one final index rebuild after the walks.
 	if args[0] == "filesystem" {
 		total, err := backfillEnabledFilesystem(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(stdout, "filesystem", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+		if rerr := emitSyncSourceResult(cfg, stdout, "filesystem", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
 			return rerr
 		}
 		return err
@@ -624,7 +641,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// `mora sync imessage` — re-run the gated iMessage backfill (shared seam).
 	if args[0] == "imessage" {
 		total, syncErr := backfillEnabledIMessage(ctx, cfg, sourceProgress)
-		rerr := emitSyncSourceResult(stdout, "imessage", sourceJSON, total, "synced %d item(s)\n")
+		rerr := emitSyncSourceResult(cfg, stdout, "imessage", sourceJSON, total, "synced %d item(s)\n")
 		// The relay receipt is written even when the stdout emit failed: the
 		// launching host is waiting on it, and a broken pipe must not strand it.
 		if receiptToken != "" {
@@ -646,7 +663,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// receipt, and recovery action are all independent (#266).
 	if args[0] == "applecalendar" {
 		total, syncErr := backfillEnabledAppleCalendar(ctx, cfg, sourceProgress)
-		rerr := emitSyncSourceResult(stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n")
+		rerr := emitSyncSourceResult(cfg, stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n")
 		// Same rule as imessage above: the relay receipt outlives a stdout failure.
 		if receiptToken != "" {
 			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], Items: total, CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
@@ -664,14 +681,14 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if args[0] == "github" {
 		total, err := backfillEnabledGitHub(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(stdout, "github", sourceJSON, total, "synced %d issue(s)\n"); rerr != nil {
+		if rerr := emitSyncSourceResult(cfg, stdout, "github", sourceJSON, total, "synced %d issue(s)\n"); rerr != nil {
 			return rerr
 		}
 		return err
 	}
 	if args[0] == "google" {
 		total, err := backfillEnabledGoogle(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+		if rerr := emitSyncSourceResult(cfg, stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
 			return rerr
 		}
 		return err
@@ -682,16 +699,52 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 // syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
 // the typed failure fields here; additions are minor, removals need a bump.
 type syncSourceReceipt struct {
-	Source string `json:"source"`
-	Items  int    `json:"items"`
+	Source                  string `json:"source"`
+	Items                   int    `json:"items"`
+	ObservedAt              string `json:"observed_at"`
+	LastSuccessAt           string `json:"last_success_at"`
+	LastAttemptAt           string `json:"last_attempt_at"`
+	NextScheduledAt         string `json:"next_scheduled_at"`
+	DurationMS              int64  `json:"duration_ms"`
+	FreshnessBudgetSeconds  int64  `json:"freshness_budget_seconds"`
+	ConsecutiveFailureCount int    `json:"consecutive_failure_count"`
+	CorrelationID           string `json:"correlation_id,omitempty"`
 }
 
 // emitSyncSourceResult writes the outcome of one per-source re-sync: a receipt
 // under --json, the shipped human line otherwise. It runs on the error path too,
 // because a partial sync still reports what it managed to pull.
-func emitSyncSourceResult(stdout io.Writer, source string, jsonOut bool, total int, humanFormat string) error {
+func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut bool, total int, humanFormat string) error {
 	if jsonOut {
-		return emitReceipt(stdout, "mora.sync."+source, 1, syncSourceReceipt{Source: source, Items: total})
+		receipt := syncSourceReceipt{Source: source, Items: total, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
+		dir := filepath.Join(cfg.StateDir, "sync")
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, row := range syncStatusReceiptSources(entries, dir, time.Now()) {
+				if row.Source != source && (source != "google" || (row.Source != "gmail" && row.Source != "calendar")) {
+					continue
+				}
+				if row.LastSuccessAt > receipt.LastSuccessAt {
+					receipt.LastSuccessAt = row.LastSuccessAt
+				}
+				if row.LastAttemptAt > receipt.LastAttemptAt {
+					receipt.LastAttemptAt = row.LastAttemptAt
+				}
+				if row.NextScheduledAt > receipt.NextScheduledAt {
+					receipt.NextScheduledAt = row.NextScheduledAt
+				}
+				receipt.DurationMS += row.DurationMS
+				if receipt.FreshnessBudgetSeconds == 0 || (row.FreshnessBudgetSeconds > 0 && row.FreshnessBudgetSeconds < receipt.FreshnessBudgetSeconds) {
+					receipt.FreshnessBudgetSeconds = row.FreshnessBudgetSeconds
+				}
+				if row.ConsecutiveFailureCount > receipt.ConsecutiveFailureCount {
+					receipt.ConsecutiveFailureCount = row.ConsecutiveFailureCount
+				}
+				if row.CorrelationID != "" {
+					receipt.CorrelationID = row.CorrelationID
+				}
+			}
+		}
+		return emitReceipt(stdout, "mora.sync."+source, 1, receipt)
 	}
 	_, err := fmt.Fprintf(stdout, humanFormat, total)
 	return err
@@ -704,14 +757,20 @@ type syncStatusReceipt struct {
 }
 
 type syncStatusReceiptSource struct {
-	Source        string `json:"source"`
-	State         string `json:"state"`
-	LastSuccessAt string `json:"last_success_at"`
-	LastAttemptAt string `json:"last_attempt_at"`
-	ItemCount     int    `json:"item_count"`
-	ErrorCount    int    `json:"error_count"`
-	LastError     string `json:"last_error,omitempty"`
-	ErrorCode     string `json:"error_code,omitempty"`
+	Source                  string `json:"source"`
+	State                   string `json:"state"`
+	LastSuccessAt           string `json:"last_success_at"`
+	LastAttemptAt           string `json:"last_attempt_at"`
+	ItemCount               int    `json:"item_count"`
+	ErrorCount              int    `json:"error_count"`
+	LastError               string `json:"last_error,omitempty"`
+	ErrorCode               string `json:"error_code,omitempty"`
+	ObservedAt              string `json:"observed_at"`
+	DurationMS              int64  `json:"duration_ms"`
+	FreshnessBudgetSeconds  int64  `json:"freshness_budget_seconds"`
+	NextScheduledAt         string `json:"next_scheduled_at"`
+	ConsecutiveFailureCount int    `json:"consecutive_failure_count"`
+	CorrelationID           string `json:"correlation_id,omitempty"`
 }
 
 func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) []syncStatusReceiptSource {
@@ -722,13 +781,19 @@ func syncStatusReceiptSources(entries []os.DirEntry, dir string, now time.Time) 
 			continue
 		}
 		sources = append(sources, syncStatusReceiptSource{
-			Source:        st.Source,
-			State:         syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
-			LastSuccessAt: st.LastSuccessAt,
-			LastAttemptAt: st.LastAttemptAt,
-			ItemCount:     st.ItemCount,
-			ErrorCount:    st.ErrorCount,
-			LastError:     st.LastError,
+			Source:                  st.Source,
+			State:                   syncStatusFileState(st, syncStatusFileThreshold(entry.Name()), now),
+			LastSuccessAt:           st.LastSuccessAt,
+			LastAttemptAt:           st.LastAttemptAt,
+			ItemCount:               st.ItemCount,
+			ErrorCount:              st.ErrorCount,
+			LastError:               st.LastError,
+			ObservedAt:              st.ObservedAt,
+			DurationMS:              st.DurationMS,
+			FreshnessBudgetSeconds:  st.FreshnessBudgetSeconds,
+			NextScheduledAt:         st.NextScheduledAt,
+			ConsecutiveFailureCount: st.ConsecutiveFailureCount,
+			CorrelationID:           st.CorrelationID,
 			// The typed companion CON-07 needs. A record persisted before the
 			// taxonomy shipped has no code on disk and is NOT rewritten; it reads
 			// as connector.unclassified here instead.
@@ -920,6 +985,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		return result, err
 	}
 	cfg.SetOperationRunID(h.RunID)
+	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: h.RunID, Stage: traceStageConnector, Source: ingestOperationSourceKey(s), Status: "started"})
 	finishFailed := func(code string, cause error) error {
 		errorCount := result.Failed
 		if errorCount == 0 {
@@ -948,6 +1014,12 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		testHookIngestActivityStarted(cfg, s, h)
 	}
 	result, dispatchErr := ingestSourceDispatchFn(ctx, cfg, s, out)
+	traceStatus := "completed"
+	if dispatchErr != nil {
+		traceStatus = "failed"
+	}
+	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: h.RunID, Stage: traceStageIngestion, Source: ingestOperationSourceKey(s), Status: traceStatus})
+	enrichSyncObservation(cfg, s, attemptStart, result.Stages.TotalMS, dispatchErr)
 	if dispatchErr == nil && result.Materialized == 0 {
 		ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
 		_, retireErr := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
@@ -978,6 +1050,29 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// heartbeat stays live while sibling sources finish. The committed rebuild
 	// that retires this run's journal stops it and owns the terminal transition.
 	return result, nil
+}
+
+func enrichSyncObservation(cfg Config, s Source, attemptStart time.Time, durationMS int64, runErr error) {
+	path := syncStatusPathFor(cfg, s)
+	if path == "" {
+		return
+	}
+	st, err := memory.LoadStatus(path)
+	if err != nil || st == nil {
+		return
+	}
+	budget := healthpkg.Threshold(s.Type)
+	st.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	st.DurationMS = durationMS
+	st.FreshnessBudgetSeconds = int64(budget.Seconds())
+	st.NextScheduledAt = attemptStart.Add(budget).UTC().Format(time.RFC3339)
+	st.CorrelationID = cfg.OperationRunID()
+	if runErr == nil {
+		st.ConsecutiveFailureCount = 0
+	} else if st.ConsecutiveFailureCount == 0 {
+		st.ConsecutiveFailureCount = 1
+	}
+	_ = memory.SaveStatus(path, st)
 }
 
 // classifyConnectorError attaches a CON-07 discrimination to a connector
@@ -1066,6 +1161,12 @@ func writeMappedMemory(cfg Config, mm memory.MappedMemory) error {
 }
 
 func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error) {
+	if runID := cfg.OperationRunID(); runID != "" {
+		if mm.Meta == nil {
+			mm.Meta = map[string]any{}
+		}
+		mm.Meta["ingest_correlation_id"] = runID
+	}
 	// Governance chokepoint (#52/#53): consult the vault-resident ledger before
 	// persisting ANY connector memory. A suppressed stable-atom (forgotten chat,
 	// forgotten 1:1 person, pruned item) is silently skipped so the hourly,
@@ -1919,7 +2020,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		result.Stages.Bytes += int64(len(text))
 		result.Examined++
 		id := "src_" + ContentHash(s.Name+":"+rel)
-		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text}
+		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text, Meta: map[string]any{"ingest_correlation_id": cfg.OperationRunID()}}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
 		body, _ := renderMemory(m)
 		if testHookFSPreWrite != nil {

@@ -402,7 +402,17 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		health = compactHealthFiltered(cfg, now, filters)
 	}
 	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": health}
-	out["evidence_manifest"] = evidenceManifest(budgeted, res)
+	manifest := evidenceManifest(budgeted, res)
+	out["evidence_manifest"] = manifest
+	links := make([]string, 0, len(manifest))
+	for _, entry := range manifest {
+		if entry.IngestCorrelationID != "" {
+			links = append(links, entry.IngestCorrelationID)
+		}
+	}
+	queryID := queryCorrelationID(query, links)
+	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: queryID, Stage: traceStageQuery, Status: "completed", Links: links})
+	out["query_correlation_id"] = queryID
 	out["ranking"] = rankingReceipts(budgeted, sr.Trace, sr.ScoreFused)
 	if dropped > 0 {
 		out["results_truncated"] = dropped

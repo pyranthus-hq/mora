@@ -78,6 +78,8 @@ jobs:
               manifest = json.load(f)
           assert manifest["version"] == "0.0.0-test", manifest
           PY
+      - name: production readiness faults and traceability
+        run: go test ./internal/mora -run 'TestProductionReadinessConnectorFixtures|TestObservability' -count=1
       - name: exam schema, ledger, and identity validation
         run: |
           go test ./internal/mora/exam -run 'TestLedgerValidator|TestCommittedLedgerIsValid|TestManifest|TestExamNoRealIdentities' -count=1

@@ -42,7 +42,13 @@ type SyncStatus struct {
 	// Appended, so a record written before this field existed decodes with an
 	// empty ErrorCode. Mora never rewrites those files to backfill: an empty code
 	// beside a non-empty LastError READS as connector.unclassified.
-	ErrorCode string `json:"error_code,omitempty"`
+	ErrorCode               string `json:"error_code,omitempty"`
+	ObservedAt              string `json:"observed_at,omitempty"`
+	DurationMS              int64  `json:"duration_ms"`
+	FreshnessBudgetSeconds  int64  `json:"freshness_budget_seconds"`
+	NextScheduledAt         string `json:"next_scheduled_at,omitempty"`
+	ConsecutiveFailureCount int    `json:"consecutive_failure_count"`
+	CorrelationID           string `json:"correlation_id,omitempty"`
 }
 
 func LoadStatus(path string) (*SyncStatus, error) {

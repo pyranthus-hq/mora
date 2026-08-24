@@ -45,7 +45,7 @@ func contentHashWithMeta(title, body, metaJSON string) string {
 // than its content, so they are persisted but EXCLUDED from the content hash. Gmail
 // actionability labels (issue #62) flip as a thread is read/starred/reclassified;
 // hashing them would re-surface an unchanged thread as "[updated]" on every toggle.
-var volatileMetaKeys = map[string]bool{"labels": true, "retrieved_at": true}
+var volatileMetaKeys = map[string]bool{"labels": true, "retrieved_at": true, "ingest_correlation_id": true}
 
 // hashMeta returns meta with the volatile (state-only) keys removed, so the content
 // hash reflects the item's CONTENT, not its read/star state. It returns the SAME map

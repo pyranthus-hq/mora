@@ -51,7 +51,20 @@ func StatusFileState(st *memory.SyncStatus, threshold time.Duration, now time.Ti
 	if age < 0 {
 		age = 0
 	}
-	if age > threshold {
+	observed := st.ObservedAt
+	if observed == "" {
+		observed = st.LastSuccessAt
+	}
+	observation, observationErr := time.Parse(time.RFC3339, observed)
+	budget := threshold
+	if st.FreshnessBudgetSeconds > 0 {
+		budget = time.Duration(st.FreshnessBudgetSeconds) * time.Second
+	}
+	observationAge := now.Sub(observation)
+	if observationAge < 0 {
+		observationAge = 0
+	}
+	if observationErr != nil || observationAge > budget || age > budget {
 		return StateStale
 	}
 	return StateFresh

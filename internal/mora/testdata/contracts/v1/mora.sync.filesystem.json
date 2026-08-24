@@ -1,5 +1,12 @@
 {
+  "consecutive_failure_count": 0,
+  "duration_ms": 0,
+  "freshness_budget_seconds": 0,
   "items": 0,
+  "last_attempt_at": "",
+  "last_success_at": "",
+  "next_scheduled_at": "",
+  "observed_at": "\u003ctimestamp\u003e",
   "schema": "mora.sync.filesystem",
   "schema_version": 1,
   "source": "filesystem"
