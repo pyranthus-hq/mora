@@ -211,9 +211,10 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		return err
 	}
 	count := 0
-	failures := 0
 	named := false
 	var namedErr error
+	var plans []sourceRunPlan
+	var outcomes []sourceRunOutcome
 	for _, s := range sources {
 		// Enabled gate (D-07): a named disabled source ERRORS before the skip so
 		// the user is never silently no-op'd; `--all` silently skips disabled.
@@ -229,24 +230,26 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		} else if !s.IsEnabled() {
 			continue // --all silently skips disabled (D-07)
 		}
-		n, err := ingestSourceFn(cfg, s, progress)
+		key := healthInstanceKeyForSource(s)
+		plans = append(plans, sourceRunPlan{Key: key, Source: s})
+		n, runErr := ingestSourceFn(cfg, s, progress)
 		count += n
-		if err != nil {
+		outcomes = append(outcomes, sourceRunOutcome{Key: key, Items: n, Err: runErr})
+		if runErr != nil {
 			// Named-source path: the failure IS the result — but a PARTIAL run
 			// (Ingest's dropped-item contract) has already written memories to
 			// the vault, so the final rebuild below must still run before the
 			// error surfaces; returning here left them unsearchable with no
 			// auto-heal (the schema check only heals version mismatches).
 			if !*all {
-				namedErr = err
+				namedErr = runErr
 				break
 			}
 			// --all (the scheduled ingest-hourly job): one broken connector must
 			// not starve the rest or skip the final rebuild — warn, keep going,
 			// and surface an aggregate error at the end (never swallow sync
 			// errors; mirrors backfillEnabledGoogle).
-			failures++
-			warnf(progress, "%s sync incomplete (resumable): %v", s.Name, err)
+			warnf(progress, "%s sync incomplete (resumable): %v", s.Name, runErr)
 		}
 	}
 	// A named source that matched NOTHING is a typo, not a successful empty run:
@@ -255,12 +258,8 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if !*all && !named {
 		return fmt.Errorf("no source named %q — run `mora sources list` to see configured sources", *sourceName)
 	}
-	// A named source that failed is one failed source; `failures` stays the
-	// --all-only counter so the aggregate error below keeps its meaning.
-	failedSources := failures
-	if namedErr != nil {
-		failedSources = 1
-	}
+	_, rebuildErr := rebuildIngestIndexFn(ctx, cfg)
+	aggregate, aggregateErr := aggregateSourceRuns(plans, outcomes, nil, rebuildErr)
 	// CON-02: every --json path that got as far as writing memories owes stdout
 	// exactly one JSON document saying what landed. A partial named-source
 	// failure and a failed rebuild both leave items in the vault, so returning
@@ -277,17 +276,17 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 			return nil
 		}
 		return emitReceipt(stdout, "mora.ingest.run", 1, ingestRunReceipt{
-			Source: *sourceName, All: *all, Items: count, FailedSources: failedSources,
+			Source: *sourceName, All: *all, Items: count, sourceRunAggregate: aggregate,
 		})
 	}
-	if _, rerr := rebuildIndex(ctx, cfg); rerr != nil {
+	if rebuildErr != nil {
 		if eerr := emitRunReceipt(); eerr != nil {
 			return eerr
 		}
 		if namedErr != nil {
-			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, rerr)
+			return fmt.Errorf("%w (and the index rebuild failed: %v — run `mora index rebuild`)", namedErr, rebuildErr)
 		}
-		return rerr
+		return rebuildErr
 	}
 	if eerr := emitRunReceipt(); eerr != nil {
 		return eerr
@@ -298,8 +297,8 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if !*jsonOut {
 		fmt.Fprintf(stdout, "ingested %d item(s)\n", count)
 	}
-	if failures > 0 {
-		return fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`)", failures)
+	if aggregateErr != nil {
+		return aggregateErr
 	}
 	return nil
 }
@@ -307,11 +306,13 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 // ingestRunReceipt reports what one ingest run did. Phase 2 (ISO-02) adds the
 // per-source outcome breakdown here; additions are minor, removals need a bump.
 type ingestRunReceipt struct {
-	Source        string `json:"source,omitempty"`
-	All           bool   `json:"all"`
-	Items         int    `json:"items"`
-	FailedSources int    `json:"failed_sources"`
+	Source string `json:"source,omitempty"`
+	All    bool   `json:"all"`
+	Items  int    `json:"items"`
+	sourceRunAggregate
 }
+
+var rebuildIngestIndexFn = rebuildIndex
 
 // progressWriter routes a command's running commentary away from stdout when
 // the caller asked for JSON, so a machine payload is never interleaved with

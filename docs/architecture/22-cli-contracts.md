@@ -102,6 +102,23 @@ not Mora's. They are declared `exempt` in the command registry with that reason.
 
 ## 3. Exit codes
 
+### Partial source runs
+
+`mora ingest run --all --json` decides its exit from trustworthiness, not from the
+first connector error. If at least one requested source completes successfully and the
+covering index rebuild succeeds, ordinary peer failures produce `status: "partial"`,
+`usable: true`, and exit 0. If every requested source fails, or the shared rebuild fails,
+the command still emits the complete receipt and then exits nonzero. Global cancellation
+is also nonzero even when already-completed receipts remain usable.
+
+The receipt preserves the original `all`, `items`, and `failed_sources` fields and adds
+`status`, `usable`, `successful_sources`, `cancelled_sources`, and one deterministic
+`sources[]` entry per requested source. Receipts are sorted by canonical source key, not
+completion time. A failed receipt names only its own source, typed code/class, and
+registry-derived `retryable` value; callers retry those failed keys rather than replaying
+successful sources. A clean zero-item read is successful `status: "empty"` with
+`error_code: "connector.empty"` and `retryable: false`; it is not a failed read.
+
 Three non-zero statuses ship. All three are grandfathered with their exact shipped meanings and are
 never re-allocated.
 

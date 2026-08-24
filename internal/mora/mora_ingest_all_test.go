@@ -17,8 +17,8 @@ import (
 // Full Disk Access under launchd) was killing the whole run — later sources
 // never synced and the final rebuildIndex never ran, so even the sources that
 // DID ingest stayed invisible to search. The fix mirrors backfillEnabledGoogle:
-// warn per failure, keep going, always rebuild, return an aggregate error
-// (honest non-zero exit — never swallow sync errors).
+// warn per failure, keep going, always rebuild, and return a usable partial
+// result (exit 0) when at least one source succeeded and the rebuild is trusted.
 func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -140,7 +140,7 @@ func TestIngestRunSharedRebuildFailureIsNotUsable(t *testing.T) {
 	if decodeErr := json.Unmarshal(stdout.Bytes(), &receipt); decodeErr != nil {
 		t.Fatalf("decode receipt: %v\n%s", decodeErr, stdout.String())
 	}
-	if receipt.Status != sourceRunStatusFailed || receipt.Usable {
+	if receipt.Status != sourceRunStatusFailed || receipt.Usable || len(receipt.Sources) != 1 || receipt.Sources[0].Usable {
 		t.Fatalf("shared failure receipt = %+v", receipt)
 	}
 }

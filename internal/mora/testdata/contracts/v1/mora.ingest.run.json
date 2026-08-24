@@ -1,7 +1,12 @@
 {
   "all": true,
+  "cancelled_sources": 0,
   "failed_sources": 0,
   "items": 0,
   "schema": "mora.ingest.run",
-  "schema_version": 1
+  "schema_version": 1,
+  "sources": [],
+  "status": "success",
+  "successful_sources": 0,
+  "usable": true
 }

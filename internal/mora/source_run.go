@@ -124,11 +124,14 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			aggregate.CancelledSources++
 		}
 	}
-	aggregate.Usable = aggregate.SuccessfulSources > 0
+	aggregate.Usable = aggregate.SuccessfulSources > 0 || len(receipts) == 0
 	switch {
 	case infrastructureErr != nil:
 		aggregate.Status = sourceRunStatusFailed
 		aggregate.Usable = false
+		for i := range aggregate.Sources {
+			aggregate.Sources[i].Usable = false
+		}
 		return aggregate, infrastructureErr
 	case aggregate.CancelledSources > 0:
 		aggregate.Status = sourceRunStatusCancelled
