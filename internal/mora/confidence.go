@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	confidencepkg "github.com/pyranthus-hq/mora/internal/confidence"
+	"sort"
 	"time"
 )
 
@@ -16,6 +17,10 @@ const (
 type confidenceEnvelope = confidencepkg.Envelope
 
 func searchConfidence(ctx context.Context, cfg Config, mems []Memory, scoreFused bool, fullMems, localMems []Memory, trace retrievalTrace, query string, now time.Time) confidenceEnvelope {
+	return searchConfidenceFor(ctx, cfg, mems, scoreFused, fullMems, localMems, trace, query, now, "", true)
+}
+
+func searchConfidenceFor(ctx context.Context, cfg Config, mems []Memory, scoreFused bool, fullMems, localMems []Memory, trace retrievalTrace, query string, now time.Time, requestedSource string, currentState bool) confidenceEnvelope {
 	scores := make([]float64, len(mems))
 	dates := make([]string, len(mems))
 	for i, m := range mems {
@@ -23,7 +28,7 @@ func searchConfidence(ctx context.Context, cfg Config, mems []Memory, scoreFused
 		dates[i] = m.CreatedAt
 	}
 	best, mean := confidencepkg.ScoreStats(scores)
-	missing, impact := confidenceSourceGaps(cfg, now)
+	missing, impact := confidenceSourceGapsFor(cfg, now, requestedSource, currentState)
 	coverageMems := returnedMemoryRows(mems, fullMems)
 	gapMems := returnedMemoryRows(mems, localMems)
 
@@ -43,6 +48,9 @@ func searchConfidence(ctx context.Context, cfg Config, mems []Memory, scoreFused
 		strength = "moderate"
 	}
 
+	if currentState && len(missing) > 0 {
+		strength = lowerConfidenceStrength(strength)
+	}
 	return confidenceEnvelope{
 		Strength:         strength,
 		Scale:            scale,
@@ -88,4 +96,32 @@ func confidenceFusedSearchStrength(ctx context.Context, cfg Config, query string
 }
 func confidenceSourceGaps(cfg Config, now time.Time) ([]string, string) {
 	return confidencepkg.SourceGaps(sourceHealthAll(cfg, now))
+}
+
+func confidenceSourceGapsFor(cfg Config, now time.Time, requestedSource string, currentState bool) ([]string, string) {
+	if !currentState {
+		return []string{}, "none"
+	}
+	all := sourceHealthAll(cfg, now)
+	kept := make([]sourceHealth, 0, len(all))
+	for _, health := range all {
+		if requestedSource != "" && !digestSourceMatches(health.Key, requestedSource) {
+			continue
+		}
+		kept = append(kept, health)
+	}
+	missing, impact := confidencepkg.SourceGaps(kept)
+	sort.Strings(missing)
+	return missing, impact
+}
+
+func lowerConfidenceStrength(strength string) string {
+	switch strength {
+	case "strong":
+		return "moderate"
+	case "moderate":
+		return "weak"
+	default:
+		return strength
+	}
 }

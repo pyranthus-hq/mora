@@ -1371,7 +1371,7 @@ func TestFiltersAliasedInstanceHealthConfidenceScoping(t *testing.T) {
 	writeFilterMemory(t, cfg, "alias-health-1", "applecal", "work", time.Now().Format(time.RFC3339), "aliashealthcheck content")
 	mustRebuild(t, cfg)
 
-	sc := filtersStructured(t, "search_memory", `{"query":"aliashealthcheck","source":"applecal:work","confidence":true}`)
+	sc := filtersStructured(t, "search_memory", `{"query":"current state of my projects aliashealthcheck","source":"applecal:work","confidence":true}`)
 
 	// The top-level health object (compactHealthFiltered) — the ALWAYS-PRESENT
 	// rollup, independent of the opt-in confidence envelope. It must keep

@@ -160,6 +160,65 @@ func TestConfidenceSearchCoverageUsesOnlyBudgetedReturnedRows(t *testing.T) {
 	}
 }
 
+func TestIsolationCurrentStateConfidenceNamesStaleSource(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	now := time.Now().UTC()
+	seedSyncStatus(t, cfg, "gmail", now.Add(-48*time.Hour))
+	rows := []Memory{{
+		ID: "gmail/current", Source: "gmail", Title: "current state of my projects Atlas", Text: "current state of my projects Atlas",
+		Score: -5, CreatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+	}}
+	conf := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+		"current state of my projects Atlas", now, "gmail", true)
+	if conf.Strength != "moderate" || !reflect.DeepEqual(conf.MissingSources, []string{"gmail"}) || conf.HealthImpact != healthStale {
+		t.Fatalf("current-state confidence = %+v", conf)
+	}
+}
+
+func TestIsolationHistoricalRelevanceIgnoresFreshness(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	now := time.Now().UTC()
+	seedSyncStatus(t, cfg, "gmail", now.Add(-48*time.Hour))
+	rows := []Memory{{
+		ID: "gmail/history", Source: "gmail", Title: "Atlas decision history", Text: "direct historical evidence",
+		Score: -5, CreatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+	}}
+	before := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+		"Atlas decision history", now, "gmail", false)
+	seedSyncStatus(t, cfg, "gmail", now.Add(-96*time.Hour))
+	after := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+		"Atlas decision history", now, "gmail", false)
+	if before.MaxScore != after.MaxScore || before.MeanScore != after.MeanScore || before.Strength != after.Strength {
+		t.Fatalf("historical relevance changed with freshness: before=%+v after=%+v", before, after)
+	}
+	if len(after.MissingSources) != 0 || after.HealthImpact != "none" {
+		t.Fatalf("historical query was freshness-demoted: %+v", after)
+	}
+}
+
+func TestIsolationFilteredConfidenceIgnoresSibling(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail", "calendar", "applecalendar")
+	now := time.Now().UTC()
+	seedSyncStatus(t, cfg, "gmail", now.Add(-48*time.Hour))
+	seedSyncStatus(t, cfg, "calendar", now.Add(-72*time.Hour))
+	seedSyncStatus(t, cfg, "applecalendar", now.Add(-96*time.Hour))
+	rows := []Memory{{ID: "gmail/current", Source: "gmail", Score: -5, CreatedAt: now.Format(time.RFC3339)}}
+	conf := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+		"current state of my projects", now, "gmail", true)
+	if !reflect.DeepEqual(conf.MissingSources, []string{"gmail"}) {
+		t.Fatalf("filtered gaps = %v, want gmail only", conf.MissingSources)
+	}
+}
+
 func TestConfidenceReturnedSharedRowCannotBorrowCollidingLocalText(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")

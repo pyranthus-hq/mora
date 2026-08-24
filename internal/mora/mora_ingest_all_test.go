@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"strings"
 	"testing"
@@ -120,6 +121,42 @@ func TestIsolationPartialAttemptCountsThroughIngestAll(t *testing.T) {
 	source := receipt.Sources[0]
 	if source.Status != sourceRunStatusPartial || source.Examined != 100 || source.Materialized != 73 || source.Failed != 27 || source.Missing != 27 {
 		t.Fatalf("source = %+v", source)
+	}
+}
+
+func TestIsolationIngestReceiptCarriesStaleProvenance(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	source := Source{Name: "mail", Type: "gmail", Scope: "global", Enabled: genericutil.Ptr(true)}
+	if err := saveSources(cfg, []Source{source}); err != nil {
+		t.Fatal(err)
+	}
+	success := "2026-08-24T08:00:00Z"
+	attempt := "2026-08-24T09:00:00Z"
+	orig := ingestSourceFn
+	t.Cleanup(func() { ingestSourceFn = orig })
+	ingestSourceFn = func(cfg Config, source Source, _ io.Writer) (sourceIngestResult, error) {
+		if err := memory.SaveStatus(syncStatusPathFor(cfg, source), &memory.SyncStatus{
+			Source: source.Name, LastSynced: success, LastSuccessAt: success, LastAttemptAt: attempt,
+			LastError: "offline", ErrorCode: errCodeConnectorUnavailable, ErrorCount: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return sourceIngestResult{Examined: 2, Materialized: 1, Failed: 1, Missing: 1},
+			newCodedError(errCodeConnectorUnavailable, nil, "offline")
+	}
+	var stdout bytes.Buffer
+	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("usable partial: %v", err)
+	}
+	var receipt ingestRunReceipt
+	if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	got := receipt.Sources[0]
+	if got.LastSuccessAt != success || got.LastAttemptAt != attempt || !got.Stale || got.ErrorCode != errCodeConnectorUnavailable {
+		t.Fatalf("source provenance = %+v", got)
 	}
 }
 
