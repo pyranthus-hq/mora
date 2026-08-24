@@ -34,11 +34,15 @@ func NewLiveFetcher(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) 
 }
 
 func (f *LiveFetcher) FetchPage(kind ItemKind, w FetchWindow, cursor string) (Page, error) {
+	return f.FetchPageContext(context.Background(), kind, w, cursor)
+}
+
+func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w FetchWindow, cursor string) (Page, error) {
 	switch kind {
 	case KindGmailThread:
-		return f.fetchGmailPage(w, cursor)
+		return f.fetchGmailPageContext(ctx, w, cursor)
 	case KindCalEvent:
-		return f.fetchCalendarPage(w, cursor)
+		return f.fetchCalendarPageContext(ctx, w, cursor)
 	default:
 		return Page{}, fmt.Errorf("unsupported kind %q", kind)
 	}

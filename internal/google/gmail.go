@@ -1,6 +1,7 @@
 package google
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -29,10 +30,8 @@ type gmailMessageEvidence struct {
 	BlockRefs  []string `json:"block_refs,omitempty"`
 }
 
-// fetchGmailPage lists one page of threads, fetches each thread, and maps it to
-// a single Item (thread-level). Quote-stripping keeps bodies lean.
-func (f *LiveFetcher) fetchGmailPage(w FetchWindow, cursor string) (Page, error) {
-	call := f.gmail.Users.Threads.List("me").MaxResults(gmailPageSize)
+func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, cursor string) (Page, error) {
+	call := f.gmail.Users.Threads.List("me").MaxResults(gmailPageSize).Context(ctx)
 	if q := buildGmailQuery(w); q != "" {
 		call = call.Q(q)
 	}
@@ -48,8 +47,11 @@ func (f *LiveFetcher) fetchGmailPage(w FetchWindow, cursor string) (Page, error)
 	}
 	var items []Item
 	for _, th := range res.Threads {
-		full, err := f.gmail.Users.Threads.Get("me", th.Id).Format("full").Do()
+		full, err := f.gmail.Users.Threads.Get("me", th.Id).Format("full").Context(ctx).Do()
 		if err != nil {
+			if ctx.Err() != nil {
+				return Page{}, ctx.Err()
+			}
 			continue // per-thread failure: skip
 		}
 		items = append(items, gmailThreadToItem(full))

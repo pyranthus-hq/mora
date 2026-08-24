@@ -128,7 +128,11 @@ func safeRepoPart(s string) bool {
 	return true
 }
 
-func (f *Fetcher) FetchPage(kind memory.ItemKind, _ memory.FetchWindow, cursor string) (memory.Page, error) {
+func (f *Fetcher) FetchPage(kind memory.ItemKind, window memory.FetchWindow, cursor string) (memory.Page, error) {
+	return f.FetchPageContext(context.Background(), kind, window, cursor)
+}
+
+func (f *Fetcher) FetchPageContext(ctx context.Context, kind memory.ItemKind, _ memory.FetchWindow, cursor string) (memory.Page, error) {
 	if kind != KindIssue {
 		return memory.Page{}, fmt.Errorf("github issues: unsupported kind %q", kind)
 	}
@@ -152,7 +156,7 @@ func (f *Fetcher) FetchPage(kind memory.ItemKind, _ memory.FetchWindow, cursor s
 	q.Set("per_page", strconv.Itoa(pageSize))
 	q.Set("page", strconv.Itoa(page))
 	u.RawQuery = q.Encode()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return memory.Page{}, err
 	}
@@ -163,6 +167,9 @@ func (f *Fetcher) FetchPage(kind memory.ItemKind, _ memory.FetchWindow, cursor s
 	}
 	resp, err := f.client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return memory.Page{}, ctx.Err()
+		}
 		return memory.Page{}, fmt.Errorf("github issues: request failed: %w", err)
 	}
 	defer resp.Body.Close()

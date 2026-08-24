@@ -123,6 +123,88 @@ func ggCalSvc(t *testing.T, srv *httptest.Server) *calendar.Service {
 	return s
 }
 
+func TestGg_FetchPageContextCancelsGmailList(t *testing.T) {
+	started, observed := make(chan struct{}), make(chan struct{})
+	fake := &ggFakeGoogle{threadsList: func(r *http.Request) (int, string) {
+		close(started)
+		<-r.Context().Done()
+		close(observed)
+		return http.StatusRequestTimeout, `{}`
+	}}
+	srv := ggServe(t, fake)
+	fetcher := &LiveFetcher{gmail: ggGmailSvc(t, srv), cal: ggCalSvc(t, srv)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := fetcher.FetchPageContext(ctx, KindGmailThread, FetchWindow{}, ""); done <- err }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("gmail list cancellation = %v", err)
+	}
+	select {
+	case <-observed:
+	case <-time.After(time.Second):
+		t.Fatal("gmail handler did not observe request cancellation")
+	}
+}
+
+func TestGg_FetchPageContextCancelsGmailThreadDetail(t *testing.T) {
+	started, observed := make(chan struct{}), make(chan struct{})
+	fake := &ggFakeGoogle{
+		threadsList: func(*http.Request) (int, string) {
+			return http.StatusOK, `{"threads":[{"id":"t1"},{"id":"t2"}]}`
+		},
+		threadGet: func(_ string, r *http.Request) (int, string) {
+			close(started)
+			<-r.Context().Done()
+			close(observed)
+			return http.StatusRequestTimeout, `{}`
+		},
+	}
+	srv := ggServe(t, fake)
+	fetcher := &LiveFetcher{gmail: ggGmailSvc(t, srv), cal: ggCalSvc(t, srv)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := fetcher.FetchPageContext(ctx, KindGmailThread, FetchWindow{}, ""); done <- err }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("gmail detail cancellation = %v", err)
+	}
+	<-observed
+	if got := len(fake.recorded()); got != 2 {
+		t.Fatalf("requests = %v, remaining detail loop continued", fake.recorded())
+	}
+}
+
+func TestGg_FetchPageContextCancelsCalendarList(t *testing.T) {
+	started, observed := make(chan struct{}), make(chan struct{})
+	gmailCalls := 0
+	fake := &ggFakeGoogle{
+		threadsList: func(*http.Request) (int, string) { gmailCalls++; return http.StatusOK, `{}` },
+		events: func(r *http.Request) (int, string) {
+			close(started)
+			<-r.Context().Done()
+			close(observed)
+			return http.StatusRequestTimeout, `{}`
+		},
+	}
+	srv := ggServe(t, fake)
+	fetcher := &LiveFetcher{gmail: ggGmailSvc(t, srv), cal: ggCalSvc(t, srv)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := fetcher.FetchPageContext(ctx, KindCalEvent, FetchWindow{}, ""); done <- err }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("calendar cancellation = %v", err)
+	}
+	<-observed
+	if gmailCalls != 0 {
+		t.Fatalf("calendar cancellation touched Gmail %d time(s)", gmailCalls)
+	}
+}
+
 func ggMustJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)

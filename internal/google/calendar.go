@@ -1,6 +1,7 @@
 package google
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,9 +11,7 @@ import (
 
 const calPageSize = 100
 
-// fetchCalendarPage lists events in [Since, Until], expanding recurrence into
-// single instances (SingleEvents=true). Cancelled instances become tombstones.
-func (f *LiveFetcher) fetchCalendarPage(w FetchWindow, cursor string) (Page, error) {
+func (f *LiveFetcher) fetchCalendarPageContext(ctx context.Context, w FetchWindow, cursor string) (Page, error) {
 	calID := w.CalendarID
 	if calID == "" {
 		calID = "primary"
@@ -21,7 +20,8 @@ func (f *LiveFetcher) fetchCalendarPage(w FetchWindow, cursor string) (Page, err
 		SingleEvents(true).
 		MaxResults(calPageSize).
 		ShowDeleted(true).
-		OrderBy("startTime")
+		OrderBy("startTime").
+		Context(ctx)
 	if !w.Since.IsZero() {
 		call = call.TimeMin(w.Since.Format(time.RFC3339))
 	}
