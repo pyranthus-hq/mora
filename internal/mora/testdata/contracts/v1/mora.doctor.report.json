@@ -76,6 +76,7 @@
       "ok": true
     }
   ],
+  "diagnosis": [],
   "git_sync_configured": false,
   "healthy": true,
   "index": {
@@ -97,8 +98,72 @@
     "schema_version": 5,
     "state": "fresh"
   },
+  "observed": [
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "index_db"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "index_embedder"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "index_fresh"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "index_matches_vault"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "operation_healthy:index_rebuild:\u003cid\u003e"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "share_disjoint_from_vault"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "share_staging_clean"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "shares_registry_readable"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "sources_config"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "token_dir"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "tokens_disjoint_from_vault"
+    },
+    {
+      "observed_at": "\u003ctimestamp\u003e",
+      "status": "passed",
+      "subject": "vault"
+    }
+  ],
   "platform": "\u003cgoos\u003e",
   "producers": [],
+  "repair_plan": [],
+  "repairable": false,
   "schema": "mora.doctor.report",
   "schema_version": 1,
   "share_publishes": 0,
@@ -106,5 +171,6 @@
   "sources": [],
   "storage_bytes": 0,
   "storage_status": "ok",
+  "verification": [],
   "version": "dev"
 }
