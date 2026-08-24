@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,34 @@ func emitRetention(stdout io.Writer, jsonOut bool, schema string, value any) err
 	}
 	_, err = fmt.Fprintln(stdout, string(b))
 	return err
+}
+
+// retentionDecisionFlagsFirst preserves value-taking flag pairs while allowing
+// the documented positional-first form. The shared flagsFirst helper is only
+// safe for boolean flags.
+func retentionDecisionFlagsFirst(args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--json" || strings.HasPrefix(a, "--json=") {
+			flags = append(flags, a)
+			continue
+		}
+		if a == "--action" || a == "--class" || a == "--summary" {
+			flags = append(flags, a)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		if strings.HasPrefix(a, "--action=") || strings.HasPrefix(a, "--class=") || strings.HasPrefix(a, "--summary=") {
+			flags = append(flags, a)
+			continue
+		}
+		positional = append(positional, a)
+	}
+	return append(flags, positional...)
 }
 
 func cmdRetention(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -54,7 +83,7 @@ func cmdRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		class := fs.String("class", "", "new class for change-class")
 		summary := fs.String("summary", "", "durable summary for compact")
 		jsonOut := fs.Bool("json", false, "emit JSON receipt")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := fs.Parse(retentionDecisionFlagsFirst(args[1:])); err != nil {
 			return err
 		}
 		if fs.NArg() != 2 {
@@ -70,7 +99,7 @@ func cmdRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fs.SetOutput(stderr)
 		yes := fs.Bool("yes", false, "confirm destructive retention mutation")
 		jsonOut := fs.Bool("json", false, "emit JSON receipt")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
@@ -89,7 +118,7 @@ func cmdRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fs.SetOutput(stderr)
 		yes := fs.Bool("yes", false, "confirm recovery mutation")
 		jsonOut := fs.Bool("json", false, "emit JSON receipt")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {

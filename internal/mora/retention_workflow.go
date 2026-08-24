@@ -611,7 +611,7 @@ func recoverRetentionManifest(ctx context.Context, cfg Config, manifestID string
 		restoredSet[entry.ID] = true
 	}
 	for _, entry := range g.activeSuppress() {
-		if entry.Kind == govKindPrune && entry.Atom.Kind == atomStableID && restoredSet[entry.Atom.Value] {
+		if entry.Kind == govKindPrune && entry.Atom.Kind == atomStableID && restoredSet[entry.Atom.Value] && strings.Contains(entry.Reason, plain.ReportID) {
 			if _, err := revokeGovernanceEntry(cfg, entry.ID); err != nil {
 				return retentionRecoveryReceipt{}, err
 			}

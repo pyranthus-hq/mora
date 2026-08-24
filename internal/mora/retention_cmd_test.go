@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRetentionCLIRequiresReviewAndExplicitConfirmation(t *testing.T) {
@@ -19,5 +20,23 @@ func TestRetentionCLIRequiresReviewAndExplicitConfirmation(t *testing.T) {
 	run(t, "retention", "decide", "--action", "delete", "--json", report.ReportID, "cli-old")
 	if _, err := runErr(t, "retention", "execute", report.ReportID); err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("execution without confirmation err=%v", err)
+	}
+}
+
+func TestRetentionCLIAllowsDocumentedPositionalFirstFlags(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--title", "old", "--text", "old body")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := buildRetentionReport(cfg, time.Now().Add(400*24*time.Hour), 365, 30)
+	if err != nil || len(report.Candidates) == 0 {
+		t.Fatalf("report: %v candidates=%d", err, len(report.Candidates))
+	}
+	out := run(t, "retention", "decide", report.ReportID, report.Candidates[0].ID, "--action", "keep", "--json")
+	if !strings.Contains(out, `"schema": "mora.retention.decision"`) {
+		t.Fatalf("decision receipt: %s", out)
 	}
 }
