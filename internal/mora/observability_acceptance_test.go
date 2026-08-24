@@ -68,6 +68,13 @@ func TestObservabilityStructuredTraceUsesStableStages(t *testing.T) {
 	if len(lines) != 5 {
 		t.Fatalf("trace lines=%d", len(lines))
 	}
+	info, err := os.Stat(filepath.Join(cfg.StateDir, "observability", "traces.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("trace permissions=%v", info.Mode().Perm())
+	}
 	for _, line := range lines {
 		var event traceEvent
 		if err := json.Unmarshal(line, &event); err != nil || event.SchemaVersion != 1 || event.CorrelationID != "op_trace" || event.ObservedAt == "" {

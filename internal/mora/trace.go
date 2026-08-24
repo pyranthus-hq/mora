@@ -2,12 +2,11 @@ package mora
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/pyranthus-hq/mora/internal/atomicio"
 )
 
 const (
@@ -41,7 +40,19 @@ func appendTraceEvent(cfg Config, event traceEvent) error {
 	if err != nil {
 		return err
 	}
-	return atomicio.AppendFile(filepath.Join(cfg.StateDir, "observability", "traces.jsonl"), string(b)+"\n")
+	path := filepath.Join(cfg.StateDir, "observability", "traces.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.WriteString(string(b) + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func queryCorrelationID(seed string, links []string) string {
