@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const ReceiptFlag = "--mora-app-receipt"
@@ -63,6 +64,13 @@ func WriteReceipt(stateDir string, r Receipt) error {
 	return atomicio.Write(Path(stateDir, r.Token), b, 0o600)
 }
 func ReadReceipt(stateDir, token, source string) (Receipt, error) {
+	return ReadReceiptAfter(stateDir, token, source, time.Time{})
+}
+
+// ReadReceiptAfter consumes one token-bound receipt and, when minCompletedAt is
+// set, rejects a receipt produced before the caller launched the app. The token is
+// removed before validation so stale or malformed content cannot be replayed.
+func ReadReceiptAfter(stateDir, token, source string, minCompletedAt time.Time) (Receipt, error) {
 	path := Path(stateDir, token)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -75,6 +83,12 @@ func ReadReceipt(stateDir, token, source string) (Receipt, error) {
 	}
 	if r.Token != token || r.Source != source || r.CompletedAt == "" {
 		return r, fmt.Errorf("protected sync receipt did not match requested source")
+	}
+	if !minCompletedAt.IsZero() {
+		completedAt, parseErr := time.Parse(time.RFC3339, r.CompletedAt)
+		if parseErr != nil || completedAt.Before(minCompletedAt.UTC().Truncate(time.Second)) {
+			return r, fmt.Errorf("protected sync receipt is older than invocation launch time")
+		}
 	}
 	if err := os.RemoveAll(filepath.Dir(path)); err != nil {
 		return r, err

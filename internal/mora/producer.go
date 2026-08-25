@@ -1,12 +1,17 @@
 package mora
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/mattn/go-isatty"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 )
 
@@ -123,6 +128,20 @@ func producerNonInteractive(w io.Writer, args []string) bool {
 // nonInteractive gates ADOPTION only: the evidence is recorded for every run, but a
 // producer is added to expected.json (what turns a later silence into a red banner)
 // only from non-interactive runs.
+func producerStampErrorPath(cfg Config, name string) string {
+	return filepath.Join(filepath.Dir(producerStatusPath(cfg)), name+".stamp_error.json")
+}
+
+type producerStampError struct {
+	Producer    string `json:"producer"`
+	AttemptedAt string `json:"attempted_at"`
+	Error       string `json:"error"`
+}
+
+// mutateProducersFn is injectable so stamp failures are tested without weakening
+// the real ledger's cross-process mutation semantics.
+var mutateProducersFn = mutateProducers
+
 func withProducerStamp(cfg Config, name string, now time.Time, nonInteractive bool, fn func() error) error {
 	var runErr error
 	if fn != nil {
@@ -131,7 +150,7 @@ func withProducerStamp(cfg Config, name string, now time.Time, nonInteractive bo
 	if name == "" {
 		return runErr
 	}
-	stampErr := mutateProducers(cfg, func(m map[string]producerStatus) error {
+	stampErr := mutateProducersFn(cfg, func(m map[string]producerStatus) error {
 		ps := m[name]
 		ps.Name = name
 		ps.LastAttemptAt = now.UTC().Format(time.RFC3339)
@@ -153,7 +172,17 @@ func withProducerStamp(cfg Config, name string, now time.Time, nonInteractive bo
 	})
 	if stampErr != nil {
 		warnf(os.Stderr, "producer stamp for %s failed (health may lag): %v", name, stampErr)
+		errRec := producerStampError{Producer: name, AttemptedAt: now.UTC().Format(time.RFC3339), Error: stampErr.Error()}
+		if b, marshalErr := json.Marshal(errRec); marshalErr == nil {
+			_ = atomicio.Write(producerStampErrorPath(cfg, name), b, 0o600)
+		}
+		stampFailure := fmt.Errorf("producer stamp for %s failed: %w", name, stampErr)
+		if runErr != nil {
+			return errors.Join(runErr, stampFailure)
+		}
+		return stampFailure
 	}
+	_ = os.Remove(producerStampErrorPath(cfg, name))
 	return runErr
 }
 
@@ -166,12 +195,19 @@ func withProducerStamp(cfg Config, name string, now time.Time, nonInteractive bo
 func stampChokepoint(cfg Config, stdout io.Writer, args []string, derived string, now time.Time, errp *error) {
 	name := producerNameFor(derived, args)
 	nonInteractive := producerNonInteractive(stdout, args)
-	_ = withProducerStamp(cfg, name, now, nonInteractive, func() error {
+	stampErr := withProducerStamp(cfg, name, now, nonInteractive, func() error {
 		if errp != nil {
 			return *errp
 		}
 		return nil
 	})
+	if stampErr != nil && errp != nil {
+		if *errp == nil {
+			*errp = stampErr
+		} else if !strings.Contains((*errp).Error(), stampErr.Error()) {
+			*errp = errors.Join(*errp, stampErr)
+		}
+	}
 }
 
 func appendSuccessTime(times []string, now time.Time) []string {
@@ -226,7 +262,26 @@ func producerHealthAll(cfg Config, now time.Time) []producerHealth {
 	if err != nil {
 		return healthpkg.ProducerLedgerFailure(err)
 	}
-	return healthpkg.ClassifyProducers(expected, status, now, producerDefaultInterval)
+	classified := healthpkg.ClassifyProducers(expected, status, now, producerDefaultInterval)
+	for i := range classified {
+		stampBytes, readErr := os.ReadFile(producerStampErrorPath(cfg, classified[i].Name))
+		if readErr != nil {
+			continue
+		}
+		var stampErr producerStampError
+		if json.Unmarshal(stampBytes, &stampErr) != nil || stampErr.AttemptedAt == "" || stampErr.Error == "" {
+			continue
+		}
+		attemptedAt, parseErr := time.Parse(time.RFC3339, stampErr.AttemptedAt)
+		lastSuccessAt, successErr := time.Parse(time.RFC3339, classified[i].LastSuccessAt)
+		if parseErr != nil || (successErr == nil && attemptedAt.Before(lastSuccessAt)) {
+			continue // a later successful stamp supersedes this retained sidecar.
+		}
+		classified[i].State = prodFailed
+		classified[i].LastError = "producer stamp failed: " + stampErr.Error
+		classified[i].LastAttemptAt = stampErr.AttemptedAt
+	}
+	return classified
 }
 
 // attemptAfterSuccess reports whether the latest ATTEMPT postdates the latest
@@ -245,6 +300,7 @@ func briefArtifactFresh(cfg Config, now time.Time) (bool, bool) {
 // it removes both the expectation and the evidence, so an adoption you regret — or a
 // job you truly stopped — is not a permanent red banner. Idempotent.
 func forgetProducerLedger(cfg Config, name string) error {
+	_ = os.Remove(producerStampErrorPath(cfg, name))
 	if err := mutateProducers(cfg, func(m map[string]producerStatus) error {
 		delete(m, name)
 		return nil
