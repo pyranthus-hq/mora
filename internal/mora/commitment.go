@@ -135,13 +135,21 @@ func commitmentCounterparty(m Memory, cfg Config) (govAtom, bool) {
 // anaphoric acceptance with corroborating object overlap.
 
 func classifyCommitments(m Memory, cfg Config) []Commitment {
+	// Two-lane gate (#295): an informational-lane WhatsApp memory may inform the
+	// brief but can NEVER create a commitment/task. Fails closed on missing lane
+	// metadata.
+	if isWhatsAppInformationalMemory(m) {
+		return nil
+	}
 	return commitmentclassify.Classify(m, commitmentclassify.Options{SelfEmails: selfEmails(cfg), ServiceOnly: memoryIsServiceOnly(m)})
 }
 
 func commitmentEvidenceFromMemories(mems []Memory, cfg Config) []commitmentEvidence {
 	eligible := make([]Memory, 0, len(mems))
 	for _, m := range mems {
-		if m.DeletedAt == "" && !meetingpkg.IsMeetingNotification(m) && !memoryIsServiceOnly(m) {
+		// Two-lane gate (#295): informational-lane WhatsApp memories never feed
+		// commitment evidence. Fails closed on missing lane metadata.
+		if m.DeletedAt == "" && !meetingpkg.IsMeetingNotification(m) && !memoryIsServiceOnly(m) && !isWhatsAppInformationalMemory(m) {
 			eligible = append(eligible, m)
 		}
 	}

@@ -19,7 +19,7 @@ func PrepareMapped(mm memory.MappedMemory, existing *memory.Memory) (memory.Memo
 	if existing == nil {
 		return m, false
 	}
-	evidenceMigration := mm.Provider == "imessage" && existing.Meta["message_evidence_schema"] == nil && mm.Meta["message_evidence_schema"] != nil
+	evidenceMigration := (mm.Provider == "imessage" || mm.Provider == "whatsapp") && existing.Meta["message_evidence_schema"] == nil && mm.Meta["message_evidence_schema"] != nil
 	if existing.ContentHash == mm.ContentHash && mm.DeletedAt == "" && !evidenceMigration {
 		return m, true
 	}

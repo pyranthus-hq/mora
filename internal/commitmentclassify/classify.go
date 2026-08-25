@@ -46,9 +46,9 @@ func participantPairs(value any) []map[string]string {
 func reportedActorFor(m memory.Memory, text string, counterparty, self commitment.Atom) (*commitment.Atom, bool) {
 	var candidates []commitment.NamedActor
 	var selfNames []string
-	if commitment.IsIMessage(m) {
+	if commitment.IsConversation(m) {
 		for _, pair := range participantPairs(m.Meta["participants"]) {
-			atom := commitment.Atom{Provider: "imessage", Kind: commitment.AtomHandle, Value: identity.Normalize(commitment.AtomHandle, pair["handle"])}
+			atom := commitment.Atom{Provider: m.Provider, Kind: commitment.AtomHandle, Value: identity.Normalize(commitment.AtomHandle, pair["handle"])}
 			if commitment.EqualAtom(counterparty, atom) {
 				candidates = append(candidates, commitment.NamedActor{Atom: atom, Name: pair["name"]})
 			}
@@ -124,7 +124,7 @@ func Classify(m memory.Memory, opts Options) []commitment.Record {
 	if !ok {
 		return nil
 	}
-	if commitment.IsIMessage(m) {
+	if commitment.IsConversation(m) {
 		if messages, present := imessage.CommitmentMessages(m); present {
 			for _, message := range messages {
 				if commitment.PastedCorrespondence(message.Body) {

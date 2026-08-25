@@ -201,8 +201,8 @@ memories. `mora forget` is the lasting local removal tool.
 
 ## Connect data
 
-Mora has six connectors: Gmail, Google Calendar, filesystem, iMessage, Apple
-Calendar, and GitHub Issues.
+Mora has seven connectors: Gmail, Google Calendar, filesystem, iMessage,
+WhatsApp, Apple Calendar, and GitHub Issues.
 
 See their state with:
 
@@ -344,6 +344,37 @@ If setup reports a permission error, complete the
 
 ```bash
 mora sync imessage
+```
+
+### WhatsApp
+
+WhatsApp v1 reads WhatsApp Desktop's own local macOS store. Enabling consent and
+ingestion are intentionally separate; there is no login or `connect` verb:
+
+```bash
+mora connectors enable whatsapp
+mora ingest run --source whatsapp
+```
+
+The default window is 90 days. One chat becomes one memory, newest messages are
+kept when a transcript exceeds its byte budget, and non-text messages use typed
+placeholders. Group sender names come from WhatsApp's group-member records with
+the message push name as a fallback.
+
+WhatsApp uses a two-lane relevance gate. Direct chats enter the
+`personal_action` lane and may contribute evidence-backed obligations. A group
+can enter the informational `intelligence` lane only when you sent at least one
+message there during the ingest window and it has substantive text or
+recoverable contact/location/document structure. Message volume by other people
+never raises a group's priority. Groups you did not participate in, along with
+reaction-only, repeated-media-only, system-only, and low-information changes,
+are acknowledged without being displayed. Group traffic cannot create tasks or
+urgent items. Surfaced items include the chosen lane and inclusion rationale.
+
+Refresh it with:
+
+```bash
+mora sync whatsapp
 ```
 
 ### Apple Calendar
@@ -1328,9 +1359,9 @@ live under the named `entities` key alongside `schema` and `schema_version`.
 The exact boundary is:
 
 - Mora reads enabled sources. It does not write to Gmail, calendars, iMessage,
-  files, or GitHub Issues.
+  WhatsApp, files, or GitHub Issues.
 - Google uses read-only OAuth scopes. GitHub Issues uses read-only API calls.
-- iMessage uses SQLite `mode=ro`. Apple Calendar uses `mode=ro` plus
+- iMessage and WhatsApp use SQLite `mode=ro`. Apple Calendar uses `mode=ro` plus
   `query_only(1)` and reads the live write-ahead log.
 - The vault, index, tokens, sync state, and local usage log stay on the computer
   by default.

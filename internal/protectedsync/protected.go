@@ -36,7 +36,9 @@ type Options struct {
 	Rand                   io.Reader
 }
 
-func IsSource(source string) bool { return source == "imessage" || source == "applecalendar" }
+func IsSource(source string) bool {
+	return source == "imessage" || source == "whatsapp" || source == "applecalendar"
+}
 func Path(stateDir, token string) string {
 	return filepath.Join(stateDir, "protected-sync", token+".json")
 }

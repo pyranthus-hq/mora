@@ -12,6 +12,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/imessage"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/whatsapp"
 )
 
 func sourceInstanceKey(m memory.Memory) (string, bool) { return SourceInstanceKey(m) }
@@ -245,6 +246,9 @@ func TestConnectorProviderKeysReconcile(t *testing.T) {
 		},
 		"imessage": func() string {
 			return imessage.MapConversationFn(nil)(memory.Item{Kind: imessage.KindIMessageChat}, "global", 0).Provider
+		},
+		"whatsapp": func() string {
+			return whatsapp.MapConversationFn()(memory.Item{Kind: whatsapp.KindConversation}, "global", 0).Provider
 		},
 		"applecalendar": func() string {
 			return memory.MapItem(memory.Item{Kind: applecal.KindAppleCalEvent}, "global", 0).Provider

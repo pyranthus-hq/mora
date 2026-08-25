@@ -58,7 +58,7 @@ func isGmail(m memory.Memory) bool {
 	return strings.EqualFold(m.Provider, "gmail") || strings.Contains(strings.ToLower(m.ProviderID), "gmail")
 }
 func Derive(m memory.Memory) ([]Row, *Diagnostic) {
-	if m.Provider == "imessage" || m.Type == "imessage" {
+	if m.Provider == "imessage" || m.Type == "imessage" || m.Provider == "whatsapp" || m.Type == "whatsapp" {
 		return deriveIMessage(m)
 	}
 	if !isGmail(m) {
@@ -143,6 +143,10 @@ func deriveIMessage(m memory.Memory) ([]Row, *Diagnostic) {
 		lastEnd = e.BlockEnd
 		audience := "direct"
 		if group, _ := m.Meta["is_group"].(bool); group {
+			audience = "group"
+		}
+		// WhatsApp encodes the same fact as chat_kind: "group" | "direct".
+		if kind, _ := m.Meta["chat_kind"].(string); kind == "group" {
 			audience = "group"
 		}
 		rows = append(rows, Row{EvidenceRef: e.EvidenceRef, MemoryID: m.ID, Sender: e.Sender, At: e.At, BlockRefs: []string{fmt.Sprintf("bytes:%d-%d", e.BlockStart, e.BlockEnd), fmt.Sprintf("from_me:%t", *e.FromMe), "audience:" + audience}, Text: m.Text[e.BlockStart:e.BlockEnd]})

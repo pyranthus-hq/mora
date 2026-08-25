@@ -1,7 +1,7 @@
 # Mora — Architecture Spec
 
 Mora is a local-first memory CLI for any agent. One pure-Go binary ingests
-Gmail, Google Calendar, selected files, iMessage, Apple Calendar, and GitHub
+Gmail, Google Calendar, selected files, iMessage, WhatsApp, Apple Calendar, and GitHub
 issues into readable Markdown. It indexes the
 Markdown in an embedded `modernc.org/sqlite` database. The index has FTS5,
 per-row vectors, and a derived person graph. Mora serves the data to any MCP
@@ -107,7 +107,7 @@ flowchart TD
 5. **Synthesize** — `think`, `digest`, and `context_memory` are deterministic, **model-free** (Mora holds no API key): `think` emits a `SynthesisPrompt` + gap analysis the caller's model runs; `digest`/`context_memory` assemble byte-stable briefs. See [synthesis: think/digest](./07-synthesis-think-digest.md).
 6. **Serve** — `serveMCP` (mcp.go) is a line-oriented stdio JSON-RPC 2.0 server exposing thirteen tools. Every `tools/call` return is wrapped in a spec `CallToolResult`. See [MCP server](./06-mcp-server.md). The same data is reachable from the CLI. See [CLI & UX](./08-cli-and-ux.md). Freshness is honest-snapshot, surfaced as a first-class output. See [sync & freshness](./11-sync-and-freshness.md).
 
-<!-- generated-contract: module=github.com/pyranthus-hq/mora mcp-tools=13 connectors=6 rrf-k=10 segment-k=10 -->
+<!-- generated-contract: module=github.com/pyranthus-hq/mora mcp-tools=13 connectors=7 rrf-k=10 segment-k=10 -->
 
 ## Package & responsibility map
 
@@ -168,6 +168,7 @@ flowchart TD
 | `internal/index` | `internal/atomicio`, `internal/config`, `internal/memory` | Embedded SQLite index storage and consistency boundary: DSNs/schema probes, deterministic manifests, failure metadata, crash-durable pending operations, and vault/index identity safety (`.mora-vault.json`, advisory rebuild-block record, legacy-safe bound-ID reads, pure rebuild verdicts, and exact refusal text). Mora retains rebuild/upsert transaction ownership, force/auto-heal policy, graph/vector construction, and CLI orchestration. |
 | `internal/ingest` | `internal/atomicio`, `internal/config`, `internal/google`, `internal/memory`, `internal/memoryfile` | Connector-ingest mechanics: journal/lease lifecycle, sync-status honesty, planning/window policy, and mapped-memory publication preparation (canonical conversion/path, unchanged skip, evidence migration). Mora directly injects process, identity, clock, path, and removal facts; governance leases, rendering/writes, fetch/dispatch, index transaction ordering, and commands remain in the composition root. |
 | `internal/registry` | `internal/atomicio`, `internal/config`, `internal/genericutil`, `internal/leasefile`, `internal/memory` | Connector/source catalog and durable registry boundary: descriptors, instance identity, atomic `sources.json`, consent normalization, helpers/platform filtering, plus the crash-safe 30-second/two-second source-registry lease and reload-under-lock RMW. Connector identity/catalog contracts are tested directly in-package; Mora retains mutation authorization, connector dispatch, CLI consent, and orchestration. |
+| `internal/whatsapp` | `internal/memory`, `modernc.org/sqlite` (read-only DSN) | macOS WhatsApp connector: read-only `ChatStorage.sqlite`, one-memory-per-conversation, typed placeholders, inverted truncation, and the mandatory two-lane relevance gate metadata. **No network imports; never opens `Axolotl.sqlite`.** |
 | `internal/applecal` | `internal/memory`, `modernc.org/sqlite` (read-only DSN) | macOS Apple Calendar connector: read-only `Calendar.sqlitedb`, one-memory-per-event, Core Data timestamp conversion. |
 | `internal/githubissues` | `internal/memory`, stdlib HTTP | Read-only GitHub Issues connector over an explicit repository allowlist; emits stable issue memories and immutable local receipts. |
 | `internal/pdftext` | `github.com/ledongthuc/pdf` | Pure-Go, recover-wrapped, size/page/text-bounded local PDF text extraction; skips null/garbled pages and never performs OCR. Mora owns attachment governance, derived-memory construction/writes, and filesystem-ingest orchestration. |
@@ -218,6 +219,7 @@ These span subsystems. Each subsystem doc enforces its own. These are the rules 
 | [20 — Index health](./20-index-health.md) | Dirty/fresh index state, generation markers, ingest journals, recovery, and the fail-closed read contract. |
 | [21 — Teach and human correction](./21-teach.md) | The local human-review plane: typed identity proposals, reversible commitment verdicts, authored-memory revision history, decision validity, consent-gated examples, and deterministic governance rebuilds. |
 | [22 — The Mora machine contract](./22-cli-contracts.md) | **The published contract for programs that call Mora**: the versioned JSON envelope and its one breaking shape change, the stdout/stderr split, the exit-code table, the error-code taxonomy, `--json` coverage and its declared exemptions, `mora capabilities` as the discovery entry point, and the backward-compatibility guarantee — each claim naming the test that enforces it. Consumer-facing; 08 holds the implementation. |
+| [23 — WhatsApp Connector](./23-connectors-whatsapp.md) | Read-only local `ChatStorage.sqlite` ingest with typed placeholders and a group-safe two-lane relevance gate: intelligence lane informs the brief, only owner-addressed obligations become tasks. |
 
 ## Glossary
 

@@ -34,6 +34,15 @@ func IsGmail(m memory.Memory) bool {
 func IsIMessage(m memory.Memory) bool {
 	return strings.EqualFold(m.Provider, "imessage") || strings.Contains(strings.ToLower(m.ProviderID), "imessage")
 }
+
+// IsWhatsApp reports whether provider identity identifies a WhatsApp memory.
+func IsWhatsApp(m memory.Memory) bool { return strings.EqualFold(m.Provider, "whatsapp") }
+
+// IsConversation reports whether m is a chat-transcript memory (iMessage or
+// WhatsApp). Both mint participants/handle metadata, so counterparty
+// resolution treats them identically; the atom carries the memory's own
+// provider so governance keys never collapse the two channels.
+func IsConversation(m memory.Memory) bool { return IsIMessage(m) || IsWhatsApp(m) }
 func metaStrings(value any) []string {
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -82,14 +91,14 @@ func Counterparty(m memory.Memory, self map[string]bool) (Atom, bool) {
 				candidates = append(candidates, Atom{Kind: AtomAddress, Value: identity.Normalize(AtomAddress, value)})
 			}
 		}
-	} else if IsIMessage(m) {
+	} else if IsConversation(m) {
 		selfTokens := identity.SelfNameTokens(self)
 		for _, pair := range participantPairs(m.Meta["participants"]) {
 			if ParticipantNameIsSelf(pair["name"], selfTokens) {
 				continue
 			}
 			if value := strings.TrimSpace(pair["handle"]); value != "" {
-				candidates = append(candidates, Atom{Provider: "imessage", Kind: AtomHandle, Value: identity.Normalize(AtomHandle, value)})
+				candidates = append(candidates, Atom{Provider: m.Provider, Kind: AtomHandle, Value: identity.Normalize(AtomHandle, value)})
 			}
 		}
 	}
@@ -122,9 +131,9 @@ func CounterpartyKeys(m memory.Memory, counterparty Atom) []string {
 			}
 		}
 	}
-	if IsIMessage(m) {
+	if IsConversation(m) {
 		for _, pair := range participantPairs(m.Meta["participants"]) {
-			atom := Atom{Provider: "imessage", Kind: AtomHandle, Value: identity.Normalize(AtomHandle, pair["handle"])}
+			atom := Atom{Provider: m.Provider, Kind: AtomHandle, Value: identity.Normalize(AtomHandle, pair["handle"])}
 			if !EqualAtom(atom, counterparty) {
 				continue
 			}

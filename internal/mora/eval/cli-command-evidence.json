@@ -335,7 +335,7 @@
     },
     {
       "name": "sync",
-      "paths": ["sync", "sync status", "sync google", "sync github", "sync filesystem", "sync imessage", "sync applecalendar", "sync git"],
+      "paths": ["sync", "sync status", "sync google", "sync github", "sync filesystem", "sync imessage", "sync whatsapp", "sync applecalendar", "sync git"],
       "evidence": {
         "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes", "TestGitHubStatusPathAndCatalogContract"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
         "json": {"status": "test", "tests": ["TestContractMutationJSONReceipts", "TestContractLeafJSONReceipts"], "reason": "sync status and every per-source re-sync verb emit receipts; sync git stays a text transport surface."},

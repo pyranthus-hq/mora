@@ -133,8 +133,8 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 	if !ok {
 		return fmt.Errorf("unknown connector %q; run `mora connectors list`", ctype)
 	}
-	if runtimeGOOS() == "windows" && macOSOnlyConnector(ctype) {
-		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on Windows.\n", info.DisplayName)
+	if runtimeGOOS() != "darwin" && macOSOnlyConnector(ctype) {
+		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on %s.\n", info.DisplayName, runtimeGOOS())
 		return fmt.Errorf("%s is macOS-only", ctype)
 	}
 	if info.NeedsAuth {
@@ -203,6 +203,12 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 		if runtimeGOOS() != "darwin" {
 			fmt.Fprintf(stderr, "note: iMessage ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
+		return nil
+	}
+	if ctype == "whatsapp" {
+		okf(stdout, "enabled whatsapp. WhatsApp reads its local ChatStorage.sqlite database — no login needed.")
+		fmt.Fprintln(stdout, "Next: grant Full Disk Access once, then run `mora ingest run --source whatsapp`.")
+		fmt.Fprintln(stdout, "Group chats are informational-only; they cannot create tasks or urgent items.")
 		return nil
 	}
 	if ctype == "applecalendar" {

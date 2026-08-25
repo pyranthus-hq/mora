@@ -44,6 +44,7 @@ var catalog = []Info{
 	// Provider "applecal" (internal/applecal), so the entry carries the alias —
 	// without it, applecal memories never reconcile with this instance and
 	// silently vanish from the delta brief.
+	{Type: "whatsapp", DisplayName: "WhatsApp", NeedsAuth: false, Ingesting: true, Rank: 1, Label: "WhatsApp"},
 	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)", Provider: "applecal", Upcoming: true},
 	{Type: "github", DisplayName: "GitHub Issues", NeedsAuth: false, Ingesting: true, Rank: 4, Label: "GitHub Issues"},
 }
@@ -64,7 +65,7 @@ func Lookup(ctype string) (Info, bool) {
 
 func MacOSOnly(ctype string) bool {
 	switch ctype {
-	case "imessage", "applecalendar", "addressbook":
+	case "imessage", "whatsapp", "applecalendar", "addressbook":
 		return true
 	default:
 		return false

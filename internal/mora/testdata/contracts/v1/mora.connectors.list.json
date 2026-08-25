@@ -32,6 +32,12 @@
     },
     {
       "enabled": false,
+      "name": "WhatsApp",
+      "needs_auth": false,
+      "type": "whatsapp"
+    },
+    {
+      "enabled": false,
       "name": "iMessage",
       "needs_auth": false,
       "type": "imessage"
