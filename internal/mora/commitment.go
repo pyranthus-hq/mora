@@ -10,6 +10,7 @@ import (
 	commitmentpkg "github.com/pyranthus-hq/mora/internal/commitment"
 	"github.com/pyranthus-hq/mora/internal/commitmentclassify"
 	meetingpkg "github.com/pyranthus-hq/mora/internal/meeting"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -278,6 +279,27 @@ func attachCommitment(line *CitedBriefLine, commitment Commitment) {
 }
 
 func writeCommitments(ctx context.Context, tx *sql.Tx, generation string, mems []Memory, cfg Config, now time.Time) error {
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return err
+	}
+	commitments := applyTeachCommitments(materializeCommitments(mems, cfg, now), governance, cfg)
+	memByID := make(map[string]Memory, len(mems))
+	for _, m := range mems {
+		memByID[m.ID] = m
+	}
+	return insertCommitmentRows(ctx, tx, generation, commitments, memByID)
+}
+
+// insertCommitmentRows persists derived commitments with a deterministic twin
+// defense (issue #495): when two vault files still derive the SAME non-empty
+// commitment_id and are provably instance twins of ONE provider object (an
+// unsuffixed pre-#475 file plus its account-suffixed canonical form), only the
+// suffixed file's row survives — with a warning naming both paths — instead of
+// a raw SQLite UNIQUE-constraint crash. Two memories that are NOT twins derive
+// genuinely distinct commitments even when an evidence ref collides; that stays
+// a hard, explicit error rather than a silent merge.
+func insertCommitmentRows(ctx context.Context, tx *sql.Tx, generation string, commitments []Commitment, memByID map[string]Memory) error {
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO commitments (generation, row_key, commitment_id, memory_id, payload)
 		 VALUES (?, ?, ?, ?, ?)`)
@@ -285,11 +307,12 @@ func writeCommitments(ctx context.Context, tx *sql.Tx, generation string, mems [
 		return err
 	}
 	defer stmt.Close()
-	governance, err := loadGovernance(cfg)
+	delStmt, err := tx.PrepareContext(ctx, `DELETE FROM commitments WHERE commitment_id = ?`)
 	if err != nil {
 		return err
 	}
-	commitments := applyTeachCommitments(materializeCommitments(mems, cfg, now), governance, cfg)
+	defer delStmt.Close()
+	inserted := map[string]string{} // commitment_id -> memory_id of the row currently in the table
 	for i, commitment := range commitments {
 		payload, err := json.Marshal(commitment)
 		if err != nil {
@@ -300,11 +323,71 @@ func writeCommitments(ctx context.Context, tx *sql.Tx, generation string, mems [
 			sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%s", commitment.OpenedBy.MemoryID, i, commitment.Direction, commitment.Summary)))
 			rowKey = "legacy:" + hex.EncodeToString(sum[:])
 		}
+		if cid := commitment.ID; cid != "" {
+			prevMemID, dup := inserted[cid]
+			if dup && prevMemID == commitment.OpenedBy.MemoryID {
+				continue // same memory re-derived this id; keep the first derivation
+			}
+			if dup {
+				keep, drop, twin := canonicalInstanceTwin(memByID[prevMemID], memByID[commitment.OpenedBy.MemoryID])
+				if !twin {
+					return fmt.Errorf("commitments: %s and %s both derive commitment_id %s but are not instance twins of one provider object; refusing to silently merge — remove or teach-supersede one of them",
+						memoryDisplayRef(memByID, prevMemID), memoryDisplayRef(memByID, commitment.OpenedBy.MemoryID), cid)
+				}
+				if keep.ID == prevMemID {
+					continue // the already-inserted row is already the canonical (suffixed) twin
+				}
+				fmt.Fprintf(os.Stderr, "warn: duplicate commitment %s derived by twin files; keeping suffixed %s over legacy %s\n",
+					cid, memoryDisplayRef(memByID, keep.ID), memoryDisplayRef(memByID, drop.ID))
+				if _, err := delStmt.ExecContext(ctx, cid); err != nil {
+					return err
+				}
+			}
+			inserted[cid] = commitment.OpenedBy.MemoryID
+		}
 		if _, err := stmt.ExecContext(ctx, generation, rowKey, nullStr(commitment.ID), commitment.OpenedBy.MemoryID, string(payload)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func memoryDisplayRef(memByID map[string]Memory, id string) string {
+	if m, ok := memByID[id]; ok && m.Path != "" {
+		return m.Path
+	}
+	return id
+}
+
+// instanceBaseOf splits an account-suffixed memory id ("gmail_thread/t1@work")
+// into its provider-object base id, mirroring the connector-side suffix rule.
+func instanceBaseOf(m Memory) (base string, suffixed bool) {
+	if m.Account != "" {
+		if b, ok := strings.CutSuffix(m.ID, "@"+m.Account); ok {
+			return b, true
+		}
+	}
+	return m.ID, false
+}
+
+// canonicalInstanceTwin decides whether two memories are the unsuffixed/
+// suffixed pair of ONE provider object (#495) and which is canonical. Twins
+// share Provider, a non-empty ProviderID, and the same base id, with exactly
+// one carrying the account suffix. The SUFFIXED side always wins.
+func canonicalInstanceTwin(a, b Memory) (keep, drop Memory, ok bool) {
+	if a.Provider == "" || a.Provider != b.Provider ||
+		a.ProviderID == "" || a.ProviderID != b.ProviderID {
+		return Memory{}, Memory{}, false
+	}
+	baseA, sufA := instanceBaseOf(a)
+	baseB, sufB := instanceBaseOf(b)
+	if baseA != baseB || sufA == sufB {
+		return Memory{}, Memory{}, false
+	}
+	if sufA {
+		return a, b, true
+	}
+	return b, a, true
 }
 
 func readCommitmentSnapshot(ctx context.Context, cfg Config) (commitmentSnapshot, error) {
