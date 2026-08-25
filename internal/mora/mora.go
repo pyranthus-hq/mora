@@ -98,6 +98,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	switch cmd {
 	case "init":
 		return cmdInit(ctx, args[1:], stdout, stderr, stdin)
+	case "setup":
+		return cmdSetup(ctx, args[1:], stdout, stderr, stdin)
 	case "write":
 		return cmdWrite(ctx, args[1:], stdout, stderr)
 	case "read":
@@ -226,6 +228,8 @@ func printUsage(w io.Writer) {
 
 USAGE:
   mora init --vault ~/vault/mora
+  mora setup --plan                # read-only verified-onboarding foundation plan
+  mora setup status --json         # machine-readable foundation status
   mora write --scope project:acme --type decision --title "OAuth" --text "..."
   mora search "OAuth status" --scope project:acme --json
   mora entities                    # the people/projects/topics across your memory

@@ -169,6 +169,18 @@ mora init
 mora doctor
 ```
 
+The verified-onboarding foundation can also be reconciled independently:
+
+```bash
+mora setup --plan        # read-only: config/vault/index/token-storage checks
+mora setup               # repair and verify that local foundation (in a terminal)
+mora setup status --json # machine-readable foundation status
+```
+
+This first `mora setup` slice deliberately does not yet verify connector reads,
+MCP registration, schedules, updates, or retrieval. It will not call those
+external flows or claim Mora is fully usable.
+
 The default vault is `~/vault/mora`. To choose another path:
 
 ```bash

@@ -235,6 +235,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "setup",
+      "payload": "",
+      "platform": "all",
+      "reason": "human reconciliation; stable machine status is mora setup status --json"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "share",
       "payload": "",
       "platform": "all",
