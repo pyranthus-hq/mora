@@ -797,8 +797,10 @@ func isIMessageMemory(m Memory) bool { return meetingpkg.IsIMessage(m) }
 // two-lane relevance gate's informational (or excluded) lane — i.e. anything
 // that is NOT a verified owner-addressed personal action. Informational lane
 // memories may inform the brief but can never create tasks or urgent items
-// (#295). Memories with no lane metadata at all still count as informational:
-// the gate fails CLOSED.
+// (#295). The gate fails CLOSED on inconsistent as well as missing metadata:
+// personal_action is only honored on a consistent DIRECT-chat tuple
+// (relevance_lane=personal_action AND chat_kind=direct), so a group memory with
+// a lost or spoofed lane can never become actionable.
 func isWhatsAppInformationalMemory(m Memory) bool {
 	if !strings.EqualFold(m.Provider, "whatsapp") {
 		return false
@@ -807,7 +809,8 @@ func isWhatsAppInformationalMemory(m Memory) bool {
 		return true
 	}
 	lane, _ := m.Meta["relevance_lane"].(string)
-	return lane != "personal_action"
+	kind, _ := m.Meta["chat_kind"].(string)
+	return lane != "personal_action" || kind != "direct"
 }
 
 // conversationProvider reports which chat channel a conversation memory came
