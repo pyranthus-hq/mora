@@ -373,7 +373,10 @@ func instanceBaseOf(m Memory) (base string, suffixed bool) {
 // canonicalInstanceTwin decides whether two memories are the unsuffixed/
 // suffixed pair of ONE provider object (#495) and which is canonical. Twins
 // share Provider, a non-empty ProviderID, and the same base id, with exactly
-// one carrying the account suffix. The SUFFIXED side always wins.
+// one carrying the account suffix; the unsuffixed side must carry NO account
+// label of its own (an account-labeled unsuffixed memory is a distinct
+// instance, not legacy residue — provider ids can be account-local). The
+// SUFFIXED side always wins.
 func canonicalInstanceTwin(a, b Memory) (keep, drop Memory, ok bool) {
 	if a.Provider == "" || a.Provider != b.Provider ||
 		a.ProviderID == "" || a.ProviderID != b.ProviderID {
@@ -385,7 +388,13 @@ func canonicalInstanceTwin(a, b Memory) (keep, drop Memory, ok bool) {
 		return Memory{}, Memory{}, false
 	}
 	if sufA {
+		if b.Account != "" {
+			return Memory{}, Memory{}, false
+		}
 		return a, b, true
+	}
+	if a.Account != "" {
+		return Memory{}, Memory{}, false
 	}
 	return b, a, true
 }

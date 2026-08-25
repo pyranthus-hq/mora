@@ -46,16 +46,28 @@ func migrateLegacyInstanceFile(cfg Config, mm memory.MappedMemory) {
 		return // default-instance write; nothing to migrate
 	}
 	canonicalPath := ingestpkg.MappedTargetPath(cfg, mm)
-	if _, err := os.Stat(canonicalPath); err != nil {
-		return // canonical not published — never remove evidence without its replacement
+	// Lstat + IsRegular on BOTH sides: a symlinked canonical (or legacy) could
+	// otherwise alias the same underlying file, and removing the "legacy" path
+	// would destroy the only real copy behind a dangling link.
+	if fi, err := os.Lstat(canonicalPath); err != nil || !fi.Mode().IsRegular() {
+		return // canonical not published as a regular file — never remove evidence without its replacement
 	}
 	legacyPath := filepath.Join(memfile.SourcesRoot(cfg), mm.Provider,
 		memfile.OSSafeBase(memory.SafeFilename(baseID))+".md")
 	if legacyPath == canonicalPath {
 		return // defensive: must be unreachable for a genuinely suffixed id
 	}
-	if _, err := os.Stat(legacyPath); err != nil {
+	if fi, err := os.Lstat(legacyPath); err != nil {
 		return // no legacy file — the common, already-migrated case
+	} else if !fi.Mode().IsRegular() {
+		warnLegacyInstance("not a regular file; leaving in place", legacyPath, canonicalPath, nil)
+		return
+	}
+	// The canonical file must itself prove it is the suffixed form of this
+	// record before anything is retired on its authority.
+	if canon, err := parseMemory(canonicalPath); err != nil || canon.ID != mm.StableID {
+		warnLegacyInstance("canonical file failed identity check; leaving legacy in place", legacyPath, canonicalPath, err)
+		return
 	}
 	parsed, err := parseMemory(legacyPath)
 	if err != nil {

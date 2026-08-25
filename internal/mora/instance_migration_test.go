@@ -245,6 +245,41 @@ func TestIndexRebuildSurvivesStrayInstanceTwin(t *testing.T) {
 	}
 }
 
+// TestCanonicalInstanceTwinRejectsLabeledUnsuffixed — an unsuffixed memory
+// that carries its OWN account label is a distinct instance (provider ids can
+// be account-local), never legacy residue: rebuild dedup must not merge it.
+func TestCanonicalInstanceTwinRejectsLabeledUnsuffixed(t *testing.T) {
+	labeled := Memory{ID: "gmail_thread/t1", Account: "home", Provider: "gmail", ProviderID: "t1"}
+	suffixed := Memory{ID: "gmail_thread/t1@work", Account: "work", Provider: "gmail", ProviderID: "t1"}
+	if _, _, ok := canonicalInstanceTwin(labeled, suffixed); ok {
+		t.Fatal("account-labeled unsuffixed memory must not be treated as a legacy twin")
+	}
+	if _, _, ok := canonicalInstanceTwin(suffixed, labeled); ok {
+		t.Fatal("twin detection must reject the labeled-unsuffixed pair in either order")
+	}
+	legacy := Memory{ID: "gmail_thread/t1", Provider: "gmail", ProviderID: "t1"}
+	keep, drop, ok := canonicalInstanceTwin(legacy, suffixed)
+	if !ok || keep.ID != suffixed.ID || drop.ID != legacy.ID {
+		t.Fatalf("true legacy twin must still resolve suffixed-wins: keep=%q drop=%q ok=%v", keep.ID, drop.ID, ok)
+	}
+}
+
+// TestInstanceMigrationLeavesLegacyWhenCanonicalIsSymlink — a canonical path
+// that is a symlink (possibly aliasing the legacy file itself) must never
+// authorize removing the legacy file.
+func TestInstanceMigrationLeavesLegacyWhenCanonicalIsSymlink(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	legacyPath := seedSourceFile(t, cfg, legacyCalendarEvent("calendar_event/ev1", "2026-07-01T09:00:00Z"))
+	canonicalPath := filepath.Join(sourcesRoot(cfg), "calendar", "calendar_event_ev1@work.md")
+	if err := os.Symlink(legacyPath, canonicalPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	migrateLegacyInstanceFile(cfg, calendarEventMM("work", instanceMigrationNow))
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy file must survive when the canonical is a symlink: %v", err)
+	}
+}
+
 // TestInsertCommitmentRowsRefusesNonTwinDuplicate — two memories that are NOT
 // twins of one provider object but derive the same commitment_id are genuinely
 // distinct commitments: that stays a hard error naming both, never a silent merge.
