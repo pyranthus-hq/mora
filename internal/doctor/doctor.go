@@ -22,15 +22,27 @@ func resolveReal(path string) string {
 		return real
 	}
 	// The path may not exist yet (e.g. a vault directory that has not been
-	// created). Resolve the parent directory so symlinks in the prefix are
-	// still canonicalized -- without this, /var/foo (where /var -> /private/var
-	// on macOS) and /private/var/foo compare as different paths even when they
-	// refer to the same location.
-	parent, base := filepath.Dir(path), filepath.Base(path)
-	if real, err := filepath.EvalSymlinks(parent); err == nil {
-		return filepath.Join(real, base)
+	// created). Walk up to the nearest existing ancestor, resolve it, then
+	// re-append the missing components -- without this, /var/foo (where
+	// /var -> /private/var on macOS) and /private/var/foo compare as different
+	// paths, and a deep not-yet-created path under a symlinked prefix
+	// (link/missing/state where link -> vault) escapes overlap detection.
+	prefix := filepath.Clean(path)
+	var missing []string
+	for {
+		parent := filepath.Dir(prefix)
+		if parent == prefix {
+			return filepath.Clean(path)
+		}
+		missing = append(missing, filepath.Base(prefix))
+		prefix = parent
+		if real, err := filepath.EvalSymlinks(prefix); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				real = filepath.Join(real, missing[i])
+			}
+			return real
+		}
 	}
-	return filepath.Clean(path)
 }
 
 // PathsDisjoint reports whether tokenDir resolves outside vault.

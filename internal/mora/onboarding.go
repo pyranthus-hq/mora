@@ -100,8 +100,9 @@ func indexIdentityMatchesVault(cfg Config) (ok bool, critical bool) {
 		return false, true
 	}
 	if indexID == "" {
-		// Legacy index (pre-vault-identity binding): no contradiction.
-		return true, false
+		// An unbound index proves nothing about identity: a legacy or foreign
+		// index must stay pending until a rebuild establishes the binding.
+		return false, false
 	}
 	if marker.VaultID == indexID {
 		return true, false
@@ -133,7 +134,9 @@ func setupFoundationStatus(cfg Config) []setupStep {
 	// Identity check: the marker's vault_id must match the index's bound vault_id.
 	// A fresh random marker created by layout reconciliation after a lost marker
 	// must NOT make the committed_index appear verified.
-	if identityOK, identityCritical := indexIdentityMatchesVault(cfg); identityCritical && !identityOK {
+	// An unbound index (no vault_id) is non-critical but still unproven, so any
+	// !identityOK outcome keeps the step pending.
+	if identityOK, _ := indexIdentityMatchesVault(cfg); !identityOK {
 		indexOK = false
 	}
 	index := setupStep{ID: "committed_index", State: "pending", Evidence: "the committed index is missing, dirty, degraded, or unreadable", Next: "mora setup"}

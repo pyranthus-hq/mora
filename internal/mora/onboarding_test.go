@@ -2,6 +2,7 @@ package mora
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -280,5 +281,32 @@ func TestSetupOverlapSymlinkResolved(t *testing.T) {
 	_, err := runErr(t, "setup", "--local-layout")
 	if err == nil || !strings.Contains(err.Error(), "overlaps the vault directory") {
 		t.Fatalf("setup with symlink-resolved StateDir inside VaultDir must fail closed: %v", err)
+	}
+}
+
+// TestSetupUnboundIndexStaysPending pins the identity rule for indexes that
+// carry no vault_id binding: an unbound index proves nothing, so
+// committed_index must stay pending until a rebuild establishes the binding.
+func TestSetupUnboundIndexStaysPending(t *testing.T) {
+	withTempHome(t)
+	cfg := defaultConfig()
+	run(t, "setup", "--local-layout", "--committed-index", "--credential-storage")
+
+	// Strip the index's vault_id binding to simulate a legacy/foreign index.
+	db, err := sql.Open("sqlite", dbPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM index_meta WHERE key='vault_id'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	steps := setupFoundationStatus(cfg)
+	for _, step := range steps {
+		if step.ID == "committed_index" && step.State == "verified" {
+			t.Fatal("an index without a vault_id binding must not report committed_index verified")
+		}
 	}
 }
