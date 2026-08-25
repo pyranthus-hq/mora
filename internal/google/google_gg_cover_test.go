@@ -445,7 +445,11 @@ func TestGg_OpenBrowser(t *testing.T) {
 		t.Fatalf("openBrowser: %v", err)
 	}
 	var got string
-	for i := 0; i < 400; i++ {
+	// openBrowser deliberately returns after starting the platform opener. On a
+	// busy full-suite run, the child shell can be scheduled after the old two
+	// second polling budget even though it received the URL correctly. Keep the
+	// same end-to-end assertion, but allow a scheduler-tolerant deadline.
+	for i := 0; i < 2000; i++ {
 		if b, err := os.ReadFile(marker); err == nil && len(b) > 0 {
 			got = string(b)
 			break
