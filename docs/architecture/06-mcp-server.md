@@ -237,7 +237,15 @@ vault and never a network destination. `DO_NOT_TRACK=1` or the
 event, including every new field. An in-process append lock keeps concurrent
 MCP/HTTP calls as independent valid JSONL records. `usageReport` decodes into
 the additive Go struct, so legacy lines containing only
-`tool/results/millis` remain backward compatible.
+`tool/results/millis` remain backward compatible. Its terminal report retains
+the historic global call/empty/latency headline, then emits an alphabetically
+sorted per-tool scorecard: calls; empty-result rate only for collection or
+found/not-found tools; latency p50/p95; and p50/p95 output-size token estimates
+using `ceil(output_bytes / 4)`. Legacy rows without `output_bytes` remain in
+call and latency totals but are explicitly excluded from output estimates; each
+row prints its contributing-event coverage (for example, `1/2 events`). The
+report consumes only `tool`, `results`, `millis`, and `output_bytes`, never
+queries or content-bearing fields.
 
 ## Invariants & gotchas
 

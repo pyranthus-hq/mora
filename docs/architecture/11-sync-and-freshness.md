@@ -393,4 +393,4 @@ On macOS, `sync imessage` and `sync applecalendar` route through a detected sign
 
 ## Index freshness
 
-Authored `mora write` and MCP `write_memory` immediately upsert FTS then coalesce a full atomic reconciliation of graph, vector, commitment, and manifest projections. Pending work remains visibly dirty until a committed rebuild covers it.
+MCP `write_memory` immediately upserts FTS and schedules, but does not await, a coalescing in-process reconciler before its handler returns. The worker waits through a 75 ms burst window before it starts the ordinary atomic rebuild, so whole-vault work stays off the request path and may retire the durable marker shortly afterward. If the process exits first, the marker remains visibly dirty until an explicit `mora index rebuild`, the scheduled `index-hourly` job (normally within its one-hour cadence), connector sync, or a delete commits the reconciliation of graph, vector, commitment, and manifest projections. A failed catch-up never reports fresh state. One-shot `mora write` keeps its synchronous reconciliation boundary because it cannot guarantee a background worker survives process exit.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -19,10 +20,49 @@ func authoredReconcileLockPath(cfg Config) string {
 
 const authoredReconcileTTL = 2 * time.Minute
 
-// reconcileAuthoredWrites elects at most one concurrent writer to rebuild every
-// derived projection after a small coalescing window. Other writers keep their
-// durable pending markers; the elected rebuild covers and retires them. This
-// avoids N full rebuilds during a multi-agent write storm while retaining the
+// authoredReconcileRunner is the narrow test seam below the production goroutine
+// launcher. The lock keeps a test seam change from racing an in-flight MCP
+// request; scheduleAuthoredReconciliation itself always exercises the real
+// launcher.
+var (
+	authoredReconcileRunnerMu sync.RWMutex
+	authoredReconcileRunner   = reconcileAuthoredWrites
+)
+
+func authoredReconcileRunnerSnapshot() func(context.Context, Config) error {
+	authoredReconcileRunnerMu.RLock()
+	runner := authoredReconcileRunner
+	authoredReconcileRunnerMu.RUnlock()
+	return runner
+}
+
+func defaultAuthoredReconcileScheduler(cfg Config) {
+	// Snapshot before the goroutine boundary: a short-lived caller or a hermetic
+	// test may restore its runner seam immediately after scheduling, but that must
+	// never change the work this invocation already elected to perform.
+	runner := authoredReconcileRunnerSnapshot()
+	go func(run func(context.Context, Config) error) {
+		if err := run(context.Background(), cfg); err != nil {
+			// stderr is outside the MCP stdio transport. Do not clear or alter a
+			// marker here: a logged failure must remain visible to health and the
+			// next explicit/scheduled recovery path.
+			fmt.Fprintf(os.Stderr, "warn: authored projection reconciliation pending: %v\n", err)
+		}
+	}(runner)
+}
+
+// scheduleAuthoredReconciliation schedules (but does not await) the coalescing
+// worker before mcpWriteMemory returns. The worker itself waits through its 75 ms
+// burst window before any rebuild work, keeping the whole-vault rebuild off the
+// request path. Failures leave the pending ledger and health dirty.
+func scheduleAuthoredReconciliation(cfg Config) {
+	defaultAuthoredReconcileScheduler(cfg)
+}
+
+// reconcileAuthoredWrites elects at most one concurrent background worker to
+// rebuild every derived projection after a small coalescing window. Other writers
+// keep their durable pending markers; the elected rebuild covers and retires them.
+// This avoids N full rebuilds during a multi-agent write storm while retaining the
 // ordinary rebuild's WAL transaction, snapshot, activity, and crash recovery
 // semantics.
 //

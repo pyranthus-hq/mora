@@ -44,9 +44,30 @@ func setTestHome(t *testing.T, dir string) {
 	t.Setenv("USERPROFILE", dir)
 }
 
+func setAuthoredReconcileRunnerForTest(t *testing.T, runner func(context.Context, Config) error) {
+	t.Helper()
+	authoredReconcileRunnerMu.Lock()
+	orig := authoredReconcileRunner
+	authoredReconcileRunner = runner
+	authoredReconcileRunnerMu.Unlock()
+	t.Cleanup(func() {
+		authoredReconcileRunnerMu.Lock()
+		authoredReconcileRunner = orig
+		authoredReconcileRunnerMu.Unlock()
+	})
+}
+
 // withTempHome points all home-derived dirs at a fresh temp dir on every OS.
 func withTempHome(t *testing.T) {
 	t.Helper()
+	// Async MCP reconciliation is a process-lifetime production worker. Hermetic
+	// temp-home tests may tear their StateDir down immediately after a call, so keep
+	// it inert by default and opt in with a local seam where its scheduling contract
+	// is under test.
+	// Snapshotting the runner before the production goroutine boundary keeps this
+	// cleanup-safe. Tests using withTempHome also call t.Setenv below, so Go's test
+	// harness already forbids them from running in parallel.
+	setAuthoredReconcileRunnerForTest(t, func(context.Context, Config) error { return nil })
 	pinOperationClockForTest(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	setTestHome(t, t.TempDir())
 	// Hermeticity: a developer's exported MORA_CONFIG_DIR / MORA_VAULT must not

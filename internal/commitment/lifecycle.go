@@ -132,23 +132,81 @@ func strictlyAfter(opened, evidence string) bool {
 	e, ee := time.Parse(time.RFC3339, strings.TrimSpace(evidence))
 	return oe == nil && ee == nil && e.After(o)
 }
-func counterpartyLinked(keys, evidenceKeys []string, text string) bool {
-	set := map[string]bool{}
-	for _, k := range evidenceKeys {
-		set[strings.ToLower(strings.TrimSpace(k))] = true
+
+// counterpartyLinked permits a cross-memory lifecycle link only when
+// source-native atoms or full trusted names agree, unless comparable atoms
+// explicitly contradict the name. A bare given or single-token name is never
+// identity evidence: it cannot link Sam Rivera to Sam Chen, or to an unrelated
+// handle labelled Sam. Authored message text is not identity proof: it can name
+// somebody other than the sender or recipient.
+func counterpartyLinked(keys, evidenceKeys []string, _ string) bool {
+	evidenceSet := map[string]bool{}
+	for _, key := range evidenceKeys {
+		evidenceSet[strings.ToLower(strings.TrimSpace(key))] = true
 	}
-	lower := strings.ToLower(oneLine(text))
-	for _, k := range keys {
-		n := strings.ToLower(strings.TrimSpace(k))
-		if set[n] {
+	for _, key := range keys {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		kind, _, ok := strings.Cut(normalized, ":")
+		if !ok || kind == "given" {
+			continue
+		}
+		if kind != "name" && evidenceSet[normalized] {
 			return true
 		}
-		kind, value, ok := strings.Cut(n, ":")
-		if ok && (kind == "name" || kind == "given") && len(value) >= 3 && strings.Contains(lower, value) {
+	}
+	if stableAtomConflict(keys, evidenceKeys) {
+		return false
+	}
+	leftFull, rightFull := fullNameKeys(keys), fullNameKeys(evidenceKeys)
+	for full := range leftFull {
+		if rightFull[full] {
 			return true
 		}
 	}
 	return false
+}
+
+// stableAtomConflict prevents a display-name fallback from unifying two
+// explicitly distinct source-native identities. An address and a handle are not
+// comparable across providers, but two differing addresses or two differing
+// handles are affirmative evidence that the parties are not the same person.
+func stableAtomConflict(left, right []string) bool {
+	for _, kind := range []string{"address", "handle"} {
+		leftValues, rightValues := stableAtomValues(left, kind), stableAtomValues(right, kind)
+		if len(leftValues) == 0 || len(rightValues) == 0 {
+			continue
+		}
+		for value := range leftValues {
+			if rightValues[value] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func stableAtomValues(keys []string, wantKind string) map[string]bool {
+	values := map[string]bool{}
+	for _, key := range keys {
+		kind, value, ok := strings.Cut(strings.ToLower(strings.TrimSpace(key)), ":")
+		if ok && kind == wantKind && value != "" {
+			values[value] = true
+		}
+	}
+	return values
+}
+
+func fullNameKeys(keys []string) map[string]bool {
+	out := map[string]bool{}
+	for _, key := range keys {
+		kind, value, ok := strings.Cut(strings.ToLower(strings.TrimSpace(key)), ":")
+		if !ok || kind != "name" || len(strings.Fields(value)) < 2 {
+			continue
+		}
+		out[value] = true
+	}
+	return out
 }
 
 var objectStopwords = map[string]bool{"a": true, "an": true, "and": true, "are": true, "at": true, "before": true, "by": true, "can": true, "could": true, "did": true, "do": true, "for": true, "from": true, "got": true, "have": true, "i": true, "in": true, "is": true, "it": true, "me": true, "my": true, "now": true, "of": true, "on": true, "please": true, "send": true, "sent": true, "share": true, "shared": true, "the": true, "them": true, "this": true, "to": true, "upload": true, "uploaded": true, "we": true, "will": true, "with": true, "you": true, "your": true, "delivered": true, "attached": true, "completed": true, "finished": true, "instead": true, "deadline": true, "moved": true}

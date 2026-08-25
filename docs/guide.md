@@ -1236,6 +1236,16 @@ a separate opt-in. Mora does not send the usage log anywhere.
 `mora usage report --json` emits the `mora.usage.report` v1 receipt, including
 whether tracking is disabled.
 
+`mora usage report` keeps its compact global headline (`total calls`,
+`empty-result rate`, and `latency p50`) and then prints a tool-name-sorted
+scorecard. Each row includes calls, an empty-result rate only for tools whose
+result count represents a returned collection or found/not-found result,
+latency p50/p95, and a deterministic output-size estimate (`ceil(output_bytes
+/ 4)`). Output estimates include coverage such as `1/2 events`: older valid
+events predate `output_bytes`, so Mora reports the missing coverage rather than
+inventing an estimate. The report never prints logged query text, even if query
+retention was explicitly enabled.
+
 ## How search works
 
 The Markdown vault is the source of truth. `index.db` is a local cache that Mora
