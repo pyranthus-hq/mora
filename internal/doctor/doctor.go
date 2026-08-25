@@ -21,6 +21,15 @@ func resolveReal(path string) string {
 	if real, err := filepath.EvalSymlinks(path); err == nil {
 		return real
 	}
+	// The path may not exist yet (e.g. a vault directory that has not been
+	// created). Resolve the parent directory so symlinks in the prefix are
+	// still canonicalized -- without this, /var/foo (where /var -> /private/var
+	// on macOS) and /private/var/foo compare as different paths even when they
+	// refer to the same location.
+	parent, base := filepath.Dir(path), filepath.Base(path)
+	if real, err := filepath.EvalSymlinks(parent); err == nil {
+		return filepath.Join(real, base)
+	}
 	return filepath.Clean(path)
 }
 

@@ -60,7 +60,7 @@
     },
     {
       "name": "verified onboarding foundation",
-      "paths": ["setup"],
+      "paths": ["setup", "setup status"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestSetupPersistsVerifiedProgressAndResumes"]},
         "json": {"status": "test", "tests": ["TestSetupStatusReobservesInsteadOfTrustingReceipt"]},

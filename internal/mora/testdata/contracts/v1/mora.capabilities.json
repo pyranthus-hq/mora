@@ -499,6 +499,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "setup status",
+      "payload": "mora.setup.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "share gc",
       "payload": "mora.share.gc",
       "platform": "all",
@@ -1631,6 +1639,10 @@
     },
     {
       "name": "mora.serve.http.uninstall",
+      "version": 1
+    },
+    {
+      "name": "mora.setup.status",
       "version": 1
     },
     {

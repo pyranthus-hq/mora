@@ -148,3 +148,137 @@ func TestSetupRefusesCorruptReceipt(t *testing.T) {
 		t.Fatalf("corrupt receipt error = %v", err)
 	}
 }
+
+
+func TestSetupIdentityRejectsMismatchedMarker(t *testing.T) {
+	withTempHome(t)
+	cfg := defaultConfig()
+	run(t, "setup", "--local-layout", "--committed-index", "--credential-storage")
+
+	// Read the original marker's vault_id so we can confirm the new one differs.
+	origMarker, origPresent, err := readVaultMarker(cfg)
+	if err != nil || !origPresent || origMarker.VaultID == "" {
+		t.Fatalf("precondition: original marker missing or empty: %v, present=%v, id=%q", err, origPresent, origMarker.VaultID)
+	}
+
+	// Simulate losing the marker.
+	if err := os.Remove(markerPath(cfg)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Layout reconciliation creates a fresh marker with a new random vault_id.
+	run(t, "setup", "--local-layout")
+
+	// The new marker must have a different id from the original.
+	newMarker, newPresent, err := readVaultMarker(cfg)
+	if err != nil || !newPresent {
+		t.Fatalf("new marker should exist after layout reconciliation: %v, present=%v", err, newPresent)
+	}
+	if newMarker.VaultID == origMarker.VaultID {
+		t.Fatal("layout reconciliation must generate a fresh vault_id, not reuse the old one")
+	}
+
+	// Verify committed_index is pending due to identity mismatch, not verified.
+	orig := setupRebuildIndex
+	setupRebuildIndex = func(context.Context, Config) (int, error) {
+		return 0, errors.New("should not be called")
+	}
+	t.Cleanup(func() { setupRebuildIndex = orig })
+
+	out := run(t, "setup", "--plan")
+	if !strings.Contains(out, "committed_index: pending") {
+		t.Fatalf("committed_index must be pending after identity mismatch:\n%s", out)
+	}
+	if strings.Contains(out, "committed_index: verified") {
+		t.Fatal("committed_index must NOT report verified when the vault marker identity doesn't match the index")
+	}
+}
+
+func TestSetupOverlapRejectsStateDirInsideVault(t *testing.T) {
+	withTempHome(t)
+	cfg := defaultConfig()
+	cfg.StateDir = filepath.Join(cfg.VaultDir, "state")
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runErr(t, "setup", "--local-layout")
+	if err == nil || !strings.Contains(err.Error(), "overlaps the vault directory") {
+		t.Fatalf("setup with StateDir inside VaultDir must fail closed: %v", err)
+	}
+	// Assert no file was created inside the vault before the error.
+	if _, err := os.Stat(cfg.VaultDir); err == nil {
+		entries, _ := os.ReadDir(cfg.VaultDir)
+		if len(entries) > 0 {
+			t.Fatalf("setup created %d file(s) inside the vault before failing", len(entries))
+		}
+	}
+}
+
+func TestSetupOverlapRejectsDataDirInsideVault(t *testing.T) {
+	withTempHome(t)
+	cfg := defaultConfig()
+	cfg.DataDir = filepath.Join(cfg.VaultDir, "data")
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runErr(t, "setup", "--local-layout")
+	if err == nil || !strings.Contains(err.Error(), "overlaps the vault directory") {
+		t.Fatalf("setup with DataDir inside VaultDir must fail closed: %v", err)
+	}
+}
+
+func TestSetupOverlapRejectsConfigDirInsideVault(t *testing.T) {
+	withTempHome(t)
+	cfg := defaultConfig()
+	cfg.VaultDir = filepath.Join(cfg.ConfigDir, "vault")
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runErr(t, "setup", "--local-layout")
+	if err == nil || !strings.Contains(err.Error(), "overlaps the vault directory") {
+		t.Fatalf("setup with VaultDir inside ConfigDir must fail closed: %v", err)
+	}
+}
+
+func TestSetupOverlapRejectsReceiptPathInsideVault(t *testing.T) {
+	withTempHome(t)
+	cfg := defaultConfig()
+	cfg.StateDir = filepath.Join(cfg.VaultDir, "state")
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runErr(t, "setup", "--local-layout")
+	if err == nil || !strings.Contains(err.Error(), "overlaps the vault directory") {
+		t.Fatalf("setup with receipt path inside VaultDir must fail closed: %v", err)
+	}
+}
+
+func TestSetupOverlapSymlinkResolved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink privileges vary on Windows")
+	}
+	withTempHome(t)
+	cfg := defaultConfig()
+	// Create the vault dir and a symlink that resolves inside it.
+	if err := os.MkdirAll(cfg.VaultDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(filepath.Dir(cfg.VaultDir), "config-link")
+	if err := os.Symlink(cfg.VaultDir, link); err != nil {
+		t.Fatal(err)
+	}
+	// StateDir via the symlink resolves inside the vault.
+	cfg.StateDir = filepath.Join(link, "state")
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runErr(t, "setup", "--local-layout")
+	if err == nil || !strings.Contains(err.Error(), "overlaps the vault directory") {
+		t.Fatalf("setup with symlink-resolved StateDir inside VaultDir must fail closed: %v", err)
+	}
+}

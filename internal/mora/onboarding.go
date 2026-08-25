@@ -80,6 +80,35 @@ func writeSetupReceipt(cfg Config, steps []setupStep) error {
 	return atomicio.WriteDurable(setupReceiptPath(cfg), body, 0o600)
 }
 
+// indexIdentityMatchesVault verifies the vault marker's identity is bound to the
+// committed index. Index freshness + the content manifest alone are a lie: a
+// vault that LOST .mora-vault.json and had local_layout recreate a fresh random
+// marker carries a different vault_id than the one the index was built from.
+// This reuses the exact identity machinery the rebuild guard trusts
+// (readVaultMarker + readIndexVaultID), so setup and rebuild cannot disagree
+// about which vault a healthy index belongs to.
+func indexIdentityMatchesVault(cfg Config) (ok bool, critical bool) {
+	marker, markerPresent, err := readVaultMarker(cfg)
+	if err != nil {
+		return false, true
+	}
+	indexID, err := readIndexVaultID(context.Background(), cfg)
+	if err != nil {
+		return false, true
+	}
+	if !markerPresent || marker.VaultID == "" {
+		return false, true
+	}
+	if indexID == "" {
+		// Legacy index (pre-vault-identity binding): no contradiction.
+		return true, false
+	}
+	if marker.VaultID == indexID {
+		return true, false
+	}
+	return false, true
+}
+
 func setupFoundationStatus(cfg Config) []setupStep {
 	layoutOK := configFileExists(cfg)
 	if _, present, err := readVaultMarker(cfg); err != nil || !present {
@@ -101,9 +130,15 @@ func setupFoundationStatus(cfg Config) []setupStep {
 	if manifestOK, manifestCritical := indexMatchesVault(cfg); manifestCritical && !manifestOK {
 		indexOK = false
 	}
+	// Identity check: the marker's vault_id must match the index's bound vault_id.
+	// A fresh random marker created by layout reconciliation after a lost marker
+	// must NOT make the committed_index appear verified.
+	if identityOK, identityCritical := indexIdentityMatchesVault(cfg); identityCritical && !identityOK {
+		indexOK = false
+	}
 	index := setupStep{ID: "committed_index", State: "pending", Evidence: "the committed index is missing, dirty, degraded, or unreadable", Next: "mora setup"}
 	if indexOK {
-		index = setupStep{ID: "committed_index", State: "verified", Evidence: "doctor index freshness and manifest checks pass"}
+		index = setupStep{ID: "committed_index", State: "verified", Evidence: "doctor index freshness, manifest, and vault identity checks pass"}
 	}
 
 	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
@@ -203,6 +238,15 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	allowLayout := interactive || *applyLayout
 	allowIndex := interactive || *applyIndex
 	allowTokens := interactive || *applyTokens
+
+	// Data-safety gate: before ANY mutation, fail closed if any operational root
+	// overlaps the vault (either direction, symlink-resolved). The receipt path is
+	// checked too — a receipt written inside the vault would be a lossy ghost on vault moves.
+	for _, root := range []string{cfg.StateDir, cfg.DataDir, cfg.ConfigDir, setupReceiptPath(cfg)} {
+		if !doctorpkg.PathsDisjoint(cfg.VaultDir, root) || !doctorpkg.PathsDisjoint(root, cfg.VaultDir) {
+			return fmt.Errorf("mora setup: %s overlaps the vault directory (%s); move it outside the vault before rerunning", root, cfg.VaultDir)
+		}
+	}
 
 	// Re-observe before every action. A receipt is evidence of prior work, never
 	// authority to skip a check whose underlying state changed.

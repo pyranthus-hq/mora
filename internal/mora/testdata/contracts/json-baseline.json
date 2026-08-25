@@ -332,6 +332,10 @@
     "status": "flag_error"
   },
   {
+    "path": "setup status",
+    "status": "parses"
+  },
+  {
     "path": "share",
     "status": "empty"
   },
