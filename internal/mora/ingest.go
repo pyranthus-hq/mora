@@ -1274,6 +1274,11 @@ func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error)
 	}
 	m, skip := ingestpkg.PrepareMapped(mm, existing)
 	if skip {
+		// Content-hash unchanged: the canonical suffixed file on disk already
+		// carries this provider object's current state, so the sync-time
+		// legacy-instance migration (#495) can safely retire its unsuffixed
+		// pre-#475 twin. Best-effort; never fails the sync.
+		migrateLegacyInstanceFile(cfg, mm)
 		return false, nil
 	}
 	body, err := renderMemory(m)
@@ -1303,6 +1308,9 @@ func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error)
 		testHookPostConnectorPublish()
 	}
 	ingestpkg.RecordPublishedPath(cfg, sourceKey, out, ingestPublishSeams())
+	// Fresh publish: the suffixed file is now canonical, so retire the legacy
+	// unsuffixed twin for the SAME provider object (#495). Best-effort.
+	migrateLegacyInstanceFile(cfg, mm)
 	return true, nil
 }
 
