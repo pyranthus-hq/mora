@@ -232,18 +232,7 @@ func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 		// stash so writeConfig persists the flag value even under MORA_VAULT.
 		cfg.ClearVaultOverride()
 	}
-	for _, dir := range []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir, memoriesRoot(cfg), sourcesRoot(cfg), filepath.Join(cfg.ConfigDir, "tokens")} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
-	if err := writeConfig(cfg); err != nil {
-		return err
-	}
-	if _, err := createVaultMarkerIfAbsent(cfg, "v_"+newID()); err != nil {
-		return err
-	}
-	if err := scaffoldControlFiles(cfg); err != nil {
+	if err := ensureMoraLayout(cfg, true); err != nil {
 		return err
 	}
 	// On a CONFIRMED repoint, config + marker now point at the NEW vault but
@@ -276,6 +265,28 @@ func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
 	return runSetupMenu(ctx, cfg, stdin, stdout, stderr)
+}
+
+// ensureMoraLayout creates and verifies the non-destructive local foundation
+// shared by init and verified setup. It deliberately does not run any connector,
+// OAuth, scheduler, update, or MCP action.
+func ensureMoraLayout(cfg Config, includeTokenDir bool) error {
+	dirs := []string{cfg.VaultDir, cfg.ConfigDir, cfg.DataDir, cfg.StateDir, memoriesRoot(cfg), sourcesRoot(cfg)}
+	if includeTokenDir {
+		dirs = append(dirs, filepath.Join(cfg.ConfigDir, "tokens"))
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	if err := writeConfig(cfg); err != nil {
+		return err
+	}
+	if _, err := createVaultMarkerIfAbsent(cfg, "v_"+newID()); err != nil {
+		return err
+	}
+	return scaffoldControlFiles(cfg)
 }
 
 // configFileExists reports whether a config.toml is already on disk —

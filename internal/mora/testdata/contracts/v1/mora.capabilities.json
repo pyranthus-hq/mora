@@ -235,6 +235,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "setup",
+      "payload": "",
+      "platform": "all",
+      "reason": "human reconciliation; stable machine status is mora setup status --json"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "share",
       "payload": "",
       "platform": "all",
@@ -486,6 +494,14 @@
       "path": "serve http uninstall",
       "payload": "mora.serve.http.uninstall",
       "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "setup status",
+      "payload": "mora.setup.status",
+      "platform": "all",
       "reason": ""
     },
     {
@@ -1623,6 +1639,10 @@
     },
     {
       "name": "mora.serve.http.uninstall",
+      "version": 1
+    },
+    {
+      "name": "mora.setup.status",
       "version": 1
     },
     {

@@ -17,16 +17,54 @@ type Check struct {
 	Critical bool   `json:"critical"`
 }
 
-func resolveReal(path string) string {
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		return real
+func resolveReal(path string) (string, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return real, nil
 	}
-	return filepath.Clean(path)
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	// The path may not exist yet (e.g. a vault directory that has not been
+	// created). Walk up to the nearest existing ancestor, resolve it, then
+	// re-append the missing components -- without this, /var/foo (where
+	// /var -> /private/var on macOS) and /private/var/foo compare as different
+	// paths, and a deep not-yet-created path under a symlinked prefix
+	// (link/missing/state where link -> vault) escapes overlap detection.
+	// Climbing is allowed ONLY past missing components: any other failure
+	// (e.g. permission denied on a symlinked ancestor) is returned so callers
+	// fail closed instead of comparing a wrong lexical path.
+	prefix := filepath.Clean(path)
+	var missing []string
+	for {
+		parent := filepath.Dir(prefix)
+		if parent == prefix {
+			return filepath.Clean(path), nil
+		}
+		missing = append(missing, filepath.Base(prefix))
+		prefix = parent
+		real, err := filepath.EvalSymlinks(prefix)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				real = filepath.Join(real, missing[i])
+			}
+			return real, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
 }
 
-// PathsDisjoint reports whether tokenDir resolves outside vault.
+// PathsDisjoint reports whether tokenDir resolves outside vault. An
+// unresolvable path (other than not-yet-created) fails closed: the pair is
+// reported as NOT disjoint so data-safety gates refuse rather than guess.
 func PathsDisjoint(vault, tokenDir string) bool {
-	rv, rt := resolveReal(vault), resolveReal(tokenDir)
+	rv, errV := resolveReal(vault)
+	rt, errT := resolveReal(tokenDir)
+	if errV != nil || errT != nil {
+		return false
+	}
 	return !strings.HasPrefix(rt+string(os.PathSeparator), rv+string(os.PathSeparator)) && rt != rv
 }
 

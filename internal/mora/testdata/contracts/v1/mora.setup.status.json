@@ -1,0 +1,32 @@
+{
+  "complete": false,
+  "receipt_present": false,
+  "remaining_checks": [
+    "MCP registration and protocol smoke test",
+    "bounded retrieval or truthful empty-index result",
+    "initial connector ingest",
+    "installed signed-app identity",
+    "protected-source readability and connector enablement",
+    "scheduled refresh and update jobs",
+    "update policy and latest update check"
+  ],
+  "schema": "mora.setup.status",
+  "schema_version": 1,
+  "steps": [
+    {
+      "evidence": "config.toml, vault marker, and local directories are present",
+      "id": "local_layout",
+      "state": "verified"
+    },
+    {
+      "evidence": "doctor index freshness, manifest, and vault identity checks pass",
+      "id": "committed_index",
+      "state": "verified"
+    },
+    {
+      "evidence": "token directory exists and is disjoint from the vault",
+      "id": "credential_storage",
+      "state": "verified"
+    }
+  ]
+}

@@ -328,6 +328,14 @@
     "status": "static_only"
   },
   {
+    "path": "setup",
+    "status": "flag_error"
+  },
+  {
+    "path": "setup status",
+    "status": "parses"
+  },
+  {
     "path": "share",
     "status": "empty"
   },

@@ -117,3 +117,24 @@ func (fakeInfo) Mode() os.FileMode  { return 0 }
 func (fakeInfo) ModTime() time.Time { return time.Time{} }
 func (fakeInfo) IsDir() bool        { return false }
 func (fakeInfo) Sys() any           { return nil }
+
+func TestPathsDisjointDeepMissingUnderSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink privileges vary on Windows")
+	}
+	root := t.TempDir()
+	vault := filepath.Join(root, "vault")
+	link := filepath.Join(root, "vault-link")
+	if err := os.MkdirAll(vault, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(vault, link); err != nil {
+		t.Fatal(err)
+	}
+	// Neither link/missing nor link/missing/state exists: resolution must walk
+	// up to the symlinked ancestor instead of falling back to the lexical path.
+	deep := filepath.Join(link, "missing", "state")
+	if PathsDisjoint(vault, deep) {
+		t.Fatal("deep not-yet-created path under a vault symlink must NOT be disjoint")
+	}
+}

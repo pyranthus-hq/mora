@@ -36,6 +36,20 @@
       "reason": "interactive first-run wizard; prompts on stdin"
     },
     {
+      "path": "setup",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "human reconciliation; stable machine status is mora setup status --json"
+    },
+    {
+      "path": "setup status",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.setup.status"
+    },
+    {
       "path": "write",
       "kind": "verb",
       "platform": "all",

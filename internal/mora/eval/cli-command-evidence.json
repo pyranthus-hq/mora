@@ -59,6 +59,17 @@
       }
     },
     {
+      "name": "verified onboarding foundation",
+      "paths": ["setup", "setup status"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestSetupPersistsVerifiedProgressAndResumes"]},
+        "json": {"status": "test", "tests": ["TestSetupStatusReobservesInsteadOfTrustingReceipt"]},
+        "state": {"status": "test", "tests": ["TestSetupPlanIsReadOnly", "TestSetupPersistsVerifiedProgressAndResumes"]},
+        "error": {"status": "test", "tests": ["TestSetupStatusRequiresJSON", "TestSetupRefusesCorruptReceipt"]},
+        "refusal": {"status": "test", "tests": ["TestSetupRefusesCorruptReceipt"]}
+      }
+    },
+    {
       "name": "memory write",
       "paths": ["write"],
       "evidence": {
