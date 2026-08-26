@@ -179,6 +179,9 @@ func scheduledEntries(cfg Config) ([]scheduleListEntry, error) {
 		}
 	case "darwin":
 		home := cfg.HomeDir()
+		if home == "" {
+			return nil, errors.New("cannot resolve a home directory for LaunchAgents")
+		}
 		for _, job := range jobs {
 			_, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", "com.mora."+job+".plist"))
 			installed[job] = err == nil
