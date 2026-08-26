@@ -118,19 +118,6 @@ func pinOperationClockForTest(t *testing.T, base time.Time) {
 	}
 }
 
-// setTestEmbedderPref pins the MORA_EMBEDDER-equivalent preference on the
-// caller's environment ("": force the deterministic static embedder).
-func setTestEmbedderPref(t *testing.T, pref string) {
-	t.Helper()
-	e := lookupTestEnv(t)
-	if e == nil {
-		t.Fatalf("setTestEmbedderPref: no test environment bound; call withTempHome/sandboxCfg first")
-		return
-	}
-	e.embedderPref = pref
-	e.embedderSet = true
-}
-
 // withTempHomeSetenv is the LEGACY env-based wrapper, kept for the genuinely
 // env-global tests that assert how Mora reads process environment variables.
 // It sets BOTH HOME and USERPROFILE because os.UserHomeDir reads USERPROFILE on
