@@ -267,7 +267,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 	if steps[1].State != "verified" {
 		if !allowIndex {
@@ -284,7 +283,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 	if steps[2].State != "verified" {
 		if !allowTokens {
@@ -305,7 +303,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 
 	if !allSetupStepsVerified(steps) {
@@ -315,7 +312,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 	fmt.Fprintln(stdout, "Foundation setup verified.")
 	fmt.Fprintln(stdout, "Full verified onboarding is not complete yet: connector, MCP, schedule, update, and retrieval checks remain deliberately unimplemented in this first slice.")

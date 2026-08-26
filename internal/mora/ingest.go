@@ -1464,19 +1464,6 @@ var newWhatsAppFetcher = func(path string) (whatsAppFetcher, error) {
 	return whatsapp.NewLiveFetcher(path)
 }
 
-// ingestWhatsApp reads the local ChatStorage.sqlite read-only and writes one
-// memory per conversation (#295). It is macOS-gated (a non-darwin host prints an
-// honest note and returns 0, never a false error) and surfaces resumable errors.
-// Rendering/truncation is the connector's inverted-truncation mapper, routed
-// through the shared resumable Ingest loop via the Map hook — the writeMappedMemory
-// boundary is reused, never reimplemented. The two-lane relevance gate lives in
-// the connector's Meta (relevance_lane / inclusion_rationale) and is enforced by
-// digest/urgent/commitment consumers.
-func ingestWhatsApp(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestWhatsAppDetailed(context.Background(), cfg, s, out)
-	return result.Materialized, err
-}
-
 func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtimeGOOS() != "darwin" {
 		if out != nil {

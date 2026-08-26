@@ -57,16 +57,6 @@ func hermeticityGuard(cfg Config) error {
 	return nil
 }
 
-// loadConfig resolves configuration from process env (production entry); under
-// tests it doubles as the hermeticity tripwire above.
-func loadConfig() (Config, error) {
-	cfg, err := configstore.Load()
-	if err != nil {
-		return cfg, err
-	}
-	return cfg, hermeticityGuard(cfg)
-}
-
 // loadConfigFor is loadConfig with context-carried injection (see
 // configstore.LoadFrom): per-test roots flow through without touching process
 // state, so parallel tests each resolve their own layout.
