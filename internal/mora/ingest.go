@@ -1484,7 +1484,7 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		}
 		return sourceIngestResult{}, nil
 	}
-	fetcher, err := newWhatsAppFetcher(whatsAppDBPath())
+	fetcher, err := newWhatsAppFetcher(whatsAppDBPath(cfg))
 	if err != nil {
 		// A present-but-unreadable ChatStorage.sqlite is the FDA-denied case (or an
 		// unsupported private schema) — point the user at doctor guidance rather
