@@ -158,7 +158,7 @@ func TestCLIContractMatrix(t *testing.T) {
 					class = contractMatrixUnsweepable
 				}
 			} else {
-				t.Run("dash-led/"+strings.ReplaceAll(row.Path, " ", "/"), func(t *testing.T) {
+				subRun(t, "dash-led/"+strings.ReplaceAll(row.Path, " ", "/"), func(t *testing.T) {
 					contractMatrixAssertDashLedRefused(t, row.Path, queryException[row.Path])
 				})
 			}
@@ -234,7 +234,7 @@ func TestContractSharedDashLedGuardIsWitnessed(t *testing.T) {
 	run(t, "init")
 	for _, path := range contractMatrixSharedGuardPaths {
 		path := path
-		t.Run(strings.ReplaceAll(path, " ", "/"), func(t *testing.T) {
+		subRun(t, strings.ReplaceAll(path, " ", "/"), func(t *testing.T) {
 			args := append(strings.Fields(path), "--bogus-positional")
 			stdout, _, err := runSplit(t, args...)
 			if err == nil {

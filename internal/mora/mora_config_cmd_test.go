@@ -58,7 +58,7 @@ func TestCmdConfigContextRoundTrip(t *testing.T) {
 	if !strings.Contains(out, "small") {
 		t.Fatalf("set should confirm the new value, got: %s", out)
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -73,12 +73,12 @@ func TestCmdConfigContextRoundTrip(t *testing.T) {
 
 	// default resets (drops the key rather than persisting a redundant value)
 	run(t, "config", "context", "default")
-	cfg, _ = loadConfig()
+	cfg, _ = loadConfigFor(testCtx(t))
 	if cfg.ContextProfile != "" {
 		t.Fatalf("ContextProfile = %q after reset, want empty", cfg.ContextProfile)
 	}
 
-	if err := cmdConfig([]string{"context", "huge"}, io.Discard, testStderr); err == nil {
+	if err := cmdConfig(testCtx(t), []string{"context", "huge"}, io.Discard, testStderr); err == nil {
 		t.Fatalf("invalid profile must error")
 	}
 }
@@ -99,7 +99,7 @@ func TestCmdConfigMMRRoundTrip(t *testing.T) {
 	if !strings.Contains(out, "on") {
 		t.Fatalf("set should confirm on, got: %s", out)
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestCmdConfigMMRRoundTrip(t *testing.T) {
 
 	// off drops the line entirely (reset-to-default), like embedder/context.
 	run(t, "config", "mmr", "off")
-	cfg, _ = loadConfig()
+	cfg, _ = loadConfigFor(testCtx(t))
 	if cfg.MMR {
 		t.Fatalf("MMR = true after `mmr off`, want false")
 	}
@@ -127,7 +127,7 @@ func TestCmdConfigMMRRoundTrip(t *testing.T) {
 		t.Fatalf("mmr off must drop the line, config.toml still has it:\n%s", b)
 	}
 
-	if err := cmdConfig([]string{"mmr", "maybe"}, io.Discard, testStderr); err == nil {
+	if err := cmdConfig(testCtx(t), []string{"mmr", "maybe"}, io.Discard, testStderr); err == nil {
 		t.Fatalf("invalid mmr setting must error")
 	}
 }

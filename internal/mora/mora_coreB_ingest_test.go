@@ -3,7 +3,6 @@ package mora
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
@@ -25,7 +24,7 @@ func coreBIngestInitCfg(t *testing.T) Config {
 	t.Helper()
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig after init: %v", err)
 	}
@@ -97,12 +96,12 @@ func TestCoreB_IngestStatusPaths(t *testing.T) {
 
 func TestCoreB_IngestAppleCalDBPathLegacy(t *testing.T) {
 	withTempHome(t)
-	home, _ := os.UserHomeDir()
+	home := mustConfig(t).HomeDir()
 	// Only the legacy ~/Library/Calendars store exists => appleCalDBPath probes
 	// the modern location, misses, and falls back to legacy.
 	legacy := filepath.Join(home, "Library", "Calendars", "Calendar.sqlitedb")
 	coreBIngestWriteFile(t, legacy, "db")
-	if got := appleCalDBPath(); got != legacy {
+	if got := appleCalDBPath(mustConfig(t)); got != legacy {
 		t.Fatalf("appleCalDBPath = %q, want legacy %q", got, legacy)
 	}
 }
@@ -123,18 +122,18 @@ func TestCoreB_IngestFileExists(t *testing.T) {
 
 func TestCoreB_IngestHomePaths(t *testing.T) {
 	withTempHome(t)
-	home, _ := os.UserHomeDir()
+	home := mustConfig(t).HomeDir()
 
-	if got := chatDBPath(); got != filepath.Join(home, "Library", "Messages", "chat.db") {
+	if got := chatDBPath(mustConfig(t)); got != filepath.Join(home, "Library", "Messages", "chat.db") {
 		t.Fatalf("chatDBPath = %q", got)
 	}
 	// No AddressBook/Calendar under the temp HOME, so both fall back to the
 	// modern default rooted at HOME.
-	ab := addressBookRoot()
+	ab := addressBookRoot(mustConfig(t))
 	if !strings.HasPrefix(ab, home) || !strings.Contains(ab, filepath.Join("Library", "Application Support", "AddressBook", "Sources")) {
 		t.Fatalf("addressBookRoot = %q, want under %q", ab, home)
 	}
-	db := appleCalDBPath()
+	db := appleCalDBPath(mustConfig(t))
 	if !strings.HasPrefix(db, home) || !strings.Contains(db, "Calendar.sqlitedb") {
 		t.Fatalf("appleCalDBPath = %q, want the modern default under %q", db, home)
 	}
@@ -184,7 +183,7 @@ func TestCoreB_IMessageLookbackDays(t *testing.T) {
 		{"all time", Source{SinceDays: -1}, -1},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			if got := iMessageLookbackDays(tc.s); got != tc.want {
 				t.Fatalf("iMessageLookbackDays(%+v) = %d, want %d", tc.s, got, tc.want)
 			}
@@ -686,14 +685,14 @@ func TestCoreB_IngestConnectFilesystemHappy(t *testing.T) {
 	coreBIngestWriteFile(t, filepath.Join(dir, "readme.md"), "# hello")
 
 	var out bytes.Buffer
-	if err := connectFilesystem(context.Background(), []string{dir}, &out, testStderr); err != nil {
+	if err := connectFilesystem(testCtx(t), []string{dir}, &out, testStderr); err != nil {
 		t.Fatalf("connectFilesystem: %v\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "Enabled filesystem and indexed 1 file(s) from") {
 		t.Fatalf("connect output missing success line:\n%s", out.String())
 	}
 	// The source was registered ENABLED under the folder's base name.
-	cfg, _ := loadConfig()
+	cfg, _ := loadConfigFor(testCtx(t))
 	sources, _ := loadSources(cfg)
 	want := defaultFilesystemSourceName(dir)
 	var found *Source
@@ -714,10 +713,10 @@ func TestCoreB_IngestConnectFilesystemReconnectAndConflict(t *testing.T) {
 	coreBIngestWriteFile(t, filepath.Join(dir1, "a.md"), "# a")
 
 	var out bytes.Buffer
-	if err := connectFilesystem(context.Background(), []string{dir1, "--name", "shared"}, &out, testStderr); err != nil {
+	if err := connectFilesystem(testCtx(t), []string{dir1, "--name", "shared"}, &out, testStderr); err != nil {
 		t.Fatalf("first connect: %v", err)
 	}
-	cfg, _ := loadConfig()
+	cfg, _ := loadConfigFor(testCtx(t))
 	sources, _ := loadSources(cfg)
 	var created string
 	for _, s := range sources {
@@ -731,7 +730,7 @@ func TestCoreB_IngestConnectFilesystemReconnectAndConflict(t *testing.T) {
 
 	// Re-connect the SAME name + SAME path => refresh in place, CreatedAt preserved.
 	out.Reset()
-	if err := connectFilesystem(context.Background(), []string{dir1, "--name", "shared"}, &out, testStderr); err != nil {
+	if err := connectFilesystem(testCtx(t), []string{dir1, "--name", "shared"}, &out, testStderr); err != nil {
 		t.Fatalf("re-connect: %v", err)
 	}
 	sources, _ = loadSources(cfg)
@@ -752,7 +751,7 @@ func TestCoreB_IngestConnectFilesystemReconnectAndConflict(t *testing.T) {
 	dir2 := t.TempDir()
 	coreBIngestWriteFile(t, filepath.Join(dir2, "b.md"), "# b")
 	out.Reset()
-	err := connectFilesystem(context.Background(), []string{dir2, "--name", "shared"}, &out, testStderr)
+	err := connectFilesystem(testCtx(t), []string{dir2, "--name", "shared"}, &out, testStderr)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("name-collision err = %v, want 'already exists'", err)
 	}
@@ -761,7 +760,7 @@ func TestCoreB_IngestConnectFilesystemReconnectAndConflict(t *testing.T) {
 func TestCoreB_IngestConnectFilesystemCorruptRegistry(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, _ := loadConfig()
+	cfg, _ := loadConfigFor(testCtx(t))
 	// A corrupt sources.json must NOT be silently overwritten (that would destroy
 	// every other registered connector).
 	if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "sources.json"), []byte("{bad"), 0o600); err != nil {
@@ -770,7 +769,7 @@ func TestCoreB_IngestConnectFilesystemCorruptRegistry(t *testing.T) {
 	dir := t.TempDir()
 	coreBIngestWriteFile(t, filepath.Join(dir, "a.md"), "# a")
 	var out bytes.Buffer
-	err := connectFilesystem(context.Background(), []string{dir}, &out, testStderr)
+	err := connectFilesystem(testCtx(t), []string{dir}, &out, testStderr)
 	if err == nil || !strings.Contains(err.Error(), "cannot read existing sources") {
 		t.Fatalf("corrupt-registry err = %v", err)
 	}
@@ -782,18 +781,18 @@ func TestCoreB_IngestConnectFilesystemErrors(t *testing.T) {
 	var out bytes.Buffer
 
 	// No path at all -> usage error.
-	if err := connectFilesystem(context.Background(), nil, &out, testStderr); err == nil || !strings.Contains(err.Error(), "usage: mora connect filesystem") {
+	if err := connectFilesystem(testCtx(t), nil, &out, testStderr); err == nil || !strings.Contains(err.Error(), "usage: mora connect filesystem") {
 		t.Fatalf("no-path err = %v", err)
 	}
 	// A path that does not exist -> cannot read.
 	missing := filepath.Join(t.TempDir(), "nope")
-	if err := connectFilesystem(context.Background(), []string{missing}, &out, testStderr); err == nil || !strings.Contains(err.Error(), "cannot read") {
+	if err := connectFilesystem(testCtx(t), []string{missing}, &out, testStderr); err == nil || !strings.Contains(err.Error(), "cannot read") {
 		t.Fatalf("missing-path err = %v", err)
 	}
 	// A file (not a directory) -> is not a directory.
 	f := filepath.Join(t.TempDir(), "file.txt")
 	coreBIngestWriteFile(t, f, "x")
-	if err := connectFilesystem(context.Background(), []string{f}, &out, testStderr); err == nil || !strings.Contains(err.Error(), "is not a directory") {
+	if err := connectFilesystem(testCtx(t), []string{f}, &out, testStderr); err == nil || !strings.Contains(err.Error(), "is not a directory") {
 		t.Fatalf("file-path err = %v", err)
 	}
 }
@@ -806,7 +805,7 @@ func TestCoreB_IngestBackfillEnabledIMessageEmpty(t *testing.T) {
 	cfg := coreBIngestInitCfg(t)
 	var out bytes.Buffer
 	// No enabled imessage source => nothing to ingest; rebuild succeeds; (0, nil).
-	total, err := backfillEnabledIMessage(context.Background(), cfg, &out)
+	total, err := backfillEnabledIMessage(testCtx(t), cfg, &out)
 	if err != nil {
 		t.Fatalf("backfill empty err = %v", err)
 	}
@@ -826,7 +825,7 @@ func TestCoreB_IngestBackfillEnabledIMessageFailure(t *testing.T) {
 		t.Fatalf("setSourceEnabled: %v", err)
 	}
 	var out bytes.Buffer
-	total, err := backfillEnabledIMessage(context.Background(), cfg, &out)
+	total, err := backfillEnabledIMessage(testCtx(t), cfg, &out)
 	if err == nil || !strings.Contains(err.Error(), "source(s) failed to sync") {
 		t.Fatalf("backfill failure err = %v, want a failed-sync summary", err)
 	}
@@ -844,10 +843,10 @@ func TestCoreB_IngestConnectIMessageSinceDays(t *testing.T) {
 	run(t, "init")
 	var out bytes.Buffer
 	// --since-days -1 persists an all-time override before readiness stops us.
-	if err := connectIMessage(context.Background(), []string{"--since-days", "-1"}, &out); err != nil {
+	if err := connectIMessage(testCtx(t), []string{"--since-days", "-1"}, &out); err != nil {
 		t.Fatalf("connectIMessage: %v", err)
 	}
-	cfg, _ := loadConfig()
+	cfg, _ := loadConfigFor(testCtx(t))
 	sources, _ := loadSources(cfg)
 	var im *Source
 	for i := range sources {
@@ -864,7 +863,7 @@ func TestCoreB_IngestConnectIMessageBadFlag(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var out bytes.Buffer
-	if err := connectIMessage(context.Background(), []string{"--nope"}, &out); err == nil {
+	if err := connectIMessage(testCtx(t), []string{"--nope"}, &out); err == nil {
 		t.Fatalf("connectIMessage bad flag: want parse error, got nil")
 	}
 }
@@ -877,7 +876,7 @@ func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
 	// Temp HOME has no ~/Library/Messages/chat.db, so readiness fails and connect
 	// stops at the honest guidance (returns nil, no false backfill). On non-darwin
 	// the readiness check stops earlier with the macOS-only note instead.
-	if err := connectIMessage(context.Background(), nil, &out); err != nil {
+	if err := connectIMessage(testCtx(t), nil, &out); err != nil {
 		t.Fatalf("connectIMessage err = %v", err)
 	}
 	s := out.String()
@@ -898,7 +897,7 @@ func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
 		t.Fatalf("connectIMessage output missing readiness guidance:\n%s", s)
 	}
 	// The imessage source row was created + enabled.
-	cfg, _ := loadConfig()
+	cfg, _ := loadConfigFor(testCtx(t))
 	sources, _ := loadSources(cfg)
 	var im *Source
 	for i := range sources {

@@ -14,10 +14,10 @@ func personMemNamed(id, provider, from, name string, created time.Time) Memory {
 	return m
 }
 
-func runBriefErr(args ...string) error {
+func runBriefErr(t *testing.T, args ...string) error {
 	var out bytes.Buffer
 	full := append([]string{"brief"}, args...)
-	return Run(context.Background(), full, &out, &out, strings.NewReader(""))
+	return Run(testCtx(t), full, &out, &out, strings.NewReader(""))
 }
 
 // TestCmdPulseDigestEntityFilter: `mora pulse --digest --since-hours N --entity <addr>`
@@ -76,7 +76,7 @@ func TestCmdBriefEntityNoMatch(t *testing.T) {
 	if err := writeMemory(cfg, personMem("riya-call", "gmail", "riya@a.com", briefFixedNow.Add(-2*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
-	err := runBriefErr("--entity", "ghost@nowhere.com")
+	err := runBriefErr(t, "--entity", "ghost@nowhere.com")
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no entity") {
 		t.Fatalf("no-match: err=%v, want a non-nil 'no entity' error", err)
 	}
@@ -99,7 +99,7 @@ func TestCmdBriefEntityAmbiguous(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	err := runBriefErr("--entity", "Riya")
+	err := runBriefErr(t, "--entity", "Riya")
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
 		t.Fatalf("ambiguous: err=%v, want a non-nil 'ambiguous' error", err)
 	}

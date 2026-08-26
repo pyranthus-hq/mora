@@ -41,7 +41,7 @@ func TestShareBareAndUnknownSubverbError(t *testing.T) {
 	run(t, "init")
 	for _, args := range [][]string{{"share"}, {"share", "bogus"}} {
 		var out bytes.Buffer
-		err := Run(context.Background(), args, &out, &out, strings.NewReader(""))
+		err := Run(testCtx(t), args, &out, &out, strings.NewReader(""))
 		if err == nil || !strings.Contains(err.Error(), "usage: mora share") {
 			t.Fatalf("Run(%v) = %v; want usage error", args, err)
 		}
@@ -141,7 +141,7 @@ func TestShareKeygenCreatesIdentityAndRefusesOverwrite(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err = Run(context.Background(), []string{"share", "keygen"}, &buf, &buf, strings.NewReader(""))
+	err = Run(testCtx(t), []string{"share", "keygen"}, &buf, &buf, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("second keygen = %v; want refuse-to-overwrite error", err)
 	}
@@ -346,7 +346,7 @@ func TestShareRefusesWhenShareRootInsideVault(t *testing.T) {
 	f.Close()
 
 	var buf bytes.Buffer
-	err = Run(context.Background(), []string{"share", "keygen"}, &buf, &buf, strings.NewReader(""))
+	err = Run(testCtx(t), []string{"share", "keygen"}, &buf, &buf, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "inside the vault") {
 		t.Fatalf("share with data_dir inside vault = %v; want refusal naming the vault", err)
 	}
@@ -1312,7 +1312,7 @@ func TestMCPSearchMemoryCarriesOwner(t *testing.T) {
 	setupSubscription(t, cfg, "neil", []Memory{
 		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
 	})
-	got, err := callMCPTool(context.Background(), "search_memory", map[string]any{"query": "sqlite"})
+	got, err := callMCPTool(testCtx(t), "search_memory", map[string]any{"query": "sqlite"})
 	if err != nil {
 		t.Fatalf("search_memory: %v", err)
 	}
@@ -1333,7 +1333,7 @@ func TestThinkAttributesSharedEvidenceAndKeepsGapsLocal(t *testing.T) {
 	setupSubscription(t, cfg, "neil", []Memory{
 		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
 	})
-	res, err := buildThink(context.Background(), cfg, "sqlite decision", "", 8, time.Now())
+	res, err := buildThink(testCtx(t), cfg, "sqlite decision", "", 8, time.Now())
 	if err != nil {
 		t.Fatalf("buildThink: %v", err)
 	}
@@ -1393,7 +1393,7 @@ func TestShareRemoveRequiresYes(t *testing.T) {
 	cfg := mustConfig(t)
 	setupPublish(t, cfg, "acme", "project:acme", testRecipient(t))
 	var buf bytes.Buffer
-	err := Run(context.Background(), []string{"share", "remove", "acme"}, &buf, &buf, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"share", "remove", "acme"}, &buf, &buf, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("remove without --yes = %v; want confirm requirement", err)
 	}
@@ -1757,7 +1757,7 @@ func TestReadResolvesSharedMemoryButDeleteDoesNot(t *testing.T) {
 	if !strings.Contains(out, `"owner": "neil"`) || !strings.Contains(out, "padding words here") {
 		t.Fatalf("read did not resolve the shared memory with full text + owner:\n%s", out)
 	}
-	got, err := callMCPTool(context.Background(), "read_memory", map[string]any{"id": "mem_20260601_000000_aaaaaaaa"})
+	got, err := callMCPTool(testCtx(t), "read_memory", map[string]any{"id": "mem_20260601_000000_aaaaaaaa"})
 	if err != nil {
 		t.Fatalf("MCP read_memory on shared id: %v", err)
 	}
@@ -1766,7 +1766,7 @@ func TestReadResolvesSharedMemoryButDeleteDoesNot(t *testing.T) {
 		t.Fatalf("MCP read_memory missing owner:\n%s", b)
 	}
 	var buf bytes.Buffer
-	err = Run(context.Background(), []string{"delete", "mem_20260601_000000_aaaaaaaa", "--yes"}, &buf, &buf, strings.NewReader(""))
+	err = Run(testCtx(t), []string{"delete", "mem_20260601_000000_aaaaaaaa", "--yes"}, &buf, &buf, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("delete reached a shared memory; shares are read-only")
 	}
@@ -1784,7 +1784,7 @@ func TestCorruptSharesRegistryIsActionable(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	err := Run(context.Background(), []string{"search", "content"}, &buf, &buf, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"search", "content"}, &buf, &buf, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "shares.json") {
 		t.Fatalf("corrupt registry error not actionable: %v", err)
 	}
@@ -1823,7 +1823,7 @@ func TestThinkGapWordingWithOnlySharedEvidence(t *testing.T) {
 	setupSubscription(t, cfg, "neil", []Memory{
 		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Acme widgets", "acme ships widgets in q3"),
 	})
-	res, err := buildThink(context.Background(), cfg, "acme widgets", "", 8, time.Now())
+	res, err := buildThink(testCtx(t), cfg, "acme widgets", "", 8, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1853,7 +1853,7 @@ func TestShareKeygenHelpHasNoSideEffects(t *testing.T) {
 		t.Fatal("keygen --help minted an identity")
 	}
 	var buf bytes.Buffer
-	if err := Run(context.Background(), []string{"share", "keygen", "stray"}, &buf, &buf, strings.NewReader("")); err == nil {
+	if err := Run(testCtx(t), []string{"share", "keygen", "stray"}, &buf, &buf, strings.NewReader("")); err == nil {
 		t.Fatal("keygen with stray args accepted")
 	}
 }

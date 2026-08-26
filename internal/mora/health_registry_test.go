@@ -131,8 +131,8 @@ func driveEverySurface(t *testing.T, ctx context.Context, cfg Config) {
 	}
 
 	srv := &httpServer{token: "tok", port: 7777}
-	handler := srv.handler()
-	for _, rt := range srv.httpRoutes() {
+	handler := srv.handler(testCtx(t))
+	for _, rt := range srv.httpRoutes(testCtx(t)) {
 		key := rt.Method + " " + rt.Pattern
 		if httpHealthExemptRoutes[key] {
 			continue
@@ -177,7 +177,7 @@ func TestEverySurfaceCarriesHealth(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	for _, id := range []string{"read-target", "delete-target"} {
 		if err := writeMemory(cfg, Memory{
@@ -207,7 +207,7 @@ func TestSixDayFreezeSurfacesOnEverySurface(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	for _, id := range []string{"read-target", "delete-target"} {
 		if err := writeMemory(cfg, Memory{

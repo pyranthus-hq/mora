@@ -204,7 +204,7 @@ func TestShareInitBucketRecordsGrant(t *testing.T) {
 	if !strings.Contains(out, "bucket") {
 		t.Fatalf("expected a bucket confirmation, got: %q", out)
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestShareInitBucketRequiresBucketName(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err = Run(context.Background(), []string{"share", "init", "acme", "--scope", "project:acme",
+	err = Run(testCtx(t), []string{"share", "init", "acme", "--scope", "project:acme",
 		"--recipient", id.Recipient().String(), "--via", "r2"}, &out, &out, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "bucket") {
 		t.Fatalf("expected a --bucket-required error, got: %v", err)
@@ -299,7 +299,7 @@ func TestConcurrentFirstBucketSubscribersSerializeFetchAndRegistration(t *testin
 }
 
 func TestFirstBucketSubscribeBindsProbeSignerAndVersion(t *testing.T) {
-	t.Run("signer swap", func(t *testing.T) {
+	subRun(t, "signer swap", func(t *testing.T) {
 		f := newBucketFixture(t)
 		if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
 			t.Fatal(err)
@@ -321,7 +321,7 @@ func TestFirstBucketSubscribeBindsProbeSignerAndVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("version rollback", func(t *testing.T) {
+	subRun(t, "version rollback", func(t *testing.T) {
 		f := newBucketFixture(t)
 		if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
 			t.Fatal(err)

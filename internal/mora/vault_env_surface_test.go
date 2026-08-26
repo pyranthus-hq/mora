@@ -59,7 +59,9 @@ import (
 // agrees with the environment.
 func twoVaults(t *testing.T) (persisted, env string) {
 	t.Helper()
-	withTempHome(t)
+	// LEGACY env harness on purpose: this file pins MORA_VAULT env-override
+	// semantics, which an injected root deliberately ignores.
+	withTempHomeSetenv(t)
 	run(t, "init")
 	persisted = mustConfig(t).VaultDir
 
@@ -125,7 +127,7 @@ func TestDoctorSurfaceHonorsVaultEnv(t *testing.T) {
 		{"marker in the env vault", true, true},
 		{"marker in the persisted vault only", false, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			persisted, env := twoVaults(t)
 			marked := persisted
 			if tc.markEnv {

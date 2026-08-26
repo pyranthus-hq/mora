@@ -24,7 +24,7 @@ import (
 func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestIngestRunAllContinuesPastFailingSource(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err = cmdIngest(context.Background(), []string{"run", "--all"}, &buf, testStderr)
+	err = cmdIngest(testCtx(t), []string{"run", "--all"}, &buf, testStderr)
 	if err != nil {
 		t.Fatalf("usable partial success must exit successfully: %v; output:\n%s", err, buf.String())
 	}
@@ -86,7 +86,7 @@ func TestIsolationPartialSuccessReceiptThroughIngestAll(t *testing.T) {
 		return sourceIngestResult{Examined: 2, Materialized: 2}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, &stderr); err != nil {
+	if err := cmdIngest(testCtx(t), []string{"run", "--all", "--json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("mixed run: %v\nstderr=%s", err, stderr.String())
 	}
 	var receipt ingestRunReceipt
@@ -114,7 +114,7 @@ func TestIsolationPartialAttemptCountsThroughIngestAll(t *testing.T) {
 			newCodedError(errCodeConnectorMalformed, nil, "27 malformed items")
 	}
 	var stdout bytes.Buffer
-	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard); err != nil {
+	if err := cmdIngest(testCtx(t), []string{"run", "--all", "--json"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("usable partial attempt: %v\n%s", err, stdout.String())
 	}
 	var receipt ingestRunReceipt
@@ -153,7 +153,7 @@ func TestIsolationIngestReceiptCarriesStaleProvenance(t *testing.T) {
 			newCodedError(errCodeConnectorUnavailable, nil, "offline")
 	}
 	var stdout bytes.Buffer
-	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard); err != nil {
+	if err := cmdIngest(testCtx(t), []string{"run", "--all", "--json"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("usable partial: %v", err)
 	}
 	var receipt ingestRunReceipt
@@ -182,7 +182,7 @@ func TestIngestRunAllFailedEmitsEveryReceiptBeforeError(t *testing.T) {
 		return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, nil, "%s offline", source.Name)
 	}
 	var stdout bytes.Buffer
-	err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard)
+	err := cmdIngest(testCtx(t), []string{"run", "--all", "--json"}, &stdout, io.Discard)
 	if err == nil {
 		t.Fatal("all-failed run must return nonzero")
 	}
@@ -209,7 +209,7 @@ func TestIngestRunSharedRebuildFailureIsNotUsable(t *testing.T) {
 	}
 	rebuildIngestIndexFn = func(context.Context, Config) (int, error) { return 0, errors.New("shared rebuild failed") }
 	var stdout bytes.Buffer
-	err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &stdout, io.Discard)
+	err := cmdIngest(testCtx(t), []string{"run", "--all", "--json"}, &stdout, io.Discard)
 	if err == nil {
 		t.Fatal("shared rebuild failure must return nonzero")
 	}
@@ -228,7 +228,7 @@ func TestIngestRunSharedRebuildFailureIsNotUsable(t *testing.T) {
 func TestIngestRunNamedSourceStillAborts(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestIngestRunNamedSourceStillAborts(t *testing.T) {
 		return sourceIngestResult{}, errors.New("boom")
 	}
 	var buf bytes.Buffer
-	if err := cmdIngest(context.Background(), []string{"run", "--source", "bad"}, &buf, testStderr); err == nil {
+	if err := cmdIngest(testCtx(t), []string{"run", "--source", "bad"}, &buf, testStderr); err == nil {
 		t.Fatalf("named-source failure must abort with the error")
 	}
 }

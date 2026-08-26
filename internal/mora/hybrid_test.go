@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"testing"
 )
 
@@ -21,7 +20,7 @@ func TestHybridGraphExpansion(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// M1's body shares NO words with the query below; it's reachable only via Neil.
 	if err := writeMemory(cfg, Memory{
@@ -61,7 +60,7 @@ func TestHybridFtsAnchor(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "OAuth design", "--text", "PKCE flow and refresh tokens for the auth design")
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "Lunch", "--text", "tacos on tuesday")
@@ -84,7 +83,7 @@ func TestHybridDeterministic(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	for i, txt := range []string{"alpha beta gamma", "beta gamma delta", "gamma delta epsilon"} {
 		run(t, "write", "--scope", "global", "--type", "note", "--title", txt, "--text", txt+" body")
 		_ = i

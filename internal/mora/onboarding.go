@@ -186,7 +186,7 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if fs.NArg() != 0 || !*jsonOut {
 			return errors.New("usage: mora setup status --json")
 		}
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -217,7 +217,7 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	if *plan && (*applyLayout || *applyIndex || *applyTokens) {
 		return errors.New("--plan cannot be combined with setup mutation flags")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -267,7 +267,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 	if steps[1].State != "verified" {
 		if !allowIndex {
@@ -284,7 +283,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 	if steps[2].State != "verified" {
 		if !allowTokens {
@@ -305,7 +303,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 
 	if !allSetupStepsVerified(steps) {
@@ -315,7 +312,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := writeSetupReceipt(cfg, steps); err != nil {
 			return fmt.Errorf("record setup progress: %w", err)
 		}
-		receiptPresent = true
 	}
 	fmt.Fprintln(stdout, "Foundation setup verified.")
 	fmt.Fprintln(stdout, "Full verified onboarding is not complete yet: connector, MCP, schedule, update, and retrieval checks remain deliberately unimplemented in this first slice.")

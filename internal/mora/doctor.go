@@ -221,22 +221,23 @@ func disjointRealPaths(vault, tokenDir string) bool { return doctorpkg.PathsDisj
 func looksSynced(path string) bool                  { return doctorpkg.LooksSynced(path) }
 func doctorFailSummary(checks []doctorCheck) string { return doctorpkg.FailSummary(checks) }
 func humanizeAgo(d time.Duration) string            { return doctorpkg.HumanizeAgo(d) }
-func printIMessageReadiness(stdout io.Writer, setupVariant bool) bool {
-	return doctorpkg.PrintIMessageReadiness(stdout, setupVariant, doctorpkg.IMessageSeams{GOOS: runtimeGOOS, ChatDBPath: chatDBPath, Stat: os.Stat, ProbeReadable: imessage.ProbeReadable})
+func printIMessageReadiness(cfg Config, stdout io.Writer, setupVariant bool) bool {
+	return doctorpkg.PrintIMessageReadiness(stdout, setupVariant, doctorpkg.IMessageSeams{GOOS: runtimeGOOS, ChatDBPath: func() string { return chatDBPath(cfg) }, Stat: os.Stat, ProbeReadable: imessage.ProbeReadable})
 }
 
 // printWhatsAppReadiness probes and prints the WhatsApp readiness checks
 // (macOS gate, ChatStorage.sqlite presence, real read probe for Full Disk
 // Access). Presentation lives in internal/doctor; mora injects the facts — the
 // same seam split as printIMessageReadiness. Returns true only when all pass.
-func printWhatsAppReadiness(stdout io.Writer) bool {
-	return doctorpkg.PrintWhatsAppReadiness(stdout, doctorpkg.WhatsAppSeams{GOOS: runtimeGOOS, DBPath: whatsAppDBPath, Stat: os.Stat, ProbeReadable: whatsapp.ProbeReadable})
+func printWhatsAppReadiness(cfg Config, stdout io.Writer) bool {
+	return doctorpkg.PrintWhatsAppReadiness(stdout, doctorpkg.WhatsAppSeams{GOOS: runtimeGOOS, DBPath: func() string { return whatsAppDBPath(cfg) }, Stat: os.Stat, ProbeReadable: whatsapp.ProbeReadable})
 }
 
-// whatsAppDBPath is the default local WhatsApp Desktop database location.
-func whatsAppDBPath() string {
-	home, _ := os.UserHomeDir()
-	return whatsapp.DefaultDBPath(home)
+// whatsAppDBPath is the default local WhatsApp Desktop database location,
+// derived from the context-resolved home so injected sandboxes never probe the
+// real store.
+func whatsAppDBPath(cfg Config) string {
+	return whatsapp.DefaultDBPath(cfg.HomeDir())
 }
 
 func sourceHealthDetailLine(h sourceHealth, now time.Time) string {
@@ -343,7 +344,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("refusing to repair without --yes (use --dry-run --json to preview)")
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -594,10 +595,10 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	printGoogleAuthRecency(cfg, stdout, now)
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
 	// Access guidance reads top-to-bottom (Surface 3).
-	printIMessageReadiness(stdout, false)
+	printIMessageReadiness(cfg, stdout, false)
 	for _, source := range sources {
 		if source.Type == "whatsapp" && source.IsEnabled() {
-			printWhatsAppReadiness(stdout)
+			printWhatsAppReadiness(cfg, stdout)
 			break
 		}
 	}

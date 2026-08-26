@@ -35,7 +35,7 @@ func cmdSources(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if len(args) == 0 {
 		return errors.New("usage: mora sources add|list")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

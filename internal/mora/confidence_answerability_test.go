@@ -148,7 +148,7 @@ func TestConfidenceSearchCoverageUsesOnlyBudgetedReturnedRows(t *testing.T) {
 		// caller did not receive it. It must not strengthen the returned set.
 		{ID: "dropped-direct", Source: "imessage", Title: "Atlas beta readiness complete launch", Text: "all terms", Score: -6, CreatedAt: "2026-08-02T00:00:00Z"},
 	}
-	conf := searchConfidence(context.Background(), cfg, returned, false, fullRows, fullRows, retrievalTrace{}, "Atlas beta readiness complete launch", now)
+	conf := searchConfidence(testCtx(t), cfg, returned, false, fullRows, fullRows, retrievalTrace{}, "Atlas beta readiness complete launch", now)
 	if conf.Strength != "moderate" {
 		t.Fatalf("strength=%q, want moderate when the only exact row was budget-dropped", conf.Strength)
 	}
@@ -171,7 +171,7 @@ func TestIsolationCurrentStateConfidenceNamesStaleSource(t *testing.T) {
 		ID: "gmail/current", Source: "gmail", Title: "current state of my projects Atlas", Text: "current state of my projects Atlas",
 		Score: -5, CreatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
 	}}
-	conf := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+	conf := searchConfidenceFor(testCtx(t), cfg, rows, false, rows, rows, retrievalTrace{},
 		"current state of my projects Atlas", now, "gmail", true)
 	if conf.Strength != "moderate" || !reflect.DeepEqual(conf.MissingSources, []string{"gmail"}) || conf.HealthImpact != healthStale {
 		t.Fatalf("current-state confidence = %+v", conf)
@@ -189,10 +189,10 @@ func TestIsolationHistoricalRelevanceIgnoresFreshness(t *testing.T) {
 		ID: "gmail/history", Source: "gmail", Title: "Atlas decision history", Text: "direct historical evidence",
 		Score: -5, CreatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
 	}}
-	before := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+	before := searchConfidenceFor(testCtx(t), cfg, rows, false, rows, rows, retrievalTrace{},
 		"Atlas decision history", now, "gmail", false)
 	seedSyncStatus(t, cfg, "gmail", now.Add(-96*time.Hour))
-	after := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+	after := searchConfidenceFor(testCtx(t), cfg, rows, false, rows, rows, retrievalTrace{},
 		"Atlas decision history", now, "gmail", false)
 	if before.MaxScore != after.MaxScore || before.MeanScore != after.MeanScore || before.Strength != after.Strength {
 		t.Fatalf("historical relevance changed with freshness: before=%+v after=%+v", before, after)
@@ -212,7 +212,7 @@ func TestIsolationFilteredConfidenceIgnoresSibling(t *testing.T) {
 	seedSyncStatus(t, cfg, "calendar", now.Add(-72*time.Hour))
 	seedSyncStatus(t, cfg, "applecalendar", now.Add(-96*time.Hour))
 	rows := []Memory{{ID: "gmail/current", Source: "gmail", Score: -5, CreatedAt: now.Format(time.RFC3339)}}
-	conf := searchConfidenceFor(context.Background(), cfg, rows, false, rows, rows, retrievalTrace{},
+	conf := searchConfidenceFor(testCtx(t), cfg, rows, false, rows, rows, retrievalTrace{},
 		"current state of my projects", now, "gmail", true)
 	if !reflect.DeepEqual(conf.MissingSources, []string{"gmail"}) {
 		t.Fatalf("filtered gaps = %v, want gmail only", conf.MissingSources)
@@ -239,7 +239,7 @@ func TestConfidenceReturnedSharedRowCannotBorrowCollidingLocalText(t *testing.T)
 	if len(rows) != 1 || rows[0].Owner != "team" || rows[0].Text != "shared partial body" {
 		t.Fatalf("returned shared identity borrowed the colliding local row: %+v", rows)
 	}
-	conf := searchConfidence(context.Background(), cfg, returned, false, full, local, retrievalTrace{}, query, time.Now())
+	conf := searchConfidence(testCtx(t), cfg, returned, false, full, local, retrievalTrace{}, query, time.Now())
 	if conf.Strength != "moderate" {
 		t.Fatalf("strength=%q, want moderate when returned shared row is partial", conf.Strength)
 	}
@@ -261,7 +261,7 @@ func TestConfidenceDirectReturnedSharedRowsCount(t *testing.T) {
 	}
 	full := append(append([]Memory{}, local...), shared...)
 	returned := append([]Memory{}, full...)
-	conf := searchConfidence(context.Background(), cfg, returned, true, full, local, retrievalTrace{}, query, time.Now())
+	conf := searchConfidence(testCtx(t), cfg, returned, true, full, local, retrievalTrace{}, query, time.Now())
 	if conf.Strength != "strong" {
 		t.Fatalf("strength=%q, want strong when two direct returned shared rows provide two sources", conf.Strength)
 	}

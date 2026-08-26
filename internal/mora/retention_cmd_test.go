@@ -27,7 +27,7 @@ func TestRetentionCLIAllowsDocumentedPositionalFirstFlags(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	run(t, "write", "--title", "old", "--text", "old body")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

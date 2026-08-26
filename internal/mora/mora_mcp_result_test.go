@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -14,7 +13,7 @@ import (
 func mcpResult(t *testing.T, line string) map[string]any {
 	t.Helper()
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"mcp", "serve"}, &out, &out, strings.NewReader(line+"\n")); err != nil {
+	if err := Run(testCtx(t), []string{"mcp", "serve"}, &out, &out, strings.NewReader(line+"\n")); err != nil {
 		t.Fatalf("mcp serve: %v\noutput:\n%s", err, out.String())
 	}
 	var resp struct {

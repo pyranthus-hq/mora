@@ -166,7 +166,10 @@ func runConcurrencyContract(t *testing.T, p concParams) {
 	// cold-start full-rebuild herd.
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	// The storm goroutines must resolve the injected sandbox, not the process
+	// environment: testCtx carries the per-test root (context values are
+	// goroutine-safe), so cliWrite/mcpWrite/rebuild all stay hermetic.
+	ctx := testCtx(t)
 
 	// Seed a handful of memories BEFORE the storm: they are the read-by-id targets
 	// for the reader goroutines (findMemory needs an id that already exists) and

@@ -32,11 +32,11 @@ func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	case "undo":
 		return teachUndo(ctx, args[1:], stdout)
 	case "history":
-		return teachHistory(args[1:], stdout)
+		return teachHistory(ctx, args[1:], stdout)
 	case "consent":
-		return teachConsent(args[1:], stdout)
+		return teachConsent(ctx, args[1:], stdout)
 	case "examples":
-		return teachExamples(args[1:], stdout)
+		return teachExamples(ctx, args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown teach subcommand %q", args[0])
 	}
@@ -71,7 +71,7 @@ func teachCommitment(ctx context.Context, args []string, stdout io.Writer) error
 	if *memoryID == "" {
 		return errors.New("--memory-id is required")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 	if *id == "" {
 		return errors.New("--id is required")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -349,7 +349,7 @@ func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := refuseDashLedPositional("teach undo", "entry id", args[0]); err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -409,7 +409,7 @@ type teachHistoryReceipt struct {
 	Entries []govEntry `json:"entries"`
 }
 
-func teachHistory(args []string, stdout io.Writer) error {
+func teachHistory(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("teach history", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	memoryID := fs.String("memory-id", "", "filter by target or replacement memory id")
@@ -417,7 +417,7 @@ func teachHistory(args []string, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -477,11 +477,11 @@ func teachHistory(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func teachConsent(args []string, stdout io.Writer) error {
+func teachConsent(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		args = []string{"status"}
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -536,11 +536,11 @@ type teachExample struct {
 	Undone   bool   `json:"undone"`
 }
 
-func teachExamples(args []string, stdout io.Writer) error {
+func teachExamples(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) != 1 || args[0] != "--json" {
 		return errors.New("usage: mora teach examples --json")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

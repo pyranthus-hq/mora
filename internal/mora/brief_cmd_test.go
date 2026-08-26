@@ -44,7 +44,7 @@ func runBrief(t *testing.T, args ...string) string {
 	t.Helper()
 	var out bytes.Buffer
 	full := append([]string{"brief"}, args...)
-	if err := Run(context.Background(), full, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), full, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("Run(brief %v) error: %v\noutput:\n%s", args, err, out.String())
 	}
 	return out.String()

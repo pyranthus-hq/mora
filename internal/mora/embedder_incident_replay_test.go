@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -147,7 +146,7 @@ func TestOllamaDownRebuildFailsClosed(t *testing.T) {
 
 	// (5) doctor --pulse exits with the typed code 2.
 	var pulseOut bytes.Buffer
-	pulseErr := Run(context.Background(), []string{"doctor", "--pulse"}, &pulseOut, &pulseOut, strings.NewReader(""))
+	pulseErr := Run(testCtx(t), []string{"doctor", "--pulse"}, &pulseOut, &pulseOut, strings.NewReader(""))
 	if pulseErr == nil {
 		t.Fatalf("doctor --pulse must fail on a dirty index; output:\n%s", pulseOut.String())
 	}
@@ -268,7 +267,7 @@ func TestMixedVectorProvenanceIsDegraded(t *testing.T) {
 // resolves. With Ollama configured-but-down, neither read-path rebuild door may
 // re-embed the vault with the static fallback and exit 0 — each refuses instead.
 func TestSearchCannotTriggerDegradedReEmbed(t *testing.T) {
-	t.Run("rebuild_on_missing", func(t *testing.T) {
+	subRun(t, "rebuild_on_missing", func(t *testing.T) {
 		// The unconditional rebuild-on-missing door (search.go): a search against a
 		// MISSING index with the daemon down must refuse, never rebuild with static.
 		// Set up the vault under the static floor (so init/write never touch ollama),
@@ -299,7 +298,7 @@ func TestSearchCannotTriggerDegradedReEmbed(t *testing.T) {
 		}
 	})
 
-	t.Run("schema_stale_autoheal", func(t *testing.T) {
+	subRun(t, "schema_stale_autoheal", func(t *testing.T) {
 		// The schema-stale auto-heal door (openIndexRO/indexAutoHeal): build a good
 		// static index, corrupt its schema version, then read with the daemon down.
 		// indexAutoHeal must refuse (embedder unresolvable) rather than auto-heal via

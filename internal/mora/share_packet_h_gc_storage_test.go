@@ -179,7 +179,7 @@ func TestManualShareGCDoesNotRequireSuccessfulPull(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := cmdShare(context.Background(), []string{"gc", "acme"}, &out, testStderr, strings.NewReader("")); err != nil {
+	if err := cmdShare(testCtx(t), []string{"gc", "acme"}, &out, testStderr, strings.NewReader("")); err != nil {
 		t.Fatalf("manual dispatcher required a successful pull: %v", err)
 	}
 	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
@@ -227,7 +227,7 @@ func TestShareStorageLimitIsWholeProduct(t *testing.T) {
 }
 
 func TestShareStorageLimitReservesInflightBuild(t *testing.T) {
-	t.Run("corpus write is rejected before IO", func(t *testing.T) {
+	subRun(t, "corpus write is rejected before IO", func(t *testing.T) {
 		cfg := packetHConfig(t)
 		packetHSetLimitHeadroom(t, cfg, 512)
 		entry := shareBlobEntry{
@@ -244,7 +244,7 @@ func TestShareStorageLimitReservesInflightBuild(t *testing.T) {
 		}
 	})
 
-	t.Run("SQLite max_page_count enforces the byte cap", func(t *testing.T) {
+	subRun(t, "SQLite max_page_count enforces the byte cap", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "index.db")
 		ctx := withShareIndexBudget(context.Background(), 4096)
 		mem := fixtureMemory("mem_20260716_000001_bbbbbbbb", "SQLite cap", "body")
@@ -256,7 +256,7 @@ func TestShareStorageLimitReservesInflightBuild(t *testing.T) {
 		}
 	})
 
-	t.Run("closed index is re-accounted before publication", func(t *testing.T) {
+	subRun(t, "closed index is re-accounted before publication", func(t *testing.T) {
 		testShareStoragePostBuildReaccount(t)
 	})
 }

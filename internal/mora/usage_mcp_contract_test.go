@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -69,7 +68,7 @@ func usageContractCall(t *testing.T, name string, args map[string]any) map[strin
 	if err != nil {
 		t.Fatalf("marshal MCP params: %v", err)
 	}
-	resp := handleMCP(context.Background(), jsonRPCRequest{
+	resp := handleMCP(testCtx(t), jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      float64(1),
 		Method:  "tools/call",
@@ -304,7 +303,7 @@ func TestUsageMCPTrackingGatesSuppressReadEvents(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			cfg := seedUsageMCPContract(t)
 			tc.gate(t, cfg)
 			usageContractCall(t, "read_memory", map[string]any{"id": usageContractID})
@@ -351,7 +350,7 @@ func TestUsageMCPConcurrentCallsAppendIndependentJSONL(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			resp := handleMCP(context.Background(), jsonRPCRequest{
+			resp := handleMCP(testCtx(t), jsonRPCRequest{
 				JSONRPC: "2.0", ID: float64(id + 1), Method: "tools/call", Params: params,
 			})
 			if _, ok := resp.Result.(map[string]any); !ok {

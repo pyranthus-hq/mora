@@ -38,7 +38,7 @@ type mcpToolInvocation struct {
 func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToolInvocation {
 	started := time.Now()
 	configStarted := time.Now()
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	trace := &mcpUsageTrace{configMillis: time.Since(configStarted).Milliseconds()}
 	inv := mcpToolInvocation{cfg: cfg, started: started, trace: trace, err: err}
 	if err != nil {

@@ -55,7 +55,7 @@ func TestIndexUpsertKeepsWAL(t *testing.T) {
 	cfg := mustConfig(t)
 
 	// A user write goes through the incremental upsert path, not a full rebuild.
-	if err := Run(context.Background(), []string{"write", "--title", "t", "--text", "hello wal"}, &nopW{}, &nopW{}, nil); err != nil {
+	if err := Run(testCtx(t), []string{"write", "--title", "t", "--text", "hello wal"}, &nopW{}, &nopW{}, nil); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if mode := persistedJournalMode(t, cfg); mode != "wal" {

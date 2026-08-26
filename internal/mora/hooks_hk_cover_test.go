@@ -21,7 +21,7 @@ func hkSetExecutable(t *testing.T, fn func() (string, error)) {
 }
 
 // hkBreakLoadConfig points MORA_CONFIG_DIR at a dir whose config.toml is itself
-// a directory, so loadConfig()'s os.ReadFile returns a non-NotExist error — the
+// a directory, so loadConfigFor(testCtx(t))'s os.ReadFile returns a non-NotExist error — the
 // fail-soft branch every hook/CLI command takes when config is unreadable.
 func hkBreakLoadConfig(t *testing.T) {
 	t.Helper()
@@ -60,11 +60,11 @@ func hkSetSearch(t *testing.T, fn func(context.Context, Config, string, string, 
 // usage errors.
 func TestHk_CmdHookUsageErrors(t *testing.T) {
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), nil, &out, testStderr, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
+	if err := cmdHook(testCtx(t), nil, &out, testStderr, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
 		t.Fatalf("empty args must return a usage error, got: %v", err)
 	}
 	out.Reset()
-	if err := cmdHook(context.Background(), []string{"frobnicate"}, &out, testStderr, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
+	if err := cmdHook(testCtx(t), []string{"frobnicate"}, &out, testStderr, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "usage:") {
 		t.Fatalf("unknown subcommand must return a usage error, got: %v", err)
 	}
 }
@@ -78,7 +78,7 @@ func TestHk_CmdHookUsageErrors(t *testing.T) {
 func TestHk_HookSessionStartInvalidJSON(t *testing.T) {
 	withTempHome(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"session-start"}, &out, testStderr, strings.NewReader("this is not json")); err != nil {
+	if err := cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader("this is not json")); err != nil {
 		t.Fatalf("invalid stdin must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -90,7 +90,7 @@ func TestHk_HookSessionStartInvalidJSON(t *testing.T) {
 func TestHk_HookSessionStartLoadConfigError(t *testing.T) {
 	hkBreakLoadConfig(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"session-start"}, &out, testStderr, strings.NewReader(`{"source":"startup"}`)); err != nil {
+	if err := cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader(`{"source":"startup"}`)); err != nil {
 		t.Fatalf("unreadable config must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -107,7 +107,7 @@ func TestHk_HookSessionStartLoadConfigError(t *testing.T) {
 func TestHk_HookRecallBadFlag(t *testing.T) {
 	withTempHome(t)
 	var out bytes.Buffer
-	err := cmdHook(context.Background(), []string{"recall", "--threshold", "not-a-float"}, &out,
+	err := cmdHook(testCtx(t), []string{"recall", "--threshold", "not-a-float"}, &out,
 		testStderr, strings.NewReader(`{"prompt":"a sufficiently long prompt here"}`))
 	if err != nil {
 		t.Fatalf("bad flag must be swallowed, got: %v", err)
@@ -122,7 +122,7 @@ func TestHk_HookRecallBadFlag(t *testing.T) {
 func TestHk_HookRecallInvalidJSON(t *testing.T) {
 	withTempHome(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader("{not json")); err != nil {
+	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader("{not json")); err != nil {
 		t.Fatalf("invalid stdin must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -135,7 +135,7 @@ func TestHk_HookRecallInvalidJSON(t *testing.T) {
 func TestHk_HookRecallLoadConfigError(t *testing.T) {
 	hkBreakLoadConfig(t)
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader(`{"prompt":"remember the eelpout decision please"}`)); err != nil {
+	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(`{"prompt":"remember the eelpout decision please"}`)); err != nil {
 		t.Fatalf("unreadable config must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -152,7 +152,7 @@ func TestHk_HookRecallSearchError(t *testing.T) {
 		return nil, errors.New("index unavailable")
 	})
 	var out bytes.Buffer
-	if err := cmdHook(context.Background(), []string{"recall"}, &out, testStderr, strings.NewReader(`{"prompt":"what did we decide about the launch"}`)); err != nil {
+	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(`{"prompt":"what did we decide about the launch"}`)); err != nil {
 		t.Fatalf("search error must fail open, got: %v", err)
 	}
 	if out.String() != "" {
@@ -201,7 +201,7 @@ func TestHk_HookInstallBadFlag(t *testing.T) {
 func TestHk_HookInstallExecutableError(t *testing.T) {
 	withTempHome(t)
 	hkSetExecutable(t, func() (string, error) { return "", errors.New("no exe") })
-	if err := hookInstall(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "no exe") {
+	if err := hookInstall(testCtx(t), nil, io.Discard); err == nil || !strings.Contains(err.Error(), "no exe") {
 		t.Fatalf("install must surface an executable-resolution error, got: %v", err)
 	}
 }
@@ -211,7 +211,7 @@ func TestHk_HookInstallExecutableError(t *testing.T) {
 func TestHk_HookInstallSettingsPathError(t *testing.T) {
 	hkSetExecutable(t, func() (string, error) { return "/opt/mora/mora", nil })
 	setTestHome(t, "")
-	if err := hookInstall(nil, io.Discard); err == nil {
+	if err := hookInstall(testCtx(t), nil, io.Discard); err == nil {
 		t.Fatal("install with no HOME must surface a settings-path error")
 	}
 }
@@ -226,7 +226,7 @@ func TestHk_HookInstallWriteError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, ".claude"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := hookInstall(nil, io.Discard); err == nil {
+	if err := hookInstall(testCtx(t), nil, io.Discard); err == nil {
 		t.Fatal("install must fail when the settings file cannot be written")
 	}
 }
@@ -235,7 +235,7 @@ func TestHk_HookInstallWriteError(t *testing.T) {
 // resolution failure.
 func TestHk_HookUninstallSettingsPathError(t *testing.T) {
 	setTestHome(t, "")
-	if err := hookUninstall(io.Discard); err == nil {
+	if err := hookUninstall(testCtx(t), io.Discard); err == nil {
 		t.Fatal("uninstall with no HOME must surface a settings-path error")
 	}
 }
@@ -245,7 +245,7 @@ func TestHk_HookUninstallSettingsPathError(t *testing.T) {
 func TestHk_HookUninstallMalformedHooks(t *testing.T) {
 	tmp := withTempHookHome(t)
 	writeClaudeSettingsFixture(t, tmp, `{"hooks":"not an object","theme":"dark"}`+"\n")
-	if err := hookUninstall(io.Discard); err == nil || !strings.Contains(err.Error(), "malformed") {
+	if err := hookUninstall(testCtx(t), io.Discard); err == nil || !strings.Contains(err.Error(), "malformed") {
 		t.Fatalf("uninstall must surface malformed hooks, got: %v", err)
 	}
 }
@@ -259,7 +259,7 @@ func TestHk_HookUninstallWriteError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, ".claude"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := hookUninstall(io.Discard); err == nil {
+	if err := hookUninstall(testCtx(t), io.Discard); err == nil {
 		t.Fatal("uninstall must fail when the settings file cannot be written")
 	}
 }
@@ -267,7 +267,7 @@ func TestHk_HookUninstallWriteError(t *testing.T) {
 // TestHk_HookStatusSettingsPathError asserts status surfaces a home-dir failure.
 func TestHk_HookStatusSettingsPathError(t *testing.T) {
 	setTestHome(t, "")
-	if err := hookStatus(io.Discard); err == nil {
+	if err := hookStatus(testCtx(t), io.Discard); err == nil {
 		t.Fatal("status with no HOME must surface a settings-path error")
 	}
 }
@@ -277,7 +277,7 @@ func TestHk_HookStatusSettingsPathError(t *testing.T) {
 func TestHk_HookStatusMalformedHooks(t *testing.T) {
 	tmp := withTempHookHome(t)
 	writeClaudeSettingsFixture(t, tmp, `{"hooks":42}`+"\n")
-	if err := hookStatus(io.Discard); err == nil || !strings.Contains(err.Error(), "malformed") {
+	if err := hookStatus(testCtx(t), io.Discard); err == nil || !strings.Contains(err.Error(), "malformed") {
 		t.Fatalf("status must surface malformed hooks, got: %v", err)
 	}
 }

@@ -109,7 +109,7 @@ func TestResolveContextBudget(t *testing.T) {
 		{"clamped above ceiling (no overflow)", 1_000_000_000, maxChars},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		subRun(t, c.name, func(t *testing.T) {
 			if got := resolveContextBudget(Config{}, c.maxTokens); got != c.want {
 				t.Fatalf("resolveContextBudget(Config{}, %d) = %d, want %d", c.maxTokens, got, c.want)
 			}
@@ -214,7 +214,7 @@ func TestGetEntityDossierShape(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, Memory{
 		ID: "m1", Scope: "project:demo", Title: "Kickoff with Neil",
 		Text: "[[Neil]] discussed the pilot", CreatedAt: "2026-05-30T10:00:00Z",

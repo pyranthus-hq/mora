@@ -68,7 +68,7 @@ func TestResolveUpdatePolicyContextDefaults(t *testing.T) {
 		{"release", "1.2.3", "/usr/local/bin/mora", "notify", "released_binary"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			BuildVersion = tt.version
 			updatePolicyExecutable = func() (string, error) { return tt.exe, nil }
 			got := resolveUpdatePolicy(Config{})
@@ -90,7 +90,7 @@ func TestUpgradePolicyPersistsWithoutDroppingUnknownConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--policy", "off"}, &out, testStderr); err != nil {
+	if err := cmdUpgrade(testCtx(t), []string{"--policy", "off"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(configPath)
@@ -100,7 +100,7 @@ func TestUpgradePolicyPersistsWithoutDroppingUnknownConfig(t *testing.T) {
 	if !bytes.Contains(body, []byte("future_key = \"keep\"")) || !bytes.Contains(body, []byte("update_policy = \"off\"")) {
 		t.Fatalf("config = %s", body)
 	}
-	loaded, err := loadConfig()
+	loaded, err := loadConfigFor(testCtx(t))
 	if err != nil || loaded.UpdatePolicy != "off" {
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
@@ -118,7 +118,7 @@ func TestOffScheduledCheckMakesZeroNetworkAndNotifierCalls(t *testing.T) {
 	updateNotificationRun = func(...string) error { notifications++; return nil }
 	runtimeGOOS = func() string { return "darwin" }
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--scheduled-check"}, &out, testStderr); err != nil {
+	if err := cmdUpgrade(testCtx(t), []string{"--scheduled-check"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	// Explicit user-requested `--check` remains allowed under policy off; only
@@ -240,7 +240,7 @@ func TestUpgradeStatusJSONIsCachedAndMakesNoCalls(t *testing.T) {
 	updateCheckLatest = func(context.Context) (stableReleaseResult, error) { checks++; return stableReleaseResult{}, nil }
 	updateNotificationRun = func(...string) error { notifications++; return nil }
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--status", "--json"}, &out, testStderr); err != nil {
+	if err := cmdUpgrade(testCtx(t), []string{"--status", "--json"}, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if checks != 0 || notifications != 0 {

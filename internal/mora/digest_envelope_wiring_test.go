@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -51,7 +50,7 @@ func TestBoolArg(t *testing.T) {
 		{"untypable uses def true", map[string]any{"envelope": []any{}}, true, true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			if got := boolArg(tc.args, "envelope", tc.def); got != tc.want {
 				t.Fatalf("boolArg(%v, envelope, %v) = %v, want %v", tc.args, tc.def, got, tc.want)
 			}
@@ -293,7 +292,7 @@ func TestPulseDigestEnvelopeOffUnchanged(t *testing.T) {
 	seedPulseVault(t)
 
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"pulse", "--digest"}, &out, &out, nil); err != nil {
+	if err := Run(testCtx(t), []string{"pulse", "--digest"}, &out, &out, nil); err != nil {
 		t.Fatalf("pulse --digest: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -315,11 +314,11 @@ func TestPulseDigestEnvelopeOnAppendsPrompt(t *testing.T) {
 	seedPulseVault(t)
 
 	var plainBuf bytes.Buffer
-	if err := Run(context.Background(), []string{"pulse", "--digest"}, &plainBuf, &plainBuf, nil); err != nil {
+	if err := Run(testCtx(t), []string{"pulse", "--digest"}, &plainBuf, &plainBuf, nil); err != nil {
 		t.Fatalf("plain pulse --digest: %v\n%s", err, plainBuf.String())
 	}
 	var envBuf bytes.Buffer
-	if err := Run(context.Background(), []string{"pulse", "--digest", "--envelope"}, &envBuf, &envBuf, nil); err != nil {
+	if err := Run(testCtx(t), []string{"pulse", "--digest", "--envelope"}, &envBuf, &envBuf, nil); err != nil {
 		t.Fatalf("pulse --digest --envelope: %v\n%s", err, envBuf.String())
 	}
 	plain := plainBuf.String()

@@ -43,7 +43,7 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		if fs.NArg() != 0 {
 			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
 		}
-		return forgetList(stdout, *jsonOut)
+		return forgetList(ctx, stdout, *jsonOut)
 	}
 	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -64,7 +64,7 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return err
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func cmdUnforget(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	if !*yes {
 		return errors.New("refusing to unforget without --yes")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -352,8 +352,8 @@ type forgetListPayload struct {
 	Entries []govEntry `json:"entries"`
 }
 
-func forgetList(stdout io.Writer, jsonOut bool) error {
-	cfg, err := loadConfig()
+func forgetList(ctx context.Context, stdout io.Writer, jsonOut bool) error {
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

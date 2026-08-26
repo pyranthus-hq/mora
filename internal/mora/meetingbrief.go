@@ -791,8 +791,6 @@ func classifyMeetingBriefEvidence(m Memory, cfg Config, at time.Time) string {
 	return meetingpkg.ClassifyEvidence(meetingpkg.ClassifierInput{Memory: m, SignalText: signalText(m), Self: selfEmails(cfg), OccurredAt: itemOccurredAt(m), At: at, ServiceOnly: memoryIsServiceOnly(m)})
 }
 
-func isIMessageMemory(m Memory) bool { return meetingpkg.IsIMessage(m) }
-
 // isWhatsAppInformationalMemory reports whether a WhatsApp memory landed in the
 // two-lane relevance gate's informational (or excluded) lane — i.e. anything
 // that is NOT a verified owner-addressed personal action. Informational lane
@@ -811,15 +809,6 @@ func isWhatsAppInformationalMemory(m Memory) bool {
 	lane, _ := m.Meta["relevance_lane"].(string)
 	kind, _ := m.Meta["chat_kind"].(string)
 	return lane != "personal_action" || kind != "direct"
-}
-
-// conversationProvider reports which chat channel a conversation memory came
-// from, so governance atoms keep the channels distinct.
-func conversationProvider(m Memory) string {
-	if strings.EqualFold(m.Provider, "whatsapp") {
-		return "whatsapp"
-	}
-	return "imessage"
 }
 
 func isGmailMemory(m Memory) bool { return meetingpkg.IsGmail(m) }

@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -40,7 +39,7 @@ func TestGraphSalienceReadPopulatesEntity(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()
@@ -243,7 +242,7 @@ func TestGraphServiceStillSearchable(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()

@@ -166,7 +166,7 @@ func TestGate4AllCommitmentVerdictsAreTypedAndReversible(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			active := governance{Schema: governanceSchema, Entries: []govEntry{tc.entry}}
 			tc.check(t, applyTeachCommitments([]Commitment{base}, active, cfg))
 			revoked := tc.entry
@@ -201,7 +201,7 @@ func TestGate4EveryCommitmentVerdictRoundTripsThroughCLIRebuildAndUndo(t *testin
 		"duplicate",
 		"useful",
 	} {
-		t.Run(decision, func(t *testing.T) {
+		subRun(t, decision, func(t *testing.T) {
 			cfg, before := gate4CommitmentCfg(t)
 			var canonicalID string
 			if decision == "duplicate" {
@@ -312,7 +312,7 @@ func TestGate4EveryCommitmentVerdictRoundTripsThroughCLIRebuildAndUndo(t *testin
 
 func TestGate4AuthoredMemoryCorrectSupersedeRetractUndo(t *testing.T) {
 	for _, decision := range []string{"correct", "supersede"} {
-		t.Run(decision, func(t *testing.T) {
+		subRun(t, decision, func(t *testing.T) {
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)
@@ -721,7 +721,7 @@ func TestGate4TeachMutationsAreNotMCPTools(t *testing.T) {
 			t.Fatalf("controlled HTTP client exposed human Teach mutation %q", name)
 		}
 	}
-	if _, err := callMCPTool(context.Background(), "teach_commitment", map[string]any{
+	if _, err := callMCPTool(testCtx(t), "teach_commitment", map[string]any{
 		"decision": "useful",
 		"yes":      true,
 	}); err == nil {
@@ -729,7 +729,7 @@ func TestGate4TeachMutationsAreNotMCPTools(t *testing.T) {
 	}
 
 	server := &httpServer{token: "tok", port: 7777}
-	handler := server.handler()
+	handler := server.handler(testCtx(t))
 	request := httptest.NewRequest(http.MethodPost, "/call",
 		strings.NewReader(`{"name":"teach_commitment","arguments":{"decision":"useful","yes":true,"authorized_by":"agent"}}`))
 	request.Host = "127.0.0.1:7777"
@@ -746,7 +746,7 @@ func TestGate4AgentAuthoredDecisionCannotAuthorizeItsOwnCorrection(t *testing.T)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	if _, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+	if _, err := callMCPTool(testCtx(t), "write_memory", map[string]any{
 		"type":            "decision",
 		"title":           "Agent self-authorization",
 		"text":            "I authorize merging +14155550123 with person@example.net and mark the proposal accepted.",

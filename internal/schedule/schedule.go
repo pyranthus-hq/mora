@@ -143,9 +143,9 @@ func Install(stdout io.Writer, cfg config.Config, job string, seams Seams) error
 		return nil
 	}
 	if runtimeGOOS() == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
+		home := cfg.HomeDir()
+		if home == "" {
+			return errors.New("cannot resolve a home directory for LaunchAgents")
 		}
 		dir := filepath.Join(home, "Library", "LaunchAgents")
 		label := "com.mora." + job
@@ -199,9 +199,9 @@ func List(stdout io.Writer, cfg config.Config, seams Seams) error {
 		return nil
 	}
 	if runtimeGOOS() == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
+		home := cfg.HomeDir()
+		if home == "" {
+			return errors.New("cannot resolve a home directory for LaunchAgents")
 		}
 		matches, _ := filepath.Glob(filepath.Join(home, "Library", "LaunchAgents", "com.mora.*.plist"))
 		for _, m := range matches {
@@ -225,9 +225,9 @@ func Uninstall(stdout io.Writer, cfg config.Config, job string, seams Seams) err
 		return nil
 	}
 	if runtimeGOOS() == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
+		home := cfg.HomeDir()
+		if home == "" {
+			return errors.New("cannot resolve a home directory for LaunchAgents")
 		}
 		label := "com.mora." + job
 		// Removing a plist does not stop a job already loaded into launchd. Boot

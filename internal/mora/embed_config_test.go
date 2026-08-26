@@ -10,7 +10,7 @@ func TestConfigEmbedderRoundTrips(t *testing.T) {
 	if err := writeConfig(cfg); err != nil {
 		t.Fatalf("writeConfig: %v", err)
 	}
-	got, err := loadConfig()
+	got, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

@@ -41,7 +41,7 @@ func cmdBriefCorrect(ctx context.Context, args []string, stdout, stderr io.Write
 		return errors.New("refusing to unlink without --yes (destructive operation)")
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

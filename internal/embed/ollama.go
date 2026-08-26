@@ -167,7 +167,7 @@ func (e OllamaEmbedder) reachable() bool { _, ok := e.probe(); return ok }
 // per vector matches the query model (a mismatch just empties the vector arm — the
 // FTS + graph arms still answer).
 func chooseEmbedderFor(cfg config.Config) (Embedder, error) {
-	pref, ok := os.LookupEnv("MORA_EMBEDDER")
+	pref, ok := cfg.EmbedderPref()
 	if !ok {
 		pref = cfg.Embedder // env unset ⇒ fall back to the durable config opt-in
 	}

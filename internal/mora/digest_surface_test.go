@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ func TestPulseDigestRendersSections(t *testing.T) {
 	digestSeed(t, cfg, "gmail", "Quarterly review", 1*time.Hour, now)
 
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"pulse", "--digest"}, &out, &out, nil); err != nil {
+	if err := Run(testCtx(t), []string{"pulse", "--digest"}, &out, &out, nil); err != nil {
 		t.Fatalf("pulse --digest: %v\n%s", err, out.String())
 	}
 	s := out.String()

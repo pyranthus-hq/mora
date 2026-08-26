@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
@@ -19,11 +18,9 @@ import (
 // temp HOME set by withTempHome ($HOME/.config/mora). Used to plant fixtures.
 func configDirFor(t *testing.T) string {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
-	}
-	return filepath.Join(home, ".config", "mora")
+	// The injected sandbox's config dir — never the real home's (.config/mora
+	// under a real HOME would leak developer state into these tests).
+	return mustConfig(t).ConfigDir
 }
 
 // runErr invokes Run with empty (non-TTY) stdin and returns output + error
@@ -32,7 +29,7 @@ func configDirFor(t *testing.T) string {
 func runErr(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	err := Run(context.Background(), args, &out, &out, strings.NewReader(""))
+	err := Run(testCtx(t), args, &out, &out, strings.NewReader(""))
 	return out.String(), err
 }
 
@@ -75,7 +72,7 @@ func TestIsEnabled(t *testing.T) {
 		{"explicit true", genericutil.Ptr(true), true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			s := Source{Name: "x", Type: "gmail", Enabled: tc.in}
 			if got := s.IsEnabled(); got != tc.want {
 				t.Fatalf("IsEnabled() with Enabled=%v = %v, want %v", tc.in, got, tc.want)
@@ -109,7 +106,7 @@ func TestGrandfatherMigration(t *testing.T) {
 		t.Fatalf("write legacy sources.json: %v", err)
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -137,7 +134,7 @@ func TestEnabledPersists(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -247,11 +244,11 @@ func TestConnectorsListWindowsHidesMacOSOnlyConnectors(t *testing.T) {
 
 func TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources(t *testing.T) {
 	for _, ctype := range []string{"imessage", "applecalendar"} {
-		t.Run(ctype, func(t *testing.T) {
+		subRun(t, ctype, func(t *testing.T) {
 			withTempHome(t)
 			withRuntimeGOOS(t, "windows")
 			run(t, "init")
-			cfg, err := loadConfig()
+			cfg, err := loadConfigFor(testCtx(t))
 			if err != nil {
 				t.Fatalf("loadConfig: %v", err)
 			}
@@ -278,7 +275,7 @@ func TestWindowsRefusesMacOSOnlyConnectorEnableWithoutMutatingSources(t *testing
 
 func TestWindowsKeepsCrossPlatformConnectorEnableFunctional(t *testing.T) {
 	for _, ctype := range []string{"gmail", "calendar", "filesystem"} {
-		t.Run(ctype, func(t *testing.T) {
+		subRun(t, ctype, func(t *testing.T) {
 			withTempHome(t)
 			withRuntimeGOOS(t, "windows")
 			run(t, "init")
@@ -292,7 +289,7 @@ func TestWindowsKeepsCrossPlatformConnectorEnableFunctional(t *testing.T) {
 			if err != nil {
 				t.Fatalf("connectors enable %s on windows should succeed: %v\n%s", ctype, err, out)
 			}
-			cfg, err := loadConfig()
+			cfg, err := loadConfigFor(testCtx(t))
 			if err != nil {
 				t.Fatalf("loadConfig: %v", err)
 			}
@@ -319,7 +316,7 @@ func TestConnectorEnableGatesIngest(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -388,7 +385,7 @@ func TestDisableNonDestructive(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -416,7 +413,7 @@ func TestGateNamedVsAll(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -471,7 +468,7 @@ func TestSetupBackfillDefaultsNo(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -480,7 +477,7 @@ func TestSetupBackfillDefaultsNo(t *testing.T) {
 	run(t, "sources", "add", "filesystem", "--name", "docs", "--path", t.TempDir())
 
 	var buf bytes.Buffer
-	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, false, &buf, testStderr, strings.NewReader("")); err != nil {
+	if err := applySetupSelection(testCtx(t), cfg, []string{"filesystem"}, false, &buf, testStderr, strings.NewReader("")); err != nil {
 		t.Fatalf("applySetupSelection(doBackfill=false) should succeed: %v\n%s", err, buf.String())
 	}
 
@@ -544,7 +541,7 @@ func TestAddSourceDefaultsDisabled(t *testing.T) {
 		t.Fatalf("sources add filesystem should succeed: %v\n%s", err, out)
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

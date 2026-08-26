@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -74,7 +73,7 @@ func TestOperationActivityDirtyRunningBannerDoesNotMakeHealthy(t *testing.T) {
 func TestDoctorJSONExposesFailedOperationAndStrictFails(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +86,7 @@ func TestDoctorJSONExposesFailedOperationAndStrictFails(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"doctor", "--json", "--strict"}, &out, &out, strings.NewReader("")); err == nil {
+	if err := Run(testCtx(t), []string{"doctor", "--json", "--strict"}, &out, &out, strings.NewReader("")); err == nil {
 		t.Fatalf("doctor strict succeeded with failed activity: %s", out.String())
 	}
 	var rep struct {

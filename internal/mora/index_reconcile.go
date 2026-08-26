@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
 
@@ -20,27 +19,19 @@ func authoredReconcileLockPath(cfg Config) string {
 
 const authoredReconcileTTL = 2 * time.Minute
 
-// authoredReconcileRunner is the narrow test seam below the production goroutine
-// launcher. The lock keeps a test seam change from racing an in-flight MCP
-// request; scheduleAuthoredReconciliation itself always exercises the real
-// launcher.
-var (
-	authoredReconcileRunnerMu sync.RWMutex
-	authoredReconcileRunner   = reconcileAuthoredWrites
-)
-
-func authoredReconcileRunnerSnapshot() func(context.Context, Config) error {
-	authoredReconcileRunnerMu.RLock()
-	runner := authoredReconcileRunner
-	authoredReconcileRunnerMu.RUnlock()
-	return runner
-}
-
+// defaultAuthoredReconcileScheduler resolves the reconciler from the config:
+// configs resolved under a context that pinned an override (tests keeping the
+// async worker inert) use it; everything else uses the production launcher.
+// The runner rides the Config instead of a package global so concurrent tests
+// never share — or race each other's cleanup of — this seam.
 func defaultAuthoredReconcileScheduler(cfg Config) {
-	// Snapshot before the goroutine boundary: a short-lived caller or a hermetic
-	// test may restore its runner seam immediately after scheduling, but that must
+	// Resolve before the goroutine boundary: a short-lived caller or a hermetic
+	// test may release its seam immediately after scheduling, but that must
 	// never change the work this invocation already elected to perform.
-	runner := authoredReconcileRunnerSnapshot()
+	runner := cfg.AuthoredReconciler()
+	if runner == nil {
+		runner = reconcileAuthoredWrites
+	}
 	go func(run func(context.Context, Config) error) {
 		if err := run(context.Background(), cfg); err != nil {
 			// stderr is outside the MCP stdio transport. Do not clear or alter a

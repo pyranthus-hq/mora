@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"testing"
 )
 
@@ -16,7 +15,7 @@ func TestGazetteerEmailInBodyNoEdge(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "gmail_thread/t1", Scope: "personal", Type: "email", Title: "hi",
@@ -51,7 +50,7 @@ func TestGazetteerBodyMentionEdge(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Establish Neil Patel as a known person via email metadata. He is the sender,
 	// so his self-presented name is a trusted alias (A2 provenance) and thus enters
@@ -94,7 +93,7 @@ func TestGazetteerNoDuplicateForParticipant(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "gmail_thread/t1", Scope: "personal", Type: "email", Title: "hi",

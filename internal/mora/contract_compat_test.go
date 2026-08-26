@@ -159,6 +159,18 @@ func contractNormalize(value any, home, path string) any {
 	}
 }
 
+// contractHome is the home dir all golden paths normalize against: the
+// injected sandbox home when the caller bound one (context-injection tests),
+// else the real user home (legacy env-pinned tests set HOME themselves).
+func contractHome(t *testing.T) string {
+	t.Helper()
+	if e := lookupTestEnv(t); e != nil && e.home != "" {
+		return e.home
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
 func contractNormalizeString(value, home string) string {
 	if home != "" {
 		value = strings.ReplaceAll(value, home, "<home>")
@@ -210,7 +222,7 @@ func contractLiveDocuments(t *testing.T) map[string]any {
 	// source instead of papering over it downstream.
 	time.Sleep(1100 * time.Millisecond)
 
-	home, _ := os.UserHomeDir()
+	home := contractHome(t)
 	registry := loadCLIRegistry(t)
 	rows := map[string]cliRegistryRow{}
 	for _, row := range registry.Commands {
@@ -319,7 +331,7 @@ func TestContractGoldenCorpusIsFrozen(t *testing.T) {
 	}
 
 	for _, schema := range contractSortedKeys(live) {
-		t.Run(schema, func(t *testing.T) {
+		subRun(t, schema, func(t *testing.T) {
 			golden, ok := contractReadGolden(t, schema)
 			if !ok {
 				t.Fatalf("no frozen golden for schema %s; generate the corpus with %s=1",
@@ -713,7 +725,7 @@ func TestContractCompatRemovalIsCaught(t *testing.T) {
 	live := contractLiveDocuments(t)
 
 	for _, schema := range contractSortedKeys(live) {
-		t.Run(schema, func(t *testing.T) {
+		subRun(t, schema, func(t *testing.T) {
 			golden, ok := contractReadGolden(t, schema)
 			if !ok {
 				t.Fatalf("no frozen golden for %s", schema)
@@ -753,7 +765,7 @@ func TestContractCompatAdditiveIsSafe(t *testing.T) {
 	live := contractLiveDocuments(t)
 
 	for _, schema := range contractSortedKeys(live) {
-		t.Run(schema, func(t *testing.T) {
+		subRun(t, schema, func(t *testing.T) {
 			golden, ok := contractReadGolden(t, schema)
 			if !ok {
 				t.Fatalf("no frozen golden for %s", schema)
@@ -842,7 +854,7 @@ func contractAddFutureFields(value any) any {
 // thing a future maintainer reads at 2am cannot rot untested, and proves the
 // detector fires on a synthetic removal rather than only on a real one.
 func TestContractCompatRemedyMessage(t *testing.T) {
-	t.Run("removal message names the bump and not the regeneration", func(t *testing.T) {
+	subRun(t, "removal message names the bump and not the regeneration", func(t *testing.T) {
 		message := contractRemovalRemedy("mora.doctor.report", "storage_bytes")
 		for _, want := range []string{"bump", "mora.doctor.report", "schema_version", "storage_bytes",
 			"testdata/contracts/v<N>/"} {
@@ -857,7 +869,7 @@ func TestContractCompatRemedyMessage(t *testing.T) {
 		}
 	})
 
-	t.Run("retype message names the bump", func(t *testing.T) {
+	subRun(t, "retype message names the bump", func(t *testing.T) {
 		message := contractRetypeRemedy("mora.list", "memories", "array", "object")
 		for _, want := range []string{"bump", "mora.list", "schema_version", "array", "object"} {
 			if !strings.Contains(message, want) {
@@ -866,7 +878,7 @@ func TestContractCompatRemedyMessage(t *testing.T) {
 		}
 	})
 
-	t.Run("synthetic removal is caught by the strict decode", func(t *testing.T) {
+	subRun(t, "synthetic removal is caught by the strict decode", func(t *testing.T) {
 		golden := map[string]any{
 			"schema":         "mora.synthetic",
 			"schema_version": float64(1),
@@ -898,7 +910,7 @@ func TestContractCompatRemedyMessage(t *testing.T) {
 		}
 	})
 
-	t.Run("synthetic removal is caught by the key walk", func(t *testing.T) {
+	subRun(t, "synthetic removal is caught by the key walk", func(t *testing.T) {
 		golden := map[string]any{
 			"kept":    "value",
 			"removed": "value",
@@ -923,7 +935,7 @@ func TestContractCompatRemedyMessage(t *testing.T) {
 		}
 	})
 
-	t.Run("an added field produces no finding", func(t *testing.T) {
+	subRun(t, "an added field produces no finding", func(t *testing.T) {
 		golden := map[string]any{"kept": "value"}
 		today := map[string]any{"kept": "value", "added": "value"}
 		if findings := contractCompareShapes("mora.synthetic", golden, today); len(findings) > 0 {
@@ -951,7 +963,7 @@ func TestContractGoldenPathPrefersGOOSOverride(t *testing.T) {
 		{"shared corpus for schemas with no override", "mora.context", "windows", filepath.Join(contractGoldenDir, "mora.context.json")},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		subRun(t, c.name, func(t *testing.T) {
 			if got := contractGoldenPathFor(c.schema, c.goos); got != c.want {
 				t.Errorf("contractGoldenPathFor(%q, %q) = %q, want %q", c.schema, c.goos, got, c.want)
 			}
@@ -990,7 +1002,7 @@ func TestContractGoldenWindowsCatalogMatchesLiveOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	home, _ := os.UserHomeDir()
+	home := contractHome(t)
 	got := contractMarshalGolden(t, contractNormalize(live, home, "mora.connectors.list"))
 	want := contractMarshalGolden(t, contractNormalize(golden, home, "mora.connectors.list"))
 	if !bytes.Equal(want, got) {

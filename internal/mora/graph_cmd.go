@@ -38,7 +38,7 @@ func cmdGraph(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--top must be positive")
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

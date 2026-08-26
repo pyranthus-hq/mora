@@ -92,7 +92,7 @@ func TestGoogleTokenPathPerAccount(t *testing.T) {
 func TestEnsureGoogleSourcesAccount(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestMultiAccountInstanceKey(t *testing.T) {
 
 	withTempHome(t)
 	run(t, "init")
-	cfg, _ := loadConfig()
+	cfg, _ := loadConfigFor(testCtx(t))
 	if err := ensureGoogleSources(cfg, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestMultiAccountInstanceKey(t *testing.T) {
 func TestIngestGoogleRoutesAccountToken(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

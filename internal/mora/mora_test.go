@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ func runPulse(t *testing.T, args ...string) string {
 	t.Helper()
 	var out bytes.Buffer
 	full := append([]string{"pulse"}, args...)
-	if err := Run(context.Background(), full, &out, &out, nil); err != nil {
+	if err := Run(testCtx(t), full, &out, &out, nil); err != nil {
 		t.Fatalf("pulse %v: %v\n%s", args, err, out.String())
 	}
 	return out.String()

@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"os"
 	"path/filepath"
@@ -33,7 +32,7 @@ func TestMCPInitializePublishesConfiguredWritePolicy(t *testing.T) {
 	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	resp := handleMCP(context.Background(), jsonRPCRequest{Method: "initialize", ID: 1})
+	resp := handleMCP(testCtx(t), jsonRPCRequest{Method: "initialize", ID: 1})
 	result, ok := resp.Result.(map[string]any)
 	if !ok {
 		t.Fatalf("initialize result = %T, want object", resp.Result)
@@ -57,7 +56,7 @@ func TestMCPWritePolicyConfigRoundTripAndRejectsInvalid(t *testing.T) {
 		t.Fatalf("loaded policy = %q, want readonly", configMCPWritePolicy(loaded))
 	}
 	var out bytes.Buffer
-	if err := cmdConfig([]string{"mcp-write-policy", "propose"}, &out, testStderr); err != nil {
+	if err := cmdConfig(testCtx(t), []string{"mcp-write-policy", "propose"}, &out, testStderr); err != nil {
 		t.Fatalf("set policy through CLI: %v", err)
 	}
 	if got := configMCPWritePolicy(mustConfig(t)); got != mcpWritePolicyPropose {
@@ -66,7 +65,7 @@ func TestMCPWritePolicyConfigRoundTripAndRejectsInvalid(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("mcp_write_policy = \"trust-me\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "invalid mcp_write_policy") {
+	if _, err := loadConfigFor(testCtx(t)); err == nil || !strings.Contains(err.Error(), "invalid mcp_write_policy") {
 		t.Fatalf("invalid policy load error = %v", err)
 	}
 }
@@ -85,7 +84,7 @@ func TestMCPWritePolicyProposeStagesThenOwnerApproves(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+	got, err := callMCPTool(testCtx(t), "write_memory", map[string]any{
 		"title": "Candidate fact",
 		"text":  "This must wait for the owner.",
 		"type":  "fact",
@@ -114,7 +113,7 @@ func TestMCPWritePolicyProposeStagesThenOwnerApproves(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := cmdMCP(context.Background(), []string{"proposals", "approve", id}, &out, &out, strings.NewReader("")); err != nil {
+	if err := cmdMCP(testCtx(t), []string{"proposals", "approve", id}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("approve proposal: %v", err)
 	}
 	files, err = allMemoryFiles(cfg)
@@ -137,10 +136,10 @@ func TestMCPWritePolicyReadonlyRefusesMutationsBeforeLookup(t *testing.T) {
 	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callMCPTool(context.Background(), "write_memory", map[string]any{"title": "x", "text": "y"}); err == nil || !strings.Contains(err.Error(), "MCP mutation refused") {
+	if _, err := callMCPTool(testCtx(t), "write_memory", map[string]any{"title": "x", "text": "y"}); err == nil || !strings.Contains(err.Error(), "MCP mutation refused") {
 		t.Fatalf("readonly write error = %v", err)
 	}
-	if _, err := callMCPTool(context.Background(), "delete_memory", map[string]any{"id": "does-not-exist"}); err == nil || !strings.Contains(err.Error(), "MCP mutation refused") {
+	if _, err := callMCPTool(testCtx(t), "delete_memory", map[string]any{"id": "does-not-exist"}); err == nil || !strings.Contains(err.Error(), "MCP mutation refused") {
 		t.Fatalf("readonly delete error = %v", err)
 	}
 	if _, err := os.Stat(mcpProposalDir(cfg)); !os.IsNotExist(err) {
@@ -156,7 +155,7 @@ func TestMCPWritePolicyProposeNeverStagesDelete(t *testing.T) {
 	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callMCPTool(context.Background(), "delete_memory", map[string]any{"id": "anything"}); err == nil || !strings.Contains(err.Error(), "never stages destructive deletes") {
+	if _, err := callMCPTool(testCtx(t), "delete_memory", map[string]any{"id": "anything"}); err == nil || !strings.Contains(err.Error(), "never stages destructive deletes") {
 		t.Fatalf("propose delete error = %v", err)
 	}
 }

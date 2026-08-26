@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -12,7 +11,7 @@ import (
 func runSplit(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var outBuf, errBuf bytes.Buffer
-	err = Run(context.Background(), args, &outBuf, &errBuf, strings.NewReader(""))
+	err = Run(testCtx(t), args, &outBuf, &errBuf, strings.NewReader(""))
 	return outBuf.String(), errBuf.String(), err
 }
 
@@ -28,7 +27,7 @@ func TestContractTracerLint(t *testing.T) {
 		{name: "unknown flag", args: []string{"lint", "--json", "--bogusflag"}},
 		{name: "human output", args: []string{"lint"}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			stdout, stderr, err := runSplit(t, tc.args...)
 			switch tc.name {
 			case "json receipt":

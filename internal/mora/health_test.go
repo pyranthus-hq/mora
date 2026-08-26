@@ -194,7 +194,7 @@ func TestDoctorStrictExitsOnStaleSource(t *testing.T) {
 	}
 
 	var out2 bytes.Buffer
-	if err := Run(context.Background(), []string{"doctor", "--strict"}, &out2, &out2, strings.NewReader("")); err == nil {
+	if err := Run(testCtx(t), []string{"doctor", "--strict"}, &out2, &out2, strings.NewReader("")); err == nil {
 		t.Fatalf("doctor --strict must error when a critical source is stale; output:\n%s", out2.String())
 	}
 }
@@ -283,7 +283,7 @@ func TestHealthBannerOrdering(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		subRun(t, c.name, func(t *testing.T) {
 			got := healthBannerFromSources(c.in)
 			if c.wantKey == "" {
 				if got != "" {
@@ -446,7 +446,7 @@ func TestMeetingBriefRendersBanner(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	enableSources(t, cfg, "gmail")
@@ -518,7 +518,7 @@ func TestDoctorPulseHealthyExit0(t *testing.T) {
 	doctorNotifyRunner = func(args ...string) error { called = true; return nil }
 
 	var out bytes.Buffer
-	err := Run(context.Background(), []string{"doctor", "--pulse"}, &out, &out, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"doctor", "--pulse"}, &out, &out, strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("doctor --pulse on a healthy vault must exit 0: %v\noutput:\n%s", err, out.String())
 	}
@@ -560,7 +560,7 @@ func TestDoctorPulseExit2AndNotifies(t *testing.T) {
 	doctorNotifyRunner = func(args ...string) error { gotArgs = append([]string(nil), args...); return nil }
 
 	var out bytes.Buffer
-	err := Run(context.Background(), []string{"doctor", "--pulse"}, &out, &out, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"doctor", "--pulse"}, &out, &out, strings.NewReader(""))
 	if err == nil {
 		t.Fatalf("doctor --pulse must error when a source is unhealthy; output:\n%s", out.String())
 	}
@@ -601,7 +601,7 @@ func TestDoctorPulseJSONEmitsOnlySources(t *testing.T) {
 	doctorNotifyRunner = func(args ...string) error { return nil }
 
 	var out bytes.Buffer
-	_ = Run(context.Background(), []string{"doctor", "--pulse", "--json"}, &out, &out, strings.NewReader(""))
+	_ = Run(testCtx(t), []string{"doctor", "--pulse", "--json"}, &out, &out, strings.NewReader(""))
 
 	var rep struct {
 		Sources []sourceHealth `json:"sources"`
@@ -797,7 +797,7 @@ func TestDoctorUsesInjectedClockForGoogleAuthRecency(t *testing.T) {
 // - strict doctor critical producer failure
 // - unreadable ledger fail-closed
 func TestIssue223HealthBannerAndCompactState(t *testing.T) {
-	t.Run("producer_only_degraded_yellow", func(t *testing.T) {
+	subRun(t, "producer_only_degraded_yellow", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -821,7 +821,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("source_index_red_precedence", func(t *testing.T) {
+	subRun(t, "source_index_red_precedence", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -850,7 +850,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("healthy_no_banner", func(t *testing.T) {
+	subRun(t, "healthy_no_banner", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -867,7 +867,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("two_long_keys_same_prefix", func(t *testing.T) {
+	subRun(t, "two_long_keys_same_prefix", func(t *testing.T) {
 		k1 := "shared_prefix_alpha"
 		k2 := "shared_prefix_beta"
 		h := Health{
@@ -890,7 +890,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("extremely_long_escaped_key_omitted", func(t *testing.T) {
+	subRun(t, "extremely_long_escaped_key_omitted", func(t *testing.T) {
 		// Key larger than compactSourceBytesCap (80 bytes)
 		longKey := "very_long_source_key_that_exceeds_the_exact_json_byte_cap_of_80_bytes_all_by_itself_and_contains_escaped_quotes_\"quoted\"_and_newlines_\n_to_force_json_escaping_overflow"
 		h := Health{
@@ -913,7 +913,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("deterministic_selection", func(t *testing.T) {
+	subRun(t, "deterministic_selection", func(t *testing.T) {
 		h := Health{
 			State: healthDegraded,
 			Sources: []sourceHealth{
@@ -932,7 +932,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("bounded_deterministic_per_source_projection", func(t *testing.T) {
+	subRun(t, "bounded_deterministic_per_source_projection", func(t *testing.T) {
 		// Table case 1: >cap same-state sources proving oldest (AgeHours desc) selected
 		hAge := Health{
 			State: healthDegraded,
@@ -992,7 +992,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("fresh_index_failed_share_stale_producer", func(t *testing.T) {
+	subRun(t, "fresh_index_failed_share_stale_producer", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -1019,7 +1019,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("digest_generated_failed_share_red_precedence", func(t *testing.T) {
+	subRun(t, "digest_generated_failed_share_red_precedence", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -1058,7 +1058,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("daily_brief_failed_share_red_precedence", func(t *testing.T) {
+	subRun(t, "daily_brief_failed_share_red_precedence", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -1087,7 +1087,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("meeting_brief_failed_share_red_precedence", func(t *testing.T) {
+	subRun(t, "meeting_brief_failed_share_red_precedence", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -1118,7 +1118,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("cached_brief_transition", func(t *testing.T) {
+	subRun(t, "cached_brief_transition", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -1159,7 +1159,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("strict_doctor_critical_producer_failure", func(t *testing.T) {
+	subRun(t, "strict_doctor_critical_producer_failure", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -1171,13 +1171,13 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 
 		setDoctorClock(t, now)
 		var strictOut bytes.Buffer
-		err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader(""))
+		err := Run(testCtx(t), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader(""))
 		if err == nil {
 			t.Fatalf("doctor --strict must fail on critical producer failure")
 		}
 	})
 
-	t.Run("unreadable_ledger_fail_closed", func(t *testing.T) {
+	subRun(t, "unreadable_ledger_fail_closed", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -1202,7 +1202,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("cap_banner_line_byte_cap_and_utf8", func(t *testing.T) {
+	subRun(t, "cap_banner_line_byte_cap_and_utf8", func(t *testing.T) {
 		tests := []struct {
 			name          string
 			input         string
@@ -1226,7 +1226,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 
 		for _, tt := range tests {
 			tt := tt
-			t.Run(tt.name, func(t *testing.T) {
+			subRun(t, tt.name, func(t *testing.T) {
 				got := capBannerLine(tt.input)
 				if len(got) != tt.wantBytes {
 					t.Fatalf("len(capBannerLine(%s)) = %d bytes, want %d: %q", tt.name, len(got), tt.wantBytes, got)
@@ -1244,7 +1244,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 	})
 
-	t.Run("producer_named_producers_vs_corrupt_ledger", func(t *testing.T) {
+	subRun(t, "producer_named_producers_vs_corrupt_ledger", func(t *testing.T) {
 		now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 		cases := []struct {
 			name   string
@@ -1265,7 +1265,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 		}
 		for _, tc := range cases {
 			tc := tc
-			t.Run("valid_"+tc.name, func(t *testing.T) {
+			subRun(t, "valid_"+tc.name, func(t *testing.T) {
 				withTempHome(t)
 				run(t, "init")
 				cfg := mustConfig(t)
@@ -1290,7 +1290,7 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 
 		for _, ledger := range []string{"expected", "status"} {
 			ledger := ledger
-			t.Run("corrupt_"+ledger, func(t *testing.T) {
+			subRun(t, "corrupt_"+ledger, func(t *testing.T) {
 				withTempHome(t)
 				run(t, "init")
 				cfg := mustConfig(t)
@@ -1336,14 +1336,14 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 					t.Fatalf("producer_ledger_readable check = %+v, want failed critical", found)
 				}
 				var strictOut bytes.Buffer
-				if err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
+				if err := Run(testCtx(t), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
 					t.Fatalf("doctor --strict must fail for corrupt %s ledger", ledger)
 				}
 			})
 		}
 	})
 
-	t.Run("filesystem_distinct_source_identity", func(t *testing.T) {
+	subRun(t, "filesystem_distinct_source_identity", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)

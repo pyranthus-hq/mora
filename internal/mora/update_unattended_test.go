@@ -230,7 +230,7 @@ func TestUnattendedRollbackFailureJoinsReceiptPersistenceFailure(t *testing.T) {
 
 func TestUnattendedPreSwapFailpointsNeverMutate(t *testing.T) {
 	for _, step := range []string{"after_installed_verify", "after_download", "after_staged_verify", "before_swap"} {
-		t.Run(step, func(t *testing.T) {
+		subRun(t, step, func(t *testing.T) {
 			f := setupUnattendedFixture(t)
 			unattendedFailpoint = func(got string) error {
 				if got == step {
@@ -492,7 +492,7 @@ func TestUnattendedHealthAndIdentityFailuresNeverSwap(t *testing.T) {
 			unattendedHealthCheck = func(context.Context, Config) error { return errors.New("dirty index") }
 		}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			f := setupUnattendedFixture(t)
 			tc.breakFn()
 			receipt := availableReceipt(f)
@@ -545,7 +545,7 @@ func TestIndexRebuildIfNeededNoOpsOnCurrentSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := cmdIndex(context.Background(), []string{"rebuild", "--if-needed"}, &out, testStderr, bytes.NewBuffer(nil)); err != nil {
+	if err := cmdIndex(testCtx(t), []string{"rebuild", "--if-needed"}, &out, testStderr, bytes.NewBuffer(nil)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "rebuild not needed") {

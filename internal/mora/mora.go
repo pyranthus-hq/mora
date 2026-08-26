@@ -141,7 +141,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "doctor":
 		return cmdDoctor(ctx, args[1:], stdout, stderr)
 	case "config":
-		return cmdConfig(args[1:], stdout, stderr)
+		return cmdConfig(ctx, args[1:], stdout, stderr)
 	case "schedule":
 		return cmdSchedule(ctx, args[1:], stdout, stderr)
 	case "sources":
@@ -400,7 +400,7 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -570,7 +570,7 @@ func cmdPulse(ctx context.Context, args []string, stdout, stderr io.Writer) (err
 	if *loopID != "" && (!*advance || *sinceHours > 0) {
 		return errors.New("mora pulse: --loop/--loop-run are only valid for a delta --advance run")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

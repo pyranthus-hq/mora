@@ -13,7 +13,7 @@ import (
 func TestRetryWhileIndexBusy(t *testing.T) {
 	busy := errors.New("database is locked (5) (SQLITE_BUSY)")
 
-	t.Run("busy then success is absorbed", func(t *testing.T) {
+	subRun(t, "busy then success is absorbed", func(t *testing.T) {
 		calls := 0
 		err := retryWhileIndexBusy(context.Background(), func() error {
 			calls++
@@ -30,7 +30,7 @@ func TestRetryWhileIndexBusy(t *testing.T) {
 		}
 	})
 
-	t.Run("a non-busy error surfaces on the first attempt", func(t *testing.T) {
+	subRun(t, "a non-busy error surfaces on the first attempt", func(t *testing.T) {
 		want := errors.New("disk full")
 		calls := 0
 		err := retryWhileIndexBusy(context.Background(), func() error {
@@ -45,7 +45,7 @@ func TestRetryWhileIndexBusy(t *testing.T) {
 		}
 	})
 
-	t.Run("sustained contention surfaces the last error at the deadline", func(t *testing.T) {
+	subRun(t, "sustained contention surfaces the last error at the deadline", func(t *testing.T) {
 		calls := 0
 		start := time.Now()
 		err := retryWhileIndexBusy(context.Background(), func() error {
@@ -63,7 +63,7 @@ func TestRetryWhileIndexBusy(t *testing.T) {
 		}
 	})
 
-	t.Run("a cancelled context stops the retry", func(t *testing.T) {
+	subRun(t, "a cancelled context stops the retry", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		calls := 0
@@ -99,7 +99,7 @@ func TestIsIndexBusyErr(t *testing.T) {
 		{"read-only vault", errors.New("attempt to write a readonly database"), false},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		subRun(t, c.name, func(t *testing.T) {
 			if got := isIndexBusyErr(c.err); got != c.want {
 				t.Errorf("isIndexBusyErr(%v) = %v, want %v", c.err, got, c.want)
 			}

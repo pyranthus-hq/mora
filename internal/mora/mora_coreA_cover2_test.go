@@ -316,7 +316,7 @@ func TestCoreA_ApplySetupSelection(t *testing.T) {
 	}
 
 	// doBackfill=false: enable only, ZERO ingest.
-	if err := applySetupSelection(context.Background(), cfg, []string{"imessage", "filesystem"}, false, &out, testStderr, stdin); err != nil {
+	if err := applySetupSelection(testCtx(t), cfg, []string{"imessage", "filesystem"}, false, &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := loadSources(cfg)
@@ -332,7 +332,7 @@ func TestCoreA_ApplySetupSelection(t *testing.T) {
 
 	// doBackfill=true with no google sources => backfill runs, reports 0.
 	out.Reset()
-	if err := applySetupSelection(context.Background(), cfg, []string{"filesystem"}, true, &out, testStderr, stdin); err != nil {
+	if err := applySetupSelection(testCtx(t), cfg, []string{"filesystem"}, true, &out, testStderr, stdin); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "backfilled 0 item(s)") {
@@ -349,7 +349,7 @@ func TestCoreA_BackfillEnabledGoogleFailure(t *testing.T) {
 	enableSources(t, cfg, "gmail")
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 	var out bytes.Buffer
-	total, err := backfillEnabledGoogle(context.Background(), cfg, &out)
+	total, err := backfillEnabledGoogle(testCtx(t), cfg, &out)
 	if err == nil {
 		t.Fatal("a failing google backfill must return a non-nil aggregate error")
 	}
@@ -767,8 +767,9 @@ func TestCoreA_PrintGoogleAuthRecency(t *testing.T) {
 func TestCoreA_PrintIMessageReadiness(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		// Off darwin only the skip line is reachable.
+		withTempHome(t)
 		var out bytes.Buffer
-		if printIMessageReadiness(&out, false) {
+		if printIMessageReadiness(mustConfig(t), &out, false) {
 			t.Fatal("non-darwin readiness must be false")
 		}
 		if !strings.Contains(out.String(), "only runs on macOS") {
@@ -778,10 +779,10 @@ func TestCoreA_PrintIMessageReadiness(t *testing.T) {
 	}
 
 	// darwin: no chat.db present => "No Messages database found".
-	t.Run("no_db", func(t *testing.T) {
+	subRun(t, "no_db", func(t *testing.T) {
 		withTempHome(t)
 		var out bytes.Buffer
-		if printIMessageReadiness(&out, false) {
+		if printIMessageReadiness(mustConfig(t), &out, false) {
 			t.Fatal("no chat.db must be not-ready")
 		}
 		if !strings.Contains(out.String(), "No Messages database found") {
@@ -790,11 +791,11 @@ func TestCoreA_PrintIMessageReadiness(t *testing.T) {
 	})
 
 	// darwin: an unreadable (non-sqlite) chat.db => FDA-denied guidance.
-	t.Run("fda_denied", func(t *testing.T) {
+	subRun(t, "fda_denied", func(t *testing.T) {
 		withTempHome(t)
 		coreAMkChatDB(t, []byte("not a sqlite file"))
 		var out bytes.Buffer
-		if printIMessageReadiness(&out, true) { // setupVariant => "then mora sync imessage"
+		if printIMessageReadiness(mustConfig(t), &out, true) { // setupVariant => "then mora sync imessage"
 			t.Fatal("an unreadable chat.db must be not-ready")
 		}
 		if !strings.Contains(out.String(), "Full Disk Access") || !strings.Contains(out.String(), "mora sync imessage") {
@@ -803,11 +804,11 @@ func TestCoreA_PrintIMessageReadiness(t *testing.T) {
 	})
 
 	// darwin: a real (empty) sqlite chat.db reads clean => ready.
-	t.Run("ready", func(t *testing.T) {
+	subRun(t, "ready", func(t *testing.T) {
 		withTempHome(t)
 		coreAMakeEmptySQLiteChatDB(t)
 		var out bytes.Buffer
-		if !printIMessageReadiness(&out, false) {
+		if !printIMessageReadiness(mustConfig(t), &out, false) {
 			t.Fatalf("a readable chat.db must be ready; got:\n%s", out.String())
 		}
 		if !strings.Contains(out.String(), "ready to sync") {
@@ -819,7 +820,7 @@ func TestCoreA_PrintIMessageReadiness(t *testing.T) {
 // coreAMkChatDB writes raw bytes to $HOME/Library/Messages/chat.db.
 func coreAMkChatDB(t *testing.T, body []byte) string {
 	t.Helper()
-	p := chatDBPath()
+	p := chatDBPath(mustConfig(t))
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +834,7 @@ func coreAMkChatDB(t *testing.T, body []byte) string {
 // chat.db path so ProbeReadable's sqlite_master query succeeds.
 func coreAMakeEmptySQLiteChatDB(t *testing.T) {
 	t.Helper()
-	p := chatDBPath()
+	p := chatDBPath(mustConfig(t))
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}

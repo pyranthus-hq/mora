@@ -210,7 +210,7 @@ func embedderProvenanceOf(cfg Config, meta map[string]string) embedderProvenance
 // model identity WITHOUT calling chooseEmbedderFor (which probe()s Ollama for up to
 // 2s). Mirrors chooseEmbedderFor's precedence (MORA_EMBEDDER, then cfg.Embedder).
 func configuredEmbedderModel(cfg Config) string {
-	pref, ok := os.LookupEnv("MORA_EMBEDDER")
+	pref, ok := cfg.EmbedderPref()
 	if !ok {
 		pref = cfg.Embedder
 	}
@@ -248,7 +248,7 @@ func embedderModelsMatch(recorded, configured string) bool {
 func resolvedEmbedderLine(cfg Config) string {
 	// Mirror chooseEmbedderFor's precedence (MORA_EMBEDDER env when set, else the
 	// durable config key) so the label names what actually drove resolution.
-	pref, ok := os.LookupEnv("MORA_EMBEDDER")
+	pref, ok := cfg.EmbedderPref()
 	if !ok {
 		pref = cfg.Embedder
 	}

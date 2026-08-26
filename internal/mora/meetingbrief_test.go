@@ -50,7 +50,7 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
@@ -194,7 +194,7 @@ func TestMeetingBriefRanksForgottenActionableEvidenceAboveRecentNoise(t *testing
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
@@ -255,7 +255,7 @@ func TestMeetingBriefDropsAmbiguousSharedThread(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
@@ -310,7 +310,7 @@ func TestMeetingBriefDropsAmbiguousOutboundGroupAttribution(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
@@ -365,7 +365,7 @@ func TestMeetingBriefRendersActionablePassageNotTriviaFromMixedThread(t *testing
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
@@ -418,7 +418,7 @@ func TestMeetingBriefMaxTokensBudgetsSerializedPayload(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
@@ -474,7 +474,7 @@ func TestMeetingBriefDatedHistoricalRailRejectsStalePresentTense(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",
@@ -553,7 +553,7 @@ func TestMeetingBriefLinesCarryOneActionCorrections(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
@@ -604,7 +604,7 @@ func TestBriefCorrectUnlinkPersistsAcrossRebuildAndCanBeReconfirmed(t *testing.T
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
@@ -676,7 +676,7 @@ func TestBriefEventCLIAndMCPReturnSameShape(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "adit@example.com",
@@ -756,7 +756,7 @@ func TestMeetingBriefUsesExactAttendeeIdentityNotSharedDisplayName(t *testing.T)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "me@example.com",

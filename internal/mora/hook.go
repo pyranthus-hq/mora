@@ -59,9 +59,9 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	case "recall":
 		return hookRecall(ctx, args[1:], stdout, stdin)
 	case "install":
-		return hookInstall(args[1:], stdout)
+		return hookInstall(ctx, args[1:], stdout)
 	case "uninstall":
-		return hookUninstall(stdout)
+		return hookUninstall(ctx, stdout)
 	case "status":
 		fs := flag.NewFlagSet("hook status", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
@@ -72,7 +72,7 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 		if fs.NArg() != 0 {
 			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
 		}
-		return hookStatus(stdout, *jsonOut)
+		return hookStatus(ctx, stdout, *jsonOut)
 	default:
 		return errors.New("usage: mora hook session-start|recall|install|uninstall|status")
 	}
@@ -86,7 +86,7 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	if in.Source == "compact" {
 		return nil
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return nil
 	}
@@ -124,7 +124,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	if skipRecallPrompt(prompt) {
 		return nil
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return nil
 	}
@@ -175,7 +175,7 @@ func writeHookOutput(stdout io.Writer, eventName, context string) error {
 	return json.NewEncoder(stdout).Encode(out)
 }
 
-func hookInstall(args []string, stdout io.Writer) error {
+func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("mora hook install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	threshold := fs.Float64("threshold", hookRecallDefaultThreshold, "BM25 max-cost threshold")
@@ -190,7 +190,7 @@ func hookInstall(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	path, err := claudeSettingsPath()
+	path, err := claudeSettingsPath(ctx)
 	if err != nil {
 		return err
 	}
@@ -201,8 +201,8 @@ func hookInstall(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func hookUninstall(stdout io.Writer) error {
-	path, err := claudeSettingsPath()
+func hookUninstall(ctx context.Context, stdout io.Writer) error {
+	path, err := claudeSettingsPath(ctx)
 	if err != nil {
 		return err
 	}
@@ -225,9 +225,9 @@ type hookStatusPayload struct {
 	Harnesses []hookStatusHarness `json:"harnesses"`
 }
 
-func hookStatus(stdout io.Writer, jsonOutput ...bool) error {
+func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error {
 	jsonOut := len(jsonOutput) > 0 && jsonOutput[0]
-	path, err := claudeSettingsPath()
+	path, err := claudeSettingsPath(ctx)
 	if err != nil {
 		return err
 	}
@@ -254,4 +254,17 @@ func hookStatus(stdout io.Writer, jsonOutput ...bool) error {
 	return nil
 }
 
-func claudeSettingsPath() (string, error) { return hookspkg.SettingsPath() }
+// claudeSettingsPath derives ~/.claude/settings.json from the context-resolved
+// home so an injected test sandbox can never reach the developer's real Claude
+// settings (that file has been wiped by a leak before — treat it as user data).
+func claudeSettingsPath(ctx context.Context) (string, error) {
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return "", err
+	}
+	home := cfg.HomeDir()
+	if home == "" {
+		return "", errors.New("cannot resolve a home directory for Claude settings")
+	}
+	return filepath.Join(home, ".claude", "settings.json"), nil
+}

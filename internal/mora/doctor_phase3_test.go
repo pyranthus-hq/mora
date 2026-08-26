@@ -32,7 +32,7 @@ func TestDoctorAmbiguousSQLiteFailureIsCauseUnverified(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &output, io.Discard); err != nil {
+	if err := cmdDoctor(testCtx(t), []string{"--json"}, &output, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	var report doctorReport
@@ -69,7 +69,7 @@ func TestDoctorRepairDryRunIsExactAndDoesNotMutate(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--repair", "--dry-run", "--json"}, &output, io.Discard); err != nil {
+	if err := cmdDoctor(testCtx(t), []string{"--repair", "--dry-run", "--json"}, &output, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	var report doctorReport
@@ -99,7 +99,7 @@ func TestDoctorRepairRequiresApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	err := cmdDoctor(context.Background(), []string{"--repair", "--json"}, &output, io.Discard)
+	err := cmdDoctor(testCtx(t), []string{"--repair", "--json"}, &output, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "refusing to repair without --yes") {
 		t.Fatalf("repair without approval error = %v", err)
 	}
@@ -118,7 +118,7 @@ func TestDoctorRepairApplyVerifiesAndIsIdempotent(t *testing.T) {
 	}
 
 	var first bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--repair", "--yes", "--json"}, &first, io.Discard); err != nil {
+	if err := cmdDoctor(testCtx(t), []string{"--repair", "--yes", "--json"}, &first, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	var report doctorReport
@@ -139,7 +139,7 @@ func TestDoctorRepairApplyVerifiesAndIsIdempotent(t *testing.T) {
 	}
 
 	var second bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--repair", "--yes", "--json"}, &second, io.Discard); err != nil {
+	if err := cmdDoctor(testCtx(t), []string{"--repair", "--yes", "--json"}, &second, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	var rerun doctorReport

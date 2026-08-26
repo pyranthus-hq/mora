@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ func TestMCPNotificationsGetNoResponse(t *testing.T) {
 	}, "\n") + "\n"
 
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"mcp", "serve"}, &out, &out, strings.NewReader(in)); err != nil {
+	if err := Run(testCtx(t), []string{"mcp", "serve"}, &out, &out, strings.NewReader(in)); err != nil {
 		t.Fatalf("mcp serve: %v\n%s", err, out.String())
 	}
 

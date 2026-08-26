@@ -287,7 +287,7 @@ func seedUnhealthyBudgetFixture(t *testing.T) Config {
 // capped. The fixture seeds 9 "bulktext" rows, so a default search returns 8.
 func TestMCPSearchDefaultLimitIsEight(t *testing.T) {
 	seedBudgetFixture(t)
-	res, err := callMCPTool(context.Background(), "search_memory", map[string]any{"query": "bulktext"})
+	res, err := callMCPTool(testCtx(t), "search_memory", map[string]any{"query": "bulktext"})
 	if err != nil {
 		t.Fatalf("search_memory: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestMCPSearchDefaultLimitIsEight(t *testing.T) {
 // the total. The cut is reported honestly via results_truncated.
 func TestSearchMemoryAggregateBudgetIsEnforced(t *testing.T) {
 	seedBudgetFixture(t) // 200 "lorem" threads, ~1KB bodies each
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// A large limit asks for 50 matches; the byte budget must trim them.
 	res, err := callMCPTool(ctx, "search_memory", map[string]any{"query": "lorem", "limit": float64(50)})
@@ -502,11 +502,11 @@ func assertBudget(t *testing.T, c budgetCase, tok, bytes int) {
 // baseline (RED rows logged, not failed) and FAILS only on a real regression or
 // on a quarantined tool getting fixed.
 func TestMCPBudgetCeilings(t *testing.T) {
-	seedBudgetFixture(t) // MCP server reaches it via loadConfig() under the temp HOME
+	seedBudgetFixture(t) // MCP server reaches it via loadConfigFor(testCtx(t)) under the temp HOME
 
 	for _, c := range budgetCases() {
 		c := c
-		t.Run(c.tool, func(t *testing.T) {
+		subRun(t, c.tool, func(t *testing.T) {
 			b := measureEnvelope(t, c.line)
 			tok := (b + charsPerToken - 1) / charsPerToken // ceil: ceilings are hard lines
 			assertBudget(t, c, tok, b)
@@ -579,7 +579,7 @@ func TestMCPBudgetCeilingsGmailSegments(t *testing.T) {
 
 	for _, c := range gmailSegmentBudgetCases() {
 		c := c
-		t.Run(c.tool, func(t *testing.T) {
+		subRun(t, c.tool, func(t *testing.T) {
 			b := measureEnvelope(t, c.line)
 			tok := (b + charsPerToken - 1) / charsPerToken
 			assertBudget(t, c, tok, b)
@@ -606,7 +606,7 @@ func TestMCPBudgetCeilingsUnhealthy(t *testing.T) {
 
 	for _, c := range unhealthyBudgetCases() {
 		c := c
-		t.Run(c.tool, func(t *testing.T) {
+		subRun(t, c.tool, func(t *testing.T) {
 			b := measureEnvelope(t, c.line)
 			tok := (b + charsPerToken - 1) / charsPerToken
 			assertBudget(t, c, tok, b)
@@ -720,7 +720,7 @@ func TestMCPBudgetCeilingsUnhealthyMaxCap(t *testing.T) {
 
 	for _, tt := range tests {
 		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			pinMCPWriteBudgetClock(t, fixedNow)
 			_, ch, perSourceBytes := seedMaxCapUnhealthyBudgetFixture(t, fixedNow, tt.prodName)
 			if ch.Sources != healthFresh {

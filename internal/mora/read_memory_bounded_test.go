@@ -309,7 +309,7 @@ func TestMCPReadMemoryBoundedExcerptCentersOnRequestedOccurrence(t *testing.T) {
 	cfg := seedBoundedReadFixtures(t)
 
 	for _, occ := range []int{1, 2, 3, boundedRepeatCount} {
-		t.Run(fmt.Sprintf("occurrence=%d", occ), func(t *testing.T) {
+		subRun(t, fmt.Sprintf("occurrence=%d", occ), func(t *testing.T) {
 			raw, err := mcpReadMemory(context.Background(), cfg, map[string]any{
 				"id": boundedRepeatDocID, "match": boundedRepeatPhrase,
 				"occurrence": float64(occ), "max_tokens": float64(300),

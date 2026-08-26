@@ -14,7 +14,7 @@ import (
 func TestCoreB_MemWriteMemoryRoundtrip(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -50,14 +50,14 @@ func TestCoreB_MemWriteMemoryRenderError(t *testing.T) {
 func TestCoreB_MemSearchMemories(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
 	run(t, "write", "--scope", "project:wink", "--type", "decision", "--title", "OAuth path", "--text", "use oauth token flow zebra")
 	run(t, "write", "--scope", "global", "--title", "Cooking", "--text", "pasta recipe zebra")
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// Term present in both bodies -> both scopes returned.
 	all, err := searchMemories(ctx, cfg, "zebra", "", 10)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestCoreB_MemSearchMemories(t *testing.T) {
 func TestCoreB_MemSearchMemoriesRebuildsMissingIndex(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -135,7 +135,7 @@ func coreBMemSeedListVault(t *testing.T) Config {
 	t.Helper()
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestCoreB_MemAllMemoryFilesWalkErrorSurfaces(t *testing.T) {
 	}
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestCoreB_MemAllMemoryFilesWalkErrorSurfaces(t *testing.T) {
 func TestCoreB_MemBuildContext(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

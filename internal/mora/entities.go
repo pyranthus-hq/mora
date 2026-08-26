@@ -66,7 +66,7 @@ func cmdEntities(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	positional := fs.Args()
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

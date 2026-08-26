@@ -46,7 +46,7 @@ func TestReproduceIngestCompletedOperationWithProducerStampFailure(t *testing.T)
 	}
 
 	var out bytes.Buffer
-	runErr := Run(context.Background(), []string{"ingest", "run", "--all"}, &out, &out, nil)
+	runErr := Run(testCtx(t), []string{"ingest", "run", "--all"}, &out, &out, nil)
 	if runErr == nil {
 		t.Fatal("ingest run --all must return non-zero error when producer stamping fails")
 	}
@@ -106,7 +106,7 @@ func TestSuccessfulCompletedIngestAdvancesProducerRecord(t *testing.T) {
 	setProducerClock(t, t0)
 
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"ingest", "run", "--all"}, &out, &out, nil); err != nil {
+	if err := Run(testCtx(t), []string{"ingest", "run", "--all"}, &out, &out, nil); err != nil {
 		t.Fatalf("ingest run --all failed: %v", err)
 	}
 
@@ -263,7 +263,7 @@ func TestSignedAppIngestTokenReceiptRelay(t *testing.T) {
 	setProducerClock(t, launchTime)
 	token, _ := newProtectedSyncToken()
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"ingest", "run", "--all", protectedSyncReceiptFlag, token}, &out, &out, nil); err != nil {
+	if err := Run(testCtx(t), []string{"ingest", "run", "--all", protectedSyncReceiptFlag, token}, &out, &out, nil); err != nil {
 		t.Fatalf("ingest run with receipt flag failed: %v", err)
 	}
 	r, err := readProtectedSyncReceipt(cfgCmd, token, "ingest-hourly", launchTime)
@@ -311,7 +311,7 @@ func TestTokenlessScheduledIngestRelaysThroughSignedApp(t *testing.T) {
 		return Run(ctx, args[childStart:], io.Discard, io.Discard, nil)
 	}
 
-	if err := Run(context.Background(), []string{"ingest", "run", "--all"}, io.Discard, io.Discard, nil); err != nil {
+	if err := Run(testCtx(t), []string{"ingest", "run", "--all"}, io.Discard, io.Discard, nil); err != nil {
 		t.Fatalf("tokenless scheduled ingest relay failed: %v", err)
 	}
 	if launches != 1 {

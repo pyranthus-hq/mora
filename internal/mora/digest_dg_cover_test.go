@@ -117,7 +117,7 @@ func TestDg_WindowDigestSkipsMalformedInputsAndCollapsesServiceSenders(t *testin
 }
 
 func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
-	t.Run("filtered advance rejected before io", func(t *testing.T) {
+	subRun(t, "filtered advance rejected before io", func(t *testing.T) {
 		cfg := dgConfig(t)
 		// Post-#62 the guard lives in advanceBrief (the build is pure and never advances).
 		_, _, err := advanceBrief(cfg, fixedNow, briefOpts{advance: true, source: "gmail"}, 10000, false)
@@ -126,7 +126,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid sources json surfaces enumeration error", func(t *testing.T) {
+	subRun(t, "invalid sources json surfaces enumeration error", func(t *testing.T) {
 		cfg := dgConfig(t)
 		if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "sources.json"), []byte("{not json"), 0o600); err != nil {
 			t.Fatalf("WriteFile sources: %v", err)
@@ -137,7 +137,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("source filter narrows enumerated sections", func(t *testing.T) {
+	subRun(t, "source filter narrows enumerated sections", func(t *testing.T) {
 		cfg := dgConfig(t)
 		enableSources(t, cfg, "gmail", "imessage")
 		seedSyncStatus(t, cfg, "gmail", fixedNow.Add(-time.Hour))
@@ -152,7 +152,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("advance reports lock acquisition failure", func(t *testing.T) {
+	subRun(t, "advance reports lock acquisition failure", func(t *testing.T) {
 		cfg := dgConfig(t)
 		enableSources(t, cfg, "gmail")
 		if err := os.WriteFile(filepath.Join(cfg.StateDir, "brief"), []byte("not a dir"), 0o600); err != nil {
@@ -165,7 +165,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("advance reports snapshot write failure", func(t *testing.T) {
+	subRun(t, "advance reports snapshot write failure", func(t *testing.T) {
 		cfg := dgConfig(t)
 		sources := []Source{{
 			Name:    "gmail",

@@ -97,7 +97,7 @@ func readUsageLog(t *testing.T, cfg Config) string {
 
 func mustConfig(t *testing.T) Config {
 	t.Helper()
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

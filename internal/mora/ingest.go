@@ -177,7 +177,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if !*all && *sourceName == "" {
 		return newCodedError(errCodeUsageMissingArgument, nil, "usage: mora ingest run --source <name>|--all")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if *account != "" && !isValidAccountLabel(*account) {
 		return fmt.Errorf("invalid account label %q (use lowercase letters, digits, hyphens)", *account)
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -590,7 +590,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		sourceJSON = *jsonOut
 	}
 	sourceProgress := progressWriter(stdout, stderr, sourceJSON)
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -954,7 +954,7 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 			return fmt.Errorf("unknown flag %q (usage: mora reingest [--full])", a)
 		}
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -1073,7 +1073,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// The activity receipt and matching journal header are both durable before
 	// dispatch can publish a vault file. Even a zero-item run gets a header, so
 	// its success can be closed only by the covering committed rebuild.
-	h, err := beginOperation(cfg, operationKindIngest, "starting", operationClock())
+	h, err := beginOperation(cfg, operationKindIngest, "starting", cfg.OperationClock())
 	if err != nil {
 		// The connector failure boundary (CON-07). Every source failure passes
 		// through here exactly once, so this is where an untyped one acquires a
@@ -1094,7 +1094,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		finishErr := finishOperation(cfg, h, operationFailed, "failed", operationCounts{
 			Items: result.Materialized, Errors: errorCount, Examined: result.Examined,
 			Materialized: result.Materialized, Missing: result.Missing,
-		}, code, operationClock())
+		}, code, cfg.OperationClock())
 		return errors.Join(cause, finishErr)
 	}
 	sourceKey := ingestOperationSourceKey(s)
@@ -1126,7 +1126,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		progressErr := progress.Stop()
 		finishErr := finishOperation(cfg, h, operationCompleted, "no_changes", operationCounts{
 			Items: 0, Examined: result.Examined, Materialized: 0, Missing: result.Missing,
-		}, "", operationClock())
+		}, "", cfg.OperationClock())
 		return result, errors.Join(retireErr, progressErr, finishErr)
 	}
 	if dispatchErr == nil {
@@ -1464,19 +1464,6 @@ var newWhatsAppFetcher = func(path string) (whatsAppFetcher, error) {
 	return whatsapp.NewLiveFetcher(path)
 }
 
-// ingestWhatsApp reads the local ChatStorage.sqlite read-only and writes one
-// memory per conversation (#295). It is macOS-gated (a non-darwin host prints an
-// honest note and returns 0, never a false error) and surfaces resumable errors.
-// Rendering/truncation is the connector's inverted-truncation mapper, routed
-// through the shared resumable Ingest loop via the Map hook — the writeMappedMemory
-// boundary is reused, never reimplemented. The two-lane relevance gate lives in
-// the connector's Meta (relevance_lane / inclusion_rationale) and is enforced by
-// digest/urgent/commitment consumers.
-func ingestWhatsApp(cfg Config, s Source, out io.Writer) (int, error) {
-	result, err := ingestWhatsAppDetailed(context.Background(), cfg, s, out)
-	return result.Materialized, err
-}
-
 func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtimeGOOS() != "darwin" {
 		if out != nil {
@@ -1484,7 +1471,7 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		}
 		return sourceIngestResult{}, nil
 	}
-	fetcher, err := newWhatsAppFetcher(whatsAppDBPath())
+	fetcher, err := newWhatsAppFetcher(whatsAppDBPath(cfg))
 	if err != nil {
 		// A present-but-unreadable ChatStorage.sqlite is the FDA-denied case (or an
 		// unsupported private schema) — point the user at doctor guidance rather
@@ -1541,15 +1528,13 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 
 // chatDBPath is the default local iMessage database location. macOS-only; the
 // caller gates on runtime.GOOS before reading it.
-func chatDBPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "Messages", "chat.db")
+func chatDBPath(cfg Config) string {
+	return filepath.Join(cfg.HomeDir(), "Library", "Messages", "chat.db")
 }
 
 // addressBookRoot is the AddressBook Sources/ root used for handle→name resolution.
-func addressBookRoot() string {
-	home, _ := os.UserHomeDir()
-	return imessage.DefaultAddressBookRoot(home)
+func addressBookRoot(cfg Config) string {
+	return imessage.DefaultAddressBookRoot(cfg.HomeDir())
 }
 
 // windowForIMessage builds the lookback window: a lean 90-day default (D-06),
@@ -1596,7 +1581,7 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		return sourceIngestResult{}, nil
 	}
 
-	path := chatDBPath()
+	path := chatDBPath(cfg)
 	deny := imessage.DenyList{Contacts: s.DenyContacts, Conversations: s.DenyConversations}
 	fetcher, err := newIMessageFetcher(path, deny)
 	if err != nil {
@@ -1618,7 +1603,7 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	defer fetcher.Close()
 
 	// Handle→name resolution; an unreadable AddressBook degrades to raw handles (D-09).
-	resolver, _ := imessage.NewResolver(addressBookRoot())
+	resolver, _ := imessage.NewResolver(addressBookRoot(cfg))
 
 	statusPath := imessageStatusPath(cfg, s.Name)
 	st, _ := memory.LoadStatus(statusPath)
@@ -1670,8 +1655,8 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 // appleCalDBPath probes the modern group-container store first, then the
 // legacy ~/Library/Calendars location; returns the modern default when neither
 // exists yet (the open error then names the real path the user must grant).
-func appleCalDBPath() string {
-	home, _ := os.UserHomeDir()
+func appleCalDBPath(cfg Config) string {
+	home := cfg.HomeDir()
 	modern := applecal.DefaultDBPath(home)
 	if _, err := os.Stat(modern); err == nil {
 		return modern
@@ -1703,7 +1688,7 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		}
 		return sourceIngestResult{}, nil
 	}
-	fetcher, err := applecal.NewLiveFetcher(appleCalDBPath())
+	fetcher, err := applecal.NewLiveFetcher(appleCalDBPath(cfg))
 	if err != nil {
 		// Same PHASE 3 HANDOFF (DOC-03) as ingestIMessage: the Full Disk Access
 		// sentence is an inference this plan preserves verbatim, and the typed code
@@ -1833,7 +1818,7 @@ func connectGitHub(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -1944,7 +1929,7 @@ func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Wri
 	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
 		path = resolved
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -2041,7 +2026,7 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 		fmt.Fprintln(stdout, "iMessage is macOS-only and cannot be enabled on Windows.")
 		return errors.New("imessage is macOS-only")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -2066,7 +2051,7 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 		}
 		fmt.Fprintf(stdout, "iMessage will ingest the last %d days; use --since-days to change this window.\n", days)
 	}
-	ready := printIMessageReadiness(stdout, true)
+	ready := printIMessageReadiness(cfg, stdout, true)
 	if !ready {
 		// Honest stop: readiness guidance already printed the next steps.
 		return nil

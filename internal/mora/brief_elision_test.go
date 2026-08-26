@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -51,8 +50,8 @@ func TestBriefSectionElisionContract(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			res, err := callMCPTool(context.Background(), "brief", map[string]any{
+		subRun(t, tt.name, func(t *testing.T) {
+			res, err := callMCPTool(testCtx(t), "brief", map[string]any{
 				"max_tokens": float64(tt.maxTokens),
 			})
 			if err != nil {
@@ -116,7 +115,7 @@ func TestEmptyBriefExplanations(t *testing.T) {
 	cfg := mustConfig(t)
 	now := time.Now()
 
-	t.Run("no_changes_steady_state", func(t *testing.T) {
+	subRun(t, "no_changes_steady_state", func(t *testing.T) {
 		enableSources(t, cfg, "gmail")
 		seedSyncStatus(t, cfg, "gmail", now.Add(-1*time.Hour))
 		m := Memory{ID: "manual_01", Scope: "global", Type: "note", Title: "Note 01", Text: "Note body", Source: "manual", CreatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339)}
@@ -131,7 +130,7 @@ func TestEmptyBriefExplanations(t *testing.T) {
 			t.Fatalf("saveBriefSnapshot: %v", err)
 		}
 
-		res, err := callMCPTool(context.Background(), "brief", map[string]any{})
+		res, err := callMCPTool(testCtx(t), "brief", map[string]any{})
 		if err != nil {
 			t.Fatalf("callMCPTool brief: %v", err)
 		}
@@ -141,7 +140,7 @@ func TestEmptyBriefExplanations(t *testing.T) {
 		}
 	})
 
-	t.Run("empty_vault", func(t *testing.T) {
+	subRun(t, "empty_vault", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfgEmpty := mustConfig(t)
@@ -155,7 +154,7 @@ func TestEmptyBriefExplanations(t *testing.T) {
 		}
 	})
 
-	t.Run("stale_or_unavailable", func(t *testing.T) {
+	subRun(t, "stale_or_unavailable", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg2 := mustConfig(t)
@@ -171,7 +170,7 @@ func TestEmptyBriefExplanations(t *testing.T) {
 		}
 	})
 
-	t.Run("filtered_no_matches", func(t *testing.T) {
+	subRun(t, "filtered_no_matches", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg3 := mustConfig(t)
@@ -256,7 +255,7 @@ func TestMCPBriefFilteredEmptyExplanationSurvivesFallback(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)
@@ -462,7 +461,7 @@ func TestMCPBriefDigestEmptyExplanationRoundTrip(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)

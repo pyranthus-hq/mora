@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -16,7 +15,7 @@ func TestReadOnlyIndexWaitsOnWriteLock(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Disable the auto-heal fallback: without a busy_timeout on the ro DSN the
 	// schema probe's SQLITE_BUSY is misread as "stale index" and openIndexRO

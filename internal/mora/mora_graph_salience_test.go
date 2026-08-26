@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"database/sql"
 	"reflect"
 	"testing"
@@ -69,7 +68,7 @@ func TestRebuildPersistsSalienceMicros(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()
@@ -116,7 +115,7 @@ func TestRebuildSalienceColumnIsAdditive(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Replace any existing entities table with the OLD schema (no salience_micros
 	// column), mimicking a vault indexed before this change.

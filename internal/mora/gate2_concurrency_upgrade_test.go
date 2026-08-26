@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
@@ -29,7 +28,7 @@ func TestUpgradePreservesState(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "")
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// --- durable artifacts a real install accumulates ---
 	if _, err := cliWrite(ctx, "global", "pre-upgrade", "body before binary swap"); err != nil {
@@ -224,7 +223,7 @@ func TestFDALossNeverStampsSuccess(t *testing.T) {
 
 	// Doctor / banner go red on the aged frozen success.
 	var js bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &js, testStderr); err == nil {
+	if err := cmdDoctor(testCtx(t), []string{"--json", "--strict"}, &js, testStderr); err == nil {
 		t.Fatal("doctor --strict must be nonzero with a failed FDA source")
 	}
 	banner := healthBannerFrom(healthOf(cfg, time.Now()))
@@ -272,7 +271,7 @@ func TestAccidentalVaultFlipIsBlockedAndVisible(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "")
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	var ids []string
 	for i := 0; i < 3; i++ {

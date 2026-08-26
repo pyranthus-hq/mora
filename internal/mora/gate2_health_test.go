@@ -24,20 +24,20 @@ var gate2Now = time.Unix(1_700_000_000, 0)
 // absent / schema-stale / blocked index. MUTATION: an "assume fine" branch => fresh
 // on one of these => RED.
 func TestIndexHealthFailsClosed(t *testing.T) {
-	t.Run("absent", func(t *testing.T) {
+	subRun(t, "absent", func(t *testing.T) {
 		cfg := sandboxCfg(t)
 		if st := indexHealthOf(cfg, gate2Now).State; st != idxNever {
 			t.Fatalf("absent index state = %q, want never", st)
 		}
 	})
-	t.Run("schema_stale", func(t *testing.T) {
+	subRun(t, "schema_stale", func(t *testing.T) {
 		cfg := gate2Vault(t)
 		stampUserVersion(t, cfg, indexSchemaVersion+99)
 		if st := indexHealthOf(cfg, gate2Now).State; st != idxFailed {
 			t.Fatalf("schema-stale index state = %q, want failed", st)
 		}
 	})
-	t.Run("blocked", func(t *testing.T) {
+	subRun(t, "blocked", func(t *testing.T) {
 		cfg := gate2Vault(t)
 		if err := writeBlockRecord(cfg, decBlockIdentity, cfg.VaultDir, 5, 3); err != nil {
 			t.Fatal(err)
@@ -88,7 +88,7 @@ func TestDoctorStrictNonzeroOnDirtyIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr)
+	err := cmdDoctor(testCtx(t), []string{"--json", "--strict"}, &buf, testStderr)
 	if err == nil {
 		t.Fatal("doctor --strict exited 0 on a dirty index")
 	}
@@ -125,18 +125,18 @@ func TestBriefRendersIndexBanner(t *testing.T) {
 // loadMemoriesByID). MUTATION: drop suppression at either => the deleted id is served => RED.
 func TestPendingDeleteIsNeverServed(t *testing.T) {
 	cfg := gate2Vault(t, coreBIdxmem("mem_del", "global", "insight", "Secret", "suppressme body"))
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// A pending delete for mem_del (its rebuild failed / was killed).
 	if _, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: filepath.Join(memoriesRoot(cfg), "global", "mem_del.md"), MemoryID: "mem_del"}); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Run("search", func(t *testing.T) {
+	subRun(t, "search", func(t *testing.T) {
 		if res := gate2Search(t, cfg, "suppressme"); len(res) != 0 {
 			t.Fatalf("search returned a pending-delete id: %+v", res)
 		}
 	})
-	t.Run("meeting_prep", func(t *testing.T) {
+	subRun(t, "meeting_prep", func(t *testing.T) {
 		// loadMemoriesByID is the graph/meeting-prep chokepoint.
 		db, err := openIndexRO(ctx, cfg)
 		if err != nil {
@@ -182,7 +182,7 @@ func TestOutOfBandVaultEditIsDirty(t *testing.T) {
 		t.Fatalf("precondition indexMatchesVault = (%v,%v), want (true,false)", ok, crit)
 	}
 
-	t.Run("mtime_not_digest", func(t *testing.T) {
+	subRun(t, "mtime_not_digest", func(t *testing.T) {
 		info, err := os.Stat(target)
 		if err != nil {
 			t.Fatal(err)
@@ -202,7 +202,7 @@ func TestOutOfBandVaultEditIsDirty(t *testing.T) {
 		}
 	})
 
-	t.Run("no_recompute", func(t *testing.T) {
+	subRun(t, "no_recompute", func(t *testing.T) {
 		// Drives the REAL cmdDoctor, so the recompute is exercised through the
 		// production call site (doctor.go's indexMatchesVault(cfg)), not the helper.
 		// MUTATION (row 26a): replace that call with (true,false) — skip the recompute.
@@ -212,7 +212,7 @@ func TestOutOfBandVaultEditIsDirty(t *testing.T) {
 			t.Fatal(err)
 		}
 		var buf bytes.Buffer
-		err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr)
+		err := cmdDoctor(testCtx(t), []string{"--json", "--strict"}, &buf, testStderr)
 		if err == nil {
 			t.Fatal("doctor --strict exited 0 despite an out-of-band vault edit")
 		}
@@ -290,14 +290,14 @@ func TestUpsertAdvancesFTSNotGraph(t *testing.T) {
 // TestProjectionLagUsesStampRelation (matrix row 36) — lag is fts−graph (a relation),
 // never wall-clock age. MUTATION: now−graph_indexed_at => an idle vault reddens by aging => RED.
 func TestProjectionLagUsesStampRelation(t *testing.T) {
-	t.Run("idle_does_not_age", func(t *testing.T) {
+	subRun(t, "idle_does_not_age", func(t *testing.T) {
 		cfg := gate2Vault(t) // fts == graph
 		farFuture := time.Unix(2_000_000_000, 0)
 		if st := indexHealthOf(cfg, farFuture).State; st != idxFresh {
 			t.Fatalf("idle vault state at a far-future now = %q, want fresh (no aging)", st)
 		}
 	})
-	t.Run("authored_write_advances_fts_only", func(t *testing.T) {
+	subRun(t, "authored_write_advances_fts_only", func(t *testing.T) {
 		cfg := gate2Vault(t)
 		base := gate2ReadMeta(t, cfg)["graph_indexed_at"]
 		gt, _ := time.Parse(time.RFC3339, base)
@@ -327,7 +327,7 @@ func TestDisabledSourceWithCorpusIsNotHealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &buf, testStderr); err != nil {
+	if err := cmdDoctor(testCtx(t), []string{"--json"}, &buf, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var rep doctorReport

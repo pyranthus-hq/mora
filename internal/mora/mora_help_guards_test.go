@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 )
@@ -29,7 +28,7 @@ func TestSearchHelpNoRawFTSError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var out bytes.Buffer
-	err := Run(context.Background(), []string{"search", "--help"}, &out, &out, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"search", "--help"}, &out, &out, strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("`search --help` returned an error (want graceful): %v\n%s", err, out.String())
 	}

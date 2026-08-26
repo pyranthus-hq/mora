@@ -348,6 +348,9 @@ func TestCoreB_UtilInstallAndListSchedule(t *testing.T) {
 	}
 	withTempHome(t)
 	cfg := testCfg(t)
+	// Pin the plist target to the sandbox home — a bare testCfg would otherwise
+	// write into the developer's real ~/Library/LaunchAgents.
+	cfg.SetHomeDir(mustConfig(t).HomeDir())
 	// Install now bootstraps the job via launchctl on darwin; stub the runner so
 	// the test never loads a real launchd job pointing at the test binary.
 	withScheduleRunner(t, nil)
@@ -372,7 +375,7 @@ func TestCoreB_UtilInstallAndListSchedule(t *testing.T) {
 	if !strings.Contains(out.String(), "installed + loaded launchd job com.mora.index-hourly") {
 		t.Fatalf("missing confirmation message, got %q", out.String())
 	}
-	plistPath := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", "com.mora.index-hourly.plist")
+	plistPath := filepath.Join(cfg.HomeDir(), "Library", "LaunchAgents", "com.mora.index-hourly.plist")
 	if _, err := os.Stat(plistPath); err != nil {
 		t.Fatalf("plist not written to %s: %v", plistPath, err)
 	}
@@ -400,6 +403,7 @@ func TestCoreB_UtilInstallScheduleWriteError(t *testing.T) {
 	setTestHome(t, homeFile)
 	t.Setenv("MORA_CONFIG_DIR", "")
 	cfg := testCfg(t)
+	cfg.SetHomeDir(homeFile)
 	var out bytes.Buffer
 	if err := installSchedule(&out, cfg, "index-hourly"); err == nil {
 		t.Fatal("installSchedule must error when LaunchAgents dir cannot be created")

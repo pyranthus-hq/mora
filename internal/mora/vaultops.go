@@ -23,7 +23,7 @@ func cmdLint(ctx context.Context, args []string, stdout, stderr io.Writer) (err 
 	if fs.NArg() != 0 {
 		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func cmdBackup(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	if fs.NArg() != 0 {
 		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

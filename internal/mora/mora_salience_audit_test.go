@@ -91,7 +91,7 @@ func allEntitySalience(t *testing.T, cfg Config) map[string]struct {
 // carries the display name, not the id) so the assertion keys on the stable id.
 func orderedPeople(t *testing.T, cfg Config) []personOverviewRow {
 	t.Helper()
-	ctx := context.Background()
+	ctx := testCtx(t)
 	ents, err := graphListEntities(ctx, cfg)
 	if err != nil {
 		t.Fatalf("graphListEntities: %v", err)
@@ -175,7 +175,7 @@ func TestSalienceRebuildAuditByteIdentical(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// A deterministic multi-source vault. FIXED instants + message counts; the most
 	// recent instant (2026-06-01) is the vault recency anchor.

@@ -202,7 +202,7 @@ func TestGovernance_ForgetCascadesToPreUpgradeAttachmentWithoutParentMeta(t *tes
 		{name: "stable id", selector: []string{"--chat", "imessage_chat/legacy-parent"}},
 		{name: "sole handle", selector: []string{"--handle", "+14155550123"}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			cfg := coreBIngestInitCfg(t)
 			parent := imsgMM("legacy-parent", "+14155550123")
 			if err := writeMappedMemory(cfg, parent); err != nil {

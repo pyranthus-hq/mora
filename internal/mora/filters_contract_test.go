@@ -1439,7 +1439,7 @@ func TestFiltersAliasedInstanceHealthConfidenceScoping(t *testing.T) {
 // (mora_coreB_mcp_test.go) — the established convention for schema-shape
 // pins in this package.
 func TestFiltersToolsListAdvertisesSourceAndSinceHours(t *testing.T) {
-	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(1), Method: "tools/list"})
+	resp := handleMCP(testCtx(t), jsonRPCRequest{JSONRPC: "2.0", ID: float64(1), Method: "tools/list"})
 	res, ok := resp.Result.(map[string]any)
 	if !ok {
 		t.Fatalf("tools/list result must be a map, got %T", resp.Result)
@@ -1532,7 +1532,7 @@ func TestFiltersIncrementalUpsertPopulatesV4Columns(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	writeFilterMemory(t, cfg, "cold-seed", "gmail", "", "2026-01-01T00:00:00Z", "unrelated cold seed content")
 	mustRebuild(t, cfg)

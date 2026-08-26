@@ -411,7 +411,7 @@ func TestMoraErrorUnwrapsPackageSentinels(t *testing.T) {
 		{"embedder unavailable", errCodeConnectorUnavailable, errEmbedderUnavailable, indexpkg.ErrUnmarkable},
 		{"rebuild blocked", errCodeDataCorrupt, errRebuildBlocked, errLoopLockHeld},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			wrapped := newCodedError(tc.code, tc.sentinel, "wrapped: %v", tc.sentinel)
 			if !errors.Is(wrapped, tc.sentinel) {
 				t.Fatalf("errors.Is lost %v through a moraError wrap", tc.sentinel)
@@ -448,7 +448,7 @@ func TestConnectorErrorClassBackfill(t *testing.T) {
 		{"healthy record stays empty", "", "", "", connectorClassUnclassified},
 		{"unknown code reads unclassified", "connector.from_the_future", "", "connector.from_the_future", connectorClassUnclassified},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			if got := syncErrorCodeOrUnclassified(tc.code, tc.lastError); got != tc.want {
 				t.Errorf("syncErrorCodeOrUnclassified(%q, %q) = %q, want %q", tc.code, tc.lastError, got, tc.want)
 			}

@@ -39,7 +39,7 @@ func TestIngestRunAllPartialSuccessOneRebuild(t *testing.T) {
 		return 2, nil
 	}
 	var output bytes.Buffer
-	if err := cmdIngest(context.Background(), []string{"run", "--all", "--json"}, &output, io.Discard); err != nil {
+	if err := cmdIngest(testCtx(t), []string{"run", "--all", "--json"}, &output, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if rebuilds.Load() != 1 {
@@ -60,7 +60,7 @@ func TestIngestRunAllGlobalCancellationNonzero(t *testing.T) {
 		<-ctx.Done()
 		return sourceIngestResult{}, ctx.Err()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(testCtx(t))
 	time.AfterFunc(20*time.Millisecond, cancel)
 	var output bytes.Buffer
 	err := cmdIngest(ctx, []string{"run", "--all", "--json"}, &output, io.Discard)
@@ -94,7 +94,7 @@ func TestReingestRetriesOnlyFailedSources(t *testing.T) {
 		called = append(called, source.Name)
 		return sourceIngestResult{}, nil
 	}
-	if err := cmdReingest(context.Background(), []string{"--failed"}, io.Discard, io.Discard); err != nil {
+	if err := cmdReingest(testCtx(t), []string{"--failed"}, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(called, []string{"retry"}) {
@@ -124,7 +124,7 @@ func TestPulseFilteredSyncFirstUsesOnlyRequestedSources(t *testing.T) {
 		return sourceRunCoordinator(ctx, req)
 	}
 	var output bytes.Buffer
-	if err := cmdPulse(context.Background(), []string{"--digest", "--sync", "--source", "gmail"}, &output, io.Discard); err != nil {
+	if err := cmdPulse(testCtx(t), []string{"--digest", "--sync", "--source", "gmail"}, &output, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(keys, []string{"gmail"}) {
@@ -144,7 +144,7 @@ func TestPulseAllSourcePartialSnapshotRemainsUsable(t *testing.T) {
 		return sourceRunResult{}, errors.New("one sibling unavailable")
 	}
 	var output bytes.Buffer
-	if err := cmdPulse(context.Background(), []string{"--digest", "--sync"}, &output, io.Discard); err != nil {
+	if err := cmdPulse(testCtx(t), []string{"--digest", "--sync"}, &output, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "Last known good evidence") {

@@ -107,7 +107,7 @@ func mergeList(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("unexpected argument %q to `mora merge list`", a)
 		}
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -189,7 +189,7 @@ func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision 
 		return errors.New("--handle and --email resolve to the same identity; nothing to merge")
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -294,7 +294,7 @@ func mergeUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := refuseDashLedPositional("merge undo", "entry id", args[0]); err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

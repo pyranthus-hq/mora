@@ -41,7 +41,7 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if len(args) == 0 {
 		return errors.New("usage: mora connectors list|enable|disable|setup")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -133,8 +133,13 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 	if !ok {
 		return fmt.Errorf("unknown connector %q; run `mora connectors list`", ctype)
 	}
-	if runtimeGOOS() != "darwin" && macOSOnlyConnector(ctype) {
-		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on %s.\n", info.DisplayName, runtimeGOOS())
+	// Windows-only refusal by contract: Linux lists macOS-only connectors and
+	// lets enable flip the bit with an ingest-time note (a vault can be synced
+	// to Linux and read there); only Windows hides + refuses them. #333's
+	// rebase briefly broadened this to every non-darwin host, which broke the
+	// documented contract and the linux CI suite.
+	if runtimeGOOS() == "windows" && macOSOnlyConnector(ctype) {
+		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on Windows.\n", info.DisplayName)
 		return fmt.Errorf("%s is macOS-only", ctype)
 	}
 	if info.NeedsAuth {
@@ -421,7 +426,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stde
 	// Google detect-and-skip → deny-list → backfill confirm → enable → backfill.
 	if imessageSelected {
 		fmt.Fprintln(stdout, "Checking iMessage readiness…")
-		printIMessageReadiness(stdout, true)
+		printIMessageReadiness(cfg, stdout, true)
 	}
 
 	// CROSS-PHASE TOUCH (UI-SPEC §C/E-7, control-flow): detect Google placeholder
@@ -498,7 +503,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stde
 	}
 	if imessageSelected {
 		if doBackfill {
-			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtimeGOOS() == "darwin" {
+			if ready, _ := imessage.ProbeReadable(chatDBPath(cfg)); ready && runtimeGOOS() == "darwin" {
 				total, err := backfillEnabledIMessage(ctx, cfg, stdout)
 				if err != nil {
 					return err
@@ -560,7 +565,7 @@ func cmdDisconnect(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if len(args) < 1 || args[0] != "google" {
 		return errors.New("usage: mora disconnect google")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

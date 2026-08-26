@@ -60,7 +60,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 
 	payload := capabilitiesDocument(t)
 
-	t.Run("commands", func(t *testing.T) {
+	subRun(t, "commands", func(t *testing.T) {
 		registry := loadCLIRegistry(t)
 		want := map[string]capabilitiesCommand{}
 		for _, row := range registry.Commands {
@@ -102,7 +102,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		}
 	})
 
-	t.Run("error_codes", func(t *testing.T) {
+	subRun(t, "error_codes", func(t *testing.T) {
 		registry := loadErrorCodeRegistry(t)
 		want := map[string]capabilitiesErrorCode{}
 		for _, row := range registry.Codes {
@@ -131,7 +131,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		}
 	})
 
-	t.Run("exit_codes", func(t *testing.T) {
+	subRun(t, "exit_codes", func(t *testing.T) {
 		registry := loadErrorCodeRegistry(t)
 		if len(payload.ExitCodes.Allocated) != len(registry.ExitCodes) {
 			t.Fatalf("allocated exit codes = %d, registry has %d", len(payload.ExitCodes.Allocated), len(registry.ExitCodes))
@@ -168,7 +168,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		}
 	})
 
-	t.Run("connectors", func(t *testing.T) {
+	subRun(t, "connectors", func(t *testing.T) {
 		want := map[string]capabilitiesConnector{}
 		for _, connector := range connectorCatalog {
 			if connector.Type == "gdrive" {
@@ -196,7 +196,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		}
 	})
 
-	t.Run("schemas", func(t *testing.T) {
+	subRun(t, "schemas", func(t *testing.T) {
 		registry := loadCLIRegistry(t)
 		want := map[string]bool{}
 		for _, row := range registry.Commands {
@@ -227,7 +227,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		}
 	})
 
-	t.Run("mcp_tools", func(t *testing.T) {
+	subRun(t, "mcp_tools", func(t *testing.T) {
 		want := mcpToolNames()
 		if !reflect.DeepEqual(want, payload.MCP.Tools) {
 			t.Errorf("mcp.tools = %v, mcpToolNames() = %v", payload.MCP.Tools, want)
@@ -246,7 +246,7 @@ func TestCapabilitiesMatchesRegistries(t *testing.T) {
 		}
 	})
 
-	t.Run("features_are_tri_state", func(t *testing.T) {
+	subRun(t, "features_are_tri_state", func(t *testing.T) {
 		if payload.Features.Repair != featureUnsupported {
 			t.Errorf("features.repair = %q, want %q until Phase 3 lands repair", payload.Features.Repair, featureUnsupported)
 		}

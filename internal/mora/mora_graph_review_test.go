@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"database/sql"
 	"testing"
 )
@@ -13,7 +12,7 @@ func TestGraphReadSelfHealsPreS1Index(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{ID: "m1", Scope: "personal", Title: "T", Text: "[[Neil]]", CreatedAt: "2026-05-30T10:00:00Z"}); err != nil {
 		t.Fatal(err)
@@ -58,7 +57,7 @@ func TestGraphStatsExcludeTombstones(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, Memory{ID: "live1", Scope: "personal", Tags: []string{"shared"}, Title: "L", Text: "x", CreatedAt: "2026-05-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +79,7 @@ func TestGetEntityTombstoneOnlyIsNotFound(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, Memory{ID: "dead", Scope: "personal", Tags: []string{"ghost"}, Title: "G", Text: "x", CreatedAt: "2026-04-01T00:00:00Z", DeletedAt: "2026-04-05T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +101,7 @@ func TestGetEntityPreservesMemoryFields(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, Memory{ID: "g1", Scope: "personal", Type: "email", Title: "T", Text: "[[Neil]]",
 		CreatedAt: "2026-05-01T00:00:00Z", Provider: "gmail", ProviderID: "gmail_thread/abc", LastSynced: "2026-05-02T00:00:00Z"}); err != nil {
 		t.Fatal(err)

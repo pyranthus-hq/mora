@@ -13,28 +13,26 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 )
 
-func pinOperationClockForTest(t *testing.T, base time.Time) {
-	t.Helper()
-	original := operationClock
-	var mu sync.Mutex
-	var tick int64
-	operationClock = func() time.Time {
-		mu.Lock()
-		defer mu.Unlock()
-		tick++
-		return base.Add(time.Duration(tick))
-	}
-	t.Cleanup(func() { operationClock = original })
-}
+// pinOperationClockForTest now lives in testctx_test.go (per-test env, not the
+// former operationClock package global).
 
 func sandboxCfg(t *testing.T) Config {
 	t.Helper()
+	// Same isolation the MORA_CONFIG_DIR Setenv used to produce (root/vault,
+	// root/data, root/state, config.toml in the root), but carried through the
+	// test's context instead of process state, so sandboxed tests can run in
+	// parallel alongside others resolving their own roots.
+	env := &testEnv{configRoot: t.TempDir()}
+	bindTestEnv(t, env)
 	pinOperationClockForTest(t, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
-	dir := t.TempDir()
-	t.Setenv("MORA_CONFIG_DIR", dir)
-	cfg := defaultConfig()
+	cfg, err := configstore.LoadFrom(env.ctx())
+	if err != nil {
+		t.Fatalf("sandboxCfg: %v", err)
+	}
 	for _, d := range []string{cfg.VaultDir, cfg.DataDir, cfg.StateDir, cfg.ConfigDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
@@ -335,12 +333,12 @@ func TestIndexRebuildForceOverridesBlock(t *testing.T) {
 	}
 	// Without --force: blocked.
 	var out bytes.Buffer
-	if err := cmdIndex(context.Background(), []string{"rebuild"}, &out, testStderr, bytes.NewReader(nil)); !errors.Is(err, errRebuildBlocked) {
+	if err := cmdIndex(testCtx(t), []string{"rebuild"}, &out, testStderr, bytes.NewReader(nil)); !errors.Is(err, errRebuildBlocked) {
 		t.Fatalf("want blocked without --force, got %v", err)
 	}
 	// With --force: succeeds, index empties.
 	out.Reset()
-	if err := cmdIndex(context.Background(), []string{"rebuild", "--force"}, &out, testStderr, bytes.NewReader(nil)); err != nil {
+	if err := cmdIndex(testCtx(t), []string{"rebuild", "--force"}, &out, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatalf("force rebuild failed: %v", err)
 	}
 	if indexCount(t, cfg) != 0 {
@@ -352,7 +350,7 @@ func TestInitCreatesMarkerAndPrintsSummary(t *testing.T) {
 	cfg := sandboxCfg(t)
 	var out bytes.Buffer
 	// non-TTY stdin (bytes.Reader) -> setup menu is skipped, summary still prints.
-	if err := cmdInit(context.Background(), nil, &out, testStderr, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(testCtx(t), nil, &out, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(markerPath(cfg)); err != nil {
@@ -501,7 +499,7 @@ func TestInitRepointConfirmedEndToEnd(t *testing.T) {
 	// Establish vault A as a real install: init writes config.toml + marker, then
 	// seed two memories and bind the index to A.
 	var initOut bytes.Buffer
-	if err := cmdInit(context.Background(), nil, &initOut, testStderr, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(testCtx(t), nil, &initOut, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -527,12 +525,12 @@ func TestInitRepointConfirmedEndToEnd(t *testing.T) {
 
 	bDir := t.TempDir() // brand-new empty vault location
 	var out bytes.Buffer
-	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, testStderr, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(testCtx(t), []string{"--vault", bDir}, &out, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatalf("confirmed repoint must succeed end-to-end, got %v", err)
 	}
 
 	// config.toml now points at B (the repoint persisted).
-	reloaded, err := loadConfig()
+	reloaded, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +569,7 @@ func TestInitRepointConfirmedEndToEnd(t *testing.T) {
 func TestInitRepointDeclinedKeepsVault(t *testing.T) {
 	cfg := sandboxCfg(t)
 	var initOut bytes.Buffer
-	if err := cmdInit(context.Background(), nil, &initOut, testStderr, bytes.NewReader(nil)); err != nil {
+	if err := cmdInit(testCtx(t), nil, &initOut, testStderr, bytes.NewReader(nil)); err != nil {
 		t.Fatal(err)
 	}
 	aVault := cfg.VaultDir
@@ -584,10 +582,10 @@ func TestInitRepointDeclinedKeepsVault(t *testing.T) {
 
 	bDir := t.TempDir()
 	var out bytes.Buffer
-	if err := cmdInit(context.Background(), []string{"--vault", bDir}, &out, testStderr, bytes.NewReader(nil)); err == nil {
+	if err := cmdInit(testCtx(t), []string{"--vault", bDir}, &out, testStderr, bytes.NewReader(nil)); err == nil {
 		t.Fatal("declined repoint must return an error")
 	}
-	reloaded, err := loadConfig()
+	reloaded, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +613,7 @@ func TestDeleteLastMemoryNotBlocked(t *testing.T) {
 		t.Fatalf("seed index count = %d, want 1", got)
 	}
 	var out bytes.Buffer
-	if err := cmdDelete(context.Background(), []string{"--yes", id}, &out, testStderr); err != nil {
+	if err := cmdDelete(testCtx(t), []string{"--yes", id}, &out, testStderr); err != nil {
 		t.Fatalf("deleting the last memory must not error: %v", err)
 	}
 	if got := indexCount(t, cfg); got != 0 {
@@ -638,7 +636,7 @@ func TestDeleteMemoryLastViaAllow(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callMCPTool(context.Background(), "delete_memory", map[string]any{"id": id}); err != nil {
+	if _, err := callMCPTool(testCtx(t), "delete_memory", map[string]any{"id": id}); err != nil {
 		t.Fatalf("MCP delete_memory of the last memory must not error: %v", err)
 	}
 	if got := indexCount(t, cfg); got != 0 {
@@ -667,7 +665,7 @@ func TestDoctorShowsBlockRecord(t *testing.T) {
 	}
 
 	var txt bytes.Buffer
-	if err := cmdDoctor(context.Background(), nil, &txt, testStderr); err != nil {
+	if err := cmdDoctor(testCtx(t), nil, &txt, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(txt.String(), "BLOCKED") {
@@ -675,7 +673,7 @@ func TestDoctorShowsBlockRecord(t *testing.T) {
 	}
 
 	var js bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &js, testStderr); err != nil {
+	if err := cmdDoctor(testCtx(t), []string{"--json"}, &js, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var rep doctorReport
@@ -693,7 +691,7 @@ func TestDoctorShowsBlockRecord(t *testing.T) {
 func TestConfigShowsPathAnnotations(t *testing.T) {
 	cfg := sandboxCfg(t)
 	var out bytes.Buffer
-	if err := cmdConfig(nil, &out, testStderr); err != nil {
+	if err := cmdConfig(testCtx(t), nil, &out, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
@@ -738,7 +736,7 @@ func TestWriteDegradesWhenRebuildBlocked(t *testing.T) {
 	seedForeignMarker(t, cfg)
 
 	var out, errOut bytes.Buffer
-	err := cmdWrite(context.Background(), []string{"--title", "new note", "--text", "do not lose me"}, &out, &errOut)
+	err := cmdWrite(testCtx(t), []string{"--title", "new note", "--text", "do not lose me"}, &out, &errOut)
 	if err != nil {
 		t.Fatalf("cmdWrite must NOT fail when the rebuild is blocked (the memory is saved): %v", err)
 	}

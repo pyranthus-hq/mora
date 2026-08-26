@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"sort"
@@ -47,7 +46,7 @@ func TestGraphPersonEdgesFromGmail(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "gmail_thread/t1", Scope: "personal", Type: "email", Title: "Re: demo",
@@ -103,7 +102,7 @@ func TestGraphCalendarAttended(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "calendar_event/e1", Scope: "personal", Type: "event", Title: "Standup",
@@ -134,7 +133,7 @@ func TestGraphIMessagePeople(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "imessage_chat/c1", Scope: "personal", Type: "imessage", Title: "chat",
@@ -171,7 +170,7 @@ func TestGraphPersonSelfMerge(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// First memory: address only, no display name.
 	if err := writeMemory(cfg, Memory{
@@ -216,7 +215,7 @@ func TestGraphPersonTombstone(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "gmail_thread/dead", Scope: "personal", Type: "email", Title: "gone",
@@ -257,7 +256,7 @@ func TestPersonCoOccurrence(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// neil + adit + bob share thread t1; carol is only in an unrelated thread t2.
 	if err := writeMemory(cfg, Memory{

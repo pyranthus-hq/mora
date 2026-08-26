@@ -198,7 +198,7 @@ func TestUncommittedGenerationNeverServed(t *testing.T) {
 // T13 (row 47a): corpus corruption fails read closed (never altered bytes) while
 // search keeps serving its intact index; a positive digest is never cached.
 func TestCorruptedPublishedCorpusFailsClosedOnRead(t *testing.T) {
-	t.Run("no_check", testCorruptedPublishedCorpusFailsClosedOnRead)
+	subRun(t, "no_check", testCorruptedPublishedCorpusFailsClosedOnRead)
 }
 
 func testCorruptedPublishedCorpusFailsClosedOnRead(t *testing.T) {
@@ -440,7 +440,7 @@ func TestSearchMemorySurfacesUnhealthyShares(t *testing.T) {
 	if err := os.WriteFile(shareIndexPath(cfg, "bad"), []byte("legacy garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := callMCPTool(context.Background(), "search_memory", map[string]any{"query": "content"})
+	got, err := callMCPTool(testCtx(t), "search_memory", map[string]any{"query": "content"})
 	if err != nil {
 		t.Fatal(err)
 	}

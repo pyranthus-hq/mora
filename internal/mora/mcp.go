@@ -89,7 +89,7 @@ const budgetUnitTokens = "tokens"
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
-			cfg, err := loadConfig()
+			cfg, err := loadConfigFor(ctx)
 			return mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil)
 		},
 		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcppkg.ToolCatalog())} },

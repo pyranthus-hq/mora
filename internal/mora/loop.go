@@ -274,7 +274,7 @@ func cmdLoop(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if len(args) == 0 {
 		return errors.New("usage: mora loop begin|heartbeat|done|status|register|list <id> [flags]")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

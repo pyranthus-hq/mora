@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 	loopbackhttp "github.com/pyranthus-hq/mora/internal/loopbackhttp"
 )
 
@@ -61,7 +62,7 @@ func cmdServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if len(rest) > 0 {
 		switch rest[0] {
 		case "install", "uninstall", "status":
-			cfg, err := loadConfig()
+			cfg, err := loadConfigFor(ctx)
 			if err != nil {
 				return err
 			}
@@ -97,7 +98,7 @@ func serveLoopbackHTTP(ctx context.Context, args []string, stdout io.Writer) err
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -109,7 +110,7 @@ func serveLoopbackHTTP(ctx context.Context, args []string, stdout io.Writer) err
 		fmt.Fprintln(stdout, token)
 		return nil
 	}
-	return newHTTPServer(token, *port).lower().Serve(ctx, stdout)
+	return newHTTPServer(token, *port).lower(ctx).Serve(ctx, stdout)
 }
 func envPortOr(def int) int {
 	if v := os.Getenv("MORA_PORT"); v != "" {
@@ -127,11 +128,14 @@ type httpServer struct {
 }
 
 func newHTTPServer(token string, port int) *httpServer { return &httpServer{token: token, port: port} }
-func (s *httpServer) lower() *loopbackhttp.Server {
-	return loopbackhttp.New(loopbackhttp.Options{Token: s.token, Port: s.port, Version: BuildVersion, AllowCall: func(name string) bool { return httpCallAllowed[name] }, Dispatch: func(ctx context.Context, name string, args map[string]any) (any, error) {
-		return callMCPTool(ctx, name, args)
+func (s *httpServer) lower(ctx context.Context) *loopbackhttp.Server {
+	return loopbackhttp.New(loopbackhttp.Options{Token: s.token, Port: s.port, Version: BuildVersion, AllowCall: func(name string) bool { return httpCallAllowed[name] }, Dispatch: func(reqCtx context.Context, name string, args map[string]any) (any, error) {
+		// Request contexts carry cancellation but not the launch context's
+		// injected sandbox; restore it so every dispatched tool resolves the
+		// same config the server was started under.
+		return callMCPTool(configstore.CarryInjection(reqCtx, ctx), name, args)
 	}, Health: func() loopbackhttp.Health {
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return loopbackhttp.Health{OK: false, State: string(healthUnhealthy), Err: err}
 		}
@@ -139,5 +143,5 @@ func (s *httpServer) lower() *loopbackhttp.Server {
 		return loopbackhttp.Health{OK: h.State == healthHealthy, State: string(h.State)}
 	}})
 }
-func (s *httpServer) handler() http.Handler   { return s.lower().Handler() }
-func (s *httpServer) httpRoutes() []httpRoute { return s.lower().Routes() }
+func (s *httpServer) handler(ctx context.Context) http.Handler   { return s.lower(ctx).Handler() }
+func (s *httpServer) httpRoutes(ctx context.Context) []httpRoute { return s.lower(ctx).Routes() }

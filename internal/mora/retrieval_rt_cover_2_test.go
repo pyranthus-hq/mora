@@ -159,7 +159,7 @@ func TestRt_ResolveEntityIDAmbiguousEmptyDisplay(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	for _, m := range []Memory{
 		senderEmail("r1", "riya.k@alpha.com", "Riya", "x@y.com"),
 		senderEmail("r2", "riya.s@beta.com", "Riya", "x@y.com"),

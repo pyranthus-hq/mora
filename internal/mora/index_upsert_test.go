@@ -67,7 +67,7 @@ func TestIndexUpsertAddsAndReplacesSingleRow(t *testing.T) {
 		coreBIdxmem("mem_seed_b", "global", "insight", "Seed B", "beta body two"),
 	}
 	cfg := coreBIdxpopulatedVault(t, "v_upsert_single", seed)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Add a brand-new memory via the write path + incremental upsert.
 	m := coreBIdxmem("mem_new_c", "global", "insight", "New C", "gammaneedle body three")
@@ -130,7 +130,7 @@ func TestIndexUpsertConcurrentWriters(t *testing.T) {
 	// full rebuild — the very serialization this feature removes).
 	cfg := coreBIdxpopulatedVault(t, "v_upsert_conc",
 		[]Memory{coreBIdxmem("mem_seed", "global", "insight", "Seed", "seed body")})
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	const workers = 20
 	var wg sync.WaitGroup
@@ -202,7 +202,7 @@ func TestIndexUpsertConcurrentWriters(t *testing.T) {
 func TestIndexUpsertBlockedVaultDegrades(t *testing.T) {
 	cfg := coreBIdxpopulatedVault(t, "v_marker_alpha",
 		[]Memory{coreBIdxmem("mem_x", "global", "insight", "X", "body x")})
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// Marker on disk = v_marker_alpha; force the index to claim a different origin.
 	idxUpsertStampVaultID(t, cfg, "v_index_beta")
 
@@ -231,7 +231,7 @@ func TestIndexUpsertBlockedVaultDegrades(t *testing.T) {
 func TestIndexUpsertColdStartDelegatesToRebuild(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "") // deterministic static embedder
 	cfg := sandboxCfg(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	m := coreBIdxmem("mem_first", "global", "insight", "First", "coldneedle first ever write")
 	if err := writeMemory(cfg, m); err != nil {
@@ -276,7 +276,7 @@ func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "")
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	origList := listRebuildFiles
 	rebuildListings := 0
 	listRebuildFiles = func(c Config) ([]string, error) {
@@ -383,7 +383,7 @@ func TestMCPAuthoredWriteSchedulesProjectionReconciliation(t *testing.T) {
 	}
 	writeDone := make(chan writeOutcome, 1)
 	go func() {
-		res, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+		res, err := callMCPTool(testCtx(t), "write_memory", map[string]any{
 			"title": "Async reconcile", "text": "asyncreconcileneedle", "scope": "project:launch", "type": "note",
 		})
 		writeDone <- writeOutcome{result: res, err: err}

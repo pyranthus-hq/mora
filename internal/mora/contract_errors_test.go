@@ -104,7 +104,7 @@ func TestContractConnectorErrorClasses(t *testing.T) {
 			wantCode: errCodeConnectorEmpty,
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			row, ok := registered[tc.wantCode]
 			if !ok {
 				t.Fatalf("%s is not registered in eval/error-code-registry.json", tc.wantCode)
@@ -178,7 +178,7 @@ func TestContractConnectorCauseClassificationIsStructural(t *testing.T) {
 		{"prose claiming full disk access", errors.New("Full Disk Access not granted?"), errCodeConnectorUnclassified},
 		{"opaque failure", errors.New("something went wrong"), errCodeConnectorUnclassified},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			if got := connectorCodeForCause(fmt.Errorf("wrapped: %w", tc.cause)); got != tc.want {
 				t.Fatalf("connectorCodeForCause(%v) = %q, want %q", tc.cause, got, tc.want)
 			}
@@ -222,7 +222,7 @@ func TestContractSQLiteErrorsCarryIndexCodes(t *testing.T) {
 		{"unexplained", errors.New("disk I/O error (10)"), errCodeInternalUnexpected},
 		{"nil", nil, ""},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			if got := sqliteErrorCode(tc.err); got != tc.want {
 				t.Fatalf("sqliteErrorCode(%v) = %q, want %q", tc.err, got, tc.want)
 			}
@@ -274,7 +274,7 @@ func TestContractSyncStatusErrorCodeIsAdditive(t *testing.T) {
 func TestContractSyncStatusReceiptCarriesErrorCode(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestContractSyncStatusReceiptCarriesErrorCode(t *testing.T) {
 func TestContractStampedFailureCarriesErrorCode(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func (f stubFetcher) FetchPage(kind memory.ItemKind, w memory.FetchWindow, curso
 func TestContractInnerPathFailureCarriesErrorCode(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestContractInnerPathFailureCarriesErrorCode(t *testing.T) {
 func TestContractRecoveredSourceReportsNoErrorCode(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

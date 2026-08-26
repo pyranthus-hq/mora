@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -33,7 +32,7 @@ func TestSixDayFreezeSurfacesWithin24h(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	t0 := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
 	enableSources(t, cfg, "gmail", "imessage")
@@ -287,7 +286,7 @@ func TestPreIngestFailureStampsThroughRealChokepoint(t *testing.T) {
 	doctorClock = func() time.Time { return now }
 	t.Cleanup(func() { doctorClock = origClock })
 	var strictOut bytes.Buffer
-	if err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
+	if err := Run(testCtx(t), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
 		t.Fatalf("doctor --strict must fail closed after a real pre-Ingest chokepoint failure")
 	}
 }

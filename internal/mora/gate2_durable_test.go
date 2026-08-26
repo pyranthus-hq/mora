@@ -34,7 +34,7 @@ func withMarkerTrace(t *testing.T) *[]string {
 // crash in exactly the mark-before-visible window.
 func TestMarkerSurvivesCrashBeforeVaultPublish(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// A write marks its op, then "crashes" (panic caught) before the vault publish.
 	target := filepath.Join(memoriesRoot(cfg), "global", "crashy.md")
@@ -58,7 +58,7 @@ func TestMarkerSurvivesCrashBeforeVaultPublish(t *testing.T) {
 // leaves a durable journal so the index reads dirty and the next rebuild recovers
 // every published path; the header's durability is the load-bearing barrier.
 func TestKilledIngestRecovers(t *testing.T) {
-	t.Run("journal_before_first_file", func(t *testing.T) {
+	subRun(t, "journal_before_first_file", func(t *testing.T) {
 		// MUTATION (row 34a): remove the production ensureIngestJournalHeader call from
 		// writeMappedMemory (journal AFTER the terminal rebuild instead of BEFORE the
 		// first publish). Then a SIGKILL after a publish but before the rebuild leaves
@@ -116,7 +116,7 @@ func TestKilledIngestRecovers(t *testing.T) {
 		}
 	})
 
-	t.Run("journal_header_synced", func(t *testing.T) {
+	subRun(t, "journal_header_synced", func(t *testing.T) {
 		// The header write goes through the durable barriers (fsync + dir sync).
 		cfg := gate2Vault(t)
 		trace := withMarkerTrace(t)

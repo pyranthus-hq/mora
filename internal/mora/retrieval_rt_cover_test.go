@@ -80,7 +80,7 @@ func (e rtEmbedder) ModelID() string                 { return e.model }
 // zero/negative-similarity rows, the scope filter, the pool cap, and the
 // deterministic id tie-break — the core of the vector arm (previously 0% covered).
 func TestRt_VectorSearchIDsRanking(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db := rtOpenDB(t)
 	rtVecTables(t, db)
 	const model = "rt-model-v1"
@@ -139,7 +139,7 @@ func TestRt_VectorSearchIDsRanking(t *testing.T) {
 // TestRt_VectorSearchIDsQueryError: a missing mem_vectors table surfaces the
 // QueryContext error rather than silently returning no ids.
 func TestRt_VectorSearchIDsQueryError(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db := rtOpenDB(t)
 	// Only the memories table exists; mem_vectors is absent.
 	rtExec(t, db, `CREATE TABLE memories (id TEXT PRIMARY KEY, scope TEXT)`)
@@ -155,7 +155,7 @@ func TestRt_VectorSearchIDsQueryError(t *testing.T) {
 // TestRt_VectorsAvailable pins all three reachable outcomes: table absent ⇒ false,
 // table present but empty ⇒ false, table populated ⇒ true.
 func TestRt_VectorsAvailable(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// (a) No mem_vectors table at all ⇒ false (sqlite_master count == 0).
 	noTable := rtOpenDB(t)
@@ -187,7 +187,7 @@ func TestRt_VectorsAvailable(t *testing.T) {
 // TestLoadVectorsByID leaves open: an empty id list short-circuits to (nil,nil),
 // and a query against a missing table surfaces the error.
 func TestRt_LoadVectorsByIDEmptyAndError(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	db := rtOpenDB(t)
 	rtVecTables(t, db)
@@ -224,7 +224,7 @@ func TestRt_LoadVectorsByIDEmptyAndError(t *testing.T) {
 // bad query surfaces the QueryContext error, and a two-column projection surfaces
 // the row-scan error (Scan into a single dest fails on a 2-column row).
 func TestRt_QueryIDs(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db := rtOpenDB(t)
 	rtExec(t, db, `CREATE TABLE memories (id TEXT PRIMARY KEY, scope TEXT)`)
 	rtInsertMem := func(id, scope string) { rtExec(t, db, `INSERT INTO memories (id, scope) VALUES (?, ?)`, id, scope) }
@@ -267,7 +267,7 @@ func rtInsertFts(t *testing.T, db *sql.DB, id, scope, text string) {
 // TestRt_FtsSearchIDs covers the scope filter (the previously-open branch), the
 // empty/punctuation-only short-circuit, a real BM25 match, and the query error.
 func TestRt_FtsSearchIDs(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db := rtOpenDB(t)
 	rtFtsTables(t, db)
 	rtInsertFts(t, db, "m1", "personal", "alpha shared")
@@ -339,7 +339,7 @@ func rtInsertEvidence(t *testing.T, db *sql.DB, personID, evID, scope, createdAt
 // person (multi-token gazetteer name), pulls their live evidence newest-first,
 // dedups across people, and honors the scope filter (a previously-open branch).
 func TestRt_GraphExpandIDsScopeAndDedup(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db := rtOpenDB(t)
 	rtGraphTables(t, db)
 	rtInsertEntity(t, db, "person:neil@x.com", "Neil Patel", `["neil@x.com"]`)
@@ -380,7 +380,7 @@ func TestRt_GraphExpandIDsScopeAndDedup(t *testing.T) {
 // (a precise email/handle token, not a gazetteer name) and the two error seams:
 // a missing entities table (loadPersonGazetteer) and a missing edges table (queryIDs).
 func TestRt_GraphExpandIDsAliasTokenAndErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db := rtOpenDB(t)
 	rtGraphTables(t, db)
 	// Single-token display name "Bob" is NOT gazetteer-eligible, so this person is
@@ -416,7 +416,7 @@ func TestRt_GraphExpandIDsAliasTokenAndErrors(t *testing.T) {
 // tie-break for a shared display name (the id<cur branch), the aliases-JSON
 // unmarshal, and the row-scan error when display_name is NULL.
 func TestRt_LoadPersonGazetteer(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db := rtOpenDB(t)
 	rtGraphTables(t, db)
 	// Insert the LARGER id first, then the SMALLER id, both sharing "Sam Jones".
@@ -456,7 +456,7 @@ func TestRt_HybridAutoRebuildsMissingIndex(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, Memory{
 		ID: "note/zephyr", Scope: "global", Type: "note", Title: "Zephyr",
 		CreatedAt: "2026-05-01T00:00:00Z", Text: "zephyr breeze notes",
@@ -496,7 +496,7 @@ func TestRt_HybridEmptyPoolReturnsNil(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "Groceries", "--text", "milk eggs bread")
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -525,7 +525,7 @@ func TestRt_DefaultSearchSemanticRoutesToHybrid(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Sanity: the chosen embedder really is semantic (drives defaultSearch's branch).
 	emb, embErr := chooseEmbedderFor(cfg)
@@ -608,7 +608,7 @@ func TestRt_HybridFusedScoreTieBreak(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Two Neil emails, ids a<b, b NEWER. Text shares no query term (so neither is an
 	// FTS hit); both are Neil's evidence (graph arm) and both carry a stored vector.

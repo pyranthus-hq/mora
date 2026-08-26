@@ -446,7 +446,7 @@ func TestScheduledPulseDailyDurableLifecycle(t *testing.T) {
 	}
 
 	var first bytes.Buffer
-	if err := runScheduledPulseDaily(context.Background(), cfg, &first, testStderr); err != nil {
+	if err := runScheduledPulseDaily(testCtx(t), cfg, &first, testStderr); err != nil {
 		t.Fatalf("first scheduled run: %v\n%s", err, first.String())
 	}
 	wantDurability := "loop:fsync,loop:dirsync,artifact:fsync,artifact:dirsync,watermark:fsync,watermark:dirsync,loop:fsync,loop:dirsync,loop:fsync,loop:dirsync"
@@ -471,7 +471,7 @@ func TestScheduledPulseDailyDurableLifecycle(t *testing.T) {
 	}
 
 	var second bytes.Buffer
-	if err := runScheduledPulseDaily(context.Background(), cfg, &second, testStderr); err != nil {
+	if err := runScheduledPulseDaily(testCtx(t), cfg, &second, testStderr); err != nil {
 		t.Fatalf("duplicate scheduled run: %v\n%s", err, second.String())
 	}
 	secondArtifact, err := os.ReadFile(artifact)

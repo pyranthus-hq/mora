@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"testing"
 	"time"
 )
@@ -23,7 +22,7 @@ func TestParseCalendarBoundary(t *testing.T) {
 		{"invalid timestamp", "2026-03-08 12:00", time.Time{}, true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			got, err := parseCalendarBoundary(map[string]any{"start": tc.value}, "start", loc)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %t", err, tc.wantErr)
@@ -79,7 +78,7 @@ func TestMCPCalendarEventsValidation(t *testing.T) {
 }
 
 func TestCalendarEventsMCPToolSchema(t *testing.T) {
-	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(1), Method: "tools/list"})
+	resp := handleMCP(testCtx(t), jsonRPCRequest{JSONRPC: "2.0", ID: float64(1), Method: "tools/list"})
 	tools := resp.Result.(map[string]any)["tools"].([]map[string]any)
 	for _, tool := range tools {
 		if tool["name"] != "calendar_events" {

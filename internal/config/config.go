@@ -1,6 +1,12 @@
 // Package config owns Mora's process configuration contract.
 package config
 
+import (
+	"context"
+	"os"
+	"time"
+)
+
 // Config is the resolved durable configuration plus process-local orchestration overrides.
 type Config struct {
 	VaultDir       string
@@ -18,6 +24,60 @@ type Config struct {
 	fusionOverride     any
 	mmrOverride        any
 	vaultDirConfigured *string
+	operationClock     func() time.Time
+	authoredReconciler func(context.Context, Config) error
+	embedderPref       *string
+	homeDirOverride    *string
+}
+
+// HomeDir resolves the user home every home-derived side lookup (LaunchAgents,
+// app discovery) must use: the injected sandbox home when one was carried in
+// (test isolation), else the real process home. Fail-safe: with neither, "".
+func (c Config) HomeDir() string {
+	if c.homeDirOverride != nil {
+		return *c.homeDirOverride
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// SetHomeDir pins the home directory on this config (test seam).
+func (c *Config) SetHomeDir(home string) { c.homeDirOverride = &home }
+
+// EmbedderPref resolves the embedder preference with the production precedence:
+// an explicitly pinned/env-set MORA_EMBEDDER wins (including "" → static), else
+// the durable cfg.Embedder opt-in applies at the caller.
+func (c Config) EmbedderPref() (string, bool) {
+	if c.embedderPref != nil {
+		return *c.embedderPref, true
+	}
+	return os.LookupEnv("MORA_EMBEDDER")
+}
+
+// SetEmbedderPref pins the embedder preference on this config (test seam).
+func (c *Config) SetEmbedderPref(pref string) { c.embedderPref = &pref }
+
+// OperationClock returns the pinned time source for operation-activity records,
+// defaulting to time.Now when none was injected.
+func (c Config) OperationClock() time.Time {
+	if c.operationClock != nil {
+		return c.operationClock()
+	}
+	return time.Now()
+}
+
+// SetOperationClock pins the time source on this config (test seam).
+func (c *Config) SetOperationClock(now func() time.Time) { c.operationClock = now }
+
+// AuthoredReconciler returns the configured reconciler launcher, or nil for the
+// production default.
+func (c Config) AuthoredReconciler() func(context.Context, Config) error {
+	return c.authoredReconciler
+}
+
+// SetAuthoredReconciler overrides the reconciler launcher on this config.
+func (c *Config) SetAuthoredReconciler(fn func(context.Context, Config) error) {
+	c.authoredReconciler = fn
 }
 
 // OperationRunID returns the process-local ingest run identity.

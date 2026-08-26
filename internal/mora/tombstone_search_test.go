@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"testing"
 )
 
@@ -17,7 +16,7 @@ func TestTombstoneExcludedFromSearch(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Two memories sharing a distinctive term; one is tombstoned.
 	live := Memory{ID: "synth/live", Scope: "global", Type: "note", Title: "Quarterly zephyrquux plan",

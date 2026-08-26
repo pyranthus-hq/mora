@@ -43,7 +43,7 @@ func coreBMcpFrames(t *testing.T, out string) []map[string]any {
 func coreBMcpServe(t *testing.T, stdin string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	err := Run(context.Background(), []string{"mcp", "serve"}, &out, &out, strings.NewReader(stdin))
+	err := Run(testCtx(t), []string{"mcp", "serve"}, &out, &out, strings.NewReader(stdin))
 	return out.String(), err
 }
 
@@ -59,7 +59,7 @@ func TestCoreB_McpCmdMCPBadSubcommand(t *testing.T) {
 		{"bogus"},
 		{"serve", "extra"},
 	} {
-		err := cmdMCP(context.Background(), args, &out, &out, strings.NewReader(""))
+		err := cmdMCP(testCtx(t), args, &out, &out, strings.NewReader(""))
 		if err == nil {
 			t.Fatalf("cmdMCP(%v) = nil, want usage error", args)
 		}
@@ -76,7 +76,7 @@ func TestCoreB_McpCmdMCPServeEmptyStdin(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var out bytes.Buffer
-	if err := cmdMCP(context.Background(), []string{"serve"}, &out, &out, strings.NewReader("")); err != nil {
+	if err := cmdMCP(testCtx(t), []string{"serve"}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("cmdMCP serve with empty stdin should exit clean, got %v", err)
 	}
 	if strings.TrimSpace(out.String()) != "" {
@@ -166,7 +166,7 @@ func TestCoreB_McpServeScannerError(t *testing.T) {
 // TestCoreB_McpHandleUnknownMethod covers the default arm: an unknown method with
 // an id returns a JSON-RPC error frame (-32601 method not found), no result.
 func TestCoreB_McpHandleUnknownMethod(t *testing.T) {
-	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(7), Method: "does/not/exist"})
+	resp := handleMCP(testCtx(t), jsonRPCRequest{JSONRPC: "2.0", ID: float64(7), Method: "does/not/exist"})
 	if resp.Result != nil {
 		t.Fatalf("unknown method must not carry a result, got: %v", resp.Result)
 	}
@@ -188,7 +188,9 @@ func TestCoreB_McpHandleUnknownMethod(t *testing.T) {
 // TestCoreB_McpHandleInitialize covers the initialize arm directly: protocol
 // version + the auto-adoption instructions the clients inject.
 func TestCoreB_McpHandleInitialize(t *testing.T) {
-	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(1), Method: "initialize"})
+	withTempHome(t)
+	run(t, "init")
+	resp := handleMCP(testCtx(t), jsonRPCRequest{JSONRPC: "2.0", ID: float64(1), Method: "initialize"})
 	if resp.Error != nil {
 		t.Fatalf("initialize must not error, got: %v", resp.Error)
 	}
@@ -208,7 +210,7 @@ func TestCoreB_McpHandleInitialize(t *testing.T) {
 // TestCoreB_McpHandleToolsList covers the tools/list arm: exactly the 13 tools we
 // publish, each a JSON-Schema object with the required properties.
 func TestCoreB_McpHandleToolsList(t *testing.T) {
-	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(2), Method: "tools/list"})
+	resp := handleMCP(testCtx(t), jsonRPCRequest{JSONRPC: "2.0", ID: float64(2), Method: "tools/list"})
 	res, ok := resp.Result.(map[string]any)
 	if !ok {
 		t.Fatalf("tools/list result must be a map, got %T", resp.Result)
@@ -240,7 +242,7 @@ func TestCoreB_McpHandleToolsCall(t *testing.T) {
 	run(t, "write", "--scope", "global", "--title", "Alpha", "--text", "alpha body")
 
 	params := json.RawMessage(`{"name":"list_memory","arguments":{}}`)
-	resp := handleMCP(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: float64(9), Method: "tools/call", Params: params})
+	resp := handleMCP(testCtx(t), jsonRPCRequest{JSONRPC: "2.0", ID: float64(9), Method: "tools/call", Params: params})
 	if resp.Error != nil {
 		t.Fatalf("tools/call must not set a JSON-RPC error, got: %v", resp.Error)
 	}
@@ -352,7 +354,7 @@ func coreBMcpInit(t *testing.T) {
 // minted id; the body is really on disk (read_memory resolves it).
 func TestCoreB_McpCallWriteMemoryHappy(t *testing.T) {
 	coreBMcpInit(t)
-	got, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+	got, err := callMCPTool(testCtx(t), "write_memory", map[string]any{
 		"title": "Coverage Note", "text": "coreB body", "type": "decision", "scope": "project:acme",
 	})
 	if err != nil {
@@ -379,7 +381,7 @@ func TestCoreB_McpCallWriteMemoryHappy(t *testing.T) {
 		t.Fatalf("write_memory default source = %q, want mcp", m.Source)
 	}
 	// The write really persisted: read it straight back by id.
-	back, err := callMCPTool(context.Background(), "read_memory", map[string]any{"id": m.ID})
+	back, err := callMCPTool(testCtx(t), "read_memory", map[string]any{"id": m.ID})
 	if err != nil {
 		t.Fatalf("read_memory after write: %v", err)
 	}
@@ -401,7 +403,7 @@ func TestCoreB_McpCallWriteMemoryMissingFields(t *testing.T) {
 		{"title": "no text here"},
 		{},
 	} {
-		_, err := callMCPTool(context.Background(), "write_memory", args)
+		_, err := callMCPTool(testCtx(t), "write_memory", args)
 		if err == nil {
 			t.Fatalf("write_memory(%v) = nil error, want validation error", args)
 		}
@@ -416,7 +418,7 @@ func TestCoreB_McpCallWriteMemoryMissingFields(t *testing.T) {
 func TestCoreB_McpCallReadMemoryMissingID(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--title", "Present", "--text", "present body")
-	_, err := callMCPTool(context.Background(), "read_memory", map[string]any{})
+	_, err := callMCPTool(testCtx(t), "read_memory", map[string]any{})
 	if err == nil {
 		t.Fatalf("read_memory with no id must error")
 	}
@@ -430,7 +432,7 @@ func TestCoreB_McpCallReadMemoryMissingID(t *testing.T) {
 func TestCoreB_McpCallSearchMemory(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--scope", "global", "--title", "Vega", "--text", "vega alignment notes")
-	got, err := callMCPTool(context.Background(), "search_memory", map[string]any{"query": "vega"})
+	got, err := callMCPTool(testCtx(t), "search_memory", map[string]any{"query": "vega"})
 	if err != nil {
 		t.Fatalf("search_memory: %v", err)
 	}
@@ -469,7 +471,7 @@ func TestCoreB_McpCallSearchMemoryTruncates(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
-	got, err := callMCPTool(context.Background(), "search_memory", map[string]any{"query": "budget", "limit": float64(60)})
+	got, err := callMCPTool(testCtx(t), "search_memory", map[string]any{"query": "budget", "limit": float64(60)})
 	if err != nil {
 		t.Fatalf("search_memory: %v", err)
 	}
@@ -496,7 +498,7 @@ func TestCoreB_McpCallGetEntity(t *testing.T) {
 	// write now upserts only the memory + FTS row (O(1)); the entity graph is
 	// materialized by a full rebuild, so build it before querying entities.
 	run(t, "index", "rebuild")
-	got, err := callMCPTool(context.Background(), "get_entity", map[string]any{"name": "Nebula Project"})
+	got, err := callMCPTool(testCtx(t), "get_entity", map[string]any{"name": "Nebula Project"})
 	if err != nil {
 		t.Fatalf("get_entity: %v", err)
 	}
@@ -539,7 +541,7 @@ func TestCoreB_McpCallGetEntity(t *testing.T) {
 func TestCoreB_McpCallContextMemoryWithQuery(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--title", "Pyranthus roadmap", "--text", "Ship the coreB coverage milestone")
-	got, err := callMCPTool(context.Background(), "context_memory", map[string]any{"query": "coreB coverage"})
+	got, err := callMCPTool(testCtx(t), "context_memory", map[string]any{"query": "coreB coverage"})
 	if err != nil {
 		t.Fatalf("context_memory(query): %v", err)
 	}
@@ -561,7 +563,7 @@ func TestCoreB_McpCallContextMemoryWithQuery(t *testing.T) {
 func TestCoreB_McpCallContextMemoryNoQuery(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--title", "Recent thing", "--text", "a recent recency-briefing body")
-	got, err := callMCPTool(context.Background(), "context_memory", map[string]any{})
+	got, err := callMCPTool(testCtx(t), "context_memory", map[string]any{})
 	if err != nil {
 		t.Fatalf("context_memory(no query): %v", err)
 	}
@@ -583,7 +585,7 @@ func TestCoreB_McpCallContextMemoryNoQuery(t *testing.T) {
 func TestCoreB_McpCallThink(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--title", "Zephyr launch", "--text", "The Zephyr launch shipped on schedule")
-	got, err := callMCPTool(context.Background(), "think", map[string]any{"query": "Zephyr launch"})
+	got, err := callMCPTool(testCtx(t), "think", map[string]any{"query": "Zephyr launch"})
 	if err != nil {
 		t.Fatalf("think: %v", err)
 	}
@@ -625,7 +627,7 @@ func TestCoreB_McpCallListEntities(t *testing.T) {
 	run(t, "write", "--scope", "project:zeta", "--title", "Scoped", "--text", "scoped body about [[Zeta Widget]]")
 	// write upserts only memory + FTS (O(1)); rebuild materializes the entity graph.
 	run(t, "index", "rebuild")
-	got, err := callMCPTool(context.Background(), "list_entities", map[string]any{})
+	got, err := callMCPTool(testCtx(t), "list_entities", map[string]any{})
 	if err != nil {
 		t.Fatalf("list_entities: %v", err)
 	}
@@ -664,7 +666,7 @@ func TestCoreB_McpCallListEntitiesKindFilter(t *testing.T) {
 	run(t, "write", "--scope", "project:zeta", "--title", "Scoped", "--text", "body with [[Zeta Widget]]")
 	// write upserts only memory + FTS (O(1)); rebuild materializes the entity graph.
 	run(t, "index", "rebuild")
-	got, err := callMCPTool(context.Background(), "list_entities", map[string]any{"kind": "link"})
+	got, err := callMCPTool(testCtx(t), "list_entities", map[string]any{"kind": "link"})
 	if err != nil {
 		t.Fatalf("list_entities(kind=link): %v", err)
 	}
@@ -683,7 +685,7 @@ func TestCoreB_McpCallListEntitiesKindFilter(t *testing.T) {
 // window path and the payload echoes that window plus the structured sections.
 func TestCoreB_McpCallDigestSinceHours(t *testing.T) {
 	coreBMcpInit(t)
-	got, err := callMCPTool(context.Background(), "digest", map[string]any{"since_hours": float64(24)})
+	got, err := callMCPTool(testCtx(t), "digest", map[string]any{"since_hours": float64(24)})
 	if err != nil {
 		t.Fatalf("digest: %v", err)
 	}
@@ -707,7 +709,7 @@ func TestCoreB_McpCallDigestSinceHours(t *testing.T) {
 // loud error, not an empty digest.
 func TestCoreB_McpCallDigestEntityNoMatch(t *testing.T) {
 	coreBMcpInit(t)
-	_, err := callMCPTool(context.Background(), "digest", map[string]any{"entity": "Nonexistent Person"})
+	_, err := callMCPTool(testCtx(t), "digest", map[string]any{"entity": "Nonexistent Person"})
 	if err == nil {
 		t.Fatalf("digest with an unresolvable entity must error")
 	}
@@ -729,7 +731,7 @@ func TestCoreB_McpCallDigestEntityResolves(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
-	got, err := callMCPTool(context.Background(), "digest", map[string]any{"entity": "riya@a.com", "since_hours": float64(24)})
+	got, err := callMCPTool(testCtx(t), "digest", map[string]any{"entity": "riya@a.com", "since_hours": float64(24)})
 	if err != nil {
 		t.Fatalf("digest with a resolvable entity must not error: %v", err)
 	}
@@ -750,7 +752,7 @@ func TestCoreB_McpCallBriefEntityResolves(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
-	got, err := callMCPTool(context.Background(), "brief", map[string]any{"entity": "riya@a.com"})
+	got, err := callMCPTool(testCtx(t), "brief", map[string]any{"entity": "riya@a.com"})
 	if err != nil {
 		t.Fatalf("brief with a resolvable entity must not error: %v", err)
 	}
@@ -783,7 +785,7 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
-	got, err := callMCPTool(context.Background(), "meeting_prep", map[string]any{"name": "riya@a.com"})
+	got, err := callMCPTool(testCtx(t), "meeting_prep", map[string]any{"name": "riya@a.com"})
 	if err != nil {
 		t.Fatalf("meeting_prep with a resolvable attendee: %v", err)
 	}
@@ -800,7 +802,7 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 // (a synthesis_prompt beside the same budgeted sections).
 func TestCoreB_McpCallDigestEnvelope(t *testing.T) {
 	coreBMcpInit(t)
-	got, err := callMCPTool(context.Background(), "digest", map[string]any{"envelope": true})
+	got, err := callMCPTool(testCtx(t), "digest", map[string]any{"envelope": true})
 	if err != nil {
 		t.Fatalf("digest envelope: %v", err)
 	}
@@ -817,7 +819,7 @@ func TestCoreB_McpCallDigestEnvelope(t *testing.T) {
 // map (source_states + sections), the session-start briefing.
 func TestCoreB_McpCallBriefUnfiltered(t *testing.T) {
 	coreBMcpInit(t)
-	got, err := callMCPTool(context.Background(), "brief", map[string]any{})
+	got, err := callMCPTool(testCtx(t), "brief", map[string]any{})
 	if err != nil {
 		t.Fatalf("brief: %v", err)
 	}
@@ -835,7 +837,7 @@ func TestCoreB_McpCallBriefUnfiltered(t *testing.T) {
 func TestCoreB_McpCallBriefScopeFilter(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--scope", "project:acme", "--title", "Acme", "--text", "acme scoped body")
-	got, err := callMCPTool(context.Background(), "brief", map[string]any{"scope": "project:acme", "since_days": float64(7)})
+	got, err := callMCPTool(testCtx(t), "brief", map[string]any{"scope": "project:acme", "since_days": float64(7)})
 	if err != nil {
 		t.Fatalf("brief(scope): %v", err)
 	}
@@ -849,7 +851,7 @@ func TestCoreB_McpCallBriefScopeFilter(t *testing.T) {
 // nothing errors, mirroring digest.
 func TestCoreB_McpCallBriefEntityNoMatch(t *testing.T) {
 	coreBMcpInit(t)
-	_, err := callMCPTool(context.Background(), "brief", map[string]any{"entity": "Nobody Here"})
+	_, err := callMCPTool(testCtx(t), "brief", map[string]any{"entity": "Nobody Here"})
 	if err == nil {
 		t.Fatalf("brief with an unresolvable entity must error")
 	}
@@ -862,7 +864,7 @@ func TestCoreB_McpCallBriefEntityNoMatch(t *testing.T) {
 // carrying a synthesis_prompt (the additive Phase-15 machinery).
 func TestCoreB_McpCallBriefEnvelope(t *testing.T) {
 	coreBMcpInit(t)
-	got, err := callMCPTool(context.Background(), "brief", map[string]any{"envelope": true})
+	got, err := callMCPTool(testCtx(t), "brief", map[string]any{"envelope": true})
 	if err != nil {
 		t.Fatalf("brief envelope: %v", err)
 	}
@@ -879,7 +881,7 @@ func TestCoreB_McpCallBriefEnvelope(t *testing.T) {
 // resolves to a valid nil-event shape.
 func TestCoreB_McpCallMeetingPrep(t *testing.T) {
 	coreBMcpInit(t)
-	got, err := callMCPTool(context.Background(), "meeting_prep", map[string]any{})
+	got, err := callMCPTool(testCtx(t), "meeting_prep", map[string]any{})
 	if err != nil {
 		t.Fatalf("meeting_prep: %v", err)
 	}
@@ -899,7 +901,7 @@ func TestCoreB_McpCallMeetingPrep(t *testing.T) {
 // a loud error before any prep is built.
 func TestCoreB_McpCallMeetingPrepEntityNoMatch(t *testing.T) {
 	coreBMcpInit(t)
-	_, err := callMCPTool(context.Background(), "meeting_prep", map[string]any{"name": "Ghost Attendee"})
+	_, err := callMCPTool(testCtx(t), "meeting_prep", map[string]any{"name": "Ghost Attendee"})
 	if err == nil {
 		t.Fatalf("meeting_prep with an unresolvable name must error")
 	}
@@ -912,12 +914,12 @@ func TestCoreB_McpCallMeetingPrepEntityNoMatch(t *testing.T) {
 // the memory is really gone (read_memory no longer resolves it).
 func TestCoreB_McpCallDeleteMemoryHappy(t *testing.T) {
 	coreBMcpInit(t)
-	written, err := callMCPTool(context.Background(), "write_memory", map[string]any{"title": "Doomed", "text": "delete me"})
+	written, err := callMCPTool(testCtx(t), "write_memory", map[string]any{"title": "Doomed", "text": "delete me"})
 	if err != nil {
 		t.Fatalf("seed write_memory: %v", err)
 	}
 	id := written.(map[string]any)["memory"].(Memory).ID
-	got, err := callMCPTool(context.Background(), "delete_memory", map[string]any{"id": id})
+	got, err := callMCPTool(testCtx(t), "delete_memory", map[string]any{"id": id})
 	if err != nil {
 		t.Fatalf("delete_memory: %v", err)
 	}
@@ -926,7 +928,7 @@ func TestCoreB_McpCallDeleteMemoryHappy(t *testing.T) {
 		t.Fatalf("delete_memory returned %v, want deleted=%s", res, id)
 	}
 	// The file is really removed: a by-id read now fails.
-	if _, rerr := callMCPTool(context.Background(), "read_memory", map[string]any{"id": id}); rerr == nil {
+	if _, rerr := callMCPTool(testCtx(t), "read_memory", map[string]any{"id": id}); rerr == nil {
 		t.Fatalf("read_memory should fail after delete of %s", id)
 	}
 }
@@ -935,7 +937,7 @@ func TestCoreB_McpCallDeleteMemoryHappy(t *testing.T) {
 // findMemory lookup rather than removing anything.
 func TestCoreB_McpCallDeleteMemoryMissingID(t *testing.T) {
 	coreBMcpInit(t)
-	_, err := callMCPTool(context.Background(), "delete_memory", map[string]any{})
+	_, err := callMCPTool(testCtx(t), "delete_memory", map[string]any{})
 	if err == nil {
 		t.Fatalf("delete_memory with no id must error")
 	}
@@ -948,7 +950,7 @@ func TestCoreB_McpCallDeleteMemoryMissingID(t *testing.T) {
 // the tool.
 func TestCoreB_McpCallUnknownTool(t *testing.T) {
 	coreBMcpInit(t)
-	_, err := callMCPTool(context.Background(), "not_a_tool", map[string]any{})
+	_, err := callMCPTool(testCtx(t), "not_a_tool", map[string]any{})
 	if err == nil {
 		t.Fatalf("unknown tool must error")
 	}
@@ -963,7 +965,7 @@ func TestCoreB_McpCallListMemory(t *testing.T) {
 	coreBMcpInit(t)
 	run(t, "write", "--scope", "project:one", "--title", "One", "--text", "body one")
 	run(t, "write", "--scope", "project:two", "--title", "Two", "--text", "body two")
-	got, err := callMCPTool(context.Background(), "list_memory", map[string]any{"scope": "project:one"})
+	got, err := callMCPTool(testCtx(t), "list_memory", map[string]any{"scope": "project:one"})
 	if err != nil {
 		t.Fatalf("list_memory: %v", err)
 	}

@@ -1989,7 +1989,7 @@ func gmailSegmentTraceIDs(t *testing.T, tr retrievalTrace) []string {
 // results.
 func TestGmailSegmentsContractBoundedDistinctParentArmAndTruthfulTrace(t *testing.T) {
 	cfg := seedGmailSegmentPoolFixture(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db, err := openIndexRO(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open index: %v", err)
@@ -2068,7 +2068,7 @@ func TestGmailSegmentsContractBoundedDistinctParentArmAndTruthfulTrace(t *testin
 // "only parents that won the bounded segment arm".
 func TestGmailSegmentsContractOutsidePoolCoMatchKeepsStrongestEvidence(t *testing.T) {
 	cfg := seedGmailSegmentPoolFixture(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	db, err := openIndexRO(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open index: %v", err)

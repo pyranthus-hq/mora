@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/charmbracelet/huh"
 	"github.com/mattn/go-isatty"
@@ -41,8 +42,33 @@ func configMMR(c Config) *mmrParams {
 }
 func defaultConfig() Config           { return configstore.Default() }
 func persistVaultDir(c Config) string { return c.PersistVaultDir() }
-func loadConfig() (Config, error)     { return configstore.Load() }
-func writeConfig(cfg Config) error    { return configstore.Write(cfg) }
+
+// realHomeConfig is captured once in TestMain before any test can touch the
+// environment; it stays nil in production binaries.
+var realHomeConfig atomic.Pointer[configstore.Config]
+
+// hermeticityGuard fails loud when a TEST resolves the REAL user layout: that
+// means the call path reached config resolution without an injected root and
+// is one step from mutating the developer's actual vault/index/state.
+func hermeticityGuard(cfg Config) error {
+	if probe := realHomeConfig.Load(); probe != nil && cfg.ConfigDir == (*probe).ConfigDir {
+		return errors.New("hermeticity violation: test resolved the REAL home config; inject a test root (withTempHome) or pin MORA_CONFIG_DIR")
+	}
+	return nil
+}
+
+// loadConfigFor is loadConfig with context-carried injection (see
+// configstore.LoadFrom): per-test roots flow through without touching process
+// state, so parallel tests each resolve their own layout.
+func loadConfigFor(ctx context.Context) (Config, error) {
+	cfg, err := configstore.LoadFrom(ctx)
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, hermeticityGuard(cfg)
+}
+
+func writeConfig(cfg Config) error { return configstore.Write(cfg) }
 
 // cmdConfig is the durable-settings surface: `mora config` shows the resolved
 // configuration; `mora config context <small|default|large>` sets the context
@@ -58,8 +84,8 @@ type configSetReceipt struct {
 	Value string `json:"value"`
 }
 
-func cmdConfig(args []string, stdout, stderr io.Writer) error {
-	cfg, err := loadConfig()
+func cmdConfig(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -205,7 +231,7 @@ func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	// re-run of `init` never repoints Mora away from a custom vault and orphans
 	// it. loadConfig returns defaults when no config.toml exists (first-time
 	// init), so brand-new setups still scaffold at the default location.
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

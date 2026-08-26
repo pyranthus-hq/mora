@@ -1,12 +1,14 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
@@ -17,8 +19,135 @@ func Default() Config {
 	if dir := os.Getenv("MORA_CONFIG_DIR"); dir != "" {
 		return Config{VaultDir: filepath.Join(dir, "vault"), ConfigDir: dir, DataDir: filepath.Join(dir, "data"), StateDir: filepath.Join(dir, "state")}
 	}
+	return homeRootConfig(homeFromEnv())
+}
+
+// homeFromEnv resolves the platform home directory exactly as os.UserHomeDir
+// does (USERPROFILE on Windows, HOME elsewhere), so injected roots and env
+// resolution can never disagree on layout.
+func homeFromEnv() string {
 	home, _ := os.UserHomeDir()
+	return home
+}
+
+// ConfigRootConfig derives the layout an isolated MORA_CONFIG_DIR root produces:
+// the vault, data, and state trees live directly under the root and config.toml
+// sits in the root itself.
+func ConfigRootConfig(dir string) Config {
+	return Config{VaultDir: filepath.Join(dir, "vault"), ConfigDir: dir, DataDir: filepath.Join(dir, "data"), StateDir: filepath.Join(dir, "state")}
+}
+
+// homeRootConfig derives the default directory layout from a home root. It is
+// the single layout source for both env resolution (Default) and context
+// injection (WithHomeRoot), so a test that injects a temp home sees byte-for-byte
+// the same paths it used to see by exporting HOME.
+func homeRootConfig(home string) Config {
 	return Config{VaultDir: filepath.Join(home, "vault", "mora"), ConfigDir: filepath.Join(home, ".config", "mora"), DataDir: filepath.Join(home, ".local", "share", "mora"), StateDir: filepath.Join(home, ".local", "state", "mora")}
+}
+
+// homeRootKey / operationClockKey carry test-scope isolation through context.
+// Values are process-local per call chain: two tests may each inject their own
+// root into their own contexts and run concurrently without sharing state.
+type homeRootKey struct{}
+
+type operationClockKey struct{}
+
+// WithHomeRoot pins the home directory used to derive default vault/config/
+// data/state locations for every LoadFrom call reading this context. The empty
+// string is a valid pin (it models a missing/unset HOME). When a root is
+// present, process environment resolution (HOME, MORA_CONFIG_DIR, MORA_VAULT)
+// is skipped entirely — the same hermeticity guarantee tests used to get from
+// blanking those variables, but carried per call chain instead of in
+// process-global state, so concurrent tests never share it.
+func WithHomeRoot(ctx context.Context, home string) context.Context {
+	return context.WithValue(ctx, homeRootKey{}, home)
+}
+
+// HomeRootFrom returns the injected home root, if any.
+func HomeRootFrom(ctx context.Context) (string, bool) {
+	home, ok := ctx.Value(homeRootKey{}).(string)
+	return home, ok
+}
+
+// configRootKey pins an isolated MORA_CONFIG_DIR-equivalent root.
+type configRootKey struct{}
+
+// WithConfigRoot pins the layout MORA_CONFIG_DIR produces (vault/, data/,
+// state/ directly under the root, config.toml in the root itself), again
+// bypassing all process environment resolution.
+func WithConfigRoot(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, configRootKey{}, dir)
+}
+
+func configRootFrom(ctx context.Context) (string, bool) {
+	dir, ok := ctx.Value(configRootKey{}).(string)
+	return dir, ok
+}
+
+// WithOperationClock pins a time source for operation-activity records resolved
+// under this context. Production callers resolve no clock and read time.Now.
+func WithOperationClock(ctx context.Context, now func() time.Time) context.Context {
+	return context.WithValue(ctx, operationClockKey{}, now)
+}
+
+func operationClockFrom(ctx context.Context) (func() time.Time, bool) {
+	fn, ok := ctx.Value(operationClockKey{}).(func() time.Time)
+	return fn, ok && fn != nil
+}
+
+// embedderPrefKey carries an explicit MORA_EMBEDDER-equivalent preference.
+type embedderPrefKey struct{}
+
+// WithEmbedderPref pins the embedder preference for configs resolved under this
+// context, replacing the process environment as the override channel.
+func WithEmbedderPref(ctx context.Context, pref string) context.Context {
+	return context.WithValue(ctx, embedderPrefKey{}, pref)
+}
+
+func embedderPrefFrom(ctx context.Context) (string, bool) {
+	pref, ok := ctx.Value(embedderPrefKey{}).(string)
+	return pref, ok
+}
+
+// authoredReconcilerKey carries an override for the async authored-write
+// reconciliation launcher (see internal/mora's scheduleAuthoredReconciliation).
+// The field type lives here so Config can carry it; the production
+// implementation is assigned by the mora package.
+type authoredReconcilerKey struct{}
+
+// WithAuthoredReconciler pins the reconciler launcher used by configs resolved
+// under this context.
+func WithAuthoredReconciler(ctx context.Context, fn func(context.Context, Config) error) context.Context {
+	return context.WithValue(ctx, authoredReconcilerKey{}, fn)
+}
+
+func authoredReconcilerFrom(ctx context.Context) (func(context.Context, Config) error, bool) {
+	fn, ok := ctx.Value(authoredReconcilerKey{}).(func(context.Context, Config) error)
+	return fn, ok && fn != nil
+}
+
+// CarryInjection layers any test-scope injection carried by src onto dst.
+// Long-lived servers resolve per-request configs from the REQUEST context,
+// which loses the launch context's injected sandbox; this restores it while
+// keeping the request's cancellation semantics. A src with no injection
+// returns dst unchanged.
+func CarryInjection(dst, src context.Context) context.Context {
+	if dir, ok := configRootFrom(src); ok {
+		dst = WithConfigRoot(dst, dir)
+	}
+	if home, ok := HomeRootFrom(src); ok {
+		dst = WithHomeRoot(dst, home)
+	}
+	if fn, ok := operationClockFrom(src); ok {
+		dst = WithOperationClock(dst, fn)
+	}
+	if fn, ok := authoredReconcilerFrom(src); ok {
+		dst = WithAuthoredReconciler(dst, fn)
+	}
+	if pref, ok := embedderPrefFrom(src); ok {
+		dst = WithEmbedderPref(dst, pref)
+	}
+	return dst
 }
 
 func splitCommaList(raw string) []string {
@@ -92,12 +221,52 @@ func ParseUpdatePolicy(raw string) (string, error) {
 }
 
 // Load resolves defaults, config.toml, then runtime environment overrides.
-func Load() (Config, error) {
-	cfg := Default()
+func Load() (Config, error) { return load(context.Background()) }
+
+// LoadFrom is Load with context-carried injection: a home root pinned via
+// WithHomeRoot replaces HOME/MORA_CONFIG_DIR resolution and disables process
+// environment layering; WithOperationClock / WithAuthoredReconciler pin the
+// matching per-config seams. Production callers use Load.
+func LoadFrom(ctx context.Context) (Config, error) { return load(ctx) }
+
+func load(ctx context.Context) (Config, error) {
+	var cfg Config
+	injected := false
+	if dir, ok := configRootFrom(ctx); ok {
+		// Mirrors Default()'s precedence: an explicit config root beats a home root.
+		cfg = ConfigRootConfig(dir)
+		injected = true
+	} else if home, ok := HomeRootFrom(ctx); ok {
+		cfg = homeRootConfig(home)
+		cfg.SetHomeDir(home)
+		injected = true
+	} else {
+		cfg = Default()
+	}
+	if fn, ok := operationClockFrom(ctx); ok {
+		cfg.SetOperationClock(fn)
+	}
+	if fn, ok := authoredReconcilerFrom(ctx); ok {
+		cfg.SetAuthoredReconciler(fn)
+	}
+	if pref, ok := embedderPrefFrom(ctx); ok {
+		cfg.SetEmbedderPref(pref)
+	}
+	return resolve(ctx, cfg, injected)
+}
+
+// resolve layers config.toml and — only when NOT context-injected — the process
+// environment over the base config. The env skip mirrors what hermetic tests
+// used to guarantee by blanking MORA_VAULT: an injected root must never be
+// overridden by whatever the invoking shell exports.
+func resolve(ctx context.Context, cfg Config, injected bool) (Config, error) {
 	path := filepath.Join(cfg.ConfigDir, "config.toml")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if injected {
+				return cfg, nil
+			}
 			return ApplyEnv(cfg)
 		}
 		return cfg, err
@@ -141,6 +310,9 @@ func Load() (Config, error) {
 			}
 			cfg.UpdatePolicy = p
 		}
+	}
+	if injected {
+		return cfg, nil
 	}
 	return ApplyEnv(cfg)
 }

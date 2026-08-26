@@ -64,7 +64,7 @@ func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		return newMoraError(errCodeUsageUnknownFlag, "usage", perr, "%v", perr)
 	}
 	if fs.NArg() == 0 && *jsonOut {
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -81,7 +81,7 @@ func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	if fs.NArg() != 1 || fs.Arg(0) != "rebuild" || (*force && *ifNeeded) {
 		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "usage: mora index rebuild [--force | --if-needed]")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -174,7 +174,7 @@ func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
 	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
 }
 func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolicy) (count int, err error) {
-	activity, err := beginOperation(cfg, operationKindIndexRebuild, "preparing", operationClock())
+	activity, err := beginOperation(cfg, operationKindIndexRebuild, "preparing", cfg.OperationClock())
 	if err != nil {
 		return 0, fmt.Errorf("starting index rebuild activity: %w", err)
 	}
@@ -191,7 +191,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		if committed {
 			code = "post_commit_cleanup_failed"
 		}
-		finishErr := finishOperation(cfg, activity, operationFailed, "failed", operationCounts{Items: count, Errors: 1}, code, operationClock())
+		finishErr := finishOperation(cfg, activity, operationFailed, "failed", operationCounts{Items: count, Errors: 1}, code, cfg.OperationClock())
 		err = errors.Join(err, finishErr)
 	}()
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
@@ -595,7 +595,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	recovery, recoveryErr := ingestpkg.RecoverJournals(cfg, files, ingestRecoverySeams())
 	var completionErr error
 	for _, runID := range recovery.RetiredRunIDs {
-		if err := completeOperationAfterCoverage(cfg, runID, operationClock()); err != nil {
+		if err := completeOperationAfterCoverage(cfg, runID, cfg.OperationClock()); err != nil {
 			completionErr = errors.Join(completionErr, fmt.Errorf("completing covered ingest %s: %w", runID, err))
 		}
 	}
@@ -616,7 +616,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := progress.Stop(); err != nil {
 		return count, err
 	}
-	if err := finishOperation(cfg, activity, operationCompleted, "completed", operationCounts{Items: count, Files: len(files)}, "", operationClock()); err != nil {
+	if err := finishOperation(cfg, activity, operationCompleted, "completed", operationCounts{Items: count, Files: len(files)}, "", cfg.OperationClock()); err != nil {
 		return count, err
 	}
 	activityCompleted = true

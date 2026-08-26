@@ -125,7 +125,7 @@ func TestMeetingPrepPayloadUnderCeiling(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	res, err := callMCPTool(context.Background(), "meeting_prep", map[string]any{"max_tokens": 20000})
+	res, err := callMCPTool(testCtx(t), "meeting_prep", map[string]any{"max_tokens": 20000})
 	if err != nil {
 		t.Fatal(err)
 	}

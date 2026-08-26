@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"testing"
 )
 
@@ -18,7 +17,7 @@ func seedRecencyVault(t *testing.T, mems ...Memory) Config {
 	t.Helper()
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -177,7 +176,7 @@ func TestListMemoryOrdersByWriteRecencyNotEventTime(t *testing.T) {
 // only list_memory populates them).
 func TestListMemoryMCPRowsCarrySplitTimestamps(t *testing.T) {
 	seedRecencyVault(t, recencyFutureEvent(), recencyGmailThread(), recencyLocalNote(), recencyPDFAttachment(), recencyCorruptSyncEvent())
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	res, err := callMCPTool(ctx, "list_memory", map[string]any{})
 	if err != nil {

@@ -39,7 +39,7 @@ func TestDigestSourceFilter(t *testing.T) {
 func TestWindowDigestHonorsSourceFilter(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

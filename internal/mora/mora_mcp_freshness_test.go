@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -20,7 +19,7 @@ func TestMCPSearchMemoryCarriesFreshness(t *testing.T) {
 	run(t, "init")
 	run(t, "write", "--scope", "global", "--title", "Alpha", "--text", "alpha body")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -30,7 +29,7 @@ func TestMCPSearchMemoryCarriesFreshness(t *testing.T) {
 		t.Fatalf("SaveStatus: %v", err)
 	}
 
-	res, err := callMCPTool(context.Background(), "search_memory", map[string]any{"query": "alpha"})
+	res, err := callMCPTool(testCtx(t), "search_memory", map[string]any{"query": "alpha"})
 	if err != nil {
 		t.Fatalf("search_memory: %v", err)
 	}
