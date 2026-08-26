@@ -767,6 +767,7 @@ func TestCoreA_PrintGoogleAuthRecency(t *testing.T) {
 func TestCoreA_PrintIMessageReadiness(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		// Off darwin only the skip line is reachable.
+		withTempHome(t)
 		var out bytes.Buffer
 		if printIMessageReadiness(mustConfig(t), &out, false) {
 			t.Fatal("non-darwin readiness must be false")
