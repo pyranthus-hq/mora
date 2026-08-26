@@ -133,8 +133,13 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 	if !ok {
 		return fmt.Errorf("unknown connector %q; run `mora connectors list`", ctype)
 	}
-	if runtimeGOOS() != "darwin" && macOSOnlyConnector(ctype) {
-		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on %s.\n", info.DisplayName, runtimeGOOS())
+	// Windows-only refusal by contract: Linux lists macOS-only connectors and
+	// lets enable flip the bit with an ingest-time note (a vault can be synced
+	// to Linux and read there); only Windows hides + refuses them. #333's
+	// rebase briefly broadened this to every non-darwin host, which broke the
+	// documented contract and the linux CI suite.
+	if runtimeGOOS() == "windows" && macOSOnlyConnector(ctype) {
+		fmt.Fprintf(stdout, "%s is macOS-only and cannot be enabled on Windows.\n", info.DisplayName)
 		return fmt.Errorf("%s is macOS-only", ctype)
 	}
 	if info.NeedsAuth {
