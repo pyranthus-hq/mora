@@ -1,13 +1,12 @@
 package mora
 
 // mora_coreA_cover3_test.go — coreA coverage worker, part 3. Cross-cutting error
-// paths shared by nearly every command: the early `loadConfig()` failure and the
+// paths shared by nearly every command: the early `loadConfigFor(testCtx(t))` failure and the
 // `flag.Parse` failure. Driving one broken input through the whole dispatch table
 // exercises those guard branches in one place. Plus a few targeted branch cases.
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,9 +14,9 @@ import (
 )
 
 // TestCoreA_LoadConfigErrorPropagates makes config.toml unreadable (a directory)
-// so loadConfig() fails, then confirms every command that loads config surfaces
+// so loadConfigFor(testCtx(t)) fails, then confirms every command that loads config surfaces
 // the error rather than swallowing it. Each command is given otherwise-valid args
-// so control flow actually reaches the loadConfig() call.
+// so control flow actually reaches the loadConfigFor(testCtx(t)) call.
 func TestCoreA_LoadConfigErrorPropagates(t *testing.T) {
 	withTempHome(t)
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "") // never let `connect google` reach the network
@@ -130,7 +129,7 @@ func TestCoreA_ApplySetupSelectionBackfillError(t *testing.T) {
 	t.Setenv("MORA_GOOGLE_CREDENTIALS", "")
 
 	var out bytes.Buffer
-	err := applySetupSelection(context.Background(), cfg, []string{"gmail"}, true, &out, testStderr, strings.NewReader(""))
+	err := applySetupSelection(testCtx(t), cfg, []string{"gmail"}, true, &out, testStderr, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("applySetupSelection with a failing confirmed backfill must return the error")
 	}

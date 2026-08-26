@@ -8,6 +8,7 @@ package mora
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +24,7 @@ func TestShareSubprocessWorker(t *testing.T) {
 	if os.Getenv("MORA_SHARE_WORKER") == "" {
 		t.Skip("not the subprocess worker")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("child loadConfig: %v", err)
 	}
@@ -88,8 +89,10 @@ func TestShareSubprocessWorker(t *testing.T) {
 		}
 	}
 	// The result is intentionally ignored — the parent asserts on-disk state.
-	_, _ = importFixtureGeneration(context.Background(), cfg,
-		shareSubscription{Name: name, Remote: "r"}, dir)
+	if _, ierr := importFixtureGeneration(context.Background(), cfg,
+		shareSubscription{Name: name, Remote: "r"}, dir); ierr != nil {
+		fmt.Fprintf(os.Stderr, "worker importFixtureGeneration: %v\n", ierr)
+	}
 }
 
 // isSQLiteBusy reports whether err is a raw SQLITE_BUSY ("database is locked"),
@@ -127,6 +130,7 @@ func spawnShareWorker(t *testing.T, home, sub, repo, hook, parked, resume string
 	cmd := exec.Command(os.Args[0], "-test.run=TestShareSubprocessWorker", "-test.timeout=120s")
 	cmd.Env = append(os.Environ(),
 		"MORA_SHARE_WORKER=1",
+		"MORA_TEST_SUBPROCESS=1",
 		"HOME="+home, "USERPROFILE="+home, "MORA_CONFIG_DIR=",
 		"MORA_SHARE_WORKER_SUB="+sub,
 		"MORA_SHARE_WORKER_REPO="+repo,
@@ -134,6 +138,7 @@ func spawnShareWorker(t *testing.T, home, sub, repo, hook, parked, resume string
 		"MORA_SHARE_PARKED="+parked,
 		"MORA_SHARE_RESUME="+resume,
 	)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("spawn worker: %v", err)
 	}
@@ -147,6 +152,7 @@ func spawnROSearchWorker(t *testing.T, home, sub string) *exec.Cmd {
 	cmd := exec.Command(os.Args[0], "-test.run=TestShareSubprocessWorker", "-test.timeout=120s")
 	cmd.Env = append(os.Environ(),
 		"MORA_SHARE_WORKER=1",
+		"MORA_TEST_SUBPROCESS=1",
 		"MORA_SHARE_MODE=ro-search",
 		"HOME="+home, "USERPROFILE="+home, "MORA_CONFIG_DIR=",
 		"MORA_SHARE_WORKER_SUB="+sub,
@@ -176,7 +182,7 @@ func TestInterruptedShareImportServesLastGoodGeneration(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	home := os.Getenv("HOME")
+	home := cfg.HomeDir()
 	id := writeTestIdentity(t, cfg)
 	registerSub(t, cfg, "neil")
 
@@ -225,7 +231,7 @@ func TestShareIndexNoSQLITEBUSYAcrossProcesses(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	home := os.Getenv("HOME")
+	home := cfg.HomeDir()
 	id := writeTestIdentity(t, cfg)
 	registerSub(t, cfg, "neil")
 
@@ -258,7 +264,7 @@ func TestZombieImportCannotPublishOverSuccessor(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	home := os.Getenv("HOME")
+	home := cfg.HomeDir()
 	id := writeTestIdentity(t, cfg)
 	registerSub(t, cfg, "neil")
 

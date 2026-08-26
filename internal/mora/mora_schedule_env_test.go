@@ -18,7 +18,7 @@ import (
 func TestSchedulePlistCarriesGoogleCredsEnv(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestSchedulePlistCarriesGoogleCredsEnv(t *testing.T) {
 func TestSchedulePlistCarriesConfigDirEnv(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestWindowsScheduleCadenceMirrorsLaunchdCadence(t *testing.T) {
 		{"ingest-hourly", []string{"/SC", "HOURLY", "/MO", "1"}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.job, func(t *testing.T) {
+		subRun(t, tt.job, func(t *testing.T) {
 			got := strings.Join(windowsScheduleCadenceArgs(tt.job), " ")
 			for _, part := range tt.want {
 				if !strings.Contains(got, part) {

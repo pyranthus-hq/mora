@@ -34,7 +34,7 @@ func TestExamIntegrityExit(t *testing.T) {
 		{name: "obligations-v3", root: examFixtureV3Root, schema: exam.SchemaV3},
 	}
 	for _, corpus := range corpora {
-		t.Run(corpus.name, func(t *testing.T) {
+		subRun(t, corpus.name, func(t *testing.T) {
 			ledger, err := exam.Load(filepath.Join(corpus.root, "ledger.json"))
 			if err != nil {
 				t.Fatalf("ledger trust leg broke; Gate 1 cannot close without loadable %s ground truth: %v", corpus.name, err)

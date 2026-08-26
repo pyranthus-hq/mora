@@ -76,7 +76,7 @@ func TestLockDeadlineBudgetsAreDedicatedAndSized(t *testing.T) {
 	// path's wait may grow past that.
 	const oldWorstCase = 3040 * time.Millisecond
 	for _, tc := range acquireLockCases() {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			if tc.budget <= 0 {
 				t.Fatalf("%s acquire budget must be positive, got %s", tc.name, tc.budget)
 			}
@@ -141,7 +141,7 @@ func TestSleepWithinDeadlineRechecksAfterWake(t *testing.T) {
 // as seconds of latency on every uncontended mutation.
 func TestLockAcquireUncontendedTakesNoBudget(t *testing.T) {
 	for _, tc := range acquireLockCases() {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := tc.newCfg(t)
 			start := time.Now()
@@ -168,7 +168,7 @@ func TestLockAcquireUncontendedTakesNoBudget(t *testing.T) {
 // holder" into either "steal it" or "give up early".
 func TestLockContentionOneWinnerThenWaiterProceeds(t *testing.T) {
 	for _, tc := range acquireLockCases() {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := tc.newCfg(t)
 			relA, err := tc.acquire(cfg, time.Now())
@@ -214,7 +214,7 @@ func TestLockContentionOneWinnerThenWaiterProceeds(t *testing.T) {
 // (isTransientContention in governance_test.go) and must keep matching.
 func TestLockAcquireGivesUpAtItsDeadline(t *testing.T) {
 	for _, tc := range acquireLockCases() {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := tc.newCfg(t)
 			now := time.Now()
@@ -295,7 +295,7 @@ func TestRemoveLeaseFileGuardedBudget(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			calls := 0
 			origRemove, origRetryable := leaseRemoveFn, leaseRemovalRetryableFn
 			t.Cleanup(func() { leaseRemoveFn, leaseRemovalRetryableFn = origRemove, origRetryable })

@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,11 +39,11 @@ func TestInitPreservesExistingConfig(t *testing.T) {
 
 	// Re-run init on the existing install.
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"init"}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"init"}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("init: %v\n%s", err, out.String())
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +53,7 @@ func TestInitPreservesExistingConfig(t *testing.T) {
 
 	// The pre-existing memory must still be reachable (not orphaned).
 	var sout bytes.Buffer
-	if err := Run(context.Background(), []string{"search", "precious", "--json"}, &sout, &sout, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"search", "precious", "--json"}, &sout, &sout, strings.NewReader("")); err != nil {
 		t.Fatalf("search: %v\n%s", err, sout.String())
 	}
 	// Plan 01-07: `search --json` carries its array under `memories`.
@@ -76,10 +75,10 @@ func TestInitVaultFlagStillOverrides(t *testing.T) {
 	want := filepath.Join(home, "elsewhere")
 
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"init", "--vault", want}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"init", "--vault", want}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("init --vault: %v\n%s", err, out.String())
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,14 +108,14 @@ func TestInitVaultRefusesRepointNonTTY(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := Run(context.Background(), []string{"init", "--vault", filepath.Join(home, "elsewhere")}, &out, &out, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"init", "--vault", filepath.Join(home, "elsewhere")}, &out, &out, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("init --vault repointed an existing config on a non-TTY; want refusal")
 	}
 	if !strings.Contains(err.Error(), custom) {
 		t.Fatalf("refusal should name the currently-configured vault, got: %v", err)
 	}
-	cfg, lerr := loadConfig()
+	cfg, lerr := loadConfigFor(testCtx(t))
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
@@ -134,10 +133,10 @@ func TestInitVaultSameDirIsNotARepoint(t *testing.T) {
 
 	custom := filepath.Join(home, "custom-vault")
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"init", "--vault", custom}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"init", "--vault", custom}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("first init --vault: %v", err)
 	}
-	if err := Run(context.Background(), []string{"init", "--vault", custom}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"init", "--vault", custom}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("re-running init with the same --vault must be idempotent, got: %v", err)
 	}
 }
@@ -153,10 +152,10 @@ func TestInitVaultTrailingSlashIsNotARepoint(t *testing.T) {
 
 	custom := filepath.Join(home, "custom-vault")
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"init", "--vault", custom}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"init", "--vault", custom}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("first init --vault: %v", err)
 	}
-	if err := Run(context.Background(), []string{"init", "--vault", custom + string(os.PathSeparator)}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"init", "--vault", custom + string(os.PathSeparator)}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("trailing-slash re-init of the same vault must be idempotent, got: %v", err)
 	}
 }

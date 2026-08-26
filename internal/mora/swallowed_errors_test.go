@@ -50,7 +50,7 @@ func TestMCPWriteMemoryDegradesOnRebuildFailure(t *testing.T) {
 	cfg := mustConfig(t)
 	poisonInserts(t, cfg)
 
-	res, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+	res, err := callMCPTool(testCtx(t), "write_memory", map[string]any{
 		"title": "Poisoned", "text": "the index rebuild after this write fails",
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestMCPDeleteMemorySurfacesRebuildFailure(t *testing.T) {
 	run(t, "init")
 	cfg := mustConfig(t)
 
-	res, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+	res, err := callMCPTool(testCtx(t), "write_memory", map[string]any{
 		"title": "Doomed", "text": "this memory is deleted under a poisoned index",
 	})
 	if err != nil {
@@ -105,14 +105,14 @@ func TestMCPDeleteMemorySurfacesRebuildFailure(t *testing.T) {
 	}
 	// A second memory keeps the failing rebuild non-empty (the trigger fires on
 	// INSERT, so an empty vault would rebuild "successfully").
-	if _, err := callMCPTool(context.Background(), "write_memory", map[string]any{
+	if _, err := callMCPTool(testCtx(t), "write_memory", map[string]any{
 		"title": "Survivor", "text": "stays in the vault",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	poisonInserts(t, cfg)
-	_, err = callMCPTool(context.Background(), "delete_memory", map[string]any{"id": doomed.ID})
+	_, err = callMCPTool(testCtx(t), "delete_memory", map[string]any{"id": doomed.ID})
 	if err == nil {
 		t.Fatal("delete_memory returned success despite a failed index rebuild — search would keep serving the deleted memory")
 	}
@@ -232,7 +232,7 @@ func TestNamedSourceIngestRebuildsDespitePartialFailure(t *testing.T) {
 	t.Cleanup(func() { ingestSourceFn = prev })
 
 	var out bytes.Buffer
-	err := Run(context.Background(), []string{"ingest", "run", "--source", "docs"}, &out, &out, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"ingest", "run", "--source", "docs"}, &out, &out, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("named-source partial failure must surface as an error")
 	}

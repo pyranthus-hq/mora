@@ -25,7 +25,7 @@ func TestIsolationConcurrencyBound(t *testing.T) {
 		plans[i].Key = fmt.Sprintf("source-%02d", i)
 	}
 	var active, maximum atomic.Int32
-	outcomes := runSourcePlan(context.Background(), plans, sourceRunOptions{
+	outcomes := runSourcePlan(testCtx(t), plans, sourceRunOptions{
 		SourceTimeout: time.Second,
 		Run: func(context.Context, sourceRunPlan) sourceRunOutcome {
 			n := active.Add(1)
@@ -47,7 +47,7 @@ func TestIsolationConcurrencyBound(t *testing.T) {
 
 func TestIsolationSourceTimeoutDoesNotCancelSibling(t *testing.T) {
 	plans := []sourceRunPlan{{Key: "blocked"}, {Key: "healthy"}}
-	outcomes := runSourcePlan(context.Background(), plans, sourceRunOptions{
+	outcomes := runSourcePlan(testCtx(t), plans, sourceRunOptions{
 		Concurrency: 2, SourceTimeout: 25 * time.Millisecond,
 		Run: func(ctx context.Context, plan sourceRunPlan) sourceRunOutcome {
 			if plan.Key == "blocked" {
@@ -98,7 +98,7 @@ func TestIsolationStableReceiptOrderForSimultaneousCompletion(t *testing.T) {
 		ready.Wait()
 		close(release)
 	}()
-	outcomes := runSourcePlan(context.Background(), plans, sourceRunOptions{
+	outcomes := runSourcePlan(testCtx(t), plans, sourceRunOptions{
 		Concurrency: len(plans), SourceTimeout: time.Second,
 		Run: func(context.Context, sourceRunPlan) sourceRunOutcome {
 			ready.Done()
@@ -275,7 +275,7 @@ func TestIsolationAggregateEdges(t *testing.T) {
 		{Key: "gmail", Source: Source{Name: "gmail", Type: "gmail"}},
 		{Key: "imessage", Source: Source{Name: "imessage", Type: "imessage"}},
 	}
-	t.Run("all failed", func(t *testing.T) {
+	subRun(t, "all failed", func(t *testing.T) {
 		outcomes := []sourceRunOutcome{
 			{Key: "gmail", Err: newCodedError(errCodeConnectorUnavailable, nil, "offline")},
 			{Key: "imessage", Err: newCodedError(errCodeConnectorMalformed, nil, "bad payload")},
@@ -285,7 +285,7 @@ func TestIsolationAggregateEdges(t *testing.T) {
 			t.Fatalf("aggregate=%+v err=%v", aggregate, err)
 		}
 	})
-	t.Run("clean empty", func(t *testing.T) {
+	subRun(t, "clean empty", func(t *testing.T) {
 		aggregate, err := aggregateSourceRuns(plans[:1], []sourceRunOutcome{{Key: "gmail"}}, nil, nil)
 		if err != nil || !aggregate.Usable || aggregate.FailedSources != 0 || len(aggregate.Sources) != 1 {
 			t.Fatalf("aggregate=%+v err=%v", aggregate, err)
@@ -295,7 +295,7 @@ func TestIsolationAggregateEdges(t *testing.T) {
 			t.Fatalf("empty receipt = %+v", receipt)
 		}
 	})
-	t.Run("failed zero is not empty", func(t *testing.T) {
+	subRun(t, "failed zero is not empty", func(t *testing.T) {
 		aggregate, err := aggregateSourceRuns(plans[:1], []sourceRunOutcome{{Key: "gmail", Err: errors.New("boom")}}, nil, nil)
 		if err == nil || aggregate.Sources[0].Status != sourceRunStatusFailed || aggregate.Sources[0].ErrorCode != errCodeConnectorUnclassified {
 			t.Fatalf("aggregate=%+v err=%v", aggregate, err)
@@ -315,7 +315,7 @@ func TestIsolationTypedSourceFailures(t *testing.T) {
 		{"unclassified", errCodeConnectorUnclassified, connectorClassUnclassified, false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			plans := []sourceRunPlan{{Key: "failed"}, {Key: "healthy"}}
 			outcomes := []sourceRunOutcome{
 				{Key: "failed", Err: newCodedError(tc.code, nil, "%s", tc.name)},
@@ -380,13 +380,13 @@ func TestIsolationSourceSelectorPlanning(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, selector := range []string{"", "gmail:", "gmail:work:extra", "unknown"} {
-		t.Run("invalid_"+strings.ReplaceAll(selector, ":", "_"), func(t *testing.T) {
+		subRun(t, "invalid_"+strings.ReplaceAll(selector, ":", "_"), func(t *testing.T) {
 			plans, _, err := planSourceRuns(cfg, selector, true, time.Now())
 			if err == nil || len(plans) != 0 {
 				t.Fatalf("selector %q: plans=%v err=%v, want pre-construction failure", selector, plans, err)
 			}
 			var stdout bytes.Buffer
-			if err := cmdPulse(context.Background(), []string{"--digest", "--sync", "--source", selector}, &stdout, io.Discard); err == nil {
+			if err := cmdPulse(testCtx(t), []string{"--digest", "--sync", "--source", selector}, &stdout, io.Discard); err == nil {
 				t.Fatalf("selector %q: command succeeded; invalid scope must fail before construction", selector)
 			}
 		})
@@ -452,7 +452,7 @@ func TestIsolationZeroEnabledSourcesIsSuccessfulEmptyPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	result, err := sourceRunCoordinator(context.Background(), sourceRunRequest{
+	result, err := sourceRunCoordinator(testCtx(t), sourceRunRequest{
 		Config: cfg,
 		run: func(context.Context, Config, Source, io.Writer) (int, error) {
 			called = true
@@ -505,7 +505,7 @@ func TestIsolationFilteredPulseConstructsOnlyRequestedSource(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := cmdPulse(context.Background(), []string{"--digest", "--sync", "--source", "gmail"}, &stdout, io.Discard); err != nil {
+	if err := cmdPulse(testCtx(t), []string{"--digest", "--sync", "--source", "gmail"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("filtered pulse: %v\n%s", err, stdout.String())
 	}
 	want := []string{"planned:gmail", "constructed:gmail", "started:gmail", "completed:gmail"}
@@ -544,7 +544,7 @@ func TestIsolationIssue381GmailDigestExcludesAppleCalendar(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := cmdPulse(context.Background(), []string{"--digest", "--sync", "--source", "gmail"}, &stdout, io.Discard); err != nil {
+	if err := cmdPulse(testCtx(t), []string{"--digest", "--sync", "--source", "gmail"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("filtered pulse: %v", err)
 	}
 	if !reflect.DeepEqual(ran, []string{"gmail"}) {
@@ -612,7 +612,7 @@ func TestIsolationFilteredPulseWithoutSyncConstructsNothing(t *testing.T) {
 		return sourceRunResult{}, nil
 	}
 	var stdout bytes.Buffer
-	if err := cmdPulse(context.Background(), []string{"--digest", "--source", "gmail"}, &stdout, io.Discard); err != nil {
+	if err := cmdPulse(testCtx(t), []string{"--digest", "--source", "gmail"}, &stdout, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if called {

@@ -84,7 +84,7 @@ func TestLegacyFlatShareIsFailClosedUntilPull(t *testing.T) {
 	if len(shared) != 0 {
 		t.Fatalf("search served untrusted legacy state: %+v", shared)
 	}
-	thought, err := buildThink(context.Background(), cfg, "legacy secret", "", 10, time.Now())
+	thought, err := buildThink(testCtx(t), cfg, "legacy secret", "", 10, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestEmptyCommitsWithLatchFailsClosed(t *testing.T) {
 	if len(shared) != 0 {
 		t.Fatalf("search resurrected legacy state: %+v", shared)
 	}
-	thought, err := buildThink(context.Background(), cfg, "legacy secret", "", 10, time.Now())
+	thought, err := buildThink(testCtx(t), cfg, "legacy secret", "", 10, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestEmptyCommitsWithLatchFailsClosed(t *testing.T) {
 // The initial-clone subtest drives the real subscribe dispatcher because clone
 // used to sit outside shareBuildAndPublish while helper-only tests stayed green.
 func TestShareAttemptStartPrecedesFetch(t *testing.T) {
-	t.Run("chokepoint callback", func(t *testing.T) {
+	subRun(t, "chokepoint callback", func(t *testing.T) {
 		withTempHome(t)
 		cfg := mustConfig(t)
 		name := "neil"
@@ -269,7 +269,7 @@ func TestShareAttemptStartPrecedesFetch(t *testing.T) {
 		}
 	})
 
-	t.Run("initial git clone", func(t *testing.T) {
+	subRun(t, "initial git clone", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)
@@ -296,7 +296,7 @@ func TestShareAttemptStartPrecedesFetch(t *testing.T) {
 		}
 	})
 
-	t.Run("initial bucket probe", func(t *testing.T) {
+	subRun(t, "initial bucket probe", func(t *testing.T) {
 		f := newBucketFixture(t)
 		if err := bucketPublish(f.ctx, f.store, f.bc, f.pub, f.mems, f.priv, f.recips()); err != nil {
 			t.Fatal(err)

@@ -196,7 +196,7 @@ func grSeedGraphVault(t *testing.T) Config {
 
 func TestGr_CmdGraphOverviewJSONAndDetail(t *testing.T) {
 	grSeedGraphVault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	var overview bytes.Buffer
 	if err := cmdGraph(ctx, []string{"--top", "1"}, &overview, testStderr); err != nil {
@@ -252,7 +252,7 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var empty bytes.Buffer
-	if err := cmdGraph(context.Background(), nil, &empty, testStderr); err != nil {
+	if err := cmdGraph(testCtx(t), nil, &empty, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if got := empty.String(); !strings.Contains(got, "No entity graph yet") {
@@ -261,7 +261,7 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	// Plan 01-04 gave graph a real flag surface, so a malformed --top is now a
 	// usage error rather than an argument the command silently ignores.
 	var badFlag bytes.Buffer
-	if err := cmdGraph(context.Background(), []string{"--top", "bad"}, &badFlag, testStderr); err == nil {
+	if err := cmdGraph(testCtx(t), []string{"--top", "bad"}, &badFlag, testStderr); err == nil {
 		t.Fatalf("malformed --top must be a usage error; got output %q", badFlag.String())
 	}
 
@@ -271,6 +271,8 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	}
 	t.Setenv("MORA_CONFIG_DIR", blockingFile)
 	var out bytes.Buffer
+	// Deliberately context.Background(): this asserts the ENV resolution error
+	// path, which an injected root would bypass.
 	if err := cmdGraph(context.Background(), nil, &out, testStderr); err == nil {
 		t.Fatal("cmdGraph should return loadConfig error when MORA_CONFIG_DIR is a file")
 	}
@@ -285,6 +287,7 @@ func TestGr_CmdGraphEmptyAndConfigError(t *testing.T) {
 	}
 	t.Setenv("MORA_CONFIG_DIR", cfgRoot)
 	out.Reset()
+	// Env resolution again: the injected root would bypass MORA_CONFIG_DIR.
 	if err := cmdGraph(context.Background(), nil, &out, testStderr); err == nil {
 		t.Fatal("cmdGraph should return graphListEntities error for an invalid configured vault")
 	}
@@ -413,7 +416,7 @@ func TestGr_SortAndAliasReadHelpers(t *testing.T) {
 }
 
 func TestGr_GraphReadSQLiteErrorAndFallbackPaths(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	cfg := grTempConfig(t)
 	if graphReady(cfg) {
 		t.Fatal("missing db should not be graph-ready")
@@ -513,7 +516,7 @@ func TestGr_GraphReadSQLiteErrorAndFallbackPaths(t *testing.T) {
 }
 
 func TestGr_GraphDetailFallbacksAndEvidenceLimit(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 	cfg := grTempConfig(t)
 	db := grOpenSQLiteIndex(t, cfg)
 	grExec(t, db, `CREATE TABLE entities(id TEXT, kind TEXT, display_name TEXT, aliases TEXT, mention_count INTEGER, salience_micros INTEGER)`)
@@ -555,7 +558,7 @@ func TestGr_GraphDetailFallbacksAndEvidenceLimit(t *testing.T) {
 }
 
 func TestGr_SQLReadHelpersSuccessAndErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	db := grOpenScriptDB(t, grSQLQuery{
 		cols: []string{"dst", "evidence_id"},

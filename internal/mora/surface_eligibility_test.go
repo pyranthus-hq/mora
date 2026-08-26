@@ -179,7 +179,7 @@ func TestCommitmentDailyEligibleUsesOpeningEvidenceAndInclusiveSevenDayWindow(t 
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			if got := commitmentDailyEligible(tt.c, at); got != tt.want {
 				t.Fatalf("eligible = %v, want %v", got, tt.want)
 			}
@@ -235,7 +235,7 @@ func TestCommitmentRefersToMeetingRequiresExplicitReference(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			c := Commitment{Summary: tt.summary, OpenedBy: commitSpan{Quote: tt.quote}}
 			if got := commitmentRefersToMeeting(c, event, nil); got != tt.want {
 				t.Fatalf("refers = %v, want %v", got, tt.want)

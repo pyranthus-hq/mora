@@ -12,7 +12,7 @@ func TestConnectIMessageSinceDaysPersists(t *testing.T) {
 	run(t, "init")
 	run(t, "connect", "imessage", "--since-days", "365")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestConnectIMessageSinceDaysAllTime(t *testing.T) {
 	run(t, "init")
 	run(t, "connect", "imessage", "--since-days", "-1")
 
-	cfg, _ := loadConfig()
+	cfg, _ := loadConfigFor(testCtx(t))
 	sources, _ := loadSources(cfg)
 	for _, s := range sources {
 		if s.Type == "imessage" && s.SinceDays != -1 {

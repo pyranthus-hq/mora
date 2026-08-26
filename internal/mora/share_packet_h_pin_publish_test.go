@@ -18,7 +18,7 @@ import (
 )
 
 func TestUncommittedOrHalfBuiltGenerationNeverServed(t *testing.T) {
-	t.Run("premature_link", func(t *testing.T) {
+	subRun(t, "premature_link", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		cfg := mustConfig(t)

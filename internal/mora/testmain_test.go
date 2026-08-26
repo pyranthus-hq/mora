@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 )
 
 // TestMain replaces the two crash-durability barriers (`atomicio.WriteDurable`'s
@@ -35,6 +36,20 @@ import (
 // ~651 tests call `run(t, "init")`. Paying for device-level crash durability
 // against a directory that `t.TempDir()` deletes moments later buys nothing.
 func TestMain(m *testing.M) {
+	// Capture the REAL resolved layout before any test can touch the process
+	// environment; loadConfig/loadConfigFor use it as the hermeticity tripwire
+	// (a test resolving this exact layout fails loud instead of silently
+	// touching the developer's real vault/index/state). A process that STARTS
+	// with MORA_CONFIG_DIR pinned or the subprocess marker set (child helpers
+	// re-exec the test binary with HOME pointed at the parent's sandbox) is
+	// already explicitly sandboxed — capturing its pinned layout would make
+	// every legitimate resolution look like a leak, so the tripwire stays
+	// unarmed.
+	if os.Getenv("MORA_CONFIG_DIR") == "" && os.Getenv("MORA_TEST_SUBPROCESS") == "" {
+		if cfg, err := configstore.Load(); err == nil {
+			realHomeConfig.Store(&cfg)
+		}
+	}
 	if os.Getenv("MORA_TEST_REAL_FSYNC") != "1" {
 		atomicio.MarkerSyncFn = func(*os.File) error { return nil }
 		atomicio.SyncDirFn = func(string) error { return nil }

@@ -8,7 +8,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -176,7 +175,7 @@ func TestMc_OllamaEmbedDecodeError(t *testing.T) {
 		{"garbage", "this is not json"},
 		{"empty-embedding", `{"embedding":[]}`},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
@@ -259,7 +258,7 @@ func TestMc_OllamaProbeErrors(t *testing.T) {
 // surface as a non-nil error rather than be swallowed into a false COVERAGE
 // verdict.
 func TestMc_ExistsInMemoriesTable(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Fresh in-memory DB with NO memories table → a real schema error.
 	dbNoTable, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "notable.db"))
@@ -585,7 +584,7 @@ func TestMc_StyleChangeItemFallback(t *testing.T) {
 // TestMc_CmdUpgradeFlagParseError: an unknown flag surfaces flag.Parse's error.
 func TestMc_CmdUpgradeFlagParseError(t *testing.T) {
 	var buf bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--nonexistent-flag"}, &buf, testStderr); err == nil {
+	if err := cmdUpgrade(testCtx(t), []string{"--nonexistent-flag"}, &buf, testStderr); err == nil {
 		t.Fatal("an unknown flag must return a parse error")
 	}
 }
@@ -601,7 +600,7 @@ func TestMc_CmdUpgradeRefusesSourceBuild(t *testing.T) {
 	for _, v := range []string{"dev", ""} {
 		BuildVersion = v
 		var buf bytes.Buffer
-		err := cmdUpgrade(context.Background(), nil, &buf, testStderr)
+		err := cmdUpgrade(testCtx(t), nil, &buf, testStderr)
 		if err == nil {
 			t.Fatalf("BuildVersion %q must refuse self-update", v)
 		}

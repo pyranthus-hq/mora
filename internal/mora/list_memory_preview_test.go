@@ -28,7 +28,7 @@ func TestMatchSnippetEmptyQueryFallsBackToHeadClip(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			got := matchSnippet(tt.text, "", tt.limit)
 			want := snippet(tt.text, tt.limit)
 			if got != want {
@@ -54,7 +54,7 @@ func TestMCPListMemoryReturnsBudgetedPreviews(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)

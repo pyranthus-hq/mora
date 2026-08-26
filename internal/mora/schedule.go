@@ -19,7 +19,7 @@ func cmdSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	if len(args) == 0 {
 		return errors.New("usage: mora schedule install|list|uninstall|run")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -178,10 +178,7 @@ func scheduledEntries(cfg Config) ([]scheduleListEntry, error) {
 			installed[job] = err == nil
 		}
 	case "darwin":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
+		home := cfg.HomeDir()
 		for _, job := range jobs {
 			_, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", "com.mora."+job+".plist"))
 			installed[job] = err == nil

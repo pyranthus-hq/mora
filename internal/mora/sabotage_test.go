@@ -164,7 +164,7 @@ func TestSabotageGibberishNeverRenders(t *testing.T) {
 	// Keep this isolation intact: coupling two defects in one memory recreates the
 	// false-green failure mode this sabotage gate exists to prevent.
 	cfg, event, at := seedSabotageHome(t, nil)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	direct, err := buildEventMeetingBrief(ctx, cfg, event.EventID, at, 0, 8)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestSabotageJunkPatternWhitespaceVariants(t *testing.T) {
 		{"Fwd:Google  Ads Account Audit", "forwarded-subject"},
 	}
 	for _, variant := range variants {
-		t.Run(variant.defectClass, func(t *testing.T) {
+		subRun(t, variant.defectClass, func(t *testing.T) {
 			matches := scanSabotageJunk([]string{variant.line})
 			if len(matches) == 0 || matches[0].DefectClass != variant.defectClass {
 				t.Fatalf("junk scorer missed whitespace/punctuation variant %q: %+v", variant.line, matches)
@@ -263,7 +263,7 @@ func TestSabotageScorerSelfCheck(t *testing.T) {
 		"every sentence ending in question":   questionExtractionFromSabotageVault(t),
 	}
 	for name, artifact := range degenerate {
-		t.Run(name, func(t *testing.T) {
+		subRun(t, name, func(t *testing.T) {
 			if sabotageScorerPasses(artifact) {
 				t.Fatalf("EVAL_BROKEN: sabotage scorer accepted degenerate artifact %q:\n%s", name, artifact)
 			}

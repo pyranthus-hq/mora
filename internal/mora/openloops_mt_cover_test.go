@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +18,7 @@ func TestMt_OpenLoopsByPersonMissingLedger(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, personMemNamed("e1", "gmail", "sam@a.com", "Sam Rivera", time.Now().Add(-48*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +45,7 @@ func TestMt_OpenLoopsByPersonLedgerReadError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +67,7 @@ func TestMt_OpenLoopsByPersonGazetteerError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// A real ledger row so listTasks succeeds and we reach loadPersonGazetteer.
 	writeLiveTasks(t, cfg, "| Ship the thing | work | you | P1 | active | — | wk | 2026-06-10 |")
 	if _, err := openLoopsByPerson(ctx, cfg, mtClosedDB(t)); err == nil {
@@ -82,7 +81,7 @@ func TestMt_OpenLoopsByPersonBlockerJoin(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, personMemNamed("e1", "gmail", "sam@a.com", "Sam Rivera", time.Now().Add(-48*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +109,7 @@ func TestMt_OpenLoopsForQueryEnsureIndexError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, personMemNamed("e1", "gmail", "sam@a.com", "Sam Rivera", time.Now().Add(-48*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +129,7 @@ func TestMt_OpenLoopsForQueryNamedPersonNoLoops(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	sam := personMemNamed("s1", "gmail", "sam@a.com", "Sam Rivera", time.Now().Add(-48*time.Hour))
 	sam.Text = "From: sam@a.com\n\nStatus update for the account."
 	if err := writeMemory(cfg, sam); err != nil {
@@ -164,7 +163,7 @@ func TestMt_EntityDisplayNameFallback(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, personMemNamed("e1", "gmail", "sam@a.com", "Sam Rivera", time.Now().Add(-48*time.Hour))); err != nil {
 		t.Fatal(err)
 	}

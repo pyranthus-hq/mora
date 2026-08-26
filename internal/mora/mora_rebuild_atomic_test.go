@@ -16,7 +16,7 @@ func TestRebuildIndexIsAtomic(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Seed + build the "old" index.
 	if err := writeMemory(cfg, Memory{ID: "aa_keep", Scope: "personal", Title: "Keep", Text: "alphakeeptoken"}); err != nil {
@@ -75,7 +75,7 @@ func TestRebuildIsAtomicWhenGraphWriteFails(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{ID: "keep", Scope: "personal", Title: "K", Text: "deltakeeptoken [[Anchor]]", CreatedAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestRebuildListsVaultInsideWriteLock(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{ID: "aa_one", Scope: "personal", Title: "One", Text: "onetoken"}); err != nil {
 		t.Fatal(err)

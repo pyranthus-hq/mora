@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -35,7 +34,7 @@ func TestA1AutomatedSendersClassifiedService(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	bots := []struct{ addr, name string }{
 		{"jobalerts-noreply@linkedin.com", "LinkedIn Job Alerts"},
@@ -173,7 +172,7 @@ func TestA2ProvenanceSenderTrustedRecipientNot(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// chris sends, presenting himself as "Chris Real" (sender provenance -> trusted).
 	writeEmail(t, cfg, "gmail_thread/c1", "chris@example.com", "Chris Real")
@@ -214,7 +213,7 @@ func TestA2IMessageContactNameTrusted(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "imessage_chat/c1", Scope: "personal", Type: "imessage", Title: "chat",
@@ -249,7 +248,7 @@ func TestA2CalendarOrganizerTrustedAttendeeNot(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "calendar_event/e1", Scope: "personal", Type: "event", Title: "Standup",
@@ -292,7 +291,7 @@ func TestA1RecipientLabelDoesNotMisclassify(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// A non-bot sender emails chris, labeling the recipient chris "Chris Receipts".
 	if err := writeMemory(cfg, Memory{
@@ -326,7 +325,7 @@ func TestA1GetEntityServiceConsistency(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	writeEmail(t, cfg, "gmail_thread/b1", "receipts@uber.com", "Uber Receipts")
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
@@ -352,7 +351,7 @@ func TestA2AliasBleedFixed(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// adit presents himself as "Alex Owner" when he sends (trusted).
 	writeEmail(t, cfg, "gmail_thread/me1", "alex.owner@gmail.com", "Alex Owner")

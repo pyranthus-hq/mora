@@ -22,7 +22,7 @@ func TestBindMCPToolsRequiresExactHandlerAlignment(t *testing.T) {
 		want     string
 	}{{"missing", catalog, nil, "missing MCP tool handler: one"}, {"extra", nil, map[string]func(context.Context, Config, map[string]any) (any, error){"extra": noopMCPHandler}, "MCP tool handler has no metadata: extra"}, {"duplicate", []mcppkg.ToolDefinition{{Name: "one"}, {Name: "one"}}, map[string]func(context.Context, Config, map[string]any) (any, error){"one": noopMCPHandler}, "duplicate MCP tool metadata: one"}}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			defer func() {
 				got := recover()
 				if got == nil || !strings.Contains(got.(string), tc.want) {

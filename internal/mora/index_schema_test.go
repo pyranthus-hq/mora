@@ -126,7 +126,7 @@ func TestPostUpgradeRebuildExecsNewBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := postUpgradeRebuild(context.Background(), script, &out); err != nil {
+	if err := postUpgradeRebuild(testCtx(t), script, &out); err != nil {
 		t.Fatalf("post-upgrade rebuild via fake binary failed: %v", err)
 	}
 	if !strings.Contains(out.String(), "fake rebuild: index rebuild") {
@@ -137,7 +137,7 @@ func TestPostUpgradeRebuildExecsNewBinary(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := postUpgradeRebuild(context.Background(), bad, &out); err == nil {
+	if err := postUpgradeRebuild(testCtx(t), bad, &out); err == nil {
 		t.Fatal("a failing rebuild must surface an error to the caller")
 	}
 }

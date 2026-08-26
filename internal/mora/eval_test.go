@@ -351,7 +351,7 @@ func liveCfgOrSkip(t *testing.T) Config {
 		t.Skip("set MORA_EVAL_LIVE=1 (your Mora config) or =/path/to/datadir (containing index.db) to score the real vault read-only; needs internal/mora/live_{queries,qrels}.tsv (gitignored; see design doc §5)")
 	}
 	if v == "1" || v == "true" {
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(testCtx(t))
 		if err != nil {
 			t.Fatalf("loadConfig: %v", err)
 		}
@@ -660,7 +660,7 @@ func TestExistsInMemoriesTable(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
@@ -685,7 +685,7 @@ func TestExistsInMemoriesTable(t *testing.T) {
 func TestEvalSearchMemorySegmentFusionAttributionUsesEmittedRanking(t *testing.T) {
 	t.Setenv("MORA_EMBEDDER", "")
 	cfg := seedGmailSegmentsSearchFixture(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// The shared Gmail fixture has four compact parent-grain decoys. Four more
 	// put the diluted Gmail parent at 0-based parent rank 8: just outside the
@@ -744,7 +744,7 @@ func TestEvalSynthetic(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
@@ -819,7 +819,7 @@ func TestEvalFixtureNearDupPrecondition(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
@@ -852,7 +852,7 @@ func TestEvalLive(t *testing.T) {
 	if _, err := os.Stat(rPath); err != nil {
 		t.Skipf("hand-label %s (+ %s) with your vault's gold ids to run the live diagnosis — see design doc §5 (3 RED seeds → ~15 stratified queries)", rPath, qPath)
 	}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	queries := loadQueries(t, qPath)
 	rel, meta, qids := loadQrels(t, rPath)
 	db := openRO(t, cfg)
@@ -883,7 +883,7 @@ func TestEvalAB(t *testing.T) {
 		t.Skipf("Ollama daemon unreachable (embedder resolved to %q) — A/B needs it; skipping (never gates)", ollamaModel)
 	}
 
-	realCfg, err := loadConfig()
+	realCfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -895,7 +895,7 @@ func TestEvalAB(t *testing.T) {
 		t.Skipf("no live vault markdown at %s (expected memories/ or sources/) to copy", srcVault)
 	}
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	queries := loadQueries(t, qPath)
 	rel, _, qids := loadQrels(t, rPath)
 

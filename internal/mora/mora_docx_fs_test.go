@@ -2,7 +2,6 @@ package mora
 
 import (
 	"archive/zip"
-	"context"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
@@ -99,7 +98,7 @@ func TestIngestFilesystemIncludesDocx(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	dir := t.TempDir()
 	writeDocx(t, filepath.Join(dir, "report.docx"), "Pangolin quarterly synthesis numbers")

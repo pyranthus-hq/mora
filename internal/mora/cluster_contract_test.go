@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -302,7 +301,7 @@ func seedClusterFixture(t *testing.T) Config {
 		"2026-04-20T00:00:00Z", nil,
 		"Retro notes from Q3 planning process improvements and team feedback.")
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
@@ -536,7 +535,7 @@ func TestClusterContractProviderAnchorEquality(t *testing.T) {
 	seed("gcal_b/evt-zephyrion-dup", "primary/evt-zephyrion", "2026-06-05T00:00:00Z",
 		[]string{"carol@example.com", "dave@example.com"}, "2026-06-05T09:00:00Z")
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +590,7 @@ func TestClusterContractProviderAnchorRequiresBothFields(t *testing.T) {
 	seed("gcal_b/evt-voltridge-other", "outlook_calendar", "primary/evt-voltridge", "2026-06-15T00:00:00Z",
 		[]string{"carol@example.com", "dave@example.com"}, "2026-06-15T09:00:00Z")
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +677,7 @@ func TestClusterContractBudgetUnderCeiling(t *testing.T) {
 // ---------------------------------------------------------------------------
 func TestClusterContractHybridSeamPreTruncate(t *testing.T) {
 	cfg := seedClusterFixture(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Precondition: pre-truncate, the fused ranking already contains all 3
 	// cluster members (proving the raw material a clustering hook would need
@@ -767,7 +766,7 @@ func TestClusterContractNoTransitiveChain(t *testing.T) {
 	seed("chain/b-bridge", []string{"xavier@example.com"}, []string{"yolanda@example.com"}, "2026-06-15T11:00:00Z")
 	seed("chain/c-gamma", []string{"yolanda@example.com"}, []string{"zack@example.com"}, "2026-06-15T12:00:00Z")
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -878,14 +877,14 @@ func TestClusterContractWindowBoundary(t *testing.T) {
 		seed("boundary/first", base.Format(time.RFC3339))
 		seed("boundary/second", base.Add(delta).Format(time.RFC3339))
 
-		ctx := context.Background()
+		ctx := testCtx(t)
 		if _, err := rebuildIndex(ctx, cfg); err != nil {
 			t.Fatal(err)
 		}
 		return cfg
 	}
 
-	t.Run("ExactlyOnBoundary_24h_NotClustered", func(t *testing.T) {
+	subRun(t, "ExactlyOnBoundary_24h_NotClustered", func(t *testing.T) {
 		seedPair(t, time.Duration(clusterContractWindowHours)*time.Hour)
 		res := mcpResult(t, budgetCall("search_memory", `{"query":"Boundary Window Regression","limit":5}`))
 		rows := resultRows(t, res)
@@ -898,7 +897,7 @@ func TestClusterContractWindowBoundary(t *testing.T) {
 		}
 	})
 
-	t.Run("JustInsideBoundary_23h59m_Clustered", func(t *testing.T) {
+	subRun(t, "JustInsideBoundary_23h59m_Clustered", func(t *testing.T) {
 		seedPair(t, 23*time.Hour+59*time.Minute)
 		res := mcpResult(t, budgetCall("search_memory", `{"query":"Boundary Window Regression","limit":5}`))
 		rows := resultRows(t, res)
@@ -952,7 +951,7 @@ func TestClusterContractAntiHubRefusalCap(t *testing.T) {
 		}
 	}
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -999,7 +998,7 @@ func TestClusterContractNoOccurredAtNoFallback(t *testing.T) {
 	// 30m apart by CreatedAt — would fall inside the window under the banned fallback.
 	seed("no-occurred-at/second", "2026-06-28T10:30:00Z")
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1051,7 @@ func seedBackfillReproFixture(t *testing.T) Config {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatalf("rebuildIndex: %v", err)
 	}
@@ -1061,7 +1060,7 @@ func seedBackfillReproFixture(t *testing.T) Config {
 
 func TestClusterContractSuppressedTopHitNoBackfill(t *testing.T) {
 	cfg := seedBackfillReproFixture(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	full, err := searchMemories(ctx, cfg, "Scratch Backfill Repro", "", 50)
 	if err != nil {
@@ -1089,7 +1088,7 @@ func TestClusterContractSuppressedTopHitNoBackfill(t *testing.T) {
 
 func TestClusterContractSuppressedTopHitNoBackfillHybrid(t *testing.T) {
 	cfg := seedBackfillReproFixture(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	full, err := hybridSearch(ctx, cfg, "Scratch Backfill Repro", "", 50)
 	if err != nil {
@@ -1119,7 +1118,7 @@ func TestClusterContractSuppressedTopHitNoBackfillHybrid(t *testing.T) {
 // proving the discipline holds end-to-end, not just at the internal primitive.
 func TestClusterContractSuppressedTopHitNoBackfillMCP(t *testing.T) {
 	cfg := seedBackfillReproFixture(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	full, err := searchMemories(ctx, cfg, "Scratch Backfill Repro", "", 50)
 	if err != nil {
@@ -1419,7 +1418,7 @@ func seedRefusalBoundaryFixture(t *testing.T, n int) Config {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1427,7 +1426,7 @@ func seedRefusalBoundaryFixture(t *testing.T, n int) Config {
 }
 
 func TestClusterContractRefusalCapBoundary5vs6(t *testing.T) {
-	t.Run("FiveMembersCluster", func(t *testing.T) {
+	subRun(t, "FiveMembersCluster", func(t *testing.T) {
 		seedRefusalBoundaryFixture(t, 5)
 		res := mcpResult(t, budgetCall("search_memory", `{"query":"Boundary Hub Regression","limit":5}`))
 		rows := resultRows(t, res)
@@ -1440,7 +1439,7 @@ func TestClusterContractRefusalCapBoundary5vs6(t *testing.T) {
 			t.Fatalf("5-member candidate must commit with exactly 4 corroborating members: %#v", rows[0])
 		}
 	})
-	t.Run("SixMembersRefuseWhole", func(t *testing.T) {
+	subRun(t, "SixMembersRefuseWhole", func(t *testing.T) {
 		seedRefusalBoundaryFixture(t, 6)
 		res := mcpResult(t, budgetCall("search_memory", `{"query":"Boundary Hub Regression","limit":10}`))
 		rows := resultRows(t, res)
@@ -1485,7 +1484,7 @@ func TestClusterContractRule2IdentityNoiseNearMiss(t *testing.T) {
 	seed("noise/a-first", []string{"push"}, []string{"mallory@example.com"}, "2026-06-27T09:00:00Z")
 	seed("noise/b-second", []string{"nolan@example.com"}, []string{"push"}, "2026-06-27T10:00:00Z")
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}

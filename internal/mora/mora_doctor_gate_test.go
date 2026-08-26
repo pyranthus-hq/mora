@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -67,13 +66,13 @@ func TestDoctorStrictErrorsWhenUnhealthy(t *testing.T) {
 	run(t, "index", "rebuild")
 
 	// Healthy vault: --strict succeeds.
-	if err := Run(context.Background(), []string{"doctor", "--strict"},
+	if err := Run(testCtx(t), []string{"doctor", "--strict"},
 		io.Discard, io.Discard, strings.NewReader("")); err != nil {
 		t.Fatalf("doctor --strict on a healthy vault must succeed: %v", err)
 	}
 
 	// Break a critical check: remove the index DB.
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +82,13 @@ func TestDoctorStrictErrorsWhenUnhealthy(t *testing.T) {
 
 	// --strict must now error.
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"doctor", "--strict"},
+	if err := Run(testCtx(t), []string{"doctor", "--strict"},
 		&out, &out, strings.NewReader("")); err == nil {
 		t.Fatalf("doctor --strict must error when a critical check fails; output:\n%s", out.String())
 	}
 
 	// Default doctor must STILL exit 0 even when unhealthy (no behavior change).
-	if err := Run(context.Background(), []string{"doctor"},
+	if err := Run(testCtx(t), []string{"doctor"},
 		io.Discard, io.Discard, strings.NewReader("")); err != nil {
 		t.Fatalf("default `mora doctor` must stay exit-0 even when unhealthy: %v", err)
 	}

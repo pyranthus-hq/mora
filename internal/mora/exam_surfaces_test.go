@@ -52,7 +52,7 @@ func pinExamSurfaceClocks(t *testing.T, at time.Time) {
 func runExamCLI(t *testing.T, args ...string) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	if err := Run(context.Background(), args, &stdout, &stderr, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), args, &stdout, &stderr, strings.NewReader("")); err != nil {
 		t.Fatalf("Run(%v): %v\nstdout:\n%s\nstderr:\n%s", args, err, stdout.String(), stderr.String())
 	}
 	return stdout.String()
@@ -335,7 +335,7 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 	dailyCLIOutput := runExamCLI(t, "pulse", "--digest", "--since-hours", "720")
 	dailyCLI := examDailyCLIPredictions(t, dailyCLIOutput)
 	dailyCLI = append(dailyCLI, examInventoryPredictions(exam.SurfaceDaily, snapshot.Commitments...)...)
-	dailyValue, err := callMCPTool(context.Background(), "digest", map[string]any{"since_hours": float64(examDailyWindowHours)})
+	dailyValue, err := callMCPTool(testCtx(t), "digest", map[string]any{"since_hours": float64(examDailyWindowHours)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 	if err := json.Unmarshal(eventCLIBytes, &eventCLI); err != nil {
 		t.Fatalf("decode event CLI brief: %v\n%s", err, eventCLIBytes)
 	}
-	eventValue, err := callMCPTool(context.Background(), "meeting_prep", map[string]any{"event_id": event.EventID, "at": asOf})
+	eventValue, err := callMCPTool(testCtx(t), "meeting_prep", map[string]any{"event_id": event.EventID, "at": asOf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func runExamSurfaces(t *testing.T, corpusRoot string) examSurfaceScorecards {
 	}
 	requestBody, _ := json.Marshal(map[string]any{"event_id": event.EventID, "at": asOf})
 	server := &httpServer{token: "exam-token", port: 7777}
-	handler := server.handler()
+	handler := server.handler(testCtx(t))
 	req := httptest.NewRequest(http.MethodPost, "/meeting-prep", bytes.NewReader(requestBody))
 	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer exam-token")

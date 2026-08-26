@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -105,7 +104,7 @@ func TestProducerStampsAtRealChokepoint(t *testing.T) {
 		{"git-daily", []string{"sync", "git"}}, // no remote configured: a FAILED run must still stamp an attempt
 	}
 	for _, tc := range cases {
-		t.Run(tc.producer, func(t *testing.T) {
+		subRun(t, tc.producer, func(t *testing.T) {
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)
@@ -114,7 +113,7 @@ func TestProducerStampsAtRealChokepoint(t *testing.T) {
 			setBriefClockForTest(t, now)
 
 			var out bytes.Buffer
-			runErr := Run(context.Background(), tc.args, &out, &out, strings.NewReader(""))
+			runErr := Run(testCtx(t), tc.args, &out, &out, strings.NewReader(""))
 
 			st := mustLoadStatus(t, cfg)
 			ps, ok := st[tc.producer]
@@ -179,7 +178,7 @@ func TestDeadProducerFailsDoctor(t *testing.T) {
 	}
 
 	var strictOut bytes.Buffer
-	if err := Run(context.Background(), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
+	if err := Run(testCtx(t), []string{"doctor", "--strict"}, &strictOut, &strictOut, strings.NewReader("")); err == nil {
 		t.Fatalf("doctor --strict must error with a dead producer:\n%s", strictOut.String())
 	}
 }
@@ -239,7 +238,7 @@ func TestDeadProducerSurfacesWithin24h(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	day1 := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
 	days := []time.Time{day1, day1.Add(24 * time.Hour), day1.Add(48 * time.Hour)}
@@ -344,7 +343,7 @@ func TestPulseSelfRecoversInOneCadence(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
 	mustSeedExpected(t, cfg, expectedProducer{Name: "doctor-pulse", IntervalSeconds: 86400, Source: producerSourceScheduled})
@@ -386,7 +385,7 @@ func TestPulseExecStampNeverMasksASickSource(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
 	enableSources(t, cfg, "gmail")
@@ -435,7 +434,7 @@ func TestPulseExecStampNeverMasksASickSource(t *testing.T) {
 // (mutation matrix row 38).
 func TestProducerLedgerNoLostUpdateAcrossProcesses(t *testing.T) {
 	if name := os.Getenv("MORA_PRODUCER_STAMP_CHILD"); name != "" {
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(testCtx(t))
 		if err != nil {
 			os.Exit(11)
 		}
@@ -452,6 +451,7 @@ func TestProducerLedgerNoLostUpdateAcrossProcesses(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
+	childHome := cfg.HomeDir()
 
 	const k = 6
 	base := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
@@ -465,6 +465,8 @@ func TestProducerLedgerNoLostUpdateAcrossProcesses(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^TestProducerLedgerNoLostUpdateAcrossProcesses$")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("MORA_PRODUCER_STAMP_CHILD=p%d", i),
+				"MORA_TEST_SUBPROCESS=1",
+				"HOME="+childHome, "USERPROFILE="+childHome, "MORA_CONFIG_DIR=", "MORA_VAULT=",
 				"MORA_PRODUCER_STAMP_NOW="+base.Add(time.Duration(i)*time.Hour).UTC().Format(time.RFC3339))
 			if out, err := cmd.CombinedOutput(); err != nil {
 				errs[i] = fmt.Errorf("child p%d: %v\n%s", i, err, out)

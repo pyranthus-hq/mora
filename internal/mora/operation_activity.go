@@ -34,7 +34,6 @@ type operationHandle = operation.Handle
 type operationLiveness = operation.Liveness
 type operationProgress = operation.Progress
 
-var operationClock = time.Now
 var operationProcessAlive operationLiveness = processAlive
 
 func operationRoot(cfg Config) string   { return operation.Root(cfg) }
@@ -57,7 +56,7 @@ func operationActivities(cfg Config, now time.Time, live operationLiveness) []op
 	return operation.Activities(cfg, now, live)
 }
 func startOperationProgress(cfg Config, h operationHandle, phase string) *operationProgress {
-	return operation.StartProgress(cfg, h, phase, operationClock)
+	return operation.StartProgress(cfg, h, phase, cfg.OperationClock)
 }
 func completeOperationAfterCoverage(cfg Config, runID string, now time.Time) error {
 	return operation.CompleteAfterCoverage(cfg, runID, now)

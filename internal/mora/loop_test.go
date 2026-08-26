@@ -74,7 +74,7 @@ func TestLoopBeginInvalidExistingRecordFailsClosed(t *testing.T) {
 		}(),
 	}
 	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
+		subRun(t, name, func(t *testing.T) {
 			cfg := loopTestCfg(t)
 			writeRawFile(t, loopLatestPath(cfg, "daily-brief"), body)
 			var out bytes.Buffer

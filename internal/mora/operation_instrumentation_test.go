@@ -40,7 +40,7 @@ func TestIngestActivityMarkedBeforeVisibleAndCompletesAfterCoveredRebuild(t *tes
 	t.Cleanup(func() { testHookFSPreWrite = origHook })
 	var sawRunID string
 	testHookFSPreWrite = func(string) {
-		acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+		acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 		a := activityWithKind(acts, operationKindIngest, operationRunning)
 		if a == nil || a.Phase != "ingesting" {
 			t.Fatalf("pre-visible activities = %+v", acts)
@@ -58,21 +58,21 @@ func TestIngestActivityMarkedBeforeVisibleAndCompletesAfterCoveredRebuild(t *tes
 	if sawRunID == "" {
 		t.Fatal("pre-visible hook did not observe ingest activity")
 	}
-	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	if a := activityWithKind(acts, operationKindIngest, operationRunning); a == nil || a.Phase != "awaiting_rebuild" {
 		t.Fatalf("post-ingest activities = %+v", acts)
 	}
 	if !operationProgressActive(sawRunID) {
 		t.Fatal("awaiting-rebuild ingest stopped its bounded heartbeat early")
 	}
-	if h := healthOf(cfg, operationClock().Add(time.Second)); h.Index.State != idxDirty || h.State != healthUnhealthy {
+	if h := healthOf(cfg, cfg.OperationClock().Add(time.Second)); h.Index.State != idxDirty || h.State != healthUnhealthy {
 		t.Fatalf("active ingest weakened dirty health: %+v", h)
 	}
 
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	acts = operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts = operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	a := activityWithKind(acts, operationKindIngest, operationCompleted)
 	if a == nil || a.RunID != sawRunID || a.Phase != "journal_retired" {
 		t.Fatalf("covered ingest did not complete after journal retirement: %+v", acts)
@@ -97,7 +97,7 @@ func TestIncrementalNoChangesRetiresJournalWithoutRebuild(t *testing.T) {
 	if n, err := ingestSource(cfg, src, &bytes.Buffer{}); err != nil || n != 0 {
 		t.Fatalf("no-change ingest n=%d err=%v", n, err)
 	}
-	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	found := false
 	for _, activity := range acts {
 		if activity.Kind == operationKindIngest && activity.State == operationCompleted && activity.Phase == "no_changes" {
@@ -121,7 +121,7 @@ func TestIngestFailureWritesTerminalReceipt(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown source type") {
 		t.Fatalf("ingest error = %v", err)
 	}
-	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	a := activityWithKind(acts, operationKindIngest, operationFailed)
 	if a == nil || a.FailureCode != "ingest_failed" || a.Phase != "failed" {
 		t.Fatalf("failed ingest activity = %+v", acts)
@@ -140,7 +140,7 @@ func TestRebuildActivityExistsBeforeListingAndFailureIsTerminal(t *testing.T) {
 	orig := listRebuildFiles
 	t.Cleanup(func() { listRebuildFiles = orig })
 	listRebuildFiles = func(c Config) ([]string, error) {
-		acts := operationActivities(c, operationClock().Add(time.Second), func(int) bool { return true })
+		acts := operationActivities(c, c.OperationClock().Add(time.Second), func(int) bool { return true })
 		a := activityWithKind(acts, operationKindIndexRebuild, operationRunning)
 		if a == nil || a.Phase != "listing" {
 			t.Fatalf("listing observed no running rebuild receipt: %+v", acts)
@@ -154,7 +154,7 @@ func TestRebuildActivityExistsBeforeListingAndFailureIsTerminal(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "injected listing failure") {
 		t.Fatalf("rebuild error = %v", err)
 	}
-	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	if a := activityWithKind(acts, operationKindIndexRebuild, operationFailed); a == nil || a.FailureCode != "rebuild_failed" {
 		t.Fatalf("failed rebuild activity = %+v", acts)
 	}
@@ -171,7 +171,7 @@ func TestCommittedRebuildCleanupFailureIsPartialNotCompleted(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "index committed but pending-marker retirement failed") {
 		t.Fatalf("rebuild error = %v", err)
 	}
-	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	a := activityWithKind(acts, operationKindIndexRebuild, operationFailed)
 	if a == nil || a.FailureCode != "post_commit_cleanup_failed" {
 		t.Fatalf("post-commit activity = %+v", acts)
@@ -201,7 +201,7 @@ func TestJournalRetirementFailureLeavesIngestUncompleted(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "index committed but ingest-journal retirement failed") {
 		t.Fatalf("rebuild error = %v", err)
 	}
-	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	if activityWithKind(acts, operationKindIngest, operationCompleted) != nil {
 		t.Fatalf("ingest falsely completed before journal retirement: %+v", acts)
 	}
@@ -242,7 +242,7 @@ func TestConcurrentIngestActivitiesAreAnonymous(t *testing.T) {
 	}
 	<-entered
 	<-entered
-	acts := operationActivities(cfg, operationClock().Add(time.Second), func(int) bool { return true })
+	acts := operationActivities(cfg, cfg.OperationClock().Add(time.Second), func(int) bool { return true })
 	running := 0
 	for _, a := range acts {
 		if a.Kind == operationKindIngest && a.State == operationRunning {
@@ -280,7 +280,7 @@ func TestDoctorStrictFailsDuringActiveIngest(t *testing.T) {
 	doctorClock = func() time.Time { return time.Date(2020, 1, 1, 0, 1, 0, 0, time.UTC) }
 	t.Cleanup(func() { doctorClock = origDoctorClock })
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestDoctorStrictFailsDuringActiveIngest(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"doctor", "--json", "--strict"}, &out, &out, strings.NewReader("")); err == nil {
+	if err := Run(testCtx(t), []string{"doctor", "--json", "--strict"}, &out, &out, strings.NewReader("")); err == nil {
 		t.Fatalf("strict doctor succeeded during active dirty ingest: %s", out.String())
 	}
 	var rep doctorReport

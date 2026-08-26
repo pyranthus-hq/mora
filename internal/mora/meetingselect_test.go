@@ -2,14 +2,13 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 )
 
 func TestCmdPrepRemoved(t *testing.T) {
 	var out bytes.Buffer
-	err := Run(context.Background(), []string{"prep"}, &out, &out, strings.NewReader(""))
+	err := Run(testCtx(t), []string{"prep"}, &out, &out, strings.NewReader(""))
 	if err == nil || err.Error() != "usage: mora brief --event-id <id>" {
 		t.Fatalf("Run(prep) error = %v, want replacement usage error", err)
 	}
@@ -19,7 +18,7 @@ func TestCmdPrepRemoved(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := Run(context.Background(), []string{"help"}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"help"}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "mora prep") {

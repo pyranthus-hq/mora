@@ -14,7 +14,9 @@ import (
 // it — silently reading the config.toml vault instead points every command at
 // the wrong memories (issue #66).
 func TestMoraVaultEnvOverridesConfigToml(t *testing.T) {
-	withTempHome(t)
+	// LEGACY env harness on purpose: MORA_VAULT override semantics are exactly
+	// what an injected root deliberately ignores.
+	withTempHomeSetenv(t)
 	run(t, "init")
 	cfg := mustConfig(t)
 	cfg.VaultDir = filepath.Join(t.TempDir(), "toml-vault")
@@ -25,7 +27,7 @@ func TestMoraVaultEnvOverridesConfigToml(t *testing.T) {
 	envVault := filepath.Join(t.TempDir(), "env-vault")
 	t.Setenv("MORA_VAULT", envVault)
 
-	got, err := loadConfig()
+	got, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -37,12 +39,12 @@ func TestMoraVaultEnvOverridesConfigToml(t *testing.T) {
 // TestMoraVaultEnvAppliesWithoutConfigToml covers the no-config.toml early
 // return in loadConfig: MORA_VAULT must also beat the built-in default vault.
 func TestMoraVaultEnvAppliesWithoutConfigToml(t *testing.T) {
-	withTempHome(t)
+	withTempHomeSetenv(t)
 
 	envVault := filepath.Join(t.TempDir(), "env-vault")
 	t.Setenv("MORA_VAULT", envVault)
 
-	got, err := loadConfig()
+	got, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -60,7 +62,7 @@ func TestMoraVaultEnvAppliesWithoutConfigToml(t *testing.T) {
 // house pattern as TestConfigEmbedderRoundTrips.
 func persistedVaultDir(t *testing.T) string {
 	t.Helper()
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

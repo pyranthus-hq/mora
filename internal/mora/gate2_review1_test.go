@@ -44,7 +44,7 @@ func TestWipedIndexMetaFailsClosed(t *testing.T) {
 		t.Fatalf("wiped-index_meta state = %q, want failed (fail closed)", st)
 	}
 	var buf bytes.Buffer
-	err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr)
+	err := cmdDoctor(testCtx(t), []string{"--json", "--strict"}, &buf, testStderr)
 	if err == nil {
 		t.Fatal("doctor --strict exited 0 on a wiped index_meta")
 	}
@@ -82,7 +82,7 @@ func TestZeroByteJournalFailsClosed(t *testing.T) {
 		t.Fatalf("zero-byte journal state = %q, want dirty (fail closed)", st)
 	}
 	var buf bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json", "--strict"}, &buf, testStderr); err == nil {
+	if err := cmdDoctor(testCtx(t), []string{"--json", "--strict"}, &buf, testStderr); err == nil {
 		t.Fatal("doctor --strict exited 0 with a zero-byte ingest journal")
 	}
 	var rep doctorReport
@@ -102,7 +102,7 @@ func TestZeroByteJournalFailsClosed(t *testing.T) {
 // was a false-clean.
 func TestConcurrentRebuildKeepsLiveIngestHeader(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	sourceKey := ingestSourceKey("gmail", "")
 
 	// Item 1: a real connector publish — writes the durable header, takes the live
@@ -159,7 +159,7 @@ func TestConcurrentRebuildKeepsLiveIngestHeader(t *testing.T) {
 // dirty (never a false-clean while the ledger has changed). Before the fix cmdUnforget
 // / cmdBriefCorrect returned without marking or rebuilding at all.
 func TestGovernanceMutationReindexes(t *testing.T) {
-	t.Run("unforget_leaves_index_fresh", func(t *testing.T) {
+	subRun(t, "unforget_leaves_index_fresh", func(t *testing.T) {
 		cfg := gate2Vault(t)
 		seed, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindForget, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: "gmail_thread_z"}, Reason: "seed"})
 		if err != nil {
@@ -171,7 +171,7 @@ func TestGovernanceMutationReindexes(t *testing.T) {
 			t.Fatal(err)
 		}
 		var buf bytes.Buffer
-		if err := cmdUnforget(context.Background(), []string{"--yes", seed.ID}, &buf, testStderr); err != nil {
+		if err := cmdUnforget(testCtx(t), []string{"--yes", seed.ID}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if st := gate2IndexState(t, cfg); st != idxFresh {
@@ -179,7 +179,7 @@ func TestGovernanceMutationReindexes(t *testing.T) {
 		}
 	})
 
-	t.Run("brief_correct_dirty_when_rebuild_fails", func(t *testing.T) {
+	subRun(t, "brief_correct_dirty_when_rebuild_fails", func(t *testing.T) {
 		cfg := gate2Vault(t, coreBIdxmem("mem_cite", "global", "insight", "Cited", "citebody"))
 		// Force the covering rebuild to fail: the mark survives => index stays dirty
 		// (never fresh-with-a-changed-ledger).
@@ -187,7 +187,7 @@ func TestGovernanceMutationReindexes(t *testing.T) {
 		listRebuildFiles = func(Config) ([]string, error) { return nil, context.DeadlineExceeded }
 		defer func() { listRebuildFiles = orig }()
 		var buf bytes.Buffer
-		if err := cmdBriefCorrect(context.Background(), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf, testStderr); err == nil {
+		if err := cmdBriefCorrect(testCtx(t), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf, testStderr); err == nil {
 			t.Fatal("cmdBriefCorrect returned nil despite a forced rebuild failure")
 		}
 		if st := gate2IndexState(t, cfg); st == idxFresh {

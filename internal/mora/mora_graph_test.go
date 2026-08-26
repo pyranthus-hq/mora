@@ -77,7 +77,7 @@ func TestRebuildMaterializesStructuralEntities(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()
@@ -119,7 +119,7 @@ func TestRebuildMaterializesStructuralEdges(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()
@@ -156,7 +156,7 @@ func TestGraphBiTemporalStamps(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()
@@ -219,7 +219,7 @@ func TestListEntitiesIsGraphBacked(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()
@@ -280,7 +280,7 @@ func TestGetEntityReturnsGraphProvenance(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	mustWrite := func(m Memory) {
 		t.Helper()

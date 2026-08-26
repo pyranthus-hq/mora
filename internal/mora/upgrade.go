@@ -63,7 +63,14 @@ func cmdUpgrade(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if selected > 1 || (*jsonOut && !*statusOnly) {
 		return fmt.Errorf("usage: mora upgrade [--check | --policy auto|notify|off | --status [--json] | --scheduled-check]")
 	}
-	cfg, err := loadConfig()
+	// The source-build refusal is static: surface it before config resolution
+	// so a broken layout never masks the real reason self-update cannot run.
+	if !*statusOnly && !*scheduledCheck && *policyFlag == "" {
+		if BuildVersion == "dev" || BuildVersion == "" {
+			return fmt.Errorf("this is a source build (version %q) — self-update only works on a released binary; use `git pull && go build`, or install a release", BuildVersion)
+		}
+	}
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

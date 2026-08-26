@@ -580,7 +580,7 @@ func TestExamCorpusHashesRequireEverySourceArtifact(t *testing.T) {
 		{name: "additional ledger", extraName: "sabotage-ledger.json", omit: "sabotage-ledger.json"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		subRun(t, tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			files := map[string][]byte{
 				"ledger.json": []byte(`{"version":1}`),

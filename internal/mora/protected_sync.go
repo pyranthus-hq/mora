@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	configstore "github.com/pyranthus-hq/mora/internal/config"
 	protectedsyncpkg "github.com/pyranthus-hq/mora/internal/protectedsync"
 )
 
@@ -40,14 +41,27 @@ func writeProtectedSyncReceipt(cfg Config, r protectedSyncReceipt) error {
 // whether the discovered app actually has Full Disk Access; a failed app launch or
 // protected read stays loud and is never retried under a different identity.
 func protectedSyncAppRoot(exe string) (string, bool) {
+	return protectedSyncAppRootFor(context.Background(), exe)
+}
+
+// protectedSyncAppRootFor is protectedSyncAppRoot with context-scoped home
+// injection. A ctx carrying an injected home root (test sandboxes) confines
+// discovery to THAT home's Applications dir — never the real ~/Applications or
+// the system /Applications — so a hermetic test can never launch the real
+// installed Mora.app against the developer's vault.
+func protectedSyncAppRootFor(ctx context.Context, exe string) (string, bool) {
 	if root, ok := moraAppRoot(exe); ok {
 		return root, true
 	}
 	var roots []string
-	if home, err := protectedSyncUserHomeDir(); err == nil && home != "" {
-		roots = append(roots, filepath.Join(home, "Applications", moraAppName))
+	if injected, ok := configstore.HomeRootFrom(ctx); ok {
+		roots = append(roots, filepath.Join(injected, "Applications", moraAppName))
+	} else {
+		if home, err := protectedSyncUserHomeDir(); err == nil && home != "" {
+			roots = append(roots, filepath.Join(home, "Applications", moraAppName))
+		}
+		roots = append(roots, filepath.Join(string(filepath.Separator), "Applications", moraAppName))
 	}
-	roots = append(roots, filepath.Join(string(filepath.Separator), "Applications", moraAppName))
 	for _, root := range roots {
 		inner := filepath.Join(root, "Contents", "MacOS", "mora")
 		info, err := os.Stat(inner)
@@ -62,7 +76,8 @@ func protectedSyncAppRoot(exe string) (string, bool) {
 }
 
 func relayProtectedSync(ctx context.Context, cfg Config, source string) (protectedSyncReceipt, error) {
-	return protectedsyncpkg.Relay(ctx, protectedsyncpkg.Options{StateDir: cfg.StateDir, Source: source, GOOS: runtimeGOOS(), Executable: protectedSyncExecutable, AppRoot: protectedSyncAppRoot, RunOpen: protectedSyncRunOpen})
+	appRoot := func(exe string) (string, bool) { return protectedSyncAppRootFor(ctx, exe) }
+	return protectedsyncpkg.Relay(ctx, protectedsyncpkg.Options{StateDir: cfg.StateDir, Source: source, GOOS: runtimeGOOS(), Executable: protectedSyncExecutable, AppRoot: appRoot, RunOpen: protectedSyncRunOpen})
 }
 func protectedSyncReceiptArg(args []string) (string, []string, error) {
 	return protectedsyncpkg.ParseArgs(args)
@@ -77,7 +92,7 @@ func readProtectedSyncReceipt(cfg Config, token, source string, minCompletedAt .
 	return protectedsyncpkg.ReadReceipt(cfg.StateDir, token, source)
 }
 
-func protectedSyncApp() (string, bool) {
+func protectedSyncApp(ctx context.Context) (string, bool) {
 	if runtimeGOOS() != "darwin" {
 		return "", false
 	}
@@ -88,14 +103,14 @@ func protectedSyncApp() (string, bool) {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	return protectedSyncAppRoot(exe)
+	return protectedSyncAppRootFor(ctx, exe)
 }
 
 // relayProtectedIngest gives scheduled all-source ingest the same token-bound
 // app receipt protocol as protected connector syncs. It is intentionally separate
 // from protectedSyncSource: `mora sync ingest-hourly` must never become valid.
 func relayProtectedIngest(ctx context.Context, cfg Config, all bool, source string) error {
-	app, ok := protectedSyncApp()
+	app, ok := protectedSyncApp(ctx)
 	if !ok {
 		return errProtectedSyncDirect
 	}

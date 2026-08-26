@@ -475,7 +475,7 @@ func TestCLIRegistryRealRunDispatch(t *testing.T) {
 	registry := loadCLIRegistry(t)
 	for _, row := range registry.Commands {
 		row := row
-		t.Run(strings.ReplaceAll(row.Path, " ", "/"), func(t *testing.T) {
+		subRun(t, strings.ReplaceAll(row.Path, " ", "/"), func(t *testing.T) {
 			if strings.HasPrefix(row.Path, "serve http ") {
 				t.Setenv("MORA_PORT", "65534")
 				stubGOOS(t, "linux")
@@ -580,34 +580,37 @@ func normalizeCLIProbe(sig cliProbeSignature, tokens ...string) cliProbeSignatur
 }
 
 func TestCLIRegistryPriorityGapsUseRealRun(t *testing.T) {
-	t.Run("serve", func(t *testing.T) {
+	subRun(t, "serve", func(t *testing.T) {
 		root := t.TempDir()
 		setTestHome(t, root)
 		t.Setenv("MORA_CONFIG_DIR", filepath.Join(root, "config"))
 		var out bytes.Buffer
-		if err := Run(context.Background(), []string{"serve"}, &out, &out, strings.NewReader("")); err == nil ||
+		if err := Run(testCtx(t), []string{"serve"}, &out, &out, strings.NewReader("")); err == nil ||
 			!strings.Contains(err.Error(), "mora serve http") {
 			t.Fatalf("Run(serve) = %v, want documented usage", err)
 		}
 		out.Reset()
-		if err := Run(context.Background(), []string{"serve", "http", "--port", "0"}, &out, &out, strings.NewReader("")); err == nil ||
+		if err := Run(testCtx(t), []string{"serve", "http", "--port", "0"}, &out, &out, strings.NewReader("")); err == nil ||
 			!strings.Contains(err.Error(), "invalid --port") {
 			t.Fatalf("Run(serve http --port 0) = %v, want port refusal", err)
 		}
 	})
 
-	t.Run("upgrade", func(t *testing.T) {
+	subRun(t, "upgrade", func(t *testing.T) {
+		root := t.TempDir()
+		setTestHome(t, root)
+		t.Setenv("MORA_CONFIG_DIR", filepath.Join(root, "config"))
 		oldVersion := BuildVersion
 		t.Cleanup(func() { BuildVersion = oldVersion })
 		BuildVersion = "dev"
 		var out bytes.Buffer
-		err := Run(context.Background(), []string{"upgrade", "--check"}, &out, &out, strings.NewReader(""))
+		err := Run(testCtx(t), []string{"upgrade", "--check"}, &out, &out, strings.NewReader(""))
 		if err == nil || !strings.Contains(err.Error(), "source build") {
 			t.Fatalf("Run(upgrade --check) = %v, want source-build refusal", err)
 		}
 	})
 
-	t.Run("connect routes", func(t *testing.T) {
+	subRun(t, "connect routes", func(t *testing.T) {
 		root := t.TempDir()
 		setTestHome(t, root)
 		t.Setenv("MORA_CONFIG_DIR", filepath.Join(root, "config"))
@@ -618,7 +621,7 @@ func TestCLIRegistryPriorityGapsUseRealRun(t *testing.T) {
 			{"connect", "filesystem"},
 		} {
 			var out bytes.Buffer
-			err := Run(context.Background(), args, &out, &out, strings.NewReader(""))
+			err := Run(testCtx(t), args, &out, &out, strings.NewReader(""))
 			if err == nil {
 				t.Fatalf("Run(%v) unexpectedly succeeded", args)
 			}
@@ -628,12 +631,12 @@ func TestCLIRegistryPriorityGapsUseRealRun(t *testing.T) {
 		}
 	})
 
-	t.Run("loop json", func(t *testing.T) {
+	subRun(t, "loop json", func(t *testing.T) {
 		root := t.TempDir()
 		setTestHome(t, root)
 		t.Setenv("MORA_CONFIG_DIR", filepath.Join(root, "config"))
 		var out bytes.Buffer
-		if err := Run(context.Background(), []string{"loop", "list", "--json"}, &out, &out, strings.NewReader("")); err != nil {
+		if err := Run(testCtx(t), []string{"loop", "list", "--json"}, &out, &out, strings.NewReader("")); err != nil {
 			t.Fatal(err)
 		}
 		var payload any
@@ -642,9 +645,9 @@ func TestCLIRegistryPriorityGapsUseRealRun(t *testing.T) {
 		}
 	})
 
-	t.Run("unforget refusal", func(t *testing.T) {
+	subRun(t, "unforget refusal", func(t *testing.T) {
 		var out bytes.Buffer
-		err := Run(context.Background(), []string{"unforget", "gov_example"}, &out, &out, strings.NewReader(""))
+		err := Run(testCtx(t), []string{"unforget", "gov_example"}, &out, &out, strings.NewReader(""))
 		if err == nil || !strings.Contains(err.Error(), "without --yes") {
 			t.Fatalf("Run(unforget) = %v, want confirmation refusal", err)
 		}
@@ -657,12 +660,12 @@ func TestCLIRegistryJSONSurfacesAreByteClean(t *testing.T) {
 		{"connectors", "list", "--json"},
 		{"loop", "list", "--json"},
 	} {
-		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+		subRun(t, strings.Join(args, "/"), func(t *testing.T) {
 			root := t.TempDir()
 			setTestHome(t, root)
 			t.Setenv("MORA_CONFIG_DIR", filepath.Join(root, "config"))
 			var out bytes.Buffer
-			if err := Run(context.Background(), args, &out, &out, strings.NewReader("")); err != nil {
+			if err := Run(testCtx(t), args, &out, &out, strings.NewReader("")); err != nil {
 				t.Fatal(err)
 			}
 			if bytes.Contains(out.Bytes(), []byte("\x1b[")) {
@@ -677,13 +680,13 @@ func TestCLIRegistryJSONSurfacesAreByteClean(t *testing.T) {
 }
 
 func TestCLIRegistryHookIOThroughRun(t *testing.T) {
-	t.Run("session start", func(t *testing.T) {
+	subRun(t, "session start", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
 		restore := stubHookBrief(t, "today's local brief")
 		defer restore()
 		var out bytes.Buffer
-		if err := Run(context.Background(), []string{"hook", "session-start"}, &out, &out,
+		if err := Run(testCtx(t), []string{"hook", "session-start"}, &out, &out,
 			strings.NewReader(`{"hook_event_name":"SessionStart"}`)); err != nil {
 			t.Fatal(err)
 		}
@@ -693,14 +696,14 @@ func TestCLIRegistryHookIOThroughRun(t *testing.T) {
 		}
 	})
 
-	t.Run("recall", func(t *testing.T) {
+	subRun(t, "recall", func(t *testing.T) {
 		cfg := seedRecallMemories(t, 1)
 		if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
 		input := `{"prompt":"What did we decide about eelpout recall token alpha?"}`
-		if err := Run(context.Background(), []string{"hook", "recall"}, &out, &out, strings.NewReader(input)); err != nil {
+		if err := Run(testCtx(t), []string{"hook", "recall"}, &out, &out, strings.NewReader(input)); err != nil {
 			t.Fatal(err)
 		}
 		got := decodeHookOutput(t, out.String())
@@ -713,7 +716,7 @@ func TestCLIRegistryHookIOThroughRun(t *testing.T) {
 func TestCLIRegistryGraphThroughRun(t *testing.T) {
 	grSeedGraphVault(t)
 	var out bytes.Buffer
-	if err := Run(context.Background(), []string{"graph", "--json", "--top", "2"}, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"graph", "--json", "--top", "2"}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
 	var payload any
@@ -732,7 +735,7 @@ func TestCLIRegistryLoopLifecycleThroughRun(t *testing.T) {
 
 	run(t, "loop", "register", "issue-205", "--cadence", "daily", "--command", "mora pulse")
 	var listOut bytes.Buffer
-	if err := Run(context.Background(), []string{"loop", "list", "--json"}, &listOut, &listOut, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"loop", "list", "--json"}, &listOut, &listOut, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
 	// Plan 01-07: `loop list --json` carries its array under `loops`.
@@ -744,7 +747,7 @@ func TestCLIRegistryLoopLifecycleThroughRun(t *testing.T) {
 	}
 
 	var beginOut bytes.Buffer
-	if err := Run(context.Background(), []string{"loop", "begin", "issue-205", "--json"}, &beginOut, &beginOut, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"loop", "begin", "issue-205", "--json"}, &beginOut, &beginOut, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
 	var begun map[string]any
@@ -759,7 +762,7 @@ func TestCLIRegistryLoopLifecycleThroughRun(t *testing.T) {
 	now = now.Add(time.Minute)
 	run(t, "loop", "heartbeat", "issue-205", "--run", runID, "--json")
 	var statusOut bytes.Buffer
-	if err := Run(context.Background(), []string{"loop", "status", "issue-205", "--json"}, &statusOut, &statusOut, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), []string{"loop", "status", "issue-205", "--json"}, &statusOut, &statusOut, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
 	var status loopHealth

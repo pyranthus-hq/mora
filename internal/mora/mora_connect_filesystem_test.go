@@ -27,7 +27,7 @@ func TestConnectFilesystemOneShot(t *testing.T) {
 	}
 
 	// The source is registered AND enabled in one shot.
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestConnectFilesystemMissingPathErrors(t *testing.T) {
 	}
 
 	// And it must NOT have registered a (broken) source.
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestConnectFilesystemNameFlagAfterPath(t *testing.T) {
 
 	run(t, "connect", "filesystem", dir, "--name", "custom")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestConnectFilesystemStoresAbsolutePath(t *testing.T) {
 
 	run(t, "connect", "filesystem", "rel-notes")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestConnectFilesystemNameCollisionErrors(t *testing.T) {
 		t.Fatalf("a different folder with the same base name should error, not silently clobber:\n%s", out)
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestConnectFilesystemTwoFoldersCoexist(t *testing.T) {
 	run(t, "connect", "filesystem", dirA)
 	run(t, "connect", "filesystem", dirB)
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestConnectFilesystemReconnectRefreshes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestConnectFilesystemRejectsFile(t *testing.T) {
 		t.Fatalf("connect filesystem on a file path should error (it takes a folder):\n%s", out)
 	}
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestConnectFilesystemScopeFlag(t *testing.T) {
 
 	run(t, "connect", "filesystem", dir, "--scope", "project:foo")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestConnectFilesystemNameFlagBeforePath(t *testing.T) {
 
 	run(t, "connect", "filesystem", "--name", "custom", dir)
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestConnectFilesystemPathFlag(t *testing.T) {
 
 	run(t, "connect", "filesystem", "--path", dir)
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

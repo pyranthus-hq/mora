@@ -62,7 +62,7 @@ func TestMergeDuplicateNameHandleVariantsStayReviewOnly(t *testing.T) {
 		strings.Contains(cliEntity, "imessage_chat/riya-old") {
 		t.Fatalf("CLI entity surface did not preserve the reviewed merge boundary:\n%s", cliEntity)
 	}
-	mcpEntity, err := callMCPTool(context.Background(), "get_entity", map[string]any{"name": "riya@acme.com"})
+	mcpEntity, err := callMCPTool(testCtx(t), "get_entity", map[string]any{"name": "riya@acme.com"})
 	if err != nil {
 		t.Fatalf("MCP get_entity after Teach confirm: %v", err)
 	}

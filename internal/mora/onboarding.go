@@ -186,7 +186,7 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if fs.NArg() != 0 || !*jsonOut {
 			return errors.New("usage: mora setup status --json")
 		}
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -217,7 +217,7 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	if *plan && (*applyLayout || *applyIndex || *applyTokens) {
 		return errors.New("--plan cannot be combined with setup mutation flags")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

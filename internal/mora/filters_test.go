@@ -243,7 +243,7 @@ func TestResolveEntityID_ReturnsAliasIDSet(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	for i, addr := range []string{"alex.owner@gmail.com", "alexowner@gmail.com", "alex.owner+promos@gmail.com"} {
 		if err := writeMemory(cfg, senderEmail(string(rune('a'+i)), addr, "Alex Owner", "x@y.com")); err != nil {
 			t.Fatal(err)

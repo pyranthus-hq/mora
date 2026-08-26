@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
 	"path/filepath"
@@ -54,7 +53,7 @@ func TestSelfEmailsIncludesConfiguredAliases(t *testing.T) {
 	}
 	writeConfigKeyForTest(t, cfg, `self_emails = "adit@adisam.com, Adit@Other.COM"`)
 
-	reloaded, err := loadConfig()
+	reloaded, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +74,7 @@ func TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	if err := saveSources(cfg, []Source{{
@@ -165,7 +164,7 @@ func TestMeetingBriefRejectsMentionOnlyEvidenceAsObligation(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	if err := saveSources(cfg, []Source{{
@@ -301,7 +300,7 @@ func TestMeetingBriefGapsWhenSelfIsNotAmongAttendees(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	// Self is known (the Google mailbox) but the invite used an alias Mora has never

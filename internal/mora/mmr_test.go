@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -89,7 +88,7 @@ func TestLoadVectorsByID(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -134,7 +133,7 @@ func TestMMRDoesNotMutateTraceFused(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -162,7 +161,7 @@ func TestMMRProductionOffByteIdentical(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -196,7 +195,7 @@ func TestMMRPreservesGraphOnlyAdmission(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -224,7 +223,7 @@ func TestMMRForcedNoVectorsNoOp(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -263,7 +262,7 @@ func TestEvalMMRPoolPrecondition(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -298,7 +297,7 @@ func TestEvalMMRNoRegression(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -384,7 +383,7 @@ func TestEvalMMRAB(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	seedEvalFixture(t, cfg)
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatalf("rebuildIndex (ollama): %v", err)

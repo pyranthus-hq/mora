@@ -51,7 +51,7 @@ func TestContractLeafJSONReceipts(t *testing.T) {
 		{name: "sources", schema: "mora.sources.list", arrayKey: "sources", args: []string{"sources", "list", "--json"}},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			stdout, _, err := runSplit(t, tc.args...)
 			if err != nil {
 				t.Fatalf("%s returned error: %v", tc.name, err)
@@ -123,7 +123,7 @@ func TestContractMutationJSONReceipts(t *testing.T) {
 		{name: "teach_history", schema: "mora.teach.history", arrayKey: "entries", args: []string{"teach", "history", "--json"}},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			stdout, _, err := runSplit(t, tc.args...)
 			if err != nil {
 				t.Fatalf("%s returned error: %v", tc.name, err)
@@ -177,7 +177,7 @@ func TestMergeDecisionJSONReceipts(t *testing.T) {
 			args: []string{"teach", "identity", "reject", "--handle", "+14155550444", "--email", "four@example.com", "--json"},
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			stdout, _, err := runSplit(t, tc.args...)
 			if err != nil {
 				t.Fatalf("%s returned error: %v", tc.name, err)
@@ -462,7 +462,7 @@ func TestContractStdoutIsPure(t *testing.T) {
 		if row.Platform != "all" || row.JSONContract == "exempt" || contractBaselineNonExecutable[row.Path] != "" {
 			continue
 		}
-		t.Run(strings.ReplaceAll(row.Path, " ", "/"), func(t *testing.T) {
+		subRun(t, strings.ReplaceAll(row.Path, " ", "/"), func(t *testing.T) {
 			args := append(strings.Fields(row.Path), "--json")
 			stdout, _, _ := runSplit(t, args...)
 			if trimmed := strings.TrimSpace(stdout); trimmed != "" && !json.Valid([]byte(trimmed)) {
@@ -498,7 +498,7 @@ func TestContractWriteJSONDegradedIndexKeepsStdoutPure(t *testing.T) {
 	if healthy.Schema != "mora.write" || healthy.SchemaVersion != 1 || healthy.ID == "" || healthy.Path == "" || healthy.Scope == "" || healthy.Type == "" || healthy.Title == "" || !healthy.IndexUpdated {
 		t.Fatalf("healthy write receipt = %+v", healthy)
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

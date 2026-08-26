@@ -54,7 +54,7 @@ func cmdRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if len(args) == 0 {
 		return fmt.Errorf("usage: mora retention report|decide|execute|recover|verify")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

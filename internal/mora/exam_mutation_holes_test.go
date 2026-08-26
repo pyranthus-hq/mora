@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"strings"
 	"testing"
@@ -27,7 +26,7 @@ func TestExamForwardedSubjectNeverBecomesEvidence(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	if err := saveSources(cfg, []Source{{
@@ -92,7 +91,7 @@ func TestExamLeadInFragmentNeverBecomesEvidence(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	if err := saveSources(cfg, []Source{{
@@ -160,7 +159,7 @@ func TestExamGmailBareQuestionNeedsRealInterrogative(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	if err := saveSources(cfg, []Source{{
@@ -225,7 +224,7 @@ func TestExamHardWrapJoinsBeforeSegmenting(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
 
 	if err := saveSources(cfg, []Source{{

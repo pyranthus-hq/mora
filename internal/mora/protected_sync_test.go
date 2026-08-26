@@ -66,9 +66,9 @@ func TestProtectedSyncRelayPreservesJSONContract(t *testing.T) {
 	protectedSyncExecutable = func() (string, error) {
 		return filepath.Join(app, "Contents", "MacOS", "mora"), nil
 	}
-	protectedSyncRunOpen = func(_ context.Context, args ...string) error {
+	protectedSyncRunOpen = func(ctx context.Context, args ...string) error {
 		token := args[len(args)-1]
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -98,7 +98,7 @@ func TestProtectedSyncRelayPreservesJSONContract(t *testing.T) {
 func TestProtectedSyncReceiptRejectsUnprotectedSource(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	err := Run(context.Background(), []string{"sync", "google", protectedSyncReceiptFlag, protectedSyncTestToken()}, nil, nil, nil)
+	err := Run(testCtx(t), []string{"sync", "google", protectedSyncReceiptFlag, protectedSyncTestToken()}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "only valid") {
 		t.Fatalf("unprotected receipt error = %v", err)
 	}

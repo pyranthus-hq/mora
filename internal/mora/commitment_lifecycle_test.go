@@ -190,7 +190,7 @@ func TestIMessageMalformedMessageEvidenceFailsClosed(t *testing.T) {
 		{name: "direction disagrees with body", mutate: func(entries []map[string]any) { entries[1]["from_me"] = false; entries[1]["sender"] = "Lucia" }},
 		{name: "sender disagrees with direction", mutate: func(entries []map[string]any) { entries[1]["sender"] = "Lucia" }},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		subRun(t, test.name, func(t *testing.T) {
 			m := imessageLifecycleMemory(t, baseTimes)
 			test.mutate(m.Meta["message_evidence"].([]map[string]any))
 			if got := classifyCommitments(m, Config{}); len(got) != 0 {
@@ -201,7 +201,7 @@ func TestIMessageMalformedMessageEvidenceFailsClosed(t *testing.T) {
 			}
 		})
 	}
-	t.Run("schema without entries", func(t *testing.T) {
+	subRun(t, "schema without entries", func(t *testing.T) {
 		m := imessageLifecycleMemory(t, baseTimes)
 		delete(m.Meta, "message_evidence")
 		if got := classifyCommitments(m, Config{}); len(got) != 0 {
@@ -211,7 +211,7 @@ func TestIMessageMalformedMessageEvidenceFailsClosed(t *testing.T) {
 			t.Fatalf("missing message evidence produced lifecycle evidence: %+v", got)
 		}
 	})
-	t.Run("rendered message count mismatch", func(t *testing.T) {
+	subRun(t, "rendered message count mismatch", func(t *testing.T) {
 		m := imessageLifecycleMemory(t, baseTimes)
 		entries := m.Meta["message_evidence"].([]map[string]any)
 		m.Meta["message_evidence"] = entries[1:]
@@ -439,7 +439,7 @@ func TestCrossThreadClosureGivenNameIdentityGate(t *testing.T) {
 		return out
 	}
 
-	t.Run("refuses two different full names sharing a given name", func(t *testing.T) {
+	subRun(t, "refuses two different full names sharing a given name", func(t *testing.T) {
 		rivera := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-rivera", "+15550100220", "Sam Rivera",
 			"I'll send the reviewer list.", "2026-08-01T09:00:00Z")
 		chen := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-chen", "+15550100221", "Sam Chen",
@@ -452,7 +452,7 @@ func TestCrossThreadClosureGivenNameIdentityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses two first-name-only contacts", func(t *testing.T) {
+	subRun(t, "refuses two first-name-only contacts", func(t *testing.T) {
 		first := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-first-a", "+15550100222", "Sam",
 			"I'll send the reviewer list.", "2026-08-01T09:00:00Z")
 		second := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-first-b", "+15550100223", "Sam",
@@ -465,7 +465,7 @@ func TestCrossThreadClosureGivenNameIdentityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses a full-name opener and an unrelated first-name-only handle", func(t *testing.T) {
+	subRun(t, "refuses a full-name opener and an unrelated first-name-only handle", func(t *testing.T) {
 		rivera := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-rivera-full", "+15550100224", "Sam Rivera",
 			"I'll send the reviewer list.", "2026-08-01T09:00:00Z")
 		unrelatedSam := oneMessageIMessageCommitmentMemory(t, "imessage_chat/sam-unrelated-short", "+15550100225", "Sam",
@@ -478,7 +478,7 @@ func TestCrossThreadClosureGivenNameIdentityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses matching full names with conflicting iMessage handles", func(t *testing.T) {
+	subRun(t, "refuses matching full names with conflicting iMessage handles", func(t *testing.T) {
 		fullName := oneMessageIMessageCommitmentMemory(t, "imessage_chat/casey-full", "+15550100230", "Casey Liao",
 			"I'll send the paper-store receipt.", "2026-08-01T09:00:00Z")
 		matchingName := oneMessageIMessageCommitmentMemory(t, "imessage_chat/casey-matching", "+15550100231", "Casey Liao",

@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +28,7 @@ func TestIssue221GapAnalysisReceiptAndPartialEvidence(t *testing.T) {
 		ID: "gmail_thread/old", Type: "email", Source: "gmail", Title: "Old evidence",
 		Text: "quorlath", CreatedAt: "2026-01-01T00:00:00Z",
 	}}
-	g, err := computeGaps(context.Background(), cfg, "quorlath", mems, retrievalTrace{}, now)
+	g, err := computeGaps(testCtx(t), cfg, "quorlath", mems, retrievalTrace{}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +49,7 @@ func TestIssue221CheckedAndNoGapsIsDistinguishable(t *testing.T) {
 		{ID: "gmail_thread/a", Type: "email", Source: "gmail", Title: "Current A", Text: "quorlath", CreatedAt: "2026-07-31T00:00:00Z"},
 		{ID: "imessage_chat/b", Type: "imessage", Source: "imessage", Title: "Current B", Text: "quorlath", CreatedAt: "2026-07-30T00:00:00Z"},
 	}
-	g, err := computeGaps(context.Background(), cfg, "quorlath", mems, retrievalTrace{}, now)
+	g, err := computeGaps(testCtx(t), cfg, "quorlath", mems, retrievalTrace{}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +67,7 @@ func TestIssue221OutcomeQuestionRejectsProspectiveOnlyEvidence(t *testing.T) {
 		{ID: "gmail_thread/invite", Type: "email", Source: "gmail", Title: "Mercor interview invitation", Text: "Please schedule your interview.", CreatedAt: "2026-07-29T00:00:00Z"},
 		{ID: "calendar_event/interview", Type: "event", Source: "calendar", Title: "Mercor interview scheduled", Text: "Calendar confirmation", CreatedAt: "2026-07-30T00:00:00Z"},
 	}
-	g, err := computeGaps(context.Background(), cfg, "What was the Mercor interview outcome?", mems, retrievalTrace{}, now)
+	g, err := computeGaps(testCtx(t), cfg, "What was the Mercor interview outcome?", mems, retrievalTrace{}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +77,7 @@ func TestIssue221OutcomeQuestionRejectsProspectiveOnlyEvidence(t *testing.T) {
 
 	mems[1].Title = "Mercor interview completed"
 	mems[1].Text = "The result was accepted."
-	g, err = computeGaps(context.Background(), cfg, "What was the Mercor interview outcome?", mems, retrievalTrace{}, now)
+	g, err = computeGaps(testCtx(t), cfg, "What was the Mercor interview outcome?", mems, retrievalTrace{}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +92,7 @@ func TestThinkEvidenceAndStaleness(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "OAuth design", "--text", "PKCE flow and refresh tokens")
 	now := time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC)
@@ -134,7 +133,7 @@ func TestThinkCoverageHole(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "note", "--text", "some unrelated content")
 
 	res, err := buildThink(ctx, cfg, "what did Zelda Fitzgerald say", "", 5, time.Now())
@@ -151,7 +150,7 @@ func TestThinkThinCoverage(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Neil appears in exactly one memory -> thin (threshold is 2).
 	if err := writeMemory(cfg, Memory{
@@ -183,7 +182,7 @@ func TestThinkNoFalseHoleForQuestionPhrase(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "plan", "--text", "the launch plan content")
 
 	res, err := buildThink(ctx, cfg, "What Should We Do About The Plan", "", 5, time.Now())
@@ -203,7 +202,7 @@ func TestThinkThinCoverageIgnoresFirstNameOnly(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	if err := writeMemory(cfg, Memory{
 		ID: "gmail_thread/t1", Scope: "personal", Type: "email", Title: "hi",
 		CreatedAt: "2026-06-01T00:00:00Z", Text: "note",
@@ -233,7 +232,7 @@ func TestThinkNoMatch(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	res, err := buildThink(context.Background(), cfg, "nonexistent topic xyzzy", "", 5, time.Now())
+	res, err := buildThink(testCtx(t), cfg, "nonexistent topic xyzzy", "", 5, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +253,7 @@ func TestThinkGraphOnlyEvidenceCaveat(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// M1 is reachable ONLY via Neil's person edge — its body shares no terms with
 	// the query below (Neil's name lives in Meta, not the text/title/FTS).
@@ -304,7 +303,7 @@ func TestThinkNoCaveatWhenDirectlySupported(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Neil's memory whose BODY contains the query's topic word ("venue") — so FTS
 	// directly supports it; it is not association-only.
@@ -335,7 +334,7 @@ func TestThinkDeterministic(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "alpha", "--text", "alpha beta gamma")
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "beta", "--text", "beta gamma delta")
 	now := time.Now()

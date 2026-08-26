@@ -61,7 +61,7 @@ func TestNoUserVisibleSQLITEBUSY(t *testing.T) {
 
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Seed enough rows that readers always have hits and a rebuild has work.
 	seedIDs := make([]string, 0, 8)
@@ -190,12 +190,12 @@ func runMPChild(t *testing.T, role string) {
 	_ = os.Setenv("MORA_CONFIG_DIR", configDir)
 	_ = os.Setenv("MORA_EMBEDDER", "")
 
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loadConfig: %v\n", err)
 		os.Exit(1)
 	}
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	switch role {
 	case "writer":

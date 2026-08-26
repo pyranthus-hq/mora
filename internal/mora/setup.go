@@ -41,7 +41,7 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if len(args) == 0 {
 		return errors.New("usage: mora connectors list|enable|disable|setup")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -421,7 +421,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stde
 	// Google detect-and-skip → deny-list → backfill confirm → enable → backfill.
 	if imessageSelected {
 		fmt.Fprintln(stdout, "Checking iMessage readiness…")
-		printIMessageReadiness(stdout, true)
+		printIMessageReadiness(cfg, stdout, true)
 	}
 
 	// CROSS-PHASE TOUCH (UI-SPEC §C/E-7, control-flow): detect Google placeholder
@@ -498,7 +498,7 @@ func runSetupMenu(ctx context.Context, cfg Config, stdin io.Reader, stdout, stde
 	}
 	if imessageSelected {
 		if doBackfill {
-			if ready, _ := imessage.ProbeReadable(chatDBPath()); ready && runtimeGOOS() == "darwin" {
+			if ready, _ := imessage.ProbeReadable(chatDBPath(cfg)); ready && runtimeGOOS() == "darwin" {
 				total, err := backfillEnabledIMessage(ctx, cfg, stdout)
 				if err != nil {
 					return err
@@ -560,7 +560,7 @@ func cmdDisconnect(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if len(args) < 1 || args[0] != "google" {
 		return errors.New("usage: mora disconnect google")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

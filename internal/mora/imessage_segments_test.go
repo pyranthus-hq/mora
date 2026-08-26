@@ -159,7 +159,7 @@ func TestIMessageEvidenceMalformedIdentityFailsClosed(t *testing.T) {
 		"invalid_time":      {"evidence_ref": base.ID + "#a", "at": "not-a-time", "from_me": true, "sender": "Me", "block_start": 0, "block_end": 9},
 		"empty_sender":      {"evidence_ref": base.ID + "#a", "at": "2026-08-01T09:00:00Z", "from_me": true, "sender": "", "block_start": 0, "block_end": 9},
 	} {
-		t.Run(name, func(t *testing.T) {
+		subRun(t, name, func(t *testing.T) {
 			m := base
 			m.Meta = map[string]any{"message_evidence": []map[string]any{entry}}
 			rows, diag := deriveIMessageSegments(m)

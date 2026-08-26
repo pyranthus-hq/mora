@@ -21,7 +21,7 @@ const retrievalDAGSchemaVersion = 5
 
 func TestRetrievalDAGSchemaV5RebuildsEveryPredecessorShape(t *testing.T) {
 	for _, shape := range []string{"v3", "d_v4", "e_v4", "partial_v5"} {
-		t.Run(shape, func(t *testing.T) {
+		subRun(t, shape, func(t *testing.T) {
 			cfg := seedGmailSegmentsSearchFixture(t)
 			retrievalDAGMutateSchema(t, cfg, shape)
 
@@ -144,7 +144,7 @@ func TestRetrievalDAGGmailSegmentFiltersApplyBeforeRanking(t *testing.T) {
 		if semantic {
 			name = "semantic"
 		}
-		t.Run(name, func(t *testing.T) {
+		subRun(t, name, func(t *testing.T) {
 			if semantic {
 				srv := fakeOllama(t, []float64{1, 0, 0, 0})
 				defer srv.Close()
@@ -219,7 +219,7 @@ func TestRetrievalDAGSegmentTraceIsDirectEvidenceAndEvalArm(t *testing.T) {
 	tr.FTS, tr.Vec, tr.Graph = nil, nil, []string{target.ID}
 	segmentField = reflect.ValueOf(&tr).Elem().FieldByName("Segment")
 	segmentField.Set(reflect.ValueOf([]string{target.ID}))
-	gaps, err := computeGaps(context.Background(), cfg, "status update", []Memory{target}, tr, time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC))
+	gaps, err := computeGaps(testCtx(t), cfg, "status update", []Memory{target}, tr, time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}

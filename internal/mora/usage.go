@@ -24,7 +24,7 @@ type usageStateReceipt struct {
 }
 
 func cmdUsage(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,7 +15,7 @@ func TestOpenLoopsByPersonJoinIsSound(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// Create the person entity "Sam Rivera" (sender ⇒ trusted display name).
 	if err := writeMemory(cfg, Memory{
@@ -69,7 +68,7 @@ func TestOpenLoopsMissingLedgerIsEmpty(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// A fresh vault has no live-tasks.md ledger at all (the cold-start case).
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -92,7 +91,7 @@ func TestOpenLoopsPerPersonCapped(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "gmail_thread/n1", Scope: "personal", Type: "email", Title: "hi",
@@ -137,7 +136,7 @@ func TestThinkOpenLoops(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if err := writeMemory(cfg, Memory{
 		ID: "gmail_thread/t1", Scope: "personal", Type: "email", Title: "Pilot kickoff",
@@ -215,7 +214,7 @@ func TestThinkOpenLoopsEvidenceIsAuthoritative(t *testing.T) {
 	run(t, "init")
 	cfg := mustConfig(t)
 	cfg.SelfEmails = []string{"self@example.com"}
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	// The inbound memory establishes Neil's trusted graph name. The outbound
 	// memory then contributes the immutable, evidence-derived obligation.
@@ -295,7 +294,7 @@ func TestThinkOpenLoopsAbsentWhenPersonNotNamed(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "Roadmap", "--text", "the pilot roadmap plan")
 	writeLiveTasks(t, cfg,
 		"| Send Neil Patel the pilot SOW | work | you | P1 | active | — | this week | 2026-06-10 |",

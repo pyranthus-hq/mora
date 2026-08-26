@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 )
@@ -15,7 +14,7 @@ func TestReingestNoSources(t *testing.T) {
 	cfg := mustConfig(t)
 
 	var out bytes.Buffer
-	if err := cmdReingest(context.Background(), nil, &out, testStderr); err != nil {
+	if err := cmdReingest(testCtx(t), nil, &out, testStderr); err != nil {
 		t.Fatalf("reingest: %v", err)
 	}
 	if !strings.Contains(out.String(), "reingested 0 item(s)") {
@@ -32,7 +31,7 @@ func TestReingestFullFlagAndHelp(t *testing.T) {
 	run(t, "init")
 
 	var out bytes.Buffer
-	if err := cmdReingest(context.Background(), []string{"--full"}, &out, testStderr); err != nil {
+	if err := cmdReingest(testCtx(t), []string{"--full"}, &out, testStderr); err != nil {
 		t.Fatalf("reingest --full: %v", err)
 	}
 	if !strings.Contains(out.String(), "full lookback") {
@@ -40,7 +39,7 @@ func TestReingestFullFlagAndHelp(t *testing.T) {
 	}
 
 	var help bytes.Buffer
-	if err := cmdReingest(context.Background(), []string{"--help"}, &help, testStderr); err != nil {
+	if err := cmdReingest(testCtx(t), []string{"--help"}, &help, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(help.String(), "usage: mora reingest") {
@@ -48,7 +47,7 @@ func TestReingestFullFlagAndHelp(t *testing.T) {
 	}
 
 	var bad bytes.Buffer
-	if err := cmdReingest(context.Background(), []string{"--bogus"}, &bad, testStderr); err == nil {
+	if err := cmdReingest(testCtx(t), []string{"--bogus"}, &bad, testStderr); err == nil {
 		t.Fatal("expected an error for an unknown flag")
 	}
 }

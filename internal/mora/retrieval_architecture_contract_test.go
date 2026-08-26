@@ -84,7 +84,7 @@ func TestRetrievalArchitectureDescribesMergedSegmentSurface(t *testing.T) {
 
 	for name, contract := range docs {
 		name, contract := name, contract
-		t.Run(name, func(t *testing.T) {
+		subRun(t, name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join("..", "..", "docs", "architecture", name)
 			body, err := os.ReadFile(path)

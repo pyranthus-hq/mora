@@ -30,57 +30,60 @@ func skipOnWindows(t *testing.T, reason string) {
 // never equal 0600/0640/0644. The production code still writes the correct mode
 // (security-relevant on Unix); this only relaxes the *assertion* on Windows.
 
-// setTestHome points the OS home directory at dir for the duration of the test.
-// It sets BOTH HOME and USERPROFILE because os.UserHomeDir — which defaultConfig
-// uses to locate the vault/config/data dirs — reads USERPROFILE on Windows and
-// HOME elsewhere. Setting only HOME (the original behavior) left every Windows
-// test resolving the caller's REAL vault under %USERPROFILE%\vault\mora: tests
-// ran against thousands of live files (slow, hit the 10m package timeout) and,
-// worse, mutated the user's real vault. Setting both keeps tests hermetic on
-// every OS; on Linux the extra USERPROFILE is simply ignored.
+// setTestHome points Mora's home-derived dirs at dir for the duration of the
+// test by injecting a home root into the caller's test context — the exact
+// layout os.UserHomeDir-driven resolution used to produce from HOME/USERPROFILE
+// (which this helper set process-globally before #319; see testctx_test.go).
+// The empty string remains valid: it models a missing HOME exactly like the old
+// t.Setenv("HOME", "") did.
 func setTestHome(t *testing.T, dir string) {
 	t.Helper()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
+	e := lookupTestEnv(t)
+	if e == nil {
+		e = &testEnv{}
+		bindTestEnv(t, e)
+	}
+	cp := *e
+	cp.home = dir
+	cp.configRoot = ""
+	bindTestEnv(t, &cp)
 }
 
+// setAuthoredReconcileRunnerForTest pins the async authored-write reconciler on
+// the caller's injected environment instead of swapping a package global, so
+// concurrent tests never share (or race each other's cleanup of) this seam.
 func setAuthoredReconcileRunnerForTest(t *testing.T, runner func(context.Context, Config) error) {
 	t.Helper()
-	authoredReconcileRunnerMu.Lock()
-	orig := authoredReconcileRunner
-	authoredReconcileRunner = runner
-	authoredReconcileRunnerMu.Unlock()
-	t.Cleanup(func() {
-		authoredReconcileRunnerMu.Lock()
-		authoredReconcileRunner = orig
-		authoredReconcileRunnerMu.Unlock()
-	})
+	e := lookupTestEnv(t)
+	if e == nil {
+		e = &testEnv{}
+		bindTestEnv(t, e)
+	}
+	e.reconciler = runner
 }
 
-// withTempHome points all home-derived dirs at a fresh temp dir on every OS.
+// withTempHome points all home-derived dirs at a fresh temp dir without
+// touching process environment: the root rides the caller's test context, so
+// tests using it MAY run in parallel (#319). Hermeticity guarantees carry over:
+// a developer's exported MORA_CONFIG_DIR / MORA_VAULT cannot leak a real config
+// or vault in, because an injected root makes config resolution skip the
+// process environment entirely (configstore.LoadFrom).
 func withTempHome(t *testing.T) {
 	t.Helper()
 	// Async MCP reconciliation is a process-lifetime production worker. Hermetic
 	// temp-home tests may tear their StateDir down immediately after a call, so keep
 	// it inert by default and opt in with a local seam where its scheduling contract
-	// is under test.
-	// Snapshotting the runner before the production goroutine boundary keeps this
-	// cleanup-safe. Tests using withTempHome also call t.Setenv below, so Go's test
-	// harness already forbids them from running in parallel.
-	setAuthoredReconcileRunnerForTest(t, func(context.Context, Config) error { return nil })
+	// is under test. The seam rides the per-test env, so this stays true per test
+	// even under parallelism.
+	env := &testEnv{home: t.TempDir(), reconciler: func(context.Context, Config) error { return nil }}
+	bindTestEnv(t, env)
 	pinOperationClockForTest(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
-	setTestHome(t, t.TempDir())
-	// Hermeticity: a developer's exported MORA_CONFIG_DIR / MORA_VAULT must not
-	// leak a real config or vault into tests that assume the temp HOME's
-	// default location.
-	t.Setenv("MORA_CONFIG_DIR", "")
-	t.Setenv("MORA_VAULT", "")
 }
 
 func run(t *testing.T, args ...string) string {
 	t.Helper()
 	var out bytes.Buffer
-	if err := Run(context.Background(), args, &out, &out, strings.NewReader("")); err != nil {
+	if err := Run(testCtx(t), args, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("Run(%v) error: %v\noutput:\n%s", args, err, out.String())
 	}
 	return out.String()
@@ -141,7 +144,7 @@ func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 	runtimeGOOS = func() string { return "windows" }
 
 	var js bytes.Buffer
-	if err := cmdDoctor(context.Background(), []string{"--json"}, &js, testStderr); err != nil {
+	if err := cmdDoctor(testCtx(t), []string{"--json"}, &js, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	var rep doctorReport
@@ -153,7 +156,7 @@ func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 	}
 
 	var text bytes.Buffer
-	if err := cmdDoctor(context.Background(), nil, &text, testStderr); err != nil {
+	if err := cmdDoctor(testCtx(t), nil, &text, testStderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(text.String(), "skipping chat.db checks on windows") {

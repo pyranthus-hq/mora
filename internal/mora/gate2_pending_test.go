@@ -19,7 +19,7 @@ import (
 // gate2Write replicates cmdWrite's mark -> create -> upsert -> retire lifecycle.
 func gate2Write(t *testing.T, cfg Config, m Memory) Memory {
 	t.Helper()
-	ctx := context.Background()
+	ctx := testCtx(t)
 	got, op, err := createMemory(ctx, cfg, m)
 	if err != nil {
 		t.Fatalf("createMemory: %v", err)
@@ -89,9 +89,9 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		return func() { testHookPostMarkerWrite = nil }
 	}
 
-	t.Run("write_marks_before_file_exists", func(t *testing.T) {
+	subRun(t, "write_marks_before_file_exists", func(t *testing.T) {
 		cfg := gate2Vault(t)
-		ctx := context.Background()
+		ctx := testCtx(t)
 		var sawOpBeforeFile bool
 		restore := captureFirstMark(func() {
 			ops, _ := listPendingOps(cfg)
@@ -108,7 +108,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		_ = unmarkIndexDirty(cfg, op.OpID)
 	})
 
-	t.Run("delete_marks_before_removal", func(t *testing.T) {
+	subRun(t, "delete_marks_before_removal", func(t *testing.T) {
 		// Drives the REAL cmdDelete. MUTATION: drop cmdDelete's markIndexDirty => the
 		// first mark is then the rebuild's A4 self-mark, which fires AFTER os.Remove =>
 		// the file is already gone at capture => RED. (A5 row 4.)
@@ -126,7 +126,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := cmdDelete(context.Background(), []string{"--yes", "mem_del"}, &buf, testStderr); err != nil {
+		if err := cmdDelete(testCtx(t), []string{"--yes", "mem_del"}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if !fileStillPresentAtMark || !sawDeleteOp {
@@ -134,7 +134,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		}
 	})
 
-	t.Run("unforget_marks_before_ledger_change", func(t *testing.T) {
+	subRun(t, "unforget_marks_before_ledger_change", func(t *testing.T) {
 		// Drives the REAL cmdUnforget. It revokes a governance entry (an index input),
 		// so it must mark BEFORE the revoke. MUTATION: drop cmdUnforget's markIndexDirty
 		// => the first mark is the rebuild's A4 self-mark AFTER the revoke => the ledger
@@ -152,7 +152,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := cmdUnforget(context.Background(), []string{"--yes", seed.ID}, &buf, testStderr); err != nil {
+		if err := cmdUnforget(testCtx(t), []string{"--yes", seed.ID}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if !ledgerUnchangedAtMark {
@@ -160,7 +160,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		}
 	})
 
-	t.Run("brief_correct_marks_before_ledger_change", func(t *testing.T) {
+	subRun(t, "brief_correct_marks_before_ledger_change", func(t *testing.T) {
 		// Drives the REAL cmdBriefCorrect (A5 row 7). MUTATION: drop its markIndexDirty
 		// => the append lands before the first (A4) mark => RED.
 		cfg := gate2Vault(t, coreBIdxmem("mem_cite", "global", "insight", "Cited", "citebody"))
@@ -172,7 +172,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := cmdBriefCorrect(context.Background(), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf, testStderr); err != nil {
+		if err := cmdBriefCorrect(testCtx(t), []string{"--memory-id", "mem_cite", "--attendee", "person@example.com", "--confirm"}, &buf, testStderr); err != nil {
 			t.Fatal(err)
 		}
 		if !ledgerUnchangedAtMark {
@@ -180,7 +180,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		}
 	})
 
-	t.Run("merge_marks_before_ledger_change", func(t *testing.T) {
+	subRun(t, "merge_marks_before_ledger_change", func(t *testing.T) {
 		// Drives the REAL mergeDecide (A5 row 8). MUTATION: drop its markIndexDirty =>
 		// the append lands before the first (A4) mark => RED.
 		cfg := gate2Vault(t)
@@ -192,7 +192,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		})
 		defer restore()
 		var buf bytes.Buffer
-		if err := mergeDecide(context.Background(), []string{"--handle", "+14155550123", "--email", "person@example.com", "--yes"}, &buf, mergeDecisionConfirm); err != nil {
+		if err := mergeDecide(testCtx(t), []string{"--handle", "+14155550123", "--email", "person@example.com", "--yes"}, &buf, mergeDecisionConfirm); err != nil {
 			t.Fatal(err)
 		}
 		if !ledgerUnchangedAtMark {
@@ -200,7 +200,7 @@ func TestEveryVaultMutationMarksDirty(t *testing.T) {
 		}
 	})
 
-	t.Run("connector_ingest_journals_before_publish", func(t *testing.T) {
+	subRun(t, "connector_ingest_journals_before_publish", func(t *testing.T) {
 		// Drives the REAL writeMappedMemory (A5 row 2). The durable journal header is
 		// the mark-before-visible for a connector publish; it must exist BEFORE the file
 		// is published. MUTATION: drop ensureIngestJournalHeader from writeMappedMemory
@@ -249,7 +249,7 @@ func TestFailedUpsertLeavesIndexDirty(t *testing.T) {
 	idxUpsertStampVaultID(t, cfg, "v_someone_else")
 
 	var buf bytes.Buffer
-	if err := cmdWrite(context.Background(), []string{"--title", "Blocked", "--text", "blockedbody"}, &buf, testStderr); err != nil {
+	if err := cmdWrite(testCtx(t), []string{"--title", "Blocked", "--text", "blockedbody"}, &buf, testStderr); err != nil {
 		t.Fatalf("cmdWrite should degrade-succeed on a blocked upsert, got %v", err)
 	}
 	ops, _ := listPendingOps(cfg)
@@ -311,7 +311,7 @@ func TestFailedRebuildIsVisibleOnACleanIndex(t *testing.T) {
 // the raced op is cleared => RED.
 func TestRebuildDoesNotClearRacedMutation(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	var racedOp pendingOp
 	orig := listRebuildFiles
@@ -350,7 +350,7 @@ func TestRebuildDoesNotClearRacedMutation(t *testing.T) {
 // (not parsed) => op cleared => RED.
 func TestUnparseableMemoryKeepsIndexDirty(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// A file with broken frontmatter: listed by allMemoryFiles, dropped by parseMemory.
 	broken := filepath.Join(memoriesRoot(cfg), "global", "broken.md")
 	if err := os.WriteFile(broken, []byte("this is not valid frontmatter\n"), 0o644); err != nil {
@@ -380,7 +380,7 @@ func TestUnparseableMemoryKeepsIndexDirty(t *testing.T) {
 // (c)'s reappearance clause => the op lives forever and B4 hides a LIVE memory => RED.
 func TestReingestRetiresDeleteOp(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	m := gate2Write(t, cfg, coreBIdxmem("", "global", "insight", "Reingested", "reingestbody"))
 	// A stale delete op for a memory that still exists on disk (a connector rewrote
 	// it onto its own path). The next committed rebuild lists+parses it => cleared.
@@ -404,7 +404,7 @@ func TestReingestRetiresDeleteOp(t *testing.T) {
 // => the op is pinned forever => RED.
 func TestAbandonedMutationLeavesNoPendingOp(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// Plant a regular FILE where the scope directory would be, so atomicCreate's
 	// MkdirAll fails with a non-EEXIST error.
 	blocker := filepath.Join(memoriesRoot(cfg), "blocked")
@@ -427,7 +427,7 @@ func TestAbandonedMutationLeavesNoPendingOp(t *testing.T) {
 // unclearable forever => RED.
 func TestKilledRebuildOpIsRecoverable(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	// Simulate a SIGKILLed rebuild: a rebuild op left behind with an OLD marked_at
 	// and a DIFFERENT op_id than any live process.
 	killed := pendingOp{
@@ -459,7 +459,7 @@ func TestKilledRebuildOpIsRecoverable(t *testing.T) {
 // The mark is a file, so it never contends on the rebuild's writer lock.
 func TestWriteDuringRebuildDoesNotAbort(t *testing.T) {
 	cfg := gate2Vault(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	var landedPath string
 	orig := listRebuildFiles

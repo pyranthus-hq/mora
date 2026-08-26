@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,7 +14,7 @@ import (
 // through the token-holding AI browser.
 func TestServeHTTPCallAllowlistBlocksDelete(t *testing.T) {
 	s := &httpServer{token: "tok", port: 7777}
-	h := s.handler()
+	h := s.handler(testCtx(t))
 
 	req := httptest.NewRequest(http.MethodPost, "/call",
 		strings.NewReader(`{"name":"delete_memory","arguments":{"id":"x"}}`))
@@ -56,7 +55,7 @@ func TestServeHTTPCallAllowlistShape(t *testing.T) {
 func TestServeHTTPPortGuardRejectsZero(t *testing.T) {
 	t.Setenv("MORA_CONFIG_DIR", t.TempDir())
 	var out strings.Builder
-	err := serveLoopbackHTTP(context.Background(), []string{"--port", "0"}, &out)
+	err := serveLoopbackHTTP(testCtx(t), []string{"--port", "0"}, &out)
 	if err == nil {
 		t.Fatal("serveLoopbackHTTP(--port 0): want error, got nil")
 	}

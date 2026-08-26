@@ -15,7 +15,6 @@ package mora
 // a local Ollama daemon answers.
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +36,7 @@ func TestEvalWeightSweep(t *testing.T) {
 		t.Skipf("Ollama daemon unreachable (embedder=%q) — sweep needs it; skipping", model)
 	}
 
-	realCfg, err := loadConfig()
+	realCfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -49,7 +48,7 @@ func TestEvalWeightSweep(t *testing.T) {
 		t.Skipf("no live vault markdown at %s to copy", srcVault)
 	}
 
-	ctx := context.Background()
+	ctx := testCtx(t)
 	queries := loadQueries(t, qPath)
 	rel, meta, qids := loadQrels(t, rPath)
 

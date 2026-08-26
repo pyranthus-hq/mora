@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 )
@@ -21,7 +20,7 @@ func TestClassifyUpgradeInstall(t *testing.T) {
 		{"release archive", "1.2.3", "/Users/me/.local/bin/mora", upgradeRouteDirect},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			BuildVersion = tc.version
 			if got := classifyUpgradeInstall(tc.exe); got != tc.want {
 				t.Fatalf("classifyUpgradeInstall(%q) = %q, want %q", tc.exe, got, tc.want)
@@ -38,7 +37,7 @@ func TestCmdUpgradeRoutesHomebrewWithoutNetwork(t *testing.T) {
 	BuildVersion = "1.2.3"
 	upgradeExecutable = func() (string, error) { return "/opt/homebrew/Cellar/mora/1.2.3/bin/mora", nil }
 	var out bytes.Buffer
-	if err := cmdUpgrade(context.Background(), []string{"--check"}, &out, testStderr); err != nil {
+	if err := cmdUpgrade(testCtx(t), []string{"--check"}, &out, testStderr); err != nil {
 		t.Fatalf("cmdUpgrade: %v", err)
 	}
 	if !strings.Contains(out.String(), "brew upgrade pyranthus-hq/tap/mora") {
@@ -70,7 +69,7 @@ func TestDecideUpgrade(t *testing.T) {
 		{"literal dev fails parse", "dev", "0.10.0", 0, false, true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		subRun(t, tc.name, func(t *testing.T) {
 			verdict, isLocal, err := decideUpgrade(tc.current, tc.latest)
 			if tc.wantErr {
 				if err == nil {

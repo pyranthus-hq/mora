@@ -60,7 +60,7 @@ func TestCrossSourceSearchCitationsAreClosedByManifest(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	result, err := mcpSearchMemory(context.Background(), cfg, map[string]any{"query": "atlas launch", "limit": float64(10)})
+	result, err := mcpSearchMemory(testCtx(t), cfg, map[string]any{"query": "atlas launch", "limit": float64(10)})
 	if err != nil {
 		t.Fatal(err)
 	}

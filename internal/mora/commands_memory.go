@@ -36,7 +36,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if *title == "" || *text == "" {
 		return errors.New("--title and --text are required")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if fs.NArg() != 1 {
 		return errors.New("read requires memory id")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -166,7 +166,7 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if len(queryArgs) < 1 {
 		return errors.New("search requires query")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -220,7 +220,7 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if !*yes {
 		return errors.New("refusing to delete without --yes")
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -270,7 +270,7 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -343,7 +343,7 @@ func cmdThink(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if query == "" {
 		return errors.New(`usage: mora think "<question>" [--scope s] [--limit n] [--json]`)
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

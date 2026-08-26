@@ -55,7 +55,7 @@ func writeLiveTasks(t *testing.T, cfg Config, rows ...string) {
 func TestTasksAddCreatesQueuedRow(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestTasksAddCreatesQueuedRow(t *testing.T) {
 func TestTasksAddIsIdempotent(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestTasksAddIsIdempotent(t *testing.T) {
 func TestTasksAddFlagsAfterName(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestTasksAddFlagsAfterName(t *testing.T) {
 func TestTasksAddNotFooledByOtherColumns(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestTasksListJSON(t *testing.T) {
 func TestStaleTasksIgnoresTerminalStatus(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestStaleTasksIgnoresTerminalStatus(t *testing.T) {
 func TestTasksDoneMarksRowDone(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestTasksDoneMarksRowDone(t *testing.T) {
 func TestTasksDoneReportsMultipleRows(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestTasksDoneReportsMultipleRows(t *testing.T) {
 func TestSyncDoesNotResurrectDoneTask(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}

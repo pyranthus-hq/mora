@@ -1493,7 +1493,7 @@ func cmdShare(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		_, err := io.WriteString(stdout, shareUsage+"\n")
 		return err
 	}
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}

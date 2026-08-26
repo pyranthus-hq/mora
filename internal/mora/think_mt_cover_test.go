@@ -1,7 +1,6 @@
 package mora
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +18,7 @@ func TestMt_BuildThinkSearchError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "t", "--text", "hello world")
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -37,7 +36,7 @@ func TestMt_BuildThinkOpenLoopsError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "plan", "--text", "the launch plan")
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -58,7 +57,7 @@ func TestMt_ComputeGapsIndexError(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "t", "--text", "hello world")
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -79,7 +78,7 @@ func TestMt_ComputeGapsVectorArmAssociationCaveat(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	run(t, "write", "--scope", "global", "--type", "note", "--title", "t", "--text", "hello world")
 	if _, err := rebuildIndex(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -101,7 +100,7 @@ func TestMt_ComputeGapsVectorArmAssociationCaveat(t *testing.T) {
 // TestMt_EntityExistsClosedDB: a closed DB fails both the display-name lookup and
 // the alias fallback, so entityExists reports false.
 func TestMt_EntityExistsClosedDB(t *testing.T) {
-	if entityExists(context.Background(), mtClosedDB(t), "Nobody Here") {
+	if entityExists(testCtx(t), mtClosedDB(t), "Nobody Here") {
 		t.Fatal("entityExists over a closed db should be false")
 	}
 }
@@ -116,10 +115,10 @@ func TestMt_EntityExistsAliasMatch(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO entities VALUES ('person:x@a.com','Xavier Onassis','["the alias"]')`); err != nil {
 		t.Fatal(err)
 	}
-	if !entityExists(context.Background(), db, "The Alias") {
+	if !entityExists(testCtx(t), db, "The Alias") {
 		t.Fatal("entityExists should match via a case-insensitive alias")
 	}
-	if entityExists(context.Background(), db, "Totally Absent") {
+	if entityExists(testCtx(t), db, "Totally Absent") {
 		t.Fatal("entityExists should NOT match an absent name")
 	}
 }
@@ -136,7 +135,7 @@ func TestMt_EntityExistsAliasScanError(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO entities (id, display_name, aliases) VALUES ('person:x','Xavier', NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	if entityExists(context.Background(), db, "Nomatch Name") {
+	if entityExists(testCtx(t), db, "Nomatch Name") {
 		t.Fatal("entityExists should be false when the alias Scan fails")
 	}
 }

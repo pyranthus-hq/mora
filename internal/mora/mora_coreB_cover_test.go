@@ -2,7 +2,6 @@ package mora
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,7 +21,7 @@ func coreBGapInitCfg(t *testing.T) Config {
 	t.Helper()
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatalf("loadConfig after init: %v", err)
 	}
@@ -67,7 +66,7 @@ func TestCoreB_GapAddSourceKeepsOtherNames(t *testing.T) {
 func TestCoreB_GapAppleCalDBPathPrefersModern(t *testing.T) {
 	withTempHome(t)
 	// With neither store present, the function returns the modern default path.
-	modern := appleCalDBPath()
+	modern := appleCalDBPath(mustConfig(t))
 	if modern == "" {
 		t.Fatal("appleCalDBPath returned empty path")
 	}
@@ -78,7 +77,7 @@ func TestCoreB_GapAppleCalDBPathPrefersModern(t *testing.T) {
 	if err := os.WriteFile(modern, []byte("sqlite"), 0o644); err != nil {
 		t.Fatalf("write modern db: %v", err)
 	}
-	if got := appleCalDBPath(); got != modern {
+	if got := appleCalDBPath(mustConfig(t)); got != modern {
 		t.Fatalf("appleCalDBPath should return the existing modern store %q, got %q", modern, got)
 	}
 }
@@ -94,7 +93,7 @@ func TestCoreB_GapConnectIMessagePersistsSinceDays(t *testing.T) {
 	// printIMessageReadiness stops before any backfill and connect returns nil; the
 	// since-days write happens first regardless. We assert the persisted side effect
 	// (and tolerate a readiness-dependent error).
-	_ = connectIMessage(context.Background(), []string{"--since-days", "-5"}, &out)
+	_ = connectIMessage(testCtx(t), []string{"--since-days", "-5"}, &out)
 	if !strings.Contains(out.String(), "enabled imessage") {
 		t.Fatalf("expected connect output to confirm imessage enabled, got: %s", out.String())
 	}
@@ -125,7 +124,7 @@ func TestCoreB_GapConnectIMessagePersistsSinceDays(t *testing.T) {
 func TestCoreB_GapConnectFilesystemRejectsBadFlag(t *testing.T) {
 	coreBGapInitCfg(t)
 	dir := t.TempDir()
-	err := connectFilesystem(context.Background(), []string{dir, "--this-flag-does-not-exist"}, io.Discard, testStderr)
+	err := connectFilesystem(testCtx(t), []string{dir, "--this-flag-does-not-exist"}, io.Discard, testStderr)
 	if err == nil {
 		t.Fatal("expected connectFilesystem to reject an unknown flag, got nil error")
 	}
@@ -145,7 +144,7 @@ func TestCoreB_GapBackfillEnabledIMessageProcessesEnabledSource(t *testing.T) {
 		t.Fatalf("setSourceEnabled imessage: %v", err)
 	}
 	var out bytes.Buffer
-	total, err := backfillEnabledIMessage(context.Background(), cfg, &out)
+	total, err := backfillEnabledIMessage(testCtx(t), cfg, &out)
 	if total != 0 {
 		t.Fatalf("expected 0 items backfilled from an unreadable/absent Messages DB, got %d", total)
 	}

@@ -71,7 +71,7 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		if err := fs.Parse(args[1:]); err != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 		}
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -130,7 +130,7 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		if strings.Contains(name, "|") {
 			return errors.New("task name must not contain '|'")
 		}
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -157,7 +157,7 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -201,7 +201,7 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		if name == "" {
 			return errors.New("usage: mora tasks done <name> [--json]")
 		}
-		cfg, err := loadConfig()
+		cfg, err := loadConfigFor(ctx)
 		if err != nil {
 			return err
 		}

@@ -42,7 +42,7 @@ func TestGoogleAccountForEmail(t *testing.T) {
 func TestSourceFreshlySynced(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	cfg, err := loadConfig()
+	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

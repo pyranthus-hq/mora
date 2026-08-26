@@ -191,16 +191,16 @@ func TestContractEveryPayloadIsVersioned(t *testing.T) {
 		seen[path] = true
 		if row.Platform != "all" {
 			shapeOnly++
-			t.Run(path+" (platform)", func(t *testing.T) { assertShapeOnly(t, row) })
+			subRun(t, path+" (platform)", func(t *testing.T) { assertShapeOnly(t, row) })
 			return
 		}
 		if _, denied := contractEnvelopeNonExecutable[path]; denied {
 			shapeOnly++
-			t.Run(path+" (shape-only)", func(t *testing.T) { assertShapeOnly(t, row) })
+			subRun(t, path+" (shape-only)", func(t *testing.T) { assertShapeOnly(t, row) })
 			return
 		}
 		covered++
-		t.Run(path, func(t *testing.T) { drive(t, row) })
+		subRun(t, path, func(t *testing.T) { drive(t, row) })
 	}
 
 	for _, path := range contractEnvelopeOrder {
@@ -322,7 +322,7 @@ func TestContractDashLedQuerySlotsAreDocumentedExceptions(t *testing.T) {
 	run(t, "init")
 	for _, path := range contractDashLedQuerySlots {
 		name := strings.Join(path, " ")
-		t.Run(name, func(t *testing.T) {
+		subRun(t, name, func(t *testing.T) {
 			args := append(append([]string{}, path...), "--bogus-positional")
 			if _, _, err := runSplit(t, args...); err != nil {
 				t.Fatalf("%s now REFUSES a dash-led query token; move it into "+
@@ -338,7 +338,7 @@ func TestContractDashLedPositionalsAreRefusedEverywhere(t *testing.T) {
 
 	for _, path := range contractDashLedPositionalPaths {
 		name := strings.Join(path, " ")
-		t.Run(name, func(t *testing.T) {
+		subRun(t, name, func(t *testing.T) {
 			// --yes is harmless where it is not a defined flag; it only matters
 			// that a destructive path is not blocked by its own confirmation
 			// gate BEFORE the positional is examined.

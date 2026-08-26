@@ -15,7 +15,7 @@ import (
 
 func TestSetupPlanIsReadOnly(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 
 	out := run(t, "setup", "--plan")
 	if !strings.Contains(out, "Mora setup foundation plan (read-only):") || !strings.Contains(out, "local_layout: pending") {
@@ -51,7 +51,7 @@ func TestSetupInteractiveDefaultReconciles(t *testing.T) {
 
 func TestSetupPersistsVerifiedProgressAndResumes(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	orig := setupRebuildIndex
 	setupRebuildIndex = func(context.Context, Config) (int, error) {
 		return 0, errors.New("injected rebuild failure")
@@ -105,7 +105,7 @@ func TestSetupPersistsVerifiedProgressAndResumes(t *testing.T) {
 
 func TestSetupStatusReobservesInsteadOfTrustingReceipt(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	run(t, "setup", "--local-layout", "--committed-index", "--credential-storage")
 	if err := os.Remove(dbPath(cfg)); err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestSetupStatusRequiresJSON(t *testing.T) {
 
 func TestSetupRefusesCorruptReceipt(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	if err := os.MkdirAll(filepath.Dir(setupReceiptPath(cfg)), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -150,10 +150,9 @@ func TestSetupRefusesCorruptReceipt(t *testing.T) {
 	}
 }
 
-
 func TestSetupIdentityRejectsMismatchedMarker(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	run(t, "setup", "--local-layout", "--committed-index", "--credential-storage")
 
 	// Read the original marker's vault_id so we can confirm the new one differs.
@@ -197,7 +196,7 @@ func TestSetupIdentityRejectsMismatchedMarker(t *testing.T) {
 
 func TestSetupOverlapRejectsStateDirInsideVault(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	cfg.StateDir = filepath.Join(cfg.VaultDir, "state")
 	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -218,7 +217,7 @@ func TestSetupOverlapRejectsStateDirInsideVault(t *testing.T) {
 
 func TestSetupOverlapRejectsDataDirInsideVault(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	cfg.DataDir = filepath.Join(cfg.VaultDir, "data")
 	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -232,7 +231,7 @@ func TestSetupOverlapRejectsDataDirInsideVault(t *testing.T) {
 
 func TestSetupOverlapRejectsConfigDirInsideVault(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	cfg.VaultDir = filepath.Join(cfg.ConfigDir, "vault")
 	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -246,7 +245,7 @@ func TestSetupOverlapRejectsConfigDirInsideVault(t *testing.T) {
 
 func TestSetupOverlapRejectsReceiptPathInsideVault(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	cfg.StateDir = filepath.Join(cfg.VaultDir, "state")
 	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -263,7 +262,7 @@ func TestSetupOverlapSymlinkResolved(t *testing.T) {
 		t.Skip("symlink privileges vary on Windows")
 	}
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	// Create the vault dir and a symlink that resolves inside it.
 	if err := os.MkdirAll(cfg.VaultDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -289,7 +288,7 @@ func TestSetupOverlapSymlinkResolved(t *testing.T) {
 // committed_index must stay pending until a rebuild establishes the binding.
 func TestSetupUnboundIndexStaysPending(t *testing.T) {
 	withTempHome(t)
-	cfg := defaultConfig()
+	cfg := mustConfig(t)
 	run(t, "setup", "--local-layout", "--committed-index", "--credential-storage")
 
 	// Strip the index's vault_id binding to simulate a legacy/foreign index.

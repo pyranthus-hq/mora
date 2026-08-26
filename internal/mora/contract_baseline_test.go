@@ -89,7 +89,7 @@ func TestContractJSONBaseline(t *testing.T) {
 
 func classifyContractJSONProbe(t *testing.T, path []string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Second)
 	defer cancel()
 	args := append(append([]string(nil), path...), "--json")
 	var stdout, stderr bytes.Buffer
