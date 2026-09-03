@@ -262,7 +262,7 @@ func (o *Operation) Status() OperationStatus {
 }
 
 func (o *Operation) Validate() error {
-	if err := o.Header.validate(SchemaOperation); err != nil {
+	if err := o.validate(SchemaOperation); err != nil {
 		return err
 	}
 	if err := validateID("request_id", PrefixRequest, o.RequestID); err != nil {

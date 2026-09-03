@@ -428,9 +428,10 @@ func validateFingerprint(field, s string) error {
 		return errf(CodeInvalidValue, field, "fingerprint must be sha256:<64 hex>")
 	}
 	for _, r := range s[len(want):] {
-		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
-			return errf(CodeInvalidValue, field, "fingerprint digest must be lowercase hex")
+		if r >= '0' && r <= '9' || r >= 'a' && r <= 'f' {
+			continue
 		}
+		return errf(CodeInvalidValue, field, "fingerprint digest must be lowercase hex")
 	}
 	return nil
 }
@@ -601,7 +602,7 @@ func (h *HealthProjection) SchemaName() string { return SchemaHealth }
 func (h *HealthProjection) ByteLimit() int     { return MaxProjectionBytes }
 
 func (h *HealthProjection) Validate() error {
-	if err := h.Header.validate(SchemaHealth); err != nil {
+	if err := h.validate(SchemaHealth); err != nil {
 		return err
 	}
 	if err := validateTimestamp("generated_at", h.GeneratedAt); err != nil {
@@ -725,7 +726,7 @@ func (t *TodayProjection) SchemaName() string { return SchemaToday }
 func (t *TodayProjection) ByteLimit() int     { return MaxProjectionBytes }
 
 func (t *TodayProjection) Validate() error {
-	if err := t.Header.validate(SchemaToday); err != nil {
+	if err := t.validate(SchemaToday); err != nil {
 		return err
 	}
 	if err := validateTimestamp("generated_at", t.GeneratedAt); err != nil {
@@ -795,7 +796,7 @@ func (c *ContextRequest) SchemaName() string { return SchemaContextRq }
 func (c *ContextRequest) ByteLimit() int     { return MaxRequestBytes }
 
 func (c *ContextRequest) Validate() error {
-	if err := c.Header.validate(SchemaContextRq); err != nil {
+	if err := c.validate(SchemaContextRq); err != nil {
 		return err
 	}
 	if err := inVocabulary("context_mode", string(c.Mode), "mode"); err != nil {
@@ -842,7 +843,7 @@ func (c *ContextBundle) SchemaName() string { return SchemaContext }
 func (c *ContextBundle) ByteLimit() int     { return MaxProjectionBytes }
 
 func (c *ContextBundle) Validate() error {
-	if err := c.Header.validate(SchemaContext); err != nil {
+	if err := c.validate(SchemaContext); err != nil {
 		return err
 	}
 	if err := validateTimestamp("generated_at", c.GeneratedAt); err != nil {
@@ -916,7 +917,7 @@ func (c *Capture) SchemaName() string { return SchemaCapture }
 func (c *Capture) ByteLimit() int     { return MaxCaptureBytes }
 
 func (c *Capture) Validate() error {
-	if err := c.Header.validate(SchemaCapture); err != nil {
+	if err := c.validate(SchemaCapture); err != nil {
 		return err
 	}
 	if err := validateIdempotencyKey("idempotency_key", c.IdempotencyKey); err != nil {
@@ -1011,7 +1012,7 @@ func (r *Receipt) SchemaName() string { return SchemaReceipt }
 func (r *Receipt) ByteLimit() int     { return MaxProjectionBytes }
 
 func (r *Receipt) Validate() error {
-	if err := r.Header.validate(SchemaReceipt); err != nil {
+	if err := r.validate(SchemaReceipt); err != nil {
 		return err
 	}
 	if err := validateID("receipt_id", PrefixReceipt, r.ReceiptID); err != nil {
@@ -1136,7 +1137,7 @@ func (d *Device) SchemaName() string { return SchemaDevice }
 func (d *Device) ByteLimit() int     { return MaxProjectionBytes }
 
 func (d *Device) Validate() error {
-	if err := d.Header.validate(SchemaDevice); err != nil {
+	if err := d.validate(SchemaDevice); err != nil {
 		return err
 	}
 	if err := validateID("device_id", PrefixDevice, d.DeviceID); err != nil {
@@ -1215,7 +1216,7 @@ func (p PairingPayload) Redacted() PairingPayload {
 }
 
 func (p *PairingPayload) Validate() error {
-	if err := p.Header.validate(SchemaPairing); err != nil {
+	if err := p.validate(SchemaPairing); err != nil {
 		return err
 	}
 	if err := validateID("device_id", PrefixDevice, p.DeviceID); err != nil {
@@ -1266,7 +1267,7 @@ func (p PairingConfirmation) Redacted() PairingConfirmation {
 }
 
 func (p *PairingConfirmation) Validate() error {
-	if err := p.Header.validate(SchemaPairingOK); err != nil {
+	if err := p.validate(SchemaPairingOK); err != nil {
 		return err
 	}
 	if err := validateID("device_id", PrefixDevice, p.DeviceID); err != nil {
