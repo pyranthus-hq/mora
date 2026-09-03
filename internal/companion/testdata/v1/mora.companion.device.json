@@ -1,0 +1,11 @@
+{
+  "schema": "mora.companion.device",
+  "schema_version": 1,
+  "device_id": "dev_01J8Z2K7Q4RN3T5V",
+  "label": "Adit iPhone",
+  "platform": "ios",
+  "state": "active",
+  "token_fingerprint": "sha256:b06e0012fde919b39ca100c28691c10a0e8eba760f88c328d74ded9d85b7f26c",
+  "created_at": "2026-09-03T11:00:00Z",
+  "last_seen_at": "2026-09-03T11:04:00Z"
+}

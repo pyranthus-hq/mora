@@ -1,0 +1,7 @@
+{
+  "schema": "mora.companion.context.request",
+  "schema_version": 1,
+  "mode": "think",
+  "query": "What did I promise Ravi about the pilot?",
+  "scope": "project:pilot"
+}

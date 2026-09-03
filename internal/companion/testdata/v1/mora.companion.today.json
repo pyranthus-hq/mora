@@ -1,0 +1,47 @@
+{
+  "schema": "mora.companion.today",
+  "schema_version": 1,
+  "generated_at": "2026-09-03T11:00:00Z",
+  "health": {
+    "state": "degraded",
+    "policy": "propose"
+  },
+  "items": [
+    {
+      "id": "today.needs_attention.1",
+      "kind": "needs_attention",
+      "title": "Ravi is waiting on the pilot scope",
+      "body": "Asked twice this week; the last reply was six days ago.",
+      "evidence": [
+        {
+          "memory_id": "mem_01J8Z2K7Q4RN3T5Y",
+          "source": "gmail:work",
+          "occurred_at": "2026-09-03T09:12:00Z",
+          "snippet": "Ravi: let us keep the pilot to the platform team until the board meets.",
+          "deep_link": "mora://memory/mem_01J8Z2K7Q4RN3T5Y"
+        }
+      ]
+    }
+  ],
+  "freshness": [
+    {
+      "key": "gmail:work",
+      "state": "fresh",
+      "age_seconds": 900,
+      "last_success_at": "2026-09-03T10:45:00Z"
+    },
+    {
+      "key": "calendar",
+      "state": "stale",
+      "age_seconds": 97200,
+      "last_success_at": "2026-09-02T08:00:00Z"
+    },
+    {
+      "key": "imessage",
+      "state": "never",
+      "age_seconds": -1,
+      "error_code": "full_disk_access_missing"
+    }
+  ],
+  "truncated": true
+}

@@ -1,0 +1,32 @@
+{
+  "schema": "mora.companion.health",
+  "schema_version": 1,
+  "generated_at": "2026-09-03T11:00:00Z",
+  "state": "degraded",
+  "policy": "propose",
+  "index": {
+    "state": "healthy",
+    "memories": 2837,
+    "built_at": "2026-09-03T10:50:00Z"
+  },
+  "sources": [
+    {
+      "key": "gmail:work",
+      "state": "fresh",
+      "age_seconds": 900,
+      "last_success_at": "2026-09-03T10:45:00Z"
+    },
+    {
+      "key": "calendar",
+      "state": "stale",
+      "age_seconds": 97200,
+      "last_success_at": "2026-09-02T08:00:00Z"
+    },
+    {
+      "key": "imessage",
+      "state": "never",
+      "age_seconds": -1,
+      "error_code": "full_disk_access_missing"
+    }
+  ]
+}

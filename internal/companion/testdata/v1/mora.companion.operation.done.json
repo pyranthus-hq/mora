@@ -1,0 +1,53 @@
+{
+  "schema": "mora.companion.operation",
+  "schema_version": 1,
+  "request_id": "req_01J8Z2K7Q4RN3T5W",
+  "idempotency_key": "ios.capture.2026-09-03T10:59:30Z.7f3a",
+  "kind": "research",
+  "lane": "research",
+  "intent": "investigate",
+  "state": "done",
+  "payload": {
+    "ref": "capture:ios.capture.2026-09-03T10:59:30Z.7f3a",
+    "fingerprint": "sha256:0cdd4a81dcdc5f6446a7433ac37215b6fcf7a1b7737d0950b3ff5bab44190f8d",
+    "bytes": 73,
+    "media_type": "text/plain; charset=utf-8"
+  },
+  "provenance": {
+    "origin": "companion",
+    "device_id": "dev_01J8Z2K7Q4RN3T5V",
+    "surface": "ios",
+    "accepted_at": "2026-09-03T11:00:00Z"
+  },
+  "attempt": {
+    "count": 1,
+    "max": 3,
+    "execution_id": "exe_01J8Z2K7Q4RN3T5Z"
+  },
+  "created_at": "2026-09-03T11:00:00Z",
+  "updated_at": "2026-09-03T11:04:00Z",
+  "freshness": [
+    {
+      "key": "gmail:work",
+      "state": "fresh",
+      "age_seconds": 900,
+      "last_success_at": "2026-09-03T10:45:00Z"
+    },
+    {
+      "key": "calendar",
+      "state": "stale",
+      "age_seconds": 97200,
+      "last_success_at": "2026-09-02T08:00:00Z"
+    },
+    {
+      "key": "imessage",
+      "state": "never",
+      "age_seconds": -1,
+      "error_code": "full_disk_access_missing"
+    }
+  ],
+  "result": {
+    "receipt_id": "rcp_01J8Z2K7Q4RN3T5X",
+    "memory_id": "mem_01J8Z2K7Q4RN3T5Y"
+  }
+}
