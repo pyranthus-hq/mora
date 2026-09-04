@@ -36,9 +36,11 @@ type stubWriter struct {
 	policyErr  error
 	publishErr error
 
-	// vault is the fake vault, keyed by pinned memory id. Its size is the
-	// duplicate detector: N retries of one capture must leave ONE entry.
-	vault map[string]bool
+	// vault is the fake vault: pinned memory id to the capture identity that owns
+	// it. Its size is the duplicate detector — N retries of one capture must
+	// leave ONE entry — and the value is what makes a foreign file at a pinned id
+	// distinguishable from our own.
+	vault map[string]string
 	// publishes counts Publish CALLS, which is a different number from the
 	// vault's size the moment the pinned id starts doing its job.
 	publishes int
@@ -54,7 +56,7 @@ type stubWriter struct {
 }
 
 func newStubWriter() *stubWriter {
-	return &stubWriter{policy: PolicyOpen, vault: map[string]bool{}}
+	return &stubWriter{policy: PolicyOpen, vault: map[string]string{}}
 }
 
 func (w *stubWriter) Policy(context.Context) (WritePolicy, error) {
@@ -63,21 +65,30 @@ func (w *stubWriter) Policy(context.Context) (WritePolicy, error) {
 	return w.policy, w.policyErr
 }
 
-func (w *stubWriter) Published(_ context.Context, memoryID string) (WriteOutcome, bool, error) {
+func (w *stubWriter) Published(_ context.Context, _ Capture, id CaptureIdentity) (WriteOutcome, bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.vault[memoryID] {
+	owner, held := w.vault[id.MemoryID]
+	if !held {
 		return WriteOutcome{}, false, nil
 	}
-	return WriteOutcome{Policy: PolicyOpen, State: ReceiptApplied, MemoryID: wireMemoryID(memoryID)}, true, nil
+	if owner != id.Identity {
+		// The pinned id is taken by a different capture. The real kernel reads
+		// the file and its ownership record to decide this; the stub keeps the
+		// same shape so the listener's half of the behaviour is under test.
+		return WriteOutcome{Policy: PolicyOpen, State: ReceiptRejected, Reason: ReasonInternal}, true, nil
+	}
+	return WriteOutcome{Policy: PolicyOpen, State: ReceiptApplied, MemoryID: wireMemoryID(id.MemoryID)}, true, nil
 }
 
-func (w *stubWriter) Publish(ctx context.Context, c Capture, memoryID string) (WriteOutcome, error) {
+func (w *stubWriter) Publish(ctx context.Context, c Capture, id CaptureIdentity) (WriteOutcome, error) {
+	memoryID := id.MemoryID
 	w.mu.Lock()
 	w.publishes++
 	w.captured = append(w.captured, c)
 	w.pinned = append(w.pinned, memoryID)
-	policy, err := w.policy, w.publishErr
+	policy, err, policyErr := w.policy, w.publishErr, w.policyErr
+	owner, held := w.vault[memoryID]
 	entered, hold := w.entered, w.hold
 	w.mu.Unlock()
 
@@ -93,6 +104,15 @@ func (w *stubWriter) Publish(ctx context.Context, c Capture, memoryID string) (W
 	if cerr := ctx.Err(); cerr != nil {
 		return WriteOutcome{}, cerr
 	}
+	if policyErr != nil {
+		// The kernel could not READ the policy, so it fails closed exactly as
+		// companionWriter does: readonly, rejected, reason policy, nothing
+		// written. The stub has to do this itself — a stub that ignored its own
+		// policyErr would let the fail-closed test pass on the strength of a
+		// pinned readonly policy instead, which is the gap the round two review
+		// named.
+		return WriteOutcome{Policy: PolicyReadonly, State: ReceiptRejected, Reason: ReasonPolicy}, nil
+	}
 	out := WriteOutcome{Policy: policy}
 	switch policy {
 	case PolicyReadonly:
@@ -100,10 +120,16 @@ func (w *stubWriter) Publish(ctx context.Context, c Capture, memoryID string) (W
 	case PolicyPropose:
 		out.State = ReceiptAccepted
 	default:
+		if held && owner != id.Identity {
+			// A pinned id the vault holds against a different capture is a
+			// vault-integrity failure, never a confident applied.
+			out.State, out.Reason = ReceiptRejected, ReasonInternal
+			return out, nil
+		}
 		// The create-exclusive publish: an id already in the vault is not a
 		// second memory, it is the same one.
 		w.mu.Lock()
-		w.vault[memoryID] = true
+		w.vault[memoryID] = id.Identity
 		w.mu.Unlock()
 		out.State = ReceiptApplied
 		out.MemoryID = wireMemoryID(memoryID)
@@ -330,13 +356,14 @@ func TestCaptureStateFollowsTheWritePolicy(t *testing.T) {
 // stayed PENDING, so an unreadable config turned every capture into a claim
 // nothing could ever settle. Both halves are asserted here.
 func TestCapturePolicyReadFailureFailsClosed(t *testing.T) {
-	srv, reg, token, root := newCaptureServer(t)
+	srv, _, token, root := newCaptureServer(t)
 	writer := writerOf(t, srv)
-	// The kernel cannot read the policy, so it fails closed to the only answer
-	// that cannot describe a write as permitted.
+	// The kernel cannot read the policy. The configured policy stays OPEN, so
+	// the only thing that can produce a rejection here is the READ failing: a
+	// stub that ignored its own policyErr would answer `applied` and fail this
+	// test, which is what makes it a witness rather than a restatement.
 	writer.policyErr = errors.New("config.toml is not readable")
-	writer.setPolicy(PolicyReadonly)
-	_ = reg
+	writer.setPolicy(PolicyOpen)
 
 	capture := captureFor(t, srv, "unreadable config")
 	receipt := decodeReceipt(t, postCapture(t, srv, token, capture))
@@ -547,11 +574,16 @@ func TestCaptureIdentityCoversEveryWriteAffectingField(t *testing.T) {
 		{"scope", func(c *Capture) { c.Scope = "project:secret" }, true},
 		{"device", func(c *Capture) { c.DeviceID = "dev_20260903_120000_99999999" }, true},
 		{"intent and lane", func(c *Capture) { c.Intent = IntentInvestigate; c.RequestedLane = LaneResearch }, true},
+		// captured_at is IN the identity, and that is what makes the derived vault
+		// id stable. The id takes its timestamp from captured_at, so a re-stamped
+		// retry that kept its identity would derive a second path and write a
+		// second memory — the exactly-once hole round two shipped. In the
+		// identity, the two move together: a re-stamped capture is a different
+		// capture, refused as a conflict long before it can derive anything.
+		{"captured_at", func(c *Capture) { c.CapturedAt = reservationStamp(testNow.Add(time.Hour)) }, true},
 		// The key is the LOOKUP, not part of the identity: folding it in would
 		// make every capture its own identity and no reuse would ever conflict.
 		{"idempotency key", func(c *Capture) { c.IdempotencyKey = "key.two" }, false},
-		// A retry that re-stamps its clock is still the same capture.
-		{"captured_at", func(c *Capture) { c.CapturedAt = reservationStamp(testNow.Add(time.Hour)) }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			changed := base
@@ -1169,4 +1201,200 @@ func interfaceMethods(t *testing.T, name string) []string {
 	}
 	t.Fatalf("no interface named %s in this package", name)
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// A re-stamped retry
+// ---------------------------------------------------------------------------
+
+// TestCaptureRestampedRetryIsAConflictNotASecondMemory is the round-two
+// exactly-once hole, closed.
+//
+// The vault id takes its timestamp from captured_at. Round two kept captured_at
+// OUT of the identity, reasoning that a retry which re-stamps its clock is still
+// the same capture — so such a retry passed the identity check, derived a
+// DIFFERENT id, aimed at a path nothing held, and the create-exclusive publish
+// had nothing to refuse. A second memory.
+//
+// captured_at is in the identity now, so the id and the identity move together.
+// A re-stamped retry is a conflict, which is the honest answer: a capture whose
+// claimed time changed is not the capture the key was issued for.
+//
+// The retry runs AFTER a sweep, because that is the condition the review named:
+// the crashed-claim tests all retried inside the window, where the pending record
+// was still there to be reclaimed.
+func TestCaptureRestampedRetryIsAConflictNotASecondMemory(t *testing.T) {
+	srv, reg, token, root := newCaptureServer(t)
+	writer := writerOf(t, srv)
+
+	first := captureFor(t, srv, "the same words, twice stamped")
+	applied := decodeReceipt(t, postCapture(t, srv, token, first))
+	if applied.State != ReceiptApplied {
+		t.Fatalf("the first capture produced %q, want applied", applied.State)
+	}
+
+	// Past the sweep window, and reopened: every crashed claim is collected and
+	// the settled record — the one that owns this key — survives.
+	after := testNow.Add(PendingSweepAfter + time.Second)
+	restarted := restartCaptureServer(t, reg, root, writer, after)
+
+	restamped := first
+	restamped.CapturedAt = reservationStamp(testNow.Add(time.Hour))
+	if restamped.IdempotencyKey != first.IdempotencyKey || restamped.Text != first.Text {
+		t.Fatal("the fixture changed more than the stamp; the test would not prove anything")
+	}
+	// The WIRE fingerprint is identical by construction, so nothing but the
+	// identity can tell these apart.
+	if restamped.PayloadFingerprint != first.PayloadFingerprint {
+		t.Fatal("the fixture changed the payload fingerprint")
+	}
+
+	receipt := decodeReceipt(t, postCapture(t, restarted, token, restamped))
+	if receipt.State != ReceiptRejected || receipt.Reason != ReasonIdempotencyConflict {
+		t.Fatalf("a re-stamped retry produced %s/%s, want rejected/idempotency_conflict", receipt.State, receipt.Reason)
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("a re-stamped retry left %d memories, want exactly 1", got)
+	}
+	// And the original key still answers with the original receipt.
+	replay := decodeReceipt(t, postCapture(t, restarted, token, first))
+	if replay.ReceiptID != applied.ReceiptID {
+		t.Fatalf("the re-stamped retry took the key: replay receipt %q, want %q", replay.ReceiptID, applied.ReceiptID)
+	}
+}
+
+// TestCaptureRestampedRetryDerivesADifferentID is the mechanism behind the test
+// above, stated directly: the id follows captured_at, which is exactly why
+// captured_at has to be inside the identity that guards it.
+func TestCaptureRestampedRetryDerivesADifferentID(t *testing.T) {
+	base := NewCapture()
+	base.IdempotencyKey = "key.one"
+	base.DeviceID = "dev_20260903_120000_a1b2c3d4"
+	base.CapturedAt = reservationStamp(testNow)
+	base.RequestedLane = LaneMemory
+	base.Intent = IntentRemember
+	base.Scope = "personal"
+	base.Text = "a note"
+	base.PayloadFingerprint = Fingerprint(base.Text)
+
+	restamped := base
+	restamped.CapturedAt = reservationStamp(testNow.Add(time.Hour))
+
+	if captureMemoryID(base, captureIdentity(base)) == captureMemoryID(restamped, captureIdentity(restamped)) {
+		t.Fatal("a re-stamped capture derives the same vault id; the test below proves nothing")
+	}
+	if captureIdentity(base) == captureIdentity(restamped) {
+		t.Fatal("a re-stamped capture has the same identity, so the differing id would go unguarded")
+	}
+	// And the id's timestamp half IS captured_at, which is the coupling that
+	// makes the two inseparable: an id that stopped following the stamp would
+	// leave the identity guarding something it no longer determines.
+	for _, c := range []Capture{base, restamped} {
+		stamp, err := time.Parse(time.RFC3339, c.CapturedAt)
+		if err != nil {
+			t.Fatalf("fixture stamp: %v", err)
+		}
+		want := PrefixMemory + stamp.UTC().Format("20060102_150405") + "_"
+		if got := captureMemoryID(c, captureIdentity(c)); !strings.HasPrefix(got, want) {
+			t.Fatalf("%q does not carry captured_at %s", got, c.CapturedAt)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A pinned id the vault holds against somebody else
+// ---------------------------------------------------------------------------
+
+// pinnedIDFor is the vault id a capture publishes under, computed the way the
+// listener computes it.
+func pinnedIDFor(c Capture) string { return captureMemoryID(c, captureIdentity(c)) }
+
+// TestCaptureForeignFileAtThePinnedIDIsNotApplied is the verified-EEXIST gate.
+//
+// Round two treated "a file is already at the pinned id" as "this capture is
+// already published". That is a claim about ownership made without reading
+// anything: a tampered vault, or a collision in a 32-bit suffix, produced a
+// confident `applied` receipt for a memory the phone never wrote. The kernel now
+// verifies, and a file that is not this capture's settles as a rejection rather
+// than being claimed.
+func TestCaptureForeignFileAtThePinnedIDIsNotApplied(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	writer := writerOf(t, srv)
+
+	capture := captureFor(t, srv, "somebody else got here first")
+	// Something else already owns the pinned path.
+	writer.mu.Lock()
+	writer.vault[pinnedIDFor(capture)] = Fingerprint("a different capture entirely")
+	writer.mu.Unlock()
+
+	receipt := decodeReceipt(t, postCapture(t, srv, token, capture))
+	if receipt.State != ReceiptRejected || receipt.Reason != ReasonInternal {
+		t.Fatalf("a foreign file at the pinned id produced %s/%s, want rejected/internal", receipt.State, receipt.Reason)
+	}
+	if receipt.MemoryID != "" {
+		t.Fatalf("a rejected receipt named memory %q", receipt.MemoryID)
+	}
+	// Nothing was written over it.
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the vault holds %d memories, want the 1 that was already there", got)
+	}
+}
+
+// TestCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite is the other half:
+// verification must not turn our OWN publication into a rejection. A retry that
+// finds its own memory already there is the exactly-once success case.
+func TestCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	writer := writerOf(t, srv)
+
+	capture := captureFor(t, srv, "already mine")
+	// The memory is there and it IS this capture's.
+	writer.mu.Lock()
+	writer.vault[pinnedIDFor(capture)] = captureIdentity(capture)
+	writer.mu.Unlock()
+
+	receipt := decodeReceipt(t, postCapture(t, srv, token, capture))
+	if receipt.State != ReceiptApplied {
+		t.Fatalf("a capture finding its own memory produced %q, want applied", receipt.State)
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the vault holds %d memories, want exactly 1", got)
+	}
+}
+
+// TestCaptureTakeoverOverAForeignFileSettlesRatherThanRetryingForever. A crashed
+// claim whose pinned id has been taken by something else must SETTLE: leaving it
+// pending would have the phone retry a write that can never land.
+func TestCaptureTakeoverOverAForeignFileSettlesRatherThanRetryingForever(t *testing.T) {
+	srv, reg, token, root := newCaptureServer(t)
+	crashing := writerOf(t, srv)
+	crashing.setPublishErr(errors.New("process died"))
+	capture := captureFor(t, srv, "crashed, then squatted")
+
+	if rec := postCapture(t, srv, token, capture); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the crashing attempt answered %d, want 503", rec.Code)
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationPending {
+		t.Fatalf("the reservation is %q, want pending", state)
+	}
+
+	// While it was down, something else took the pinned path.
+	survivor := newStubWriter()
+	survivor.mu.Lock()
+	survivor.vault[pinnedIDFor(capture)] = Fingerprint("not this capture")
+	survivor.mu.Unlock()
+
+	after := testNow.Add(ReservationTakeover + time.Second)
+	restarted := restartCaptureServer(t, reg, root, survivor, after)
+
+	receipt := decodeReceipt(t, postCapture(t, restarted, token, capture))
+	if receipt.State != ReceiptRejected || receipt.Reason != ReasonInternal {
+		t.Fatalf("a takeover over a foreign file produced %s/%s, want rejected/internal", receipt.State, receipt.Reason)
+	}
+	if got := survivor.count(); got != 0 {
+		t.Fatalf("the takeover asked the kernel to write %d times, want 0", got)
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationSettled {
+		t.Fatalf("the reservation is %q, want settled", state)
+	}
 }

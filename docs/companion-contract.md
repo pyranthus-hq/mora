@@ -467,6 +467,23 @@ between the publication and the receipt therefore costs a retry, never a duplica
 crashed reservation it asks the kernel whether the pinned id is already published before it writes,
 so recovery finishes the crashed attempt's receipt instead of repeating its work.
 
+**"Already there" is verified, never assumed.** EEXIST says a file is at that path; it says nothing
+about whose. So the kernel records who owns a pinned id when it claims one — a small ownership record
+under the state directory naming the device, the key and the capture identity, written and fsynced
+*before* the memory — and on EEXIST it reads both that record and the memory itself, comparing the
+memory's text, scope, type and `source` against what this capture would have written. A file that is
+not this capture's is **never** `applied`: it is `rejected` with reason `internal`, nothing is
+written, and the specific cause (the pinned id and the device) goes to the operator's log rather than
+onto the wire (`TestCompanionCaptureForeignFileAtThePinnedIDIsRejected`,
+`TestCompanionCapturePublishedVerifiesRatherThanTrusting`). A missing ownership record is not a
+failure — a state directory can be rebuilt independently of the vault — so the file comparison
+narrows rather than skips (`TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite`).
+
+`internal` is the frozen vocabulary's word for this. Nothing the phone sent was wrong, and §8's
+reasons describe client conditions; a vault holding a file where a capture belongs is a vault
+integrity failure, and inventing an enum value for it would move a published vocabulary for a case
+an operator reads out of a log.
+
 ### Idempotency
 
 | Case | Answer |
@@ -482,13 +499,22 @@ answered the first attempt and returns those, so a client that hashes or caches 
 an identical one on the retry (`TestCaptureRetryIsByteIdenticalOnTheWire`,
 `TestReservationReplayReturnsTheStoredBytes`, both asserting with `bytes.Equal` on raw bodies).
 
-**"The same capture" covers every field that changes what is written** — device, lane, intent, scope
-and text, as canonical JSON — and deliberately excludes the idempotency key (which is the lookup) and
-`captured_at` (a retry that re-stamps its clock is still the same capture)
-(`TestCaptureIdentityCoversEveryWriteAffectingField`). The wire `payload_fingerprint` cannot do this
-job: §5 defines it as SHA-256 over the **text** alone, so the same key and text under a different
-scope hashed identically and the second capture silently inherited the first one's placement.
-`TestCaptureSameKeyDifferentScopeIsAConflict` is that case, and it is now a conflict.
+**"The same capture" covers every field that changes what is written** — device, `captured_at`, lane,
+intent, scope and text, as canonical JSON — and deliberately excludes the idempotency key, which is
+the lookup (`TestCaptureIdentityCoversEveryWriteAffectingField`). The wire `payload_fingerprint`
+cannot do this job: §5 defines it as SHA-256 over the **text** alone, so the same key and text under a
+different scope hashed identically and the second capture silently inherited the first one's
+placement. `TestCaptureSameKeyDifferentScopeIsAConflict` is that case, and it is a conflict.
+
+> **`captured_at` is immutable for a given idempotency key.** A retry must resend the capture it
+> already sent, byte for byte. A phone queue that preserves the stamp across a relaunch satisfies this
+> by construction; a client that re-stamps its clock on retry gets `idempotency_conflict`, not a
+> second memory (`TestCaptureRestampedRetryIsAConflictNotASecondMemory`).
+>
+> This is not an arbitrary rule. The vault id takes its timestamp from `captured_at`, so a stamp that
+> moved would derive a different id, aim at a path nothing holds, and give the create-exclusive
+> publish nothing to refuse. Putting `captured_at` inside the identity is what makes the id stable:
+> the two move together or not at all.
 
 ### Revocation
 
@@ -515,6 +541,16 @@ The bound is hard, in four directions:
 | Crashed pending records | swept after `PendingSweepAfter` | collected on open and on insert |
 | Total records | `MaxReservations` (512) | the oldest **settled** records are trimmed |
 | One record on read | 64 KiB | refused as corrupt or hostile |
+
+**The bound is arithmetic, not a walk.** The store takes one census when it opens and moves it on
+insert, settle and sweep, so a fresh reservation reads exactly one file — its own — and walks no
+directory (`TestReservationFreshPathWalksNoDirectory`, `TestReservationOpeningWalksOnce`). Sweeping
+walks the in-memory claim set rather than the store
+(`TestReservationSweepWalksThePendingSetNotTheStore`), and expiry is checked where it costs nothing:
+when a record is touched, and at the opening census. The one operation that still walks is the
+total-cap trim, which runs only when the census says the store is over 512. The census is per
+process, which is the honest bound: a second listener opens its own store and takes its own, so two
+of them admit up to 2N in flight rather than infinity.
 
 `PendingSweepAfter` is deliberately later than `ReservationTakeover`. Between the two, a retry
 *reclaims* a crashed record, reads the id it pinned, and asks whether that memory is already

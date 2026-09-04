@@ -30,6 +30,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -94,7 +95,7 @@ func cmdCompanionServe(ctx context.Context, args []string, stdout io.Writer) err
 		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, *port),
 		Devices:  reg,
 		Reader:   newCompanionReader(cfg),
-		Writer:   newCompanionWriter(),
+		Writer:   newCompanionWriter(stdout),
 		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),
 		Now:      cfg.OperationClock,
 		Log:      stdout,
@@ -493,9 +494,27 @@ func (k *companionReader) meetingContext(ctx context.Context, req companion.Cont
 // one request. Capture is the exception by definition: it is a write, it is
 // governed by the vault's own policy, and marking it read-only would make the
 // one authorized mutation refuse itself.
-type companionWriter struct{}
+type companionWriter struct {
+	// log receives vault-integrity failures and nothing else.
+	//
+	// It is NOT a per-request log, and the distinction is the N12 invariant: the
+	// listener records nothing about a request it served. A file at a pinned id
+	// that is not the capture claiming it is not a served request — it is a
+	// tampered or colliding vault, an incident an operator has to be able to
+	// find. The line names the memory id and the device, both kernel-derived,
+	// and never a word the user wrote.
+	log io.Writer
+}
 
-func newCompanionWriter() *companionWriter { return &companionWriter{} }
+// newCompanionWriter takes the log sink variadically so a caller that has no
+// sink — every test that only cares about the vault — passes none and gets
+// io.Discard, and the existing N12 test helper keeps compiling unchanged.
+func newCompanionWriter(log ...io.Writer) *companionWriter {
+	if len(log) == 0 || log[0] == nil {
+		return &companionWriter{log: io.Discard}
+	}
+	return &companionWriter{log: log[0]}
+}
 
 // Policy reports the vault's current write policy.
 func (w *companionWriter) Policy(ctx context.Context) (companion.WritePolicy, error) {
@@ -522,24 +541,111 @@ func (w *companionWriter) Policy(ctx context.Context) (companion.WritePolicy, er
 // A config that cannot be read answers "not published" rather than failing: the
 // caller's next step is Publish, which fails closed on the same unreadable
 // config, so the refusal happens once and in one place.
-func (w *companionWriter) Published(ctx context.Context, memoryID string) (companion.WriteOutcome, bool, error) {
+func (w *companionWriter) Published(ctx context.Context, c companion.Capture, id companion.CaptureIdentity) (companion.WriteOutcome, bool, error) {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return companion.WriteOutcome{}, false, nil
 	}
-	if _, err := findMemoryRaw(cfg, memoryID); err != nil {
+	state, err := w.verifyPublication(cfg, c, id)
+	switch {
+	case err != nil:
+		return companion.WriteOutcome{}, false, err
+	case state == publicationAbsent:
 		return companion.WriteOutcome{}, false, nil
+	case state == publicationForeign:
+		// The pinned id is taken by something that is not this capture. Reporting
+		// it published would hand the phone a receipt for somebody else's memory;
+		// reporting it absent would send the retry into a write that cannot land.
+		// It is settled as a rejection so the key stops being retried at all.
+		return w.integrityFailure(cfg, id), true, nil
 	}
 	return companion.WriteOutcome{
 		Policy:   companion.PolicyOpen,
 		State:    companion.ReceiptApplied,
-		MemoryID: companionOpaqueID(companion.PrefixMemory, memoryID),
+		MemoryID: companionOpaqueID(companion.PrefixMemory, id.MemoryID),
 	}, true, nil
+}
+
+// publicationState is what the vault holds at a pinned id.
+type publicationState int
+
+const (
+	// publicationAbsent: nothing is there, so the write may proceed.
+	publicationAbsent publicationState = iota
+	// publicationOurs: the memory there IS this capture, verified rather than
+	// assumed.
+	publicationOurs
+	// publicationForeign: something is there and it is not this capture.
+	publicationForeign
+)
+
+// verifyPublication decides which of the three it is.
+//
+// # Why EEXIST is not enough on its own
+//
+// Round two treated "the file is already there" as "the capture is already
+// published". That is only true if the file is THIS capture's, and nothing
+// checked: a tampered vault, or a 32-bit suffix collision between two different
+// captures, produced a confident `applied` receipt for a memory the phone never
+// wrote. The suffix is 32 bits; including the device in the preimage stops
+// identical preimages, not collisions.
+//
+// So the id's ownership is recorded when it is claimed — a small sidecar under
+// the state directory naming the device, the key and the capture identity — and
+// the file itself is compared against what this capture would have written.
+// Both have to agree:
+//
+//   - the sidecar says this identity owns the id, and
+//   - the memory on disk carries this capture's own text, scope, type and the
+//     companion source stamp.
+//
+// A sidecar that is missing is not a failure: a state directory can be moved or
+// rebuilt independently of the vault, and refusing there would reject a memory
+// the user really did capture. The file comparison still has to pass, so a
+// missing sidecar narrows the check rather than skipping it.
+func (w *companionWriter) verifyPublication(cfg Config, c companion.Capture, id companion.CaptureIdentity) (publicationState, error) {
+	existing, err := findMemoryRaw(cfg, id.MemoryID)
+	if err != nil {
+		return publicationAbsent, nil
+	}
+	owner, found, err := readCapturePublication(cfg, id.MemoryID)
+	if err != nil {
+		return publicationForeign, nil
+	}
+	if found && !owner.matches(id) {
+		return publicationForeign, nil
+	}
+	want, err := mcpMemoryFromArgs(companionWriteArgs(c), mcpWriteClock())
+	if err != nil {
+		return publicationForeign, nil
+	}
+	if existing.Text != want.Text || existing.Scope != want.Scope ||
+		existing.Type != want.Type || existing.Source != want.Source {
+		return publicationForeign, nil
+	}
+	return publicationOurs, nil
+}
+
+// integrityFailure is the outcome for a pinned id the vault holds against
+// somebody else.
+//
+// The reason is `internal` because N02's reject_reason vocabulary is frozen and
+// this is not a client condition: nothing the phone sent was wrong, and no other
+// published reason describes "the vault holds a file where this capture belongs".
+// The specific cause goes to the operator's log, where it can name the id.
+func (w *companionWriter) integrityFailure(cfg Config, id companion.CaptureIdentity) companion.WriteOutcome {
+	fmt.Fprintf(w.log, "companion capture: refusing to claim %s — the vault holds a memory at that id that is not this capture (device %s); "+
+		"inspect it before re-pairing, and see docs/companion-contract.md\n", id.MemoryID, id.DeviceID)
+	return companion.WriteOutcome{
+		Policy: companion.WritePolicy(configMCPWritePolicy(cfg)),
+		State:  companion.ReceiptRejected,
+		Reason: companion.ReasonInternal,
+	}
 }
 
 // Publish runs one capture through the kernel's governed write path, pinned to
 // memoryID, and reports what actually happened to the vault.
-func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, memoryID string) (companion.WriteOutcome, error) {
+func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id companion.CaptureIdentity) (companion.WriteOutcome, error) {
 	started := time.Now()
 	configStarted := time.Now()
 	cfg, err := loadConfigFor(ctx)
@@ -570,8 +676,9 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, memo
 	args := companionWriteArgs(c)
 
 	var (
-		value    any
-		writeErr error
+		value     any
+		writeErr  error
+		integrity bool
 	)
 	action, policyErr := mcppkg.MutationAction(policy, "write_memory")
 	switch action {
@@ -587,7 +694,19 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, memo
 		value, writeErr = stageMCPWriteProposal(cfg, args)
 	default:
 		// open. The receipt flips to applied only on the far side of this call.
-		value, writeErr = mcpWriteMemoryWith(traced, cfg, args, withExplicitMemoryID(memoryID))
+		//
+		// The id's ownership is recorded BEFORE the write, so a later attempt at
+		// the same pinned id can tell "this is mine" from "something else is
+		// there". Recording it after would leave a window in which our own memory
+		// looked foreign to our own retry.
+		if claimErr := claimCapturePublication(cfg, id); claimErr != nil {
+			if errors.Is(claimErr, errMemoryIDMismatch) {
+				integrity = true
+				break
+			}
+			return companion.WriteOutcome{}, claimErr
+		}
+		value, writeErr = mcpWriteMemoryWith(traced, cfg, args, withExplicitMemoryID(id.MemoryID))
 	}
 	// Some handlers, mutations included, have no tool-specific structural counts.
 	// They still get one content-free event and an honest envelope size — the
@@ -613,6 +732,9 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, memo
 		out.State = companion.ReceiptAccepted
 		return out, nil
 	}
+	if integrity {
+		return w.integrityFailure(cfg, id), nil
+	}
 	if writeErr != nil {
 		return companion.WriteOutcome{}, writeErr
 	}
@@ -622,6 +744,19 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, memo
 		// Reporting applied without a memory id would be the one claim a receipt
 		// may never make, and Receipt.Validate would refuse it anyway.
 		return companion.WriteOutcome{}, fmt.Errorf("companion capture: the governed write path returned no memory")
+	}
+	// A pinned id the vault already holds is only OUR publication if the file
+	// says so. The create-exclusive publish reports EEXIST without reading
+	// anything, so the reading happens here, and a file that is not this
+	// capture's is a rejection rather than a confident `applied`.
+	if companionAlreadyPublished(value) {
+		state, verr := w.verifyPublication(cfg, c, id)
+		if verr != nil {
+			return companion.WriteOutcome{}, verr
+		}
+		if state != publicationOurs {
+			return w.integrityFailure(cfg, id), nil
+		}
 	}
 	// Durability BEFORE the claim. A sync failure is a failure of the whole
 	// publication: the bytes may be there and may not, and the honest answer is
@@ -1158,3 +1293,154 @@ func companionText(s string, max int) string {
 }
 
 func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
+
+// ---------------------------------------------------------------------------
+// The publication record
+// ---------------------------------------------------------------------------
+
+// capturePublication records WHICH capture owns a pinned vault id.
+//
+// It is the sidecar the exactly-once check reads. The reservation already knows
+// all of this, but a reservation is swept once its crash window closes, and the
+// question "does this memory belong to that capture?" outlives it — so the
+// ownership is recorded separately, keyed by the memory id, and never collected
+// on a timer.
+//
+// It lives under the STATE directory rather than beside the memory. The vault is
+// the user's own tree: it is synced, opened in an editor, and read by people, and
+// a bookkeeping file with a digest in it does not belong there. One small record
+// per memory a phone published is the same order of growth as the memories
+// themselves.
+type capturePublication struct {
+	Schema        string `json:"schema"`
+	SchemaVersion int    `json:"schema_version"`
+	MemoryID      string `json:"memory_id"`
+	DeviceID      string `json:"device_id"`
+	Key           string `json:"idempotency_key"`
+	Identity      string `json:"capture_identity"`
+	ClaimedAt     string `json:"claimed_at"`
+}
+
+const schemaCapturePublication = "mora.companion.capture.publication"
+
+// matches reports whether this record describes the same capture.
+//
+// All three parts have to agree. The identity alone would let one device claim
+// another's id if a digest ever collided; the device alone would let two captures
+// from one phone share a memory.
+func (p capturePublication) matches(id companion.CaptureIdentity) bool {
+	return p.MemoryID == id.MemoryID &&
+		p.DeviceID == id.DeviceID &&
+		p.Key == id.Key &&
+		p.Identity == id.Identity
+}
+
+// errMemoryIDMismatch reports that a pinned vault id is owned by a different
+// capture. It is a vault-integrity failure, not a client error: nothing the
+// phone sent was wrong.
+var errMemoryIDMismatch = errors.New("mora: that memory id is claimed by a different capture")
+
+// maxCapturePublicationBytes bounds one record on the read path, so a hostile or
+// corrupt file is refused rather than allocated.
+const maxCapturePublicationBytes = 8 << 10
+
+func capturePublicationDir(cfg Config) string {
+	return filepath.Join(cfg.StateDir, "companion", "published")
+}
+
+// capturePublicationPath is the record for one memory id.
+//
+// The id is validated by companion.CaptureIdentity before it reaches here and is
+// restricted to the contract's opaque character set, so it carries no separator.
+// filepath.Base is belt to that brace: a filename derived from a value that
+// crosses a wire is never allowed to choose its own directory.
+func capturePublicationPath(cfg Config, memoryID string) string {
+	return filepath.Join(capturePublicationDir(cfg), filepath.Base(memoryID)+".json")
+}
+
+// claimCapturePublication records that this capture owns the pinned id, and
+// refuses if somebody else already does.
+//
+// It is written BEFORE the vault write and fsynced, so the ownership is durable
+// by the time the memory it describes can exist. The other order would leave a
+// window in which our own memory looked unowned — and therefore foreign — to our
+// own retry.
+//
+// Re-claiming an id this capture already owns is a no-op rather than a rewrite:
+// a retry must not churn the file it is about to read.
+func claimCapturePublication(cfg Config, id companion.CaptureIdentity) error {
+	existing, found, err := readCapturePublication(cfg, id.MemoryID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if !existing.matches(id) {
+			return errMemoryIDMismatch
+		}
+		return nil
+	}
+	record := capturePublication{
+		Schema:        schemaCapturePublication,
+		SchemaVersion: 1,
+		MemoryID:      id.MemoryID,
+		DeviceID:      id.DeviceID,
+		Key:           id.Key,
+		Identity:      id.Identity,
+		ClaimedAt:     mcpWriteClock().UTC().Truncate(time.Second).Format(time.RFC3339),
+	}
+	body, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := capturePublicationDir(cfg)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := capturePublicationPath(cfg, id.MemoryID)
+	if err := atomicio.Write(path, append(body, '\n'), 0o600); err != nil {
+		return err
+	}
+	// The record is the thing a later attempt reads to decide whether it owns a
+	// memory, so it is durable before the memory is.
+	return companionSyncPublication(path)
+}
+
+// readCapturePublication reads one ownership record. A missing one is not an
+// error: the state directory can be rebuilt independently of the vault.
+func readCapturePublication(cfg Config, memoryID string) (capturePublication, bool, error) {
+	path := capturePublicationPath(cfg, memoryID)
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return capturePublication{}, false, nil
+	}
+	if err != nil {
+		return capturePublication{}, false, err
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, maxCapturePublicationBytes+1))
+	if err != nil {
+		return capturePublication{}, false, err
+	}
+	if len(body) > maxCapturePublicationBytes {
+		return capturePublication{}, false, fmt.Errorf("companion capture: %s is over the %d-byte limit", path, maxCapturePublicationBytes)
+	}
+	var record capturePublication
+	if err := json.Unmarshal(body, &record); err != nil {
+		return capturePublication{}, false, fmt.Errorf("companion capture: %s is not readable as a publication record: %w", path, err)
+	}
+	if record.Schema != schemaCapturePublication {
+		return capturePublication{}, false, fmt.Errorf("companion capture: %s is not a publication record", path)
+	}
+	return record, true, nil
+}
+
+// companionAlreadyPublished reports whether the governed write path found the
+// pinned id already in the vault rather than creating it.
+func companionAlreadyPublished(result any) bool {
+	wrapped, ok := result.(map[string]any)
+	if !ok {
+		return false
+	}
+	already, _ := wrapped["already_published"].(bool)
+	return already
+}

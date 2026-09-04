@@ -12,6 +12,7 @@ package mora
 // from the one route that writes.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,6 +74,19 @@ const (
 	captureTestMemoryID = "mem_20260904_030000_a1b2c3d4"
 )
 
+// captureTestIdentity is the CaptureIdentity the listener would hand the kernel
+// for a pinned id. The digests only have to be well-formed and stable: what the
+// kernel does with them is record ownership and compare it.
+func captureTestIdentity(memoryID string) companion.CaptureIdentity {
+	return companion.CaptureIdentity{
+		DeviceID:    captureTestDevice,
+		Key:         "key.one",
+		Identity:    companion.Fingerprint("identity:" + memoryID),
+		Fingerprint: companion.Fingerprint("payload:" + memoryID),
+		MemoryID:    memoryID,
+	}
+}
+
 // vaultMemories returns every memory in the vault, so a test can count them.
 // "Exactly one artefact" is a claim about the vault, not about a receipt.
 func vaultMemories(t *testing.T, cfg Config) []Memory {
@@ -132,7 +146,7 @@ func TestCompanionCaptureUnderOpenAppliesToTheVault(t *testing.T) {
 	cfg := captureTestVault(t, mcpWritePolicyOpen)
 	writer := newCompanionWriter()
 
-	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "the wifi code is on the fridge"), captureTestMemoryID)
+	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "the wifi code is on the fridge"), captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -178,7 +192,7 @@ func TestCompanionCapturePublishesUnderThePinnedID(t *testing.T) {
 	cfg := captureTestVault(t, mcpWritePolicyOpen)
 	writer := newCompanionWriter()
 
-	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "pin me"), captureTestMemoryID); err != nil {
+	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "pin me"), captureTestIdentity(captureTestMemoryID)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	memories := vaultMemories(t, cfg)
@@ -203,11 +217,11 @@ func TestCompanionCaptureSecondPublishAtTheSameIDWritesOneFile(t *testing.T) {
 	writer := newCompanionWriter()
 	capture := captureFixture(t, captureTestDevice, "key.one", "written once")
 
-	first, err := writer.Publish(testCtx(t), capture, captureTestMemoryID)
+	first, err := writer.Publish(testCtx(t), capture, captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
-	second, err := writer.Publish(testCtx(t), capture, captureTestMemoryID)
+	second, err := writer.Publish(testCtx(t), capture, captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("second publish: %v", err)
 	}
@@ -228,14 +242,19 @@ func TestCompanionCaptureSecondPublishAtTheSameIDWritesOneFile(t *testing.T) {
 func TestCompanionCapturePublishedReportsTheVault(t *testing.T) {
 	captureTestVault(t, mcpWritePolicyOpen)
 	writer := newCompanionWriter()
+	// ONE capture throughout. Published verifies that the memory at the pinned id
+	// is THIS capture's, so asking about it with a different body is a different
+	// question — and gets a different, correct, answer.
+	capture := captureFixture(t, captureTestDevice, "key.one", "now it exists")
+	id := captureTestIdentity(captureTestMemoryID)
 
-	if _, published, err := writer.Published(testCtx(t), captureTestMemoryID); err != nil || published {
+	if _, published, err := writer.Published(testCtx(t), capture, id); err != nil || published {
 		t.Fatalf("an unwritten id reported published=%t err=%v", published, err)
 	}
-	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "now it exists"), captureTestMemoryID); err != nil {
+	if _, err := writer.Publish(testCtx(t), capture, id); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	outcome, published, err := writer.Published(testCtx(t), captureTestMemoryID)
+	outcome, published, err := writer.Published(testCtx(t), capture, id)
 	if err != nil || !published {
 		t.Fatalf("a written id reported published=%t err=%v", published, err)
 	}
@@ -256,7 +275,7 @@ func TestCompanionCaptureMemoryIDMatchesAnEvidenceRow(t *testing.T) {
 	cfg := captureTestVault(t, mcpWritePolicyOpen)
 	writer := newCompanionWriter()
 
-	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "a note to find again"), captureTestMemoryID)
+	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "a note to find again"), captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -279,7 +298,7 @@ func TestCompanionCaptureUnderProposeStagesAndWritesNothing(t *testing.T) {
 	writer := newCompanionWriter()
 
 	before := len(vaultMemories(t, cfg))
-	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "stage me"), captureTestMemoryID)
+	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "stage me"), captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -303,7 +322,7 @@ func TestCompanionCaptureUnderReadonlyTouchesNothing(t *testing.T) {
 	writer := newCompanionWriter()
 
 	before := len(vaultMemories(t, cfg))
-	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "do not write me"), captureTestMemoryID)
+	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "do not write me"), captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -337,7 +356,7 @@ func TestCompanionCaptureUnreadableConfigFailsClosed(t *testing.T) {
 		t.Fatal("the fixture did not actually break the config")
 	}
 
-	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "unreadable config"), captureTestMemoryID)
+	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "unreadable config"), captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("an unreadable config produced an error rather than a rejection: %v", err)
 	}
@@ -360,7 +379,7 @@ func TestCompanionCapturePolicyIsReadPerRequest(t *testing.T) {
 	cfg := captureTestVault(t, mcpWritePolicyOpen)
 	writer := newCompanionWriter()
 
-	first, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "before the flip"), captureTestMemoryID)
+	first, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "before the flip"), captureTestIdentity(captureTestMemoryID))
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -374,7 +393,7 @@ func TestCompanionCapturePolicyIsReadPerRequest(t *testing.T) {
 	}
 
 	// The SAME writer value, no restart.
-	second, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.two", "after the flip"), "mem_20260904_030000_bbbbbbbb")
+	second, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.two", "after the flip"), captureTestIdentity("mem_20260904_030000_bbbbbbbb"))
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -409,18 +428,26 @@ func TestCompanionCaptureSyncsThePublicationBeforeItReturns(t *testing.T) {
 	}
 	t.Cleanup(func() { companionSyncPublication = original })
 
-	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "make me durable"), captureTestMemoryID); err != nil {
+	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "make me durable"), captureTestIdentity(captureTestMemoryID)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if len(synced) != 1 {
-		t.Fatalf("the publication was synced %d times, want exactly 1", len(synced))
+	// Two things are made durable, in this order: the record that says which
+	// capture owns the pinned id, and then the memory itself. The ownership
+	// record goes first on purpose — a crash between them leaves an owned id
+	// with no memory, which a retry completes, where the other order would leave
+	// a memory that looked unowned to its own retry.
+	if len(synced) != 2 {
+		t.Fatalf("the publication was synced %d times, want 2 (the ownership record, then the memory)", len(synced))
 	}
 	memories := vaultMemories(t, cfg)
 	if len(memories) != 1 {
 		t.Fatalf("the vault holds %d memories, want 1", len(memories))
 	}
-	if synced[0] != memories[0].Path {
-		t.Fatalf("synced %q, want the memory's own path %q", synced[0], memories[0].Path)
+	if synced[0] != capturePublicationPath(cfg, captureTestMemoryID) {
+		t.Fatalf("synced %q first, want the ownership record", synced[0])
+	}
+	if synced[1] != memories[0].Path {
+		t.Fatalf("synced %q second, want the memory's own path %q", synced[1], memories[0].Path)
 	}
 }
 
@@ -436,7 +463,7 @@ func TestCompanionCaptureSyncFailureIsNotAnAppliedReceipt(t *testing.T) {
 	companionSyncPublication = func(string) error { return errors.New("the volume went away") }
 	t.Cleanup(func() { companionSyncPublication = original })
 
-	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "undurable"), captureTestMemoryID)
+	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "undurable"), captureTestIdentity(captureTestMemoryID))
 	if err == nil {
 		t.Fatalf("a failed sync produced outcome %+v rather than an error", outcome)
 	}
@@ -529,7 +556,7 @@ func TestCompanionCaptureRecordsTheUsageLedgerRow(t *testing.T) {
 			cfg := captureTestVault(t, tc.policy)
 			writer := newCompanionWriter()
 
-			outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "ledger me"), captureTestMemoryID)
+			outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "ledger me"), captureTestIdentity(captureTestMemoryID))
 			if err != nil {
 				t.Fatalf("publish: %v", err)
 			}
@@ -561,7 +588,7 @@ func TestCompanionCaptureLedgerRowMatchesTheMCPToolRow(t *testing.T) {
 		t.Fatalf("write_memory: %v", err)
 	}
 	writer := newCompanionWriter()
-	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "a phone wrote this"), captureTestMemoryID); err != nil {
+	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "a phone wrote this"), captureTestIdentity(captureTestMemoryID)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -608,15 +635,15 @@ func (p *readOnlyProbe) Policy(ctx context.Context) (companion.WritePolicy, erro
 	return p.inner.Policy(ctx)
 }
 
-func (p *readOnlyProbe) Published(ctx context.Context, memoryID string) (companion.WriteOutcome, bool, error) {
-	return p.inner.Published(ctx, memoryID)
+func (p *readOnlyProbe) Published(ctx context.Context, c companion.Capture, id companion.CaptureIdentity) (companion.WriteOutcome, bool, error) {
+	return p.inner.Published(ctx, c, id)
 }
 
-func (p *readOnlyProbe) Publish(ctx context.Context, c companion.Capture, memoryID string) (companion.WriteOutcome, error) {
+func (p *readOnlyProbe) Publish(ctx context.Context, c companion.Capture, id companion.CaptureIdentity) (companion.WriteOutcome, error) {
 	p.mu.Lock()
 	p.readOnly, p.seen = readOnlyCall(ctx), true
 	p.mu.Unlock()
-	return p.inner.Publish(ctx, c, memoryID)
+	return p.inner.Publish(ctx, c, id)
 }
 
 // TestCompanionCaptureIsNotMarkedReadOnly is the N12 invariant, stated for the
@@ -682,8 +709,11 @@ func TestCompanionWriterNeverMarksItsContextReadOnly(t *testing.T) {
 			return true
 		})
 	}
-	if checked != 3 {
-		t.Fatalf("walked %d companionWriter methods, want the 3 the Writer seam declares", checked)
+	// The three the Writer seam declares, plus the two the verification is made
+	// of. The count is asserted so a method added later is walked rather than
+	// silently skipped by this witness.
+	if checked != 5 {
+		t.Fatalf("walked %d companionWriter methods, want 5", checked)
 	}
 }
 
@@ -832,6 +862,11 @@ func TestCompanionCaptureEndToEndCrashAfterPublicationLeavesOneMemoryFile(t *tes
 		if err := original(path); err != nil {
 			return err
 		}
+		if strings.HasSuffix(path, ".json") {
+			// The ownership record's own sync. The kill has to land AFTER the
+			// memory exists, so this one is allowed through.
+			return nil
+		}
 		return errors.New("the process died before the receipt settled")
 	}
 	if rec := postCompanionCapture(t, handler, token, capture); rec.Code != http.StatusServiceUnavailable {
@@ -919,4 +954,188 @@ func TestCompanionCaptureRefusesTheGenericLoopbackToken(t *testing.T) {
 	if files := vaultMemoryFiles(t, cfg); len(files) != 0 {
 		t.Fatalf("an unauthenticated capture wrote %d memory files", len(files))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// A pinned id the vault holds against somebody else
+// ---------------------------------------------------------------------------
+
+// TestCompanionCaptureForeignFileAtThePinnedIDIsRejected is the verified-EEXIST
+// gate, against a real vault.
+//
+// Round two took the create-exclusive publish's EEXIST as proof that the capture
+// was already published. EEXIST says a file is there; it says nothing about
+// whose. A tampered vault, or a collision in the 32-bit suffix, therefore
+// produced a confident `applied` receipt for a memory the phone never wrote.
+//
+// The file is pre-created with different content, so the ownership record and
+// the content comparison both disagree with the capture claiming the id.
+func TestCompanionCaptureForeignFileAtThePinnedIDIsRejected(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	var log bytes.Buffer
+	writer := newCompanionWriter(&log)
+
+	// Somebody else's memory, already at the pinned path.
+	foreign := Memory{
+		Scope: "personal", Type: "insight", Title: "Not the capture",
+		Source: "cli", CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Text: "this file was here first", ID: captureTestMemoryID,
+	}
+	body, err := renderMemory(foreign)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	path := memoryPath(cfg, foreign)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("seed the vault: %v", err)
+	}
+
+	outcome, err := writer.Publish(testCtx(t),
+		captureFixture(t, captureTestDevice, "key.one", "my note"),
+		captureTestIdentity(captureTestMemoryID))
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if outcome.State != companion.ReceiptRejected || outcome.Reason != companion.ReasonInternal {
+		t.Fatalf("a foreign file at the pinned id produced %s/%s, want rejected/internal", outcome.State, outcome.Reason)
+	}
+	if outcome.MemoryID != "" {
+		t.Fatalf("a rejected outcome named memory %q", outcome.MemoryID)
+	}
+	// The foreign file is untouched: refusing means refusing, not overwriting.
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(after) != string(body) {
+		t.Fatal("the refusal overwrote the file it refused")
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 1 {
+		t.Fatalf("the vault holds %d memory files, want the 1 that was already there", len(files))
+	}
+	// An operator can find out WHY. The reason on the wire is the frozen
+	// `internal`; the specific cause is here, naming the id and nothing the user
+	// wrote.
+	if !strings.Contains(log.String(), captureTestMemoryID) {
+		t.Fatalf("the integrity failure was not logged: %q", log.String())
+	}
+	if strings.Contains(log.String(), "my note") || strings.Contains(log.String(), "this file was here first") {
+		t.Fatalf("the log carries memory text: %q", log.String())
+	}
+}
+
+// TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite is the
+// other half. Verification must not turn our OWN publication into a rejection:
+// a retry that finds its own memory already there is the exactly-once success
+// case, and it must not write again.
+func TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	capture := captureFixture(t, captureTestDevice, "key.one", "mine, written once")
+	id := captureTestIdentity(captureTestMemoryID)
+
+	first, err := writer.Publish(testCtx(t), capture, id)
+	if err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	before, err := os.ReadFile(memoryPath(cfg, Memory{Scope: "personal", Type: "insight", ID: captureTestMemoryID}))
+	if err != nil {
+		t.Fatalf("read the published memory: %v", err)
+	}
+
+	second, err := writer.Publish(testCtx(t), capture, id)
+	if err != nil {
+		t.Fatalf("second publish: %v", err)
+	}
+	if first.State != companion.ReceiptApplied || second.State != companion.ReceiptApplied {
+		t.Fatalf("states = %q then %q, want applied twice", first.State, second.State)
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 1 {
+		t.Fatalf("two publishes left %d memory files, want exactly 1", len(files))
+	}
+	after, err := os.ReadFile(vaultMemoryFiles(t, cfg)[0])
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("the second publish rewrote the memory it found")
+	}
+}
+
+// TestCompanionCapturePublicationRecordNamesItsOwner. The ownership record is
+// what makes "already published" answerable after the reservation that knew it
+// has been swept. It is written BEFORE the memory, so our own retry never sees
+// an unowned file where its memory should be.
+func TestCompanionCapturePublicationRecordNamesItsOwner(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	id := captureTestIdentity(captureTestMemoryID)
+
+	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "owned"), id); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	record, found, err := readCapturePublication(cfg, captureTestMemoryID)
+	if err != nil || !found {
+		t.Fatalf("the publication record is missing: found=%t err=%v", found, err)
+	}
+	if !record.matches(id) {
+		t.Fatalf("the record does not describe the capture that wrote it: %+v", record)
+	}
+	// It carries digests and identifiers, never a word the user wrote.
+	body, err := os.ReadFile(capturePublicationPath(cfg, captureTestMemoryID))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(body), "owned") {
+		t.Fatalf("the publication record carries the capture text: %s", body)
+	}
+
+	// A DIFFERENT capture cannot claim the same id.
+	other := captureTestIdentity(captureTestMemoryID)
+	other.Key = "key.two"
+	if err := claimCapturePublication(cfg, other); !errors.Is(err, errMemoryIDMismatch) {
+		t.Fatalf("a second capture claimed the same id: %v", err)
+	}
+	// And the owner can re-claim its own id as many times as it retries.
+	if err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("the owner could not re-claim its own id: %v", err)
+	}
+}
+
+// TestCompanionCapturePublishedVerifiesRatherThanTrusting. The takeover
+// pre-check answers the same question as the EEXIST branch and must answer it
+// the same way, or a reclaimed reservation would settle a receipt for somebody
+// else's memory.
+func TestCompanionCapturePublishedVerifiesRatherThanTrusting(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	capture := captureFixture(t, captureTestDevice, "key.one", "mine")
+	id := captureTestIdentity(captureTestMemoryID)
+
+	if _, err := writer.Publish(testCtx(t), capture, id); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	outcome, published, err := writer.Published(testCtx(t), capture, id)
+	if err != nil || !published || outcome.State != companion.ReceiptApplied {
+		t.Fatalf("the owner's own memory reported published=%t state=%q err=%v", published, outcome.State, err)
+	}
+
+	// The same id, asked about by a DIFFERENT capture: present, and not theirs.
+	stranger := captureTestIdentity(captureTestMemoryID)
+	stranger.Key = "key.two"
+	stranger.Identity = companion.Fingerprint("a different capture")
+	outcome, published, err = writer.Published(testCtx(t), capture, stranger)
+	if err != nil {
+		t.Fatalf("published: %v", err)
+	}
+	if !published {
+		t.Fatal("a taken id reported absent to a stranger; the retry would write into it")
+	}
+	if outcome.State != companion.ReceiptRejected || outcome.Reason != companion.ReasonInternal {
+		t.Fatalf("a stranger got %s/%s, want rejected/internal", outcome.State, outcome.Reason)
+	}
+	_ = cfg
 }

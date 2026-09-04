@@ -39,6 +39,7 @@ package companion
 //     insert. An expired pending record is a crashed attempt nobody came back
 //     for, and the pinned id means sweeping it loses nothing: the retry derives
 //     the same id and the create-exclusive publish still refuses to write twice.
+//     The sweep walks the in-memory pending SET, so it costs nothing per capture.
 //   - MaxReservations caps the total. Over it the oldest SETTLED records go,
 //     because a settled record is idempotency memory while a pending one is a
 //     claim somebody may still be acting on.
@@ -237,6 +238,24 @@ type ReservationStore struct {
 	mu       sync.Mutex
 	inflight map[string]chan struct{}
 
+	// counted, total and pending are the store's census, held in memory so the
+	// hot path does no directory walk.
+	//
+	// A fresh reservation used to scan the whole store twice — once to count the
+	// pending records against the bound, once more to trim — which made every
+	// capture pay for every capture that came before it. The census is seeded by
+	// ONE scan when the store opens and moved by insert, settle and sweep after
+	// that. pending maps a reservation's path to when it was reserved, which is
+	// all the sweep needs, so sweeping walks the pending SET rather than the
+	// directory.
+	//
+	// It is per process, and that is the honest bound rather than a global one:
+	// a second process opens its own store and takes its own census. One
+	// `mora companion serve` is the writer in practice, and a second one
+	// admitting up to its own limit is a bound of 2N, not of infinity.
+	total   int
+	pending map[string]time.Time
+
 	// writeRecord publishes a reservation file. It is a field rather than a
 	// direct call so a test can fail the write at the exact instant the ordering
 	// rules exist for — the moment between "the vault holds the memory" and "the
@@ -244,6 +263,10 @@ type ReservationStore struct {
 	// production never does. The same seam, for the same reason, as
 	// Registry.writeRecord.
 	writeRecord func(path string, body []byte, beforeRename func() error) error
+	// readDir is the directory walk, a field so a test can COUNT it. The claim
+	// it exists for is a cost claim — that a fresh reservation walks nothing —
+	// and a cost claim needs something that can be counted.
+	readDir func(name string) ([]os.DirEntry, error)
 }
 
 // ReservationOption injects a seam. Both exist for tests; production passes
@@ -282,13 +305,61 @@ func NewReservationStore(stateDir string, opts ...ReservationOption) *Reservatio
 		now:         time.Now,
 		entropy:     rand.Reader,
 		inflight:    map[string]chan struct{}{},
+		pending:     map[string]time.Time{},
 		writeRecord: writeSecretFile,
+		readDir:     os.ReadDir,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	s.sweep(s.now(), "")
+	s.census(s.now())
 	return s
+}
+
+// census is the ONE directory walk the store performs in the ordinary course of
+// its life.
+//
+// It runs when the store opens: it collects what may not be kept — expired
+// records of any state, and crashed pending claims past PendingSweepAfter — and
+// seeds the in-memory counts from what survives. Everything after this is
+// arithmetic.
+//
+// It is best effort and silent. A store that cannot tidy itself must still
+// serve, and a listener that refused to start because one reservation file was
+// unreadable would be trading a small problem for a total one.
+func (s *ReservationStore) census(now time.Time) {
+	total := 0
+	pending := map[string]time.Time{}
+	for _, row := range s.list() {
+		if s.collectable(row.record, now) {
+			_ = os.Remove(row.path)
+			continue
+		}
+		total++
+		if row.record.State == reservationPending {
+			if reserved, err := time.Parse(time.RFC3339, row.record.ReservedAt); err == nil {
+				pending[row.path] = reserved
+			} else {
+				pending[row.path] = time.Time{}
+			}
+		}
+	}
+	s.mu.Lock()
+	s.total, s.pending = total, pending
+	s.mu.Unlock()
+}
+
+// collectable reports whether a record may be deleted outright: expired at any
+// state, or a pending claim nobody came back for.
+func (s *ReservationStore) collectable(record reservationRecord, now time.Time) bool {
+	if expiry, err := time.Parse(time.RFC3339, record.ExpiresAt); err == nil && !now.Before(expiry) {
+		return true
+	}
+	if record.State != reservationPending {
+		return false
+	}
+	reserved, err := time.Parse(time.RFC3339, record.ReservedAt)
+	return err != nil || !now.Before(reserved.Add(PendingSweepAfter))
 }
 
 // Claim is a held reservation: the key is durably claimed and the holder is the
@@ -314,6 +385,21 @@ type Claim struct {
 
 // MemoryID is the vault id this claim publishes under.
 func (c *Claim) MemoryID() string { return c.record.MemoryID }
+
+// Identity is what was RESERVED, not what the caller recomputed.
+//
+// The difference matters on a takeover: the reclaimed record carries the id the
+// crashed attempt pinned, and the kernel has to be asked about that id rather
+// than about one derived a second time.
+func (c *Claim) Identity() CaptureIdentity {
+	return CaptureIdentity{
+		DeviceID:    c.record.DeviceID,
+		Key:         c.record.IdempotencyKey,
+		Identity:    c.record.CaptureIdentity,
+		Fingerprint: c.record.PayloadFingerprint,
+		MemoryID:    c.record.MemoryID,
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Reserve
@@ -389,17 +475,28 @@ func (s *ReservationStore) reserveOnDisk(id CaptureIdentity, inflight string, do
 	now := s.now()
 	takenOver := false
 
+	fresh := true
 	existing, err := readReservation(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		// A fresh key.
 	case err != nil:
 		return nil, nil, err
+	case s.collectable(existing, now):
+		// Expired, or a crashed claim past the sweep window. Collecting it HERE
+		// rather than on a timer is what keeps the hot path free of directory
+		// walks: the one record this request touches is the one record that gets
+		// checked, and the census moves by one.
+		_ = os.Remove(path)
+		s.forget(path)
 	default:
 		// The identity is checked FIRST, before the state, so a key reused for a
 		// different capture is a conflict whether the first attempt settled or is
 		// still running. The other order would let a second capture reclaim a
 		// crashed reservation belonging to the first.
+		//
+		// captured_at is inside the identity, so a retry that re-stamps its clock
+		// lands here rather than deriving a second vault id.
 		if existing.CaptureIdentity != id.Identity {
 			return nil, nil, ErrIdempotencyConflict
 		}
@@ -417,16 +514,18 @@ func (s *ReservationStore) reserveOnDisk(id CaptureIdentity, inflight string, do
 		// write may or may not have landed, so the caller checks the pinned id
 		// against the vault before it writes.
 		takenOver = true
+		fresh = false
 		// The reclaimed record keeps the id the crashed attempt pinned, which is
 		// the whole point: the retry must aim at the same vault path.
 		id.MemoryID = existing.MemoryID
 	}
 
-	// The store's HARD bound. It is enforced BEFORE the record is written, so a
-	// refusal creates nothing — a bound that admitted the request and then tidied
-	// up afterwards would still be a file per request while the pressure lasted.
-	if !takenOver {
-		if pending := s.sweep(now, path); pending >= MaxPendingReservations {
+	// The store's HARD bound, answered from the census rather than from a walk.
+	// It is enforced BEFORE the record is written, so a refusal creates nothing —
+	// a bound that admitted the request and then tidied up afterwards would still
+	// be a file per request while the pressure lasted.
+	if fresh {
+		if s.sweep(now) >= MaxPendingReservations {
 			return nil, nil, ErrTooManyPending
 		}
 	}
@@ -445,12 +544,44 @@ func (s *ReservationStore) reserveOnDisk(id CaptureIdentity, inflight string, do
 	if err := s.write(path, record, held); err != nil {
 		return nil, nil, err
 	}
+	s.remember(path, now, fresh)
 	// Trimming runs after the write and never touches the record just written, so
 	// a store at its total cap can still accept the capture that pushed it there.
+	// It is the one operation that still walks, and it runs only when the census
+	// says the store is over its total cap — which is the moment a walk is what
+	// the caller is asking for.
 	s.trim(path)
 	return nil, &Claim{
 		store: s, inflight: inflight, done: done, path: path, record: record, TakenOver: takenOver,
 	}, nil
+}
+
+// remember moves the census for a reservation that was just written.
+func (s *ReservationStore) remember(path string, now time.Time, fresh bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fresh {
+		s.total++
+	}
+	s.pending[path] = now
+}
+
+// forget moves the census for a reservation that was just deleted.
+func (s *ReservationStore) forget(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pending, path)
+	if s.total > 0 {
+		s.total--
+	}
+}
+
+// settled moves the census for a reservation that just reached its receipt. The
+// record survives; it is no longer a live claim.
+func (s *ReservationStore) settled(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pending, path)
 }
 
 // takeoverDue reports whether a pending reservation stamped at reservedAt is old
@@ -509,7 +640,13 @@ func (c *Claim) Settle(r Receipt, response []byte) error {
 	record.State = reservationSettled
 	record.Receipt = &r
 	record.Response = string(response)
-	return c.store.write(c.path, record, held)
+	if err := c.store.write(c.path, record, held); err != nil {
+		return err
+	}
+	// The record survives; it is no longer a live claim, so it leaves the pending
+	// set and stops counting against the in-flight bound.
+	c.store.settled(c.path)
+	return nil
 }
 
 // Abandon releases the in-process hold WITHOUT settling.
@@ -660,43 +797,44 @@ func readReservation(path string) (reservationRecord, error) {
 // Sweeping and trimming
 // ---------------------------------------------------------------------------
 
-// sweep collects what the store may not keep and reports how many pending
-// records survived.
+// sweep collects crashed pending claims and reports how many live ones remain.
 //
-// Two things go: an expired record of any state, and a PENDING record past the
-// takeover window. The second is what makes the bound hard. Sweeping a crashed
-// pending record used to be unsafe, because the record was the only thing that
-// stopped a retry writing twice; it is safe now because the memory id is derived
-// rather than stored, so the retry aims at the same vault path and the
-// create-exclusive publish refuses the second write.
+// It walks the PENDING SET, not the directory. That is the difference the round
+// two review named: the old shape read every record in the store on every fresh
+// reservation, so a capture cost a walk over every capture before it. The set is
+// the only thing a sweep needs — a pending record is identified by its path and
+// judged by when it was reserved — and both are in memory.
+//
+// Sweeping a crashed pending record is safe because the memory id is DERIVED
+// rather than stored: the retry re-derives the same id, and the kernel's
+// create-exclusive publish refuses the second write. The record was never the
+// thing holding the guarantee.
 //
 // It is best effort: a capture must not fail because housekeeping did. The count
 // it returns is what the caller compares against MaxPendingReservations, so the
-// bound is measured AFTER the sweep rather than against records that no longer
+// bound is measured AFTER the sweep rather than against claims that no longer
 // deserve to exist.
-func (s *ReservationStore) sweep(now time.Time, keep string) int {
-	pending := 0
-	for _, row := range s.list() {
-		if row.path == keep {
-			if row.record.State == reservationPending {
-				pending++
-			}
-			continue
-		}
-		if expiry, err := time.Parse(time.RFC3339, row.record.ExpiresAt); err == nil && !now.Before(expiry) {
-			_ = os.Remove(row.path)
-			continue
-		}
-		if row.record.State == reservationPending {
-			if reserved, err := time.Parse(time.RFC3339, row.record.ReservedAt); err != nil ||
-				!now.Before(reserved.Add(PendingSweepAfter)) {
-				_ = os.Remove(row.path)
-				continue
-			}
-			pending++
+func (s *ReservationStore) sweep(now time.Time) int {
+	s.mu.Lock()
+	stale := make([]string, 0, len(s.pending))
+	for path, reserved := range s.pending {
+		if reserved.IsZero() || !now.Before(reserved.Add(PendingSweepAfter)) {
+			stale = append(stale, path)
 		}
 	}
-	return pending
+	for _, path := range stale {
+		delete(s.pending, path)
+		if s.total > 0 {
+			s.total--
+		}
+	}
+	live := len(s.pending)
+	s.mu.Unlock()
+
+	for _, path := range stale {
+		_ = os.Remove(path)
+	}
+	return live
 }
 
 // trim enforces the TOTAL cap by dropping the oldest settled records.
@@ -706,21 +844,28 @@ func (s *ReservationStore) sweep(now time.Time, keep string) int {
 // vault still refuses to write twice. A pending record is never trimmed: it is a
 // claim somebody may still be acting on.
 func (s *ReservationStore) trim(keep string) {
+	s.mu.Lock()
+	over := s.total > MaxReservations
+	s.mu.Unlock()
+	if !over {
+		return
+	}
 	rows := s.list()
 	if len(rows) <= MaxReservations {
 		return
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].record.ReservedAt < rows[j].record.ReservedAt })
-	over := len(rows) - MaxReservations
+	excess := len(rows) - MaxReservations
 	for _, row := range rows {
-		if over == 0 {
+		if excess == 0 {
 			break
 		}
 		if row.path == keep || row.record.State != reservationSettled {
 			continue
 		}
 		if os.Remove(row.path) == nil {
-			over--
+			s.forget(row.path)
+			excess--
 		}
 	}
 }
@@ -734,7 +879,7 @@ type reservationFile struct {
 // sweeping is housekeeping, and one corrupt file must not stop the rest being
 // bounded.
 func (s *ReservationStore) list() []reservationFile {
-	devices, err := os.ReadDir(s.root)
+	devices, err := s.readDir(s.root)
 	if err != nil {
 		return nil
 	}
@@ -743,7 +888,7 @@ func (s *ReservationStore) list() []reservationFile {
 		if !device.IsDir() {
 			continue
 		}
-		entries, err := os.ReadDir(filepath.Join(s.root, device.Name()))
+		entries, err := s.readDir(filepath.Join(s.root, device.Name()))
 		if err != nil {
 			continue
 		}

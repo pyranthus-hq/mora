@@ -29,10 +29,10 @@ func storeRootOf(srv *Server) string { return srv.captures.root }
 func reopenStore(root string, now func() time.Time) *ReservationStore {
 	s := NewReservationStore("", WithReservationClock(now))
 	s.root = root
-	// Opening sweeps, and the constructor swept the wrong (empty) root before the
-	// real one was set. Sweep again so a reopened store behaves exactly as one
-	// constructed over this directory would.
-	s.sweep(s.now(), "")
+	// Opening takes a census, and the constructor took it over the wrong (empty)
+	// root before the real one was set. Take it again so a reopened store behaves
+	// exactly as one constructed over this directory would.
+	s.census(s.now())
 	return s
 }
 
@@ -52,6 +52,20 @@ func reservationRecordOn(t *testing.T, root, deviceID, key string) reservationRe
 func reservationStateOn(t *testing.T, root string, c Capture) reservationState {
 	t.Helper()
 	return reservationRecordOn(t, root, c.DeviceID, c.IdempotencyKey).State
+}
+
+// storeTotal reads the store's in-memory census.
+func storeTotal(s *ReservationStore) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total
+}
+
+// storePending reads the store's in-memory count of live claims.
+func storePending(s *ReservationStore) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
 }
 
 // reservationExists reports whether a key has a file at all.
@@ -431,6 +445,17 @@ func TestReservationTakeoverWaitsForTheWindow(t *testing.T) {
 	if recovered.MemoryID() != id.MemoryID {
 		t.Fatalf("the reclaimed claim publishes under %q, want the pinned %q", recovered.MemoryID(), id.MemoryID)
 	}
+	// And the identity the kernel is ASKED about is the one that was reserved,
+	// not the one the caller just recomputed. They differ here precisely because
+	// the stamp drifted, which is the case a recomputed identity would get wrong.
+	asked := recovered.Identity()
+	if asked.MemoryID != id.MemoryID || asked.Identity != id.Identity ||
+		asked.Key != id.Key || asked.DeviceID != id.DeviceID {
+		t.Fatalf("the reclaimed claim reports identity %+v, want what was reserved %+v", asked, id)
+	}
+	if asked.MemoryID == drifted.MemoryID {
+		t.Fatal("the reclaimed claim reports the drifted id; a retry would aim at a path nothing holds")
+	}
 	// And the record on disk still pins it, so a THIRD attempt agrees too.
 	record, err := readReservation(store.path(testStoreDevice, id.Key))
 	if err != nil {
@@ -590,28 +615,68 @@ func TestReservationSweepsCrashedPendingRecords(t *testing.T) {
 	})
 }
 
-// TestReservationExpires proves the TTL is real. A key answerable forever is a
-// directory that grows forever.
+// TestReservationExpires proves the TTL is real, on both the occasions it is
+// enforced.
+//
+// Expiry is checked where it costs nothing: when the record itself is touched,
+// and when the store takes its census on open. It is deliberately NOT a periodic
+// walk — a fresh reservation must not pay for every reservation before it, which
+// is what the round two review measured.
 func TestReservationExpires(t *testing.T) {
-	store, clock, root := testStore(t)
-	id := storeIdentity("key.old", "old")
+	t.Run("a touched record is collected and not answered", func(t *testing.T) {
+		store, clock, root := testStore(t)
+		id := storeIdentity("key.old", "old")
 
-	_, claim, err := store.Reserve(id)
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	receipt, body := storeReceipt(t, store, id, ReceiptApplied)
-	if err := claim.Settle(receipt, body); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
+		_, claim, err := store.Reserve(id)
+		if err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+		if err := claim.Settle(receipt, body); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
 
-	*clock = testNow.Add(ReservationTTL + time.Hour)
-	if _, _, err := store.Reserve(storeIdentity("key.new", "new")); err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	if reservationExists(root, testStoreDevice, "key.old") {
-		t.Fatal("the expired reservation is still on disk")
-	}
+		*clock = testNow.Add(ReservationTTL + time.Hour)
+		replay, again, err := store.Reserve(id)
+		if err != nil {
+			t.Fatalf("reserve past the TTL: %v", err)
+		}
+		if again == nil {
+			t.Fatalf("an expired reservation still answered a replay: %s", replay)
+		}
+		// The stale record was replaced rather than left to answer, and the store
+		// counts one reservation rather than two.
+		record := reservationRecordOn(t, root, testStoreDevice, "key.old")
+		if record.State != reservationPending {
+			t.Fatalf("state = %q, want the fresh pending record", record.State)
+		}
+		if got := storeTotal(store); got != 1 {
+			t.Fatalf("the census counts %d reservations, want 1", got)
+		}
+	})
+
+	t.Run("opening the store collects them", func(t *testing.T) {
+		store, clock, root := testStore(t)
+		id := storeIdentity("key.old", "old")
+
+		_, claim, err := store.Reserve(id)
+		if err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+		if err := claim.Settle(receipt, body); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+
+		*clock = testNow.Add(ReservationTTL + time.Hour)
+		reopened := reopenStore(root, func() time.Time { return *clock })
+		if reservationExists(root, testStoreDevice, "key.old") {
+			t.Fatal("opening the store did not collect an expired reservation")
+		}
+		if got := storeTotal(reopened); got != 0 {
+			t.Fatalf("the reopened census counts %d reservations, want 0", got)
+		}
+	})
 }
 
 // TestReservationTrimsTheOldestSettledPastTheTotalCap. The total cap is the
@@ -789,3 +854,192 @@ func TestReservationIDMintingSurfacesAnEntropyFailure(t *testing.T) {
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+// ---------------------------------------------------------------------------
+// Scan cost
+// ---------------------------------------------------------------------------
+
+// countingReadDir wraps os.ReadDir and counts the walks.
+func countingReadDir(n *int) func(string) ([]os.DirEntry, error) {
+	return func(name string) ([]os.DirEntry, error) {
+		*n++
+		return os.ReadDir(name)
+	}
+}
+
+// TestReservationFreshPathWalksNoDirectory is the cost gate.
+//
+// Round two answered the in-flight bound by reading every record in the store,
+// and then trimmed by reading them all again — so the Nth capture of a session
+// paid for the N-1 before it, and a store near its cap turned one phone request
+// into a thousand file reads. The census makes the bound arithmetic: one walk
+// when the store opens, and none per capture.
+//
+// The assertion is on the WALK rather than on a stopwatch, because a timing
+// assertion is a flake and a walk count is a fact.
+func TestReservationFreshPathWalksNoDirectory(t *testing.T) {
+	root := t.TempDir()
+	now := testNow
+	walks := 0
+	store := NewReservationStore(root, WithReservationClock(func() time.Time { return now }))
+	// The census has already run against an empty directory. Count from here.
+	store.readDir = countingReadDir(&walks)
+
+	for i := 0; i < 32; i++ {
+		id := storeIdentity(fmt.Sprintf("key.%03d", i), "payload")
+		_, claim, err := store.Reserve(id)
+		if err != nil {
+			t.Fatalf("reserve %d: %v", i, err)
+		}
+		receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+		if err := claim.Settle(receipt, body); err != nil {
+			t.Fatalf("settle %d: %v", i, err)
+		}
+	}
+	if walks != 0 {
+		t.Fatalf("32 captures walked the store %d times, want 0", walks)
+	}
+	// A replay is the same: it reads ONE record, the one it is about.
+	if _, _, err := store.Reserve(storeIdentity("key.000", "payload")); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if walks != 0 {
+		t.Fatalf("a replay walked the store %d times, want 0", walks)
+	}
+	// And the census it kept instead is the truth: 32 records, none of them a
+	// live claim.
+	if got := storeTotal(store); got != 32 {
+		t.Fatalf("the census counts %d reservations, want 32", got)
+	}
+	if got := storePending(store); got != 0 {
+		t.Fatalf("the census counts %d live claims, want 0", got)
+	}
+}
+
+// TestReservationOpeningWalksOnce pins the other half: the census is seeded by
+// exactly one pass over the store, not by one per device or one per record.
+func TestReservationOpeningWalksOnce(t *testing.T) {
+	store, _, root := testStore(t)
+	for i := 0; i < 4; i++ {
+		id := storeIdentity(fmt.Sprintf("key.%03d", i), "payload")
+		_, claim, err := store.Reserve(id)
+		if err != nil {
+			t.Fatalf("reserve %d: %v", i, err)
+		}
+		receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+		if err := claim.Settle(receipt, body); err != nil {
+			t.Fatalf("settle %d: %v", i, err)
+		}
+	}
+
+	walks := 0
+	reopened := NewReservationStore("", WithReservationClock(func() time.Time { return testNow }))
+	reopened.root = root
+	reopened.readDir = countingReadDir(&walks)
+	reopened.census(testNow)
+
+	// One walk for the store's root, one for the single device directory inside
+	// it. What matters is that it does not grow with the number of RECORDS.
+	if walks != 2 {
+		t.Fatalf("the opening census walked %d directories, want 2 (the root and one device)", walks)
+	}
+	if got := storeTotal(reopened); got != 4 {
+		t.Fatalf("the census counts %d reservations, want 4", got)
+	}
+}
+
+// TestReservationSweepWalksThePendingSetNotTheStore. The sweep has to be able to
+// run on the hot path, so it reads the in-memory claim set rather than the
+// directory; the only files it touches are the ones it deletes.
+func TestReservationSweepWalksThePendingSetNotTheStore(t *testing.T) {
+	store, clock, root := testStore(t)
+
+	// One crashed claim, and a settled record beside it that the sweep must not
+	// need to read in order to leave alone.
+	settledID := storeIdentity("key.settled", "payload")
+	_, settledClaim, err := store.Reserve(settledID)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	receipt, body := storeReceipt(t, store, settledID, ReceiptApplied)
+	if err := settledClaim.Settle(receipt, body); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	crashed := storeIdentity("key.crashed", "payload")
+	_, crashedClaim, err := store.Reserve(crashed)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	crashedClaim.Abandon()
+
+	walks := 0
+	store.readDir = countingReadDir(&walks)
+	*clock = testNow.Add(PendingSweepAfter + time.Second)
+	if live := store.sweep(*clock); live != 0 {
+		t.Fatalf("the sweep reports %d live claims, want 0", live)
+	}
+	if walks != 0 {
+		t.Fatalf("the sweep walked the store %d times, want 0", walks)
+	}
+	if reservationExists(root, testStoreDevice, "key.crashed") {
+		t.Fatal("the sweep left the crashed claim on disk")
+	}
+	if !reservationExists(root, testStoreDevice, "key.settled") {
+		t.Fatal("the sweep collected a settled record")
+	}
+	if got := storeTotal(store); got != 1 {
+		t.Fatalf("the census counts %d reservations after the sweep, want 1", got)
+	}
+}
+
+// TestReservationCensusTracksSettleAndSweep. The census is the bound, so a count
+// that drifted from the directory would be a bound that refused good captures or
+// admitted bad ones. It is checked against the files at each step.
+func TestReservationCensusTracksSettleAndSweep(t *testing.T) {
+	store, clock, root := testStore(t)
+
+	id := storeIdentity("key.one", "payload")
+	_, claim, err := store.Reserve(id)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if got, want := storePending(store), 1; got != want {
+		t.Fatalf("after reserve: %d live claims, want %d", got, want)
+	}
+	if got, want := storeTotal(store), 1; got != want {
+		t.Fatalf("after reserve: %d reservations, want %d", got, want)
+	}
+
+	receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+	if err := claim.Settle(receipt, body); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if got := storePending(store); got != 0 {
+		t.Fatalf("a settled record is still counted as a live claim: %d", got)
+	}
+	if got := storeTotal(store); got != 1 {
+		t.Fatalf("a settled record left the census: %d", got)
+	}
+
+	// A crashed claim, swept.
+	crashed := storeIdentity("key.two", "payload")
+	_, crashedClaim, err := store.Reserve(crashed)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	crashedClaim.Abandon()
+	*clock = testNow.Add(PendingSweepAfter + time.Second)
+	store.sweep(*clock)
+	if got := storeTotal(store); got != 1 {
+		t.Fatalf("after the sweep the census counts %d, want 1", got)
+	}
+
+	// And the census agrees with the disk.
+	entries, err := os.ReadDir(filepath.Join(root, testStoreDevice))
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != storeTotal(store) {
+		t.Fatalf("the census counts %d reservations, the directory holds %d", storeTotal(store), len(entries))
+	}
+}

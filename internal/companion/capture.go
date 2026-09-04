@@ -87,16 +87,20 @@ type Writer interface {
 	// write anything, so that even those receipts name the policy in force. An
 	// error means the policy could not be READ, and the caller fails closed.
 	Policy(ctx context.Context) (WritePolicy, error)
-	// Published reports whether memoryID is already in the vault, and if so the
-	// outcome that describes it. It is asked only when a crashed reservation is
-	// reclaimed, so the retry can finish somebody else's work rather than repeat
-	// it. The outcome comes from the kernel because only the kernel knows what a
-	// published memory means for a receipt.
-	Published(ctx context.Context, memoryID string) (WriteOutcome, bool, error)
+	// Published reports whether the pinned id is already in the vault, and if so
+	// the outcome that describes it. It is asked only when a crashed reservation
+	// is reclaimed, so the retry can finish somebody else's work rather than
+	// repeat it.
+	//
+	// It takes the whole CaptureIdentity because "is it published?" is not a
+	// question about a path. A file at the pinned id that is NOT this capture is
+	// a vault-integrity failure, and the kernel is the only side that can tell
+	// the difference — so it returns the outcome, including the rejection.
+	Published(ctx context.Context, c Capture, id CaptureIdentity) (WriteOutcome, bool, error)
 	// Publish runs the capture through the kernel's existing governed write
-	// path, pinned to memoryID, and reports what happened. The publication is
+	// path, pinned to id.MemoryID, and reports what happened. The publication is
 	// durable — the file and its directory are synced — before it returns.
-	Publish(ctx context.Context, c Capture, memoryID string) (WriteOutcome, error)
+	Publish(ctx context.Context, c Capture, id CaptureIdentity) (WriteOutcome, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,30 +117,46 @@ type Writer interface {
 // than reconciled because the fingerprint is a published contract field and this
 // is the kernel's own idempotency identity.
 //
+// # captured_at is part of the identity, and that is load-bearing
+//
+// It was excluded in round two, on the reasoning that a retry which re-stamps
+// its clock is still the same capture. That reasoning was wrong in a way that
+// cost exactly-once: the vault id derives its timestamp from captured_at, so a
+// retry with a fresh stamp derived a DIFFERENT id, aimed at a different vault
+// path, and the create-exclusive publish had nothing to refuse. Including it
+// makes the id stable by construction — the identity and the id move together or
+// not at all — and turns a re-stamped retry into an idempotency_conflict, which
+// is the honest answer: a capture whose claimed time changed is not the capture
+// the key was issued for.
+//
+// The client-side rule that falls out is stated in the contract:
+// **captured_at is immutable for a given idempotency key.** A phone queue that
+// preserves the stamp across a relaunch (N23) satisfies it by construction.
+//
 // Excluded deliberately: the idempotency key itself, which is the LOOKUP and
-// would make every capture its own identity; and the client's captured_at,
-// because a retry that re-stamps its clock is still the same capture and must
-// still replay rather than write again.
+// would make every capture its own identity, so no reuse could ever conflict.
 //
 // The digest is over canonical JSON — a fixed field order, one encoder — so two
 // runs of the same build agree byte for byte.
 func captureIdentity(c Capture) string {
 	canonical := struct {
-		Schema  string `json:"schema"`
-		Version int    `json:"schema_version"`
-		Device  string `json:"device_id"`
-		Lane    Lane   `json:"requested_lane"`
-		Intent  Intent `json:"intent"`
-		Scope   string `json:"scope"`
-		Text    string `json:"text"`
+		Schema     string `json:"schema"`
+		Version    int    `json:"schema_version"`
+		Device     string `json:"device_id"`
+		CapturedAt string `json:"captured_at"`
+		Lane       Lane   `json:"requested_lane"`
+		Intent     Intent `json:"intent"`
+		Scope      string `json:"scope"`
+		Text       string `json:"text"`
 	}{
-		Schema:  SchemaCapture,
-		Version: SchemaVersion,
-		Device:  c.DeviceID,
-		Lane:    c.RequestedLane,
-		Intent:  c.Intent,
-		Scope:   c.Scope,
-		Text:    c.Text,
+		Schema:     SchemaCapture,
+		Version:    SchemaVersion,
+		Device:     c.DeviceID,
+		CapturedAt: c.CapturedAt,
+		Lane:       c.RequestedLane,
+		Intent:     c.Intent,
+		Scope:      c.Scope,
+		Text:       c.Text,
 	}
 	// The encoder cannot fail on this struct: every field is a string or an int.
 	body, _ := json.Marshal(canonical)
@@ -155,9 +175,14 @@ func captureIdentity(c Capture) string {
 //
 // The shape is Mora's own, `mem_YYYYMMDD_HHMMSS_<8 hex>`, which is what the
 // contract corpus normalises. The time half is the capture's own captured_at
-// rather than the mint instant — a real timestamp, stable across retries, and
-// the more honest of the two, because when the user wrote the note is a fact
-// about the note and when the Mac got round to it is not.
+// rather than the mint instant — a real timestamp, and the more honest of the
+// two, because when the user wrote the note is a fact about the note and when
+// the Mac got round to it is not.
+//
+// captured_at is inside the identity as well as inside the id, which is what
+// makes the id stable: the two cannot disagree. A capture that changes its stamp
+// changes its identity, so it is refused as a conflict long before it could
+// derive a second path.
 func captureMemoryID(c Capture, identity string) string {
 	sum := sha256.Sum256([]byte(c.DeviceID + "\x00" + c.IdempotencyKey + "\x00" + identity))
 	stamp := "00000000_000000"
@@ -351,13 +376,16 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 //     afterwards would be a write the operator revoked the right to make.
 func (s *Server) publish(ctx context.Context, c Capture, claim *Claim, stillLive func() bool) (WriteOutcome, error) {
 	if claim.TakenOver {
-		outcome, published, err := s.writer.Published(ctx, claim.MemoryID())
+		outcome, published, err := s.writer.Published(ctx, c, claim.Identity())
 		if err != nil {
 			return WriteOutcome{}, err
 		}
 		if published {
 			// A crashed attempt got its write in before it died. Finishing its
-			// receipt is the whole job; writing again is the duplicate.
+			// receipt is the whole job; writing again is the duplicate. The
+			// outcome may also be a REJECTION: a file at the pinned id that is
+			// not this capture is a vault-integrity failure, and settling it is
+			// how the key stops being retried forever.
 			return outcome, nil
 		}
 	}
@@ -371,7 +399,7 @@ func (s *Server) publish(ctx context.Context, c Capture, claim *Claim, stillLive
 		}
 		return WriteOutcome{Policy: policy, State: ReceiptRejected, Reason: ReasonUnknownDevice}, nil
 	}
-	return s.writer.Publish(ctx, c, claim.MemoryID())
+	return s.writer.Publish(ctx, c, claim.Identity())
 }
 
 // refuse builds a terminal rejection for a capture the kernel was never asked to
