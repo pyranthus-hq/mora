@@ -58,11 +58,18 @@ func companionTestListener(t *testing.T) (http.Handler, string, Config) {
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
+	// N21 made the governed writer and the reservation store required: the
+	// allowlist declares a capture route, and a listener assembled without them
+	// would publish a route it cannot serve. This helper hands over the REAL
+	// writer, so the tests below that drive the read routes are still driving a
+	// production assembly.
 	srv, err := companion.NewServer(companion.ServerOptions{
-		Addr:    fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
-		Devices: reg,
-		Reader:  newCompanionReader(cfg),
-		Now:     cfg.OperationClock,
+		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
+		Devices:  reg,
+		Reader:   newCompanionReader(cfg),
+		Writer:   newCompanionWriter(),
+		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),
+		Now:      cfg.OperationClock,
 	})
 	if err != nil {
 		t.Fatalf("new companion server: %v", err)

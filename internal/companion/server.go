@@ -21,6 +21,7 @@ package companion
 //	GET  /v1/companion/today     the three things worth surfacing, with evidence
 //	POST /v1/companion/context   a grounded bundle for one query
 //	GET  /v1/companion/health    freshness, index state and write policy
+//	POST /v1/companion/captures  governed capture, answered with a receipt
 //
 // The allowlist is the security boundary, so it is data (routeDefs) rather than
 // a series of mux registrations scattered through the file, and a test walks it.
@@ -28,6 +29,12 @@ package companion
 // configuration write and no read-a-memory-by-id route: a phone that can name a
 // memory id can enumerate the vault, and a phone that can name a tool has the
 // generic API again under a different name.
+//
+// N21 widened the table by ONE route, deliberately and once. Capture is the only
+// write a phone may ask for, it produces a receipt rather than a tool call, and
+// what it is permitted to do to the vault is decided by the vault's own write
+// policy — see capture.go. Widening the table is a code change in a reviewed
+// file, which is the property the table exists to keep.
 //
 // # 200 does not mean fresh
 //
@@ -62,6 +69,7 @@ const (
 	RouteToday   = "/v1/companion/today"
 	RouteContext = "/v1/companion/context"
 	RouteHealth  = "/v1/companion/health"
+	RouteCapture = "/v1/companion/captures"
 )
 
 // LoopbackHost is the ONLY address this server will bind. Not "localhost",
@@ -133,6 +141,9 @@ type Reader interface {
 	Health(ctx context.Context) (HealthProjection, error)
 }
 
+// Writer, the governed-write seam, is declared in capture.go beside the route
+// that uses it.
+
 // Authenticator is the credential seam. *Registry implements it.
 type Authenticator interface {
 	Authenticate(token string) (Device, error)
@@ -145,8 +156,16 @@ type ServerOptions struct {
 	Addr string
 	// Devices resolves a bearer token to a device.
 	Devices Authenticator
-	// Reader answers the three routes.
+	// Reader answers the three read routes.
 	Reader Reader
+	// Writer answers the capture route through the kernel's governed write
+	// path. It is required: a listener assembled without one would declare a
+	// route in the allowlist that cannot be served.
+	Writer Writer
+	// Captures is the durable idempotency store. It is required for the same
+	// reason Writer is, and it is injected rather than derived from a path so a
+	// caller cannot end up with two stores over one directory.
+	Captures *ReservationStore
 	// AllowHost is the ONE extra Host value the listener accepts, and it is
 	// empty by default. Empty means the loopback-only behavior below is
 	// unchanged, byte for byte.
@@ -182,6 +201,8 @@ type Server struct {
 	addr          string
 	devices       Authenticator
 	reader        Reader
+	writer        Writer
+	captures      *ReservationStore
 	allowHost     string
 	now           func() time.Time
 	log           io.Writer
@@ -217,6 +238,12 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if o.Reader == nil {
 		return nil, errors.New("companion: the listener needs a kernel reader")
 	}
+	if o.Writer == nil {
+		return nil, errors.New("companion: the listener needs a governed writer")
+	}
+	if o.Captures == nil {
+		return nil, errors.New("companion: the listener needs a capture reservation store")
+	}
 	allowHost, err := CheckAllowHost(o.AllowHost)
 	if err != nil {
 		return nil, err
@@ -237,6 +264,8 @@ func NewServer(o ServerOptions) (*Server, error) {
 		addr:          o.Addr,
 		devices:       o.Devices,
 		reader:        o.Reader,
+		writer:        o.Writer,
+		captures:      o.Captures,
 		allowHost:     allowHost,
 		now:           now,
 		log:           log,
@@ -277,6 +306,7 @@ func (s *Server) routeDefs() []route {
 		{http.MethodGet, RouteToday, s.handleToday},
 		{http.MethodPost, RouteContext, s.handleContext},
 		{http.MethodGet, RouteHealth, s.handleHealth},
+		{http.MethodPost, RouteCapture, s.handleCapture},
 	}
 }
 
@@ -741,6 +771,23 @@ func writeKernelFailure(w http.ResponseWriter, err error) {
 		writeOpaque(w, http.StatusServiceUnavailable, "timeout")
 		return
 	}
+	// A capture whose key is already being processed is not a failure and is
+	// not the kernel being unwell: the retry that follows finds the receipt the
+	// holder settled. It gets its own code so a phone can say "still saving"
+	// rather than "Mora is down", and the same Retry-After as the rest.
+	if errors.Is(err, ErrCaptureInFlight) {
+		writeOpaque(w, http.StatusServiceUnavailable, "in_flight")
+		return
+	}
+	// The reservation store's HARD bound. It is its own code because the remedy
+	// is different from every other 503 here: the Mac is not unwell and the
+	// request is not malformed — too many captures are already claimed and
+	// unfinished, and a client that keeps minting fresh keys is the pressure
+	// rather than the victim. No reservation was created for this one.
+	if errors.Is(err, ErrTooManyPending) {
+		writeOpaque(w, http.StatusServiceUnavailable, "too_many_pending")
+		return
+	}
 	writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
 }
 
@@ -1019,7 +1066,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		_ = hs.Shutdown(shutdownCtx)
 	}()
 	fmt.Fprintf(s.log, "mora companion serve listening on http://%s/  (loopback only)\n", ln.Addr().String())
-	fmt.Fprintf(s.log, "  routes: GET %s, POST %s, GET %s\n", RouteToday, RouteContext, RouteHealth)
+	fmt.Fprintf(s.log, "  routes: GET %s, POST %s, GET %s, POST %s\n", RouteToday, RouteContext, RouteHealth, RouteCapture)
 	fmt.Fprintln(s.log, "  credential: a device token from `mora companion pair` — the loopback API token is not accepted here")
 	if s.allowHost != "" {
 		// The name itself is deliberately absent. The operator typed it on the

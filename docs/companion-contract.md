@@ -259,7 +259,7 @@ Stated plainly, so nobody reads a shape here as an approved mechanism.
   (`TestLoopbackEndpointCannotBeSpoofed`).
 - **Transport, listener, and device registry are not here.** The narrow loopback listener is graph
   node N12, the registry and `mora companion pair/list/revoke/status` are N11, governed capture and
-  durable idempotency are N21, and the Tailscale Serve boundary is N22. This package is types,
+  durable idempotency are N21 (§14), and the Tailscale Serve boundary is N22. This package is types,
   bounds, and validation only.
 - **The async lane's transport is undecided** — encrypted relay against replica-read is a Wave 3
   decision. The envelope in §9 is what both options carry, which is why it is content-free.
@@ -288,11 +288,17 @@ and `TestGenericLoopbackAPIRefusesADeviceToken` prove both directions.
 | `GET` | `/v1/companion/today` | `mora.companion.today` |
 | `POST` | `/v1/companion/context` | `mora.companion.context.request` in, `mora.companion.context` out |
 | `GET` | `/v1/companion/health` | `mora.companion.health` |
+| `POST` | `/v1/companion/captures` | `mora.companion.capture` in, `mora.companion.receipt` out |
 
 That is the whole allowlist, and it is a table in one file rather than a series of registrations, so
-a test can walk it. There is no `/call`, no delete, no sync, no connector command, no configuration
-write and no read-a-memory-by-id route: a device that can name a memory id can enumerate the vault,
-and a device that can name a tool has the generic API back under a different name.
+a test can walk it (`TestServerServesExactlyFourRoutes`). There is no `/call`, no delete, no sync, no
+connector command, no configuration write and no read-a-memory-by-id route: a device that can name a
+memory id can enumerate the vault, and a device that can name a tool has the generic API back under a
+different name.
+
+The capture route is the ONE write, added by N21 and covered in §14. There is deliberately no
+`GET /v1/companion/receipts`: this contract publishes a receipt schema and no list-response schema
+for one, so a listing route would have to invent an envelope. It is a later node's to add.
 
 ### What the listener refuses
 
@@ -597,3 +603,358 @@ fails and can only be made by editing a test — which is the reviewable act it 
 
 Swift decodes the same documents, byte for byte, under graph node N14. A fixture only Go can read
 proves nothing.
+
+## 14. Governed capture (N21)
+
+`POST /v1/companion/captures` is the only route on this listener that changes the vault. Everything
+below is enforced by a named test in `internal/companion/capture_test.go`,
+`internal/companion/idempotency_test.go` or `internal/mora/companion_capture_test.go`.
+
+### The policy is the gate, and the phone never holds the lever
+
+The write policy is read from the vault's own configuration **on every request** — not captured when
+the listener started, so `mora config mcp-write-policy readonly` takes effect without a restart
+(`TestCompanionCapturePolicyIsReadPerRequest`). It is not a field on the capture, not a header, and
+not a query parameter. The outcome is §8's table, and `Receipt.Validate` refuses any receipt that
+describes an outcome its policy could not have produced.
+
+| Policy | Receipt | What is on disk afterwards |
+|---|---|---|
+| `readonly` | `rejected`, `reason: policy`, `settled_at` set | nothing: no memory and no staged proposal |
+| `propose` | `accepted`, no `memory_id`, **no `settled_at`** | one entry in the same pending queue `mora mcp proposals` lists |
+| `open` | `applied`, `memory_id` and `settled_at` set | one memory in the vault |
+
+`accepted` carries no `settled_at` on purpose: the capture is waiting for a human at the Mac, and
+stamping it settled would say the question is closed.
+
+**A policy that cannot be read is `readonly`.** A malformed or unreadable `config.toml` produces
+`rejected: policy` — a terminal receipt at 200 — and the reservation settles
+(`TestCompanionCaptureUnreadableConfigFailsClosed`, `TestCapturePolicyReadFailureFailsClosed`).
+Returning an error instead was two defects in one: the phone was told the Mac was busy when it was
+misconfigured, and the key stayed claimed, so an unreadable vault turned every capture into a
+reservation nothing could ever settle.
+
+**`applied` is a statement about the vault, not about the request.** The state flips only after the
+kernel's governed write path returns — the same path `mora write` and MCP `write_memory` use, through
+`createMemory`'s create-exclusive publish. The listener opens no second door into the vault, which is
+why the pending-op marker, the index upsert and the authored-write reconciliation all still happen
+for a phone capture. The write is also recorded in the same usage ledger every MCP tool call is
+(`TestCompanionCaptureRecordsTheUsageLedgerRow`,
+`TestCompanionCaptureLedgerRowMatchesTheMCPToolRow`) — a ledger that held some writes and not others
+would be a record of nothing in particular.
+
+The kernel stamps the provenance: `source` is `companion`, the type is an insight, and the title is
+derived from the text. `scope` is the device's, because the schema already restricts it to `personal`
+or `project:<name>`.
+
+### Durable before it is claimed
+
+A vault write is a rename, and a rename is atomic without being durable: the bytes and the directory
+entry can both still be in cache when the write path returns. A receipt that says `applied` is a
+promise about stable storage, so the memory file **and its parent directory are fsynced** before the
+outcome reaches the listener, which is strictly before the receipt settles
+(`TestCompanionCaptureSyncsThePublicationBeforeItReturns`,
+`TestCompanionCaptureSyncsBeforeTheReservationSettles`). A sync that fails is not an `applied`
+receipt: the capture is left unsettled so a retry re-runs the check
+(`TestCompanionCaptureSyncFailureIsNotAnAppliedReceipt`).
+
+### Exactly once
+
+The vault id a capture publishes under is **derived**, from the device, the idempotency key and the
+payload, in Mora's own `mem_YYYYMMDD_HHMMSS_<8 hex>` shape — the time half is the capture's own
+`captured_at`, which is a real timestamp and stable across retries
+(`TestCaptureMemoryIDIsDerivedAndStable`). The id is written into the reservation **before** the
+kernel is asked to write anything, and the kernel is asked to create exactly that id.
+
+That is what makes the publish exactly-once rather than merely reserved:
+
+```
+reserve (durable, carries the pinned id)  ->  vault write AT that id  ->  settle (durable)
+```
+
+`createMemory`'s create-exclusive publish decides every race the reservation cannot. The first
+attempt links the file; every later one is told the memory already exists and answers `applied`
+without writing again (`TestCompanionCaptureSecondPublishAtTheSameIDWritesOneFile`). A process killed
+between the publication and the receipt therefore costs a retry, never a duplicate
+(`TestCaptureCrashAfterPublicationAppliesExactlyOnce`,
+`TestCompanionCaptureEndToEndCrashAfterPublicationLeavesOneMemoryFile`). When a retry reclaims a
+crashed reservation it asks the kernel whether the pinned id is already published before it writes,
+so recovery finishes the crashed attempt's receipt instead of repeating its work.
+
+**A key that has published is remembered after its reservation is gone.** The ownership record is
+written under two names — by memory id, and by (device, idempotency key) — and a **fresh** reservation
+consults the second one first. That matters because a capture killed after its publication leaves a
+pending reservation the sweep collects: after that the key looks unused, so without this lookup a
+re-stamped retry would be a new identity, a new derived id and a second memory
+(`TestCaptureRestampedRetryAfterSweepIsAConflict`). A key that published a *different* capture is
+`idempotency_conflict`, refused before any reservation exists
+(`TestCaptureConsultsThePublishedIndexBeforeReserving`); a key that published *this* capture falls
+through and settles `applied` over the memory already there
+(`TestCaptureIdenticalRetryAfterSweepReplaysTheApplication`).
+
+The (device, key) record is the **canonical** one: it is staged, fsynced, and then **linked** into
+place with `os.Link` — the primitive that makes the claim exclusive, because the filesystem refuses
+the second link with `EEXIST` so exactly one caller ever learns it created the record and the other
+learns it created nothing and must roll back nothing. A stat followed by a rename is not exclusive,
+and the loser of that race would delete the winner's publication
+(`TestCompanionCaptureCanonicalClaimIsExclusive`, `TestCompanionCaptureLoserRollsBackNothing`).
+
+On a filesystem with no links the fallback is an **ownership token**: an `O_EXCL` create of
+`<record>.claim`, held while the already-fsynced staging file is renamed onto the final name, so no
+reader ever sees a half-written record. The token records **who holds it and when they took it**, and
+a claimant that finds a corpse — a pid that is gone, or a token older than the same takeover window a
+crashed reservation is reclaimed in — reclaims it. Without that a process killed between the token
+and the rename wedged that key's publication for the life of the state directory
+(`TestCompanionCaptureOrphanClaimTokenIsReclaimed`). A token whose owner is alive and inside the
+window is **never** removed: the claimant reports a retryable busy error, not an integrity failure,
+because a contended token says nothing about who owns the id, and the phone sees `503 unavailable`
+rather than a receipt of any state (`TestCompanionCaptureBusyTokenAnswersUnavailableNotAReceipt`).
+The whole publish — take the token, verify, rename, release — runs under a kernel-held lock
+(`internal/leasefile`), because a staleness rule enforced with a second `O_EXCL` sentinel is a
+check-then-use race — the lesson the device registry's lock already records.
+
+The lock is not the only defence, because a lock is only as good as the thing enforcing it: an flock
+is advisory, it follows the inode, and there are filesystems where it does not exclude at all. So the
+token also carries a **per-claim nonce**, and every step that acts on it — the rename of the staged
+file into place, and the removal of the token — re-reads the token and compares the nonce
+**immediately before acting**. Holding the lock across only the token replacement left an **ABA**: an
+owner whose token had aged past the window but whose process was merely slow could resume, pass the
+pre-rename stat, rename after it had already lost ownership, and then unconditionally delete its
+successor's token. A claimant that has lost ownership now renames nothing, deletes nothing, and
+reports the busy error (`TestCompanionCaptureStaleTokenReclaimIsNotABA`,
+`TestCompanionCaptureTokenReleaseOnlyRemovesItsOwn`). The nonce comes from the CSPRNG and the publish
+**fails** rather than degrading to a PRNG if that is unavailable: elsewhere a random suffix is a
+uniqueness token, but here it is the whole ownership proof.
+
+The record carries the memory id and the capture identity. The **exact response bytes live in a
+receipt sibling beside it**, `<record>.receipt`, claimed with the same exclusive primitive: the record
+itself is immutable once claimed, and rewriting it in place let two racing callers mint two different
+answers for one publication. A replay is answered from the sibling directly — so replay does not
+depend on a reservation, whose retention moves independently
+(`TestCaptureReplayDoesNotDependOnTheReservation`,
+`TestCaptureReplayComesFromThePublishedRecordNotTheStore`). A sibling that is not a whole, valid
+receipt is **repaired rather than answered with**, and the repair takes the same exclusion the first
+publication does, so exactly one repairer acts and the other reads the winner's bytes
+(`TestCompanionCaptureTornSiblingRepairIsExclusive`). The repair happens **once**, with one attempt
+after it and then a typed error — never by recursion, which an unusable name turned into an unbounded
+stack (`TestCompanionCaptureReceiptRepairIsBoundedNotRecursive`). The by-memory-id name is a **secondary
+pointer** back to it, created after it; every lookup consults the canonical record first and repairs a
+missing pointer when it finds one, so a crash between the two writes is repaired rather than fatal
+(`TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex`,
+`TestCompanionCaptureCrashBetweenIndexAndMemoryWritesOneMemory`).
+
+The receipt bytes reach the canonical record **before** the reservation settles, and a failure there
+is fatal to the attempt rather than swallowed: the worst a crash can do is leave the reservation
+pending, which a retry already knows how to finish
+(`TestCaptureReceiptIsRecordedBeforeTheReservationSettles`). A replay that finds the canonical record
+without its bytes — the state the other order left — backfills them before it answers, so the
+reservation is never the only copy (`TestCaptureBackfillsCanonicalBytesOnReplay`), and a replay
+repairs a missing pointer on its way past.
+
+Ownership records are the durable audit trail, bounded by the same total cap as reservations (512) and
+trimmed oldest-first. The trim is **settled-aware** — a record with no response bytes is a publication
+still in flight and is never evicted — and it runs only after a capture has recorded its receipt, so a
+**rejected request never trims** (`TestCompanionCapturePublishedStoreIsBounded`,
+`TestCompanionCaptureAtCapRejectionLeavesTheTreeIdentical`). Like the reservation store, it counts
+rather than walks: a claim and a by-key lookup walk nothing, and the census seeds itself on the first
+trim (`TestCompanionCaptureClaimWalksNothing`). **A key is replayable only while its record survives
+that retention.** Past it, the key is free again.
+
+**"Already there" is verified, never assumed.** EEXIST says a file is at that path; it says nothing
+about whose. So the kernel records who owns a pinned id when it claims one — a small ownership record
+under the state directory naming the device, the key and the capture identity, written and fsynced
+*before* the memory — and on EEXIST it reads both that record and the memory itself, comparing the
+memory's text, scope, type and `source` against what this capture would have written. A file that is
+not this capture's is **never** `applied`: it is `rejected` with reason `internal`, nothing is
+written, and the specific cause (the pinned id and the device) goes to the operator's log rather than
+onto the wire (`TestCompanionCaptureForeignFileAtThePinnedIDIsRejected`,
+`TestCompanionCapturePublishedVerifiesRatherThanTrusting`). A missing ownership record is not a
+failure — a state directory can be rebuilt independently of the vault — so the file comparison
+narrows rather than skips (`TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite`).
+
+**A refusal writes nothing, including bookkeeping.** A claim reports the exact files it created, and a
+failure rolls back only those: an id already owned by another capture is refused without creating or
+removing anything, and a claim that merely repaired a pointer takes back the pointer and leaves the
+record. A record this request *did* create is taken back when the memory turns out foreign, so the published tree is
+byte-identical before and after (`TestCompanionCaptureForeignRejectionLeavesNoResidue`,
+`TestCompanionCaptureForeignOwnerRecordIsNotTouched`). A record alone proves nothing about the vault:
+the memory comparison still runs, so a record planted for an id nobody published cannot be used to
+adopt whatever turns up there later (`TestCompanionCapturePrePlantedOwnerCannotClaimALaterMemory`).
+The one crash the ordering exists for — the record durable, the memory not — is completed by the
+retry rather than refused (`TestCompanionCaptureOwnerFsyncedButMemoryAbsentIsCompleted`).
+
+### The one thing the listener logs
+
+§11 says the listener logs nothing per request, and that stands. The single documented exception is a
+**vault-integrity event**: a memory at a pinned id that is not the capture claiming it. It is an
+incident rather than a served request, it goes to the listener's own log sink — the one the startup
+banner uses, `io.Discard` when a caller supplies none — and it carries two kernel-derived
+identifiers, the memory id and the device id, and nothing else. Not the token, not the text, not the
+receipt. `TestCaptureLogsIntegrityEventsAndNothingElse` drives a healthy capture and a broken vault
+through one listener and asserts silence for the first and exactly that line for the second;
+`TestServerLogsNothingPerRequest` still holds for every ordinary exchange.
+
+`internal` is the frozen vocabulary's word for this. Nothing the phone sent was wrong, and §8's
+reasons describe client conditions; a vault holding a file where a capture belongs is a vault
+integrity failure, and inventing an enum value for it would move a published vocabulary for a case
+an operator reads out of a log.
+
+### Idempotency
+
+| Case | Answer |
+|---|---|
+| same key, same capture | the **same response bytes** — stored, not re-marshalled, same `receipt_id` |
+| same key, different capture | `rejected`, `reason: idempotency_conflict`; the first capture keeps the key |
+| same key, concurrently | one caller wins the claim; the others wait and read the settled bytes, or get `503 in_flight` |
+| same key, after a crash | the retry completes it — one applied receipt, one memory file |
+| same key, after a process restart | the same answers: the reservation is a file, not memory |
+
+**Replay is byte-identical on the wire.** The settled reservation stores the exact bytes that
+answered the first attempt and returns those, so a client that hashes or caches a response body gets
+an identical one on the retry (`TestCaptureRetryIsByteIdenticalOnTheWire`,
+`TestReservationReplayReturnsTheStoredBytes`, both asserting with `bytes.Equal` on raw bodies).
+
+**"The same capture" covers every field that changes what is written** — device, `captured_at`, lane,
+intent, scope and text, as canonical JSON — and deliberately excludes the idempotency key, which is
+the lookup (`TestCaptureIdentityCoversEveryWriteAffectingField`). The wire `payload_fingerprint`
+cannot do this job: §5 defines it as SHA-256 over the **text** alone, so the same key and text under a
+different scope hashed identically and the second capture silently inherited the first one's
+placement. `TestCaptureSameKeyDifferentScopeIsAConflict` is that case, and it is a conflict.
+
+> **`captured_at` is immutable for a given idempotency key.** A retry must resend the capture it
+> already sent, byte for byte. A phone queue that preserves the stamp across a relaunch satisfies this
+> by construction; a client that re-stamps its clock on retry gets `idempotency_conflict`, not a
+> second memory (`TestCaptureRestampedRetryIsAConflictNotASecondMemory`).
+>
+> This is not an arbitrary rule. The vault id takes its timestamp from `captured_at`, so a stamp that
+> moved would derive a different id, aim at a path nothing holds, and give the create-exclusive
+> publish nothing to refuse. Putting `captured_at` inside the identity is what makes the id stable:
+> the two move together or not at all.
+
+### Revocation
+
+A capture is authenticated when it arrives, and it can then sit in the work-budget queue while an
+operator runs `mora companion revoke`. The credential is **re-checked immediately before the write**;
+a revoked device gets `rejected: unknown_device`, nothing is written, and the reservation **settles**
+rather than staying pending, so a revoked device's claim is closed rather than left for a later
+takeover (`TestCaptureRevokedBetweenReserveAndWriteWritesNothing`). A device revoked before the
+request arrives never reaches the capture path at all and gets the same opaque 401 as every other
+credential failure.
+
+### The reservation store, and its hard bound
+
+Reservations live at `<state>/companion/captures/<device_id>/<digest>.json`, 0600 inside 0700, with
+the same atomic-write-and-fsync discipline as the device registry. **The key space is per device**, so
+two devices choosing one key never collide and no device can read another's receipt by guessing its
+key. The filename is a digest of the key rather than the key itself.
+
+The bound is hard, in four directions:
+
+| Bound | Value | What happens at it |
+|---|---|---|
+| In-flight captures | `MaxPendingReservations` (64) | `503` with code `too_many_pending`, and **no file is created** |
+| Crashed pending records | swept after `PendingSweepAfter` | collected on open and on insert |
+| Total records | `MaxReservations` (512) | the oldest **settled** records are trimmed |
+| One record on read | 64 KiB | refused as corrupt or hostile |
+
+**The bound is arithmetic, not a walk.** The store takes one census when it opens and moves it on
+insert, settle and sweep, so a fresh reservation reads exactly one file — its own — and walks no
+directory (`TestReservationFreshPathWalksNoDirectory`, `TestReservationOpeningWalksOnce`). Sweeping
+walks the in-memory claim set rather than the store
+(`TestReservationSweepWalksThePendingSetNotTheStore`), and expiry is checked where it costs nothing:
+when a record is touched, and at the opening census. The one operation that still walks is the
+total-cap trim, which runs only when the census says the store is over 512. The census is per
+process, which is the honest bound: a second listener opens its own store and takes its own, so two
+of them admit up to 2N in flight rather than infinity.
+
+`PendingSweepAfter` is deliberately later than `ReservationTakeover`. Between the two, a retry
+*reclaims* a crashed record, reads the id it pinned, and asks whether that memory is already
+published; sweeping at the takeover line would delete the record before any retry could read it and
+make the recovery path unreachable. Past the sweep line the record goes, and correctness does not
+depend on it — the id is derived, so a later retry re-derives it and the create-exclusive publish
+still refuses the second write. `TestReservationRefusesPastThePendingBound` and
+`TestReservationSweepsCrashedPendingRecords` pin both.
+
+### What a successful capture writes, in order
+
+| # | File | Exclusive primitive | Rolled back by |
+|---|---|---|---|
+| 1 | `<state>/companion/captures/<device>/<sha256(key)>.json` — reservation, pending | staged temp + fsync + rename | nobody; the sweep collects it past `PendingSweepAfter` |
+| 2 | `<state>/companion/published/keys/<device>/<sha256(key)>.json` — **canonical**, immutable | **`os.Link`** from a fsynced same-directory staging file; `EEXIST` means somebody else owns it | `publicationClaim.rollback`, and only if the link succeeded |
+| 3 | `<state>/companion/published/<memory id>.json` — pointer back to the canonical record | `O_EXCL` create | same, and only if this call created it |
+| 4 | `<vault>/mora/memories/<scope>/<memory id>.md` — the memory at the pinned id | `atomicCreate` (create-exclusive), then fsynced | nobody; a published memory is never unpublished, and a retry verifies it |
+| 5 | `…/<sha256(key)>.json.receipt` — the receipt **sibling** | **`os.Link`**, same primitive; `EEXIST` means somebody recorded it first, and their bytes are the answer | nobody; a failure here fails the attempt |
+| 6 | reservation rewritten as settled, with the **authoritative** bytes | staged temp + fsync + rename | nobody |
+
+The trim runs inside step 5, immediately after the receipt is recorded and before
+the reservation settles. It is placed there rather than after step 6 because that
+is the last point a *successful* capture is still inside the kernel: the listener
+has no seam after the settle, and adding one would buy nothing the settled-aware
+rule does not already give. The two guarantees the position has to preserve both
+hold: a **rejected** request never reaches step 5, so it can never evict
+anything; and the trim skips any record without a receipt sibling, so a
+publication still in flight is never taken.
+
+The canonical record is **immutable** after step 2: the receipt is a sibling rather than a rewrite, because a rewrite is last-writer-wins and two callers reaching the receipt could mint different bodies for one publication. A canonical record with no sibling is "published, receipt not yet recorded", and a retry records it exclusively.
+
+
+
+**The fallback is disciplined.** `os.Link` falls back to an `O_EXCL` create of the final path **only** when the error means the filesystem cannot do links at all (`EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `errors.ErrUnsupported`). Every other link error — an I/O fault, a full disk — is a hard error that leaves nothing behind, rather than a direct write that would mask the fault and risk a half-written record. `EXDEV` is deliberately not in that set: the staging file is created in the destination's own directory, so a cross-device link is a bug, not a limitation. Any failure after the fallback's create removes the file
+(`TestCompanionCaptureLinkFallbackDiscipline`).
+
+**A sibling is never visible incomplete, and never trusted blindly.** The link path publishes bytes
+that are already whole and already fsynced. The no-links fallback stages and fsyncs a temporary file,
+takes an `O_EXCL` ownership token at `<name>.claim`, renames the staged file into place and then drops
+the token — so no reader ever sees a partial record. A reader validates what it finds anyway: a
+sibling that is empty, does not decode, or describes another capture reads as "receipt not yet
+recorded", and the next retry replaces it under the token
+(`TestCompanionCaptureLinkFallbackDiscipline`).
+
+**Whoever wins the receipt owns the answer.** `RecordReceipt` returns the authoritative bytes — the
+sibling's, whether this caller wrote them or lost the race for them — and the capture settles its
+reservation with those bytes and returns exactly those bytes. A caller that answered with the receipt
+it had built locally would give two racing claimants two different receipt ids for one publication
+(`TestCaptureRacingClaimantsAnswerTheSameBytes`, `TestCaptureLoserAnswersTheWinnersBytes`).
+
+**Contradictory bookkeeping is an integrity failure.** A by-memory-id pointer whose record names a
+different memory is not shrugged at: it settles as `rejected` with reason `internal` and the same
+integrity event a foreign memory produces, because answering "absent" would send a retry into a write
+at an id another publication already owns
+(`TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex`,
+`TestCapturePointerMismatchIsAnIntegrityFailure`).
+
+That holds for a pointer that names a **different capture**, too, and it holds in production rather
+than only in the store's own unit tests. The kernel reports that condition with its own sentinel; the
+companion side keys on the contract's integrity error, so the two are mapped at the seam. An unmapped
+mismatch fell through as a plain error — the request became a `503`, the phone was told to retry a
+vault fault that will never resolve itself, and no integrity event reached the operator's log
+(`TestCompanionCapturePointerMismatchSettlesIntegrityEndToEnd`, which drives a real capture, corrupts
+the pointer it wrote, and retries).
+
+**A replay finishes what it finds.** A publication whose receipt landed and whose reservation never settled leaves a pending row that would occupy the in-flight bound until the sweep; the replay settles it, under the reservation store's own lock, before it answers (`TestCaptureReplaySettlesAPendingReservation`).
+
+### Status codes
+
+Every **decodable** capture answers `200` with a receipt, rejections included. That is §11's rule
+applied to a write: the status code says whether the request was served, the body says what happened
+to the vault. `4xx` and `5xx` are reserved for the cases where there is no receipt to give — no
+credential (`401`, opaque), an oversize body (`413`), a body that does not decode (`400`, carrying the
+schema code and never the value), a busy or unreachable kernel (`503`, with `Retry-After`), a key
+already in flight (`503 in_flight`), and the store's bound (`503 too_many_pending`).
+
+### What a capture may not do
+
+- **Claim another device.** `device_id` is compared against the authenticated device and the receipt
+  is stamped with the authenticated one. A mismatch is `rejected: unknown_device` and never reaches
+  the vault.
+- **Reach a lane this build cannot execute.** v1 serves `intent: remember` only; `ask` is the context
+  route and `investigate` is the async lane, which has no worker yet. Both are
+  `rejected: unsupported_lane`.
+- **Echo its payload back.** A receipt is identifiers, a state, a policy, a fingerprint and two
+  timestamps. `TestCaptureReceiptNeverEchoesThePayload` drives the real handler and fails on any word
+  of the capture appearing in the response.
+- **Escape the tighter bound.** Capture caps its body at `MaxCaptureBytes` (24 KiB), not at the
+  guard chain's `MaxRequestBytes` (64 KiB).
+
+Capture goes through the same one-at-a-time work budget every read does, and stamps `last_seen_at`
+only on a `2xx` — a last-seen stamp records that a device was served.

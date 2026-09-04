@@ -205,6 +205,23 @@ func callMCPTool(ctx context.Context, name string, args map[string]any) (any, er
 var mcpWriteClock = time.Now
 
 func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
+	return mcpWriteMemoryWith(ctx, cfg, args)
+}
+
+// mcpWriteMemoryWith is mcpWriteMemory with the governed create's options.
+//
+// The split exists because the MCP tool table pins the handler signature, so the
+// option cannot be a fourth parameter on the handler itself. mcpWriteMemory
+// stays exactly that handler and passes no options; the companion capture path
+// (graph node N21) calls this form with withExplicitMemoryID so the vault write
+// is exactly-once. Everything after the create is identical for both callers,
+// which is the point: there is ONE governed write path, not two.
+//
+// A pinned id that is already published returns errMemoryAlreadyExists along
+// with the memory, and the index reflection below is skipped: the memory is
+// already in the vault and already covered by whatever indexed it the first
+// time, so re-upserting it would be work with no claim behind it.
+func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, opts ...createOption) (any, error) {
 	now := mcpWriteClock()
 	m, err := mcpMemoryFromArgs(args, now)
 	if err != nil {
@@ -215,7 +232,12 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	// is the server's most concurrent write path — N agents writing at once.
 	// createMemory sets m.ID and m.Path.
 	var op pendingOp
-	if m, op, err = createMemory(ctx, cfg, m); err != nil {
+	if m, op, err = createMemory(ctx, cfg, m, opts...); err != nil {
+		if errors.Is(err, errMemoryAlreadyExists) {
+			// The pinned id was already published. The caller asked for the
+			// memory to exist, and it does; saying so is the successful answer.
+			return map[string]any{"memory": m, "already_published": true, "health": compactHealthOf(cfg, now)}, nil
+		}
 		return nil, err
 	}
 	m = decorateDecision(m, now)

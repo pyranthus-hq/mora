@@ -102,11 +102,13 @@ func testServer(t *testing.T) (*Server, *stubReader, *Registry, string, *bytes.B
 	reader := newStubReader()
 	log := &bytes.Buffer{}
 	srv, err := NewServer(ServerOptions{
-		Addr:    "127.0.0.1:7778",
-		Devices: reg,
-		Reader:  reader,
-		Now:     func() time.Time { return time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC) },
-		Log:     log,
+		Addr:     "127.0.0.1:7778",
+		Devices:  reg,
+		Reader:   reader,
+		Writer:   newStubWriter(),
+		Captures: NewReservationStore(t.TempDir(), WithReservationClock(func() time.Time { return testNow })),
+		Now:      func() time.Time { return testNow },
+		Log:      log,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -139,16 +141,22 @@ func contextBody(t *testing.T, mode ContextMode, query string) io.Reader {
 // The allowlist
 // ---------------------------------------------------------------------------
 
-// TestServerServesExactlyThreeRoutes is the route-table gate. It walks the
+// TestServerServesExactlyFourRoutes is the route-table gate. It walks the
 // declared table AND drives the mux, so a route added to one without the other
 // is caught either way.
-func TestServerServesExactlyThreeRoutes(t *testing.T) {
+//
+// N21 widened the table from three routes to four. The RULE is untouched — the
+// allowlist is still a literal expectation in this file, still compared position
+// by position, and still driven through the real mux — and only the expected
+// table moved, which is the reviewable act adding a route is supposed to be.
+func TestServerServesExactlyFourRoutes(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 
 	want := []Route{
 		{Method: http.MethodGet, Pattern: "/v1/companion/today"},
 		{Method: http.MethodPost, Pattern: "/v1/companion/context"},
 		{Method: http.MethodGet, Pattern: "/v1/companion/health"},
+		{Method: http.MethodPost, Pattern: "/v1/companion/captures"},
 	}
 	got := srv.Routes()
 	if len(got) != len(want) {
@@ -163,8 +171,11 @@ func TestServerServesExactlyThreeRoutes(t *testing.T) {
 	handler := srv.Handler()
 	for _, route := range want {
 		var body io.Reader
-		if route.Method == http.MethodPost {
+		switch route.Pattern {
+		case RouteContext:
 			body = contextBody(t, ModeThink, "what did Sam decide")
+		case RouteCapture:
+			body = captureBody(t, srv, "remember the wifi code")
 		}
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, request(route.Method, route.Pattern, token, body))
@@ -202,7 +213,16 @@ func TestServerRefusesEveryRouteOutsideTheAllowlist(t *testing.T) {
 		{http.MethodGet, "/entity/Sam"},
 		{http.MethodGet, "/"},
 		// Mutation and administration, in the companion namespace.
-		{http.MethodPost, "/v1/companion/captures"},
+		//
+		// POST /v1/companion/captures used to be on this list and is now the
+		// allowlist's fourth entry (N21). What replaces it here is the pair of
+		// near-misses that must STAY refused: the singular alias, so the pinned
+		// route string is one string rather than whatever a client guessed, and
+		// the receipts listing, which N21 deliberately did not add because N02
+		// publishes no list schema for it.
+		{http.MethodPost, "/v1/companion/capture"},
+		{http.MethodGet, "/v1/companion/receipts"},
+		{http.MethodGet, "/v1/companion/captures/rcp_1"},
 		{http.MethodDelete, "/v1/companion/memories/mem_1"},
 		{http.MethodGet, "/v1/companion/memories/mem_1"},
 		{http.MethodPost, "/v1/companion/sync"},
@@ -260,7 +280,7 @@ func TestServerRefusesEveryMethodOutsideTheAllowlist(t *testing.T) {
 		http.MethodTrace,
 	}
 
-	for _, pattern := range []string{RouteToday, RouteContext, RouteHealth} {
+	for _, pattern := range []string{RouteToday, RouteContext, RouteHealth, RouteCapture} {
 		for _, method := range methods {
 			if method == allowed[pattern] || method == http.MethodConnect {
 				// CONNECT is not a request httptest can shape meaningfully.
@@ -309,9 +329,11 @@ func TestServerMountsNothingOutsideTheDeclaredRoutes(t *testing.T) {
 	probes := []string{
 		"/", "/v1", "/v1/", "/v1/companion", "/v1/companion/",
 		"/call", "/healthz", "/brief", "/search", "/think", "/write", "/entity/Sam",
-		"/v1/companion/captures", "/v1/companion/devices", "/v1/companion/operations",
+		"/v1/companion/capture", "/v1/companion/receipts",
+		"/v1/companion/devices", "/v1/companion/operations",
 		"/v1/companion/memories", "/v1/companion/sync", "/v1/companion/config",
 		"/v1/companion/today/extra", "/v1/companion/health/extra", "/v1/companion/context/extra",
+		"/v1/companion/captures/extra",
 		"/debug/pprof/", "/metrics", "/index.html", "/favicon.ico",
 	}
 	for _, path := range probes {
@@ -588,6 +610,9 @@ func TestServerHandlersAuthorizeWithoutTheMiddleware(t *testing.T) {
 		{"today", srv.handleToday, http.MethodGet, RouteToday, func() io.Reader { return nil }},
 		{"health", srv.handleHealth, http.MethodGet, RouteHealth, func() io.Reader { return nil }},
 		{"context", srv.handleContext, http.MethodPost, RouteContext, func() io.Reader { return contextBody(t, ModeThink, "q") }},
+		{"capture", srv.handleCapture, http.MethodPost, RouteCapture, func() io.Reader {
+			return captureBody(t, srv, "bare handler")
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := reader.calls
@@ -631,13 +656,13 @@ func TestNewServerBindsLoopbackOnly(t *testing.T) {
 		"",
 	} {
 		t.Run(addr, func(t *testing.T) {
-			_, err := NewServer(ServerOptions{Addr: addr, Devices: reg, Reader: newStubReader()})
+			_, err := NewServer(ServerOptions{Addr: addr, Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
 			if !errors.Is(err, ErrNotLoopback) {
 				t.Fatalf("NewServer(%q) = %v, want ErrNotLoopback", addr, err)
 			}
 		})
 	}
-	if _, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Reader: newStubReader()}); err != nil {
+	if _, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())}); err != nil {
 		t.Fatalf("NewServer refused the loopback address: %v", err)
 	}
 }
@@ -952,6 +977,8 @@ func TestServerBoundsASlowKernelCallWithARealDeadline(t *testing.T) {
 		Addr:          "127.0.0.1:7778",
 		Devices:       reg,
 		Reader:        reader,
+		Writer:        newStubWriter(),
+		Captures:      NewReservationStore(t.TempDir()),
 		KernelTimeout: 50 * time.Millisecond,
 	})
 	if err != nil {
@@ -1404,7 +1431,7 @@ func TestServerStartupBannerCarriesNoCredential(t *testing.T) {
 	// buffer the test polls has to be synchronized or -race reports the test's
 	// own read against it.
 	log := &lockedBuffer{}
-	srv, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Reader: newStubReader(), Log: log})
+	srv, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir()), Log: log})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1494,7 +1521,7 @@ func TestServerWritesTheDeviceRegistryAtMostOncePerWindow(t *testing.T) {
 				// so Marshal refuses it and writePayload answers 500.
 				freshReader.today.Items = []TodayItem{{ID: "itm_1", Kind: ItemChanged, Title: "Uncited", Evidence: []Evidence{}}}
 			}
-			fresh, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: reg, Reader: freshReader})
+			fresh, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: reg, Reader: freshReader, Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1561,7 +1588,7 @@ func TestServerStampsLastSeenAtAndNeverFailsAReadForIt(t *testing.T) {
 	}
 
 	failing := &failingStamper{Registry: reg}
-	broken, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: failing, Reader: newStubReader()})
+	broken, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: failing, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1129,8 +1129,12 @@ func ValidateRouting(lane Lane, intent Intent) error {
 // ---------------------------------------------------------------------------
 
 // Receipt is the terminal record for one capture, and the only thing that lets
-// a phone say "saved". It is returned by POST /v1/companion/captures and listed
-// by GET /v1/companion/receipts.
+// a phone say "saved". It is returned by POST /v1/companion/captures.
+//
+// There is deliberately no listing route. This package publishes a receipt
+// schema and no list-response schema for one, so a GET that returned an array of
+// them would have to invent an envelope this contract has not frozen. A later
+// node adds both together or neither.
 //
 // A receipt carries the async job state machine in Operation when the capture
 // was routed to a lane that does not settle in the request. That block is the
