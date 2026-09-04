@@ -647,7 +647,7 @@ func (p *readOnlyProbe) PublishedForKey(ctx context.Context, deviceID, key strin
 	return p.inner.PublishedForKey(ctx, deviceID, key)
 }
 
-func (p *readOnlyProbe) RecordReceipt(ctx context.Context, id companion.CaptureIdentity, response []byte) error {
+func (p *readOnlyProbe) RecordReceipt(ctx context.Context, id companion.CaptureIdentity, response []byte) ([]byte, error) {
 	return p.inner.RecordReceipt(ctx, id, response)
 }
 
@@ -1424,7 +1424,7 @@ func TestCompanionCapturePublishedStoreIsBounded(t *testing.T) {
 			t.Fatalf("claim %d: %v", i, err)
 		}
 		if settle {
-			if err := writer.RecordReceipt(testCtx(t), id, []byte(fmt.Sprintf("receipt %d\n", i))); err != nil {
+			if _, err := writer.RecordReceipt(testCtx(t), id, receiptBytesFor(t, id, i)); err != nil {
 				t.Fatalf("record %d: %v", i, err)
 			}
 		}
@@ -1481,6 +1481,30 @@ func TestCompanionCapturePublishedStoreIsBounded(t *testing.T) {
 	}
 }
 
+// receiptBytesFor builds a receipt the store will accept as whole. The sibling
+// is validated on read — non-empty, decodes, and describes this capture — so a
+// test that stored an arbitrary string would be storing something the product
+// treats as "not yet recorded".
+func receiptBytesFor(t *testing.T, id companion.CaptureIdentity, n int) []byte {
+	t.Helper()
+	r := companion.NewReceipt()
+	r.ReceiptID = fmt.Sprintf("rcp_20260904_030000_%08x", n)
+	r.RequestID = fmt.Sprintf("req_20260904_030000_%08x", n)
+	r.IdempotencyKey = id.Key
+	r.DeviceID = id.DeviceID
+	r.State = companion.ReceiptApplied
+	r.MemoryID = companionOpaqueID(companion.PrefixMemory, id.MemoryID)
+	r.PayloadFingerprint = id.Fingerprint
+	r.Policy = companion.PolicyOpen
+	r.ReceivedAt = "2026-09-04T03:00:00Z"
+	r.SettledAt = "2026-09-04T03:00:00Z"
+	body, err := companion.Marshal(&r)
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	return body
+}
+
 func mustReadDir(t *testing.T, dir string) []os.DirEntry {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -1506,8 +1530,8 @@ func TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex(t *testing
 	if _, err := writer.Publish(testCtx(t), capture, id); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	receipt := []byte("{\n  \"receipt\": \"the first answer\"\n}\n")
-	if err := writer.RecordReceipt(testCtx(t), id, receipt); err != nil {
+	receipt := receiptBytesFor(t, id, 7)
+	if _, err := writer.RecordReceipt(testCtx(t), id, receipt); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
@@ -1559,8 +1583,11 @@ func TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex(t *testing
 	if werr := os.WriteFile(capturePublicationPath(cfg, stale.MemoryID), append(body, '\n'), 0o600); werr != nil {
 		t.Fatalf("plant the stale pointer: %v", werr)
 	}
-	if _, found, err := readCapturePublication(cfg, stale.MemoryID); err != nil || found {
-		t.Fatalf("a pointer to a record about another memory answered: found=%t err=%v", found, err)
+	// A pointer that disagrees with the record behind it is a vault-integrity
+	// failure, surfaced rather than shrugged at: answering "absent" would send a
+	// retry into a write at an id somebody else's publication already owns.
+	if _, found, err := readCapturePublication(cfg, stale.MemoryID); found || !errors.Is(err, companion.ErrPublishedIntegrity) {
+		t.Fatalf("a contradictory pointer answered found=%t err=%v, want an integrity failure", found, err)
 	}
 	if files := vaultMemoryFiles(t, cfg); len(files) != 1 {
 		t.Fatalf("the retry left %d memory files, want exactly 1", len(files))
@@ -1625,7 +1652,7 @@ func TestCompanionCaptureAtCapRejectionLeavesTheTreeIdentical(t *testing.T) {
 		if _, err := claimCapturePublication(cfg, id); err != nil {
 			t.Fatalf("claim %d: %v", i, err)
 		}
-		if err := writer.RecordReceipt(testCtx(t), id, []byte(fmt.Sprintf("receipt %d\n", i))); err != nil {
+		if _, err := writer.RecordReceipt(testCtx(t), id, receiptBytesFor(t, id, i)); err != nil {
 			t.Fatalf("record %d: %v", i, err)
 		}
 	}
@@ -1706,14 +1733,14 @@ func TestCompanionCaptureClaimWalksNothing(t *testing.T) {
 		Fingerprint: companion.Fingerprint("payload 0"),
 		MemoryID:    "mem_20260904_030000_00000000",
 	}
-	if err := writer.RecordReceipt(testCtx(t), id, []byte("receipt\n")); err != nil {
+	if _, err := writer.RecordReceipt(testCtx(t), id, receiptBytesFor(t, id, 0)); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	seeded := walks
 	if seeded == 0 || seeded > 2 {
 		t.Fatalf("the census seeded itself with %d walks, want the root and one device directory", seeded)
 	}
-	if err := writer.RecordReceipt(testCtx(t), id, []byte("receipt\n")); err != nil {
+	if _, err := writer.RecordReceipt(testCtx(t), id, receiptBytesFor(t, id, 0)); err != nil {
 		t.Fatalf("second record: %v", err)
 	}
 	if walks != seeded {
@@ -1887,7 +1914,7 @@ func TestCompanionCaptureReceiptSiblingIsExclusive(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			body := []byte(fmt.Sprintf("{\n  \"receipt\": \"racer %d\"\n}\n", i))
+			body := receiptBytesFor(t, id, i)
 			got, err := recordCaptureReceipt(cfg, id, body)
 			mu.Lock()
 			defer mu.Unlock()
@@ -1907,13 +1934,24 @@ func TestCompanionCaptureReceiptSiblingIsExclusive(t *testing.T) {
 		t.Fatalf("two racers minted different receipts for one publication:\n%s\n%s", answers[0], answers[1])
 	}
 	// Exactly one sibling, and it is what both of them answered with.
-	stored, found, err := readCaptureReceipt(capturePublicationReceiptPath(cfg, id.DeviceID, id.Key))
+	stored, found, err := readCaptureReceipt(capturePublicationReceiptPath(cfg, id.DeviceID, id.Key), id)
 	if err != nil || !found {
 		t.Fatalf("no receipt sibling: found=%t err=%v", found, err)
 	}
 	if !bytes.Equal(stored, answers[0]) {
 		t.Fatalf("the stored receipt is not what the racers answered with")
 	}
+	// A later claimant through the SEAM gets those same bytes back, not its own:
+	// the writer returns what is authoritative, whoever wrote it.
+	writer := newCompanionWriter()
+	late, err := writer.RecordReceipt(testCtx(t), id, receiptBytesFor(t, id, 99))
+	if err != nil {
+		t.Fatalf("late record: %v", err)
+	}
+	if !bytes.Equal(late, answers[0]) {
+		t.Fatalf("a late claimant answered with its own bytes, not the winner's")
+	}
+
 	// And the canonical record was never rewritten: it still carries no bytes of
 	// its own, because it is immutable after its link.
 	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
@@ -1945,7 +1983,7 @@ func TestCompanionCaptureCanonicalWithoutASiblingIsIncomplete(t *testing.T) {
 		t.Fatalf("a record with no sibling answered %q, want nothing", response)
 	}
 
-	if err := writer.RecordReceipt(testCtx(t), id, []byte("{\n  \"receipt\": \"recorded late\"\n}\n")); err != nil {
+	if _, err := writer.RecordReceipt(testCtx(t), id, receiptBytesFor(t, id, 1)); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	_, _, response, err = writer.PublishedForKey(testCtx(t), id.DeviceID, id.Key)
@@ -2003,9 +2041,26 @@ func TestCompanionCaptureLinkFallbackDiscipline(t *testing.T) {
 		if _, err := claimCapturePublication(cfg, other); !errors.Is(err, errMemoryIDMismatch) {
 			t.Fatalf("the fallback was not exclusive: %v", err)
 		}
+		// The ownership token is what makes it exclusive, so a token somebody else
+		// holds refuses the publish outright rather than racing it.
+		fresh := captureTestIdentity("mem_20260904_030002_bbbbbbbb")
+		fresh.Key = "key.token"
+		token := capturePublicationKeyPath(cfg, fresh.DeviceID, fresh.Key) + ".claim"
+		if err := os.MkdirAll(filepath.Dir(token), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(token, nil, 0o600); err != nil {
+			t.Fatalf("plant the token: %v", err)
+		}
+		if _, err := claimCapturePublication(cfg, fresh); !errors.Is(err, errMemoryIDMismatch) {
+			t.Fatalf("a held token did not refuse the publish: %v", err)
+		}
+		if _, err := os.Stat(capturePublicationKeyPath(cfg, fresh.DeviceID, fresh.Key)); !os.IsNotExist(err) {
+			t.Fatalf("the refused publish wrote a record anyway: %v", err)
+		}
 	})
 
-	t.Run("a fallback that cannot finish removes the file", func(t *testing.T) {
+	t.Run("a record that cannot be staged never appears", func(t *testing.T) {
 		cfg := captureTestVault(t, mcpWritePolicyOpen)
 		capturePublicationLink = func(string, string) error {
 			return &os.LinkError{Op: "link", Err: syscall.ENOTSUP}
@@ -2016,15 +2071,54 @@ func TestCompanionCaptureLinkFallbackDiscipline(t *testing.T) {
 
 		id := captureTestIdentity(captureTestMemoryID)
 		if _, err := claimCapturePublication(cfg, id); err == nil {
-			t.Fatal("a fallback whose write failed reported success")
+			t.Fatal("a claim whose staging write failed reported success")
 		}
-		// The create succeeded and the write did not, so the file must be gone
-		// rather than left as a short record a later read would refuse.
+		// The staging file is the only thing that could have been written, and it
+		// is gone; the final name was never touched, so no reader can see a short
+		// record under it.
 		if _, err := os.Stat(capturePublicationKeyPath(cfg, id.DeviceID, id.Key)); !os.IsNotExist(err) {
-			t.Fatalf("the failed fallback left a file behind: %v", err)
+			t.Fatalf("the failed claim left a record behind: %v", err)
 		}
 		if tree := publishedTree(t, cfg); len(tree) != 0 {
-			t.Fatalf("the failed fallback left %d files behind", len(tree))
+			t.Fatalf("the failed claim left %d files behind: %v", len(tree), tree)
 		}
 	})
+}
+
+// TestCompanionCaptureTornSiblingIsRepaired. A sibling that is empty, does not
+// decode, or describes another capture is not an answer: it reads as "receipt
+// not yet recorded", and the next retry replaces it.
+func TestCompanionCaptureTornSiblingIsRepaired(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	id := captureTestIdentity(captureTestMemoryID)
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	path := capturePublicationReceiptPath(cfg, id.DeviceID, id.Key)
+	if err := os.WriteFile(path, []byte("{\"half"), 0o600); err != nil {
+		t.Fatalf("plant a torn sibling: %v", err)
+	}
+
+	// A torn sibling answers nothing.
+	if _, found, err := readCaptureReceipt(path, id); err != nil || found {
+		t.Fatalf("a torn sibling answered: found=%t err=%v", found, err)
+	}
+	if _, _, response, err := writer.PublishedForKey(testCtx(t), id.DeviceID, id.Key); err != nil || len(response) != 0 {
+		t.Fatalf("a torn sibling reached a caller: %q err=%v", response, err)
+	}
+
+	// And the retry repairs it.
+	whole := receiptBytesFor(t, id, 3)
+	recorded, err := writer.RecordReceipt(testCtx(t), id, whole)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if !bytes.Equal(recorded, whole) {
+		t.Fatalf("the retry did not replace the torn sibling")
+	}
+	stored, found, err := readCaptureReceipt(path, id)
+	if err != nil || !found || !bytes.Equal(stored, whole) {
+		t.Fatalf("the sibling was not repaired: found=%t err=%v", found, err)
+	}
 }

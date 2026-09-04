@@ -110,7 +110,11 @@ type Writer interface {
 	// It is called after the reservation settles, and it is the only place the
 	// published store is trimmed — which is what makes a REJECTED request unable
 	// to evict anything.
-	RecordReceipt(ctx context.Context, id CaptureIdentity, response []byte) error
+	// It returns the AUTHORITATIVE bytes: the ones now in the store, whether this
+	// caller wrote them or lost the race to somebody who did. A caller that
+	// answered with its own locally built receipt instead would give two racing
+	// claimants two different receipts for one publication.
+	RecordReceipt(ctx context.Context, id CaptureIdentity, response []byte) ([]byte, error)
 	// Published reports whether the pinned id is already in the vault, and if so
 	// the outcome that describes it. It is asked only when a crashed reservation
 	// is reclaimed, so the retry can finish somebody else's work rather than
@@ -366,6 +370,12 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 	// writing again.
 	published, found, response, perr := s.writer.PublishedForKey(ctx, dev.DeviceID, c.IdempotencyKey)
 	if perr != nil {
+		// Bookkeeping that contradicts itself — a pointer naming one memory and a
+		// record naming another — is a vault-integrity failure, settled as a
+		// rejection rather than retried forever over a store that cannot answer.
+		if errors.Is(perr, ErrPublishedIntegrity) {
+			return s.refuseIntegrity(ctx, dev, c, received, perr.Error())
+		}
 		return nil, perr
 	}
 	if found && published != identity {
@@ -418,7 +428,7 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		// Without the backfill the reservation is the only copy, and the day it
 		// is trimmed a retry starts minting fresh receipts for one publication.
 		if found && len(response) == 0 {
-			if err := s.writer.RecordReceipt(ctx, CaptureIdentity{
+			if _, err := s.writer.RecordReceipt(ctx, CaptureIdentity{
 				DeviceID:    dev.DeviceID,
 				Key:         c.IdempotencyKey,
 				Identity:    identity,
@@ -467,7 +477,15 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		// reservation that would one day be trimmed. Recording first means the
 		// worst a crash can do is leave the reservation pending — which is a
 		// state the retry already knows how to finish.
-		if err := s.writer.RecordReceipt(ctx, claim.Identity(), body); err != nil {
+		recorded, err := s.writer.RecordReceipt(ctx, claim.Identity(), body)
+		if err != nil {
+			return nil, err
+		}
+		// Whoever won the receipt owns the answer. This attempt settles with
+		// those bytes and returns exactly those bytes, so a racing claimant and
+		// this one answer identically.
+		body = recorded
+		if err := json.Unmarshal(body, &receipt); err != nil {
 			return nil, err
 		}
 	}
@@ -518,6 +536,26 @@ func (s *Server) publish(ctx context.Context, c Capture, claim *Claim, stillLive
 		return WriteOutcome{Policy: policy, State: ReceiptRejected, Reason: ReasonUnknownDevice}, nil
 	}
 	return s.writer.Publish(ctx, c, claim.Identity())
+}
+
+// refuseIntegrity is the terminal rejection for a store whose own bookkeeping
+// disagrees with itself. It carries the same reason and the same integrity
+// channel as a foreign memory at a pinned id, because it is the same class of
+// failure: nothing the phone sent was wrong, and the vault is in a state the
+// kernel cannot explain.
+func (s *Server) refuseIntegrity(ctx context.Context, dev Device, c Capture, received time.Time, detail string) ([]byte, error) {
+	policy, err := s.writer.Policy(ctx)
+	if err != nil {
+		policy = PolicyReadonly
+	}
+	s.logIntegrityEvent(detail)
+	receipt, err := s.receipt(dev, c, WriteOutcome{
+		Policy: policy, State: ReceiptRejected, Reason: ReasonInternal,
+	}, received)
+	if err != nil {
+		return nil, err
+	}
+	return Marshal(&receipt)
 }
 
 // refuse builds a terminal rejection for a capture the kernel was never asked to

@@ -150,6 +150,11 @@ var (
 	// ErrTooManyPending reports that too many captures are already in flight. It
 	// is the store's HARD bound, and it is refused before any file is created.
 	ErrTooManyPending = errors.New("companion: too many captures are already in flight")
+	// ErrPublishedIntegrity reports that the published store's own bookkeeping
+	// contradicts itself — a pointer naming one memory and the record behind it
+	// naming another. It is a vault-integrity failure, not a client condition,
+	// and it settles as a rejection rather than being retried forever.
+	ErrPublishedIntegrity = errors.New("companion: the published store's bookkeeping disagrees with itself")
 	// ErrNoClaim reports a Settle against a claim that was already released.
 	ErrNoClaim = errors.New("companion: this reservation is no longer held")
 )

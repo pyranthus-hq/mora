@@ -44,6 +44,8 @@ type stubWriter struct {
 	receipts     map[string][]byte
 	publishedErr error
 	recordErr    error
+	// beforeRecord runs at the instant two claimants would race for the receipt.
+	beforeRecord func()
 	// vault is the fake vault: pinned memory id to the capture identity that owns
 	// it. Its size is the duplicate detector — N retries of one capture must
 	// leave ONE entry — and the value is what makes a foreign file at a pinned id
@@ -85,14 +87,23 @@ func (w *stubWriter) PublishedForKey(_ context.Context, deviceID, key string) (s
 
 // RecordReceipt is the canonical record's response half: the bytes the capture
 // answered with, kept where no reservation retention can reach them.
-func (w *stubWriter) RecordReceipt(_ context.Context, id CaptureIdentity, response []byte) error {
+func (w *stubWriter) RecordReceipt(_ context.Context, id CaptureIdentity, response []byte) ([]byte, error) {
+	if w.beforeRecord != nil {
+		w.beforeRecord()
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.recordErr != nil {
-		return w.recordErr
+		return nil, w.recordErr
 	}
-	w.receipts[id.DeviceID+"\x00"+id.Key] = append([]byte(nil), response...)
-	return nil
+	key := id.DeviceID + "\x00" + id.Key
+	// The sibling is exclusive: the first caller's bytes are the answer, and
+	// everybody else reads them back rather than overwriting.
+	if existing, held := w.receipts[key]; held {
+		return append([]byte(nil), existing...), nil
+	}
+	w.receipts[key] = append([]byte(nil), response...)
+	return append([]byte(nil), response...), nil
 }
 
 func (w *stubWriter) Published(_ context.Context, _ Capture, id CaptureIdentity) (WriteOutcome, bool, error) {
@@ -1811,5 +1822,135 @@ func TestCaptureReplaySettlesAPendingReservation(t *testing.T) {
 	}
 	if got := writer.memories(); got != 1 {
 		t.Fatalf("the vault holds %d memories, want 1", got)
+	}
+}
+
+// TestCaptureRacingClaimantsAnswerTheSameBytes is the round-seven hole, end to
+// end through the real capture path.
+//
+// The sibling's exclusivity made ONE receipt authoritative, and then the caller
+// threw it away: each claimant settled and answered with the receipt it had
+// built locally, so two racing captures returned different receipt ids for one
+// publication. Whoever wins the sibling owns the answer, and everybody else
+// settles and answers with those bytes.
+func TestCaptureRacingClaimantsAnswerTheSameBytes(t *testing.T) {
+	srv, _, token, root := newCaptureServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "two claimants, one receipt")
+	body := captureBytes(t, capture)
+
+	// The listener runs ONE kernel call at a time, so the two claimants cannot be
+	// held at the seam simultaneously: the second would never arrive and the
+	// first would wait for it forever. The gate holds the first briefly instead,
+	// which is enough to overlap the settle of one with the arrival of the other
+	// — and the property under test is not the timing, it is that whoever loses
+	// the receipt answers with the winner's bytes.
+	const racers = 2
+	var once sync.Once
+	writer.beforeRecord = func() {
+		once.Do(func() { time.Sleep(20 * time.Millisecond) })
+	}
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		answers [][]byte
+	)
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := postRaw(srv, token, body)
+			mu.Lock()
+			defer mu.Unlock()
+			if rec.Code == http.StatusOK {
+				answers = append(answers, append([]byte(nil), rec.Body.Bytes()...))
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(answers) == 0 {
+		t.Fatal("no claimant got a receipt")
+	}
+	for i := range answers {
+		if !bytes.Equal(answers[i], answers[0]) {
+			t.Fatalf("two claimants answered differently:\n%s\n%s", answers[0], answers[i])
+		}
+	}
+	// One publication, one receipt, and the reservation settled with the very
+	// bytes that were answered.
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the race left %d memories, want 1", got)
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationSettled {
+		t.Fatalf("the reservation is %q, want settled", state)
+	}
+	record := reservationRecordOn(t, root, capture.DeviceID, capture.IdempotencyKey)
+	if !bytes.Equal([]byte(record.Response), answers[0]) {
+		t.Fatalf("the reservation settled with bytes nobody answered with")
+	}
+	// And a later replay is those same bytes.
+	if replay := postRaw(srv, token, body); !bytes.Equal(replay.Body.Bytes(), answers[0]) {
+		t.Fatalf("the replay is not the answered bytes")
+	}
+}
+
+// TestCaptureLoserAnswersTheWinnersBytes states it without the race: a claimant
+// whose receipt is refused because somebody recorded one first must answer with
+// theirs, not with the one it built.
+func TestCaptureLoserAnswersTheWinnersBytes(t *testing.T) {
+	srv, _, token, _ := newCaptureServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "somebody recorded first")
+
+	// The winner's receipt is already in the store, under this key.
+	winner := NewReceipt()
+	winner.ReceiptID = "rcp_20260903_120000_deadbeef"
+	winner.RequestID = "req_20260903_120000_deadbeef"
+	winner.IdempotencyKey = capture.IdempotencyKey
+	winner.DeviceID = capture.DeviceID
+	winner.State = ReceiptApplied
+	winner.MemoryID = "mem_00000001"
+	winner.PayloadFingerprint = capture.PayloadFingerprint
+	winner.Policy = PolicyOpen
+	winner.ReceivedAt = reservationStamp(testNow)
+	winner.SettledAt = reservationStamp(testNow)
+	theirs, err := Marshal(&winner)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	writer.mu.Lock()
+	writer.receipts[capture.DeviceID+"\x00"+capture.IdempotencyKey] = theirs
+	writer.mu.Unlock()
+
+	got := decodeReceipt(t, postCapture(t, srv, token, capture))
+	if got.ReceiptID != winner.ReceiptID {
+		t.Fatalf("the loser answered with receipt %q, want the winner's %q", got.ReceiptID, winner.ReceiptID)
+	}
+}
+
+// TestCapturePointerMismatchIsAnIntegrityFailure. Bookkeeping that contradicts
+// itself — a pointer naming one memory and the record behind it naming another —
+// is a vault-integrity failure, settled as a rejection with the integrity event
+// on the listener's log. Answering "absent" would send the retry into a write at
+// an id another publication already owns.
+func TestCapturePointerMismatchIsAnIntegrityFailure(t *testing.T) {
+	srv, _, _, token, log := testServer(t)
+	writer := writerOf(t, srv)
+	log.Reset()
+	writer.mu.Lock()
+	writer.publishedErr = ErrPublishedIntegrity
+	writer.mu.Unlock()
+
+	receipt := decodeReceipt(t, postCapture(t, srv, token, captureFor(t, srv, "contradictory bookkeeping")))
+	if receipt.State != ReceiptRejected || receipt.Reason != ReasonInternal {
+		t.Fatalf("produced %s/%s, want rejected/internal", receipt.State, receipt.Reason)
+	}
+	if got := writer.count(); got != 0 {
+		t.Fatalf("a contradictory store reached the write path %d times, want 0", got)
+	}
+	if log.Len() == 0 {
+		t.Fatal("the integrity event was not logged")
 	}
 }

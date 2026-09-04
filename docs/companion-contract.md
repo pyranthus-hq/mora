@@ -635,15 +635,44 @@ still refuses the second write. `TestReservationRefusesPastThePendingBound` and
 | 3 | `<state>/companion/published/<memory id>.json` — pointer back to the canonical record | `O_EXCL` create | same, and only if this call created it |
 | 4 | `<vault>/mora/memories/<scope>/<memory id>.md` — the memory at the pinned id | `atomicCreate` (create-exclusive), then fsynced | nobody; a published memory is never unpublished, and a retry verifies it |
 | 5 | `…/<sha256(key)>.json.receipt` — the receipt **sibling** | **`os.Link`**, same primitive; `EEXIST` means somebody recorded it first, and their bytes are the answer | nobody; a failure here fails the attempt |
-| 6 | reservation rewritten as settled, with the same bytes | staged temp + fsync + rename | nobody |
-| 7 | trim | — | — |
+| 6 | reservation rewritten as settled, with the **authoritative** bytes | staged temp + fsync + rename | nobody |
+
+The trim runs inside step 5, immediately after the receipt is recorded and before
+the reservation settles. It is placed there rather than after step 6 because that
+is the last point a *successful* capture is still inside the kernel: the listener
+has no seam after the settle, and adding one would buy nothing the settled-aware
+rule does not already give. The two guarantees the position has to preserve both
+hold: a **rejected** request never reaches step 5, so it can never evict
+anything; and the trim skips any record without a receipt sibling, so a
+publication still in flight is never taken.
 
 The canonical record is **immutable** after step 2: the receipt is a sibling rather than a rewrite, because a rewrite is last-writer-wins and two callers reaching the receipt could mint different bodies for one publication. A canonical record with no sibling is "published, receipt not yet recorded", and a retry records it exclusively.
 
-The trim runs at step 7, after the reservation has settled, and nowhere else.
+
 
 **The fallback is disciplined.** `os.Link` falls back to an `O_EXCL` create of the final path **only** when the error means the filesystem cannot do links at all (`EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `errors.ErrUnsupported`). Every other link error — an I/O fault, a full disk — is a hard error that leaves nothing behind, rather than a direct write that would mask the fault and risk a half-written record. `EXDEV` is deliberately not in that set: the staging file is created in the destination's own directory, so a cross-device link is a bug, not a limitation. Any failure after the fallback's create removes the file
 (`TestCompanionCaptureLinkFallbackDiscipline`).
+
+**A sibling is never visible incomplete, and never trusted blindly.** The link path publishes bytes
+that are already whole and already fsynced. The no-links fallback stages and fsyncs a temporary file,
+takes an `O_EXCL` ownership token at `<name>.claim`, renames the staged file into place and then drops
+the token — so no reader ever sees a partial record. A reader validates what it finds anyway: a
+sibling that is empty, does not decode, or describes another capture reads as "receipt not yet
+recorded", and the next retry replaces it under the token
+(`TestCompanionCaptureLinkFallbackDiscipline`).
+
+**Whoever wins the receipt owns the answer.** `RecordReceipt` returns the authoritative bytes — the
+sibling's, whether this caller wrote them or lost the race for them — and the capture settles its
+reservation with those bytes and returns exactly those bytes. A caller that answered with the receipt
+it had built locally would give two racing claimants two different receipt ids for one publication
+(`TestCaptureRacingClaimantsAnswerTheSameBytes`, `TestCaptureLoserAnswersTheWinnersBytes`).
+
+**Contradictory bookkeeping is an integrity failure.** A by-memory-id pointer whose record names a
+different memory is not shrugged at: it settles as `rejected` with reason `internal` and the same
+integrity event a foreign memory produces, because answering "absent" would send a retry into a write
+at an id another publication already owns
+(`TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex`,
+`TestCapturePointerMismatchIsAnIntegrityFailure`).
 
 **A replay finishes what it finds.** A publication whose receipt landed and whose reservation never settled leaves a pending row that would occupy the in-flight bound until the sweep; the replay settles it, under the reservation store's own lock, before it answers (`TestCaptureReplaySettlesAPendingReservation`).
 
