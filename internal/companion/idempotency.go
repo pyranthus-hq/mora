@@ -6,40 +6,44 @@ package companion
 // A phone on a train retries. It retries because the socket died, because iOS
 // suspended the app mid-request, because the user tapped twice. Every one of
 // those retries carries the SAME idempotency key, and the only acceptable
-// outcome is one memory in the vault and one receipt — byte for byte the
-// receipt the first attempt would have produced.
+// outcome is one memory in the vault and one receipt — byte for byte the bytes
+// the first attempt returned.
 //
-// # The ordering, and why it is that way round
+// # The ordering, and what makes it exactly-once
 //
-//	reserve (durable)  ->  vault write  ->  settle (durable)
+//	reserve (durable)  ->  vault write at a PINNED id  ->  settle (durable)
 //
-// The reservation is fsynced and renamed into place BEFORE the kernel is asked
-// to write anything. That ordering is the whole design. Reserving after the
-// write would mean a crash in between leaves a memory in the vault that no key
-// points at, so the phone's retry writes a second one and the user has the same
-// note twice with no way to tell which is which. Reserving first means a crash
-// in between leaves a key pointing at a write that never happened, and the
-// retry completes it — the vault gains one memory, not two.
+// The reservation is fsynced and renamed into place before the kernel is asked
+// to write anything, and it carries the vault id the write will use. That id is
+// DERIVED — from the device, the idempotency key and the payload — so it is the
+// same id on every attempt, and the kernel's create-exclusive publish is what
+// decides the race: whoever gets the link wins, and every later attempt is told
+// the memory already exists and settles `applied` without writing again.
 //
-// # What this store does NOT promise
-//
-// It is not a distributed transaction. There is a window between the kernel's
-// vault publication and this store's settle write: a process killed inside it
-// leaves a `pending` reservation over a memory that DOES exist, and a retry
-// after the takeover window writes a second one. Closing that would mean the
-// vault write itself carrying the idempotency key, which is a change to the
-// kernel's write path rather than to this file. The window is one fsync wide
-// and it is stated here rather than papered over.
+// That is the difference from round one, which reserved first and then hoped.
+// Reserving first alone only closes the window BEFORE the write; a process
+// killed between the vault publication and the settle write still left a pending
+// reservation over a memory that existed, and the retry duplicated it. Pinning
+// the id closes the window on the other side too, because the second write
+// cannot land.
 //
 // # Bounded, because a phone can talk
 //
-// Every reservation is a file a device caused to exist, so the store is a DoS
-// surface unless it is bounded in three directions at once: MaxReservations
-// caps how many exist, ReservationTTL caps how long one lives, and
-// maxReservationBytes caps how big one can be on the read path. Pruning is
-// oldest-settled-first, so the entries that survive pressure are the ones a
-// retry is most likely to ask about. Losing an old settled entry risks a
-// duplicate on a week-old retry; keeping an unbounded directory risks the Mac.
+// Every reservation is a file a device caused to exist, so the store is bounded
+// in four directions at once:
+//
+//   - MaxPendingReservations caps how many captures may be IN FLIGHT. Past it a
+//     new key is refused with ErrTooManyPending and no file is created, so a
+//     device that can make the kernel fail cannot turn that into unbounded disk.
+//   - Pending records expire after PendingSweepAfter and are swept on open and on
+//     insert. An expired pending record is a crashed attempt nobody came back
+//     for, and the pinned id means sweeping it loses nothing: the retry derives
+//     the same id and the create-exclusive publish still refuses to write twice.
+//   - MaxReservations caps the total. Over it the oldest SETTLED records go,
+//     because a settled record is idempotency memory while a pending one is a
+//     claim somebody may still be acting on.
+//   - maxReservationBytes caps one record on the read path, so a hostile file is
+//     refused rather than allocated.
 //
 // # The key space is per device
 //
@@ -73,25 +77,48 @@ import (
 // the point past which a device is costing the Mac more than a note is worth.
 const (
 	// MaxReservations caps how many reservations exist across every device.
-	// A capture writes one file, so without a cap a phone in a retry loop with
-	// a fresh key each time is an unbounded directory.
 	MaxReservations = 512
+	// MaxPendingReservations caps how many captures may be in flight at once.
+	//
+	// It is much smaller than MaxReservations because a pending record is a
+	// claim, not a memory: the listener runs one kernel call at a time, so more
+	// than a handful of live claims means attempts are failing rather than
+	// finishing. Refusing at this line is what makes the store's bound HARD —
+	// without it, a kernel that fails every request turns each fresh key into a
+	// file that nothing ever settles or evicts.
+	MaxPendingReservations = 64
 	// ReservationTTL is how long a settled receipt stays answerable. A retry
-	// after this gets a fresh receipt for a second memory, which is why it is
-	// days rather than minutes: a phone that was offline over a weekend is a
-	// normal phone.
+	// after this gets a fresh receipt, which is why it is days rather than
+	// minutes: a phone that was offline over a weekend is a normal phone.
 	ReservationTTL = 7 * 24 * time.Hour
 	// ReservationTakeover is how long a pending reservation is treated as
-	// somebody else's live work rather than as a crash to recover from.
+	// somebody else's live work rather than as a crash to recover from. Past it
+	// the record is sweepable and the key is reclaimable.
 	//
 	// It is longer than the listener's KernelTimeout on purpose. Shorter, and a
-	// second process could take over a reservation whose holder is still inside
-	// its vault write — which is the duplicate this file exists to prevent,
-	// arrived at from the other direction.
+	// second caller could reclaim a key whose holder is still inside its vault
+	// write. The pinned id makes that safe rather than catastrophic, but "safe"
+	// is not a reason to make it likely.
 	ReservationTakeover = 3 * KernelTimeout
+	// PendingSweepAfter is when a crashed pending record is COLLECTED, and it is
+	// deliberately later than ReservationTakeover.
+	//
+	// The two thresholds do different jobs and collapsing them breaks the first.
+	// Between them a retry RECLAIMS the record, reads the vault id the crashed
+	// attempt pinned, and asks the kernel whether that memory is already
+	// published — which is how a capture killed between its write and its receipt
+	// finishes without writing again. Sweep at the takeover line instead and the
+	// record is gone before any retry can read it, so the recovery path is
+	// unreachable and every crashed capture pays for a second write attempt.
+	//
+	// Past this line the record goes, and correctness does not depend on it: the
+	// memory id is DERIVED, so a retry re-derives the same id and the kernel's
+	// create-exclusive publish still refuses the second write. What is lost is
+	// only the shortcut.
+	PendingSweepAfter = 4 * ReservationTakeover
 	// maxReservationBytes bounds ONE reservation file on the read path. A
-	// receipt is under 2 KiB; this leaves room for the envelope and refuses
-	// anything that is not a reservation.
+	// receipt and its response bytes are under 4 KiB together; this leaves room
+	// and refuses anything that is not a reservation.
 	maxReservationBytes = 64 << 10
 	// reservationWait bounds how long a concurrent duplicate waits for the
 	// holder of the same key to settle. Past it the caller is told the capture
@@ -113,12 +140,15 @@ const schemaCaptureReservation = "mora.companion.capture.reservation"
 // matching prose.
 var (
 	// ErrIdempotencyConflict reports that the key was already used for a
-	// DIFFERENT payload. It is never a silent overwrite and never a silent
-	// replay: the first payload keeps the key.
-	ErrIdempotencyConflict = errors.New("companion: that idempotency key already covers a different payload")
+	// DIFFERENT capture. It is never a silent overwrite and never a silent
+	// replay: the first capture keeps the key.
+	ErrIdempotencyConflict = errors.New("companion: that idempotency key already covers a different capture")
 	// ErrCaptureInFlight reports that another caller holds this key right now.
 	// It is transient: the retry that follows finds the settled receipt.
 	ErrCaptureInFlight = errors.New("companion: that idempotency key is being processed")
+	// ErrTooManyPending reports that too many captures are already in flight. It
+	// is the store's HARD bound, and it is refused before any file is created.
+	ErrTooManyPending = errors.New("companion: too many captures are already in flight")
 	// ErrNoClaim reports a Settle against a claim that was already released.
 	ErrNoClaim = errors.New("companion: this reservation is no longer held")
 )
@@ -127,29 +157,68 @@ var (
 type reservationState string
 
 const (
-	// reservationPending means the key is claimed and the vault write has not
-	// been confirmed. A pending record older than ReservationTakeover is a
-	// crashed attempt and may be taken over.
+	// reservationPending means the key is claimed and the capture has not
+	// settled. A pending record older than ReservationTakeover is a crashed
+	// attempt: reclaimable, and sweepable.
 	reservationPending reservationState = "pending"
 	// reservationSettled means the capture reached a terminal receipt, which is
-	// stored verbatim so a replay returns the same bytes.
+	// stored with the exact bytes that answered the first attempt.
 	reservationSettled reservationState = "settled"
 )
 
+// CaptureIdentity is everything the store needs to answer "is this the same
+// capture?" and "where does it publish?".
+//
+// Identity and Fingerprint are deliberately two fields. Fingerprint is the wire
+// `payload_fingerprint`, which N02 defines as SHA-256 over the capture TEXT and
+// which the receipt carries; Identity covers every field that changes what gets
+// written, so the same key with a different scope is a conflict rather than a
+// replay of somebody else's placement decision.
+type CaptureIdentity struct {
+	DeviceID    string
+	Key         string
+	Identity    string
+	Fingerprint string
+	// MemoryID is the vault id this capture publishes under. It is derived
+	// before the reservation is written, and it is what makes the kernel's
+	// create-exclusive publish an exactly-once primitive.
+	MemoryID string
+}
+
+func (id CaptureIdentity) validate() error {
+	if err := validateID("device_id", PrefixDevice, id.DeviceID); err != nil {
+		return err
+	}
+	if err := validateIdempotencyKey("idempotency_key", id.Key); err != nil {
+		return err
+	}
+	if err := validateFingerprint("capture_identity", id.Identity); err != nil {
+		return err
+	}
+	if err := validateFingerprint("payload_fingerprint", id.Fingerprint); err != nil {
+		return err
+	}
+	return validateID("memory_id", PrefixMemory, id.MemoryID)
+}
+
 // reservationRecord is the stored form of one reservation.
 //
-// It carries the fingerprint rather than the text: the store answers "same key,
-// same payload?" and has no business holding a word the user wrote. The receipt
-// it settles with carries none either.
+// It carries digests rather than the text: the store answers "same key, same
+// capture?" and has no business holding a word the user wrote. Response holds
+// the exact bytes the first attempt returned, so a replay is byte-identical on
+// the wire rather than re-marshalled and merely equal in structure.
 type reservationRecord struct {
 	Header
 	IdempotencyKey     string           `json:"idempotency_key"`
 	DeviceID           string           `json:"device_id"`
+	CaptureIdentity    string           `json:"capture_identity"`
 	PayloadFingerprint string           `json:"payload_fingerprint"`
+	MemoryID           string           `json:"memory_id"`
 	State              reservationState `json:"state"`
 	ReservedAt         string           `json:"reserved_at"`
 	ExpiresAt          string           `json:"expires_at"`
 	Receipt            *Receipt         `json:"receipt,omitempty"`
+	Response           string           `json:"response,omitempty"`
 }
 
 // ReservationStore is the durable idempotency store rooted at a StateDir.
@@ -167,6 +236,14 @@ type ReservationStore struct {
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{}
+
+	// writeRecord publishes a reservation file. It is a field rather than a
+	// direct call so a test can fail the write at the exact instant the ordering
+	// rules exist for — the moment between "the vault holds the memory" and "the
+	// reservation says so". There is no exported way to replace it and
+	// production never does. The same seam, for the same reason, as
+	// Registry.writeRecord.
+	writeRecord func(path string, body []byte, beforeRename func() error) error
 }
 
 // ReservationOption injects a seam. Both exist for tests; production passes
@@ -194,16 +271,23 @@ func WithReservationEntropy(src io.Reader) ReservationOption {
 
 // NewReservationStore returns a store under stateDir. The directory does not
 // have to exist yet; it is created, hardened and re-hardened on use.
+//
+// Opening SWEEPS: expired records and crashed pending claims are collected here,
+// so a listener that restarts after a bad night does not begin life at its own
+// bound. The sweep is best effort and silent — a store that cannot tidy itself
+// must still serve.
 func NewReservationStore(stateDir string, opts ...ReservationOption) *ReservationStore {
 	s := &ReservationStore{
-		root:     filepath.Join(stateDir, "companion", "captures"),
-		now:      time.Now,
-		entropy:  rand.Reader,
-		inflight: map[string]chan struct{}{},
+		root:        filepath.Join(stateDir, "companion", "captures"),
+		now:         time.Now,
+		entropy:     rand.Reader,
+		inflight:    map[string]chan struct{}{},
+		writeRecord: writeSecretFile,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.sweep(s.now(), "")
 	return s
 }
 
@@ -220,37 +304,41 @@ type Claim struct {
 	path     string
 	record   reservationRecord
 	release  sync.Once
+
+	// TakenOver reports that this claim RECLAIMED a crashed attempt rather than
+	// starting fresh. The caller uses it to ask the kernel whether the pinned
+	// memory id is already published before it writes, which is the difference
+	// between finishing somebody else's work and repeating it.
+	TakenOver bool
 }
+
+// MemoryID is the vault id this claim publishes under.
+func (c *Claim) MemoryID() string { return c.record.MemoryID }
 
 // ---------------------------------------------------------------------------
 // Reserve
 // ---------------------------------------------------------------------------
 
-// Reserve claims key for device against fingerprint.
+// Reserve claims id.Key for id.DeviceID.
 //
 // It returns exactly one of three things:
 //
-//   - a stored terminal Receipt, when this key has already settled for this
-//     payload. This is the replay answer and it is byte-identical, because the
-//     receipt is returned from storage rather than rebuilt.
+//   - the exact response BYTES of the first attempt, when this key has already
+//     settled for this capture. This is the replay answer, and it is the same
+//     bytes rather than a re-marshalling of the same fields.
 //   - a live *Claim, when the caller is the one who may now run the write.
 //   - an error: ErrIdempotencyConflict for the same key over a different
-//     payload, ErrCaptureInFlight while somebody else holds it.
+//     capture, ErrCaptureInFlight while somebody else holds it,
+//     ErrTooManyPending when the store is at its in-flight bound.
 //
 // The durable write happens before the claim is handed back, so a caller that
 // holds a Claim is holding a promise that survives a crash.
-func (s *ReservationStore) Reserve(deviceID, key, fingerprint string) (Receipt, *Claim, error) {
-	if err := validateID("device_id", PrefixDevice, deviceID); err != nil {
-		return Receipt{}, nil, err
-	}
-	if err := validateIdempotencyKey("idempotency_key", key); err != nil {
-		return Receipt{}, nil, err
-	}
-	if err := validateFingerprint("payload_fingerprint", fingerprint); err != nil {
-		return Receipt{}, nil, err
+func (s *ReservationStore) Reserve(id CaptureIdentity) ([]byte, *Claim, error) {
+	if err := id.validate(); err != nil {
+		return nil, nil, err
 	}
 
-	inflight := deviceID + "\x00" + key
+	inflight := id.DeviceID + "\x00" + id.Key
 	// The wait is bounded by a real timer rather than by the injected clock. A
 	// pinned test clock does not advance on its own, and a wait that depended on
 	// it would hang rather than fail.
@@ -267,82 +355,102 @@ func (s *ReservationStore) Reserve(deviceID, key, fingerprint string) (Receipt, 
 			s.inflight[inflight] = done
 			s.mu.Unlock()
 
-			rcpt, claim, err := s.reserveOnDisk(deviceID, key, fingerprint, inflight, done)
+			replay, claim, err := s.reserveOnDisk(id, inflight, done)
 			if claim == nil {
-				// A replay, a conflict or a failure holds nothing.
+				// A replay, a conflict or a refusal holds nothing.
 				s.finish(inflight, done)
 			}
-			return rcpt, claim, err
+			return replay, claim, err
 		}
 		s.mu.Unlock()
 
 		select {
 		case <-waitOn:
 			// The holder finished. Go round again: the record is settled now,
-			// so the next pass returns its receipt rather than a second claim.
+			// so the next pass returns its bytes rather than a second claim.
 		case <-timer.C:
-			return Receipt{}, nil, ErrCaptureInFlight
+			return nil, nil, ErrCaptureInFlight
 		}
 	}
 }
 
 // reserveOnDisk is the durable half of Reserve, under the cross-process lock.
-func (s *ReservationStore) reserveOnDisk(deviceID, key, fingerprint, inflight string, done chan struct{}) (Receipt, *Claim, error) {
-	if err := s.ensureDir(deviceID); err != nil {
-		return Receipt{}, nil, err
+func (s *ReservationStore) reserveOnDisk(id CaptureIdentity, inflight string, done chan struct{}) ([]byte, *Claim, error) {
+	if err := s.ensureDir(id.DeviceID); err != nil {
+		return nil, nil, err
 	}
 	held, err := s.lock()
 	if err != nil {
-		return Receipt{}, nil, err
+		return nil, nil, err
 	}
 	defer held.release()
 
-	path := s.path(deviceID, key)
+	path := s.path(id.DeviceID, id.Key)
 	now := s.now()
+	takenOver := false
 
 	existing, err := readReservation(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		// A fresh key.
 	case err != nil:
-		return Receipt{}, nil, err
+		return nil, nil, err
 	default:
-		// The fingerprint is checked FIRST, before the state, so a key reused
-		// for different text is a conflict whether the first attempt settled or
-		// is still running. The other order would let a second payload take over
-		// a crashed reservation belonging to the first.
-		if existing.PayloadFingerprint != fingerprint {
-			return Receipt{}, nil, ErrIdempotencyConflict
+		// The identity is checked FIRST, before the state, so a key reused for a
+		// different capture is a conflict whether the first attempt settled or is
+		// still running. The other order would let a second capture reclaim a
+		// crashed reservation belonging to the first.
+		if existing.CaptureIdentity != id.Identity {
+			return nil, nil, ErrIdempotencyConflict
 		}
-		if existing.State == reservationSettled && existing.Receipt != nil {
-			return *existing.Receipt, nil, nil
+		if existing.State == reservationSettled && existing.Response != "" {
+			return []byte(existing.Response), nil, nil
 		}
 		if !s.takeoverDue(existing.ReservedAt, now) {
-			// Another process is inside its vault write right now. Taking the
-			// key from it would produce the duplicate this file exists to
-			// prevent, so the caller is told to come back.
-			return Receipt{}, nil, ErrCaptureInFlight
+			// Another caller is inside its vault write right now. Taking the key
+			// from it is safe — the pinned id cannot be written twice — but it
+			// would mean two callers doing the same work, and the second would
+			// answer before the first had settled.
+			return nil, nil, ErrCaptureInFlight
 		}
-		// A pending record older than the takeover window is a crashed attempt.
-		// The write it reserved never confirmed, so this caller completes it.
+		// A pending record past the takeover window is a crashed attempt. Its
+		// write may or may not have landed, so the caller checks the pinned id
+		// against the vault before it writes.
+		takenOver = true
+		// The reclaimed record keeps the id the crashed attempt pinned, which is
+		// the whole point: the retry must aim at the same vault path.
+		id.MemoryID = existing.MemoryID
+	}
+
+	// The store's HARD bound. It is enforced BEFORE the record is written, so a
+	// refusal creates nothing — a bound that admitted the request and then tidied
+	// up afterwards would still be a file per request while the pressure lasted.
+	if !takenOver {
+		if pending := s.sweep(now, path); pending >= MaxPendingReservations {
+			return nil, nil, ErrTooManyPending
+		}
 	}
 
 	record := reservationRecord{
 		Header:             newHeader(schemaCaptureReservation),
-		IdempotencyKey:     key,
-		DeviceID:           deviceID,
-		PayloadFingerprint: fingerprint,
+		IdempotencyKey:     id.Key,
+		DeviceID:           id.DeviceID,
+		CaptureIdentity:    id.Identity,
+		PayloadFingerprint: id.Fingerprint,
+		MemoryID:           id.MemoryID,
 		State:              reservationPending,
 		ReservedAt:         reservationStamp(now),
 		ExpiresAt:          reservationStamp(now.Add(ReservationTTL)),
 	}
 	if err := s.write(path, record, held); err != nil {
-		return Receipt{}, nil, err
+		return nil, nil, err
 	}
-	// Pruning runs after the write and never touches the record just written, so
-	// a store at its cap can still accept the capture that pushed it there.
-	s.prune(now, path)
-	return Receipt{}, &Claim{store: s, inflight: inflight, done: done, path: path, record: record}, nil
+	// Trimming runs after the write and never touches the record just written, so
+	// a store at its total cap can still accept the capture that pushed it there.
+	s.trim(path)
+	return nil, &Claim{
+		store: s, inflight: inflight, done: done, path: path, record: record, TakenOver: takenOver,
+	}, nil
 }
 
 // takeoverDue reports whether a pending reservation stamped at reservedAt is old
@@ -350,7 +458,8 @@ func (s *ReservationStore) reserveOnDisk(deviceID, key, fingerprint, inflight st
 //
 // An unparseable stamp is treated as due. A reservation whose age cannot be read
 // is a corrupt record, and leaving it undecidable would wedge that key forever;
-// the fingerprint check above still protects the payload identity.
+// the identity check above still protects the capture identity, and the pinned
+// id still protects the vault.
 func (s *ReservationStore) takeoverDue(reservedAt string, now time.Time) bool {
 	t, err := time.Parse(time.RFC3339, reservedAt)
 	if err != nil {
@@ -363,18 +472,27 @@ func (s *ReservationStore) takeoverDue(reservedAt string, now time.Time) bool {
 // Settle and Abandon
 // ---------------------------------------------------------------------------
 
-// Settle stores the terminal receipt and releases the claim.
+// Settle stores the terminal receipt WITH the exact bytes that answered it, and
+// releases the claim.
+//
+// The response bytes are stored rather than rebuilt because a replay has to be
+// the same answer on the wire, not merely the same fields: a client that hashes
+// or caches a response body is entitled to have the retry match it byte for
+// byte.
 //
 // The receipt is validated and cross-checked against what was reserved before
 // anything is written: a receipt for a different key, device or payload would
 // make the store answer a future replay with somebody else's outcome.
-func (c *Claim) Settle(r Receipt) error {
+func (c *Claim) Settle(r Receipt, response []byte) error {
 	if c == nil || c.store == nil {
 		return ErrNoClaim
 	}
 	defer c.finish()
 	if err := r.Validate(); err != nil {
 		return err
+	}
+	if len(response) == 0 {
+		return fmt.Errorf("companion: a settled reservation carries the bytes it answered with")
 	}
 	if r.IdempotencyKey != c.record.IdempotencyKey ||
 		r.DeviceID != c.record.DeviceID ||
@@ -390,15 +508,17 @@ func (c *Claim) Settle(r Receipt) error {
 	record := c.record
 	record.State = reservationSettled
 	record.Receipt = &r
+	record.Response = string(response)
 	return c.store.write(c.path, record, held)
 }
 
 // Abandon releases the in-process hold WITHOUT settling.
 //
-// The pending record stays on disk deliberately. It is the durable evidence
-// that this key was claimed, and the reason a crash between the reservation and
-// the write cannot become two memories: the retry finds the pending record and
-// completes it once the takeover window has passed.
+// The pending record stays on disk deliberately. It is the durable evidence that
+// this key was claimed, and it is what a retry inside the takeover window sees
+// instead of racing. Past that window the record is sweepable, and losing it
+// costs nothing: the pinned memory id, not the record, is what stops a second
+// write.
 func (c *Claim) Abandon() {
 	if c == nil {
 		return
@@ -494,7 +614,7 @@ func (s *ReservationStore) write(path string, record reservationRecord, held *lo
 	if len(body) > maxReservationBytes {
 		return fmt.Errorf("companion: a reservation of %d bytes is over the %d-byte limit", len(body), maxReservationBytes)
 	}
-	return writeSecretFile(path, body, func() error {
+	return s.writeRecord(path, body, func() error {
 		if !held.stillOwns() {
 			return ErrLocked
 		}
@@ -526,8 +646,8 @@ func readReservation(path string) (reservationRecord, error) {
 		return reservationRecord{}, fmt.Errorf("companion: %s is not a capture reservation: %w", path, err)
 	}
 	// A stored receipt is validated on the way OUT as well as on the way in. It
-	// is about to be handed to a device as the answer to a replay, and a record
-	// edited on disk must not become a projection that never passed Validate.
+	// is about to answer a replay, and a record edited on disk must not become a
+	// projection that never passed Validate.
 	if record.Receipt != nil {
 		if err := record.Receipt.Validate(); err != nil {
 			return reservationRecord{}, fmt.Errorf("companion: %s holds a receipt that does not validate: %w", path, err)
@@ -537,37 +657,62 @@ func readReservation(path string) (reservationRecord, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Pruning
+// Sweeping and trimming
 // ---------------------------------------------------------------------------
 
-// prune keeps the store inside its bounds. It is best effort: a capture must not
-// fail because housekeeping did.
+// sweep collects what the store may not keep and reports how many pending
+// records survived.
 //
-// Expired entries go first. If the store is still over MaxReservations, the
-// OLDEST SETTLED entries go next — settled entries are pure idempotency memory,
-// so dropping one risks a duplicate on a very old retry, while dropping a
-// pending one would drop the record that stops a duplicate right now. A pending
-// entry inside its takeover window is never pruned.
-func (s *ReservationStore) prune(now time.Time, keep string) {
-	rows := s.list()
-	live := make([]reservationFile, 0, len(rows))
-	for _, row := range rows {
+// Two things go: an expired record of any state, and a PENDING record past the
+// takeover window. The second is what makes the bound hard. Sweeping a crashed
+// pending record used to be unsafe, because the record was the only thing that
+// stopped a retry writing twice; it is safe now because the memory id is derived
+// rather than stored, so the retry aims at the same vault path and the
+// create-exclusive publish refuses the second write.
+//
+// It is best effort: a capture must not fail because housekeeping did. The count
+// it returns is what the caller compares against MaxPendingReservations, so the
+// bound is measured AFTER the sweep rather than against records that no longer
+// deserve to exist.
+func (s *ReservationStore) sweep(now time.Time, keep string) int {
+	pending := 0
+	for _, row := range s.list() {
 		if row.path == keep {
-			live = append(live, row)
+			if row.record.State == reservationPending {
+				pending++
+			}
 			continue
 		}
 		if expiry, err := time.Parse(time.RFC3339, row.record.ExpiresAt); err == nil && !now.Before(expiry) {
 			_ = os.Remove(row.path)
 			continue
 		}
-		live = append(live, row)
+		if row.record.State == reservationPending {
+			if reserved, err := time.Parse(time.RFC3339, row.record.ReservedAt); err != nil ||
+				!now.Before(reserved.Add(PendingSweepAfter)) {
+				_ = os.Remove(row.path)
+				continue
+			}
+			pending++
+		}
 	}
-	if len(live) <= MaxReservations {
+	return pending
+}
+
+// trim enforces the TOTAL cap by dropping the oldest settled records.
+//
+// Settled records are pure idempotency memory, so dropping one risks a duplicate
+// on a very old retry — and even that is now bounded by the pinned id, which the
+// vault still refuses to write twice. A pending record is never trimmed: it is a
+// claim somebody may still be acting on.
+func (s *ReservationStore) trim(keep string) {
+	rows := s.list()
+	if len(rows) <= MaxReservations {
 		return
 	}
-	sort.SliceStable(live, func(i, j int) bool { return live[i].record.ReservedAt < live[j].record.ReservedAt })
-	over := len(live) - MaxReservations
-	for _, row := range live {
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].record.ReservedAt < rows[j].record.ReservedAt })
+	over := len(rows) - MaxReservations
+	for _, row := range rows {
 		if over == 0 {
 			break
 		}
@@ -585,8 +730,9 @@ type reservationFile struct {
 	record reservationRecord
 }
 
-// list walks the store. An unreadable entry is skipped rather than fatal: prune
-// is housekeeping, and one corrupt file must not stop the rest being bounded.
+// list walks the store. An unreadable entry is skipped rather than fatal:
+// sweeping is housekeeping, and one corrupt file must not stop the rest being
+// bounded.
 func (s *ReservationStore) list() []reservationFile {
 	devices, err := os.ReadDir(s.root)
 	if err != nil {

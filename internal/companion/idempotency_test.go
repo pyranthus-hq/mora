@@ -1,7 +1,9 @@
 package companion
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,20 +29,36 @@ func storeRootOf(srv *Server) string { return srv.captures.root }
 func reopenStore(root string, now func() time.Time) *ReservationStore {
 	s := NewReservationStore("", WithReservationClock(now))
 	s.root = root
+	// Opening sweeps, and the constructor swept the wrong (empty) root before the
+	// real one was set. Sweep again so a reopened store behaves exactly as one
+	// constructed over this directory would.
+	s.sweep(s.now(), "")
 	return s
 }
 
-// reservationStateOn reads the stored state of one key straight off the disk.
+// reservationRecordOn reads one stored reservation straight off the disk.
 // Asserting on the FILE rather than on an API is the point in the crash tests:
 // what survives a process is the file.
-func reservationStateOn(t *testing.T, root string, c Capture) reservationState {
+func reservationRecordOn(t *testing.T, root, deviceID, key string) reservationRecord {
 	t.Helper()
 	store := &ReservationStore{root: root, now: time.Now}
-	record, err := readReservation(store.path(c.DeviceID, c.IdempotencyKey))
+	record, err := readReservation(store.path(deviceID, key))
 	if err != nil {
 		t.Fatalf("read reservation: %v", err)
 	}
-	return record.State
+	return record
+}
+
+func reservationStateOn(t *testing.T, root string, c Capture) reservationState {
+	t.Helper()
+	return reservationRecordOn(t, root, c.DeviceID, c.IdempotencyKey).State
+}
+
+// reservationExists reports whether a key has a file at all.
+func reservationExists(root, deviceID, key string) bool {
+	store := &ReservationStore{root: root, now: time.Now}
+	_, err := os.Stat(store.path(deviceID, key))
+	return err == nil
 }
 
 // testStore returns a reservation store over a temporary directory with a
@@ -56,10 +74,24 @@ func testStore(t *testing.T) (*ReservationStore, *time.Time, string) {
 
 const testStoreDevice = "dev_20260903_120000_a1b2c3d4"
 
-// storeReceipt builds a terminal receipt for a reserved key. The store validates
-// what it is asked to settle, so a helper that produced an invalid one would
-// fail at Settle rather than at the assertion under test.
-func storeReceipt(t *testing.T, store *ReservationStore, deviceID, key, fingerprint string, state ReceiptState) Receipt {
+// storeIdentity builds a CaptureIdentity for a key and a payload. Identity and
+// fingerprint are derived from different strings so a test that changes one
+// without the other is visibly doing so.
+func storeIdentity(key, payload string) CaptureIdentity {
+	return CaptureIdentity{
+		DeviceID:    testStoreDevice,
+		Key:         key,
+		Identity:    Fingerprint("identity:" + payload),
+		Fingerprint: Fingerprint(payload),
+		MemoryID:    PrefixMemory + "20260903_120000_" + strings.TrimPrefix(Fingerprint(key+payload), "sha256:")[:8],
+	}
+}
+
+// storeReceipt builds a terminal receipt for a reserved key, and the bytes that
+// answered it. The store validates what it is asked to settle, so a helper that
+// produced an invalid one would fail at Settle rather than at the assertion
+// under test.
+func storeReceipt(t *testing.T, store *ReservationStore, id CaptureIdentity, state ReceiptState) (Receipt, []byte) {
 	t.Helper()
 	receiptID, err := store.NewID(PrefixReceipt)
 	if err != nil {
@@ -72,18 +104,22 @@ func storeReceipt(t *testing.T, store *ReservationStore, deviceID, key, fingerpr
 	r := NewReceipt()
 	r.ReceiptID = receiptID
 	r.RequestID = requestID
-	r.IdempotencyKey = key
-	r.DeviceID = deviceID
+	r.IdempotencyKey = id.Key
+	r.DeviceID = id.DeviceID
 	r.State = state
-	r.PayloadFingerprint = fingerprint
+	r.PayloadFingerprint = id.Fingerprint
 	r.Policy = PolicyOpen
-	r.MemoryID = "mem_00000001"
+	r.MemoryID = wireMemoryID(id.MemoryID)
 	r.ReceivedAt = reservationStamp(store.now())
 	r.SettledAt = reservationStamp(store.now())
 	if err := r.Validate(); err != nil {
 		t.Fatalf("the helper built an invalid receipt: %v", err)
 	}
-	return r
+	body, err := Marshal(&r)
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	return r, body
 }
 
 // ---------------------------------------------------------------------------
@@ -93,23 +129,26 @@ func storeReceipt(t *testing.T, store *ReservationStore, deviceID, key, fingerpr
 // TestReservationIsDurableBeforeTheWrite is the ordering claim, asserted against
 // the filesystem.
 //
-// The claim is handed back only after the reservation is on disk, so a caller
-// holding a claim is holding something that survives the process. Reserving
-// AFTER the write would mean a crash in between leaves a memory in the vault
-// that no key points at, and the retry writes a second one.
+// The claim is handed back only after the reservation is on disk, and it carries
+// the vault id the write will pin. Reserving AFTER the write would mean a crash
+// in between leaves a memory in the vault that no key points at.
 func TestReservationIsDurableBeforeTheWrite(t *testing.T) {
 	store, _, root := testStore(t)
-	fingerprint := Fingerprint("a note")
+	id := storeIdentity("key.one", "a note")
 
-	_, claim, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	_, claim, err := store.Reserve(id)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
 	if claim == nil {
 		t.Fatal("a fresh key returned no claim")
 	}
-	// Nothing has been settled and no vault write has happened, and the record
-	// is already there.
+	if claim.TakenOver {
+		t.Fatal("a fresh key reported a takeover")
+	}
+	if claim.MemoryID() != id.MemoryID {
+		t.Fatalf("the claim publishes under %q, want the pinned %q", claim.MemoryID(), id.MemoryID)
+	}
 	record, err := readReservation(store.path(testStoreDevice, "key.one"))
 	if err != nil {
 		t.Fatalf("the reservation is not on disk: %v", err)
@@ -117,62 +156,74 @@ func TestReservationIsDurableBeforeTheWrite(t *testing.T) {
 	if record.State != reservationPending {
 		t.Fatalf("state = %q, want pending", record.State)
 	}
-	if record.PayloadFingerprint != fingerprint {
-		t.Fatalf("the record does not carry the payload fingerprint")
+	// The pinned id is on disk BEFORE the write, which is what a crashed attempt
+	// leaves behind for the retry to aim at.
+	if record.MemoryID != id.MemoryID {
+		t.Fatalf("the record pins %q, want %q", record.MemoryID, id.MemoryID)
 	}
-	if record.Receipt != nil {
-		t.Fatal("a pending reservation carries a receipt")
+	if record.CaptureIdentity != id.Identity || record.PayloadFingerprint != id.Fingerprint {
+		t.Fatalf("the record does not carry both digests: %+v", record)
+	}
+	if record.Receipt != nil || record.Response != "" {
+		t.Fatal("a pending reservation carries an answer")
 	}
 	if !strings.HasPrefix(store.path(testStoreDevice, "key.one"), filepath.Join(root, testStoreDevice)) {
 		t.Fatalf("the reservation is not under the device's own directory")
 	}
 }
 
-// TestReservationReplayReturnsTheStoredReceipt proves the replay answer comes
-// out of storage rather than being rebuilt. A rebuilt receipt would carry a new
-// receipt id and a new settled_at, which is a different document for the same
-// event.
-func TestReservationReplayReturnsTheStoredReceipt(t *testing.T) {
+// TestReservationReplayReturnsTheStoredBytes proves the replay answer is the
+// BYTES the first attempt returned, not a re-marshalling of the same fields.
+//
+// A rebuilt receipt would carry a new receipt id and a new settled_at; even a
+// perfectly rebuilt one is only equal by luck of the encoder, and a client that
+// hashes or caches a response body is entitled to better than luck.
+func TestReservationReplayReturnsTheStoredBytes(t *testing.T) {
 	store, _, _ := testStore(t)
-	fingerprint := Fingerprint("a note")
+	id := storeIdentity("key.one", "a note")
 
-	_, claim, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	_, claim, err := store.Reserve(id)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	want := storeReceipt(t, store, testStoreDevice, "key.one", fingerprint, ReceiptApplied)
-	if err := claim.Settle(want); err != nil {
+	receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+	if err := claim.Settle(receipt, body); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 
-	got, again, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	replay, again, err := store.Reserve(id)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
 	if again != nil {
 		t.Fatal("a settled key handed out a second claim")
 	}
-	if got != want {
-		t.Fatalf("replay returned %+v, want %+v", got, want)
-	}
-	first, err := Marshal(&want)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	second, err := Marshal(&got)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if string(first) != string(second) {
-		t.Fatalf("the replay is not byte-identical\n%s\n%s", first, second)
+	if !bytes.Equal(replay, body) {
+		t.Fatalf("the replay is not the stored bytes\nwant:\n%s\ngot:\n%s", body, replay)
 	}
 }
 
-// TestReservationSameKeyDifferentPayloadIsAConflict. The first payload keeps the
-// key whether it settled or is still pending: a fingerprint check that ran only
-// against settled records would let a second payload take over a crashed
+// TestReservationSettleRequiresTheAnsweringBytes. A settled record with no
+// response is a record that cannot answer a replay, so the store refuses to
+// create one rather than discovering the hole on the retry.
+func TestReservationSettleRequiresTheAnsweringBytes(t *testing.T) {
+	store, _, _ := testStore(t)
+	id := storeIdentity("key.one", "a note")
+	_, claim, err := store.Reserve(id)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	receipt, _ := storeReceipt(t, store, id, ReceiptApplied)
+	if err := claim.Settle(receipt, nil); err == nil {
+		t.Fatal("Settle stored a receipt with no bytes to answer with")
+	}
+}
+
+// TestReservationSameKeyDifferentCaptureIsAConflict. The first capture keeps the
+// key whether it settled or is still pending: an identity check that ran only
+// against settled records would let a second capture reclaim a crashed
 // reservation belonging to the first.
-func TestReservationSameKeyDifferentPayloadIsAConflict(t *testing.T) {
+func TestReservationSameKeyDifferentCaptureIsAConflict(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		settle bool
@@ -182,22 +233,23 @@ func TestReservationSameKeyDifferentPayloadIsAConflict(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, _, _ := testStore(t)
-			first := Fingerprint("the original")
+			first := storeIdentity("key.one", "the original")
 
-			_, claim, err := store.Reserve(testStoreDevice, "key.one", first)
+			_, claim, err := store.Reserve(first)
 			if err != nil {
 				t.Fatalf("reserve: %v", err)
 			}
 			if tc.settle {
-				if err := claim.Settle(storeReceipt(t, store, testStoreDevice, "key.one", first, ReceiptApplied)); err != nil {
+				receipt, body := storeReceipt(t, store, first, ReceiptApplied)
+				if err := claim.Settle(receipt, body); err != nil {
 					t.Fatalf("settle: %v", err)
 				}
 			} else {
 				claim.Abandon()
 			}
 
-			_, _, err = store.Reserve(testStoreDevice, "key.one", Fingerprint("something else"))
-			if !errors.Is(err, ErrIdempotencyConflict) {
+			second := storeIdentity("key.one", "something else")
+			if _, _, err := store.Reserve(second); !errors.Is(err, ErrIdempotencyConflict) {
 				t.Fatalf("err = %v, want ErrIdempotencyConflict", err)
 			}
 		})
@@ -214,30 +266,35 @@ func TestReservationIsScopedPerDevice(t *testing.T) {
 	store, _, _ := testStore(t)
 	const other = "dev_20260903_120000_99999999"
 
-	mine := Fingerprint("my note")
-	_, claim, err := store.Reserve(testStoreDevice, "shared.key", mine)
+	mine := storeIdentity("shared.key", "my note")
+	_, claim, err := store.Reserve(mine)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if err := claim.Settle(storeReceipt(t, store, testStoreDevice, "shared.key", mine, ReceiptApplied)); err != nil {
+	receipt, body := storeReceipt(t, store, mine, ReceiptApplied)
+	if err := claim.Settle(receipt, body); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 
-	// The same key, from another device, with a DIFFERENT payload. If the key
-	// space were shared this would be a conflict; scoped per device it is simply
-	// a fresh reservation.
-	stored, second, err := store.Reserve(other, "shared.key", Fingerprint("their note"))
+	// The same key from another device with a DIFFERENT capture. If the key space
+	// were shared this would be a conflict; scoped per device it is a fresh
+	// reservation.
+	theirs := storeIdentity("shared.key", "their note")
+	theirs.DeviceID = other
+	replay, second, err := store.Reserve(theirs)
 	if err != nil {
 		t.Fatalf("the second device's reservation failed: %v", err)
 	}
 	if second == nil {
-		t.Fatalf("the second device was handed the first device's receipt: %+v", stored)
+		t.Fatalf("the second device was handed the first device's answer: %s", replay)
 	}
-	// And the same key with the SAME payload does not return the other device's
-	// receipt either.
-	stored, third, err := store.Reserve(other, "shared.key", mine)
-	if !errors.Is(err, ErrIdempotencyConflict) && third == nil && stored.DeviceID == testStoreDevice {
-		t.Fatalf("device %s read device %s's receipt", other, testStoreDevice)
+	// And the same key with the SAME capture does not reach the other device's
+	// stored bytes either.
+	sameCapture := mine
+	sameCapture.DeviceID = other
+	replay, third, err := store.Reserve(sameCapture)
+	if err == nil && third == nil && bytes.Equal(replay, body) {
+		t.Fatalf("device %s read device %s's stored response", other, testStoreDevice)
 	}
 }
 
@@ -246,18 +303,17 @@ func TestReservationIsScopedPerDevice(t *testing.T) {
 // budget in the way.
 //
 // Exactly one wins the claim. Every other caller either waits for it and reads
-// the settled receipt, or is told the capture is in flight. None of them gets a
-// second claim, because a second claim is a second vault write.
+// the settled bytes, or is told the capture is in flight.
 func TestReservationConcurrentDuplicatesElectOneWinner(t *testing.T) {
 	store, _, _ := testStore(t)
-	fingerprint := Fingerprint("concurrent")
+	id := storeIdentity("key.one", "concurrent")
 
 	const callers = 16
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
 		claims  int
-		replays []Receipt
+		replays [][]byte
 		busy    int
 	)
 	start := make(chan struct{})
@@ -266,7 +322,7 @@ func TestReservationConcurrentDuplicatesElectOneWinner(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			stored, claim, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+			replay, claim, err := store.Reserve(id)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -276,12 +332,12 @@ func TestReservationConcurrentDuplicatesElectOneWinner(t *testing.T) {
 				t.Errorf("reserve: %v", err)
 			case claim != nil:
 				claims++
-				// The winner settles, which is what wakes everybody waiting.
-				if serr := claim.Settle(storeReceipt(t, store, testStoreDevice, "key.one", fingerprint, ReceiptApplied)); serr != nil {
+				receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+				if serr := claim.Settle(receipt, body); serr != nil {
 					t.Errorf("settle: %v", serr)
 				}
 			default:
-				replays = append(replays, stored)
+				replays = append(replays, replay)
 			}
 		}()
 	}
@@ -294,10 +350,9 @@ func TestReservationConcurrentDuplicatesElectOneWinner(t *testing.T) {
 	if claims+len(replays)+busy != callers {
 		t.Fatalf("%d claims + %d replays + %d busy != %d callers", claims, len(replays), busy, callers)
 	}
-	// Every caller that got an answer got the SAME answer.
 	for i, r := range replays {
-		if i > 0 && r != replays[0] {
-			t.Fatalf("two waiters got different receipts:\n%+v\n%+v", replays[0], r)
+		if i > 0 && !bytes.Equal(r, replays[0]) {
+			t.Fatalf("two waiters got different bytes:\n%s\n%s", replays[0], r)
 		}
 	}
 }
@@ -307,41 +362,42 @@ func TestReservationConcurrentDuplicatesElectOneWinner(t *testing.T) {
 // the reservation is a file.
 func TestReservationSurvivesTheStoreValue(t *testing.T) {
 	store, clock, root := testStore(t)
-	fingerprint := Fingerprint("durable")
+	id := storeIdentity("key.one", "durable")
 
-	_, claim, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	_, claim, err := store.Reserve(id)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	want := storeReceipt(t, store, testStoreDevice, "key.one", fingerprint, ReceiptApplied)
-	if err := claim.Settle(want); err != nil {
+	receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+	if err := claim.Settle(receipt, body); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 
-	reopened := NewReservationStore(filepath.Dir(filepath.Dir(root)), WithReservationClock(func() time.Time { return *clock }))
-	got, again, err := reopened.Reserve(testStoreDevice, "key.one", fingerprint)
+	reopened := reopenStore(root, func() time.Time { return *clock })
+	replay, again, err := reopened.Reserve(id)
 	if err != nil {
 		t.Fatalf("reserve after reopen: %v", err)
 	}
 	if again != nil {
 		t.Fatal("a reopened store handed out a second claim for a settled key")
 	}
-	if got != want {
-		t.Fatalf("a reopened store returned %+v, want %+v", got, want)
+	if !bytes.Equal(replay, body) {
+		t.Fatalf("a reopened store returned different bytes")
 	}
 }
 
-// TestReservationTakeoverWaitsForTheWindow is the crash-recovery rule, both
-// ways round.
+// TestReservationTakeoverWaitsForTheWindow is the crash-recovery rule, both ways
+// round.
 //
 // Inside the window a pending reservation belongs to a caller that may still be
-// inside its vault write, and taking it would MAKE the duplicate. Past the
-// window it is a crash, and refusing forever would wedge the key.
+// inside its vault write, and reclaiming it would mean two callers doing the
+// same work. Past the window it is a crash, and refusing forever would wedge the
+// key.
 func TestReservationTakeoverWaitsForTheWindow(t *testing.T) {
-	store, clock, root := testStore(t)
-	fingerprint := Fingerprint("crashed")
+	store, clock, _ := testStore(t)
+	id := storeIdentity("key.one", "crashed")
 
-	_, claim, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	_, claim, err := store.Reserve(id)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
@@ -350,26 +406,38 @@ func TestReservationTakeoverWaitsForTheWindow(t *testing.T) {
 	claim.Abandon()
 
 	*clock = testNow.Add(ReservationTakeover - time.Second)
-	if _, _, err := store.Reserve(testStoreDevice, "key.one", fingerprint); !errors.Is(err, ErrCaptureInFlight) {
+	if _, _, err := store.Reserve(id); !errors.Is(err, ErrCaptureInFlight) {
 		t.Fatalf("inside the window err = %v, want ErrCaptureInFlight", err)
 	}
 
+	// The retry asks under a DIFFERENT derived id, which is what a client whose
+	// captured_at drifted between attempts produces. The reclaimed claim must
+	// still aim at the id the crashed attempt PINNED: that id is where the
+	// memory either is or is not, and re-deriving one here would send the retry
+	// somewhere the create-exclusive publish has nothing to refuse.
 	*clock = testNow.Add(ReservationTakeover)
-	_, recovered, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	drifted := id
+	drifted.MemoryID = PrefixMemory + "20260904_090000_ffffffff"
+	_, recovered, err := store.Reserve(drifted)
 	if err != nil {
 		t.Fatalf("past the window: %v", err)
 	}
 	if recovered == nil {
 		t.Fatal("past the takeover window a crashed reservation was not recoverable")
 	}
-	// The recovered claim rewrote the record, so its stamp is the new one and the
-	// key is not permanently in the past.
-	record, err := readReservation(filepath.Join(root, testStoreDevice, strings.TrimPrefix(Fingerprint("key.one"), "sha256:")+".json"))
+	if !recovered.TakenOver {
+		t.Fatal("a reclaimed reservation did not report the takeover")
+	}
+	if recovered.MemoryID() != id.MemoryID {
+		t.Fatalf("the reclaimed claim publishes under %q, want the pinned %q", recovered.MemoryID(), id.MemoryID)
+	}
+	// And the record on disk still pins it, so a THIRD attempt agrees too.
+	record, err := readReservation(store.path(testStoreDevice, id.Key))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if record.ReservedAt != reservationStamp(*clock) {
-		t.Fatalf("the recovered reservation is stamped %q, want %q", record.ReservedAt, reservationStamp(*clock))
+	if record.MemoryID != id.MemoryID {
+		t.Fatalf("the reclaimed record pins %q, want %q", record.MemoryID, id.MemoryID)
 	}
 }
 
@@ -378,17 +446,17 @@ func TestReservationTakeoverWaitsForTheWindow(t *testing.T) {
 // would make it hand somebody else's outcome to the next caller.
 func TestReservationSettleRefusesAForeignReceipt(t *testing.T) {
 	store, _, _ := testStore(t)
-	fingerprint := Fingerprint("mine")
+	id := storeIdentity("key.one", "mine")
 
-	_, claim, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	_, claim, err := store.Reserve(id)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	foreign := storeReceipt(t, store, testStoreDevice, "key.two", fingerprint, ReceiptApplied)
-	if err := claim.Settle(foreign); err == nil {
+	other := storeIdentity("key.two", "mine")
+	foreign, body := storeReceipt(t, store, other, ReceiptApplied)
+	if err := claim.Settle(foreign, body); err == nil {
 		t.Fatal("Settle accepted a receipt for another key")
 	}
-	// And the record is untouched: a refused settle must not half-write.
 	record, err := readReservation(store.path(testStoreDevice, "key.one"))
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -402,40 +470,164 @@ func TestReservationSettleRefusesAForeignReceipt(t *testing.T) {
 // never reach storage, because storage is where a replay reads it FROM.
 func TestReservationRefusesAnInvalidReceipt(t *testing.T) {
 	store, _, _ := testStore(t)
-	fingerprint := Fingerprint("mine")
+	id := storeIdentity("key.one", "mine")
 
-	_, claim, err := store.Reserve(testStoreDevice, "key.one", fingerprint)
+	_, claim, err := store.Reserve(id)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	broken := storeReceipt(t, store, testStoreDevice, "key.one", fingerprint, ReceiptApplied)
+	broken, body := storeReceipt(t, store, id, ReceiptApplied)
 	broken.MemoryID = "" // an applied receipt that names no memory
-	if err := claim.Settle(broken); err == nil {
+	if err := claim.Settle(broken, body); err == nil {
 		t.Fatal("Settle stored a receipt the contract forbids")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Bounds and durability
+// Bounds
 // ---------------------------------------------------------------------------
 
-// TestReservationStoreIsBounded proves the store cannot be grown without limit
-// by a device that keeps talking. Expired entries go first; past the cap, the
-// oldest SETTLED entries go, because a settled entry is pure idempotency memory
-// while a pending one is what stops a duplicate right now.
-func TestReservationStoreIsBounded(t *testing.T) {
-	store, clock, root := testStore(t)
+// TestReservationRefusesPastThePendingBound is the HARD bound.
+//
+// Round one's bound was not hard: nothing evicted an unexpired pending record,
+// so a kernel that failed every request turned each fresh key into a file that
+// was never settled and never collected. The refusal has to happen BEFORE the
+// write, or the bound is a promise to tidy up rather than a limit.
+func TestReservationRefusesPastThePendingBound(t *testing.T) {
+	store, _, root := testStore(t)
 
-	// One past the cap, each settled, each a second apart so "oldest" is real.
-	for i := 0; i <= MaxReservations; i++ {
-		*clock = testNow.Add(time.Duration(i) * time.Second)
-		key := "key." + strings.TrimPrefix(Fingerprint(string(rune(i))), "sha256:")[:20]
-		fingerprint := Fingerprint(key)
-		_, claim, err := store.Reserve(testStoreDevice, key, fingerprint)
+	for i := 0; i < MaxPendingReservations; i++ {
+		id := storeIdentity(fmt.Sprintf("key.%03d", i), "payload")
+		_, claim, err := store.Reserve(id)
 		if err != nil {
 			t.Fatalf("reserve %d: %v", i, err)
 		}
-		if err := claim.Settle(storeReceipt(t, store, testStoreDevice, key, fingerprint, ReceiptApplied)); err != nil {
+		// Abandoned, not settled: every one of these is a live claim.
+		claim.Abandon()
+	}
+
+	over := storeIdentity("key.over", "payload")
+	_, claim, err := store.Reserve(over)
+	if !errors.Is(err, ErrTooManyPending) {
+		t.Fatalf("at the bound err = %v, want ErrTooManyPending", err)
+	}
+	if claim != nil {
+		t.Fatal("a refused reservation handed out a claim")
+	}
+	// And NO file was created. A bound that admitted the request and tidied up
+	// afterwards would still be a file per request while the pressure lasted.
+	if reservationExists(root, testStoreDevice, "key.over") {
+		t.Fatal("the refused key created a reservation file")
+	}
+	entries, err := os.ReadDir(filepath.Join(root, testStoreDevice))
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != MaxPendingReservations {
+		t.Fatalf("the store holds %d reservations, want %d", len(entries), MaxPendingReservations)
+	}
+}
+
+// TestReservationSweepsCrashedPendingRecords proves the sweep, on both the
+// occasions it has to run.
+//
+// Sweeping a crashed pending record is only safe because the memory id is
+// DERIVED: the retry re-derives the same id, the vault refuses the second write,
+// and the record was never the thing holding the guarantee.
+func TestReservationSweepsCrashedPendingRecords(t *testing.T) {
+	t.Run("on insert", func(t *testing.T) {
+		store, clock, root := testStore(t)
+		crashed := storeIdentity("key.crashed", "payload")
+		_, claim, err := store.Reserve(crashed)
+		if err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		claim.Abandon()
+
+		*clock = testNow.Add(PendingSweepAfter + time.Second)
+		fresh := storeIdentity("key.fresh", "payload")
+		if _, _, err := store.Reserve(fresh); err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		if reservationExists(root, testStoreDevice, "key.crashed") {
+			t.Fatal("the crashed pending record survived an insert past the takeover window")
+		}
+	})
+
+	t.Run("on open", func(t *testing.T) {
+		store, clock, root := testStore(t)
+		crashed := storeIdentity("key.crashed", "payload")
+		_, claim, err := store.Reserve(crashed)
+		if err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		claim.Abandon()
+
+		*clock = testNow.Add(PendingSweepAfter + time.Second)
+		reopenStore(root, func() time.Time { return *clock })
+		if reservationExists(root, testStoreDevice, "key.crashed") {
+			t.Fatal("opening the store did not sweep a crashed pending record")
+		}
+	})
+
+	t.Run("a reclaimable pending record survives the takeover window", func(t *testing.T) {
+		store, clock, root := testStore(t)
+		live := storeIdentity("key.live", "payload")
+		_, claim, err := store.Reserve(live)
+		if err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		claim.Abandon()
+
+		// Past the takeover window but inside the sweep window: this is the
+		// interval a crashed capture is RECOVERED in, so the record has to
+		// survive it or the recovery path is unreachable.
+		*clock = testNow.Add(ReservationTakeover + time.Second)
+		reopenStore(root, func() time.Time { return *clock })
+		if !reservationExists(root, testStoreDevice, "key.live") {
+			t.Fatal("a reclaimable pending record was swept before anything could reclaim it")
+		}
+	})
+}
+
+// TestReservationExpires proves the TTL is real. A key answerable forever is a
+// directory that grows forever.
+func TestReservationExpires(t *testing.T) {
+	store, clock, root := testStore(t)
+	id := storeIdentity("key.old", "old")
+
+	_, claim, err := store.Reserve(id)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+	if err := claim.Settle(receipt, body); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	*clock = testNow.Add(ReservationTTL + time.Hour)
+	if _, _, err := store.Reserve(storeIdentity("key.new", "new")); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if reservationExists(root, testStoreDevice, "key.old") {
+		t.Fatal("the expired reservation is still on disk")
+	}
+}
+
+// TestReservationTrimsTheOldestSettledPastTheTotalCap. The total cap is the
+// second bound, and it drops idempotency memory rather than live claims.
+func TestReservationTrimsTheOldestSettledPastTheTotalCap(t *testing.T) {
+	store, clock, root := testStore(t)
+
+	for i := 0; i <= MaxReservations; i++ {
+		*clock = testNow.Add(time.Duration(i) * time.Second)
+		id := storeIdentity(fmt.Sprintf("key.%04d", i), "payload")
+		_, claim, err := store.Reserve(id)
+		if err != nil {
+			t.Fatalf("reserve %d: %v", i, err)
+		}
+		receipt, body := storeReceipt(t, store, id, ReceiptApplied)
+		if err := claim.Settle(receipt, body); err != nil {
 			t.Fatalf("settle %d: %v", i, err)
 		}
 	}
@@ -448,29 +640,9 @@ func TestReservationStoreIsBounded(t *testing.T) {
 	}
 }
 
-// TestReservationExpires proves the TTL is real. A key answerable forever is a
-// directory that grows forever.
-func TestReservationExpires(t *testing.T) {
-	store, clock, _ := testStore(t)
-	fingerprint := Fingerprint("old")
-
-	_, claim, err := store.Reserve(testStoreDevice, "key.old", fingerprint)
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	if err := claim.Settle(storeReceipt(t, store, testStoreDevice, "key.old", fingerprint, ReceiptApplied)); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-
-	// Past the TTL, a reservation for ANOTHER key prunes the expired one.
-	*clock = testNow.Add(ReservationTTL + time.Hour)
-	if _, _, err := store.Reserve(testStoreDevice, "key.new", Fingerprint("new")); err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	if _, err := readReservation(store.path(testStoreDevice, "key.old")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the expired reservation is still readable: %v", err)
-	}
-}
+// ---------------------------------------------------------------------------
+// Durability and hostile files
+// ---------------------------------------------------------------------------
 
 // TestReservationFilesAreNotWorldReadable holds the store to the same
 // filesystem discipline as the device registry: 0700 directories, 0600 files.
@@ -483,7 +655,7 @@ func TestReservationFilesAreNotWorldReadable(t *testing.T) {
 		t.Skip("POSIX modes are not enforced on Windows; exclusion there comes from the profile directory's ACL")
 	}
 	store, _, root := testStore(t)
-	if _, _, err := store.Reserve(testStoreDevice, "key.one", Fingerprint("x")); err != nil {
+	if _, _, err := store.Reserve(storeIdentity("key.one", "x")); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
 	for _, tc := range []struct {
@@ -509,7 +681,7 @@ func TestReservationFilesAreNotWorldReadable(t *testing.T) {
 // memory amplifier before it is anything else.
 func TestReservationRefusesAnOversizeRecord(t *testing.T) {
 	store, _, _ := testStore(t)
-	if _, _, err := store.Reserve(testStoreDevice, "key.one", Fingerprint("x")); err != nil {
+	if _, _, err := store.Reserve(storeIdentity("key.one", "x")); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
 	path := store.path(testStoreDevice, "key.one")
@@ -554,23 +726,29 @@ func TestReservationKeyIsNotAPath(t *testing.T) {
 	}
 }
 
-// TestReservationValidatesWhatItIsAsked refuses a malformed device id, key or
-// fingerprint at the boundary rather than deriving a path from it.
+// TestReservationValidatesWhatItIsAsked refuses a malformed device id, key,
+// digest or memory id at the boundary rather than deriving a path from it.
 func TestReservationValidatesWhatItIsAsked(t *testing.T) {
 	store, _, _ := testStore(t)
+	valid := storeIdentity("key.one", "x")
 	for _, tc := range []struct {
-		name                     string
-		device, key, fingerprint string
+		name    string
+		breakIt func(*CaptureIdentity)
 	}{
-		{"no device", "", "key.one", Fingerprint("x")},
-		{"device is not a device id", "phone", "key.one", Fingerprint("x")},
-		{"no key", testStoreDevice, "", Fingerprint("x")},
-		{"key carries prose", testStoreDevice, "remember the wifi code", Fingerprint("x")},
-		{"key is unbounded", testStoreDevice, strings.Repeat("k", MaxIdempotencyKeyBytes+1), Fingerprint("x")},
-		{"fingerprint is not a digest", testStoreDevice, "key.one", "x"},
+		{"no device", func(id *CaptureIdentity) { id.DeviceID = "" }},
+		{"device is not a device id", func(id *CaptureIdentity) { id.DeviceID = "phone" }},
+		{"no key", func(id *CaptureIdentity) { id.Key = "" }},
+		{"key carries prose", func(id *CaptureIdentity) { id.Key = "remember the wifi code" }},
+		{"key is unbounded", func(id *CaptureIdentity) { id.Key = strings.Repeat("k", MaxIdempotencyKeyBytes+1) }},
+		{"identity is not a digest", func(id *CaptureIdentity) { id.Identity = "x" }},
+		{"fingerprint is not a digest", func(id *CaptureIdentity) { id.Fingerprint = "x" }},
+		{"no memory id", func(id *CaptureIdentity) { id.MemoryID = "" }},
+		{"memory id is not a memory id", func(id *CaptureIdentity) { id.MemoryID = "rcp_20260903_120000_aaaaaaaa" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := store.Reserve(tc.device, tc.key, tc.fingerprint); err == nil {
+			broken := valid
+			tc.breakIt(&broken)
+			if _, _, err := store.Reserve(broken); err == nil {
 				t.Fatal("the store accepted it")
 			}
 		})
@@ -590,8 +768,6 @@ func TestReservationIDsAreOpaqueAndBounded(t *testing.T) {
 			t.Fatalf("%q: %v", id, err)
 		}
 	}
-	// Two mints inside the same second differ, or two captures in one second
-	// would share a receipt id.
 	first, _ := store.NewID(PrefixReceipt)
 	second, _ := store.NewID(PrefixReceipt)
 	if first == second {

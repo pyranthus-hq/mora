@@ -533,6 +533,15 @@ func writeKernelFailure(w http.ResponseWriter, err error) {
 		writeOpaque(w, http.StatusServiceUnavailable, "in_flight")
 		return
 	}
+	// The reservation store's HARD bound. It is its own code because the remedy
+	// is different from every other 503 here: the Mac is not unwell and the
+	// request is not malformed — too many captures are already claimed and
+	// unfinished, and a client that keeps minting fresh keys is the pressure
+	// rather than the victim. No reservation was created for this one.
+	if errors.Is(err, ErrTooManyPending) {
+		writeOpaque(w, http.StatusServiceUnavailable, "too_many_pending")
+		return
+	}
 	writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
 }
 

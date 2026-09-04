@@ -18,25 +18,26 @@ package companion
 //	propose  -> accepted                   staged for local approval, NOT in the vault
 //	open     -> applied                    in the vault, and only after the write landed
 //
-// "Only after" is the load-bearing half. The receipt state is derived from what
-// the kernel's governed write path actually did, not from what it was asked to
-// do, so `applied` cannot be claimed for a write that failed. A device may show
-// the word "Saved" for exactly one of those three states.
+// A policy that cannot be READ is readonly. That is the fail-closed direction and
+// it is not a detail: a malformed config used to surface as a 503 and leave the
+// key claimed, so an unreadable vault turned every capture into a pending record
+// and the store filled up with claims nothing could settle.
 //
-// # One write path, not a second one
+// # One write path, and one place a memory can land
 //
 // The kernel side of Writer goes through the SAME governed write the CLI's
 // `mora write` and the MCP write_memory tool use. This listener opens no second
 // door into the vault: it decides who may knock and what the request must look
 // like, and the kernel decides what happens to the vault.
 //
-// # Retries are the normal case
+// # Retries are the normal case, and the id is what makes them safe
 //
-// A phone retries. See idempotency.go for the reservation ordering; the shape
-// here is that the reservation is durable BEFORE the kernel is asked to write,
-// and the terminal receipt is stored into that reservation afterwards, so the
-// same key with the same payload returns the same receipt bytes and the same
-// key with a different payload is a conflict rather than an overwrite.
+// The vault id a capture publishes under is DERIVED — see captureMemoryID —
+// before the key is reserved, and the kernel is asked to create exactly that id.
+// The create-exclusive publish then settles every race the reservation cannot:
+// two attempts, a crash between the write and the settle, a swept reservation,
+// a duplicate delivered by a proxy. Whoever gets the link wins; everybody else
+// is told the memory already exists and settles `applied` without writing.
 //
 // # What a receipt never carries
 //
@@ -47,7 +48,11 @@ package companion
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -73,18 +78,98 @@ type WriteOutcome struct {
 
 // Writer is the kernel's governed-write seam, the mirror of Reader.
 //
-// It has two methods and neither takes a policy: the kernel reads the policy
-// itself, per request, from the vault it owns. A seam that accepted a policy
-// would be a seam a caller could lie to.
+// No method takes a policy: the kernel reads the policy itself, per request,
+// from the vault it owns. A seam that accepted a policy would be a seam a caller
+// could lie to.
 type Writer interface {
 	// Policy reports the vault's current write policy. It is used only to stamp
 	// a receipt for a capture that is refused before the kernel is asked to
-	// write anything, so that even those receipts name the policy in force.
+	// write anything, so that even those receipts name the policy in force. An
+	// error means the policy could not be READ, and the caller fails closed.
 	Policy(ctx context.Context) (WritePolicy, error)
+	// Published reports whether memoryID is already in the vault, and if so the
+	// outcome that describes it. It is asked only when a crashed reservation is
+	// reclaimed, so the retry can finish somebody else's work rather than repeat
+	// it. The outcome comes from the kernel because only the kernel knows what a
+	// published memory means for a receipt.
+	Published(ctx context.Context, memoryID string) (WriteOutcome, bool, error)
 	// Publish runs the capture through the kernel's existing governed write
-	// path and reports what happened.
-	Publish(ctx context.Context, c Capture) (WriteOutcome, error)
+	// path, pinned to memoryID, and reports what happened. The publication is
+	// durable — the file and its directory are synced — before it returns.
+	Publish(ctx context.Context, c Capture, memoryID string) (WriteOutcome, error)
 }
+
+// ---------------------------------------------------------------------------
+// Capture identity
+// ---------------------------------------------------------------------------
+
+// captureIdentity is the digest that answers "is this the same capture?".
+//
+// It covers every field that changes WHAT GETS WRITTEN, and nothing else. The
+// wire `payload_fingerprint` cannot do this job: N02 defines it as SHA-256 over
+// the text alone, so the same key with the same text and a different SCOPE
+// hashed identically and replayed the first receipt — the second capture
+// silently inherited the first one's placement. The two are kept separate rather
+// than reconciled because the fingerprint is a published contract field and this
+// is the kernel's own idempotency identity.
+//
+// Excluded deliberately: the idempotency key itself, which is the LOOKUP and
+// would make every capture its own identity; and the client's captured_at,
+// because a retry that re-stamps its clock is still the same capture and must
+// still replay rather than write again.
+//
+// The digest is over canonical JSON — a fixed field order, one encoder — so two
+// runs of the same build agree byte for byte.
+func captureIdentity(c Capture) string {
+	canonical := struct {
+		Schema  string `json:"schema"`
+		Version int    `json:"schema_version"`
+		Device  string `json:"device_id"`
+		Lane    Lane   `json:"requested_lane"`
+		Intent  Intent `json:"intent"`
+		Scope   string `json:"scope"`
+		Text    string `json:"text"`
+	}{
+		Schema:  SchemaCapture,
+		Version: SchemaVersion,
+		Device:  c.DeviceID,
+		Lane:    c.RequestedLane,
+		Intent:  c.Intent,
+		Scope:   c.Scope,
+		Text:    c.Text,
+	}
+	// The encoder cannot fail on this struct: every field is a string or an int.
+	body, _ := json.Marshal(canonical)
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// captureMemoryID derives the vault id a capture publishes under.
+//
+// It is the exactly-once primitive. Because the id is derived rather than minted,
+// every attempt at the same capture aims at the same vault path, and the kernel's
+// create-exclusive publish refuses the second write — so a crash anywhere between
+// the reservation and the settle costs a retry, never a duplicate memory. The
+// reservation records the id, but nothing DEPENDS on the record surviving: a
+// swept reservation re-derives the same id.
+//
+// The shape is Mora's own, `mem_YYYYMMDD_HHMMSS_<8 hex>`, which is what the
+// contract corpus normalises. The time half is the capture's own captured_at
+// rather than the mint instant — a real timestamp, stable across retries, and
+// the more honest of the two, because when the user wrote the note is a fact
+// about the note and when the Mac got round to it is not.
+func captureMemoryID(c Capture, identity string) string {
+	sum := sha256.Sum256([]byte(c.DeviceID + "\x00" + c.IdempotencyKey + "\x00" + identity))
+	stamp := "00000000_000000"
+	if t, err := time.Parse(time.RFC3339, c.CapturedAt); err == nil {
+		stamp = t.UTC().Format("20060102_150405")
+	}
+	return fmt.Sprintf("%s%s_%s", PrefixMemory, stamp, hex.EncodeToString(sum[:4]))
+}
+
+// ---------------------------------------------------------------------------
+// The handler
+// ---------------------------------------------------------------------------
 
 // handleCapture serves POST RouteCapture.
 //
@@ -122,10 +207,19 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var receipt Receipt
+	// stillLive re-asks the registry the question the guard chain answered when
+	// the request arrived. It is a closure rather than a stored Device because
+	// the answer has to be recomputed, not remembered: revocation is the whole
+	// point, and a Device value captured at admission is exactly the stale answer.
+	stillLive := func() bool {
+		_, ok := s.authorize(r)
+		return ok
+	}
+
+	var response []byte
 	if !s.budgeted(w, r, func(ctx context.Context) error {
 		var err error
-		receipt, err = s.capture(ctx, dev, capture, received)
+		response, err = s.capture(ctx, dev, capture, received, stillLive)
 		return err
 	}) {
 		return
@@ -139,13 +233,37 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 	// vocabularies for one answer. The 4xx and 5xx codes are reserved for the
 	// cases where there is no receipt to give: no credential, an oversize body,
 	// a body that does not decode, a busy or unreachable kernel.
-	if s.writePayload(w, &receipt) {
+	if s.writeCaptureBody(w, response) {
 		s.markSeen(dev.DeviceID)
 	}
 }
 
-// capture runs one governed capture: reserve, publish, settle.
-func (s *Server) capture(ctx context.Context, dev Device, c Capture, received time.Time) (Receipt, error) {
+// writeCaptureBody writes the exact bytes a capture settled with.
+//
+// It writes BYTES rather than re-marshalling a receipt, because a replay must be
+// byte-identical on the wire: a client that hashes or caches a response body is
+// entitled to have the retry match it exactly, and a re-marshalling is only ever
+// equal by luck of the encoder. The headers are the ones every other projection
+// carries.
+func (s *Server) writeCaptureBody(w http.ResponseWriter, body []byte) bool {
+	if len(body) == 0 {
+		writeOpaque(w, http.StatusInternalServerError, "internal")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// The capture path
+// ---------------------------------------------------------------------------
+
+// capture runs one governed capture: reserve, publish at the pinned id, settle.
+// It returns the exact bytes the response body carries.
+func (s *Server) capture(ctx context.Context, dev Device, c Capture, received time.Time, stillLive func() bool) ([]byte, error) {
 	// A device may not capture as another device. The claim is compared, never
 	// trusted, and the receipt is stamped with the AUTHENTICATED id — echoing the
 	// claimed one back would put a device identifier of the caller's choosing
@@ -161,62 +279,119 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		return s.refuse(ctx, dev, c, ReasonUnsupportedLane, received)
 	}
 
-	stored, claim, err := s.captures.Reserve(dev.DeviceID, c.IdempotencyKey, c.PayloadFingerprint)
+	identity := captureIdentity(c)
+	replay, claim, err := s.captures.Reserve(CaptureIdentity{
+		DeviceID:    dev.DeviceID,
+		Key:         c.IdempotencyKey,
+		Identity:    identity,
+		Fingerprint: c.PayloadFingerprint,
+		MemoryID:    captureMemoryID(c, identity),
+	})
 	switch {
 	case errors.Is(err, ErrIdempotencyConflict):
-		// The key belongs to the first payload and keeps belonging to it. This
+		// The key belongs to the first capture and keeps belonging to it. This
 		// receipt is deliberately NOT stored: storing it would let the second
-		// payload take the key it was just refused.
+		// capture take the key it was just refused.
 		return s.refuse(ctx, dev, c, ReasonIdempotencyConflict, received)
 	case err != nil:
-		return Receipt{}, err
+		return nil, err
 	}
 	if claim == nil {
-		// The replay answer, returned from storage rather than rebuilt, so it is
-		// the same bytes and the same receipt id the first attempt produced.
-		return stored, nil
+		// The replay answer: the bytes the first attempt returned, not a
+		// re-marshalling of the same fields.
+		return replay, nil
 	}
 	settled := false
 	// The claim is released on every path. Abandoning leaves the PENDING record
-	// on disk on purpose: it is the durable evidence that this key was claimed,
-	// and it is what a retry after a crash completes instead of duplicating.
+	// on disk on purpose: inside the takeover window it is what a concurrent
+	// retry sees instead of racing. Past it the record is swept, and losing it
+	// costs nothing — the pinned id is what stops a second write.
 	defer func() {
 		if !settled {
 			claim.Abandon()
 		}
 	}()
 
-	outcome, err := s.writer.Publish(ctx, c)
+	outcome, err := s.publish(ctx, c, claim, stillLive)
 	if err != nil {
 		// The kernel could not decide. No receipt is invented: a rejected
 		// receipt would claim the capture will NEVER be applied, which is a
 		// stronger statement than "this attempt failed", and it is the statement
 		// that would stop the phone retrying.
-		return Receipt{}, err
+		return nil, err
 	}
 	receipt, err := s.receipt(dev, c, outcome, received)
 	if err != nil {
-		return Receipt{}, err
+		return nil, err
 	}
-	if err := claim.Settle(receipt); err != nil {
-		return Receipt{}, err
+	body, err := Marshal(&receipt)
+	if err != nil {
+		return nil, err
+	}
+	if err := claim.Settle(receipt, body); err != nil {
+		return nil, err
 	}
 	settled = true
-	return receipt, nil
+	return body, nil
+}
+
+// publish decides what actually happens to the vault for one held claim.
+//
+// Two checks stand between the reservation and the write, and both exist because
+// the request has been admitted for a while by the time it gets here:
+//
+//   - A reclaimed claim asks whether the pinned id is ALREADY published. It
+//     usually is not, and the create-exclusive publish would catch it anyway;
+//     asking first is what turns "the retry cannot duplicate" into "the retry
+//     does not even try", which is the difference between a bounded race and a
+//     wasted vault write on every recovery.
+//   - Every claim re-checks the credential. Authentication happened when the
+//     request arrived; an operator who revokes a device while a request is
+//     sitting in the work-budget queue has said no, and a write that lands
+//     afterwards would be a write the operator revoked the right to make.
+func (s *Server) publish(ctx context.Context, c Capture, claim *Claim, stillLive func() bool) (WriteOutcome, error) {
+	if claim.TakenOver {
+		outcome, published, err := s.writer.Published(ctx, claim.MemoryID())
+		if err != nil {
+			return WriteOutcome{}, err
+		}
+		if published {
+			// A crashed attempt got its write in before it died. Finishing its
+			// receipt is the whole job; writing again is the duplicate.
+			return outcome, nil
+		}
+	}
+	if !stillLive() {
+		// The device was revoked between admission and the write. Nothing is
+		// written and the reservation SETTLES rather than staying pending, so a
+		// revoked device's claim is closed rather than left for a takeover.
+		policy, err := s.writer.Policy(ctx)
+		if err != nil {
+			policy = PolicyReadonly
+		}
+		return WriteOutcome{Policy: policy, State: ReceiptRejected, Reason: ReasonUnknownDevice}, nil
+	}
+	return s.writer.Publish(ctx, c, claim.MemoryID())
 }
 
 // refuse builds a terminal rejection for a capture the kernel was never asked to
-// write.
+// write, and returns its bytes.
 //
 // It still reads the policy, because a receipt names the policy in force whatever
 // the reason — an operator reading a rejected receipt a week later should not
-// have to guess which policy the Mac was under.
-func (s *Server) refuse(ctx context.Context, dev Device, c Capture, reason RejectReason, received time.Time) (Receipt, error) {
+// have to guess which policy the Mac was under. A policy that cannot be read is
+// readonly: the fail-closed direction, and the only one that cannot describe a
+// write as permitted.
+func (s *Server) refuse(ctx context.Context, dev Device, c Capture, reason RejectReason, received time.Time) ([]byte, error) {
 	policy, err := s.writer.Policy(ctx)
 	if err != nil {
-		return Receipt{}, err
+		policy = PolicyReadonly
 	}
-	return s.receipt(dev, c, WriteOutcome{Policy: policy, State: ReceiptRejected, Reason: reason}, received)
+	receipt, err := s.receipt(dev, c, WriteOutcome{Policy: policy, State: ReceiptRejected, Reason: reason}, received)
+	if err != nil {
+		return nil, err
+	}
+	return Marshal(&receipt)
 }
 
 // receipt assembles and validates one terminal receipt.

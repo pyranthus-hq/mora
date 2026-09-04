@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,9 +25,10 @@ var testNow = time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 // The stub kernel writer
 // ---------------------------------------------------------------------------
 
-// stubWriter answers the capture route the way a kernel would. Every field is
-// settable so a test can pin a policy, fail a publish, or count how many times
-// the vault was actually asked to write.
+// stubWriter answers the capture route the way a kernel would, including the
+// part that matters most: it keeps a fake vault keyed by the PINNED memory id,
+// so a second write at the same id is refused exactly as the real
+// create-exclusive publish refuses it.
 type stubWriter struct {
 	mu sync.Mutex
 
@@ -34,22 +36,26 @@ type stubWriter struct {
 	policyErr  error
 	publishErr error
 
-	// publishes counts vault-write attempts. It is the duplicate detector: the
-	// whole point of the reservation is that N retries produce ONE of these.
+	// vault is the fake vault, keyed by pinned memory id. Its size is the
+	// duplicate detector: N retries of one capture must leave ONE entry.
+	vault map[string]bool
+	// publishes counts Publish CALLS, which is a different number from the
+	// vault's size the moment the pinned id starts doing its job.
 	publishes int
-	// memoryIDs is handed out one per applied publish, so two applied writes
-	// are visibly two memories rather than one id returned twice.
-	nextMemory int
 	// entered is signalled once per publish, and hold (when non-nil) is waited
 	// on before the publish returns, so a test can pin one capture inside the
 	// kernel while it drives a second.
 	entered chan struct{}
 	hold    chan struct{}
-	// captured records every capture the kernel was handed.
+	// captured records every capture the kernel was handed, and pinned every id
+	// it was asked to publish under.
 	captured []Capture
+	pinned   []string
 }
 
-func newStubWriter() *stubWriter { return &stubWriter{policy: PolicyOpen} }
+func newStubWriter() *stubWriter {
+	return &stubWriter{policy: PolicyOpen, vault: map[string]bool{}}
+}
 
 func (w *stubWriter) Policy(context.Context) (WritePolicy, error) {
 	w.mu.Lock()
@@ -57,14 +63,22 @@ func (w *stubWriter) Policy(context.Context) (WritePolicy, error) {
 	return w.policy, w.policyErr
 }
 
-func (w *stubWriter) Publish(ctx context.Context, c Capture) (WriteOutcome, error) {
+func (w *stubWriter) Published(_ context.Context, memoryID string) (WriteOutcome, bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.vault[memoryID] {
+		return WriteOutcome{}, false, nil
+	}
+	return WriteOutcome{Policy: PolicyOpen, State: ReceiptApplied, MemoryID: wireMemoryID(memoryID)}, true, nil
+}
+
+func (w *stubWriter) Publish(ctx context.Context, c Capture, memoryID string) (WriteOutcome, error) {
 	w.mu.Lock()
 	w.publishes++
 	w.captured = append(w.captured, c)
+	w.pinned = append(w.pinned, memoryID)
 	policy, err := w.policy, w.publishErr
 	entered, hold := w.entered, w.hold
-	w.nextMemory++
-	n := w.nextMemory
 	w.mu.Unlock()
 
 	if entered != nil {
@@ -86,24 +100,48 @@ func (w *stubWriter) Publish(ctx context.Context, c Capture) (WriteOutcome, erro
 	case PolicyPropose:
 		out.State = ReceiptAccepted
 	default:
+		// The create-exclusive publish: an id already in the vault is not a
+		// second memory, it is the same one.
+		w.mu.Lock()
+		w.vault[memoryID] = true
+		w.mu.Unlock()
 		out.State = ReceiptApplied
-		// One id per applied write, so two writes are visibly two memories
-		// rather than one id handed back twice.
-		out.MemoryID = fmt.Sprintf("%s%08d", PrefixMemory, n)
+		out.MemoryID = wireMemoryID(memoryID)
 	}
 	return out, nil
 }
 
+// wireMemoryID is the stub's stand-in for the kernel's one-way derivation of a
+// wire identifier from a vault id. It only has to be deterministic and valid.
+func wireMemoryID(vaultID string) string {
+	return PrefixMemory + strings.TrimPrefix(Fingerprint(vaultID), "sha256:")[:32]
+}
+
+// count reports how many times the kernel was ASKED to write.
 func (w *stubWriter) count() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.publishes
 }
 
+// memories reports how many distinct memories the fake vault holds. This is the
+// number "exactly once" is a claim about.
+func (w *stubWriter) memories() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.vault)
+}
+
 func (w *stubWriter) setPolicy(p WritePolicy) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.policy = p
+}
+
+func (w *stubWriter) setPublishErr(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.publishErr = err
 }
 
 // writerOf returns the stub the test server was built with.
@@ -171,6 +209,34 @@ func captureBody(t *testing.T, srv *Server, text string) *strings.Reader {
 	return strings.NewReader(string(captureBytes(t, captureFor(t, srv, text))))
 }
 
+// newCaptureServer is testServer with the reservation directory and the clock
+// handed back, for the tests that have to restart a listener over the same state
+// or move time past the takeover window.
+func newCaptureServer(t *testing.T) (*Server, *Registry, string, string) {
+	t.Helper()
+	srv, _, reg, token, _ := testServer(t)
+	return srv, reg, token, storeRootOf(srv)
+}
+
+// restartCaptureServer builds a SECOND listener over the same registry and the
+// same reservation directory, with its own in-memory state and its own clock.
+// That is what a restarted `mora companion serve` is.
+func restartCaptureServer(t *testing.T, reg *Registry, root string, writer Writer, now time.Time) *Server {
+	t.Helper()
+	srv, err := NewServer(ServerOptions{
+		Addr:     "127.0.0.1:7778",
+		Devices:  reg,
+		Reader:   newStubReader(),
+		Writer:   writer,
+		Captures: reopenStore(root, func() time.Time { return now }),
+		Now:      func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	return srv
+}
+
 // postCapture drives one capture through the REAL guard chain and returns the
 // response. Everything in this file goes through the handler rather than calling
 // the capture path directly: the guards, the limiter and the 2xx-only last-seen
@@ -212,9 +278,9 @@ func decodeReceipt(t *testing.T, rec *httptest.ResponseRecorder) Receipt {
 // TestCaptureStateFollowsTheWritePolicy is the gate: N02's published table,
 // driven end to end through the real handler under each of the three policies.
 //
-// The publish COUNT is asserted beside the state because the states alone would
+// The vault COUNT is asserted beside the state because the states alone would
 // pass for a listener that wrote the vault and then labelled the receipt
-// `rejected`. readonly must not reach the write path at all.
+// `rejected`.
 func TestCaptureStateFollowsTheWritePolicy(t *testing.T) {
 	for _, tc := range []struct {
 		policy   WritePolicy
@@ -222,10 +288,10 @@ func TestCaptureStateFollowsTheWritePolicy(t *testing.T) {
 		reason   RejectReason
 		memory   bool
 		settled  bool
-		attempts int
+		memories int
 	}{
-		{PolicyReadonly, ReceiptRejected, ReasonPolicy, false, true, 1},
-		{PolicyPropose, ReceiptAccepted, "", false, false, 1},
+		{PolicyReadonly, ReceiptRejected, ReasonPolicy, false, true, 0},
+		{PolicyPropose, ReceiptAccepted, "", false, false, 0},
 		{PolicyOpen, ReceiptApplied, "", true, true, 1},
 	} {
 		t.Run(string(tc.policy), func(t *testing.T) {
@@ -249,32 +315,69 @@ func TestCaptureStateFollowsTheWritePolicy(t *testing.T) {
 			if (receipt.SettledAt != "") != tc.settled {
 				t.Fatalf("policy %s produced settled_at %q, want present=%t", tc.policy, receipt.SettledAt, tc.settled)
 			}
+			if got := writer.memories(); got != tc.memories {
+				t.Fatalf("policy %s left %d memories in the vault, want %d", tc.policy, got, tc.memories)
+			}
 		})
 	}
 }
 
-// TestCaptureUnderReadonlyNeverReachesTheWritePath is the half of the table a
-// state assertion cannot prove. `rejected: policy` has to mean the vault was
-// never asked, not that it was asked and the answer was relabelled.
-func TestCaptureUnderReadonlyNeverReachesTheWritePath(t *testing.T) {
-	srv, _, _, token, _ := testServer(t)
+// TestCapturePolicyReadFailureFailsClosed is the fail-closed gate.
+//
+// A vault whose configuration cannot be read is not a vault that may be written
+// to. It used to surface as a 503, which was two defects in one: the phone was
+// told the Mac was busy when it was actually misconfigured, and the reservation
+// stayed PENDING, so an unreadable config turned every capture into a claim
+// nothing could ever settle. Both halves are asserted here.
+func TestCapturePolicyReadFailureFailsClosed(t *testing.T) {
+	srv, reg, token, root := newCaptureServer(t)
 	writer := writerOf(t, srv)
+	// The kernel cannot read the policy, so it fails closed to the only answer
+	// that cannot describe a write as permitted.
+	writer.policyErr = errors.New("config.toml is not readable")
 	writer.setPolicy(PolicyReadonly)
+	_ = reg
 
-	receipt := decodeReceipt(t, postCapture(t, srv, token, captureFor(t, srv, "do not write this")))
+	capture := captureFor(t, srv, "unreadable config")
+	receipt := decodeReceipt(t, postCapture(t, srv, token, capture))
 	if receipt.State != ReceiptRejected || receipt.Reason != ReasonPolicy {
-		t.Fatalf("readonly produced %s/%s, want rejected/policy", receipt.State, receipt.Reason)
+		t.Fatalf("an unreadable policy produced %s/%s, want rejected/policy", receipt.State, receipt.Reason)
 	}
-	// The kernel WAS consulted — the policy is read from the vault, not guessed
-	// — but Publish returned the refusal without writing, which is what the stub
-	// records as a publish that produced no memory.
-	if receipt.MemoryID != "" {
-		t.Fatalf("a readonly capture named memory %q", receipt.MemoryID)
+	if receipt.Policy != PolicyReadonly {
+		t.Fatalf("the receipt names policy %q, want readonly", receipt.Policy)
+	}
+	if got := writer.memories(); got != 0 {
+		t.Fatalf("an unreadable policy wrote %d memories", got)
+	}
+	// And the reservation is SETTLED. A pending record here is the shape that
+	// filled the store up.
+	if state := reservationStateOn(t, root, capture); state != reservationSettled {
+		t.Fatalf("the reservation is %q, want settled", state)
 	}
 }
 
-// TestCaptureAppliedOnlyAfterThePublicationCompletes proves the ordering claim
-// in the issue: the state flips to applied AFTER the vault write, never before.
+// TestCaptureRefusalStillNamesThePolicyWhenItCannotBeRead. A receipt names the
+// policy in force whatever the reason, and a policy that cannot be read is
+// readonly rather than blank — a receipt with an empty policy would not validate
+// and an invented one would be a claim.
+func TestCaptureRefusalStillNamesThePolicyWhenItCannotBeRead(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	writer := writerOf(t, srv)
+	writer.policyErr = errors.New("config.toml is not readable")
+
+	capture := captureFor(t, srv, "not mine")
+	capture.DeviceID = "dev_20260903_120000_ffffffff"
+	receipt := decodeReceipt(t, postCapture(t, srv, token, capture))
+	if receipt.State != ReceiptRejected || receipt.Reason != ReasonUnknownDevice {
+		t.Fatalf("produced %s/%s, want rejected/unknown_device", receipt.State, receipt.Reason)
+	}
+	if receipt.Policy != PolicyReadonly {
+		t.Fatalf("the receipt names policy %q, want the fail-closed readonly", receipt.Policy)
+	}
+}
+
+// TestCaptureAppliedOnlyAfterThePublicationCompletes proves the ordering claim:
+// the state flips to applied AFTER the vault write, never before.
 //
 // The stub holds the publish open. While it is held, the request has not
 // answered at all — so there is no window in which a receipt saying `applied`
@@ -314,7 +417,7 @@ func TestCaptureAppliedOnlyAfterThePublicationCompletes(t *testing.T) {
 func TestCaptureFailedPublishIsNotATerminalRejection(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 	writer := writerOf(t, srv)
-	writer.publishErr = errors.New("the vault is on a disconnected volume")
+	writer.setPublishErr(errors.New("the vault is on a disconnected volume"))
 
 	rec := postCapture(t, srv, token, captureFor(t, srv, "unlucky"))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -329,10 +432,13 @@ func TestCaptureFailedPublishIsNotATerminalRejection(t *testing.T) {
 // Idempotency, through the handler
 // ---------------------------------------------------------------------------
 
-// TestCaptureRetryReturnsTheSameReceiptBytes is the retry contract. Same key,
-// same payload: one write, and a response that is the same BYTES — not merely
-// the same state, and not a second receipt id.
-func TestCaptureRetryReturnsTheSameReceiptBytes(t *testing.T) {
+// TestCaptureRetryIsByteIdenticalOnTheWire is the retry contract, asserted with
+// bytes.Equal on two RAW response bodies rather than on decoded structs.
+//
+// Round one compared strings of re-marshalled receipts, which proves the
+// encoder is deterministic and not that the second response is the first one. A
+// client that hashes or caches a body needs the stronger claim.
+func TestCaptureRetryIsByteIdenticalOnTheWire(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 	writer := writerOf(t, srv)
 	capture := captureFor(t, srv, "sam owes me the deck by friday")
@@ -340,20 +446,22 @@ func TestCaptureRetryReturnsTheSameReceiptBytes(t *testing.T) {
 	first := postCapture(t, srv, token, capture)
 	second := postCapture(t, srv, token, capture)
 
-	if first.Body.String() != second.Body.String() {
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
 		t.Fatalf("a retry returned different bytes\nfirst:\n%s\nsecond:\n%s", first.Body.String(), second.Body.String())
 	}
 	if got := writer.count(); got != 1 {
-		t.Fatalf("the vault was written %d times for one idempotency key, want 1", got)
+		t.Fatalf("the kernel was asked to write %d times for one idempotency key, want 1", got)
 	}
-	receipt := decodeReceipt(t, second)
-	if receipt.State != ReceiptApplied {
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the vault holds %d memories, want 1", got)
+	}
+	if receipt := decodeReceipt(t, second); receipt.State != ReceiptApplied {
 		t.Fatalf("state = %q, want applied", receipt.State)
 	}
 }
 
 // TestCaptureSameKeyDifferentPayloadIsAConflict is the other half. The first
-// payload keeps the key; the second is refused rather than silently overwriting
+// capture keeps the key; the second is refused rather than silently overwriting
 // it or silently inheriting its receipt.
 func TestCaptureSameKeyDifferentPayloadIsAConflict(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
@@ -369,8 +477,8 @@ func TestCaptureSameKeyDifferentPayloadIsAConflict(t *testing.T) {
 	if receipt.State != ReceiptRejected || receipt.Reason != ReasonIdempotencyConflict {
 		t.Fatalf("a reused key over new text produced %s/%s, want rejected/idempotency_conflict", receipt.State, receipt.Reason)
 	}
-	if got := writer.count(); got != 1 {
-		t.Fatalf("the conflicting capture reached the vault: %d writes, want 1", got)
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the conflicting capture reached the vault: %d memories, want 1", got)
 	}
 	// The first receipt is untouched: a conflict must not consume the key it was
 	// refused, or the second payload would win by asking twice.
@@ -380,11 +488,214 @@ func TestCaptureSameKeyDifferentPayloadIsAConflict(t *testing.T) {
 	}
 }
 
-// TestCaptureConcurrentDuplicatesWriteOnce drives N goroutines at one key.
+// TestCaptureSameKeyDifferentScopeIsAConflict is the judge's example, and the
+// reason the idempotency identity is not the wire fingerprint.
 //
-// One wins the reservation; the rest either wait for it and get the same
-// receipt, or are told the capture is in flight. What none of them may do is
-// produce a second vault write or a second receipt id.
+// N02 defines payload_fingerprint as SHA-256 over the TEXT alone. Two captures
+// with the same key and the same text but different scopes therefore hash
+// identically, and the second used to REPLAY the first — silently inheriting a
+// placement decision it did not make. The identity digest covers scope, so the
+// second is a conflict.
+func TestCaptureSameKeyDifferentScopeIsAConflict(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	writer := writerOf(t, srv)
+
+	personal := captureFor(t, srv, "x")
+	personal.Scope = "personal"
+	personal.PayloadFingerprint = Fingerprint(personal.Text)
+	first := decodeReceipt(t, postCapture(t, srv, token, personal))
+	if first.State != ReceiptApplied {
+		t.Fatalf("the first capture produced %q, want applied", first.State)
+	}
+
+	project := personal
+	project.Scope = "project:secret"
+	// Same key, same text, so the WIRE fingerprint is identical by construction.
+	if project.PayloadFingerprint != personal.PayloadFingerprint {
+		t.Fatal("the fixture no longer holds the fingerprint constant; the test would not prove anything")
+	}
+
+	receipt := decodeReceipt(t, postCapture(t, srv, token, project))
+	if receipt.State != ReceiptRejected || receipt.Reason != ReasonIdempotencyConflict {
+		t.Fatalf("the same key under a different scope produced %s/%s, want rejected/idempotency_conflict", receipt.State, receipt.Reason)
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the rescoped capture reached the vault: %d memories, want 1", got)
+	}
+}
+
+// TestCaptureIdentityCoversEveryWriteAffectingField walks the fields directly,
+// so a field added to Capture later that changes what is written and is NOT
+// folded into the identity fails here rather than in production.
+func TestCaptureIdentityCoversEveryWriteAffectingField(t *testing.T) {
+	base := NewCapture()
+	base.IdempotencyKey = "key.one"
+	base.DeviceID = "dev_20260903_120000_a1b2c3d4"
+	base.CapturedAt = reservationStamp(testNow)
+	base.RequestedLane = LaneMemory
+	base.Intent = IntentRemember
+	base.Scope = "personal"
+	base.Text = "a note"
+	base.PayloadFingerprint = Fingerprint(base.Text)
+
+	for _, tc := range []struct {
+		name   string
+		change func(*Capture)
+		differ bool
+	}{
+		{"text", func(c *Capture) { c.Text = "another note"; c.PayloadFingerprint = Fingerprint(c.Text) }, true},
+		{"scope", func(c *Capture) { c.Scope = "project:secret" }, true},
+		{"device", func(c *Capture) { c.DeviceID = "dev_20260903_120000_99999999" }, true},
+		{"intent and lane", func(c *Capture) { c.Intent = IntentInvestigate; c.RequestedLane = LaneResearch }, true},
+		// The key is the LOOKUP, not part of the identity: folding it in would
+		// make every capture its own identity and no reuse would ever conflict.
+		{"idempotency key", func(c *Capture) { c.IdempotencyKey = "key.two" }, false},
+		// A retry that re-stamps its clock is still the same capture.
+		{"captured_at", func(c *Capture) { c.CapturedAt = reservationStamp(testNow.Add(time.Hour)) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := base
+			tc.change(&changed)
+			if (captureIdentity(changed) != captureIdentity(base)) != tc.differ {
+				t.Fatalf("changing %s: identity differs = %t, want %t", tc.name, !tc.differ, tc.differ)
+			}
+		})
+	}
+}
+
+// TestCaptureMemoryIDIsDerivedAndStable is the exactly-once primitive itself.
+//
+// The id has to be the same on every attempt at the same capture — otherwise a
+// retry aims at a different vault path and the create-exclusive publish has
+// nothing to refuse — and it has to be in the shape the contract corpus
+// normalises, or a committed golden could never be frozen.
+func TestCaptureMemoryIDIsDerivedAndStable(t *testing.T) {
+	c := NewCapture()
+	c.IdempotencyKey = "key.one"
+	c.DeviceID = "dev_20260903_120000_a1b2c3d4"
+	c.CapturedAt = reservationStamp(testNow)
+	c.RequestedLane = LaneMemory
+	c.Intent = IntentRemember
+	c.Scope = "personal"
+	c.Text = "a note"
+	c.PayloadFingerprint = Fingerprint(c.Text)
+
+	id := captureMemoryID(c, captureIdentity(c))
+	if again := captureMemoryID(c, captureIdentity(c)); again != id {
+		t.Fatalf("the derivation is not stable: %q then %q", id, again)
+	}
+	if err := validateID("memory_id", PrefixMemory, id); err != nil {
+		t.Fatalf("%q: %v", id, err)
+	}
+	// mem_YYYYMMDD_HHMMSS_<8 hex>, which is the pattern the contract corpus
+	// normalises. A shape outside it would make a golden unfreezable.
+	rest := strings.TrimPrefix(id, PrefixMemory)
+	parts := strings.Split(rest, "_")
+	if len(parts) != 3 || len(parts[0]) != 8 || len(parts[1]) != 6 || len(parts[2]) != 8 {
+		t.Fatalf("%q is not mem_YYYYMMDD_HHMMSS_<8 hex>", id)
+	}
+	if _, err := time.Parse("20060102150405", parts[0]+parts[1]); err != nil {
+		t.Fatalf("%q does not carry a real timestamp: %v", id, err)
+	}
+	// A different capture gets a different id.
+	other := c
+	other.Text = "a different note"
+	other.PayloadFingerprint = Fingerprint(other.Text)
+	if captureMemoryID(other, captureIdentity(other)) == id {
+		t.Fatal("two different captures derive the same vault id")
+	}
+}
+
+// TestCaptureCrashAfterPublicationAppliesExactlyOnce is the round-two gate, and
+// the defect round one documented rather than fixed.
+//
+// The vault write lands and the process dies BEFORE the receipt settles —
+// injected by failing the settle write, which leaves exactly the on-disk state a
+// kill leaves. A restarted listener retries the same request past the takeover
+// window. What must come out: one memory, one applied receipt, and a third
+// attempt that replays it rather than minting another.
+func TestCaptureCrashAfterPublicationAppliesExactlyOnce(t *testing.T) {
+	srv, reg, token, root := newCaptureServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "killed after the write landed")
+
+	// The settle write fails; the vault write does not. This is the window.
+	srv.captures.writeRecord = func(path string, body []byte, beforeRename func() error) error {
+		if strings.Contains(string(body), string(reservationSettled)) {
+			return errors.New("the process died before the receipt settled")
+		}
+		return writeSecretFile(path, body, beforeRename)
+	}
+	if rec := postCapture(t, srv, token, capture); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the crashing attempt answered %d, want 503\n%s", rec.Code, rec.Body.String())
+	}
+	// The vault HAS the memory and the reservation says pending. That is the
+	// dangerous state, and it is the state the retry has to survive.
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the crashed attempt left %d memories, want 1", got)
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationPending {
+		t.Fatalf("after the crash the reservation is %q, want pending", state)
+	}
+
+	after := testNow.Add(ReservationTakeover + time.Second)
+	restarted := restartCaptureServer(t, reg, root, writer, after)
+
+	receipt := decodeReceipt(t, postCapture(t, restarted, token, capture))
+	if receipt.State != ReceiptApplied {
+		t.Fatalf("the retry produced %q, want applied", receipt.State)
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the retry left %d memories, want exactly 1", got)
+	}
+	// The retry did not even ASK for a second write: it found the pinned id
+	// already published and finished the crashed attempt's receipt.
+	if got := writer.count(); got != 1 {
+		t.Fatalf("the kernel was asked to write %d times, want 1", got)
+	}
+	// And a third attempt replays that receipt rather than minting another.
+	replay := decodeReceipt(t, postCapture(t, restarted, token, capture))
+	if replay.ReceiptID != receipt.ReceiptID {
+		t.Fatalf("a third attempt minted receipt %q, want the settled %q", replay.ReceiptID, receipt.ReceiptID)
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("a third attempt left %d memories, want 1", got)
+	}
+}
+
+// TestCaptureCrashBeforeTheWriteAppliesExactlyOnce is the same guarantee from
+// the other side of the window: the process dies BEFORE the vault write, so the
+// retry has to do the work rather than recognise it.
+func TestCaptureCrashBeforeTheWriteAppliesExactlyOnce(t *testing.T) {
+	srv, reg, token, root := newCaptureServer(t)
+	crashing := writerOf(t, srv)
+	crashing.setPublishErr(errors.New("process died"))
+	capture := captureFor(t, srv, "killed before the write")
+
+	if rec := postCapture(t, srv, token, capture); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the crashing attempt answered %d, want 503", rec.Code)
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationPending {
+		t.Fatalf("after the crash the reservation is %q, want pending", state)
+	}
+	if got := crashing.memories(); got != 0 {
+		t.Fatalf("the crashed attempt left %d memories, want 0", got)
+	}
+
+	after := testNow.Add(ReservationTakeover + time.Second)
+	survivor := newStubWriter()
+	restarted := restartCaptureServer(t, reg, root, survivor, after)
+
+	receipt := decodeReceipt(t, postCapture(t, restarted, token, capture))
+	if receipt.State != ReceiptApplied {
+		t.Fatalf("the retry produced %q, want applied", receipt.State)
+	}
+	if got := survivor.memories(); got != 1 {
+		t.Fatalf("the retry left %d memories, want exactly 1", got)
+	}
+}
+
+// TestCaptureConcurrentDuplicatesWriteOnce drives N goroutines at one key.
 func TestCaptureConcurrentDuplicatesWriteOnce(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 	writer := writerOf(t, srv)
@@ -392,7 +703,7 @@ func TestCaptureConcurrentDuplicatesWriteOnce(t *testing.T) {
 
 	const callers = 8
 	var wg sync.WaitGroup
-	bodies := make([]string, callers)
+	bodies := make([][]byte, callers)
 	codes := make([]int, callers)
 	start := make(chan struct{})
 	for i := 0; i < callers; i++ {
@@ -401,179 +712,176 @@ func TestCaptureConcurrentDuplicatesWriteOnce(t *testing.T) {
 			defer wg.Done()
 			<-start
 			rec := postRaw(srv, token, body)
-			codes[i], bodies[i] = rec.Code, rec.Body.String()
+			codes[i], bodies[i] = rec.Code, append([]byte(nil), rec.Body.Bytes()...)
 		}(i)
 	}
 	close(start)
 	wg.Wait()
 
-	if got := writer.count(); got != 1 {
-		t.Fatalf("%d concurrent duplicates produced %d vault writes, want 1", callers, got)
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("%d concurrent duplicates produced %d memories, want 1", callers, got)
 	}
 	// The listener's work budget is one kernel call at a time, so some callers
 	// legitimately get a 503. Every caller that got an ANSWER must have got the
-	// same one.
-	answered := ""
+	// same bytes.
+	var answered []byte
 	for i := range bodies {
 		switch codes[i] {
 		case http.StatusOK:
-			if answered == "" {
+			if answered == nil {
 				answered = bodies[i]
 				continue
 			}
-			if bodies[i] != answered {
-				t.Fatalf("two concurrent duplicates got different receipts\n%s\n%s", answered, bodies[i])
+			if !bytes.Equal(bodies[i], answered) {
+				t.Fatalf("two concurrent duplicates got different bytes\n%s\n%s", answered, bodies[i])
 			}
 		case http.StatusServiceUnavailable:
 		default:
 			t.Fatalf("concurrent duplicate %d answered %d: %s", i, codes[i], bodies[i])
 		}
 	}
-	if answered == "" {
+	if answered == nil {
 		t.Fatal("no concurrent duplicate got a receipt")
 	}
 }
 
 // TestCaptureReservationSurvivesProcessRestart reopens the store over the same
 // directory, which is what a restarted `mora companion serve` does.
-//
-// The reservation is a file, not a memory, so the answer after the restart is
-// the same receipt rather than a second write.
 func TestCaptureReservationSurvivesProcessRestart(t *testing.T) {
-	srv, _, reg, token, _ := testServer(t)
+	srv, reg, token, root := newCaptureServer(t)
 	writer := writerOf(t, srv)
 	capture := captureFor(t, srv, "survive the restart")
-	first := decodeReceipt(t, postCapture(t, srv, token, capture))
+	first := postCapture(t, srv, token, capture)
 
-	// A second listener over the SAME registry and the SAME reservation
-	// directory, with its own in-memory state. This is a restart.
-	restarted, err := NewServer(ServerOptions{
-		Addr:     "127.0.0.1:7778",
-		Devices:  reg,
-		Reader:   newStubReader(),
-		Writer:   writer,
-		Captures: reopenStore(storeRootOf(srv), func() time.Time { return testNow }),
-		Now:      func() time.Time { return testNow },
-	})
-	if err != nil {
-		t.Fatalf("restart: %v", err)
+	restarted := restartCaptureServer(t, reg, root, writer, testNow)
+	second := postCapture(t, restarted, token, capture)
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+		t.Fatalf("after a restart the same key answered differently\n%s\n%s", first.Body.String(), second.Body.String())
 	}
-	second := decodeReceipt(t, postCapture(t, restarted, token, capture))
-	if second.ReceiptID != first.ReceiptID {
-		t.Fatalf("after a restart the same key produced receipt %q, want %q", second.ReceiptID, first.ReceiptID)
-	}
-	if got := writer.count(); got != 1 {
-		t.Fatalf("the restart wrote the vault again: %d writes, want 1", got)
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the restart wrote the vault again: %d memories, want 1", got)
 	}
 }
 
-// TestCaptureCrashBetweenReservationAndWriteAppliesExactlyOnce is the crash
-// gate.
-//
-// The first attempt reserves durably and is then killed before the vault write
-// confirms — modelled by a publish that panics, which is as close to a lost
-// process as an in-process test gets while still leaving the on-disk state a
-// crash would leave. A restarted listener retries the same key and must produce
-// exactly one applied receipt and exactly one vault artefact.
-func TestCaptureCrashBetweenReservationAndWriteAppliesExactlyOnce(t *testing.T) {
-	srv, _, reg, token, _ := testServer(t)
-	root := storeRootOf(srv)
-	capture := captureFor(t, srv, "killed mid-write")
-
-	crashing := newStubWriter()
-	crashing.publishErr = errors.New("process died")
-	crashed, err := NewServer(ServerOptions{
-		Addr:     "127.0.0.1:7778",
-		Devices:  reg,
-		Reader:   newStubReader(),
-		Writer:   crashing,
-		Captures: reopenStore(root, func() time.Time { return testNow }),
-		Now:      func() time.Time { return testNow },
-	})
-	if err != nil {
-		t.Fatalf("first listener: %v", err)
-	}
-	if rec := postCapture(t, crashed, token, capture); rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("the crashing attempt answered %d, want 503", rec.Code)
-	}
-	// The reservation is on disk and PENDING: the key was claimed before the
-	// write was attempted, which is the ordering the whole design turns on.
-	if state := reservationStateOn(t, root, capture); state != reservationPending {
-		t.Fatalf("after the crash the reservation is %q, want pending", state)
-	}
-
-	// The restart is past the takeover window, which is how a live process tells
-	// a crashed reservation from a peer that is still inside its write.
-	after := testNow.Add(ReservationTakeover + time.Second)
-	survivor := newStubWriter()
-	restarted, err := NewServer(ServerOptions{
-		Addr:     "127.0.0.1:7778",
-		Devices:  reg,
-		Reader:   newStubReader(),
-		Writer:   survivor,
-		Captures: reopenStore(root, func() time.Time { return after }),
-		Now:      func() time.Time { return after },
-	})
-	if err != nil {
-		t.Fatalf("restarted listener: %v", err)
-	}
-	receipt := decodeReceipt(t, postCapture(t, restarted, token, capture))
-	if receipt.State != ReceiptApplied {
-		t.Fatalf("the retry produced state %q, want applied", receipt.State)
-	}
-	if got := survivor.count(); got != 1 {
-		t.Fatalf("the retry wrote the vault %d times, want exactly 1", got)
-	}
-	if got := crashing.count(); got != 1 {
-		t.Fatalf("the crashed attempt wrote the vault %d times, want 1 attempt", got)
-	}
-	// And the retry is now the settled answer, so a THIRD attempt is a replay
-	// rather than a second write.
-	replay := decodeReceipt(t, postCapture(t, restarted, token, capture))
-	if replay.ReceiptID != receipt.ReceiptID {
-		t.Fatalf("a third attempt minted receipt %q, want the settled %q", replay.ReceiptID, receipt.ReceiptID)
-	}
-	if got := survivor.count(); got != 1 {
-		t.Fatalf("a third attempt wrote the vault again: %d writes, want 1", got)
-	}
-}
-
-// TestCapturePendingReservationIsNotTakenOverEarly is the other side of the
-// takeover window. A peer still inside its vault write must not have its key
-// taken, or the recovery rule would itself be the duplicate.
+// TestCapturePendingReservationIsNotTakenOverEarly. A peer still inside its
+// vault write must not have its key reclaimed: the pinned id makes that safe,
+// but two callers doing the same work is still two callers.
 func TestCapturePendingReservationIsNotTakenOverEarly(t *testing.T) {
-	srv, _, reg, token, _ := testServer(t)
-	root := storeRootOf(srv)
+	srv, reg, token, root := newCaptureServer(t)
+	stalled := writerOf(t, srv)
+	stalled.setPublishErr(errors.New("stalled"))
 	capture := captureFor(t, srv, "still running")
+	postCapture(t, srv, token, capture)
 
-	stalled := newStubWriter()
-	stalled.publishErr = errors.New("stalled")
-	first, err := NewServer(ServerOptions{
-		Addr: "127.0.0.1:7778", Devices: reg, Reader: newStubReader(), Writer: stalled,
-		Captures: reopenStore(root, func() time.Time { return testNow }),
-		Now:      func() time.Time { return testNow },
-	})
-	if err != nil {
-		t.Fatalf("first listener: %v", err)
-	}
-	postCapture(t, first, token, capture)
-
-	// A different process, one second later — well inside the window.
 	peer := newStubWriter()
-	second, err := NewServer(ServerOptions{
-		Addr: "127.0.0.1:7778", Devices: reg, Reader: newStubReader(), Writer: peer,
-		Captures: reopenStore(root, func() time.Time { return testNow.Add(time.Second) }),
-		Now:      func() time.Time { return testNow.Add(time.Second) },
-	})
-	if err != nil {
-		t.Fatalf("second listener: %v", err)
-	}
+	second := restartCaptureServer(t, reg, root, peer, testNow.Add(time.Second))
 	rec := postCapture(t, second, token, capture)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a peer inside the takeover window answered %d, want 503\n%s", rec.Code, rec.Body.String())
 	}
 	if got := peer.count(); got != 0 {
-		t.Fatalf("the peer wrote the vault %d times, want 0", got)
+		t.Fatalf("the peer asked the kernel to write %d times, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bounds and revocation
+// ---------------------------------------------------------------------------
+
+// TestCaptureRefusesPastThePendingBound is the store's hard bound seen from the
+// wire: its own code, a Retry-After, and no file for the refused key.
+func TestCaptureRefusesPastThePendingBound(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	writer := writerOf(t, srv)
+	// A kernel that fails every request is what fills a store with pending
+	// records, which is exactly the pressure the bound exists for.
+	writer.setPublishErr(errors.New("the kernel is unwell"))
+
+	device := testDeviceID(t, srv)
+	for i := 0; i < MaxPendingReservations; i++ {
+		capture := captureFor(t, srv, fmt.Sprintf("pending %d", i))
+		if rec := postCapture(t, srv, token, capture); rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("capture %d answered %d, want 503", i, rec.Code)
+		}
+	}
+
+	over := captureFor(t, srv, "one too many")
+	rec := postCapture(t, srv, token, over)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("past the bound the listener answered %d, want 503\n%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "too_many_pending") {
+		t.Fatalf("the refusal does not carry its own code: %s", rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("the refusal carries no Retry-After")
+	}
+	if reservationExists(storeRootOf(srv), device, over.IdempotencyKey) {
+		t.Fatal("the refused key created a reservation file")
+	}
+}
+
+// TestCaptureRevokedBetweenReserveAndWriteWritesNothing is the revocation race.
+//
+// Authentication happens when the request arrives. A capture can then sit in the
+// work-budget queue while an operator runs `mora companion revoke`, and a write
+// that lands afterwards is a write the operator revoked the right to make. The
+// credential is re-checked immediately before the write, and the reservation
+// SETTLES rather than staying pending — a revoked device's claim is closed, not
+// left for a later takeover.
+func TestCaptureRevokedBetweenReserveAndWriteWritesNothing(t *testing.T) {
+	srv, reg, token, root := newCaptureServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "revoked mid-flight")
+
+	// The revocation lands INSIDE the request, in the exact window the defect
+	// lived in: the reservation is being written, and the vault write has not
+	// been attempted. Hooking the reservation's own durable write is the only
+	// place that window is observable from outside the handler.
+	base := srv.captures.writeRecord
+	srv.captures.writeRecord = func(path string, body []byte, beforeRename func() error) error {
+		err := base(path, body, beforeRename)
+		if _, _, rerr := reg.Revoke(capture.DeviceID); rerr != nil {
+			t.Errorf("revoke: %v", rerr)
+		}
+		return err
+	}
+
+	receipt := decodeReceipt(t, postCapture(t, srv, token, capture))
+	if receipt.State != ReceiptRejected || receipt.Reason != ReasonUnknownDevice {
+		t.Fatalf("a revoked device produced %s/%s, want rejected/unknown_device", receipt.State, receipt.Reason)
+	}
+	if got := writer.memories(); got != 0 {
+		t.Fatalf("a revoked device wrote %d memories, want 0", got)
+	}
+	if got := writer.count(); got != 0 {
+		t.Fatalf("a revoked device reached the kernel's write path %d times, want 0", got)
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationSettled {
+		t.Fatalf("the revoked device's reservation is %q, want settled", state)
+	}
+}
+
+// TestCaptureFromARevokedDeviceIsRefusedAtTheDoor is the ordinary case: a device
+// revoked before the request arrives never reaches the capture path at all, and
+// gets the same opaque 401 as every other credential failure.
+func TestCaptureFromARevokedDeviceIsRefusedAtTheDoor(t *testing.T) {
+	srv, reg, token, _ := newCaptureServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "revoked before it asked")
+
+	if _, _, err := reg.Revoke(capture.DeviceID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	rec := postCapture(t, srv, token, capture)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a revoked device answered %d, want 401\n%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != unauthorizedBody {
+		t.Fatalf("a revoked device got a distinguishable refusal: %q", body)
+	}
+	if got := writer.memories(); got != 0 {
+		t.Fatalf("a revoked device wrote %d memories", got)
 	}
 }
 
@@ -581,9 +889,7 @@ func TestCapturePendingReservationIsNotTakenOverEarly(t *testing.T) {
 // What a capture may not do
 // ---------------------------------------------------------------------------
 
-// TestCaptureCannotClaimAnotherDevice is the impersonation gate. The body's
-// device_id is compared against the authenticated one and never trusted, and the
-// receipt is stamped with the authenticated id.
+// TestCaptureCannotClaimAnotherDevice is the impersonation gate.
 func TestCaptureCannotClaimAnotherDevice(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 	writer := writerOf(t, srv)
@@ -604,10 +910,7 @@ func TestCaptureCannotClaimAnotherDevice(t *testing.T) {
 	}
 }
 
-// TestCaptureRefusesTheLanesItCannotExecute pins v1's scope. `ask` is the
-// context route's job and `investigate` is the async lane, which has no worker
-// yet — both are refused with the published reason rather than routed somewhere
-// that does not exist.
+// TestCaptureRefusesTheLanesItCannotExecute pins v1's scope.
 func TestCaptureRefusesTheLanesItCannotExecute(t *testing.T) {
 	for _, tc := range []struct {
 		intent Intent
@@ -634,49 +937,8 @@ func TestCaptureRefusesTheLanesItCannotExecute(t *testing.T) {
 	}
 }
 
-// TestCaptureFromARevokedDeviceCannotBeCompleted is the revocation gate.
-//
-// A device revoked between its reservation and its retry gets the same opaque
-// 401 every other credential failure gets, and its pending reservation stays
-// pending forever — a revoked device's claimed key is never completed by anyone,
-// because completing it would be a write the operator revoked the right to make.
-func TestCaptureFromARevokedDeviceCannotBeCompleted(t *testing.T) {
-	srv, _, reg, token, _ := testServer(t)
-	root := storeRootOf(srv)
-	capture := captureFor(t, srv, "revoke me mid-flight")
-
-	stalled := writerOf(t, srv)
-	stalled.publishErr = errors.New("stalled")
-	if rec := postCapture(t, srv, token, capture); rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("the stalled capture answered %d, want 503", rec.Code)
-	}
-	if state := reservationStateOn(t, root, capture); state != reservationPending {
-		t.Fatalf("the reservation is %q, want pending", state)
-	}
-
-	if _, _, err := reg.Revoke(capture.DeviceID); err != nil {
-		t.Fatalf("revoke: %v", err)
-	}
-	stalled.publishErr = nil
-
-	rec := postCapture(t, srv, token, capture)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("a revoked device's retry answered %d, want 401\n%s", rec.Code, rec.Body.String())
-	}
-	if body := rec.Body.String(); body != unauthorizedBody {
-		t.Fatalf("a revoked device got a distinguishable refusal: %q", body)
-	}
-	if state := reservationStateOn(t, root, capture); state != reservationPending {
-		t.Fatalf("a revoked device's reservation is %q, want it left pending", state)
-	}
-}
-
 // TestCaptureReceiptNeverEchoesThePayload drives the real handler and fails on
 // any word of the capture appearing in the response.
-//
-// A receipt is identifiers, a state, a policy, a fingerprint and two timestamps.
-// It is stored, listed and shown in an Activity row, and the moment it carries a
-// snippet the phone is holding vault text that nothing governs.
 func TestCaptureReceiptNeverEchoesThePayload(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 	// Every word is long and distinctive: a short fragment turns up inside a
@@ -704,10 +966,6 @@ func TestCaptureRefusesAnOversizeBody(t *testing.T) {
 		srv, _, _, token, _ := testServer(t)
 		writer := writerOf(t, srv)
 
-		// Valid JSON, well under MaxRequestBytes, well over MaxCaptureBytes. The
-		// padding is an unknown field, so if the bound ever stopped firing the
-		// request would fail the strict decode instead — a different code, which
-		// is what the status assertion below distinguishes.
 		valid := captureBytes(t, captureFor(t, srv, "small"))
 		padding := strings.Repeat("p", MaxCaptureBytes)
 		body := strings.Replace(string(valid), `"text"`, `"padding": "`+padding+`",
@@ -750,10 +1008,7 @@ func TestCaptureRefusesAnOversizeBody(t *testing.T) {
 	})
 }
 
-// TestCaptureDecodesStrictly is the strict-inbound half for the write route. An
-// unknown field, a fingerprint that does not cover the text, and a scope the
-// contract does not publish are all refused before the kernel is reached, and
-// the refusal carries the schema code rather than the value.
+// TestCaptureDecodesStrictly is the strict-inbound half for the write route.
 func TestCaptureDecodesStrictly(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 	writer := writerOf(t, srv)
@@ -771,8 +1026,7 @@ func TestCaptureDecodesStrictly(t *testing.T) {
 		{"trailing data", string(captureBytes(t, valid)) + "}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			srv.Handler().ServeHTTP(rec, request(http.MethodPost, RouteCapture, token, strings.NewReader(tc.body)))
+			rec := postRaw(srv, token, []byte(tc.body))
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("answered %d, want 400\n%s", rec.Code, rec.Body.String())
 			}
@@ -791,7 +1045,7 @@ func TestCaptureDecodesStrictly(t *testing.T) {
 func TestCaptureStampsLastSeenOnlyOn2xx(t *testing.T) {
 	srv, _, reg, token, _ := testServer(t)
 	writer := writerOf(t, srv)
-	writer.publishErr = errors.New("nope")
+	writer.setPublishErr(errors.New("nope"))
 
 	if rec := postCapture(t, srv, token, captureFor(t, srv, "failed")); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("want 503, got %d", rec.Code)
@@ -804,7 +1058,7 @@ func TestCaptureStampsLastSeenOnlyOn2xx(t *testing.T) {
 		t.Fatalf("a 503 stamped last_seen_at = %q", devices[0].LastSeenAt)
 	}
 
-	writer.publishErr = nil
+	writer.setPublishErr(nil)
 	if rec := postCapture(t, srv, token, captureFor(t, srv, "served")); rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
@@ -818,8 +1072,7 @@ func TestCaptureStampsLastSeenOnlyOn2xx(t *testing.T) {
 }
 
 // TestCaptureGoesThroughTheWorkBudget proves the write route is under the same
-// one-at-a-time limiter every read is. A capture walks the vault's write path;
-// it is the last route that should be able to run unbounded in parallel.
+// one-at-a-time limiter every read is.
 func TestCaptureGoesThroughTheWorkBudget(t *testing.T) {
 	srv, _, _, token, _ := testServer(t)
 	writer := writerOf(t, srv)
@@ -827,18 +1080,30 @@ func TestCaptureGoesThroughTheWorkBudget(t *testing.T) {
 	writer.hold = make(chan struct{})
 
 	holder := captureBytes(t, captureFor(t, srv, "holds the slot"))
-	go func() { postRaw(srv, token, holder) }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		postRaw(srv, token, holder)
+	}()
 	<-writer.entered
 
 	// A DIFFERENT capture, so nothing about idempotency is doing the refusing.
 	rec := postCapture(t, srv, token, captureFor(t, srv, "wants the slot"))
 	if rec.Code != http.StatusServiceUnavailable {
+		close(writer.hold)
+		<-done
 		t.Fatalf("a second capture answered %d while the budget was held, want 503\n%s", rec.Code, rec.Body.String())
 	}
 	if rec.Header().Get("Retry-After") == "" {
+		close(writer.hold)
+		<-done
 		t.Fatal("the refusal carries no Retry-After")
 	}
 	close(writer.hold)
+	// The holder is waited for rather than abandoned: it settles a reservation
+	// into the test's temp directory on its way out, and a goroutine still
+	// writing there when t.TempDir cleans up is a flake, not a finding.
+	<-done
 }
 
 // TestCaptureIsTheOnlyRouteThatWrites is the seam witness.

@@ -818,9 +818,29 @@ var newIDFn = newID
 // is no path to mark until the ID exists, and a collision changes it. The returned
 // op has an empty OpID when the index was not ready to be marked (cold start) — in
 // which case unmarkIndexDirty is a harmless no-op.
-func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp, error) {
+//
+// # The explicit-id option
+//
+// createOption is additive: every existing caller passes none and gets exactly
+// the behaviour above. withExplicitMemoryID pins the id instead of minting one,
+// which turns atomicCreate's create-exclusive publish into an EXACTLY-ONCE
+// primitive for a caller that can derive the same id twice.
+//
+// The retry loop is the reason the option has to exist here rather than in a
+// wrapper. A minted id treats EEXIST as a collision and re-mints; a pinned id
+// must treat the very same EEXIST as "this memory is already published" and say
+// so, because re-minting would be the duplicate write the caller pinned the id
+// to prevent. That is one branch, and it is not expressible outside this loop.
+func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOption) (Memory, pendingOp, error) {
+	var options createOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
 		m.ID = newIDFn()
+		if options.explicitID != "" {
+			m.ID = options.explicitID
+		}
 		body, err := renderMemory(m)
 		if err != nil {
 			return Memory{}, pendingOp{}, err
@@ -835,6 +855,14 @@ func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp,
 		if err := atomicCreate(path, body, 0o644); err != nil {
 			_ = unmarkIndexDirty(cfg, op.OpID) // this attempt's op is abandoned
 			if errors.Is(err, os.ErrExist) {
+				if options.explicitID != "" {
+					// The caller chose this id, so EEXIST is not a collision: the
+					// memory it wanted is already in the vault. Re-minting would
+					// publish a second copy of the thing it pinned the id to
+					// publish exactly once.
+					m.Path = path
+					return m, pendingOp{}, errMemoryAlreadyExists
+				}
 				continue // id collision: re-mint and retry
 			}
 			return Memory{}, pendingOp{}, err
@@ -844,6 +872,31 @@ func createMemory(ctx context.Context, cfg Config, m Memory) (Memory, pendingOp,
 	}
 	return Memory{}, pendingOp{}, fmt.Errorf("create memory: could not mint a unique id after %d attempts", maxCreateAttempts)
 }
+
+// createOptions carries the optional settings of a governed create. The zero
+// value is what every pre-existing caller gets.
+type createOptions struct{ explicitID string }
+
+// createOption adjusts one governed create.
+type createOption func(*createOptions)
+
+// withExplicitMemoryID pins the id a governed create publishes under, instead of
+// minting one.
+//
+// It exists for the companion capture path (graph node N21), which derives the
+// id from the device, the idempotency key and the payload BEFORE it reserves the
+// key, so the same capture retried after a crash resolves to the same vault
+// path. The create-exclusive publish then decides the outcome: whoever gets the
+// link wins, and everybody else is told the memory already exists.
+func withExplicitMemoryID(id string) createOption {
+	return func(o *createOptions) { o.explicitID = id }
+}
+
+// errMemoryAlreadyExists reports that a create with a PINNED id found the vault
+// already holding it. It is not a failure: for the caller that pinned the id it
+// is the successful end of an exactly-once publish, and the returned Memory
+// carries the path.
+var errMemoryAlreadyExists = errors.New("mora: a memory with that id is already published")
 
 // indexSchemaVersion stamps index.db (PRAGMA user_version) with the schema this
 // binary writes. Bump it whenever rebuildIndex's shape changes meaning (a new

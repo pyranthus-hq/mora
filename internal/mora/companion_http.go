@@ -34,10 +34,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/companion"
 	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
@@ -443,7 +446,7 @@ func (k *companionReader) meetingContext(ctx context.Context, req companion.Cont
 //
 // Publish dispatches through mcppkg.MutationAction and then through the SAME two
 // destinations the MCP write_memory tool uses — stageMCPWriteProposal for
-// `propose`, mcpWriteMemory for `open` — which in turn use createMemory, the
+// `propose`, mcpWriteMemoryWith for `open` — which in turn use createMemory, the
 // create-exclusive publish `mora write` uses. Nothing here touches the vault
 // directly. That matters beyond tidiness: the governed write path is where the
 // pending-op marker, the index upsert and the authored-write reconciliation
@@ -453,12 +456,35 @@ func (k *companionReader) meetingContext(ctx context.Context, req companion.Cont
 // The policy interpretation is mcppkg.MutationAction's and is not restated here.
 // N21 consumes the write policy; it does not own it.
 //
-// # The config is re-read per request
+// # Exactly once, because the id is pinned
+//
+// Publish takes the vault id the capture must land on. The companion side
+// derives it before it reserves the key, so every attempt at the same capture
+// aims at the same path, and createMemory's create-exclusive publish decides the
+// race: the first one links, and every later one is told the memory already
+// exists. That is what closes the crash window between the publication and the
+// receipt — a window a reservation alone cannot close, because the reservation
+// is written before the write and says nothing about whether it landed.
+//
+// # Durable before it is claimed
+//
+// A vault write is a rename, and a rename is atomic without being durable: the
+// file's bytes and its directory entry can still be in cache when this function
+// returns. A receipt that says `applied` is a promise about stable storage, so
+// the file and its parent are synced HERE, before the outcome goes back to the
+// listener and long before the receipt settles.
+//
+// # The config is re-read per request, and a config that cannot be read is readonly
 //
 // Not captured at startup. An operator who runs `mora config mcp-write-policy
 // readonly` while the listener is up has made a security decision, and a
 // listener that answered from a policy it read at boot would keep accepting
 // captures until someone restarted it.
+//
+// A config that cannot be read at all fails CLOSED, to a `rejected: policy`
+// receipt rather than an error. The error shape was worse than untidy: it became
+// a 503, the reservation stayed pending, and an unreadable vault turned every
+// capture into a claim nothing could ever settle.
 //
 // # The read-only marker is deliberately NOT set
 //
@@ -480,53 +506,169 @@ func (w *companionWriter) Policy(ctx context.Context) (companion.WritePolicy, er
 	return companionWritePolicy(cfg), nil
 }
 
-// Publish runs one capture through the kernel's governed write path and reports
-// what actually happened to the vault.
-func (w *companionWriter) Publish(ctx context.Context, c companion.Capture) (companion.WriteOutcome, error) {
+// Published reports whether the pinned id is already in the vault, and if so the
+// outcome that describes it.
+//
+// It is asked only when a crashed reservation is reclaimed. The create-exclusive
+// publish would catch the duplicate anyway; asking first is what turns "the
+// retry cannot duplicate" into "the retry does not even try", and it is what
+// lets a recovered capture settle its receipt without a second write.
+//
+// The outcome names `open` whatever the policy is NOW, because the memory exists
+// and could only have been published under `open`. Binding the receipt to a
+// policy that has since tightened would make it describe an outcome that never
+// happened.
+//
+// A config that cannot be read answers "not published" rather than failing: the
+// caller's next step is Publish, which fails closed on the same unreadable
+// config, so the refusal happens once and in one place.
+func (w *companionWriter) Published(ctx context.Context, memoryID string) (companion.WriteOutcome, bool, error) {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
-		return companion.WriteOutcome{}, err
+		return companion.WriteOutcome{}, false, nil
+	}
+	if _, err := findMemoryRaw(cfg, memoryID); err != nil {
+		return companion.WriteOutcome{}, false, nil
+	}
+	return companion.WriteOutcome{
+		Policy:   companion.PolicyOpen,
+		State:    companion.ReceiptApplied,
+		MemoryID: companionOpaqueID(companion.PrefixMemory, memoryID),
+	}, true, nil
+}
+
+// Publish runs one capture through the kernel's governed write path, pinned to
+// memoryID, and reports what actually happened to the vault.
+func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, memoryID string) (companion.WriteOutcome, error) {
+	started := time.Now()
+	configStarted := time.Now()
+	cfg, err := loadConfigFor(ctx)
+	configMillis := time.Since(configStarted).Milliseconds()
+	if err != nil {
+		// Fail CLOSED. A policy that cannot be read is readonly, and readonly
+		// rejects — the only direction that cannot describe a write as permitted.
+		// It is a terminal receipt rather than an error so the reservation
+		// SETTLES: a pending claim over an unreadable config is a claim nothing
+		// will ever resolve.
+		return companion.WriteOutcome{
+			Policy: companion.PolicyReadonly,
+			State:  companion.ReceiptRejected,
+			Reason: companion.ReasonPolicy,
+		}, nil
 	}
 	policy := configMCPWritePolicy(cfg)
 	out := companion.WriteOutcome{Policy: companion.WritePolicy(policy)}
 
-	action, _ := mcppkg.MutationAction(policy, "write_memory")
+	// The usage trace and the invocation below are the SAME ones invokeMCPTool
+	// builds. The capture cannot go through invokeMCPTool itself — the MCP tool
+	// table pins the handler signature, so the pinned id has nowhere to travel —
+	// so it produces the identical ledger row by using the identical type. A
+	// capture that wrote the vault and left no row would make the usage ledger a
+	// record of some writes rather than of writes.
+	trace := &mcpUsageTrace{configMillis: configMillis}
+	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
+	args := companionWriteArgs(c)
+
+	var (
+		value    any
+		writeErr error
+	)
+	action, policyErr := mcppkg.MutationAction(policy, "write_memory")
 	switch action {
 	case mcppkg.ActionRefuse:
 		// readonly. Nothing is staged and nothing is written, so the refusal is
 		// terminal and carries the published policy reason.
-		out.State = companion.ReceiptRejected
-		out.Reason = companion.ReasonPolicy
-		return out, nil
+		writeErr = policyErr
 	case mcppkg.ActionPropose:
 		// propose. The capture is staged in the same pending queue
 		// `mora mcp proposals` already lists and approves, so a phone capture and
 		// an agent write wait in one place under one review. Nothing is in the
 		// vault, which is exactly what an `accepted` receipt claims.
-		if _, err := stageMCPWriteProposal(cfg, companionWriteArgs(c)); err != nil {
-			return companion.WriteOutcome{}, err
+		value, writeErr = stageMCPWriteProposal(cfg, args)
+	default:
+		// open. The receipt flips to applied only on the far side of this call.
+		value, writeErr = mcpWriteMemoryWith(traced, cfg, args, withExplicitMemoryID(memoryID))
+	}
+	// Some handlers, mutations included, have no tool-specific structural counts.
+	// They still get one content-free event and an honest envelope size — the
+	// same five lines invokeMCPTool runs for the same reason.
+	if trace.event.Tool == "" {
+		results := 0
+		if writeErr == nil {
+			results = 1
+		}
+		trace.event = usageEvent{Tool: "write_memory", Results: results}
+	}
+	_ = mcpToolInvocation{cfg: cfg, started: started, trace: trace, value: value, err: writeErr, loggable: true}.result()
+
+	switch action {
+	case mcppkg.ActionRefuse:
+		out.State = companion.ReceiptRejected
+		out.Reason = companion.ReasonPolicy
+		return out, nil
+	case mcppkg.ActionPropose:
+		if writeErr != nil {
+			return companion.WriteOutcome{}, writeErr
 		}
 		out.State = companion.ReceiptAccepted
 		return out, nil
 	}
-
-	// open. The receipt flips to applied only on the far side of this call: it
-	// returns after createMemory's create-exclusive publish has landed the file,
-	// so `applied` is a statement about the vault and not about the request.
-	result, err := mcpWriteMemory(ctx, cfg, companionWriteArgs(c))
-	if err != nil {
-		return companion.WriteOutcome{}, err
+	if writeErr != nil {
+		return companion.WriteOutcome{}, writeErr
 	}
-	memory, ok := companionWrittenMemory(result)
+	memory, ok := companionWrittenMemory(value)
 	if !ok {
 		// The write path answered in a shape this function does not understand.
 		// Reporting applied without a memory id would be the one claim a receipt
 		// may never make, and Receipt.Validate would refuse it anyway.
 		return companion.WriteOutcome{}, fmt.Errorf("companion capture: the governed write path returned no memory")
 	}
+	// Durability BEFORE the claim. A sync failure is a failure of the whole
+	// publication: the bytes may be there and may not, and the honest answer is
+	// to leave the reservation unsettled so a retry re-runs the check. The retry
+	// is cheap and safe — the pinned id means it finds the memory already
+	// published rather than writing a second one.
+	if err := companionSyncPublication(memory.Path); err != nil {
+		return companion.WriteOutcome{}, fmt.Errorf("companion capture: the memory was written but could not be made durable: %w", err)
+	}
 	out.State = companion.ReceiptApplied
 	out.MemoryID = companionOpaqueID(companion.PrefixMemory, memory.ID)
 	return out, nil
+}
+
+// companionSyncPublication makes a just-published memory durable, and is the
+// seam a test replaces to prove the ordering.
+//
+// It is a package variable rather than a direct call for one reason: the claim
+// under test is that the sync happens BEFORE the receipt settles, and an
+// ordering claim needs something that can observe when it ran. Production never
+// replaces it.
+var companionSyncPublication = syncPublication
+
+// syncPublication fsyncs a file and the directory entry that points at it.
+//
+// Both halves are needed and neither is enough alone. Syncing the file leaves
+// the directory entry in cache, so a crash can lose the name while keeping the
+// bytes; syncing the directory alone leaves the bytes in cache. internal/atomicio
+// owns the platform split for the directory half (it is a no-op on Windows,
+// where NTFS journals the rename's metadata), so this calls it rather than
+// re-deciding it.
+func syncPublication(path string) error {
+	if path == "" {
+		return fmt.Errorf("companion capture: the governed write path returned no memory path to sync")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return atomicio.SyncDir(filepath.Dir(path))
 }
 
 // companionWrittenMemory pulls the saved memory out of the governed write path's

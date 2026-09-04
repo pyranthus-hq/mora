@@ -413,51 +413,116 @@ describes an outcome its policy could not have produced.
 `accepted` carries no `settled_at` on purpose: the capture is waiting for a human at the Mac, and
 stamping it settled would say the question is closed.
 
+**A policy that cannot be read is `readonly`.** A malformed or unreadable `config.toml` produces
+`rejected: policy` — a terminal receipt at 200 — and the reservation settles
+(`TestCompanionCaptureUnreadableConfigFailsClosed`, `TestCapturePolicyReadFailureFailsClosed`).
+Returning an error instead was two defects in one: the phone was told the Mac was busy when it was
+misconfigured, and the key stayed claimed, so an unreadable vault turned every capture into a
+reservation nothing could ever settle.
+
 **`applied` is a statement about the vault, not about the request.** The state flips only after the
 kernel's governed write path returns — the same path `mora write` and MCP `write_memory` use, through
 `createMemory`'s create-exclusive publish. The listener opens no second door into the vault, which is
 why the pending-op marker, the index upsert and the authored-write reconciliation all still happen
-for a phone capture.
+for a phone capture. The write is also recorded in the same usage ledger every MCP tool call is
+(`TestCompanionCaptureRecordsTheUsageLedgerRow`,
+`TestCompanionCaptureLedgerRowMatchesTheMCPToolRow`) — a ledger that held some writes and not others
+would be a record of nothing in particular.
 
 The kernel stamps the provenance: `source` is `companion`, the type is an insight, and the title is
 derived from the text. `scope` is the device's, because the schema already restricts it to `personal`
 or `project:<name>`.
 
+### Durable before it is claimed
+
+A vault write is a rename, and a rename is atomic without being durable: the bytes and the directory
+entry can both still be in cache when the write path returns. A receipt that says `applied` is a
+promise about stable storage, so the memory file **and its parent directory are fsynced** before the
+outcome reaches the listener, which is strictly before the receipt settles
+(`TestCompanionCaptureSyncsThePublicationBeforeItReturns`,
+`TestCompanionCaptureSyncsBeforeTheReservationSettles`). A sync that fails is not an `applied`
+receipt: the capture is left unsettled so a retry re-runs the check
+(`TestCompanionCaptureSyncFailureIsNotAnAppliedReceipt`).
+
+### Exactly once
+
+The vault id a capture publishes under is **derived**, from the device, the idempotency key and the
+payload, in Mora's own `mem_YYYYMMDD_HHMMSS_<8 hex>` shape — the time half is the capture's own
+`captured_at`, which is a real timestamp and stable across retries
+(`TestCaptureMemoryIDIsDerivedAndStable`). The id is written into the reservation **before** the
+kernel is asked to write anything, and the kernel is asked to create exactly that id.
+
+That is what makes the publish exactly-once rather than merely reserved:
+
+```
+reserve (durable, carries the pinned id)  ->  vault write AT that id  ->  settle (durable)
+```
+
+`createMemory`'s create-exclusive publish decides every race the reservation cannot. The first
+attempt links the file; every later one is told the memory already exists and answers `applied`
+without writing again (`TestCompanionCaptureSecondPublishAtTheSameIDWritesOneFile`). A process killed
+between the publication and the receipt therefore costs a retry, never a duplicate
+(`TestCaptureCrashAfterPublicationAppliesExactlyOnce`,
+`TestCompanionCaptureEndToEndCrashAfterPublicationLeavesOneMemoryFile`). When a retry reclaims a
+crashed reservation it asks the kernel whether the pinned id is already published before it writes,
+so recovery finishes the crashed attempt's receipt instead of repeating its work.
+
 ### Idempotency
-
-Every capture carries a device-generated `idempotency_key`. The reservation for that key is written,
-fsynced and renamed into place **before** the kernel is asked to write anything:
-
-```
-reserve (durable)  ->  vault write  ->  settle the receipt (durable)
-```
-
-That ordering is the whole design. Reserving after the write would mean a crash in between leaves a
-memory nothing points at, so the phone's retry writes a second one.
 
 | Case | Answer |
 |---|---|
-| same key, same `payload_fingerprint` | the **same receipt bytes** — returned from storage, same `receipt_id` |
-| same key, different `payload_fingerprint` | `rejected`, `reason: idempotency_conflict`; the first payload keeps the key |
-| same key, concurrently | one caller wins the claim; the others wait and read the settled receipt, or get `503 in_flight` |
-| same key, after a crash before the write | the retry completes the reservation — one applied receipt, one memory |
+| same key, same capture | the **same response bytes** — stored, not re-marshalled, same `receipt_id` |
+| same key, different capture | `rejected`, `reason: idempotency_conflict`; the first capture keeps the key |
+| same key, concurrently | one caller wins the claim; the others wait and read the settled bytes, or get `503 in_flight` |
+| same key, after a crash | the retry completes it — one applied receipt, one memory file |
 | same key, after a process restart | the same answers: the reservation is a file, not memory |
+
+**Replay is byte-identical on the wire.** The settled reservation stores the exact bytes that
+answered the first attempt and returns those, so a client that hashes or caches a response body gets
+an identical one on the retry (`TestCaptureRetryIsByteIdenticalOnTheWire`,
+`TestReservationReplayReturnsTheStoredBytes`, both asserting with `bytes.Equal` on raw bodies).
+
+**"The same capture" covers every field that changes what is written** — device, lane, intent, scope
+and text, as canonical JSON — and deliberately excludes the idempotency key (which is the lookup) and
+`captured_at` (a retry that re-stamps its clock is still the same capture)
+(`TestCaptureIdentityCoversEveryWriteAffectingField`). The wire `payload_fingerprint` cannot do this
+job: §5 defines it as SHA-256 over the **text** alone, so the same key and text under a different
+scope hashed identically and the second capture silently inherited the first one's placement.
+`TestCaptureSameKeyDifferentScopeIsAConflict` is that case, and it is now a conflict.
+
+### Revocation
+
+A capture is authenticated when it arrives, and it can then sit in the work-budget queue while an
+operator runs `mora companion revoke`. The credential is **re-checked immediately before the write**;
+a revoked device gets `rejected: unknown_device`, nothing is written, and the reservation **settles**
+rather than staying pending, so a revoked device's claim is closed rather than left for a later
+takeover (`TestCaptureRevokedBetweenReserveAndWriteWritesNothing`). A device revoked before the
+request arrives never reaches the capture path at all and gets the same opaque 401 as every other
+credential failure.
+
+### The reservation store, and its hard bound
 
 Reservations live at `<state>/companion/captures/<device_id>/<digest>.json`, 0600 inside 0700, with
 the same atomic-write-and-fsync discipline as the device registry. **The key space is per device**, so
 two devices choosing one key never collide and no device can read another's receipt by guessing its
 key. The filename is a digest of the key rather than the key itself.
 
-The store is bounded three ways — `MaxReservations` (512), `ReservationTTL` (7 days), and a
-per-record read bound — so a device that keeps talking cannot grow it without limit. Pruning drops
-expired entries first, then the oldest **settled** ones: a settled entry is pure idempotency memory,
-while a pending one is what stops a duplicate right now.
+The bound is hard, in four directions:
 
-**What this does not promise.** There is a window between the vault publication and the settle write.
-A process killed inside it leaves a `pending` reservation over a memory that does exist, and a retry
-past the takeover window writes a second one. Closing it would mean the vault write itself carrying
-the idempotency key, which is a change to the kernel's write path rather than to this listener. The
-window is one fsync wide and it is stated rather than papered over.
+| Bound | Value | What happens at it |
+|---|---|---|
+| In-flight captures | `MaxPendingReservations` (64) | `503` with code `too_many_pending`, and **no file is created** |
+| Crashed pending records | swept after `PendingSweepAfter` | collected on open and on insert |
+| Total records | `MaxReservations` (512) | the oldest **settled** records are trimmed |
+| One record on read | 64 KiB | refused as corrupt or hostile |
+
+`PendingSweepAfter` is deliberately later than `ReservationTakeover`. Between the two, a retry
+*reclaims* a crashed record, reads the id it pinned, and asks whether that memory is already
+published; sweeping at the takeover line would delete the record before any retry could read it and
+make the recovery path unreachable. Past the sweep line the record goes, and correctness does not
+depend on it — the id is derived, so a later retry re-derives it and the create-exclusive publish
+still refuses the second write. `TestReservationRefusesPastThePendingBound` and
+`TestReservationSweepsCrashedPendingRecords` pin both.
 
 ### Status codes
 
@@ -465,7 +530,8 @@ Every **decodable** capture answers `200` with a receipt, rejections included. T
 applied to a write: the status code says whether the request was served, the body says what happened
 to the vault. `4xx` and `5xx` are reserved for the cases where there is no receipt to give — no
 credential (`401`, opaque), an oversize body (`413`), a body that does not decode (`400`, carrying the
-schema code and never the value), a busy or unreachable kernel (`503`, with `Retry-After`).
+schema code and never the value), a busy or unreachable kernel (`503`, with `Retry-After`), a key
+already in flight (`503 in_flight`), and the store's bound (`503 too_many_pending`).
 
 ### What a capture may not do
 
@@ -478,8 +544,6 @@ schema code and never the value), a busy or unreachable kernel (`503`, with `Ret
 - **Echo its payload back.** A receipt is identifiers, a state, a policy, a fingerprint and two
   timestamps. `TestCaptureReceiptNeverEchoesThePayload` drives the real handler and fails on any word
   of the capture appearing in the response.
-- **Outlive its revocation.** A revoked device gets the same opaque `401` as every other credential
-  failure, so a reservation it left pending is never completed by anyone.
 - **Escape the tighter bound.** Capture caps its body at `MaxCaptureBytes` (24 KiB), not at the
   guard chain's `MaxRequestBytes` (64 KiB).
 
