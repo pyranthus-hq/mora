@@ -1,0 +1,902 @@
+package companion
+
+// registry.go is the device registry: the durable half of pairing. schema.go
+// says what a device IS on the wire; this file decides which devices exist,
+// which credential authenticates one, and when that credential stops working.
+//
+// It stays inside the leaf rule (TestPackageIsALeaf): standard library only.
+// That is why the atomic write, the lock and the directory hardening below are
+// written out here instead of importing internal/atomicio — the contract has to
+// stay compilable into a fixture generator and a Swift-parity harness without
+// dragging the kernel along.
+//
+// # Where the secrets live
+//
+// ConfigDir holds the credential material and is hardened to 0700 with 0600
+// files on every open, not only on create. A registry that only sets its modes
+// at creation time trusts an umask, a restore-from-backup and a `chmod -R` it
+// has no reason to trust; hardenPath re-asserts them.
+//
+//	<ConfigDir>/companion/devices.json   0600  device records, token hashes
+//	<ConfigDir>/companion/host.key       0600  host identity seed
+//	<ConfigDir>/companion/.lock          0600  cross-process write lock
+//	<StateDir>/companion/receipts/*.json 0600  append-only audit of pair/revoke
+//
+// The receipts are in StateDir rather than ConfigDir on purpose: they are the
+// audit trail, they grow, and they carry no secret — only fingerprints — so
+// they are safe in the tree a user is likelier to sync or ship in a bug report.
+//
+// # What is never written
+//
+// The bearer token and the one-time pairing code the registry GENERATES exist
+// in memory and in the QR payload, and nowhere else: both are persisted only as
+// SHA-256 fingerprints. A stolen devices.json therefore lets an attacker
+// enumerate devices and revoke them; it does not let them authenticate as one.
+// TestRegistryPersistsNoSecrets enforces it byte-for-byte.
+//
+// The guarantee is about the generated fields, not about every byte in the
+// file. A caller that passes a live pairing code as a device LABEL has written
+// it to disk itself, and no boundary here can undo that — the label is
+// operator-supplied text and is stored verbatim.
+
+import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base32"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// PairingTTL is how long a printed pairing code stays usable. It is short
+// because the code is a bearer secret displayed on a screen: the window in
+// which a shoulder-surfed QR code is worth anything is the window this bounds.
+const PairingTTL = 10 * time.Minute
+
+const (
+	// tokenEntropyBytes sizes the bearer token. 32 bytes is the point past
+	// which the SHA-256 fingerprint stored in devices.json is not worth
+	// attacking: there is no dictionary to run against it.
+	tokenEntropyBytes = 32
+	// pairingCodeEntropyBytes sizes the one-time code. It is smaller than the
+	// token because it is transcribable by a human in a fallback flow and it
+	// dies in PairingTTL; 20 bytes is 160 bits, which no ten-minute window
+	// reaches.
+	pairingCodeEntropyBytes = 20
+	// deviceIDEntropyBytes sizes the random tail of a dev_ identifier.
+	deviceIDEntropyBytes = 4
+)
+
+// registryFileVersion is the on-disk record-file version. It moves only when a
+// stored field is removed or retyped; adding one is backward compatible because
+// the decoder tolerates absent fields.
+const registryFileVersion = 1
+
+// Filesystem modes. The directory mode and the file mode are separate constants
+// because they are separate promises: 0700 keeps another local account from
+// LISTING the credential store, 0600 keeps it from READING one file it already
+// knows the name of.
+const (
+	secretDirMode  os.FileMode = 0o700
+	secretFileMode os.FileMode = 0o600
+)
+
+// Registry errors. They are values rather than formatted strings so a caller —
+// the CLI here, the listener in N12 — can branch on the condition without
+// matching prose.
+var (
+	// ErrNoSuchDevice is returned for a device_id that was never issued.
+	ErrNoSuchDevice = errors.New("no such device")
+	// ErrNotPending is returned when a confirmation arrives for a device that
+	// is already active or already revoked. Replaying a confirmation must not
+	// mint a second token.
+	ErrNotPending = errors.New("device is not awaiting pairing")
+	// ErrPairingExpired is returned when the code was right but late.
+	ErrPairingExpired = errors.New("pairing code expired")
+	// ErrPairingCode is returned when the code was wrong. It is deliberately
+	// distinct from ErrPairingExpired for the operator and deliberately
+	// identical in cost for an attacker: both are decided after the same
+	// constant-time comparison.
+	ErrPairingCode = errors.New("pairing code does not match")
+	// ErrLocked is returned when another process held the registry lock for
+	// longer than lockTimeout, or when this process lost its own lock to the
+	// stale sweep before it could write.
+	ErrLocked = errors.New("the device registry is locked by another process")
+)
+
+// errNoChange is the internal signal a mutation returns when it decided that
+// nothing needs writing. It never reaches a caller.
+var errNoChange = errors.New("companion: nothing to write")
+
+// AuthError is the typed refusal Authenticate returns. Reason is drawn from the
+// frozen reject_reason vocabulary so the listener can render it and the phone
+// can decode it without parsing prose.
+type AuthError struct{ Reason RejectReason }
+
+func (e *AuthError) Error() string { return "companion: " + string(e.Reason) }
+
+// Registry is the durable device registry rooted at a ConfigDir and a StateDir.
+// It holds no state between calls: every operation reads the record file, acts,
+// and writes it back under the lock, so two Registry values over one directory
+// and two processes over one directory behave the same way.
+type Registry struct {
+	configDir string
+	stateDir  string
+	now       func() time.Time
+	entropy   io.Reader
+}
+
+// RegistryOption injects a seam. Both seams exist for tests; production passes
+// neither and gets time.Now and crypto/rand.
+type RegistryOption func(*Registry)
+
+// WithClock pins the time source.
+func WithClock(now func() time.Time) RegistryOption {
+	return func(r *Registry) {
+		if now != nil {
+			r.now = now
+		}
+	}
+}
+
+// WithEntropy pins the randomness source. A test that pins it gets reproducible
+// device ids, codes and tokens; nothing else in the package may read entropy.
+func WithEntropy(src io.Reader) RegistryOption {
+	return func(r *Registry) {
+		if src != nil {
+			r.entropy = src
+		}
+	}
+}
+
+// NewRegistry returns a registry over the given directories. Neither directory
+// has to exist yet; each is created, hardened and re-hardened on use.
+func NewRegistry(configDir, stateDir string, opts ...RegistryOption) *Registry {
+	r := &Registry{configDir: configDir, stateDir: stateDir, now: time.Now, entropy: rand.Reader}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// ---------------------------------------------------------------------------
+// On-disk records
+// ---------------------------------------------------------------------------
+
+// deviceRecord is the stored form of a device. It is a superset of the wire
+// Device: everything the wire type carries plus the material that must never
+// leave this file.
+//
+// The two hash fields are the whole security model of the registry. Neither the
+// pairing code nor the bearer token is stored, so the file is a list of things
+// a credential could be checked AGAINST, never a list of credentials.
+type deviceRecord struct {
+	DeviceID string      `json:"device_id"`
+	Label    string      `json:"label"`
+	Platform Platform    `json:"platform"`
+	State    DeviceState `json:"state"`
+
+	// TokenFingerprint is sha256 over the bearer token, in the published
+	// "sha256:<hex>" form, so the value stored here and the value projected in
+	// `mora companion list` are the same string.
+	TokenFingerprint string `json:"token_fingerprint,omitempty"`
+	// PairingCodeFingerprint is sha256 over the one-time code. It is cleared
+	// the moment the code is spent or the device is revoked.
+	PairingCodeFingerprint string `json:"pairing_code_fingerprint,omitempty"`
+	PairingExpiresAt       string `json:"pairing_expires_at,omitempty"`
+
+	// PublicKey is the device's own key material from the confirmation. The
+	// registry stores it and does not yet use it: it is the hook N12's listener
+	// needs if bearer auth is ever upgraded to a signature.
+	PublicKey string `json:"public_key,omitempty"`
+
+	CreatedAt  string `json:"created_at"`
+	LastSeenAt string `json:"last_seen_at,omitempty"`
+	RevokedAt  string `json:"revoked_at,omitempty"`
+}
+
+// registryFile is the whole record file.
+type registryFile struct {
+	Version int             `json:"version"`
+	Devices []*deviceRecord `json:"devices"`
+}
+
+// device projects a record onto the published wire type. It is the only place a
+// Device is built from storage, so a field that must never be projected — the
+// pairing-code fingerprint, the pairing expiry — cannot leak by being added to
+// the record struct and forgotten here.
+func (rec *deviceRecord) device() Device {
+	d := NewDevice()
+	d.DeviceID = rec.DeviceID
+	d.Label = rec.Label
+	d.Platform = rec.Platform
+	d.State = rec.State
+	d.TokenFingerprint = rec.TokenFingerprint
+	d.CreatedAt = rec.CreatedAt
+	d.LastSeenAt = rec.LastSeenAt
+	d.RevokedAt = rec.RevokedAt
+	return d
+}
+
+// ---------------------------------------------------------------------------
+// Operations
+// ---------------------------------------------------------------------------
+
+// Pair registers a pending device and returns the payload the phone scans.
+//
+// The returned payload carries the ONLY copy of the one-time code: the registry
+// keeps a fingerprint. A caller that loses the payload has to pair again, which
+// is the correct trade — the alternative is a code sitting in a file.
+func (r *Registry) Pair(label string, platform Platform, endpoint string) (PairingPayload, error) {
+	if err := validateText("label", label, MaxLabelBytes, true); err != nil {
+		return PairingPayload{}, err
+	}
+	if err := inVocabulary("platform", string(platform), "platform"); err != nil {
+		return PairingPayload{}, err
+	}
+	if err := validateEndpoint("endpoint", endpoint); err != nil {
+		return PairingPayload{}, err
+	}
+
+	host, err := r.HostFingerprint()
+	if err != nil {
+		return PairingPayload{}, err
+	}
+	deviceID, err := r.newDeviceID()
+	if err != nil {
+		return PairingPayload{}, err
+	}
+	code, err := r.newSecret(pairingCodeEntropyBytes)
+	if err != nil {
+		return PairingPayload{}, err
+	}
+
+	now := r.stamp()
+	expires := r.stampAt(r.now().Add(PairingTTL))
+
+	payload := NewPairingPayload()
+	payload.DeviceID = deviceID
+	payload.Endpoint = endpoint
+	payload.PairingCode = code
+	payload.ExpiresAt = expires
+	payload.HostFingerprint = host
+	if err := payload.Validate(); err != nil {
+		return PairingPayload{}, err
+	}
+
+	rec := &deviceRecord{
+		DeviceID:               deviceID,
+		Label:                  label,
+		Platform:               platform,
+		State:                  DevicePending,
+		PairingCodeFingerprint: Fingerprint(code),
+		PairingExpiresAt:       expires,
+		CreatedAt:              now,
+	}
+	// The record is validated through its own projection before it is written,
+	// so a record that could never be rendered as a Device never reaches disk.
+	if d := rec.device(); d.Validate() != nil {
+		return PairingPayload{}, d.Validate()
+	}
+
+	err = r.mutate(func(f *registryFile) (receipt, error) {
+		// Two pairings inside the same second share the identifier's date-time
+		// half and are separated only by its random tail. The odds are
+		// negligible and the consequence would not be — a second device
+		// shadowing the first in every lookup — so it is checked rather than
+		// assumed.
+		if f.find(deviceID) != nil {
+			return receipt{}, fmt.Errorf("companion: device id %s is already registered; run pair again", deviceID)
+		}
+		f.Devices = append(f.Devices, rec)
+		return receipt{Event: "paired", DeviceID: deviceID, At: now}, nil
+	})
+	if err != nil {
+		return PairingPayload{}, err
+	}
+	return payload, nil
+}
+
+// Confirm spends a pairing code and mints the bearer token.
+//
+// The returned token is the only copy; the registry keeps its fingerprint.
+// Confirm is not idempotent by design: a second confirmation for the same
+// device finds it active, not pending, and is refused with ErrNotPending. A
+// replayed confirmation that minted a second live token would double the
+// credentials in circulation for one device and make revocation a guess.
+func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err error) {
+	if err := c.Validate(); err != nil {
+		return "", Device{}, err
+	}
+	token, err = r.newSecret(tokenEntropyBytes)
+	if err != nil {
+		return "", Device{}, err
+	}
+	now := r.stamp()
+	var expiredCode bool
+
+	err = r.mutate(func(f *registryFile) (receipt, error) {
+		rec := f.find(c.DeviceID)
+		if rec == nil {
+			return receipt{}, ErrNoSuchDevice
+		}
+		if rec.State != DevicePending || rec.PairingCodeFingerprint == "" {
+			return receipt{}, ErrNotPending
+		}
+		// Compare first, THEN check expiry. The other order answers "was that
+		// code right?" for free to anyone who can make a device expire, and the
+		// comparison is the part that must not be skippable.
+		match := subtle.ConstantTimeCompare(
+			[]byte(rec.PairingCodeFingerprint),
+			[]byte(Fingerprint(c.PairingCode)),
+		) == 1
+		expired := r.expired(rec.PairingExpiresAt)
+		if !match {
+			return receipt{}, ErrPairingCode
+		}
+		if expired {
+			// The code is burned, not merely late. Leaving it in place would
+			// make the TTL depend on the system clock never moving backwards,
+			// and on a laptop the clock is user-controlled: set the date back
+			// and yesterday's photographed QR code works again. Note that this
+			// only fires for a code that MATCHED, so a wrong guess can never
+			// burn somebody else's pending pairing.
+			rec.PairingCodeFingerprint = ""
+			expiredCode = true
+			return receipt{Event: "expired", DeviceID: c.DeviceID, At: now}, nil
+		}
+
+		rec.State = DeviceActive
+		rec.TokenFingerprint = Fingerprint(token)
+		rec.PairingCodeFingerprint = ""
+		rec.PairingExpiresAt = ""
+		rec.Label = c.Label
+		rec.Platform = c.Platform
+		rec.PublicKey = c.PublicKey
+		dev = rec.device()
+		if err := dev.Validate(); err != nil {
+			return receipt{}, err
+		}
+		return receipt{Event: "confirmed", DeviceID: c.DeviceID, At: now}, nil
+	})
+	if err != nil {
+		return "", Device{}, err
+	}
+	if expiredCode {
+		// The burn was committed, so the refusal is reported after the write
+		// rather than instead of it.
+		return "", Device{}, ErrPairingExpired
+	}
+	return token, dev, nil
+}
+
+// Authenticate resolves a bearer token to its device.
+//
+// Every stored fingerprint is compared, with no early exit, so the time taken
+// does not depend on which device matched or on how far down the file it sits.
+// A revoked device keeps its fingerprint precisely so this can answer
+// "revoked_device" rather than "unknown_device": an operator who cannot tell a
+// stale client from an attacker cannot respond to either.
+func (r *Registry) Authenticate(token string) (Device, error) {
+	f, err := r.load()
+	if err != nil {
+		return Device{}, err
+	}
+	if token == "" {
+		return Device{}, &AuthError{Reason: ReasonUnknownDevice}
+	}
+	want := []byte(Fingerprint(token))
+
+	var matched *deviceRecord
+	for _, rec := range f.Devices {
+		if rec.TokenFingerprint == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(rec.TokenFingerprint), want) == 1 {
+			matched = rec
+		}
+	}
+	if matched == nil {
+		return Device{}, &AuthError{Reason: ReasonUnknownDevice}
+	}
+	if matched.State != DeviceActive {
+		return Device{}, &AuthError{Reason: ReasonRevokedDevice}
+	}
+	return matched.device(), nil
+}
+
+// MarkSeen records that a device just authenticated. It is separate from
+// Authenticate so the read path stays a read: a listener that wrote the record
+// file on every request would serialize its own traffic behind one lock.
+func (r *Registry) MarkSeen(deviceID string) error {
+	now := r.stamp()
+	return r.mutate(func(f *registryFile) (receipt, error) {
+		rec := f.find(deviceID)
+		if rec == nil {
+			return receipt{}, ErrNoSuchDevice
+		}
+		if rec.LastSeenAt == now {
+			return receipt{}, errNoChange
+		}
+		rec.LastSeenAt = now
+		// No receipt: last_seen_at moves on every request a phone makes, and an
+		// audit row per request is a log, not an audit trail.
+		return receipt{}, nil
+	})
+}
+
+// Revoke ends a device's access. It reports whether this call was the one that
+// changed anything, so a caller can tell "revoked now" from "already revoked"
+// without the second case being an error — re-revoking under uncertainty is
+// exactly what an operator should be able to do freely.
+//
+// The token fingerprint survives revocation on purpose; see Authenticate.
+func (r *Registry) Revoke(deviceID string) (dev Device, changed bool, err error) {
+	if err := validateID("device_id", PrefixDevice, deviceID); err != nil {
+		return Device{}, false, err
+	}
+	now := r.stamp()
+
+	err = r.mutate(func(f *registryFile) (receipt, error) {
+		rec := f.find(deviceID)
+		if rec == nil {
+			return receipt{}, ErrNoSuchDevice
+		}
+		if rec.State == DeviceRevoked {
+			dev, changed = rec.device(), false
+			return receipt{}, errNoChange
+		}
+		rec.State = DeviceRevoked
+		rec.RevokedAt = now
+		// A half-finished pairing is revoked too: the code dies with the
+		// device, or a revoked device could be brought back by a QR code
+		// somebody photographed a minute earlier.
+		rec.PairingCodeFingerprint = ""
+		rec.PairingExpiresAt = ""
+		dev, changed = rec.device(), true
+		if err := dev.Validate(); err != nil {
+			return receipt{}, err
+		}
+		return receipt{Event: "revoked", DeviceID: deviceID, At: now}, nil
+	})
+	if err != nil {
+		return Device{}, false, err
+	}
+	return dev, changed, nil
+}
+
+// List returns every device, newest registration last. Pending devices whose
+// code has expired are reported as they are stored — expiry is a property of
+// the code, not a state transition, so a device does not silently change state
+// between two reads that did nothing.
+func (r *Registry) List() ([]Device, error) {
+	f, err := r.load()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Device, 0, len(f.Devices))
+	for _, rec := range f.Devices {
+		out = append(out, rec.device())
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
+		return out[i].DeviceID < out[j].DeviceID
+	})
+	return out, nil
+}
+
+// Status is the registry summary: counts and whether a pairing window is open
+// right now.
+//
+// It carries no path, because a status line ends up in screenshots and bug
+// reports and a home directory is not something to publish there. It carries no
+// host fingerprint either: that value is random per install, so a document
+// containing it can never be frozen against a golden, and the moment it is
+// actually needed is the pairing moment, where PairingPayload already carries
+// it for the human comparing two screens. Call HostFingerprint directly if a
+// later caller needs it on its own.
+type Status struct {
+	Active            int    `json:"active"`
+	Pending           int    `json:"pending"`
+	Revoked           int    `json:"revoked"`
+	PairingOpen       bool   `json:"pairing_open"`
+	NextPairingExpiry string `json:"next_pairing_expiry,omitempty"`
+}
+
+// Status summarizes the registry.
+func (r *Registry) Status() (Status, error) {
+	f, err := r.load()
+	if err != nil {
+		return Status{}, err
+	}
+	var s Status
+	for _, rec := range f.Devices {
+		switch rec.State {
+		case DeviceActive:
+			s.Active++
+		case DevicePending:
+			s.Pending++
+			if rec.PairingExpiresAt == "" || r.expired(rec.PairingExpiresAt) {
+				continue
+			}
+			s.PairingOpen = true
+			if s.NextPairingExpiry == "" || rec.PairingExpiresAt < s.NextPairingExpiry {
+				s.NextPairingExpiry = rec.PairingExpiresAt
+			}
+		case DeviceRevoked:
+			s.Revoked++
+		}
+	}
+	return s, nil
+}
+
+// HostFingerprint returns the stable identity of this Mac, creating the seed on
+// first use. It is what a phone pins so a pairing code replayed against a
+// different host is visible to the human comparing two printed fingerprints.
+//
+// The seed is random rather than derived from a hostname or a machine id: a
+// derived fingerprint changes when the user renames their Mac, and a phone
+// would read that rename as a host substitution.
+func (r *Registry) HostFingerprint() (string, error) {
+	path := filepath.Join(r.dir(), "host.key")
+	if seed, err := os.ReadFile(path); err == nil && len(seed) == tokenEntropyBytes {
+		if err := hardenPath(path, secretFileMode); err != nil {
+			return "", err
+		}
+		return Fingerprint(string(seed)), nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	seed := make([]byte, tokenEntropyBytes)
+	if _, err := io.ReadFull(r.entropy, seed); err != nil {
+		return "", fmt.Errorf("companion: read entropy: %w", err)
+	}
+	if err := r.ensureDir(); err != nil {
+		return "", err
+	}
+	if err := writeSecretFile(path, seed); err != nil {
+		return "", err
+	}
+	return Fingerprint(string(seed)), nil
+}
+
+func (f *registryFile) find(id string) *deviceRecord {
+	for _, rec := range f.Devices {
+		if rec.DeviceID == id {
+			return rec
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+func (r *Registry) dir() string      { return filepath.Join(r.configDir, "companion") }
+func (r *Registry) filePath() string { return filepath.Join(r.dir(), "devices.json") }
+func (r *Registry) lockPath() string { return filepath.Join(r.dir(), ".lock") }
+func (r *Registry) receiptDir() string {
+	return filepath.Join(r.stateDir, "companion", "receipts")
+}
+
+func (r *Registry) ensureDir() error {
+	if err := os.MkdirAll(r.dir(), secretDirMode); err != nil {
+		return err
+	}
+	// MkdirAll honours the umask, and a directory restored from an archive
+	// carries whatever mode the archive held, so the mode is asserted rather
+	// than assumed.
+	return hardenPath(r.dir(), secretDirMode)
+}
+
+// load reads the record file. A missing file is an empty registry, not an
+// error: `mora companion list` before the first pairing is a legitimate call.
+func (r *Registry) load() (*registryFile, error) {
+	// The mode is repaired BEFORE the read, not after: hardening a file the
+	// process has already read leaves the whole read window at whatever mode
+	// the file was found in.
+	if err := hardenPath(r.filePath(), secretFileMode); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	body, err := os.ReadFile(r.filePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return &registryFile{Version: registryFileVersion}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var f registryFile
+	if err := json.Unmarshal(body, &f); err != nil {
+		return nil, fmt.Errorf("companion: %s is not readable as a device registry (%w); "+
+			"move it aside and pair again", r.filePath(), err)
+	}
+	if f.Version > registryFileVersion {
+		return nil, fmt.Errorf("companion: device registry is version %d, this build understands %d — upgrade mora",
+			f.Version, registryFileVersion)
+	}
+	return &f, nil
+}
+
+// mutate runs fn against the record file under the cross-process lock and
+// writes the result atomically.
+//
+// fn RETURNS the receipt rather than the caller passing one in, because only fn
+// knows whether anything moved: a re-revocation of an already-revoked device
+// must not leave a second audit row saying it did. An empty Event writes none.
+//
+// The read happens INSIDE the lock: reading first and locking second is the
+// lost-update bug this exists to prevent, where two `mora companion pair` runs
+// each write a file containing only their own device.
+func (r *Registry) mutate(fn func(*registryFile) (receipt, error)) error {
+	if err := r.ensureDir(); err != nil {
+		return err
+	}
+	nonce, unlock, err := r.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	f, err := r.load()
+	if err != nil {
+		return err
+	}
+	rcpt, err := fn(f)
+	if errors.Is(err, errNoChange) {
+		// Nothing moved, so nothing is written. Rewriting the file for a no-op
+		// would re-serialize whatever was already there — including a record an
+		// older build wrote that no longer validates — and would stamp an audit
+		// row on an event that did not happen.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !r.holds(nonce) {
+		// The lock was swept as stale while fn ran, so another process may have
+		// replaced the state this snapshot came from. Refusing is the only
+		// answer that cannot lose their write.
+		return ErrLocked
+	}
+	f.Version = registryFileVersion
+	body, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeSecretFile(r.filePath(), append(body, '\n')); err != nil {
+		return err
+	}
+	// The receipt is written after the record file, never before: a receipt for
+	// a revocation that did not land is a worse lie than a revocation with no
+	// receipt.
+	if rcpt.Event == "" {
+		return nil
+	}
+	return r.writeReceipt(rcpt)
+}
+
+// lock takes the cross-process write lock and returns the nonce identifying
+// THIS holder.
+//
+// O_EXCL on a regular file is the portable primitive here — flock and
+// LockFileEx are not the same call on the three platforms this ships to — so a
+// crashed process leaves a stale lock and lockStale bounds how long that can
+// block anyone. Stealing a stale lock is the dangerous half: the process whose
+// lock was stolen may still be alive and holding a snapshot it is about to
+// write. The nonce is what makes the steal safe. It is written into the lock
+// file, checked before the holder writes anything, and checked again before the
+// holder removes the file, so a stolen lock turns into a refusal rather than a
+// lost update or a lock deleted out from under its new owner.
+func (r *Registry) lock() (nonce string, unlock func(), err error) {
+	const (
+		lockTimeout = 5 * time.Second
+		lockPoll    = 20 * time.Millisecond
+		lockStale   = 60 * time.Second
+	)
+	nonce, err = r.newSecret(16)
+	if err != nil {
+		return "", nil, err
+	}
+	release := func() {
+		// Only the current owner may remove the file. Without this check, a
+		// process whose lock was stolen deletes the NEW owner's lock on its way
+		// out and lets a third writer in.
+		if held, _ := os.ReadFile(r.lockPath()); string(held) == nonce {
+			os.Remove(r.lockPath())
+		}
+	}
+
+	deadline := time.Now().Add(lockTimeout)
+	for {
+		fh, openErr := os.OpenFile(r.lockPath(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, secretFileMode)
+		if openErr == nil {
+			_, writeErr := fh.WriteString(nonce)
+			closeErr := fh.Close()
+			if writeErr != nil || closeErr != nil {
+				release()
+				return "", nil, errors.Join(writeErr, closeErr)
+			}
+			return nonce, release, nil
+		}
+		if !errors.Is(openErr, os.ErrExist) {
+			return "", nil, openErr
+		}
+		if info, statErr := os.Stat(r.lockPath()); statErr == nil && time.Since(info.ModTime()) > lockStale {
+			os.Remove(r.lockPath())
+			continue
+		}
+		if time.Now().After(deadline) {
+			return "", nil, ErrLocked
+		}
+		time.Sleep(lockPoll)
+	}
+}
+
+// holds reports whether this nonce is still the one in the lock file. A holder
+// that lost the lock to the stale-lock sweep read a snapshot that another
+// process has since replaced, so its write would be a lost update.
+func (r *Registry) holds(nonce string) bool {
+	held, err := os.ReadFile(r.lockPath())
+	return err == nil && string(held) == nonce
+}
+
+// receipt is one audit row. It names the device and the moment, never the
+// credential and never the payload, so the receipts directory stays safe to
+// include in a bug report.
+type receipt struct {
+	Event    string `json:"event"`
+	DeviceID string `json:"device_id"`
+	At       string `json:"at"`
+}
+
+func (r *Registry) writeReceipt(rcpt receipt) error {
+	if err := os.MkdirAll(r.receiptDir(), secretDirMode); err != nil {
+		return err
+	}
+	if err := hardenPath(r.receiptDir(), secretDirMode); err != nil {
+		return err
+	}
+	suffix, err := r.newSecret(4)
+	if err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(struct {
+		Header
+		receipt
+	}{Header: newHeader(schemaRegistryReceipt), receipt: rcpt}, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Colons are legal in an RFC3339 stamp and illegal in a Windows filename,
+	// so the compact form is used for the name and the exact stamp stays in the
+	// body.
+	stamp := strings.NewReplacer("-", "", ":", "").Replace(rcpt.At)
+	name := fmt.Sprintf("%s-%s-%s-%s.json", stamp, rcpt.Event, rcpt.DeviceID, suffix)
+	return writeSecretFile(filepath.Join(r.receiptDir(), name), append(body, '\n'))
+}
+
+// schemaRegistryReceipt names the audit row. It is not one of the published
+// wire schemas: no device ever receives it, and it is versioned only so a later
+// reader can tell what it is looking at.
+const schemaRegistryReceipt = "mora.companion.registry.receipt"
+
+// writeSecretFile writes body to path atomically at 0600.
+//
+// The mode is set on the temporary file BEFORE the rename, not on the final
+// path after it: a chmod after rename leaves a window in which the secret is
+// world-readable, and that window is exactly when a watcher would look.
+func writeSecretFile(path string, body []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if err := tmp.Chmod(secretFileMode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return hardenPath(path, secretFileMode)
+}
+
+// hardenPath re-asserts a mode, tolerating the platforms where it is not a real
+// question. On Windows os.Chmod only moves the read-only bit and Stat reports a
+// synthesized mode, so comparing modes there would fail forever on a system
+// that has no POSIX permissions to get wrong.
+func hardenPath(path string, mode os.FileMode) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() == mode {
+		return nil
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Identifiers, secrets and time
+// ---------------------------------------------------------------------------
+
+// secretEncoding is unpadded, uppercase base32. Base32 rather than base64
+// because these strings are read aloud and typed by hand in the fallback
+// pairing flow, and base32's alphabet has no case-sensitive collisions.
+var secretEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+func (r *Registry) newSecret(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r.entropy, buf); err != nil {
+		return "", fmt.Errorf("companion: read entropy: %w", err)
+	}
+	return secretEncoding.EncodeToString(buf), nil
+}
+
+// newDeviceID mints an identifier in the shape the rest of Mora already
+// generates: a kind prefix, a date, a time, and a random hex tail
+// (`dev_20260903_120000_a1b2c3d4`). Matching that shape is not cosmetic — the
+// contract corpus normalizes exactly this pattern, so a device id in any other
+// shape would make `mora companion list` unfreezable.
+//
+// Nothing may be parsed out of the opaque half; it is timestamped for the same
+// reason every other Mora id is, so a human reading a log can order two of them.
+func (r *Registry) newDeviceID() (string, error) {
+	tail := make([]byte, deviceIDEntropyBytes)
+	if _, err := io.ReadFull(r.entropy, tail); err != nil {
+		return "", fmt.Errorf("companion: read entropy: %w", err)
+	}
+	return fmt.Sprintf("%s%s_%s", PrefixDevice, r.now().UTC().Format("20060102_150405"), hex.EncodeToString(tail)), nil
+}
+
+// stamp renders the current time in the one timestamp format this package
+// publishes: RFC3339, UTC, second precision.
+func (r *Registry) stamp() string { return r.stampAt(r.now()) }
+
+func (r *Registry) stampAt(t time.Time) string {
+	return t.UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
+// expired reports whether a stored deadline has passed. An unparseable or
+// missing deadline counts as expired: a pairing window nobody can read the end
+// of is not a window that should stay open.
+func (r *Registry) expired(deadline string) bool {
+	if deadline == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, deadline)
+	if err != nil {
+		return true
+	}
+	// Equality counts as expired. A deadline that is still valid AT the
+	// deadline is a deadline one second longer than the one published.
+	return !r.now().Before(t)
+}

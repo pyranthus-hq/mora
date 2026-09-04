@@ -1,0 +1,8 @@
+{
+  "active": 0,
+  "pairing_open": false,
+  "pending": 0,
+  "revoked": 0,
+  "schema": "mora.companion.status",
+  "schema_version": 1
+}

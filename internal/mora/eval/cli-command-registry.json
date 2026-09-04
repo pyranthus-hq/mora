@@ -1009,6 +1009,41 @@
       "platform": "native-seam",
       "json_contract": "result",
       "payload": "mora.serve.http.status"
+    },
+    {
+      "path": "companion",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "path": "companion pair",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "every invocation mints a fresh one-time pairing code and carries the per-install host fingerprint, so no two runs produce the same document and there is nothing a golden could freeze; the mora.companion.pair envelope is pinned by TestCompanionPairEmitsAPairingPayloadAndRegistersAPendingDevice"
+    },
+    {
+      "path": "companion list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.companion.list"
+    },
+    {
+      "path": "companion revoke",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "revocation needs a real paired device id, so the generic envelope prober cannot drive it; the mora.companion.revoke receipt envelope is pinned by TestCompanionRevokeEmitsVersionedReceiptAndIsIdempotent"
+    },
+    {
+      "path": "companion status",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.companion.status"
     }
   ]
 }

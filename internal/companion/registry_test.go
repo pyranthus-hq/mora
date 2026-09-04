@@ -1,0 +1,844 @@
+package companion
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// testRegistry returns a registry over two fresh temp roots with a pinned
+// clock. The clock starts at a fixed instant and only moves when a test moves
+// it, so a pairing window closes because the test said so and never because the
+// suite was slow.
+func testRegistry(t *testing.T) (*Registry, *time.Time, string, string) {
+	t.Helper()
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	clock := &now
+	reg := NewRegistry(configDir, stateDir, WithClock(func() time.Time { return *clock }))
+	return reg, clock, configDir, stateDir
+}
+
+// pairAndConfirm drives the whole happy path and returns the minted token.
+func pairAndConfirm(t *testing.T, reg *Registry, label string) (string, Device) {
+	t.Helper()
+	payload, err := reg.Pair(label, PlatformIOS, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	c := NewPairingConfirmation()
+	c.DeviceID = payload.DeviceID
+	c.PairingCode = payload.PairingCode
+	c.Label = label
+	c.Platform = PlatformIOS
+	c.PublicKey = testPublicKey
+	c.ConfirmedAt = payload.ExpiresAt
+	token, dev, err := reg.Confirm(c)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	return token, dev
+}
+
+// testPublicKey is 32 fixed bytes in the "<alg>:<base64>" form
+// validatePublicKey accepts. The registry stores the key and does not interpret
+// it, so a constant is enough.
+var testPublicKey = "ed25519:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+
+func TestRegistryPairConfirmAuthenticateRoundTrip(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+
+	payload, err := reg.Pair("Adit's phone", PlatformIOS, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	if err := payload.Validate(); err != nil {
+		t.Fatalf("pair payload does not satisfy the published schema: %v", err)
+	}
+	if !strings.HasPrefix(payload.DeviceID, PrefixDevice) {
+		t.Fatalf("device id %q does not carry the published prefix", payload.DeviceID)
+	}
+
+	before, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].State != DevicePending {
+		t.Fatalf("after pair, want one pending device, got %+v", before)
+	}
+	if before[0].TokenFingerprint != "" {
+		t.Fatal("a pending device must not name a credential it has not been issued")
+	}
+
+	c := NewPairingConfirmation()
+	c.DeviceID = payload.DeviceID
+	c.PairingCode = payload.PairingCode
+	c.Label = "Adit's phone"
+	c.Platform = PlatformIOS
+	c.PublicKey = testPublicKey
+	c.ConfirmedAt = payload.ExpiresAt
+
+	token, dev, err := reg.Confirm(c)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if token == "" {
+		t.Fatal("confirm minted no token")
+	}
+	if dev.State != DeviceActive {
+		t.Fatalf("confirmed device state = %q, want active", dev.State)
+	}
+	if dev.TokenFingerprint != Fingerprint(token) {
+		t.Fatal("the projected fingerprint is not the fingerprint of the minted token")
+	}
+
+	got, err := reg.Authenticate(token)
+	if err != nil {
+		t.Fatalf("authenticate with the minted token: %v", err)
+	}
+	if got.DeviceID != payload.DeviceID {
+		t.Fatalf("authenticate resolved %q, want %q", got.DeviceID, payload.DeviceID)
+	}
+}
+
+// TestRegistryPersistsNoSecrets is the claim registry.go's package comment
+// makes, checked against the actual bytes: neither the one-time code nor the
+// bearer token may appear anywhere under ConfigDir or StateDir.
+func TestRegistryPersistsNoSecrets(t *testing.T) {
+	reg, _, configDir, stateDir := testRegistry(t)
+
+	payload, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The code is checked while it is still live, before it is spent: a
+	// registry that wrote the code and erased it on confirm would still have
+	// written it.
+	assertAbsentFromTree(t, configDir, "pairing code", payload.PairingCode)
+	assertAbsentFromTree(t, stateDir, "pairing code", payload.PairingCode)
+
+	c := NewPairingConfirmation()
+	c.DeviceID = payload.DeviceID
+	c.PairingCode = payload.PairingCode
+	c.Label = "phone"
+	c.Platform = PlatformIOS
+	c.PublicKey = testPublicKey
+	c.ConfirmedAt = payload.ExpiresAt
+	token, _, err := reg.Confirm(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertAbsentFromTree(t, configDir, "bearer token", token)
+	assertAbsentFromTree(t, stateDir, "bearer token", token)
+	assertAbsentFromTree(t, configDir, "pairing code", payload.PairingCode)
+
+	// The fingerprint IS expected on disk — that is what makes authentication
+	// possible without storing the credential — so its presence is asserted
+	// too. Otherwise this test would pass just as well against a registry that
+	// persisted nothing at all.
+	body, err := os.ReadFile(filepath.Join(configDir, "companion", "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(Fingerprint(token))) {
+		t.Fatal("devices.json does not carry the token fingerprint; nothing could authenticate")
+	}
+}
+
+func assertAbsentFromTree(t *testing.T, root, what, secret string) {
+	t.Helper()
+	if secret == "" {
+		t.Fatalf("%s is empty; the check would pass vacuously", what)
+	}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if bytes.Contains(body, []byte(secret)) {
+			t.Errorf("%s is stored in plaintext at %s", what, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistryRevokeEndsAuthenticationAndIsIdempotent(t *testing.T) {
+	reg, _, _, stateDir := testRegistry(t)
+	token, dev := pairAndConfirm(t, reg, "phone")
+
+	revoked, changed, err := reg.Revoke(dev.DeviceID)
+	if err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if !changed {
+		t.Fatal("the first revoke reported no change")
+	}
+	if revoked.State != DeviceRevoked || revoked.RevokedAt == "" {
+		t.Fatalf("revoked device = %+v, want state revoked with a timestamp", revoked)
+	}
+	if err := revoked.Validate(); err != nil {
+		t.Fatalf("revoked device does not satisfy the published schema: %v", err)
+	}
+
+	// The credential must stop working, and it must stop working with the
+	// reason that tells an operator this was a device they knew about.
+	_, err = reg.Authenticate(token)
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("authenticate after revoke returned %v, want an *AuthError", err)
+	}
+	if authErr.Reason != ReasonRevokedDevice {
+		t.Fatalf("reason = %q, want %q", authErr.Reason, ReasonRevokedDevice)
+	}
+
+	again, changed, err := reg.Revoke(dev.DeviceID)
+	if err != nil {
+		t.Fatalf("second revoke: %v", err)
+	}
+	if changed {
+		t.Fatal("the second revoke claimed to change something")
+	}
+	if again.RevokedAt != revoked.RevokedAt {
+		t.Fatal("the second revoke moved the revocation time")
+	}
+
+	// A repeat writes no receipt: the audit trail records revocations, not
+	// attempts to repeat one.
+	if got := len(receiptFiles(t, stateDir, "revoked")); got != 1 {
+		t.Fatalf("revocation receipts = %d, want exactly 1", got)
+	}
+
+	if _, _, err := reg.Revoke("dev_missing"); !errors.Is(err, ErrNoSuchDevice) {
+		t.Fatalf("revoking an unknown device returned %v, want ErrNoSuchDevice", err)
+	}
+}
+
+func TestRegistryConfirmRejectsWrongCodeExpiredCodeAndReplay(t *testing.T) {
+	t.Run("a wrong code does not burn somebody else's pending pairing", func(t *testing.T) {
+		reg, clock, _, _ := testRegistry(t)
+		payload, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
+		if err != nil {
+			t.Fatal(err)
+		}
+		*clock = clock.Add(PairingTTL + time.Second)
+		wrong := confirmationFor(payload)
+		wrong.PairingCode = "NOTTHERIGHTCODE"
+		if _, _, err := reg.Confirm(wrong); !errors.Is(err, ErrPairingCode) {
+			t.Fatalf("a wrong late code returned %v, want ErrPairingCode", err)
+		}
+		// The expiry burn fires only for a code that MATCHED. Otherwise anyone
+		// who can reach the listener kills a pairing by guessing.
+		*clock = clock.Add(-PairingTTL - time.Second)
+		if _, _, err := reg.Confirm(confirmationFor(payload)); err != nil {
+			t.Fatalf("a wrong guess burned the real code: %v", err)
+		}
+	})
+
+	t.Run("wrong code", func(t *testing.T) {
+		reg, _, _, _ := testRegistry(t)
+		payload, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := confirmationFor(payload)
+		c.PairingCode = "NOTTHERIGHTCODE"
+		if _, _, err := reg.Confirm(c); !errors.Is(err, ErrPairingCode) {
+			t.Fatalf("confirm with a wrong code returned %v, want ErrPairingCode", err)
+		}
+		// A failed attempt must leave the window open; otherwise one typo from
+		// anybody who can reach the listener denies the real device its pairing.
+		devices, err := reg.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if devices[0].State != DevicePending {
+			t.Fatalf("state after a wrong code = %q, want pending", devices[0].State)
+		}
+	})
+
+	t.Run("expired code", func(t *testing.T) {
+		reg, clock, _, _ := testRegistry(t)
+		payload, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
+		if err != nil {
+			t.Fatal(err)
+		}
+		*clock = clock.Add(PairingTTL + time.Second)
+		if _, _, err := reg.Confirm(confirmationFor(payload)); !errors.Is(err, ErrPairingExpired) {
+			t.Fatalf("confirm after the TTL returned %v, want ErrPairingExpired", err)
+		}
+		// The late code is BURNED, not merely refused: a second attempt no
+		// longer has a code to present.
+		if _, _, err := reg.Confirm(confirmationFor(payload)); !errors.Is(err, ErrNotPending) {
+			t.Fatalf("second confirm after expiry returned %v, want ErrNotPending", err)
+		}
+		// Turning the clock back must not revive it. On a laptop the clock is
+		// user-controlled, so a TTL enforced only by comparison would mean
+		// yesterday's photographed QR code works again tomorrow.
+		*clock = clock.Add(-2 * PairingTTL)
+		if _, _, err := reg.Confirm(confirmationFor(payload)); !errors.Is(err, ErrNotPending) {
+			t.Fatalf("a rolled-back clock revived an expired code: %v", err)
+		}
+		devices, err := reg.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if devices[0].State != DevicePending {
+			t.Fatalf("burning the code changed the stored state to %q", devices[0].State)
+		}
+	})
+
+	t.Run("replay", func(t *testing.T) {
+		reg, _, _, _ := testRegistry(t)
+		payload, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := confirmationFor(payload)
+		first, _, err := reg.Confirm(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, _, err := reg.Confirm(c)
+		if !errors.Is(err, ErrNotPending) {
+			t.Fatalf("replayed confirmation returned %v, want ErrNotPending", err)
+		}
+		if second != "" {
+			t.Fatal("a replayed confirmation minted a second token")
+		}
+		if _, err := reg.Authenticate(first); err != nil {
+			t.Fatalf("the first token stopped working after a replay: %v", err)
+		}
+	})
+
+	t.Run("unknown device", func(t *testing.T) {
+		reg, _, _, _ := testRegistry(t)
+		c := NewPairingConfirmation()
+		c.DeviceID = "dev_nothinghere"
+		c.PairingCode = "ANYTHING"
+		c.Label = "phone"
+		c.Platform = PlatformIOS
+		c.PublicKey = testPublicKey
+		c.ConfirmedAt = "2026-09-03T12:00:00Z"
+		if _, _, err := reg.Confirm(c); !errors.Is(err, ErrNoSuchDevice) {
+			t.Fatalf("confirm for an unknown device returned %v, want ErrNoSuchDevice", err)
+		}
+	})
+}
+
+func confirmationFor(payload PairingPayload) PairingConfirmation {
+	c := NewPairingConfirmation()
+	c.DeviceID = payload.DeviceID
+	c.PairingCode = payload.PairingCode
+	c.Label = "phone"
+	c.Platform = PlatformIOS
+	c.PublicKey = testPublicKey
+	c.ConfirmedAt = payload.ExpiresAt
+	return c
+}
+
+func TestRegistryAuthenticateSeparatesRevokedFromUnknown(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	live, _ := pairAndConfirm(t, reg, "keeper")
+	doomed, doomedDev := pairAndConfirm(t, reg, "stolen")
+	if _, _, err := reg.Revoke(doomedDev.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  RejectReason
+	}{
+		{"revoked token", doomed, ReasonRevokedDevice},
+		{"never issued", "NEVERISSUEDTOKEN", ReasonUnknownDevice},
+		{"empty token", "", ReasonUnknownDevice},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := reg.Authenticate(tc.token)
+			var authErr *AuthError
+			if !errors.As(err, &authErr) {
+				t.Fatalf("err = %v, want an *AuthError", err)
+			}
+			if authErr.Reason != tc.want {
+				t.Fatalf("reason = %q, want %q", authErr.Reason, tc.want)
+			}
+		})
+	}
+
+	// Revoking one device must not disturb another.
+	if _, err := reg.Authenticate(live); err != nil {
+		t.Fatalf("the surviving device stopped authenticating: %v", err)
+	}
+}
+
+// TestRegistryAuthenticateComparesInConstantTime is a source-level witness, not
+// a timing measurement. A wall-clock timing assertion over SHA-256 comparisons
+// is noise on a loaded CI box and would be quarantined within a week; what can
+// be asserted deterministically is the two properties that make the comparison
+// constant time in the first place — subtle.ConstantTimeCompare rather than ==,
+// and no early exit out of the loop once a match is found.
+func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "registry.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		d, ok := decl.(*ast.FuncDecl)
+		if ok && d.Name.Name == "Authenticate" && d.Recv != nil {
+			fn = d
+		}
+	}
+	if fn == nil {
+		t.Fatal("Authenticate not found in registry.go")
+	}
+
+	var loops int
+	var constantTime, earlyExit bool
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		rng, ok := node.(*ast.RangeStmt)
+		if !ok {
+			return true
+		}
+		loops++
+		ast.Inspect(rng.Body, func(inner ast.Node) bool {
+			switch n := inner.(type) {
+			case *ast.CallExpr:
+				if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+					if id, ok := sel.X.(*ast.Ident); ok && id.Name == "subtle" && sel.Sel.Name == "ConstantTimeCompare" {
+						constantTime = true
+					}
+				}
+			case *ast.ReturnStmt, *ast.BranchStmt:
+				// `continue` past a record with no fingerprint is fine — it
+				// leaks nothing about the token — but a return or a break
+				// inside the loop makes the running time depend on WHICH
+				// record matched.
+				if b, ok := inner.(*ast.BranchStmt); ok && b.Tok == token.CONTINUE {
+					return true
+				}
+				earlyExit = true
+			}
+			return true
+		})
+		return true
+	})
+
+	if loops != 1 {
+		t.Fatalf("Authenticate has %d range loops; the witness assumes exactly one", loops)
+	}
+	if !constantTime {
+		t.Fatal("Authenticate does not compare fingerprints with subtle.ConstantTimeCompare")
+	}
+	if earlyExit {
+		t.Fatal("Authenticate exits its comparison loop early; the time taken now depends on which device matched")
+	}
+}
+
+func TestRegistryHardensDirectoryAndFileModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not the access-control mechanism on Windows")
+	}
+	reg, _, configDir, stateDir := testRegistry(t)
+	pairAndConfirm(t, reg, "phone")
+
+	dir := filepath.Join(configDir, "companion")
+	assertMode(t, dir, secretDirMode)
+	assertMode(t, filepath.Join(dir, "devices.json"), secretFileMode)
+	assertMode(t, filepath.Join(dir, "host.key"), secretFileMode)
+	assertMode(t, filepath.Join(stateDir, "companion", "receipts"), secretDirMode)
+	for _, path := range receiptFiles(t, stateDir, "") {
+		assertMode(t, path, secretFileMode)
+	}
+
+	// Loosening the modes by hand must not survive the next operation: the
+	// registry re-asserts them on every open, because a restore from an archive
+	// or a stray chmod -R is exactly how a 0600 file quietly becomes 0644.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "devices.json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Pair("second", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, dir, secretDirMode)
+	assertMode(t, filepath.Join(dir, "devices.json"), secretFileMode)
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("%s mode = %04o, want %04o", path, got, want)
+	}
+}
+
+func TestRegistryWritesReceiptsToStateDirWithoutSecrets(t *testing.T) {
+	reg, _, configDir, stateDir := testRegistry(t)
+	payload, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, dev, err := reg.Confirm(confirmationFor(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := reg.Revoke(dev.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Receipts live in StateDir, never in the credential directory.
+	if got := receiptFiles(t, configDir, ""); len(got) != 0 {
+		t.Fatalf("receipts written into ConfigDir: %v", got)
+	}
+	for _, event := range []string{"paired", "confirmed", "revoked"} {
+		if got := len(receiptFiles(t, stateDir, event)); got != 1 {
+			t.Fatalf("%s receipts = %d, want 1", event, got)
+		}
+	}
+
+	for _, path := range receiptFiles(t, stateDir, "") {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row struct {
+			Schema        string `json:"schema"`
+			SchemaVersion int    `json:"schema_version"`
+			Event         string `json:"event"`
+			DeviceID      string `json:"device_id"`
+			At            string `json:"at"`
+		}
+		if err := json.Unmarshal(body, &row); err != nil {
+			t.Fatalf("%s does not decode: %v", path, err)
+		}
+		if row.Schema != schemaRegistryReceipt || row.SchemaVersion != SchemaVersion {
+			t.Fatalf("%s carries %s/%d, want %s/%d", path, row.Schema, row.SchemaVersion, schemaRegistryReceipt, SchemaVersion)
+		}
+		if row.DeviceID != dev.DeviceID || row.At == "" {
+			t.Fatalf("%s does not name the device and the moment: %+v", path, row)
+		}
+		if bytes.Contains(body, []byte(token)) || bytes.Contains(body, []byte(payload.PairingCode)) {
+			t.Fatalf("%s carries a credential", path)
+		}
+	}
+}
+
+// receiptFiles lists receipt files under root, optionally filtered by event.
+func receiptFiles(t *testing.T, root, event string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if filepath.Base(filepath.Dir(path)) != "receipts" {
+			return nil
+		}
+		if event != "" && !strings.Contains(d.Name(), "-"+event+"-") {
+			return nil
+		}
+		out = append(out, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestRegistryConcurrentPairKeepsEveryDevice drives the lost-update case the
+// lock exists for: two pairings racing over one record file, each of which read
+// a file that did not yet contain the other.
+func TestRegistryConcurrentPairKeepsEveryDevice(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	const n = 8
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("pair %d: %v", i, err)
+		}
+	}
+
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != n {
+		t.Fatalf("registry holds %d devices after %d concurrent pairings; the lost-update guard did not hold", len(devices), n)
+	}
+	seen := map[string]bool{}
+	for _, d := range devices {
+		if seen[d.DeviceID] {
+			t.Fatalf("duplicate device id %q", d.DeviceID)
+		}
+		seen[d.DeviceID] = true
+	}
+}
+
+func TestRegistryRejectsBadPairInput(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	for _, tc := range []struct {
+		name     string
+		label    string
+		platform Platform
+		endpoint string
+	}{
+		{"empty label", "", PlatformIOS, "http://127.0.0.1:7777"},
+		{"unknown platform", "phone", Platform("android"), "http://127.0.0.1:7777"},
+		{"cleartext non-loopback endpoint", "phone", PlatformIOS, "http://evil.example/"},
+		{"userinfo endpoint", "phone", PlatformIOS, "http://127.0.0.1:@evil.example/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := reg.Pair(tc.label, tc.platform, tc.endpoint); err == nil {
+				t.Fatal("pair accepted input the published schema refuses")
+			}
+			devices, err := reg.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(devices) != 0 {
+				t.Fatalf("a refused pairing still wrote %d device(s)", len(devices))
+			}
+		})
+	}
+}
+
+func TestRegistryStatusReportsCountsAndPairingWindow(t *testing.T) {
+	reg, clock, _, _ := testRegistry(t)
+
+	empty, err := reg.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Active+empty.Pending+empty.Revoked != 0 || empty.PairingOpen {
+		t.Fatalf("empty registry status = %+v", empty)
+	}
+
+	payload, err := reg.Pair("pending phone", PlatformIOS, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, err := reg.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !open.PairingOpen || open.Pending != 1 || open.NextPairingExpiry != payload.ExpiresAt {
+		t.Fatalf("status with a live code = %+v", open)
+	}
+
+	// The host fingerprint lives on PairingPayload, not on Status: it is the
+	// value a phone pins at the pairing moment, and it must not move.
+	second, err := reg.Pair("another phone", PlatformIOS, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.HostFingerprint != payload.HostFingerprint {
+		t.Fatal("the host fingerprint changed between two pairings")
+	}
+	if err := validateFingerprint("host_fingerprint", payload.HostFingerprint); err != nil {
+		t.Fatalf("host fingerprint: %v", err)
+	}
+
+	*clock = clock.Add(PairingTTL + time.Second)
+	closed, err := reg.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.PairingOpen || closed.NextPairingExpiry != "" {
+		t.Fatalf("status after the TTL = %+v, want a closed window", closed)
+	}
+	if closed.Pending != 2 {
+		t.Fatal("an expired code silently changed a device's stored state")
+	}
+}
+
+func TestRegistryMarkSeenRecordsLastSeen(t *testing.T) {
+	reg, clock, _, _ := testRegistry(t)
+	token, dev := pairAndConfirm(t, reg, "phone")
+
+	// Authenticate is a read: it must not move last_seen_at on its own, or a
+	// listener would serialize every request behind one file write.
+	if _, err := reg.Authenticate(token); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].LastSeenAt != "" {
+		t.Fatal("Authenticate wrote last_seen_at")
+	}
+
+	*clock = clock.Add(time.Hour)
+	if err := reg.MarkSeen(dev.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	devices, err = reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].LastSeenAt != "2026-09-03T13:00:00Z" {
+		t.Fatalf("last_seen_at = %q", devices[0].LastSeenAt)
+	}
+	if err := devices[0].Validate(); err != nil {
+		t.Fatalf("device with last_seen_at fails the published schema: %v", err)
+	}
+	if err := reg.MarkSeen("dev_missing"); !errors.Is(err, ErrNoSuchDevice) {
+		t.Fatalf("MarkSeen for an unknown device returned %v", err)
+	}
+}
+
+func TestRegistrySurvivesRestartAndRefusesAFutureFile(t *testing.T) {
+	reg, _, configDir, stateDir := testRegistry(t)
+	token, dev := pairAndConfirm(t, reg, "phone")
+
+	// A second Registry value over the same directories is what a second
+	// process is: nothing may live only in memory.
+	reopened := NewRegistry(configDir, stateDir)
+	got, err := reopened.Authenticate(token)
+	if err != nil {
+		t.Fatalf("authenticate after reopen: %v", err)
+	}
+	if got.DeviceID != dev.DeviceID {
+		t.Fatalf("reopened registry resolved %q", got.DeviceID)
+	}
+
+	path := filepath.Join(configDir, "companion", "devices.json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.Replace(body, []byte(`"version": 1`), []byte(`"version": 99`), 1), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.List(); err == nil || !strings.Contains(err.Error(), "upgrade mora") {
+		t.Fatalf("a future record file returned %v; it must refuse and say what to do", err)
+	}
+
+	if err := os.WriteFile(path, []byte("{not json"), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.List(); err == nil || !strings.Contains(err.Error(), "pair again") {
+		t.Fatalf("a corrupt record file returned %v; it must refuse and say what to do", err)
+	}
+}
+
+// TestRegistryRefusesToWriteAfterLosingItsLock drives the stale-lock steal
+// deterministically: the lock is taken away WHILE the mutation is running, which
+// is exactly the window in which a snapshot goes stale. The holder must refuse
+// rather than write, because its copy of the file predates whatever the new
+// owner just committed.
+func TestRegistryRefusesToWriteAfterLosingItsLock(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	if _, err := reg.Pair("first", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := reg.mutate(func(f *registryFile) (receipt, error) {
+		// A sweeper decided this lock was stale and handed it to someone else.
+		if err := os.WriteFile(reg.lockPath(), []byte("SOMEBODYELSE"), secretFileMode); err != nil {
+			return receipt{}, err
+		}
+		f.Devices = append(f.Devices, &deviceRecord{
+			DeviceID:  "dev_20260903_120000_ffffffff",
+			Label:     "smuggled",
+			Platform:  PlatformIOS,
+			State:     DevicePending,
+			CreatedAt: "2026-09-03T12:00:00Z",
+		})
+		return receipt{Event: "paired", DeviceID: "dev_20260903_120000_ffffffff", At: "2026-09-03T12:00:00Z"}, nil
+	})
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("a mutation that lost its lock returned %v, want ErrLocked", err)
+	}
+
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("the refused mutation still wrote: registry holds %d devices", len(devices))
+	}
+}
+
+// TestRegistryUnlockOnlyRemovesItsOwnLock closes the other half of the steal: a
+// holder that lost its lock must not delete the NEW owner's lock on its way
+// out, which would let a third writer in.
+func TestRegistryUnlockOnlyRemovesItsOwnLock(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	if err := reg.ensureDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	nonce, unlock, err := reg.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reg.holds(nonce) {
+		t.Fatal("the holder does not recognize its own lock")
+	}
+
+	if err := os.WriteFile(reg.lockPath(), []byte("SOMEBODYELSE"), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if reg.holds(nonce) {
+		t.Fatal("a stolen lock still reads as held")
+	}
+
+	unlock()
+	held, err := os.ReadFile(reg.lockPath())
+	if err != nil {
+		t.Fatalf("the former holder deleted the new owner's lock: %v", err)
+	}
+	if string(held) != "SOMEBODYELSE" {
+		t.Fatalf("lock file = %q", held)
+	}
+
+	// Its own lock, though, must be released — or the next writer waits out the
+	// full stale timeout for nothing.
+	if err := os.WriteFile(reg.lockPath(), []byte(nonce), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if _, err := os.Stat(reg.lockPath()); !os.IsNotExist(err) {
+		t.Fatalf("the holder did not release its own lock: %v", err)
+	}
+}
