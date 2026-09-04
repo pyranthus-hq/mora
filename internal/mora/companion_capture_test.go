@@ -2043,6 +2043,12 @@ func TestCompanionCaptureLinkFallbackDiscipline(t *testing.T) {
 		}
 		// The ownership token is what makes it exclusive, so a token somebody else
 		// holds refuses the publish outright rather than racing it.
+		//
+		// It refuses with errCapturePublicationBusy rather than
+		// errMemoryIDMismatch, and that is round nine's correction: a contended
+		// token says nothing about who owns the id, and reporting it as an
+		// integrity failure settled a permanent rejection over a capture that was
+		// only in flight.
 		fresh := captureTestIdentity("mem_20260904_030002_bbbbbbbb")
 		fresh.Key = "key.token"
 		token := capturePublicationKeyPath(cfg, fresh.DeviceID, fresh.Key) + ".claim"
@@ -2052,8 +2058,12 @@ func TestCompanionCaptureLinkFallbackDiscipline(t *testing.T) {
 		if err := os.WriteFile(token, nil, 0o600); err != nil {
 			t.Fatalf("plant the token: %v", err)
 		}
-		if _, err := claimCapturePublication(cfg, fresh); !errors.Is(err, errMemoryIDMismatch) {
+		_, err = claimCapturePublication(cfg, fresh)
+		if !errors.Is(err, errCapturePublicationBusy) {
 			t.Fatalf("a held token did not refuse the publish: %v", err)
+		}
+		if errors.Is(err, errMemoryIDMismatch) {
+			t.Fatal("a contended token was reported as an integrity failure")
 		}
 		if _, err := os.Stat(capturePublicationKeyPath(cfg, fresh.DeviceID, fresh.Key)); !os.IsNotExist(err) {
 			t.Fatalf("the refused publish wrote a record anyway: %v", err)
@@ -2120,5 +2130,336 @@ func TestCompanionCaptureTornSiblingIsRepaired(t *testing.T) {
 	stored, found, err := readCaptureReceipt(path, id)
 	if err != nil || !found || !bytes.Equal(stored, whole) {
 		t.Fatalf("the sibling was not repaired: found=%t err=%v", found, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round nine: the orphan token, the racing repairers, and the pointer mismatch
+// ---------------------------------------------------------------------------
+
+// plantCaptureClaimToken writes one ownership token by hand, so a test can
+// present a corpse or a live holder without arranging a real crash.
+func plantCaptureClaimToken(t *testing.T, token string, pid int, takenAt time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(token), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body, err := json.Marshal(captureClaimToken{
+		Schema:  schemaCaptureClaimToken,
+		PID:     pid,
+		TakenAt: takenAt.UTC().Truncate(time.Second).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("marshal token: %v", err)
+	}
+	if err := os.WriteFile(token, append(body, '\n'), 0o600); err != nil {
+		t.Fatalf("plant the token: %v", err)
+	}
+}
+
+// noLinksFilesystem forces the no-links fallback for the rest of the test.
+func noLinksFilesystem(t *testing.T) {
+	t.Helper()
+	original := capturePublicationLink
+	t.Cleanup(func() { capturePublicationLink = original })
+	capturePublicationLink = func(string, string) error {
+		return &os.LinkError{Op: "link", Err: syscall.ENOTSUP}
+	}
+}
+
+// TestCompanionCaptureOrphanClaimTokenIsReclaimed is round nine's first item.
+//
+// Round eight's fallback token was an empty file removed on the way out. A
+// process killed between the O_EXCL create and the rename orphaned it, and from
+// then on every claimant for that (device, key) got EEXIST from a token whose
+// owner was never coming back: the canonical publication for that key was wedged
+// for the life of the state directory.
+//
+// The token now carries its owner and the moment it was taken, and a corpse —
+// past companion.ReservationTakeover, or owned by a pid that is gone — is
+// reclaimed. A token whose owner is alive and inside the window is never
+// removed.
+func TestCompanionCaptureOrphanClaimTokenIsReclaimed(t *testing.T) {
+	t.Run("a token past the takeover window is reclaimed", func(t *testing.T) {
+		cfg := captureTestVault(t, mcpWritePolicyOpen)
+		noLinksFilesystem(t)
+		id := captureTestIdentity(captureTestMemoryID)
+		token := capturePublicationKeyPath(cfg, id.DeviceID, id.Key) + ".claim"
+		// A LIVE pid, so the only thing retiring this token is its age. That is
+		// the case a pid the operating system recycled would otherwise wedge.
+		plantCaptureClaimToken(t, token, os.Getpid(), time.Now().Add(-(companion.ReservationTakeover + time.Second)))
+
+		if _, err := claimCapturePublication(cfg, id); err != nil {
+			t.Fatalf("an orphaned token wedged the publication: %v", err)
+		}
+		record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
+		if err != nil || !found || !record.matches(id) {
+			t.Fatalf("the reclaiming claimant wrote no usable record: found=%t err=%v", found, err)
+		}
+		if _, err := os.Stat(token); !os.IsNotExist(err) {
+			t.Fatalf("the token outlived the publication it guarded: %v", err)
+		}
+	})
+
+	t.Run("a token whose owner is dead is reclaimed at once", func(t *testing.T) {
+		cfg := captureTestVault(t, mcpWritePolicyOpen)
+		noLinksFilesystem(t)
+		originalAlive := captureProcessAlive
+		t.Cleanup(func() { captureProcessAlive = originalAlive })
+		captureProcessAlive = func(int) bool { return false }
+
+		id := captureTestIdentity(captureTestMemoryID)
+		token := capturePublicationKeyPath(cfg, id.DeviceID, id.Key) + ".claim"
+		// Taken THIS INSTANT, so the age rule cannot be what retires it. A crash
+		// must not cost a whole takeover window of wedged captures when the
+		// operating system can already say the owner is gone.
+		plantCaptureClaimToken(t, token, 424242, time.Now())
+
+		if _, err := claimCapturePublication(cfg, id); err != nil {
+			t.Fatalf("a dead owner's token wedged the publication: %v", err)
+		}
+		record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
+		if err != nil || !found || !record.matches(id) {
+			t.Fatalf("the reclaiming claimant wrote no usable record: found=%t err=%v", found, err)
+		}
+	})
+
+	t.Run("a live token refuses and is never deleted", func(t *testing.T) {
+		cfg := captureTestVault(t, mcpWritePolicyOpen)
+		noLinksFilesystem(t)
+		id := captureTestIdentity(captureTestMemoryID)
+		token := capturePublicationKeyPath(cfg, id.DeviceID, id.Key) + ".claim"
+		plantCaptureClaimToken(t, token, os.Getpid(), time.Now())
+		before, err := os.ReadFile(token)
+		if err != nil {
+			t.Fatalf("read the planted token: %v", err)
+		}
+
+		_, err = claimCapturePublication(cfg, id)
+		if !errors.Is(err, errCapturePublicationBusy) {
+			t.Fatalf("a live token answered %v, want errCapturePublicationBusy", err)
+		}
+		if errors.Is(err, errMemoryIDMismatch) {
+			t.Fatal("a contended token was reported as an integrity failure")
+		}
+		after, err := os.ReadFile(token)
+		if err != nil {
+			t.Fatalf("the refused claimant removed a live token: %v", err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatalf("the refused claimant rewrote a live token: %q -> %q", before, after)
+		}
+		if _, err := os.Stat(capturePublicationKeyPath(cfg, id.DeviceID, id.Key)); !os.IsNotExist(err) {
+			t.Fatalf("the refused claimant wrote a record anyway: %v", err)
+		}
+	})
+}
+
+// TestCompanionCaptureReceiptRepairIsBoundedNotRecursive is the other half of
+// round nine's first item.
+//
+// Round eight repaired an unusable receipt sibling by removing it and CALLING
+// ITSELF. A state that keeps coming back unusable recursed until the stack ran
+// out — and an orphaned claim token was exactly such a state, which is how the
+// two defects met. The repair now happens once, there is one attempt after it,
+// and a sibling still unusable at that point is a typed error.
+//
+// The call count is the witness: two attempts to claim the sibling and no more,
+// however permanently broken the name is.
+func TestCompanionCaptureReceiptRepairIsBoundedNotRecursive(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	id := captureTestIdentity(captureTestMemoryID)
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	receipt := capturePublicationReceiptPath(cfg, id.DeviceID, id.Key)
+	if err := os.WriteFile(receipt, []byte("{ this is not a receipt"), 0o600); err != nil {
+		t.Fatalf("plant a torn sibling: %v", err)
+	}
+
+	// The permanently stale state: the name is always taken, so the repair's own
+	// write cannot land either. Nothing here can ever succeed, which is the only
+	// honest way to ask "does it stop?".
+	original := capturePublicationLink
+	t.Cleanup(func() { capturePublicationLink = original })
+	attempts := 0
+	capturePublicationLink = func(string, string) error {
+		attempts++
+		if attempts > 8 {
+			t.Fatalf("the repair recursed: %d attempts at the sibling", attempts)
+		}
+		return os.ErrExist
+	}
+
+	_, err := recordCaptureReceipt(cfg, id, receiptBytesFor(t, id, 1))
+	if !errors.Is(err, errCaptureReceiptUnrepaired) {
+		t.Fatalf("a permanently unusable sibling answered %v, want errCaptureReceiptUnrepaired", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("the sibling was claimed %d times, want exactly 2 — one attempt and one repair", attempts)
+	}
+}
+
+// TestCompanionCaptureTornSiblingRepairIsExclusive is round nine's second item.
+//
+// Two callers that both find the receipt sibling torn both removed it and both
+// wrote, so one deleted a receipt the other had already published and the two
+// attempts answered ONE publication with different bytes. That is the exact
+// property the sibling exists to guarantee against.
+//
+// The repair now runs under the same kind of exclusion the first publication
+// uses, so exactly one repairer acts and the other reads the winner's bytes. The
+// seam holds both callers at the collision point — both have decided to repair,
+// neither has acted — which is what makes the race a test rather than a hope.
+func TestCompanionCaptureTornSiblingRepairIsExclusive(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	id := captureTestIdentity(captureTestMemoryID)
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	receipt := capturePublicationReceiptPath(cfg, id.DeviceID, id.Key)
+	if err := os.WriteFile(receipt, []byte("{ torn"), 0o600); err != nil {
+		t.Fatalf("plant a torn sibling: %v", err)
+	}
+
+	original := captureReceiptRepairGate
+	t.Cleanup(func() { captureReceiptRepairGate = original })
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	captureReceiptRepairGate = func() {
+		arrived.Done()
+		arrived.Wait()
+	}
+
+	var (
+		wg      sync.WaitGroup
+		answers = make([][]byte, 2)
+		errs    = make([]error, 2)
+	)
+	for i := range answers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Deliberately DIFFERENT bytes, so "they agreed" cannot be an
+			// accident of both writing the same thing.
+			answers[i], errs[i] = recordCaptureReceipt(cfg, id, receiptBytesFor(t, id, i+1))
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("repairer %d failed: %v", i, err)
+		}
+	}
+	if !bytes.Equal(answers[0], answers[1]) {
+		t.Fatalf("two repairers answered one publication differently:\n%s\n%s", answers[0], answers[1])
+	}
+	onDisk, err := os.ReadFile(receipt)
+	if err != nil {
+		t.Fatalf("a repairer deleted the winner's receipt: %v", err)
+	}
+	if !bytes.Equal(onDisk, answers[0]) {
+		t.Fatalf("the sibling on disk is not what either caller answered with:\n%s\n%s", onDisk, answers[0])
+	}
+	if _, found, err := readCaptureReceipt(receipt, id); err != nil || !found {
+		t.Fatalf("the repaired sibling is not a whole receipt: found=%t err=%v", found, err)
+	}
+	// One sibling, not two. A repairer that wrote beside the name rather than
+	// onto it would leave the store with a second answer nobody reads.
+	siblings := 0
+	for name := range publishedTree(t, cfg) {
+		if strings.Contains(name, ".receipt") {
+			siblings++
+		}
+	}
+	if siblings != 1 {
+		t.Fatalf("the published tree holds %d receipt siblings, want 1", siblings)
+	}
+}
+
+// loggedCaptureListener is a second listener over an existing vault whose
+// integrity log a test can read. It is the same wiring restartedCaptureListener
+// builds; the only difference is that the Server's log sink is a buffer.
+func loggedCaptureListener(t *testing.T, cfg Config, log *bytes.Buffer) http.Handler {
+	t.Helper()
+	clock := cfg.OperationClock
+	reg := companion.NewRegistry(cfg.ConfigDir, cfg.StateDir, companion.WithClock(clock))
+	srv, err := companion.NewServer(companion.ServerOptions{
+		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
+		Devices:  reg,
+		Reader:   newCompanionReader(cfg),
+		Writer:   newCompanionWriter(),
+		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(clock)),
+		Now:      clock,
+		Log:      log,
+	})
+	if err != nil {
+		t.Fatalf("build the listener: %v", err)
+	}
+	return srv.Handler()
+}
+
+// TestCompanionCapturePointerMismatchSettlesIntegrityEndToEnd is round nine's
+// third item, driven through the production seam.
+//
+// The kernel reports a pointer that names somebody else's capture with its own
+// sentinel, errMemoryIDMismatch. The companion side keys on
+// companion.ErrPublishedIntegrity, so an unmapped mismatch fell through as a
+// plain error: the request became a 503, the phone was told to retry a vault
+// fault that will never resolve itself, and the operator was told nothing at
+// all. A memory FILE that is foreign already settled a `rejected: internal`
+// receipt with the cause on the outcome; the pointer had to answer the same way.
+//
+// Nothing here is stubbed. A real capture publishes through the real path, the
+// pointer it wrote is then made to name a different capture, and the retry is a
+// real request.
+func TestCompanionCapturePointerMismatchSettlesIntegrityEndToEnd(t *testing.T) {
+	handler, token, cfg, _ := captureListener(t, mcpWritePolicyOpen)
+	device := companionListenerDevice(t, cfg)
+	capture := captureFixture(t, device, "key.pointer", "the pointer disagrees with the record")
+
+	if rec := postCompanionCapture(t, handler, token, capture); rec.Code != http.StatusOK {
+		t.Fatalf("the first capture answered %d\n%s", rec.Code, rec.Body.String())
+	}
+	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, device, capture.IdempotencyKey))
+	if err != nil || !found {
+		t.Fatalf("the first capture left no canonical record: found=%t err=%v", found, err)
+	}
+
+	// The corruption: the pointer for this memory id now names a capture that is
+	// not the one the canonical record describes.
+	pointer := capturePublicationPath(cfg, record.MemoryID)
+	body, err := json.MarshalIndent(capturePublicationIndex{
+		Schema:        schemaCapturePublicationIndex,
+		SchemaVersion: 1,
+		MemoryID:      record.MemoryID,
+		DeviceID:      record.DeviceID,
+		Key:           "key.somebody.else",
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal the pointer: %v", err)
+	}
+	if err := os.WriteFile(pointer, append(body, '\n'), 0o600); err != nil {
+		t.Fatalf("rewrite the pointer: %v", err)
+	}
+
+	var log bytes.Buffer
+	rec := postCompanionCapture(t, loggedCaptureListener(t, cfg, &log), token, capture)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the retry over a mismatched pointer answered %d, want a settled 200\n%s", rec.Code, rec.Body.String())
+	}
+	var receipt companion.Receipt
+	if err := json.Unmarshal(rec.Body.Bytes(), &receipt); err != nil {
+		t.Fatalf("decode receipt: %v", err)
+	}
+	if err := receipt.Validate(); err != nil {
+		t.Fatalf("the listener returned an invalid receipt: %v", err)
+	}
+	if receipt.State != companion.ReceiptRejected || receipt.Reason != companion.ReasonInternal {
+		t.Fatalf("state=%q reason=%q, want rejected/internal", receipt.State, receipt.Reason)
+	}
+	if !strings.Contains(log.String(), "refusing to claim a memory") {
+		t.Fatalf("the integrity event never reached the log: %q", log.String())
 	}
 }

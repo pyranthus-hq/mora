@@ -29,7 +29,9 @@ package mora
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -45,6 +47,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/companion"
 	healthpkg "github.com/pyranthus-hq/mora/internal/health"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	synthesispkg "github.com/pyranthus-hq/mora/internal/synthesis"
 )
@@ -523,11 +526,11 @@ func (w *companionWriter) RecordReceipt(ctx context.Context, id companion.Captur
 	}
 	recorded, err := recordCaptureReceipt(cfg, id, response)
 	if err != nil {
-		return nil, err
+		return nil, companionIntegrityError(err)
 	}
 	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
 	if err != nil {
-		return nil, err
+		return nil, companionIntegrityError(err)
 	}
 	if found {
 		record.Response = string(recorded)
@@ -574,7 +577,7 @@ func (w *companionWriter) Published(ctx context.Context, c companion.Capture, id
 	state, err := w.verifyPublication(cfg, c, id)
 	switch {
 	case err != nil:
-		return companion.WriteOutcome{}, false, err
+		return companion.WriteOutcome{}, false, companionIntegrityError(err)
 	case state == publicationAbsent:
 		return companion.WriteOutcome{}, false, nil
 	case state == publicationForeign:
@@ -675,6 +678,28 @@ func (w *companionWriter) integrityFailure(cfg Config, id companion.CaptureIdent
 	}
 }
 
+// companionIntegrityError maps the kernel's own mismatch sentinel onto the one
+// the companion capture path understands.
+//
+// errMemoryIDMismatch and companion.ErrPublishedIntegrity name the same
+// condition from two sides of the seam: bookkeeping in the published store that
+// contradicts itself, with nothing wrong in what the phone sent. The companion
+// side keys on ErrPublishedIntegrity to settle a `rejected: internal` receipt
+// with the cause on the outcome; an unmapped mismatch fell through as a plain
+// error, so the request became a 503 and the operator was told nothing at all —
+// the same vault fault answered two different ways depending on which lookup
+// happened to find it first.
+//
+// Both sentinels stay in the chain. Callers inside this package that already
+// branch on errMemoryIDMismatch keep working, and the companion side gets the
+// contract error it tests for.
+func companionIntegrityError(err error) error {
+	if err == nil || !errors.Is(err, errMemoryIDMismatch) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", companion.ErrPublishedIntegrity, err)
+}
+
 // PublishedForKey reports what this device's key has already published.
 //
 // It is asked before a FRESH reservation is taken, and it is the answer the
@@ -692,7 +717,7 @@ func (w *companionWriter) PublishedForKey(ctx context.Context, deviceID, key str
 	}
 	record, found, err := publishedForKey(cfg, deviceID, key)
 	if err != nil || !found {
-		return "", false, nil, err
+		return "", false, nil, companionIntegrityError(err)
 	}
 	// A replay repairs the pointer on its way past. The canonical record is the
 	// authority, so a missing pointer is not an error — but leaving it missing
@@ -704,7 +729,7 @@ func (w *companionWriter) PublishedForKey(ctx context.Context, deviceID, key str
 	if _, rerr := repairCapturePublicationIndex(cfg, companion.CaptureIdentity{
 		DeviceID: record.DeviceID, Key: record.Key, MemoryID: record.MemoryID, Identity: record.Identity,
 	}); rerr != nil {
-		return "", false, nil, rerr
+		return "", false, nil, companionIntegrityError(rerr)
 	}
 	return record.Identity, true, []byte(record.Response), nil
 }
@@ -1502,7 +1527,7 @@ func (c publicationClaim) rollback() error {
 //
 // # The order, and why it is that order
 //
-//	canonical (by key, temp + fsync + rename)  ->  pointer (by memory id)  ->  memory
+//	canonical (by key, temp + fsync + LINK)  ->  pointer (by memory id)  ->  memory
 //
 // The canonical record is durable first, because it is the one a retry has to
 // find. The pointer is derived from it and can always be rebuilt, so a crash
@@ -1559,7 +1584,7 @@ func claimCapturePublication(cfg Config, id companion.CaptureIdentity) (publicat
 		Identity:      id.Identity,
 		ClaimedAt:     mcpWriteClock().UTC().Truncate(time.Second).Format(time.RFC3339),
 	}
-	if err := writeCapturePublicationRecord(keyPath, record); err != nil {
+	if err := writeCapturePublicationRecord(capturePublicationLockDir(cfg), keyPath, record); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			// Somebody claimed the key between the read and the create. Whoever
 			// they are, they are not us unless the record says so — and either
@@ -1656,13 +1681,13 @@ var capturePublicationRaceGate = func() {}
 // could see a short file, which readCapturePublicationAt reports as unreadable
 // rather than as absent. That is the safe direction: a record that cannot be
 // read is not a record that says the key is free.
-func writeCapturePublicationRecord(path string, record capturePublication) error {
+func writeCapturePublicationRecord(locks, path string, record capturePublication) error {
 	body, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return err
 	}
 	capturePublicationRaceGate()
-	return linkCapturePublicationRecord(path, append(body, '\n'))
+	return linkCapturePublicationRecord(locks, path, append(body, '\n'))
 }
 
 // capturePublicationLink is the exclusive primitive, a seam so a test can make
@@ -1676,7 +1701,7 @@ var capturePublicationWrite = func(file *os.File, body []byte) (int, error) { re
 
 // linkCapturePublicationRecord stages the bytes, syncs them, and links them into
 // place under a name nobody else holds.
-func linkCapturePublicationRecord(path string, body []byte) error {
+func linkCapturePublicationRecord(locks, path string, body []byte) error {
 	if len(body) > maxCapturePublicationBytes {
 		return fmt.Errorf("companion capture: a publication record of %d bytes is over the %d-byte limit", len(body), maxCapturePublicationBytes)
 	}
@@ -1710,7 +1735,7 @@ func linkCapturePublicationRecord(path string, body []byte) error {
 		// file goes with the defer and the destination was never touched.
 		return err
 	}
-	return claimAndPublishCapturePublication(path, name, dir)
+	return claimAndPublishCapturePublication(locks, path, name, dir)
 }
 
 // claimAndPublishCapturePublication is the no-links fallback.
@@ -1722,22 +1747,33 @@ func linkCapturePublicationRecord(path string, body []byte) error {
 // final path, which is what round seven did, left a window in which a losing
 // reader could see an empty or half-written record and take it for the answer.
 //
-// The token is removed once the record is published. A token left behind by a
-// dead process is not a problem: the record either exists, in which case readers
-// have it, or it does not, in which case the next attempt finds no record and
-// the token blocks only that one key until it is cleared by the same retry.
-func claimAndPublishCapturePublication(path, staged, dir string) error {
+// # The token is reclaimable, because a bare token wedges the name forever
+//
+// Round eight left the token as a plain empty file removed on the way out. A
+// process killed between the create and the rename orphaned it, and from then on
+// every claimant for that (device, key) got EEXIST from a token whose owner was
+// never coming back — the canonical publication for that key was wedged for the
+// life of the state directory, and the receipt-repair path recursed on it.
+//
+// So the token carries WHO holds it and WHEN they took it, and a claimant that
+// finds a corpse — a dead pid, or a token older than companion.ReservationTakeover,
+// the same window a crashed reservation is taken over in — reclaims it. A token
+// whose owner is alive and inside the window is never removed: the claimant
+// reports errCapturePublicationBusy and the phone retries.
+//
+// The reclaim itself is exclusive, and NOT by a second O_EXCL sentinel. That was
+// N11's lesson and it applies here unchanged: any staleness rule enforced with
+// O_EXCL is a check-then-use race, because between "this token looks stale" and
+// "I removed it" a second reclaimer can be at exactly the same point. The whole
+// read-judge-replace sequence therefore runs under a kernel-held lock
+// (internal/leasefile, flock on POSIX and a LockFileEx range on Windows), which
+// has no staleness rule of its own because the kernel drops it when the holder
+// dies.
+func claimAndPublishCapturePublication(locks, path, staged, dir string) error {
 	token := path + ".claim"
-	file, err := os.OpenFile(token, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			// Somebody else is publishing this name right now, or died trying.
-			// Either way this caller created nothing.
-			return os.ErrExist
-		}
+	if err := takeCaptureClaimToken(locks, token); err != nil {
 		return err
 	}
-	_ = file.Close()
 
 	if _, err := os.Stat(path); err == nil {
 		_ = os.Remove(token)
@@ -1756,6 +1792,182 @@ func claimAndPublishCapturePublication(path, staged, dir string) error {
 		return err
 	}
 	return os.Remove(token)
+}
+
+// captureClaimToken is what the fallback writes into its ownership token so a
+// later claimant can tell a live publisher from a corpse.
+//
+// The pid is only meaningful on the host that wrote it, which is the only host
+// that ever reads it: the published store lives under this Mac's own state
+// directory. Pid REUSE is the case the timestamp covers — a recycled pid makes a
+// dead owner look alive, and the takeover window then retires the token anyway.
+type captureClaimToken struct {
+	Schema  string `json:"schema"`
+	PID     int    `json:"pid"`
+	TakenAt string `json:"taken_at"`
+}
+
+const schemaCaptureClaimToken = "mora.companion.capture.publication.claim"
+
+// errCapturePublicationBusy reports that another attempt holds the fallback's
+// ownership token for this name right now.
+//
+// It is deliberately NOT errMemoryIDMismatch. A contended token says nothing
+// about who owns the id — it is the same key's own concurrent attempt or its
+// takeover — and reporting it as an integrity failure would settle a permanent
+// rejection over a capture that is merely in flight. A retryable error is the
+// honest answer: the retry finds the record and replays it.
+var errCapturePublicationBusy = errors.New("mora: another attempt is publishing that capture record right now")
+
+// takeCaptureClaimToken wins the exclusive right to rename onto path, reclaiming
+// a corpse if it finds one.
+//
+// Everything that reads, judges and replaces the token happens under the guard,
+// so no two callers are ever between their own read and their own create. What
+// happens AFTER — the stat, the rename, the directory sync — is outside it on
+// purpose: the token is the thing that excludes, the guard only decides who gets
+// the token, and holding a cross-process lock across an fsync would serialize
+// unrelated publishes behind one slow disk.
+func takeCaptureClaimToken(locks, token string) error {
+	return withCapturePublicationGuard(locks, token, func() error {
+		err := createCaptureClaimToken(token)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		stale, serr := captureClaimTokenIsStale(token, mcpWriteClock())
+		if serr != nil {
+			return serr
+		}
+		if !stale {
+			// A live publisher. It is not removed, not raced, and not waited on
+			// inside a request: this attempt reports busy and the phone retries.
+			return errCapturePublicationBusy
+		}
+		if rmErr := os.Remove(token); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return rmErr
+		}
+		return createCaptureClaimToken(token)
+	})
+}
+
+// createCaptureClaimToken writes one complete token, exclusively, and reports
+// os.ErrExist if somebody already holds the name.
+//
+// The bytes are written before the guard is released, which is what lets a later
+// claimant treat an UNREADABLE token as a corpse rather than as a live claim it
+// caught mid-write.
+func createCaptureClaimToken(token string) error {
+	if err := os.MkdirAll(filepath.Dir(token), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(token, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(captureClaimToken{
+		Schema:  schemaCaptureClaimToken,
+		PID:     os.Getpid(),
+		TakenAt: mcpWriteClock().UTC().Truncate(time.Second).Format(time.RFC3339),
+	})
+	if err != nil {
+		_ = file.Close()
+		_ = os.Remove(token)
+		return err
+	}
+	if _, err := file.Write(append(body, '\n')); err != nil {
+		_ = file.Close()
+		_ = os.Remove(token)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(token)
+		return err
+	}
+	return nil
+}
+
+// captureClaimTokenIsStale reports whether the token on disk is a corpse.
+//
+// Three ways to be one, and each is a different failure:
+//
+//   - the owner's process is gone, which is the common crash and is retired at
+//     once rather than after a window;
+//   - the token is older than companion.ReservationTakeover, which covers a pid
+//     the operating system has recycled onto some unrelated live program;
+//   - the token cannot be read as a token at all AND its mtime is past the same
+//     window. An unreadable token is either debris from a build that wrote empty
+//     ones or a truncated file; either way it is only retired once it is old,
+//     so a token this process is at that instant writing is never mistaken for
+//     one.
+func captureClaimTokenIsStale(token string, now time.Time) (bool, error) {
+	info, err := os.Stat(token)
+	if errors.Is(err, os.ErrNotExist) {
+		// It went away between the failed create and this read. Whoever removed
+		// it left the name free, and the create below decides.
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	body, found, err := readCapturePublicationBytes(token)
+	if err != nil || !found {
+		return !now.Before(info.ModTime().Add(companion.ReservationTakeover)), nil
+	}
+	var held captureClaimToken
+	if json.Unmarshal(body, &held) != nil || held.Schema != schemaCaptureClaimToken {
+		return !now.Before(info.ModTime().Add(companion.ReservationTakeover)), nil
+	}
+	if held.PID > 0 && !captureProcessAlive(held.PID) {
+		return true, nil
+	}
+	takenAt, perr := time.Parse(time.RFC3339, held.TakenAt)
+	if perr != nil {
+		return !now.Before(info.ModTime().Add(companion.ReservationTakeover)), nil
+	}
+	return !now.Before(takenAt.Add(companion.ReservationTakeover)), nil
+}
+
+// captureProcessAlive reports whether a pid still names a running process, and
+// is a seam so a test can present a corpse without killing anything.
+//
+// It is internal/operation's liveness probe, unchanged: the build-tagged
+// signal-zero probe on POSIX and an OpenProcess on Windows. Reusing it rather
+// than writing a second one keeps one definition of "that process is gone" in
+// the product.
+//
+// Its POSIX half answers false for a process this user cannot signal. That is
+// the wrong direction in general and the right one here: the published store
+// lives in a 0700 directory under this user's own home, so every token in it was
+// written by this user, and a pid that cannot be signalled is a pid that has
+// been recycled onto somebody else's program — a corpse by another name. The
+// takeover window covers the case either way.
+var captureProcessAlive = processAlive
+
+// capturePublicationLockDir is where the published store's cross-process guards
+// live.
+//
+// It is a SIBLING of the published tree rather than a directory inside it, and
+// that is load-bearing rather than tidy: a refusal must leave the published tree
+// byte for byte as it found it, and a guard file created inside it would be a
+// byte of difference. Guards also outlive every process by design — nothing ever
+// removes them — so a tree that had to stay clean could not hold them.
+func capturePublicationLockDir(cfg Config) string {
+	return filepath.Join(cfg.StateDir, "companion", "publocks")
+}
+
+// withCapturePublicationGuard runs fn holding the kernel lock for one name.
+//
+// The key is hashed so the guard is one flat file per protected name whatever
+// the name's own depth, and internal/leasefile owns the platform split — flock
+// on POSIX, a LockFileEx byte range on Windows — plus the rule that matters
+// most here: the lock file is never removed, so there is no staleness protocol
+// and no window in which two holders exist.
+func withCapturePublicationGuard(locks, key string, fn func() error) error {
+	sum := sha256.Sum256([]byte(key))
+	return leasefile.WithGuard(filepath.Join(locks, hex.EncodeToString(sum[:])+".lock"), fn)
 }
 
 // stageCapturePublicationBytes writes the record beside its destination and
@@ -1807,6 +2019,17 @@ func capturePublicationReceiptPath(cfg Config, deviceID, key string) string {
 // publication first, and theirs is the answer. Returning it rather than
 // overwriting is what makes one publication have one receipt no matter how many
 // callers reach this point.
+//
+// # One repair, then a typed error, and never recursion
+//
+// The name can be taken by something that is not a usable receipt — a torn
+// fallback write, debris somebody left behind — and that has to be repaired
+// rather than answered with. Round eight repaired it by removing the file and
+// CALLING ITSELF, which is unbounded: a state that keeps coming back torn (a
+// read-only sibling, a directory at the name, a filesystem returning stale
+// bytes) recurses until the stack runs out. So the repair happens exactly once,
+// there is one attempt after it, and a sibling still unusable at that point is
+// errCaptureReceiptUnrepaired.
 func recordCaptureReceipt(cfg Config, id companion.CaptureIdentity, response []byte) ([]byte, error) {
 	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
 	if err != nil {
@@ -1818,28 +2041,114 @@ func recordCaptureReceipt(cfg Config, id companion.CaptureIdentity, response []b
 	if !record.matches(id) {
 		return nil, errMemoryIDMismatch
 	}
+	locks := capturePublicationLockDir(cfg)
 	path := capturePublicationReceiptPath(cfg, id.DeviceID, id.Key)
-	err = linkCapturePublicationRecord(path, response)
+
+	body, done, err := recordCaptureReceiptOnce(locks, path, id, response)
+	if err != nil {
+		return nil, err
+	}
+	if done {
+		return body, nil
+	}
+	captureReceiptRepairGate()
+	body, done, err = repairCaptureReceiptSibling(locks, path, id, response)
+	if err != nil {
+		return nil, err
+	}
+	if done {
+		return body, nil
+	}
+	return nil, fmt.Errorf("%w: %s", errCaptureReceiptUnrepaired, path)
+}
+
+// errCaptureReceiptUnrepaired reports a receipt sibling that is neither usable
+// nor replaceable. It is terminal for the attempt and deliberately not a
+// rejection: the publication is real, and a receipt that cannot be written is a
+// fault to retry, not a verdict on the capture.
+var errCaptureReceiptUnrepaired = errors.New("mora: the receipt sibling could not be recorded or repaired")
+
+// captureReceiptRepairGate is a no-op seam that runs at the instant two callers
+// have BOTH decided the sibling needs repairing and neither has acted.
+//
+// That is the collision point, and holding both there is the only way to make
+// the two-repairer race deterministic rather than hopeful. Production replaces
+// it with nothing.
+var captureReceiptRepairGate = func() {}
+
+// recordCaptureReceiptOnce links the bytes, or reads back the whole sibling
+// somebody else linked.
+//
+// done=false with no error is the one interesting answer: the name is taken by
+// something that is not a usable receipt, which is the state the repair exists
+// for.
+func recordCaptureReceiptOnce(locks, path string, id companion.CaptureIdentity, response []byte) ([]byte, bool, error) {
+	err := linkCapturePublicationRecord(locks, path, response)
 	if err == nil {
-		return response, nil
+		return response, true, nil
 	}
 	if !errors.Is(err, os.ErrExist) {
-		return nil, err
+		return nil, false, err
 	}
 	theirs, found, rerr := readCaptureReceipt(path, id)
 	if rerr != nil {
-		return nil, rerr
+		return nil, false, rerr
 	}
-	if !found {
-		// The name is taken by something that is not a usable receipt: a torn
-		// fallback write, or a file somebody else left behind. It is repaired
-		// rather than answered with.
-		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return nil, rmErr
+	return theirs, found, nil
+}
+
+// repairCaptureReceiptSibling replaces a torn sibling, and does it through the
+// SAME kind of exclusion the first publication used.
+//
+// # Why the exclusion is the whole fix
+//
+// Round eight's repair was remove-then-write with nothing holding the name in
+// between. Two repairers that both found the sibling torn both removed it and
+// both wrote, so one of them deleted a receipt the other had already published
+// and the two attempts answered the same publication with different bytes —
+// which is precisely the property the sibling exists to guarantee against.
+//
+// Under the guard exactly one repairer acts. The other arrives after it, finds a
+// WHOLE sibling, and answers with those bytes: it deletes nothing, writes
+// nothing, and returns byte-for-byte what the winner returned. The guard is
+// keyed on ".repair" rather than on the sibling's own name so it can never
+// collide with the fallback's token guard for the same path, which this function
+// takes underneath it.
+func repairCaptureReceiptSibling(locks, path string, id companion.CaptureIdentity, response []byte) ([]byte, bool, error) {
+	var (
+		body []byte
+		done bool
+	)
+	err := withCapturePublicationGuard(locks, path+".repair", func() error {
+		// Re-read under the guard. A sibling that has become whole since the
+		// caller looked is the winner's, and answering with it is what stops a
+		// valid receipt from being deleted by a repairer that was one step
+		// behind.
+		theirs, found, rerr := readCaptureReceipt(path, id)
+		if rerr != nil {
+			return rerr
 		}
-		return recordCaptureReceipt(cfg, id, response)
-	}
-	return theirs, nil
+		if found {
+			body, done = theirs, true
+			return nil
+		}
+		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return rmErr
+		}
+		lerr := linkCapturePublicationRecord(locks, path, response)
+		if lerr == nil {
+			body, done = response, true
+			return nil
+		}
+		if errors.Is(lerr, os.ErrExist) || errors.Is(lerr, errCapturePublicationBusy) {
+			// The name came back under this guard, which means something outside
+			// the published store is writing it. It is not repaired again here:
+			// the caller reports the typed error rather than looping.
+			return nil
+		}
+		return lerr
+	})
+	return body, done, err
 }
 
 // readCaptureReceipt reads one receipt sibling, and reports it only if it is a

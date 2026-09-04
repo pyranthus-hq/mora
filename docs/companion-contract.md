@@ -697,12 +697,32 @@ place with `os.Link` — the primitive that makes the claim exclusive, because t
 the second link with `EEXIST` so exactly one caller ever learns it created the record and the other
 learns it created nothing and must roll back nothing. A stat followed by a rename is not exclusive,
 and the loser of that race would delete the winner's publication
-(`TestCompanionCaptureCanonicalClaimIsExclusive`, `TestCompanionCaptureLoserRollsBackNothing`). On a
-filesystem with no links the fallback is an `O_EXCL` create of the final path. The record it
-carries the memory id, the capture identity **and the exact response bytes**, and a replay is answered
-from it directly — so replay does not depend on a reservation, whose retention moves independently
+(`TestCompanionCaptureCanonicalClaimIsExclusive`, `TestCompanionCaptureLoserRollsBackNothing`).
+
+On a filesystem with no links the fallback is an **ownership token**: an `O_EXCL` create of
+`<record>.claim`, held while the already-fsynced staging file is renamed onto the final name, so no
+reader ever sees a half-written record. The token records **who holds it and when they took it**, and
+a claimant that finds a corpse — a pid that is gone, or a token older than the same takeover window a
+crashed reservation is reclaimed in — reclaims it. Without that a process killed between the token
+and the rename wedged that key's publication for the life of the state directory
+(`TestCompanionCaptureOrphanClaimTokenIsReclaimed`). A token whose owner is alive and inside the
+window is **never** removed: the claimant reports a retryable busy error, not an integrity failure,
+because a contended token says nothing about who owns the id. The read-judge-replace sequence runs
+under a kernel-held lock (`internal/leasefile`), because a staleness rule enforced with a second
+`O_EXCL` sentinel is a check-then-use race — the lesson the device registry's lock already records.
+
+The record carries the memory id and the capture identity. The **exact response bytes live in a
+receipt sibling beside it**, `<record>.receipt`, claimed with the same exclusive primitive: the record
+itself is immutable once claimed, and rewriting it in place let two racing callers mint two different
+answers for one publication. A replay is answered from the sibling directly — so replay does not
+depend on a reservation, whose retention moves independently
 (`TestCaptureReplayDoesNotDependOnTheReservation`,
-`TestCaptureReplayComesFromThePublishedRecordNotTheStore`). The by-memory-id name is a **secondary
+`TestCaptureReplayComesFromThePublishedRecordNotTheStore`). A sibling that is not a whole, valid
+receipt is **repaired rather than answered with**, and the repair takes the same exclusion the first
+publication does, so exactly one repairer acts and the other reads the winner's bytes
+(`TestCompanionCaptureTornSiblingRepairIsExclusive`). The repair happens **once**, with one attempt
+after it and then a typed error — never by recursion, which an unusable name turned into an unbounded
+stack (`TestCompanionCaptureReceiptRepairIsBoundedNotRecursive`). The by-memory-id name is a **secondary
 pointer** back to it, created after it; every lookup consults the canonical record first and repairs a
 missing pointer when it finds one, so a crash between the two writes is repaired rather than fatal
 (`TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex`,
@@ -887,6 +907,14 @@ integrity event a foreign memory produces, because answering "absent" would send
 at an id another publication already owns
 (`TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex`,
 `TestCapturePointerMismatchIsAnIntegrityFailure`).
+
+That holds for a pointer that names a **different capture**, too, and it holds in production rather
+than only in the store's own unit tests. The kernel reports that condition with its own sentinel; the
+companion side keys on the contract's integrity error, so the two are mapped at the seam. An unmapped
+mismatch fell through as a plain error — the request became a `503`, the phone was told to retry a
+vault fault that will never resolve itself, and no integrity event reached the operator's log
+(`TestCompanionCapturePointerMismatchSettlesIntegrityEndToEnd`, which drives a real capture, corrupts
+the pointer it wrote, and retries).
 
 **A replay finishes what it finds.** A publication whose receipt landed and whose reservation never settled leaves a pending row that would occupy the in-flight bound until the sweep; the replay settles it, under the reservation store's own lock, before it answers (`TestCaptureReplaySettlesAPendingReservation`).
 

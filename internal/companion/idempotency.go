@@ -686,11 +686,11 @@ func (s *ReservationStore) finish(inflight string, done chan struct{}) {
 // durable somewhere else.
 //
 // It closes the last window in the ordering: the receipt reaches the kernel's
-// canonical record before the reservation settles, so a crash or a failed settle
-// in between leaves a publication that IS complete and a reservation that says
-// pending. A retry then answers from the canonical bytes without ever coming
-// back for the row, which sits there occupying the in-flight bound until the
-// sweep collects it.
+// publication — its record's receipt sibling — before the reservation settles,
+// so a crash or a failed settle in between leaves a publication that IS complete
+// and a reservation that says pending. A retry then answers from the published
+// bytes without ever coming back for the row, which sits there occupying the
+// in-flight bound until the sweep collects it.
 //
 // It is a no-op when there is nothing to finish — no record, or one that already
 // settled — so a replay may call it unconditionally. The receipt is decoded from

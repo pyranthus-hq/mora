@@ -423,10 +423,14 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		// The replay answer: the bytes the first attempt returned, not a
 		// re-marshalling of the same fields.
 		//
-		// If the canonical record is missing those bytes — a crash between the
-		// publication and the receipt — this is the moment to put them back.
-		// Without the backfill the reservation is the only copy, and the day it
-		// is trimmed a retry starts minting fresh receipts for one publication.
+		// If the publication is missing those bytes — a crash between the
+		// publication and its receipt — this is the moment to put them back.
+		// They live in a RECEIPT SIBLING beside the canonical record, not inside
+		// it: the record is immutable once claimed, so the bytes are claimed
+		// with their own exclusive create and the first writer's answer is the
+		// one every later caller reads. Without the backfill the reservation is
+		// the only copy, and the day it is trimmed a retry starts minting fresh
+		// receipts for one publication.
 		if found && len(response) == 0 {
 			if _, err := s.writer.RecordReceipt(ctx, CaptureIdentity{
 				DeviceID:    dev.DeviceID,
@@ -469,14 +473,20 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		return nil, err
 	}
 	if outcome.State == ReceiptApplied {
-		// The bytes go into the canonical record BEFORE the reservation settles,
-		// and a failure here is fatal to this attempt.
+		// The bytes go into the publication's RECEIPT SIBLING before the
+		// reservation settles, and a failure here is fatal to this attempt.
 		//
 		// The other order was the round-five hole: settle first, record after,
-		// and a crash in between left a canonical record with no bytes and a
+		// and a crash in between left a publication with no bytes and a
 		// reservation that would one day be trimmed. Recording first means the
 		// worst a crash can do is leave the reservation pending — which is a
 		// state the retry already knows how to finish.
+		//
+		// The sibling rather than the record itself is round eight's correction:
+		// the canonical record is immutable once claimed, so rewriting it in
+		// place made two racing callers mint two different answers for one
+		// publication. The sibling is claimed with the same exclusive create,
+		// and RecordReceipt hands back whatever bytes ended up there.
 		recorded, err := s.writer.RecordReceipt(ctx, claim.Identity(), body)
 		if err != nil {
 			return nil, err
