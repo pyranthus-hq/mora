@@ -684,6 +684,15 @@ func (w *companionWriter) PublishedForKey(ctx context.Context, deviceID, key str
 	if err != nil || !found {
 		return "", false, nil, err
 	}
+	// A replay repairs the pointer on its way past. The canonical record is the
+	// authority, so a missing pointer is not an error — but leaving it missing
+	// would mean the by-id lookup keeps answering "absent" for a memory that is
+	// very much published.
+	if _, rerr := repairCapturePublicationIndex(cfg, companion.CaptureIdentity{
+		DeviceID: record.DeviceID, Key: record.Key, MemoryID: record.MemoryID, Identity: record.Identity,
+	}); rerr != nil && !errors.Is(rerr, errMemoryIDMismatch) {
+		return "", false, nil, rerr
+	}
 	return record.Identity, true, []byte(record.Response), nil
 }
 
@@ -1628,40 +1637,49 @@ func recordCaptureReceipt(cfg Config, id companion.CaptureIdentity, response []b
 	return rewriteCapturePublicationRecord(keyPath, record)
 }
 
-// writeCapturePublicationRecord creates the canonical record, durably, and fails
-// if it is already there.
+// capturePublicationRaceGate is a no-op seam that runs at the instant two
+// concurrent claims for one key would collide.
 //
-// The bytes and the directory entry are both synced before it returns: this
-// record is the proof a later retry reads, and a proof that can evaporate in a
-// power cut is not one.
+// It exists so the exclusivity below can be WITNESSED rather than asserted: a
+// race is only a race if two callers can be held at the same point, and holding
+// them is the only way to make the test deterministic instead of hopeful.
+// Production replaces it with nothing.
+var capturePublicationRaceGate = func() {}
+
+// writeCapturePublicationRecord creates the canonical record, durably and
+// EXCLUSIVELY, and fails with os.ErrExist if somebody else already owns it.
+//
+// # Why a link rather than a stat and a rename
+//
+// Stat-then-rename is not exclusive and the gap is the whole defect: two claims
+// for one key both see "absent", both rename their own staging file over the
+// path, and the loser then believes it created a record that is actually the
+// winner's — so its rollback deletes the winner's publication. os.Link is the
+// primitive that decides: the filesystem refuses the second link with EEXIST, so
+// exactly one caller ever learns it created the file, and the other learns it
+// did not create anything and must roll back nothing.
+//
+// The staging file carries the bytes and is fsynced BEFORE the link, so the
+// record is never visible half-written and never visible without being durable.
+//
+// On Windows, os.Link is a hard link on NTFS and behaves the same way. A
+// filesystem that does not support links at all falls back to an O_EXCL create
+// of the final path — still exclusive, at the cost of a window in which a reader
+// could see a short file, which readCapturePublicationAt reports as unreadable
+// rather than as absent. That is the safe direction: a record that cannot be
+// read is not a record that says the key is free.
 func writeCapturePublicationRecord(path string, record capturePublication) error {
 	body, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	if _, err := os.Stat(path); err == nil {
-		return os.ErrExist
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return publishCapturePublicationRecord(path, append(body, '\n'))
+	capturePublicationRaceGate()
+	return linkCapturePublicationRecord(path, append(body, '\n'))
 }
 
-// rewriteCapturePublicationRecord replaces an existing canonical record.
-func rewriteCapturePublicationRecord(path string, record capturePublication) error {
-	body, err := json.MarshalIndent(record, "", "  ")
-	if err != nil {
-		return err
-	}
-	return publishCapturePublicationRecord(path, append(body, '\n'))
-}
-
-// publishCapturePublicationRecord stages the bytes beside the record and renames
-// them into place, syncing both.
-func publishCapturePublicationRecord(path string, body []byte) error {
+// linkCapturePublicationRecord stages the bytes, syncs them, and links them into
+// place under a name nobody else holds.
+func linkCapturePublicationRecord(path string, body []byte) error {
 	if len(body) > maxCapturePublicationBytes {
 		return fmt.Errorf("companion capture: a publication record of %d bytes is over the %d-byte limit", len(body), maxCapturePublicationBytes)
 	}
@@ -1669,27 +1687,94 @@ func publishCapturePublicationRecord(path string, body []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".pub-*.tmp")
+	name, err := stageCapturePublicationBytes(dir, body)
 	if err != nil {
 		return err
 	}
-	name := tmp.Name()
 	defer os.Remove(name)
+
+	if err := os.Link(name, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Somebody else owns this name. Nothing here created anything, which
+			// is exactly what the caller has to know.
+			return os.ErrExist
+		}
+		// A filesystem with no links. Fall back to an exclusive create of the
+		// final path, which is still the filesystem deciding rather than us.
+		file, cerr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if cerr != nil {
+			if errors.Is(cerr, os.ErrExist) {
+				return os.ErrExist
+			}
+			return errors.Join(err, cerr)
+		}
+		if _, werr := file.Write(body); werr != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return werr
+		}
+		if serr := file.Sync(); serr != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return serr
+		}
+		if cerr := file.Close(); cerr != nil {
+			_ = os.Remove(path)
+			return cerr
+		}
+		return atomicio.SyncDir(dir)
+	}
+	return atomicio.SyncDir(dir)
+}
+
+// stageCapturePublicationBytes writes the record beside its destination and
+// makes it durable before anybody can link to it.
+func stageCapturePublicationBytes(dir string, body []byte) (string, error) {
+	tmp, err := os.CreateTemp(dir, ".pub-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	name := tmp.Name()
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
-		return err
+		os.Remove(name)
+		return "", err
 	}
 	if _, err := tmp.Write(body); err != nil {
 		tmp.Close()
-		return err
+		os.Remove(name)
+		return "", err
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return err
+		os.Remove(name)
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
+// rewriteCapturePublicationRecord replaces an existing canonical record. It is
+// the receipt backfill, and it is a rename rather than a link because the name
+// is already ours.
+func rewriteCapturePublicationRecord(path string, record capturePublication) error {
+	body, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
 		return err
 	}
+	body = append(body, '\n')
+	if len(body) > maxCapturePublicationBytes {
+		return fmt.Errorf("companion capture: a publication record of %d bytes is over the %d-byte limit", len(body), maxCapturePublicationBytes)
+	}
+	dir := filepath.Dir(path)
+	name, err := stageCapturePublicationBytes(dir, body)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(name)
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}

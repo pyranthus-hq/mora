@@ -478,7 +478,13 @@ re-stamped retry would be a new identity, a new derived id and a second memory
 through and settles `applied` over the memory already there
 (`TestCaptureIdenticalRetryAfterSweepReplaysTheApplication`).
 
-The (device, key) record is the **canonical** one: it is written through a staged-fsync-rename, it
+The (device, key) record is the **canonical** one: it is staged, fsynced, and then **linked** into
+place with `os.Link` — the primitive that makes the claim exclusive, because the filesystem refuses
+the second link with `EEXIST` so exactly one caller ever learns it created the record and the other
+learns it created nothing and must roll back nothing. A stat followed by a rename is not exclusive,
+and the loser of that race would delete the winner's publication
+(`TestCompanionCaptureCanonicalClaimIsExclusive`, `TestCompanionCaptureLoserRollsBackNothing`). On a
+filesystem with no links the fallback is an `O_EXCL` create of the final path. The record it
 carries the memory id, the capture identity **and the exact response bytes**, and a replay is answered
 from it directly — so replay does not depend on a reservation, whose retention moves independently
 (`TestCaptureReplayDoesNotDependOnTheReservation`,
@@ -487,6 +493,14 @@ pointer** back to it, created after it; every lookup consults the canonical reco
 missing pointer when it finds one, so a crash between the two writes is repaired rather than fatal
 (`TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex`,
 `TestCompanionCaptureCrashBetweenIndexAndMemoryWritesOneMemory`).
+
+The receipt bytes reach the canonical record **before** the reservation settles, and a failure there
+is fatal to the attempt rather than swallowed: the worst a crash can do is leave the reservation
+pending, which a retry already knows how to finish
+(`TestCaptureReceiptIsRecordedBeforeTheReservationSettles`). A replay that finds the canonical record
+without its bytes — the state the other order left — backfills them before it answers, so the
+reservation is never the only copy (`TestCaptureBackfillsCanonicalBytesOnReplay`), and a replay
+repairs a missing pointer on its way past.
 
 Ownership records are the durable audit trail, bounded by the same total cap as reservations (512) and
 trimmed oldest-first. The trim is **settled-aware** — a record with no response bytes is a publication

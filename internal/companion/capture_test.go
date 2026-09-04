@@ -1664,3 +1664,100 @@ func TestCaptureReplayComesFromThePublishedRecordNotTheStore(t *testing.T) {
 		t.Fatal("a replay from the published record reserved the key again")
 	}
 }
+
+// TestCaptureReceiptIsRecordedBeforeTheReservationSettles is the round-five
+// ordering hole.
+//
+// Settling first and recording after left a canonical record with no bytes if
+// anything went wrong in between, and the retry answered from the reservation
+// without putting them back — so the day that reservation was trimmed, a retry
+// minted fresh receipts for one publication. Recording first means the worst a
+// failure can do is leave the reservation pending, which the retry already knows
+// how to finish.
+func TestCaptureReceiptIsRecordedBeforeTheReservationSettles(t *testing.T) {
+	srv, reg, token, root := newCaptureServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "the receipt goes first")
+
+	writer.mu.Lock()
+	writer.recordErr = errors.New("the process died before the receipt was recorded")
+	writer.mu.Unlock()
+
+	if rec := postCapture(t, srv, token, capture); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a failed receipt record answered %d, want 503\n%s", rec.Code, rec.Body.String())
+	}
+	// The reservation is PENDING, not settled: a settled reservation with no
+	// canonical bytes behind it is the state this ordering exists to prevent.
+	if state := reservationStateOn(t, root, capture); state != reservationPending {
+		t.Fatalf("the reservation is %q, want pending", state)
+	}
+
+	writer.mu.Lock()
+	writer.recordErr = nil
+	writer.mu.Unlock()
+
+	// The retry finishes it, and the bytes are in the canonical record. It runs
+	// past the takeover window, which is when a crashed claim becomes
+	// reclaimable.
+	restarted := restartCaptureServer(t, reg, root, writer, testNow.Add(ReservationTakeover+time.Second))
+	receipt := decodeReceipt(t, postCapture(t, restarted, token, capture))
+	if receipt.State != ReceiptApplied {
+		t.Fatalf("the retry produced %q, want applied", receipt.State)
+	}
+	_, found, response, err := writer.PublishedForKey(context.Background(), capture.DeviceID, capture.IdempotencyKey)
+	if err != nil || !found || len(response) == 0 {
+		t.Fatalf("the canonical record holds no receipt bytes: found=%t err=%v", found, err)
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the vault holds %d memories, want 1", got)
+	}
+}
+
+// TestCaptureBackfillsCanonicalBytesOnReplay is the recovery half.
+//
+// A canonical record with no bytes and a settled reservation that has them is
+// what a crash in the old order left behind. A replay must put them back before
+// it answers, or the reservation stays the only copy and its trim is a clock
+// counting down to a second receipt.
+func TestCaptureBackfillsCanonicalBytesOnReplay(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "backfill me")
+
+	first := postCapture(t, srv, token, capture)
+	if first.Code != http.StatusOK {
+		t.Fatalf("the first capture answered %d", first.Code)
+	}
+
+	// The state the old order left: published, settled, canonical bytes lost.
+	writer.mu.Lock()
+	delete(writer.receipts, capture.DeviceID+"\x00"+capture.IdempotencyKey)
+	writer.mu.Unlock()
+
+	second := postCapture(t, srv, token, capture)
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+		t.Fatalf("the replay is not the first attempt's bytes")
+	}
+	// And the canonical record has them again, so the NEXT replay does not need
+	// the reservation either.
+	_, found, response, err := writer.PublishedForKey(context.Background(), capture.DeviceID, capture.IdempotencyKey)
+	if err != nil || !found {
+		t.Fatalf("published lookup: found=%t err=%v", found, err)
+	}
+	if !bytes.Equal(response, first.Body.Bytes()) {
+		t.Fatalf("the canonical record was not backfilled with the answering bytes")
+	}
+
+	// Prove it: delete the reservation and replay again.
+	store := &ReservationStore{root: storeRootOf(srv), now: time.Now}
+	if err := os.Remove(store.path(capture.DeviceID, capture.IdempotencyKey)); err != nil {
+		t.Fatalf("remove the reservation: %v", err)
+	}
+	third := postCapture(t, srv, token, capture)
+	if !bytes.Equal(first.Body.Bytes(), third.Body.Bytes()) {
+		t.Fatalf("after the backfill and the trim the replay changed")
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the vault holds %d memories, want 1", got)
+	}
+}

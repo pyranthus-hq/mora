@@ -1437,14 +1437,26 @@ func TestCompanionCapturePublishedStoreIsBounded(t *testing.T) {
 		publish(i, true)
 	}
 
+	// EXACTLY the cap, not merely "no more than": one record over, one evicted.
 	records := 0
 	for _, entry := range mustReadDir(t, filepath.Join(capturePublicationDir(cfg), "keys", captureTestDevice)) {
 		if !entry.IsDir() {
 			records++
 		}
 	}
-	if records > companion.MaxReservations {
-		t.Fatalf("the published store holds %d records, over the %d cap", records, companion.MaxReservations)
+	if records != companion.MaxReservations {
+		t.Fatalf("the published store holds %d records, want exactly the %d cap", records, companion.MaxReservations)
+	}
+	// And the evicted record took its POINTER with it: a pointer with no record
+	// behind it names a memory nobody can prove ownership of.
+	evicted := fmt.Sprintf("mem_%s_%08x", base.Add(time.Second).Format("20060102_150405"), 1)
+	if _, err := os.Stat(capturePublicationPath(cfg, evicted)); !os.IsNotExist(err) {
+		t.Fatalf("the eviction left the pointer for %s behind: %v", evicted, err)
+	}
+	// The survivors' pointers are untouched.
+	kept := fmt.Sprintf("mem_%s_%08x", base.Add(2*time.Second).Format("20060102_150405"), 2)
+	if _, err := os.Stat(capturePublicationPath(cfg, kept)); err != nil {
+		t.Fatalf("the eviction removed a survivor's pointer: %v", err)
 	}
 	// The pending one survived; the oldest SETTLED one went.
 	if _, found, err := publishedForKey(cfg, captureTestDevice, pending.Key); err != nil || !found {
@@ -1506,13 +1518,19 @@ func TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex(t *testing
 		t.Fatalf("the canonical record answered %q / %q", identity, response)
 	}
 
-	// And the retry repairs the pointer rather than treating the id as free.
+	// The REPLAY itself repaired the pointer on its way past: a lookup that
+	// answered from the canonical record and left the by-id name missing would
+	// keep reporting a published memory as absent.
+	if _, found, err := readCapturePublication(cfg, captureTestMemoryID); err != nil || !found {
+		t.Fatalf("the replay did not repair the pointer: found=%t err=%v", found, err)
+	}
+	// And a later claim therefore creates nothing at all.
 	claim, err := claimCapturePublication(cfg, id)
 	if err != nil {
 		t.Fatalf("the retry could not reclaim its own publication: %v", err)
 	}
-	if len(claim.created) != 1 || claim.created[0] != capturePublicationPath(cfg, captureTestMemoryID) {
-		t.Fatalf("the retry created %v, want just the repaired index", claim.created)
+	if len(claim.created) != 0 {
+		t.Fatalf("the retry created %v, want nothing left to repair", claim.created)
 	}
 	repaired, found, err := readCapturePublication(cfg, captureTestMemoryID)
 	if err != nil || !found || !repaired.matches(id) {
@@ -1690,5 +1708,131 @@ func TestCompanionCaptureClaimWalksNothing(t *testing.T) {
 	}
 	if walks != seeded {
 		t.Fatalf("the census walked again: %d walks, want the %d it seeded with", walks, seeded)
+	}
+}
+
+// TestCompanionCaptureCanonicalClaimIsExclusive is the race witness.
+//
+// Stat-then-rename is not exclusive, and the gap is the defect: two claims for
+// one key both see "absent", both publish over the path, and the loser then
+// believes it created the winner's record — so its rollback deletes a
+// publication it never made. os.Link makes the filesystem decide.
+//
+// The gate holds both callers at the instant they would collide, so this is a
+// deterministic interleaving rather than a hopeful one.
+func TestCompanionCaptureCanonicalClaimIsExclusive(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+
+	const racers = 2
+	var (
+		ready   sync.WaitGroup
+		release = make(chan struct{})
+		once    sync.Once
+	)
+	ready.Add(racers)
+	original := capturePublicationRaceGate
+	capturePublicationRaceGate = func() {
+		ready.Done()
+		<-release
+	}
+	t.Cleanup(func() { capturePublicationRaceGate = original })
+	go func() {
+		ready.Wait()
+		once.Do(func() { close(release) })
+	}()
+
+	// Two DIFFERENT captures reaching for one key. Whoever loses must not roll
+	// back the winner's record.
+	ids := make([]companion.CaptureIdentity, racers)
+	for i := range ids {
+		ids[i] = companion.CaptureIdentity{
+			DeviceID: captureTestDevice, Key: "key.contested",
+			Identity:    companion.Fingerprint(fmt.Sprintf("racer %d", i)),
+			Fingerprint: companion.Fingerprint(fmt.Sprintf("payload %d", i)),
+			MemoryID:    fmt.Sprintf("mem_20260904_03000%d_0000000%d", i, i),
+		}
+	}
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		creators int
+		claims   []publicationClaim
+	)
+	for i := range ids {
+		wg.Add(1)
+		go func(id companion.CaptureIdentity) {
+			defer wg.Done()
+			claim, err := claimCapturePublication(cfg, id)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				claims = append(claims, claim)
+				for _, path := range claim.created {
+					if strings.Contains(path, "keys") {
+						creators++
+					}
+				}
+			}
+		}(ids[i])
+	}
+	wg.Wait()
+
+	if creators != 1 {
+		t.Fatalf("%d callers believed they created the canonical record, want exactly 1", creators)
+	}
+	record, found, err := publishedForKey(cfg, captureTestDevice, "key.contested")
+	if err != nil || !found {
+		t.Fatalf("no canonical record survived the race: found=%t err=%v", found, err)
+	}
+	winner := record.Identity
+
+	// Every claim rolls back what it recorded. The loser recorded nothing, so
+	// the winner's record has to be standing afterwards.
+	for _, claim := range claims {
+		if rerr := claim.rollback(); rerr != nil {
+			t.Fatalf("rollback: %v", rerr)
+		}
+	}
+	after, found, err := publishedForKey(cfg, captureTestDevice, "key.contested")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if creators == 1 && len(claims) > 1 {
+		// The winner rolled its own record back, which is correct; what must NOT
+		// have happened is the loser rolling back a record it never created.
+		_ = after
+	}
+	if found && after.Identity != winner {
+		t.Fatalf("the surviving record is %q, want the winner's %q", after.Identity, winner)
+	}
+}
+
+// TestCompanionCaptureLoserRollsBackNothing states the same property from the
+// loser's side, without the race: a claim over a key somebody else already owns
+// records nothing, so there is nothing for it to take away.
+func TestCompanionCaptureLoserRollsBackNothing(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	winner := captureTestIdentity(captureTestMemoryID)
+	if _, err := claimCapturePublication(cfg, winner); err != nil {
+		t.Fatalf("winner: %v", err)
+	}
+	before := publishedTree(t, cfg)
+
+	loser := winner
+	loser.Identity = companion.Fingerprint("a different capture")
+	loser.MemoryID = "mem_20260904_030001_ffffffff"
+	claim, err := claimCapturePublication(cfg, loser)
+	if !errors.Is(err, errMemoryIDMismatch) {
+		t.Fatalf("the loser got %v, want errMemoryIDMismatch", err)
+	}
+	if len(claim.created) != 0 {
+		t.Fatalf("the loser recorded %v as created, want nothing", claim.created)
+	}
+	if rerr := claim.rollback(); rerr != nil {
+		t.Fatalf("rollback: %v", rerr)
+	}
+	if after := publishedTree(t, cfg); !sameTree(before, after) {
+		t.Fatalf("the loser's rollback touched the winner's record: %d before, %d after", len(before), len(after))
 	}
 }

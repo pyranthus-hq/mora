@@ -371,7 +371,7 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 	if found && published != identity {
 		return s.refuse(ctx, dev, c, ReasonIdempotencyConflict, received)
 	}
-	if found && len(response) > 0 {
+	if found && published == identity && len(response) > 0 {
 		// This key published THIS capture and the bytes it answered with are on
 		// disk. Returning them is the replay, and it does not go through the
 		// reservation at all — which is the point: the reservation has its own
@@ -399,6 +399,22 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 	if claim == nil {
 		// The replay answer: the bytes the first attempt returned, not a
 		// re-marshalling of the same fields.
+		//
+		// If the canonical record is missing those bytes — a crash between the
+		// publication and the receipt — this is the moment to put them back.
+		// Without the backfill the reservation is the only copy, and the day it
+		// is trimmed a retry starts minting fresh receipts for one publication.
+		if found && len(response) == 0 {
+			if err := s.writer.RecordReceipt(ctx, CaptureIdentity{
+				DeviceID:    dev.DeviceID,
+				Key:         c.IdempotencyKey,
+				Identity:    identity,
+				Fingerprint: c.PayloadFingerprint,
+				MemoryID:    captureMemoryID(c, identity),
+			}, replay); err != nil {
+				return nil, err
+			}
+		}
 		return replay, nil
 	}
 	settled := false
@@ -429,17 +445,23 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 	if err != nil {
 		return nil, err
 	}
+	if outcome.State == ReceiptApplied {
+		// The bytes go into the canonical record BEFORE the reservation settles,
+		// and a failure here is fatal to this attempt.
+		//
+		// The other order was the round-five hole: settle first, record after,
+		// and a crash in between left a canonical record with no bytes and a
+		// reservation that would one day be trimmed. Recording first means the
+		// worst a crash can do is leave the reservation pending — which is a
+		// state the retry already knows how to finish.
+		if err := s.writer.RecordReceipt(ctx, claim.Identity(), body); err != nil {
+			return nil, err
+		}
+	}
 	if err := claim.Settle(receipt, body); err != nil {
 		return nil, err
 	}
 	settled = true
-	if outcome.State == ReceiptApplied {
-		// The bytes go into the published record AFTER the reservation settles.
-		// That ordering is what keeps a rejected request from trimming the
-		// store, and it is safe to lose: until it lands, the reservation is
-		// still the replay, and the next attempt records it again.
-		_ = s.writer.RecordReceipt(ctx, claim.Identity(), body)
-	}
 	return body, nil
 }
 
