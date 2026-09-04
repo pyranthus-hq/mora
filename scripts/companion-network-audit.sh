@@ -363,6 +363,28 @@ endpoint_url() {
 # about some other host entirely — passed as a refusal of THIS address. The
 # anchor makes the message have to be curl's, about exit 7, and nothing else.
 #
+# EXACTLY TWO wordings are accepted, and both were verified against the libcurl
+# that produces them rather than guessed:
+#
+#   "Connection refused"          the operating system's strerror for
+#                                 ECONNREFUSED, which curl appends to its own
+#                                 message. This is what Linux prints.
+#   "Couldn't connect to server"  libcurl's own text for CURLE_COULDNT_CONNECT,
+#                                 returned by curl_easy_strerror in
+#                                 lib/strerror.c. This is what macOS prints,
+#                                 where the OS strerror is not appended.
+#
+# A third wording, "Could not connect to server", was accepted here and has been
+# REMOVED. It is not a string libcurl emits. Verified against the exact library
+# the live audit measures (curl 8.2.1, libcurl/8.2.1):
+#
+#   $ strings libcurl.4.dylib | grep -c "Couldn't connect to server"   # 1
+#   $ strings libcurl.4.dylib | grep -c "Could not connect to server"  # 0
+#
+# A wording that is not PROVEN to mean ECONNREFUSED must classify as unreachable,
+# never as refused: inventing a spelling of "refused" is how a probe starts
+# accepting a message that means something else entirely.
+#
 # A proxy refusal is checked BEFORE the refusal wording and is never a refusal.
 # "curl: (7) Failed to connect to proxy ... Couldn't connect to server" contains
 # the refusal wording verbatim, but it is the PROXY refusing, which says nothing
@@ -400,7 +422,7 @@ classify_endpoint_result() {
     *proxy*|*Proxy*|*PROXY*) printf 'error\n'; return ;;
     *[Uu]nreachable*|*"No route to host"*|*"Network is down"*)
       printf 'error\n'; return ;;
-    *[Rr]efused*|*"Couldn't connect to server"*|*"Could not connect to server"*)
+    *[Rr]efused*|*"Couldn't connect to server"*)
       printf 'refused\n'; return ;;
   esac
   printf 'error\n'
@@ -924,22 +946,36 @@ stub_curl_unanchored_refusal() {
 stub_curl_proxy_refusal() {
   printf "7 000 0 curl: (7) Failed to connect to proxy.example port 3128 after 1 ms: Couldn't connect to server\n"
 }
-# stub_curl_requires_noproxy refuses only when the probe actually passed the
-# flags that make a refusal trustworthy, and answers 200 otherwise — so the
-# fixture asserts the argv instead of trusting a comment.
+# stub_curl_requires_noproxy pins the argv CONTRACT, not merely the presence of
+# two strings.
+#
+# Both positions matter and neither is cosmetic:
+#
+#   -q must be FIRST. curl reads ~/.curlrc unless -q is given, and it applies
+#      the file's contents at the point -q would have appeared. A -q that is not
+#      the first argument leaves a window in which the operator's own defaults —
+#      a proxy, a --resolve, a header — are already in effect.
+#   --noproxy must be IMMEDIATELY followed by '*'. It takes a value; a --noproxy
+#      whose next argument is some other flag disables proxying for the wrong
+#      host list and silently consumes that flag as its value.
+#
+# The stub refuses only when both hold and answers 200 otherwise, so a probe
+# that reorders or separates them fails rather than passing on a substring.
 # shellcheck disable=SC2329
 stub_curl_requires_noproxy() {
-  local saw_noproxy=0 saw_q=0 a
-  for a in "$@"; do
-    case "$a" in
-      --noproxy) saw_noproxy=1 ;;
-      -q) saw_q=1 ;;
-    esac
+  local i=1 n=$# next
+  [ "${1:-}" = "-q" ] || { printf '0 200 512 \n'; return; }
+  while [ "$i" -le "$n" ]; do
+    if [ "${!i}" = "--noproxy" ]; then
+      i=$((i + 1))
+      [ "$i" -le "$n" ] || { printf '0 200 512 \n'; return; }
+      next=${!i}
+      [ "$next" = "*" ] || { printf '0 200 512 \n'; return; }
+      printf '7 000 0 curl: (7) Failed to connect: Connection refused\n'
+      return
+    fi
+    i=$((i + 1))
   done
-  if [ "$saw_noproxy" -eq 1 ] && [ "$saw_q" -eq 1 ]; then
-    printf '7 000 0 curl: (7) Failed to connect: Connection refused\n'
-    return
-  fi
   printf '0 200 512 \n'
 }
 # stub_curl_requires_interface answers 200 unless --interface was passed for a
@@ -956,6 +992,11 @@ stub_curl_requires_interface() {
     *) printf '7 000 0 curl: (7) Failed to connect: Connection refused\n' ;;
   esac
 }
+# stub_curl_invented_wording emits the third refusal spelling that was accepted
+# here until it was checked against libcurl and found not to exist. It must
+# block, not pass.
+# shellcheck disable=SC2329
+stub_curl_invented_wording() { printf '7 000 0 curl: (7) Could not connect to server\n'; }
 # stub_curl_unroutable_zone refuses the unzoned urls and cannot route the zoned
 # one. Before the zone was carried into the URL this shape passed, because a
 # curl that could not route was recorded as a refusal.
@@ -1130,6 +1171,12 @@ FIXTURE
     "$(classify_endpoint_result 7 000 0 'curl: (7) Failed to connect: Host is unreachable')"
   expect_string error "curl exit 7 with no message at all is NOT a refusal" \
     "$(classify_endpoint_result 7 000 0 '')"
+  # "Could not connect to server" is NOT a string libcurl emits — the arm that
+  # accepted it was removed. Verified against the library the live audit
+  # measures: `strings libcurl.4.dylib | grep -c "Could not connect to server"`
+  # is 0, while the same grep for "Couldn'"'"'t connect to server" is 1.
+  expect_string error "an invented spelling of the refusal is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 0 'curl: (7) Could not connect to server')"
   expect_string error "a timeout is not a refusal" \
     "$(classify_endpoint_result 28 000 0 'curl: (28) Operation timed out')"
   expect_string error "an unresolvable host is not a refusal" \
@@ -1212,6 +1259,12 @@ FIXTURE
   expect_probe fail "an HTTP/0.9-style reply must not pass" \
     lan_probe_with stub_curl_http09 "$endpoints" 0
 
+  # The removed wording, at probe level too.
+  expect_probe fail "an invented refusal spelling must not pass the probe" \
+    lan_probe_with stub_curl_invented_wording "$endpoints" 0
+  expect_probe pass "an invented refusal spelling blocks instead (exit 3)" \
+    lan_probe_with stub_curl_invented_wording "$endpoints" 3
+
   # The two false-PASS shapes this round exists for.
   expect_probe fail "a refusal wording in unrelated stderr must not pass the probe" \
     lan_probe_with stub_curl_unanchored_refusal "$endpoints" 0
@@ -1222,10 +1275,21 @@ FIXTURE
   expect_probe pass "a refusing proxy blocks instead (exit 3)" \
     lan_probe_with stub_curl_proxy_refusal "$endpoints" 3
 
-  # And the argv itself, asserted rather than described: the stub refuses only
-  # when -q and --noproxy were actually passed, and answers 200 otherwise.
-  expect_probe pass "the probe passes -q and --noproxy '*' to curl" \
+  # And the argv itself, asserted rather than described. The stub refuses only
+  # when -q is the FIRST argument and --noproxy is IMMEDIATELY followed by '*',
+  # and answers 200 otherwise, so a probe that reorders or separates them fails.
+  expect_probe pass "-q is curl's first argument and --noproxy is followed by '*'" \
     lan_probe_with stub_curl_requires_noproxy "$endpoints" 0
+  # The stub's own contract, proved directly so a fixture that has stopped
+  # discriminating cannot make the assertion above vacuous.
+  expect_string '0 200 512 ' "a -q that is not first fails the argv contract" \
+    "$(stub_curl_requires_noproxy -sS -q --noproxy '*' http://192.0.2.10/)"
+  expect_string '0 200 512 ' "a --noproxy not followed by '*' fails the argv contract" \
+    "$(stub_curl_requires_noproxy -q --noproxy -sS http://192.0.2.10/)"
+  expect_string '0 200 512 ' "a --noproxy with no value at all fails the argv contract" \
+    "$(stub_curl_requires_noproxy -q --noproxy)"
+  expect_string '0 200 512 ' "no --noproxy at all fails the argv contract" \
+    "$(stub_curl_requires_noproxy -q -sS http://192.0.2.10/)"
   expect_probe pass "the probe passes --interface for a zoned address" \
     lan_probe_with stub_curl_requires_interface "$endpoints" 0
 

@@ -518,11 +518,16 @@ It now has three outcomes, and only one of them is proof:
 
 The refusal test is **anchored to curl's own message line** — it must begin `curl: (7) ` — and it is
 two-directional. Substring-matching the whole of stderr was wrong: any text that happened to contain
-"refused", from any component, about any host, passed as a refusal of *this* address. It matches both
-curl vocabularies (macOS says `Couldn't connect to server` for `ECONNREFUSED` where Linux says
-`Connection refused`), and an exit 7 whose message matches *neither* the refusal nor the unreachable
-wording is recorded as unreachable rather than guessed at, so a future change to curl's wording
-degrades to BLOCKED and can never become a silent pass.
+"refused", from any component, about any host, passed as a refusal of *this* address. It accepts exactly **two** wordings, both verified against the
+libcurl that produces them: `Connection refused`, the operating system's `strerror` for
+`ECONNREFUSED` and what Linux prints, and `Couldn't connect to server`, libcurl's own text for
+`CURLE_COULDNT_CONNECT` from `curl_easy_strerror` in `lib/strerror.c` and what macOS prints. A third
+spelling, `Could not connect to server`, was accepted and has been **removed**: it is not a string
+libcurl emits. Checked against the exact library the live audit measures (curl 8.2.1,
+libcurl/8.2.1) — `strings libcurl.4.dylib | grep -c "Couldn't connect to server"` is 1 and the same
+grep for `Could not connect to server` is 0. An exit 7 whose message matches *neither* the refusal
+nor the unreachable vocabulary is recorded as unreachable rather than guessed at, so a future change
+to curl's wording degrades to BLOCKED and can never become a silent pass.
 
 **A proxy is the sharpest way to fake this probe, so it is locked out three times.** A configured
 proxy that refuses connections answers exit 7 with the refusal wording verbatim for *every* URL, and
@@ -530,8 +535,12 @@ C2 would report that every address on the machine refused without a single packe
 of them. The script clears `http_proxy`/`https_proxy`/`ALL_PROXY`/`NO_PROXY` and their variants
 before anything runs; every probe curl is given `-q` (ignore `~/.curlrc`) and `--noproxy '*'`; and a
 message naming a proxy is classified as unreachable even if it carries the refusal wording. A
-self-test fixture asserts the argv rather than trusting this paragraph: the stub refuses only when
-`-q` and `--noproxy` were actually passed, and answers 200 otherwise.
+self-test fixture asserts the argv *contract* rather than trusting this paragraph: the stub refuses
+only when `-q` is curl's **first** argument and `--noproxy` is **immediately followed by** `*`, and
+answers 200 otherwise. Both positions carry weight — curl applies `~/.curlrc` at the point `-q` would
+have appeared, so a `-q` that is not first leaves a window in which the operator's own defaults are
+already in effect, and `--noproxy` takes a value, so a `--noproxy` followed by another flag disables
+proxying for the wrong host list and swallows that flag as its value.
 
 A reply with **no status line but a non-empty body** — HTTP/0.9, or anything that is not HTTP at all
 — counts as *responded*, not as unproven. Something is listening; it simply did not speak HTTP/1.
