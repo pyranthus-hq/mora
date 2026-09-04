@@ -14,6 +14,7 @@ package mora
 //	mora companion list     show every device and the credential it authenticates with
 //	mora companion revoke   end one device's access
 //	mora companion status   counts, host identity, and whether a window is open
+//	mora companion serve    the narrow loopback listener a paired phone reads
 //
 // `pair` prints a secret. It is the only command here that does, it says so in
 // the human output, and the JSON form carries it because a QR renderer has to
@@ -44,7 +45,7 @@ const (
 	schemaCompanionStatus = "mora.companion.status"
 )
 
-const companionUsage = "usage: mora companion <pair|list|revoke|status>"
+const companionUsage = "usage: mora companion <pair|list|revoke|status|serve>"
 
 func cmdCompanion(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -59,6 +60,8 @@ func cmdCompanion(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return cmdCompanionRevoke(ctx, args[1:], stdout, stderr)
 	case "status":
 		return cmdCompanionStatus(ctx, args[1:], stdout)
+	case "serve":
+		return cmdCompanionServe(ctx, args[1:], stdout)
 	default:
 		return newCodedError(errCodeUsageUnknownValue, nil,
 			"unknown companion subcommand %q — %s", args[0], companionUsage)
@@ -113,7 +116,12 @@ func cmdCompanionPair(ctx context.Context, args []string, stdout, stderr io.Writ
 			"usage: mora companion pair [--label NAME] [--platform ios|macos|other] [--endpoint URL] (unexpected argument %q)", fs.Arg(0))
 	}
 	if *endpoint == "" {
-		*endpoint = fmt.Sprintf("http://127.0.0.1:%d", envPortOr(defaultHTTPPort))
+		// The default is the COMPANION listener's port, not the generic
+		// loopback API's: a phone that follows this endpoint must land on
+		// `mora companion serve`, which is the only server that accepts the
+		// token pairing is about to mint. Publishing a reachable-off-the-Mac
+		// endpoint is N22's job, not this default's.
+		*endpoint = fmt.Sprintf("http://%s:%d", companion.LoopbackHost, defaultCompanionPort)
 	}
 
 	reg, _, err := companionRegistry(ctx)

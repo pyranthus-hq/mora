@@ -266,12 +266,64 @@ Stated plainly, so nobody reads a shape here as an approved mechanism.
 - **This package imports only the standard library** and must never import `internal/mora`
   (`TestPackageIsALeaf`).
 
-## 11. Notes for Wave 1
+## 11. The listener (N12)
 
-Two things this schema deliberately leaves to the nodes that build on it, stated here rather than
-discovered there.
+`mora companion serve` is the only server that speaks this contract. It is a **separate** loopback
+HTTP listener from `mora serve http`, and the separation is the security boundary rather than a
+packaging choice.
 
-### N12: mapping the kernel's index state onto `HealthState`
+| | `mora serve http` | `mora companion serve` |
+|---|---|---|
+| Credential | one shared token in `~/.config/mora/http.json`, embedded in a web page | a per-device token from `mora companion pair`, revocable one device at a time |
+| Surface | a `/call` escape hatch plus eight convenience routes, including `write` | three read routes |
+| Audience | a sandboxed AI browser on the same Mac | a paired phone |
+
+A token from either side is refused by the other. `TestCompanionListenerRefusesTheGenericLoopbackToken`
+and `TestGenericLoopbackAPIRefusesADeviceToken` prove both directions.
+
+### The routes
+
+| Method | Path | Payload |
+|---|---|---|
+| `GET` | `/v1/companion/today` | `mora.companion.today` |
+| `POST` | `/v1/companion/context` | `mora.companion.context.request` in, `mora.companion.context` out |
+| `GET` | `/v1/companion/health` | `mora.companion.health` |
+
+That is the whole allowlist, and it is a table in one file rather than a series of registrations, so
+a test can walk it. There is no `/call`, no delete, no sync, no connector command, no configuration
+write and no read-a-memory-by-id route: a device that can name a memory id can enumerate the vault,
+and a device that can name a tool has the generic API back under a different name.
+
+### What the listener refuses
+
+- **Any address but `127.0.0.1`.** Not `localhost`, not `::1`, not `0.0.0.0` — one literal string,
+  checked in `NewServer` and again in `Serve`. Publishing the listener beyond the loopback interface
+  is N22's job. A `Host` header that is not the literal loopback address is a 403, which is the
+  DNS-rebinding defense.
+- **Every credential failure, identically.** No token, a malformed token, an unknown device and a
+  revoked device all get the same 401 with the same body and no `WWW-Authenticate` header, so a
+  caller holding a stolen token cannot classify it by probing. An operator learns which from
+  `mora companion list`.
+- **Oversize headers and bodies**, before the kernel is reached.
+
+Authorization is checked twice: once in the guard chain, and again inside each handler. A middleware
+chain is a claim about how a handler is mounted, and a mounting is one refactor away from being wrong.
+
+### 200 never means fresh
+
+Every projection carries the kernel's own freshness rows and its health summary, and a degraded index
+or a dead connector still answers 200. The status code reports whether the request was served; the
+body reports whether the answer can be trusted. A phone that renders only the status code would show a
+confident empty screen during an outage.
+
+Identifiers are derived, not passed through. A Mora stable id is `<kind>/<provider id>` — it carries
+the provider, usually the account, and often the message id — so an evidence row ships
+`mem_<32 hex>`, a deterministic one-way digest of it. The same memory is the same id across requests,
+and nothing downstream can parse a provider out of it.
+
+The listener logs nothing per request: not the token, not the query, not the body, not the answer.
+
+### Mapping the kernel's index state onto `HealthState`
 
 `index.state` and the top-level `state` are this contract's three-value vocabulary
 (`healthy`/`degraded`/`unhealthy`). The kernel's own index health is a wider vocabulary, and the
@@ -288,6 +340,15 @@ listener must collapse it exactly this way rather than inventing a mapping:
 A projection whose `index.state` is `unhealthy` is still served — the contract's honesty rule is that
 the client is told, not that the response is withheld.
 
+Note that this is **not** the kernel's own aggregate collapse, which folds `dirty` into `unhealthy`.
+The two answer different questions. The aggregate is `mora doctor`'s fail-closed verdict on whether
+the vault is in a state anyone should trust; `index.state` is one arm of a projection that already
+carries the aggregate beside it in the top-level `state`, and flattening a behind-but-usable index
+into the same value as a missing one would cost the phone the distinction. `TestCompanionIndexStateFollowsTheContractTable`
+pins the table.
+
+## 12. Notes for Wave 1
+
 ### N11: canonicalizing and cryptographically validating public keys
 
 `validatePublicKey` is a **format** check: an algorithm label, standard base64, and a 32-byte length.
@@ -303,7 +364,7 @@ pin a device key. Before a key is pinned, the registry must:
 - **Bind the algorithm.** A key pinned as `ed25519` is never usable as `x25519`, and the label is
   part of the pinned identity rather than a hint.
 
-## 12. How the contract is enforced
+## 13. How the contract is enforced
 
 `internal/companion/testdata/v1/<schema>.json` holds one frozen document per fixture, and:
 

@@ -297,6 +297,10 @@ USAGE:
   mora mcp proposals list          # inspect writes staged by propose-mode MCP clients
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
+  mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
+  mora companion list|status       # the paired devices, and whether a pairing window is open
+  mora companion revoke <id>       # end one device's access
+  mora companion serve             # the narrow loopback listener a paired phone reads (Today/context/health only)
   mora hook install|uninstall|status
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability

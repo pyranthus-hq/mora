@@ -795,21 +795,24 @@ func (r *Registry) load() (*registryFile, error) {
 	if err := hardenPath(r.filePath(), secretFileMode); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	// The size is checked before the bytes are read. Authenticate runs this on
-	// every request N12's listener serves, so an oversized record file would be
-	// a request-rate memory amplifier long before it was a parse error.
-	info, err := os.Stat(r.filePath())
-	if err == nil && info.Size() > MaxRegistryBytes {
-		return nil, fmt.Errorf("companion: the device registry is %d bytes, over the %d-byte limit; "+
-			"this is a corrupt or hostile file, not a large one — move it aside and pair again",
-			info.Size(), MaxRegistryBytes)
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	body, err := os.ReadFile(r.filePath())
+	// The size bound is enforced BY the read, not by a stat beside it.
+	//
+	// Stat-then-ReadFile answers the size question about one moment and reads
+	// the bytes in another, so a file that grew in between was read whole and
+	// the bound reported on a size that no longer existed. Reading through a
+	// limit reader capped one byte ABOVE the bound closes that: there is one
+	// observation, the bytes actually taken, and an over-limit file announces
+	// itself by the read filling the extra byte. Authenticate runs this on
+	// every request the listener serves, so the bound is a request-rate memory
+	// bound before it is anything else.
+	body, err := readBounded(r.filePath(), MaxRegistryBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return &registryFile{Version: registryFileVersion}, nil
+	}
+	if errors.Is(err, errTooLarge) {
+		return nil, fmt.Errorf("companion: the device registry is over the %d-byte limit; "+
+			"this is a corrupt or hostile file, not a large one — move it aside and pair again",
+			MaxRegistryBytes)
 	}
 	if err != nil {
 		return nil, err
@@ -829,6 +832,31 @@ func (r *Registry) load() (*registryFile, error) {
 			len(f.Devices), MaxDevices)
 	}
 	return &f, nil
+}
+
+// errTooLarge reports that a bounded read hit its ceiling.
+var errTooLarge = errors.New("companion: file exceeds its size bound")
+
+// readBounded reads at most limit bytes from path and refuses a longer file.
+//
+// It reads limit+1 through an io.LimitReader: if that extra byte arrives, the
+// file is over the bound and nothing more of it is read into memory. The open
+// file handle is what is measured, so a file swapped or grown between a stat
+// and a read cannot slip past — there is no stat.
+func readBounded(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	body, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, errTooLarge
+	}
+	return body, nil
 }
 
 // mutate runs fn against the record file under the cross-process lock and

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -407,6 +408,18 @@ func TestRegistryAuthenticateSeparatesRevokedFromUnknown(t *testing.T) {
 //     unconditional hash. Not a comparison, not a conditional, not an
 //     assignment to something else that is then compared. Round two allowed an
 //     `if token == ""` to slip through because it only looked for returns.
+//  5. The loop must iterate a set the token had no say in. `for i, rec := range
+//     candidates(token, f.Devices)` satisfies every rule above — one loop, no
+//     branch inside it, one pre-loop hash — and still leaks the token through
+//     the ITERATION COUNT, which is the coarsest timing signal there is.
+//
+// Rules 4 and 5 both rest on the taint set, and the taint set has to follow the
+// token through a struct field and through a range header, not only through a
+// bare `x := token`. Both were holes: `box.v = token` bound a selector, which
+// the round-three binder ignored because it only looked at *ast.Ident, and
+// `for _, c := range token` bound its key and value in a statement that is
+// neither an assignment nor a declaration. Anything reachable from the token is
+// a token-shaped answer regardless of the syntax that carried it there.
 func authenticateWitnessViolations(fn *ast.FuncDecl) []string {
 	var out []string
 
@@ -488,6 +501,14 @@ func authenticateWitnessViolations(fn *ast.FuncDecl) []string {
 				"allowed, the unconditional hash", hashes, param))
 	}
 
+	// Part 5: the loop must not iterate a token-derived set.
+	if exprReadsTainted(loop.X, tainted) {
+		out = append(out, fmt.Sprintf(
+			"the comparison loop ranges over a value derived from %q; the NUMBER of iterations then "+
+				"depends on the token, which is a timing signal no constant-time comparison inside the "+
+				"loop can take back", param))
+	}
+
 	// Parts 1, 2 and 3, all inside the loop.
 	var constantTime, branched bool
 	ast.Inspect(loop.Body, func(node ast.Node) bool {
@@ -527,14 +548,7 @@ func authenticateTaintSet(fn *ast.FuncDecl, param string) map[string]bool {
 	tainted := map[string]bool{param: true}
 	readsTainted := func(exprs []ast.Expr) bool {
 		for _, expr := range exprs {
-			found := false
-			ast.Inspect(expr, func(node ast.Node) bool {
-				if id, ok := node.(*ast.Ident); ok && tainted[id.Name] {
-					found = true
-				}
-				return true
-			})
-			if found {
+			if exprReadsTainted(expr, tainted) {
 				return true
 			}
 		}
@@ -543,10 +557,19 @@ func authenticateTaintSet(fn *ast.FuncDecl, param string) map[string]bool {
 	bind := func(lhs []ast.Expr) bool {
 		grew := false
 		for _, expr := range lhs {
-			if id, ok := expr.(*ast.Ident); ok && id.Name != "_" && !tainted[id.Name] {
-				tainted[id.Name] = true
-				grew = true
+			// The ROOT of the assignment target, not only a bare identifier.
+			// `box.v = token` taints box, `slots[0] = token` taints slots and
+			// `*p = token` taints p, because every later read of box, slots or
+			// p can see the token through the field, the element or the
+			// pointee. Round three bound only *ast.Ident, so the selector form
+			// walked straight past the "exactly one pre-loop assignment" rule
+			// and out through an `if box.v == ""` that mentioned no token.
+			id := rootIdent(expr)
+			if id == nil || id.Name == "_" || tainted[id.Name] {
+				continue
 			}
+			tainted[id.Name] = true
+			grew = true
 		}
 		return grew
 	}
@@ -557,6 +580,24 @@ func authenticateTaintSet(fn *ast.FuncDecl, param string) map[string]bool {
 			switch n := node.(type) {
 			case *ast.AssignStmt:
 				if readsTainted(n.Rhs) && bind(n.Lhs) {
+					grew = true
+				}
+			case *ast.RangeStmt:
+				// A range header binds without being an assignment or a
+				// declaration. Ranging over anything token-derived hands the
+				// key and the value the token's shape — its length, its bytes,
+				// the size of a set filtered by it.
+				if !exprReadsTainted(n.X, tainted) {
+					return true
+				}
+				targets := []ast.Expr{}
+				if n.Key != nil {
+					targets = append(targets, n.Key)
+				}
+				if n.Value != nil {
+					targets = append(targets, n.Value)
+				}
+				if bind(targets) {
 					grew = true
 				}
 			case *ast.ValueSpec:
@@ -574,6 +615,42 @@ func authenticateTaintSet(fn *ast.FuncDecl, param string) map[string]bool {
 		})
 		if !grew {
 			return tainted
+		}
+	}
+}
+
+// exprReadsTainted reports whether expr mentions any tainted identifier.
+func exprReadsTainted(expr ast.Expr, tainted map[string]bool) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if id, ok := node.(*ast.Ident); ok && tainted[id.Name] {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// rootIdent unwraps an assignment target down to the identifier it ultimately
+// names: x, x.f, x[i], *x and any parenthesized form all root at x.
+func rootIdent(expr ast.Expr) *ast.Ident {
+	for {
+		switch n := expr.(type) {
+		case *ast.Ident:
+			return n
+		case *ast.ParenExpr:
+			expr = n.X
+		case *ast.SelectorExpr:
+			expr = n.X
+		case *ast.IndexExpr:
+			expr = n.X
+		case *ast.StarExpr:
+			expr = n.X
+		default:
+			return nil
 		}
 	}
 }
@@ -622,7 +699,7 @@ func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
 // against correct code, so it is fed the exact shapes it exists to catch —
 // including the two that got through round two.
 func TestRegistryAuthenticateWitnessRejectsBadShapes(t *testing.T) {
-	const preamble = "package p\nimport \"crypto/subtle\"\nfunc Fingerprint(string) string { return \"\" }\ntype Device struct{}\ntype rec struct{ TokenFingerprint string }\nvar devices []rec\n"
+	const preamble = "package p\nimport \"crypto/subtle\"\nfunc Fingerprint(string) string { return \"\" }\ntype Device struct{}\ntype rec struct{ TokenFingerprint string }\nvar devices []rec\ntype holder struct{ v string }\nvar box holder\nfunc candidates(string, []rec) []rec { return nil }\n"
 
 	for _, tc := range []struct {
 		name string
@@ -762,6 +839,44 @@ func TestRegistryAuthenticateWitnessRejectsBadShapes(t *testing.T) {
 	return Device{}, nil`,
 		},
 		{
+			// The selector case. `box.v = token` binds a struct field, which
+			// the round-three binder ignored because it only recognized a bare
+			// identifier on the left, so neither the "exactly one pre-loop
+			// assignment" rule nor the taint-aware branch check saw anything.
+			name: "token stashed through a struct field and branched on later",
+			body: `
+	want := []byte(Fingerprint(token))
+	box.v = token
+	if box.v == "" {
+		return Device{}, nil
+	}
+	matched := -1
+	for i, r := range devices {
+		if subtle.ConstantTimeCompare([]byte(r.TokenFingerprint), want) == 1 {
+			matched = i
+		}
+	}
+	_ = matched
+	return Device{}, nil`,
+		},
+		{
+			// The iteration-count case. Every earlier rule is satisfied — one
+			// range loop, one pre-loop hash, no branch and no exit inside the
+			// loop, a genuine constant-time compare — and the token still
+			// decides how many comparisons run.
+			name: "the comparison loop ranges over a token-derived set",
+			body: `
+	want := []byte(Fingerprint(token))
+	matched := -1
+	for i, r := range candidates(token, devices) {
+		if subtle.ConstantTimeCompare([]byte(r.TokenFingerprint), want) == 1 {
+			matched = i
+		}
+	}
+	_ = matched
+	return Device{}, nil`,
+		},
+		{
 			name: "plain equality instead of a constant-time compare",
 			body: `
 	want := Fingerprint(token)
@@ -804,6 +919,258 @@ func TestRegistryAuthenticateWitnessRejectsBadShapes(t *testing.T) {
 `)
 	if violations := authenticateWitnessViolations(good); len(violations) != 0 {
 		t.Fatalf("the witness rejects the correct shape:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+// TestAuthenticateTaintSetFollowsSelectorsAndRangeHeaders pins the two binding
+// forms the witness used to miss, at the level they are decided.
+//
+// The full-witness negative controls above cover what those holes let through
+// in a whole function, but one of them cannot be reached that way: `for _, c :=
+// range token` above the comparison loop is a SECOND range loop, so the witness
+// rejects it on the loop count before the taint set is consulted. Asserting the
+// taint set directly is what proves the binding is followed rather than merely
+// unreachable — the day the loop-count rule is relaxed, this is what still says
+// a range over the token taints what it binds.
+func TestAuthenticateTaintSetFollowsSelectorsAndRangeHeaders(t *testing.T) {
+	const preamble = "package p\ntype holder struct{ v string }\nvar box holder\nvar slots []string\n"
+
+	for _, tc := range []struct {
+		name    string
+		body    string
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "selector target taints its root",
+			body:    "\tbox.v = token\n",
+			want:    []string{"token", "box"},
+			notWant: []string{"slots"},
+		},
+		{
+			name: "index target taints its root",
+			body: "\tslots[0] = token\n",
+			want: []string{"token", "slots"},
+		},
+		{
+			name: "range over the token taints its key and value",
+			body: "\tfor i, c := range token {\n\t\t_, _ = i, c\n\t}\n",
+			want: []string{"token", "i", "c"},
+		},
+		{
+			name:    "range over an untainted collection taints nothing",
+			body:    "\tfor i, c := range slots {\n\t\t_, _ = i, c\n\t}\n",
+			want:    []string{"token"},
+			notWant: []string{"i", "c", "slots"},
+		},
+		{
+			name: "taint reaches a range header through an alias chain",
+			body: "\talias := token\n\tderived := alias\n\tfor i, c := range derived {\n\t\t_, _ = i, c\n\t}\n",
+			want: []string{"token", "alias", "derived", "i", "c"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fn := authenticateDecl(t, preamble+"func Authenticate(token string) {\n"+tc.body+"}\n")
+			tainted := authenticateTaintSet(fn, "token")
+			for _, name := range tc.want {
+				if !tainted[name] {
+					t.Fatalf("%q is not tainted; the taint set is %v", name, sortedNames(tainted))
+				}
+			}
+			for _, name := range tc.notWant {
+				if tainted[name] {
+					t.Fatalf("%q is tainted but nothing derived it from the token; the taint set is %v", name, sortedNames(tainted))
+				}
+			}
+		})
+	}
+}
+
+func sortedNames(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for name := range set {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestRegistryRefusesAnOversizeRecordFileByReadingBounded pins the size bound
+// AND the way it is measured.
+//
+// It used to be a Stat beside a ReadFile: the size question was answered about
+// one moment and the bytes taken in another, so a file that grew in between was
+// read whole and the bound reported on a size that no longer existed.
+// Authenticate runs load() on every request the listener serves, which makes
+// that a request-rate memory bound, not a tidiness one.
+func TestRegistryRefusesAnOversizeRecordFileByReadingBounded(t *testing.T) {
+	reg, _, configDir, _ := testRegistry(t)
+	pairAndConfirm(t, reg, "phone")
+
+	path := filepath.Join(configDir, "companion", "devices.json")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), MaxRegistryBytes+1), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.List(); err == nil || !strings.Contains(err.Error(), "over the") {
+		t.Fatalf("an oversize registry was accepted: %v", err)
+	}
+	// It is refused for its SIZE, not because the bytes failed to parse: the
+	// message must name the limit, and the parse error must never be the thing
+	// that saved us.
+	if _, err := reg.List(); err != nil && strings.Contains(err.Error(), "not readable as a device registry") {
+		t.Fatalf("the oversize file reached the JSON decoder: %v", err)
+	}
+
+	// Exactly at the bound is legal, so the refusal is a ceiling and not an
+	// off-by-one that rejects a large-but-valid file.
+	body := append([]byte(`{"version":1,"devices":[]}`), bytes.Repeat([]byte(" "), MaxRegistryBytes-len(`{"version":1,"devices":[]}`))...)
+	if len(body) != MaxRegistryBytes {
+		t.Fatalf("the fixture is %d bytes, want exactly %d", len(body), MaxRegistryBytes)
+	}
+	if err := os.WriteFile(path, body, secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.List(); err != nil {
+		t.Fatalf("a file exactly at the bound was refused: %v", err)
+	}
+}
+
+// TestRegistryLoadReadsThroughTheBoundedReaderOnly is the structural witness for
+// the size bound.
+//
+// The behavioural tests above pass whether load() reads through readBounded or
+// reverts to Stat-then-ReadFile, because a statically oversize file is refused
+// either way — the bound was FIXED-NO-TEST. What separates the two shapes is the
+// window between the size question and the read, and that window is not
+// reachable from a test without a filesystem race. So the property is asserted
+// where it is decided: load() takes the record file through readBounded and
+// through nothing else. os.ReadFile or os.Stat reappearing on that path fails
+// here, which is the revert this test exists to catch.
+func TestRegistryLoadReadsThroughTheBoundedReaderOnly(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "registry.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var load *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "load" && fn.Recv != nil {
+			load = fn
+		}
+	}
+	if load == nil {
+		t.Fatal("load not found in registry.go")
+	}
+
+	var (
+		bounded int
+		banned  []string
+	)
+	ast.Inspect(load.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			if fun.Name == "readBounded" {
+				bounded++
+			}
+		case *ast.SelectorExpr:
+			pkg, ok := fun.X.(*ast.Ident)
+			if !ok || pkg.Name != "os" {
+				return true
+			}
+			// Every way to get the bytes or the size without the bound.
+			switch fun.Sel.Name {
+			case "ReadFile", "Stat", "Lstat", "Open", "OpenFile":
+				banned = append(banned, "os."+fun.Sel.Name)
+			}
+		}
+		return true
+	})
+
+	if bounded != 1 {
+		t.Fatalf("load calls readBounded %d times, want exactly 1", bounded)
+	}
+	if len(banned) != 0 {
+		t.Fatalf("load reads the record file outside the bound: %v — the size question and the read must be one observation", banned)
+	}
+
+	// And readBounded itself must be the thing that opens it, or the name is
+	// decorative.
+	var reader *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "readBounded" {
+			reader = fn
+		}
+	}
+	if reader == nil {
+		t.Fatal("readBounded not found in registry.go")
+	}
+	var opens, limits bool
+	ast.Inspect(reader.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if pkg.Name == "os" && sel.Sel.Name == "Open" {
+			opens = true
+		}
+		if pkg.Name == "io" && sel.Sel.Name == "LimitReader" {
+			limits = true
+		}
+		return true
+	})
+	if !opens || !limits {
+		t.Fatalf("readBounded opens=%t limits=%t; it must read one open handle through a limit", opens, limits)
+	}
+}
+
+// TestReadBoundedTakesAtMostItsLimit pins the primitive directly, including
+// that it does not read the whole file into memory to discover it is too big.
+func TestReadBoundedTakesAtMostItsLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+
+	for _, tc := range []struct {
+		name    string
+		size    int64
+		limit   int64
+		wantErr error
+		wantLen int
+	}{
+		{"under the limit", 10, 100, nil, 10},
+		{"exactly the limit", 100, 100, nil, 100},
+		{"one over the limit", 101, 100, errTooLarge, 0},
+		{"far over the limit", 100000, 100, errTooLarge, 0},
+		{"empty", 0, 100, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, bytes.Repeat([]byte("x"), int(tc.size)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			body, err := readBounded(path, tc.limit)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if len(body) != tc.wantLen {
+				t.Fatalf("read %d bytes, want %d", len(body), tc.wantLen)
+			}
+		})
+	}
+
+	if _, err := readBounded(filepath.Join(dir, "absent"), 100); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a missing file reads as %v, want os.ErrNotExist", err)
 	}
 }
 

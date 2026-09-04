@@ -1044,6 +1044,13 @@
       "platform": "all",
       "json_contract": "result",
       "payload": "mora.companion.status"
+    },
+    {
+      "path": "companion serve",
+      "kind": "subcommand",
+      "platform": "loopback-seam",
+      "json_contract": "exempt",
+      "reason": "long-running loopback listener; it serves the companion routes until the process ends and has no document to emit"
     }
   ]
 }

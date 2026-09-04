@@ -497,6 +497,17 @@
         "error": {"status": "test", "tests": ["TestCompanionErrorsNameTheNextCommand"], "reason": "An unknown device id is a usage error naming `mora companion list`. Corrupt and future-versioned record files are refused with an actionable message by TestRegistrySurvivesRestartAndRefusesAFutureFile in internal/companion."},
         "refusal": {"status": "test", "tests": ["TestCompanionRefusesUnknownSubcommandAndDashLedDeviceID"], "reason": "A dash-led token cannot land in the device-id slot, an unknown subcommand and a stray positional are refused, and every refusal leaves stdout empty and the registry untouched. The registry's own refusals (wrong code, expired code, replayed confirmation, non-loopback cleartext endpoint) are proved in internal/companion."}
       }
+    },
+    {
+      "name": "companion listener",
+      "paths": ["companion serve"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionProjectionsCarryKernelFreshness", "TestCompanionContextRunsEveryMode", "TestCompanionListenerRefusesTheGenericLoopbackToken"], "reason": "The listener is driven end to end over the real registry and the real kernel reader: all three routes answer 200 for a paired device, every context mode returns a bundle the contract accepts, and the projections carry the kernel's own health state and write policy."},
+        "json": {"status": "test", "tests": ["TestCompanionServeRefusesJSONAndBadArguments", "TestCompanionContextRunsEveryMode"], "reason": "The subcommand itself refuses --json because it runs a server. The JSON it does produce is the N02 companion schema on the wire, and it is decoded back through companion.Unmarshal rather than substring-matched."},
+        "state": {"status": "test", "tests": ["TestCompanionListenerRefusesTheGenericLoopbackToken", "TestGenericLoopbackAPIRefusesADeviceToken"], "reason": "The durable state this verb reads is the device registry, and the credential boundary is what matters about it: the loopback token in http.json fails on every companion route and a device token fails on every generic route. The registry's own files, modes and locking are proved in internal/companion/registry_test.go, which this registry cannot name because it indexes only test functions in internal/mora."},
+        "error": {"status": "test", "tests": ["TestCompanionServeRefusesJSONAndBadArguments"], "reason": "An out-of-range port, a stray positional and an unknown flag are coded usage errors raised before net.Listen, so a bad invocation cannot leave a socket behind."},
+        "refusal": {"status": "test", "tests": ["TestCompanionServeRefusesJSONAndBadArguments", "TestLoopbackHTTPResponsesAreByteForByteUnchanged", "TestLoopbackHTTPRouteTableIsUnchanged"], "reason": "The subcommand refuses --json and every malformed argument, and the generic loopback API is pinned byte for byte so this node cannot have widened it. The route allowlist, the opaque 401, the loopback-only bind and the header and body bounds are proved in internal/companion/server_test.go against the package that owns them."}
+      }
     }
   ]
 }
