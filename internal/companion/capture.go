@@ -101,7 +101,16 @@ type Writer interface {
 	// the sweep collects, and after that the key looks unused. Without it, a
 	// re-stamped retry of such a capture is a new identity, a new derived id, and
 	// a second memory.
-	PublishedForKey(ctx context.Context, deviceID, key string) (identity string, found bool, err error)
+	// The response bytes come back with it: they are what the FIRST attempt
+	// answered with, so a replay after the reservation is gone is the same bytes
+	// rather than a fresh receipt for the same memory.
+	PublishedForKey(ctx context.Context, deviceID, key string) (identity string, found bool, response []byte, err error)
+	// RecordReceipt stores the bytes a published capture answered with, so a
+	// later replay does not depend on a reservation that has its own retention.
+	// It is called after the reservation settles, and it is the only place the
+	// published store is trimmed — which is what makes a REJECTED request unable
+	// to evict anything.
+	RecordReceipt(ctx context.Context, id CaptureIdentity, response []byte) error
 	// Published reports whether the pinned id is already in the vault, and if so
 	// the outcome that describes it. It is asked only when a crashed reservation
 	// is reclaimed, so the retry can finish somebody else's work rather than
@@ -355,10 +364,20 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 	// THIS capture falls through: the derivation is deterministic, so the write
 	// below finds its own memory already there and settles applied without
 	// writing again.
-	if published, found, perr := s.writer.PublishedForKey(ctx, dev.DeviceID, c.IdempotencyKey); perr != nil {
+	published, found, response, perr := s.writer.PublishedForKey(ctx, dev.DeviceID, c.IdempotencyKey)
+	if perr != nil {
 		return nil, perr
-	} else if found && published != identity {
+	}
+	if found && published != identity {
 		return s.refuse(ctx, dev, c, ReasonIdempotencyConflict, received)
+	}
+	if found && len(response) > 0 {
+		// This key published THIS capture and the bytes it answered with are on
+		// disk. Returning them is the replay, and it does not go through the
+		// reservation at all — which is the point: the reservation has its own
+		// retention, and a replay that depended on it would start minting fresh
+		// receipts for one publication the moment it was trimmed.
+		return response, nil
 	}
 
 	replay, claim, err := s.captures.Reserve(CaptureIdentity{
@@ -414,6 +433,13 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		return nil, err
 	}
 	settled = true
+	if outcome.State == ReceiptApplied {
+		// The bytes go into the published record AFTER the reservation settles.
+		// That ordering is what keeps a rejected request from trimming the
+		// store, and it is safe to lose: until it lands, the reservation is
+		// still the replay, and the next attempt records it again.
+		_ = s.writer.RecordReceipt(ctx, claim.Identity(), body)
+	}
 	return body, nil
 }
 

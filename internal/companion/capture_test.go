@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -40,7 +41,9 @@ type stubWriter struct {
 	// identity that published under them. It is written on every applied publish
 	// and, unlike a reservation, nothing collects it.
 	published    map[string]string
+	receipts     map[string][]byte
 	publishedErr error
+	recordErr    error
 	// vault is the fake vault: pinned memory id to the capture identity that owns
 	// it. Its size is the duplicate detector — N retries of one capture must
 	// leave ONE entry — and the value is what makes a foreign file at a pinned id
@@ -61,7 +64,7 @@ type stubWriter struct {
 }
 
 func newStubWriter() *stubWriter {
-	return &stubWriter{policy: PolicyOpen, vault: map[string]string{}, published: map[string]string{}}
+	return &stubWriter{policy: PolicyOpen, vault: map[string]string{}, published: map[string]string{}, receipts: map[string][]byte{}}
 }
 
 func (w *stubWriter) Policy(context.Context) (WritePolicy, error) {
@@ -73,11 +76,23 @@ func (w *stubWriter) Policy(context.Context) (WritePolicy, error) {
 // PublishedForKey is the durable audit trail the sweep cannot take away. The
 // stub keeps it as its own map so a test can model a capture that published and
 // then had its reservation collected.
-func (w *stubWriter) PublishedForKey(_ context.Context, deviceID, key string) (string, bool, error) {
+func (w *stubWriter) PublishedForKey(_ context.Context, deviceID, key string) (string, bool, []byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	identity, found := w.published[deviceID+"\x00"+key]
-	return identity, found, w.publishedErr
+	return identity, found, w.receipts[deviceID+"\x00"+key], w.publishedErr
+}
+
+// RecordReceipt is the canonical record's response half: the bytes the capture
+// answered with, kept where no reservation retention can reach them.
+func (w *stubWriter) RecordReceipt(_ context.Context, id CaptureIdentity, response []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.recordErr != nil {
+		return w.recordErr
+	}
+	w.receipts[id.DeviceID+"\x00"+id.Key] = append([]byte(nil), response...)
+	return nil
 }
 
 func (w *stubWriter) Published(_ context.Context, _ Capture, id CaptureIdentity) (WriteOutcome, bool, error) {
@@ -1580,5 +1595,72 @@ func TestCaptureLogsIntegrityEventsAndNothingElse(t *testing.T) {
 	}
 	if strings.Contains(log.String(), receipt.ReceiptID) {
 		t.Fatalf("the log carries the receipt: %q", log.String())
+	}
+}
+
+// TestCaptureReplayDoesNotDependOnTheReservation is the round-four defect: the
+// exact response bytes lived only in the reservation, whose trim and TTL move
+// independently of the published record. A reservation collected while its
+// publication survived would let the next retry mint a SECOND receipt for one
+// memory.
+//
+// The bytes are recorded into the canonical published record now, so deleting
+// the reservation outright changes nothing a client can see.
+func TestCaptureReplayDoesNotDependOnTheReservation(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "the receipt outlives its reservation")
+
+	first := postCapture(t, srv, token, capture)
+	if first.Code != http.StatusOK {
+		t.Fatalf("the first capture answered %d\n%s", first.Code, first.Body.String())
+	}
+
+	// The reservation goes, the publication stays — the state a trim leaves.
+	store := &ReservationStore{root: storeRootOf(srv), now: time.Now}
+	if err := os.Remove(store.path(capture.DeviceID, capture.IdempotencyKey)); err != nil {
+		t.Fatalf("remove the reservation: %v", err)
+	}
+	if reservationExists(storeRootOf(srv), capture.DeviceID, capture.IdempotencyKey) {
+		t.Fatal("the reservation survived; the test would not prove anything")
+	}
+
+	second := postCapture(t, srv, token, capture)
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+		t.Fatalf("the replay is not the first attempt's bytes\nfirst:\n%s\nsecond:\n%s", first.Body.String(), second.Body.String())
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the replay left %d memories, want exactly 1", got)
+	}
+	if got := writer.count(); got != 1 {
+		t.Fatalf("the replay asked the kernel to write %d times, want 1", got)
+	}
+}
+
+// TestCaptureReplayComesFromThePublishedRecordNotTheStore proves the ORDER of
+// the two answers: the published record is consulted before anything is
+// reserved, so a replay costs no reservation at all.
+func TestCaptureReplayComesFromThePublishedRecordNotTheStore(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	capture := captureFor(t, srv, "answered from the record")
+
+	first := postCapture(t, srv, token, capture)
+	if first.Code != http.StatusOK {
+		t.Fatalf("the first capture answered %d", first.Code)
+	}
+	// Everything the reservation store knows is gone.
+	store := &ReservationStore{root: storeRootOf(srv), now: time.Now}
+	if err := os.Remove(store.path(capture.DeviceID, capture.IdempotencyKey)); err != nil {
+		t.Fatalf("remove the reservation: %v", err)
+	}
+
+	second := postCapture(t, srv, token, capture)
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+		t.Fatal("the replay is not the first attempt's bytes")
+	}
+	// And it did not take a reservation to answer: the published record was
+	// enough, so nothing was written back into the store.
+	if reservationExists(storeRootOf(srv), capture.DeviceID, capture.IdempotencyKey) {
+		t.Fatal("a replay from the published record reserved the key again")
 	}
 }

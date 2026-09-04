@@ -12,6 +12,7 @@ package mora
 // from the one route that writes.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -419,34 +420,41 @@ func TestCompanionCaptureSyncsThePublicationBeforeItReturns(t *testing.T) {
 	cfg := captureTestVault(t, mcpWritePolicyOpen)
 	writer := newCompanionWriter()
 
-	var synced []string
+	var (
+		synced       []string
+		recordAtSync string
+	)
+	id := captureTestIdentity(captureTestMemoryID)
 	original := companionSyncPublication
 	companionSyncPublication = func(path string) error {
 		synced = append(synced, path)
+		if body, rerr := os.ReadFile(capturePublicationKeyPath(cfg, id.DeviceID, id.Key)); rerr == nil {
+			recordAtSync = string(body)
+		}
 		return original(path)
 	}
 	t.Cleanup(func() { companionSyncPublication = original })
 
-	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "make me durable"), captureTestIdentity(captureTestMemoryID)); err != nil {
+	if _, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "make me durable"), id); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	// Two things are made durable, in this order: the record that says which
-	// capture owns the pinned id, and then the memory itself. The ownership
-	// record goes first on purpose — a crash between them leaves an owned id
-	// with no memory, which a retry completes, where the other order would leave
-	// a memory that looked unowned to its own retry.
-	if len(synced) != 2 {
-		t.Fatalf("the publication was synced %d times, want 2 (the ownership record, then the memory)", len(synced))
+	// The memory is synced through this seam. The canonical ownership record has
+	// its own durable write — staged, fsynced and renamed — because it is the
+	// proof a later retry reads, and it lands BEFORE the memory: a crash between
+	// them leaves an owned id with no memory, which a retry completes, where the
+	// other order would leave a memory that looked unowned to its own retry.
+	if len(synced) != 1 {
+		t.Fatalf("the memory was synced %d times, want exactly 1", len(synced))
 	}
 	memories := vaultMemories(t, cfg)
 	if len(memories) != 1 {
 		t.Fatalf("the vault holds %d memories, want 1", len(memories))
 	}
-	if synced[0] != capturePublicationPath(cfg, captureTestMemoryID) {
-		t.Fatalf("synced %q first, want the ownership record", synced[0])
+	if synced[0] != memories[0].Path {
+		t.Fatalf("synced %q, want the memory's own path %q", synced[0], memories[0].Path)
 	}
-	if synced[1] != memories[0].Path {
-		t.Fatalf("synced %q second, want the memory's own path %q", synced[1], memories[0].Path)
+	if recordAtSync == "" {
+		t.Fatal("the canonical ownership record did not exist when the memory was synced; the order is reversed")
 	}
 }
 
@@ -634,8 +642,12 @@ func (p *readOnlyProbe) Policy(ctx context.Context) (companion.WritePolicy, erro
 	return p.inner.Policy(ctx)
 }
 
-func (p *readOnlyProbe) PublishedForKey(ctx context.Context, deviceID, key string) (string, bool, error) {
+func (p *readOnlyProbe) PublishedForKey(ctx context.Context, deviceID, key string) (string, bool, []byte, error) {
 	return p.inner.PublishedForKey(ctx, deviceID, key)
+}
+
+func (p *readOnlyProbe) RecordReceipt(ctx context.Context, id companion.CaptureIdentity, response []byte) error {
+	return p.inner.RecordReceipt(ctx, id, response)
 }
 
 func (p *readOnlyProbe) Published(ctx context.Context, c companion.Capture, id companion.CaptureIdentity) (companion.WriteOutcome, bool, error) {
@@ -715,8 +727,8 @@ func TestCompanionWriterNeverMarksItsContextReadOnly(t *testing.T) {
 	// The three the Writer seam declares, plus the two the verification is made
 	// of. The count is asserted so a method added later is walked rather than
 	// silently skipped by this witness.
-	if checked != 6 {
-		t.Fatalf("walked %d companionWriter methods, want 6", checked)
+	if checked != 7 {
+		t.Fatalf("walked %d companionWriter methods, want 7", checked)
 	}
 }
 
@@ -1105,8 +1117,8 @@ func TestCompanionCapturePublicationRecordNamesItsOwner(t *testing.T) {
 		t.Fatalf("a second capture claimed the same id: %v", err)
 	}
 	// And the owner can re-claim its own id as many times as it retries.
-	if created, err := claimCapturePublication(cfg, id); err != nil || created {
-		t.Fatalf("the owner could not re-claim its own id: created=%t err=%v", created, err)
+	if claim, err := claimCapturePublication(cfg, id); err != nil || len(claim.created) != 0 {
+		t.Fatalf("the owner could not re-claim its own id: created=%v err=%v", claim.created, err)
 	}
 }
 
@@ -1385,18 +1397,19 @@ func TestCompanionCaptureOwnerFsyncedButMemoryAbsentIsCompleted(t *testing.T) {
 	}
 }
 
-// TestCompanionCapturePublishedByKeySurvivesAndIsBounded covers the durable
-// audit trail: it answers by (device, key), it is trimmed oldest-first at the
-// same total cap the reservation store uses, and the trim walks only when the
-// directory is over that cap.
-func TestCompanionCapturePublishedByKeyIsBounded(t *testing.T) {
+// TestCompanionCapturePublishedStoreIsBounded covers the durable audit trail:
+// it answers by (device, key), it is trimmed oldest-first at the same total cap
+// the reservation store uses, and the trim is SETTLED-AWARE and runs only after
+// a capture has recorded its receipt.
+func TestCompanionCapturePublishedStoreIsBounded(t *testing.T) {
 	cfg := captureTestVault(t, mcpWritePolicyOpen)
-
-	// One over the cap, each a second apart so "oldest" is a real ordering.
+	writer := newCompanionWriter()
 	base := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
 	original := mcpWriteClock
 	t.Cleanup(func() { mcpWriteClock = original })
-	for i := 0; i <= companion.MaxReservations; i++ {
+
+	publish := func(i int, settle bool) companion.CaptureIdentity {
+		t.Helper()
 		at := base.Add(time.Duration(i) * time.Second)
 		mcpWriteClock = func() time.Time { return at }
 		id := companion.CaptureIdentity{
@@ -1409,27 +1422,273 @@ func TestCompanionCapturePublishedByKeyIsBounded(t *testing.T) {
 		if _, err := claimCapturePublication(cfg, id); err != nil {
 			t.Fatalf("claim %d: %v", i, err)
 		}
+		if settle {
+			if err := writer.RecordReceipt(testCtx(t), id, []byte(fmt.Sprintf("receipt %d\n", i))); err != nil {
+				t.Fatalf("record %d: %v", i, err)
+			}
+		}
+		return id
 	}
 
-	entries, err := os.ReadDir(capturePublicationDir(cfg))
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
+	// The oldest is left PENDING — claimed, never settled. The trim must not take
+	// it, because its bytes are what a retry is about to need.
+	pending := publish(0, false)
+	for i := 1; i <= companion.MaxReservations; i++ {
+		publish(i, true)
 	}
+
 	records := 0
-	for _, entry := range entries {
+	for _, entry := range mustReadDir(t, filepath.Join(capturePublicationDir(cfg), "keys", captureTestDevice)) {
 		if !entry.IsDir() {
 			records++
 		}
 	}
 	if records > companion.MaxReservations {
-		t.Fatalf("the published tree holds %d records, over the %d cap", records, companion.MaxReservations)
+		t.Fatalf("the published store holds %d records, over the %d cap", records, companion.MaxReservations)
 	}
-	// The oldest went; the newest stayed, and it is still answerable by key.
-	if _, found, err := publishedForKey(cfg, captureTestDevice, "key.0000"); err != nil || found {
-		t.Fatalf("the oldest record survived the trim: found=%t err=%v", found, err)
+	// The pending one survived; the oldest SETTLED one went.
+	if _, found, err := publishedForKey(cfg, captureTestDevice, pending.Key); err != nil || !found {
+		t.Fatalf("the trim evicted a publication that had not settled: found=%t err=%v", found, err)
+	}
+	if _, found, err := publishedForKey(cfg, captureTestDevice, "key.0001"); err != nil || found {
+		t.Fatalf("the oldest settled record survived the trim: found=%t err=%v", found, err)
 	}
 	newest := fmt.Sprintf("key.%04d", companion.MaxReservations)
 	if _, found, err := publishedForKey(cfg, captureTestDevice, newest); err != nil || !found {
 		t.Fatalf("the newest record was trimmed: found=%t err=%v", found, err)
+	}
+}
+
+func mustReadDir(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir %s: %v", dir, err)
+	}
+	return entries
+}
+
+// TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex is the split
+// the round-four review named.
+//
+// The canonical record is durable and the pointer is not, which is what a kill
+// between the two writes leaves. Every lookup consults the canonical record
+// first, so the retry finds it, repairs the missing pointer, and replays the
+// receipt it already recorded — it does not mint a second one.
+func TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	id := captureTestIdentity(captureTestMemoryID)
+	capture := captureFixture(t, captureTestDevice, "key.one", "canonical first")
+
+	if _, err := writer.Publish(testCtx(t), capture, id); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	receipt := []byte("{\n  \"receipt\": \"the first answer\"\n}\n")
+	if err := writer.RecordReceipt(testCtx(t), id, receipt); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	// The crash: the pointer is gone, the canonical record is not.
+	if err := os.Remove(capturePublicationPath(cfg, captureTestMemoryID)); err != nil {
+		t.Fatalf("remove the index: %v", err)
+	}
+	if _, found, err := readCapturePublication(cfg, captureTestMemoryID); err != nil || found {
+		t.Fatalf("the index is still readable: found=%t err=%v", found, err)
+	}
+
+	// The canonical record still answers by key, with the same bytes.
+	identity, found, response, err := writer.PublishedForKey(testCtx(t), captureTestDevice, "key.one")
+	if err != nil || !found {
+		t.Fatalf("the canonical record did not survive: found=%t err=%v", found, err)
+	}
+	if identity != id.Identity || !bytes.Equal(response, receipt) {
+		t.Fatalf("the canonical record answered %q / %q", identity, response)
+	}
+
+	// And the retry repairs the pointer rather than treating the id as free.
+	claim, err := claimCapturePublication(cfg, id)
+	if err != nil {
+		t.Fatalf("the retry could not reclaim its own publication: %v", err)
+	}
+	if len(claim.created) != 1 || claim.created[0] != capturePublicationPath(cfg, captureTestMemoryID) {
+		t.Fatalf("the retry created %v, want just the repaired index", claim.created)
+	}
+	repaired, found, err := readCapturePublication(cfg, captureTestMemoryID)
+	if err != nil || !found || !repaired.matches(id) {
+		t.Fatalf("the index was not repaired: found=%t err=%v", found, err)
+	}
+	// A pointer is a shortcut, never an authority. One that names a key whose
+	// canonical record is about a DIFFERENT memory answers nothing.
+	stale := capturePublicationIndex{
+		Schema: schemaCapturePublicationIndex, SchemaVersion: 1,
+		MemoryID: "mem_20260904_030000_ffffffff", DeviceID: id.DeviceID, Key: id.Key,
+	}
+	body, merr := json.MarshalIndent(stale, "", "  ")
+	if merr != nil {
+		t.Fatalf("marshal: %v", merr)
+	}
+	if werr := os.WriteFile(capturePublicationPath(cfg, stale.MemoryID), append(body, '\n'), 0o600); werr != nil {
+		t.Fatalf("plant the stale pointer: %v", werr)
+	}
+	if _, found, err := readCapturePublication(cfg, stale.MemoryID); err != nil || found {
+		t.Fatalf("a pointer to a record about another memory answered: found=%t err=%v", found, err)
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 1 {
+		t.Fatalf("the retry left %d memory files, want exactly 1", len(files))
+	}
+}
+
+// TestCompanionCaptureCrashBetweenIndexAndMemoryWritesOneMemory is the other
+// half of the split: both records are durable and the memory is not, which the
+// retry completes with exactly one write.
+func TestCompanionCaptureCrashBetweenIndexAndMemoryWritesOneMemory(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	id := captureTestIdentity(captureTestMemoryID)
+
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 0 {
+		t.Fatalf("the claim wrote %d memory files, want 0", len(files))
+	}
+
+	outcome, err := writer.Publish(testCtx(t), captureFixture(t, captureTestDevice, "key.one", "memory last"), id)
+	if err != nil {
+		t.Fatalf("the retry could not complete the publication: %v", err)
+	}
+	if outcome.State != companion.ReceiptApplied {
+		t.Fatalf("the retry produced %q, want applied", outcome.State)
+	}
+	files := vaultMemoryFiles(t, cfg)
+	if len(files) != 1 {
+		t.Fatalf("the retry left %d memory files, want exactly 1", len(files))
+	}
+	if !strings.Contains(files[0], captureTestMemoryID) {
+		t.Fatalf("the retry wrote %q, want the pinned id", files[0])
+	}
+}
+
+// TestCompanionCaptureAtCapRejectionLeavesTheTreeIdentical is the trim-ordering
+// defect.
+//
+// Round four trimmed on the CLAIM, before the memory was verified, so an at-cap
+// request that was then rejected over a foreign memory evicted an older
+// publication on its way out — a refusal that changed durable state. The trim
+// moved to after the receipt is recorded, which only a settled capture reaches.
+func TestCompanionCaptureAtCapRejectionLeavesTheTreeIdentical(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	base := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	original := mcpWriteClock
+	t.Cleanup(func() { mcpWriteClock = original })
+
+	// Fill the store to its cap, every record settled.
+	for i := 0; i < companion.MaxReservations; i++ {
+		at := base.Add(time.Duration(i) * time.Second)
+		mcpWriteClock = func() time.Time { return at }
+		id := companion.CaptureIdentity{
+			DeviceID: captureTestDevice, Key: fmt.Sprintf("key.%04d", i),
+			Identity:    companion.Fingerprint(fmt.Sprintf("identity %d", i)),
+			Fingerprint: companion.Fingerprint(fmt.Sprintf("payload %d", i)),
+			MemoryID:    fmt.Sprintf("mem_%s_%08x", at.Format("20060102_150405"), i),
+		}
+		if _, err := claimCapturePublication(cfg, id); err != nil {
+			t.Fatalf("claim %d: %v", i, err)
+		}
+		if err := writer.RecordReceipt(testCtx(t), id, []byte(fmt.Sprintf("receipt %d\n", i))); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+	mcpWriteClock = original
+
+	// Somebody else's memory at the pinned id the next capture would use.
+	foreign := Memory{
+		Scope: "personal", Type: "insight", Title: "Not the capture",
+		Source: "cli", CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Text: "this file was here first", ID: captureTestMemoryID,
+	}
+	body, err := renderMemory(foreign)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	path := memoryPath(cfg, foreign)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("seed the vault: %v", err)
+	}
+
+	before := publishedTree(t, cfg)
+	outcome, err := writer.Publish(testCtx(t),
+		captureFixture(t, captureTestDevice, "key.late", "arrives at the cap"),
+		captureTestIdentity(captureTestMemoryID))
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if outcome.State != companion.ReceiptRejected || outcome.Reason != companion.ReasonInternal {
+		t.Fatalf("produced %s/%s, want rejected/internal", outcome.State, outcome.Reason)
+	}
+	after := publishedTree(t, cfg)
+	if !sameTree(before, after) {
+		t.Fatalf("an at-cap rejection changed the published tree: %d records before, %d after", len(before), len(after))
+	}
+}
+
+// TestCompanionCaptureClaimWalksNothing is the cost gate for the published
+// store. A claim answers from records it names directly; only the trim walks,
+// and only after a capture has settled.
+func TestCompanionCaptureClaimWalksNothing(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	walks := 0
+	writer.census.readDir = func(name string) ([]os.DirEntry, error) {
+		walks++
+		return os.ReadDir(name)
+	}
+
+	for i := 0; i < 16; i++ {
+		id := companion.CaptureIdentity{
+			DeviceID: captureTestDevice, Key: fmt.Sprintf("key.%03d", i),
+			Identity:    companion.Fingerprint(fmt.Sprintf("identity %d", i)),
+			Fingerprint: companion.Fingerprint(fmt.Sprintf("payload %d", i)),
+			MemoryID:    fmt.Sprintf("mem_20260904_0300%02d_%08x", i, i),
+		}
+		if _, err := claimCapturePublication(cfg, id); err != nil {
+			t.Fatalf("claim %d: %v", i, err)
+		}
+		if walks != 0 {
+			t.Fatalf("claim %d walked the published store %d times, want 0", i, walks)
+		}
+		if _, _, _, err := writer.PublishedForKey(testCtx(t), captureTestDevice, id.Key); err != nil {
+			t.Fatalf("lookup %d: %v", i, err)
+		}
+		if walks != 0 {
+			t.Fatalf("a by-key lookup walked the published store %d times, want 0", walks)
+		}
+	}
+
+	// The census seeds itself on the FIRST trim — one pass, not one per record —
+	// and never walks again.
+	id := companion.CaptureIdentity{
+		DeviceID: captureTestDevice, Key: "key.000",
+		Identity:    companion.Fingerprint("identity 0"),
+		Fingerprint: companion.Fingerprint("payload 0"),
+		MemoryID:    "mem_20260904_030000_00000000",
+	}
+	if err := writer.RecordReceipt(testCtx(t), id, []byte("receipt\n")); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	seeded := walks
+	if seeded == 0 || seeded > 2 {
+		t.Fatalf("the census seeded itself with %d walks, want the root and one device directory", seeded)
+	}
+	if err := writer.RecordReceipt(testCtx(t), id, []byte("receipt\n")); err != nil {
+		t.Fatalf("second record: %v", err)
+	}
+	if walks != seeded {
+		t.Fatalf("the census walked again: %d walks, want the %d it seeded with", walks, seeded)
 	}
 }

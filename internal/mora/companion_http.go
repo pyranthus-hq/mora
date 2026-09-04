@@ -495,9 +495,43 @@ func (k *companionReader) meetingContext(ctx context.Context, req companion.Cont
 // one request. Capture is the exception by definition: it is a write, it is
 // governed by the vault's own policy, and marking it read-only would make the
 // one authorized mutation refuse itself.
-type companionWriter struct{}
+type companionWriter struct {
+	// census bounds the published store without walking it per capture. It is
+	// per writer rather than package-level so two listeners in one process — a
+	// test, a future embedding — do not share one.
+	census *publishedCensus
+}
 
-func newCompanionWriter() *companionWriter { return &companionWriter{} }
+func newCompanionWriter() *companionWriter {
+	return &companionWriter{census: newPublishedCensus()}
+}
+
+// RecordReceipt stores the bytes a published capture answered with, and is the
+// only place the published store is trimmed.
+//
+// It is called AFTER the reservation has settled, which is what makes two things
+// true at once: a rejected request never trims — so a refusal leaves the store
+// byte-identical — and the trim never evicts a publication whose capture has not
+// finished, because an unsettled record has no response bytes and the trim skips
+// those.
+func (w *companionWriter) RecordReceipt(ctx context.Context, id companion.CaptureIdentity, response []byte) error {
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return err
+	}
+	if err := recordCaptureReceipt(cfg, id, response); err != nil {
+		return err
+	}
+	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
+	if err != nil {
+		return err
+	}
+	if found {
+		w.census.note(record)
+	}
+	w.census.trim(cfg, id)
+	return nil
+}
 
 // Policy reports the vault's current write policy.
 func (w *companionWriter) Policy(ctx context.Context) (companion.WritePolicy, error) {
@@ -638,19 +672,19 @@ func (w *companionWriter) integrityFailure(cfg Config, id companion.CaptureIdent
 // pending row the sweep collects, and after that the key looks unused. Without
 // this lookup a re-stamped retry of such a capture is a new identity, a new
 // derived id, and a second memory.
-func (w *companionWriter) PublishedForKey(ctx context.Context, deviceID, key string) (string, bool, error) {
+func (w *companionWriter) PublishedForKey(ctx context.Context, deviceID, key string) (string, bool, []byte, error) {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		// Fail closed the way Publish does: an unreadable config is not a licence
 		// to treat a used key as fresh, and the write that follows will refuse
 		// anyway.
-		return "", false, nil
+		return "", false, nil, nil
 	}
 	record, found, err := publishedForKey(cfg, deviceID, key)
 	if err != nil || !found {
-		return "", false, err
+		return "", false, nil, err
 	}
-	return record.Identity, true, nil
+	return record.Identity, true, []byte(record.Response), nil
 }
 
 // Publish runs one capture through the kernel's governed write path, pinned to
@@ -689,7 +723,7 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 		value     any
 		writeErr  error
 		integrity bool
-		claimed   bool
+		claim     publicationClaim
 	)
 	action, policyErr := mcppkg.MutationAction(policy, "write_memory")
 	switch action {
@@ -711,7 +745,7 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 		// there". Recording it after would leave a window in which our own memory
 		// looked foreign to our own retry.
 		var claimErr error
-		if claimed, claimErr = claimCapturePublication(cfg, id); claimErr != nil {
+		if claim, claimErr = claimCapturePublication(cfg, id); claimErr != nil {
 			if errors.Is(claimErr, errMemoryIDMismatch) {
 				// The id is owned by a different capture. Nothing was created,
 				// so nothing has to be taken back.
@@ -774,10 +808,11 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 			// rejection leaves the state directory exactly as it found it — and a
 			// caller who can grind the suffix cannot pre-plant ownership for ids
 			// nobody has published.
-			if claimed {
-				if rerr := removeCapturePublication(cfg, id); rerr != nil {
-					return companion.WriteOutcome{}, rerr
-				}
+			// Exactly what this request created goes back, and nothing else. A
+			// record it merely found — somebody else's, or its own from an
+			// earlier attempt — is not its to remove.
+			if rerr := claim.rollback(); rerr != nil {
+				return companion.WriteOutcome{}, rerr
 			}
 			return w.integrityFailure(cfg, id), nil
 		}
@@ -1322,19 +1357,24 @@ func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
 // The publication record
 // ---------------------------------------------------------------------------
 
-// capturePublication records WHICH capture owns a pinned vault id.
+// capturePublication is the durable record of one published capture, and it is
+// the store's CANONICAL document.
 //
-// It is the sidecar the exactly-once check reads. The reservation already knows
-// all of this, but a reservation is swept once its crash window closes, and the
-// question "does this memory belong to that capture?" outlives it — so the
-// ownership is recorded separately, keyed by the memory id, and never collected
-// on a timer.
+// It is keyed by (device, idempotency key), because that is the question the
+// record exists to answer: "has this key already published, and what did it
+// answer with?". The reservation answers it too, but only until its crash window
+// closes and the sweep collects it — so the answer has to live somewhere with a
+// life of its own.
+//
+// It carries the response BYTES, so a replay after the reservation is gone is
+// the same answer on the wire rather than a fresh receipt for the same memory.
+// Round four kept the bytes only in the reservation, whose trim and TTL move
+// independently of this store; an index that survived its reservation could
+// therefore mint a second receipt for one publication.
 //
 // It lives under the STATE directory rather than beside the memory. The vault is
-// the user's own tree: it is synced, opened in an editor, and read by people, and
-// a bookkeeping file with a digest in it does not belong there. One small record
-// per memory a phone published is the same order of growth as the memories
-// themselves.
+// the user's own tree — synced, opened in an editor, read by people — and a
+// bookkeeping file with a digest in it does not belong there.
 type capturePublication struct {
 	Schema        string `json:"schema"`
 	SchemaVersion int    `json:"schema_version"`
@@ -1343,9 +1383,31 @@ type capturePublication struct {
 	Key           string `json:"idempotency_key"`
 	Identity      string `json:"capture_identity"`
 	ClaimedAt     string `json:"claimed_at"`
+	// Response is the exact body the first attempt answered with. It is empty
+	// between the claim and the receipt, which is precisely what "published but
+	// not yet settled" looks like — and what makes the trim settled-aware
+	// without the kernel having to see a reservation.
+	Response string `json:"response,omitempty"`
 }
 
 const schemaCapturePublication = "mora.companion.capture.publication"
+
+// capturePublicationIndex is the SECONDARY name: a pointer from a pinned memory
+// id back to the canonical record.
+//
+// It is a pointer rather than a copy so the two can never disagree, and rather
+// than a hard link because the canonical record is rewritten by rename when its
+// receipt arrives — which would leave a link pointing at the version before the
+// bytes existed.
+type capturePublicationIndex struct {
+	Schema        string `json:"schema"`
+	SchemaVersion int    `json:"schema_version"`
+	MemoryID      string `json:"memory_id"`
+	DeviceID      string `json:"device_id"`
+	Key           string `json:"idempotency_key"`
+}
+
+const schemaCapturePublicationIndex = "mora.companion.capture.publication.index"
 
 // matches reports whether this record describes the same capture.
 //
@@ -1365,14 +1427,14 @@ func (p capturePublication) matches(id companion.CaptureIdentity) bool {
 var errMemoryIDMismatch = errors.New("mora: that memory id is claimed by a different capture")
 
 // maxCapturePublicationBytes bounds one record on the read path, so a hostile or
-// corrupt file is refused rather than allocated.
-const maxCapturePublicationBytes = 8 << 10
+// corrupt file is refused rather than allocated. It has room for a receipt.
+const maxCapturePublicationBytes = 64 << 10
 
 func capturePublicationDir(cfg Config) string {
 	return filepath.Join(cfg.StateDir, "companion", "published")
 }
 
-// capturePublicationPath is the record for one memory id.
+// capturePublicationPath is the SECONDARY name: the pointer for one memory id.
 //
 // The id is validated by companion.CaptureIdentity before it reaches here and is
 // restricted to the contract's opaque character set, so it carries no separator.
@@ -1382,54 +1444,90 @@ func capturePublicationPath(cfg Config, memoryID string) string {
 	return filepath.Join(capturePublicationDir(cfg), filepath.Base(memoryID)+".json")
 }
 
-// capturePublicationKeyPath is the same record, found the other way round: by the
-// device and the idempotency key rather than by the memory id.
+// capturePublicationKeyPath is the CANONICAL name: the record itself, found by
+// the device and the idempotency key.
 //
 // The key is hashed rather than used as a filename, for the reason the
 // reservation store hashes it: a name derived from a value that crossed a wire is
-// never allowed to choose its own directory. The device id is validated to the
-// contract's opaque character set before it reaches here, and Base is the brace to
-// that belt.
+// never allowed to choose its own directory.
 func capturePublicationKeyPath(cfg Config, deviceID, key string) string {
 	digest := strings.TrimPrefix(companion.Fingerprint(key), "sha256:")
 	return filepath.Join(capturePublicationDir(cfg), "keys", filepath.Base(deviceID), digest+".json")
 }
 
-// claimCapturePublication records that this capture owns the pinned id, and
-// refuses if somebody else already does.
+// publicationClaim is what one claim created, and the only thing a failure after
+// it may remove.
 //
-// It is written BEFORE the vault write and fsynced, so the ownership is durable
-// by the time the memory it describes can exist. The other order would leave a
-// window in which our own memory looked unowned — and therefore foreign — to our
-// own retry.
+// Rollback works from this list rather than from the two names a capture COULD
+// have created. The difference is the whole point: a claim that found the
+// canonical record already there and only repaired the pointer must, if it later
+// fails, take back the pointer and leave the record — and a claim that found
+// somebody else's record must take back nothing at all.
+type publicationClaim struct{ created []string }
+
+// rollback removes exactly what this claim created, newest first.
+func (c publicationClaim) rollback() error {
+	var firstErr error
+	for i := len(c.created) - 1; i >= 0; i-- {
+		if err := os.Remove(c.created[i]); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// claimCapturePublication records that this capture owns the pinned id.
 //
-// It writes the SAME record under two names: by memory id, which answers "whose
-// is the file at this path?", and by (device, key), which answers "did this key
-// already publish something?". The second is what survives a swept reservation:
-// a capture killed after its publication leaves no pending row to reclaim, so
-// without it a re-stamped retry looks like a fresh key, derives a different id,
-// and writes a second memory.
+// # The order, and why it is that order
 //
-// It reports whether THIS call created the records, because a caller that
-// created them and then found the memory foreign has to take them away again —
-// "nothing was written" has to be true of the state directory as well as of the
-// vault.
+//	canonical (by key, temp + fsync + rename)  ->  pointer (by memory id)  ->  memory
 //
-// Re-claiming an id this capture already owns is a no-op rather than a rewrite:
-// a retry must not churn the file it is about to read.
-func claimCapturePublication(cfg Config, id companion.CaptureIdentity) (created bool, err error) {
-	existing, found, err := readCapturePublication(cfg, id.MemoryID)
+// The canonical record is durable first, because it is the one a retry has to
+// find. The pointer is derived from it and can always be rebuilt, so a crash
+// between the two is repaired rather than fatal — every lookup consults the
+// canonical record first and recreates a missing pointer when it sees one.
+//
+// The reverse order would be the broken one: a pointer with no record behind it
+// names a memory nobody can prove ownership of.
+//
+// It reports the exact files it created, because a caller that later finds the
+// memory foreign has to take back what it made and nothing else.
+func claimCapturePublication(cfg Config, id companion.CaptureIdentity) (publicationClaim, error) {
+	var claim publicationClaim
+	keyPath := capturePublicationKeyPath(cfg, id.DeviceID, id.Key)
+	idPath := capturePublicationPath(cfg, id.MemoryID)
+
+	// The canonical record first, always. A key that already published something
+	// is either this capture — in which case the pointer may need repairing — or
+	// a different one, which is a refusal that touches nothing.
+	existing, found, err := readCapturePublicationAt(keyPath)
 	if err != nil {
-		return false, err
+		return claim, err
 	}
 	if found {
 		if !existing.matches(id) {
-			// Somebody else owns this id. Nothing is written and nothing is
-			// removed: the refusal must not touch a record it does not own.
-			return false, errMemoryIDMismatch
+			return claim, errMemoryIDMismatch
 		}
-		return false, nil
+		// The record is ours. Repair the pointer if the crash that brought us
+		// here happened between the two writes.
+		created, rerr := repairCapturePublicationIndex(cfg, id)
+		if rerr != nil {
+			return claim, rerr
+		}
+		if created {
+			claim.created = append(claim.created, idPath)
+		}
+		return claim, nil
 	}
+
+	// No canonical record. A pointer that exists anyway belongs to somebody else's
+	// publication, or is the debris of one — either way the id is not ours to take.
+	if pointer, pfound, perr := readCapturePublicationIndexAt(idPath); perr != nil {
+		return claim, perr
+	} else if pfound && (pointer.DeviceID != id.DeviceID || pointer.Key != id.Key) {
+		return claim, errMemoryIDMismatch
+	}
+
 	record := capturePublication{
 		Schema:        schemaCapturePublication,
 		SchemaVersion: 1,
@@ -1439,47 +1537,168 @@ func claimCapturePublication(cfg Config, id companion.CaptureIdentity) (created 
 		Identity:      id.Identity,
 		ClaimedAt:     mcpWriteClock().UTC().Truncate(time.Second).Format(time.RFC3339),
 	}
-	body, err := json.MarshalIndent(record, "", "  ")
+	if err := writeCapturePublicationRecord(keyPath, record); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Somebody claimed the key between the read and the create. Whoever
+			// they are, they are not us unless the record says so — and either
+			// way this call created nothing.
+			raced, rfound, rerr := readCapturePublicationAt(keyPath)
+			if rerr != nil {
+				return claim, rerr
+			}
+			if rfound && raced.matches(id) {
+				return claim, nil
+			}
+			return claim, errMemoryIDMismatch
+		}
+		return claim, err
+	}
+	claim.created = append(claim.created, keyPath)
+
+	created, err := repairCapturePublicationIndex(cfg, id)
+	if err != nil {
+		_ = claim.rollback()
+		return publicationClaim{}, err
+	}
+	if created {
+		claim.created = append(claim.created, idPath)
+	}
+	return claim, nil
+}
+
+// repairCapturePublicationIndex creates the pointer if it is missing, and
+// reports whether it had to.
+//
+// A pointer that is already there and names this capture is left alone: it is
+// not ours to have created, so it is not ours to roll back. A pointer that names
+// a different capture is somebody else's id.
+func repairCapturePublicationIndex(cfg Config, id companion.CaptureIdentity) (bool, error) {
+	path := capturePublicationPath(cfg, id.MemoryID)
+	pointer, found, err := readCapturePublicationIndexAt(path)
 	if err != nil {
 		return false, err
 	}
-	body = append(body, '\n')
-
-	// The by-id record is created exclusively. Reading and then writing would be
-	// a check-then-use race between two processes claiming one id; O_EXCL makes
-	// the filesystem decide.
-	path := capturePublicationPath(cfg, id.MemoryID)
-	if err := writeCapturePublicationExclusive(path, body); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			// Somebody claimed it between the read and the create. Whoever they
-			// are, they are not us unless the record says so.
-			raced, found, rerr := readCapturePublication(cfg, id.MemoryID)
-			if rerr != nil {
-				return false, rerr
-			}
-			if found && raced.matches(id) {
-				return false, nil
-			}
+	if found {
+		if pointer.DeviceID != id.DeviceID || pointer.Key != id.Key {
 			return false, errMemoryIDMismatch
+		}
+		return false, nil
+	}
+	body, err := json.MarshalIndent(capturePublicationIndex{
+		Schema:        schemaCapturePublicationIndex,
+		SchemaVersion: 1,
+		MemoryID:      id.MemoryID,
+		DeviceID:      id.DeviceID,
+		Key:           id.Key,
+	}, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := writeCapturePublicationExclusive(path, append(body, '\n')); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
 		}
 		return false, err
 	}
-	if err := writeCapturePublicationExclusive(capturePublicationKeyPath(cfg, id.DeviceID, id.Key), body); err != nil && !errors.Is(err, os.ErrExist) {
-		_ = os.Remove(path)
-		return false, err
-	}
-	// Both records are the thing a later attempt reads to decide whether it owns
-	// a memory, so they are durable before the memory is.
-	if err := companionSyncPublication(path); err != nil {
-		_ = removeCapturePublication(cfg, id)
-		return false, err
-	}
-	trimCapturePublications(cfg, id)
 	return true, nil
 }
 
-// writeCapturePublicationExclusive creates one record, and fails if it is
-// already there.
+// recordCaptureReceipt stores the bytes a published capture answered with, into
+// the canonical record.
+//
+// This is what makes a replay independent of the reservation. It is a rewrite
+// through a temporary file and a rename, so a reader sees the record with the
+// receipt or the record without it, never half of either.
+func recordCaptureReceipt(cfg Config, id companion.CaptureIdentity, response []byte) error {
+	keyPath := capturePublicationKeyPath(cfg, id.DeviceID, id.Key)
+	record, found, err := readCapturePublicationAt(keyPath)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("companion capture: no publication record for %s to record a receipt against", id.MemoryID)
+	}
+	if !record.matches(id) {
+		return errMemoryIDMismatch
+	}
+	if record.Response == string(response) {
+		return nil
+	}
+	record.Response = string(response)
+	return rewriteCapturePublicationRecord(keyPath, record)
+}
+
+// writeCapturePublicationRecord creates the canonical record, durably, and fails
+// if it is already there.
+//
+// The bytes and the directory entry are both synced before it returns: this
+// record is the proof a later retry reads, and a proof that can evaporate in a
+// power cut is not one.
+func writeCapturePublicationRecord(path string, record capturePublication) error {
+	body, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return publishCapturePublicationRecord(path, append(body, '\n'))
+}
+
+// rewriteCapturePublicationRecord replaces an existing canonical record.
+func rewriteCapturePublicationRecord(path string, record capturePublication) error {
+	body, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return publishCapturePublicationRecord(path, append(body, '\n'))
+}
+
+// publishCapturePublicationRecord stages the bytes beside the record and renames
+// them into place, syncing both.
+func publishCapturePublicationRecord(path string, body []byte) error {
+	if len(body) > maxCapturePublicationBytes {
+		return fmt.Errorf("companion capture: a publication record of %d bytes is over the %d-byte limit", len(body), maxCapturePublicationBytes)
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".pub-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	return atomicio.SyncDir(dir)
+}
+
+// writeCapturePublicationExclusive creates one small file, and fails if it is
+// already there. It is the pointer's write: derived, rebuildable, and not worth
+// an fsync of its own.
 func writeCapturePublicationExclusive(path string, body []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -1500,97 +1719,41 @@ func writeCapturePublicationExclusive(path string, body []byte) error {
 	return nil
 }
 
-// removeCapturePublication takes back the records a claim created.
-//
-// It is the rollback for a claim that turned out to be over a foreign memory. A
-// rejection that left its own bookkeeping behind would let a caller who can
-// grind the 32-bit suffix pre-plant ownership for ids nobody has published, and
-// "nothing was written" would be false of the state directory even while it was
-// true of the vault.
-func removeCapturePublication(cfg Config, id companion.CaptureIdentity) error {
-	byID := os.Remove(capturePublicationPath(cfg, id.MemoryID))
-	byKey := os.Remove(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
-	if byID != nil && !errors.Is(byID, os.ErrNotExist) {
-		return byID
-	}
-	if byKey != nil && !errors.Is(byKey, os.ErrNotExist) {
-		return byKey
-	}
-	return nil
-}
-
 // publishedForKey answers "did this key already publish something, and what?".
 //
-// It is the lookup a FRESH reservation makes before it claims anything. The
-// reservation store cannot answer it: a capture killed after its publication
-// leaves a pending row that the sweep collects, and after that the key looks
-// unused. The ownership record is the durable audit trail and outlives the
-// reservation, so this is where the question belongs.
+// It is the lookup a FRESH reservation makes before it claims anything, and it
+// reads the canonical record — the reservation store cannot answer it, because a
+// capture killed after its publication leaves a pending row the sweep collects
+// and after that the key looks unused.
 func publishedForKey(cfg Config, deviceID, key string) (capturePublication, bool, error) {
 	return readCapturePublicationAt(capturePublicationKeyPath(cfg, deviceID, key))
 }
 
-// trimCapturePublications keeps the audit trail inside the same total cap the
-// reservation store uses, dropping the oldest first.
+// readCapturePublication finds a record by the pinned memory id, through the
+// pointer, and repairs a pointer that has gone missing.
 //
-// It is best effort, and it walks ONLY when the directory is over the cap — a
-// count of at most a few hundred entries, on the publication path rather than
-// the read path. A key whose record has been trimmed is no longer replayable,
-// which the contract states rather than leaving a client to discover.
-func trimCapturePublications(cfg Config, keep companion.CaptureIdentity) {
-	dir := capturePublicationDir(cfg)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	records := make([]capturePublication, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		record, found, rerr := readCapturePublicationAt(filepath.Join(dir, entry.Name()))
-		if rerr != nil || !found {
-			continue
-		}
-		records = append(records, record)
-	}
-	if len(records) <= companion.MaxReservations {
-		return
-	}
-	sort.SliceStable(records, func(i, j int) bool { return records[i].ClaimedAt < records[j].ClaimedAt })
-	for _, record := range records[:len(records)-companion.MaxReservations] {
-		if record.MemoryID == keep.MemoryID {
-			continue
-		}
-		_ = removeCapturePublication(cfg, companion.CaptureIdentity{
-			MemoryID: record.MemoryID, DeviceID: record.DeviceID, Key: record.Key,
-		})
-	}
-}
-
-// readCapturePublication reads one ownership record. A missing one is not an
-// error: the state directory can be rebuilt independently of the vault.
+// It consults the canonical record in every case: a pointer is a shortcut, never
+// an authority.
 func readCapturePublication(cfg Config, memoryID string) (capturePublication, bool, error) {
-	return readCapturePublicationAt(capturePublicationPath(cfg, memoryID))
-}
-
-// readCapturePublicationAt reads one record from a path, whichever of the two
-// names it was found under.
-func readCapturePublicationAt(path string) (capturePublication, bool, error) {
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
+	pointer, found, err := readCapturePublicationIndexAt(capturePublicationPath(cfg, memoryID))
+	if err != nil || !found {
+		return capturePublication{}, false, err
+	}
+	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, pointer.DeviceID, pointer.Key))
+	if err != nil || !found {
+		return capturePublication{}, false, err
+	}
+	if record.MemoryID != memoryID {
 		return capturePublication{}, false, nil
 	}
-	if err != nil {
+	return record, true, nil
+}
+
+// readCapturePublicationAt reads one canonical record.
+func readCapturePublicationAt(path string) (capturePublication, bool, error) {
+	body, found, err := readCapturePublicationBytes(path)
+	if err != nil || !found {
 		return capturePublication{}, false, err
-	}
-	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, maxCapturePublicationBytes+1))
-	if err != nil {
-		return capturePublication{}, false, err
-	}
-	if len(body) > maxCapturePublicationBytes {
-		return capturePublication{}, false, fmt.Errorf("companion capture: %s is over the %d-byte limit", path, maxCapturePublicationBytes)
 	}
 	var record capturePublication
 	if err := json.Unmarshal(body, &record); err != nil {
@@ -1600,6 +1763,157 @@ func readCapturePublicationAt(path string) (capturePublication, bool, error) {
 		return capturePublication{}, false, fmt.Errorf("companion capture: %s is not a publication record", path)
 	}
 	return record, true, nil
+}
+
+// readCapturePublicationIndexAt reads one pointer.
+func readCapturePublicationIndexAt(path string) (capturePublicationIndex, bool, error) {
+	body, found, err := readCapturePublicationBytes(path)
+	if err != nil || !found {
+		return capturePublicationIndex{}, false, err
+	}
+	var pointer capturePublicationIndex
+	if err := json.Unmarshal(body, &pointer); err != nil {
+		return capturePublicationIndex{}, false, fmt.Errorf("companion capture: %s is not readable as a publication index: %w", path, err)
+	}
+	if pointer.Schema != schemaCapturePublicationIndex {
+		return capturePublicationIndex{}, false, fmt.Errorf("companion capture: %s is not a publication index", path)
+	}
+	return pointer, true, nil
+}
+
+// readCapturePublicationBytes reads one bounded file. A missing one is not an
+// error: the state directory can be rebuilt independently of the vault.
+func readCapturePublicationBytes(path string) ([]byte, bool, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, maxCapturePublicationBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(body) > maxCapturePublicationBytes {
+		return nil, false, fmt.Errorf("companion capture: %s is over the %d-byte limit", path, maxCapturePublicationBytes)
+	}
+	return body, true, nil
+}
+
+// removeCapturePublication takes back both names of one publication. It is used
+// only by the trim, which owns every record it evicts.
+func removeCapturePublication(cfg Config, record capturePublication) {
+	_ = os.Remove(capturePublicationPath(cfg, record.MemoryID))
+	_ = os.Remove(capturePublicationKeyPath(cfg, record.DeviceID, record.Key))
+}
+
+// ---------------------------------------------------------------------------
+// The published-store census
+// ---------------------------------------------------------------------------
+
+// publishedCensus keeps the published store inside its bound without walking it.
+//
+// It is the same shape the reservation store uses and for the same reason: a
+// count taken by reading every record on every claim makes the Nth capture pay
+// for the N-1 before it. One walk seeds it, and the trim moves it.
+//
+// It is deliberately seeded at TRIM time rather than at claim time, so a fresh
+// claim walks nothing at all — the trim runs only after a capture has settled,
+// which is the one moment a walk is what the caller is asking for.
+type publishedCensus struct {
+	mu      sync.Mutex
+	seeded  bool
+	records []capturePublication
+	// readDir is the walk, a field so a test can COUNT it. The claim it exists
+	// for is a cost claim, and a cost claim needs something countable.
+	readDir func(name string) ([]os.DirEntry, error)
+}
+
+func newPublishedCensus() *publishedCensus { return &publishedCensus{readDir: os.ReadDir} }
+
+// note records a publication the census has not seen, without a walk.
+func (c *publishedCensus) note(record capturePublication) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.seeded {
+		return
+	}
+	for i, existing := range c.records {
+		if existing.MemoryID == record.MemoryID {
+			c.records[i] = record
+			return
+		}
+	}
+	c.records = append(c.records, record)
+}
+
+// trim keeps the store inside the same total cap the reservation store uses,
+// dropping the oldest SETTLED records first.
+//
+// Settled-aware means a record with no response bytes is never evicted: those
+// bytes arrive when the capture settles, so their absence is exactly "this
+// publication is still in flight", and evicting one would take away the proof a
+// retry is about to need.
+//
+// It runs after a capture has settled, never on a claim, so a REJECTED request
+// cannot evict anything — which is what makes "the published tree is unchanged"
+// true of a refusal.
+func (c *publishedCensus) trim(cfg Config, keep companion.CaptureIdentity) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.seeded {
+		c.records = c.walk(cfg)
+		c.seeded = true
+	}
+	if len(c.records) <= companion.MaxReservations {
+		return
+	}
+	sort.SliceStable(c.records, func(i, j int) bool { return c.records[i].ClaimedAt < c.records[j].ClaimedAt })
+	excess := len(c.records) - companion.MaxReservations
+	survivors := make([]capturePublication, 0, len(c.records))
+	for _, record := range c.records {
+		if excess > 0 && record.MemoryID != keep.MemoryID && record.Response != "" {
+			removeCapturePublication(cfg, record)
+			excess--
+			continue
+		}
+		survivors = append(survivors, record)
+	}
+	c.records = survivors
+}
+
+// walk reads the canonical records. It is the one directory pass in the census's
+// life, and it walks the CANONICAL tree — the pointers are derived and would
+// double the count.
+func (c *publishedCensus) walk(cfg Config) []capturePublication {
+	root := filepath.Join(capturePublicationDir(cfg), "keys")
+	devices, err := c.readDir(root)
+	if err != nil {
+		return nil
+	}
+	out := []capturePublication{}
+	for _, device := range devices {
+		if !device.IsDir() {
+			continue
+		}
+		entries, err := c.readDir(filepath.Join(root, device.Name()))
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			record, found, rerr := readCapturePublicationAt(filepath.Join(root, device.Name(), entry.Name()))
+			if rerr != nil || !found {
+				continue
+			}
+			out = append(out, record)
+		}
+	}
+	return out
 }
 
 // companionAlreadyPublished reports whether the governed write path found the

@@ -478,9 +478,24 @@ re-stamped retry would be a new identity, a new derived id and a second memory
 through and settles `applied` over the memory already there
 (`TestCaptureIdenticalRetryAfterSweepReplaysTheApplication`).
 
-Ownership records are the durable audit trail, and they are bounded by the same total cap as
-reservations (512), trimmed oldest-first (`TestCompanionCapturePublishedByKeyIsBounded`). **A key is
-replayable only while its record survives that retention.** Past it, the key is free again.
+The (device, key) record is the **canonical** one: it is written through a staged-fsync-rename, it
+carries the memory id, the capture identity **and the exact response bytes**, and a replay is answered
+from it directly — so replay does not depend on a reservation, whose retention moves independently
+(`TestCaptureReplayDoesNotDependOnTheReservation`,
+`TestCaptureReplayComesFromThePublishedRecordNotTheStore`). The by-memory-id name is a **secondary
+pointer** back to it, created after it; every lookup consults the canonical record first and repairs a
+missing pointer when it finds one, so a crash between the two writes is repaired rather than fatal
+(`TestCompanionCaptureCrashBetweenCanonicalAndIndexRepairsTheIndex`,
+`TestCompanionCaptureCrashBetweenIndexAndMemoryWritesOneMemory`).
+
+Ownership records are the durable audit trail, bounded by the same total cap as reservations (512) and
+trimmed oldest-first. The trim is **settled-aware** — a record with no response bytes is a publication
+still in flight and is never evicted — and it runs only after a capture has recorded its receipt, so a
+**rejected request never trims** (`TestCompanionCapturePublishedStoreIsBounded`,
+`TestCompanionCaptureAtCapRejectionLeavesTheTreeIdentical`). Like the reservation store, it counts
+rather than walks: a claim and a by-key lookup walk nothing, and the census seeds itself on the first
+trim (`TestCompanionCaptureClaimWalksNothing`). **A key is replayable only while its record survives
+that retention.** Past it, the key is free again.
 
 **"Already there" is verified, never assumed.** EEXIST says a file is at that path; it says nothing
 about whose. So the kernel records who owns a pinned id when it claims one — a small ownership record
@@ -494,9 +509,10 @@ onto the wire (`TestCompanionCaptureForeignFileAtThePinnedIDIsRejected`,
 failure — a state directory can be rebuilt independently of the vault — so the file comparison
 narrows rather than skips (`TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite`).
 
-**A refusal writes nothing, including bookkeeping.** The ownership record is created `O_EXCL`, so an
-id already owned by another capture is refused without creating or removing anything; and a record
-this request *did* create is taken back when the memory turns out foreign, so the published tree is
+**A refusal writes nothing, including bookkeeping.** A claim reports the exact files it created, and a
+failure rolls back only those: an id already owned by another capture is refused without creating or
+removing anything, and a claim that merely repaired a pointer takes back the pointer and leaves the
+record. A record this request *did* create is taken back when the memory turns out foreign, so the published tree is
 byte-identical before and after (`TestCompanionCaptureForeignRejectionLeavesNoResidue`,
 `TestCompanionCaptureForeignOwnerRecordIsNotTouched`). A record alone proves nothing about the vault:
 the memory comparison still runs, so a record planted for an id nobody published cannot be used to
