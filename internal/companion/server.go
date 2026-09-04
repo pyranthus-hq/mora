@@ -115,6 +115,10 @@ const (
 // literal loopback host.
 var ErrNotLoopback = errors.New("companion: the listener binds " + LoopbackHost + " only")
 
+// ErrBadAllowHost is returned by NewServer for an AllowHost that could never
+// match a real Host header.
+var ErrBadAllowHost = errors.New("companion: --allow-host must be one exact host or host:port")
+
 // Reader is the kernel seam.
 //
 // It exists so this package stays a leaf (TestPackageIsALeaf): the contract, the
@@ -143,6 +147,23 @@ type ServerOptions struct {
 	Devices Authenticator
 	// Reader answers the three routes.
 	Reader Reader
+	// AllowHost is the ONE extra Host value the listener accepts, and it is
+	// empty by default. Empty means the loopback-only behavior below is
+	// unchanged, byte for byte.
+	//
+	// It exists because a reverse proxy in front of a loopback backend
+	// forwards the CLIENT's Host verbatim, so the DNS-rebinding guard — which
+	// requires the literal loopback address — refuses every proxied request.
+	// Measured against `tailscale serve` (1.102.3): the backend sees
+	// Host: <node-fqdn>[:port], X-Forwarded-Host identical, and RemoteAddr
+	// 127.0.0.1. Without this field a paired phone behind Tailscale Serve gets
+	// 403 forbidden_host on every route.
+	//
+	// The value is ONE exact host[:port] string, compared case-insensitively
+	// against r.Host with no wildcard, no suffix rule and no list. It is
+	// supplied by the operator at startup and never read from a file this
+	// process does not own.
+	AllowHost string
 	// Now is the clock, injected so a test can pin it.
 	Now func() time.Time
 	// KernelTimeout bounds one kernel call. Zero means KernelTimeout.
@@ -161,6 +182,7 @@ type Server struct {
 	addr          string
 	devices       Authenticator
 	reader        Reader
+	allowHost     string
 	now           func() time.Time
 	log           io.Writer
 	kernelTimeout time.Duration
@@ -195,6 +217,10 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if o.Reader == nil {
 		return nil, errors.New("companion: the listener needs a kernel reader")
 	}
+	allowHost, err := CheckAllowHost(o.AllowHost)
+	if err != nil {
+		return nil, err
+	}
 	now := o.Now
 	if now == nil {
 		now = time.Now
@@ -211,6 +237,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		addr:          o.Addr,
 		devices:       o.Devices,
 		reader:        o.Reader,
+		allowHost:     allowHost,
 		now:           now,
 		log:           log,
 		kernelTimeout: timeout,
@@ -295,16 +322,158 @@ func (s *Server) Handler() http.Handler {
 // browser treat the origin as its own. Requiring the literal is the check.
 func (s *Server) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		if host != LoopbackHost {
+		if !s.hostAllowed(r) {
 			writeOpaque(w, http.StatusForbidden, "forbidden_host")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostAllowed decides the guard.
+//
+// The loopback arm is unchanged and comes first, so a listener with no
+// AllowHost behaves exactly as it did before this field existed.
+//
+// The second arm is the reverse-proxy arm, and it carries a SECOND condition
+// that the first does not need: the peer must be loopback. Tailscale Serve
+// terminates TLS in tailscaled and dials the backend from 127.0.0.1, so a
+// request that arrives with the published name in Host and a peer that is NOT
+// loopback did not come through the proxy.
+//
+// Be precise about what that buys, because it is easy to overclaim: a loopback
+// peer does NOT prove the request came through Serve. Any process on this Mac
+// can open the port and type the published name in, exactly as it could already
+// type 127.0.0.1 in. The check is worth having for one narrower reason — if the
+// bind is ever widened, by this code or by a port forwarder someone runs, the
+// published name stops being sufficient on its own. Proving WHO is asking is the
+// device bearer token's job, and it is the only thing here that does it.
+//
+// The peer address is NEVER used for anything else. It is not an identity, it is
+// not a rate-limit key and it is not logged. Behind Serve the real client is
+// carried only in X-Forwarded-For, which is attacker-settable input on any path
+// that is not the proxy, so this file reads neither it nor the
+// Tailscale-User-* identity headers. The device bearer token stays the only
+// credential.
+func (s *Server) hostAllowed(r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == LoopbackHost {
+		return true
+	}
+	if s.allowHost == "" {
+		return false
+	}
+	// Exact, whole-string, ASCII-case-insensitive. Host names are
+	// case-insensitive on the wire, so folding a/A is not a widening; anything
+	// else — a suffix rule, a wildcard, a list — would be, and is deliberately
+	// absent.
+	//
+	// The folding is ASCII-only rather than strings.EqualFold on purpose.
+	// EqualFold applies Unicode simple folding, under which U+212A KELVIN SIGN
+	// folds to "k" and U+017F LATIN SMALL LETTER LONG S folds to "s" — so an
+	// attacker-chosen Host that is not this name byte-wise could still compare
+	// equal to it. A Host header for a MagicDNS name is ASCII (an
+	// internationalized name reaches the wire as punycode, which is also
+	// ASCII), so nothing legitimate is lost, and CheckAllowHost refuses a
+	// non-ASCII AllowHost for the same reason.
+	if !equalFoldASCII(r.Host, s.allowHost) {
+		return false
+	}
+	return peerIsLoopback(r.RemoteAddr)
+}
+
+// equalFoldASCII compares two strings for equality, folding only A-Z with a-z.
+//
+// It is not strings.EqualFold: see hostAllowed for why Unicode folding is a
+// widening here.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
+}
+
+// peerIsLoopback reports whether the connection's peer is a loopback address.
+//
+// It fails CLOSED: an empty or unparseable RemoteAddr is not loopback. A handler
+// invoked directly by a test has no peer, which is why the tests that drive the
+// AllowHost arm set RemoteAddr explicitly.
+func peerIsLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// CheckAllowHost validates the opt-in host at startup, so a value that could
+// never match is a named startup error rather than a silent 403 an operator
+// debugs against a phone.
+//
+// It is exported so `mora companion expose`, which prints the `--allow-host`
+// argument an operator will paste, validates it against the SAME rule the
+// listener will apply. A command that prints a value its own listener would
+// refuse is worse than one that refuses to print.
+//
+// It refuses anything that is not a single host or host:port: no scheme, no
+// path, no wildcard, no comma-separated list, no whitespace. It also refuses a
+// value that merely restates the loopback host, because that is already allowed
+// and accepting it would suggest the field does something it does not.
+func CheckAllowHost(allowHost string) (string, error) {
+	if allowHost == "" {
+		return "", nil
+	}
+	if allowHost != strings.TrimSpace(allowHost) {
+		return "", fmt.Errorf("%w (%q has surrounding whitespace)", ErrBadAllowHost, allowHost)
+	}
+	// The angle brackets are in this set for one reason: the placeholder
+	// `mora companion expose` prints when it does not know the node name uses
+	// them, so a command pasted without editing fails at STARTUP with a named
+	// error rather than starting a listener whose allowed host nobody can send.
+	if strings.ContainsAny(allowHost, " \t/\\*?#@,<>") {
+		return "", fmt.Errorf("%w (%q must be one host or host:port, with no scheme, path, wildcard or list)", ErrBadAllowHost, allowHost)
+	}
+	for i := 0; i < len(allowHost); i++ {
+		// ASCII only, so the comparison in hostAllowed can fold ASCII case and
+		// nothing else. A MagicDNS name is ASCII, and an internationalized name
+		// reaches the wire as punycode, which is also ASCII.
+		if allowHost[i] > 0x7f || allowHost[i] < 0x21 {
+			return "", fmt.Errorf("%w (%q must be printable ASCII)", ErrBadAllowHost, allowHost)
+		}
+	}
+	host := allowHost
+	if h, port, err := net.SplitHostPort(allowHost); err == nil {
+		if h == "" {
+			return "", fmt.Errorf("%w (%q has no host part)", ErrBadAllowHost, allowHost)
+		}
+		if _, err := strconv.Atoi(port); err != nil {
+			return "", fmt.Errorf("%w (%q has a non-numeric port)", ErrBadAllowHost, allowHost)
+		}
+		host = h
+	}
+	if host == "" {
+		return "", fmt.Errorf("%w (%q has no host part)", ErrBadAllowHost, allowHost)
+	}
+	if equalFoldASCII(host, LoopbackHost) {
+		return "", fmt.Errorf("%w (%q is already accepted; leave it empty)", ErrBadAllowHost, allowHost)
+	}
+	return allowHost, nil
 }
 
 // sizeGuard caps the headers and the body. Both bounds exist because both are
@@ -775,6 +944,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	fmt.Fprintf(s.log, "mora companion serve listening on http://%s/  (loopback only)\n", ln.Addr().String())
 	fmt.Fprintf(s.log, "  routes: GET %s, POST %s, GET %s\n", RouteToday, RouteContext, RouteHealth)
 	fmt.Fprintln(s.log, "  credential: a device token from `mora companion pair` — the loopback API token is not accepted here")
+	if s.allowHost != "" {
+		// The name itself is deliberately absent. The operator typed it on the
+		// command line one line above, `tailscale serve status` repeats it, and
+		// a banner that does not carry it is a log an operator can paste into a
+		// bug report without redacting a machine name.
+		fmt.Fprintln(s.log, "  published: one extra Host value is accepted, and only from a loopback peer (a reverse proxy on this Mac)")
+	}
 	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

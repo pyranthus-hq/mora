@@ -347,6 +347,120 @@ carries the aggregate beside it in the top-level `state`, and flattening a behin
 into the same value as a missing one would cost the phone the distinction. `TestCompanionIndexStateFollowsTheContractTable`
 pins the table.
 
+### Publishing it to a tailnet (N22)
+
+`mora companion expose` prints the exact commands that publish the loopback listener over the
+tailnet, and prints nothing else. It never runs `tailscale`, never reads the tailnet, and never
+prints a token, a pairing code or a fingerprint — it reads the registry's COUNTS and nothing more.
+
+```
+mora companion expose --hostname <this Mac's tailnet name>
+```
+
+It refuses in two cases. With no ACTIVE device it exits non-zero with `data.not_found` and names
+`mora companion pair`: publishing a listener that nothing can authenticate to puts a port on your
+tailnet for no one. A device that has been paired but not yet confirmed does not count, because the
+listener answers 401 to everything it sends. With a listener port of zero it exits non-zero rather
+than printing a command containing `:0`.
+
+The output is two commands, in order, plus their undo:
+
+```
+mora companion serve --port 7778 --allow-host <NAME>
+tailscale serve --bg --https=443 http://127.0.0.1:7778
+
+tailscale serve --https=443 off
+tailscale serve reset
+```
+
+No Funnel command is ever printed. Funnel publishes to the public internet, and nothing in this
+contract is meant to leave the tailnet. `expose` states `funnel: off` rather than omitting it, so a
+reader looking for the Funnel command finds the answer instead of assuming it was forgotten.
+
+#### Why `--allow-host` exists
+
+Serve terminates TLS in `tailscaled` and reverse-proxies to the loopback backend, forwarding the
+client's `Host` header **verbatim**. Measured against Tailscale 1.102.3 on macOS, a request to the
+published node name arrives at the backend as:
+
+| What the backend sees | Value |
+|---|---|
+| `Host` | the published node name, with the port unless it is the scheme's default |
+| `X-Forwarded-Host` | identical to `Host` |
+| `X-Forwarded-For` | the tailnet address of the real client |
+| `RemoteAddr` | `127.0.0.1` |
+| extra headers | `Tailscale-User-Login`, `Tailscale-User-Name`, `Tailscale-User-Profile-Pic` |
+
+The listener's DNS-rebinding guard requires the literal loopback address in `Host`, so before N22 a
+paired phone behind Serve got `403 forbidden_host` on **every** route. This is the first of N04's
+three product-breaking findings, and it is confirmed rather than theoretical.
+
+`--allow-host` is the whole fix, and it is deliberately the smallest one:
+
+- **Opt-in.** Empty is the default and means the loopback-only behaviour is unchanged, byte for byte.
+- **One value.** One exact `host` or `host:port`, compared case-insensitively against `Host` as a
+  whole string. No wildcard, no suffix rule, no list. Anything else is refused at startup with a
+  named error, so a value that could never match is a failure to start rather than a 403 an operator
+  debugs against a phone.
+- **Still loopback-only at the socket.** The bind is unchanged and still refuses any address but
+  `127.0.0.1`.
+- **Still loopback-only at the peer.** A request carrying the published name is admitted only when
+  the connection's peer is a loopback address. Serve dials the backend from `127.0.0.1`. Be precise
+  about what this buys: a loopback peer does **not** prove a request came through Serve — any process
+  on the Mac can open the port and type the published name in, exactly as it could already type
+  `127.0.0.1` in. It is worth having for one narrower reason: if the bind is ever widened, by this
+  code or by a port forwarder someone runs, the published name stops being sufficient on its own.
+  Proving *who* is asking is the device bearer token's job, and it is the only thing here that does
+  it.
+- **Compared as ASCII.** The fold is A-Z with a-z and nothing else. `strings.EqualFold` applies
+  Unicode simple folding, under which U+212A KELVIN SIGN folds to `k` and U+017F LATIN SMALL LETTER
+  LONG S folds to `s`, so a `Host` that is not this name byte-wise would compare equal to it — and
+  an absolute-form request URI lets a client put that authority into `Host` directly. A MagicDNS name
+  is ASCII, an internationalized name reaches the wire as punycode which is also ASCII, and a
+  non-ASCII `--allow-host` is refused at startup.
+- **Still one credential.** The device bearer token. The `Tailscale-User-*` headers are a real signed
+  assertion about a tailnet USER and are worth nothing here, because this listener answers to a
+  paired DEVICE. Neither they nor `X-Forwarded-For` are read for authentication, for throttling, or
+  for logging.
+
+The value belongs to the operator's machine, not to this repository: it is supplied on the command
+line (or from the invocation the operator keeps in their own configuration), and no real tailnet
+name appears in the code, the tests, the goldens or these docs. When `expose` is run without
+`--hostname` it prints a placeholder that the listener **refuses at startup**, so a command pasted
+without editing fails closed.
+
+#### The throttle finding, which is recorded and not solved
+
+Behind Serve the client IP does not survive the proxy: every device looks like `127.0.0.1` to the
+listener. A per-IP throttle would therefore collapse into a single bucket shared by every phone.
+That is N04's second finding and it stands. The listener's work budget is per-process
+(`maxInFlightKernelCalls`), which is honest about what it bounds; nothing here pretends to
+rate-limit per device from a network address. The real client address exists only in
+`X-Forwarded-For`, which is attacker-settable on any path that is not the proxy, so it is not read.
+
+N04's third finding — revoke must fail closed — is unchanged by publication: revocation is a
+registry state change, and an unknown, revoked or malformed token gets the same 401 whether the
+request arrived over loopback or through Serve.
+
+#### Proving it on a live machine
+
+`scripts/companion-network-audit.sh` runs against a live `mora companion serve` plus a live
+`tailscale serve` and proves the boundary rather than asserting it:
+
+| Probe | What it proves |
+|---|---|
+| A | the listening socket is `127.0.0.1:<port>` and nothing else |
+| B | exactly one Serve mapping, it targets this listener, and Funnel is off |
+| C | a tailnet request reaches the listener; this Mac's LAN address refuses the connection |
+| D | the log holds no token, pairing code, prompt, answer, vault text or device id |
+| E | the peer the listener sees is loopback (the throttle finding above), with a no-`--allow-host` control that returns `403 forbidden_host` |
+
+Every probe fails closed: a missing tool, an empty command output or an unparseable line is a FAIL,
+never a skip. `--self-test` drives the same probe logic against fixtures that must fail — including a
+real listener bound to `0.0.0.0` and a log line containing the session token — so a probe that has
+stopped checking anything cannot report PASS.
+
+
 ## 12. Notes for Wave 1
 
 ### N11: canonicalizing and cryptographically validating public keys

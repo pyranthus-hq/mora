@@ -19,6 +19,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "companion expose",
+      "payload": "",
+      "platform": "all",
+      "reason": "expose refuses until the registry holds an ACTIVE device, and the generic prober drives a fresh temp home whose registry is empty, so it can never reach the success document; the mora.companion.expose receipt envelope is pinned by TestCompanionExposePrintsTheExactTailscaleCommands"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "companion pair",
       "payload": "",
       "platform": "all",
