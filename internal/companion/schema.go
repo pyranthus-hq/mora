@@ -34,8 +34,13 @@ package companion
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -84,10 +89,11 @@ const (
 	MaxTitleBytes           = 200
 	MaxBodyBytes            = 2 << 10
 	MaxSnippetBytes         = 512
+	MaxSourceKeyBytes       = 64
+	MaxPublicKeyBytes       = 128
 	MaxSynthesisPromptBytes = 8 << 10
 	MaxGapBytes             = 200
 	MaxDeepLinkBytes        = 512
-	MaxErrorTextBytes       = 200
 
 	MaxTodayItems       = 3
 	MaxEvidencePerItem  = 5
@@ -265,6 +271,26 @@ const (
 	PlatformOther Platform = "other"
 )
 
+// SourceErrorCode is the typed reason a source is not fresh. It is a code and
+// never the connector's prose: an error string from a mail or message connector
+// can carry an address, a subject line, or a filename, and a freshness row
+// travels inside the content-free operation envelope. A frozen vocabulary is
+// what keeps that envelope content-free by construction rather than by review.
+type SourceErrorCode string
+
+const (
+	ErrAuthExpired        SourceErrorCode = "auth_expired"
+	ErrPermissionDenied   SourceErrorCode = "permission_denied"
+	ErrNetworkUnavailable SourceErrorCode = "network_unavailable"
+	ErrRateLimited        SourceErrorCode = "rate_limited"
+	ErrSourceUnavailable  SourceErrorCode = "source_unavailable"
+	ErrNotConfigured      SourceErrorCode = "not_configured"
+	ErrInternal           SourceErrorCode = "internal"
+)
+
+// PayloadMediaType is the only media type v1 carries.
+const PayloadMediaType = "text/plain; charset=utf-8"
+
 // TodayItemKind classifies a Today item.
 type TodayItemKind string
 
@@ -274,27 +300,53 @@ const (
 	ItemCommitment     TodayItemKind = "commitment"
 )
 
-// Vocabulary lists every published enum value by JSON field family. It exists
-// so a single test can freeze the whole vocabulary, and so a shell can render
-// an unknown value without guessing.
-var Vocabulary = map[string][]string{
-	"lane":            {string(LaneMemory), string(LaneResearch)},
-	"intent":          {string(IntentRemember), string(IntentAsk), string(IntentInvestigate)},
-	"kind":            {string(KindCapture), string(KindAsk), string(KindResearch)},
-	"operation_state": {string(StateCaptured), string(StateTriaged), string(StateLeased), string(StateRunning), string(StateDone), string(StateNeedsInput), string(StateFailed)},
-	"receipt_state":   {string(ReceiptAccepted), string(ReceiptApplied), string(ReceiptRejected)},
-	"reject_reason":   {string(ReasonPolicy), string(ReasonUnknownDevice), string(ReasonRevokedDevice), string(ReasonTooLarge), string(ReasonMalformed), string(ReasonUnsupportedLane), string(ReasonIdempotencyConflict), string(ReasonUnavailable), string(ReasonInternal)},
-	"write_policy":    {string(PolicyOpen), string(PolicyPropose), string(PolicyReadonly)},
-	"context_mode":    {string(ModeThink), string(ModeSearch), string(ModeMeetingPrep)},
-	"health_state":    {string(HealthHealthy), string(HealthDegraded), string(HealthUnhealthy)},
-	"freshness_state": {string(FreshnessFresh), string(FreshnessStale), string(FreshnessFailed), string(FreshnessNever)},
-	"device_state":    {string(DevicePending), string(DeviceActive), string(DeviceRevoked)},
-	"platform":        {string(PlatformIOS), string(PlatformMacOS), string(PlatformOther)},
-	"today_item_kind": {string(ItemNeedsAttention), string(ItemChanged), string(ItemCommitment)},
+// vocabulary lists every published enum value by JSON field family.
+//
+// It is unexported and reached only through VocabularyFor, which returns a
+// copy. An exported map would be writable by any package in the process, and a
+// vocabulary a caller can edit is not a stable enum: a test or a plugin could
+// widen it and every Validate in this package would start accepting a value the
+// contract never published.
+var vocabulary = map[string][]string{
+	"lane":              {string(LaneMemory), string(LaneResearch)},
+	"intent":            {string(IntentRemember), string(IntentAsk), string(IntentInvestigate)},
+	"kind":              {string(KindCapture), string(KindAsk), string(KindResearch)},
+	"operation_state":   {string(StateCaptured), string(StateTriaged), string(StateLeased), string(StateRunning), string(StateDone), string(StateNeedsInput), string(StateFailed)},
+	"receipt_state":     {string(ReceiptAccepted), string(ReceiptApplied), string(ReceiptRejected)},
+	"reject_reason":     {string(ReasonPolicy), string(ReasonUnknownDevice), string(ReasonRevokedDevice), string(ReasonTooLarge), string(ReasonMalformed), string(ReasonUnsupportedLane), string(ReasonIdempotencyConflict), string(ReasonUnavailable), string(ReasonInternal)},
+	"write_policy":      {string(PolicyOpen), string(PolicyPropose), string(PolicyReadonly)},
+	"context_mode":      {string(ModeThink), string(ModeSearch), string(ModeMeetingPrep)},
+	"health_state":      {string(HealthHealthy), string(HealthDegraded), string(HealthUnhealthy)},
+	"freshness_state":   {string(FreshnessFresh), string(FreshnessStale), string(FreshnessFailed), string(FreshnessNever)},
+	"device_state":      {string(DevicePending), string(DeviceActive), string(DeviceRevoked)},
+	"platform":          {string(PlatformIOS), string(PlatformMacOS), string(PlatformOther)},
+	"today_item_kind":   {string(ItemNeedsAttention), string(ItemChanged), string(ItemCommitment)},
+	"origin":            {OriginCompanion, OriginCLI, OriginMCP},
+	"media_type":        {PayloadMediaType},
+	"source_error_code": {string(ErrAuthExpired), string(ErrPermissionDenied), string(ErrNetworkUnavailable), string(ErrRateLimited), string(ErrSourceUnavailable), string(ErrNotConfigured), string(ErrInternal)},
+}
+
+// VocabularyFamilies returns every published enum family, sorted.
+func VocabularyFamilies() []string {
+	out := make([]string, 0, len(vocabulary))
+	for family := range vocabulary {
+		out = append(out, family)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// VocabularyFor returns the published values of one enum family. The returned
+// slice is a copy: the contract's vocabulary is not writable from outside this
+// package.
+func VocabularyFor(family string) []string {
+	out := make([]string, len(vocabulary[family]))
+	copy(out, vocabulary[family])
+	return out
 }
 
 func inVocabulary(family, value, field string) error {
-	for _, v := range Vocabulary[family] {
+	for _, v := range vocabulary[family] {
 		if v == value {
 			return nil
 		}
@@ -521,7 +573,25 @@ func Marshal(v Payload) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(b, '\n'), nil
+	b = append(b, '\n')
+	// The bound is enforced on the way out as well as on the way in. Checking
+	// it only on decode would leave a producer free to emit an operation
+	// envelope past 4 KiB or a projection past 4 MiB, and the peer that
+	// rejected it would be the only one to find out.
+	if limit := v.ByteLimit(); limit > 0 && len(b) > limit {
+		return nil, errf(CodeTooLarge, "", "encoded payload is %d bytes, limit is %d", len(b), limit)
+	}
+	return b, nil
+}
+
+// Fingerprint returns the payload fingerprint for a capture's text. It is the
+// published derivation: SHA-256 over the exact UTF-8 bytes the device sent,
+// rendered lowercase with a "sha256:" prefix. A device computes it, the kernel
+// recomputes it, and a mismatch on a repeated idempotency key is
+// ReasonIdempotencyConflict.
+func Fingerprint(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ---------------------------------------------------------------------------
@@ -535,24 +605,17 @@ type SourceFreshness struct {
 	State         FreshnessState `json:"state"`
 	AgeSeconds    int64          `json:"age_seconds"`
 	LastSuccessAt string         `json:"last_success_at,omitempty"`
-	// ErrorCode is the typed companion to a failure. It is a code, never the
-	// error prose: prose from a connector can carry an address or a subject
-	// line, and this payload leaves the Mac.
-	ErrorCode string `json:"error_code,omitempty"`
+	// ErrorCode is the typed companion to a failure, drawn from the frozen
+	// source_error_code vocabulary. It is never the connector's prose.
+	ErrorCode SourceErrorCode `json:"error_code,omitempty"`
 }
 
 func (f SourceFreshness) validate(field string) error {
-	if f.Key == "" {
-		return errf(CodeMissingField, field+".key", "source key is required")
-	}
-	if !opaqueRunes(f.Key) {
-		return errf(CodeInvalidValue, field+".key", "source key carries characters outside [A-Za-z0-9_.:-]")
+	if err := validateSourceKey(field+".key", f.Key); err != nil {
+		return err
 	}
 	if err := inVocabulary("freshness_state", string(f.State), field+".state"); err != nil {
 		return err
-	}
-	if f.State == FreshnessNever && f.LastSuccessAt != "" {
-		return errf(CodeInvalidState, field+".last_success_at", "a never-successful source has no last success")
 	}
 	if f.AgeSeconds < -1 {
 		return errf(CodeInvalidValue, field+".age_seconds", "age is -1 (never) or a non-negative count")
@@ -560,7 +623,46 @@ func (f SourceFreshness) validate(field string) error {
 	if err := validateOptionalTimestamp(field+".last_success_at", f.LastSuccessAt); err != nil {
 		return err
 	}
-	return validateText(field+".error_code", f.ErrorCode, MaxErrorTextBytes, false)
+	// A freshness row is the product's honesty signal, so its three fields
+	// have to agree. A "never" row that reports an age, or a "fresh" row with
+	// no last success, is a row a client would render as a confident claim
+	// nothing supports.
+	switch f.State {
+	case FreshnessNever:
+		if f.LastSuccessAt != "" {
+			return errf(CodeInvalidState, field+".last_success_at", "a never-successful source has no last success")
+		}
+		if f.AgeSeconds != -1 {
+			return errf(CodeInvalidState, field+".age_seconds", "a never-successful source has age -1")
+		}
+	case FreshnessFresh, FreshnessStale:
+		if f.LastSuccessAt == "" {
+			return errf(CodeMissingField, field+".last_success_at", "a %s source succeeded at some point and says when", f.State)
+		}
+		if f.AgeSeconds < 0 {
+			return errf(CodeInvalidState, field+".age_seconds", "a %s source has a non-negative age", f.State)
+		}
+	}
+	if f.ErrorCode == "" {
+		return nil
+	}
+	return inVocabulary("source_error_code", string(f.ErrorCode), field+".error_code")
+}
+
+// validateSourceKey bounds a connector key. It is unbounded nowhere: a
+// freshness row rides inside the 4 KiB operation envelope, so a key with no
+// ceiling is a way to push content through it.
+func validateSourceKey(field, key string) error {
+	if key == "" {
+		return errf(CodeMissingField, field, "source key is required")
+	}
+	if len(key) > MaxSourceKeyBytes {
+		return errf(CodeTooLarge, field, "exceeds %d bytes", MaxSourceKeyBytes)
+	}
+	if !opaqueRunes(key) {
+		return errf(CodeInvalidValue, field, "source key carries characters outside [A-Za-z0-9_.:-]")
+	}
+	return nil
 }
 
 func validateFreshness(field string, rows []SourceFreshness) error {
@@ -648,11 +750,8 @@ func (e Evidence) validate(field string) error {
 	if err := validateID(field+".memory_id", PrefixMemory, e.MemoryID); err != nil {
 		return err
 	}
-	if e.Source == "" {
-		return errf(CodeMissingField, field+".source", "source is required")
-	}
-	if !opaqueRunes(e.Source) {
-		return errf(CodeInvalidValue, field+".source", "source carries characters outside [A-Za-z0-9_.:-]")
+	if err := validateSourceKey(field+".source", e.Source); err != nil {
+		return err
 	}
 	if err := validateOptionalTimestamp(field+".occurred_at", e.OccurredAt); err != nil {
 		return err
@@ -944,6 +1043,13 @@ func (c *Capture) Validate() error {
 	if err := validateFingerprint("payload_fingerprint", c.PayloadFingerprint); err != nil {
 		return err
 	}
+	// Syntax is not enough. The fingerprint is the idempotency identity: the
+	// kernel answers "same key, same payload?" with it, so a fingerprint that
+	// does not cover this text would let two different captures share one
+	// identity and let the second silently take the first's receipt.
+	if want := Fingerprint(c.Text); c.PayloadFingerprint != want {
+		return errf(CodeInvalidValue, "payload_fingerprint", "fingerprint does not cover the capture text")
+	}
 	return ValidateRouting(c.RequestedLane, c.Intent)
 }
 
@@ -1081,6 +1187,9 @@ func (r *Receipt) Validate() error {
 			return errf(CodeInvalidState, "reason", "an accepted receipt has no rejection reason")
 		}
 	}
+	if err := validatePolicyOutcome(r.State, r.Reason, r.Policy); err != nil {
+		return err
+	}
 	if r.Operation == nil {
 		return nil
 	}
@@ -1105,6 +1214,39 @@ func (r *Receipt) Validate() error {
 	}
 	if op.Attempts < 0 {
 		return errf(CodeInvalidValue, "operation.attempts", "count cannot be negative")
+	}
+	return nil
+}
+
+// validatePolicyOutcome binds a receipt's state to the write policy that
+// produced it, so a receipt cannot describe an outcome the policy could not
+// have reached.
+//
+// The binding applies to the policy-determined outcomes — the ones where the
+// policy alone decided what happened, which is when the receipt carries no
+// reason or carries ReasonPolicy:
+//
+//	readonly -> rejected    propose -> accepted    open -> applied
+//
+// Every other rejection reason (unknown_device, too_large, idempotency_conflict
+// and the rest) can occur under any policy, and those receipts are required to
+// be rejected and are not bound further. Binding them to a policy as well would
+// make an oversize capture unrepresentable under `open`, which is a real case
+// N21 has to return.
+func validatePolicyOutcome(state ReceiptState, reason RejectReason, policy WritePolicy) error {
+	if reason != "" && reason != ReasonPolicy {
+		if state != ReceiptRejected {
+			return errf(CodeInvalidState, "state", "reason %q can only produce a rejected receipt", reason)
+		}
+		return nil
+	}
+	want := map[WritePolicy]ReceiptState{
+		PolicyReadonly: ReceiptRejected,
+		PolicyPropose:  ReceiptAccepted,
+		PolicyOpen:     ReceiptApplied,
+	}[policy]
+	if state != want {
+		return errf(CodeInvalidState, "state", "the %s policy produces a %s receipt, not %s", policy, want, state)
 	}
 	return nil
 }
@@ -1177,6 +1319,12 @@ func (d *Device) Validate() error {
 	if d.State == DevicePending && d.TokenFingerprint != "" {
 		return errf(CodeInvalidState, "token_fingerprint", "a pending device has no credential yet")
 	}
+	// An active device is one the listener will authenticate, so it must
+	// identify the credential it authenticates with. A revoked device may have
+	// none: revocation deletes it.
+	if d.State == DeviceActive && d.TokenFingerprint == "" {
+		return errf(CodeMissingField, "token_fingerprint", "an active device names its credential by fingerprint")
+	}
 	return nil
 }
 
@@ -1225,8 +1373,8 @@ func (p *PairingPayload) Validate() error {
 	if err := validateText("endpoint", p.Endpoint, MaxDeepLinkBytes, true); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(p.Endpoint, "https://") && !strings.HasPrefix(p.Endpoint, "http://127.0.0.1:") {
-		return errf(CodeInvalidValue, "endpoint", "endpoint is https, or loopback for a local test")
+	if err := validateEndpoint("endpoint", p.Endpoint); err != nil {
+		return err
 	}
 	if err := validateText("pairing_code", p.PairingCode, MaxIdempotencyKeyBytes, true); err != nil {
 		return err
@@ -1235,6 +1383,68 @@ func (p *PairingPayload) Validate() error {
 		return err
 	}
 	return validateFingerprint("host_fingerprint", p.HostFingerprint)
+}
+
+// validateEndpoint accepts https, or cleartext http only to a real loopback
+// host.
+//
+// A prefix match is not good enough here and the difference is exploitable:
+// "http://127.0.0.1:@evil.example/" starts with "http://127.0.0.1:" and points
+// at evil.example, because everything before the "@" is userinfo. The URL is
+// parsed, the host is compared, and any userinfo at all is refused — a pairing
+// endpoint has no business carrying credentials in its authority.
+func validateEndpoint(field, raw string) error {
+	if err := validateText(field, raw, MaxDeepLinkBytes, true); err != nil {
+		return err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errf(CodeInvalidValue, field, "endpoint is not a URL")
+	}
+	if u.User != nil {
+		return errf(CodeInvalidValue, field, "endpoint must not carry userinfo")
+	}
+	switch u.Scheme {
+	case "https":
+		if u.Hostname() == "" {
+			return errf(CodeInvalidValue, field, "endpoint has no host")
+		}
+		return nil
+	case "http":
+		switch u.Hostname() {
+		case "127.0.0.1", "::1", "localhost":
+			return nil
+		}
+		return errf(CodeInvalidValue, field, "cleartext is allowed only to a loopback host")
+	}
+	return errf(CodeInvalidValue, field, "endpoint scheme must be https, or http to loopback")
+}
+
+// validatePublicKey accepts "<alg>:<base64 of 32 bytes>" for the two key types
+// a paired device presents: an ed25519 signing key and an X25519 agreement key.
+// Both are 32 bytes, so a typed check here rejects a truncated, re-encoded, or
+// entirely made-up key at the boundary instead of at first use.
+func validatePublicKey(field, raw string) error {
+	if err := validateText(field, raw, MaxPublicKeyBytes, true); err != nil {
+		return err
+	}
+	alg, encoded, ok := strings.Cut(raw, ":")
+	if !ok {
+		return errf(CodeInvalidValue, field, "public key must be <alg>:<base64>")
+	}
+	switch alg {
+	case "ed25519", "x25519":
+	default:
+		return errf(CodeInvalidEnum, field, "public key algorithm must be ed25519 or x25519")
+	}
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return errf(CodeInvalidValue, field, "public key is not standard base64")
+	}
+	if len(key) != 32 {
+		return errf(CodeInvalidValue, field, "an %s public key is 32 bytes, got %d", alg, len(key))
+	}
+	return nil
 }
 
 // PairingConfirmation is what the phone posts back to finish pairing. It
@@ -1282,7 +1492,7 @@ func (p *PairingConfirmation) Validate() error {
 	if err := inVocabulary("platform", string(p.Platform), "platform"); err != nil {
 		return err
 	}
-	if err := validateText("public_key", p.PublicKey, MaxDeepLinkBytes, true); err != nil {
+	if err := validatePublicKey("public_key", p.PublicKey); err != nil {
 		return err
 	}
 	return validateTimestamp("confirmed_at", p.ConfirmedAt)

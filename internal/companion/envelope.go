@@ -133,13 +133,7 @@ func (p PayloadRef) validate(field string) error {
 	if p.Bytes > MaxCaptureTextBytes {
 		return errf(CodeTooLarge, field+".bytes", "payload exceeds %d bytes", MaxCaptureTextBytes)
 	}
-	if p.MediaType == "" {
-		return errf(CodeMissingField, field+".media_type", "media type is required")
-	}
-	if p.MediaType != "text/plain; charset=utf-8" {
-		return errf(CodeInvalidEnum, field+".media_type", `v1 carries only "text/plain; charset=utf-8"`)
-	}
-	return nil
+	return inVocabulary("media_type", p.MediaType, field+".media_type")
 }
 
 // Provenance says where an operation came from. Every field is a coarse,
@@ -164,12 +158,8 @@ const (
 )
 
 func (p Provenance) validate(field string) error {
-	switch p.Origin {
-	case OriginCompanion, OriginCLI, OriginMCP:
-	case "":
-		return errf(CodeMissingField, field+".origin", "origin is required")
-	default:
-		return errf(CodeInvalidEnum, field+".origin", "not a published origin")
+	if err := inVocabulary("origin", p.Origin, field+".origin"); err != nil {
+		return err
 	}
 	if p.Origin == OriginCompanion && p.DeviceID == "" {
 		return errf(CodeMissingField, field+".device_id", "a companion operation names its device")

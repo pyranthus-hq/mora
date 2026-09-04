@@ -35,7 +35,7 @@ func TestStateMachineIsFrozen(t *testing.T) {
 	}
 	// Every published state must appear in the machine, or the vocabulary
 	// would carry a state nothing can reach.
-	for _, v := range Vocabulary["operation_state"] {
+	for _, v := range VocabularyFor("operation_state") {
 		s := OperationState(v)
 		if len(NextStates(s)) == 0 && !s.IsTerminal() {
 			t.Errorf("%s is neither terminal nor able to move", s)
@@ -372,7 +372,7 @@ func TestStatusProjectsTheEnvelope(t *testing.T) {
 // contract: every state it must render is reachable through a receipt.
 func TestReceiptJobStateRendersTheSpineVocabulary(t *testing.T) {
 	r := ReceiptFixture()
-	for _, v := range Vocabulary["operation_state"] {
+	for _, v := range VocabularyFor("operation_state") {
 		r.Operation.State = OperationState(v)
 		if err := r.Validate(); err != nil {
 			t.Errorf("a receipt cannot carry job state %s: %v", v, err)
@@ -382,7 +382,7 @@ func TestReceiptJobStateRendersTheSpineVocabulary(t *testing.T) {
 
 func TestStateMachineRendersEveryState(t *testing.T) {
 	text := StateMachine()
-	for _, v := range Vocabulary["operation_state"] {
+	for _, v := range VocabularyFor("operation_state") {
 		if !strings.Contains(text, v) {
 			t.Errorf("StateMachine() omits %s:\n%s", v, text)
 		}

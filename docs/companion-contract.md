@@ -45,6 +45,11 @@ New *enum values* are also MINOR. A client must render an unknown enum value as 
 than failing. The kernel is the exception in the other direction: it rejects an enum value it does
 not know on anything a device sent, because it is the authority on what it can execute.
 
+The published values are reachable through `VocabularyFamilies()` and `VocabularyFor(family)`, which
+returns a **copy**. The vocabulary map itself is unexported: an exported map is writable by any
+package in the process, and a vocabulary a caller can widen is not a stable enum
+(`TestVocabularyIsNotWritableFromOutside`).
+
 ## 3. Strict inbound, tolerant outbound
 
 This is the asymmetry to internalise.
@@ -72,12 +77,16 @@ part, a numeric offset, and a lowercase `z`.
 |---|---|---|
 | Identifier | `<prefix>_<opaque>` | Prefixes `dev_`, `req_`, `rcp_`, `mem_`, `exe_`. At most 64 bytes, characters `[A-Za-z0-9_.:-]`. **The opaque part is not parseable** — nothing may be read out of it. |
 | Idempotency key | device-generated, stable across retries | At most 128 bytes, same character set. Spaces and prose are rejected: the key travels into the content-free operation envelope, so it may not become a second text field. |
-| Fingerprint | `sha256:<64 lowercase hex>` | `Fingerprint(text)` is the published derivation: SHA-256 over the exact UTF-8 bytes. A client computes it, the kernel recomputes it. |
+| Fingerprint | `sha256:<64 lowercase hex>` | `Fingerprint(text)` is the published derivation: SHA-256 over the exact UTF-8 bytes. A client computes it and **the kernel recomputes it over the text it received**: a capture whose `payload_fingerprint` does not cover its own `text` is rejected, syntax notwithstanding. |
+| Source key | at most 64 bytes, `[A-Za-z0-9_.:-]` | Applies to `freshness[].key` and `evidence[].source`. A freshness row rides inside the 4 KiB operation envelope, so an unbounded key is a way to push content through it. |
+| Public key | `<alg>:<base64 of 32 bytes>`, `alg` ∈ `ed25519`, `x25519` | Both key types a paired device presents are 32 bytes, so a truncated or invented key fails at the boundary rather than at first use. |
 | Scope | `personal` or `project:<name>` | Nothing else. A device cannot name a source. |
 
 `payload_fingerprint` is what makes idempotency answerable: same key with the same fingerprint
 returns the same receipt; **same key with a different fingerprint is `idempotency_conflict`**, never
-a silent overwrite.
+a silent overwrite. Checking only the fingerprint's *syntax* would defeat that — two different
+captures could then share one identity and the second would take the first's receipt — so
+`TestCaptureFingerprintMustCoverItsText` states that case directly.
 
 ## 6. Bounds
 
@@ -92,10 +101,13 @@ Every bound is enforced by `Validate` or by `Unmarshal`, never left to the calle
 | Today items | 3 |
 | Evidence per Today item / per context bundle | 5 / 32 |
 | Gaps, freshness rows | 16, 32 |
+| Source key, public key | 64 B, 128 B |
 
-`TestGoldensAreWithinTheirByteLimit` proves the published bounds are not aspirational, and
-`TestOversizePayloadIsRejectedBeforeDecoding` proves an oversize body is refused *before* it is
-decoded rather than after.
+Bounds are enforced **in both directions**: `Unmarshal` refuses an oversize body *before* decoding
+it, and `Marshal` refuses to emit one. A decode-only check would leave a producer free to emit an
+operation envelope past 4 KiB, and the peer that rejected it would be the only one to find out —
+`TestMarshalEnforcesTheByteLimit` builds an envelope that is valid field by field and still too
+large. `TestGoldensAreWithinTheirByteLimit` proves the published bounds are not aspirational.
 
 ## 7. The schemas
 
@@ -127,6 +139,17 @@ decoded the happy path has not been tested.
   cannot check is not shippable.
 - A context bundle always carries `gaps`, even empty — what the vault does not know is a claim, not
   an omission.
+- **A freshness row's three fields must agree** (`TestFreshnessRowsMustAgree`): `never` implies
+  `age_seconds` of `-1` and no `last_success_at`; `fresh` and `stale` must carry a `last_success_at`
+  and a non-negative age. A row that disagrees with itself renders as a confident claim nothing
+  supports.
+- `freshness[].error_code` is a **frozen enum**, never the connector's prose: `auth_expired`,
+  `permission_denied`, `network_unavailable`, `rate_limited`, `source_unavailable`,
+  `not_configured`, `internal`. Connector error strings carry addresses, subject lines and
+  filenames, and freshness rows travel inside the content-free operation envelope — so this being an
+  enum is what keeps that envelope content-free by construction rather than by review.
+- **An active device carries a `token_fingerprint`**; a pending one carries none, and a revoked one
+  need not, because revocation deletes the credential.
 
 ## 8. Capture, receipts, and the word "Saved"
 
@@ -156,8 +179,22 @@ receipt that names no memory, and an accepted one that claims a memory, both imp
 Rejection reasons: `policy`, `unknown_device`, `revoked_device`, `too_large`, `malformed`,
 `unsupported_lane`, `idempotency_conflict`, `unavailable`, `internal`.
 
-Write policy maps as you would expect and as the kernel already behaves: `readonly` → `rejected:
-policy`, `propose` → `accepted`, `open` → `applied` after vault publication.
+### State is bound to policy
+
+A receipt cannot describe an outcome its write policy could not have produced
+(`TestReceiptStateIsBoundToPolicy`):
+
+| Policy | Outcome |
+|---|---|
+| `readonly` | `rejected` with `reason: policy` |
+| `propose` | `accepted` |
+| `open` | `applied`, after vault publication |
+
+The binding covers the **policy-determined** outcomes — those with no reason, or with
+`reason: policy`. Every other reason (`unknown_device`, `too_large`, `idempotency_conflict` and the
+rest) can occur under any policy, and those receipts are required to be `rejected` but are not bound
+further. Binding them too would make an oversize capture unrepresentable under `open`, which is a
+real case the capture path has to return.
 
 ## 9. The async operation envelope
 
@@ -202,7 +239,12 @@ Stated plainly, so nobody reads a shape here as an approved mechanism.
 
 - **The pairing code and bearer token formats are a human decision gate.** This schema fixes the
   envelope around them; `pairing_code` is an opaque string here. Never log a pairing payload — call
-  `Redacted()`, which masks the code (`TestPairingRedactionMasksTheOneTimeCode`).
+  `Redacted()`, which masks the code (`TestPairingRedactionMasksTheOneTimeCode`). The pairing
+  `endpoint` *is* checked: it is parsed with `net/url`, must be `https`, or `http` only to a
+  loopback host (`127.0.0.1`, `::1`, `localhost`), and must carry no userinfo. A prefix match is not
+  sufficient and the difference is exploitable — `http://127.0.0.1:@evil.example/` begins with
+  `http://127.0.0.1:` and resolves to `evil.example`, because everything before the `@` is userinfo
+  (`TestLoopbackEndpointCannotBeSpoofed`).
 - **Transport, listener, and device registry are not here.** The narrow loopback listener is graph
   node N12, the registry and `mora companion pair/list/revoke/status` are N11, governed capture and
   durable idempotency are N21, and the Tailscale Serve boundary is N22. This package is types,

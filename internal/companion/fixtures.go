@@ -1,8 +1,6 @@
 package companion
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"sort"
 	"strings"
 )
@@ -35,21 +33,11 @@ const (
 	fixtureText        = "Ravi wants the pilot scoped to one team before the October board meeting."
 )
 
-// Fingerprint returns the payload fingerprint for a capture's text. It is the
-// published derivation: sha256 over the exact UTF-8 bytes the device sent,
-// rendered lowercase with a "sha256:" prefix. A device computes it, the kernel
-// recomputes it, and a mismatch on a repeated idempotency key is
-// ReasonIdempotencyConflict.
-func Fingerprint(text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
 func fixtureFreshness() []SourceFreshness {
 	return []SourceFreshness{
 		{Key: "gmail:work", State: FreshnessFresh, AgeSeconds: 900, LastSuccessAt: "2026-09-03T10:45:00Z"},
 		{Key: "calendar", State: FreshnessStale, AgeSeconds: 97200, LastSuccessAt: "2026-09-02T08:00:00Z"},
-		{Key: "imessage", State: FreshnessNever, AgeSeconds: -1, ErrorCode: "full_disk_access_missing"},
+		{Key: "imessage", State: FreshnessNever, AgeSeconds: -1, ErrorCode: ErrPermissionDenied},
 	}
 }
 
@@ -97,7 +85,7 @@ func PairingConfirmationFixture() *PairingConfirmation {
 	p.PairingCode = "fixture-pairing-code"
 	p.Label = "Adit iPhone"
 	p.Platform = PlatformIOS
-	p.PublicKey = "fixture-device-public-key"
+	p.PublicKey = "ed25519:9AzJQCUvXQOYQKgCIZAox5SM2lI248yCFdfdVmFEUss="
 	p.ConfirmedAt = fixtureCreatedAt
 	return &p
 }
@@ -205,7 +193,7 @@ func OperationFixture() *Operation {
 		Ref:         "capture:" + fixtureIdemKey,
 		Fingerprint: Fingerprint(fixtureText),
 		Bytes:       len(fixtureText),
-		MediaType:   "text/plain; charset=utf-8",
+		MediaType:   PayloadMediaType,
 	}
 	o.Provenance = Provenance{
 		Origin:     OriginCompanion,

@@ -43,7 +43,7 @@
       "key": "imessage",
       "state": "never",
       "age_seconds": -1,
-      "error_code": "full_disk_access_missing"
+      "error_code": "permission_denied"
     }
   ]
 }
