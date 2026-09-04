@@ -390,40 +390,28 @@ func TestRegistryAuthenticateSeparatesRevokedFromUnknown(t *testing.T) {
 	}
 }
 
-// TestRegistryAuthenticateComparesInConstantTime is a source-level witness, not
-// a timing measurement. A wall-clock timing assertion over SHA-256 comparisons
-// is noise on a loaded CI box and would be quarantined within a week; what can
-// be asserted deterministically are the four properties that make the
-// comparison constant time in the first place.
+// authenticateWitnessViolations returns every way fn breaks the constant-time
+// contract. It is a function rather than a body of assertions so the witness
+// itself can be tested: TestRegistryAuthenticateWitnessRejectsBadShapes feeds it
+// the shapes it is supposed to catch, which is the only way to know a
+// source-level witness has not quietly become a no-op.
+//
+// The contract, in four parts:
 //
 //  1. subtle.ConstantTimeCompare rather than ==.
 //  2. No exit out of the loop once a match is found, so the running time does
 //     not depend on WHICH device matched.
 //  3. No branch inside the loop at all — a `continue` past a credential-less
 //     device makes the cost depend on how many devices carry one.
-//  4. No return before the loop that depends on the TOKEN. This is the one the
-//     first round missed: `if token == "" { return }` answered "was that even a
-//     token?" for free, before any comparison ran.
-func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "registry.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fn *ast.FuncDecl
-	for _, decl := range file.Decls {
-		d, ok := decl.(*ast.FuncDecl)
-		if ok && d.Name.Name == "Authenticate" && d.Recv != nil {
-			fn = d
-		}
-	}
-	if fn == nil {
-		t.Fatal("Authenticate not found in registry.go")
-	}
+//  4. Above the loop, the ONLY statement allowed to read the token is the
+//     unconditional hash. Not a comparison, not a conditional, not an
+//     assignment to something else that is then compared. Round two allowed an
+//     `if token == ""` to slip through because it only looked for returns.
+func authenticateWitnessViolations(fn *ast.FuncDecl) []string {
+	var out []string
 
-	// The parameter's own name, so renaming it cannot quietly retire claim 4.
-	if len(fn.Type.Params.List) != 1 || len(fn.Type.Params.List[0].Names) != 1 {
-		t.Fatalf("Authenticate takes %d parameter groups; the witness assumes one named parameter", len(fn.Type.Params.List))
+	if fn.Type.Params.List == nil || len(fn.Type.Params.List) != 1 || len(fn.Type.Params.List[0].Names) != 1 {
+		return []string{"Authenticate does not take exactly one named parameter"}
 	}
 	param := fn.Type.Params.List[0].Names[0].Name
 
@@ -432,45 +420,57 @@ func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		if rng, ok := node.(*ast.RangeStmt); ok {
 			loops++
-			loop = rng
+			if loop == nil {
+				loop = rng
+			}
 		}
 		return true
 	})
 	if loops != 1 {
-		t.Fatalf("Authenticate has %d range loops; the witness assumes exactly one", loops)
+		return []string{fmt.Sprintf("Authenticate has %d range loops; the witness assumes exactly one", loops)}
 	}
 
-	// Claim 4: nothing before the loop may return, and the check is on the
-	// STATEMENT list rather than on a nested walk, so a return buried in an
-	// `if` above the loop is caught too.
+	// Part 4. Every statement above the loop is examined whole, so a read
+	// buried inside an `if`, a closure or a composite literal counts.
 	for _, stmt := range fn.Body.List {
 		if stmt.Pos() >= loop.Pos() {
 			break
 		}
-		// A return that cannot see the token cannot leak anything about it:
-		// failing to load the registry, or failing to read entropy, costs the
-		// same for every caller. A statement that does BOTH — reads the token
-		// and can return — is the shape being forbidden.
-		var returns, readsToken bool
+		reads, hashes, branches := 0, 0, false
 		ast.Inspect(stmt, func(node ast.Node) bool {
 			switch n := node.(type) {
-			case *ast.ReturnStmt:
-				returns = true
 			case *ast.Ident:
 				if n.Name == param {
-					readsToken = true
+					reads++
 				}
+			case *ast.CallExpr:
+				id, ok := n.Fun.(*ast.Ident)
+				if !ok || id.Name != "Fingerprint" || len(n.Args) != 1 {
+					return true
+				}
+				if arg, ok := n.Args[0].(*ast.Ident); ok && arg.Name == param {
+					hashes++
+				}
+			case *ast.ReturnStmt, *ast.IfStmt, *ast.BranchStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt:
+				branches = true
 			}
 			return true
 		})
-		if returns && readsToken {
-			t.Fatalf("a statement above Authenticate's comparison loop both reads %q and can return; "+
-				"an exit that depends on the token answers a question about it before any comparison runs",
-				param)
+		if reads == 0 {
+			continue
+		}
+		// The one permitted shape: a plain assignment that reads the token
+		// exactly once, and reads it only to hash it.
+		if _, ok := stmt.(*ast.AssignStmt); !ok || branches || hashes != 1 || reads != 1 {
+			out = append(out, fmt.Sprintf(
+				"a statement above the comparison loop reads %q outside the unconditional hash "+
+					"(assignment=%t branching=%t hashes=%d reads=%d); any other read answers a "+
+					"question about the token before a single comparison has run",
+				param, ok, branches, hashes, reads))
 		}
 	}
 
-	// Claims 1, 2 and 3, all inside the loop.
+	// Parts 1, 2 and 3, all inside the loop.
 	var constantTime, branched bool
 	ast.Inspect(loop.Body, func(node ast.Node) bool {
 		switch n := node.(type) {
@@ -486,10 +486,156 @@ func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
 		return true
 	})
 	if !constantTime {
-		t.Fatal("Authenticate does not compare fingerprints with subtle.ConstantTimeCompare")
+		out = append(out, "the comparison loop does not use subtle.ConstantTimeCompare")
 	}
 	if branched {
-		t.Fatal("Authenticate branches out of its comparison loop; the time taken now depends on which device matched")
+		out = append(out, "the comparison loop can be exited early; the time taken now depends on which device matched")
+	}
+	return out
+}
+
+func authenticateDecl(t *testing.T, src string) *ast.FuncDecl {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "witness.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "Authenticate" {
+			return fn
+		}
+	}
+	t.Fatal("no Authenticate in source")
+	return nil
+}
+
+// TestRegistryAuthenticateComparesInConstantTime runs the witness against the
+// real production function. A wall-clock timing assertion over SHA-256
+// comparisons is noise on a loaded CI box and would be quarantined within a
+// week; these are the properties that can be asserted deterministically.
+func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "registry.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		d, ok := decl.(*ast.FuncDecl)
+		if ok && d.Name.Name == "Authenticate" && d.Recv != nil {
+			fn = d
+		}
+	}
+	if fn == nil {
+		t.Fatal("Authenticate not found in registry.go")
+	}
+	if violations := authenticateWitnessViolations(fn); len(violations) != 0 {
+		t.Fatalf("Authenticate breaks the constant-time contract:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+// TestRegistryAuthenticateWitnessRejectsBadShapes is the negative control. A
+// source-level witness that has stopped detecting anything still passes forever
+// against correct code, so it is fed the exact shapes it exists to catch —
+// including the two that got through round two.
+func TestRegistryAuthenticateWitnessRejectsBadShapes(t *testing.T) {
+	const preamble = "package p\nimport \"crypto/subtle\"\nfunc Fingerprint(string) string { return \"\" }\ntype Device struct{}\ntype rec struct{ TokenFingerprint string }\nvar devices []rec\n"
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "early return on the empty token",
+			body: `
+	if token == "" {
+		return Device{}, nil
+	}
+	want := []byte(Fingerprint(token))
+	matched := -1
+	for i, r := range devices {
+		if subtle.ConstantTimeCompare([]byte(r.TokenFingerprint), want) == 1 {
+			matched = i
+		}
+	}
+	_ = matched
+	return Device{}, nil`,
+		},
+		{
+			name: "aliased token compared in a later statement",
+			body: `
+	alias := token
+	want := []byte(Fingerprint(token))
+	if alias == "" {
+		return Device{}, nil
+	}
+	matched := -1
+	for i, r := range devices {
+		if subtle.ConstantTimeCompare([]byte(r.TokenFingerprint), want) == 1 {
+			matched = i
+		}
+	}
+	_ = matched
+	return Device{}, nil`,
+		},
+		{
+			name: "continue past a credential-less device",
+			body: `
+	want := []byte(Fingerprint(token))
+	matched := -1
+	for i, r := range devices {
+		if r.TokenFingerprint == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(r.TokenFingerprint), want) == 1 {
+			matched = i
+		}
+	}
+	_ = matched
+	return Device{}, nil`,
+		},
+		{
+			name: "plain equality instead of a constant-time compare",
+			body: `
+	want := Fingerprint(token)
+	matched := -1
+	for i, r := range devices {
+		if r.TokenFingerprint == want {
+			matched = i
+		}
+	}
+	_ = matched
+	return Device{}, nil`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fn := authenticateDecl(t, preamble+"func Authenticate(token string) (Device, error) {"+tc.body+"\n}\n")
+			if violations := authenticateWitnessViolations(fn); len(violations) == 0 {
+				t.Fatal("the witness accepted a shape it exists to reject; it has become a no-op")
+			}
+		})
+	}
+
+	// And it must still accept the correct shape, or the negative control is
+	// just a witness that rejects everything.
+	good := authenticateDecl(t, preamble+`func Authenticate(token string) (Device, error) {
+	want := []byte(Fingerprint(token))
+	absent := []byte(Fingerprint("x"))
+	matched := -1
+	for i, r := range devices {
+		stored := []byte(r.TokenFingerprint)
+		if len(stored) != len(absent) {
+			stored = absent
+		}
+		if subtle.ConstantTimeCompare(stored, want) == 1 {
+			matched = i
+		}
+	}
+	_ = matched
+	return Device{}, nil
+}
+`)
+	if violations := authenticateWitnessViolations(good); len(violations) != 0 {
+		t.Fatalf("the witness rejects the correct shape:\n  %s", strings.Join(violations, "\n  "))
 	}
 }
 
@@ -1216,5 +1362,243 @@ func TestRegistryRefusesACorruptHostSeed(t *testing.T) {
 	}
 	if restored == first {
 		t.Fatal("the fingerprint did not follow the seed")
+	}
+}
+
+// TestRegistryRevocationReceiptNeverOutlivesAFailedCommit is the round-three
+// ordering witness, and it is the reason receipt ordering is per event rather
+// than global.
+//
+// Round two wrote every receipt first. For Confirm that is correct — see
+// TestRegistryReceiptFailureNeverActivatesACredential — but for Revoke it
+// manufactures the one audit lie that gets somebody hurt: a `revoked` row on
+// disk while the credential is still live, telling an operator that access
+// ended when it has not. A real revocation with no audit row is a bookkeeping
+// gap; a fake revocation row over a live credential is a false all-clear.
+func TestRegistryRevocationReceiptNeverOutlivesAFailedCommit(t *testing.T) {
+	reg, _, _, stateDir := testRegistry(t)
+	token, dev := pairAndConfirm(t, reg, "phone")
+
+	// Fail the record write at the exact instant the ordering rules exist for:
+	// after the mutation decided what happened, before it is on disk.
+	commitFailed := errors.New("simulated disk failure at commit")
+	reg.writeRecord = func(string, []byte, func() error) error { return commitFailed }
+
+	_, changed, err := reg.Revoke(dev.DeviceID)
+	if !errors.Is(err, commitFailed) {
+		t.Fatalf("Revoke returned %v, want the injected commit failure", err)
+	}
+	if changed {
+		t.Fatal("Revoke reported a change it could not commit")
+	}
+
+	// (a) No receipt may assert a state the record file does not hold.
+	if got := receiptFiles(t, stateDir, "revoked"); len(got) != 0 {
+		t.Fatalf("a `revoked` receipt survived a failed commit: %v — an operator reading the "+
+			"audit trail would believe this device's access had ended", got)
+	}
+
+	// And the credential really is still live, which is what makes such a
+	// receipt a lie rather than merely premature.
+	reg.writeRecord = writeSecretFile
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].State != DeviceActive {
+		t.Fatalf("state = %q, want active — the injected failure did not actually block the commit", devices[0].State)
+	}
+	if _, err := reg.Authenticate(token); err != nil {
+		t.Fatalf("the token stopped authenticating after a FAILED revocation: %v", err)
+	}
+
+	// The retry is the whole point of leaving the state alone: revocation stays
+	// available once the disk comes back.
+	if _, changed, err := reg.Revoke(dev.DeviceID); err != nil || !changed {
+		t.Fatalf("retrying the revocation returned (%t, %v)", changed, err)
+	}
+	if got := receiptFiles(t, stateDir, "revoked"); len(got) != 1 {
+		t.Fatalf("revocation receipts after the retry = %d, want 1", len(got))
+	}
+	if _, err := reg.Authenticate(token); err == nil {
+		t.Fatal("the token still authenticates after a successful revocation")
+	}
+}
+
+// TestRegistryRefusesAMutationThatWouldBrickTheFile closes the gap between the
+// two bounds. MaxDevices counts devices and says nothing about bytes, so a
+// registry comfortably under both limits when it was written compactly can
+// cross MaxRegistryBytes once it is re-indented — producing a file this same
+// build then refuses to LOAD. A registry bricked by its own write is the one
+// outcome worth refusing outright.
+func TestRegistryRefusesAMutationThatWouldBrickTheFile(t *testing.T) {
+	reg, _, configDir, _ := testRegistry(t)
+	if _, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(configDir, "companion", "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = reg.mutate(func(f *registryFile) (receipt, error) {
+		f.Devices = append(f.Devices, &deviceRecord{
+			DeviceID:  "dev_20260903_120000_aaaaaaaa",
+			Label:     "bulky",
+			Platform:  PlatformIOS,
+			State:     DevicePending,
+			CreatedAt: "2026-09-03T12:00:00Z",
+			// Nothing bounds a STORED public key's length, so this is the
+			// shape a corrupt or hostile record takes.
+			PublicKey: strings.Repeat("A", MaxRegistryBytes+1),
+		})
+		return receipt{Event: "paired", DeviceID: "dev_20260903_120000_aaaaaaaa", At: "2026-09-03T12:00:00Z"}, nil
+	})
+	if !errors.Is(err, ErrRegistryTooLarge) {
+		t.Fatalf("an oversize commit returned %v, want ErrRegistryTooLarge", err)
+	}
+
+	after, err := os.ReadFile(filepath.Join(configDir, "companion", "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("the refused mutation still rewrote the record file")
+	}
+	// The refusal has to leave a registry that still loads, or it traded one
+	// brick for another.
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatalf("the registry no longer loads after a refused write: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("registry holds %d devices, want 1", len(devices))
+	}
+}
+
+// TestRegistryHardensHostKeyBeforeReadingIt pins both halves of the fix the
+// round-two review marked FIXED-NO-TEST: that a loosened host.key is repaired,
+// and that the repair happens BEFORE the key bytes are read. Reading first and
+// chmodding second leaves the seed world-readable for exactly as long as it
+// takes to read it, which is the only window that matters.
+func TestRegistryHardensHostKeyBeforeReadingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not the access-control mechanism on Windows")
+	}
+	reg, _, configDir, _ := testRegistry(t)
+	first, err := reg.HostFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(configDir, "companion", "host.key")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The read path, not the create path: the seed already exists, so this is
+	// the branch a running listener takes.
+	again, err := reg.HostFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != first {
+		t.Fatal("the host identity changed when its mode was repaired")
+	}
+	assertMode(t, path, secretFileMode)
+
+	// Ordering cannot be observed from outside a single call, so it is asserted
+	// at the source: in readHostSeed, every harden call must precede the read.
+	// This is what makes the behavioral half above mean "repaired in time"
+	// rather than merely "repaired".
+	file, err := parser.ParseFile(token.NewFileSet(), "registry.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if d, ok := decl.(*ast.FuncDecl); ok && d.Name.Name == "readHostSeed" {
+			fn = d
+		}
+	}
+	if fn == nil {
+		t.Fatal("readHostSeed not found in registry.go")
+	}
+	var lastHarden, firstRead token.Pos
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			if fun.Name == "hardenPath" && call.Pos() > lastHarden {
+				lastHarden = call.Pos()
+			}
+		case *ast.SelectorExpr:
+			if id, ok := fun.X.(*ast.Ident); ok {
+				if id.Name == "r" && fun.Sel.Name == "hardenExisting" && call.Pos() > lastHarden {
+					lastHarden = call.Pos()
+				}
+				if id.Name == "os" && fun.Sel.Name == "ReadFile" && (firstRead == 0 || call.Pos() < firstRead) {
+					firstRead = call.Pos()
+				}
+			}
+		}
+		return true
+	})
+	if lastHarden == 0 || firstRead == 0 {
+		t.Fatalf("readHostSeed no longer both hardens (%d) and reads (%d); the witness is stale", lastHarden, firstRead)
+	}
+	if lastHarden > firstRead {
+		t.Fatal("readHostSeed reads the seed before it finishes asserting the mode; " +
+			"the key bytes are exposed for the length of the read")
+	}
+}
+
+// TestRegistryRefusesToPublishAfterALateUnlink pins WHERE the ownership check
+// sits, not merely that one exists.
+//
+// Round two checked ownership once, in mutate, before the receipt and record
+// writes. The review's objection was exact: an unlink landing after that check
+// still let the rename publish, so the check proved nothing about the moment
+// that mattered. Here the lock is unlinked and re-acquired by a second writer
+// AFTER the mutation has returned and after any check mutate could make on its
+// own — the write is already staged — and the publish must still refuse. A
+// check anywhere earlier than the rename passes this scenario happily.
+func TestRegistryRefusesToPublishAfterALateUnlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows will not unlink a file while a handle is open, so the lock cannot be replaced under its holder")
+	}
+	reg, _, _, _ := testRegistry(t)
+	if _, err := reg.Pair("first", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+		t.Fatal(err)
+	}
+
+	real := reg.writeRecord
+	reg.writeRecord = func(path string, body []byte, beforeRename func() error) error {
+		// Everything mutate could check has already been checked by now.
+		if err := os.Remove(reg.lockPath()); err != nil {
+			return err
+		}
+		stolen, err := acquireLock(reg.lockPath(), secretFileMode, time.Second, 10*time.Millisecond)
+		if err != nil {
+			return err
+		}
+		defer stolen.release()
+		return real(path, body, beforeRename)
+	}
+
+	_, err := reg.Pair("second", PlatformIOS, "http://127.0.0.1:7777")
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("a publish whose lock was taken after the mutation returned %v, want ErrLocked", err)
+	}
+
+	reg.writeRecord = real
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("the refused publish still landed: registry holds %d devices", len(devices))
 	}
 }

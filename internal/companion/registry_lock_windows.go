@@ -74,7 +74,14 @@ func (l *lockFile) stillOwns() bool { return true }
 // the kernel drops the lock regardless of what CloseHandle reports.
 func (l *lockFile) release() { syscall.CloseHandle(l.handle) }
 
-// syncDir is a no-op. Windows cannot open a directory as a file for flushing,
-// and NTFS orders the metadata write that publishes a rename against the file
-// data itself, so there is no separate directory entry to flush.
+// syncDir is a no-op on Windows, and the honest description of what that costs
+// is short: a directory handle cannot be flushed through os.File here, so the
+// POSIX "fsync the parent after the rename" step has no equivalent to call.
+//
+// Durability of the rename therefore rests on NTFS journaling rather than on
+// anything this package does. That is a weaker promise than the POSIX path
+// gives — it is not an equivalent one, and no ordering guarantee is claimed
+// here that has not been measured. The file's own contents are still flushed
+// before the rename on every platform; it is only the directory entry that goes
+// unflushed.
 func syncDir(string) error { return nil }

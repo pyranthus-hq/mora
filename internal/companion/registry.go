@@ -141,6 +141,10 @@ var (
 	// identical in cost for an attacker: both are decided after the same
 	// constant-time comparison.
 	ErrPairingCode = errors.New("pairing code does not match")
+	// ErrRegistryTooLarge is returned when a mutation would write a record
+	// file that load would then refuse. It is a distinct error because the
+	// caller's remedy is to revoke a device, not to retry.
+	ErrRegistryTooLarge = errors.New("the device registry would exceed its size limit")
 	// ErrLocked is returned when another process held the registry lock for
 	// longer than lockTimeout, or when this process lost its own lock to the
 	// stale sweep before it could write.
@@ -167,6 +171,13 @@ type Registry struct {
 	stateDir  string
 	now       func() time.Time
 	entropy   io.Reader
+
+	// writeRecord publishes the record file. It is a field rather than a
+	// direct call so a test can fail the commit at the exact instant the
+	// receipt-ordering rules exist for — the moment between "the audit row is
+	// on disk" and "the state it describes is on disk". There is no exported
+	// way to replace it and production never does.
+	writeRecord func(path string, body []byte, beforeRename func() error) error
 }
 
 // RegistryOption injects a seam. Both seams exist for tests; production passes
@@ -195,7 +206,13 @@ func WithEntropy(src io.Reader) RegistryOption {
 // NewRegistry returns a registry over the given directories. Neither directory
 // has to exist yet; each is created, hardened and re-hardened on use.
 func NewRegistry(configDir, stateDir string, opts ...RegistryOption) *Registry {
-	r := &Registry{configDir: configDir, stateDir: stateDir, now: time.Now, entropy: rand.Reader}
+	r := &Registry{
+		configDir:   configDir,
+		stateDir:    stateDir,
+		now:         time.Now,
+		entropy:     rand.Reader,
+		writeRecord: writeSecretFile,
+	}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -339,7 +356,9 @@ func (r *Registry) Pair(label string, platform Platform, endpoint string) (Pairi
 				"revoke one with `mora companion revoke` before pairing another", len(f.Devices), MaxDevices)
 		}
 		f.Devices = append(f.Devices, rec)
-		return receipt{Event: "paired", DeviceID: deviceID, At: now}, nil
+		// After the commit: a `paired` row must never claim a device the
+		// record file does not carry.
+		return receipt{Event: "paired", DeviceID: deviceID, At: now, order: receiptAfterCommit}, nil
 	})
 	if err != nil {
 		return PairingPayload{}, err
@@ -393,7 +412,11 @@ func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err
 			// burn somebody else's pending pairing.
 			rec.PairingCodeFingerprint = ""
 			expiredCode = true
-			return receipt{Event: "expired", DeviceID: c.DeviceID, At: now}, nil
+			// After the commit, unlike the `confirmed` row below: burning a
+			// code mints nothing, so there is no holder to strand, and an
+			// `expired` row over a code the record file still shows as live
+			// would be the same false all-clear a premature `revoked` row is.
+			return receipt{Event: "expired", DeviceID: c.DeviceID, At: now, order: receiptAfterCommit}, nil
 		}
 
 		rec.State = DeviceActive
@@ -407,7 +430,10 @@ func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err
 		if err := dev.Validate(); err != nil {
 			return receipt{}, err
 		}
-		return receipt{Event: "confirmed", DeviceID: c.DeviceID, At: now}, nil
+		// Before the commit: this is the one event that hands its caller a
+		// secret, so a receipt failure must not leave the credential live. See
+		// mutate.
+		return receipt{Event: "confirmed", DeviceID: c.DeviceID, At: now, order: receiptBeforeCommit}, nil
 	})
 	if err != nil {
 		return "", Device{}, err
@@ -526,7 +552,9 @@ func (r *Registry) Revoke(deviceID string) (dev Device, changed bool, err error)
 		if err := dev.Validate(); err != nil {
 			return receipt{}, err
 		}
-		return receipt{Event: "revoked", DeviceID: deviceID, At: now}, nil
+		// After the commit. A `revoked` row that outlives a failed write tells
+		// an operator that access ended while the credential is still live.
+		return receipt{Event: "revoked", DeviceID: deviceID, At: now, order: receiptAfterCommit}, nil
 	})
 	if err != nil {
 		return Device{}, false, err
@@ -643,10 +671,12 @@ func (r *Registry) HostFingerprint() (string, error) {
 	if _, err := io.ReadFull(r.entropy, seed); err != nil {
 		return "", fmt.Errorf("companion: read entropy: %w", err)
 	}
-	if !held.stillOwns() {
-		return "", ErrLocked
-	}
-	if err := writeSecretFile(r.hostKeyPath(), seed); err != nil {
+	if err := writeSecretFile(r.hostKeyPath(), seed, func() error {
+		if !held.stillOwns() {
+			return ErrLocked
+		}
+		return nil
+	}); err != nil {
 		return "", err
 	}
 	return Fingerprint(string(seed)), nil
@@ -821,36 +851,72 @@ func (r *Registry) mutate(fn func(*registryFile) (receipt, error)) error {
 	if err != nil {
 		return err
 	}
-	if !held.stillOwns() {
-		// The lock file this holder locked is no longer the lock file the path
-		// names, so somebody unlinked it and a second writer is loose on a
-		// fresh inode. This snapshot may already be stale; refusing is the only
-		// answer that cannot lose their write.
-		return ErrLocked
-	}
 	f.Version = registryFileVersion
 	body, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
+	body = append(body, '\n')
+	// The size is checked here, on the way out, and not only on the way in.
+	// MaxDevices bounds the count and says nothing about the bytes: a registry
+	// well under both limits when it was written compactly can cross
+	// MaxRegistryBytes once it is re-indented and one more device is appended,
+	// and the result is a file this build will refuse to LOAD — a registry
+	// bricked by its own write. Refusing the write is the only outcome that
+	// leaves the vault readable.
+	if len(body) > MaxRegistryBytes {
+		return fmt.Errorf("%w: this change would write %d bytes, over the %d-byte limit; "+
+			"revoke a device with `mora companion revoke` first", ErrRegistryTooLarge, len(body), MaxRegistryBytes)
+	}
 
-	// The receipt is written BEFORE the record file, and the ordering is the
-	// difference between two failure modes that are not equally bad.
+	// stillOwns is checked immediately before each rename rather than once
+	// here, because a check here answers a question about a moment that has
+	// already passed by the time the rename runs. See writeSecretFile.
+	stillHolds := func() error {
+		if !held.stillOwns() {
+			return ErrLocked
+		}
+		return nil
+	}
+	commit := func() error { return r.writeRecord(r.filePath(), body, stillHolds) }
+
+	// Receipt ordering is PER EVENT, because the two orderings fail in opposite
+	// directions and there is no single safe choice. Two invariants have to
+	// hold, and they pull against each other whenever a write can half-fail:
 	//
-	// Confirm activates a token fingerprint and hands its caller the only copy
-	// of the token. If the record file committed and the receipt then failed,
-	// mutate would return an error, the caller would discard the token it was
-	// holding, and the vault would be left with an ACTIVE credential that
-	// nobody has — a device that can never authenticate and can only be found
-	// by reading devices.json. Writing the receipt first turns that into an
-	// audit row for an event that did not land, which is self-describing: the
-	// device it names does not exist.
-	if rcpt.Event != "" {
-		if err := r.writeReceipt(rcpt); err != nil {
+	//	(a) a receipt must never assert a state the record file does not hold;
+	//	(b) an active credential must never exist without a holder.
+	//
+	// Confirm is the only event that can break (b). It mints the bearer token,
+	// hands its caller the only copy, and marks the device active. Commit-first
+	// there means a receipt failure returns an error, the caller discards the
+	// token, and the vault keeps an ACTIVE credential nobody holds — invisible
+	// except by reading devices.json, and it authenticates nothing forever. So
+	// Confirm writes its receipt first and accepts the (a) residue: a
+	// `confirmed` row may exist for a device that is still pending. That row is
+	// harmless — the device it names has no credential, which is exactly what
+	// the record file says — and it is the deliberate trade, not an oversight.
+	//
+	// Every other event takes the opposite order, and Revoke is why. A
+	// `revoked` receipt written before the record file can outlive a failed
+	// commit and tell an operator that access ended while the credential is
+	// still live. That is the one audit lie that gets somebody hurt: a real
+	// revocation with no audit row is a bookkeeping gap, a fake revocation row
+	// over a live credential is a false all-clear. Commit-first makes the
+	// unaudited-but-real revocation the only failure available.
+	if rcpt.Event == "" {
+		return commit()
+	}
+	if rcpt.order == receiptBeforeCommit {
+		if err := r.writeReceipt(rcpt, stillHolds); err != nil {
 			return err
 		}
+		return commit()
 	}
-	return writeSecretFile(r.filePath(), append(body, '\n'))
+	if err := commit(); err != nil {
+		return err
+	}
+	return r.writeReceipt(rcpt, stillHolds)
 }
 
 // lockTimeout / lockPoll bound how long a caller waits for the write lock. The
@@ -873,16 +939,35 @@ func (r *Registry) lock() (*lockFile, error) {
 	return acquireLock(r.lockPath(), secretFileMode, lockTimeout, lockPoll)
 }
 
+// receiptOrder says whether an audit row is written before or after the record
+// file it describes. It is per-event, because the two orderings fail in
+// opposite directions and no single choice is safe for every event. See mutate.
+type receiptOrder int
+
+const (
+	// receiptAfterCommit is the default and the safe answer for anything that
+	// does not hand a secret to its caller. The worst case is a real change
+	// with no audit row.
+	receiptAfterCommit receiptOrder = iota
+	// receiptBeforeCommit is only for events that mint a credential.
+	receiptBeforeCommit
+)
+
 // receipt is one audit row. It names the device and the moment, never the
 // credential and never the payload, so the receipts directory stays safe to
 // include in a bug report.
+//
+// order is unexported and therefore never marshaled: it steers mutate, it is
+// not part of the row.
 type receipt struct {
 	Event    string `json:"event"`
 	DeviceID string `json:"device_id"`
 	At       string `json:"at"`
+
+	order receiptOrder
 }
 
-func (r *Registry) writeReceipt(rcpt receipt) error {
+func (r *Registry) writeReceipt(rcpt receipt, beforeRename func() error) error {
 	if err := os.MkdirAll(r.receiptDir(), secretDirMode); err != nil {
 		return err
 	}
@@ -905,7 +990,7 @@ func (r *Registry) writeReceipt(rcpt receipt) error {
 	// body.
 	stamp := strings.NewReplacer("-", "", ":", "").Replace(rcpt.At)
 	name := fmt.Sprintf("%s-%s-%s-%s.json", stamp, rcpt.Event, rcpt.DeviceID, suffix)
-	return writeSecretFile(filepath.Join(r.receiptDir(), name), append(body, '\n'))
+	return writeSecretFile(filepath.Join(r.receiptDir(), name), append(body, '\n'), beforeRename)
 }
 
 // schemaRegistryReceipt names the audit row. It is not one of the published
@@ -918,7 +1003,16 @@ const schemaRegistryReceipt = "mora.companion.registry.receipt"
 // The mode is set on the temporary file BEFORE the rename, not on the final
 // path after it: a chmod after rename leaves a window in which the secret is
 // world-readable, and that window is exactly when a watcher would look.
-func writeSecretFile(path string, body []byte) error {
+//
+// beforeRename, when non-nil, runs in the last instant before the rename
+// publishes the file, and a non-nil return aborts the write with nothing
+// published. Callers use it to re-assert that they still hold the write lock.
+// The position is the whole point: a lock check anywhere earlier answers a
+// question about a moment that has already passed by the time the rename runs,
+// which is the window the round-two review found. It narrows the window to the
+// gap between the check and one syscall; it does not close it, and nothing
+// pretends otherwise.
+func writeSecretFile(path string, body []byte, beforeRename func() error) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
@@ -941,6 +1035,11 @@ func writeSecretFile(path string, body []byte) error {
 	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+	if beforeRename != nil {
+		if err := beforeRename(); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return err

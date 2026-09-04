@@ -61,11 +61,27 @@ func acquireLock(path string, mode os.FileMode, timeout, poll time.Duration) (*l
 // stillOwns reports whether the lock this holder took is still the lock that
 // path names.
 //
-// Nothing in this package unlinks a lock file, but an operator, a backup
-// restore or a stray `rm` can. A flock follows the inode, so after an unlink
-// the holder keeps a lock on a file nobody can reach while the next caller
-// creates a fresh inode and locks that instead: two writers, no error. Fstat
-// against stat is what turns that into a refusal.
+// # Threat model, stated plainly
+//
+// This is BEST-EFFORT DETECTION, not a guarantee, and the distinction matters
+// enough to spell out.
+//
+// Nothing in this package ever unlinks a lock file. The case being detected is
+// therefore external: an operator, a backup restore, a `rm -rf` on a cache
+// directory, a cleaner script. Because the file lives under the user's own
+// ConfigDir, that actor runs as the same user and could equally well rewrite
+// devices.json directly — so this is not, and cannot be, a defense against a
+// hostile local process. It exists because a flock follows the INODE: after an
+// unlink the old holder still holds a lock on a file nobody can reach while the
+// next caller creates a fresh inode and locks that instead, and the result is
+// two writers with no error anywhere. Comparing the descriptor against the path
+// turns that silent case into a refusal.
+//
+// What it does not do is close the window. The check happens immediately before
+// the rename, which is as late as it can be, and an unlink landing between that
+// check and the rename syscall is still undetected. That residue is accepted:
+// shrinking it further requires a lock the filesystem enforces on the rename
+// itself, which no portable API offers.
 func (l *lockFile) stillOwns() bool {
 	held, err := l.fh.Stat()
 	if err != nil {
