@@ -259,7 +259,7 @@ Stated plainly, so nobody reads a shape here as an approved mechanism.
   (`TestLoopbackEndpointCannotBeSpoofed`).
 - **Transport, listener, and device registry are not here.** The narrow loopback listener is graph
   node N12, the registry and `mora companion pair/list/revoke/status` are N11, governed capture and
-  durable idempotency are N21, and the Tailscale Serve boundary is N22. This package is types,
+  durable idempotency are N21 (§14), and the Tailscale Serve boundary is N22. This package is types,
   bounds, and validation only.
 - **The async lane's transport is undecided** — encrypted relay against replica-read is a Wave 3
   decision. The envelope in §9 is what both options carry, which is why it is content-free.
@@ -288,11 +288,17 @@ and `TestGenericLoopbackAPIRefusesADeviceToken` prove both directions.
 | `GET` | `/v1/companion/today` | `mora.companion.today` |
 | `POST` | `/v1/companion/context` | `mora.companion.context.request` in, `mora.companion.context` out |
 | `GET` | `/v1/companion/health` | `mora.companion.health` |
+| `POST` | `/v1/companion/captures` | `mora.companion.capture` in, `mora.companion.receipt` out |
 
 That is the whole allowlist, and it is a table in one file rather than a series of registrations, so
-a test can walk it. There is no `/call`, no delete, no sync, no connector command, no configuration
-write and no read-a-memory-by-id route: a device that can name a memory id can enumerate the vault,
-and a device that can name a tool has the generic API back under a different name.
+a test can walk it (`TestServerServesExactlyFourRoutes`). There is no `/call`, no delete, no sync, no
+connector command, no configuration write and no read-a-memory-by-id route: a device that can name a
+memory id can enumerate the vault, and a device that can name a tool has the generic API back under a
+different name.
+
+The capture route is the ONE write, added by N21 and covered in §14. There is deliberately no
+`GET /v1/companion/receipts`: this contract publishes a receipt schema and no list-response schema
+for one, so a listing route would have to invent an envelope. It is a later node's to add.
 
 ### What the listener refuses
 
@@ -383,3 +389,99 @@ fails and can only be made by editing a test — which is the reviewable act it 
 
 Swift decodes the same documents, byte for byte, under graph node N14. A fixture only Go can read
 proves nothing.
+
+## 14. Governed capture (N21)
+
+`POST /v1/companion/captures` is the only route on this listener that changes the vault. Everything
+below is enforced by a named test in `internal/companion/capture_test.go`,
+`internal/companion/idempotency_test.go` or `internal/mora/companion_capture_test.go`.
+
+### The policy is the gate, and the phone never holds the lever
+
+The write policy is read from the vault's own configuration **on every request** — not captured when
+the listener started, so `mora config mcp-write-policy readonly` takes effect without a restart
+(`TestCompanionCapturePolicyIsReadPerRequest`). It is not a field on the capture, not a header, and
+not a query parameter. The outcome is §8's table, and `Receipt.Validate` refuses any receipt that
+describes an outcome its policy could not have produced.
+
+| Policy | Receipt | What is on disk afterwards |
+|---|---|---|
+| `readonly` | `rejected`, `reason: policy`, `settled_at` set | nothing: no memory and no staged proposal |
+| `propose` | `accepted`, no `memory_id`, **no `settled_at`** | one entry in the same pending queue `mora mcp proposals` lists |
+| `open` | `applied`, `memory_id` and `settled_at` set | one memory in the vault |
+
+`accepted` carries no `settled_at` on purpose: the capture is waiting for a human at the Mac, and
+stamping it settled would say the question is closed.
+
+**`applied` is a statement about the vault, not about the request.** The state flips only after the
+kernel's governed write path returns — the same path `mora write` and MCP `write_memory` use, through
+`createMemory`'s create-exclusive publish. The listener opens no second door into the vault, which is
+why the pending-op marker, the index upsert and the authored-write reconciliation all still happen
+for a phone capture.
+
+The kernel stamps the provenance: `source` is `companion`, the type is an insight, and the title is
+derived from the text. `scope` is the device's, because the schema already restricts it to `personal`
+or `project:<name>`.
+
+### Idempotency
+
+Every capture carries a device-generated `idempotency_key`. The reservation for that key is written,
+fsynced and renamed into place **before** the kernel is asked to write anything:
+
+```
+reserve (durable)  ->  vault write  ->  settle the receipt (durable)
+```
+
+That ordering is the whole design. Reserving after the write would mean a crash in between leaves a
+memory nothing points at, so the phone's retry writes a second one.
+
+| Case | Answer |
+|---|---|
+| same key, same `payload_fingerprint` | the **same receipt bytes** — returned from storage, same `receipt_id` |
+| same key, different `payload_fingerprint` | `rejected`, `reason: idempotency_conflict`; the first payload keeps the key |
+| same key, concurrently | one caller wins the claim; the others wait and read the settled receipt, or get `503 in_flight` |
+| same key, after a crash before the write | the retry completes the reservation — one applied receipt, one memory |
+| same key, after a process restart | the same answers: the reservation is a file, not memory |
+
+Reservations live at `<state>/companion/captures/<device_id>/<digest>.json`, 0600 inside 0700, with
+the same atomic-write-and-fsync discipline as the device registry. **The key space is per device**, so
+two devices choosing one key never collide and no device can read another's receipt by guessing its
+key. The filename is a digest of the key rather than the key itself.
+
+The store is bounded three ways — `MaxReservations` (512), `ReservationTTL` (7 days), and a
+per-record read bound — so a device that keeps talking cannot grow it without limit. Pruning drops
+expired entries first, then the oldest **settled** ones: a settled entry is pure idempotency memory,
+while a pending one is what stops a duplicate right now.
+
+**What this does not promise.** There is a window between the vault publication and the settle write.
+A process killed inside it leaves a `pending` reservation over a memory that does exist, and a retry
+past the takeover window writes a second one. Closing it would mean the vault write itself carrying
+the idempotency key, which is a change to the kernel's write path rather than to this listener. The
+window is one fsync wide and it is stated rather than papered over.
+
+### Status codes
+
+Every **decodable** capture answers `200` with a receipt, rejections included. That is §11's rule
+applied to a write: the status code says whether the request was served, the body says what happened
+to the vault. `4xx` and `5xx` are reserved for the cases where there is no receipt to give — no
+credential (`401`, opaque), an oversize body (`413`), a body that does not decode (`400`, carrying the
+schema code and never the value), a busy or unreachable kernel (`503`, with `Retry-After`).
+
+### What a capture may not do
+
+- **Claim another device.** `device_id` is compared against the authenticated device and the receipt
+  is stamped with the authenticated one. A mismatch is `rejected: unknown_device` and never reaches
+  the vault.
+- **Reach a lane this build cannot execute.** v1 serves `intent: remember` only; `ask` is the context
+  route and `investigate` is the async lane, which has no worker yet. Both are
+  `rejected: unsupported_lane`.
+- **Echo its payload back.** A receipt is identifiers, a state, a policy, a fingerprint and two
+  timestamps. `TestCaptureReceiptNeverEchoesThePayload` drives the real handler and fails on any word
+  of the capture appearing in the response.
+- **Outlive its revocation.** A revoked device gets the same opaque `401` as every other credential
+  failure, so a reservation it left pending is never completed by anyone.
+- **Escape the tighter bound.** Capture caps its body at `MaxCaptureBytes` (24 KiB), not at the
+  guard chain's `MaxRequestBytes` (64 KiB).
+
+Capture goes through the same one-at-a-time work budget every read does, and stamps `last_seen_at`
+only on a `2xx` — a last-seen stamp records that a device was served.

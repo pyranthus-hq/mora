@@ -40,6 +40,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/companion"
 	healthpkg "github.com/pyranthus-hq/mora/internal/health"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	synthesispkg "github.com/pyranthus-hq/mora/internal/synthesis"
 )
 
@@ -87,11 +88,13 @@ func cmdCompanionServe(ctx context.Context, args []string, stdout io.Writer) err
 		return err
 	}
 	srv, err := companion.NewServer(companion.ServerOptions{
-		Addr:    fmt.Sprintf("%s:%d", companion.LoopbackHost, *port),
-		Devices: reg,
-		Reader:  newCompanionReader(cfg),
-		Now:     cfg.OperationClock,
-		Log:     stdout,
+		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, *port),
+		Devices:  reg,
+		Reader:   newCompanionReader(cfg),
+		Writer:   newCompanionWriter(),
+		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),
+		Now:      cfg.OperationClock,
+		Log:      stdout,
 	})
 	if err != nil {
 		return err
@@ -428,6 +431,168 @@ func (k *companionReader) meetingContext(ctx context.Context, req companion.Cont
 	}
 	return evidence, gaps, nil
 }
+
+// ---------------------------------------------------------------------------
+// The kernel writer
+// ---------------------------------------------------------------------------
+
+// companionWriter implements companion.Writer: the one path by which a phone can
+// change the vault (graph node N21).
+//
+// # It opens no second door
+//
+// Publish dispatches through mcppkg.MutationAction and then through the SAME two
+// destinations the MCP write_memory tool uses — stageMCPWriteProposal for
+// `propose`, mcpWriteMemory for `open` — which in turn use createMemory, the
+// create-exclusive publish `mora write` uses. Nothing here touches the vault
+// directly. That matters beyond tidiness: the governed write path is where the
+// pending-op marker, the index upsert and the authored-write reconciliation
+// live, and a listener that wrote its own file would produce a memory the index
+// never learns about.
+//
+// The policy interpretation is mcppkg.MutationAction's and is not restated here.
+// N21 consumes the write policy; it does not own it.
+//
+// # The config is re-read per request
+//
+// Not captured at startup. An operator who runs `mora config mcp-write-policy
+// readonly` while the listener is up has made a security decision, and a
+// listener that answered from a policy it read at boot would keep accepting
+// captures until someone restarted it.
+//
+// # The read-only marker is deliberately NOT set
+//
+// companionKernelContext marks every READ this listener makes as "answer from
+// what exists, never repair", because a repair is minutes of disk reachable from
+// one request. Capture is the exception by definition: it is a write, it is
+// governed by the vault's own policy, and marking it read-only would make the
+// one authorized mutation refuse itself.
+type companionWriter struct{}
+
+func newCompanionWriter() *companionWriter { return &companionWriter{} }
+
+// Policy reports the vault's current write policy.
+func (w *companionWriter) Policy(ctx context.Context) (companion.WritePolicy, error) {
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return "", err
+	}
+	return companionWritePolicy(cfg), nil
+}
+
+// Publish runs one capture through the kernel's governed write path and reports
+// what actually happened to the vault.
+func (w *companionWriter) Publish(ctx context.Context, c companion.Capture) (companion.WriteOutcome, error) {
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return companion.WriteOutcome{}, err
+	}
+	policy := configMCPWritePolicy(cfg)
+	out := companion.WriteOutcome{Policy: companion.WritePolicy(policy)}
+
+	action, _ := mcppkg.MutationAction(policy, "write_memory")
+	switch action {
+	case mcppkg.ActionRefuse:
+		// readonly. Nothing is staged and nothing is written, so the refusal is
+		// terminal and carries the published policy reason.
+		out.State = companion.ReceiptRejected
+		out.Reason = companion.ReasonPolicy
+		return out, nil
+	case mcppkg.ActionPropose:
+		// propose. The capture is staged in the same pending queue
+		// `mora mcp proposals` already lists and approves, so a phone capture and
+		// an agent write wait in one place under one review. Nothing is in the
+		// vault, which is exactly what an `accepted` receipt claims.
+		if _, err := stageMCPWriteProposal(cfg, companionWriteArgs(c)); err != nil {
+			return companion.WriteOutcome{}, err
+		}
+		out.State = companion.ReceiptAccepted
+		return out, nil
+	}
+
+	// open. The receipt flips to applied only on the far side of this call: it
+	// returns after createMemory's create-exclusive publish has landed the file,
+	// so `applied` is a statement about the vault and not about the request.
+	result, err := mcpWriteMemory(ctx, cfg, companionWriteArgs(c))
+	if err != nil {
+		return companion.WriteOutcome{}, err
+	}
+	memory, ok := companionWrittenMemory(result)
+	if !ok {
+		// The write path answered in a shape this function does not understand.
+		// Reporting applied without a memory id would be the one claim a receipt
+		// may never make, and Receipt.Validate would refuse it anyway.
+		return companion.WriteOutcome{}, fmt.Errorf("companion capture: the governed write path returned no memory")
+	}
+	out.State = companion.ReceiptApplied
+	out.MemoryID = companionOpaqueID(companion.PrefixMemory, memory.ID)
+	return out, nil
+}
+
+// companionWrittenMemory pulls the saved memory out of the governed write path's
+// result. Both of that path's success shapes — the plain one and the
+// index-degraded one — carry it under the same key, which is why the degraded
+// case is still an applied receipt: the vault has the memory, and only the
+// derived index is behind.
+func companionWrittenMemory(result any) (Memory, bool) {
+	wrapped, ok := result.(map[string]any)
+	if !ok {
+		return Memory{}, false
+	}
+	memory, ok := wrapped["memory"].(Memory)
+	if !ok || memory.ID == "" {
+		return Memory{}, false
+	}
+	return memory, true
+}
+
+// companionWriteArgs shapes a capture as a write_memory request.
+//
+// Three fields are stamped by the kernel and are NOT readable from the capture:
+//
+//   - source is "companion", always. It is the provenance an operator reads to
+//     know a memory came from a phone, and a device that could set it could
+//     make its writes look like the CLI's.
+//   - type is an insight. A phone captures a note; the decision fields carry
+//     validity semantics the companion contract does not model, and letting a
+//     device reach them would put half a decision record on the wire.
+//   - title is derived from the text rather than supplied, because the capture
+//     schema has no title and inventing a second free-text field on the wire is
+//     how a bounded contract stops being bounded.
+//
+// scope IS the device's, because it is the one placement decision the phone is
+// entitled to make, and the schema already restricts it to "personal" or
+// "project:<name>" — a device cannot name a source or reach another vault.
+func companionWriteArgs(c companion.Capture) map[string]any {
+	return map[string]any{
+		"scope":  c.Scope,
+		"type":   "insight",
+		"title":  companionCaptureTitle(c.Text),
+		"text":   c.Text,
+		"source": companion.OriginCompanion,
+	}
+}
+
+// companionCaptureTitle derives a bounded title from the captured text.
+//
+// It is the first non-empty line, truncated on a rune boundary. A capture with
+// nothing but whitespace cannot occur — the schema requires text — but a capture
+// whose first line is whitespace can, so the fallback is a fixed string rather
+// than an empty title the write path would refuse.
+func companionCaptureTitle(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		return companionText(trimmed, companionCaptureTitleBytes)
+	}
+	return "Captured note"
+}
+
+// companionCaptureTitleBytes bounds a derived title. It is well under the
+// vault's own limits and short enough to read in a list.
+const companionCaptureTitleBytes = 120
 
 // ---------------------------------------------------------------------------
 // Today assembly
