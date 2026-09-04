@@ -27,7 +27,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -452,7 +451,11 @@ type companionExposePayload struct {
 	ListenCommand []string `json:"listen_command"`
 	ServeCommand  []string `json:"serve_command"`
 	OffCommand    []string `json:"off_command"`
-	ResetCommand  []string `json:"reset_command"`
+	// ResetCommand is carried because a caller may need it, and it is the ONLY
+	// command here that is not safe to run blind: it removes every serve mapping
+	// on the node, including ones another tool created. The human rendering
+	// prints it as a warning rather than as a step.
+	ResetCommand []string `json:"reset_command"`
 }
 
 func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) error {
@@ -578,9 +581,11 @@ func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) er
 	fmt.Fprintf(stdout, "  %s\n", shellLine(out.ListenCommand))
 	fmt.Fprintf(stdout, "  %s\n", shellLine(out.ServeCommand))
 	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Stop publishing:")
+	fmt.Fprintln(stdout, "Stop publishing this listener:")
 	fmt.Fprintf(stdout, "  %s\n", shellLine(out.OffCommand))
-	fmt.Fprintf(stdout, "  %s   (removes every mapping, not just this one)\n", shellLine(out.ResetCommand))
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "Warning: %s removes EVERY serve mapping on this node, including ones\n", shellLine(out.ResetCommand))
+	fmt.Fprintln(stdout, "another tool put there. Use the targeted off command above unless you mean all of them.")
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "--allow-host is what makes this work: Serve forwards the client's Host header unchanged,")
 	fmt.Fprintln(stdout, "and the listener refuses any Host but 127.0.0.1 unless you name the published one exactly.")
@@ -589,16 +594,24 @@ func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) er
 	return nil
 }
 
-// shellLine renders an argv for a human to paste. It quotes only what a shell
-// would otherwise split, so the common case reads as the command it is.
+// shellLine renders an argv for a human to paste.
+//
+// EVERY argument is wrapped in POSIX single quotes, including ones that need no
+// quoting at all. That is deliberate and it is a safety property rather than a
+// style: inside single quotes a POSIX shell interprets nothing — no `;`, no
+// `$`, no backtick, no newline — so a printed line can only ever be ONE command
+// with literal arguments. Quoting "only what a shell would otherwise split" was
+// the previous shape and was wrong, because it made the safety of the printed
+// line depend on the caller having validated its inputs. It now depends on
+// nothing: a future bug that lets `node.example;id` reach this function prints
+// an argument containing a semicolon, not a second command.
+//
+// A literal single quote is closed, escaped and reopened ('\”) because it is
+// the one byte that cannot appear inside single quotes.
 func shellLine(argv []string) string {
 	parts := make([]string, 0, len(argv))
 	for _, a := range argv {
-		if a == "" || strings.ContainsAny(a, " \t\"'\\$`") {
-			parts = append(parts, strconv.Quote(a))
-			continue
-		}
-		parts = append(parts, a)
+		parts = append(parts, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
 	}
 	return strings.Join(parts, " ")
 }

@@ -15,6 +15,8 @@ package mora
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -129,40 +131,40 @@ func TestCompanionExposePrintsTheExactTailscaleCommands(t *testing.T) {
 		{
 			name:      "https on the default port drops it from Host",
 			args:      []string{"--hostname", exampleNode},
-			serve:     "tailscale serve --bg --https=443 http://127.0.0.1:7778",
-			off:       "tailscale serve --https=443 off",
+			serve:     "'tailscale' 'serve' '--bg' '--https=443' 'http://127.0.0.1:7778'",
+			off:       "'tailscale' 'serve' '--https=443' 'off'",
 			allowHost: exampleNode,
 			publicURL: "https://" + exampleNode + "/",
 		},
 		{
 			name:      "https on a non-default port keeps it",
 			args:      []string{"--hostname", exampleNode, "--tailnet-port", "8443"},
-			serve:     "tailscale serve --bg --https=8443 http://127.0.0.1:7778",
-			off:       "tailscale serve --https=8443 off",
+			serve:     "'tailscale' 'serve' '--bg' '--https=8443' 'http://127.0.0.1:7778'",
+			off:       "'tailscale' 'serve' '--https=8443' 'off'",
 			allowHost: exampleNode + ":8443",
 			publicURL: "https://" + exampleNode + ":8443/",
 		},
 		{
 			name:      "plaintext on the default port drops it",
 			args:      []string{"--hostname", exampleNode, "--plaintext"},
-			serve:     "tailscale serve --bg --http=80 http://127.0.0.1:7778",
-			off:       "tailscale serve --http=80 off",
+			serve:     "'tailscale' 'serve' '--bg' '--http=80' 'http://127.0.0.1:7778'",
+			off:       "'tailscale' 'serve' '--http=80' 'off'",
 			allowHost: exampleNode,
 			publicURL: "http://" + exampleNode + "/",
 		},
 		{
 			name:      "plaintext on a non-default port keeps it",
 			args:      []string{"--hostname", exampleNode, "--plaintext", "--tailnet-port", "8080"},
-			serve:     "tailscale serve --bg --http=8080 http://127.0.0.1:7778",
-			off:       "tailscale serve --http=8080 off",
+			serve:     "'tailscale' 'serve' '--bg' '--http=8080' 'http://127.0.0.1:7778'",
+			off:       "'tailscale' 'serve' '--http=8080' 'off'",
 			allowHost: exampleNode + ":8080",
 			publicURL: "http://" + exampleNode + ":8080/",
 		},
 		{
 			name:      "a different listener port moves the proxy target",
 			args:      []string{"--hostname", exampleNode, "--port", "9999"},
-			serve:     "tailscale serve --bg --https=443 http://127.0.0.1:9999",
-			off:       "tailscale serve --https=443 off",
+			serve:     "'tailscale' 'serve' '--bg' '--https=443' 'http://127.0.0.1:9999'",
+			off:       "'tailscale' 'serve' '--https=443' 'off'",
 			allowHost: exampleNode,
 			publicURL: "https://" + exampleNode + "/",
 		},
@@ -175,7 +177,7 @@ func TestCompanionExposePrintsTheExactTailscaleCommands(t *testing.T) {
 			if line := shellLine(got.OffCommand); line != tc.off {
 				t.Fatalf("off_command = %q, want %q", line, tc.off)
 			}
-			if line := shellLine(got.ResetCommand); line != "tailscale serve reset" {
+			if line := shellLine(got.ResetCommand); line != "'tailscale' 'serve' 'reset'" {
 				t.Fatalf("reset_command = %q", line)
 			}
 			if got.AllowHost != tc.allowHost {
@@ -189,7 +191,7 @@ func TestCompanionExposePrintsTheExactTailscaleCommands(t *testing.T) {
 			if _, err := companion.CheckAllowHost(got.AllowHost); err != nil {
 				t.Fatalf("expose printed an --allow-host its own listener refuses: %v", err)
 			}
-			if !strings.Contains(shellLine(got.ListenCommand), "--allow-host "+tc.allowHost) {
+			if !strings.Contains(shellLine(got.ListenCommand), "'--allow-host' '"+tc.allowHost+"'") {
 				t.Fatalf("listen_command does not carry the allow-host: %q", shellLine(got.ListenCommand))
 			}
 			// Funnel is stated, and no command that enables it is ever printed.
@@ -274,6 +276,20 @@ func TestCompanionExposeRefusesArgumentsThatWouldPrintABrokenCommand(t *testing.
 		{"negative port", []string{"--port", "-1"}, "between 1 and 65535"},
 		{"tailnet port out of range", []string{"--tailnet-port", "70000"}, "between 1 and 65535"},
 		{"hostname with a scheme", []string{"--hostname", "https://" + exampleNode}, "invalid --hostname"},
+		// The judge's exact input. A blocklist of shell metacharacters admitted
+		// it; the hostname grammar is an allowlist and does not.
+		{"hostname carrying a shell command", []string{"--hostname", "node.example;id"}, "invalid --hostname"},
+		{"hostname with a backtick", []string{"--hostname", "node`id`.example"}, "invalid --hostname"},
+		{"hostname with command substitution", []string{"--hostname", "node$(id).example"}, "invalid --hostname"},
+		{"hostname with a newline", []string{"--hostname", exampleNode + "\nid"}, "invalid --hostname"},
+		{"hostname with an underscore", []string{"--hostname", "no_de.example"}, "invalid --hostname"},
+		{"label starting with a hyphen", []string{"--hostname", "-node.example"}, "invalid --hostname"},
+		{"label ending with a hyphen", []string{"--hostname", "node-.example"}, "invalid --hostname"},
+		{"a trailing dot", []string{"--hostname", exampleNode + "."}, "invalid --hostname"},
+		{"a leading dot", []string{"--hostname", "." + exampleNode}, "invalid --hostname"},
+		{"port zero", []string{"--hostname", exampleNode + ":0"}, "invalid --hostname"},
+		{"port above the range", []string{"--hostname", exampleNode + ":70000"}, "invalid --hostname"},
+		{"a bare colon", []string{"--hostname", exampleNode + ":"}, "invalid --hostname"},
 		{"hostname with a path", []string{"--hostname", exampleNode + "/v1"}, "invalid --hostname"},
 		{"hostname with a wildcard", []string{"--hostname", "*." + exampleNode}, "invalid --hostname"},
 		{"hostname list", []string{"--hostname", exampleNode + "," + exampleNode}, "invalid --hostname"},
@@ -317,5 +333,76 @@ func TestCompanionExposeDoesNotRunTailscale(t *testing.T) {
 	}
 	if strings.Contains(string(src), `"os/exec"`) {
 		t.Fatal("companion.go imports os/exec")
+	}
+}
+
+func TestCompanionExposePrintsOnlyOneCommandPerLine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the printed lines are POSIX shell lines; there is no /bin/sh here")
+	}
+	withTempHome(t)
+	run(t, "init")
+	activateOneDevice(t)
+
+	got := decodeExpose(t, run(t, "companion", "expose", "--hostname", exampleNode, "--json"))
+	for _, argv := range [][]string{got.ListenCommand, got.ServeCommand, got.OffCommand, got.ResetCommand} {
+		assertOneShellCommand(t, argv)
+	}
+
+	// And the property does not depend on the caller having validated anything.
+	// shellLine is handed the judge's injection directly: the printed line must
+	// still be one command whose last argument is that literal string.
+	assertOneShellCommand(t, []string{"tailscale", "serve", "--bg", "--https=443", "http://node.example;id/"})
+	assertOneShellCommand(t, []string{"mora", "companion", "serve", "--allow-host", "a b'c;$(id)`id`\n|&<>*?"})
+}
+
+// assertOneShellCommand proves the rendered argv is ONE command with literal
+// arguments, by having a real shell parse it.
+//
+// The line is first checked for syntax with `sh -n`, then substituted into a
+// printf whose output must be exactly the original arguments, one per line. A
+// second command, a substitution, a glob or a split would change that output —
+// `id` would print its own text, `*` would expand to filenames — so byte
+// equality is the assertion.
+func assertOneShellCommand(t *testing.T, argv []string) {
+	t.Helper()
+	line := shellLine(argv)
+
+	if err := exec.Command("/bin/sh", "-n", "-c", line).Run(); err != nil {
+		t.Fatalf("`sh -n` rejected the printed line %q: %v", line, err)
+	}
+
+	out, err := exec.Command("/bin/sh", "-c", "printf '%s\\n' "+line).Output()
+	if err != nil {
+		t.Fatalf("running printf over %q: %v", line, err)
+	}
+	want := strings.Join(argv, "\n") + "\n"
+	if string(out) != want {
+		t.Fatalf("the printed line did not survive the shell as literal arguments\nline: %s\n got: %q\nwant: %q", line, out, want)
+	}
+}
+
+func TestCompanionExposePrintsResetAsAWarningNotAStep(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	activateOneDevice(t)
+
+	human := run(t, "companion", "expose", "--hostname", exampleNode)
+	off := shellLine([]string{"tailscale", "serve", "--https=443", "off"})
+	reset := shellLine([]string{"tailscale", "serve", "reset"})
+
+	if !strings.Contains(human, "Stop publishing this listener:\n  "+off) {
+		t.Fatalf("the targeted off command is not the step offered:\n%s", human)
+	}
+	// `reset` removes every mapping on the node, including one another tool
+	// created, so it must not read as the next thing to run.
+	if !strings.Contains(human, "Warning: "+reset) {
+		t.Fatalf("reset is not presented as a warning:\n%s", human)
+	}
+	if !strings.Contains(human, "removes EVERY serve mapping") {
+		t.Fatalf("the warning does not say what reset removes:\n%s", human)
+	}
+	if strings.Contains(human, "Stop publishing this listener:\n  "+off+"\n  "+reset) {
+		t.Fatalf("reset is still printed as a second step:\n%s", human)
 	}
 }

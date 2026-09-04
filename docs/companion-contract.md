@@ -350,8 +350,17 @@ pins the table.
 ### Publishing it to a tailnet (N22)
 
 `mora companion expose` prints the exact commands that publish the loopback listener over the
-tailnet, and prints nothing else. It never runs `tailscale`, never reads the tailnet, and never
-prints a token, a pairing code or a fingerprint — it reads the registry's COUNTS and nothing more.
+tailnet. What it prints is: the resolved listener URL, the public URL, the `--allow-host` value, the
+count of active devices, `funnel: off`, the two commands to run in order, the targeted command that
+stops publishing, a warning about `tailscale serve reset`, and a short explanation of why
+`--allow-host` is needed. What it does **not** print is any secret: it never runs `tailscale`, never
+reads the tailnet, and never prints a token, a pairing code or a fingerprint — it reads the
+registry's COUNTS and nothing more.
+
+Every argument in every printed command is wrapped in POSIX single quotes, including arguments that
+need no quoting. Inside single quotes a POSIX shell interprets nothing, so a printed line can only
+ever be one command with literal arguments. That is a safety property rather than a style: it holds
+even if a future change lets an unvalidated value reach the renderer.
 
 ```
 mora companion expose --hostname <this Mac's tailnet name>
@@ -363,15 +372,18 @@ tailnet for no one. A device that has been paired but not yet confirmed does not
 listener answers 401 to everything it sends. With a listener port of zero it exits non-zero rather
 than printing a command containing `:0`.
 
-The output is two commands, in order, plus their undo:
+The output is two commands, in order, plus the targeted command that undoes them:
 
 ```
-mora companion serve --port 7778 --allow-host <NAME>
-tailscale serve --bg --https=443 http://127.0.0.1:7778
+'mora' 'companion' 'serve' '--port' '7778' '--allow-host' '<NAME>'
+'tailscale' 'serve' '--bg' '--https=443' 'http://127.0.0.1:7778'
 
-tailscale serve --https=443 off
-tailscale serve reset
+'tailscale' 'serve' '--https=443' 'off'
 ```
+
+`tailscale serve reset` is printed as a **warning**, not as a step. It removes every serve mapping on
+the node, including one another tool created, so it is the wrong instrument for undoing this
+publication and the targeted `off` above is the right one.
 
 No Funnel command is ever printed. Funnel publishes to the public internet, and nothing in this
 contract is meant to leave the tailnet. `expose` states `funnel: off` rather than omitting it, so a
@@ -398,10 +410,15 @@ three product-breaking findings, and it is confirmed rather than theoretical.
 `--allow-host` is the whole fix, and it is deliberately the smallest one:
 
 - **Opt-in.** Empty is the default and means the loopback-only behaviour is unchanged, byte for byte.
-- **One value.** One exact `host` or `host:port`, compared case-insensitively against `Host` as a
-  whole string. No wildcard, no suffix rule, no list. Anything else is refused at startup with a
-  named error, so a value that could never match is a failure to start rather than a 403 an operator
-  debugs against a phone.
+- **One value, and it must be a DNS name.** The grammar is an ALLOWLIST, not a list of forbidden
+  characters: `<RFC 1123 hostname>[:port]` or `[<IPv6 literal>][:port]`, where a hostname is at most
+  253 characters of dot-separated labels, a label is 1 to 63 ASCII letters, digits and hyphens and
+  may not begin or end with one, and a port is 1 to 65535. A scheme, a path, a space, userinfo, a
+  wildcard, a comma, a trailing dot or a shell metacharacter is refused **before** any value reaches
+  a command line or a `Host` comparison — a blocklist was the first shape and was wrong, because it
+  admitted `node.example;id`. The value is compared case-insensitively against `Host` as a whole
+  string: no suffix rule, no list. A value that could never match is a failure to START rather than a
+  403 an operator debugs against a phone.
 - **Still loopback-only at the socket.** The bind is unchanged and still refuses any address but
   `127.0.0.1`.
 - **Still loopback-only at the peer.** A request carrying the published name is admitted only when
@@ -447,18 +464,33 @@ request arrived over loopback or through Serve.
 `scripts/companion-network-audit.sh` runs against a live `mora companion serve` plus a live
 `tailscale serve` and proves the boundary rather than asserting it:
 
-| Probe | What it proves |
-|---|---|
-| A | the listening socket is `127.0.0.1:<port>` and nothing else |
-| B | exactly one Serve mapping, it targets this listener, and Funnel is off |
-| C | a tailnet request reaches the listener; this Mac's LAN address refuses the connection |
-| D | the log holds no token, pairing code, prompt, answer, vault text or device id |
-| E | the peer the listener sees is loopback (the throttle finding above), with a no-`--allow-host` control that returns `403 forbidden_host` |
+| Probe | What it proves | Runs today |
+|---|---|---|
+| A | the listening socket is `127.0.0.1:<port>` and nothing else | yes |
+| B | exactly one Serve handler, it proxies to this listener, no raw TCP forward, Funnel off — read from `tailscale serve status --json` and parsed structurally | yes |
+| C1 | a tailnet request reaches the listener and gets the opaque 401 | yes |
+| C2 | **every** non-loopback address on **every** interface refuses the connection | yes |
+| D1 | the log holds no bearer token, no pairing code and no device id, all of which the session really sent | yes |
+| D2 | the log does not name the published host | yes |
+| D3 | after a served, decoded request the log still holds no prompt, answer or vault text | **BLOCKED** |
+| D4 | an authenticated route call is served (200) and its projection decodes | **BLOCKED** |
+| E | the peer the listener sees is loopback (the throttle finding above), with a no-`--allow-host` control that returns `403 forbidden_host` | yes |
+
+A probe is PASS, FAIL or **BLOCKED**, and BLOCKED is the honest answer to a claim nothing exercised.
+D3 and D4 are blocked today: `Registry.Confirm` has no production caller, so no device can reach the
+ACTIVE state, every request the script can make is refused at the auth guard, and nothing decodes a
+body, runs retrieval or produces an answer. Their absence from the log would therefore prove nothing.
+Any blocked probe makes the final verdict **PARTIAL**, which is not PASS and exits 3.
+
+There is deliberately no Mac-side shortcut that confirms a pairing to unblock them. A pairing is
+proven by the phone with its one-time code; the kernel-side confirm route is a separate node. A local
+backdoor would fake the exact evidence this audit exists to collect.
 
 Every probe fails closed: a missing tool, an empty command output or an unparseable line is a FAIL,
-never a skip. `--self-test` drives the same probe logic against fixtures that must fail — including a
-real listener bound to `0.0.0.0` and a log line containing the session token — so a probe that has
-stopped checking anything cannot report PASS.
+never a skip. `--self-test` drives the same probe functions against fixtures that must fail —
+including a real listener bound to `0.0.0.0`, a log line containing the session token, a registry
+holding only a pending device, and the counter set `(8 passed, 0 failed, 2 blocked)` which must
+render PARTIAL and never PASS.
 
 
 ## 12. Notes for Wave 1

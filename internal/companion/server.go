@@ -431,49 +431,126 @@ func peerIsLoopback(remoteAddr string) bool {
 // listener will apply. A command that prints a value its own listener would
 // refuse is worse than one that refuses to print.
 //
-// It refuses anything that is not a single host or host:port: no scheme, no
-// path, no wildcard, no comma-separated list, no whitespace. It also refuses a
-// value that merely restates the loopback host, because that is already allowed
-// and accepting it would suggest the field does something it does not.
+// The grammar is an ALLOWLIST, not a list of forbidden characters. A published
+// host is a DNS name and nothing else, so this accepts exactly:
+//
+//	<RFC 1123 hostname>[:port]
+//	[<IPv6 literal>][:port]
+//
+// A hostname is at most 253 characters of dot-separated labels; a label is 1 to
+// 63 characters of ASCII letters, digits and hyphens and may not begin or end
+// with a hyphen. A port is 1 to 65535. Everything else — a scheme, a path, a
+// space, userinfo, a wildcard, a comma, a trailing dot, a shell metacharacter —
+// is refused here, before any value reaches a command line or a Host
+// comparison. A blocklist was the previous shape and was wrong: it admitted
+// `node.example;id`, which `mora companion expose` would then print inside a
+// command an operator pastes into a shell.
 func CheckAllowHost(allowHost string) (string, error) {
 	if allowHost == "" {
 		return "", nil
 	}
-	if allowHost != strings.TrimSpace(allowHost) {
-		return "", fmt.Errorf("%w (%q has surrounding whitespace)", ErrBadAllowHost, allowHost)
-	}
-	// The angle brackets are in this set for one reason: the placeholder
-	// `mora companion expose` prints when it does not know the node name uses
-	// them, so a command pasted without editing fails at STARTUP with a named
-	// error rather than starting a listener whose allowed host nobody can send.
-	if strings.ContainsAny(allowHost, " \t/\\*?#@,<>") {
-		return "", fmt.Errorf("%w (%q must be one host or host:port, with no scheme, path, wildcard or list)", ErrBadAllowHost, allowHost)
-	}
-	for i := 0; i < len(allowHost); i++ {
-		// ASCII only, so the comparison in hostAllowed can fold ASCII case and
-		// nothing else. A MagicDNS name is ASCII, and an internationalized name
-		// reaches the wire as punycode, which is also ASCII.
-		if allowHost[i] > 0x7f || allowHost[i] < 0x21 {
-			return "", fmt.Errorf("%w (%q must be printable ASCII)", ErrBadAllowHost, allowHost)
-		}
-	}
-	host := allowHost
-	if h, port, err := net.SplitHostPort(allowHost); err == nil {
-		if h == "" {
-			return "", fmt.Errorf("%w (%q has no host part)", ErrBadAllowHost, allowHost)
-		}
-		if _, err := strconv.Atoi(port); err != nil {
-			return "", fmt.Errorf("%w (%q has a non-numeric port)", ErrBadAllowHost, allowHost)
-		}
-		host = h
-	}
-	if host == "" {
-		return "", fmt.Errorf("%w (%q has no host part)", ErrBadAllowHost, allowHost)
+	host, err := splitAllowHost(allowHost)
+	if err != nil {
+		return "", err
 	}
 	if equalFoldASCII(host, LoopbackHost) {
 		return "", fmt.Errorf("%w (%q is already accepted; leave it empty)", ErrBadAllowHost, allowHost)
 	}
 	return allowHost, nil
+}
+
+// splitAllowHost validates the whole value and returns the host part.
+func splitAllowHost(allowHost string) (string, error) {
+	host := allowHost
+	// An IPv6 literal is the one host shape that legitimately contains colons,
+	// so it is matched first and by its brackets, which is the only unambiguous
+	// way to tell "[::1]:80" from a hostname that happens to hold a colon.
+	if strings.HasPrefix(allowHost, "[") {
+		end := strings.Index(allowHost, "]")
+		if end < 0 {
+			return "", fmt.Errorf("%w (%q opens an IPv6 literal it never closes)", ErrBadAllowHost, allowHost)
+		}
+		literal := allowHost[1:end]
+		ip := net.ParseIP(literal)
+		if ip == nil || ip.To4() != nil {
+			return "", fmt.Errorf("%w (%q is not an IPv6 literal)", ErrBadAllowHost, allowHost)
+		}
+		if err := checkAllowPortSuffix(allowHost, allowHost[end+1:]); err != nil {
+			return "", err
+		}
+		return literal, nil
+	}
+	if i := strings.LastIndex(allowHost, ":"); i >= 0 {
+		if err := checkAllowPortSuffix(allowHost, allowHost[i:]); err != nil {
+			return "", err
+		}
+		host = allowHost[:i]
+	}
+	if err := checkDNSName(allowHost, host); err != nil {
+		return "", err
+	}
+	return host, nil
+}
+
+// checkAllowPortSuffix validates the ":port" tail, which may be empty.
+func checkAllowPortSuffix(allowHost, suffix string) error {
+	if suffix == "" {
+		return nil
+	}
+	if suffix[0] != ':' {
+		return fmt.Errorf("%w (%q has trailing text after the host)", ErrBadAllowHost, allowHost)
+	}
+	digits := suffix[1:]
+	if digits == "" {
+		return fmt.Errorf("%w (%q ends in a colon with no port)", ErrBadAllowHost, allowHost)
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return fmt.Errorf("%w (%q has a non-numeric port)", ErrBadAllowHost, allowHost)
+		}
+	}
+	port, err := strconv.Atoi(digits)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("%w (%q has a port outside 1-65535)", ErrBadAllowHost, allowHost)
+	}
+	return nil
+}
+
+// checkDNSName enforces RFC 1123 host syntax on the host part.
+//
+// A trailing dot is refused rather than trimmed. The comparison in hostAllowed
+// is whole-string, so "name." and "name" are different allowed hosts; accepting
+// both spellings here would silently pick one of them for the operator.
+func checkDNSName(allowHost, host string) error {
+	if host == "" {
+		return fmt.Errorf("%w (%q has no host part)", ErrBadAllowHost, allowHost)
+	}
+	if len(host) > 253 {
+		return fmt.Errorf("%w (a hostname is at most 253 characters, %q is %d)", ErrBadAllowHost, allowHost, len(host))
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" {
+			return fmt.Errorf("%w (%q has an empty label; a leading or trailing dot is not a hostname)", ErrBadAllowHost, allowHost)
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("%w (%q has a label longer than 63 characters)", ErrBadAllowHost, allowHost)
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("%w (%q has a label that begins or ends with a hyphen)", ErrBadAllowHost, allowHost)
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			switch {
+			case c >= 'a' && c <= 'z':
+			case c >= 'A' && c <= 'Z':
+			case c >= '0' && c <= '9':
+			case c == '-':
+			default:
+				return fmt.Errorf("%w (%q is not a hostname: a label holds only ASCII letters, digits and hyphens)", ErrBadAllowHost, allowHost)
+			}
+		}
+	}
+	return nil
 }
 
 // sizeGuard caps the headers and the body. Both bounds exist because both are

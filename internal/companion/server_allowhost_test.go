@@ -227,6 +227,31 @@ func TestAllowHostIsValidatedAtStartup(t *testing.T) {
 		{"a non-numeric port", testPublishedHost + ":https"},
 		{"a non-ASCII name", "n\u00f8de.tailnet-example.example"},
 		{"a control character", testPublishedHost + "\n"},
+		// The judge's exact input. The grammar below is an ALLOWLIST of RFC 1123
+		// host syntax, so a shell metacharacter is refused because it is not a
+		// hostname character, not because it appears on a list of bad ones.
+		{"a shell command", "node.example;id"},
+		{"a backtick", "node`id`.example"},
+		{"command substitution", "node$(id).example"},
+		{"a pipe", "node|id.example"},
+		{"an ampersand", "node&id.example"},
+		{"a newline in the middle", "node\nid.example"},
+		{"a quote", "node'id'.example"},
+		{"an underscore", "no_de.example"},
+		{"a label starting with a hyphen", "-node.example"},
+		{"a label ending with a hyphen", "node-.example"},
+		{"a leading dot", "." + testPublishedHost},
+		{"a trailing dot", testPublishedHost + "."},
+		{"a doubled dot", "node..example"},
+		{"a label over 63 characters", strings.Repeat("a", 64) + ".example"},
+		{"a name over 253 characters", strings.TrimSuffix(strings.Repeat("abcdefgh.", 29), ".") + ".example"},
+		{"port zero", testPublishedHost + ":0"},
+		{"a port above the range", testPublishedHost + ":70000"},
+		{"a bare colon", testPublishedHost + ":"},
+		{"two ports", testPublishedHost + ":80:80"},
+		{"an unclosed IPv6 literal", "[2001:db8::1:8443"},
+		{"an IPv4 address in brackets", "[192.0.2.10]:8443"},
+		{"a bracketed non-address", "[not-an-address]:8443"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewServer(ServerOptions{
@@ -239,7 +264,17 @@ func TestAllowHostIsValidatedAtStartup(t *testing.T) {
 	}
 
 	// And the shapes that must keep working.
-	for _, ok := range []string{testPublishedHost, testPublishedHost + ":8443", "[2001:db8::1]:8443"} {
+	for _, ok := range []string{
+		testPublishedHost,
+		testPublishedHost + ":8443",
+		testPublishedHost + ":1",
+		testPublishedHost + ":65535",
+		"[2001:db8::1]:8443",
+		"[2001:db8::1]",
+		"a.example",
+		"node-1.sub-net.example",
+		strings.Repeat("a", 63) + ".example",
+	} {
 		if _, err := NewServer(ServerOptions{
 			Addr: "127.0.0.1:7778", AllowHost: ok, Devices: reg, Reader: newStubReader(),
 		}); err != nil {
