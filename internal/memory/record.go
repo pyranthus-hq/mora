@@ -121,9 +121,11 @@ type Source struct {
 	// DenyContacts / DenyConversations scope iMessage ingest (IMSG-06/D-07/D-08).
 	// Persisted on the imessage source row in sources.json (no new config file),
 	// matching Phase 1's no-new-file precedent. Empty = include everyone.
-	DenyContacts      []string `json:"deny_contacts,omitempty"`
-	DenyConversations []string `json:"deny_conversations,omitempty"`
-	Repositories      []string `json:"repositories,omitempty"` // github: explicit owner/repo allowlist
+	DenyContacts                []string `json:"deny_contacts,omitempty"`
+	DenyConversations           []string `json:"deny_conversations,omitempty"`
+	AllowConversations          []string `json:"allow_conversations,omitempty"`           // whatsapp: exact group-title allowlist
+	WhatsAppAllowlistConfigured bool     `json:"whatsapp_allowlist_configured,omitempty"` // distinguishes legacy all-chat behavior from fail-closed policy
+	Repositories                []string `json:"repositories,omitempty"`                  // github: explicit owner/repo allowlist
 }
 
 // IsEnabled reports explicit connector enablement; nil preserves legacy disabled semantics.

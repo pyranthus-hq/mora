@@ -280,6 +280,7 @@ USAGE:
   mora connect github --repo owner/repo  # replace the default repository allowlist (repeatable)
   mora connect imessage            # macOS: enable iMessage, check Full Disk Access, then backfill
   mora connect imessage --since-days 365   # widen the iMessage backlog window (negative = all-time)
+  mora connectors enable whatsapp --chat "Family" # repeat --chat for an exact group-title allowlist
   mora connect filesystem ~/Documents      # add + enable + index a folder in one step (one-shot of: sources add + ingest run)
   mora sync status
   mora sync google
