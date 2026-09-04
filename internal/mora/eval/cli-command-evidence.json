@@ -486,6 +486,17 @@
         "error": {"status": "test", "tests": ["TestMc_CmdUpgradeFlagParseError", "TestCLIRegistryPriorityGapsUseRealRun/upgrade", "TestNotificationFailureKeepsCachedWarning", "TestLoadUpdateReceiptRejectsCorruptOrFutureData", "TestUnattendedRollbackFailureIsTypedAndSanitized"]},
         "refusal": {"status": "test", "tests": ["TestCLIRegistryPriorityGapsUseRealRun/upgrade", "TestOffScheduledCheckMakesZeroNetworkAndNotifierCalls", "TestSourceDefaultScheduledCheckDoesNothing", "TestUpdateLeaseRejectsConcurrentHolderAndReapsStale", "TestUnattendedHealthAndIdentityFailuresNeverSwap", "TestUnwritableAppFallsBackOnceForSameVersion"], "reason": "Source builds default off and configured off returns before network/notifier egress; bare manual self-update retains its existing dev-build refusal."}
       }
+    },
+    {
+      "name": "companion",
+      "paths": ["companion", "companion pair", "companion list", "companion revoke", "companion status"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionPairEmitsAPairingPayloadAndRegistersAPendingDevice", "TestCompanionListProjectsDevicesWithoutCredentials", "TestCompanionRevokeEmitsVersionedReceiptAndIsIdempotent", "TestCompanionStatusReportsCountsAndHostIdentity"], "reason": "Every verb is driven end to end through Run against a temp home: pair registers a pending device, list projects it, revoke ends it, status counts it."},
+        "json": {"status": "test", "tests": ["TestCompanionPairEmitsAPairingPayloadAndRegistersAPendingDevice", "TestCompanionListProjectsDevicesWithoutCredentials", "TestCompanionRevokeEmitsVersionedReceiptAndIsIdempotent", "TestCompanionStatusReportsCountsAndHostIdentity"], "reason": "decodeCompanion pins schema and schema_version on all four payloads, including the two whose registry rows are exempt because no two runs of them produce the same document."},
+        "state": {"status": "test", "tests": ["TestCompanionRevokeEmitsVersionedReceiptAndIsIdempotent", "TestCompanionListProjectsDevicesWithoutCredentials", "TestCompanionPairEmitsAPairingPayloadAndRegistersAPendingDevice"], "reason": "Durable state is the device record file in ConfigDir and the receipts in StateDir; these prove a pairing and a revocation persist across separate Run calls. The 0700 directory, the 0600 files, the constant-time comparison and the guarantee that no generated credential is written are proved against the package that owns them in internal/companion/registry_test.go, which this registry cannot name because it indexes only test functions in internal/mora."},
+        "error": {"status": "test", "tests": ["TestCompanionErrorsNameTheNextCommand"], "reason": "An unknown device id is a usage error naming `mora companion list`. Corrupt and future-versioned record files are refused with an actionable message by TestRegistrySurvivesRestartAndRefusesAFutureFile in internal/companion."},
+        "refusal": {"status": "test", "tests": ["TestCompanionRefusesUnknownSubcommandAndDashLedDeviceID"], "reason": "A dash-led token cannot land in the device-id slot, an unknown subcommand and a stray positional are refused, and every refusal leaves stdout empty and the registry untouched. The registry's own refusals (wrong code, expired code, replayed confirmation, non-loopback cleartext endpoint) are proved in internal/companion."}
+      }
     }
   ]
 }

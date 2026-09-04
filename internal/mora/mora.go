@@ -179,6 +179,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdLoop(ctx, args[1:], stdout, stderr)
 	case "upgrade":
 		return cmdUpgrade(ctx, args[1:], stdout, stderr)
+	case "companion":
+		return cmdCompanion(ctx, args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":

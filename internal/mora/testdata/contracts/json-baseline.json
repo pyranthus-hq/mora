@@ -32,6 +32,26 @@
     "status": "parses"
   },
   {
+    "path": "companion",
+    "status": "empty"
+  },
+  {
+    "path": "companion list",
+    "status": "parses"
+  },
+  {
+    "path": "companion pair",
+    "status": "parses"
+  },
+  {
+    "path": "companion revoke",
+    "status": "empty"
+  },
+  {
+    "path": "companion status",
+    "status": "parses"
+  },
+  {
     "path": "config",
     "status": "parses"
   },
