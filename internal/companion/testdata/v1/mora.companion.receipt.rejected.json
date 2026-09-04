@@ -1,0 +1,14 @@
+{
+  "schema": "mora.companion.receipt",
+  "schema_version": 1,
+  "receipt_id": "rcp_01J8Z2K7Q4RN3T5X",
+  "request_id": "req_01J8Z2K7Q4RN3T5W",
+  "idempotency_key": "ios.capture.2026-09-03T10:59:30Z.7f3a",
+  "device_id": "dev_01J8Z2K7Q4RN3T5V",
+  "state": "rejected",
+  "reason": "policy",
+  "payload_fingerprint": "sha256:0cdd4a81dcdc5f6446a7433ac37215b6fcf7a1b7737d0950b3ff5bab44190f8d",
+  "policy": "readonly",
+  "received_at": "2026-09-03T11:00:00Z",
+  "settled_at": "2026-09-03T11:04:00Z"
+}

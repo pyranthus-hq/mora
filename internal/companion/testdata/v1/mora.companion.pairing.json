@@ -1,0 +1,9 @@
+{
+  "schema": "mora.companion.pairing",
+  "schema_version": 1,
+  "device_id": "dev_01J8Z2K7Q4RN3T5V",
+  "endpoint": "https://mora-mac.tail-scale.ts.net/v1/companion",
+  "pairing_code": "fixture-pairing-code",
+  "expires_at": "2026-09-03T11:10:00Z",
+  "host_fingerprint": "sha256:f62a6fcfc7a5533db3571a07bdfdcaf7e6dce43842fb4990f846af9ef49774d1"
+}

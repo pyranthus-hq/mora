@@ -21,3 +21,8 @@ internal/mora/testdata/contracts/*.json text eol=lf
 # cross a separator, so the rule above never reached it. windows-latest runs the
 # full suite and a CRLF golden fails the byte compare.
 internal/mora/testdata/contracts/**/*.json text eol=lf
+
+# The companion contract corpus is compared byte-for-byte against
+# json.MarshalIndent output, which emits LF everywhere. Windows checkout
+# conversion would rewrite these to CRLF and fail every golden.
+internal/companion/testdata/v1/*.json text eol=lf

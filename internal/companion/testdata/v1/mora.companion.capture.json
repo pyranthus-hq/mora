@@ -1,0 +1,12 @@
+{
+  "schema": "mora.companion.capture",
+  "schema_version": 1,
+  "idempotency_key": "ios.capture.2026-09-03T10:59:30Z.7f3a",
+  "device_id": "dev_01J8Z2K7Q4RN3T5V",
+  "captured_at": "2026-09-03T10:59:30Z",
+  "requested_lane": "memory",
+  "intent": "remember",
+  "scope": "project:pilot",
+  "text": "Ravi wants the pilot scoped to one team before the October board meeting.",
+  "payload_fingerprint": "sha256:0cdd4a81dcdc5f6446a7433ac37215b6fcf7a1b7737d0950b3ff5bab44190f8d"
+}

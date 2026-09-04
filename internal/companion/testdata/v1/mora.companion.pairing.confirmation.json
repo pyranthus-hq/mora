@@ -1,0 +1,10 @@
+{
+  "schema": "mora.companion.pairing.confirmation",
+  "schema_version": 1,
+  "device_id": "dev_01J8Z2K7Q4RN3T5V",
+  "pairing_code": "fixture-pairing-code",
+  "label": "Adit iPhone",
+  "platform": "ios",
+  "public_key": "ed25519:9AzJQCUvXQOYQKgCIZAox5SM2lI248yCFdfdVmFEUss=",
+  "confirmed_at": "2026-09-03T11:00:00Z"
+}
