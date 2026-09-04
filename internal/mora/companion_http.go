@@ -30,6 +30,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -125,6 +126,7 @@ func (k *companionReader) now() time.Time { return k.cfg.OperationClock().UTC().
 
 // Health projects the kernel's health snapshot.
 func (k *companionReader) Health(ctx context.Context) (companion.HealthProjection, error) {
+	ctx = companionKernelContext(ctx)
 	now := k.now()
 	snapshot := healthOf(k.cfg, now)
 	out := companion.NewHealthProjection()
@@ -150,6 +152,7 @@ func (k *companionReader) Health(ctx context.Context) (companion.HealthProjectio
 // Truncated says so — three of three and three of nine are different statements
 // and a phone must be able to tell them apart.
 func (k *companionReader) Today(ctx context.Context) (companion.TodayProjection, error) {
+	ctx = companionKernelContext(ctx)
 	now := k.now()
 	snapshot := healthOf(k.cfg, now)
 
@@ -172,19 +175,19 @@ func (k *companionReader) Today(ctx context.Context) (companion.TodayProjection,
 	out.Freshness = companionFreshness(snapshot.Sources, out.GeneratedAt)
 
 	// The brief reads the typed commitment inventory, which reaches the index
-	// through ensureIndexDB and rebuilds when the graph is absent. Today is a
-	// read, so it asks first: with no usable index the projection is empty and
-	// the health summary beside it already says why. An empty Today under an
-	// unhealthy banner is the honest answer; a rebuild triggered by a phone is
-	// not an answer at all.
-	if companionRetrievalReady(k.cfg) {
-		if err := ctx.Err(); err != nil {
-			return companion.TodayProjection{}, err
-		}
-		digest, err := briefDigest(k.cfg, now, mcpDigestMaxItems)
-		if err != nil {
-			return companion.TodayProjection{}, err
-		}
+	// through ensureIndexDB. Under the read-only marker that refuses instead of
+	// rebuilding, and an empty Today under a health summary that already says
+	// unhealthy is the honest answer — a rebuild triggered by a phone is not an
+	// answer at all.
+	if err := ctx.Err(); err != nil {
+		return companion.TodayProjection{}, err
+	}
+	digest, err := companionBrief(ctx, k.cfg, now)
+	switch {
+	case companionDegraded(err):
+	case err != nil:
+		return companion.TodayProjection{}, err
+	default:
 		if err := ctx.Err(); err != nil {
 			return companion.TodayProjection{}, err
 		}
@@ -201,6 +204,31 @@ func (k *companionReader) Today(ctx context.Context) (companion.TodayProjection,
 	}
 	k.storeToday(key, now, out)
 	return out, nil
+}
+
+// companionBrief is briefDigest with the caller's context threaded through.
+//
+// It is a separate entry point rather than a change to briefDigest because
+// briefDigest takes no context: its signature is shared with the CLI and the
+// MCP tools, and widening it would put a context on six call sites that have
+// nothing to say about one. The two builds are briefDigest's own — the delta
+// preview, and the fixed-window fallback when the delta is empty — so a phone
+// sees the same Today the terminal does, minus any repair.
+func companionBrief(ctx context.Context, cfg Config, now time.Time) (Digest, error) {
+	d, err := buildDigest(cfg, now, briefOpts{advance: false, perSourceCap: mcpDigestMaxItems, ctx: ctx})
+	if err != nil {
+		return Digest{}, err
+	}
+	if briefSurfacedItemCount(d) == 0 {
+		fallback, fallbackErr := buildDigest(cfg, now, briefOpts{
+			advance: false, sinceHours: briefFallbackWindowHours, perSourceCap: mcpDigestMaxItems, ctx: ctx,
+		})
+		if fallbackErr != nil {
+			return Digest{}, fallbackErr
+		}
+		d = preserveBriefFallbackEmptyExplanation(d, fallback)
+	}
+	return d, nil
 }
 
 // companionTodayTTL bounds how long a Today answer may be reused when the index
@@ -245,6 +273,7 @@ func (k *companionReader) storeToday(key string, now time.Time, out companion.To
 // request touches, and a phone on a hostile network is not the right place to
 // hold them.
 func (k *companionReader) Context(ctx context.Context, req companion.ContextRequest) (companion.ContextBundle, error) {
+	ctx = companionKernelContext(ctx)
 	now := k.now()
 	out := companion.NewContextBundle()
 	out.GeneratedAt = companionStamp(now)
@@ -289,50 +318,36 @@ func (k *companionReader) Context(ctx context.Context, req companion.ContextRequ
 }
 
 // companionIndexNotReadable is the gap a bundle carries when retrieval could not
-// run. It is prose for a phone screen, and it is deliberately not an error: the
-// request succeeded, the vault simply cannot answer it right now, and that
-// distinction is the whole of the honesty contract.
+// run without a repair. It is prose for a phone screen, and it is deliberately
+// not an error: the request succeeded, the vault simply cannot answer it without
+// work the caller forbade, and that distinction is the whole of the honesty
+// contract.
 const companionIndexNotReadable = "The search index is missing or unreadable, so nothing was retrieved. Run `mora index rebuild` on the Mac."
 
-// companionRetrievalReady reports whether retrieval can run WITHOUT building
-// anything.
+// companionKernelContext marks every kernel call this listener makes as
+// read-only.
 //
-// This gate is the read-only guarantee, and it exists because the kernel's read
-// paths self-heal. hybridSearchTrace rebuilds when the index file is absent;
-// ensureIndexDB rebuilds when the graph tables are missing; openIndexRO rebuilds
-// a schema-stale index when indexAutoHeal allows. Every one of those is minutes
-// of disk and CPU over the whole vault — correct for a human at a terminal who
-// asked for an answer, and a denial of service when it hangs off an
-// authenticated GET from a phone on someone else's network.
+// It is the ONE place the marker is set. The previous shape asked
+// companionRetrievalReady at the boundary and called the kernel only when the
+// answer looked safe, which is a guess about which paths repair — and it was
+// wrong twice, because meeting_prep reached ensureIndexDB through the commitment
+// inventory and think reached healShareIndex through a subscribed corpus. It
+// also raced: the index could go away between the check and the call. Marking
+// the context instead makes the refusal a property of the repair site, which
+// cannot be wrong about itself.
+func companionKernelContext(ctx context.Context) context.Context { return withReadOnly(ctx) }
+
+// companionDegraded reports whether err is the kernel declining to repair.
 //
-// So the companion path asks first and calls nothing that could heal. Each check
-// is a pure read: a stat, a read-only open, one catalog query. When the answer
-// is no, the bundle comes back empty with the gap saying so and the health
-// summary already carrying the unhealthy index — which is what a device should
-// see, because "I could not look" and "I looked and found nothing" are different
-// claims.
-func companionRetrievalReady(cfg Config) bool {
-	// graphReady covers both the file's existence and the S1 graph tables, and
-	// it opens read-only. It is the same predicate ensureIndexDB branches on,
-	// asked before the branch instead of inside it.
-	if !graphReady(cfg) {
-		return false
-	}
-	db, err := sql.Open("sqlite", roIndexDSN(cfg))
-	if err != nil {
-		return false
-	}
-	defer db.Close()
-	// checkIndexSchema, NOT openIndexRO: openIndexRO rebuilds on a version
-	// mismatch, which is the exact behavior this function exists to avoid.
-	return checkIndexSchema(db) == nil
-}
+// It is a bundle-shaped answer, not a failure: the phone is told the vault could
+// not look, which is a different claim from having looked and found nothing.
+func companionDegraded(err error) bool { return errors.Is(err, ErrReadOnlyRepairNeeded) }
 
 func (k *companionReader) thinkContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
-	if !companionRetrievalReady(k.cfg) {
+	res, err := buildThink(ctx, k.cfg, req.Query, req.Scope, companionContextEvidence, now)
+	if companionDegraded(err) {
 		return nil, []string{companionIndexNotReadable}, nil
 	}
-	res, err := buildThink(ctx, k.cfg, req.Query, req.Scope, companionContextEvidence, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -340,10 +355,10 @@ func (k *companionReader) thinkContext(ctx context.Context, req companion.Contex
 }
 
 func (k *companionReader) searchContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
-	if !companionRetrievalReady(k.cfg) {
+	mems, err := hybridSearch(ctx, k.cfg, req.Query, req.Scope, companionContextEvidence)
+	if companionDegraded(err) {
 		return nil, []string{companionIndexNotReadable}, nil
 	}
-	mems, err := hybridSearch(ctx, k.cfg, req.Query, req.Scope, companionContextEvidence)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -357,12 +372,16 @@ func (k *companionReader) searchContext(ctx context.Context, req companion.Conte
 // attendee the query names.
 func (k *companionReader) meetingContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
 	var filter map[string]bool
-	// resolveEntityFilter reaches the entity graph through ensureIndexDB, which
-	// rebuilds when the graph is absent. The meeting brief ITSELF reads vault
-	// files and needs no index, so an unreadable index costs the narrowing, not
-	// the brief.
-	if name := strings.TrimSpace(req.Query); name != "" && companionRetrievalReady(k.cfg) {
+	degraded := false
+	if name := strings.TrimSpace(req.Query); name != "" {
 		resolved, err := resolveEntityFilter(ctx, k.cfg, name)
+		if companionDegraded(err) {
+			// The narrowing needs the entity graph; the brief itself does not.
+			// Losing the narrowing is worth saying and not worth failing over.
+			degraded = true
+			err = nil
+			resolved = nil
+		}
 		if err != nil {
 			// An unresolvable name is not a failure: it is the honest answer
 			// that the vault does not know this person, and it belongs in the
@@ -372,6 +391,12 @@ func (k *companionReader) meetingContext(ctx context.Context, req companion.Cont
 		filter = resolved
 	}
 	brief, err := buildNextMeetingBrief(ctx, k.cfg, now, filter, 0, meetingBriefDefaultPerGuest)
+	if companionDegraded(err) {
+		// buildNextMeetingBrief reaches the commitment inventory, which reaches
+		// ensureIndexDB. With no index there is no brief to give, and saying so
+		// is the answer.
+		return nil, []string{companionIndexNotReadable}, nil
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -395,7 +420,7 @@ func (k *companionReader) meetingContext(ctx context.Context, req companion.Cont
 		}
 	}
 	gaps := append([]string{}, brief.Gaps...)
-	if !companionRetrievalReady(k.cfg) {
+	if degraded {
 		gaps = append(gaps, companionIndexNotReadable)
 	}
 	if brief.Event == nil {

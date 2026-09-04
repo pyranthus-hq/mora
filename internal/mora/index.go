@@ -170,7 +170,17 @@ func openIndexRO(ctx context.Context, cfg Config) (*sql.DB, error) {
 	}
 	return db, nil
 }
+
+// rebuildIndex is the ONE chokepoint every inline index repair passes through:
+// the rebuild-on-missing in hybridSearchTrace, the graph rebuild in
+// ensureIndexDB, and openIndexRO's schema auto-heal all land here. Guarding it
+// once is why the read-only guarantee is three lines rather than a survey of
+// every read path — and why a repair path added later is covered by default
+// instead of by remembering.
 func rebuildIndex(ctx context.Context, cfg Config) (int, error) {
+	if readOnlyCall(ctx) {
+		return 0, ErrReadOnlyRepairNeeded
+	}
 	return rebuildIndexWithPolicy(ctx, cfg, policyEnforce)
 }
 func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolicy) (count int, err error) {

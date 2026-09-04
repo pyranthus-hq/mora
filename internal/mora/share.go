@@ -985,6 +985,14 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 // itself unreadable it fails closed. It mints a NEW gen (never overwriting the
 // corrupt one), keeping it Windows-safe.
 func healShareIndex(ctx context.Context, cfg Config, name string) error {
+	// Healing publishes a new generation, which is a durable write. A read-only
+	// caller gets the refusal, and the ONE call site already treats a failed
+	// heal as per-artifact suppression — so a corrupt share drops out of that
+	// search rather than taking local recall down with it, which is the
+	// behavior that site documents.
+	if readOnlyCall(ctx) {
+		return ErrReadOnlyRepairNeeded
+	}
 	return shareBuildAndPublish(ctx, cfg, name, buildModeHeal, func(runID string) (int, error) {
 		commit, ok, err := resolvePublishedCommit(cfg, name)
 		if err != nil {

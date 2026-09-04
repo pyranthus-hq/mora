@@ -1035,6 +1035,107 @@ func TestRegistryRefusesAnOversizeRecordFileByReadingBounded(t *testing.T) {
 	}
 }
 
+// TestRegistryLoadReadsThroughTheBoundedReaderOnly is the structural witness for
+// the size bound.
+//
+// The behavioural tests above pass whether load() reads through readBounded or
+// reverts to Stat-then-ReadFile, because a statically oversize file is refused
+// either way — the bound was FIXED-NO-TEST. What separates the two shapes is the
+// window between the size question and the read, and that window is not
+// reachable from a test without a filesystem race. So the property is asserted
+// where it is decided: load() takes the record file through readBounded and
+// through nothing else. os.ReadFile or os.Stat reappearing on that path fails
+// here, which is the revert this test exists to catch.
+func TestRegistryLoadReadsThroughTheBoundedReaderOnly(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "registry.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var load *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "load" && fn.Recv != nil {
+			load = fn
+		}
+	}
+	if load == nil {
+		t.Fatal("load not found in registry.go")
+	}
+
+	var (
+		bounded int
+		banned  []string
+	)
+	ast.Inspect(load.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			if fun.Name == "readBounded" {
+				bounded++
+			}
+		case *ast.SelectorExpr:
+			pkg, ok := fun.X.(*ast.Ident)
+			if !ok || pkg.Name != "os" {
+				return true
+			}
+			// Every way to get the bytes or the size without the bound.
+			switch fun.Sel.Name {
+			case "ReadFile", "Stat", "Lstat", "Open", "OpenFile":
+				banned = append(banned, "os."+fun.Sel.Name)
+			}
+		}
+		return true
+	})
+
+	if bounded != 1 {
+		t.Fatalf("load calls readBounded %d times, want exactly 1", bounded)
+	}
+	if len(banned) != 0 {
+		t.Fatalf("load reads the record file outside the bound: %v — the size question and the read must be one observation", banned)
+	}
+
+	// And readBounded itself must be the thing that opens it, or the name is
+	// decorative.
+	var reader *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "readBounded" {
+			reader = fn
+		}
+	}
+	if reader == nil {
+		t.Fatal("readBounded not found in registry.go")
+	}
+	var opens, limits bool
+	ast.Inspect(reader.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if pkg.Name == "os" && sel.Sel.Name == "Open" {
+			opens = true
+		}
+		if pkg.Name == "io" && sel.Sel.Name == "LimitReader" {
+			limits = true
+		}
+		return true
+	})
+	if !opens || !limits {
+		t.Fatalf("readBounded opens=%t limits=%t; it must read one open handle through a limit", opens, limits)
+	}
+}
+
 // TestReadBoundedTakesAtMostItsLimit pins the primitive directly, including
 // that it does not read the whole file into memory to discover it is too big.
 func TestReadBoundedTakesAtMostItsLimit(t *testing.T) {

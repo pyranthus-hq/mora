@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +37,9 @@ type stubReader struct {
 	// honorContext makes a call return the context's error instead of an
 	// answer, which is what a real kernel read does when the deadline fires.
 	honorContext bool
+	// slow makes a call take this long unless its context is cancelled first,
+	// which is how a real slow read behaves.
+	slow time.Duration
 }
 
 // gate is the shared body of every stubbed kernel call.
@@ -45,6 +51,15 @@ func (s *stubReader) gate(ctx context.Context) error {
 	if s.honorContext {
 		<-ctx.Done()
 		return ctx.Err()
+	}
+	if s.slow > 0 {
+		timer := time.NewTimer(s.slow)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	if s.hold != nil {
 		<-s.hold
@@ -318,6 +333,93 @@ func TestServerMountsNothingOutsideTheDeclaredRoutes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestServerRegistersRoutesInExactlyOnePlace is the structural half of the
+// allowlist.
+//
+// The probe-path test beside it drives a finite list, so a registration at a
+// path nobody thought to probe — /admin, /debug/whatever — would pass it. This
+// is the complement: it parses server.go and requires that the WHOLE file
+// contains exactly one mux registration, and that it is the routeDefs loop. A
+// second Handle or HandleFunc anywhere in the file fails here regardless of what
+// path it claims, so the allowlist cannot be widened without the widening being
+// the diff.
+func TestServerRegistersRoutesInExactlyOnePlace(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type site struct {
+		fn   string
+		call string
+	}
+	var sites []site
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			switch sel.Sel.Name {
+			case "Handle", "HandleFunc":
+				sites = append(sites, site{fn: fn.Name.Name, call: sel.Sel.Name})
+			}
+			return true
+		})
+	}
+
+	if len(sites) != 1 {
+		t.Fatalf("server.go has %d mux registration sites, want exactly 1 (the routeDefs loop): %+v", len(sites), sites)
+	}
+	if sites[0].fn != "router" {
+		t.Fatalf("the registration lives in %q, want router()", sites[0].fn)
+	}
+
+	// And that one site must be inside a range over routeDefs(), so it cannot
+	// be a single hard-coded route pretending to be the loop.
+	var loopsOverRouteDefs bool
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "router" || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			rng, ok := node.(*ast.RangeStmt)
+			if !ok {
+				return true
+			}
+			call, ok := rng.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "routeDefs" {
+				ast.Inspect(rng.Body, func(inner ast.Node) bool {
+					c, ok := inner.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					if sel, ok := c.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "HandleFunc" || sel.Sel.Name == "Handle") {
+						loopsOverRouteDefs = true
+					}
+					return true
+				})
+			}
+			return true
+		})
+	}
+	if !loopsOverRouteDefs {
+		t.Fatal("router() does not register from a range over routeDefs(); the table is no longer the source of the mux")
 	}
 }
 
@@ -798,37 +900,48 @@ func TestServerRefusesASecondConcurrentKernelCall(t *testing.T) {
 	}
 }
 
-// TestServerBoundsAKernelCallWithADeadline proves a slow read answers rather
-// than hanging.
+// TestServerBoundsASlowKernelCallWithARealDeadline drives the deadline the way
+// it actually fires.
 //
-// The stub waits on the context, which is what a real read does when its
-// deadline fires. The assertion is that the socket gets a bounded, typed refusal
-// — not that the read is fast.
-func TestServerBoundsAKernelCallWithADeadline(t *testing.T) {
-	srv, reader, _, token, _ := testServer(t)
-	reader.honorContext = true
-
-	// Reach the handler directly with a context that has already expired, so
-	// the test asserts the deadline PATH without waiting KernelTimeout for it.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
-	defer cancel()
-	<-ctx.Done()
+// The version this replaces handed the handler a context that had ALREADY
+// expired, which proved the error mapping and nothing about the timeout: a
+// server with no deadline at all would have passed it. Here the parent context
+// is live, the reader is genuinely slow, and the listener's own clock is what
+// ends the call — and the budget it held has to come back afterwards, or one
+// slow read would 503 the listener forever.
+func TestServerBoundsASlowKernelCallWithARealDeadline(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	token, _ := pairAndConfirm(t, reg, "phone")
+	reader := newStubReader()
+	reader.slow = 30 * time.Second
+	srv, err := NewServer(ServerOptions{
+		Addr:          "127.0.0.1:7778",
+		Devices:       reg,
+		Reader:        reader,
+		KernelTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := srv.Handler()
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		srv.handleToday(rec, request(http.MethodGet, RouteToday, token, nil).WithContext(ctx))
+		// A live parent context: nothing has cancelled it, so the ONLY thing
+		// that can end this call is the listener's own deadline.
+		handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
 		done <- rec
 	}()
 
 	var rec *httptest.ResponseRecorder
 	select {
 	case rec = <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("the handler hung past its own deadline")
 	}
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("a request past its deadline = %d, want 503\n%s", rec.Code, rec.Body.String())
+		t.Fatalf("a slow read = %d, want 503\n%s", rec.Code, rec.Body.String())
 	}
 	if got := rec.Header().Get("Retry-After"); got == "" {
 		t.Fatal("the timeout does not say when to come back")
@@ -836,13 +949,136 @@ func TestServerBoundsAKernelCallWithADeadline(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"timeout"`) {
 		t.Fatalf("the timeout is indistinguishable from any other outage:\n%s", rec.Body.String())
 	}
-	// And it carries nothing of the kernel's own error.
 	if strings.Contains(rec.Body.String(), "context") {
 		t.Fatalf("the timeout leaked the kernel error:\n%s", rec.Body.String())
 	}
+
+	// The slot came back: a request that times out must not take the listener
+	// down with it.
+	reader.slow = 0
+	after := httptest.NewRecorder()
+	handler.ServeHTTP(after, request(http.MethodGet, RouteToday, token, nil))
+	if after.Code != http.StatusOK {
+		t.Fatalf("after a timeout the next request got %d; the slot was not released", after.Code)
+	}
 }
 
-// TestServerReleasesTheBudgetOnEveryExit pins the release path for the two ways
+// TestServerReleasesTheSlotBeforeWritingTheResponse pins the slot's lifetime to
+// the kernel call and nothing wider.
+//
+// A deferred release alone looks correct and is not: it holds the slot for the
+// whole of the response write, which on a phone's network is the slow part. The
+// assertion is made while a response body is mid-write — a second request has to
+// be served THEN, not merely after the first handler returns.
+func TestServerReleasesTheSlotBeforeWritingTheResponse(t *testing.T) {
+	srv, _, _, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	writing := make(chan struct{})
+	unblock := make(chan struct{})
+	slow := &blockingWriter{rec: httptest.NewRecorder(), writing: writing, unblock: unblock}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(slow, request(http.MethodGet, RouteToday, token, nil))
+	}()
+
+	select {
+	case <-writing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first response never started writing")
+	}
+
+	// The kernel call is finished; only the write is in flight. The slot must
+	// already be back.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+	close(unblock)
+	<-done
+
+	if rec.Code != http.StatusServiceUnavailable {
+		if rec.Code != http.StatusOK {
+			t.Fatalf("the concurrent request = %d, want 200", rec.Code)
+		}
+		return
+	}
+	t.Fatal("the listener held its only kernel slot across the response write; a slow reader shuts every other request out")
+}
+
+// blockingWriter stops inside the first Write so a test can observe the server
+// mid-response.
+type blockingWriter struct {
+	rec     *httptest.ResponseRecorder
+	writing chan struct{}
+	unblock chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingWriter) Header() http.Header { return b.rec.Header() }
+
+func (b *blockingWriter) WriteHeader(code int) { b.rec.WriteHeader(code) }
+
+func (b *blockingWriter) Write(p []byte) (int, error) {
+	b.once.Do(func() {
+		close(b.writing)
+		<-b.unblock
+	})
+	return b.rec.Write(p)
+}
+
+// TestServerHealthIsNeverRefusedForBusyness is the limiter exemption.
+//
+// Health is the route a phone reads when something looks wrong, and a health
+// check that answers "too busy" is the one answer it must never give: a client
+// cannot tell that from the Mac being down.
+func TestServerHealthIsNeverRefusedForBusyness(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+	reader.entered = make(chan struct{}, 1)
+	reader.hold = make(chan struct{})
+
+	first := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+		first <- rec.Code
+	}()
+	select {
+	case <-reader.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first request never reached the kernel")
+	}
+
+	// Today holds the only slot. Health must still answer.
+	healthDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, request(http.MethodGet, RouteHealth, token, nil))
+		healthDone <- rec
+	}()
+	select {
+	case <-reader.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("health did not reach the kernel while Today held the slot")
+	}
+	close(reader.hold)
+
+	var health *httptest.ResponseRecorder
+	select {
+	case health = <-healthDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("health never answered")
+	}
+	if health.Code != http.StatusOK {
+		t.Fatalf("health = %d while the budget was held, want 200\n%s", health.Code, health.Body.String())
+	}
+	if code := <-first; code != http.StatusOK {
+		t.Fatalf("the first request = %d, want 200", code)
+	}
+}
+
+// TestServerReleasesTheBudgetOnEveryExit pins the release path// TestServerReleasesTheBudgetOnEveryExit pins the release path for the two ways
 // a handler can leave early. A budget that leaks on the error path is a server
 // that answers 503 forever after its first failure.
 func TestServerReleasesTheBudgetOnEveryExit(t *testing.T) {
@@ -1046,36 +1282,129 @@ func TestServerStartupBannerCarriesNoCredential(t *testing.T) {
 // last_seen_at
 // ---------------------------------------------------------------------------
 
-// TestServerStampsLastSeenAtOnceAndNeverFailsAReadForIt pins the throttle and
-// the best-effort contract: a device's audit stamp must not serialize its
-// traffic, and a stamp that cannot be written must not cost the device its
-// answer.
-func TestServerStampsLastSeenAtOnceAndNeverFailsAReadForIt(t *testing.T) {
+// TestServerWritesTheDeviceRegistryAtMostOncePerWindow is the durable-write
+// budget.
+//
+// The stamp used to live in the guard chain, so EVERY authenticated request
+// could reach it — including a 405, a 503 and a rejected body. A client
+// hammering an unsupported method could therefore drive a registry write per
+// request, which is a durable write on a path that served nothing. A last-seen
+// stamp records that a device was SERVED; nothing else is a serving.
+func TestServerWritesTheDeviceRegistryAtMostOncePerWindow(t *testing.T) {
 	srv, _, reg, token, _ := testServer(t)
 	handler := srv.Handler()
+	counted := &countingStamper{Registry: reg}
+	srv.devices = counted
 
-	for i := 0; i < 3; i++ {
+	// Fifty served requests inside one debounce window.
+	for i := 0; i < 50; i++ {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, request(http.MethodGet, RouteHealth, token, nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("request %d got %d", i, rec.Code)
+			t.Fatalf("request %d = %d, want 200", i, rec.Code)
 		}
+	}
+	if counted.marks != 1 {
+		t.Fatalf("50 served requests wrote the registry %d times, want exactly 1", counted.marks)
+	}
+
+	// Nothing that failed to serve may write at all.
+	//
+	// Each case gets a FRESH listener on purpose. Reusing the one above would
+	// leave the device already inside its debounce window, so a stamp on the
+	// failing path would be suppressed by the debounce rather than by the rule
+	// under test — and the test would pass against a listener that stamps every
+	// request it sees.
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		token  string
+		body   func() io.Reader
+		want   int
+	}{
+		{"405", http.MethodDelete, RouteHealth, token, func() io.Reader { return nil }, http.StatusMethodNotAllowed},
+		{"405 on HEAD", http.MethodHead, RouteToday, token, func() io.Reader { return nil }, http.StatusMethodNotAllowed},
+		{"404", http.MethodGet, "/v1/companion/nope", token, func() io.Reader { return nil }, http.StatusNotFound},
+		{"401", http.MethodGet, RouteHealth, "not-a-token", func() io.Reader { return nil }, http.StatusUnauthorized},
+		{"400", http.MethodPost, RouteContext, token, func() io.Reader { return strings.NewReader("{") }, http.StatusBadRequest},
+		{"413", http.MethodPost, RouteContext, token, func() io.Reader {
+			return strings.NewReader(strings.Repeat("x", MaxRequestBytes+1))
+		}, http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fresh, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: reg, Reader: newStubReader()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			freshCount := &countingStamper{Registry: reg}
+			fresh.devices = freshCount
+
+			rec := httptest.NewRecorder()
+			fresh.Handler().ServeHTTP(rec, request(tc.method, tc.path, tc.token, tc.body()))
+			if rec.Code != tc.want {
+				t.Fatalf("%s = %d, want %d\n%s", tc.name, rec.Code, tc.want, rec.Body.String())
+			}
+			if freshCount.marks != 0 {
+				t.Fatalf("a %s wrote the device registry %d times", tc.name, freshCount.marks)
+			}
+
+			// The same listener DOES stamp when it actually serves, so the
+			// zero above is the failing path's doing and not a dead stamper.
+			served := httptest.NewRecorder()
+			fresh.Handler().ServeHTTP(served, request(http.MethodGet, RouteHealth, token, nil))
+			if served.Code != http.StatusOK {
+				t.Fatalf("the control request = %d, want 200", served.Code)
+			}
+			if freshCount.marks != 1 {
+				t.Fatalf("the control request wrote the registry %d times, want 1", freshCount.marks)
+			}
+		})
+	}
+
+	// The window is a window, not a once-ever: past it, a served request stamps
+	// again, or `mora companion list` would show a stale last-seen forever.
+	srv.mu.Lock()
+	for id := range srv.seen {
+		srv.seen[id] = srv.seen[id].Add(-2 * markSeenInterval)
+	}
+	srv.mu.Unlock()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteHealth, token, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the post-window request = %d, want 200", rec.Code)
+	}
+	if counted.marks != 2 {
+		t.Fatalf("after the window expired the registry was written %d times, want 2", counted.marks)
+	}
+}
+
+// TestServerStampsLastSeenAtAndNeverFailsAReadForIt keeps the end-to-end half:
+// the stamp reaches the real registry, and a registry that cannot take it does
+// not cost the device its answer.
+func TestServerStampsLastSeenAtAndNeverFailsAReadForIt(t *testing.T) {
+	srv, _, reg, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteHealth, token, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the served request = %d", rec.Code)
 	}
 	devices, err := reg.List()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if devices[0].LastSeenAt == "" {
-		t.Fatal("the first request did not stamp last_seen_at")
+		t.Fatal("a served request did not stamp last_seen_at")
 	}
 
-	// A registry that cannot stamp must not cost the device its answer.
 	failing := &failingStamper{Registry: reg}
 	broken, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: failing, Reader: newStubReader()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	broken.Handler().ServeHTTP(rec, request(http.MethodGet, RouteHealth, token, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("a failed last-seen stamp cost the device its answer: %d", rec.Code)
@@ -1083,6 +1412,17 @@ func TestServerStampsLastSeenAtOnceAndNeverFailsAReadForIt(t *testing.T) {
 	if failing.calls == 0 {
 		t.Fatal("the listener never tried to stamp last_seen_at")
 	}
+}
+
+// countingStamper counts durable registry writes without suppressing them.
+type countingStamper struct {
+	*Registry
+	marks int
+}
+
+func (c *countingStamper) MarkSeen(id string) error {
+	c.marks++
+	return c.Registry.MarkSeen(id)
 }
 
 type failingStamper struct {

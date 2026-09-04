@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/companion"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 	loopbackhttp "github.com/pyranthus-hq/mora/internal/loopbackhttp"
 )
@@ -471,10 +472,6 @@ func TestCompanionContextNeverBuildsAnIndex(t *testing.T) {
 	if _, err := os.Stat(index); !os.IsNotExist(err) {
 		t.Fatalf("the index still exists after removal: %v", err)
 	}
-	if companionRetrievalReady(cfg) {
-		t.Fatal("companionRetrievalReady says an absent index is usable")
-	}
-
 	handler, token, _ := companionTestListener(t)
 	for _, mode := range []companion.ContextMode{companion.ModeThink, companion.ModeSearch, companion.ModeMeetingPrep} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -550,10 +547,247 @@ func TestCompanionTodayNeverBuildsAnIndex(t *testing.T) {
 	}
 }
 
-// TestCompanionRetrievalReadyRefusesEveryUnusableIndex pins the gate's own
-// branches, so a future edit that loosens one is visible here rather than in a
-// rebuild nobody notices.
-func TestCompanionRetrievalReadyRefusesEveryUnusableIndex(t *testing.T) {
+// TestReadOnlyRefusesEveryDurableRepair drives the read-only marker against the
+// repair sites themselves.
+//
+// The previous shape asked a boundary predicate whether the index looked usable
+// and called the kernel only when it did. That is a guess about which paths
+// repair, and it was wrong twice — meeting_prep reached ensureIndexDB through
+// the commitment inventory, think reached healShareIndex through a subscribed
+// corpus — and it raced besides. This asserts the property at the site that
+// decides it: with the marker on, a repair returns ErrReadOnlyRepairNeeded and
+// writes nothing.
+func TestReadOnlyRefusesEveryDurableRepair(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--scope", "personal", "--type", "fact", "--title", "A", "--text", "B")
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := dbPath(cfg)
+	readOnly := withReadOnly(testCtx(t))
+
+	t.Run("rebuild refuses and writes nothing", func(t *testing.T) {
+		if rerr := os.Remove(index); rerr != nil {
+			t.Fatal(rerr)
+		}
+		if _, rerr := rebuildIndex(readOnly, cfg); !errors.Is(rerr, ErrReadOnlyRepairNeeded) {
+			t.Fatalf("rebuildIndex under the marker = %v, want ErrReadOnlyRepairNeeded", rerr)
+		}
+		if _, serr := os.Stat(index); !os.IsNotExist(serr) {
+			t.Fatal("a refused rebuild still created the index")
+		}
+	})
+
+	t.Run("hybridSearch refuses rather than rebuilding", func(t *testing.T) {
+		if _, serr := os.Stat(index); !os.IsNotExist(serr) {
+			t.Fatal("the fixture expects an absent index")
+		}
+		if _, serr := hybridSearch(readOnly, cfg, "anything", "", 4); !errors.Is(serr, ErrReadOnlyRepairNeeded) {
+			t.Fatalf("hybridSearch under the marker = %v, want ErrReadOnlyRepairNeeded", serr)
+		}
+		if _, serr := os.Stat(index); !os.IsNotExist(serr) {
+			t.Fatal("a refused search still built the index")
+		}
+	})
+
+	t.Run("the commitment inventory refuses rather than rebuilding", func(t *testing.T) {
+		// This is the path meeting_prep and the brief both reach, and the one
+		// the round-2 review found still writing.
+		if _, ierr := readCommitmentInventory(readOnly, cfg, cfg.OperationClock()); !errors.Is(ierr, ErrReadOnlyRepairNeeded) {
+			t.Fatalf("readCommitmentInventory under the marker = %v, want ErrReadOnlyRepairNeeded", ierr)
+		}
+		if _, serr := os.Stat(index); !os.IsNotExist(serr) {
+			t.Fatal("a refused inventory read still built the index")
+		}
+	})
+
+	t.Run("healShareIndex refuses rather than publishing a repair", func(t *testing.T) {
+		if herr := healShareIndex(readOnly, cfg, "any-share"); !errors.Is(herr, ErrReadOnlyRepairNeeded) {
+			t.Fatalf("healShareIndex under the marker = %v, want ErrReadOnlyRepairNeeded", herr)
+		}
+	})
+
+	t.Run("a schema-stale index is refused, not healed", func(t *testing.T) {
+		// openIndexRO's auto-heal is a rebuild, so it lands on the same guard.
+		// The fixture is a valid database whose user_version this binary does
+		// not understand.
+		if _, rerr := rebuildIndex(testCtx(t), cfg); rerr != nil {
+			t.Fatal(rerr)
+		}
+		db, derr := sql.Open("sqlite", rwIndexDSN(cfg))
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		if _, derr := db.Exec(`PRAGMA user_version = 999`); derr != nil {
+			t.Fatal(derr)
+		}
+		if cerr := db.Close(); cerr != nil {
+			t.Fatal(cerr)
+		}
+		before, serr := os.Stat(index)
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		if _, oerr := openIndexRO(readOnly, cfg); oerr == nil {
+			t.Fatal("a schema-stale index opened cleanly under the marker")
+		}
+		after, serr := os.Stat(index)
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+			t.Fatal("the schema-stale index was rewritten under the read-only marker")
+		}
+	})
+}
+
+// TestCompanionMeetingPrepWithARealEventBuildsNoIndex is the round-2 finding,
+// reproduced and closed.
+//
+// The earlier no-index test seeded no calendar event, so buildNextMeetingBrief
+// returned its empty brief before it ever reached the commitment inventory —
+// the test passed while the write path it claimed to cover was never entered.
+// This one seeds a real event with real attendees, so the brief goes all the way
+// to readCommitmentInventory, which is where ensureIndexDB used to rebuild.
+func TestCompanionMeetingPrepWithARealEventBuildsNoIndex(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	pinPrepClock(t, now)
+	// The self address has to be resolvable or the brief gaps out before it
+	// reaches the commitment inventory — which is exactly how the test this
+	// replaces managed to pass without covering anything.
+	if err := saveSources(cfg, []Source{{
+		Name: "gmail", Type: "gmail", Email: "me@a.com",
+		Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, eventMemFull("evt", "Acme sync", now.Add(2*time.Hour).Format(time.RFC3339),
+		map[string]string{"riya@a.com": "Riya", "me@a.com": "Me"}, "me@a.com", "riya@a.com")); err != nil {
+		t.Fatal(err)
+	}
+	// Build the index once so the event is real and resolvable, then take it
+	// away: this is the state a phone can find the Mac in.
+	if _, err := rebuildIndex(testCtx(t), cfg); err != nil {
+		t.Fatal(err)
+	}
+	index := dbPath(cfg)
+	if err := os.Remove(index); err != nil {
+		t.Fatal(err)
+	}
+
+	// The unmarked path still reaches the event, which proves the fixture is
+	// live rather than exiting early like the one it replaces.
+	brief, err := buildNextMeetingBrief(testCtx(t), cfg, now, nil, 0, meetingBriefDefaultPerGuest)
+	if err != nil {
+		t.Fatalf("the fixture does not produce a brief at all: %v", err)
+	}
+	if brief.Event == nil {
+		t.Fatal("the fixture seeded no reachable event, so it cannot exercise the commitment inventory")
+	}
+	if _, serr := os.Stat(index); serr != nil {
+		t.Fatal("the unmarked brief did not rebuild; the fixture no longer covers the write path")
+	}
+	if err := os.Remove(index); err != nil {
+		t.Fatal(err)
+	}
+
+	handler, token, _ := companionTestListener(t)
+	body := `{"schema":"mora.companion.context.request","schema_version":1,"mode":"meeting_prep","query":"Riya"}`
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, companionRequest(t, http.MethodPost, companion.RouteContext, token, body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("meeting_prep = %d, want 200\n%s", rec.Code, rec.Body.String())
+	}
+	if _, serr := os.Stat(index); !os.IsNotExist(serr) {
+		t.Fatal("meeting_prep with a real event BUILT AN INDEX")
+	}
+	var bundle companion.ContextBundle
+	if uerr := companion.Unmarshal(rec.Body.Bytes(), &bundle); uerr != nil {
+		t.Fatalf("meeting_prep produced a bundle the contract rejects: %v", uerr)
+	}
+	var said bool
+	for _, gap := range bundle.Gaps {
+		if strings.Contains(gap, "index") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("meeting_prep returned a bundle without saying the index is unreadable: %v", bundle.Gaps)
+	}
+}
+
+// TestCompanionThinkPublishesNoShareRepair is the other round-2 finding.
+//
+// A corrupt subscribed-share index makes search re-cut and PUBLISH a repair
+// generation from the head's frozen corpus. That is the right answer for a human
+// running `mora search`; it is a durable write triggered by an authenticated
+// HTTP request, which is not.
+func TestCompanionThinkPublishesNoShareRepair(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
+	})
+	commit, ok, err := resolvePublishedCommit(cfg, "neil")
+	if err != nil || !ok {
+		t.Fatalf("no published generation to corrupt: %v", err)
+	}
+	if err := os.WriteFile(shareGenIndexPath(cfg, "neil", commit.Gen), []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	handler, token, _ := companionTestListener(t)
+	body := `{"schema":"mora.companion.context.request","schema_version":1,"mode":"think","query":"sqlite"}`
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, companionRequest(t, http.MethodPost, companion.RouteContext, token, body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("think = %d, want 200\n%s", rec.Code, rec.Body.String())
+	}
+
+	after, ok, err := resolvePublishedCommit(cfg, "neil")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("the subscription lost its published generation")
+	}
+	if after.Gen != commit.Gen {
+		t.Fatalf("think PUBLISHED a repair generation: %s -> %s", commit.Gen, after.Gen)
+	}
+
+	// And the unmarked path still heals, so the refusal is the marker's doing
+	// and not a broken heal.
+	if _, _, serr := searchSharedCorporaProbe(t, cfg); serr != nil {
+		t.Fatalf("the unmarked search failed: %v", serr)
+	}
+	healed, ok, err := resolvePublishedCommit(cfg, "neil")
+	if err != nil || !ok {
+		t.Fatalf("resolve after the unmarked search: %v", err)
+	}
+	if healed.Gen == commit.Gen {
+		t.Fatal("the unmarked search did not heal; the fixture no longer covers the write path")
+	}
+}
+
+// searchSharedCorporaProbe runs the shared-corpus arm with an ordinary context,
+// which is the path that heals.
+func searchSharedCorporaProbe(t *testing.T, cfg Config) ([][]Memory, bool, error) {
+	t.Helper()
+	res, err := searchSharedCorpora(testCtx(t), cfg, "sqlite", "", 8)
+	return res, true, err
+}
+
+// TestReadOnlyIsOffForEveryOtherCaller is the regression guard the ruling asked
+// for. The marker must change nothing for the CLI, MCP, or the generic loopback
+// API: those callers still get the self-healing kernel they have always had.
+func TestReadOnlyIsOffForEveryOtherCaller(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	run(t, "write", "--scope", "personal", "--type", "fact", "--title", "A", "--text", "B")
@@ -563,84 +797,33 @@ func TestCompanionRetrievalReadyRefusesEveryUnusableIndex(t *testing.T) {
 	}
 	index := dbPath(cfg)
 
-	if !companionRetrievalReady(cfg) {
-		t.Fatal("a freshly built index is not readable")
+	if readOnlyCall(testCtx(t)) {
+		t.Fatal("an ordinary context reads as read-only")
+	}
+	if readOnlyCall(nil) { //nolint:staticcheck // a nil context is exactly the case under test
+		t.Fatal("a nil context reads as read-only; the guard must fail open for callers that pass one")
 	}
 
-	t.Run("absent", func(t *testing.T) {
-		saved, rerr := os.ReadFile(index)
-		if rerr != nil {
-			t.Fatal(rerr)
-		}
-		if rerr := os.Remove(index); rerr != nil {
-			t.Fatal(rerr)
-		}
-		defer func() {
-			if werr := os.WriteFile(index, saved, 0o600); werr != nil {
-				t.Fatal(werr)
-			}
-		}()
-		if companionRetrievalReady(cfg) {
-			t.Fatal("an absent index reads as usable")
-		}
-	})
+	if rerr := os.Remove(index); rerr != nil {
+		t.Fatal(rerr)
+	}
+	// An unmarked search rebuilds, exactly as it did before this node.
+	if _, serr := hybridSearch(testCtx(t), cfg, "A", "", 4); serr != nil {
+		t.Fatalf("an unmarked search failed: %v", serr)
+	}
+	if _, serr := os.Stat(index); serr != nil {
+		t.Fatalf("an unmarked search did not rebuild the index: %v", serr)
+	}
 
-	t.Run("schema stale", func(t *testing.T) {
-		// A valid database with the graph tables present, whose user_version
-		// this binary does not understand. graphReady says yes to it, so this
-		// is the ONLY case that reaches the schema check — and it is the case
-		// that matters, because openIndexRO's answer to a schema-stale index is
-		// to rebuild it.
-		db, derr := sql.Open("sqlite", rwIndexDSN(cfg))
-		if derr != nil {
-			t.Fatal(derr)
-		}
-		var restore int
-		if derr := db.QueryRow(`PRAGMA user_version`).Scan(&restore); derr != nil {
-			t.Fatal(derr)
-		}
-		if _, derr := db.Exec(`PRAGMA user_version = 999`); derr != nil {
-			t.Fatal(derr)
-		}
-		if cerr := db.Close(); cerr != nil {
-			t.Fatal(cerr)
-		}
-		defer func() {
-			back, berr := sql.Open("sqlite", rwIndexDSN(cfg))
-			if berr != nil {
-				t.Fatal(berr)
-			}
-			defer back.Close()
-			if _, berr := back.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, restore)); berr != nil {
-				t.Fatal(berr)
-			}
-		}()
-
-		if !graphReady(cfg) {
-			t.Fatal("the fixture broke graphReady, so it cannot exercise the schema check")
-		}
-		if companionRetrievalReady(cfg) {
-			t.Fatal("a schema-stale index reads as usable; openIndexRO would rebuild it")
-		}
-	})
-
-	t.Run("not a database", func(t *testing.T) {
-		saved, rerr := os.ReadFile(index)
-		if rerr != nil {
-			t.Fatal(rerr)
-		}
-		if werr := os.WriteFile(index, []byte("this is not a sqlite file"), 0o600); werr != nil {
-			t.Fatal(werr)
-		}
-		defer func() {
-			if werr := os.WriteFile(index, saved, 0o600); werr != nil {
-				t.Fatal(werr)
-			}
-		}()
-		if companionRetrievalReady(cfg) {
-			t.Fatal("a corrupt index reads as usable")
-		}
-	})
+	if rerr := os.Remove(index); rerr != nil {
+		t.Fatal(rerr)
+	}
+	if _, ierr := readCommitmentInventory(testCtx(t), cfg, cfg.OperationClock()); ierr != nil {
+		t.Fatalf("an unmarked inventory read failed: %v", ierr)
+	}
+	if _, serr := os.Stat(index); serr != nil {
+		t.Fatalf("an unmarked inventory read did not rebuild the index: %v", serr)
+	}
 }
 
 // TestCompanionTodayIsCachedUntilTheIndexMoves pins the work budget's other
@@ -758,101 +941,129 @@ func TestCompanionHealthStateIsTheKernelAggregate(t *testing.T) {
 	}
 }
 
-// TestCompanionFreshnessKeepsEveryKernelState is the fidelity table: every
-// kernel state crossed with an empty and a non-empty last_success_at, and with
-// and without a typed error code.
+// TestCompanionFreshnessCoversEveryCombination is the fidelity table, and it is
+// a real Cartesian product this time.
 //
-// The row that used to be wrong is the first one. A failure with no successful
-// sync behind it — which is exactly what an unreadable sources.json produces,
-// state failed with an empty last_success_at and a data.corrupt code —
-// collapsed to plain "never" and dropped the code on the way out. A phone then
-// showed a source that had simply never run, rather than one that is broken
-// right now and says why.
-func TestCompanionFreshnessKeepsEveryKernelState(t *testing.T) {
+// Four kernel states crossed with present/absent last_success_at crossed with
+// present/absent error_code is sixteen rows, and the previous version claimed
+// the table while covering nine of them. Every output field is asserted, because
+// the failures this exists to catch are field-shaped: a dropped error_code, an
+// age that survived a state change, a timestamp on a row that claims never.
+//
+// The row that used to be wrong is failed/absent/present — an unreadable
+// sources.json — which collapsed to "never" and lost its code, so a phone showed
+// a source that had simply never run rather than one that is broken now.
+func TestCompanionFreshnessCoversEveryCombination(t *testing.T) {
 	const generated = "2026-09-04T12:00:00Z"
 	const last = "2026-09-04T11:00:00Z"
+	const hour = int64(3600)
 
-	for _, tc := range []struct {
-		name string
-		src  healthpkg.Source
-		want companion.SourceFreshness
+	states := []struct {
+		name   string
+		kernel string
 	}{
-		{
-			name: "failed with no last success keeps failed and its code",
-			src:  healthpkg.Source{Key: "sources_config", State: healthpkg.Failed, ErrorCode: errCodeDataCorrupt},
-			want: companion.SourceFreshness{Key: "sources_config", State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrInternal},
-		},
-		{
-			name: "failed with no last success and no code still names a reason",
-			src:  healthpkg.Source{Key: "gmail", State: healthpkg.Failed},
-			want: companion.SourceFreshness{Key: "gmail", State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrInternal},
-		},
-		{
-			name: "failed with a last success keeps the age too",
-			src:  healthpkg.Source{Key: "gmail", State: healthpkg.Failed, LastSuccessAt: last, ErrorCode: errCodeConnectorUnauthorized},
-			want: companion.SourceFreshness{Key: "gmail", State: companion.FreshnessFailed, AgeSeconds: 3600, LastSuccessAt: last, ErrorCode: companion.ErrAuthExpired},
-		},
-		{
-			name: "failed with an unparseable last success keeps failed",
-			src:  healthpkg.Source{Key: "gmail", State: healthpkg.Failed, LastSuccessAt: "last tuesday", ErrorCode: errCodeConnectorUnavailable},
-			want: companion.SourceFreshness{Key: "gmail", State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrSourceUnavailable},
-		},
-		{
-			name: "stale keeps its typed reason",
-			src:  healthpkg.Source{Key: "imessage", State: healthpkg.Stale, LastSuccessAt: last, ErrorCode: errCodeConnectorStale},
-			want: companion.SourceFreshness{Key: "imessage", State: companion.FreshnessStale, AgeSeconds: 3600, LastSuccessAt: last, ErrorCode: companion.ErrSourceUnavailable},
-		},
-		{
-			name: "stale with no reason carries none",
-			src:  healthpkg.Source{Key: "imessage", State: healthpkg.Stale, LastSuccessAt: last},
-			want: companion.SourceFreshness{Key: "imessage", State: companion.FreshnessStale, AgeSeconds: 3600, LastSuccessAt: last},
-		},
-		{
-			name: "stale with no last success cannot claim an age",
-			src:  healthpkg.Source{Key: "imessage", State: healthpkg.Stale},
-			want: companion.SourceFreshness{Key: "imessage", State: companion.FreshnessNever, AgeSeconds: -1},
-		},
-		{
-			name: "fresh drops any error code, by contract",
-			src:  healthpkg.Source{Key: "github", State: healthpkg.Fresh, LastSuccessAt: last, ErrorCode: errCodeConnectorStale},
-			want: companion.SourceFreshness{Key: "github", State: companion.FreshnessFresh, AgeSeconds: 3600, LastSuccessAt: last},
-		},
-		{
-			name: "fresh with no last success cannot claim freshness",
-			src:  healthpkg.Source{Key: "github", State: healthpkg.Fresh},
-			want: companion.SourceFreshness{Key: "github", State: companion.FreshnessNever, AgeSeconds: -1},
-		},
-		{
-			name: "never carries no age, no stamp and no code",
-			src:  healthpkg.Source{Key: "applecalendar", State: healthpkg.Never, ErrorCode: errCodeConnectorUnavailable},
-			want: companion.SourceFreshness{Key: "applecalendar", State: companion.FreshnessNever, AgeSeconds: -1},
-		},
-		{
-			name: "a state the kernel grows later fails closed to never",
-			src:  healthpkg.Source{Key: "future", State: "partially-synced", LastSuccessAt: last},
-			want: companion.SourceFreshness{Key: "future", State: companion.FreshnessNever, AgeSeconds: -1},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rows := companionFreshness([]healthpkg.Source{tc.src}, generated)
-			if len(rows) != 1 {
-				t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+		{"fresh", healthpkg.Fresh},
+		{"stale", healthpkg.Stale},
+		{"failed", healthpkg.Failed},
+		{"never", healthpkg.Never},
+	}
+	stamps := []struct {
+		name  string
+		value string
+	}{
+		{"with a last success", last},
+		{"with no last success", ""},
+	}
+	codes := []struct {
+		name  string
+		value string
+	}{
+		{"with a typed code", errCodeConnectorUnauthorized},
+		{"with no code", ""},
+	}
+
+	// want is the whole published output for each of the sixteen inputs.
+	want := map[string]companion.SourceFreshness{
+		"fresh/with a last success/with a typed code":   {State: companion.FreshnessFresh, AgeSeconds: hour, LastSuccessAt: last},
+		"fresh/with a last success/with no code":        {State: companion.FreshnessFresh, AgeSeconds: hour, LastSuccessAt: last},
+		"fresh/with no last success/with a typed code":  {State: companion.FreshnessNever, AgeSeconds: -1},
+		"fresh/with no last success/with no code":       {State: companion.FreshnessNever, AgeSeconds: -1},
+		"stale/with a last success/with a typed code":   {State: companion.FreshnessStale, AgeSeconds: hour, LastSuccessAt: last, ErrorCode: companion.ErrAuthExpired},
+		"stale/with a last success/with no code":        {State: companion.FreshnessStale, AgeSeconds: hour, LastSuccessAt: last},
+		"stale/with no last success/with a typed code":  {State: companion.FreshnessNever, AgeSeconds: -1},
+		"stale/with no last success/with no code":       {State: companion.FreshnessNever, AgeSeconds: -1},
+		"failed/with a last success/with a typed code":  {State: companion.FreshnessFailed, AgeSeconds: hour, LastSuccessAt: last, ErrorCode: companion.ErrAuthExpired},
+		"failed/with a last success/with no code":       {State: companion.FreshnessFailed, AgeSeconds: hour, LastSuccessAt: last, ErrorCode: companion.ErrInternal},
+		"failed/with no last success/with a typed code": {State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrAuthExpired},
+		"failed/with no last success/with no code":      {State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrInternal},
+		"never/with a last success/with a typed code":   {State: companion.FreshnessNever, AgeSeconds: -1},
+		"never/with a last success/with no code":        {State: companion.FreshnessNever, AgeSeconds: -1},
+		"never/with no last success/with a typed code":  {State: companion.FreshnessNever, AgeSeconds: -1},
+		"never/with no last success/with no code":       {State: companion.FreshnessNever, AgeSeconds: -1},
+	}
+	if len(want) != len(states)*len(stamps)*len(codes) {
+		t.Fatalf("the expectation table has %d rows, want %d — it is not the full product",
+			len(want), len(states)*len(stamps)*len(codes))
+	}
+
+	covered := map[string]bool{}
+	for _, st := range states {
+		for _, ts := range stamps {
+			for _, code := range codes {
+				name := st.name + "/" + ts.name + "/" + code.name
+				t.Run(name, func(t *testing.T) {
+					expected, ok := want[name]
+					if !ok {
+						t.Fatalf("no expectation for %q", name)
+					}
+					expected.Key = "gmail:work"
+					covered[name] = true
+
+					rows := companionFreshness([]healthpkg.Source{{
+						Key:           "gmail:work",
+						State:         st.kernel,
+						LastSuccessAt: ts.value,
+						ErrorCode:     code.value,
+					}}, generated)
+					if len(rows) != 1 {
+						t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+					}
+					got := rows[0]
+
+					// Every field, named, so a regression says which one moved.
+					if got.Key != expected.Key {
+						t.Fatalf("key = %q, want %q", got.Key, expected.Key)
+					}
+					if got.State != expected.State {
+						t.Fatalf("state = %q, want %q", got.State, expected.State)
+					}
+					if got.AgeSeconds != expected.AgeSeconds {
+						t.Fatalf("age_seconds = %d, want %d", got.AgeSeconds, expected.AgeSeconds)
+					}
+					if got.LastSuccessAt != expected.LastSuccessAt {
+						t.Fatalf("last_success_at = %q, want %q", got.LastSuccessAt, expected.LastSuccessAt)
+					}
+					if got.ErrorCode != expected.ErrorCode {
+						t.Fatalf("error_code = %q, want %q", got.ErrorCode, expected.ErrorCode)
+					}
+
+					// And the contract must accept it, or the fidelity is
+					// theoretical.
+					projection := companion.NewHealthProjection()
+					projection.GeneratedAt = generated
+					projection.State = companion.HealthUnhealthy
+					projection.Policy = companion.PolicyReadonly
+					projection.Index = companion.IndexHealth{State: companion.HealthUnhealthy}
+					projection.Sources = rows
+					if err := projection.Validate(); err != nil {
+						t.Fatalf("the translated row does not satisfy the contract: %v", err)
+					}
+				})
 			}
-			if rows[0] != tc.want {
-				t.Fatalf("row = %+v\nwant   %+v", rows[0], tc.want)
-			}
-			// The contract has to accept what the mapping produced, or the
-			// fidelity is theoretical.
-			projection := companion.NewHealthProjection()
-			projection.GeneratedAt = generated
-			projection.State = companion.HealthUnhealthy
-			projection.Policy = companion.PolicyReadonly
-			projection.Index = companion.IndexHealth{State: companion.HealthUnhealthy}
-			projection.Sources = rows
-			if err := projection.Validate(); err != nil {
-				t.Fatalf("the translated row does not satisfy the contract: %v", err)
-			}
-		})
+		}
+	}
+	if len(covered) != len(want) {
+		t.Fatalf("drove %d of %d combinations", len(covered), len(want))
 	}
 }
 

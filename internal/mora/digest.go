@@ -192,6 +192,16 @@ type briefOpts struct {
 	entityIDSet map[string]bool
 	scope       string
 	sinceDays   int
+	// ctx carries the caller's context into the one place digest assembly
+	// reaches durable-repair code: digestCommitmentInventory, which loads the
+	// typed commitment inventory through ensureIndexDB. It used to fabricate a
+	// context.Background() there, which silently discarded the companion
+	// listener's read-only marker and let an authenticated phone request
+	// rebuild the whole index (graph node N12).
+	//
+	// nil for every existing caller, and readOnlyCall(nil) is false, so the
+	// rebuild-on-missing behavior every other surface depends on is unchanged.
+	ctx context.Context
 }
 
 // filtered reports whether any preview-only filter is active. The persisted
@@ -230,7 +240,7 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	if err != nil {
 		return Digest{}, err
 	}
-	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg, now)
+	commitmentsByMemory, gated, err := digestCommitmentInventory(opts.ctx, cfg, now)
 	if err != nil {
 		return Digest{}, err
 	}
@@ -261,7 +271,7 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 // materialization shared with meeting briefs. A missing DataDir is the explicit seam
 // used by pure digest assembly tests; a real loaded Config always gates on the typed
 // inventory.
-func digestCommitmentInventory(cfg Config, at time.Time) (map[string][]Commitment, bool, error) {
+func digestCommitmentInventory(ctx context.Context, cfg Config, at time.Time) (map[string][]Commitment, bool, error) {
 	// Pure resolver tests may intentionally construct only VaultDir/StateDir and
 	// have no index location. A real loaded Config always has DataDir; do not turn
 	// an otherwise valid empty/filtered brief into an attempt to create "index.db"
@@ -269,7 +279,10 @@ func digestCommitmentInventory(cfg Config, at time.Time) (map[string][]Commitmen
 	if strings.TrimSpace(cfg.DataDir) == "" {
 		return nil, false, nil
 	}
-	inventory, err := readCommitmentInventory(context.Background(), cfg, at)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	inventory, err := readCommitmentInventory(ctx, cfg, at)
 	if err != nil {
 		return nil, false, err
 	}
@@ -871,7 +884,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 	if err != nil {
 		return Digest{}, "", err
 	}
-	commitmentsByMemory, gated, err := digestCommitmentInventory(cfg, now)
+	commitmentsByMemory, gated, err := digestCommitmentInventory(opts.ctx, cfg, now)
 	if err != nil {
 		return Digest{}, "", err
 	}

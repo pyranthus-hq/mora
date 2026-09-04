@@ -145,17 +145,25 @@ type ServerOptions struct {
 	Reader Reader
 	// Now is the clock, injected so a test can pin it.
 	Now func() time.Time
+	// KernelTimeout bounds one kernel call. Zero means KernelTimeout.
+	//
+	// It is configurable because the deadline PATH has to be reachable in a
+	// test with a real, live parent context — the previous deadline test handed
+	// the handler an already-expired context, which proved the error mapping
+	// and nothing about the timeout actually firing.
+	KernelTimeout time.Duration
 	// Log receives the startup banner and nothing else.
 	Log io.Writer
 }
 
 // Server is the narrow companion listener.
 type Server struct {
-	addr    string
-	devices Authenticator
-	reader  Reader
-	now     func() time.Time
-	log     io.Writer
+	addr          string
+	devices       Authenticator
+	reader        Reader
+	now           func() time.Time
+	log           io.Writer
+	kernelTimeout time.Duration
 
 	// kernel is the work budget, held for the duration of one kernel call.
 	kernel chan struct{}
@@ -195,14 +203,19 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if log == nil {
 		log = io.Discard
 	}
+	timeout := o.KernelTimeout
+	if timeout <= 0 {
+		timeout = KernelTimeout
+	}
 	return &Server{
-		addr:    o.Addr,
-		devices: o.Devices,
-		reader:  o.Reader,
-		now:     now,
-		log:     log,
-		kernel:  make(chan struct{}, maxInFlightKernelCalls),
-		seen:    map[string]time.Time{},
+		addr:          o.Addr,
+		devices:       o.Devices,
+		reader:        o.Reader,
+		now:           now,
+		log:           log,
+		kernelTimeout: timeout,
+		kernel:        make(chan struct{}, maxInFlightKernelCalls),
+		seen:          map[string]time.Time{},
 	}, nil
 }
 
@@ -335,12 +348,10 @@ func headerBytes(h http.Header) int {
 // the path is real or not.
 func (s *Server) authGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		dev, ok := s.authorize(r)
-		if !ok {
+		if _, ok := s.authorize(r); !ok {
 			writeUnauthorized(w)
 			return
 		}
-		s.markSeen(dev.DeviceID)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -399,34 +410,24 @@ func (s *Server) requireDevice(w http.ResponseWriter, r *http.Request) (Device, 
 	return dev, true
 }
 
-// begin is the handler boundary: method, credential, work budget, deadline.
+// admit is the handler boundary: method, then credential.
 //
 // The order is the point. The method check runs FIRST, before any credential
 // work, because a method this route does not serve is not a question about who
 // is asking — answering it with a 401 would be a lie, and doing the
-// authentication first would mean an unlisted method still costs a hash. Then
-// the credential, then the budget, then the clock.
+// authentication first would mean an unlisted method still costs a hash.
 //
-// It returns the context the kernel call must use and a release function the
-// caller must defer. ok is false when a response has already been written.
-func (s *Server) begin(w http.ResponseWriter, r *http.Request, method string) (context.Context, func(), bool) {
+// It deliberately does NOT take the work budget or start the clock. A route that
+// does no kernel work should not be able to 503, and a route that reads a body
+// should read it before it holds a slot. ok is false when a response has already
+// been written.
+func (s *Server) admit(w http.ResponseWriter, r *http.Request, method string) (Device, bool) {
 	if r.Method != method {
 		w.Header().Set("Allow", method)
 		writeOpaque(w, http.StatusMethodNotAllowed, "method_not_allowed")
-		return nil, nil, false
+		return Device{}, false
 	}
-	if _, ok := s.requireDevice(w, r); !ok {
-		return nil, nil, false
-	}
-	release, ok := s.acquire(w)
-	if !ok {
-		return nil, nil, false
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), KernelTimeout)
-	return ctx, func() {
-		cancel()
-		release()
-	}, true
+	return s.requireDevice(w, r)
 }
 
 // acquire takes the work budget, or refuses immediately.
@@ -435,15 +436,48 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request, method string) (c
 // way to hold sockets and memory while the caller has already given up. A 503
 // with a Retry-After is a smaller lie than a connection that eventually answers
 // something stale.
+//
+// The returned release is idempotent. Handlers release the slot BEFORE writing
+// the response body and again through a defer, because a slow client reading a
+// 4 MiB projection down a phone's network must not be holding the Mac's only
+// kernel slot while it does.
 func (s *Server) acquire(w http.ResponseWriter) (func(), bool) {
 	select {
 	case s.kernel <- struct{}{}:
-		return func() { <-s.kernel }, true
+		var once sync.Once
+		return func() { once.Do(func() { <-s.kernel }) }, true
 	default:
 		w.Header().Set("Retry-After", strconv.Itoa(RetryAfterSeconds))
 		writeOpaque(w, http.StatusServiceUnavailable, "busy")
 		return nil, false
 	}
+}
+
+// budgeted runs one kernel call under the work budget and the deadline.
+//
+// It exists so the slot's lifetime is exactly the kernel call: taken after the
+// request is fully read and validated, released before a byte of the response is
+// written. Everything outside that window is the listener's own cheap work or
+// the client's network, and neither should be able to shut the other phone out.
+func (s *Server) budgeted(w http.ResponseWriter, r *http.Request, call func(context.Context) error) bool {
+	release, ok := s.acquire(w)
+	if !ok {
+		return false
+	}
+	// The release is scoped to THIS function, and that is the whole design: the
+	// slot is taken here, the kernel call happens here, and the slot goes back
+	// when this returns — which is before the caller writes a byte of the
+	// response. Holding it across the write would mean a phone draining a 4 MiB
+	// projection over a slow network keeps every other request out.
+	defer release()
+	ctx, cancel := context.WithTimeout(r.Context(), s.kernelTimeout)
+	defer cancel()
+	err := call(ctx)
+	if err != nil {
+		writeKernelFailure(w, err)
+		return false
+	}
+	return true
 }
 
 // writeKernelFailure turns a kernel error into an opaque answer.
@@ -461,13 +495,21 @@ func writeKernelFailure(w http.ResponseWriter, err error) {
 	writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
 }
 
-// markSeen stamps last_seen_at, throttled and best-effort.
+// markSeen stamps last_seen_at, debounced in memory and best-effort.
 //
-// Throttled because the stamp is a durable write behind the registry lock, and
-// a write per request would serialize a phone's traffic behind its own audit
-// trail. Best-effort because a read must not fail on account of a stamp: the
-// device authenticated, the answer is owed, and a lock held by a concurrent
-// `mora companion revoke` is a normal thing to lose a race to.
+// It is called from exactly one place: after a route has answered a device
+// successfully. Not from the guard chain, which is where it used to live — a
+// 405, a 503 and a rejected body all ran through that chain, so a client
+// hammering an unsupported method could drive a durable write per request. A
+// last-seen stamp records that a device was SERVED, and nothing else is a
+// serving.
+//
+// Debounced because the stamp is a durable write behind the registry lock, and a
+// write per request would serialize a phone's traffic behind its own audit
+// trail. The window is per device and lives in memory: a restart loses the
+// debounce, not the stamp. Best-effort because a read must not fail on account
+// of a stamp — the device authenticated, the answer is owed, and a lock held by
+// a concurrent `mora companion revoke` is a normal thing to lose a race to.
 func (s *Server) markSeen(deviceID string) {
 	now := s.now()
 	s.mu.Lock()
@@ -486,39 +528,53 @@ func (s *Server) markSeen(deviceID string) {
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleToday(w http.ResponseWriter, r *http.Request) {
-	ctx, done, ok := s.begin(w, r, http.MethodGet)
+	dev, ok := s.admit(w, r, http.MethodGet)
 	if !ok {
 		return
 	}
-	defer done()
-	projection, err := s.reader.Today(ctx)
-	if err != nil {
-		writeKernelFailure(w, err)
+	var projection TodayProjection
+	if !s.budgeted(w, r, func(ctx context.Context) error {
+		var err error
+		projection, err = s.reader.Today(ctx)
+		return err
+	}) {
 		return
 	}
 	s.writePayload(w, &projection)
+	s.markSeen(dev.DeviceID)
 }
 
+// handleHealth is deliberately OUTSIDE the work budget.
+//
+// Health is the route a phone reads when something looks wrong, and a health
+// check that answers "too busy" is the one answer it must never give: a client
+// cannot tell that from the Mac being down. It earns the exemption by being
+// cheap — a health snapshot and one COUNT over the read-only index, no vault
+// walk and no retrieval — so it cannot be the thing that makes the Mac busy.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ctx, done, ok := s.begin(w, r, http.MethodGet)
+	dev, ok := s.admit(w, r, http.MethodGet)
 	if !ok {
 		return
 	}
-	defer done()
+	ctx, cancel := context.WithTimeout(r.Context(), s.kernelTimeout)
+	defer cancel()
 	projection, err := s.reader.Health(ctx)
 	if err != nil {
 		writeKernelFailure(w, err)
 		return
 	}
 	s.writePayload(w, &projection)
+	s.markSeen(dev.DeviceID)
 }
 
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
-	ctx, done, ok := s.begin(w, r, http.MethodPost)
+	dev, ok := s.admit(w, r, http.MethodPost)
 	if !ok {
 		return
 	}
-	defer done()
+	// The body is read and validated BEFORE the budget is taken. A slow client
+	// dribbling a request body must not hold the Mac's only kernel slot while it
+	// does, and a malformed body should cost a decode rather than a slot.
 	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBytes+1))
 	if err != nil {
 		writeOpaque(w, http.StatusRequestEntityTooLarge, CodeTooLarge)
@@ -549,12 +605,17 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		writeOpaque(w, http.StatusBadRequest, CodeMalformed)
 		return
 	}
-	bundle, err := s.reader.Context(ctx, req)
-	if err != nil {
-		writeKernelFailure(w, err)
+
+	var bundle ContextBundle
+	if !s.budgeted(w, r, func(ctx context.Context) error {
+		var err error
+		bundle, err = s.reader.Context(ctx, req)
+		return err
+	}) {
 		return
 	}
 	s.writePayload(w, &bundle)
+	s.markSeen(dev.DeviceID)
 }
 
 // writePayload marshals through Marshal, which validates.
