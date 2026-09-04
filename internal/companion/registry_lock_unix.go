@@ -81,7 +81,12 @@ func (l *lockFile) stillOwns() bool {
 // release drops the lock by closing the descriptor. The kernel would do this
 // anyway on exit; doing it explicitly is what lets a second caller in the same
 // process proceed.
-func (l *lockFile) release() error { return l.fh.Close() }
+//
+// It returns nothing on purpose. Nothing is ever written to the lock file, so a
+// close error carries no lost data, and the lock is released by the kernel
+// whether or not close reports success — there is no failure here a caller
+// could act on.
+func (l *lockFile) release() { l.fh.Close() }
 
 // syncDir flushes a directory entry so a rename survives a crash. Without it an
 // atomic rename is only atomic with respect to other readers, not with respect

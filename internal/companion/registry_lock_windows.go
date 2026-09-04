@@ -69,8 +69,10 @@ func acquireLock(path string, _ os.FileMode, timeout, poll time.Duration) (*lock
 // implementation guards against cannot occur.
 func (l *lockFile) stillOwns() bool { return true }
 
-// release drops the lock by closing the handle.
-func (l *lockFile) release() error { return syscall.CloseHandle(l.handle) }
+// release drops the lock by closing the handle. It returns nothing for the same
+// reason the POSIX implementation does: nothing is written to the lock file, and
+// the kernel drops the lock regardless of what CloseHandle reports.
+func (l *lockFile) release() { syscall.CloseHandle(l.handle) }
 
 // syncDir is a no-op. Windows cannot open a directory as a file for flushing,
 // and NTFS orders the metadata write that publishes a rename against the file

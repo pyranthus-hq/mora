@@ -826,16 +826,12 @@ func TestRegistryLockIsMutuallyExclusive(t *testing.T) {
 		t.Fatalf("a contended lock returned %v, want ErrLocked", err)
 	}
 
-	if err := first.release(); err != nil {
-		t.Fatal(err)
-	}
+	first.release()
 	second, err := acquireLock(reg.lockPath(), secretFileMode, lockTimeout, lockPoll)
 	if err != nil {
 		t.Fatalf("the lock was not released: %v", err)
 	}
-	if err := second.release(); err != nil {
-		t.Fatal(err)
-	}
+	second.release()
 
 	// The lock file itself is never removed. Removing it is what reintroduces
 	// the window in which two holders exist, so its survival is the contract,
