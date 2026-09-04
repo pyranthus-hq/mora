@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"bytes"
 	"encoding/json"
 	"go/parser"
 	"go/token"
@@ -621,29 +622,72 @@ func TestLoopbackEndpointCannotBeSpoofed(t *testing.T) {
 	}
 }
 
-// TestFreshnessRowsMustAgree covers the honesty rules between a row's three
-// fields.
+// TestFreshnessRowsMustAgree covers the honesty rules between a row's fields
+// and the payload that carries them.
 func TestFreshnessRowsMustAgree(t *testing.T) {
+	const ref = "2026-09-03T11:00:00Z"
+	const lastSuccess = "2026-09-03T10:45:00Z" // 900 seconds before ref
 	cases := []struct {
 		name string
 		row  SourceFreshness
 		ok   bool
 	}{
-		{"fresh with a last success", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: 60, LastSuccessAt: fixtureCreatedAt}, true},
-		{"fresh without one", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: 60}, false},
-		{"stale without one", SourceFreshness{Key: "gmail", State: FreshnessStale, AgeSeconds: 90000}, false},
-		{"fresh with a never age", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: -1, LastSuccessAt: fixtureCreatedAt}, false},
+		{"fresh with a matching age", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: 900, LastSuccessAt: lastSuccess}, true},
+		{"fresh without a last success", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: 900}, false},
+		{"stale without a last success", SourceFreshness{Key: "gmail", State: FreshnessStale, AgeSeconds: 90000}, false},
+		{"fresh with a never age", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: -1, LastSuccessAt: lastSuccess}, false},
+		// The age is what a client renders as "15 minutes ago". A number that
+		// drifts from the two timestamps beside it is a quiet lie.
+		{"fresh with a wrong age", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: 60, LastSuccessAt: lastSuccess}, false},
+		{"stale with a wrong age", SourceFreshness{Key: "gmail", State: FreshnessStale, AgeSeconds: 901, LastSuccessAt: lastSuccess}, false},
+		{"succeeded after the payload was generated", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: 0, LastSuccessAt: "2026-09-03T11:30:00Z"}, false},
+		// A fresh source has nothing to explain.
+		{"fresh carrying an error code", SourceFreshness{Key: "gmail", State: FreshnessFresh, AgeSeconds: 900, LastSuccessAt: lastSuccess, ErrorCode: ErrRateLimited}, false},
+		// A failure with no code reaches a client as an unexplained red dot.
+		{"failed with a code", SourceFreshness{Key: "calendar", State: FreshnessFailed, AgeSeconds: -1, ErrorCode: ErrAuthExpired}, true},
+		{"failed without a code", SourceFreshness{Key: "calendar", State: FreshnessFailed, AgeSeconds: -1}, false},
 		{"never with age -1", SourceFreshness{Key: "imessage", State: FreshnessNever, AgeSeconds: -1}, true},
 		{"never with an age", SourceFreshness{Key: "imessage", State: FreshnessNever, AgeSeconds: 60}, false},
-		{"never with a last success", SourceFreshness{Key: "imessage", State: FreshnessNever, AgeSeconds: -1, LastSuccessAt: fixtureCreatedAt}, false},
-		{"failed is unconstrained", SourceFreshness{Key: "calendar", State: FreshnessFailed, AgeSeconds: -1, ErrorCode: ErrAuthExpired}, true},
+		{"never with a last success", SourceFreshness{Key: "imessage", State: FreshnessNever, AgeSeconds: -1, LastSuccessAt: lastSuccess}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.row.validate("f") == nil; got != tc.ok {
+			if got := tc.row.validate("f", ref) == nil; got != tc.ok {
 				t.Errorf("accepted=%v, want %v", got, tc.ok)
 			}
 		})
+	}
+}
+
+// TestAgeIsCheckedAgainstTheCarryingPayload proves the reference timestamp is
+// the payload's own, in each of the three payloads that carry freshness.
+func TestAgeIsCheckedAgainstTheCarryingPayload(t *testing.T) {
+	h := HealthFixture()
+	h.Sources[0].AgeSeconds++
+	if err := h.Validate(); err == nil {
+		t.Error("health checks its sources against generated_at")
+	}
+	tp := TodayFixture()
+	tp.Freshness[0].AgeSeconds++
+	if err := tp.Validate(); err == nil {
+		t.Error("Today checks its freshness against generated_at")
+	}
+	c := ContextFixture()
+	c.Freshness[0].AgeSeconds++
+	if err := c.Validate(); err == nil {
+		t.Error("a context bundle checks its freshness against generated_at")
+	}
+	// An operation's freshness is the grounding it was accepted against, so
+	// its reference is created_at rather than updated_at.
+	op := OperationFixture()
+	op.Freshness[0].AgeSeconds++
+	if err := op.Validate(); err == nil {
+		t.Error("an operation checks its freshness against created_at")
+	}
+	op = OperationFixture()
+	op.CreatedAt = op.UpdatedAt
+	if err := op.Validate(); err == nil {
+		t.Error("moving created_at must invalidate the ages measured against it")
 	}
 }
 
@@ -737,5 +781,69 @@ func TestActiveDeviceNamesItsCredential(t *testing.T) {
 	revoked.TokenFingerprint = ""
 	if err := revoked.Validate(); err != nil {
 		t.Errorf("a revoked device need not name a credential: %v", err)
+	}
+}
+
+// TestTrailingTokensAreMalformed covers the end-of-input check. json.Decoder's
+// More reports whether another element follows in the current stream and
+// answers false on a stray "}" or "]", so a document with either appended used
+// to decode cleanly.
+func TestTrailingTokensAreMalformed(t *testing.T) {
+	golden := goldenBytes(t, SchemaCapture)
+	trimmed := bytes.TrimRight(golden, "\n")
+	bad := map[string][]byte{
+		"trailing brace":   append(append([]byte{}, trimmed...), '}'),
+		"trailing bracket": append(append([]byte{}, trimmed...), ']'),
+		"trailing comma":   append(append([]byte{}, trimmed...), ','),
+		"second document":  append(append([]byte{}, trimmed...), []byte("{}")...),
+		"trailing garbage": append(append([]byte{}, trimmed...), []byte("nonsense")...),
+		"trailing null":    append(append([]byte{}, trimmed...), []byte("null")...),
+	}
+	for name, body := range bad {
+		t.Run(name, func(t *testing.T) {
+			err := Unmarshal(body, &Capture{})
+			var e *Error
+			if !asError(err, &e) || e.Code != CodeMalformed {
+				t.Fatalf("want %s, got %v", CodeMalformed, err)
+			}
+		})
+	}
+
+	ok := map[string][]byte{
+		"canonical":           golden,
+		"trailing newlines":   append(append([]byte{}, trimmed...), []byte("\n\n")...),
+		"trailing whitespace": append(append([]byte{}, trimmed...), []byte(" \t\r\n")...),
+	}
+	for name, body := range ok {
+		t.Run(name, func(t *testing.T) {
+			if err := Unmarshal(body, &Capture{}); err != nil {
+				t.Fatalf("want a clean decode, got %v", err)
+			}
+		})
+	}
+}
+
+// TestRetryCapHasACeiling proves the attempt cap is itself capped. A cap the
+// caller picks freely is not a cap: a queue could set it to a million and the
+// budget enforcement the async lane depends on would be advisory.
+func TestRetryCapHasACeiling(t *testing.T) {
+	op := OperationFixture()
+	op.Attempt = Attempt{Count: 1, Max: MaxAttempts, ExecutionID: fixtureExecutionID}
+	if err := op.Validate(); err != nil {
+		t.Fatalf("the published ceiling must itself be legal: %v", err)
+	}
+	op.Attempt = Attempt{Count: 1, Max: MaxAttempts + 1, ExecutionID: fixtureExecutionID}
+	err := op.Validate()
+	var e *Error
+	if !asError(err, &e) || e.Code != CodeTooLarge || e.Field != "attempt.max" {
+		t.Fatalf("want %s at attempt.max, got %v", CodeTooLarge, err)
+	}
+
+	// The receipt's projection of the same counter is capped too, or the
+	// ceiling would hold only on the path that happens to carry the envelope.
+	r := ReceiptFixture()
+	r.Operation.Attempts = MaxAttempts + 1
+	if err := r.Validate(); err == nil {
+		t.Fatal("a receipt must not report more attempts than the ceiling allows")
 	}
 }

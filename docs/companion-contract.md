@@ -56,7 +56,10 @@ This is the asymmetry to internalise.
 
 - **The kernel decodes strictly.** `Unmarshal` sets `DisallowUnknownFields` and rejects an unknown
   field, trailing data, an oversize body, a wrong schema name, an unpublished enum value, or a
-  malformed timestamp. `TestUnknownFieldIsRejected` runs it over every golden.
+  malformed timestamp. `TestUnknownFieldIsRejected` runs it over every golden. "Trailing data" means
+  a real end-of-input check: `json.Decoder.More` reports whether another element follows in the
+  current stream and answers false on a stray `}` or `]`, so the decoder reads one more token and
+  requires `io.EOF` (`TestTrailingTokensAreMalformed`).
 - **A client decodes tolerantly.** Fields will appear that your version has never seen.
   `TestAddingAFieldIsSafeForAPinnedConsumer` injects a field nothing emits and proves a pinned
   consumer's view is byte-identical afterwards, so "adding is safe" is measured rather than assumed.
@@ -102,6 +105,7 @@ Every bound is enforced by `Validate` or by `Unmarshal`, never left to the calle
 | Evidence per Today item / per context bundle | 5 / 32 |
 | Gaps, freshness rows | 16, 32 |
 | Source key, public key | 64 B, 128 B |
+| Retry cap (`attempt.max`, `operation.attempts`) | 10 |
 
 Bounds are enforced **in both directions**: `Unmarshal` refuses an oversize body *before* decoding
 it, and `Marshal` refuses to emit one. A decode-only check would leave a producer free to emit an
@@ -139,10 +143,15 @@ decoded the happy path has not been tested.
   cannot check is not shippable.
 - A context bundle always carries `gaps`, even empty — what the vault does not know is a claim, not
   an omission.
-- **A freshness row's three fields must agree** (`TestFreshnessRowsMustAgree`): `never` implies
-  `age_seconds` of `-1` and no `last_success_at`; `fresh` and `stale` must carry a `last_success_at`
-  and a non-negative age. A row that disagrees with itself renders as a confident claim nothing
-  supports.
+- **A freshness row must agree with itself and with the payload carrying it**
+  (`TestFreshnessRowsMustAgree`, `TestAgeIsCheckedAgainstTheCarryingPayload`):
+  `never` implies `age_seconds` of `-1` and no `last_success_at`; `failed` must name an
+  `error_code`; `fresh` must carry none; `fresh` and `stale` must carry a `last_success_at`, and
+  their `age_seconds` must be **exactly** the distance from that timestamp to the payload's own
+  `generated_at` — `created_at` for an operation, whose freshness is the grounding it was accepted
+  against. No tolerance: both timestamps are already pinned to second precision, and the age is what
+  a client renders as "15 minutes ago", so a number that drifts from the two timestamps beside it is
+  the quietest way for a projection to lie.
 - `freshness[].error_code` is a **frozen enum**, never the connector's prose: `auth_expired`,
   `permission_denied`, `network_unavailable`, `rate_limited`, `source_unavailable`,
   `not_configured`, `internal`. Connector error strings carry addresses, subject lines and
@@ -228,7 +237,10 @@ captured -> triaged -> leased -> running -> done | needs_input | failed
   carries no error code; a `failed` result names an error code and no memory.
 
 `ValidateTransition` is the whole machine, and `TestStateMachineIsFrozen` pins it. `attempt.max` is
-required and enforced: an operation without a cap could retry forever.
+required, enforced, and **itself capped at `MaxAttempts` (10)**: a retry cap the caller picks freely
+is not a cap — a queue could set it to a million and the budget enforcement the async lane depends on
+would be advisory. The receipt's `operation.attempts` carries the same ceiling, so it holds on both
+paths (`TestRetryCapHasACeiling`).
 
 A receipt carries this state machine as its `operation` block, which is a projection of the envelope
 (`Operation.Status`), not a second source of truth (`TestStatusProjectsTheEnvelope`).
@@ -254,7 +266,44 @@ Stated plainly, so nobody reads a shape here as an approved mechanism.
 - **This package imports only the standard library** and must never import `internal/mora`
   (`TestPackageIsALeaf`).
 
-## 11. How the contract is enforced
+## 11. Notes for Wave 1
+
+Two things this schema deliberately leaves to the nodes that build on it, stated here rather than
+discovered there.
+
+### N12: mapping the kernel's index state onto `HealthState`
+
+`index.state` and the top-level `state` are this contract's three-value vocabulary
+(`healthy`/`degraded`/`unhealthy`). The kernel's own index health is a wider vocabulary, and the
+listener must collapse it exactly this way rather than inventing a mapping:
+
+| Kernel index state | `HealthState` | Why |
+|---|---|---|
+| `fresh` | `healthy` | The index matches the vault. |
+| `dirty` | `degraded` | The index is behind the vault. Results are usable and incomplete, which is precisely `degraded`. |
+| `degraded` | `degraded` | Straight through. |
+| `failed` | `unhealthy` | The index could not be opened or does not match this build. |
+| `never` | `unhealthy` | There is no index, so nothing can be retrieved. `never` must not collapse to `degraded`: an absent index is not a partial one. |
+
+A projection whose `index.state` is `unhealthy` is still served — the contract's honesty rule is that
+the client is told, not that the response is withheld.
+
+### N11: canonicalizing and cryptographically validating public keys
+
+`validatePublicKey` is a **format** check: an algorithm label, standard base64, and a 32-byte length.
+That is the right depth for a schema package with no crypto dependencies, and it is not enough to
+pin a device key. Before a key is pinned, the registry must:
+
+- **Canonicalize.** Re-encode the decoded bytes and require the result to equal the input, so a
+  non-canonical base64 encoding of the same key cannot be pinned as a second, different device.
+  Compare pinned keys by their decoded bytes, never by their encoded string.
+- **Validate cryptographically.** For `ed25519`, reject a point that is not a valid encoding and
+  reject the low-order points; for `x25519`, reject the all-zero key and the known small-subgroup
+  points. Thirty-two bytes of anything decodes; only some of it is a key.
+- **Bind the algorithm.** A key pinned as `ed25519` is never usable as `x25519`, and the label is
+  part of the pinned identity rather than a hint.
+
+## 12. How the contract is enforced
 
 `internal/companion/testdata/v1/<schema>.json` holds one frozen document per fixture, and:
 

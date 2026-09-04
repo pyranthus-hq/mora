@@ -39,6 +39,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"sort"
 	"strings"
@@ -101,6 +102,12 @@ const (
 	MaxCitations        = 32
 	MaxGaps             = 16
 	MaxFreshnessSources = 32
+
+	// MaxAttempts is the published ceiling on an operation's retry cap. An
+	// attempt cap the caller chooses freely is not a cap: a queue could set
+	// it to a million and the budget enforcement the spine depends on would
+	// be advisory.
+	MaxAttempts = 10
 )
 
 // Identifier prefixes. An identifier is "<prefix>_<opaque>": the opaque part is
@@ -556,7 +563,11 @@ func Unmarshal(data []byte, v Payload) error {
 		}
 		return errf(CodeMalformed, "", "%s", err.Error())
 	}
-	if dec.More() {
+	// Decoder.More is not an end-of-input check: it reports whether another
+	// element follows in the current stream, and it answers false on a
+	// stray "}" or "]", so `{...}}` used to decode cleanly. Reading one more
+	// token and requiring io.EOF is the actual check.
+	if _, err := dec.Token(); err != io.EOF {
 		return errf(CodeMalformed, "", "trailing data after the JSON document")
 	}
 	return v.Validate()
@@ -610,7 +621,7 @@ type SourceFreshness struct {
 	ErrorCode SourceErrorCode `json:"error_code,omitempty"`
 }
 
-func (f SourceFreshness) validate(field string) error {
+func (f SourceFreshness) validate(field, referenceAt string) error {
 	if err := validateSourceKey(field+".key", f.Key); err != nil {
 		return err
 	}
@@ -623,10 +634,15 @@ func (f SourceFreshness) validate(field string) error {
 	if err := validateOptionalTimestamp(field+".last_success_at", f.LastSuccessAt); err != nil {
 		return err
 	}
-	// A freshness row is the product's honesty signal, so its three fields
-	// have to agree. A "never" row that reports an age, or a "fresh" row with
-	// no last success, is a row a client would render as a confident claim
-	// nothing supports.
+	if f.ErrorCode != "" {
+		if err := inVocabulary("source_error_code", string(f.ErrorCode), field+".error_code"); err != nil {
+			return err
+		}
+	}
+	// A freshness row is the product's honesty signal, so its four fields have
+	// to agree with each other and with the projection that carries them. A
+	// row that disagrees with itself renders as a confident claim nothing
+	// supports.
 	switch f.State {
 	case FreshnessNever:
 		if f.LastSuccessAt != "" {
@@ -635,6 +651,12 @@ func (f SourceFreshness) validate(field string) error {
 		if f.AgeSeconds != -1 {
 			return errf(CodeInvalidState, field+".age_seconds", "a never-successful source has age -1")
 		}
+	case FreshnessFailed:
+		// A failure with no code is the shape that used to reach a client as
+		// an unexplained red dot.
+		if f.ErrorCode == "" {
+			return errf(CodeMissingField, field+".error_code", "a failed source names why it failed")
+		}
 	case FreshnessFresh, FreshnessStale:
 		if f.LastSuccessAt == "" {
 			return errf(CodeMissingField, field+".last_success_at", "a %s source succeeded at some point and says when", f.State)
@@ -642,11 +664,43 @@ func (f SourceFreshness) validate(field string) error {
 		if f.AgeSeconds < 0 {
 			return errf(CodeInvalidState, field+".age_seconds", "a %s source has a non-negative age", f.State)
 		}
+		if f.State == FreshnessFresh && f.ErrorCode != "" {
+			return errf(CodeInvalidState, field+".error_code", "a fresh source carries no error code")
+		}
+		if err := checkAge(field, f.AgeSeconds, f.LastSuccessAt, referenceAt); err != nil {
+			return err
+		}
 	}
-	if f.ErrorCode == "" {
+	return nil
+}
+
+// checkAge requires age_seconds to be exactly the distance from the source's
+// last success to the moment the carrying payload was generated.
+//
+// Exactly, with no tolerance: the age is what a client renders as "15 minutes
+// ago", and a number that drifts from the two timestamps beside it is the
+// quietest way for a projection to lie. Both timestamps are already pinned to
+// second precision, so there is nothing to round.
+func checkAge(field string, ageSeconds int64, lastSuccessAt, referenceAt string) error {
+	if referenceAt == "" {
 		return nil
 	}
-	return inVocabulary("source_error_code", string(f.ErrorCode), field+".error_code")
+	last, err := time.Parse(time.RFC3339, lastSuccessAt)
+	if err != nil {
+		return errf(CodeInvalidValue, field+".last_success_at", "timestamp is not RFC3339")
+	}
+	reference, err := time.Parse(time.RFC3339, referenceAt)
+	if err != nil {
+		return errf(CodeInvalidValue, field+".age_seconds", "the carrying payload has no usable timestamp")
+	}
+	want := int64(reference.Sub(last).Seconds())
+	if want < 0 {
+		return errf(CodeInvalidState, field+".last_success_at", "a source cannot have succeeded after the payload was generated")
+	}
+	if ageSeconds != want {
+		return errf(CodeInvalidState, field+".age_seconds", "age is %d, but last_success_at is %d seconds before the payload's own timestamp", ageSeconds, want)
+	}
+	return nil
 }
 
 // validateSourceKey bounds a connector key. It is unbounded nowhere: a
@@ -665,12 +719,12 @@ func validateSourceKey(field, key string) error {
 	return nil
 }
 
-func validateFreshness(field string, rows []SourceFreshness) error {
+func validateFreshness(field string, rows []SourceFreshness, referenceAt string) error {
 	if err := validateCount(field, len(rows), MaxFreshnessSources); err != nil {
 		return err
 	}
 	for i, r := range rows {
-		if err := r.validate(fmt.Sprintf("%s[%d]", field, i)); err != nil {
+		if err := r.validate(fmt.Sprintf("%s[%d]", field, i), referenceAt); err != nil {
 			return err
 		}
 	}
@@ -728,7 +782,7 @@ func (h *HealthProjection) Validate() error {
 	if h.Sources == nil {
 		return errf(CodeMissingField, "sources", "an empty collection is [], never null")
 	}
-	return validateFreshness("sources", h.Sources)
+	return validateFreshness("sources", h.Sources, h.GeneratedAt)
 }
 
 // ---------------------------------------------------------------------------
@@ -870,7 +924,7 @@ func (t *TodayProjection) Validate() error {
 	if t.Freshness == nil {
 		return errf(CodeMissingField, "freshness", "an empty collection is [], never null")
 	}
-	return validateFreshness("freshness", t.Freshness)
+	return validateFreshness("freshness", t.Freshness, t.GeneratedAt)
 }
 
 // ---------------------------------------------------------------------------
@@ -971,7 +1025,7 @@ func (c *ContextBundle) Validate() error {
 	if c.Freshness == nil {
 		return errf(CodeMissingField, "freshness", "an empty collection is [], never null")
 	}
-	if err := validateFreshness("freshness", c.Freshness); err != nil {
+	if err := validateFreshness("freshness", c.Freshness, c.GeneratedAt); err != nil {
 		return err
 	}
 	if err := validateText("synthesis_prompt", c.SynthesisPrompt, MaxSynthesisPromptBytes, true); err != nil {
@@ -1214,6 +1268,9 @@ func (r *Receipt) Validate() error {
 	}
 	if op.Attempts < 0 {
 		return errf(CodeInvalidValue, "operation.attempts", "count cannot be negative")
+	}
+	if op.Attempts > MaxAttempts {
+		return errf(CodeTooLarge, "operation.attempts", "at most %d attempts", MaxAttempts)
 	}
 	return nil
 }

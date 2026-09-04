@@ -191,6 +191,9 @@ func (a Attempt) validate(field string) error {
 	if a.Max <= 0 {
 		return errf(CodeInvalidValue, field+".max", "an attempt cap is required and is positive")
 	}
+	if a.Max > MaxAttempts {
+		return errf(CodeTooLarge, field+".max", "the retry cap is at most %d", MaxAttempts)
+	}
 	if a.Count > a.Max {
 		return errf(CodeInvalidState, field+".count", "attempts exceed the cap")
 	}
@@ -302,7 +305,10 @@ func (o *Operation) Validate() error {
 	if o.Freshness == nil {
 		return errf(CodeMissingField, "freshness", "an empty collection is [], never null")
 	}
-	if err := validateFreshness("freshness", o.Freshness); err != nil {
+	// The freshness an operation carries is the grounding it was accepted
+	// against, so the reference for every age is when it was created, not
+	// when it was last touched.
+	if err := validateFreshness("freshness", o.Freshness, o.CreatedAt); err != nil {
 		return err
 	}
 	return o.validateResult()
