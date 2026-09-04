@@ -1,0 +1,530 @@
+package companion
+
+// server.go is the narrow companion listener (graph node N12).
+//
+// It is a SEPARATE loopback HTTP server from internal/loopbackhttp, and the
+// separation is the point. The generic loopback API exists to hand a sandboxed
+// AI browser the whole tool surface behind one shared bearer token: it has a
+// /call escape hatch, it can write memories, and its token lives in a file any
+// process running as the user can read. None of that is safe to put on a phone's
+// network path. This listener answers three read-only questions and nothing
+// else, and the only credential it accepts is a per-device token minted by
+// `mora companion pair` and revocable by `mora companion revoke`.
+//
+// The two token families are disjoint by construction. This server never reads
+// http.json, and the generic server never consults the device registry, so a
+// leaked loopback token buys nothing here and a stolen device token buys nothing
+// there. Both directions are proved in internal/mora/companion_http_test.go.
+//
+// # What the routes are, and why there are only three
+//
+//	GET  /v1/companion/today     the three things worth surfacing, with evidence
+//	POST /v1/companion/context   a grounded bundle for one query
+//	GET  /v1/companion/health    freshness, index state and write policy
+//
+// The allowlist is the security boundary, so it is data (routeDefs) rather than
+// a series of mux registrations scattered through the file, and a test walks it.
+// There is deliberately no /call, no delete, no sync, no connector command, no
+// configuration write and no read-a-memory-by-id route: a phone that can name a
+// memory id can enumerate the vault, and a phone that can name a tool has the
+// generic API again under a different name.
+//
+// # 200 does not mean fresh
+//
+// Every projection carries the kernel's own freshness rows and health summary.
+// A degraded index or a dead connector still answers 200 — the honesty lives in
+// the body, because a phone that only reads status codes would show a confident
+// empty screen during an outage. The kernel supplies those fields; this file
+// never invents one.
+//
+// # What this file will not do
+//
+// It logs nothing per request. Not the token, not the query, not the body, not
+// the answer. The only writer it holds is for the startup banner, and
+// TestServerLogsNothingPerRequest asserts the writer stays empty across a full
+// authenticated exchange.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Published route patterns. A device pins these strings.
+const (
+	RouteToday   = "/v1/companion/today"
+	RouteContext = "/v1/companion/context"
+	RouteHealth  = "/v1/companion/health"
+)
+
+// LoopbackHost is the ONLY address this server will bind. Not "localhost",
+// which resolves through the resolver and can be pointed elsewhere, and not
+// "::1" — one literal address, checked as a string, so there is no name
+// resolution anywhere in the bind path.
+const LoopbackHost = "127.0.0.1"
+
+const (
+	// MaxHeaderBytes caps the summed size of the request headers. It is
+	// enforced twice: once by http.Server for a real listener, and once in
+	// the guard so a handler reached directly (a test, or a future embedding)
+	// is bounded too.
+	MaxHeaderBytes = 8 << 10
+	// ServerReadHeaderTimeout bounds a client that opens a connection and
+	// then sends nothing.
+	ServerReadHeaderTimeout = 10 * time.Second
+	// ServerReadTimeout and ServerWriteTimeout bound a slow body and a slow
+	// reader. A companion request is a local read; none of them is long.
+	ServerReadTimeout  = 30 * time.Second
+	ServerWriteTimeout = 60 * time.Second
+	// markSeenInterval throttles the last-seen stamp. See markSeen.
+	markSeenInterval = 5 * time.Minute
+)
+
+// ErrNotLoopback is returned by NewServer for any address that is not the
+// literal loopback host.
+var ErrNotLoopback = errors.New("companion: the listener binds " + LoopbackHost + " only")
+
+// Reader is the kernel seam.
+//
+// It exists so this package stays a leaf (TestPackageIsALeaf): the contract, the
+// registry and the listener compile with only the standard library, and the
+// vault, the index and the connectors live behind three methods implemented in
+// internal/mora. A device can reach exactly what this interface exposes, which
+// is why the interface is three read methods and has no capture, delete or
+// tool-dispatch member.
+type Reader interface {
+	Today(ctx context.Context) (TodayProjection, error)
+	Context(ctx context.Context, req ContextRequest) (ContextBundle, error)
+	Health(ctx context.Context) (HealthProjection, error)
+}
+
+// Authenticator is the credential seam. *Registry implements it.
+type Authenticator interface {
+	Authenticate(token string) (Device, error)
+	MarkSeen(deviceID string) error
+}
+
+// ServerOptions configures the listener. Every field except Log is required.
+type ServerOptions struct {
+	// Addr is host:port. The host must be LoopbackHost.
+	Addr string
+	// Devices resolves a bearer token to a device.
+	Devices Authenticator
+	// Reader answers the three routes.
+	Reader Reader
+	// Now is the clock, injected so a test can pin it.
+	Now func() time.Time
+	// Log receives the startup banner and nothing else.
+	Log io.Writer
+}
+
+// Server is the narrow companion listener.
+type Server struct {
+	addr    string
+	devices Authenticator
+	reader  Reader
+	now     func() time.Time
+	log     io.Writer
+
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+// Route is one allowlisted method-and-pattern pair.
+type Route struct{ Method, Pattern string }
+
+type route struct {
+	Method, Pattern string
+	Handler         http.HandlerFunc
+}
+
+// NewServer validates the address and returns the listener.
+//
+// The address is checked HERE rather than at Serve so a misconfiguration is a
+// startup error with a name on it, and so the check cannot be skipped by a
+// caller that builds a Handler and mounts it somewhere else.
+func NewServer(o ServerOptions) (*Server, error) {
+	if err := checkLoopbackAddr(o.Addr); err != nil {
+		return nil, err
+	}
+	if o.Devices == nil {
+		return nil, errors.New("companion: the listener needs a device registry")
+	}
+	if o.Reader == nil {
+		return nil, errors.New("companion: the listener needs a kernel reader")
+	}
+	now := o.Now
+	if now == nil {
+		now = time.Now
+	}
+	log := o.Log
+	if log == nil {
+		log = io.Discard
+	}
+	return &Server{addr: o.Addr, devices: o.Devices, reader: o.Reader, now: now, log: log, seen: map[string]time.Time{}}, nil
+}
+
+// checkLoopbackAddr refuses anything but the literal loopback host.
+//
+// "localhost" is refused as well as 0.0.0.0 and ::1. A name is refused because
+// resolving it is someone else's decision — /etc/hosts, a DNS server, a
+// container's resolver — and the whole point of this check is that the decision
+// is made here, in one place, against one literal string.
+func checkLoopbackAddr(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("%w (got an empty address)", ErrNotLoopback)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%w (%q is not host:port)", ErrNotLoopback, addr)
+	}
+	if host != LoopbackHost {
+		return fmt.Errorf("%w (refusing to bind %q)", ErrNotLoopback, host)
+	}
+	if port == "" {
+		return fmt.Errorf("%w (got no port)", ErrNotLoopback)
+	}
+	return nil
+}
+
+// routeDefs is the allowlist. It is the ONLY place a route is declared, it is
+// what Routes() reports, and it is what router() mounts, so the table a test
+// walks and the table the server serves cannot drift apart.
+func (s *Server) routeDefs() []route {
+	return []route{
+		{http.MethodGet, RouteToday, s.handleToday},
+		{http.MethodPost, RouteContext, s.handleContext},
+		{http.MethodGet, RouteHealth, s.handleHealth},
+	}
+}
+
+// Routes reports the allowlist.
+func (s *Server) Routes() []Route {
+	defs := s.routeDefs()
+	out := make([]Route, 0, len(defs))
+	for _, r := range defs {
+		out = append(out, Route{Method: r.Method, Pattern: r.Pattern})
+	}
+	return out
+}
+
+func (s *Server) router() http.Handler {
+	mux := http.NewServeMux()
+	for _, rt := range s.routeDefs() {
+		mux.HandleFunc(rt.Method+" "+rt.Pattern, rt.Handler)
+	}
+	return mux
+}
+
+// Handler returns the guarded mux: host guard, size guard, authentication, then
+// the allowlisted routes. Each handler authenticates AGAIN — see authorize.
+func (s *Server) Handler() http.Handler {
+	return s.hostGuard(s.sizeGuard(s.authGuard(s.router())))
+}
+
+// hostGuard is the DNS-rebinding defense. A browser or an app on the phone's
+// network can be pointed at a name that resolves to 127.0.0.1; what it cannot do
+// is put the literal loopback address in the Host header and still have the
+// browser treat the origin as its own. Requiring the literal is the check.
+func (s *Server) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if host != LoopbackHost {
+			writeOpaque(w, http.StatusForbidden, "forbidden_host")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sizeGuard caps the headers and the body. Both bounds exist because both are
+// attacker-chosen: a phone that can send an unbounded header set or an unbounded
+// body can exhaust this process without ever presenting a credential.
+func (s *Server) sizeGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if headerBytes(r.Header)+len("Host: ")+len(r.Host)+2 > MaxHeaderBytes {
+			writeOpaque(w, http.StatusRequestHeaderFieldsTooLarge, "headers_too_large")
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// headerBytes sums the wire cost of the parsed header set: one "Key: value"
+// line, with its separator and CRLF, per value.
+//
+// The caller adds the Host line separately. net/http promotes Host out of
+// r.Header onto r.Host, so a request whose whole payload is an enormous Host
+// value is invisible to this function — on a real listener MaxHeaderBytes
+// catches it, but a handler reached directly would not, and the two bounds are
+// supposed to agree.
+func headerBytes(h http.Header) int {
+	n := 0
+	for key, values := range h {
+		for _, v := range values {
+			n += len(key) + len(v) + 4 // ": " and CRLF
+		}
+	}
+	return n
+}
+
+// authGuard is the first of the two authorization checks.
+//
+// It runs before routing so an unauthenticated caller cannot learn which paths
+// exist: every request without a live device token gets the same 401, whether
+// the path is real or not.
+func (s *Server) authGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dev, ok := s.authorize(r)
+		if !ok {
+			writeUnauthorized(w)
+			return
+		}
+		s.markSeen(dev.DeviceID)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authorize resolves the request's bearer token to a live device.
+//
+// It is deliberately branch-free on the way in: a missing header, an empty
+// token and a malformed one all reach Registry.Authenticate, which hashes
+// unconditionally and compares every stored fingerprint at full width. Refusing
+// early on "there is no header" would answer a question about the credential
+// before any comparison ran, which is the shape the N11 witness exists to
+// forbid, and it would make the cheap failure distinguishable from the
+// expensive one by a stopwatch.
+func (s *Server) authorize(r *http.Request) (Device, bool) {
+	dev, err := s.devices.Authenticate(bearerToken(r.Header.Get("Authorization")))
+	if err != nil {
+		return Device{}, false
+	}
+	return dev, true
+}
+
+// bearerToken strips the scheme. It never reports whether the scheme was
+// present: a header with no "Bearer " prefix yields a token that will simply
+// fail to match, which is the same outcome by the same path as a wrong token.
+func bearerToken(header string) string {
+	const scheme = "bearer "
+	if len(header) >= len(scheme) && strings.EqualFold(header[:len(scheme)], scheme) {
+		return header[len(scheme):]
+	}
+	return header
+}
+
+// requireDevice is the SECOND authorization check, at the handler boundary.
+//
+// A middleware chain is a claim about how a handler is mounted, and a mounting
+// is one refactor away from being wrong: a route registered on the bare mux, a
+// handler reused by a future transport, a test harness that skips the wrapper.
+// Re-authenticating inside the handler makes the guarantee a property of the
+// handler itself rather than of the assembly around it. The cost is one extra
+// SHA-256 per request over a bounded device list.
+func (s *Server) requireDevice(w http.ResponseWriter, r *http.Request) (Device, bool) {
+	dev, ok := s.authorize(r)
+	if !ok {
+		writeUnauthorized(w)
+		return Device{}, false
+	}
+	return dev, true
+}
+
+// markSeen stamps last_seen_at, throttled and best-effort.
+//
+// Throttled because the stamp is a durable write behind the registry lock, and
+// a write per request would serialize a phone's traffic behind its own audit
+// trail. Best-effort because a read must not fail on account of a stamp: the
+// device authenticated, the answer is owed, and a lock held by a concurrent
+// `mora companion revoke` is a normal thing to lose a race to.
+func (s *Server) markSeen(deviceID string) {
+	now := s.now()
+	s.mu.Lock()
+	last, ok := s.seen[deviceID]
+	if ok && now.Sub(last) < markSeenInterval {
+		s.mu.Unlock()
+		return
+	}
+	s.seen[deviceID] = now
+	s.mu.Unlock()
+	_ = s.devices.MarkSeen(deviceID)
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleToday(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireDevice(w, r); !ok {
+		return
+	}
+	projection, err := s.reader.Today(r.Context())
+	if err != nil {
+		writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	s.writePayload(w, &projection)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireDevice(w, r); !ok {
+		return
+	}
+	projection, err := s.reader.Health(r.Context())
+	if err != nil {
+		writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	s.writePayload(w, &projection)
+}
+
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireDevice(w, r); !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBytes+1))
+	if err != nil {
+		writeOpaque(w, http.StatusRequestEntityTooLarge, CodeTooLarge)
+		return
+	}
+	if len(body) > MaxRequestBytes {
+		writeOpaque(w, http.StatusRequestEntityTooLarge, CodeTooLarge)
+		return
+	}
+	// Strict inbound: unknown fields, unknown enum values, oversize text and
+	// malformed timestamps are all rejected here rather than normalized. The
+	// error carries the schema CODE and never the value that failed, so a
+	// rejection cannot echo a device's query back through an error body.
+	req := NewContextRequest()
+	if err := Unmarshal(body, &req); err != nil {
+		var schemaErr *Error
+		if errors.As(err, &schemaErr) {
+			writeRejection(w, http.StatusBadRequest, schemaErr)
+			return
+		}
+		writeOpaque(w, http.StatusBadRequest, CodeMalformed)
+		return
+	}
+	bundle, err := s.reader.Context(r.Context(), req)
+	if err != nil {
+		writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	s.writePayload(w, &bundle)
+}
+
+// writePayload marshals through Marshal, which validates.
+//
+// Validating on the way out is what stops a kernel bug from becoming a wire
+// contract violation: a projection with a freshness row whose age disagrees with
+// its own timestamps, or an item with no evidence, is a lie a phone would
+// render, so it becomes a 500 with nothing in it instead. Tolerant outbound
+// applies to the DEVICE's decoder, not to this producer.
+func (s *Server) writePayload(w http.ResponseWriter, v Payload) {
+	body, err := Marshal(v)
+	if err != nil {
+		writeOpaque(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// ---------------------------------------------------------------------------
+// Responses
+// ---------------------------------------------------------------------------
+
+// unauthorizedBody is the ONE answer to every credential failure: no token, a
+// malformed token, a token for a device that was never paired, and a token for
+// a device that was revoked. An operator learns which from `mora companion
+// list`; a caller holding a bad token learns nothing at all, so a stolen token
+// cannot be classified by probing.
+const unauthorizedBody = "{\n  \"error\": \"unauthorized\"\n}\n"
+
+func writeUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	// No WWW-Authenticate challenge: the header's realm and error parameters
+	// are exactly the discrimination this response exists not to give.
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = io.WriteString(w, unauthorizedBody)
+}
+
+func writeOpaque(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, "{\n  \"error\": %q\n}\n", code)
+}
+
+// writeRejection reports a schema refusal. It carries the code and the field
+// path — both of which are this package's own vocabulary — and never the
+// offending value.
+func writeRejection(w http.ResponseWriter, status int, err *Error) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	if err.Field == "" {
+		_, _ = fmt.Fprintf(w, "{\n  \"error\": %q\n}\n", err.Code)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "{\n  \"error\": %q,\n  \"field\": %q\n}\n", err.Code, err.Field)
+}
+
+// ---------------------------------------------------------------------------
+// Serving
+// ---------------------------------------------------------------------------
+
+// Serve listens on the validated loopback address until ctx is done.
+//
+// The address is re-checked here. NewServer already refused a non-loopback
+// address, and checking again costs nothing and closes the one path that would
+// otherwise matter: a Server value assembled by some future constructor that
+// forgot to.
+func (s *Server) Serve(ctx context.Context) error {
+	if err := checkLoopbackAddr(s.addr); err != nil {
+		return err
+	}
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("companion listen on %s: %w (is another `mora companion serve` already running?)", s.addr, err)
+	}
+	hs := &http.Server{
+		Handler:           s.Handler(),
+		MaxHeaderBytes:    MaxHeaderBytes,
+		ReadHeaderTimeout: ServerReadHeaderTimeout,
+		ReadTimeout:       ServerReadTimeout,
+		WriteTimeout:      ServerWriteTimeout,
+		// ErrorLog is left nil on purpose: net/http's default logger writes
+		// request-derived text to standard error, and this listener logs
+		// nothing a device sent.
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(shutdownCtx)
+	}()
+	fmt.Fprintf(s.log, "mora companion serve listening on http://%s/  (loopback only)\n", ln.Addr().String())
+	fmt.Fprintf(s.log, "  routes: GET %s, POST %s, GET %s\n", RouteToday, RouteContext, RouteHealth)
+	fmt.Fprintln(s.log, "  credential: a device token from `mora companion pair` — the loopback API token is not accepted here")
+	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}

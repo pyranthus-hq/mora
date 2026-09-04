@@ -48,6 +48,10 @@
     "status": "empty"
   },
   {
+    "path": "companion serve",
+    "status": "static_only"
+  },
+  {
     "path": "companion status",
     "status": "parses"
   },

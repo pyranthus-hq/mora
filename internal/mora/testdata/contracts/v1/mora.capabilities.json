@@ -35,6 +35,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "companion serve",
+      "payload": "",
+      "platform": "loopback-seam",
+      "reason": "long-running loopback listener; it serves the companion routes until the process ends and has no document to emit"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "connect google",
       "payload": "",
       "platform": "network-seam",
