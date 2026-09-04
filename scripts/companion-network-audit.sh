@@ -59,6 +59,17 @@
 
 set -euo pipefail
 
+# A proxy would make every probe in this script measure the proxy instead of the
+# thing being audited, and a proxy that REFUSES connections answers exit 7 with
+# a refusal wording for every URL — which is exactly the shape the LAN probe
+# reads as "nothing is listening there". Clear the whole family before anything
+# runs; curl is additionally given -q (ignore ~/.curlrc) and --noproxy '*' per
+# request, and classify_endpoint_result refuses a proxy message outright. Three
+# locks, because a false PASS here is silent.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY \
+  all_proxy ALL_PROXY no_proxy NO_PROXY \
+  ftp_proxy FTP_PROXY 2>/dev/null || true
+
 PORT=7778
 TAILNET_PORT=8080
 MANAGE_SERVE=0
@@ -330,65 +341,108 @@ endpoint_url() {
 #
 # There are exactly three answers and only ONE of them is the good one:
 #
-#   responded  the address answered HTTP at all. The port is reachable off
-#              loopback. This is the defect the probe exists to find, and the
-#              status code does not matter: a 401 from a LAN address is as bad
-#              as a 200.
-#   refused    the kernel refused the connection (curl exit 7 AND a refusal in
-#              curl's own message). This is the only outcome that proves nothing
-#              is listening there.
+#   responded  the address answered at all. The port is reachable off loopback,
+#              and that is the defect this probe exists to find. The status code
+#              does not matter: a 401 from a LAN address is as bad as a 200. A
+#              status of 000 with a non-empty body counts too — an HTTP/0.9-style
+#              reply has no status line, but something answered.
+#   refused    the kernel refused the connection. This is the only outcome that
+#              proves nothing is listening there, and it is recognised ONLY from
+#              curl's own message line.
 #   error      anything else: a timeout (28), an unresolvable or unroutable host
-#              (6, or 7 with "No route to host"), a TLS failure, a bad URL. The
-#              previous version mapped every one of these to the same "-" as a
-#              refusal, so a probe that never reached the address counted as
-#              proof that the address was closed.
+#              (6, or 7 with "No route to host"), a proxy that refused on the
+#              address's behalf, a TLS failure, a bad URL, or an exit 7 whose
+#              message this function does not recognise. The first version
+#              mapped every one of these to the same value as a refusal, so a
+#              probe that never reached the address counted as proof that the
+#              address was closed.
 #
-# $1 curl exit status, $2 http_code, $3 curl stderr
+# The refusal test is ANCHORED to curl's own message line, which begins
+# "curl: (7) ". Substring-matching the whole of stderr was wrong: any text that
+# happened to contain "refused" — a shell warning, a proxy diagnostic, a message
+# about some other host entirely — passed as a refusal of THIS address. The
+# anchor makes the message have to be curl's, about exit 7, and nothing else.
+#
+# A proxy refusal is checked BEFORE the refusal wording and is never a refusal.
+# "curl: (7) Failed to connect to proxy ... Couldn't connect to server" contains
+# the refusal wording verbatim, but it is the PROXY refusing, which says nothing
+# about the address. With a proxy configured and refusing, every LAN URL would
+# come back "refused" and C2 would pass without a single packet having reached
+# any of these addresses. curl_probe also passes --noproxy '*' and -q so a proxy
+# cannot be used at all; this arm is the second lock on the same door.
+#
+# $1 curl exit status, $2 http_code, $3 bytes downloaded, $4 curl stderr
 classify_endpoint_result() {
-  local status=$1 code=$2 err=$3
+  local status=$1 code=$2 size=$3 err=$4 msg
   case "$code" in
-    ''|000) ;;
+    ''|000)
+      # No status line. If bytes still came back, something answered.
+      case "$size" in
+        ''|0) ;;
+        *[!0-9]*) printf 'error\n'; return ;;
+        *) printf 'responded\n'; return ;;
+      esac
+      ;;
     *[!0-9]*) printf 'error\n'; return ;;
     *) printf 'responded\n'; return ;;
   esac
-  if [ "$status" = "7" ]; then
-    # Exit 7 covers BOTH "the kernel refused me" and "I could not get there",
-    # and only the first proves the port is closed. curl does not separate them
-    # by status, so the message is matched, in both directions and explicitly:
-    # an unreachable wording wins, a refusal wording passes, and an exit 7 whose
-    # wording is neither is an error rather than a guess. macOS curl says
-    # "Couldn't connect to server" where Linux curl says "Connection refused";
-    # both are the same ECONNREFUSED.
-    case "$err" in
-      *[Uu]nreachable*|*"No route to host"*|*"Network is down"*)
-        printf 'error\n'; return ;;
-      *[Rr]efused*|*"Couldn't connect to server"*|*"Could not connect to server"*)
-        printf 'refused\n'; return ;;
-    esac
+  if [ "$status" != "7" ]; then
+    printf 'error\n'
+    return
   fi
+  # Trim leading whitespace, then require curl's own exit-7 message line.
+  msg=${err#"${err%%[![:space:]]*}"}
+  case "$msg" in
+    'curl: (7) '*) ;;
+    *) printf 'error\n'; return ;;
+  esac
+  case "$msg" in
+    *proxy*|*Proxy*|*PROXY*) printf 'error\n'; return ;;
+    *[Uu]nreachable*|*"No route to host"*|*"Network is down"*)
+      printf 'error\n'; return ;;
+    *[Rr]efused*|*"Couldn't connect to server"*|*"Could not connect to server"*)
+      printf 'refused\n'; return ;;
+  esac
   printf 'error\n'
 }
 
-# curl_probe runs one request and prints "<exit> <http_code> <stderr>".
+# curl_probe runs one request and prints "<exit> <http_code> <bytes> <message>".
 #
-# The stub seam exists so --self-test can drive the LAN probe with a timeout and
-# with a 200 without needing a machine that produces either.
+# The flags are part of the proof, not conveniences:
+#
+#   -q             ignore ~/.curlrc, so an operator's own default flags cannot
+#                  change what this audit measures.
+#   --noproxy '*'  never use a proxy for any host. A configured proxy that
+#                  refuses connections answers exit 7 with a refusal wording for
+#                  EVERY url, and C2 would then report that every address on the
+#                  machine refused without a packet having reached any of them.
+#                  The environment is cleared at startup for the same reason;
+#                  this flag also covers a proxy curl reads from elsewhere.
+#   -sS            -s alone suppresses curl's own message, leaving stderr empty
+#                  so no refusal can ever be recognised. -S puts it back.
+#   --connect-timeout bounds an address that simply never answers, which is what
+#                  a link-local on an idle tunnel does.
+#
+# Only curl's OWN message line is returned. Anything else on stderr is dropped
+# rather than concatenated, so the anchored match in classify_endpoint_result
+# sees a message that is curl's or nothing.
+#
+# The stub seam receives the FULL argv, so a fixture can assert which flags the
+# real probe passes rather than trusting a comment.
 curl_probe() {
-  local url=$1 iface=${2:-} out status
-  if [ -n "${AUDIT_CURL_STUB:-}" ]; then
-    "$AUDIT_CURL_STUB" "$url" "$iface"
-    return
-  fi
-  # -S keeps curl's own message on stderr under -s; without it the message is
-  # empty and the refusal cannot be told from an unreachable address at all.
-  # --connect-timeout bounds an address that simply never answers, which is what
-  # a link-local on an idle tunnel does.
-  local args=(-sS -o /dev/null -m 6 --connect-timeout 2 -w '%{http_code}')
+  local url=$1 iface=${2:-} out status line
+  local args=(-q --noproxy '*' -sS -o /dev/null -m 6 --connect-timeout 2 -w '%{http_code} %{size_download}')
   if [ -n "$iface" ]; then
     args+=(--interface "$iface")
   fi
-  out=$(curl "${args[@]}" -H "Authorization: Bearer ${SESSION_TOKEN:-}" "$url" 2>"$TMP_CURL_ERR") && status=0 || status=$?
-  printf '%s %s %s\n' "$status" "${out:-000}" "$(tr '\n' ' ' <"$TMP_CURL_ERR")"
+  args+=(-H "Authorization: Bearer ${SESSION_TOKEN:-}" "$url")
+  if [ -n "${AUDIT_CURL_STUB:-}" ]; then
+    "$AUDIT_CURL_STUB" "${args[@]}"
+    return
+  fi
+  out=$(curl "${args[@]}" 2>"$TMP_CURL_ERR") && status=0 || status=$?
+  line=$(grep -m1 '^curl: (' "$TMP_CURL_ERR" 2>/dev/null || true)
+  printf '%s %s %s\n' "$status" "${out:-000 0}" "$line"
 }
 
 # probe_lan_endpoints drives every (interface, address) pair and reports.
@@ -420,7 +474,7 @@ curl_probe() {
 #
 # Endpoints arrive on stdin as "interface<TAB>address" lines.
 probe_lan_endpoints() {
-  local port=$1 iface addr url zone verdict result status code err
+  local port=$1 iface addr url zone verdict result status code size err
   local seen=0 refused=0 responded=0 unreachable=0
   while IFS=$'\t' read -r iface addr; do
     [ -z "$addr" ] && continue
@@ -436,8 +490,11 @@ probe_lan_endpoints() {
     status=${result%% *}
     result=${result#* }
     code=${result%% *}
+    result=${result#* }
+    size=${result%% *}
     err=${result#* }
-    verdict=$(classify_endpoint_result "$status" "$code" "$err")
+    [ "$err" = "$size" ] && err=""
+    verdict=$(classify_endpoint_result "$status" "$code" "$size" "$err")
     case "$verdict" in
       refused) refused=$((refused + 1)) ;;
       responded)
@@ -557,7 +614,16 @@ run_live() {
   LOCAL_ENDPOINTS=$(local_endpoints)
   # redact() folds every local address away, so a pasted report names interfaces
   # and outcomes but never an address on this machine.
-  LOCAL_ADDRS=$(printf '%s\n' "$LOCAL_ENDPOINTS" | awk -F'\t' '{ split($2, a, "%"); print a[1] }' | tr '\n' ' ')
+  # LONGEST FIRST. redact() replaces substrings, and an address can be a prefix
+  # of another one: lo0's fe80::1 is a prefix of an EUI-64 link-local, so
+  # replacing it first left the rest of that address — which encodes a hardware
+  # MAC — in output meant to be pasted into a pull request.
+  LOCAL_ADDRS=$(printf '%s\n' "$LOCAL_ENDPOINTS" \
+    | awk -F'\t' '{ split($2, a, "%"); print a[1] }' \
+    | awk '!seen[$0]++ { print length($0), $0 }' \
+    | sort -rn -k1,1 \
+    | cut -d' ' -f2- \
+    | tr '\n' ' ')
   export AUDIT_PORT="$PORT"
 
   # The session's secrets and payloads. These exact strings are what the log
@@ -821,29 +887,83 @@ lan_probe_with() {
   [ "$rc" = "$want" ]
 }
 
-# The curl stubs. Each prints "<exit> <http_code> <stderr>", the same three
-# fields the real curl_probe prints.
+# The curl stubs.
+#
+# Each receives the FULL argv curl_probe would have handed curl, and prints
+# "<exit> <http_code> <bytes> <message>" — the same four fields the real
+# curl_probe prints. Taking the whole argv is what lets a fixture assert which
+# flags the probe passes rather than trusting a comment.
 # shellcheck disable=SC2329
-stub_curl_refused() { printf '7 000 curl: (7) Failed to connect to %s: Connection refused\n' "$1"; }
+stub_curl_refused() { printf '7 000 0 curl: (7) Failed to connect to %s: Connection refused\n' "${*: -1}"; }
 # shellcheck disable=SC2329
-stub_curl_timeout() { printf '28 000 curl: (28) Operation timed out after 6000 milliseconds\n'; }
+stub_curl_timeout() { printf '28 000 0 curl: (28) Operation timed out after 6000 milliseconds\n'; }
 # shellcheck disable=SC2329
-stub_curl_200() { printf '0 200 \n'; }
+stub_curl_200() { printf '0 200 512 \n'; }
 # shellcheck disable=SC2329
-stub_curl_401() { printf '0 401 \n'; }
-# stub_curl_unroutable_zone refuses a zoned URL and times out on everything
-# else. Before the zone was carried into the URL this shape passed, because a
-# curl that could not route was recorded as a refusal.
+stub_curl_401() { printf '0 401 64 \n'; }
+# stub_curl_http09 answers with no status line but with a body. Something is
+# listening; it just did not speak HTTP/1.
+# shellcheck disable=SC2329
+stub_curl_http09() { printf '0 000 37 \n'; }
 # stub_curl_unknown_wording is an exit 7 whose message matches neither the
 # refusal nor the unreachable vocabulary — the shape a future curl release could
 # produce. It must degrade to unreachable, not to a pass.
 # shellcheck disable=SC2329
-stub_curl_unknown_wording() { printf '7 000 curl: (7) something new nobody has parsed yet\n'; }
+stub_curl_unknown_wording() { printf '7 000 0 curl: (7) something new nobody has parsed yet\n'; }
+# stub_curl_unanchored_refusal emits a refusal wording that is NOT on curl's own
+# message line — a diagnostic from something else that happens to contain the
+# word. Substring-matching the whole of stderr accepted this as a refusal.
+# shellcheck disable=SC2329
+stub_curl_unanchored_refusal() {
+  printf '7 000 0 warning: an unrelated component reported Connection refused\n'
+}
+# stub_curl_proxy_refusal is the false PASS this item is about: a configured
+# proxy that refuses connections answers exit 7 with the refusal wording
+# verbatim, for EVERY url, without a packet reaching any address.
+# shellcheck disable=SC2329
+stub_curl_proxy_refusal() {
+  printf "7 000 0 curl: (7) Failed to connect to proxy.example port 3128 after 1 ms: Couldn't connect to server\n"
+}
+# stub_curl_requires_noproxy refuses only when the probe actually passed the
+# flags that make a refusal trustworthy, and answers 200 otherwise — so the
+# fixture asserts the argv instead of trusting a comment.
+# shellcheck disable=SC2329
+stub_curl_requires_noproxy() {
+  local saw_noproxy=0 saw_q=0 a
+  for a in "$@"; do
+    case "$a" in
+      --noproxy) saw_noproxy=1 ;;
+      -q) saw_q=1 ;;
+    esac
+  done
+  if [ "$saw_noproxy" -eq 1 ] && [ "$saw_q" -eq 1 ]; then
+    printf '7 000 0 curl: (7) Failed to connect: Connection refused\n'
+    return
+  fi
+  printf '0 200 512 \n'
+}
+# stub_curl_requires_interface answers 200 unless --interface was passed for a
+# zoned address, so the fixture pins that argument too.
+# shellcheck disable=SC2329
+stub_curl_requires_interface() {
+  case "$*" in
+    *%25*)
+      case "$*" in
+        *--interface*) printf '7 000 0 curl: (7) Failed to connect: Connection refused\n' ;;
+        *) printf '0 200 512 \n' ;;
+      esac
+      ;;
+    *) printf '7 000 0 curl: (7) Failed to connect: Connection refused\n' ;;
+  esac
+}
+# stub_curl_unroutable_zone refuses the unzoned urls and cannot route the zoned
+# one. Before the zone was carried into the URL this shape passed, because a
+# curl that could not route was recorded as a refusal.
 # shellcheck disable=SC2329
 stub_curl_unroutable_zone() {
-  case "$1" in
-    *%25*) printf '7 000 curl: (7) Failed to connect: No route to host\n' ;;
-    *) printf "7 000 curl: (7) Couldn't connect to server\n" ;;
+  case "$*" in
+    *%25*) printf '7 000 0 curl: (7) Failed to connect: No route to host\n' ;;
+    *) printf "7 000 0 curl: (7) Couldn't connect to server\n" ;;
   esac
 }
 
@@ -996,31 +1116,60 @@ FIXTURE
   expect_string "http://192.0.2.10:7778/v1/companion/health" \
     "an IPv4 endpoint is bare" "$(endpoint_url '192.0.2.10' 7778)"
 
-  # Classification. Only an explicit refusal is a refusal.
+  # Classification. Only an explicit refusal, on curl's own message line, is a
+  # refusal.
   expect_string refused "curl exit 7 saying Connection refused is a refusal" \
-    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect to 192.0.2.10 port 7778: Connection refused')"
+    "$(classify_endpoint_result 7 000 0 'curl: (7) Failed to connect to 192.0.2.10 port 7778: Connection refused')"
   expect_string refused "curl exit 7 in macOS wording is the same refusal" \
-    "$(classify_endpoint_result 7 000 "curl: (7) Failed to connect to 192.0.2.10 port 7778 after 1 ms: Couldn't connect to server")"
+    "$(classify_endpoint_result 7 000 0 "curl: (7) Failed to connect to 192.0.2.10 port 7778 after 1 ms: Couldn't connect to server")"
   expect_string error "curl exit 7 with no route to host is NOT a refusal" \
-    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect: No route to host')"
+    "$(classify_endpoint_result 7 000 0 'curl: (7) Failed to connect: No route to host')"
   expect_string error "curl exit 7 with an unreachable network is NOT a refusal" \
-    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect: Network is unreachable')"
+    "$(classify_endpoint_result 7 000 0 'curl: (7) Failed to connect: Network is unreachable')"
   expect_string error "curl exit 7 with a host unreachable is NOT a refusal" \
-    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect: Host is unreachable')"
+    "$(classify_endpoint_result 7 000 0 'curl: (7) Failed to connect: Host is unreachable')"
   expect_string error "curl exit 7 with no message at all is NOT a refusal" \
-    "$(classify_endpoint_result 7 000 '')"
+    "$(classify_endpoint_result 7 000 0 '')"
   expect_string error "a timeout is not a refusal" \
-    "$(classify_endpoint_result 28 000 'curl: (28) Operation timed out')"
+    "$(classify_endpoint_result 28 000 0 'curl: (28) Operation timed out')"
   expect_string error "an unresolvable host is not a refusal" \
-    "$(classify_endpoint_result 6 000 'curl: (6) Could not resolve host')"
+    "$(classify_endpoint_result 6 000 0 'curl: (6) Could not resolve host')"
   expect_string error "a malformed URL is not a refusal" \
-    "$(classify_endpoint_result 3 000 'curl: (3) URL rejected')"
+    "$(classify_endpoint_result 3 000 0 'curl: (3) URL rejected')"
+
+  # The anchor. A refusal wording that is not on curl's own exit-7 message line
+  # is not curl telling us about THIS address.
+  expect_string error "a refusal wording in unrelated stderr is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 0 'warning: an unrelated component reported Connection refused')"
+  expect_string error "a refusal wording after unrelated text is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 0 'note: something else. curl: (7) Connection refused')"
+  expect_string error "a refusal wording on a DIFFERENT curl exit line is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 0 'curl: (56) Recv failure: Connection refused')"
+  expect_string error "bare refusal text with no curl prefix is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 0 'Connection refused')"
+  expect_string refused "leading whitespace before curl's line is tolerated" \
+    "$(classify_endpoint_result 7 000 0 '   curl: (7) Connection refused')"
+
+  # The proxy arm. A configured proxy that refuses answers exit 7 with the
+  # refusal wording verbatim, for every URL, without a packet reaching the
+  # address. It must never read as the address refusing.
+  expect_string error "a proxy refusal is NOT the address refusing" \
+    "$(classify_endpoint_result 7 000 0 "curl: (7) Failed to connect to proxy.example port 3128 after 1 ms: Couldn't connect to server")"
+  expect_string error "a proxy connection refused is NOT the address refusing" \
+    "$(classify_endpoint_result 7 000 0 'curl: (7) Failed to connect to proxy.example port 3128: Connection refused')"
+
   expect_string responded "any HTTP status from the address is a response" \
-    "$(classify_endpoint_result 0 200 '')"
+    "$(classify_endpoint_result 0 200 512 '')"
   expect_string responded "a 401 from the address is still a response" \
-    "$(classify_endpoint_result 0 401 '')"
+    "$(classify_endpoint_result 0 401 64 '')"
   expect_string responded "a 500 from the address is still a response" \
-    "$(classify_endpoint_result 0 500 '')"
+    "$(classify_endpoint_result 0 500 0 '')"
+  # No status line, but bytes came back: something is listening, it just did not
+  # speak HTTP/1.
+  expect_string responded "a 000 status with a body is a response, not a block" \
+    "$(classify_endpoint_result 0 000 37 '')"
+  expect_string error "a 000 status with no body stays unproven" \
+    "$(classify_endpoint_result 0 000 0 '')"
 
   # And the probe end to end, driven through the curl seam.
   # Exit 0 = every endpoint refused, 1 = something answered, 3 = something was
@@ -1057,6 +1206,28 @@ FIXTURE
   # silent pass.
   expect_probe pass "an exit 7 with an unrecognized message blocks rather than passing" \
     lan_probe_with stub_curl_unknown_wording "$endpoints" 3
+  # A reply with no status line but a body is the port answering.
+  expect_probe pass "an HTTP/0.9-style reply from a LAN address -> FAIL (exit 1)" \
+    lan_probe_with stub_curl_http09 "$endpoints" 1
+  expect_probe fail "an HTTP/0.9-style reply must not pass" \
+    lan_probe_with stub_curl_http09 "$endpoints" 0
+
+  # The two false-PASS shapes this round exists for.
+  expect_probe fail "a refusal wording in unrelated stderr must not pass the probe" \
+    lan_probe_with stub_curl_unanchored_refusal "$endpoints" 0
+  expect_probe pass "an unanchored refusal blocks instead (exit 3)" \
+    lan_probe_with stub_curl_unanchored_refusal "$endpoints" 3
+  expect_probe fail "a refusing PROXY must not pass the probe for every address" \
+    lan_probe_with stub_curl_proxy_refusal "$endpoints" 0
+  expect_probe pass "a refusing proxy blocks instead (exit 3)" \
+    lan_probe_with stub_curl_proxy_refusal "$endpoints" 3
+
+  # And the argv itself, asserted rather than described: the stub refuses only
+  # when -q and --noproxy were actually passed, and answers 200 otherwise.
+  expect_probe pass "the probe passes -q and --noproxy '*' to curl" \
+    lan_probe_with stub_curl_requires_noproxy "$endpoints" 0
+  expect_probe pass "the probe passes --interface for a zoned address" \
+    lan_probe_with stub_curl_requires_interface "$endpoints" 0
 
   # And the verdict. This is the must-not-PASS fixture the previous version of
   # this script would have failed: probes that could not be run must never add
