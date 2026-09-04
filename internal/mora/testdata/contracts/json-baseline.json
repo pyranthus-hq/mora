@@ -36,6 +36,10 @@
     "status": "empty"
   },
   {
+    "path": "companion expose",
+    "status": "empty"
+  },
+  {
     "path": "companion list",
     "status": "parses"
   },

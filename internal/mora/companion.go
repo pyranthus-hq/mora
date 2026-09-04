@@ -15,6 +15,7 @@ package mora
 //	mora companion revoke   end one device's access
 //	mora companion status   counts, host identity, and whether a window is open
 //	mora companion serve    the narrow loopback listener a paired phone reads
+//	mora companion expose   the exact commands that publish that listener to the tailnet
 //
 // `pair` prints a secret. It is the only command here that does, it says so in
 // the human output, and the JSON form carries it because a QR renderer has to
@@ -26,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/companion"
@@ -43,9 +45,10 @@ const (
 	schemaCompanionList   = "mora.companion.list"
 	schemaCompanionRevoke = "mora.companion.revoke"
 	schemaCompanionStatus = "mora.companion.status"
+	schemaCompanionExpose = "mora.companion.expose"
 )
 
-const companionUsage = "usage: mora companion <pair|list|revoke|status|serve>"
+const companionUsage = "usage: mora companion <pair|list|revoke|status|serve|expose>"
 
 func cmdCompanion(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -62,6 +65,8 @@ func cmdCompanion(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return cmdCompanionStatus(ctx, args[1:], stdout)
 	case "serve":
 		return cmdCompanionServe(ctx, args[1:], stdout)
+	case "expose":
+		return cmdCompanionExpose(ctx, args[1:], stdout)
 	default:
 		return newCodedError(errCodeUsageUnknownValue, nil,
 			"unknown companion subcommand %q — %s", args[0], companionUsage)
@@ -366,4 +371,262 @@ func companionError(verb string, err error) error {
 		return newCodedError(errCodeUsageUnknownValue, err, "mora companion %s: %v", verb, err)
 	}
 	return fmt.Errorf("mora companion %s: %w", verb, err)
+}
+
+// ---------------------------------------------------------------------------
+// expose
+// ---------------------------------------------------------------------------
+
+// `mora companion expose` is graph node N22: it publishes nothing, and it says
+// exactly how to publish.
+//
+// # Why it prints commands instead of running them
+//
+// Tailscale Serve is the user's network, not Mora's. A command that shells out
+// to `tailscale` would take a durable action on a tailnet Mora does not own,
+// under a daemon Mora cannot see the policy of, and would need to be trusted to
+// take that action back. Printing leaves both the decision and the undo with the
+// operator, and it keeps this subcommand runnable on a machine with no Tailscale
+// installed at all. Nothing here execs anything, and nothing here reads the
+// tailnet.
+//
+// # The Host problem, which is the whole reason this node exists
+//
+// Serve terminates TLS in tailscaled and reverse-proxies to the loopback
+// backend, forwarding the client's Host header VERBATIM. Measured against
+// tailscale 1.102.3 on macOS: a request to the published node name arrives at
+// the backend with Host set to the node name (and X-Forwarded-Host identical),
+// while RemoteAddr is 127.0.0.1. The N12 listener's DNS-rebinding guard requires
+// the literal loopback address in Host, so before this node a paired phone
+// behind Serve got 403 forbidden_host on every route.
+//
+// That is why the published `serve` line carries `--allow-host`, and why this
+// command computes the value rather than leaving the operator to guess it: the
+// exact string depends on the published port, because Serve omits the port from
+// Host only when it is the scheme's default.
+//
+// # What it refuses
+//
+// No active device: publishing a listener that nothing can authenticate to puts
+// a port on the tailnet for no one, and the operator's next step is `pair`, not
+// `tailscale`. An unusable listener port: a port of zero is not a configuration,
+// and printing a command containing ":0" would be printing a broken command.
+//
+// # What it never prints
+//
+// A token, a pairing code, or any device secret. It reads only the registry's
+// COUNTS. It also never prints a Funnel command: Funnel publishes to the public
+// internet, and nothing in this contract is meant to leave the tailnet.
+
+const (
+	// defaultTailnetHTTPSPort is Serve's HTTPS port. Serve omits a default port
+	// from the Host header it forwards, which is why the allow-host value below
+	// is computed rather than always "name:port".
+	defaultTailnetHTTPSPort = 443
+	// defaultTailnetHTTPPort is the plaintext equivalent.
+	defaultTailnetHTTPPort = 80
+	// hostnamePlaceholder stands in when the operator has not supplied the node
+	// name. It is deliberately not a valid hostname: a command that still holds
+	// it cannot be pasted by accident, and no real tailnet name is ever baked
+	// into this binary, its tests or its goldens.
+	hostnamePlaceholder = "<your-node>.<your-tailnet>.ts.net"
+	// companionResetWarning is the one sentence that travels with the reset
+	// command wherever it is printed, in either rendering.
+	companionResetWarning = "removes EVERY serve mapping on this node, including ones another tool created; use the targeted off command instead"
+)
+
+// companionExposePayload is the `expose` receipt.
+//
+// The commands are argv slices rather than one string because a shell-quoted
+// line is a rendering, and a caller that wants to run one should not have to
+// unparse it. The human branch joins them.
+type companionExposePayload struct {
+	ListenerPort  int      `json:"listener_port"`
+	Backend       string   `json:"backend"`
+	Hostname      string   `json:"hostname"`
+	HostnameKnown bool     `json:"hostname_known"`
+	Scheme        string   `json:"scheme"`
+	TailnetPort   int      `json:"tailnet_port"`
+	PublicURL     string   `json:"public_url"`
+	AllowHost     string   `json:"allow_host"`
+	ActiveDevices int      `json:"active_devices"`
+	Funnel        string   `json:"funnel"`
+	ListenCommand []string `json:"listen_command"`
+	ServeCommand  []string `json:"serve_command"`
+	OffCommand    []string `json:"off_command"`
+	// Destructive is NOT a sibling of OffCommand, and that nesting is the
+	// point. `tailscale serve reset` removes every serve mapping on the node,
+	// including ones another tool created, so a machine caller reading this
+	// document must not be able to reach for it by mistake while scanning a
+	// flat list of commands. It sits behind a key named for what it is, beside
+	// a warning that cannot be missed by anything that reads the command.
+	Destructive companionExposeDestructive `json:"destructive"`
+}
+
+// companionExposeDestructive carries the one command here that is unsafe to run
+// blind, and the sentence that says why.
+type companionExposeDestructive struct {
+	ResetCommand []string `json:"reset_command"`
+	Warning      string   `json:"warning"`
+}
+
+func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("companion expose", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	port := fs.Int("port", defaultCompanionPort, "the loopback port `mora companion serve` listens on")
+	hostname := fs.String("hostname", "", "this Mac's tailnet name (`tailscale status --json`, Self.DNSName without the trailing dot)")
+	tailnetPort := fs.Int("tailnet-port", 0, "the port to publish on (default 443 for HTTPS, 80 with --plaintext)")
+	plaintext := fs.Bool("plaintext", false, "publish over plain HTTP instead of HTTPS, for a tailnet with HTTPS certificates disabled")
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+	}
+	if fs.NArg() != 0 {
+		return newCodedError(errCodeUsageUnknownValue, nil,
+			"usage: mora companion expose [--port N] [--hostname NAME] [--tailnet-port N] [--plaintext] [--json] (unexpected argument %q)", fs.Arg(0))
+	}
+
+	// The listener port is checked before the registry is opened: a command
+	// that cannot produce a usable line should not touch the device records at
+	// all, and "not configured" is a different sentence from "out of range".
+	if *port == 0 {
+		return newCodedError(errCodeUsageUnknownValue, nil,
+			"the companion listener port is not configured — pass --port, or run `mora companion serve` on its default port %d",
+			defaultCompanionPort)
+	}
+	if *port < 0 || *port > 65535 {
+		return newCodedError(errCodeUsageUnknownValue, nil,
+			"invalid --port %d: must be between 1 and 65535", *port)
+	}
+
+	scheme := "https"
+	publishPort := defaultTailnetHTTPSPort
+	if *plaintext {
+		scheme = "http"
+		publishPort = defaultTailnetHTTPPort
+	}
+	if *tailnetPort != 0 {
+		publishPort = *tailnetPort
+	}
+	if publishPort < 1 || publishPort > 65535 {
+		return newCodedError(errCodeUsageUnknownValue, nil,
+			"invalid --tailnet-port %d: must be between 1 and 65535", *tailnetPort)
+	}
+
+	node := *hostname
+	known := node != ""
+	if !known {
+		node = hostnamePlaceholder
+	} else if _, err := companion.CheckAllowHost(node); err != nil {
+		// Validated against the LISTENER's rule, not a second one, so this
+		// command cannot print an --allow-host argument its own listener would
+		// refuse at startup.
+		return newCodedError(errCodeUsageUnknownValue, err,
+			"invalid --hostname %q: %v", *hostname, err)
+	}
+
+	reg, _, err := companionRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	status, err := reg.Status()
+	if err != nil {
+		return companionError("expose", err)
+	}
+	if status.Active == 0 {
+		// Counts only. This branch never reads a token or a code, and the
+		// message names the command that fixes it.
+		return newCodedError(errCodeDataNotFound, nil,
+			"no active paired device (%d pending, %d revoked) — run `mora companion pair` and finish pairing first; "+
+				"publishing a listener that nothing can authenticate to puts a port on your tailnet for no one",
+			status.Pending, status.Revoked)
+	}
+
+	// Serve omits the port from the URL, and therefore from the Host header it
+	// forwards, exactly when the port is the scheme's default. The allow-host
+	// value has to match what actually arrives, so it is derived from the same
+	// condition rather than written twice.
+	portIsDefault := (scheme == "https" && publishPort == defaultTailnetHTTPSPort) ||
+		(scheme == "http" && publishPort == defaultTailnetHTTPPort)
+	authority := node
+	if !portIsDefault {
+		authority = fmt.Sprintf("%s:%d", node, publishPort)
+	}
+	backend := fmt.Sprintf("http://%s:%d", companion.LoopbackHost, *port)
+	portFlag := fmt.Sprintf("--%s=%d", scheme, publishPort)
+
+	out := companionExposePayload{
+		ListenerPort:  *port,
+		Backend:       backend,
+		Hostname:      node,
+		HostnameKnown: known,
+		Scheme:        scheme,
+		TailnetPort:   publishPort,
+		PublicURL:     fmt.Sprintf("%s://%s/", scheme, authority),
+		AllowHost:     authority,
+		ActiveDevices: status.Active,
+		// Stated, not omitted. A reader looking for the Funnel command should
+		// find the answer rather than assume the command was forgotten.
+		Funnel:        "off",
+		ListenCommand: []string{"mora", "companion", "serve", "--port", fmt.Sprint(*port), "--allow-host", authority},
+		ServeCommand:  []string{"tailscale", "serve", "--bg", portFlag, backend},
+		OffCommand:    []string{"tailscale", "serve", portFlag, "off"},
+		Destructive: companionExposeDestructive{
+			ResetCommand: []string{"tailscale", "serve", "reset"},
+			Warning:      companionResetWarning,
+		},
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, schemaCompanionExpose, companionSchemaVersion, out)
+	}
+
+	fmt.Fprintf(stdout, "listener\t%s\n", out.Backend)
+	fmt.Fprintf(stdout, "public\t%s\n", out.PublicURL)
+	fmt.Fprintf(stdout, "allow-host\t%s\n", out.AllowHost)
+	fmt.Fprintf(stdout, "devices\t%d active\n", out.ActiveDevices)
+	fmt.Fprintf(stdout, "funnel\t%s (this command never publishes to the public internet)\n", out.Funnel)
+	fmt.Fprintln(stdout)
+	if !known {
+		fmt.Fprintf(stdout, "Replace %s with this Mac's tailnet name before running anything:\n", hostnamePlaceholder)
+		fmt.Fprintln(stdout, "  tailscale status --json    (Self.DNSName, without the trailing dot)")
+		fmt.Fprintln(stdout, "Or re-run with --hostname NAME and copy the lines below verbatim.")
+		fmt.Fprintln(stdout)
+	}
+	fmt.Fprintln(stdout, "Start the listener, then publish it. In this order:")
+	fmt.Fprintf(stdout, "  %s\n", shellLine(out.ListenCommand))
+	fmt.Fprintf(stdout, "  %s\n", shellLine(out.ServeCommand))
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Stop publishing this listener:")
+	fmt.Fprintf(stdout, "  %s\n", shellLine(out.OffCommand))
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "Warning: %s\n", shellLine(out.Destructive.ResetCommand))
+	fmt.Fprintf(stdout, "  %s\n", out.Destructive.Warning)
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "--allow-host is what makes this work: Serve forwards the client's Host header unchanged,")
+	fmt.Fprintln(stdout, "and the listener refuses any Host but 127.0.0.1 unless you name the published one exactly.")
+	fmt.Fprintln(stdout, "The listener still binds 127.0.0.1 only, and still accepts a proxied request only from a")
+	fmt.Fprintln(stdout, "loopback peer. Verify the whole boundary with scripts/companion-network-audit.sh.")
+	return nil
+}
+
+// shellLine renders an argv for a human to paste.
+//
+// EVERY argument is wrapped in POSIX single quotes, including ones that need no
+// quoting at all. That is deliberate and it is a safety property rather than a
+// style: inside single quotes a POSIX shell interprets nothing — no `;`, no
+// `$`, no backtick, no newline — so a printed line can only ever be ONE command
+// with literal arguments. Quoting "only what a shell would otherwise split" was
+// the previous shape and was wrong, because it made the safety of the printed
+// line depend on the caller having validated its inputs. It now depends on
+// nothing: a future bug that lets `node.example;id` reach this function prints
+// an argument containing a semicolon, not a second command.
+//
+// A literal single quote is closed, escaped and reopened ('\”) because it is
+// the one byte that cannot appear inside single quotes.
+func shellLine(argv []string) string {
+	parts := make([]string, 0, len(argv))
+	for _, a := range argv {
+		parts = append(parts, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
+	}
+	return strings.Join(parts, " ")
 }
