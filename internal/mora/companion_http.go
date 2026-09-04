@@ -68,6 +68,7 @@ func cmdCompanionServe(ctx context.Context, args []string, stdout io.Writer) err
 	fs := flag.NewFlagSet("companion serve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	port := fs.Int("port", defaultCompanionPort, "loopback port to listen on")
+	allowHost := fs.String("allow-host", "", "one exact Host value to accept from a loopback reverse proxy (see `mora companion expose`); empty keeps loopback-only")
 	jsonOut := fs.Bool("json", false, "not supported: this subcommand runs a server")
 	if err := fs.Parse(args); err != nil {
 		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
@@ -93,13 +94,14 @@ func cmdCompanionServe(ctx context.Context, args []string, stdout io.Writer) err
 		return err
 	}
 	srv, err := companion.NewServer(companion.ServerOptions{
-		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, *port),
-		Devices:  reg,
-		Reader:   newCompanionReader(cfg),
-		Writer:   newCompanionWriter(),
-		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),
-		Now:      cfg.OperationClock,
-		Log:      stdout,
+		Addr:      fmt.Sprintf("%s:%d", companion.LoopbackHost, *port),
+		AllowHost: *allowHost,
+		Devices:   reg,
+		Reader:    newCompanionReader(cfg),
+		Writer:    newCompanionWriter(),
+		Captures:  companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),
+		Now:       cfg.OperationClock,
+		Log:       stdout,
 	})
 	if err != nil {
 		return err

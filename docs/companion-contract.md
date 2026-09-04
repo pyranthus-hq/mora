@@ -353,6 +353,220 @@ carries the aggregate beside it in the top-level `state`, and flattening a behin
 into the same value as a missing one would cost the phone the distinction. `TestCompanionIndexStateFollowsTheContractTable`
 pins the table.
 
+### Publishing it to a tailnet (N22)
+
+`mora companion expose` prints the exact commands that publish the loopback listener over the
+tailnet. What it prints is: the resolved listener URL, the public URL, the `--allow-host` value, the
+count of active devices, `funnel: off`, the two commands to run in order, the targeted command that
+stops publishing, a warning about `tailscale serve reset`, and a short explanation of why
+`--allow-host` is needed. What it does **not** print is any secret: it never runs `tailscale`, never
+reads the tailnet, and never prints a token, a pairing code or a fingerprint — it reads the
+registry's COUNTS and nothing more.
+
+Every argument in every printed command is wrapped in POSIX single quotes, including arguments that
+need no quoting. Inside single quotes a POSIX shell interprets nothing, so a printed line can only
+ever be one command with literal arguments. That is a safety property rather than a style: it holds
+even if a future change lets an unvalidated value reach the renderer.
+
+```
+mora companion expose --hostname <this Mac's tailnet name>
+```
+
+It refuses in two cases. With no ACTIVE device it exits non-zero with `data.not_found` and names
+`mora companion pair`: publishing a listener that nothing can authenticate to puts a port on your
+tailnet for no one. A device that has been paired but not yet confirmed does not count, because the
+listener answers 401 to everything it sends. With a listener port of zero it exits non-zero rather
+than printing a command containing `:0`.
+
+The output is two commands, in order, plus the targeted command that undoes them:
+
+```
+'mora' 'companion' 'serve' '--port' '7778' '--allow-host' '<NAME>'
+'tailscale' 'serve' '--bg' '--https=443' 'http://127.0.0.1:7778'
+
+'tailscale' 'serve' '--https=443' 'off'
+```
+
+`tailscale serve reset` is printed as a **warning**, not as a step. It removes every serve mapping on
+the node, including one another tool created, so it is the wrong instrument for undoing this
+publication and the targeted `off` above is the right one.
+
+The same distinction is structural in `--json`. `off_command` is a top-level key; there is **no**
+top-level `reset_command`. The reset lives under a `destructive` object whose only other key is a
+`warning` sentence, so a machine caller scanning the top level for a command to run cannot reach the
+global reset by mistake:
+
+```json
+{
+  "off_command": ["tailscale", "serve", "--https=443", "off"],
+  "destructive": {
+    "reset_command": ["tailscale", "serve", "reset"],
+    "warning": "removes EVERY serve mapping on this node, including ones another tool created; use the targeted off command instead"
+  }
+}
+```
+
+No Funnel command is ever printed. Funnel publishes to the public internet, and nothing in this
+contract is meant to leave the tailnet. `expose` states `funnel: off` rather than omitting it, so a
+reader looking for the Funnel command finds the answer instead of assuming it was forgotten.
+
+#### Why `--allow-host` exists
+
+Serve terminates TLS in `tailscaled` and reverse-proxies to the loopback backend, forwarding the
+client's `Host` header **verbatim**. Measured against Tailscale 1.102.3 on macOS, a request to the
+published node name arrives at the backend as:
+
+| What the backend sees | Value |
+|---|---|
+| `Host` | the published node name, with the port unless it is the scheme's default |
+| `X-Forwarded-Host` | identical to `Host` |
+| `X-Forwarded-For` | the tailnet address of the real client |
+| `RemoteAddr` | `127.0.0.1` |
+| extra headers | `Tailscale-User-Login`, `Tailscale-User-Name`, `Tailscale-User-Profile-Pic` |
+
+The listener's DNS-rebinding guard requires the literal loopback address in `Host`, so before N22 a
+paired phone behind Serve got `403 forbidden_host` on **every** route. This is the first of N04's
+three product-breaking findings, and it is confirmed rather than theoretical.
+
+`--allow-host` is the whole fix, and it is deliberately the smallest one:
+
+- **Opt-in.** Empty is the default and means the loopback-only behaviour is unchanged, byte for byte.
+- **One value, and it must be a DNS name.** The grammar is an ALLOWLIST, not a list of forbidden
+  characters: `<RFC 1123 hostname>[:port]` or `[<IPv6 literal>][:port]`, where a hostname is at most
+  253 characters of dot-separated labels, a label is 1 to 63 ASCII letters, digits and hyphens and
+  may not begin or end with one, and a port is 1 to 65535. A scheme, a path, a space, userinfo, a
+  wildcard, a comma, a trailing dot or a shell metacharacter is refused **before** any value reaches
+  a command line or a `Host` comparison — a blocklist was the first shape and was wrong, because it
+  admitted `node.example;id`. The value is compared case-insensitively against `Host` as a whole
+  string: no suffix rule, no list. A value that could never match is a failure to START rather than a
+  403 an operator debugs against a phone.
+- **Still loopback-only at the socket.** The bind is unchanged and still refuses any address but
+  `127.0.0.1`.
+- **Still loopback-only at the peer.** A request carrying the published name is admitted only when
+  the connection's peer is a loopback address. Serve dials the backend from `127.0.0.1`. Be precise
+  about what this buys: a loopback peer does **not** prove a request came through Serve — any process
+  on the Mac can open the port and type the published name in, exactly as it could already type
+  `127.0.0.1` in. It is worth having for one narrower reason: if the bind is ever widened, by this
+  code or by a port forwarder someone runs, the published name stops being sufficient on its own.
+  Proving *who* is asking is the device bearer token's job, and it is the only thing here that does
+  it.
+- **Compared as ASCII.** The fold is A-Z with a-z and nothing else. `strings.EqualFold` applies
+  Unicode simple folding, under which U+212A KELVIN SIGN folds to `k` and U+017F LATIN SMALL LETTER
+  LONG S folds to `s`, so a `Host` that is not this name byte-wise would compare equal to it — and
+  an absolute-form request URI lets a client put that authority into `Host` directly. A MagicDNS name
+  is ASCII, an internationalized name reaches the wire as punycode which is also ASCII, and a
+  non-ASCII `--allow-host` is refused at startup.
+- **Still one credential.** The device bearer token. The `Tailscale-User-*` headers are a real signed
+  assertion about a tailnet USER and are worth nothing here, because this listener answers to a
+  paired DEVICE. Neither they nor `X-Forwarded-For` are read for authentication, for throttling, or
+  for logging.
+
+The value belongs to the operator's machine, not to this repository: it is supplied on the command
+line (or from the invocation the operator keeps in their own configuration), and no real tailnet
+name appears in the code, the tests, the goldens or these docs. When `expose` is run without
+`--hostname` it prints a placeholder that the listener **refuses at startup**, so a command pasted
+without editing fails closed.
+
+#### The throttle finding, which is recorded and not solved
+
+Behind Serve the client IP does not survive the proxy: every device looks like `127.0.0.1` to the
+listener. A per-IP throttle would therefore collapse into a single bucket shared by every phone.
+That is N04's second finding and it stands. The listener's work budget is per-process
+(`maxInFlightKernelCalls`), which is honest about what it bounds; nothing here pretends to
+rate-limit per device from a network address. The real client address exists only in
+`X-Forwarded-For`, which is attacker-settable on any path that is not the proxy, so it is not read.
+
+N04's third finding — revoke must fail closed — is unchanged by publication: revocation is a
+registry state change, and an unknown, revoked or malformed token gets the same 401 whether the
+request arrived over loopback or through Serve.
+
+#### Proving it on a live machine
+
+`scripts/companion-network-audit.sh` runs against a live `mora companion serve` plus a live
+`tailscale serve` and proves the boundary rather than asserting it:
+
+| Probe | What it proves | Runs today |
+|---|---|---|
+| A | the listening socket is `127.0.0.1:<port>` and nothing else | yes |
+| B | exactly one Serve handler, it proxies to this listener, no raw TCP forward, Funnel off — read from `tailscale serve status --json` and parsed structurally | yes |
+| C1 | a tailnet request reaches the listener and gets the opaque 401 | yes |
+| C2 | **every** (interface, address) pair on this Mac EXPLICITLY refuses the connection | partly — see below |
+| D1 | the log holds no bearer token, no pairing code and no device id, all of which the session really sent | yes |
+| D2 | the log does not name the published host | yes |
+| D3 | after a served, decoded request the log still holds no prompt, answer or vault text | **BLOCKED** |
+| D4 | an authenticated route call is served (200) and its projection decodes | **BLOCKED** |
+| E | the peer the listener sees is loopback (the throttle finding above), with a no-`--allow-host` control that returns `403 forbidden_host` | yes |
+
+A probe is PASS, FAIL or **BLOCKED**, and BLOCKED is the honest answer to a claim nothing exercised.
+D3 and D4 are blocked today: `Registry.Confirm` has no production caller, so no device can reach the
+ACTIVE state, every request the script can make is refused at the auth guard, and nothing decodes a
+body, runs retrieval or produces an answer. Their absence from the log would therefore prove nothing.
+Any blocked probe makes the final verdict **PARTIAL**, which is not PASS and exits 3.
+
+There is deliberately no Mac-side shortcut that confirms a pairing to unblock them. A pairing is
+proven by the phone with its one-time code; the kernel-side confirm route is a separate node. A local
+backdoor would fake the exact evidence this audit exists to collect.
+
+C2 deserves a note, because it was the probe most easily faked. It enumerates **(interface, address)
+pairs**, not addresses: the same address on two interfaces is two endpoints, and a link-local IPv6
+keeps its scope id all the way into the URL, where the `%` is percent-encoded as `%25` per RFC 6874
+and the interface is handed to curl. The earlier version dropped the scope id, deduplicated addresses
+independently of interfaces, and flattened every curl error to the same value as a refusal, so an
+endpoint it could not route to was counted as an endpoint it had proved closed.
+
+It now has three outcomes, and only one of them is proof:
+
+| Outcome | What it means | C2 |
+|---|---|---|
+| **refused** | curl exit 7 *and* a refusal in curl's own message | the port is closed there |
+| **responded** | the address answered HTTP at **any** status — 200 and 401 alike | **FAIL**: the port is reachable off loopback |
+| **unreachable** | a timeout, no route, an unreachable network, or an exit 7 whose wording matches neither vocabulary | **BLOCKED**: no answer either way, so nothing is proved |
+
+The refusal test is **anchored to curl's own message line** — it must begin `curl: (7) ` — and it is
+two-directional. Substring-matching the whole of stderr was wrong: any text that happened to contain
+"refused", from any component, about any host, passed as a refusal of *this* address. It accepts exactly **two** wordings, both verified against the
+libcurl that produces them: `Connection refused`, the operating system's `strerror` for
+`ECONNREFUSED` and what Linux prints, and `Couldn't connect to server`, libcurl's own text for
+`CURLE_COULDNT_CONNECT` from `curl_easy_strerror` in `lib/strerror.c` and what macOS prints. A third
+spelling, `Could not connect to server`, was accepted and has been **removed**: it is not a string
+libcurl emits. Checked against the exact library the live audit measures (curl 8.2.1,
+libcurl/8.2.1) — `strings libcurl.4.dylib | grep -c "Couldn't connect to server"` is 1 and the same
+grep for `Could not connect to server` is 0. An exit 7 whose message matches *neither* the refusal
+nor the unreachable vocabulary is recorded as unreachable rather than guessed at, so a future change
+to curl's wording degrades to BLOCKED and can never become a silent pass.
+
+**A proxy is the sharpest way to fake this probe, so it is locked out three times.** A configured
+proxy that refuses connections answers exit 7 with the refusal wording verbatim for *every* URL, and
+C2 would report that every address on the machine refused without a single packet having reached any
+of them. The script clears `http_proxy`/`https_proxy`/`ALL_PROXY`/`NO_PROXY` and their variants
+before anything runs; every probe curl is given `-q` (ignore `~/.curlrc`) and `--noproxy '*'`; and a
+message naming a proxy is classified as unreachable even if it carries the refusal wording. A
+self-test fixture asserts the argv *contract* rather than trusting this paragraph: the stub refuses
+only when `-q` is curl's **first** argument and `--noproxy` is **immediately followed by** `*`, and
+answers 200 otherwise. Both positions carry weight — curl applies `~/.curlrc` at the point `-q` would
+have appeared, so a `-q` that is not first leaves a window in which the operator's own defaults are
+already in effect, and `--noproxy` takes a value, so a `--noproxy` followed by another flag disables
+proxying for the wrong host list and swallows that flag as its value.
+
+A reply with **no status line but a non-empty body** — HTTP/0.9, or anything that is not HTTP at all
+— counts as *responded*, not as unproven. Something is listening; it simply did not speak HTTP/1.
+
+**The unreachable set is not empty on a normal Mac, and that is expected.** The `fe80::` link-locals
+on `awdl0` (AirDrop) and on the `utun` interfaces never answer at all, and a tailnet IPv6 is
+blackholed by `tailscaled` rather than refused; a connect to any of them simply hangs. Those
+endpoints are named individually with their interface, address, zone and curl exit status, and they
+make the run PARTIAL. Calling them a failure would keep the audit permanently red for a reason that
+has nothing to do with the listener; calling them a refusal was the original bug.
+
+Every probe fails closed: a missing tool, an empty command output or an unparseable line is a FAIL,
+never a skip. `--self-test` drives the same probe functions against fixtures that must fail —
+including a real listener bound to `0.0.0.0`, a log line containing the session token, a registry
+holding only a pending device, real `ifconfig` text carrying a duplicated address and three zoned
+link-local addresses, curl stubs returning a timeout, a 200 and a 401, a stub that refuses only the
+unzoned URLs (the exact shape the old code passed on), and the counter set `(8 passed, 0 failed,
+2 blocked)` which must render PARTIAL and never PASS.
+
+
 ## 12. Notes for Wave 1
 
 ### N11: canonicalizing and cryptographically validating public keys

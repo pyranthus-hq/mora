@@ -499,6 +499,17 @@
       }
     },
     {
+      "name": "companion publication",
+      "paths": ["companion expose"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionExposePrintsTheExactTailscaleCommands", "TestCompanionExposeWithoutAHostnamePrintsAPlaceholderTheListenerRefuses"], "reason": "Every published combination is pinned: the proxy target, the --allow-host value Serve will actually send, the off command and the reset command, across HTTPS and plaintext on default and non-default ports. Without a supplied node name the command prints a placeholder that the listener refuses at startup, so an unedited paste fails closed."},
+        "json": {"status": "test", "tests": ["TestCompanionExposePrintsTheExactTailscaleCommands"], "reason": "The receipt is decoded back into its payload type through the shared envelope check rather than substring-matched, and each command is compared as an argv rather than as a rendered line."},
+        "state": {"status": "test", "tests": ["TestCompanionExposeRefusesUntilADeviceIsActive"], "reason": "The durable state expose reads is the device registry, and it reads COUNTS only: an empty registry and a registry holding a pending-but-unconfirmed device are both refused, and the command succeeds only once a device can actually authenticate."},
+        "error": {"status": "test", "tests": ["TestCompanionExposeRefusesArgumentsThatWouldPrintABrokenCommand", "TestCompanionExposeRefusesUntilADeviceIsActive"], "reason": "A port of zero, an out-of-range port, a hostname carrying a scheme, a path, a wildcard or a list, and the unedited placeholder are all coded usage errors; the no-device refusal is data.not_found and names `mora companion pair`. Every refusal leaves stdout empty."},
+        "refusal": {"status": "test", "tests": ["TestCompanionExposeNeverPrintsACredential", "TestCompanionExposeDoesNotRunTailscale"], "reason": "The command prints no device token, no pairing code and no fingerprint, and a source-level witness pins that it execs nothing: it prints the tailscale commands rather than running them, so the operator keeps both the decision and the undo. The listener-side half of the boundary is proved in internal/companion/server_allowhost_test.go."}
+      }
+    },
+    {
       "name": "companion listener",
       "paths": ["companion serve"],
       "evidence": {
