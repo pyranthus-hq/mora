@@ -1224,6 +1224,13 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 		return nil, nil
 	}
 	var out [][]Memory
+	// refused records a read-only caller's refusal to heal. It is the ONE heal
+	// error that must not be swallowed: every other failure means "this share
+	// cannot be served and the operator will hear about it from doctor", while
+	// this one means "this share COULD be served, and you told me not to do the
+	// work". A companion request that quietly dropped a subscription would show
+	// a phone a confident answer built from part of the corpus.
+	var refused error
 	for _, sub := range sf.Subscriptions {
 		commit, ok, rerr := resolvePublishedCommit(cfg, sub.Name)
 		if rerr != nil || !ok {
@@ -1237,6 +1244,9 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 			// cannot re-cut, exclude THIS subscription from search only (per-artifact
 			// suppression) — a corrupt share index never takes down local recall.
 			if healErr := healShareIndex(ctx, cfg, sub.Name); healErr != nil {
+				if errors.Is(healErr, ErrReadOnlyRepairNeeded) {
+					refused = healErr
+				}
 				continue
 			}
 			commit, ok, rerr = resolvePublishedCommit(cfg, sub.Name)
@@ -1256,7 +1266,11 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 			out = append(out, res)
 		}
 	}
-	return out, nil
+	// The refusal is returned AFTER the loop, so every healthy subscription is
+	// still searched and the caller can see both what was found and that the
+	// result is incomplete. Non-companion callers never set the marker, so
+	// refused is nil for them and this returns exactly what it always did.
+	return out, refused
 }
 
 // unionSharedResults fuses the local ranked list with every subscription's

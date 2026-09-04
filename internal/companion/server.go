@@ -464,15 +464,18 @@ func (s *Server) budgeted(w http.ResponseWriter, r *http.Request, call func(cont
 	if !ok {
 		return false
 	}
-	// The release is scoped to THIS function, and that is the whole design: the
-	// slot is taken here, the kernel call happens here, and the slot goes back
-	// when this returns — which is before the caller writes a byte of the
-	// response. Holding it across the write would mean a phone draining a 4 MiB
-	// projection over a slow network keeps every other request out.
+	// The slot is taken here, the kernel call happens here, and the slot goes
+	// back BEFORE any response is written — the error response included. The
+	// deferred release is the backstop for a panic; the explicit one is the
+	// contract, because a deferred release alone would still hold the slot
+	// across writeKernelFailure below. Holding it across any write means a
+	// phone on a slow network keeps every other request out, and an error body
+	// travels the same network a projection does.
 	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), s.kernelTimeout)
 	defer cancel()
 	err := call(ctx)
+	release()
 	if err != nil {
 		writeKernelFailure(w, err)
 		return false
@@ -540,8 +543,12 @@ func (s *Server) handleToday(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	s.writePayload(w, &projection)
-	s.markSeen(dev.DeviceID)
+	// The stamp records that a device was SERVED. A projection the contract
+	// refuses is a 500, and a 500 served nothing — so the write is gated on the
+	// response actually being a 2xx rather than on having got this far.
+	if s.writePayload(w, &projection) {
+		s.markSeen(dev.DeviceID)
+	}
 }
 
 // handleHealth is deliberately OUTSIDE the work budget.
@@ -560,11 +567,60 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	projection, err := s.reader.Health(ctx)
 	if err != nil {
-		writeKernelFailure(w, err)
-		return
+		// A health route that answers 503 has told the phone nothing it could
+		// not already infer from the socket. Health's whole job is to report
+		// state, and "the kernel could not tell me" IS a state — so the failure
+		// becomes a projection that says unhealthy, rather than an absence of
+		// one. The alternative asks a client to distinguish "Mora is unwell"
+		// from "Mora is not there", which is exactly what this route exists to
+		// let it do.
+		projection = degradedHealth(err)
 	}
-	s.writePayload(w, &projection)
-	s.markSeen(dev.DeviceID)
+	if s.writePayload(w, &projection) {
+		s.markSeen(dev.DeviceID)
+	}
+}
+
+// kernelSourceKey names the kernel itself in a freshness row.
+//
+// It is not a connector, and it is deliberately distinguishable from one: the
+// thing that failed is Mora's own read path, and attributing that to gmail or
+// imessage would be a lie about which part of the system is unwell.
+const kernelSourceKey = "mora.kernel"
+
+// degradedHealth is the projection a health request gets when the kernel could
+// not produce one.
+//
+// Everything it claims is something this function actually knows. The state is
+// unhealthy because a kernel that cannot answer is not healthy. The policy is
+// readonly because a kernel in that condition must not be told a write would be
+// accepted — the safe direction is the one that refuses. The index is unhealthy
+// with no memory count and no built-at, because nothing here read the index. The
+// only row is the kernel's own, carrying the typed reason.
+func degradedHealth(err error) HealthProjection {
+	out := NewHealthProjection()
+	out.GeneratedAt = time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	out.State = HealthUnhealthy
+	out.Policy = PolicyReadonly
+	out.Index = IndexHealth{State: HealthUnhealthy}
+	out.Sources = []SourceFreshness{{
+		Key:        kernelSourceKey,
+		State:      FreshnessFailed,
+		AgeSeconds: -1,
+		ErrorCode:  kernelErrorCode(err),
+	}}
+	return out
+}
+
+// kernelErrorCode maps a kernel failure onto the frozen vocabulary. A deadline
+// is the kernel being unreachable in time, which is what source_unavailable
+// says; anything else is internal, because a code this package cannot explain
+// must not be guessed at.
+func kernelErrorCode(err error) SourceErrorCode {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrSourceUnavailable
+	}
+	return ErrInternal
 }
 
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
@@ -614,8 +670,9 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	s.writePayload(w, &bundle)
-	s.markSeen(dev.DeviceID)
+	if s.writePayload(w, &bundle) {
+		s.markSeen(dev.DeviceID)
+	}
 }
 
 // writePayload marshals through Marshal, which validates.
@@ -625,16 +682,17 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 // its own timestamps, or an item with no evidence, is a lie a phone would
 // render, so it becomes a 500 with nothing in it instead. Tolerant outbound
 // applies to the DEVICE's decoder, not to this producer.
-func (s *Server) writePayload(w http.ResponseWriter, v Payload) {
+func (s *Server) writePayload(w http.ResponseWriter, v Payload) bool {
 	body, err := Marshal(v)
 	if err != nil {
 		writeOpaque(w, http.StatusInternalServerError, "internal")
-		return
+		return false
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+	return true
 }
 
 // ---------------------------------------------------------------------------

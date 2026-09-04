@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -347,80 +348,113 @@ func TestServerMountsNothingOutsideTheDeclaredRoutes(t *testing.T) {
 // path it claims, so the allowlist cannot be widened without the widening being
 // the diff.
 func TestServerRegistersRoutesInExactlyOnePlace(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
+	// The WHOLE package, not just server.go. A registration helper in any other
+	// file of the package reaches the same mux, so parsing one file was a
+	// witness over the place a registration currently lives rather than over
+	// the places one could be added.
+	files := companionProductionFiles(t)
+	if len(files) < 2 {
+		t.Fatalf("parsed %d production files; the package has more than that", len(files))
 	}
 
 	type site struct {
+		file string
 		fn   string
 		call string
 	}
 	var sites []site
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+	for name, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				switch sel.Sel.Name {
+				case "Handle", "HandleFunc":
+					sites = append(sites, site{file: name, fn: fn.Name.Name, call: sel.Sel.Name})
+				}
+				return true
+			})
 		}
-		ast.Inspect(fn.Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			switch sel.Sel.Name {
-			case "Handle", "HandleFunc":
-				sites = append(sites, site{fn: fn.Name.Name, call: sel.Sel.Name})
-			}
-			return true
-		})
 	}
 
 	if len(sites) != 1 {
-		t.Fatalf("server.go has %d mux registration sites, want exactly 1 (the routeDefs loop): %+v", len(sites), sites)
+		t.Fatalf("the package has %d mux registration sites, want exactly 1 (the routeDefs loop in server.go): %+v", len(sites), sites)
 	}
-	if sites[0].fn != "router" {
-		t.Fatalf("the registration lives in %q, want router()", sites[0].fn)
+	if sites[0].file != "server.go" || sites[0].fn != "router" {
+		t.Fatalf("the registration lives in %s:%s, want server.go:router", sites[0].file, sites[0].fn)
 	}
 
 	// And that one site must be inside a range over routeDefs(), so it cannot
 	// be a single hard-coded route pretending to be the loop.
 	var loopsOverRouteDefs bool
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "router" || fn.Body == nil {
-			continue
-		}
-		ast.Inspect(fn.Body, func(node ast.Node) bool {
-			rng, ok := node.(*ast.RangeStmt)
-			if !ok {
-				return true
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "router" || fn.Body == nil {
+				continue
 			}
-			call, ok := rng.X.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "routeDefs" {
-				ast.Inspect(rng.Body, func(inner ast.Node) bool {
-					c, ok := inner.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					if sel, ok := c.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "HandleFunc" || sel.Sel.Name == "Handle") {
-						loopsOverRouteDefs = true
-					}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				rng, ok := node.(*ast.RangeStmt)
+				if !ok {
 					return true
-				})
-			}
-			return true
-		})
+				}
+				call, ok := rng.X.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "routeDefs" {
+					ast.Inspect(rng.Body, func(inner ast.Node) bool {
+						c, ok := inner.(*ast.CallExpr)
+						if !ok {
+							return true
+						}
+						if sel, ok := c.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "HandleFunc" || sel.Sel.Name == "Handle") {
+							loopsOverRouteDefs = true
+						}
+						return true
+					})
+				}
+				return true
+			})
+		}
 	}
 	if !loopsOverRouteDefs {
 		t.Fatal("router() does not register from a range over routeDefs(); the table is no longer the source of the mux")
 	}
+}
+
+// companionProductionFiles parses every non-test .go file in the package,
+// keyed by file name.
+func companionProductionFiles(t *testing.T) map[string]*ast.File {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	out := map[string]*ast.File{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, name, nil, 0)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", name, perr)
+		}
+		out[name] = file
+	}
+	return out
 }
 
 // TestServerHeadDoesNotReachTheKernel is the named regression for the defect
@@ -1006,6 +1040,50 @@ func TestServerReleasesTheSlotBeforeWritingTheResponse(t *testing.T) {
 	t.Fatal("the listener held its only kernel slot across the response write; a slow reader shuts every other request out")
 }
 
+// TestServerReleasesTheSlotBeforeWritingAnErrorResponse is the same rule on the
+// path that is easy to forget.
+//
+// An error body travels the same network a projection does, and a deferred
+// release alone would still hold the slot across writeKernelFailure. A listener
+// that is slow BECAUSE something is wrong is exactly when the next request most
+// needs to get through.
+func TestServerReleasesTheSlotBeforeWritingAnErrorResponse(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+	reader.todayErr = errors.New("the kernel is unhappy")
+
+	writing := make(chan struct{})
+	unblock := make(chan struct{})
+	slow := &blockingWriter{rec: httptest.NewRecorder(), writing: writing, unblock: unblock}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(slow, request(http.MethodGet, RouteToday, token, nil))
+	}()
+
+	select {
+	case <-writing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the error response never started writing")
+	}
+
+	// The failing kernel call is over; only the error body is in flight. The
+	// slot must already be back.
+	reader.todayErr = nil
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+	close(unblock)
+	<-done
+
+	if rec.Code == http.StatusServiceUnavailable && strings.Contains(rec.Body.String(), "busy") {
+		t.Fatal("the listener held its kernel slot across the ERROR response write")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the concurrent request = %d, want 200\n%s", rec.Code, rec.Body.String())
+	}
+}
+
 // blockingWriter stops inside the first Write so a test can observe the server
 // mid-response.
 type blockingWriter struct {
@@ -1025,6 +1103,78 @@ func (b *blockingWriter) Write(p []byte) (int, error) {
 		<-b.unblock
 	})
 	return b.rec.Write(p)
+}
+
+// TestServerHealthDegradesRatherThanRefusing is the honesty rule for the one
+// route a phone reads when something looks wrong.
+//
+// A 503 from health tells a client nothing it could not already infer from the
+// socket: it cannot distinguish "Mora is unwell" from "Mora is not there", which
+// is the exact distinction this route exists to give it. So a kernel that cannot
+// produce a projection produces a projection that says so.
+func TestServerHealthDegradesRatherThanRefusing(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want SourceErrorCode
+	}{
+		{"an ordinary kernel failure", errors.New("open /Users/someone/vault/mora/index.db: permission denied"), ErrInternal},
+		{"a deadline", context.DeadlineExceeded, ErrSourceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader.healthErr = tc.err
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, request(http.MethodGet, RouteHealth, token, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("health with a failing kernel = %d, want 200\n%s", rec.Code, rec.Body.String())
+			}
+			// The body has to be a real projection, not a shape that merely
+			// looks like one: decode it the way a device would.
+			var projection HealthProjection
+			if uerr := Unmarshal(rec.Body.Bytes(), &projection); uerr != nil {
+				t.Fatalf("the degraded health answer does not satisfy the contract: %v\n%s", uerr, rec.Body.String())
+			}
+			if projection.State != HealthUnhealthy {
+				t.Fatalf("state = %q, want unhealthy", projection.State)
+			}
+			if projection.Index.State != HealthUnhealthy {
+				t.Fatalf("index.state = %q, want unhealthy", projection.Index.State)
+			}
+			if projection.Policy != PolicyReadonly {
+				t.Fatalf("policy = %q, want readonly — a kernel that cannot answer must not promise a write", projection.Policy)
+			}
+			if len(projection.Sources) != 1 {
+				t.Fatalf("sources = %+v, want exactly the kernel's own row", projection.Sources)
+			}
+			row := projection.Sources[0]
+			if row.Key != kernelSourceKey {
+				t.Fatalf("the failing row is attributed to %q, want %q — the kernel is not a connector", row.Key, kernelSourceKey)
+			}
+			if row.State != FreshnessFailed {
+				t.Fatalf("the kernel row state = %q, want failed", row.State)
+			}
+			if row.ErrorCode != tc.want {
+				t.Fatalf("error_code = %q, want %q", row.ErrorCode, tc.want)
+			}
+			// And it leaks nothing of the kernel's own error.
+			if strings.Contains(rec.Body.String(), "vault") || strings.Contains(rec.Body.String(), "permission denied") {
+				t.Fatalf("the degraded health answer leaked the kernel error:\n%s", rec.Body.String())
+			}
+		})
+	}
+
+	// Today and context still refuse: they have an answer to give or they do
+	// not, and a projection that says "unhealthy" is not a substitute for one.
+	reader.todayErr = errors.New("the kernel is unhappy")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Today with a failing kernel = %d, want 503", rec.Code)
+	}
 }
 
 // TestServerHealthIsNeverRefusedForBusyness is the limiter exemption.
@@ -1331,9 +1481,20 @@ func TestServerWritesTheDeviceRegistryAtMostOncePerWindow(t *testing.T) {
 		{"413", http.MethodPost, RouteContext, token, func() io.Reader {
 			return strings.NewReader(strings.Repeat("x", MaxRequestBytes+1))
 		}, http.StatusRequestEntityTooLarge},
+		// A projection the contract refuses is a 500, and a 500 served nothing.
+		// This is the case status-blind stamping got wrong: the handler reached
+		// writePayload, so "we got this far" was true while "we answered" was
+		// not.
+		{"500", http.MethodGet, RouteToday, token, func() io.Reader { return nil }, http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fresh, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: reg, Reader: newStubReader()})
+			freshReader := newStubReader()
+			if tc.name == "500" {
+				// An item with no evidence is a claim with nothing behind it,
+				// so Marshal refuses it and writePayload answers 500.
+				freshReader.today.Items = []TodayItem{{ID: "itm_1", Kind: ItemChanged, Title: "Uncited", Evidence: []Evidence{}}}
+			}
+			fresh, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: reg, Reader: freshReader})
 			if err != nil {
 				t.Fatal(err)
 			}

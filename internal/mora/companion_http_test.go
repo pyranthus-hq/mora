@@ -762,6 +762,27 @@ func TestCompanionThinkPublishesNoShareRepair(t *testing.T) {
 		t.Fatalf("think PUBLISHED a repair generation: %s -> %s", commit.Gen, after.Gen)
 	}
 
+	// Not publishing is half the property. The other half is SAYING so: a
+	// subscription dropped from the corpus without a word is a confident answer
+	// built from part of the evidence, which is the failure the whole gap
+	// discipline exists to prevent.
+	var bundle companion.ContextBundle
+	if uerr := companion.Unmarshal(rec.Body.Bytes(), &bundle); uerr != nil {
+		t.Fatalf("think produced a bundle the contract rejects: %v\n%s", uerr, rec.Body.String())
+	}
+	var said bool
+	for _, gap := range bundle.Gaps {
+		if strings.Contains(gap, "index") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("think dropped a corrupt subscription silently; gaps = %v", bundle.Gaps)
+	}
+	if bundle.Health.State == companion.HealthHealthy {
+		t.Fatalf("think reported healthy while a subscription was unreadable: %+v", bundle.Health)
+	}
+
 	// And the unmarked path still heals, so the refusal is the marker's doing
 	// and not a broken heal.
 	if _, _, serr := searchSharedCorporaProbe(t, cfg); serr != nil {
@@ -773,6 +794,77 @@ func TestCompanionThinkPublishesNoShareRepair(t *testing.T) {
 	}
 	if healed.Gen == commit.Gen {
 		t.Fatal("the unmarked search did not heal; the fixture no longer covers the write path")
+	}
+}
+
+// TestSearchSharedCorporaSurfacesTheReadOnlyRefusal pins the propagation itself,
+// at the function that used to swallow it.
+//
+// Every OTHER heal failure stays suppressed — a share that genuinely cannot be
+// re-cut is excluded from this search and surfaced by doctor, and taking local
+// recall down over it would be the wrong trade. The read-only refusal is the one
+// that must travel, because it means the share COULD have been served and the
+// caller asked for no work.
+func TestSearchSharedCorporaSurfacesTheReadOnlyRefusal(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	seedAuthored(t, "personal", "Local sqlite note", "we picked sqlite locally")
+	setupSubscription(t, cfg, "neil", []Memory{
+		fixtureMemory("mem_20260601_000000_aaaaaaaa", "Neil sqlite decision", "neil standardized on sqlite too"),
+	})
+	commit, ok, err := resolvePublishedCommit(cfg, "neil")
+	if err != nil || !ok {
+		t.Fatalf("no published generation to corrupt: %v", err)
+	}
+	if err := os.WriteFile(shareGenIndexPath(cfg, "neil", commit.Gen), []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Under the marker: the refusal reaches the caller, and nothing was
+	// published.
+	if _, serr := searchSharedCorpora(withReadOnly(testCtx(t)), cfg, "sqlite", "", 8); !errors.Is(serr, ErrReadOnlyRepairNeeded) {
+		t.Fatalf("searchSharedCorpora under the marker = %v, want ErrReadOnlyRepairNeeded", serr)
+	}
+	refusedGen, ok, err := resolvePublishedCommit(cfg, "neil")
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if refusedGen.Gen != commit.Gen {
+		t.Fatal("the refused search published a repair generation anyway")
+	}
+
+	// Without it: unchanged. The share heals, the search succeeds, and no error
+	// reaches the caller — which is what every non-companion surface depends on.
+	if _, serr := searchSharedCorpora(testCtx(t), cfg, "sqlite", "", 8); serr != nil {
+		t.Fatalf("the unmarked search returned %v, want nil", serr)
+	}
+	healed, ok, err := resolvePublishedCommit(cfg, "neil")
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if healed.Gen == commit.Gen {
+		t.Fatal("the unmarked search did not heal; the fixture no longer covers the write path")
+	}
+
+	// And a heal that genuinely CANNOT run stays suppressed. This is the other
+	// half of the rule and the half a blanket propagation would break: a share
+	// whose frozen corpus is itself unreadable can never be re-cut, doctor is
+	// where an operator hears about it, and taking local recall down over one
+	// unrepairable subscription would be the wrong trade.
+	if err := os.WriteFile(shareGenIndexPath(cfg, "neil", healed.Gen), []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(shareGenCorpusDir(cfg, "neil", healed.Gen)); err != nil {
+		t.Fatal(err)
+	}
+	if herr := healShareIndex(testCtx(t), cfg, "neil"); herr == nil {
+		t.Fatal("the fixture still heals, so it cannot exercise the suppressed path")
+	} else if errors.Is(herr, ErrReadOnlyRepairNeeded) {
+		t.Fatalf("the fixture produced the read-only refusal, not an ordinary heal failure: %v", herr)
+	}
+	if _, serr := searchSharedCorpora(testCtx(t), cfg, "sqlite", "", 8); serr != nil {
+		t.Fatalf("an unrepairable share took the whole search down: %v — only the read-only refusal may travel", serr)
 	}
 }
 
