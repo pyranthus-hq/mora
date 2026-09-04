@@ -1761,3 +1761,55 @@ func TestCaptureBackfillsCanonicalBytesOnReplay(t *testing.T) {
 		t.Fatalf("the vault holds %d memories, want 1", got)
 	}
 }
+
+// TestCaptureReplaySettlesAPendingReservation is the round-six hole.
+//
+// The receipt reaches the canonical record before the reservation settles, so a
+// failed settle leaves a publication that IS complete and a row that says
+// pending. The retry answers from the canonical bytes without ever coming back
+// for that row, which then sits against the in-flight bound until the sweep.
+// The replay finishes it.
+func TestCaptureReplaySettlesAPendingReservation(t *testing.T) {
+	srv, _, token, root := newCaptureServer(t)
+	writer := writerOf(t, srv)
+	capture := captureFor(t, srv, "the receipt landed, the settle did not")
+
+	// The receipt is recorded and the settle fails: exactly the window.
+	srv.captures.writeRecord = func(path string, body []byte, beforeRename func() error) error {
+		if strings.Contains(string(body), string(reservationSettled)) {
+			return errors.New("the process died before the reservation settled")
+		}
+		return writeSecretFile(path, body, beforeRename)
+	}
+	if rec := postCapture(t, srv, token, capture); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the crashing attempt answered %d, want 503\n%s", rec.Code, rec.Body.String())
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationPending {
+		t.Fatalf("the reservation is %q, want pending", state)
+	}
+	if got := storePending(srv.captures); got != 1 {
+		t.Fatalf("the census counts %d live claims, want 1", got)
+	}
+
+	// The settle works again; the retry answers from the canonical record AND
+	// finishes the row it found.
+	srv.captures.writeRecord = writeSecretFile
+	first := postCapture(t, srv, token, capture)
+	if first.Code != http.StatusOK {
+		t.Fatalf("the retry answered %d\n%s", first.Code, first.Body.String())
+	}
+	if state := reservationStateOn(t, root, capture); state != reservationSettled {
+		t.Fatalf("the replay left the reservation %q, want settled", state)
+	}
+	if got := storePending(srv.captures); got != 0 {
+		t.Fatalf("the census still counts %d live claims, want 0", got)
+	}
+	// And the answer is the bytes the canonical record holds, on every attempt.
+	second := postCapture(t, srv, token, capture)
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+		t.Fatalf("the replay is not byte-identical")
+	}
+	if got := writer.memories(); got != 1 {
+		t.Fatalf("the vault holds %d memories, want 1", got)
+	}
+}

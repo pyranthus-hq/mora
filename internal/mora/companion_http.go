@@ -519,7 +519,7 @@ func (w *companionWriter) RecordReceipt(ctx context.Context, id companion.Captur
 	if err != nil {
 		return err
 	}
-	if err := recordCaptureReceipt(cfg, id, response); err != nil {
+	if _, err := recordCaptureReceipt(cfg, id, response); err != nil {
 		return err
 	}
 	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
@@ -1612,31 +1612,6 @@ func repairCapturePublicationIndex(cfg Config, id companion.CaptureIdentity) (bo
 	return true, nil
 }
 
-// recordCaptureReceipt stores the bytes a published capture answered with, into
-// the canonical record.
-//
-// This is what makes a replay independent of the reservation. It is a rewrite
-// through a temporary file and a rename, so a reader sees the record with the
-// receipt or the record without it, never half of either.
-func recordCaptureReceipt(cfg Config, id companion.CaptureIdentity, response []byte) error {
-	keyPath := capturePublicationKeyPath(cfg, id.DeviceID, id.Key)
-	record, found, err := readCapturePublicationAt(keyPath)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("companion capture: no publication record for %s to record a receipt against", id.MemoryID)
-	}
-	if !record.matches(id) {
-		return errMemoryIDMismatch
-	}
-	if record.Response == string(response) {
-		return nil
-	}
-	record.Response = string(response)
-	return rewriteCapturePublicationRecord(keyPath, record)
-}
-
 // capturePublicationRaceGate is a no-op seam that runs at the instant two
 // concurrent claims for one key would collide.
 //
@@ -1677,6 +1652,15 @@ func writeCapturePublicationRecord(path string, record capturePublication) error
 	return linkCapturePublicationRecord(path, append(body, '\n'))
 }
 
+// capturePublicationLink is the exclusive primitive, a seam so a test can make
+// it fail in the ways a filesystem does. Production is os.Link.
+var capturePublicationLink = os.Link
+
+// capturePublicationWrite is the fallback's write, a seam for the same reason:
+// the branch that matters is the one where the create succeeded and the write
+// did not, and a file that cannot be finished must not survive as a short one.
+var capturePublicationWrite = func(file *os.File, body []byte) (int, error) { return file.Write(body) }
+
 // linkCapturePublicationRecord stages the bytes, syncs them, and links them into
 // place under a name nobody else holds.
 func linkCapturePublicationRecord(path string, body []byte) error {
@@ -1693,38 +1677,64 @@ func linkCapturePublicationRecord(path string, body []byte) error {
 	}
 	defer os.Remove(name)
 
-	if err := os.Link(name, path); err != nil {
+	err = capturePublicationLink(name, path)
+	switch {
+	case err == nil:
+		return atomicio.SyncDir(dir)
+	case errors.Is(err, os.ErrExist):
+		// Somebody else owns this name. Nothing here created anything, which is
+		// exactly what the caller has to know.
+		return os.ErrExist
+	case !linkUnsupported(err):
+		// A real fault, not a filesystem that cannot do links. Round six fell
+		// back on EVERY non-EEXIST error, which turned an I/O fault into a direct
+		// write to the final path — masking the fault and risking a half-written
+		// canonical record if the process died mid-write. EXDEV is deliberately
+		// not in the unsupported set: the staging file is created in the
+		// destination's own directory, so a cross-device link is a bug, not a
+		// limitation.
+		// A real fault. It is reported, and nothing is left behind: the staging
+		// file goes with the defer and the destination was never touched.
+		return err
+	}
+	return createCapturePublicationExclusively(path, body, dir)
+}
+
+// createCapturePublicationExclusively is the no-links fallback.
+//
+// It is still the filesystem deciding — O_EXCL on the final path — and it is
+// still all-or-nothing: any failure after the create removes the file, so a
+// half-written record never survives to be read as a publication. The cost is a
+// window in which a reader could see a short file, which readCapturePublicationAt
+// reports as unreadable rather than as absent. That is the safe direction: a
+// record that cannot be read must not be taken to mean the key is free.
+func createCapturePublicationExclusively(path string, body []byte, dir string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			// Somebody else owns this name. Nothing here created anything, which
-			// is exactly what the caller has to know.
 			return os.ErrExist
 		}
-		// A filesystem with no links. Fall back to an exclusive create of the
-		// final path, which is still the filesystem deciding rather than us.
-		file, cerr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if cerr != nil {
-			if errors.Is(cerr, os.ErrExist) {
-				return os.ErrExist
-			}
-			return errors.Join(err, cerr)
-		}
-		if _, werr := file.Write(body); werr != nil {
-			_ = file.Close()
-			_ = os.Remove(path)
-			return werr
-		}
-		if serr := file.Sync(); serr != nil {
-			_ = file.Close()
-			_ = os.Remove(path)
-			return serr
-		}
-		if cerr := file.Close(); cerr != nil {
-			_ = os.Remove(path)
-			return cerr
-		}
-		return atomicio.SyncDir(dir)
+		return err
 	}
-	return atomicio.SyncDir(dir)
+	if _, err := capturePublicationWrite(file, body); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	if err := atomicio.SyncDir(dir); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // stageCapturePublicationBytes writes the record beside its destination and
@@ -1757,28 +1767,58 @@ func stageCapturePublicationBytes(dir string, body []byte) (string, error) {
 	return name, nil
 }
 
-// rewriteCapturePublicationRecord replaces an existing canonical record. It is
-// the receipt backfill, and it is a rename rather than a link because the name
-// is already ours.
-func rewriteCapturePublicationRecord(path string, record capturePublication) error {
-	body, err := json.MarshalIndent(record, "", "  ")
+// capturePublicationReceiptPath is the receipt SIBLING of one canonical record.
+//
+// The receipt lives beside the record rather than inside it because the record is
+// IMMUTABLE once linked. Round six rewrote the record in place to add the bytes,
+// through an unguarded rename — last writer wins, so two callers that both
+// reached the receipt could mint different bodies for one publication. A sibling
+// claimed with the same exclusive primitive makes the receipt as decided as the
+// record: the first one to link it wins, and everybody else reads what it wrote.
+func capturePublicationReceiptPath(cfg Config, deviceID, key string) string {
+	return capturePublicationKeyPath(cfg, deviceID, key) + ".receipt"
+}
+
+// recordCaptureReceipt claims the receipt sibling, exclusively, and returns the
+// bytes that ended up there.
+//
+// EEXIST is not a failure: somebody else recorded the receipt for this
+// publication first, and theirs is the answer. Returning it rather than
+// overwriting is what makes one publication have one receipt no matter how many
+// callers reach this point.
+func recordCaptureReceipt(cfg Config, id companion.CaptureIdentity, response []byte) ([]byte, error) {
+	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	body = append(body, '\n')
-	if len(body) > maxCapturePublicationBytes {
-		return fmt.Errorf("companion capture: a publication record of %d bytes is over the %d-byte limit", len(body), maxCapturePublicationBytes)
+	if !found {
+		return nil, fmt.Errorf("companion capture: no publication record for %s to record a receipt against", id.MemoryID)
 	}
-	dir := filepath.Dir(path)
-	name, err := stageCapturePublicationBytes(dir, body)
-	if err != nil {
-		return err
+	if !record.matches(id) {
+		return nil, errMemoryIDMismatch
 	}
-	defer os.Remove(name)
-	if err := os.Rename(name, path); err != nil {
-		return err
+	path := capturePublicationReceiptPath(cfg, id.DeviceID, id.Key)
+	err = linkCapturePublicationRecord(path, response)
+	if err == nil {
+		return response, nil
 	}
-	return atomicio.SyncDir(dir)
+	if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	theirs, found, rerr := readCaptureReceipt(path)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if !found {
+		return nil, fmt.Errorf("companion capture: the receipt for %s was claimed and then vanished", id.MemoryID)
+	}
+	return theirs, nil
+}
+
+// readCaptureReceipt reads one receipt sibling. Its absence means "published,
+// receipt not yet recorded", which a retry completes.
+func readCaptureReceipt(path string) ([]byte, bool, error) {
+	return readCapturePublicationBytes(path)
 }
 
 // writeCapturePublicationExclusive creates one small file, and fails if it is
@@ -1811,7 +1851,21 @@ func writeCapturePublicationExclusive(path string, body []byte) error {
 // capture killed after its publication leaves a pending row the sweep collects
 // and after that the key looks unused.
 func publishedForKey(cfg Config, deviceID, key string) (capturePublication, bool, error) {
-	return readCapturePublicationAt(capturePublicationKeyPath(cfg, deviceID, key))
+	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, deviceID, key))
+	if err != nil || !found {
+		return record, found, err
+	}
+	// The record is the claim; the sibling is the answer. A record without one is
+	// "published, receipt not yet recorded", and the empty Response is what tells
+	// the caller to record it.
+	response, hasReceipt, err := readCaptureReceipt(capturePublicationReceiptPath(cfg, deviceID, key))
+	if err != nil {
+		return capturePublication{}, false, err
+	}
+	if hasReceipt {
+		record.Response = string(response)
+	}
+	return record, true, nil
 }
 
 // readCapturePublication finds a record by the pinned memory id, through the
@@ -1891,6 +1945,7 @@ func readCapturePublicationBytes(path string) ([]byte, bool, error) {
 // only by the trim, which owns every record it evicts.
 func removeCapturePublication(cfg Config, record capturePublication) {
 	_ = os.Remove(capturePublicationPath(cfg, record.MemoryID))
+	_ = os.Remove(capturePublicationReceiptPath(cfg, record.DeviceID, record.Key))
 	_ = os.Remove(capturePublicationKeyPath(cfg, record.DeviceID, record.Key))
 }
 
@@ -1994,6 +2049,11 @@ func (c *publishedCensus) walk(cfg Config) []capturePublication {
 			record, found, rerr := readCapturePublicationAt(filepath.Join(root, device.Name(), entry.Name()))
 			if rerr != nil || !found {
 				continue
+			}
+			// Settled-awareness reads the sibling: a record with no receipt is a
+			// publication still in flight, and the trim never takes one.
+			if response, hasReceipt, _ := readCaptureReceipt(capturePublicationReceiptPath(cfg, record.DeviceID, record.Key)); hasReceipt {
+				record.Response = string(response)
 			}
 			out = append(out, record)
 		}

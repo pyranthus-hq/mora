@@ -372,6 +372,19 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		return s.refuse(ctx, dev, c, ReasonIdempotencyConflict, received)
 	}
 	if found && published == identity && len(response) > 0 {
+		// A publication whose reservation never settled — the receipt landed and
+		// the settle did not — leaves a pending row that would sit against the
+		// in-flight bound until the sweep. The replay finishes it, under the
+		// store's own lock, before it answers.
+		if err := s.captures.SettleFromReplay(CaptureIdentity{
+			DeviceID:    dev.DeviceID,
+			Key:         c.IdempotencyKey,
+			Identity:    identity,
+			Fingerprint: c.PayloadFingerprint,
+			MemoryID:    captureMemoryID(c, identity),
+		}, response); err != nil {
+			return nil, err
+		}
 		// This key published THIS capture and the bytes it answered with are on
 		// disk. Returning them is the replay, and it does not go through the
 		// reservation at all — which is the point: the reservation has its own

@@ -626,6 +626,27 @@ depend on it — the id is derived, so a later retry re-derives it and the creat
 still refuses the second write. `TestReservationRefusesPastThePendingBound` and
 `TestReservationSweepsCrashedPendingRecords` pin both.
 
+### What a successful capture writes, in order
+
+| # | File | Exclusive primitive | Rolled back by |
+|---|---|---|---|
+| 1 | `<state>/companion/captures/<device>/<sha256(key)>.json` — reservation, pending | staged temp + fsync + rename | nobody; the sweep collects it past `PendingSweepAfter` |
+| 2 | `<state>/companion/published/keys/<device>/<sha256(key)>.json` — **canonical**, immutable | **`os.Link`** from a fsynced same-directory staging file; `EEXIST` means somebody else owns it | `publicationClaim.rollback`, and only if the link succeeded |
+| 3 | `<state>/companion/published/<memory id>.json` — pointer back to the canonical record | `O_EXCL` create | same, and only if this call created it |
+| 4 | `<vault>/mora/memories/<scope>/<memory id>.md` — the memory at the pinned id | `atomicCreate` (create-exclusive), then fsynced | nobody; a published memory is never unpublished, and a retry verifies it |
+| 5 | `…/<sha256(key)>.json.receipt` — the receipt **sibling** | **`os.Link`**, same primitive; `EEXIST` means somebody recorded it first, and their bytes are the answer | nobody; a failure here fails the attempt |
+| 6 | reservation rewritten as settled, with the same bytes | staged temp + fsync + rename | nobody |
+| 7 | trim | — | — |
+
+The canonical record is **immutable** after step 2: the receipt is a sibling rather than a rewrite, because a rewrite is last-writer-wins and two callers reaching the receipt could mint different bodies for one publication. A canonical record with no sibling is "published, receipt not yet recorded", and a retry records it exclusively.
+
+The trim runs at step 7, after the reservation has settled, and nowhere else.
+
+**The fallback is disciplined.** `os.Link` falls back to an `O_EXCL` create of the final path **only** when the error means the filesystem cannot do links at all (`EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `errors.ErrUnsupported`). Every other link error — an I/O fault, a full disk — is a hard error that leaves nothing behind, rather than a direct write that would mask the fault and risk a half-written record. `EXDEV` is deliberately not in that set: the staging file is created in the destination's own directory, so a cross-device link is a bug, not a limitation. Any failure after the fallback's create removes the file
+(`TestCompanionCaptureLinkFallbackDiscipline`).
+
+**A replay finishes what it finds.** A publication whose receipt landed and whose reservation never settled leaves a pending row that would occupy the in-flight bound until the sweep; the replay settles it, under the reservation store's own lock, before it answers (`TestCaptureReplaySettlesAPendingReservation`).
+
 ### Status codes
 
 Every **decodable** capture answers `200` with a receipt, rejections included. That is §11's rule

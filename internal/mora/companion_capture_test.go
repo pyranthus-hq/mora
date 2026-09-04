@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1438,11 +1439,20 @@ func TestCompanionCapturePublishedStoreIsBounded(t *testing.T) {
 	}
 
 	// EXACTLY the cap, not merely "no more than": one record over, one evicted.
-	records := 0
+	records, receipts := 0, 0
 	for _, entry := range mustReadDir(t, filepath.Join(capturePublicationDir(cfg), "keys", captureTestDevice)) {
-		if !entry.IsDir() {
+		switch {
+		case entry.IsDir():
+		case strings.HasSuffix(entry.Name(), ".json.receipt"):
+			receipts++
+		case strings.HasSuffix(entry.Name(), ".json"):
 			records++
 		}
+	}
+	// The receipt siblings are evicted with their records: one publication is one
+	// record and, once it has settled, one receipt.
+	if receipts != records-1 {
+		t.Fatalf("the store holds %d records and %d receipts; the pending one has none, so want %d", records, receipts, records-1)
 	}
 	if records != companion.MaxReservations {
 		t.Fatalf("the published store holds %d records, want exactly the %d cap", records, companion.MaxReservations)
@@ -1835,4 +1845,186 @@ func TestCompanionCaptureLoserRollsBackNothing(t *testing.T) {
 	if after := publishedTree(t, cfg); !sameTree(before, after) {
 		t.Fatalf("the loser's rollback touched the winner's record: %d before, %d after", len(before), len(after))
 	}
+}
+
+// TestCompanionCaptureReceiptSiblingIsExclusive is the immutability witness.
+//
+// Round six added the receipt by REWRITING the canonical record through an
+// unguarded rename: last writer wins, so two callers that both reached the
+// receipt could mint different bodies for one publication. The record is
+// immutable after its link now, and the receipt is a sibling claimed with the
+// same primitive — the first to link it wins, and everybody else reads what it
+// wrote.
+func TestCompanionCaptureReceiptSiblingIsExclusive(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	id := captureTestIdentity(captureTestMemoryID)
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	const racers = 2
+	var (
+		ready   sync.WaitGroup
+		release = make(chan struct{})
+		once    sync.Once
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		answers [][]byte
+	)
+	ready.Add(racers)
+	original := capturePublicationRaceGate
+	capturePublicationRaceGate = func() {
+		ready.Done()
+		<-release
+	}
+	t.Cleanup(func() { capturePublicationRaceGate = original })
+	go func() {
+		ready.Wait()
+		once.Do(func() { close(release) })
+	}()
+
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := []byte(fmt.Sprintf("{\n  \"receipt\": \"racer %d\"\n}\n", i))
+			got, err := recordCaptureReceipt(cfg, id, body)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				t.Errorf("record %d: %v", i, err)
+				return
+			}
+			answers = append(answers, got)
+		}(i)
+	}
+	wg.Wait()
+
+	if len(answers) != racers {
+		t.Fatalf("%d racers answered, want %d", len(answers), racers)
+	}
+	if !bytes.Equal(answers[0], answers[1]) {
+		t.Fatalf("two racers minted different receipts for one publication:\n%s\n%s", answers[0], answers[1])
+	}
+	// Exactly one sibling, and it is what both of them answered with.
+	stored, found, err := readCaptureReceipt(capturePublicationReceiptPath(cfg, id.DeviceID, id.Key))
+	if err != nil || !found {
+		t.Fatalf("no receipt sibling: found=%t err=%v", found, err)
+	}
+	if !bytes.Equal(stored, answers[0]) {
+		t.Fatalf("the stored receipt is not what the racers answered with")
+	}
+	// And the canonical record was never rewritten: it still carries no bytes of
+	// its own, because it is immutable after its link.
+	record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
+	if err != nil || !found {
+		t.Fatalf("canonical: found=%t err=%v", found, err)
+	}
+	if record.Response != "" {
+		t.Fatalf("the canonical record was rewritten: %q", record.Response)
+	}
+}
+
+// TestCompanionCaptureCanonicalWithoutASiblingIsIncomplete. A record with no
+// receipt beside it is "published, receipt not yet recorded" — the state a crash
+// between the two leaves — and the retry records it rather than answering with
+// nothing.
+func TestCompanionCaptureCanonicalWithoutASiblingIsIncomplete(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	id := captureTestIdentity(captureTestMemoryID)
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	_, found, response, err := writer.PublishedForKey(testCtx(t), id.DeviceID, id.Key)
+	if err != nil || !found {
+		t.Fatalf("lookup: found=%t err=%v", found, err)
+	}
+	if len(response) != 0 {
+		t.Fatalf("a record with no sibling answered %q, want nothing", response)
+	}
+
+	if err := writer.RecordReceipt(testCtx(t), id, []byte("{\n  \"receipt\": \"recorded late\"\n}\n")); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	_, _, response, err = writer.PublishedForKey(testCtx(t), id.DeviceID, id.Key)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(response) == 0 {
+		t.Fatal("the retry did not record the receipt")
+	}
+}
+
+// TestCompanionCaptureLinkFallbackDiscipline is item three.
+//
+// Round six fell back to a direct write on EVERY non-EEXIST link error, which
+// turned an I/O fault into a partial canonical record. The fallback fires only
+// for a filesystem that cannot do links; everything else is a hard error that
+// leaves nothing behind.
+func TestCompanionCaptureLinkFallbackDiscipline(t *testing.T) {
+	original := capturePublicationLink
+	t.Cleanup(func() { capturePublicationLink = original })
+
+	t.Run("a real fault is a hard error and leaves nothing", func(t *testing.T) {
+		cfg := captureTestVault(t, mcpWritePolicyOpen)
+		capturePublicationLink = func(string, string) error {
+			return &os.LinkError{Op: "link", Err: syscall.EIO}
+		}
+		id := captureTestIdentity(captureTestMemoryID)
+		if _, err := claimCapturePublication(cfg, id); err == nil || errors.Is(err, errMemoryIDMismatch) {
+			t.Fatalf("an I/O fault produced %v, want it surfaced", err)
+		}
+		if _, err := os.Stat(capturePublicationKeyPath(cfg, id.DeviceID, id.Key)); !os.IsNotExist(err) {
+			t.Fatalf("the failed claim left a canonical record behind: %v", err)
+		}
+		if tree := publishedTree(t, cfg); len(tree) != 0 {
+			t.Fatalf("the failed claim left %d files behind", len(tree))
+		}
+	})
+
+	t.Run("a filesystem with no links falls back", func(t *testing.T) {
+		cfg := captureTestVault(t, mcpWritePolicyOpen)
+		capturePublicationLink = func(string, string) error {
+			return &os.LinkError{Op: "link", Err: syscall.ENOTSUP}
+		}
+		id := captureTestIdentity(captureTestMemoryID)
+		if _, err := claimCapturePublication(cfg, id); err != nil {
+			t.Fatalf("the fallback did not run: %v", err)
+		}
+		record, found, err := readCapturePublicationAt(capturePublicationKeyPath(cfg, id.DeviceID, id.Key))
+		if err != nil || !found || !record.matches(id) {
+			t.Fatalf("the fallback wrote no usable record: found=%t err=%v", found, err)
+		}
+		// And it is still exclusive: a second claim for the same name is refused.
+		other := id
+		other.Identity = companion.Fingerprint("somebody else")
+		if _, err := claimCapturePublication(cfg, other); !errors.Is(err, errMemoryIDMismatch) {
+			t.Fatalf("the fallback was not exclusive: %v", err)
+		}
+	})
+
+	t.Run("a fallback that cannot finish removes the file", func(t *testing.T) {
+		cfg := captureTestVault(t, mcpWritePolicyOpen)
+		capturePublicationLink = func(string, string) error {
+			return &os.LinkError{Op: "link", Err: syscall.ENOTSUP}
+		}
+		originalWrite := capturePublicationWrite
+		capturePublicationWrite = func(*os.File, []byte) (int, error) { return 0, syscall.EIO }
+		t.Cleanup(func() { capturePublicationWrite = originalWrite })
+
+		id := captureTestIdentity(captureTestMemoryID)
+		if _, err := claimCapturePublication(cfg, id); err == nil {
+			t.Fatal("a fallback whose write failed reported success")
+		}
+		// The create succeeded and the write did not, so the file must be gone
+		// rather than left as a short record a later read would refuse.
+		if _, err := os.Stat(capturePublicationKeyPath(cfg, id.DeviceID, id.Key)); !os.IsNotExist(err) {
+			t.Fatalf("the failed fallback left a file behind: %v", err)
+		}
+		if tree := publishedTree(t, cfg); len(tree) != 0 {
+			t.Fatalf("the failed fallback left %d files behind", len(tree))
+		}
+	})
 }

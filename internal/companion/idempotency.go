@@ -677,6 +677,69 @@ func (s *ReservationStore) finish(inflight string, done chan struct{}) {
 	close(done)
 }
 
+// SettleFromReplay settles a PENDING reservation with bytes that are already
+// durable somewhere else.
+//
+// It closes the last window in the ordering: the receipt reaches the kernel's
+// canonical record before the reservation settles, so a crash or a failed settle
+// in between leaves a publication that IS complete and a reservation that says
+// pending. A retry then answers from the canonical bytes without ever coming
+// back for the row, which sits there occupying the in-flight bound until the
+// sweep collects it.
+//
+// It is a no-op when there is nothing to finish — no record, or one that already
+// settled — so a replay may call it unconditionally. The receipt is decoded from
+// the bytes and validated before anything is written, because these bytes are
+// about to become the stored answer to every future replay.
+func (s *ReservationStore) SettleFromReplay(id CaptureIdentity, response []byte) error {
+	if err := id.validate(); err != nil {
+		return err
+	}
+	if len(response) == 0 {
+		return fmt.Errorf("companion: a replay settles with the bytes it answered with")
+	}
+	var receipt Receipt
+	if err := json.Unmarshal(response, &receipt); err != nil {
+		return fmt.Errorf("companion: the replay bytes are not a receipt: %w", err)
+	}
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	if receipt.IdempotencyKey != id.Key || receipt.DeviceID != id.DeviceID ||
+		receipt.PayloadFingerprint != id.Fingerprint {
+		return fmt.Errorf("companion: those replay bytes do not describe this capture")
+	}
+
+	if err := s.ensureDir(id.DeviceID); err != nil {
+		return err
+	}
+	held, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer held.release()
+
+	path := s.path(id.DeviceID, id.Key)
+	record, err := readReservation(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if record.State == reservationSettled || record.CaptureIdentity != id.Identity {
+		return nil
+	}
+	record.State = reservationSettled
+	record.Receipt = &receipt
+	record.Response = string(response)
+	if err := s.write(path, record, held); err != nil {
+		return err
+	}
+	s.settled(path)
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Identifiers
 // ---------------------------------------------------------------------------
