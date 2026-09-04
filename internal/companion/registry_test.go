@@ -995,6 +995,84 @@ func sortedNames(set map[string]bool) []string {
 	return out
 }
 
+// TestRegistryRefusesAnOversizeRecordFileByReadingBounded pins the size bound
+// AND the way it is measured.
+//
+// It used to be a Stat beside a ReadFile: the size question was answered about
+// one moment and the bytes taken in another, so a file that grew in between was
+// read whole and the bound reported on a size that no longer existed.
+// Authenticate runs load() on every request the listener serves, which makes
+// that a request-rate memory bound, not a tidiness one.
+func TestRegistryRefusesAnOversizeRecordFileByReadingBounded(t *testing.T) {
+	reg, _, configDir, _ := testRegistry(t)
+	pairAndConfirm(t, reg, "phone")
+
+	path := filepath.Join(configDir, "companion", "devices.json")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), MaxRegistryBytes+1), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.List(); err == nil || !strings.Contains(err.Error(), "over the") {
+		t.Fatalf("an oversize registry was accepted: %v", err)
+	}
+	// It is refused for its SIZE, not because the bytes failed to parse: the
+	// message must name the limit, and the parse error must never be the thing
+	// that saved us.
+	if _, err := reg.List(); err != nil && strings.Contains(err.Error(), "not readable as a device registry") {
+		t.Fatalf("the oversize file reached the JSON decoder: %v", err)
+	}
+
+	// Exactly at the bound is legal, so the refusal is a ceiling and not an
+	// off-by-one that rejects a large-but-valid file.
+	body := append([]byte(`{"version":1,"devices":[]}`), bytes.Repeat([]byte(" "), MaxRegistryBytes-len(`{"version":1,"devices":[]}`))...)
+	if len(body) != MaxRegistryBytes {
+		t.Fatalf("the fixture is %d bytes, want exactly %d", len(body), MaxRegistryBytes)
+	}
+	if err := os.WriteFile(path, body, secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.List(); err != nil {
+		t.Fatalf("a file exactly at the bound was refused: %v", err)
+	}
+}
+
+// TestReadBoundedTakesAtMostItsLimit pins the primitive directly, including
+// that it does not read the whole file into memory to discover it is too big.
+func TestReadBoundedTakesAtMostItsLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+
+	for _, tc := range []struct {
+		name    string
+		size    int64
+		limit   int64
+		wantErr error
+		wantLen int
+	}{
+		{"under the limit", 10, 100, nil, 10},
+		{"exactly the limit", 100, 100, nil, 100},
+		{"one over the limit", 101, 100, errTooLarge, 0},
+		{"far over the limit", 100000, 100, errTooLarge, 0},
+		{"empty", 0, 100, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, bytes.Repeat([]byte("x"), int(tc.size)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			body, err := readBounded(path, tc.limit)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if len(body) != tc.wantLen {
+				t.Fatalf("read %d bytes, want %d", len(body), tc.wantLen)
+			}
+		})
+	}
+
+	if _, err := readBounded(filepath.Join(dir, "absent"), 100); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a missing file reads as %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRegistryHardensDirectoryAndFileModes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits are not the access-control mechanism on Windows")

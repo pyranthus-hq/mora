@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/companion"
@@ -87,7 +88,7 @@ func cmdCompanionServe(ctx context.Context, args []string, stdout io.Writer) err
 	srv, err := companion.NewServer(companion.ServerOptions{
 		Addr:    fmt.Sprintf("%s:%d", companion.LoopbackHost, *port),
 		Devices: reg,
-		Reader:  companionReader{cfg: cfg},
+		Reader:  newCompanionReader(cfg),
 		Now:     cfg.OperationClock,
 		Log:     stdout,
 	})
@@ -102,12 +103,28 @@ func cmdCompanionServe(ctx context.Context, args []string, stdout io.Writer) err
 // ---------------------------------------------------------------------------
 
 // companionReader implements companion.Reader over a resolved Config.
-type companionReader struct{ cfg Config }
+//
+// It carries a short-lived Today cache. Today walks the whole vault through
+// briefDigest, and a phone that polls — which is exactly what a phone does —
+// would pay that walk per poll. The cache is per-reader rather than a package
+// global so two listeners in one process (a test, a future embedding) do not
+// share one.
+type companionReader struct {
+	cfg Config
 
-func (k companionReader) now() time.Time { return k.cfg.OperationClock().UTC().Truncate(time.Second) }
+	mu     sync.Mutex
+	today  companion.TodayProjection
+	key    string
+	cached time.Time
+	valid  bool
+}
+
+func newCompanionReader(cfg Config) *companionReader { return &companionReader{cfg: cfg} }
+
+func (k *companionReader) now() time.Time { return k.cfg.OperationClock().UTC().Truncate(time.Second) }
 
 // Health projects the kernel's health snapshot.
-func (k companionReader) Health(ctx context.Context) (companion.HealthProjection, error) {
+func (k *companionReader) Health(ctx context.Context) (companion.HealthProjection, error) {
 	now := k.now()
 	snapshot := healthOf(k.cfg, now)
 	out := companion.NewHealthProjection()
@@ -132,13 +149,19 @@ func (k companionReader) Health(ctx context.Context) (companion.HealthProjection
 // committed, then what merely changed. Only companion.MaxTodayItems survive, and
 // Truncated says so — three of three and three of nine are different statements
 // and a phone must be able to tell them apart.
-func (k companionReader) Today(_ context.Context) (companion.TodayProjection, error) {
+func (k *companionReader) Today(ctx context.Context) (companion.TodayProjection, error) {
 	now := k.now()
-	digest, err := briefDigest(k.cfg, now, mcpDigestMaxItems)
-	if err != nil {
-		return companion.TodayProjection{}, err
-	}
 	snapshot := healthOf(k.cfg, now)
+
+	// The cache key is the index's own state, so a rebuild, a pending write or
+	// a new commit stamp retires the entry immediately. The TTL is the floor
+	// under everything the key cannot see — a vault file edited by hand, a
+	// connector that landed without touching the index — so a stale answer is
+	// bounded in time as well as in state.
+	key := companionTodayCacheKey(snapshot)
+	if cached, ok := k.cachedToday(key, now); ok {
+		return cached, nil
+	}
 
 	out := companion.NewTodayProjection()
 	out.GeneratedAt = companionStamp(now)
@@ -148,17 +171,71 @@ func (k companionReader) Today(_ context.Context) (companion.TodayProjection, er
 	}
 	out.Freshness = companionFreshness(snapshot.Sources, out.GeneratedAt)
 
-	candidates := companionTodayCandidates(digest)
-	if len(candidates) > companion.MaxTodayItems {
-		out.Items = candidates[:companion.MaxTodayItems]
-		out.Truncated = true
-	} else {
-		out.Items = candidates
+	// The brief reads the typed commitment inventory, which reaches the index
+	// through ensureIndexDB and rebuilds when the graph is absent. Today is a
+	// read, so it asks first: with no usable index the projection is empty and
+	// the health summary beside it already says why. An empty Today under an
+	// unhealthy banner is the honest answer; a rebuild triggered by a phone is
+	// not an answer at all.
+	if companionRetrievalReady(k.cfg) {
+		if err := ctx.Err(); err != nil {
+			return companion.TodayProjection{}, err
+		}
+		digest, err := briefDigest(k.cfg, now, mcpDigestMaxItems)
+		if err != nil {
+			return companion.TodayProjection{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return companion.TodayProjection{}, err
+		}
+		candidates := companionTodayCandidates(digest)
+		if len(candidates) > companion.MaxTodayItems {
+			out.Items = candidates[:companion.MaxTodayItems]
+			out.Truncated = true
+		} else {
+			out.Items = candidates
+		}
 	}
 	if err := out.Validate(); err != nil {
 		return companion.TodayProjection{}, err
 	}
+	k.storeToday(key, now, out)
 	return out, nil
+}
+
+// companionTodayTTL bounds how long a Today answer may be reused when the index
+// state has not moved. It is short because Today is the screen a phone opens on
+// and a minute-old answer is fine; it is not zero because a poll loop must not
+// be able to walk the vault once per poll.
+const companionTodayTTL = 60 * time.Second
+
+// companionTodayCacheKey is the index's identity, not a hash of the answer. A
+// changed key means the vault moved under the last answer, so the entry is not
+// merely old, it is wrong.
+func companionTodayCacheKey(h Health) string {
+	return fmt.Sprintf("%s|%s|%s|%d|%t|%s",
+		h.State, h.Index.State, h.Index.IndexedAt, h.Index.PendingOps, h.Index.Blocked, h.Index.DirtySince)
+}
+
+func (k *companionReader) cachedToday(key string, now time.Time) (companion.TodayProjection, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if !k.valid || k.key != key {
+		return companion.TodayProjection{}, false
+	}
+	// A clock that moved backwards (a pinned test clock, an NTP step) expires
+	// the entry rather than extending it indefinitely.
+	age := now.Sub(k.cached)
+	if age < 0 || age > companionTodayTTL {
+		return companion.TodayProjection{}, false
+	}
+	return k.today, true
+}
+
+func (k *companionReader) storeToday(key string, now time.Time, out companion.TodayProjection) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.today, k.key, k.cached, k.valid = out, key, now, true
 }
 
 // Context answers one grounded query.
@@ -167,7 +244,7 @@ func (k companionReader) Today(_ context.Context) (companion.TodayProjection, er
 // budget or a limit: every one of those is a lever on how much of the vault a
 // request touches, and a phone on a hostile network is not the right place to
 // hold them.
-func (k companionReader) Context(ctx context.Context, req companion.ContextRequest) (companion.ContextBundle, error) {
+func (k *companionReader) Context(ctx context.Context, req companion.ContextRequest) (companion.ContextBundle, error) {
 	now := k.now()
 	out := companion.NewContextBundle()
 	out.GeneratedAt = companionStamp(now)
@@ -211,7 +288,50 @@ func (k companionReader) Context(ctx context.Context, req companion.ContextReque
 	return out, nil
 }
 
-func (k companionReader) thinkContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
+// companionIndexNotReadable is the gap a bundle carries when retrieval could not
+// run. It is prose for a phone screen, and it is deliberately not an error: the
+// request succeeded, the vault simply cannot answer it right now, and that
+// distinction is the whole of the honesty contract.
+const companionIndexNotReadable = "The search index is missing or unreadable, so nothing was retrieved. Run `mora index rebuild` on the Mac."
+
+// companionRetrievalReady reports whether retrieval can run WITHOUT building
+// anything.
+//
+// This gate is the read-only guarantee, and it exists because the kernel's read
+// paths self-heal. hybridSearchTrace rebuilds when the index file is absent;
+// ensureIndexDB rebuilds when the graph tables are missing; openIndexRO rebuilds
+// a schema-stale index when indexAutoHeal allows. Every one of those is minutes
+// of disk and CPU over the whole vault — correct for a human at a terminal who
+// asked for an answer, and a denial of service when it hangs off an
+// authenticated GET from a phone on someone else's network.
+//
+// So the companion path asks first and calls nothing that could heal. Each check
+// is a pure read: a stat, a read-only open, one catalog query. When the answer
+// is no, the bundle comes back empty with the gap saying so and the health
+// summary already carrying the unhealthy index — which is what a device should
+// see, because "I could not look" and "I looked and found nothing" are different
+// claims.
+func companionRetrievalReady(cfg Config) bool {
+	// graphReady covers both the file's existence and the S1 graph tables, and
+	// it opens read-only. It is the same predicate ensureIndexDB branches on,
+	// asked before the branch instead of inside it.
+	if !graphReady(cfg) {
+		return false
+	}
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+	// checkIndexSchema, NOT openIndexRO: openIndexRO rebuilds on a version
+	// mismatch, which is the exact behavior this function exists to avoid.
+	return checkIndexSchema(db) == nil
+}
+
+func (k *companionReader) thinkContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
+	if !companionRetrievalReady(k.cfg) {
+		return nil, []string{companionIndexNotReadable}, nil
+	}
 	res, err := buildThink(ctx, k.cfg, req.Query, req.Scope, companionContextEvidence, now)
 	if err != nil {
 		return nil, nil, err
@@ -219,7 +339,10 @@ func (k companionReader) thinkContext(ctx context.Context, req companion.Context
 	return res.Evidence, flattenThinkGaps(res.Gaps), nil
 }
 
-func (k companionReader) searchContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
+func (k *companionReader) searchContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
+	if !companionRetrievalReady(k.cfg) {
+		return nil, []string{companionIndexNotReadable}, nil
+	}
 	mems, err := hybridSearch(ctx, k.cfg, req.Query, req.Scope, companionContextEvidence)
 	if err != nil {
 		return nil, nil, err
@@ -232,9 +355,13 @@ func (k companionReader) searchContext(ctx context.Context, req companion.Contex
 
 // meetingContext builds the next meeting's brief, optionally narrowed to the
 // attendee the query names.
-func (k companionReader) meetingContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
+func (k *companionReader) meetingContext(ctx context.Context, req companion.ContextRequest, now time.Time) ([]synthesispkg.Evidence, []string, error) {
 	var filter map[string]bool
-	if name := strings.TrimSpace(req.Query); name != "" {
+	// resolveEntityFilter reaches the entity graph through ensureIndexDB, which
+	// rebuilds when the graph is absent. The meeting brief ITSELF reads vault
+	// files and needs no index, so an unreadable index costs the narrowing, not
+	// the brief.
+	if name := strings.TrimSpace(req.Query); name != "" && companionRetrievalReady(k.cfg) {
 		resolved, err := resolveEntityFilter(ctx, k.cfg, name)
 		if err != nil {
 			// An unresolvable name is not a failure: it is the honest answer
@@ -268,6 +395,9 @@ func (k companionReader) meetingContext(ctx context.Context, req companion.Conte
 		}
 	}
 	gaps := append([]string{}, brief.Gaps...)
+	if !companionRetrievalReady(k.cfg) {
+		gaps = append(gaps, companionIndexNotReadable)
+	}
 	if brief.Event == nil {
 		gaps = append(gaps, "No upcoming meeting was found in the vault, so this bundle has no event to prepare for.")
 	}
@@ -467,43 +597,70 @@ func companionFreshness(sources []healthpkg.Source, generatedAt string) []compan
 		if key == "" {
 			continue
 		}
-		row := companion.SourceFreshness{Key: key, AgeSeconds: -1}
-		switch src.State {
-		case healthpkg.Fresh:
-			row.State = companion.FreshnessFresh
-		case healthpkg.Stale:
-			row.State = companion.FreshnessStale
-		case healthpkg.Failed:
-			row.State = companion.FreshnessFailed
-			row.ErrorCode = companionSourceErrorCode(src.ErrorCode)
-		default:
-			row.State = companion.FreshnessNever
+		out = append(out, companionFreshnessRow(key, src, generatedAt))
+	}
+	return out
+}
+
+// companionFreshnessRow translates ONE kernel row.
+//
+// The shape that used to be wrong: a failure with no successful sync behind it
+// — which is what an unreadable sources.json produces, state failed with an
+// empty last_success_at and a data.corrupt code — collapsed to plain "never"
+// and dropped the code on the way. A phone then showed a source that had simply
+// never run, rather than one that is broken right now and says why. Failure
+// survives the absence of a timestamp; only fresh and stale depend on one,
+// because only they make a claim about age.
+func companionFreshnessRow(key string, src healthpkg.Source, generatedAt string) companion.SourceFreshness {
+	row := companion.SourceFreshness{Key: key, AgeSeconds: -1}
+	last := companionOptionalStamp(src.LastSuccessAt)
+
+	switch src.State {
+	case healthpkg.Failed:
+		// A failed row keeps its state and its code whether or not it ever
+		// succeeded. The contract REQUIRES a code here, so an untyped failure
+		// becomes internal rather than an unexplained red dot.
+		row.State = companion.FreshnessFailed
+		row.ErrorCode = companionSourceErrorCode(src.ErrorCode)
+		row.LastSuccessAt = last
+		if last != "" {
+			row.AgeSeconds = companionAgeSeconds(last, generatedAt)
 		}
-		last := companionOptionalStamp(src.LastSuccessAt)
-		if row.State == companion.FreshnessNever || last == "" {
-			// A row with no usable last-success timestamp cannot claim an age
-			// or a freshness it can support. It reports never, which is the
-			// fail-closed answer the health kernel would give.
+	case healthpkg.Fresh, healthpkg.Stale:
+		if last == "" {
+			// The contract forbids a fresh or stale row without the timestamp
+			// its age is measured from, and inventing one would be the lie the
+			// exactness rule exists to prevent. "Never successfully synced" is
+			// what an absent last success actually means.
 			row.State = companion.FreshnessNever
-			row.LastSuccessAt = ""
-			row.ErrorCode = ""
-			row.AgeSeconds = -1
-			out = append(out, row)
-			continue
+			break
 		}
 		row.LastSuccessAt = last
 		row.AgeSeconds = companionAgeSeconds(last, generatedAt)
 		if row.AgeSeconds < 0 {
-			// The stored success is later than this projection's own clock —
-			// a skewed connector stamp. Reporting a negative age would fail
-			// validation; reporting the source as never-successful would be a
-			// lie. Age zero, "it succeeded as of now", is the honest floor.
+			// The stored success is later than this projection's own clock — a
+			// skewed connector stamp. A negative age fails validation and
+			// reporting the source as never-successful would be a lie; age
+			// zero, "it succeeded as of now", is the honest floor.
 			row.LastSuccessAt = generatedAt
 			row.AgeSeconds = 0
 		}
-		out = append(out, row)
+		if src.State == healthpkg.Fresh {
+			row.State = companion.FreshnessFresh
+			// A fresh source carries no error code, by contract.
+			break
+		}
+		row.State = companion.FreshnessStale
+		// A stale row MAY name why, and staleness usually has a reason worth
+		// showing, so the code survives when the kernel typed one.
+		if src.ErrorCode != "" {
+			row.ErrorCode = companionSourceErrorCode(src.ErrorCode)
+		}
+	default:
+		// never, and anything the kernel grows later: no claim, no age, no code.
+		row.State = companion.FreshnessNever
 	}
-	return out
+	return row
 }
 
 func companionAgeSeconds(lastSuccessAt, generatedAt string) int64 {

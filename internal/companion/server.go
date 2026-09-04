@@ -51,6 +51,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -82,8 +83,32 @@ const (
 	// reader. A companion request is a local read; none of them is long.
 	ServerReadTimeout  = 30 * time.Second
 	ServerWriteTimeout = 60 * time.Second
+	// ServerIdleTimeout bounds a kept-alive connection that has gone quiet.
+	// net/http falls back to ReadTimeout when this is unset, which happens to
+	// be the value we want — but "happens to be" is not a setting, and the
+	// fallback moves if ReadTimeout ever does.
+	ServerIdleTimeout = 60 * time.Second
 	// markSeenInterval throttles the last-seen stamp. See markSeen.
 	markSeenInterval = 5 * time.Minute
+	// KernelTimeout bounds ONE kernel call. Every route is a local read over a
+	// vault the user owns; a read that has not finished in this long is not
+	// going to finish usefully, and a phone waiting on a socket forever is
+	// worse than a phone told to come back.
+	KernelTimeout = 20 * time.Second
+	// RetryAfterSeconds is what a refused caller is told to wait. It is short
+	// because the refusal means "someone else is reading", not "come back
+	// tomorrow".
+	RetryAfterSeconds = 2
+	// maxInFlightKernelCalls is the work budget.
+	//
+	// Today walks the vault. Context runs retrieval. Both are bounded per call
+	// but neither is cheap, and a device that pipelines requests would multiply
+	// that by however many sockets it opens. ONE at a time is the honest budget
+	// for a single-user Mac: the phone is one reader, and the second concurrent
+	// request is either a retry or a bug. Excess is refused immediately with a
+	// Retry-After rather than queued, because a queue is just a slower way to
+	// run out of memory.
+	maxInFlightKernelCalls = 1
 )
 
 // ErrNotLoopback is returned by NewServer for any address that is not the
@@ -132,6 +157,9 @@ type Server struct {
 	now     func() time.Time
 	log     io.Writer
 
+	// kernel is the work budget, held for the duration of one kernel call.
+	kernel chan struct{}
+
 	mu   sync.Mutex
 	seen map[string]time.Time
 }
@@ -167,7 +195,15 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if log == nil {
 		log = io.Discard
 	}
-	return &Server{addr: o.Addr, devices: o.Devices, reader: o.Reader, now: now, log: log, seen: map[string]time.Time{}}, nil
+	return &Server{
+		addr:    o.Addr,
+		devices: o.Devices,
+		reader:  o.Reader,
+		now:     now,
+		log:     log,
+		kernel:  make(chan struct{}, maxInFlightKernelCalls),
+		seen:    map[string]time.Time{},
+	}, nil
 }
 
 // checkLoopbackAddr refuses anything but the literal loopback host.
@@ -214,10 +250,22 @@ func (s *Server) Routes() []Route {
 	return out
 }
 
+// router mounts the allowlist.
+//
+// The patterns are registered WITHOUT a method, and the method is enforced
+// inside each handler instead. That is not the obvious way round, and it is
+// deliberate: Go's ServeMux answers a "GET /x" pattern for HEAD as well, so a
+// method-in-pattern registration silently serves a method the route table does
+// not list. HEAD ran the kernel and returned its headers while Routes() said
+// GET only — the allowlist was a claim the mux did not honor.
+//
+// One method check, in the handler, is a thing a test can drive directly and a
+// reader can find. The cost is that an unlisted method on a listed path reaches
+// the handler; it gets a 405 with an Allow header there, before any other work.
 func (s *Server) router() http.Handler {
 	mux := http.NewServeMux()
 	for _, rt := range s.routeDefs() {
-		mux.HandleFunc(rt.Method+" "+rt.Pattern, rt.Handler)
+		mux.HandleFunc(rt.Pattern, rt.Handler)
 	}
 	return mux
 }
@@ -314,15 +362,24 @@ func (s *Server) authorize(r *http.Request) (Device, bool) {
 	return dev, true
 }
 
-// bearerToken strips the scheme. It never reports whether the scheme was
-// present: a header with no "Bearer " prefix yields a token that will simply
-// fail to match, which is the same outcome by the same path as a wrong token.
+// bearerToken strips the scheme, and REQUIRES it.
+//
+// A header without "Bearer " yields the empty string rather than the raw value,
+// so a device token pasted bare into Authorization does not authenticate. That
+// matters beyond tidiness: a client that works without the scheme will be
+// written without it, and the next proxy, log or auth layer in the path is
+// entitled to assume RFC 7235 framing. Accepting both shapes means the
+// credential's wire form is whatever the first client happened to send.
+//
+// It never reports WHICH way it failed. An absent scheme returns "", the same
+// as an empty token, and the caller hands that to Authenticate, which costs
+// exactly what a real token costs — so the refusal is one path, not two.
 func bearerToken(header string) string {
 	const scheme = "bearer "
 	if len(header) >= len(scheme) && strings.EqualFold(header[:len(scheme)], scheme) {
 		return header[len(scheme):]
 	}
-	return header
+	return ""
 }
 
 // requireDevice is the SECOND authorization check, at the handler boundary.
@@ -340,6 +397,68 @@ func (s *Server) requireDevice(w http.ResponseWriter, r *http.Request) (Device, 
 		return Device{}, false
 	}
 	return dev, true
+}
+
+// begin is the handler boundary: method, credential, work budget, deadline.
+//
+// The order is the point. The method check runs FIRST, before any credential
+// work, because a method this route does not serve is not a question about who
+// is asking — answering it with a 401 would be a lie, and doing the
+// authentication first would mean an unlisted method still costs a hash. Then
+// the credential, then the budget, then the clock.
+//
+// It returns the context the kernel call must use and a release function the
+// caller must defer. ok is false when a response has already been written.
+func (s *Server) begin(w http.ResponseWriter, r *http.Request, method string) (context.Context, func(), bool) {
+	if r.Method != method {
+		w.Header().Set("Allow", method)
+		writeOpaque(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return nil, nil, false
+	}
+	if _, ok := s.requireDevice(w, r); !ok {
+		return nil, nil, false
+	}
+	release, ok := s.acquire(w)
+	if !ok {
+		return nil, nil, false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), KernelTimeout)
+	return ctx, func() {
+		cancel()
+		release()
+	}, true
+}
+
+// acquire takes the work budget, or refuses immediately.
+//
+// Immediately, rather than blocking: a queue in front of an expensive read is a
+// way to hold sockets and memory while the caller has already given up. A 503
+// with a Retry-After is a smaller lie than a connection that eventually answers
+// something stale.
+func (s *Server) acquire(w http.ResponseWriter) (func(), bool) {
+	select {
+	case s.kernel <- struct{}{}:
+		return func() { <-s.kernel }, true
+	default:
+		w.Header().Set("Retry-After", strconv.Itoa(RetryAfterSeconds))
+		writeOpaque(w, http.StatusServiceUnavailable, "busy")
+		return nil, false
+	}
+}
+
+// writeKernelFailure turns a kernel error into an opaque answer.
+//
+// A deadline is reported as its own code so a client can tell "this Mac is
+// busy, ask again" from "this read cannot be served", and both carry a
+// Retry-After. Neither carries the kernel's error text: it can name a vault
+// path, and a device has no use for it.
+func writeKernelFailure(w http.ResponseWriter, err error) {
+	w.Header().Set("Retry-After", strconv.Itoa(RetryAfterSeconds))
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeOpaque(w, http.StatusServiceUnavailable, "timeout")
+		return
+	}
+	writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
 }
 
 // markSeen stamps last_seen_at, throttled and best-effort.
@@ -367,33 +486,39 @@ func (s *Server) markSeen(deviceID string) {
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleToday(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireDevice(w, r); !ok {
+	ctx, done, ok := s.begin(w, r, http.MethodGet)
+	if !ok {
 		return
 	}
-	projection, err := s.reader.Today(r.Context())
+	defer done()
+	projection, err := s.reader.Today(ctx)
 	if err != nil {
-		writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
+		writeKernelFailure(w, err)
 		return
 	}
 	s.writePayload(w, &projection)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireDevice(w, r); !ok {
+	ctx, done, ok := s.begin(w, r, http.MethodGet)
+	if !ok {
 		return
 	}
-	projection, err := s.reader.Health(r.Context())
+	defer done()
+	projection, err := s.reader.Health(ctx)
 	if err != nil {
-		writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
+		writeKernelFailure(w, err)
 		return
 	}
 	s.writePayload(w, &projection)
 }
 
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireDevice(w, r); !ok {
+	ctx, done, ok := s.begin(w, r, http.MethodPost)
+	if !ok {
 		return
 	}
+	defer done()
 	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBytes+1))
 	if err != nil {
 		writeOpaque(w, http.StatusRequestEntityTooLarge, CodeTooLarge)
@@ -407,7 +532,14 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	// malformed timestamps are all rejected here rather than normalized. The
 	// error carries the schema CODE and never the value that failed, so a
 	// rejection cannot echo a device's query back through an error body.
-	req := NewContextRequest()
+	//
+	// The zero value is load-bearing. Decoding into NewContextRequest() would
+	// pre-fill schema and schema_version, so a body that omitted them inherited
+	// the right answer from the constructor and passed a check it never faced:
+	// {"mode":"think","query":"x"} was accepted as a v1 context request. A zero
+	// Header fails Header.validate with schema_mismatch, which is what "strict
+	// inbound" was supposed to mean.
+	var req ContextRequest
 	if err := Unmarshal(body, &req); err != nil {
 		var schemaErr *Error
 		if errors.As(err, &schemaErr) {
@@ -417,9 +549,9 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		writeOpaque(w, http.StatusBadRequest, CodeMalformed)
 		return
 	}
-	bundle, err := s.reader.Context(r.Context(), req)
+	bundle, err := s.reader.Context(ctx, req)
 	if err != nil {
-		writeOpaque(w, http.StatusServiceUnavailable, "unavailable")
+		writeKernelFailure(w, err)
 		return
 	}
 	s.writePayload(w, &bundle)
@@ -509,6 +641,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		ReadHeaderTimeout: ServerReadHeaderTimeout,
 		ReadTimeout:       ServerReadTimeout,
 		WriteTimeout:      ServerWriteTimeout,
+		IdleTimeout:       ServerIdleTimeout,
 		// ErrorLog is left nil on purpose: net/http's default logger writes
 		// request-derived text to standard error, and this listener logs
 		// nothing a device sent.

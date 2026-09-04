@@ -11,12 +11,14 @@ package mora
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,7 +60,7 @@ func companionTestListener(t *testing.T) (http.Handler, string, Config) {
 	srv, err := companion.NewServer(companion.ServerOptions{
 		Addr:    fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
 		Devices: reg,
-		Reader:  companionReader{cfg: cfg},
+		Reader:  newCompanionReader(cfg),
 		Now:     cfg.OperationClock,
 	})
 	if err != nil {
@@ -365,7 +367,7 @@ func TestCompanionProjectionsCarryNoProviderIdentity(t *testing.T) {
 		"--title", "Launch date", "--text", "The launch is on the 14th.")
 	handler, token, cfg := companionTestListener(t)
 
-	reader := companionReader{cfg: cfg}
+	reader := newCompanionReader(cfg)
 	bundle, err := reader.Context(testCtx(t), func() companion.ContextRequest {
 		req := companion.NewContextRequest()
 		req.Mode = companion.ModeSearch
@@ -440,6 +442,272 @@ func TestCompanionOpaqueIDIsBoundedAndOpaque(t *testing.T) {
 	}
 }
 
+// TestCompanionContextNeverBuildsAnIndex is the read-only guarantee.
+//
+// The kernel's read paths self-heal: hybridSearchTrace rebuilds when the index
+// file is absent, ensureIndexDB rebuilds when the graph tables are missing, and
+// openIndexRO rebuilds a schema-stale index. Each is minutes of disk and CPU
+// over the whole vault, and each was reachable from one authenticated POST — a
+// denial of service with a valid credential, which is the shape N22 exposes to
+// a network.
+//
+// The test starts with NO index, drives every context mode, and asserts that no
+// index file appeared and that the answer says so instead of pretending the
+// vault had nothing to say.
+func TestCompanionContextNeverBuildsAnIndex(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--scope", "personal", "--type", "decision",
+		"--title", "Launch date", "--text", "The launch is on the 14th, agreed with Sam.")
+
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := dbPath(cfg)
+	if err := os.RemoveAll(index); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(index); !os.IsNotExist(err) {
+		t.Fatalf("the index still exists after removal: %v", err)
+	}
+	if companionRetrievalReady(cfg) {
+		t.Fatal("companionRetrievalReady says an absent index is usable")
+	}
+
+	handler, token, _ := companionTestListener(t)
+	for _, mode := range []companion.ContextMode{companion.ModeThink, companion.ModeSearch, companion.ModeMeetingPrep} {
+		t.Run(string(mode), func(t *testing.T) {
+			body := fmt.Sprintf(`{"schema":"mora.companion.context.request","schema_version":1,"mode":%q,"query":"launch"}`, mode)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, companionRequest(t, http.MethodPost, companion.RouteContext, token, body))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("mode %s = %d, want 200 — an unreadable index is reported in the body\n%s", mode, rec.Code, rec.Body.String())
+			}
+			if _, err := os.Stat(index); !os.IsNotExist(err) {
+				t.Fatalf("mode %s BUILT AN INDEX; a companion request must never write", mode)
+			}
+
+			var bundle companion.ContextBundle
+			if uerr := companion.Unmarshal(rec.Body.Bytes(), &bundle); uerr != nil {
+				t.Fatalf("mode %s produced a bundle the contract rejects: %v", mode, uerr)
+			}
+			if len(bundle.Evidence) != 0 {
+				t.Fatalf("mode %s cited evidence with no index to retrieve it from", mode)
+			}
+			var said bool
+			for _, gap := range bundle.Gaps {
+				if strings.Contains(gap, "index") {
+					said = true
+				}
+			}
+			if !said {
+				t.Fatalf("mode %s returned an empty bundle without saying the index is unreadable: %v", mode, bundle.Gaps)
+			}
+			// An empty answer must not read as a healthy one.
+			if bundle.Health.State == companion.HealthHealthy {
+				t.Fatalf("mode %s reported healthy with no index: %+v", mode, bundle.Health)
+			}
+		})
+	}
+}
+
+// TestCompanionTodayNeverBuildsAnIndex is the same guarantee for the other
+// expensive route. Today reads vault files rather than the index, so it answers
+// — the assertion is that answering costs no rebuild.
+func TestCompanionTodayNeverBuildsAnIndex(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--scope", "personal", "--type", "decision",
+		"--title", "Ship it", "--text", "Three routes, device tokens only.")
+
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := dbPath(cfg)
+	if err := os.RemoveAll(index); err != nil {
+		t.Fatal(err)
+	}
+
+	handler, token, _ := companionTestListener(t)
+	for _, route := range []string{companion.RouteToday, companion.RouteHealth} {
+		t.Run(route, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, companionRequest(t, http.MethodGet, route, token, ""))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d, want 200\n%s", route, rec.Code, rec.Body.String())
+			}
+			if _, err := os.Stat(index); !os.IsNotExist(err) {
+				t.Fatalf("GET %s BUILT AN INDEX", route)
+			}
+			// An answer served without a usable index must not read as a
+			// healthy one.
+			if !strings.Contains(rec.Body.String(), `"unhealthy"`) {
+				t.Fatalf("GET %s answered with no index and did not say so:\n%s", route, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestCompanionRetrievalReadyRefusesEveryUnusableIndex pins the gate's own
+// branches, so a future edit that loosens one is visible here rather than in a
+// rebuild nobody notices.
+func TestCompanionRetrievalReadyRefusesEveryUnusableIndex(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--scope", "personal", "--type", "fact", "--title", "A", "--text", "B")
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := dbPath(cfg)
+
+	if !companionRetrievalReady(cfg) {
+		t.Fatal("a freshly built index is not readable")
+	}
+
+	t.Run("absent", func(t *testing.T) {
+		saved, rerr := os.ReadFile(index)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if rerr := os.Remove(index); rerr != nil {
+			t.Fatal(rerr)
+		}
+		defer func() {
+			if werr := os.WriteFile(index, saved, 0o600); werr != nil {
+				t.Fatal(werr)
+			}
+		}()
+		if companionRetrievalReady(cfg) {
+			t.Fatal("an absent index reads as usable")
+		}
+	})
+
+	t.Run("schema stale", func(t *testing.T) {
+		// A valid database with the graph tables present, whose user_version
+		// this binary does not understand. graphReady says yes to it, so this
+		// is the ONLY case that reaches the schema check — and it is the case
+		// that matters, because openIndexRO's answer to a schema-stale index is
+		// to rebuild it.
+		db, derr := sql.Open("sqlite", rwIndexDSN(cfg))
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		var restore int
+		if derr := db.QueryRow(`PRAGMA user_version`).Scan(&restore); derr != nil {
+			t.Fatal(derr)
+		}
+		if _, derr := db.Exec(`PRAGMA user_version = 999`); derr != nil {
+			t.Fatal(derr)
+		}
+		if cerr := db.Close(); cerr != nil {
+			t.Fatal(cerr)
+		}
+		defer func() {
+			back, berr := sql.Open("sqlite", rwIndexDSN(cfg))
+			if berr != nil {
+				t.Fatal(berr)
+			}
+			defer back.Close()
+			if _, berr := back.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, restore)); berr != nil {
+				t.Fatal(berr)
+			}
+		}()
+
+		if !graphReady(cfg) {
+			t.Fatal("the fixture broke graphReady, so it cannot exercise the schema check")
+		}
+		if companionRetrievalReady(cfg) {
+			t.Fatal("a schema-stale index reads as usable; openIndexRO would rebuild it")
+		}
+	})
+
+	t.Run("not a database", func(t *testing.T) {
+		saved, rerr := os.ReadFile(index)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if werr := os.WriteFile(index, []byte("this is not a sqlite file"), 0o600); werr != nil {
+			t.Fatal(werr)
+		}
+		defer func() {
+			if werr := os.WriteFile(index, saved, 0o600); werr != nil {
+				t.Fatal(werr)
+			}
+		}()
+		if companionRetrievalReady(cfg) {
+			t.Fatal("a corrupt index reads as usable")
+		}
+	})
+}
+
+// TestCompanionTodayIsCachedUntilTheIndexMoves pins the work budget's other
+// half. The concurrency limit bounds simultaneous work; the cache bounds
+// REPEATED work, which is what a polling phone actually generates.
+func TestCompanionTodayIsCachedUntilTheIndexMoves(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--scope", "personal", "--type", "decision",
+		"--title", "First", "--text", "The first decision.")
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := newCompanionReader(cfg)
+
+	first, err := reader.Today(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reader.valid {
+		t.Fatal("the first Today did not populate the cache")
+	}
+
+	// A second read at the same index state is served from the cache. Proving
+	// that without timing: poison the cached value and require it back.
+	reader.mu.Lock()
+	poisoned := reader.today
+	poisoned.Truncated = !poisoned.Truncated
+	reader.today = poisoned
+	reader.mu.Unlock()
+
+	second, err := reader.Today(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Truncated != poisoned.Truncated {
+		t.Fatal("the second Today re-walked the vault instead of using the cache")
+	}
+
+	// A changed index state retires the entry, even inside the TTL: the answer
+	// is not merely old, it is wrong.
+	reader.mu.Lock()
+	reader.key = "a different index state"
+	reader.mu.Unlock()
+	third, err := reader.Today(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Truncated != first.Truncated {
+		t.Fatal("a changed index state did not retire the cached Today")
+	}
+
+	// And the TTL is the floor under everything the key cannot see.
+	reader.mu.Lock()
+	reader.cached = reader.cached.Add(-2 * companionTodayTTL)
+	reader.today = poisoned
+	reader.mu.Unlock()
+	fourth, err := reader.Today(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fourth.Truncated != first.Truncated {
+		t.Fatal("an expired entry was served")
+	}
+}
+
 // TestCompanionIndexStateFollowsTheContractTable pins the collapse N02
 // published in docs/companion-contract.md.
 //
@@ -487,6 +755,130 @@ func TestCompanionHealthStateIsTheKernelAggregate(t *testing.T) {
 				t.Fatalf("health state %q maps to %q, want %q", tc.kernel, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCompanionFreshnessKeepsEveryKernelState is the fidelity table: every
+// kernel state crossed with an empty and a non-empty last_success_at, and with
+// and without a typed error code.
+//
+// The row that used to be wrong is the first one. A failure with no successful
+// sync behind it — which is exactly what an unreadable sources.json produces,
+// state failed with an empty last_success_at and a data.corrupt code —
+// collapsed to plain "never" and dropped the code on the way out. A phone then
+// showed a source that had simply never run, rather than one that is broken
+// right now and says why.
+func TestCompanionFreshnessKeepsEveryKernelState(t *testing.T) {
+	const generated = "2026-09-04T12:00:00Z"
+	const last = "2026-09-04T11:00:00Z"
+
+	for _, tc := range []struct {
+		name string
+		src  healthpkg.Source
+		want companion.SourceFreshness
+	}{
+		{
+			name: "failed with no last success keeps failed and its code",
+			src:  healthpkg.Source{Key: "sources_config", State: healthpkg.Failed, ErrorCode: errCodeDataCorrupt},
+			want: companion.SourceFreshness{Key: "sources_config", State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrInternal},
+		},
+		{
+			name: "failed with no last success and no code still names a reason",
+			src:  healthpkg.Source{Key: "gmail", State: healthpkg.Failed},
+			want: companion.SourceFreshness{Key: "gmail", State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrInternal},
+		},
+		{
+			name: "failed with a last success keeps the age too",
+			src:  healthpkg.Source{Key: "gmail", State: healthpkg.Failed, LastSuccessAt: last, ErrorCode: errCodeConnectorUnauthorized},
+			want: companion.SourceFreshness{Key: "gmail", State: companion.FreshnessFailed, AgeSeconds: 3600, LastSuccessAt: last, ErrorCode: companion.ErrAuthExpired},
+		},
+		{
+			name: "failed with an unparseable last success keeps failed",
+			src:  healthpkg.Source{Key: "gmail", State: healthpkg.Failed, LastSuccessAt: "last tuesday", ErrorCode: errCodeConnectorUnavailable},
+			want: companion.SourceFreshness{Key: "gmail", State: companion.FreshnessFailed, AgeSeconds: -1, ErrorCode: companion.ErrSourceUnavailable},
+		},
+		{
+			name: "stale keeps its typed reason",
+			src:  healthpkg.Source{Key: "imessage", State: healthpkg.Stale, LastSuccessAt: last, ErrorCode: errCodeConnectorStale},
+			want: companion.SourceFreshness{Key: "imessage", State: companion.FreshnessStale, AgeSeconds: 3600, LastSuccessAt: last, ErrorCode: companion.ErrSourceUnavailable},
+		},
+		{
+			name: "stale with no reason carries none",
+			src:  healthpkg.Source{Key: "imessage", State: healthpkg.Stale, LastSuccessAt: last},
+			want: companion.SourceFreshness{Key: "imessage", State: companion.FreshnessStale, AgeSeconds: 3600, LastSuccessAt: last},
+		},
+		{
+			name: "stale with no last success cannot claim an age",
+			src:  healthpkg.Source{Key: "imessage", State: healthpkg.Stale},
+			want: companion.SourceFreshness{Key: "imessage", State: companion.FreshnessNever, AgeSeconds: -1},
+		},
+		{
+			name: "fresh drops any error code, by contract",
+			src:  healthpkg.Source{Key: "github", State: healthpkg.Fresh, LastSuccessAt: last, ErrorCode: errCodeConnectorStale},
+			want: companion.SourceFreshness{Key: "github", State: companion.FreshnessFresh, AgeSeconds: 3600, LastSuccessAt: last},
+		},
+		{
+			name: "fresh with no last success cannot claim freshness",
+			src:  healthpkg.Source{Key: "github", State: healthpkg.Fresh},
+			want: companion.SourceFreshness{Key: "github", State: companion.FreshnessNever, AgeSeconds: -1},
+		},
+		{
+			name: "never carries no age, no stamp and no code",
+			src:  healthpkg.Source{Key: "applecalendar", State: healthpkg.Never, ErrorCode: errCodeConnectorUnavailable},
+			want: companion.SourceFreshness{Key: "applecalendar", State: companion.FreshnessNever, AgeSeconds: -1},
+		},
+		{
+			name: "a state the kernel grows later fails closed to never",
+			src:  healthpkg.Source{Key: "future", State: "partially-synced", LastSuccessAt: last},
+			want: companion.SourceFreshness{Key: "future", State: companion.FreshnessNever, AgeSeconds: -1},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := companionFreshness([]healthpkg.Source{tc.src}, generated)
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+			}
+			if rows[0] != tc.want {
+				t.Fatalf("row = %+v\nwant   %+v", rows[0], tc.want)
+			}
+			// The contract has to accept what the mapping produced, or the
+			// fidelity is theoretical.
+			projection := companion.NewHealthProjection()
+			projection.GeneratedAt = generated
+			projection.State = companion.HealthUnhealthy
+			projection.Policy = companion.PolicyReadonly
+			projection.Index = companion.IndexHealth{State: companion.HealthUnhealthy}
+			projection.Sources = rows
+			if err := projection.Validate(); err != nil {
+				t.Fatalf("the translated row does not satisfy the contract: %v", err)
+			}
+		})
+	}
+}
+
+// TestCompanionUnreadableSourcesConfigReachesTheWire is the end-to-end form of
+// the row above: the kernel's own fail-closed answer for a corrupt sources.json
+// has to survive the translation and appear on the health route.
+func TestCompanionUnreadableSourcesConfigReachesTheWire(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kernel := sourceHealthAll(cfg, cfg.OperationClock())
+	rows := companionFreshness(kernel, companionStamp(cfg.OperationClock()))
+	for i, src := range kernel {
+		if src.State != healthpkg.Failed {
+			continue
+		}
+		if rows[i].State != companion.FreshnessFailed {
+			t.Fatalf("kernel source %q is failed but reached the wire as %q", src.Key, rows[i].State)
+		}
+		if rows[i].ErrorCode == "" {
+			t.Fatalf("kernel source %q reached the wire as a failure with no reason", src.Key)
+		}
 	}
 }
 

@@ -26,23 +26,53 @@ type stubReader struct {
 	healthErr error
 	lastReq   ContextRequest
 	calls     int
+	// entered is signalled once per kernel call, and hold (when non-nil) is
+	// waited on before the call returns. Together they let a test pin one
+	// request inside the kernel while it drives a second.
+	entered chan struct{}
+	hold    chan struct{}
+	// honorContext makes a call return the context's error instead of an
+	// answer, which is what a real kernel read does when the deadline fires.
+	honorContext bool
+}
+
+// gate is the shared body of every stubbed kernel call.
+func (s *stubReader) gate(ctx context.Context) error {
+	s.calls++
+	if s.entered != nil {
+		s.entered <- struct{}{}
+	}
+	if s.honorContext {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if s.hold != nil {
+		<-s.hold
+	}
+	return ctx.Err()
 }
 
 func newStubReader() *stubReader {
 	return &stubReader{today: *TodayFixture(), context: *ContextFixture(), health: *HealthFixture()}
 }
 
-func (s *stubReader) Today(context.Context) (TodayProjection, error) {
-	s.calls++
+func (s *stubReader) Today(ctx context.Context) (TodayProjection, error) {
+	if err := s.gate(ctx); err != nil {
+		return TodayProjection{}, err
+	}
 	return s.today, s.todayErr
 }
-func (s *stubReader) Health(context.Context) (HealthProjection, error) {
-	s.calls++
+func (s *stubReader) Health(ctx context.Context) (HealthProjection, error) {
+	if err := s.gate(ctx); err != nil {
+		return HealthProjection{}, err
+	}
 	return s.health, s.healthErr
 }
-func (s *stubReader) Context(_ context.Context, req ContextRequest) (ContextBundle, error) {
-	s.calls++
+func (s *stubReader) Context(ctx context.Context, req ContextRequest) (ContextBundle, error) {
 	s.lastReq = req
+	if err := s.gate(ctx); err != nil {
+		return ContextBundle{}, err
+	}
 	return s.context, s.ctxErr
 }
 
@@ -190,27 +220,124 @@ func TestServerRefusesEveryRouteOutsideTheAllowlist(t *testing.T) {
 	}
 }
 
-// TestServerRefusesTheWrongMethodOnAnAllowlistedPath pins the method half of
-// the allowlist: a GET route is not a write route with a different verb.
-func TestServerRefusesTheWrongMethodOnAnAllowlistedPath(t *testing.T) {
+// TestServerRefusesEveryMethodOutsideTheAllowlist is the method half of the
+// allowlist, driven against the REAL mux for EVERY method the standard library
+// knows.
+//
+// HEAD is the reason this test is shaped this way. Go's ServeMux answers a
+// "GET /x" pattern for HEAD as well, so registering the method in the pattern
+// served a method Routes() never listed: HEAD reached the kernel and returned
+// its headers while the declared allowlist said GET only. Enumerating the
+// method set rather than spot-checking a few verbs is what catches the next one
+// of those.
+func TestServerRefusesEveryMethodOutsideTheAllowlist(t *testing.T) {
 	srv, reader, _, token, _ := testServer(t)
 	handler := srv.Handler()
 
-	for _, tc := range []struct{ method, path string }{
-		{http.MethodPost, RouteToday},
-		{http.MethodDelete, RouteToday},
-		{http.MethodGet, RouteContext},
-		{http.MethodPut, RouteHealth},
-	} {
-		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+	allowed := map[string]string{}
+	for _, route := range srv.Routes() {
+		allowed[route.Pattern] = route.Method
+	}
+	methods := []string{
+		http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions, http.MethodConnect,
+		http.MethodTrace,
+	}
+
+	for _, pattern := range []string{RouteToday, RouteContext, RouteHealth} {
+		for _, method := range methods {
+			if method == allowed[pattern] || method == http.MethodConnect {
+				// CONNECT is not a request httptest can shape meaningfully.
+				continue
+			}
+			t.Run(method+" "+pattern, func(t *testing.T) {
+				before := reader.calls
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, request(method, pattern, token, strings.NewReader("{}")))
+				if rec.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("%s %s = %d, want 405\n%s", method, pattern, rec.Code, rec.Body.String())
+				}
+				if got := rec.Header().Get("Allow"); got != allowed[pattern] {
+					t.Fatalf("%s %s Allow = %q, want %q", method, pattern, got, allowed[pattern])
+				}
+				if reader.calls != before {
+					t.Fatalf("%s %s reached the kernel", method, pattern)
+				}
+				if rec.Body.Len() != 0 && strings.Contains(rec.Body.String(), "schema") {
+					t.Fatalf("%s %s answered with a projection:\n%s", method, pattern, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// TestServerMountsNothingOutsideTheDeclaredRoutes probes the REAL mux for paths
+// no routeDef names.
+//
+// The previous version of the allowlist test enumerated its expectations from
+// routeDefs, which is the table under test: a stray `mux.HandleFunc` added
+// beside the loop would have been invisible to it. This drives a table of probe
+// paths the mux must not know, with a live credential and the permissive method,
+// so a registration outside routeDefs shows up as a non-404.
+func TestServerMountsNothingOutsideTheDeclaredRoutes(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	declared := map[string]bool{}
+	for _, route := range srv.Routes() {
+		declared[route.Pattern] = true
+	}
+
+	// Every path a registration would plausibly use, plus the prefixes a
+	// subtree pattern ("/v1/", "/") would capture.
+	probes := []string{
+		"/", "/v1", "/v1/", "/v1/companion", "/v1/companion/",
+		"/call", "/healthz", "/brief", "/search", "/think", "/write", "/entity/Sam",
+		"/v1/companion/captures", "/v1/companion/devices", "/v1/companion/operations",
+		"/v1/companion/memories", "/v1/companion/sync", "/v1/companion/config",
+		"/v1/companion/today/extra", "/v1/companion/health/extra", "/v1/companion/context/extra",
+		"/debug/pprof/", "/metrics", "/index.html", "/favicon.ico",
+	}
+	for _, path := range probes {
+		if declared[path] {
+			t.Fatalf("probe %q is a declared route; the probe table is stale", path)
+		}
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(method+" "+path, func(t *testing.T) {
+				before := reader.calls
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, request(method, path, token, strings.NewReader("{}")))
+				// 404 is the only acceptable answer: 405 would mean the mux
+				// knows the path, and anything 2xx would mean it serves it.
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("%s %s = %d, want 404 — something is mounted outside routeDefs\n%s",
+						method, path, rec.Code, rec.Body.String())
+				}
+				if reader.calls != before {
+					t.Fatalf("%s %s reached the kernel", method, path)
+				}
+			})
+		}
+	}
+}
+
+// TestServerHeadDoesNotReachTheKernel is the named regression for the defect
+// itself, kept separate from the enumeration so it cannot be diluted by a
+// future edit to the method table.
+func TestServerHeadDoesNotReachTheKernel(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	for _, pattern := range []string{RouteToday, RouteHealth} {
+		t.Run(pattern, func(t *testing.T) {
 			before := reader.calls
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, request(tc.method, tc.path, token, strings.NewReader("{}")))
-			if rec.Code == http.StatusOK {
-				t.Fatalf("%s %s answered 200", tc.method, tc.path)
+			handler.ServeHTTP(rec, request(http.MethodHead, pattern, token, nil))
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("HEAD %s = %d, want 405", pattern, rec.Code)
 			}
 			if reader.calls != before {
-				t.Fatalf("%s %s reached the kernel", tc.method, tc.path)
+				t.Fatalf("HEAD %s executed the kernel", pattern)
 			}
 		})
 	}
@@ -510,6 +637,240 @@ func TestServerDecodesContextStrictly(t *testing.T) {
 				t.Fatalf("the rejection echoed the query back:\n%s", rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestServerRefusesAContextRequestWithNoEnvelope is the strict-inbound
+// regression.
+//
+// The handler used to decode into NewContextRequest(), whose constructor
+// pre-fills schema and schema_version — so a body that omitted the envelope
+// entirely inherited the right answer and was accepted as a v1 request. The
+// envelope is the pinning identity of a payload; a decoder that supplies it on
+// the sender's behalf is not validating a version, it is assuming one.
+func TestServerRefusesAContextRequestWithNoEnvelope(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	for _, tc := range []struct{ name, body, wantField string }{
+		{"no envelope at all", `{"mode":"think","query":"x"}`, "schema"},
+		{"no schema", `{"schema_version":1,"mode":"think","query":"x"}`, "schema"},
+		{"no schema_version", `{"schema":"mora.companion.context.request","mode":"think","query":"x"}`, "schema_version"},
+		{"wrong schema_version", `{"schema":"mora.companion.context.request","schema_version":2,"mode":"think","query":"x"}`, "schema_version"},
+		{"null envelope", `{"schema":null,"schema_version":null,"mode":"think","query":"x"}`, "schema"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := reader.calls
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, request(http.MethodPost, RouteContext, token, strings.NewReader(tc.body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s = %d, want 400\n%s", tc.name, rec.Code, rec.Body.String())
+			}
+			if reader.calls != before {
+				t.Fatalf("%s reached the kernel", tc.name)
+			}
+			// The N02 rejection envelope: the code and the field path, and
+			// never the value that failed.
+			var refusal struct {
+				Error string `json:"error"`
+				Field string `json:"field"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &refusal); err != nil {
+				t.Fatalf("%s: the refusal is not JSON: %v\n%s", tc.name, err, rec.Body.String())
+			}
+			if refusal.Error != CodeSchemaMismatch {
+				t.Fatalf("%s: error = %q, want %q\n%s", tc.name, refusal.Error, CodeSchemaMismatch, rec.Body.String())
+			}
+			if refusal.Field != tc.wantField {
+				t.Fatalf("%s: field = %q, want %q", tc.name, refusal.Field, tc.wantField)
+			}
+		})
+	}
+
+	// And the fully-enveloped form still works, so the refusal is the envelope
+	// check and not a broken decoder.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodPost, RouteContext, token, contextBody(t, ModeThink, "x")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a fully enveloped request got %d, want 200\n%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestServerRequiresTheBearerScheme drives a VALID token with no scheme.
+//
+// The earlier no-scheme case used an invalid token, so it proved nothing about
+// the scheme: it would have passed against a parser that accepted a bare token,
+// because the token was wrong either way.
+func TestServerRequiresTheBearerScheme(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   int
+	}{
+		{"bare valid token", token, http.StatusUnauthorized},
+		{"wrong scheme, valid token", "Token " + token, http.StatusUnauthorized},
+		{"basic scheme, valid token", "Basic " + token, http.StatusUnauthorized},
+		{"no space after the scheme", "Bearer" + token, http.StatusUnauthorized},
+		{"bearer, valid token", "Bearer " + token, http.StatusOK},
+		{"lowercase bearer is still the scheme", "bearer " + token, http.StatusOK},
+		{"mixed-case bearer is still the scheme", "BeArEr " + token, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := reader.calls
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, RouteHealth, nil)
+			req.Host = "127.0.0.1:7778"
+			req.Header.Set("Authorization", tc.header)
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("%s = %d, want %d\n%s", tc.name, rec.Code, tc.want, rec.Body.String())
+			}
+			reached := reader.calls != before
+			if tc.want == http.StatusUnauthorized && reached {
+				t.Fatalf("%s reached the kernel", tc.name)
+			}
+			if tc.want == http.StatusOK && !reached {
+				t.Fatalf("%s did not reach the kernel", tc.name)
+			}
+			if tc.want == http.StatusUnauthorized && rec.Body.String() != unauthorizedBody {
+				t.Fatalf("%s is distinguishable from every other refusal:\n%s", tc.name, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestServerRefusesASecondConcurrentKernelCall is the work budget.
+//
+// Today walks the vault and context runs retrieval; neither is cheap, and a
+// device that pipelines requests would multiply that by however many sockets it
+// opens. The second caller is refused IMMEDIATELY rather than queued, because a
+// queue in front of an expensive read holds sockets and memory for a caller who
+// has already given up.
+func TestServerRefusesASecondConcurrentKernelCall(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+	reader.entered = make(chan struct{}, 1)
+	reader.hold = make(chan struct{})
+
+	first := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+		first <- rec.Code
+	}()
+
+	select {
+	case <-reader.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first request never reached the kernel")
+	}
+
+	// The first call is pinned inside the kernel. The second must be refused
+	// without waiting for it, and must not reach the kernel at all.
+	before := reader.calls
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the second concurrent request = %d, want 503\n%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Fatal("the 503 does not say when to come back")
+	}
+	if reader.calls != before {
+		t.Fatal("the refused request still reached the kernel")
+	}
+
+	close(reader.hold)
+	if code := <-first; code != http.StatusOK {
+		t.Fatalf("the first request = %d, want 200", code)
+	}
+
+	// The budget is released, so the next request is served rather than
+	// permanently refused.
+	reader.hold = nil
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("after the budget was released, a request got %d, want 200", rec.Code)
+	}
+}
+
+// TestServerBoundsAKernelCallWithADeadline proves a slow read answers rather
+// than hanging.
+//
+// The stub waits on the context, which is what a real read does when its
+// deadline fires. The assertion is that the socket gets a bounded, typed refusal
+// — not that the read is fast.
+func TestServerBoundsAKernelCallWithADeadline(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	reader.honorContext = true
+
+	// Reach the handler directly with a context that has already expired, so
+	// the test asserts the deadline PATH without waiting KernelTimeout for it.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		srv.handleToday(rec, request(http.MethodGet, RouteToday, token, nil).WithContext(ctx))
+		done <- rec
+	}()
+
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler hung past its own deadline")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a request past its deadline = %d, want 503\n%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Fatal("the timeout does not say when to come back")
+	}
+	if !strings.Contains(rec.Body.String(), `"timeout"`) {
+		t.Fatalf("the timeout is indistinguishable from any other outage:\n%s", rec.Body.String())
+	}
+	// And it carries nothing of the kernel's own error.
+	if strings.Contains(rec.Body.String(), "context") {
+		t.Fatalf("the timeout leaked the kernel error:\n%s", rec.Body.String())
+	}
+}
+
+// TestServerReleasesTheBudgetOnEveryExit pins the release path for the two ways
+// a handler can leave early. A budget that leaks on the error path is a server
+// that answers 503 forever after its first failure.
+func TestServerReleasesTheBudgetOnEveryExit(t *testing.T) {
+	srv, reader, _, token, _ := testServer(t)
+	handler := srv.Handler()
+
+	reader.todayErr = errors.New("the kernel is unhappy")
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("failing request %d = %d, want 503", i, rec.Code)
+		}
+	}
+	// A malformed body leaves through the rejection path, which is after the
+	// budget was taken.
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, request(http.MethodPost, RouteContext, token, strings.NewReader("{")))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("malformed request %d = %d, want 400", i, rec.Code)
+		}
+	}
+	reader.todayErr = nil
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request(http.MethodGet, RouteToday, token, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("after six early exits a healthy request got %d; the budget leaked", rec.Code)
 	}
 }
 
