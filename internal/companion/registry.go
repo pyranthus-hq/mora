@@ -141,6 +141,12 @@ var (
 	// identical in cost for an attacker: both are decided after the same
 	// constant-time comparison.
 	ErrPairingCode = errors.New("pairing code does not match")
+	// ErrReceiptNotWritten means the change COMMITTED and only its audit row
+	// failed. It is a warning, never a reason to undo or withhold the change:
+	// a caller that discarded a minted token here would leave an active
+	// credential nobody holds, which is the exact failure the ordering exists
+	// to prevent. Callers surface it and carry on.
+	ErrReceiptNotWritten = errors.New("the change was applied but its audit receipt could not be written")
 	// ErrRegistryTooLarge is returned when a mutation would write a record
 	// file that load would then refuse. It is a distinct error because the
 	// caller's remedy is to revoke a device, not to retry.
@@ -172,12 +178,13 @@ type Registry struct {
 	now       func() time.Time
 	entropy   io.Reader
 
-	// writeRecord publishes the record file. It is a field rather than a
-	// direct call so a test can fail the commit at the exact instant the
-	// receipt-ordering rules exist for — the moment between "the audit row is
-	// on disk" and "the state it describes is on disk". There is no exported
-	// way to replace it and production never does.
+	// writeRecord publishes the record file and writeAudit publishes an audit
+	// row. They are fields rather than direct calls so a test can fail either
+	// half at the exact instant the ordering rules exist for — the moment
+	// between "the state is on disk" and "the row describing it is on disk".
+	// There is no exported way to replace either and production never does.
 	writeRecord func(path string, body []byte, beforeRename func() error) error
+	writeAudit  func(rcpt receipt, beforeRename func() error) error
 }
 
 // RegistryOption injects a seam. Both seams exist for tests; production passes
@@ -213,6 +220,7 @@ func NewRegistry(configDir, stateDir string, opts ...RegistryOption) *Registry {
 		entropy:     rand.Reader,
 		writeRecord: writeSecretFile,
 	}
+	r.writeAudit = r.writeReceipt
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -356,14 +364,16 @@ func (r *Registry) Pair(label string, platform Platform, endpoint string) (Pairi
 				"revoke one with `mora companion revoke` before pairing another", len(f.Devices), MaxDevices)
 		}
 		f.Devices = append(f.Devices, rec)
-		// After the commit: a `paired` row must never claim a device the
-		// record file does not carry.
-		return receipt{Event: "paired", DeviceID: deviceID, At: now, order: receiptAfterCommit}, nil
+		return receipt{Event: "paired", DeviceID: deviceID, At: now}, nil
 	})
-	if err != nil {
+	// A receipt failure is not a pairing failure. The device is registered and
+	// the code in this payload is the only copy there will ever be, so it is
+	// returned alongside the warning rather than thrown away; discarding it
+	// would leave a pending device nobody can complete.
+	if err != nil && !errors.Is(err, ErrReceiptNotWritten) {
 		return PairingPayload{}, err
 	}
-	return payload, nil
+	return payload, err
 }
 
 // Confirm spends a pairing code and mints the bearer token.
@@ -412,11 +422,7 @@ func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err
 			// burn somebody else's pending pairing.
 			rec.PairingCodeFingerprint = ""
 			expiredCode = true
-			// After the commit, unlike the `confirmed` row below: burning a
-			// code mints nothing, so there is no holder to strand, and an
-			// `expired` row over a code the record file still shows as live
-			// would be the same false all-clear a premature `revoked` row is.
-			return receipt{Event: "expired", DeviceID: c.DeviceID, At: now, order: receiptAfterCommit}, nil
+			return receipt{Event: "expired", DeviceID: c.DeviceID, At: now}, nil
 		}
 
 		rec.State = DeviceActive
@@ -430,20 +436,27 @@ func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err
 		if err := dev.Validate(); err != nil {
 			return receipt{}, err
 		}
-		// Before the commit: this is the one event that hands its caller a
-		// secret, so a receipt failure must not leave the credential live. See
-		// mutate.
-		return receipt{Event: "confirmed", DeviceID: c.DeviceID, At: now, order: receiptBeforeCommit}, nil
+		return receipt{Event: "confirmed", DeviceID: c.DeviceID, At: now}, nil
 	})
-	if err != nil {
+	unaudited := errors.Is(err, ErrReceiptNotWritten)
+	if err != nil && !unaudited {
 		return "", Device{}, err
 	}
 	if expiredCode {
 		// The burn was committed, so the refusal is reported after the write
-		// rather than instead of it.
+		// rather than instead of it. No credential was minted, so there is no
+		// holder to strand; the audit warning is joined on so a caller can
+		// still see that the row is missing.
+		if unaudited {
+			return "", Device{}, errors.Join(ErrPairingExpired, err)
+		}
 		return "", Device{}, ErrPairingExpired
 	}
-	return token, dev, nil
+	// The device is ACTIVE in the record file and this token is the only copy
+	// of its credential. Returning ("", err) here because the audit row failed
+	// would strand exactly the credential nobody holds that the ordering exists
+	// to prevent, so the token goes back with the warning attached.
+	return token, dev, err
 }
 
 // Authenticate resolves a bearer token to its device.
@@ -552,14 +565,16 @@ func (r *Registry) Revoke(deviceID string) (dev Device, changed bool, err error)
 		if err := dev.Validate(); err != nil {
 			return receipt{}, err
 		}
-		// After the commit. A `revoked` row that outlives a failed write tells
-		// an operator that access ended while the credential is still live.
-		return receipt{Event: "revoked", DeviceID: deviceID, At: now, order: receiptAfterCommit}, nil
+		return receipt{Event: "revoked", DeviceID: deviceID, At: now}, nil
 	})
-	if err != nil {
+	// The revocation committed; only its audit row did not. Reporting failure
+	// here would tell an operator their revocation did not take when it did,
+	// which is the same class of lie as a receipt that outlives a failed
+	// commit — just pointed the other way.
+	if err != nil && !errors.Is(err, ErrReceiptNotWritten) {
 		return Device{}, false, err
 	}
-	return dev, changed, nil
+	return dev, changed, err
 }
 
 // List returns every device, newest registration last. Pending devices whose
@@ -880,43 +895,35 @@ func (r *Registry) mutate(fn func(*registryFile) (receipt, error)) error {
 	}
 	commit := func() error { return r.writeRecord(r.filePath(), body, stillHolds) }
 
-	// Receipt ordering is PER EVENT, because the two orderings fail in opposite
-	// directions and there is no single safe choice. Two invariants have to
-	// hold, and they pull against each other whenever a write can half-fail:
+	// The record file is the single source of truth, so it commits FIRST,
+	// always, for every event. Two invariants have to hold:
 	//
 	//	(a) a receipt must never assert a state the record file does not hold;
-	//	(b) an active credential must never exist without a holder.
+	//	(b) a committed change must never be discarded because its audit failed.
 	//
-	// Confirm is the only event that can break (b). It mints the bearer token,
-	// hands its caller the only copy, and marks the device active. Commit-first
-	// there means a receipt failure returns an error, the caller discards the
-	// token, and the vault keeps an ACTIVE credential nobody holds — invisible
-	// except by reading devices.json, and it authenticates nothing forever. So
-	// Confirm writes its receipt first and accepts the (a) residue: a
-	// `confirmed` row may exist for a device that is still pending. That row is
-	// harmless — the device it names has no credential, which is exactly what
-	// the record file says — and it is the deliberate trade, not an oversight.
+	// Record-first is what makes (a) unconditional. An earlier design wrote
+	// Confirm's receipt first, reasoning that a receipt failure would otherwise
+	// strand an ACTIVE credential nobody holds — but the fix for that is not to
+	// reorder the writes, it is to stop throwing the credential away. A
+	// `confirmed` row over a still-pending device is an audit trail that lies,
+	// and there is no arrangement of two writes that makes a lying audit trail
+	// the better failure.
 	//
-	// Every other event takes the opposite order, and Revoke is why. A
-	// `revoked` receipt written before the record file can outlive a failed
-	// commit and tell an operator that access ended while the credential is
-	// still live. That is the one audit lie that gets somebody hurt: a real
-	// revocation with no audit row is a bookkeeping gap, a fake revocation row
-	// over a live credential is a false all-clear. Commit-first makes the
-	// unaudited-but-real revocation the only failure available.
+	// So (b) is satisfied by the RETURN, not by the ordering. A receipt failure
+	// after a successful commit surfaces as ErrReceiptNotWritten, which callers
+	// treat as a warning: the change is real and durable, its audit row is not,
+	// and the caller must still hand back the token or the pairing code it just
+	// minted. Every mutating method here does exactly that.
 	if rcpt.Event == "" {
-		return commit()
-	}
-	if rcpt.order == receiptBeforeCommit {
-		if err := r.writeReceipt(rcpt, stillHolds); err != nil {
-			return err
-		}
 		return commit()
 	}
 	if err := commit(); err != nil {
 		return err
 	}
-	return r.writeReceipt(rcpt, stillHolds)
+	if err := r.writeAudit(rcpt, stillHolds); err != nil {
+		return fmt.Errorf("%w: %v", ErrReceiptNotWritten, err)
+	}
+	return nil
 }
 
 // lockTimeout / lockPoll bound how long a caller waits for the write lock. The
@@ -939,32 +946,13 @@ func (r *Registry) lock() (*lockFile, error) {
 	return acquireLock(r.lockPath(), secretFileMode, lockTimeout, lockPoll)
 }
 
-// receiptOrder says whether an audit row is written before or after the record
-// file it describes. It is per-event, because the two orderings fail in
-// opposite directions and no single choice is safe for every event. See mutate.
-type receiptOrder int
-
-const (
-	// receiptAfterCommit is the default and the safe answer for anything that
-	// does not hand a secret to its caller. The worst case is a real change
-	// with no audit row.
-	receiptAfterCommit receiptOrder = iota
-	// receiptBeforeCommit is only for events that mint a credential.
-	receiptBeforeCommit
-)
-
 // receipt is one audit row. It names the device and the moment, never the
 // credential and never the payload, so the receipts directory stays safe to
 // include in a bug report.
-//
-// order is unexported and therefore never marshaled: it steers mutate, it is
-// not part of the row.
 type receipt struct {
 	Event    string `json:"event"`
 	DeviceID string `json:"device_id"`
 	At       string `json:"at"`
-
-	order receiptOrder
 }
 
 func (r *Registry) writeReceipt(rcpt receipt, beforeRename func() error) error {

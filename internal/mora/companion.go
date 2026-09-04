@@ -52,11 +52,11 @@ func cmdCompanion(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	switch args[0] {
 	case "pair":
-		return cmdCompanionPair(ctx, args[1:], stdout)
+		return cmdCompanionPair(ctx, args[1:], stdout, stderr)
 	case "list":
 		return cmdCompanionList(ctx, args[1:], stdout)
 	case "revoke":
-		return cmdCompanionRevoke(ctx, args[1:], stdout)
+		return cmdCompanionRevoke(ctx, args[1:], stdout, stderr)
 	case "status":
 		return cmdCompanionStatus(ctx, args[1:], stdout)
 	default:
@@ -98,7 +98,7 @@ type companionPairPayload struct {
 	HostFingerprint string `json:"host_fingerprint"`
 }
 
-func cmdCompanionPair(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdCompanionPair(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("companion pair", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	label := fs.String("label", "phone", "human label for the device")
@@ -121,7 +121,7 @@ func cmdCompanionPair(ctx context.Context, args []string, stdout io.Writer) erro
 		return err
 	}
 	payload, err := reg.Pair(*label, companion.Platform(*platform), *endpoint)
-	if err != nil {
+	if err != nil && !warnUnaudited(stderr, "pair", err) {
 		return companionError("pair", err)
 	}
 
@@ -216,7 +216,7 @@ type companionRevokePayload struct {
 	Changed   bool   `json:"changed"`
 }
 
-func cmdCompanionRevoke(ctx context.Context, args []string, stdout io.Writer) error {
+func cmdCompanionRevoke(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// The positional is read before the flag set because the device id comes
 	// first, and it is guarded because a mistyped flag landing in an id slot is
 	// the bug class refuseDashLedPositional exists to close.
@@ -247,7 +247,7 @@ func cmdCompanionRevoke(ctx context.Context, args []string, stdout io.Writer) er
 	// direction — it removes access, it never destroys a memory — and the moment
 	// an operator wants it is the moment friction is most expensive.
 	dev, changed, err := reg.Revoke(deviceID)
-	if err != nil {
+	if err != nil && !warnUnaudited(stderr, "revoke", err) {
 		return companionError("revoke", err)
 	}
 	out := companionRevokePayload{
@@ -315,6 +315,26 @@ func cmdCompanionStatus(ctx context.Context, args []string, stdout io.Writer) er
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
+
+// warnUnaudited handles the one registry error that is not a failure.
+//
+// ErrReceiptNotWritten means the change COMMITTED and only its audit row did
+// not. The device is paired, or revoked, and the pairing code this command just
+// printed is the only copy there will ever be — so the command prints its normal
+// output and exits 0, with the warning on stderr where it cannot corrupt a
+// `--json` document being piped into something. Exiting non-zero here would tell
+// a script the pairing failed when it did not, and a retry would mint a second
+// device.
+//
+// It reports whether it handled the error.
+func warnUnaudited(stderr io.Writer, verb string, err error) bool {
+	if !errors.Is(err, companion.ErrReceiptNotWritten) {
+		return false
+	}
+	fmt.Fprintf(stderr, "warning: the %s took effect but its audit receipt could not be written (%v); "+
+		"the change is real, the local audit trail is incomplete\n", verb, err)
+	return true
+}
 
 // companionError translates a registry error into the CLI's coded vocabulary.
 //
