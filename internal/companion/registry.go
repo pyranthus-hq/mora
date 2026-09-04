@@ -547,13 +547,33 @@ func (r *Registry) Status() (Status, error) {
 // derived fingerprint changes when the user renames their Mac, and a phone
 // would read that rename as a host substitution.
 func (r *Registry) HostFingerprint() (string, error) {
-	path := filepath.Join(r.dir(), "host.key")
-	if seed, err := os.ReadFile(path); err == nil && len(seed) == tokenEntropyBytes {
-		if err := hardenPath(path, secretFileMode); err != nil {
-			return "", err
-		}
+	// Fast path: the seed exists, so no lock is needed. writeSecretFile
+	// publishes by rename, so a concurrent reader sees either no file or the
+	// whole file, never a partial one.
+	if seed, err := r.readHostSeed(); err == nil {
 		return Fingerprint(string(seed)), nil
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	// Creation goes through the registry lock. Publishing by rename is not
+	// enough on its own: Windows refuses a rename onto a path that exists or
+	// that another process has open, which is exactly what two concurrent first
+	// pairings produce. Under the lock the destination provably does not exist.
+	if err := r.ensureDir(); err != nil {
+		return "", err
+	}
+	nonce, unlock, err := r.lock()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
+	// Re-read inside the lock: whoever held it before this call may have been
+	// creating the very seed this call was about to generate.
+	if seed, err := r.readHostSeed(); err == nil {
+		return Fingerprint(string(seed)), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 
@@ -561,13 +581,32 @@ func (r *Registry) HostFingerprint() (string, error) {
 	if _, err := io.ReadFull(r.entropy, seed); err != nil {
 		return "", fmt.Errorf("companion: read entropy: %w", err)
 	}
-	if err := r.ensureDir(); err != nil {
-		return "", err
+	if !r.holds(nonce) {
+		return "", ErrLocked
 	}
-	if err := writeSecretFile(path, seed); err != nil {
+	if err := writeSecretFile(r.hostKeyPath(), seed); err != nil {
 		return "", err
 	}
 	return Fingerprint(string(seed)), nil
+}
+
+// readHostSeed returns the stored seed. A file of the wrong size is a corrupt
+// identity, and it is an error rather than a reason to mint a new one: silently
+// rotating the host identity would make every already-paired phone see what
+// looks like a host substitution.
+func (r *Registry) readHostSeed() ([]byte, error) {
+	seed, err := os.ReadFile(r.hostKeyPath())
+	if err != nil {
+		return nil, err
+	}
+	if len(seed) != tokenEntropyBytes {
+		return nil, fmt.Errorf("companion: %s is %d bytes, not %d — the host identity is corrupt; "+
+			"move it aside and re-pair every device", r.hostKeyPath(), len(seed), tokenEntropyBytes)
+	}
+	if err := hardenPath(r.hostKeyPath(), secretFileMode); err != nil {
+		return nil, err
+	}
+	return seed, nil
 }
 
 func (f *registryFile) find(id string) *deviceRecord {
@@ -583,9 +622,10 @@ func (f *registryFile) find(id string) *deviceRecord {
 // Persistence
 // ---------------------------------------------------------------------------
 
-func (r *Registry) dir() string      { return filepath.Join(r.configDir, "companion") }
-func (r *Registry) filePath() string { return filepath.Join(r.dir(), "devices.json") }
-func (r *Registry) lockPath() string { return filepath.Join(r.dir(), ".lock") }
+func (r *Registry) dir() string         { return filepath.Join(r.configDir, "companion") }
+func (r *Registry) filePath() string    { return filepath.Join(r.dir(), "devices.json") }
+func (r *Registry) lockPath() string    { return filepath.Join(r.dir(), ".lock") }
+func (r *Registry) hostKeyPath() string { return filepath.Join(r.dir(), "host.key") }
 func (r *Registry) receiptDir() string {
 	return filepath.Join(r.stateDir, "companion", "receipts")
 }

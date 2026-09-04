@@ -842,3 +842,91 @@ func TestRegistryUnlockOnlyRemovesItsOwnLock(t *testing.T) {
 		t.Fatalf("the holder did not release its own lock: %v", err)
 	}
 }
+
+// TestRegistryConcurrentHostFingerprintAgrees is the Windows regression: the
+// host seed used to be created outside the lock, so N concurrent first pairings
+// each wrote a temp file and renamed it onto host.key. POSIX tolerates a rename
+// onto an existing path; Windows refuses one onto a path that exists or that
+// another process holds open, and CI failed with "Access is denied".
+//
+// The identity must also AGREE across the racers. A registry that let two of
+// them mint different seeds would hand two phones different host fingerprints
+// for the same Mac, which is precisely the substitution the fingerprint exists
+// to make visible.
+func TestRegistryConcurrentHostFingerprintAgrees(t *testing.T) {
+	reg, _, configDir, _ := testRegistry(t)
+	const n = 8
+
+	var wg sync.WaitGroup
+	got := make([]string, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], errs[i] = reg.HostFingerprint()
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("HostFingerprint %d: %v", i, err)
+		}
+		if got[i] != got[0] {
+			t.Fatalf("racer %d minted %s, racer 0 minted %s", i, got[i], got[0])
+		}
+	}
+	if err := validateFingerprint("host_fingerprint", got[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exactly one seed file, and no temporary left behind.
+	entries, err := os.ReadDir(filepath.Join(configDir, "companion"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
+			t.Fatalf("a temporary file survived: %s", e.Name())
+		}
+	}
+}
+
+// TestRegistryRefusesACorruptHostSeed pins the choice not to self-heal. Minting
+// a fresh seed over a truncated one would rotate the host identity silently, and
+// every already-paired phone would read that as a host substitution.
+func TestRegistryRefusesACorruptHostSeed(t *testing.T) {
+	reg, _, configDir, _ := testRegistry(t)
+	first, err := reg.HostFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(configDir, "companion", "host.key")
+	if err := os.WriteFile(path, []byte("short"), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	_, err = reg.HostFingerprint()
+	if err == nil {
+		t.Fatal("a truncated host seed was accepted")
+	}
+	if !strings.Contains(err.Error(), "host identity is corrupt") {
+		t.Fatalf("error %q does not say what went wrong", err)
+	}
+	if _, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777"); err == nil {
+		t.Fatal("pairing succeeded against a corrupt host identity")
+	}
+
+	body := make([]byte, tokenEntropyBytes)
+	if err := os.WriteFile(path, body, secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := reg.HostFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored == first {
+		t.Fatal("the fingerprint did not follow the seed")
+	}
+}
