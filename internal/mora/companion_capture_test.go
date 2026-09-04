@@ -12,7 +12,6 @@ package mora
 // from the one route that writes.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -635,6 +634,10 @@ func (p *readOnlyProbe) Policy(ctx context.Context) (companion.WritePolicy, erro
 	return p.inner.Policy(ctx)
 }
 
+func (p *readOnlyProbe) PublishedForKey(ctx context.Context, deviceID, key string) (string, bool, error) {
+	return p.inner.PublishedForKey(ctx, deviceID, key)
+}
+
 func (p *readOnlyProbe) Published(ctx context.Context, c companion.Capture, id companion.CaptureIdentity) (companion.WriteOutcome, bool, error) {
 	return p.inner.Published(ctx, c, id)
 }
@@ -712,8 +715,8 @@ func TestCompanionWriterNeverMarksItsContextReadOnly(t *testing.T) {
 	// The three the Writer seam declares, plus the two the verification is made
 	// of. The count is asserted so a method added later is walked rather than
 	// silently skipped by this witness.
-	if checked != 5 {
-		t.Fatalf("walked %d companionWriter methods, want 5", checked)
+	if checked != 6 {
+		t.Fatalf("walked %d companionWriter methods, want 6", checked)
 	}
 }
 
@@ -972,8 +975,7 @@ func TestCompanionCaptureRefusesTheGenericLoopbackToken(t *testing.T) {
 // the content comparison both disagree with the capture claiming the id.
 func TestCompanionCaptureForeignFileAtThePinnedIDIsRejected(t *testing.T) {
 	cfg := captureTestVault(t, mcpWritePolicyOpen)
-	var log bytes.Buffer
-	writer := newCompanionWriter(&log)
+	writer := newCompanionWriter()
 
 	// Somebody else's memory, already at the pinned path.
 	foreign := Memory{
@@ -1017,13 +1019,16 @@ func TestCompanionCaptureForeignFileAtThePinnedIDIsRejected(t *testing.T) {
 		t.Fatalf("the vault holds %d memory files, want the 1 that was already there", len(files))
 	}
 	// An operator can find out WHY. The reason on the wire is the frozen
-	// `internal`; the specific cause is here, naming the id and nothing the user
-	// wrote.
-	if !strings.Contains(log.String(), captureTestMemoryID) {
-		t.Fatalf("the integrity failure was not logged: %q", log.String())
+	// `internal`; the specific cause travels on the outcome, naming the ids and
+	// nothing the user wrote, and the LISTENER decides where it goes — the kernel
+	// has no log of its own on this path, and giving it the listener's stdout is
+	// what regressed N12's silence.
+	if !strings.Contains(outcome.IntegrityDetail, captureTestMemoryID) ||
+		!strings.Contains(outcome.IntegrityDetail, captureTestDevice) {
+		t.Fatalf("the integrity detail names neither the memory nor the device: %q", outcome.IntegrityDetail)
 	}
-	if strings.Contains(log.String(), "my note") || strings.Contains(log.String(), "this file was here first") {
-		t.Fatalf("the log carries memory text: %q", log.String())
+	if strings.Contains(outcome.IntegrityDetail, "my note") || strings.Contains(outcome.IntegrityDetail, "this file was here first") {
+		t.Fatalf("the integrity detail carries memory text: %q", outcome.IntegrityDetail)
 	}
 }
 
@@ -1096,12 +1101,12 @@ func TestCompanionCapturePublicationRecordNamesItsOwner(t *testing.T) {
 	// A DIFFERENT capture cannot claim the same id.
 	other := captureTestIdentity(captureTestMemoryID)
 	other.Key = "key.two"
-	if err := claimCapturePublication(cfg, other); !errors.Is(err, errMemoryIDMismatch) {
+	if _, err := claimCapturePublication(cfg, other); !errors.Is(err, errMemoryIDMismatch) {
 		t.Fatalf("a second capture claimed the same id: %v", err)
 	}
 	// And the owner can re-claim its own id as many times as it retries.
-	if err := claimCapturePublication(cfg, id); err != nil {
-		t.Fatalf("the owner could not re-claim its own id: %v", err)
+	if created, err := claimCapturePublication(cfg, id); err != nil || created {
+		t.Fatalf("the owner could not re-claim its own id: created=%t err=%v", created, err)
 	}
 }
 
@@ -1138,4 +1143,293 @@ func TestCompanionCapturePublishedVerifiesRatherThanTrusting(t *testing.T) {
 		t.Fatalf("a stranger got %s/%s, want rejected/internal", outcome.State, outcome.Reason)
 	}
 	_ = cfg
+}
+
+// ---------------------------------------------------------------------------
+// Nothing written means nothing written
+// ---------------------------------------------------------------------------
+
+// publishedTree is the state of the ownership directory, as bytes.
+//
+// The claim under test is "nothing was written", and that has to be true of the
+// state directory as well as of the vault. Comparing the tree byte for byte is
+// the only assertion that catches a rejection which tidied up almost everything.
+func publishedTree(t *testing.T, cfg Config) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	root := capturePublicationDir(cfg)
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		out[rel] = string(body)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the published tree: %v", err)
+	}
+	return out
+}
+
+func sameTree(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// TestCompanionCaptureForeignRejectionLeavesNoResidue is the round-three
+// residue defect.
+//
+// The ownership record is written before the vault write, so a capture that then
+// finds the memory foreign has already created it. Round three rejected and left
+// it there, which made "nothing was written" false of the state directory — and
+// worse, let a caller who can grind the 32-bit suffix pre-plant ownership for ids
+// nobody has published.
+func TestCompanionCaptureForeignRejectionLeavesNoResidue(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+
+	// Somebody else's memory, already at the pinned path, with no ownership
+	// record — so the claim below is the one that creates one.
+	foreign := Memory{
+		Scope: "personal", Type: "insight", Title: "Not the capture",
+		Source: "cli", CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Text: "this file was here first", ID: captureTestMemoryID,
+	}
+	body, err := renderMemory(foreign)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	path := memoryPath(cfg, foreign)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("seed the vault: %v", err)
+	}
+
+	before := publishedTree(t, cfg)
+	outcome, err := writer.Publish(testCtx(t),
+		captureFixture(t, captureTestDevice, "key.one", "my note"),
+		captureTestIdentity(captureTestMemoryID))
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if outcome.State != companion.ReceiptRejected || outcome.Reason != companion.ReasonInternal {
+		t.Fatalf("produced %s/%s, want rejected/internal", outcome.State, outcome.Reason)
+	}
+	after := publishedTree(t, cfg)
+	if !sameTree(before, after) {
+		t.Fatalf("the rejection left residue in the published tree:\nbefore %v\nafter  %v", before, after)
+	}
+	if len(after) != 0 {
+		t.Fatalf("the rejected request created %d ownership records, want 0", len(after))
+	}
+	// And the key was not marked as having published anything.
+	if _, found, ferr := publishedForKey(cfg, captureTestDevice, "key.one"); ferr != nil || found {
+		t.Fatalf("the rejected request claimed the key: found=%t err=%v", found, ferr)
+	}
+}
+
+// TestCompanionCaptureForeignOwnerRecordIsNotTouched. When the id is owned by a
+// DIFFERENT capture, the refusal must not create anything and must not remove
+// the record it does not own.
+func TestCompanionCaptureForeignOwnerRecordIsNotTouched(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+
+	// Somebody else already owns the id.
+	stranger := captureTestIdentity(captureTestMemoryID)
+	stranger.Key = "their.key"
+	stranger.Identity = companion.Fingerprint("their capture")
+	if _, err := claimCapturePublication(cfg, stranger); err != nil {
+		t.Fatalf("seed the ownership: %v", err)
+	}
+	before := publishedTree(t, cfg)
+
+	outcome, err := writer.Publish(testCtx(t),
+		captureFixture(t, captureTestDevice, "key.one", "mine"),
+		captureTestIdentity(captureTestMemoryID))
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if outcome.State != companion.ReceiptRejected || outcome.Reason != companion.ReasonInternal {
+		t.Fatalf("produced %s/%s, want rejected/internal", outcome.State, outcome.Reason)
+	}
+	if after := publishedTree(t, cfg); !sameTree(before, after) {
+		t.Fatalf("the refusal touched a record it does not own:\nbefore %v\nafter  %v", before, after)
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 0 {
+		t.Fatalf("the refusal wrote %d memory files", len(files))
+	}
+}
+
+// TestCompanionCaptureOwnershipIsCreatedExclusively. Reading a record and then
+// writing one is a check-then-use race: two processes claiming one id would both
+// read "absent" and both write. The create is O_EXCL so the filesystem decides,
+// and this asserts the create itself rather than the branch above it.
+func TestCompanionCaptureOwnershipIsCreatedExclusively(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	path := capturePublicationPath(cfg, captureTestMemoryID)
+
+	if err := writeCapturePublicationExclusive(path, []byte("first\n")); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	err := writeCapturePublicationExclusive(path, []byte("second\n"))
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("the second create returned %v, want os.ErrExist", err)
+	}
+	body, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatalf("read back: %v", rerr)
+	}
+	if string(body) != "first\n" {
+		t.Fatalf("the refused create overwrote the record: %q", body)
+	}
+}
+
+// TestCompanionCapturePrePlantedOwnerCannotClaimALaterMemory. An ownership record
+// alone proves nothing about the vault: the memory comparison still runs, so a
+// record planted for an id nobody published cannot be used to adopt whatever
+// turns up at that path later.
+func TestCompanionCapturePrePlantedOwnerCannotClaimALaterMemory(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	id := captureTestIdentity(captureTestMemoryID)
+
+	// The record is planted first, by the same capture that will later ask.
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("plant the ownership: %v", err)
+	}
+	// And somebody else's memory turns up at that id.
+	foreign := Memory{
+		Scope: "personal", Type: "insight", Title: "Planted",
+		Source: "cli", CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Text: "not what the capture says", ID: captureTestMemoryID,
+	}
+	body, err := renderMemory(foreign)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	path := memoryPath(cfg, foreign)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("seed the vault: %v", err)
+	}
+
+	outcome, published, err := writer.Published(testCtx(t),
+		captureFixture(t, captureTestDevice, "key.one", "mine"), id)
+	if err != nil {
+		t.Fatalf("published: %v", err)
+	}
+	if !published || outcome.State != companion.ReceiptRejected || outcome.Reason != companion.ReasonInternal {
+		t.Fatalf("a planted record adopted a foreign memory: published=%t %s/%s", published, outcome.State, outcome.Reason)
+	}
+}
+
+// TestCompanionCaptureOwnerFsyncedButMemoryAbsentIsCompleted is the crash the
+// ordering exists for: the ownership record is durable and the memory is not,
+// which is what a kill between the two leaves. The retry must WRITE, not refuse.
+func TestCompanionCaptureOwnerFsyncedButMemoryAbsentIsCompleted(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	writer := newCompanionWriter()
+	capture := captureFixture(t, captureTestDevice, "key.one", "owner first, memory later")
+	id := captureTestIdentity(captureTestMemoryID)
+
+	// The crash: the ownership record lands, the memory never does.
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 0 {
+		t.Fatalf("the claim wrote %d memory files, want 0", len(files))
+	}
+
+	// The takeover pre-check must say ABSENT: an ownership record is a claim on a
+	// path, not a memory, and treating it as published would settle a receipt for
+	// a memory that does not exist.
+	if _, published, perr := writer.Published(testCtx(t), capture, id); perr != nil || published {
+		t.Fatalf("an owner record with no memory reported published=%t err=%v", published, perr)
+	}
+
+	outcome, err := writer.Publish(testCtx(t), capture, id)
+	if err != nil {
+		t.Fatalf("the retry could not complete the crashed publication: %v", err)
+	}
+	if outcome.State != companion.ReceiptApplied {
+		t.Fatalf("the retry produced %q, want applied", outcome.State)
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 1 {
+		t.Fatalf("the retry left %d memory files, want exactly 1", len(files))
+	}
+}
+
+// TestCompanionCapturePublishedByKeySurvivesAndIsBounded covers the durable
+// audit trail: it answers by (device, key), it is trimmed oldest-first at the
+// same total cap the reservation store uses, and the trim walks only when the
+// directory is over that cap.
+func TestCompanionCapturePublishedByKeyIsBounded(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+
+	// One over the cap, each a second apart so "oldest" is a real ordering.
+	base := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	original := mcpWriteClock
+	t.Cleanup(func() { mcpWriteClock = original })
+	for i := 0; i <= companion.MaxReservations; i++ {
+		at := base.Add(time.Duration(i) * time.Second)
+		mcpWriteClock = func() time.Time { return at }
+		id := companion.CaptureIdentity{
+			DeviceID:    captureTestDevice,
+			Key:         fmt.Sprintf("key.%04d", i),
+			Identity:    companion.Fingerprint(fmt.Sprintf("identity %d", i)),
+			Fingerprint: companion.Fingerprint(fmt.Sprintf("payload %d", i)),
+			MemoryID:    fmt.Sprintf("mem_%s_%08x", at.Format("20060102_150405"), i),
+		}
+		if _, err := claimCapturePublication(cfg, id); err != nil {
+			t.Fatalf("claim %d: %v", i, err)
+		}
+	}
+
+	entries, err := os.ReadDir(capturePublicationDir(cfg))
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	records := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			records++
+		}
+	}
+	if records > companion.MaxReservations {
+		t.Fatalf("the published tree holds %d records, over the %d cap", records, companion.MaxReservations)
+	}
+	// The oldest went; the newest stayed, and it is still answerable by key.
+	if _, found, err := publishedForKey(cfg, captureTestDevice, "key.0000"); err != nil || found {
+		t.Fatalf("the oldest record survived the trim: found=%t err=%v", found, err)
+	}
+	newest := fmt.Sprintf("key.%04d", companion.MaxReservations)
+	if _, found, err := publishedForKey(cfg, captureTestDevice, newest); err != nil || !found {
+		t.Fatalf("the newest record was trimmed: found=%t err=%v", found, err)
+	}
 }

@@ -74,6 +74,12 @@ type WriteOutcome struct {
 	// MemoryID is set if and only if State is applied. It is the identifier the
 	// phone will see again on an evidence row for the same memory.
 	MemoryID string
+	// IntegrityDetail is set only when the kernel refused because the VAULT is
+	// in a state it cannot explain — a memory at a pinned id that is not this
+	// capture. It never reaches the device: it is the one thing this listener
+	// logs, and it carries identifiers the kernel derived and nothing the user
+	// wrote. See handleCapture.
+	IntegrityDetail string
 }
 
 // Writer is the kernel's governed-write seam, the mirror of Reader.
@@ -87,6 +93,15 @@ type Writer interface {
 	// write anything, so that even those receipts name the policy in force. An
 	// error means the policy could not be READ, and the caller fails closed.
 	Policy(ctx context.Context) (WritePolicy, error)
+	// PublishedForKey reports the capture identity this device's key has already
+	// published, if any.
+	//
+	// It is asked before a FRESH reservation, and it answers what the reservation
+	// store cannot: a capture killed after its publication leaves a pending row
+	// the sweep collects, and after that the key looks unused. Without it, a
+	// re-stamped retry of such a capture is a new identity, a new derived id, and
+	// a second memory.
+	PublishedForKey(ctx context.Context, deviceID, key string) (identity string, found bool, err error)
 	// Published reports whether the pinned id is already in the vault, and if so
 	// the outcome that describes it. It is asked only when a crashed reservation
 	// is reclaimed, so the retry can finish somebody else's work rather than
@@ -263,6 +278,28 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// logIntegrityEvent is the ONE line this listener writes about a request, and
+// the documented exception to "it logs nothing per request".
+//
+// The rule that exception has to respect is what the rule is FOR: a per-request
+// log leaks what a device asked and what it was told. This is neither. It fires
+// only when the vault holds a memory at a pinned id that is not the capture
+// claiming it — a tampered or collided vault, which is an incident rather than a
+// served request — and it carries two kernel-derived identifiers and nothing
+// else. Not the token, not the text, not the receipt.
+//
+// It goes to the Server's own log sink, the one N12 gave it for the startup
+// banner, so a test that hands the listener a buffer sees silence across a
+// healthy exchange (TestServerLogsNothingPerRequest) and sees this when the
+// vault is broken.
+func (s *Server) logIntegrityEvent(detail string) {
+	if detail == "" {
+		return
+	}
+	fmt.Fprintf(s.log, "companion capture: refusing to claim a memory — %s; "+
+		"inspect it before re-pairing, and see docs/companion-contract.md\n", detail)
+}
+
 // writeCaptureBody writes the exact bytes a capture settled with.
 //
 // It writes BYTES rather than re-marshalling a receipt, because a replay must be
@@ -305,6 +342,25 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 	}
 
 	identity := captureIdentity(c)
+
+	// The published index is consulted BEFORE anything is reserved.
+	//
+	// A capture killed after its publication leaves a pending reservation, and
+	// past the sweep window that row is collected — so the key looks unused, a
+	// re-stamped retry is a new identity, and it derives a second vault id that
+	// nothing holds. The ownership record is the durable audit trail and outlives
+	// the reservation, so it is what answers "has this key already published?".
+	//
+	// A key that published something ELSE is a conflict. A key that published
+	// THIS capture falls through: the derivation is deterministic, so the write
+	// below finds its own memory already there and settles applied without
+	// writing again.
+	if published, found, perr := s.writer.PublishedForKey(ctx, dev.DeviceID, c.IdempotencyKey); perr != nil {
+		return nil, perr
+	} else if found && published != identity {
+		return s.refuse(ctx, dev, c, ReasonIdempotencyConflict, received)
+	}
+
 	replay, claim, err := s.captures.Reserve(CaptureIdentity{
 		DeviceID:    dev.DeviceID,
 		Key:         c.IdempotencyKey,
@@ -345,6 +401,7 @@ func (s *Server) capture(ctx context.Context, dev Device, c Capture, received ti
 		// that would stop the phone retrying.
 		return nil, err
 	}
+	s.logIntegrityEvent(outcome.IntegrityDetail)
 	receipt, err := s.receipt(dev, c, outcome, received)
 	if err != nil {
 		return nil, err

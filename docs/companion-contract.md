@@ -467,6 +467,21 @@ between the publication and the receipt therefore costs a retry, never a duplica
 crashed reservation it asks the kernel whether the pinned id is already published before it writes,
 so recovery finishes the crashed attempt's receipt instead of repeating its work.
 
+**A key that has published is remembered after its reservation is gone.** The ownership record is
+written under two names — by memory id, and by (device, idempotency key) — and a **fresh** reservation
+consults the second one first. That matters because a capture killed after its publication leaves a
+pending reservation the sweep collects: after that the key looks unused, so without this lookup a
+re-stamped retry would be a new identity, a new derived id and a second memory
+(`TestCaptureRestampedRetryAfterSweepIsAConflict`). A key that published a *different* capture is
+`idempotency_conflict`, refused before any reservation exists
+(`TestCaptureConsultsThePublishedIndexBeforeReserving`); a key that published *this* capture falls
+through and settles `applied` over the memory already there
+(`TestCaptureIdenticalRetryAfterSweepReplaysTheApplication`).
+
+Ownership records are the durable audit trail, and they are bounded by the same total cap as
+reservations (512), trimmed oldest-first (`TestCompanionCapturePublishedByKeyIsBounded`). **A key is
+replayable only while its record survives that retention.** Past it, the key is free again.
+
 **"Already there" is verified, never assumed.** EEXIST says a file is at that path; it says nothing
 about whose. So the kernel records who owns a pinned id when it claims one — a small ownership record
 under the state directory naming the device, the key and the capture identity, written and fsynced
@@ -478,6 +493,27 @@ onto the wire (`TestCompanionCaptureForeignFileAtThePinnedIDIsRejected`,
 `TestCompanionCapturePublishedVerifiesRatherThanTrusting`). A missing ownership record is not a
 failure — a state directory can be rebuilt independently of the vault — so the file comparison
 narrows rather than skips (`TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite`).
+
+**A refusal writes nothing, including bookkeeping.** The ownership record is created `O_EXCL`, so an
+id already owned by another capture is refused without creating or removing anything; and a record
+this request *did* create is taken back when the memory turns out foreign, so the published tree is
+byte-identical before and after (`TestCompanionCaptureForeignRejectionLeavesNoResidue`,
+`TestCompanionCaptureForeignOwnerRecordIsNotTouched`). A record alone proves nothing about the vault:
+the memory comparison still runs, so a record planted for an id nobody published cannot be used to
+adopt whatever turns up there later (`TestCompanionCapturePrePlantedOwnerCannotClaimALaterMemory`).
+The one crash the ordering exists for — the record durable, the memory not — is completed by the
+retry rather than refused (`TestCompanionCaptureOwnerFsyncedButMemoryAbsentIsCompleted`).
+
+### The one thing the listener logs
+
+§11 says the listener logs nothing per request, and that stands. The single documented exception is a
+**vault-integrity event**: a memory at a pinned id that is not the capture claiming it. It is an
+incident rather than a served request, it goes to the listener's own log sink — the one the startup
+banner uses, `io.Discard` when a caller supplies none — and it carries two kernel-derived
+identifiers, the memory id and the device id, and nothing else. Not the token, not the text, not the
+receipt. `TestCaptureLogsIntegrityEventsAndNothingElse` drives a healthy capture and a broken vault
+through one listener and asserts silence for the first and exactly that line for the second;
+`TestServerLogsNothingPerRequest` still holds for every ordinary exchange.
 
 `internal` is the frozen vocabulary's word for this. Nothing the phone sent was wrong, and §8's
 reasons describe client conditions; a vault holding a file where a capture belongs is a vault
