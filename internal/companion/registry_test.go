@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -392,9 +393,17 @@ func TestRegistryAuthenticateSeparatesRevokedFromUnknown(t *testing.T) {
 // TestRegistryAuthenticateComparesInConstantTime is a source-level witness, not
 // a timing measurement. A wall-clock timing assertion over SHA-256 comparisons
 // is noise on a loaded CI box and would be quarantined within a week; what can
-// be asserted deterministically is the two properties that make the comparison
-// constant time in the first place — subtle.ConstantTimeCompare rather than ==,
-// and no early exit out of the loop once a match is found.
+// be asserted deterministically are the four properties that make the
+// comparison constant time in the first place.
+//
+//  1. subtle.ConstantTimeCompare rather than ==.
+//  2. No exit out of the loop once a match is found, so the running time does
+//     not depend on WHICH device matched.
+//  3. No branch inside the loop at all — a `continue` past a credential-less
+//     device makes the cost depend on how many devices carry one.
+//  4. No return before the loop that depends on the TOKEN. This is the one the
+//     first round missed: `if token == "" { return }` answered "was that even a
+//     token?" for free, before any comparison ran.
 func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "registry.go", nil, 0)
@@ -412,45 +421,75 @@ func TestRegistryAuthenticateComparesInConstantTime(t *testing.T) {
 		t.Fatal("Authenticate not found in registry.go")
 	}
 
-	var loops int
-	var constantTime, earlyExit bool
+	// The parameter's own name, so renaming it cannot quietly retire claim 4.
+	if len(fn.Type.Params.List) != 1 || len(fn.Type.Params.List[0].Names) != 1 {
+		t.Fatalf("Authenticate takes %d parameter groups; the witness assumes one named parameter", len(fn.Type.Params.List))
+	}
+	param := fn.Type.Params.List[0].Names[0].Name
+
+	var loop *ast.RangeStmt
+	loops := 0
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
-		rng, ok := node.(*ast.RangeStmt)
-		if !ok {
-			return true
+		if rng, ok := node.(*ast.RangeStmt); ok {
+			loops++
+			loop = rng
 		}
-		loops++
-		ast.Inspect(rng.Body, func(inner ast.Node) bool {
-			switch n := inner.(type) {
-			case *ast.CallExpr:
-				if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
-					if id, ok := sel.X.(*ast.Ident); ok && id.Name == "subtle" && sel.Sel.Name == "ConstantTimeCompare" {
-						constantTime = true
-					}
-				}
-			case *ast.ReturnStmt, *ast.BranchStmt:
-				// `continue` past a record with no fingerprint is fine — it
-				// leaks nothing about the token — but a return or a break
-				// inside the loop makes the running time depend on WHICH
-				// record matched.
-				if b, ok := inner.(*ast.BranchStmt); ok && b.Tok == token.CONTINUE {
-					return true
-				}
-				earlyExit = true
-			}
-			return true
-		})
 		return true
 	})
-
 	if loops != 1 {
 		t.Fatalf("Authenticate has %d range loops; the witness assumes exactly one", loops)
 	}
+
+	// Claim 4: nothing before the loop may return, and the check is on the
+	// STATEMENT list rather than on a nested walk, so a return buried in an
+	// `if` above the loop is caught too.
+	for _, stmt := range fn.Body.List {
+		if stmt.Pos() >= loop.Pos() {
+			break
+		}
+		// A return that cannot see the token cannot leak anything about it:
+		// failing to load the registry, or failing to read entropy, costs the
+		// same for every caller. A statement that does BOTH — reads the token
+		// and can return — is the shape being forbidden.
+		var returns, readsToken bool
+		ast.Inspect(stmt, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.ReturnStmt:
+				returns = true
+			case *ast.Ident:
+				if n.Name == param {
+					readsToken = true
+				}
+			}
+			return true
+		})
+		if returns && readsToken {
+			t.Fatalf("a statement above Authenticate's comparison loop both reads %q and can return; "+
+				"an exit that depends on the token answers a question about it before any comparison runs",
+				param)
+		}
+	}
+
+	// Claims 1, 2 and 3, all inside the loop.
+	var constantTime, branched bool
+	ast.Inspect(loop.Body, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "subtle" && sel.Sel.Name == "ConstantTimeCompare" {
+					constantTime = true
+				}
+			}
+		case *ast.ReturnStmt, *ast.BranchStmt:
+			branched = true
+		}
+		return true
+	})
 	if !constantTime {
 		t.Fatal("Authenticate does not compare fingerprints with subtle.ConstantTimeCompare")
 	}
-	if earlyExit {
-		t.Fatal("Authenticate exits its comparison loop early; the time taken now depends on which device matched")
+	if branched {
+		t.Fatal("Authenticate branches out of its comparison loop; the time taken now depends on which device matched")
 	}
 }
 
@@ -761,22 +800,81 @@ func TestRegistrySurvivesRestartAndRefusesAFutureFile(t *testing.T) {
 	}
 }
 
-// TestRegistryRefusesToWriteAfterLosingItsLock drives the stale-lock steal
-// deterministically: the lock is taken away WHILE the mutation is running, which
-// is exactly the window in which a snapshot goes stale. The holder must refuse
-// rather than write, because its copy of the file predates whatever the new
-// owner just committed.
-func TestRegistryRefusesToWriteAfterLosingItsLock(t *testing.T) {
+// TestRegistryLockIsMutuallyExclusive is the deterministic exclusion witness.
+// It does not race two goroutines and hope: it takes the lock, proves a second
+// acquisition cannot succeed while it is held, releases it, and proves the
+// second acquisition then can.
+func TestRegistryLockIsMutuallyExclusive(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	if err := reg.ensureDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := reg.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A short deadline so the negative case is a test and not a five-second
+	// pause. The assertion is that it never succeeds, not that it fails fast.
+	blocked, err := acquireLock(reg.lockPath(), secretFileMode, 200*time.Millisecond, 10*time.Millisecond)
+	if err == nil {
+		blocked.release()
+		t.Fatal("two holders took the same lock at the same time")
+	}
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("a contended lock returned %v, want ErrLocked", err)
+	}
+
+	if err := first.release(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := acquireLock(reg.lockPath(), secretFileMode, lockTimeout, lockPoll)
+	if err != nil {
+		t.Fatalf("the lock was not released: %v", err)
+	}
+	if err := second.release(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lock file itself is never removed. Removing it is what reintroduces
+	// the window in which two holders exist, so its survival is the contract,
+	// not litter.
+	if _, err := os.Stat(reg.lockPath()); err != nil {
+		t.Fatalf("the lock file was removed on release: %v", err)
+	}
+}
+
+// TestRegistryRefusesToWriteAfterItsLockFileIsReplaced drives the check-then-use
+// race the previous O_EXCL design could not close, and does it deterministically
+// rather than by timing.
+//
+// The old failure ran: holder A checks that it still holds the lock, a sweeper
+// removes the file, holder B creates a fresh one and writes, A writes its stale
+// snapshot on top, and B's pairing is gone. Here the removal happens at the
+// worst possible moment — inside the mutation, after any check A could have
+// made — and A must refuse rather than write.
+func TestRegistryRefusesToWriteAfterItsLockFileIsReplaced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows will not unlink a file while a handle is open, so the lock cannot be replaced under its holder")
+	}
 	reg, _, _, _ := testRegistry(t)
 	if _, err := reg.Pair("first", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
 		t.Fatal(err)
 	}
 
 	err := reg.mutate(func(f *registryFile) (receipt, error) {
-		// A sweeper decided this lock was stale and handed it to someone else.
-		if err := os.WriteFile(reg.lockPath(), []byte("SOMEBODYELSE"), secretFileMode); err != nil {
+		// A sweeper decided this lock was stale and unlinked it; a second
+		// writer is now loose on a fresh inode.
+		if err := os.Remove(reg.lockPath()); err != nil {
 			return receipt{}, err
 		}
+		stolen, err := acquireLock(reg.lockPath(), secretFileMode, time.Second, 10*time.Millisecond)
+		if err != nil {
+			return receipt{}, err
+		}
+		defer stolen.release()
+
 		f.Devices = append(f.Devices, &deviceRecord{
 			DeviceID:  "dev_20260903_120000_ffffffff",
 			Label:     "smuggled",
@@ -787,7 +885,7 @@ func TestRegistryRefusesToWriteAfterLosingItsLock(t *testing.T) {
 		return receipt{Event: "paired", DeviceID: "dev_20260903_120000_ffffffff", At: "2026-09-03T12:00:00Z"}, nil
 	})
 	if !errors.Is(err, ErrLocked) {
-		t.Fatalf("a mutation that lost its lock returned %v, want ErrLocked", err)
+		t.Fatalf("a mutation whose lock file was replaced returned %v, want ErrLocked", err)
 	}
 
 	devices, err := reg.List()
@@ -797,49 +895,243 @@ func TestRegistryRefusesToWriteAfterLosingItsLock(t *testing.T) {
 	if len(devices) != 1 {
 		t.Fatalf("the refused mutation still wrote: registry holds %d devices", len(devices))
 	}
+	if got := receiptFiles(t, reg.stateDir, "paired"); len(got) != 1 {
+		t.Fatalf("paired receipts = %d, want 1 — the refused mutation left an audit row", len(got))
+	}
 }
 
-// TestRegistryUnlockOnlyRemovesItsOwnLock closes the other half of the steal: a
-// holder that lost its lock must not delete the NEW owner's lock on its way
-// out, which would let a third writer in.
-func TestRegistryUnlockOnlyRemovesItsOwnLock(t *testing.T) {
+// TestRegistryConcurrentPairAndRevokeKeepEveryChange runs the two mutating
+// operations against each other. A lock that only serialized like operations
+// would pass the pair-only test and still lose a revocation to a concurrent
+// pairing, which is the direction that matters: a dropped revocation leaves a
+// live credential.
+func TestRegistryConcurrentPairAndRevokeKeepEveryChange(t *testing.T) {
 	reg, _, _, _ := testRegistry(t)
-	if err := reg.ensureDir(); err != nil {
-		t.Fatal(err)
+
+	const existing = 6
+	var doomed []string
+	for i := 0; i < existing; i++ {
+		_, dev := pairAndConfirm(t, reg, "seed")
+		doomed = append(doomed, dev.DeviceID)
 	}
 
-	nonce, unlock, err := reg.lock()
+	const fresh = 6
+	var wg sync.WaitGroup
+	pairErrs := make([]error, fresh)
+	revokeErrs := make([]error, existing)
+	for i := 0; i < fresh; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, pairErrs[i] = reg.Pair("new", PlatformIOS, "http://127.0.0.1:7777")
+		}(i)
+	}
+	for i, id := range doomed {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			_, _, revokeErrs[i] = reg.Revoke(id)
+		}(i, id)
+	}
+	wg.Wait()
+
+	for i, err := range pairErrs {
+		if err != nil {
+			t.Fatalf("pair %d: %v", i, err)
+		}
+	}
+	for i, err := range revokeErrs {
+		if err != nil {
+			t.Fatalf("revoke %d: %v", i, err)
+		}
+	}
+
+	devices, err := reg.List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reg.holds(nonce) {
-		t.Fatal("the holder does not recognize its own lock")
+	if len(devices) != existing+fresh {
+		t.Fatalf("registry holds %d devices, want %d — a concurrent write was lost", len(devices), existing+fresh)
 	}
+	state := map[string]DeviceState{}
+	for _, d := range devices {
+		state[d.DeviceID] = d.State
+	}
+	for _, id := range doomed {
+		if state[id] != DeviceRevoked {
+			t.Fatalf("%s is %q after a concurrent revoke; a dropped revocation leaves a live credential", id, state[id])
+		}
+	}
+}
 
-	if err := os.WriteFile(reg.lockPath(), []byte("SOMEBODYELSE"), secretFileMode); err != nil {
-		t.Fatal(err)
-	}
-	if reg.holds(nonce) {
-		t.Fatal("a stolen lock still reads as held")
-	}
-
-	unlock()
-	held, err := os.ReadFile(reg.lockPath())
+// TestRegistryReceiptFailureNeverActivatesACredential is the ordering witness.
+//
+// Confirm mints the token, hands its caller the only copy, and marks the device
+// active. If the record file committed and the receipt then failed, the caller
+// would see an error, discard the token, and leave an ACTIVE device whose
+// credential nobody holds. Writing the receipt first makes that impossible.
+func TestRegistryReceiptFailureNeverActivatesACredential(t *testing.T) {
+	reg, _, _, stateDir := testRegistry(t)
+	payload, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777")
 	if err != nil {
-		t.Fatalf("the former holder deleted the new owner's lock: %v", err)
-	}
-	if string(held) != "SOMEBODYELSE" {
-		t.Fatalf("lock file = %q", held)
-	}
-
-	// Its own lock, though, must be released — or the next writer waits out the
-	// full stale timeout for nothing.
-	if err := os.WriteFile(reg.lockPath(), []byte(nonce), secretFileMode); err != nil {
 		t.Fatal(err)
 	}
-	unlock()
-	if _, err := os.Stat(reg.lockPath()); !os.IsNotExist(err) {
-		t.Fatalf("the holder did not release its own lock: %v", err)
+
+	// A regular file where the receipts directory belongs: MkdirAll refuses it,
+	// so the receipt write fails for a reason no retry can fix.
+	if err := os.RemoveAll(filepath.Join(stateDir, "companion", "receipts")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "companion", "receipts"), []byte("not a directory"), secretFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	token, _, err := reg.Confirm(confirmationFor(payload))
+	if err == nil {
+		t.Fatal("Confirm succeeded with an unwritable audit trail")
+	}
+	if token != "" {
+		t.Fatal("Confirm returned a token on a failed call")
+	}
+
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].State != DevicePending {
+		t.Fatalf("state = %q after a failed Confirm; the record file committed ahead of the receipt", devices[0].State)
+	}
+	if devices[0].TokenFingerprint != "" {
+		t.Fatal("a credential was activated that no caller holds")
+	}
+}
+
+// TestRegistryHardensConfigDirItself pins the parent. A 0700 credential
+// directory inside a 0755 ConfigDir still lets another local account list the
+// parent, watch `companion` appear, and read the file count and timestamps off
+// every pairing and revocation.
+func TestRegistryHardensConfigDirItself(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not the access-control mechanism on Windows")
+	}
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	if err := os.Chmod(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(configDir, stateDir)
+
+	if _, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, configDir, secretDirMode)
+	assertMode(t, filepath.Join(configDir, "companion"), secretDirMode)
+
+	// The read path repairs it too. A user who only ever runs `mora companion
+	// list` still deserves the mode.
+	if err := os.Chmod(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.List(); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, configDir, secretDirMode)
+}
+
+// TestRegistryRefusesAnOversizeOrOvercrowdedRegistry pins the two read-path
+// bounds N12's listener depends on: it loads this file on every request, so an
+// unbounded one is a per-request memory amplifier.
+func TestRegistryRefusesAnOversizeOrOvercrowdedRegistry(t *testing.T) {
+	t.Run("byte cap", func(t *testing.T) {
+		reg, _, configDir, _ := testRegistry(t)
+		if _, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(configDir, "companion", "devices.json")
+		if err := os.WriteFile(path, bytes.Repeat([]byte("x"), MaxRegistryBytes+1), secretFileMode); err != nil {
+			t.Fatal(err)
+		}
+		_, err := reg.Authenticate("anything")
+		if err == nil || !strings.Contains(err.Error(), "over the") {
+			t.Fatalf("an oversize registry returned %v; it must refuse before reading the bytes", err)
+		}
+	})
+
+	t.Run("device cap", func(t *testing.T) {
+		reg, _, configDir, _ := testRegistry(t)
+		f := &registryFile{Version: registryFileVersion}
+		for i := 0; i <= MaxDevices; i++ {
+			f.Devices = append(f.Devices, &deviceRecord{
+				DeviceID:  fmt.Sprintf("dev_20260903_120000_%08x", i),
+				Label:     "crowd",
+				Platform:  PlatformIOS,
+				State:     DevicePending,
+				CreatedAt: "2026-09-03T12:00:00Z",
+			})
+		}
+		body, err := json.MarshalIndent(f, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(configDir, "companion"), secretDirMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(configDir, "companion", "devices.json"), body, secretFileMode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reg.List(); err == nil || !strings.Contains(err.Error(), "over the") {
+			t.Fatalf("an overcrowded registry returned %v", err)
+		}
+	})
+
+	t.Run("pair refuses at the cap", func(t *testing.T) {
+		reg, _, _, _ := testRegistry(t)
+		for i := 0; i < MaxDevices; i++ {
+			if _, err := reg.Pair("phone", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+				t.Fatalf("pair %d: %v", i, err)
+			}
+		}
+		_, err := reg.Pair("one too many", PlatformIOS, "http://127.0.0.1:7777")
+		if err == nil || !strings.Contains(err.Error(), "the limit is") {
+			t.Fatalf("pairing past the cap returned %v; the bound must hold on the way in too", err)
+		}
+		devices, err := reg.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(devices) != MaxDevices {
+			t.Fatalf("registry holds %d devices, want %d", len(devices), MaxDevices)
+		}
+	})
+}
+
+// TestRegistryAuthenticateAcceptsNoTokenAsAnOrdinaryMiss pins the behavior half
+// of the no-early-exit rule. The empty string and a malformed string are
+// ordinary misses, indistinguishable from a well-formed token that simply is
+// not registered.
+func TestRegistryAuthenticateAcceptsNoTokenAsAnOrdinaryMiss(t *testing.T) {
+	reg, _, _, _ := testRegistry(t)
+	live, _ := pairAndConfirm(t, reg, "keeper")
+	// A pending device carries no fingerprint, so it is the record the loop
+	// used to `continue` past.
+	if _, err := reg.Pair("pending", PlatformIOS, "http://127.0.0.1:7777"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, token := range []string{"", "x", strings.Repeat("A", 512), "sha256:"} {
+		_, err := reg.Authenticate(token)
+		var authErr *AuthError
+		if !errors.As(err, &authErr) {
+			t.Fatalf("Authenticate(%q) returned %v, want an *AuthError", token, err)
+		}
+		if authErr.Reason != ReasonUnknownDevice {
+			t.Fatalf("Authenticate(%q) reason = %q, want %q", token, authErr.Reason, ReasonUnknownDevice)
+		}
+	}
+
+	// The pending device next to it must not have been made matchable by the
+	// fixed-width substitution.
+	if _, err := reg.Authenticate(live); err != nil {
+		t.Fatalf("the real token stopped working: %v", err)
 	}
 }
 

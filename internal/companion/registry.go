@@ -38,6 +38,25 @@ package companion
 // file. A caller that passes a live pairing code as a device LABEL has written
 // it to disk itself, and no boundary here can undo that — the label is
 // operator-supplied text and is stored verbatim.
+//
+// # What is bounded
+//
+// The record file is bounded at MaxRegistryBytes and MaxDevices, and both are
+// enforced on the read path, not only on the write path. Authenticate loads the
+// file on every request the listener serves, so an unbounded file is a
+// per-request memory amplifier rather than a one-off parse cost. A file past
+// either bound is refused as corrupt or hostile; it is never truncated, because
+// silently dropping devices is silently dropping revocations.
+//
+// # How the write lock works
+//
+// Exclusion is held by the operating system on an open handle — flock on POSIX,
+// a zero share mode on Windows — and released when that handle closes,
+// including when the process dies. Nothing removes the lock file. An O_EXCL
+// sentinel with a staleness sweep was tried first and cannot be made correct:
+// any rule that lets one process take a lock away from another is a
+// check-then-use race on both sides of the handoff. See
+// registry_lock_unix.go.
 
 import (
 	"crypto/rand"
@@ -50,6 +69,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -72,6 +92,22 @@ const (
 	pairingCodeEntropyBytes = 20
 	// deviceIDEntropyBytes sizes the random tail of a dev_ identifier.
 	deviceIDEntropyBytes = 4
+)
+
+// Bounds on the record file. Authenticate reads it on every request N12's
+// listener serves, so an unbounded file is a per-request memory amplifier, not
+// just a slow parse: a 200 MB devices.json costs 200 MB of allocation on every
+// inbound request until the process dies.
+//
+// Neither bound is a capacity target. MaxDevices is far above any real number
+// of phones one person pairs, and a file that exceeds either is corrupt or
+// hostile rather than large, so both refuse with that framing rather than
+// truncating.
+const (
+	// MaxRegistryBytes bounds the encoded record file.
+	MaxRegistryBytes = 1 << 20
+	// MaxDevices bounds how many devices one vault registers.
+	MaxDevices = 64
 )
 
 // registryFileVersion is the on-disk record-file version. It moves only when a
@@ -295,6 +331,13 @@ func (r *Registry) Pair(label string, platform Platform, endpoint string) (Pairi
 		if f.find(deviceID) != nil {
 			return receipt{}, fmt.Errorf("companion: device id %s is already registered; run pair again", deviceID)
 		}
+		// The bound is enforced on the way in as well as on the way out.
+		// Checking it only on load would leave the file free to grow past a
+		// limit that then makes it unreadable.
+		if len(f.Devices) >= MaxDevices {
+			return receipt{}, fmt.Errorf("companion: %d devices are registered, the limit is %d; "+
+				"revoke one with `mora companion revoke` before pairing another", len(f.Devices), MaxDevices)
+		}
 		f.Devices = append(f.Devices, rec)
 		return receipt{Event: "paired", DeviceID: deviceID, At: now}, nil
 	})
@@ -379,8 +422,14 @@ func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err
 
 // Authenticate resolves a bearer token to its device.
 //
-// Every stored fingerprint is compared, with no early exit, so the time taken
-// does not depend on which device matched or on how far down the file it sits.
+// Every stored fingerprint is compared, at full width, with no exit before the
+// loop and none inside it, so the time taken does not depend on the token, on
+// which device matched, or on how far down the file it sits. The two shapes
+// that used to break that are both gone: an early return for the empty string
+// answered "was that even a token?" before any comparison ran, and a `continue`
+// past a credential-less device made the loop's cost depend on how many devices
+// carried one.
+//
 // A revoked device keeps its fingerprint precisely so this can answer
 // "revoked_device" rather than "unknown_device": an operator who cannot tell a
 // stale client from an attacker cannot respond to either.
@@ -389,27 +438,40 @@ func (r *Registry) Authenticate(token string) (Device, error) {
 	if err != nil {
 		return Device{}, err
 	}
-	if token == "" {
-		return Device{}, &AuthError{Reason: ReasonUnknownDevice}
+	// A per-call random digest stands in for any stored fingerprint that is not
+	// canonical — an empty one on a pending device, a truncated one in a
+	// corrupt file. It is random rather than a fixed constant so it cannot be
+	// matched deliberately, and it is the same width as a real digest so
+	// ConstantTimeCompare never short-circuits on a length mismatch.
+	seed, err := r.newSecret(tokenEntropyBytes)
+	if err != nil {
+		return Device{}, err
 	}
+	absent := []byte(Fingerprint(seed))
+
+	// Fingerprint is fixed width: every input, the empty string included,
+	// produces the same "sha256:<64 hex>" string. Hashing unconditionally is
+	// what lets an empty or malformed token cost exactly what a real one costs.
 	want := []byte(Fingerprint(token))
 
-	var matched *deviceRecord
-	for _, rec := range f.Devices {
-		if rec.TokenFingerprint == "" {
-			continue
+	matched := -1
+	for i, rec := range f.Devices {
+		stored := []byte(rec.TokenFingerprint)
+		if len(stored) != len(absent) {
+			stored = absent
 		}
-		if subtle.ConstantTimeCompare([]byte(rec.TokenFingerprint), want) == 1 {
-			matched = rec
+		if subtle.ConstantTimeCompare(stored, want) == 1 {
+			matched = i
 		}
 	}
-	if matched == nil {
+	if matched < 0 {
 		return Device{}, &AuthError{Reason: ReasonUnknownDevice}
 	}
-	if matched.State != DeviceActive {
+	rec := f.Devices[matched]
+	if rec.State != DeviceActive {
 		return Device{}, &AuthError{Reason: ReasonRevokedDevice}
 	}
-	return matched.device(), nil
+	return rec.device(), nil
 }
 
 // MarkSeen records that a device just authenticated. It is separate from
@@ -563,11 +625,11 @@ func (r *Registry) HostFingerprint() (string, error) {
 	if err := r.ensureDir(); err != nil {
 		return "", err
 	}
-	nonce, unlock, err := r.lock()
+	held, err := r.lock()
 	if err != nil {
 		return "", err
 	}
-	defer unlock()
+	defer held.release()
 
 	// Re-read inside the lock: whoever held it before this call may have been
 	// creating the very seed this call was about to generate.
@@ -581,7 +643,7 @@ func (r *Registry) HostFingerprint() (string, error) {
 	if _, err := io.ReadFull(r.entropy, seed); err != nil {
 		return "", fmt.Errorf("companion: read entropy: %w", err)
 	}
-	if !r.holds(nonce) {
+	if !held.stillOwns() {
 		return "", ErrLocked
 	}
 	if err := writeSecretFile(r.hostKeyPath(), seed); err != nil {
@@ -595,6 +657,15 @@ func (r *Registry) HostFingerprint() (string, error) {
 // rotating the host identity would make every already-paired phone see what
 // looks like a host substitution.
 func (r *Registry) readHostSeed() ([]byte, error) {
+	// The mode is asserted before the bytes are read, not after. Reading first
+	// and chmodding second leaves the seed readable for exactly as long as it
+	// takes to read it, which is the only window that matters.
+	if err := r.hardenExisting(); err != nil {
+		return nil, err
+	}
+	if err := hardenPath(r.hostKeyPath(), secretFileMode); err != nil {
+		return nil, err
+	}
 	seed, err := os.ReadFile(r.hostKeyPath())
 	if err != nil {
 		return nil, err
@@ -602,9 +673,6 @@ func (r *Registry) readHostSeed() ([]byte, error) {
 	if len(seed) != tokenEntropyBytes {
 		return nil, fmt.Errorf("companion: %s is %d bytes, not %d — the host identity is corrupt; "+
 			"move it aside and re-pair every device", r.hostKeyPath(), len(seed), tokenEntropyBytes)
-	}
-	if err := hardenPath(r.hostKeyPath(), secretFileMode); err != nil {
-		return nil, err
 	}
 	return seed, nil
 }
@@ -630,7 +698,22 @@ func (r *Registry) receiptDir() string {
 	return filepath.Join(r.stateDir, "companion", "receipts")
 }
 
+// ensureDir creates the credential directory and asserts the mode of BOTH it
+// and its parent.
+//
+// Hardening only the subdirectory was not enough. A ConfigDir that already
+// existed at 0755 — made by an older mora, restored from an archive, unpacked
+// by an installer — lets another local account list it, watch `companion`
+// appear, and see the file count and timestamps change on every pairing and
+// revocation. 0700 on the parent is also the mode internal/config already
+// creates it with, so this repairs drift rather than inventing a policy.
 func (r *Registry) ensureDir() error {
+	if err := os.MkdirAll(r.configDir, secretDirMode); err != nil {
+		return err
+	}
+	if err := hardenPath(r.configDir, secretDirMode); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(r.dir(), secretDirMode); err != nil {
 		return err
 	}
@@ -640,13 +723,43 @@ func (r *Registry) ensureDir() error {
 	return hardenPath(r.dir(), secretDirMode)
 }
 
+// hardenExisting asserts the modes of whatever part of the tree is already
+// there, without creating anything. Read paths use it: `mora companion list`
+// before the first pairing must not conjure a credential directory, but if one
+// exists it must not be read through a permissive parent either.
+func (r *Registry) hardenExisting() error {
+	for _, path := range []string{r.configDir, r.dir()} {
+		if err := hardenPath(path, secretDirMode); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 // load reads the record file. A missing file is an empty registry, not an
 // error: `mora companion list` before the first pairing is a legitimate call.
 func (r *Registry) load() (*registryFile, error) {
-	// The mode is repaired BEFORE the read, not after: hardening a file the
-	// process has already read leaves the whole read window at whatever mode
-	// the file was found in.
+	// Every mode is repaired BEFORE the read, not after, and the parent
+	// directories come first: hardening a file the process has already read
+	// leaves the whole read window at whatever mode the file was found in, and
+	// hardening a file inside a listable directory leaves its existence and
+	// size public for the same window.
+	if err := r.hardenExisting(); err != nil {
+		return nil, err
+	}
 	if err := hardenPath(r.filePath(), secretFileMode); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	// The size is checked before the bytes are read. Authenticate runs this on
+	// every request N12's listener serves, so an oversized record file would be
+	// a request-rate memory amplifier long before it was a parse error.
+	info, err := os.Stat(r.filePath())
+	if err == nil && info.Size() > MaxRegistryBytes {
+		return nil, fmt.Errorf("companion: the device registry is %d bytes, over the %d-byte limit; "+
+			"this is a corrupt or hostile file, not a large one — move it aside and pair again",
+			info.Size(), MaxRegistryBytes)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	body, err := os.ReadFile(r.filePath())
@@ -665,6 +778,11 @@ func (r *Registry) load() (*registryFile, error) {
 		return nil, fmt.Errorf("companion: device registry is version %d, this build understands %d — upgrade mora",
 			f.Version, registryFileVersion)
 	}
+	if len(f.Devices) > MaxDevices {
+		return nil, fmt.Errorf("companion: the device registry holds %d devices, over the %d limit; "+
+			"revoke what you do not recognize, or move the file aside and pair again",
+			len(f.Devices), MaxDevices)
+	}
 	return &f, nil
 }
 
@@ -682,11 +800,11 @@ func (r *Registry) mutate(fn func(*registryFile) (receipt, error)) error {
 	if err := r.ensureDir(); err != nil {
 		return err
 	}
-	nonce, unlock, err := r.lock()
+	held, err := r.lock()
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer held.release()
 
 	f, err := r.load()
 	if err != nil {
@@ -703,9 +821,10 @@ func (r *Registry) mutate(fn func(*registryFile) (receipt, error)) error {
 	if err != nil {
 		return err
 	}
-	if !r.holds(nonce) {
-		// The lock was swept as stale while fn ran, so another process may have
-		// replaced the state this snapshot came from. Refusing is the only
+	if !held.stillOwns() {
+		// The lock file this holder locked is no longer the lock file the path
+		// names, so somebody unlinked it and a second writer is loose on a
+		// fresh inode. This snapshot may already be stale; refusing is the only
 		// answer that cannot lose their write.
 		return ErrLocked
 	}
@@ -714,81 +833,44 @@ func (r *Registry) mutate(fn func(*registryFile) (receipt, error)) error {
 	if err != nil {
 		return err
 	}
-	if err := writeSecretFile(r.filePath(), append(body, '\n')); err != nil {
-		return err
+
+	// The receipt is written BEFORE the record file, and the ordering is the
+	// difference between two failure modes that are not equally bad.
+	//
+	// Confirm activates a token fingerprint and hands its caller the only copy
+	// of the token. If the record file committed and the receipt then failed,
+	// mutate would return an error, the caller would discard the token it was
+	// holding, and the vault would be left with an ACTIVE credential that
+	// nobody has — a device that can never authenticate and can only be found
+	// by reading devices.json. Writing the receipt first turns that into an
+	// audit row for an event that did not land, which is self-describing: the
+	// device it names does not exist.
+	if rcpt.Event != "" {
+		if err := r.writeReceipt(rcpt); err != nil {
+			return err
+		}
 	}
-	// The receipt is written after the record file, never before: a receipt for
-	// a revocation that did not land is a worse lie than a revocation with no
-	// receipt.
-	if rcpt.Event == "" {
-		return nil
-	}
-	return r.writeReceipt(rcpt)
+	return writeSecretFile(r.filePath(), append(body, '\n'))
 }
 
-// lock takes the cross-process write lock and returns the nonce identifying
-// THIS holder.
+// lockTimeout / lockPoll bound how long a caller waits for the write lock. The
+// operations under it are a read, a small mutation and two file writes, so a
+// wait past this is a wedged peer rather than a busy one.
+const (
+	lockTimeout = 5 * time.Second
+	lockPoll    = 20 * time.Millisecond
+)
+
+// lock takes the cross-process write lock.
 //
-// O_EXCL on a regular file is the portable primitive here — flock and
-// LockFileEx are not the same call on the three platforms this ships to — so a
-// crashed process leaves a stale lock and lockStale bounds how long that can
-// block anyone. Stealing a stale lock is the dangerous half: the process whose
-// lock was stolen may still be alive and holding a snapshot it is about to
-// write. The nonce is what makes the steal safe. It is written into the lock
-// file, checked before the holder writes anything, and checked again before the
-// holder removes the file, so a stolen lock turns into a refusal rather than a
-// lost update or a lock deleted out from under its new owner.
-func (r *Registry) lock() (nonce string, unlock func(), err error) {
-	const (
-		lockTimeout = 5 * time.Second
-		lockPoll    = 20 * time.Millisecond
-		lockStale   = 60 * time.Second
-	)
-	nonce, err = r.newSecret(16)
-	if err != nil {
-		return "", nil, err
-	}
-	release := func() {
-		// Only the current owner may remove the file. Without this check, a
-		// process whose lock was stolen deletes the NEW owner's lock on its way
-		// out and lets a third writer in.
-		if held, _ := os.ReadFile(r.lockPath()); string(held) == nonce {
-			os.Remove(r.lockPath())
-		}
-	}
-
-	deadline := time.Now().Add(lockTimeout)
-	for {
-		fh, openErr := os.OpenFile(r.lockPath(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, secretFileMode)
-		if openErr == nil {
-			_, writeErr := fh.WriteString(nonce)
-			closeErr := fh.Close()
-			if writeErr != nil || closeErr != nil {
-				release()
-				return "", nil, errors.Join(writeErr, closeErr)
-			}
-			return nonce, release, nil
-		}
-		if !errors.Is(openErr, os.ErrExist) {
-			return "", nil, openErr
-		}
-		if info, statErr := os.Stat(r.lockPath()); statErr == nil && time.Since(info.ModTime()) > lockStale {
-			os.Remove(r.lockPath())
-			continue
-		}
-		if time.Now().After(deadline) {
-			return "", nil, ErrLocked
-		}
-		time.Sleep(lockPoll)
-	}
-}
-
-// holds reports whether this nonce is still the one in the lock file. A holder
-// that lost the lock to the stale-lock sweep read a snapshot that another
-// process has since replaced, so its write would be a lost update.
-func (r *Registry) holds(nonce string) bool {
-	held, err := os.ReadFile(r.lockPath())
-	return err == nil && string(held) == nonce
+// The lock is held by the operating system on an open handle — flock on POSIX,
+// a zero share mode on Windows — and released when that handle closes,
+// including when the process dies. See registry_lock_unix.go for why the
+// previous O_EXCL-plus-staleness-sweep design could not be made correct: any
+// rule that lets one process take a lock away from another is a check-then-use
+// race on both sides of the handoff.
+func (r *Registry) lock() (*lockFile, error) {
+	return acquireLock(r.lockPath(), secretFileMode, lockTimeout, lockPoll)
 }
 
 // receipt is one audit row. It names the device and the moment, never the
@@ -863,13 +945,29 @@ func writeSecretFile(path string, body []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
+	// The rename is atomic against other readers the moment it returns, and not
+	// yet durable: the new file's blocks are on disk and the directory entry
+	// that points at them may still be in cache. Without this a power loss
+	// after a revocation can bring the revoked device back.
+	if err := syncDir(dir); err != nil {
+		return err
+	}
 	return hardenPath(path, secretFileMode)
 }
 
-// hardenPath re-asserts a mode, tolerating the platforms where it is not a real
-// question. On Windows os.Chmod only moves the read-only bit and Stat reports a
-// synthesized mode, so comparing modes there would fail forever on a system
-// that has no POSIX permissions to get wrong.
+// hardenPath re-asserts a mode and FAILS CLOSED if it does not take.
+//
+// A chmod can return nil and change nothing — on a filesystem mounted without
+// permission support, on an exotic ACL, on a path somebody else owns — so the
+// mode is read back and compared. Returning success there would leave the
+// caller believing a credential is protected when it is world-readable, which
+// is worse than refusing to store one at all.
+//
+// Windows is exempt from the read-back, not from the chmod. There os.Chmod only
+// moves the read-only bit and Stat reports a synthesized mode, so the
+// comparison could never succeed on a system that has no POSIX permissions to
+// get wrong; exclusion there comes from the share mode and the ACL the profile
+// directory already carries.
 func hardenPath(path string, mode os.FileMode) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -880,6 +978,18 @@ func hardenPath(path string, mode os.FileMode) error {
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if after.Mode().Perm() != mode {
+		return fmt.Errorf("companion: %s is mode %04o and will not stay %04o — "+
+			"refusing to keep credentials somewhere the mode cannot be enforced",
+			path, after.Mode().Perm(), mode)
 	}
 	return nil
 }
