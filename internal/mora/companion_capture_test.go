@@ -2463,3 +2463,39 @@ func TestCompanionCapturePointerMismatchSettlesIntegrityEndToEnd(t *testing.T) {
 		t.Fatalf("the integrity event never reached the log: %q", log.String())
 	}
 }
+
+// TestCompanionCaptureRepairUnderTheFallbackDoesNotDeadlock is where round
+// nine's two fixes meet: a torn receipt sibling on a filesystem that cannot do
+// links, so the exclusive repair runs and then takes the fallback's ownership
+// token underneath itself.
+//
+// Two kernel-held locks nested in one goroutine is exactly how a deadlock is
+// written, and the only thing standing between this and one is that the guards
+// are keyed on different names. That is worth a witness rather than a comment.
+func TestCompanionCaptureRepairUnderTheFallbackDoesNotDeadlock(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	id := captureTestIdentity(captureTestMemoryID)
+	if _, err := claimCapturePublication(cfg, id); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	receipt := capturePublicationReceiptPath(cfg, id.DeviceID, id.Key)
+	if err := os.WriteFile(receipt, []byte("{ torn"), 0o600); err != nil {
+		t.Fatalf("plant a torn sibling: %v", err)
+	}
+	noLinksFilesystem(t)
+
+	want := receiptBytesFor(t, id, 7)
+	got, err := recordCaptureReceipt(cfg, id, want)
+	if err != nil {
+		t.Fatalf("the repair under the fallback failed: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("the repair answered with bytes nobody wrote:\n%s\n%s", got, want)
+	}
+	if _, found, err := readCaptureReceipt(receipt, id); err != nil || !found {
+		t.Fatalf("the repaired sibling is not a whole receipt: found=%t err=%v", found, err)
+	}
+	if _, err := os.Stat(receipt + ".claim"); !os.IsNotExist(err) {
+		t.Fatalf("the fallback left its token behind: %v", err)
+	}
+}
