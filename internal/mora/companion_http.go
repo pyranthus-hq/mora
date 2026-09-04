@@ -653,11 +653,18 @@ var companionSyncPublication = syncPublication
 // owns the platform split for the directory half (it is a no-op on Windows,
 // where NTFS journals the rename's metadata), so this calls it rather than
 // re-deciding it.
+//
+// The file is opened O_WRONLY rather than with os.Open, and that is not a
+// stylistic choice. Go's File.Sync is FlushFileBuffers on Windows, which needs a
+// handle carrying GENERIC_WRITE; a read-only handle fails with "Access is
+// denied" — which is exactly how this arrived, as a Windows-only CI failure
+// against a path that works on POSIX. Opening for write syncs nothing extra: no
+// bytes are written through the handle.
 func syncPublication(path string) error {
 	if path == "" {
 		return fmt.Errorf("companion capture: the governed write path returned no memory path to sync")
 	}
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
