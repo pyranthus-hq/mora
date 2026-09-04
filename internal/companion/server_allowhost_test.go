@@ -37,6 +37,8 @@ func allowHostServer(t *testing.T, allowHost string) (*Server, string, *bytes.Bu
 		AllowHost: allowHost,
 		Devices:   reg,
 		Reader:    newStubReader(),
+		Writer:    newStubWriter(),
+		Captures:  NewReservationStore(t.TempDir()),
 		Now:       func() time.Time { return time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC) },
 		Log:       log,
 	})
@@ -200,7 +202,7 @@ func TestAllowHostBindIsStillLoopbackOnly(t *testing.T) {
 	reg, _, _, _ := testRegistry(t)
 	for _, addr := range []string{"0.0.0.0:7778", "192.0.2.10:7778", "localhost:7778", "[::1]:7778"} {
 		if _, err := NewServer(ServerOptions{
-			Addr: addr, AllowHost: testPublishedHost, Devices: reg, Reader: newStubReader(),
+			Addr: addr, AllowHost: testPublishedHost, Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir()),
 		}); !errors.Is(err, ErrNotLoopback) {
 			t.Fatalf("NewServer(Addr=%q, AllowHost set) error = %v, want ErrNotLoopback", addr, err)
 		}
@@ -255,7 +257,7 @@ func TestAllowHostIsValidatedAtStartup(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewServer(ServerOptions{
-				Addr: "127.0.0.1:7778", AllowHost: tc.allowHost, Devices: reg, Reader: newStubReader(),
+				Addr: "127.0.0.1:7778", AllowHost: tc.allowHost, Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir()),
 			})
 			if !errors.Is(err, ErrBadAllowHost) {
 				t.Fatalf("NewServer(AllowHost=%q) error = %v, want ErrBadAllowHost", tc.allowHost, err)
@@ -276,7 +278,7 @@ func TestAllowHostIsValidatedAtStartup(t *testing.T) {
 		strings.Repeat("a", 63) + ".example",
 	} {
 		if _, err := NewServer(ServerOptions{
-			Addr: "127.0.0.1:7778", AllowHost: ok, Devices: reg, Reader: newStubReader(),
+			Addr: "127.0.0.1:7778", AllowHost: ok, Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir()),
 		}); err != nil {
 			t.Fatalf("NewServer(AllowHost=%q) refused a valid host: %v", ok, err)
 		}
@@ -315,7 +317,7 @@ func TestAllowHostBannerNamesThePropertyAndNotTheHost(t *testing.T) {
 	// polls has to be synchronized or -race reports the test's own read.
 	log := &lockedBuffer{}
 	srv, err := NewServer(ServerOptions{
-		Addr: "127.0.0.1:0", AllowHost: testPublishedHost, Devices: reg, Reader: newStubReader(), Log: log,
+		Addr: "127.0.0.1:0", AllowHost: testPublishedHost, Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir()), Log: log,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
