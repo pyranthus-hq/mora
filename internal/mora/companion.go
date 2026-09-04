@@ -430,6 +430,9 @@ const (
 	// it cannot be pasted by accident, and no real tailnet name is ever baked
 	// into this binary, its tests or its goldens.
 	hostnamePlaceholder = "<your-node>.<your-tailnet>.ts.net"
+	// companionResetWarning is the one sentence that travels with the reset
+	// command wherever it is printed, in either rendering.
+	companionResetWarning = "removes EVERY serve mapping on this node, including ones another tool created; use the targeted off command instead"
 )
 
 // companionExposePayload is the `expose` receipt.
@@ -451,11 +454,20 @@ type companionExposePayload struct {
 	ListenCommand []string `json:"listen_command"`
 	ServeCommand  []string `json:"serve_command"`
 	OffCommand    []string `json:"off_command"`
-	// ResetCommand is carried because a caller may need it, and it is the ONLY
-	// command here that is not safe to run blind: it removes every serve mapping
-	// on the node, including ones another tool created. The human rendering
-	// prints it as a warning rather than as a step.
+	// Destructive is NOT a sibling of OffCommand, and that nesting is the
+	// point. `tailscale serve reset` removes every serve mapping on the node,
+	// including ones another tool created, so a machine caller reading this
+	// document must not be able to reach for it by mistake while scanning a
+	// flat list of commands. It sits behind a key named for what it is, beside
+	// a warning that cannot be missed by anything that reads the command.
+	Destructive companionExposeDestructive `json:"destructive"`
+}
+
+// companionExposeDestructive carries the one command here that is unsafe to run
+// blind, and the sentence that says why.
+type companionExposeDestructive struct {
 	ResetCommand []string `json:"reset_command"`
+	Warning      string   `json:"warning"`
 }
 
 func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) error {
@@ -559,7 +571,10 @@ func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) er
 		ListenCommand: []string{"mora", "companion", "serve", "--port", fmt.Sprint(*port), "--allow-host", authority},
 		ServeCommand:  []string{"tailscale", "serve", "--bg", portFlag, backend},
 		OffCommand:    []string{"tailscale", "serve", portFlag, "off"},
-		ResetCommand:  []string{"tailscale", "serve", "reset"},
+		Destructive: companionExposeDestructive{
+			ResetCommand: []string{"tailscale", "serve", "reset"},
+			Warning:      companionResetWarning,
+		},
 	}
 	if *jsonOut {
 		return emitReceipt(stdout, schemaCompanionExpose, companionSchemaVersion, out)
@@ -584,8 +599,8 @@ func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) er
 	fmt.Fprintln(stdout, "Stop publishing this listener:")
 	fmt.Fprintf(stdout, "  %s\n", shellLine(out.OffCommand))
 	fmt.Fprintln(stdout)
-	fmt.Fprintf(stdout, "Warning: %s removes EVERY serve mapping on this node, including ones\n", shellLine(out.ResetCommand))
-	fmt.Fprintln(stdout, "another tool put there. Use the targeted off command above unless you mean all of them.")
+	fmt.Fprintf(stdout, "Warning: %s\n", shellLine(out.Destructive.ResetCommand))
+	fmt.Fprintf(stdout, "  %s\n", out.Destructive.Warning)
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "--allow-host is what makes this work: Serve forwards the client's Host header unchanged,")
 	fmt.Fprintln(stdout, "and the listener refuses any Host but 127.0.0.1 unless you name the published one exactly.")

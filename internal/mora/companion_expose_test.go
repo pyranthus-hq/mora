@@ -177,7 +177,7 @@ func TestCompanionExposePrintsTheExactTailscaleCommands(t *testing.T) {
 			if line := shellLine(got.OffCommand); line != tc.off {
 				t.Fatalf("off_command = %q, want %q", line, tc.off)
 			}
-			if line := shellLine(got.ResetCommand); line != "'tailscale' 'serve' 'reset'" {
+			if line := shellLine(got.Destructive.ResetCommand); line != "'tailscale' 'serve' 'reset'" {
 				t.Fatalf("reset_command = %q", line)
 			}
 			if got.AllowHost != tc.allowHost {
@@ -198,7 +198,7 @@ func TestCompanionExposePrintsTheExactTailscaleCommands(t *testing.T) {
 			if got.Funnel != "off" {
 				t.Fatalf("funnel = %q, want off", got.Funnel)
 			}
-			for _, argv := range [][]string{got.ServeCommand, got.OffCommand, got.ResetCommand, got.ListenCommand} {
+			for _, argv := range [][]string{got.ServeCommand, got.OffCommand, got.Destructive.ResetCommand, got.ListenCommand} {
 				if strings.Contains(shellLine(argv), "funnel") {
 					t.Fatalf("expose printed a Funnel command: %q", shellLine(argv))
 				}
@@ -345,7 +345,7 @@ func TestCompanionExposePrintsOnlyOneCommandPerLine(t *testing.T) {
 	activateOneDevice(t)
 
 	got := decodeExpose(t, run(t, "companion", "expose", "--hostname", exampleNode, "--json"))
-	for _, argv := range [][]string{got.ListenCommand, got.ServeCommand, got.OffCommand, got.ResetCommand} {
+	for _, argv := range [][]string{got.ListenCommand, got.ServeCommand, got.OffCommand, got.Destructive.ResetCommand} {
 		assertOneShellCommand(t, argv)
 	}
 
@@ -399,10 +399,52 @@ func TestCompanionExposePrintsResetAsAWarningNotAStep(t *testing.T) {
 	if !strings.Contains(human, "Warning: "+reset) {
 		t.Fatalf("reset is not presented as a warning:\n%s", human)
 	}
-	if !strings.Contains(human, "removes EVERY serve mapping") {
+	if !strings.Contains(human, companionResetWarning) {
 		t.Fatalf("the warning does not say what reset removes:\n%s", human)
 	}
 	if strings.Contains(human, "Stop publishing this listener:\n  "+off+"\n  "+reset) {
 		t.Fatalf("reset is still printed as a second step:\n%s", human)
+	}
+}
+
+func TestCompanionExposeJSONDoesNotOfferResetAsACommand(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	activateOneDevice(t)
+
+	raw := run(t, "companion", "expose", "--hostname", exampleNode, "--json")
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("expose --json does not decode: %v\n%s", err, raw)
+	}
+
+	// The whole point: a machine caller scanning the top level for a command to
+	// run must not find the global reset beside off_command. `tailscale serve
+	// reset` removes every mapping on the node, including one another tool
+	// created, and a flat list invites reaching for it.
+	if _, found := doc["reset_command"]; found {
+		t.Fatalf("reset_command is still a top-level key:\n%s", raw)
+	}
+	if _, found := doc["off_command"]; !found {
+		t.Fatalf("off_command is not top level; the safe teardown must stay first-class:\n%s", raw)
+	}
+
+	destructive, ok := doc["destructive"].(map[string]any)
+	if !ok {
+		t.Fatalf("destructive is not an object:\n%s", raw)
+	}
+	// Exactly two keys: the command, and the sentence that says what it does.
+	if len(destructive) != 2 {
+		t.Fatalf("destructive has %d keys, want the command and its warning: %v", len(destructive), destructive)
+	}
+	if _, found := destructive["reset_command"]; !found {
+		t.Fatalf("destructive does not carry the reset command:\n%s", raw)
+	}
+	warning, _ := destructive["warning"].(string)
+	if warning != companionResetWarning {
+		t.Fatalf("destructive.warning = %q, want the reset warning", warning)
+	}
+	if !strings.Contains(warning, "EVERY serve mapping") {
+		t.Fatalf("the warning does not say that reset removes every mapping: %q", warning)
 	}
 }

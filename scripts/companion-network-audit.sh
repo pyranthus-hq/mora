@@ -284,15 +284,182 @@ probe_log() {
   return 0
 }
 
-# local_addresses lists every non-loopback address on every interface that has
-# one. The LAN probe used to test en0 alone, which proves nothing about a Mac
-# with Wi-Fi and Ethernet both up, or about a utun the listener could be
-# reachable on.
-local_addresses() {
-  ifconfig 2>/dev/null | awk '
-    $1 == "inet" && $2 != "127.0.0.1" { print $2 }
-    $1 == "inet6" { split($2, a, "%"); if (a[1] != "::1") print a[1] }
-  ' | sort -u
+# local_endpoints_from parses `ifconfig` output into (interface, address) PAIRS,
+# one per line, tab separated.
+#
+# It emits PAIRS, and it deduplicates by the pair rather than by the address.
+# Two earlier bugs lived in the difference. Deduplicating addresses alone hid an
+# address that is present on two interfaces, and stripping the IPv6 scope id
+# turned `fe80::1%en0` into `fe80::1`, which is not routable without a zone: curl
+# then failed for the WRONG reason, the failure was flattened to "unreachable",
+# and the probe recorded a refusal it never observed. A link-local address keeps
+# its zone here and carries it all the way into the URL.
+#
+# lo0's own link-local (fe80::1%lo0) is deliberately KEPT. The listener binds the
+# literal 127.0.0.1, so a connection to any other address — including another
+# address on the loopback interface — must be refused, and that is worth probing.
+local_endpoints_from() {
+  awk '
+    /^[a-zA-Z][a-zA-Z0-9_.]*:/ { iface = substr($1, 1, length($1) - 1); next }
+    $1 == "inet" && $2 != "127.0.0.1" { print iface "\t" $2 }
+    $1 == "inet6" {
+      split($2, a, "%")
+      if (a[1] != "::1") print iface "\t" $2
+    }
+  ' | awk '!seen[$0]++'
+}
+
+local_endpoints() { ifconfig 2>/dev/null | local_endpoints_from; }
+
+# endpoint_url builds the URL for one (interface, address) pair.
+#
+# A zoned IPv6 literal carries its zone into the URL with the percent sign
+# percent-encoded as %25, which is what RFC 6874 requires and what curl parses.
+# Passing the bare `%` produces a URL curl rejects, and dropping the zone
+# produces one it cannot route — both of which would look like a refusal.
+endpoint_url() {
+  local addr=$1 port=$2
+  case "$addr" in
+    *%*) printf 'http://[%s]:%s/v1/companion/health\n' "${addr%%%*}%25${addr#*%}" "$port" ;;
+    *:*) printf 'http://[%s]:%s/v1/companion/health\n' "$addr" "$port" ;;
+    *)   printf 'http://%s:%s/v1/companion/health\n' "$addr" "$port" ;;
+  esac
+}
+
+# classify_endpoint_result names what actually happened to one probe.
+#
+# There are exactly three answers and only ONE of them is the good one:
+#
+#   responded  the address answered HTTP at all. The port is reachable off
+#              loopback. This is the defect the probe exists to find, and the
+#              status code does not matter: a 401 from a LAN address is as bad
+#              as a 200.
+#   refused    the kernel refused the connection (curl exit 7 AND a refusal in
+#              curl's own message). This is the only outcome that proves nothing
+#              is listening there.
+#   error      anything else: a timeout (28), an unresolvable or unroutable host
+#              (6, or 7 with "No route to host"), a TLS failure, a bad URL. The
+#              previous version mapped every one of these to the same "-" as a
+#              refusal, so a probe that never reached the address counted as
+#              proof that the address was closed.
+#
+# $1 curl exit status, $2 http_code, $3 curl stderr
+classify_endpoint_result() {
+  local status=$1 code=$2 err=$3
+  case "$code" in
+    ''|000) ;;
+    *[!0-9]*) printf 'error\n'; return ;;
+    *) printf 'responded\n'; return ;;
+  esac
+  if [ "$status" = "7" ]; then
+    # Exit 7 covers BOTH "the kernel refused me" and "I could not get there",
+    # and only the first proves the port is closed. curl does not separate them
+    # by status, so the message is matched, in both directions and explicitly:
+    # an unreachable wording wins, a refusal wording passes, and an exit 7 whose
+    # wording is neither is an error rather than a guess. macOS curl says
+    # "Couldn't connect to server" where Linux curl says "Connection refused";
+    # both are the same ECONNREFUSED.
+    case "$err" in
+      *[Uu]nreachable*|*"No route to host"*|*"Network is down"*)
+        printf 'error\n'; return ;;
+      *[Rr]efused*|*"Couldn't connect to server"*|*"Could not connect to server"*)
+        printf 'refused\n'; return ;;
+    esac
+  fi
+  printf 'error\n'
+}
+
+# curl_probe runs one request and prints "<exit> <http_code> <stderr>".
+#
+# The stub seam exists so --self-test can drive the LAN probe with a timeout and
+# with a 200 without needing a machine that produces either.
+curl_probe() {
+  local url=$1 iface=${2:-} out status
+  if [ -n "${AUDIT_CURL_STUB:-}" ]; then
+    "$AUDIT_CURL_STUB" "$url" "$iface"
+    return
+  fi
+  # -S keeps curl's own message on stderr under -s; without it the message is
+  # empty and the refusal cannot be told from an unreachable address at all.
+  # --connect-timeout bounds an address that simply never answers, which is what
+  # a link-local on an idle tunnel does.
+  local args=(-sS -o /dev/null -m 6 --connect-timeout 2 -w '%{http_code}')
+  if [ -n "$iface" ]; then
+    args+=(--interface "$iface")
+  fi
+  out=$(curl "${args[@]}" -H "Authorization: Bearer ${SESSION_TOKEN:-}" "$url" 2>"$TMP_CURL_ERR") && status=0 || status=$?
+  printf '%s %s %s\n' "$status" "${out:-000}" "$(tr '\n' ' ' <"$TMP_CURL_ERR")"
+}
+
+# probe_lan_endpoints drives every (interface, address) pair and reports.
+#
+# It distinguishes the three things that can happen, because collapsing them is
+# exactly the defect this probe had:
+#
+#   refused    the kernel refused the connection. The port is closed there, and
+#              this is the only outcome that PROVES it.
+#   responded  the address answered HTTP at all. The boundary is violated, at
+#              any status code. This is a FAILURE.
+#   unreachable the connect never completed — a timeout, no route, an
+#              unreachable network. It proves NOTHING in either direction, so it
+#              is neither a pass nor a violation: the endpoint is BLOCKED.
+#
+# On a Mac with AirDrop or a VPN up the unreachable set is not empty and cannot
+# be made empty: the fe80:: link-locals on awdl0 and on the utun interfaces
+# never answer, and a tailnet IPv6 is blackholed by tailscaled rather than
+# refused. Calling those a failure would make the audit permanently red for a
+# reason that has nothing to do with the listener; calling them a refusal was
+# the original bug. They are named, with interface, address, zone and curl exit,
+# and they make the RUN partial.
+#
+# It prints one line per interesting endpoint plus a PROBED/REFUSED/BLOCKED
+# tally, and it fails CLOSED: zero endpoints is a failure.
+#
+# Exit: 0 every endpoint refused; 1 at least one responded; 3 none responded but
+# some were unreachable.
+#
+# Endpoints arrive on stdin as "interface<TAB>address" lines.
+probe_lan_endpoints() {
+  local port=$1 iface addr url zone verdict result status code err
+  local seen=0 refused=0 responded=0 unreachable=0
+  while IFS=$'\t' read -r iface addr; do
+    [ -z "$addr" ] && continue
+    seen=$((seen + 1))
+    url=$(endpoint_url "$addr" "$port")
+    zone=""
+    # A link-local address needs an interface to leave the host at all, so curl
+    # is told which one rather than being left to guess.
+    case "$addr" in
+      fe80:*|FE80:*) zone=${addr#*%}; [ "$zone" = "$addr" ] && zone=$iface ;;
+    esac
+    result=$(curl_probe "$url" "$zone")
+    status=${result%% *}
+    result=${result#* }
+    code=${result%% *}
+    err=${result#* }
+    verdict=$(classify_endpoint_result "$status" "$code" "$err")
+    case "$verdict" in
+      refused) refused=$((refused + 1)) ;;
+      responded)
+        responded=$((responded + 1))
+        printf 'REACHABLE %s %s answered HTTP %s\n' "$iface" "$addr" "$code"
+        ;;
+      *)
+        unreachable=$((unreachable + 1))
+        printf 'UNREACHABLE %s %s zone=%s curl exit %s (%s); no answer either way, so nothing is proved here\n' \
+          "$iface" "$addr" "${zone:-none}" "$status" "${err:-no message}"
+        ;;
+    esac
+  done
+  if [ "$seen" -eq 0 ]; then
+    printf 'UNREACHABLE no non-loopback address was found on any interface\n'
+    return 1
+  fi
+  printf 'PROBED %s REFUSED %s RESPONDED %s UNREACHABLE %s\n' \
+    "$seen" "$refused" "$responded" "$unreachable"
+  [ "$responded" -eq 0 ] || return 1
+  [ "$unreachable" -eq 0 ] || return 3
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -378,6 +545,7 @@ run_live() {
     die "neither python3 nor jq is installed; JSON cannot be parsed structurally"
 
   WORKDIR=$(mktemp -d)
+  TMP_CURL_ERR="$WORKDIR/curl.err"
   trap cleanup EXIT INT TERM
 
   NODE_FQDN=$(tailscale status --json | json_query "print(d['Self']['DNSName'].rstrip('.'))" '.Self.DNSName | rtrimstr(".")')
@@ -386,7 +554,10 @@ run_live() {
   TAILNET_SUFFIX=${NODE_FQDN#*.}
   TAILNET_IP=$(tailscale ip -4 2>/dev/null | head -1)
   [ -n "$TAILNET_IP" ] || die "tailscale reported no IPv4 address"
-  LOCAL_ADDRS=$(local_addresses | tr '\n' ' ')
+  LOCAL_ENDPOINTS=$(local_endpoints)
+  # redact() folds every local address away, so a pasted report names interfaces
+  # and outcomes but never an address on this machine.
+  LOCAL_ADDRS=$(printf '%s\n' "$LOCAL_ENDPOINTS" | awk -F'\t' '{ split($2, a, "%"); print a[1] }' | tr '\n' ' ')
   export AUDIT_PORT="$PORT"
 
   # The session's secrets and payloads. These exact strings are what the log
@@ -459,23 +630,36 @@ run_live() {
     fail "C1 a tailnet request did not reach the listener as expected (status ${via_tailnet}, want 401)"
   fi
 
-  local addr probed=0 reachable=0 status
-  for addr in $LOCAL_ADDRS; do
-    probed=$((probed + 1))
-    case "$addr" in
-      *:*) status=$(http_status "http://[${addr}]:${PORT}/v1/companion/health") ;;
-      *) status=$(http_status "http://${addr}:${PORT}/v1/companion/health") ;;
-    esac
-    if [ "$status" != "-" ]; then
-      reachable=$((reachable + 1))
-      fail "C2 ${addr} answered with status ${status}; the port is reachable off loopback"
-    fi
-  done
-  if [ "$probed" -eq 0 ]; then
-    fail "C2 no non-loopback address was found on any interface, so nothing could be probed (fail closed)"
-  elif [ "$reachable" -eq 0 ]; then
-    pass "C2 every non-loopback address on this Mac refuses the connection (${probed} probed across all interfaces)"
-  fi
+  local lan_report lan_rc=0 line tally
+  lan_report=$(printf '%s\n' "$LOCAL_ENDPOINTS" | probe_lan_endpoints "$PORT") || lan_rc=$?
+  tally=$(printf '%s\n' "$lan_report" | awk '$1 == "PROBED" { print }')
+  case "$lan_rc" in
+    0)
+      pass "C2 every non-loopback endpoint on every interface EXPLICITLY refused the connection (${tally})"
+      ;;
+    3)
+      # Not a violation and not a proof. An address that never answers proves
+      # nothing in either direction, so the claim stays open rather than being
+      # counted either way.
+      blocked "C2 some non-loopback endpoints could not be reached at all; none answered (${tally})"
+      note "An unreachable endpoint is not a refusal. On a Mac with AirDrop or a VPN up this set is"
+      note "never empty: the fe80:: link-locals on awdl0 and the utun interfaces never answer, and a"
+      note "tailnet IPv6 is blackholed by tailscaled rather than refused."
+      while IFS= read -r line; do
+        case "$line" in UNREACHABLE*) note "$line" ;; esac
+      done <<EOF
+$lan_report
+EOF
+      ;;
+    *)
+      fail "C2 a non-loopback address answered HTTP; the port is reachable off loopback (${tally})"
+      while IFS= read -r line; do
+        case "$line" in REACHABLE*|UNREACHABLE*) note "$line" ;; esac
+      done <<EOF
+$lan_report
+EOF
+      ;;
+  esac
 
   # ---- Probe D: the log ----------------------------------------------------
   # The unauthenticated half of the session: three route calls that are all
@@ -593,6 +777,76 @@ expect_probe() {
   fi
 }
 
+# expect_string asserts an exact value. $1 want, $2 label, $3 got.
+expect_string() {
+  local want=$1 label=$2 got=$3
+  if [ "$got" = "$want" ]; then
+    pass "ST $label"
+  else
+    fail "ST $label"
+    note "got:  $got"
+    note "want: $want"
+  fi
+}
+
+# expect_count asserts the number of enumerated endpoints.
+expect_count() {
+  local want=$1 label=$2 endpoints=$3 got
+  got=$(printf '%s\n' "$endpoints" | grep -c .)
+  expect_string "$want" "$label" "$got"
+}
+
+# endpoints_contain reports whether the enumeration holds an exact pair.
+# Invoked through expect_probe, which shellcheck does not follow.
+# shellcheck disable=SC2329
+endpoints_contain() {
+  local endpoints=$1 want=$2 line
+  while IFS= read -r line; do
+    [ "$line" = "$want" ] && return 0
+  done <<EOF
+$endpoints
+EOF
+  return 1
+}
+
+# lan_probe_with runs the real LAN probe with a stubbed curl.
+# $1 stub function name, $2 the endpoint list.
+# Invoked through expect_probe, which shellcheck does not follow.
+# shellcheck disable=SC2329
+lan_probe_with() {
+  local stub=$1 endpoints=$2 want=${3:-0} rc=0
+  AUDIT_CURL_STUB=$stub
+  printf '%s\n' "$endpoints" | probe_lan_endpoints 7778 >/dev/null || rc=$?
+  AUDIT_CURL_STUB=""
+  [ "$rc" = "$want" ]
+}
+
+# The curl stubs. Each prints "<exit> <http_code> <stderr>", the same three
+# fields the real curl_probe prints.
+# shellcheck disable=SC2329
+stub_curl_refused() { printf '7 000 curl: (7) Failed to connect to %s: Connection refused\n' "$1"; }
+# shellcheck disable=SC2329
+stub_curl_timeout() { printf '28 000 curl: (28) Operation timed out after 6000 milliseconds\n'; }
+# shellcheck disable=SC2329
+stub_curl_200() { printf '0 200 \n'; }
+# shellcheck disable=SC2329
+stub_curl_401() { printf '0 401 \n'; }
+# stub_curl_unroutable_zone refuses a zoned URL and times out on everything
+# else. Before the zone was carried into the URL this shape passed, because a
+# curl that could not route was recorded as a refusal.
+# stub_curl_unknown_wording is an exit 7 whose message matches neither the
+# refusal nor the unreachable vocabulary — the shape a future curl release could
+# produce. It must degrade to unreachable, not to a pass.
+# shellcheck disable=SC2329
+stub_curl_unknown_wording() { printf '7 000 curl: (7) something new nobody has parsed yet\n'; }
+# shellcheck disable=SC2329
+stub_curl_unroutable_zone() {
+  case "$1" in
+    *%25*) printf '7 000 curl: (7) Failed to connect: No route to host\n' ;;
+    *) printf "7 000 curl: (7) Couldn't connect to server\n" ;;
+  esac
+}
+
 # expect_verdict asserts the final word for a set of counters.
 expect_verdict() {
   local want=$1 label=$2 got
@@ -691,6 +945,118 @@ time.sleep(30)
     probe_active_gate 'not json'
   expect_probe fail "empty status blocks the authenticated probes" \
     probe_active_gate ''
+
+  # ---- The LAN probe ------------------------------------------------------
+  #
+  # Enumeration first. The fixture is real `ifconfig` text and carries the two
+  # shapes the previous version got wrong: the same address on two interfaces,
+  # and a link-local IPv6 with a scope id.
+  local ifconfig_fixture endpoints
+  ifconfig_fixture=$(cat <<'FIXTURE'
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+	inet 127.0.0.1 netmask 0xff000000
+	inet6 ::1 prefixlen 128
+	inet6 fe80::1%lo0 prefixlen 64 scopeid 0x1
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	inet 192.0.2.10 netmask 0xffffff00 broadcast 192.0.2.255
+	inet6 fe80::dead:beef:cafe:1%en0 prefixlen 64 secured scopeid 0xc
+	inet6 2001:db8::10 prefixlen 64 autoconf secured
+en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	inet 192.0.2.10 netmask 0xffffff00 broadcast 192.0.2.255
+utun3: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
+	inet6 fe80::9f4b:1a2b:3c4d:5e6f%utun3 prefixlen 64 scopeid 0x10
+FIXTURE
+)
+  endpoints=$(printf '%s\n' "$ifconfig_fixture" | local_endpoints_from)
+
+  # ::1 and 127.0.0.1 are out; everything else is in, ONCE PER INTERFACE.
+  expect_probe fail "the loopback address is not enumerated" \
+    endpoints_contain "$endpoints" "lo0	127.0.0.1"
+  expect_probe fail "::1 is not enumerated" \
+    endpoints_contain "$endpoints" "lo0	::1"
+  expect_probe pass "lo0's own link-local is still enumerated" \
+    endpoints_contain "$endpoints" "lo0	fe80::1%lo0"
+  expect_probe pass "a link-local IPv6 keeps its scope id" \
+    endpoints_contain "$endpoints" "en0	fe80::dead:beef:cafe:1%en0"
+  expect_probe pass "a tunnel link-local is enumerated too" \
+    endpoints_contain "$endpoints" "utun3	fe80::9f4b:1a2b:3c4d:5e6f%utun3"
+  expect_probe pass "the same address on a second interface is a second endpoint" \
+    endpoints_contain "$endpoints" "en1	192.0.2.10"
+  expect_probe pass "and the first one is still there" \
+    endpoints_contain "$endpoints" "en0	192.0.2.10"
+  expect_count 6 "six endpoints, deduplicated by PAIR and not by address" "$endpoints"
+
+  # The URL a zoned address produces. `%` must reach curl as `%25`, or the URL
+  # is rejected and the rejection looks exactly like a refusal.
+  expect_string "http://[fe80::dead:beef:cafe:1%25en0]:7778/v1/companion/health" \
+    "a zoned IPv6 endpoint is percent-encoded per RFC 6874" \
+    "$(endpoint_url 'fe80::dead:beef:cafe:1%en0' 7778)"
+  expect_string "http://[2001:db8::10]:7778/v1/companion/health" \
+    "a plain IPv6 endpoint is bracketed" "$(endpoint_url '2001:db8::10' 7778)"
+  expect_string "http://192.0.2.10:7778/v1/companion/health" \
+    "an IPv4 endpoint is bare" "$(endpoint_url '192.0.2.10' 7778)"
+
+  # Classification. Only an explicit refusal is a refusal.
+  expect_string refused "curl exit 7 saying Connection refused is a refusal" \
+    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect to 192.0.2.10 port 7778: Connection refused')"
+  expect_string refused "curl exit 7 in macOS wording is the same refusal" \
+    "$(classify_endpoint_result 7 000 "curl: (7) Failed to connect to 192.0.2.10 port 7778 after 1 ms: Couldn't connect to server")"
+  expect_string error "curl exit 7 with no route to host is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect: No route to host')"
+  expect_string error "curl exit 7 with an unreachable network is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect: Network is unreachable')"
+  expect_string error "curl exit 7 with a host unreachable is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 'curl: (7) Failed to connect: Host is unreachable')"
+  expect_string error "curl exit 7 with no message at all is NOT a refusal" \
+    "$(classify_endpoint_result 7 000 '')"
+  expect_string error "a timeout is not a refusal" \
+    "$(classify_endpoint_result 28 000 'curl: (28) Operation timed out')"
+  expect_string error "an unresolvable host is not a refusal" \
+    "$(classify_endpoint_result 6 000 'curl: (6) Could not resolve host')"
+  expect_string error "a malformed URL is not a refusal" \
+    "$(classify_endpoint_result 3 000 'curl: (3) URL rejected')"
+  expect_string responded "any HTTP status from the address is a response" \
+    "$(classify_endpoint_result 0 200 '')"
+  expect_string responded "a 401 from the address is still a response" \
+    "$(classify_endpoint_result 0 401 '')"
+  expect_string responded "a 500 from the address is still a response" \
+    "$(classify_endpoint_result 0 500 '')"
+
+  # And the probe end to end, driven through the curl seam.
+  # Exit 0 = every endpoint refused, 1 = something answered, 3 = something was
+  # unreachable and nothing answered. Each is asserted by the code it must
+  # produce, so a timeout can neither pass as a refusal nor be mistaken for a
+  # violation.
+  expect_probe pass "every endpoint explicitly refused -> PASS (exit 0)" \
+    lan_probe_with stub_curl_refused "$endpoints" 0
+  expect_probe fail "every endpoint refused is NOT reported as unreachable" \
+    lan_probe_with stub_curl_refused "$endpoints" 3
+  expect_probe pass "a timeout is never a refusal: it BLOCKS (exit 3)" \
+    lan_probe_with stub_curl_timeout "$endpoints" 3
+  expect_probe fail "a timeout must not pass as a refusal" \
+    lan_probe_with stub_curl_timeout "$endpoints" 0
+  expect_probe pass "a 200 from a LAN address -> FAIL (exit 1)" \
+    lan_probe_with stub_curl_200 "$endpoints" 1
+  expect_probe fail "a 200 from a LAN address must not pass" \
+    lan_probe_with stub_curl_200 "$endpoints" 0
+  expect_probe fail "a 200 from a LAN address must not merely block" \
+    lan_probe_with stub_curl_200 "$endpoints" 3
+  expect_probe pass "a 401 from a LAN address -> FAIL (exit 1)" \
+    lan_probe_with stub_curl_401 "$endpoints" 1
+  expect_probe pass "no endpoints at all -> FAIL (nothing was audited)" \
+    lan_probe_with stub_curl_refused "" 1
+  # The regression this whole section exists for: the zoned link-local used to
+  # lose its zone, curl failed to route, and the failure was counted as a
+  # refusal. A stub that refuses only the UNZONED urls and cannot route the
+  # zoned one passed then; it must not pass now.
+  expect_probe fail "an unroutable zoned endpoint is no longer mistaken for a refusal" \
+    lan_probe_with stub_curl_unroutable_zone "$endpoints" 0
+  expect_probe pass "an unroutable zoned endpoint blocks instead (exit 3)" \
+    lan_probe_with stub_curl_unroutable_zone "$endpoints" 3
+  # A wording curl might change under us must degrade to unreachable, never to a
+  # silent pass.
+  expect_probe pass "an exit 7 with an unrecognized message blocks rather than passing" \
+    lan_probe_with stub_curl_unknown_wording "$endpoints" 3
 
   # And the verdict. This is the must-not-PASS fixture the previous version of
   # this script would have failed: probes that could not be run must never add

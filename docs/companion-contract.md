@@ -385,6 +385,21 @@ The output is two commands, in order, plus the targeted command that undoes them
 the node, including one another tool created, so it is the wrong instrument for undoing this
 publication and the targeted `off` above is the right one.
 
+The same distinction is structural in `--json`. `off_command` is a top-level key; there is **no**
+top-level `reset_command`. The reset lives under a `destructive` object whose only other key is a
+`warning` sentence, so a machine caller scanning the top level for a command to run cannot reach the
+global reset by mistake:
+
+```json
+{
+  "off_command": ["tailscale", "serve", "--https=443", "off"],
+  "destructive": {
+    "reset_command": ["tailscale", "serve", "reset"],
+    "warning": "removes EVERY serve mapping on this node, including ones another tool created; use the targeted off command instead"
+  }
+}
+```
+
 No Funnel command is ever printed. Funnel publishes to the public internet, and nothing in this
 contract is meant to leave the tailnet. `expose` states `funnel: off` rather than omitting it, so a
 reader looking for the Funnel command finds the answer instead of assuming it was forgotten.
@@ -469,7 +484,7 @@ request arrived over loopback or through Serve.
 | A | the listening socket is `127.0.0.1:<port>` and nothing else | yes |
 | B | exactly one Serve handler, it proxies to this listener, no raw TCP forward, Funnel off — read from `tailscale serve status --json` and parsed structurally | yes |
 | C1 | a tailnet request reaches the listener and gets the opaque 401 | yes |
-| C2 | **every** non-loopback address on **every** interface refuses the connection | yes |
+| C2 | **every** (interface, address) pair on this Mac EXPLICITLY refuses the connection | partly — see below |
 | D1 | the log holds no bearer token, no pairing code and no device id, all of which the session really sent | yes |
 | D2 | the log does not name the published host | yes |
 | D3 | after a served, decoded request the log still holds no prompt, answer or vault text | **BLOCKED** |
@@ -486,11 +501,41 @@ There is deliberately no Mac-side shortcut that confirms a pairing to unblock th
 proven by the phone with its one-time code; the kernel-side confirm route is a separate node. A local
 backdoor would fake the exact evidence this audit exists to collect.
 
+C2 deserves a note, because it was the probe most easily faked. It enumerates **(interface, address)
+pairs**, not addresses: the same address on two interfaces is two endpoints, and a link-local IPv6
+keeps its scope id all the way into the URL, where the `%` is percent-encoded as `%25` per RFC 6874
+and the interface is handed to curl. The earlier version dropped the scope id, deduplicated addresses
+independently of interfaces, and flattened every curl error to the same value as a refusal, so an
+endpoint it could not route to was counted as an endpoint it had proved closed.
+
+It now has three outcomes, and only one of them is proof:
+
+| Outcome | What it means | C2 |
+|---|---|---|
+| **refused** | curl exit 7 *and* a refusal in curl's own message | the port is closed there |
+| **responded** | the address answered HTTP at **any** status — 200 and 401 alike | **FAIL**: the port is reachable off loopback |
+| **unreachable** | a timeout, no route, an unreachable network, or an exit 7 whose wording matches neither vocabulary | **BLOCKED**: no answer either way, so nothing is proved |
+
+The refusal test is deliberately two-directional and matches both curl vocabularies: macOS curl says
+`Couldn't connect to server` for `ECONNREFUSED` where Linux curl says `Connection refused`, and an
+exit 7 whose message matches *neither* the refusal nor the unreachable wording is recorded as
+unreachable rather than guessed at — so a future change to curl's wording degrades to BLOCKED and can
+never become a silent pass.
+
+**The unreachable set is not empty on a normal Mac, and that is expected.** The `fe80::` link-locals
+on `awdl0` (AirDrop) and on the `utun` interfaces never answer at all, and a tailnet IPv6 is
+blackholed by `tailscaled` rather than refused; a connect to any of them simply hangs. Those
+endpoints are named individually with their interface, address, zone and curl exit status, and they
+make the run PARTIAL. Calling them a failure would keep the audit permanently red for a reason that
+has nothing to do with the listener; calling them a refusal was the original bug.
+
 Every probe fails closed: a missing tool, an empty command output or an unparseable line is a FAIL,
 never a skip. `--self-test` drives the same probe functions against fixtures that must fail —
 including a real listener bound to `0.0.0.0`, a log line containing the session token, a registry
-holding only a pending device, and the counter set `(8 passed, 0 failed, 2 blocked)` which must
-render PARTIAL and never PASS.
+holding only a pending device, real `ifconfig` text carrying a duplicated address and three zoned
+link-local addresses, curl stubs returning a timeout, a 200 and a 401, a stub that refuses only the
+unzoned URLs (the exact shape the old code passed on), and the counter set `(8 passed, 0 failed,
+2 blocked)` which must render PARTIAL and never PASS.
 
 
 ## 12. Notes for Wave 1
