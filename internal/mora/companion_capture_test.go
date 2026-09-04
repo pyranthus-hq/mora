@@ -2499,3 +2499,231 @@ func TestCompanionCaptureRepairUnderTheFallbackDoesNotDeadlock(t *testing.T) {
 		t.Fatalf("the fallback left its token behind: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round ten: ABA on the stale-token reclaim, and the busy token on the wire
+// ---------------------------------------------------------------------------
+
+// TestCompanionCaptureStaleTokenReclaimIsNotABA is round ten's blocking item.
+//
+// Round nine held the kernel guard only across the token REPLACEMENT and then
+// let go. That left an ABA: an owner whose token had aged past the takeover
+// window but whose process was merely SLOW — a long pause, a suspended VM, a
+// stopped debugger — could resume, pass the pre-rename stat, rename after it had
+// already lost ownership, and then unconditionally remove its successor's token.
+// Two claimants could both pass the stat, and one could overwrite or delete the
+// other's canonical publication.
+//
+// This drives the unguarded interior on purpose. Widening the lock closes the
+// case between cooperating processes, but a lock is only as good as the thing
+// enforcing it — an flock is advisory, it follows the inode, and there are
+// network filesystems where it does not exclude at all. What is under test here
+// is the SECOND line of defence: the per-claim nonce, and the rule that every
+// step re-verifies ownership immediately before it acts. So the seam lets B in
+// exactly where a failed lock would have.
+func TestCompanionCaptureStaleTokenReclaimIsNotABA(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	id := captureTestIdentity(captureTestMemoryID)
+	keyPath := capturePublicationKeyPath(cfg, id.DeviceID, id.Key)
+	dir := filepath.Dir(keyPath)
+	token := keyPath + ".claim"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Two records that differ, so "one survived" can name WHICH one.
+	stage := func(identity string) string {
+		t.Helper()
+		body, err := json.MarshalIndent(capturePublication{
+			Schema:        schemaCapturePublication,
+			SchemaVersion: 1,
+			MemoryID:      id.MemoryID,
+			DeviceID:      id.DeviceID,
+			Key:           id.Key,
+			Identity:      identity,
+			ClaimedAt:     "2026-09-04T03:00:00Z",
+		}, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal %s: %v", identity, err)
+		}
+		name, err := stageCapturePublicationBytes(dir, append(body, '\n'))
+		if err != nil {
+			t.Fatalf("stage %s: %v", identity, err)
+		}
+		return name
+	}
+	stagedA, stagedB := stage("claimant-A"), stage("claimant-B")
+
+	// A takes the token as the AGED owner: its taken_at is already past the
+	// takeover window, which is exactly the state that makes B reclaim it.
+	originalClock := mcpWriteClock
+	t.Cleanup(func() { mcpWriteClock = originalClock })
+	mcpWriteClock = func() time.Time {
+		return originalClock().Add(-(companion.ReservationTakeover + time.Minute))
+	}
+	nonceA, err := takeCaptureClaimToken(token)
+	if err != nil {
+		t.Fatalf("A could not take the token: %v", err)
+	}
+	mcpWriteClock = originalClock
+
+	// B reclaims in the window between A's stat and A's rename — the window the
+	// ABA lived in.
+	var (
+		once     sync.Once
+		nonceB   string
+		tokenB   []byte
+		reclaim  error
+		original = captureClaimRenameGate
+	)
+	t.Cleanup(func() { captureClaimRenameGate = original })
+	captureClaimRenameGate = func() {
+		once.Do(func() {
+			nonceB, reclaim = takeCaptureClaimToken(token)
+			tokenB, _ = os.ReadFile(token)
+		})
+	}
+
+	// A resumes and must be refused.
+	err = publishUnderCaptureClaimToken(token, nonceA, keyPath, stagedA, dir)
+	if reclaim != nil {
+		t.Fatalf("B could not reclaim the aged token: %v", reclaim)
+	}
+	if nonceB == "" || nonceB == nonceA {
+		t.Fatalf("the reclaim did not mint a fresh nonce: A=%q B=%q", nonceA, nonceB)
+	}
+	if !errors.Is(err, errCapturePublicationBusy) {
+		t.Fatalf("A renamed after losing ownership: %v", err)
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatalf("A published a record it had lost the right to publish: %v", err)
+	}
+
+	// And A did not take B's token with it on the way out. That is the other
+	// half of the defect: a bare os.Remove deleted the successor's claim, and the
+	// name then looked free to a third claimant mid-rename.
+	after, err := os.ReadFile(token)
+	if err != nil {
+		t.Fatalf("A deleted B's token: %v", err)
+	}
+	if !bytes.Equal(after, tokenB) {
+		t.Fatalf("A rewrote B's token:\n%s\n%s", tokenB, after)
+	}
+
+	// B finishes. Exactly one canonical record, and it is B's.
+	if err := publishUnderCaptureClaimToken(token, nonceB, keyPath, stagedB, dir); err != nil {
+		t.Fatalf("B could not publish the record it owns: %v", err)
+	}
+	record, found, err := readCapturePublicationAt(keyPath)
+	if err != nil || !found {
+		t.Fatalf("no canonical record survived: found=%t err=%v", found, err)
+	}
+	if record.Identity != "claimant-B" {
+		t.Fatalf("the surviving record is %q, want claimant-B", record.Identity)
+	}
+	if _, err := os.Stat(token); !os.IsNotExist(err) {
+		t.Fatalf("B left its own token behind: %v", err)
+	}
+	records := 0
+	for name := range publishedTree(t, cfg) {
+		if strings.HasSuffix(name, ".json") {
+			records++
+		}
+	}
+	if records != 1 {
+		t.Fatalf("the published tree holds %d canonical records, want 1", records)
+	}
+}
+
+// TestCompanionCaptureBusyTokenAnswersUnavailableNotAReceipt is the busy path on
+// the wire.
+//
+// A token whose owner is alive and inside the takeover window is never removed
+// and never raced. What the phone must see for that is a 503: the capture has
+// not been refused, it has not been applied, and a receipt of any state would be
+// a claim about the vault that nobody has made yet. A rejected receipt would be
+// the worst of the three — it says the capture will NEVER be applied, and it is
+// exactly what stops the phone retrying something that will succeed in a second.
+func TestCompanionCaptureBusyTokenAnswersUnavailableNotAReceipt(t *testing.T) {
+	handler, authToken, cfg, _ := captureListener(t, mcpWritePolicyOpen)
+	device := companionListenerDevice(t, cfg)
+	capture := captureFixture(t, device, "key.busy", "a live token holds this name")
+	noLinksFilesystem(t)
+
+	claim := capturePublicationKeyPath(cfg, device, capture.IdempotencyKey) + ".claim"
+	plantCaptureClaimToken(t, claim, os.Getpid(), time.Now())
+	planted, err := os.ReadFile(claim)
+	if err != nil {
+		t.Fatalf("read the planted token: %v", err)
+	}
+
+	rec := postCompanionCapture(t, handler, authToken, capture)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a live token answered %d, want 503\n%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"unavailable"`) {
+		t.Fatalf("the body is not the opaque unavailable error: %s", rec.Body.String())
+	}
+	var receipt companion.Receipt
+	if json.Unmarshal(rec.Body.Bytes(), &receipt) == nil && receipt.ReceiptID != "" {
+		t.Fatalf("the phone was handed a receipt for a capture nobody published: %s", rec.Body.String())
+	}
+	if files := vaultMemoryFiles(t, cfg); len(files) != 0 {
+		t.Fatalf("the refused capture wrote %d memory files, want 0", len(files))
+	}
+	after, err := os.ReadFile(claim)
+	if err != nil {
+		t.Fatalf("the refused capture deleted a live token: %v", err)
+	}
+	if !bytes.Equal(planted, after) {
+		t.Fatalf("the refused capture rewrote a live token:\n%s\n%s", planted, after)
+	}
+	if _, err := os.Stat(capturePublicationKeyPath(cfg, device, capture.IdempotencyKey)); !os.IsNotExist(err) {
+		t.Fatalf("the refused capture wrote a canonical record anyway: %v", err)
+	}
+}
+
+// TestCompanionCaptureTokenReleaseOnlyRemovesItsOwn isolates rule (d).
+//
+// The ABA witness above proves a claimant that has lost ownership never reaches
+// a release at all, because the pre-rename verify turns it back first. This
+// proves the release itself is safe even if it is reached: round nine's bare
+// os.Remove deleted whatever token was at the name, so a claimant one step
+// behind took its successor's claim with it and the name looked free to a third
+// claimant while a rename was still in flight against it.
+func TestCompanionCaptureTokenReleaseOnlyRemovesItsOwn(t *testing.T) {
+	cfg := captureTestVault(t, mcpWritePolicyOpen)
+	id := captureTestIdentity(captureTestMemoryID)
+	token := capturePublicationKeyPath(cfg, id.DeviceID, id.Key) + ".claim"
+
+	mine, err := takeCaptureClaimToken(token)
+	if err != nil {
+		t.Fatalf("take: %v", err)
+	}
+	held, err := os.ReadFile(token)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	// Somebody else's nonce. The token stays exactly where it is, and the cause
+	// the caller was carrying comes back unchanged.
+	cause := errors.New("the caller's own failure")
+	if err := releaseCaptureClaimToken(token, "not-the-nonce-on-disk", cause); !errors.Is(err, cause) {
+		t.Fatalf("release returned %v, want the caller's own cause", err)
+	}
+	after, err := os.ReadFile(token)
+	if err != nil {
+		t.Fatalf("a foreign release deleted the token: %v", err)
+	}
+	if !bytes.Equal(held, after) {
+		t.Fatalf("a foreign release rewrote the token:\n%s\n%s", held, after)
+	}
+
+	// Our own nonce releases it, and a successful publish reports no error.
+	if err := releaseCaptureClaimToken(token, mine, nil); err != nil {
+		t.Fatalf("the owner could not release its own token: %v", err)
+	}
+	if _, err := os.Stat(token); !os.IsNotExist(err) {
+		t.Fatalf("the owner's release left the token behind: %v", err)
+	}
+}

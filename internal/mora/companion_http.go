@@ -514,11 +514,14 @@ func newCompanionWriter() *companionWriter {
 // RecordReceipt stores the bytes a published capture answered with, and is the
 // only place the published store is trimmed.
 //
-// It is called AFTER the reservation has settled, which is what makes two things
-// true at once: a rejected request never trims — so a refusal leaves the store
-// byte-identical — and the trim never evicts a publication whose capture has not
-// finished, because an unsettled record has no response bytes and the trim skips
-// those.
+// It is called after the capture has been APPLIED and before its reservation
+// settles — the receipt bytes have to be durable in the published store first,
+// because the other order left a record with no bytes behind any crash in
+// between. Two things follow, and they are what the trim relies on: a rejected
+// request never reaches this function at all, so a refusal leaves the store
+// byte-identical, and the trim never evicts a publication whose bytes have not
+// arrived, because a record with no response bytes is a publication still in
+// flight and the trim skips those.
 func (w *companionWriter) RecordReceipt(ctx context.Context, id companion.CaptureIdentity, response []byte) ([]byte, error) {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
@@ -1765,128 +1768,268 @@ func linkCapturePublicationRecord(locks, path string, body []byte) error {
 // N11's lesson and it applies here unchanged: any staleness rule enforced with
 // O_EXCL is a check-then-use race, because between "this token looks stale" and
 // "I removed it" a second reclaimer can be at exactly the same point. The whole
-// read-judge-replace sequence therefore runs under a kernel-held lock
-// (internal/leasefile, flock on POSIX and a LockFileEx range on Windows), which
-// has no staleness rule of its own because the kernel drops it when the holder
-// dies.
+// publish — take the token, verify, rename, release — therefore runs under a
+// kernel-held lock (internal/leasefile, flock on POSIX and a LockFileEx range on
+// Windows), which has no staleness rule of its own because the kernel drops it
+// when the holder dies.
+//
+// # ABA, and why the lock is not the only defence
+//
+// Round nine held the lock only across the token REPLACEMENT and then let go.
+// That left an ABA: an owner whose token had aged past the takeover window but
+// whose process was merely slow could resume, pass the pre-rename stat, rename
+// after it had already lost ownership, and then unconditionally remove its
+// SUCCESSOR's token — so two claimants could both pass the stat and one could
+// overwrite or delete the other's canonical publication.
+//
+// Widening the lock closes it between cooperating processes. It is not enough on
+// its own, because a lock is only as good as the thing enforcing it: an flock is
+// advisory and follows the INODE, so an external `rm` of the guard file hands two
+// callers two different locks, and there are network filesystems where it does
+// not exclude at all. So the token carries a per-claim NONCE, and every step that
+// acts on it — the rename and the removal both — re-reads the token and compares
+// the nonce IMMEDIATELY before acting. A claimant that has lost ownership renames
+// nothing, deletes nothing, and reports the retryable busy error.
 func claimAndPublishCapturePublication(locks, path, staged, dir string) error {
 	token := path + ".claim"
-	if err := takeCaptureClaimToken(locks, token); err != nil {
+	return withCapturePublicationGuard(locks, token, func() error {
+		nonce, err := takeCaptureClaimToken(token)
+		if err != nil {
+			return err
+		}
+		return publishUnderCaptureClaimToken(token, nonce, path, staged, dir)
+	})
+}
+
+// publishUnderCaptureClaimToken renames the staged record into place, and every
+// step it takes is guarded by the nonce it was handed.
+//
+// The ordering is the point:
+//
+//	verify -> stat -> verify -> RENAME -> sync -> verify -> remove token
+//
+// The verify before the rename is the one the ABA slipped through: the stat is a
+// check, the rename is the use, and round nine had nothing between them. The
+// verify before the removal is the other half — it is what stops a claimant that
+// has lost ownership from deleting the token its successor is publishing under.
+func publishUnderCaptureClaimToken(token, nonce, path, staged, dir string) error {
+	if err := verifyCaptureClaimToken(token, nonce); err != nil {
+		// Ownership is already gone. Nothing here may touch the token or the
+		// name: both belong to whoever holds the token now.
 		return err
 	}
-
 	if _, err := os.Stat(path); err == nil {
-		_ = os.Remove(token)
-		return os.ErrExist
+		return releaseCaptureClaimToken(token, nonce, os.ErrExist)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		_ = os.Remove(token)
+		return releaseCaptureClaimToken(token, nonce, err)
+	}
+
+	// The seam sits between the stat and the rename because that is the window
+	// the ABA lives in. Production replaces it with nothing.
+	captureClaimRenameGate()
+
+	if err := verifyCaptureClaimToken(token, nonce); err != nil {
 		return err
 	}
 	if err := os.Rename(staged, path); err != nil {
-		_ = os.Remove(token)
-		return err
+		return releaseCaptureClaimToken(token, nonce, err)
 	}
 	if err := atomicio.SyncDir(dir); err != nil {
 		_ = os.Remove(path)
-		_ = os.Remove(token)
+		return releaseCaptureClaimToken(token, nonce, err)
+	}
+	return releaseCaptureClaimToken(token, nonce, nil)
+}
+
+// captureClaimRenameGate is a no-op seam that runs in the window between the
+// pre-rename stat and the rename itself.
+var captureClaimRenameGate = func() {}
+
+// verifyCaptureClaimToken reports whether the token on disk is still the one
+// this caller took.
+//
+// A missing token, an unreadable one, or one carrying somebody else's nonce all
+// mean the same thing: this caller no longer owns the name. It is the retryable
+// busy error rather than a fault, because the capture itself is fine — the
+// publication is being made by somebody else right now, and the retry will find
+// their record and replay it.
+func verifyCaptureClaimToken(token, nonce string) error {
+	held, found, err := readCaptureClaimToken(token)
+	if err != nil {
 		return err
 	}
-	return os.Remove(token)
+	if !found || held.Nonce == "" || held.Nonce != nonce {
+		return errCapturePublicationBusy
+	}
+	return nil
+}
+
+// releaseCaptureClaimToken removes the token if and only if it is still ours,
+// and returns cause unchanged.
+//
+// The nonce check is not a tidiness measure. Round nine's release was a bare
+// os.Remove, so a claimant that had lost ownership deleted the token its
+// successor was publishing under — and the name then looked free to a third
+// claimant while a rename was still in flight against it.
+//
+// A token that is no longer ours is left exactly where it is and is NOT reported
+// as an error on a successful publish: the record is renamed into place and
+// durable at that point, and the next claimant reads the record before it ever
+// looks at a token.
+func releaseCaptureClaimToken(token, nonce string, cause error) error {
+	held, found, err := readCaptureClaimToken(token)
+	if err != nil {
+		if cause != nil {
+			return cause
+		}
+		return err
+	}
+	if !found || held.Nonce != nonce {
+		return cause
+	}
+	if err := os.Remove(token); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if cause != nil {
+			return cause
+		}
+		return err
+	}
+	return cause
 }
 
 // captureClaimToken is what the fallback writes into its ownership token so a
-// later claimant can tell a live publisher from a corpse.
+// later claimant can tell a live publisher from a corpse, and so the holder can
+// tell whether it is still the holder.
 //
 // The pid is only meaningful on the host that wrote it, which is the only host
 // that ever reads it: the published store lives under this Mac's own state
 // directory. Pid REUSE is the case the timestamp covers — a recycled pid makes a
 // dead owner look alive, and the takeover window then retires the token anyway.
+//
+// The NONCE is per claim rather than per process, and that is what pid and
+// timestamp cannot do. One process can take, lose and retake the same token, and
+// two claims from one pid inside one second are indistinguishable by either of
+// the other two fields — so ownership is identified by the nonce and nothing
+// else.
 type captureClaimToken struct {
 	Schema  string `json:"schema"`
 	PID     int    `json:"pid"`
+	Nonce   string `json:"nonce"`
 	TakenAt string `json:"taken_at"`
 }
 
 const schemaCaptureClaimToken = "mora.companion.capture.publication.claim"
 
 // errCapturePublicationBusy reports that another attempt holds the fallback's
-// ownership token for this name right now.
+// ownership token for this name right now, or that this attempt has lost it.
 //
 // It is deliberately NOT errMemoryIDMismatch. A contended token says nothing
 // about who owns the id — it is the same key's own concurrent attempt or its
 // takeover — and reporting it as an integrity failure would settle a permanent
 // rejection over a capture that is merely in flight. A retryable error is the
-// honest answer: the retry finds the record and replays it.
+// honest answer: the phone sees 503 and the retry finds the record and replays
+// it.
 var errCapturePublicationBusy = errors.New("mora: another attempt is publishing that capture record right now")
 
-// takeCaptureClaimToken wins the exclusive right to rename onto path, reclaiming
-// a corpse if it finds one.
+// takeCaptureClaimToken wins the exclusive right to rename onto the record's
+// name, reclaiming a corpse if it finds one, and returns the nonce that proves
+// the claim.
 //
-// Everything that reads, judges and replaces the token happens under the guard,
-// so no two callers are ever between their own read and their own create. What
-// happens AFTER — the stat, the rename, the directory sync — is outside it on
-// purpose: the token is the thing that excludes, the guard only decides who gets
-// the token, and holding a cross-process lock across an fsync would serialize
-// unrelated publishes behind one slow disk.
-func takeCaptureClaimToken(locks, token string) error {
-	return withCapturePublicationGuard(locks, token, func() error {
-		err := createCaptureClaimToken(token)
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return err
-		}
-		stale, serr := captureClaimTokenIsStale(token, mcpWriteClock())
-		if serr != nil {
-			return serr
-		}
-		if !stale {
-			// A live publisher. It is not removed, not raced, and not waited on
-			// inside a request: this attempt reports busy and the phone retries.
-			return errCapturePublicationBusy
-		}
-		if rmErr := os.Remove(token); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return rmErr
-		}
-		return createCaptureClaimToken(token)
-	})
+// Its caller holds the guard across this AND the publish that follows, so no two
+// callers are ever between their own read and their own create — and no caller
+// is ever between its own create and its own rename while another takes the
+// token away.
+func takeCaptureClaimToken(token string) (string, error) {
+	nonce, err := createCaptureClaimToken(token)
+	if err == nil {
+		return nonce, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	stale, serr := captureClaimTokenIsStale(token, mcpWriteClock())
+	if serr != nil {
+		return "", serr
+	}
+	if !stale {
+		// A live publisher. It is not removed, not raced, and not waited on
+		// inside a request: this attempt reports busy and the phone retries.
+		return "", errCapturePublicationBusy
+	}
+	if rmErr := os.Remove(token); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+		return "", rmErr
+	}
+	return createCaptureClaimToken(token)
 }
 
 // createCaptureClaimToken writes one complete token, exclusively, and reports
-// os.ErrExist if somebody already holds the name.
+// os.ErrExist if somebody already holds the name. It returns the nonce that
+// identifies this claim.
 //
 // The bytes are written before the guard is released, which is what lets a later
 // claimant treat an UNREADABLE token as a corpse rather than as a live claim it
 // caught mid-write.
-func createCaptureClaimToken(token string) error {
+func createCaptureClaimToken(token string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(token), 0o700); err != nil {
-		return err
+		return "", err
+	}
+	nonce, err := captureClaimNonce()
+	if err != nil {
+		return "", err
 	}
 	file, err := os.OpenFile(token, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return err
+		return "", err
 	}
 	body, err := json.Marshal(captureClaimToken{
 		Schema:  schemaCaptureClaimToken,
 		PID:     os.Getpid(),
+		Nonce:   nonce,
 		TakenAt: mcpWriteClock().UTC().Truncate(time.Second).Format(time.RFC3339),
 	})
+	if err == nil {
+		_, err = file.Write(append(body, '\n'))
+	}
+	if err == nil {
+		err = file.Close()
+	} else {
+		_ = file.Close()
+	}
 	if err != nil {
-		_ = file.Close()
 		_ = os.Remove(token)
-		return err
+		return "", err
 	}
-	if _, err := file.Write(append(body, '\n')); err != nil {
-		_ = file.Close()
-		_ = os.Remove(token)
-		return err
+	return nonce, nil
+}
+
+// captureClaimNonce mints the value that identifies one claim.
+//
+// It FAILS rather than degrading when the CSPRNG does. Elsewhere in this package
+// a random suffix is a uniqueness token and a PRNG fallback is the right call;
+// here the nonce is the whole ownership proof, and a predictable or repeated one
+// would let a second claimant's verify pass against the first claimant's token.
+// Refusing the publish is the safe direction: the caller reports an error, the
+// phone retries, and nothing is renamed on a claim nobody can prove.
+func captureClaimNonce() (string, error) {
+	var b [16]byte
+	if _, err := randRead(b[:]); err != nil {
+		return "", fmt.Errorf("companion capture: no entropy for a publication claim: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(token)
-		return err
+	return hex.EncodeToString(b[:]), nil
+}
+
+// readCaptureClaimToken reads one ownership token. A missing or unreadable one
+// is "not found" rather than an error: the callers all treat "this is not a
+// token that names me" the same way.
+func readCaptureClaimToken(token string) (captureClaimToken, bool, error) {
+	body, found, err := readCapturePublicationBytes(token)
+	if err != nil || !found {
+		return captureClaimToken{}, false, err
 	}
-	return nil
+	var held captureClaimToken
+	if json.Unmarshal(body, &held) != nil || held.Schema != schemaCaptureClaimToken {
+		return captureClaimToken{}, false, nil
+	}
+	return held, true, nil
 }
 
 // captureClaimTokenIsStale reports whether the token on disk is a corpse.
@@ -1912,12 +2055,8 @@ func captureClaimTokenIsStale(token string, now time.Time) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	body, found, err := readCapturePublicationBytes(token)
+	held, found, err := readCaptureClaimToken(token)
 	if err != nil || !found {
-		return !now.Before(info.ModTime().Add(companion.ReservationTakeover)), nil
-	}
-	var held captureClaimToken
-	if json.Unmarshal(body, &held) != nil || held.Schema != schemaCaptureClaimToken {
 		return !now.Before(info.ModTime().Add(companion.ReservationTakeover)), nil
 	}
 	if held.PID > 0 && !captureProcessAlive(held.PID) {

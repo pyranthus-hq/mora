@@ -707,9 +707,24 @@ crashed reservation is reclaimed in — reclaims it. Without that a process kill
 and the rename wedged that key's publication for the life of the state directory
 (`TestCompanionCaptureOrphanClaimTokenIsReclaimed`). A token whose owner is alive and inside the
 window is **never** removed: the claimant reports a retryable busy error, not an integrity failure,
-because a contended token says nothing about who owns the id. The read-judge-replace sequence runs
-under a kernel-held lock (`internal/leasefile`), because a staleness rule enforced with a second
-`O_EXCL` sentinel is a check-then-use race — the lesson the device registry's lock already records.
+because a contended token says nothing about who owns the id, and the phone sees `503 unavailable`
+rather than a receipt of any state (`TestCompanionCaptureBusyTokenAnswersUnavailableNotAReceipt`).
+The whole publish — take the token, verify, rename, release — runs under a kernel-held lock
+(`internal/leasefile`), because a staleness rule enforced with a second `O_EXCL` sentinel is a
+check-then-use race — the lesson the device registry's lock already records.
+
+The lock is not the only defence, because a lock is only as good as the thing enforcing it: an flock
+is advisory, it follows the inode, and there are filesystems where it does not exclude at all. So the
+token also carries a **per-claim nonce**, and every step that acts on it — the rename of the staged
+file into place, and the removal of the token — re-reads the token and compares the nonce
+**immediately before acting**. Holding the lock across only the token replacement left an **ABA**: an
+owner whose token had aged past the window but whose process was merely slow could resume, pass the
+pre-rename stat, rename after it had already lost ownership, and then unconditionally delete its
+successor's token. A claimant that has lost ownership now renames nothing, deletes nothing, and
+reports the busy error (`TestCompanionCaptureStaleTokenReclaimIsNotABA`,
+`TestCompanionCaptureTokenReleaseOnlyRemovesItsOwn`). The nonce comes from the CSPRNG and the publish
+**fails** rather than degrading to a PRNG if that is unavailable: elsewhere a random suffix is a
+uniqueness token, but here it is the whole ownership proof.
 
 The record carries the memory id and the capture identity. The **exact response bytes live in a
 receipt sibling beside it**, `<record>.receipt`, claimed with the same exclusive primitive: the record
