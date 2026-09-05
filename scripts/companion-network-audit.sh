@@ -328,6 +328,22 @@ confirm_path_from() {
   printf '%s\n' "$rest"
 }
 
+# confirm_target_from returns the URL to POST the confirmation to: the emitted
+# value, unchanged.
+#
+# It exists as a named function rather than as a bare variable so the rule has
+# somewhere to live and somewhere to be tested. It VALIDATES and then returns the
+# input verbatim — it never rewrites the authority, which is the defect the
+# round-3 item is about — and it fails closed on anything a client could not
+# follow.
+#
+# $1 the emitted confirm_url.
+confirm_target_from() {
+  local raw=$1
+  confirm_path_from "$raw" >/dev/null || return 1
+  printf '%s\n' "$raw"
+}
+
 # probe_grant reads a pairing grant and prints the bearer token it carries.
 #
 # It is a pure function over text so --self-test can feed it fixtures, and it
@@ -715,32 +731,41 @@ http_status() {
 # request that asks for the token. Everything it does, a phone can do; nothing it
 # does reaches into the registry.
 #
-# The URL is built from the confirm_url `mora companion pair` EMITTED, not from
-# a path this script knows. That is the point: the whole reason the payload
-# carries a confirm_url is so a client never has to guess the route, and an audit
-# that hard-coded the route would pass while every real client 404ed.
+# The URL is the confirm_url `mora companion pair` EMITTED, used VERBATIM —
+# origin and path, exactly the bytes a phone would follow.
 #
-# Only the emitted PATH is taken, and the authority is the published one. The
-# emitted URL's origin is the pairing endpoint's — loopback by default, and the
-# audit deliberately publishes over plaintext HTTP, which `pair` will not accept
-# as a non-loopback endpoint. So the path is what is consumed and the transport
-# is the audit's; if the route string ever moves, this follows it.
+# The previous version took only the emitted PATH and rebuilt an origin of its
+# own. That is a weaker proof than it looks: an audit that reconstructs the
+# authority passes even when the emitted origin is wrong, which is the whole
+# class of defect the origin-derivation fix was about. If the emitted URL is
+# unusable, this probe fails and says so.
+#
+# The emitted origin here is the pairing endpoint's, which is loopback by
+# default, and that is a property of THIS tailnet rather than a choice: HTTPS
+# certificates are not enabled on it (`tailscale status --json` reports a null
+# CertDomains), so Serve can only publish plaintext, and `pair` refuses a
+# non-loopback plaintext endpoint by design — a cleartext pairing endpoint
+# pointing off-box is exactly what its validation exists to stop. So the
+# confirmation is posted to the loopback origin the payload emitted, and the
+# published path is proven separately by P3 below, which drives the same route
+# over the tailnet, and by D4, which drives an authenticated route there with
+# the token this confirmation minted.
 #
 # $1 node fqdn, $2 tailnet port, $3 the device id `mora companion pair` returned,
 # $4 the confirm_url it emitted.
 confirm_pairing() {
-  local node=$1 port=$2 device=$3 emitted=$4 url path body status public_key confirmed_at payload replay
-  path=$(confirm_path_from "$emitted") || {
+  local node=$1 port=$2 device=$3 emitted=$4 url path body status public_key confirmed_at payload replay published
+  url=$(confirm_target_from "$emitted") || {
     fail "P1 mora companion pair emitted no usable confirm_url"
     DEVICE_TOKEN=""
     return 0
   }
+  path=$(confirm_path_from "$emitted")
   if [ "$path" != "$CONFIRM_ROUTE" ]; then
     # Not fatal — the emitted value is what a client would follow, so it is what
     # is used — but a disagreement is worth saying out loud.
     note "the emitted confirm_url path is ${path}, not the ${CONFIRM_ROUTE} this script expected"
   fi
-  url="http://${node}:${port}${path}"
   # A real ed25519 public key shape: 32 random bytes, standard base64. The
   # registry stores it and does not interpret it, but the SCHEMA rejects
   # anything that is not 32 decoded bytes, so a fixture string would be refused
@@ -750,13 +775,13 @@ confirm_pairing() {
   payload=$(printf '{"schema":"mora.companion.pairing.confirmation","schema_version":1,"device_id":"%s","pairing_code":"%s","label":"audit","platform":"ios","public_key":"%s","confirmed_at":"%s"}' \
     "$device" "$PAIRING_CODE" "$public_key" "$confirmed_at")
 
-  body=$(curl -s -m 10 -X POST -H 'Content-Type: application/json' \
-    -d "$payload" -w '\n%{http_code}' "$url" 2>/dev/null || true)
+  body=$(confirm_post "$url" "$payload")
   status=${body##*$'\n'}
   body=${body%$'\n'*}
 
   if [ "$status" = "200" ] && DEVICE_TOKEN=$(probe_grant "$body" "$device"); then
-    pass "P1 the pairing code was spent over the published route with NO bearer token, and the grant decodes"
+    pass "P1 the pairing code was spent at the confirm_url the payload EMITTED, verbatim, with NO bearer token, and the grant decodes"
+    note "The URL was not reconstructed: origin and path are the bytes a phone would follow."
     note "The grant's token_fingerprint is sha256 over the token it carries, which is the value"
     note "a person compares against \`mora companion list\` on the Mac."
   else
@@ -771,13 +796,45 @@ confirm_pairing() {
   # The replay. A confirmation is spent exactly once: a second one must not mint
   # a second live credential for one device, and it must be refused with the
   # same opaque 401 as a wrong code rather than with anything that classifies it.
-  replay=$(curl -s -o /dev/null -m 10 -X POST -H 'Content-Type: application/json' \
-    -d "$payload" -w '%{http_code}' "$url" 2>/dev/null || true)
+  replay=$(confirm_post "$url" "$payload")
+  replay=${replay##*$'\n'}
   if [ "$replay" = "401" ]; then
     pass "P2 the same confirmation replayed is refused with the opaque 401 — a code is spent exactly once"
   else
     fail "P2 a replayed pairing confirmation returned ${replay}, want 401"
   fi
+
+  # P3: the same route over the PUBLISHED path. The confirmation above went to
+  # the emitted loopback origin, so this is what proves the route is mounted and
+  # reachable through Serve — with a spent code, so it must be the opaque 401
+  # rather than anything that classifies it.
+  published=$(confirm_post "http://${node}:${port}${path}" "$payload")
+  published=${published##*$'\n'}
+  if [ "$published" = "401" ]; then
+    pass "P3 the same route reached over the published tailnet path answers the opaque 401"
+  else
+    fail "P3 the pairing route over the published path returned ${published}, want 401"
+  fi
+}
+
+# confirm_post issues one unauthenticated confirmation POST and prints
+# "<body>\n<http_code>".
+#
+# It is a seam rather than an inline curl so --self-test can substitute a stub
+# and assert WHICH URL the confirmation was sent to. That is the property this
+# item is about: the audit must post to the emitted URL, and a test that only
+# checked the extracted path would pass against an audit that rebuilt the
+# authority.
+#
+# $1 url, $2 payload.
+confirm_post() {
+  local url=$1 payload=$2
+  if [ -n "${AUDIT_CONFIRM_STUB:-}" ]; then
+    "$AUDIT_CONFIRM_STUB" "$url" "$payload"
+    return 0
+  fi
+  curl -qsS -m 10 --noproxy '*' -X POST -H 'Content-Type: application/json' \
+    -d "$payload" -w '\n%{http_code}' "$url" 2>/dev/null || true
 }
 
 run_live() {
@@ -1120,6 +1177,24 @@ EOF
   return 1
 }
 
+# confirm_post_target runs the real confirmation path with a stubbed POST and
+# prints the URL the POST actually received.
+#
+# It drives confirm_target_from and confirm_post together, which is what makes
+# this a test of the audit's behavior rather than of one string function.
+# Invoked through expect_string, which shellcheck does not follow.
+# shellcheck disable=SC2329
+confirm_post_target() {
+  local emitted=$1 url
+  url=$(confirm_target_from "$emitted") || return 1
+  AUDIT_CONFIRM_STUB=stub_confirm_echo_url
+  confirm_post "$url" '{"ignored":true}'
+  AUDIT_CONFIRM_STUB=""
+}
+# stub_confirm_echo_url prints the URL it was handed instead of making a request.
+# shellcheck disable=SC2329
+stub_confirm_echo_url() { printf '%s\n' "$1"; }
+
 # The grant fixtures. The token's fingerprint is COMPUTED here, so the good
 # fixture is self-consistent by construction rather than by a hand-typed digest
 # that could rot.
@@ -1366,6 +1441,20 @@ time.sleep(30)
     probe_log "listening" ""
   expect_probe fail "no markers at all is rejected" \
     probe_log "listening"
+
+  # The confirm_url is FOLLOWED, origin and all. This is the fixture the
+  # round-3 item asks for: an emitted URL whose origin is nothing this script
+  # could have reconstructed must be exactly what the POST receives. An audit
+  # that took the path and rebuilt the authority passes every path fixture
+  # below and fails this one.
+  expect_string "https://elsewhere.example:9443/v1/companion/pairing/confirm" \
+    "the confirmation is posted to the emitted origin, not a reconstructed one" \
+    "$(confirm_post_target 'https://elsewhere.example:9443/v1/companion/pairing/confirm')"
+  expect_string "http://192.0.2.10:7778/some/other/route" \
+    "an emitted URL is followed verbatim, path and all" \
+    "$(confirm_post_target 'http://192.0.2.10:7778/some/other/route')"
+  expect_probe fail "an unusable emitted confirm_url is refused rather than rebuilt" \
+    confirm_target_from "node.example/v1/companion/pairing/confirm"
 
   # The confirm_url reader. The audit follows the URL `pair` emitted, so a
   # value it cannot read is a failure to report rather than a reason to fall

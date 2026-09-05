@@ -61,6 +61,19 @@ func TestCompanionConfirmURLMountsTheRouteExactlyOnce(t *testing.T) {
 			want:     "https://mora-mac.tail-scale.ts.net:8443" + companion.RouteConfirm,
 		},
 		{
+			// A bracketed IPv6 literal. url.Host keeps the brackets, so the
+			// origin round-trips as a valid authority rather than as a bare
+			// address with colons in it.
+			name:     "a bracketed IPv6 literal with a port",
+			endpoint: "http://[::1]:7778/v1/companion",
+			want:     "http://[::1]:7778" + companion.RouteConfirm,
+		},
+		{
+			name:     "a bracketed IPv6 literal with no port",
+			endpoint: "https://[2001:db8::1]/v1/companion",
+			want:     "https://[2001:db8::1]" + companion.RouteConfirm,
+		},
+		{
 			// The route itself, handed back in. Idempotent: deriving twice must
 			// not stack the path, because `expose` derives from a URL `pair`
 			// may already have derived.

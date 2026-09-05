@@ -25,7 +25,9 @@ package companion
 //	one budget       MaxPairingAttempts wrong codes against a live pairing and
 //	                 the pairing is REVOKED, with a receipt. The count is
 //	                 DURABLE — it lives in the pending device's record, so a
-//	                 restart does not hand an attacker five fresh guesses
+//	                 restart does not hand an attacker five fresh guesses — and
+//	                 a count that cannot be written treats the pairing as
+//	                 exhausted until it can
 //	no logging       the handler writes nothing to the listener's log, and the
 //	                 token it hands back exists only in the response body
 //
@@ -208,6 +210,88 @@ func (g *PairingGrant) Validate() error {
 // the counter can never accumulate against an active or revoked one; see
 // RecordPairingFailure for why that restriction is the security property.
 
+// unrecordedFailures latches devices whose durable counter write FAILED.
+//
+// The durable budget is only a budget while it can be written. If a counter
+// write fails and the failure is discarded — which is what this file used to do
+// — the count does not move and the next guess reaches Confirm again: an
+// attacker who can make that write fail, or who is simply unlucky with the
+// registry lock, gets unlimited attempts against a live code. The budget looked
+// durable and was not.
+//
+// So an unwritable failure is REMEMBERED here and the pairing is treated as
+// exhausted for this process until the write lands. The write is retried on the
+// next attempt for that device, and that attempt is refused too: the strict
+// direction, because the alternative hands a free guess to whoever caused the
+// failure.
+//
+// It is a LATCH rather than a counter, and that is a statement about what can
+// happen rather than a simplification. A device is latched only on the path
+// that reaches Confirm, and a latched device never reaches Confirm again until
+// the latch clears — so at most one failure is ever owed, and a counter here
+// would be machinery for a state this route cannot enter.
+//
+// It is in-memory ON PURPOSE, and it is not a second budget. It only ever makes
+// the route MORE closed than the durable count, never less: a restart drops the
+// latch and falls back to whatever the record actually says, which is the count
+// the write failed to increment — the same place the durable budget would have
+// been. Losing the latch cannot unlock anything the record does not already
+// permit.
+//
+// The set is bounded by construction. An entry is created only for a device the
+// registry found PENDING with a live code, which bounds it by MaxDevices, and an
+// entry is removed as soon as the owed write lands.
+type unrecordedFailures struct {
+	mu      sync.Mutex
+	latched map[string]bool
+}
+
+func newUnrecordedFailures() *unrecordedFailures {
+	return &unrecordedFailures{latched: map[string]bool{}}
+}
+
+// latch records that a failure could not be written.
+func (u *unrecordedFailures) latch(deviceID string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.latched[deviceID] = true
+}
+
+// held reports whether a device is waiting on a write that has not landed.
+func (u *unrecordedFailures) held(deviceID string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.latched[deviceID]
+}
+
+// release drops the latch, for a write that has landed or a pairing that has
+// ended.
+func (u *unrecordedFailures) release(deviceID string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	delete(u.latched, deviceID)
+}
+
+// retryOwedFailure retries the counter write this process owes for a device.
+//
+// The latch is released ONLY when the write actually lands. A release on a
+// failed retry would be the original defect wearing a retry loop: the pairing
+// would go back to answering guesses with a count that never moved.
+func (s *Server) retryOwedFailure(deviceID string) {
+	spent, err := s.confirms.RecordPairingFailure(deviceID)
+	if err != nil {
+		// Still unwritable. The latch stays, so the next attempt is refused and
+		// tries again.
+		return
+	}
+	s.unrecorded.release(deviceID)
+	if spent >= MaxPairingAttempts {
+		// The budget the retry just completed is spent. Revoking is the same
+		// act the ordinary path takes.
+		_, _, _ = s.confirms.Revoke(deviceID)
+	}
+}
+
 // pairingRefused reports whether err is one of Registry.Confirm's refusals.
 //
 // It exists because the ONE error the handler tolerates — ErrReceiptNotWritten,
@@ -298,6 +382,18 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A failure this process could not durably record makes the pairing
+	// exhausted until it can. The write is retried here and the attempt is
+	// refused either way — see unrecordedFailures for why the strict direction
+	// is the right one, and note that Confirm is never reached, so the guess
+	// this request carries is not tried at all.
+	if s.unrecorded.held(c.DeviceID) {
+		s.retryOwedFailure(c.DeviceID)
+		settle()
+		writeUnauthorized(w)
+		return
+	}
+
 	// The durable budget is read BEFORE any guess is tried. A locked-out caller
 	// costs one bounded registry READ — never the cross-process write lock —
 	// so it cannot stall `mora companion pair` or `revoke` from the network.
@@ -354,7 +450,15 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		// already-settled one deliberately do not.
 		if errors.Is(err, ErrPairingCode) {
 			spent, ferr := s.confirms.RecordPairingFailure(c.DeviceID)
-			if ferr == nil && spent >= MaxPairingAttempts {
+			switch {
+			case ferr != nil:
+				// The count did NOT move. Discarding this — the previous
+				// shape — meant the next guess reached Confirm again and the
+				// budget was not durable at all. The failure is latched
+				// instead: the pairing is exhausted for this process until the
+				// write lands, and the write is retried on the next attempt.
+				s.unrecorded.latch(c.DeviceID)
+			case spent >= MaxPairingAttempts:
 				// The revocation is what makes the budget mean something. Its
 				// result is CHECKED rather than discarded: a failure leaves the
 				// record pending with the count already durable, so the branch
@@ -401,21 +505,59 @@ func (s *Server) pairingSlot(w http.ResponseWriter) (func(), bool) {
 	}
 }
 
-// pairingFloor starts the minimum-duration clock and returns the function that
-// waits out whatever is left of it.
+// pairingFloor arms the response deadline and returns the function that waits
+// it out.
+//
+// It is a QUANTIZER, not a minimum. A plain minimum was the previous shape and
+// it leaked: the paths differ in what they do — an unknown id returns before
+// any comparison, a wrong code takes the registry's write lock and publishes the
+// failure counter, an expired code burns the code and writes a record and a
+// receipt — and a minimum only hides that while every path finishes inside it.
+// The moment one overruns, its overrun is measurable against the ones that did
+// not, and a 5-second lock budget sits behind the write.
+//
+// So the elapsed time is rounded UP to the next whole PairingFloor bucket and
+// padded to that boundary. Every refusal that does its work inside one bucket
+// leaves at exactly one bucket; a path that overruns leaves at exactly two,
+// which is a step rather than a slope. What that buys, precisely: an observer
+// cannot read the amount of work a path did, only which bucket it fell in, and
+// the buckets are wide enough (250ms) that every path this route has lands in
+// the first one. What it does not buy is a cryptographic constant-time
+// guarantee at the level of branches or cache lines, and nothing here claims
+// one — the comparison that decides the answer is constant-time in
+// Registry.Confirm.
 //
 // It reads time.Now rather than the injected clock on purpose. s.now is the
 // contract's clock — a test pins it to a constant, and a constant cannot measure
-// an elapsed interval. The floor is a real-time property of the wire, so it is
-// measured in real time, and it is the DURATION that is injectable instead.
+// an elapsed interval. The pad is a real-time property of the wire, so it is
+// measured in real time, and it is the BUCKET WIDTH that is injectable instead.
 func (s *Server) pairingFloor() func() {
 	if s.pairingMinimum <= 0 {
 		return func() {}
 	}
 	start := time.Now()
 	return func() {
-		if rest := s.pairingMinimum - time.Since(start); rest > 0 {
+		elapsed := time.Since(start)
+		if rest := padToBucket(elapsed, s.pairingMinimum) - elapsed; rest > 0 {
 			time.Sleep(rest)
 		}
 	}
+}
+
+// padToBucket returns the deadline elapsed is padded up to: the smallest whole
+// multiple of width that is at least elapsed, and never less than one width.
+//
+// It is a free function so the arithmetic can be tested exactly, without a
+// clock: the boundary cases (just under a bucket, exactly on one, just over)
+// are where a rounding bug would live, and they are not observable through a
+// wall-clock measurement.
+func padToBucket(elapsed, width time.Duration) time.Duration {
+	if width <= 0 {
+		return elapsed
+	}
+	buckets := elapsed / width
+	if elapsed%width != 0 || buckets == 0 {
+		buckets++
+	}
+	return buckets * width
 }

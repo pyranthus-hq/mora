@@ -244,10 +244,14 @@ type Server struct {
 	// pairing is the confirmation budget: one at a time, listener-wide. It is
 	// separate from kernel on purpose — see pairingSlot.
 	pairing chan struct{}
-	// pairingMinimum is the confirmation route's timing floor. The attempt
-	// budget it sits beside is NOT here: it is durable, and lives in the
-	// pending device's own record. See pairing_route.go.
+	// pairingMinimum is the confirmation route's timing bucket width. The
+	// attempt budget it sits beside is NOT here: it is durable, and lives in
+	// the pending device's own record. See pairing_route.go.
 	pairingMinimum time.Duration
+	// unrecorded latches wrong codes whose durable counter write failed, so a
+	// budget that cannot be written still fails closed. It only ever makes the
+	// route more closed than the record does; see unrecordedFailures.
+	unrecorded *unrecordedFailures
 
 	mu   sync.Mutex
 	seen map[string]time.Time
@@ -332,6 +336,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 
 		pairing:        make(chan struct{}, maxInFlightConfirmations),
 		pairingMinimum: floor,
+		unrecorded:     newUnrecordedFailures(),
 
 		seen: map[string]time.Time{},
 	}, nil

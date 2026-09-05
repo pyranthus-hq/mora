@@ -724,6 +724,159 @@ func listenerOver(t *testing.T, reg *Registry) *Server {
 	return srv
 }
 
+// TestPairingCounterWriteFailureExhaustsThePairing is the fail-closed rule for
+// the budget's WRITE.
+//
+// A durable budget is only durable while it can be written. This file used to
+// discard a failed counter write: the count did not move, and the next guess
+// reached Confirm again — so an attacker who could make that write fail, or who
+// was simply unlucky with the registry lock, had no budget at all. The budget
+// looked durable and was not, and no test covered it.
+//
+// The rule: an unwritable failure makes the pairing exhausted for this process
+// until the write lands, the write is retried on the next attempt, and that
+// attempt is refused too.
+func TestPairingCounterWriteFailureExhaustsThePairing(t *testing.T) {
+	srv, reg, _ := confirmServer(t)
+	c := pendingPairing(t, reg, "phone")
+	wrong := c
+	wrong.PairingCode = "wrong-code"
+
+	// Two write failures: the one on the guess itself, and the one on the first
+	// retry. The second is what makes this a test of the RETRY rather than of a
+	// single unlucky write.
+	counter := &failingCounter{Confirmer: reg, failures: 2}
+	srv.confirms = counter
+
+	// The first guess is tried, is wrong, and its counter write FAILS.
+	if rec := postConfirm(t, srv, wrong); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the first wrong code = %d, want 401", rec.Code)
+	}
+	if counter.confirms != 1 {
+		t.Fatalf("Confirm ran %d times on the first attempt, want 1", counter.confirms)
+	}
+	// The count really did not move — this is the state the latch exists for.
+	if n, _, err := reg.PairingBudget(c.DeviceID); err != nil || n != 0 {
+		t.Fatalf("the record holds %d attempts (err %v); the write was supposed to fail", n, err)
+	}
+
+	// The next attempt must NOT reach Confirm. This is the whole property: the
+	// guess it carries is never tried, so an unwritable budget cannot be
+	// out-guessed.
+	confirmsBefore := counter.confirms
+	if rec := postConfirm(t, srv, c); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("an attempt against an unrecordable budget = %d, want 401", rec.Code)
+	}
+	if counter.confirms != confirmsBefore {
+		t.Fatalf("Confirm was reached %d times while the budget was unrecordable", counter.confirms-confirmsBefore)
+	}
+	// It carried the RIGHT code and was still refused, which is what "fail
+	// closed" means here.
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].State != DevicePending {
+		t.Fatalf("state = %s, want pending — the right code was served while the budget was unrecordable", devices[0].State)
+	}
+	// That attempt retried the write and it failed again, so the count is still
+	// where it was and the latch still holds.
+	if n, _, err := reg.PairingBudget(c.DeviceID); err != nil || n != 0 {
+		t.Fatalf("the record holds %d attempts (err %v) after a failed retry, want 0", n, err)
+	}
+
+	// The writer heals. The retry lands on the next attempt, which is STILL
+	// refused, and the owed failure is now on the record: the count is the
+	// number of guesses actually made, not the number of writes that happened
+	// to succeed.
+	counter.failures = 0
+	confirmsBefore = counter.confirms
+	if rec := postConfirm(t, srv, c); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the flushing attempt = %d, want 401", rec.Code)
+	}
+	if counter.confirms != confirmsBefore {
+		t.Fatalf("the flushing attempt reached Confirm %d times", counter.confirms-confirmsBefore)
+	}
+	if n, _, err := reg.PairingBudget(c.DeviceID); err != nil || n != 1 {
+		t.Fatalf("after the retry the record holds %d attempts (err %v), want 1", n, err)
+	}
+
+	// And with nothing owed, the route serves again: the latch is a hold, not a
+	// permanent lockout, so a transient write failure does not brick a pairing.
+	if rec := postConfirm(t, srv, c); rec.Code != http.StatusOK {
+		t.Fatalf("a settled latch did not release: %d", rec.Code)
+	}
+}
+
+// TestPairingCounterWriteFailureStillEndsAtTheBudget proves the drained retries
+// land the pairing in the same place a healthy run would.
+//
+// Five guesses are five guesses whether or not their writes succeeded at the
+// time. If the flush wrote once and forgot the rest, a run of failures would
+// leave the record under the budget forever and the pairing would never be
+// revoked.
+func TestPairingCounterWriteFailureStillEndsAtTheBudget(t *testing.T) {
+	srv, reg, _ := confirmServer(t)
+	c := pendingPairing(t, reg, "phone")
+	wrong := c
+	wrong.PairingCode = "wrong-code"
+
+	// Every write fails while the guesses are made. Only the FIRST guess
+	// reaches Confirm; after that the latch refuses without trying, so the
+	// owed count is one — the rest were never tried.
+	counter := &failingCounter{Confirmer: reg, failures: 1}
+	srv.confirms = counter
+	for i := 0; i < MaxPairingAttempts; i++ {
+		if rec := postConfirm(t, srv, wrong); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	// Heal the writer, then drive EXACTLY the guesses the budget still has left
+	// if the owed one counted. One attempt retries the owed write and is
+	// refused; MaxPairingAttempts-1 more are tried and counted. If the owed
+	// failure were lost, the count would end one short and the pairing would
+	// still be live — which is the slack this loop is sized to remove.
+	counter.failures = 0
+	for i := 0; i < MaxPairingAttempts; i++ {
+		if rec := postConfirm(t, srv, wrong); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("post-heal attempt %d = %d, want 401", i+1, rec.Code)
+		}
+	}
+	devices, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].State != DeviceRevoked {
+		t.Fatalf("state after the budget was spent = %s, want revoked", devices[0].State)
+	}
+	if rec := postConfirm(t, srv, c); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the right code worked after the budget was spent: %d", rec.Code)
+	}
+}
+
+// failingCounter fails RecordPairingFailure a fixed number of times, and counts
+// how often Confirm was reached — which is the observation the fail-closed rule
+// is about.
+type failingCounter struct {
+	Confirmer
+	failures int
+	confirms int
+}
+
+func (f *failingCounter) Confirm(p PairingConfirmation) (string, Device, error) {
+	f.confirms++
+	return f.Confirmer.Confirm(p)
+}
+
+func (f *failingCounter) RecordPairingFailure(id string) (int, error) {
+	if f.failures > 0 {
+		f.failures--
+		return 0, errors.New("companion: simulated counter write failure")
+	}
+	return f.Confirmer.RecordPairingFailure(id)
+}
+
 // TestRecordPairingFailureOnlyCountsALivePairing drives the registry guard
 // DIRECTLY, and it is here because the handler's own guard hides it.
 //
@@ -1020,58 +1173,125 @@ func (b *blockingConfirmer) Confirm(p PairingConfirmation) (string, Device, erro
 	return b.Confirmer.Confirm(p)
 }
 
-// TestPairingConfirmPadsEveryAnswerToTheFloor is the timing test.
+// TestPairingFloorPadsToBucketBoundaries pins the quantizer's arithmetic.
 //
-// The three outcomes cost wildly different amounts of work — an unknown device
-// returns before any comparison, a wrong code runs the constant-time compare,
-// and a success writes the record file and a receipt — and the floor is what
-// stops that difference from being readable with a stopwatch. It is asserted as
-// a MINIMUM, which is what a floor is: the test proves the padding happens, not
-// that the paths are identical, because they are not and this file does not
-// claim they are.
-func TestPairingConfirmPadsEveryAnswerToTheFloor(t *testing.T) {
-	const floor = 120 * time.Millisecond
-	reg, _, _, _ := testRegistry(t)
+// It is a unit test on padToBucket rather than a wall-clock measurement,
+// because the cases where a rounding bug lives — just under a boundary, exactly
+// on one, just over — are the cases a measurement cannot separate from jitter.
+func TestPairingFloorPadsToBucketBoundaries(t *testing.T) {
+	const width = 250 * time.Millisecond
+	for _, tc := range []struct{ elapsed, want time.Duration }{
+		{0, width},
+		{time.Nanosecond, width},
+		{width - time.Nanosecond, width},
+		{width, width},
+		{width + time.Nanosecond, 2 * width},
+		{width + 150*time.Millisecond, 2 * width},
+		{2 * width, 2 * width},
+		{2*width + time.Nanosecond, 3 * width},
+	} {
+		if got := padToBucket(tc.elapsed, width); got != tc.want {
+			t.Errorf("padToBucket(%v, %v) = %v, want %v", tc.elapsed, width, got, tc.want)
+		}
+	}
+	// A zero or negative width is "no pad", which is how a test switches the
+	// quantizer off; it must not divide by zero on the way.
+	if got := padToBucket(5*time.Millisecond, 0); got != 5*time.Millisecond {
+		t.Errorf("padToBucket with no width = %v, want the elapsed time unchanged", got)
+	}
+}
+
+// TestPairingRefusalsLandInTheSameTimingBucket is the timing test, and it
+// asserts BUCKET EQUALITY rather than a minimum.
+//
+// A minimum was the previous assertion and it was too weak: the four paths do
+// wildly different amounts of work — an unknown id returns before any
+// comparison, a wrong code takes the registry's write lock and publishes the
+// failure counter, an expired code burns the code and writes a record and a
+// receipt, and a latched budget retries a write — and a minimum passes while one
+// of them overruns by any amount at all. The overrun is exactly what an observer
+// with a stopwatch reads.
+//
+// The quantizer makes the answer a STEP: every path that finishes its work
+// inside one bucket leaves at one bucket, and a path that overruns leaves at
+// two. So the assertion is that all four land in the same bucket, which on any
+// machine that can do a few file writes in 250ms is bucket one.
+func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
+	const width = 250 * time.Millisecond
+	reg, clock, _, _ := testRegistry(t)
 	srv, err := NewServer(ServerOptions{
 		Addr: "127.0.0.1:7778", Devices: reg, Pairings: reg,
 		Reader: newStubReader(), Writer: newStubWriter(),
 		Captures:     NewReservationStore(t.TempDir()),
-		Now:          func() time.Time { return testNow },
-		PairingFloor: floor,
+		Now:          func() time.Time { return *clock },
+		PairingFloor: width,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 
-	c := pendingPairing(t, reg, "phone")
-	unknown := c
+	// Four devices, so each path drives its own pairing and none of them
+	// disturbs another's state.
+	live := pendingPairing(t, reg, "wrong code")
+	stale := pendingPairing(t, reg, "expired code")
+	latched := pendingPairing(t, reg, "unrecordable counter")
+	unknown := live
 	unknown.DeviceID = "dev_20260903_120000_deadbeef"
-	wrong := c
+	wrong := live
 	wrong.PairingCode = "wrong-code"
 
+	// The expired path needs a code that MATCHES and is late, which is the
+	// refusal that writes the most: it burns the code and writes a receipt.
+	*clock = clock.Add(PairingTTL + time.Second)
+
+	// The latched path needs a device whose counter write already failed.
+	srv.confirms = &failingCounter{Confirmer: reg, failures: 1}
+	latchedWrong := latched
+	latchedWrong.PairingCode = "wrong-code"
+	postConfirm(t, srv, latchedWrong)
+	srv.confirms = reg
+	// Put the latch back by hand: the line above spent the stub's one failure,
+	// and what this case measures is the branch that retries an owed write.
+	srv.unrecorded.latch(latched.DeviceID)
+
+	buckets := map[string]int{}
 	for _, tc := range []struct {
 		name string
 		body PairingConfirmation
-		want int
 	}{
-		// The cheapest refusal in Registry.Confirm: it returns before any
-		// comparison runs.
-		{"an unknown device", unknown, http.StatusUnauthorized},
-		{"a wrong code", wrong, http.StatusUnauthorized},
-		// The expensive path: it writes the record file and a receipt.
-		{"a successful confirmation", c, http.StatusOK},
+		// Cheapest: Confirm returns before any comparison runs.
+		{"an unknown device id", unknown},
+		// Takes the write lock and publishes the failure counter.
+		{"a wrong code against a live pairing", wrong},
+		// Burns the code: a record write and a receipt write.
+		{"a matching but expired code", stale},
+		// Retries an owed counter write before refusing.
+		{"a budget that could not be recorded", latchedWrong},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			start := time.Now()
-			rec := postConfirm(t, srv, tc.body)
-			elapsed := time.Since(start)
-			if rec.Code != tc.want {
-				t.Fatalf("status = %d, want %d\n%s", rec.Code, tc.want, rec.Body.String())
-			}
-			if elapsed < floor {
-				t.Fatalf("answered in %v, under the %v floor — the cheap and expensive paths are separable", elapsed, floor)
-			}
-		})
+		start := time.Now()
+		rec := postConfirm(t, srv, tc.body)
+		elapsed := time.Since(start)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s = %d, want 401\n%s", tc.name, rec.Code, rec.Body.String())
+		}
+		// The bucket a duration fell in. Integer division, so anything in
+		// [width, 2*width) is bucket 1 — the pad guarantees at least width, and
+		// only a path that did more than a full bucket of WORK can reach 2.
+		buckets[tc.name] = int(elapsed / width)
+	}
+
+	var first string
+	for name, bucket := range buckets {
+		if first == "" {
+			first = name
+		}
+		if bucket != buckets[first] {
+			t.Fatalf("%q landed in bucket %d and %q in bucket %d — the refusal paths are separable by a stopwatch\n%v",
+				name, bucket, first, buckets[first], buckets)
+		}
+		if bucket < 1 {
+			t.Fatalf("%q answered inside the first bucket boundary (%v); the pad did not run\n%v", name, width, buckets)
+		}
 	}
 }
 

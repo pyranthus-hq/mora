@@ -1014,17 +1014,105 @@ fixed for adding an enum value. No existing schema could carry the token —
   a listener with no pairing window open are the same opaque `401`, byte for byte, with no
   `WWW-Authenticate` header. In particular, "no window is open" is **not** a `404`: a `404` is an
   oracle for exactly the fact a prober wants.
-- **One floor.** Every answer — refusal and success alike — takes at least `PairingFloor` (250ms).
-  The refusal paths through `Registry.Confirm` are not equally expensive: an unknown id returns
-  before any comparison, a wrong code runs the constant-time compare and writes nothing, and a
-  matching-but-expired code burns the code and writes two files. The floor collapses that gap. Be
-  precise about what it is: a floor, not a clamp, so a path that overruns it is still slower, and it
-  is not a cryptographic constant-time guarantee at the level of branches or cache lines. The
-  comparison that actually decides the answer is constant-time in `Registry.Confirm` and always was.
-  One slot times the floor also caps the whole route at four attempts a second.
-- **One attempt budget.** `MaxPairingAttempts` (5) wrong codes against a live pairing and the
-  pairing is **revoked**, with a `revoked` receipt written record-first. The right code buys nothing
-  afterwards.
+- **One timing bucket.** Every answer — refusal and success alike — is padded up to a whole
+  `PairingFloor` (250 ms) boundary: the elapsed time is rounded **up** to the next bucket, not merely
+  raised to a minimum. The paths are not equally expensive. An unknown id returns before any
+  comparison; a wrong code takes the registry's write lock and publishes the failure counter; a
+  matching-but-expired code burns the code and writes a record and a receipt; a latched budget
+  retries an owed write. A plain minimum hid that only while every path finished inside it, and the
+  moment one overran, the overrun was readable with a stopwatch.
+
+  Quantizing makes the answer a **step**: a path that does its work inside one bucket leaves at one
+  bucket, and one that overruns leaves at two.
+  `TestPairingRefusalsLandInTheSameTimingBucket` drives all four refusal paths and asserts bucket
+  *equality*, not a minimum; `TestPairingFloorPadsToBucketBoundaries` pins the arithmetic at the
+  boundaries a wall-clock measurement cannot separate from jitter.
+
+  Be precise about what that buys: an observer can read which bucket a request fell in, not how much
+  work it did, and every path this route has lands in the first one. It is **not** a cryptographic
+  constant-time guarantee at the level of branches or cache lines, and nothing here claims one — the
+  comparison that actually decides the answer is constant-time in `Registry.Confirm`. One slot times
+  one bucket also caps the whole route at four attempts a second.
+- **One attempt budget, and it is DURABLE.** `MaxPairingAttempts` (5) wrong codes against a live
+  pairing and the pairing is **revoked**, with a `revoked` receipt written record-first. The right
+  code buys nothing afterwards. The count lives in the pending device's own record
+  (`pairing_attempts`), not in the listener's memory: an in-memory counter hands an attacker a fresh
+  five guesses every time the process restarts, and an attacker who can make it exit — or who simply
+  waits for the operator to restart it — would have no budget at all
+  (`TestPairingBudgetSurvivesARestart`).
+- **The revocation the budget ends in is checked, not fired and forgotten.** A revoke that fails
+  leaves the pairing live while the listener believes it dealt with it, and a durable count would
+  make that permanent rather than self-healing. So the failure fails **closed** — the attempt is
+  still refused, even with the right code — and the revocation is retried on every subsequent
+  attempt until it lands (`TestPairingRevokeFailureStillRefusesAndIsRetried`). A budget that cannot
+  be *read* fails closed the same way (`TestPairingConfirmFailsClosedWhenTheBudgetCannotBeRead`).
+- **A count that cannot be WRITTEN fails closed too.** A durable budget is only durable while the
+  counter can be published. Discarding a failed write left the count where it was and let the next
+  guess reach `Confirm` again, so anyone who could make that write fail — or who was simply unlucky
+  with the registry lock — had no budget at all. An unwritable failure now marks the pairing
+  exhausted for that process: the write is retried on the next attempt for that device, and **that
+  attempt is refused too**, so the guess it carries is never tried. The retries drain, so the count
+  the record ends up holding is the number of guesses actually made
+  (`TestPairingCounterWriteFailureExhaustsThePairing`,
+  `TestPairingCounterWriteFailureStillEndsAtTheBudget`). The latch is in memory and only ever makes
+  the route *more* closed than the record does — a restart drops it and falls back to whatever the
+  record says, which is exactly where the durable budget would have been.
+
+### The grant's fingerprint must cover its token
+
+`Validate` requires `token_fingerprint` to equal the fingerprint of the token it travels with,
+through the same derivation N11 stores (`TestPairingGrantFingerprintMustCoverItsToken`). A
+well-formed digest of some *other* string passes every format check and would send the person
+comparing it against `mora companion list` to compare a value describing nothing they hold.
+Validation runs on the way out as well as on the way in, so a producer bug becomes a `500` rather
+than a wire-contract violation.
+
+### A receipt warning is tolerated only on the success path
+
+`Registry.Confirm` reports `ErrReceiptNotWritten` when a change committed and only its audit row did
+not. On a **successful** confirmation that warning must not throw the credential away: the device is
+active and the returned token is the only copy of it.
+
+It is not tolerated on a refusal, and the expired code makes that concrete. Confirm *burns* a
+matching-but-late code — so a clock rolled back cannot revive yesterday's photographed QR code — and
+that burn is a durable write with a receipt. When the receipt fails, Confirm returns
+`errors.Join(ErrPairingExpired, ErrReceiptNotWritten)`: a refusal with a warning attached. Treating
+any receipt warning as success there built a grant out of an empty token and answered `500`, which
+is both a refusal an attacker can tell apart by status code alone and a lie about what went wrong.
+The handler now tolerates the warning only alongside a credential that was actually minted
+(`TestPairingConfirmRefusesAnExpiredCodeWhoseReceiptAlsoFailed`,
+`TestPairingConfirmStillIssuesWhenOnlyTheSuccessReceiptFailed`).
+
+### Bootstrap: `expose` publishes for an open pairing window
+
+`mora companion expose` used to refuse whenever no device was **active**, and that was circular: the
+first device cannot become active until the phone reaches this route, and it cannot reach it until
+the listener is published — which is what `expose` exists to explain. An operator following the
+documented path got `data.not_found` and no way forward.
+
+The refusal now asks the question it meant to ask. Publishing is refused only when there is neither
+an active device **nor** a pending one with a live code. When only a pending device exists, the
+serve commands print alongside the window's deadline, the pending device ids, and the confirm URL
+(`TestCompanionExposeRefusesOnlyWhenNothingCouldEverAuthenticate`).
+
+### The confirm URL is published, not guessed
+
+`mora companion pair` emits `confirm_url`, and `mora companion expose` emits one for the published
+origin. Both are derived from the endpoint's **origin** — scheme, host and port — with the route
+mounted once. Appending the route to the endpoint was wrong for the endpoint shape the canonical
+pairing golden carries:
+
+```
+endpoint   https://host/v1/companion
+appended   https://host/v1/companion/v1/companion/pairing/confirm   404, mounted nowhere
+derived    https://host/v1/companion/pairing/confirm                served
+```
+
+Every mount point on this listener is an absolute path from the origin, so the origin is the only
+part of the endpoint that can contribute (`TestCompanionConfirmURLMountsTheRouteExactlyOnce`,
+`TestCompanionPairEmitsAUsableConfirmURL`). The network audit posts its confirmation to the emitted
+URL **verbatim**, origin and path — not to an origin it rebuilt — so a client that trusted the field
+is exercised rather than assumed.
 
 ### Why a lockout can never revoke an active device
 
@@ -1046,6 +1134,38 @@ against an active or revoked one, and a remote caller cannot create records at a
 bounded registry **read**, never the cross-process write lock, so a stranger repeating a spent guess
 cannot stall `mora companion pair` or `revoke` on the Mac
 (`TestPairingConfirmSpendsNoWriteLockOnALockedOutCaller`).
+
+### The accepted cost: a pairing-window denial of service
+
+Say this plainly rather than leaving it to be discovered. **A stranger who knows a pending device id
+can end that pairing in five requests.** The id is not a secret — `mora companion pair` prints it,
+the QR payload carries it, and it is short — so anyone who can reach the confirmation route and has
+seen or guessed one can spend the budget with five wrong codes and have the kernel revoke the
+pairing. That is a denial of service on the *pairing window*, deliberately accepted, and it is the
+price of the property in the section above: a budget that only the real holder of the code could
+exhaust is not a budget at all.
+
+What it cannot do is the part that matters. It cannot revoke a **paired** device — the counter moves
+only for a device that is pending with a live code — it cannot read anything, and it cannot make the
+code guessable: the budget bounds the attempts, and the code's 160 bits bound the guessing.
+
+The mitigations are the short window and the operator:
+
+- `PairingTTL` is 10 minutes. There is no long-lived target here; outside a window there is nothing
+  to exhaust.
+- The remedy is one command. `mora companion pair` issues a fresh code and a fresh id, and
+  `mora companion status` shows the window and the device awaiting it, so an operator watching a
+  pairing fail can see which one died.
+- The revocation writes a `revoked` receipt, so a pairing that ended this way is visible in the audit
+  trail rather than silently gone.
+
+**There is deliberately no per-source limiter**, and that is N04's finding rather than an omission.
+Behind Tailscale Serve the listener sees `127.0.0.1` as the peer for every phone: the client address
+does not survive the proxy, and the only place the real one appears is `X-Forwarded-For`, which is
+attacker-settable on any path that is not the proxy. A per-IP throttle would therefore collapse into
+one bucket shared by every device — throttling the legitimate phone on the attacker's behalf — or
+would key on a header the attacker chooses. The limits that exist are the ones that can be trusted:
+one confirmation in flight listener-wide, the timing bucket, and the per-window attempt budget.
 
 ### What the exemption does and does not cost
 
