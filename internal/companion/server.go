@@ -22,6 +22,7 @@ package companion
 //	POST /v1/companion/context   a grounded bundle for one query
 //	GET  /v1/companion/health    freshness, index state and write policy
 //	POST /v1/companion/captures  governed capture, answered with a receipt
+//	POST /v1/companion/pairing/confirm  spend a one-time code, receive the token
 //
 // The allowlist is the security boundary, so it is data (routeDefs) rather than
 // a series of mux registrations scattered through the file, and a test walks it.
@@ -29,6 +30,13 @@ package companion
 // configuration write and no read-a-memory-by-id route: a phone that can name a
 // memory id can enumerate the vault, and a phone that can name a tool has the
 // generic API again under a different name.
+//
+// N12b widened it by one more, and that one is the only route on this listener
+// that is reachable WITHOUT a device token — it is the request that asks for the
+// token, so it cannot present one. Everything that stands in for the missing
+// credential (one slot, one opaque refusal, a timing floor, an attempt budget
+// that ends the pairing) is in pairing_route.go, and authGuard below reads the
+// exemption out of the same table rather than from a second list.
 //
 // N21 widened the table by ONE route, deliberately and once. Capture is the only
 // write a phone may ask for, it produces a receipt rather than a tool call, and
@@ -70,6 +78,10 @@ const (
 	RouteContext = "/v1/companion/context"
 	RouteHealth  = "/v1/companion/health"
 	RouteCapture = "/v1/companion/captures"
+	// RouteConfirm is the ONE unauthenticated route: the request that asks for
+	// a device token cannot carry one. See pairing_route.go for everything that
+	// stands in for the missing credential.
+	RouteConfirm = "/v1/companion/pairing/confirm"
 )
 
 // LoopbackHost is the ONLY address this server will bind. Not "localhost",
@@ -166,6 +178,16 @@ type ServerOptions struct {
 	// reason Writer is, and it is injected rather than derived from a path so a
 	// caller cannot end up with two stores over one directory.
 	Captures *ReservationStore
+	// Pairings spends a one-time code and mints a device token. It is required
+	// for the same reason Writer is: a listener assembled without one would
+	// declare a route in the allowlist that cannot be served.
+	//
+	// It is a SEPARATE seam from Devices even though *Registry satisfies both.
+	// Authenticator is what every authenticated request touches and it is two
+	// read-ish methods; Confirmer is what the one unauthenticated route touches
+	// and it mints and revokes credentials. Keeping them apart is what lets a
+	// reader see, from the type of a field, which surface a stranger can reach.
+	Pairings Confirmer
 	// AllowHost is the ONE extra Host value the listener accepts, and it is
 	// empty by default. Empty means the loopback-only behavior below is
 	// unchanged, byte for byte.
@@ -185,6 +207,14 @@ type ServerOptions struct {
 	AllowHost string
 	// Now is the clock, injected so a test can pin it.
 	Now func() time.Time
+	// PairingFloor is the minimum time one pairing confirmation takes. Zero
+	// means PairingFloor.
+	//
+	// It is configurable for the same reason KernelTimeout is: the property is
+	// about real elapsed time, so a test that wants to prove the floor fires has
+	// to be able to shorten it, and every other test has to be able to switch it
+	// off rather than pay a quarter second per request.
+	PairingFloor time.Duration
 	// KernelTimeout bounds one kernel call. Zero means KernelTimeout.
 	//
 	// It is configurable because the deadline PATH has to be reachable in a
@@ -203,6 +233,7 @@ type Server struct {
 	reader        Reader
 	writer        Writer
 	captures      *ReservationStore
+	confirms      Confirmer
 	allowHost     string
 	now           func() time.Time
 	log           io.Writer
@@ -210,16 +241,32 @@ type Server struct {
 
 	// kernel is the work budget, held for the duration of one kernel call.
 	kernel chan struct{}
+	// pairing is the confirmation budget: one at a time, listener-wide. It is
+	// separate from kernel on purpose — see pairingSlot.
+	pairing chan struct{}
+	// pairings is the per-device attempt budget, and pairingMinimum is the
+	// timing floor. Both live in pairing_route.go.
+	pairings       *pairingLimiter
+	pairingMinimum time.Duration
 
 	mu   sync.Mutex
 	seen map[string]time.Time
 }
 
 // Route is one allowlisted method-and-pattern pair.
-type Route struct{ Method, Pattern string }
+//
+// Public is part of the published table rather than a separate list, so "which
+// routes need no credential" is answered by the same data a test walks. Exactly
+// one route sets it, and TestExactlyOneRouteIsUnauthenticated is what keeps that
+// true.
+type Route struct {
+	Method, Pattern string
+	Public          bool
+}
 
 type route struct {
 	Method, Pattern string
+	Public          bool
 	Handler         http.HandlerFunc
 }
 
@@ -244,6 +291,9 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if o.Captures == nil {
 		return nil, errors.New("companion: the listener needs a capture reservation store")
 	}
+	if o.Pairings == nil {
+		return nil, errors.New("companion: the listener needs a pairing confirmer")
+	}
 	allowHost, err := CheckAllowHost(o.AllowHost)
 	if err != nil {
 		return nil, err
@@ -260,18 +310,31 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if timeout <= 0 {
 		timeout = KernelTimeout
 	}
+	// A NEGATIVE floor means "no floor" and is how a test switches it off; only
+	// zero falls back to the default, so an explicit choice is never silently
+	// replaced by one this file made.
+	floor := o.PairingFloor
+	if floor == 0 {
+		floor = PairingFloor
+	}
 	return &Server{
 		addr:          o.Addr,
 		devices:       o.Devices,
 		reader:        o.Reader,
 		writer:        o.Writer,
 		captures:      o.Captures,
+		confirms:      o.Pairings,
 		allowHost:     allowHost,
 		now:           now,
 		log:           log,
 		kernelTimeout: timeout,
 		kernel:        make(chan struct{}, maxInFlightKernelCalls),
-		seen:          map[string]time.Time{},
+
+		pairing:        make(chan struct{}, maxInFlightConfirmations),
+		pairings:       newPairingLimiter(),
+		pairingMinimum: floor,
+
+		seen: map[string]time.Time{},
 	}, nil
 }
 
@@ -303,10 +366,11 @@ func checkLoopbackAddr(addr string) error {
 // walks and the table the server serves cannot drift apart.
 func (s *Server) routeDefs() []route {
 	return []route{
-		{http.MethodGet, RouteToday, s.handleToday},
-		{http.MethodPost, RouteContext, s.handleContext},
-		{http.MethodGet, RouteHealth, s.handleHealth},
-		{http.MethodPost, RouteCapture, s.handleCapture},
+		{http.MethodGet, RouteToday, false, s.handleToday},
+		{http.MethodPost, RouteContext, false, s.handleContext},
+		{http.MethodGet, RouteHealth, false, s.handleHealth},
+		{http.MethodPost, RouteCapture, false, s.handleCapture},
+		{http.MethodPost, RouteConfirm, true, s.handleConfirm},
 	}
 }
 
@@ -315,7 +379,7 @@ func (s *Server) Routes() []Route {
 	defs := s.routeDefs()
 	out := make([]Route, 0, len(defs))
 	for _, r := range defs {
-		out = append(out, Route{Method: r.Method, Pattern: r.Pattern})
+		out = append(out, Route{Method: r.Method, Pattern: r.Pattern, Public: r.Public})
 	}
 	return out
 }
@@ -622,8 +686,51 @@ func headerBytes(h http.Header) int {
 // It runs before routing so an unauthenticated caller cannot learn which paths
 // exist: every request without a live device token gets the same 401, whether
 // the path is real or not.
+//
+// The one exemption is read out of routeDefs, not out of a second list here, so
+// a route cannot become public by being added in the wrong place. It is keyed on
+// the PATH rather than on method-and-path, so an unlisted method against the
+// pairing route reaches its handler and gets the same 405-with-Allow every other
+// route gives — a 401 there would claim the refusal was about a credential when
+// the route has none.
+//
+// The exemption costs one thing and it is worth naming: the pairing path is
+// discoverable without a token, because a 405 and a 404 are distinguishable. It
+// is a published route printed by `mora companion pair`, so there was never a
+// secret to keep. Nothing else about it is free — see pairing_route.go.
 func (s *Server) authGuard(next http.Handler) http.Handler {
+	public := map[string]bool{}
+	for _, rt := range s.routeDefs() {
+		if rt.Public {
+			public[rt.Pattern] = true
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// r.URL.Path is the UNESCAPED path, and that is the right key because it
+		// is the same form ServeMux matches on. Measured against this Go
+		// (TestTheAuthExemptionAgreesWithTheMuxOnEncodedPaths):
+		//
+		//	/v1/companion/pairing/confirm     Path matches, the mux serves it
+		//	/v1/companion/pairing/%63onfirm   Path matches, the mux ALSO serves
+		//	                                  it — one route, two spellings, and
+		//	                                  Go decides that, not this file
+		//	/v1/companion/pairing%2Fconfirm   Path matches, the mux 404s: %2F is
+		//	                                  one segment, so no pattern matches
+		//	/v1/companion/%74oday             Path does NOT match, so the
+		//	                                  credential check runs — an encoded
+		//	                                  spelling of a PROTECTED route can
+		//	                                  never be exempted
+		//
+		// The direction that would matter is a request the mux routes to a
+		// protected handler while this map calls it public, and it cannot
+		// happen: a mux match means the unescaped segments equal the pattern,
+		// which means r.URL.Path IS that pattern. The %2F case is the only
+		// asymmetry and it costs nothing — the exemption is granted and then
+		// nothing is mounted there, so no handler runs.
+		if public[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if _, ok := s.authorize(r); !ok {
 			writeUnauthorized(w)
 			return
@@ -1067,6 +1174,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 	fmt.Fprintf(s.log, "mora companion serve listening on http://%s/  (loopback only)\n", ln.Addr().String())
 	fmt.Fprintf(s.log, "  routes: GET %s, POST %s, GET %s, POST %s\n", RouteToday, RouteContext, RouteHealth, RouteCapture)
+	fmt.Fprintf(s.log, "  pairing: POST %s (the one route that takes no token; it is where a one-time code is spent)\n", RouteConfirm)
 	fmt.Fprintln(s.log, "  credential: a device token from `mora companion pair` — the loopback API token is not accepted here")
 	if s.allowHost != "" {
 		// The name itself is deliberately absent. The operator typed it on the

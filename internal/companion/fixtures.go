@@ -90,6 +90,23 @@ func PairingConfirmationFixture() *PairingConfirmation {
 	return &p
 }
 
+// PairingGrantFixture is the canonical answer to a confirmation: the one
+// document in this contract that carries a bearer token.
+//
+// The token here is a fixture string, not a token format — the real format is a
+// kernel decision and is opaque on the wire, exactly as the pairing code is. The
+// fingerprint is computed from it rather than written out, so the pair in this
+// document is consistent by construction and a client can check its own
+// derivation against the golden.
+func PairingGrantFixture() *PairingGrant {
+	g := NewPairingGrant()
+	g.DeviceID = fixtureDeviceID
+	g.Token = "fixture-bearer-token"
+	g.TokenFingerprint = Fingerprint("fixture-bearer-token")
+	g.IssuedAt = fixtureCreatedAt
+	return &g
+}
+
 // HealthFixture is the canonical health projection: one fresh source, one
 // stale, one that never ran. A fixture where everything is green would let a
 // client ship without ever rendering the honest cases.
@@ -277,6 +294,7 @@ var fixtures = map[string]func() Payload{
 	SchemaDevice + "#revoked":   func() Payload { return RevokedDeviceFixture() },
 	SchemaPairing:               func() Payload { return PairingFixture() },
 	SchemaPairingOK:             func() Payload { return PairingConfirmationFixture() },
+	SchemaPairingGrant:          func() Payload { return PairingGrantFixture() },
 	SchemaHealth:                func() Payload { return HealthFixture() },
 	SchemaToday:                 func() Payload { return TodayFixture() },
 	SchemaContextRq:             func() Payload { return ContextRequestFixture() },

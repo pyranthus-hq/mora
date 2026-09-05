@@ -66,6 +66,7 @@ func companionTestListener(t *testing.T) (http.Handler, string, Config) {
 	srv, err := companion.NewServer(companion.ServerOptions{
 		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
 		Devices:  reg,
+		Pairings: reg,
 		Reader:   newCompanionReader(cfg),
 		Writer:   newCompanionWriter(),
 		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),

@@ -97,12 +97,20 @@ func companionRegistry(ctx context.Context) (*companion.Registry, Config, error)
 // point of the command is to hand it to a QR renderer, and it is the reason the
 // human rendering below carries a warning line rather than printing it bare.
 type companionPairPayload struct {
-	DeviceID        string `json:"device_id"`
-	Label           string `json:"label"`
-	Platform        string `json:"platform"`
-	Endpoint        string `json:"endpoint"`
-	PairingCode     string `json:"pairing_code"`
-	ExpiresAt       string `json:"expires_at"`
+	DeviceID    string `json:"device_id"`
+	Label       string `json:"label"`
+	Platform    string `json:"platform"`
+	Endpoint    string `json:"endpoint"`
+	PairingCode string `json:"pairing_code"`
+	ExpiresAt   string `json:"expires_at"`
+	// ConfirmURL is where the phone POSTs the code to finish pairing (N12b).
+	//
+	// It is computed here rather than left to the client to assemble, because
+	// the alternative is every client guessing a path and the route's name
+	// becoming whatever the first one sent. It is the endpoint with the
+	// listener's published confirmation route appended, so a phone that scans
+	// this payload needs nothing else.
+	ConfirmURL      string `json:"confirm_url"`
 	HostFingerprint string `json:"host_fingerprint"`
 }
 
@@ -145,6 +153,7 @@ func cmdCompanionPair(ctx context.Context, args []string, stdout, stderr io.Writ
 		Endpoint:        payload.Endpoint,
 		PairingCode:     payload.PairingCode,
 		ExpiresAt:       payload.ExpiresAt,
+		ConfirmURL:      companionConfirmURL(payload.Endpoint),
 		HostFingerprint: payload.HostFingerprint,
 	}
 	if *jsonOut {
@@ -155,9 +164,23 @@ func cmdCompanionPair(ctx context.Context, args []string, stdout, stderr io.Writ
 	fmt.Fprintf(stdout, "endpoint\t%s\n", out.Endpoint)
 	fmt.Fprintf(stdout, "host\t%s\n", out.HostFingerprint)
 	fmt.Fprintf(stdout, "expires\t%s\n", out.ExpiresAt)
+	fmt.Fprintf(stdout, "confirm\tPOST %s\n", out.ConfirmURL)
 	fmt.Fprintf(stdout, "code\t%s\n", out.PairingCode)
 	fmt.Fprintln(stdout, "This code is a one-time secret. Anyone who reads it can pair a device until it expires.")
+	fmt.Fprintln(stdout, "The phone finishes pairing by POSTing the code to the confirm URL; `mora companion serve` must be running.")
 	return nil
+}
+
+// companionConfirmURL derives the confirmation URL from the pairing endpoint.
+//
+// The endpoint is the base a phone was told to reach, and the route is the
+// listener's own published constant, so the two are joined here rather than
+// concatenated by hand at each caller. The endpoint is already validated by
+// companion.PairingPayload — https, or http to a loopback host, with no
+// userinfo — so nothing here re-parses it; it only has to survive a trailing
+// slash, which an operator passing --endpoint will eventually type.
+func companionConfirmURL(endpoint string) string {
+	return strings.TrimSuffix(endpoint, "/") + companion.RouteConfirm
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +342,13 @@ func cmdCompanionStatus(ctx context.Context, args []string, stdout io.Writer) er
 	fmt.Fprintf(stdout, "revoked\t%d\n", status.Revoked)
 	if status.PairingOpen {
 		fmt.Fprintf(stdout, "pairing\topen until %s\n", status.NextPairingExpiry)
+		// Which device the window belongs to, because the confirmation the
+		// phone posts names the device by id and an operator watching a pairing
+		// go wrong needs to know which one to revoke.
+		for _, id := range status.PendingDevices {
+			fmt.Fprintf(stdout, "awaiting\t%s\n", id)
+		}
+		fmt.Fprintf(stdout, "confirm\tPOST %s on the running listener\n", companion.RouteConfirm)
 		return nil
 	}
 	fmt.Fprintln(stdout, "pairing\tclosed")

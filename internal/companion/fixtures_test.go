@@ -19,6 +19,14 @@ import (
 // schema is MINOR and appears here as a new line; a field that disappears from
 // here without a SchemaVersion bump is a broken contract.
 var frozenKeys = map[string][]string{
+	"mora.companion.pairing.grant": {
+		"device_id:string",
+		"issued_at:string",
+		"schema:string",
+		"schema_version:number",
+		"token:string",
+		"token_fingerprint:string",
+	},
 	"mora.companion.capture": {
 		"captured_at:string",
 		"device_id:string",
@@ -281,9 +289,9 @@ func TestGoldenCorpusIsFrozen(t *testing.T) {
 // fixture.
 func TestGoldenCorpusIsComplete(t *testing.T) {
 	published := []string{
-		SchemaDevice, SchemaPairing, SchemaPairingOK, SchemaToday,
-		SchemaContext, SchemaContextRq, SchemaCapture, SchemaReceipt,
-		SchemaHealth, SchemaOperation,
+		SchemaDevice, SchemaPairing, SchemaPairingOK, SchemaPairingGrant,
+		SchemaToday, SchemaContext, SchemaContextRq, SchemaCapture,
+		SchemaReceipt, SchemaHealth, SchemaOperation,
 	}
 	have := map[string]bool{}
 	for _, name := range SchemaNames() {
@@ -384,6 +392,8 @@ func newEmptyLike(t *testing.T, p Payload) Payload {
 		return &PairingPayload{}
 	case *PairingConfirmation:
 		return &PairingConfirmation{}
+	case *PairingGrant:
+		return &PairingGrant{}
 	case *HealthProjection:
 		return &HealthProjection{}
 	case *TodayProjection:

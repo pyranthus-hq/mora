@@ -615,6 +615,16 @@ type Status struct {
 	Revoked           int    `json:"revoked"`
 	PairingOpen       bool   `json:"pairing_open"`
 	NextPairingExpiry string `json:"next_pairing_expiry,omitempty"`
+	// PendingDevices names the devices with a LIVE pairing code, oldest
+	// registration first. It is the answer to the question `status` could not
+	// previously answer — "which device is the open window for?" — which a human
+	// finishing a pairing needs, because the confirmation the phone posts names
+	// the device by id.
+	//
+	// It is omitted when empty, and it holds identifiers rather than labels: an
+	// id is what the phone sends, and a label is operator-supplied text that has
+	// no business in a document meant to be pasted into a bug report.
+	PendingDevices []string `json:"pending_devices,omitempty"`
 }
 
 // Status summarizes the registry.
@@ -634,6 +644,7 @@ func (r *Registry) Status() (Status, error) {
 				continue
 			}
 			s.PairingOpen = true
+			s.PendingDevices = append(s.PendingDevices, rec.DeviceID)
 			if s.NextPairingExpiry == "" || rec.PairingExpiresAt < s.NextPairingExpiry {
 				s.NextPairingExpiry = rec.PairingExpiresAt
 			}

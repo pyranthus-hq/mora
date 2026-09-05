@@ -100,6 +100,7 @@ func cmdCompanionServe(ctx context.Context, args []string, stdout io.Writer) err
 		Addr:      fmt.Sprintf("%s:%d", companion.LoopbackHost, *port),
 		AllowHost: *allowHost,
 		Devices:   reg,
+		Pairings:  reg,
 		Reader:    newCompanionReader(cfg),
 		Writer:    newCompanionWriter(),
 		Captures:  companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),
