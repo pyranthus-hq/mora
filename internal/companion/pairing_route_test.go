@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1035,8 +1036,13 @@ func TestPairingMarkerIsAFileUnderTheRegistryDirectory(t *testing.T) {
 	if info.Size() != 0 {
 		t.Fatalf("the marker carries %d bytes; it is a presence flag and nothing else", info.Size())
 	}
-	assertMode(t, dir, secretDirMode)
-	assertMode(t, path, secretFileMode)
+	// POSIX bits are not the access-control mechanism on Windows — hardenPath
+	// is exempt from the read-back there for the same reason — so the modes are
+	// asserted where they mean something.
+	if runtime.GOOS != "windows" {
+		assertMode(t, dir, secretDirMode)
+		assertMode(t, path, secretFileMode)
+	}
 
 	// It is idempotent: at most one failure is ever owed.
 	if err := reg.MarkPairingFailureUnrecorded(c.DeviceID); err != nil {
