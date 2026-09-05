@@ -1444,6 +1444,16 @@ func whatsAppStatusPath(cfg Config, name string) string {
 
 const defaultWhatsAppLookbackDays = 90
 
+func conversationTitleAllowed(title string, allow []string) bool {
+	want := strings.ToLower(strings.TrimSpace(title))
+	for _, candidate := range allow {
+		if want == strings.ToLower(strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
 func windowForWhatsApp(s Source) memory.FetchWindow {
 	days := s.SinceDays
 	if days == 0 {
@@ -1460,8 +1470,11 @@ type whatsAppFetcher interface {
 	Close() error
 }
 
-var newWhatsAppFetcher = func(path string) (whatsAppFetcher, error) {
-	return whatsapp.NewLiveFetcher(path)
+var newWhatsAppFetcher = func(path string, allowConversations []string, allowlistConfigured bool) (whatsAppFetcher, error) {
+	if !allowlistConfigured {
+		return whatsapp.NewLiveFetcher(path)
+	}
+	return whatsapp.NewLiveFetcherWithAllowlist(path, allowConversations)
 }
 
 func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
@@ -1471,7 +1484,7 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		}
 		return sourceIngestResult{}, nil
 	}
-	fetcher, err := newWhatsAppFetcher(whatsAppDBPath(cfg))
+	fetcher, err := newWhatsAppFetcher(whatsAppDBPath(cfg), s.AllowConversations, s.WhatsAppAllowlistConfigured)
 	if err != nil {
 		// A present-but-unreadable ChatStorage.sqlite is the FDA-denied case (or an
 		// unsupported private schema) — point the user at doctor guidance rather
@@ -1487,6 +1500,9 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	win := windowForWhatsApp(s)
 
 	if out != nil {
+		if s.WhatsAppAllowlistConfigured {
+			fmt.Fprintf(out, "  %s: restricting ingest to %d allowlisted group title(s): %s\n", s.Name, len(s.AllowConversations), strings.Join(s.AllowConversations, ", "))
+		}
 		days := s.SinceDays
 		if days == 0 {
 			days = defaultWhatsAppLookbackDays
@@ -1499,6 +1515,9 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 	prog := newProgress(out, s.Name, "conversations")
 	write := func(mm memory.MappedMemory) (bool, error) {
+		if s.WhatsAppAllowlistConfigured && !conversationTitleAllowed(mm.Title, s.AllowConversations) {
+			return false, fmt.Errorf("WhatsApp connector returned conversation outside the configured allowlist")
+		}
 		wrote, err := writeMappedMemoryDetailed(cfg, mm)
 		if err != nil {
 			return false, err

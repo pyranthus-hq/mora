@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -193,6 +194,63 @@ func setIMessageDenyList(cfg Config, contacts, conversations []string) error {
 		}
 		return sources, nil
 	})
+}
+
+// normalizeConversationAllowlist preserves user-facing chat titles while
+// rejecting empty entries and de-duplicating exact titles case-insensitively.
+func normalizeConversationAllowlist(titles []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	clean := make([]string, 0, len(titles))
+	for _, title := range titles {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			return nil, errors.New("WhatsApp --chat title cannot be empty")
+		}
+		key := strings.ToLower(title)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		clean = append(clean, title)
+	}
+	return clean, nil
+}
+
+// setWhatsAppAllowlist persists the exact chat-title allowlist before consent
+// is enabled. The ingest connector applies it before reading message bodies.
+func setWhatsAppAllowlist(cfg Config, titles []string) error {
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		for i := range sources {
+			if sources[i].Type == "whatsapp" {
+				sources[i].AllowConversations = append([]string(nil), titles...)
+				sources[i].WhatsAppAllowlistConfigured = true
+				return sources, nil
+			}
+		}
+		return append(sources, Source{
+			Name: "whatsapp", Type: "whatsapp", Scope: "personal",
+			Enabled: genericutil.Ptr(false), CreatedAt: time.Now().Format(time.RFC3339),
+			AllowConversations: append([]string(nil), titles...), WhatsAppAllowlistConfigured: true,
+		}), nil
+	})
+}
+
+// resetWhatsAppSyncStatus clears paging state after an allowlist policy change.
+// Without this, a prior failed run can resume after the newly allowed group.
+func resetWhatsAppSyncStatus(cfg Config) error {
+	sources, err := loadSources(cfg)
+	if err != nil {
+		return err
+	}
+	for _, source := range sources {
+		if source.Type != "whatsapp" {
+			continue
+		}
+		if err := os.Remove(whatsAppStatusPath(cfg, source.Name)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("reset WhatsApp sync status: %w", err)
+		}
+	}
+	return nil
 }
 
 // ensureGoogleSources registers the gmail/calendar source pair for one Google

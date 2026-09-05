@@ -49,7 +49,11 @@ type conversation struct {
 	messages []message
 }
 
-type LiveFetcher struct{ db *sql.DB }
+type LiveFetcher struct {
+	db                  *sql.DB
+	allowlistConfigured bool
+	allowedGroupJIDs    []string
+}
 
 func DefaultDBPath(home string) string {
 	return filepath.Join(home, "Library", "Group Containers", "group.net.whatsapp.WhatsApp.shared", "ChatStorage.sqlite")
@@ -60,6 +64,17 @@ func databaseDSN(path string) string {
 }
 
 func NewLiveFetcher(path string) (*LiveFetcher, error) {
+	return newLiveFetcher(path, nil, false)
+}
+
+// NewLiveFetcherWithAllowlist opens WhatsApp's local store read-only and limits
+// message reads to group titles in allowConversations. Matching is exact after
+// trimming and case-folding. An explicitly empty list ingests no conversations.
+func NewLiveFetcherWithAllowlist(path string, allowConversations []string) (*LiveFetcher, error) {
+	return newLiveFetcher(path, allowConversations, true)
+}
+
+func newLiveFetcher(path string, allowConversations []string, configured bool) (*LiveFetcher, error) {
 	db, err := sql.Open("sqlite", databaseDSN(path))
 	if err != nil {
 		return nil, err
@@ -68,7 +83,75 @@ func NewLiveFetcher(path string) (*LiveFetcher, error) {
 		db.Close()
 		return nil, err
 	}
-	return &LiveFetcher{db: db}, nil
+	f := &LiveFetcher{db: db, allowlistConfigured: configured}
+	if configured {
+		f.allowedGroupJIDs, err = resolveAllowedGroupJIDs(db, allowConversations)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	return f, nil
+}
+
+func normalizeConversationTitle(title string) string {
+	return strings.ToLower(strings.TrimSpace(title))
+}
+
+func resolveAllowedGroupJIDs(db *sql.DB, titles []string) ([]string, error) {
+	if len(titles) == 0 {
+		return []string{}, nil
+	}
+	wanted := make(map[string]string, len(titles))
+	for _, title := range titles {
+		trimmed := strings.TrimSpace(title)
+		if trimmed == "" {
+			return nil, fmt.Errorf("WhatsApp allowlist contains an empty chat title")
+		}
+		wanted[normalizeConversationTitle(trimmed)] = trimmed
+	}
+	rows, err := db.Query(`SELECT
+		COALESCE(NULLIF(ZCONTACTJID,''), NULLIF(ZCONTACTIDENTIFIER,''), ''),
+		COALESCE(NULLIF(ZPARTNERNAME,''), NULLIF(ZCONTACTJID,''), NULLIF(ZCONTACTIDENTIFIER,''), '')
+		FROM ZWACHATSESSION
+		WHERE COALESCE(NULLIF(ZCONTACTJID,''), NULLIF(ZCONTACTIDENTIFIER,''), '') LIKE '%@g.us'`)
+	if err != nil {
+		return nil, fmt.Errorf("resolve WhatsApp group allowlist: %w", err)
+	}
+	defer rows.Close()
+	matches := make(map[string]map[string]struct{}, len(wanted))
+	for rows.Next() {
+		var jid, title string
+		if err := rows.Scan(&jid, &title); err != nil {
+			return nil, fmt.Errorf("scan WhatsApp group allowlist: %w", err)
+		}
+		key := normalizeConversationTitle(title)
+		if _, ok := wanted[key]; !ok {
+			continue
+		}
+		if matches[key] == nil {
+			matches[key] = map[string]struct{}{}
+		}
+		matches[key][jid] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate WhatsApp group allowlist: %w", err)
+	}
+	var jids []string
+	for key, display := range wanted {
+		switch len(matches[key]) {
+		case 0:
+			return nil, fmt.Errorf("allowlisted WhatsApp group %q was not found", display)
+		case 1:
+			for jid := range matches[key] {
+				jids = append(jids, jid)
+			}
+		default:
+			return nil, fmt.Errorf("allowlisted WhatsApp group title %q is ambiguous (%d groups match)", display, len(matches[key]))
+		}
+	}
+	sort.Strings(jids)
+	return jids, nil
 }
 
 func (f *LiveFetcher) Close() error {
@@ -144,10 +227,23 @@ func (f *LiveFetcher) FetchPage(kind memory.ItemKind, window memory.FetchWindow,
 			return memory.Page{}, fmt.Errorf("bad cursor %q: %w", cursor, err)
 		}
 	}
-	rows, err := f.db.Query(`SELECT Z_PK,
+	query := `SELECT Z_PK,
 		COALESCE(NULLIF(ZCONTACTJID,''), NULLIF(ZCONTACTIDENTIFIER,''), ''),
 		COALESCE(NULLIF(ZPARTNERNAME,''), NULLIF(ZCONTACTJID,''), NULLIF(ZCONTACTIDENTIFIER,''), '')
-		FROM ZWACHATSESSION WHERE Z_PK > ? ORDER BY Z_PK LIMIT ?`, start, pageSize)
+		FROM ZWACHATSESSION WHERE Z_PK > ?`
+	args := []any{start}
+	if f.allowlistConfigured {
+		if len(f.allowedGroupJIDs) == 0 {
+			return memory.Page{}, nil
+		}
+		query += " AND COALESCE(NULLIF(ZCONTACTJID,''), NULLIF(ZCONTACTIDENTIFIER,''), '') IN (" + strings.TrimRight(strings.Repeat("?,", len(f.allowedGroupJIDs)), ",") + ")"
+		for _, jid := range f.allowedGroupJIDs {
+			args = append(args, jid)
+		}
+	}
+	query += " ORDER BY Z_PK LIMIT ?"
+	args = append(args, pageSize)
+	rows, err := f.db.Query(query, args...)
 	if err != nil {
 		return memory.Page{}, fmt.Errorf("list WhatsApp chats: %w", err)
 	}
