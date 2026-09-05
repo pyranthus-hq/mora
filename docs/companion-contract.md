@@ -1028,6 +1028,21 @@ fixed for adding an enum value. No existing schema could carry the token —
   *equality*, not a minimum; `TestPairingFloorPadsToBucketBoundaries` pins the arithmetic at the
   boundaries a wall-clock measurement cannot separate from jitter.
 
+  The **success** path is quantized the same way, and by the same clock: `settle` runs inside the
+  writer, after the grant has been validated and marshalled and in the last instant before the first
+  byte. Padding before the marshal would leave the marshal outside the padded window, and a success
+  would measure as "the pad plus building a document" against a refusal's "the pad" — so timing
+  would answer *did I get a credential?* even while it refused to answer *why was I refused?*. The
+  bucket-equality test carries the success case beside the four refusals, and a source-level witness
+  pins the ordering, because a four-field marshal costs microseconds and no stopwatch can enforce it
+  (`TestPairingSuccessPadsAfterTheMarshal`, with its own negative control).
+
+  Two route-level tests inject a delay past a boundary and require the answer to land on the NEXT
+  one (`TestPairingSlowPathLandsOnTheNextBucketBoundary`,
+  `TestPairingSlowSuccessLandsOnTheNextBucketBoundary`). They exist because a minimum and a
+  quantizer agree on every path that fits inside one bucket, and every path this route actually has
+  does — the difference only shows when something overruns, which is the case that matters.
+
   Be precise about what that buys: an observer can read which bucket a request fell in, not how much
   work it did, and every path this route has lands in the first one. It is **not** a cryptographic
   constant-time guarantee at the level of branches or cache lines, and nothing here claims one — the
@@ -1046,17 +1061,32 @@ fixed for adding an enum value. No existing schema could carry the token —
   still refused, even with the right code — and the revocation is retried on every subsequent
   attempt until it lands (`TestPairingRevokeFailureStillRefusesAndIsRetried`). A budget that cannot
   be *read* fails closed the same way (`TestPairingConfirmFailsClosedWhenTheBudgetCannotBeRead`).
-- **A count that cannot be WRITTEN fails closed too.** A durable budget is only durable while the
-  counter can be published. Discarding a failed write left the count where it was and let the next
-  guess reach `Confirm` again, so anyone who could make that write fail — or who was simply unlucky
-  with the registry lock — had no budget at all. An unwritable failure now marks the pairing
-  exhausted for that process: the write is retried on the next attempt for that device, and **that
-  attempt is refused too**, so the guess it carries is never tried. The retries drain, so the count
-  the record ends up holding is the number of guesses actually made
-  (`TestPairingCounterWriteFailureExhaustsThePairing`,
-  `TestPairingCounterWriteFailureStillEndsAtTheBudget`). The latch is in memory and only ever makes
-  the route *more* closed than the record does — a restart drops it and falls back to whatever the
-  record says, which is exactly where the durable budget would have been.
+- **A count that cannot be WRITTEN fails closed too, and the debt is itself durable.** A durable
+  budget is only durable while the counter can be published. Discarding a failed write left the
+  count where it was and let the next guess reach `Confirm` again, so anyone who could make that
+  write fail — or who was simply unlucky with the registry lock — had no budget at all. An
+  unwritable failure now makes the pairing exhausted: the write is retried on the next attempt for
+  that device, **before** `Confirm`, and that attempt is refused too, so the guess it carries is
+  never tried (`TestPairingCounterWriteFailureExhaustsThePairing`,
+  `TestPairingCounterWriteFailureStillEndsAtTheBudget`).
+
+  Remembering the debt only in memory was not enough: an attacker who can make a write fail can
+  usually make a process exit, and if they cannot they can wait for the operator to restart it. So
+  the debt is written down as a **marker file** —
+  `<ConfigDir>/companion/unrecorded-failures/<device id>`, empty, `0600` under the registry's own
+  `0700` directory, published by the same atomic rename every other file here uses. It is a
+  *sidecar* rather than a field in the record for the reason that makes it work at all: the thing
+  that just failed is the record write, so a mark written through the same path would share its
+  failure mode. `PairingBudget` reads it back on every attempt, so the refusal survives a restart
+  (`TestPairingCounterDebtSurvivesARestart`,
+  `TestPairingCounterDebtIsRefusedAcrossRestartsUntilItIsPaid`,
+  `TestPairingMarkerIsAFileUnderTheRegistryDirectory`).
+
+  The in-memory latch stays beside it, because the marker write can fail too — it happens at exactly
+  the moment the filesystem is unhappy. Either half alone refuses, and the latch is released only
+  when the marker is really gone, so a filesystem that cannot delete leaves the route closed rather
+  than open (`TestPairingMarkIsNotClearedByAFailedDelete`). Neither half can make the route *more*
+  open than the record does.
 
 ### The grant's fingerprint must cover its token
 
@@ -1113,6 +1143,13 @@ part of the endpoint that can contribute (`TestCompanionConfirmURLMountsTheRoute
 `TestCompanionPairEmitsAUsableConfirmURL`). The network audit posts its confirmation to the emitted
 URL **verbatim**, origin and path — not to an origin it rebuilt — so a client that trusted the field
 is exercised rather than assumed.
+
+The audit's own honesty is enforced two ways. Its `--self-test` drives the whole confirmation
+end to end with a stub at the HTTP boundary and nowhere above it, so the URL selection, the payload,
+the grant decode and the P1/P2/P3 verdicts are all production code; reverting the URL selection turns
+it red. And a **live** run refuses to start when either test seam is set in the environment, rather
+than clearing it — an operator who set one meant something by it, and an audit that silently ignored
+it would hand back a result they would then trust.
 
 ### Why a lockout can never revoke an active device
 

@@ -101,6 +101,11 @@ PAIRING_CODE=""
 # CONFIRM_URL is what `mora companion pair` EMITTED. The audit follows it rather
 # than assembling a URL of its own; see confirm_pairing.
 CONFIRM_URL=""
+# The self-test's confirmation fixture keeps its state here. Live mode refuses
+# to run with any seam set, so these are never read on a real run.
+CONFIRM_STUB_LOG=""
+CONFIRM_STUB_DEVICE=""
+CONFIRM_STUB_TOKEN=""
 
 # ---------------------------------------------------------------------------
 # Output
@@ -837,7 +842,36 @@ confirm_post() {
     -d "$payload" -w '\n%{http_code}' "$url" 2>/dev/null || true
 }
 
+# refuse_test_seams fails the LIVE audit closed when any test seam is set.
+#
+# The script carries two stubs so --self-test can drive the real probe logic
+# against fixtures: AUDIT_CURL_STUB replaces the LAN probe's curl, and
+# AUDIT_CONFIRM_STUB replaces the confirmation POST. Either one turns a live run
+# into theatre — the probes would measure the stub and report PASS — and an
+# environment variable is exactly the kind of thing that survives in a shell, a
+# CI job or a pasted command line without anyone noticing.
+#
+# So live mode refuses rather than clearing them. Clearing would be the quiet
+# fix, and quiet is wrong here: an operator who set one meant something by it,
+# and an audit that silently ignored it would produce a result they would then
+# trust. The seams are cleared for the PROBES only after this check has proven
+# nothing was set, so nothing a subshell inherits can reach one either.
+refuse_test_seams() {
+  local name
+  for name in AUDIT_CONFIRM_STUB AUDIT_CURL_STUB; do
+    if [ -n "${!name:-}" ]; then
+      die "$name is set; the live audit refuses to run against a stub. Unset it and re-run, or use --self-test."
+    fi
+  done
+  # Proven empty, then pinned empty: a probe that runs in a subshell cannot
+  # inherit a seam from anywhere, and the pin is inside the process rather than
+  # exported so nothing this script spawns can be steered by one either.
+  AUDIT_CONFIRM_STUB=""
+  AUDIT_CURL_STUB=""
+}
+
 run_live() {
+  refuse_test_seams
   need lsof
   need openssl
   need shasum
@@ -1195,6 +1229,81 @@ confirm_post_target() {
 # shellcheck disable=SC2329
 stub_confirm_echo_url() { printf '%s\n' "$1"; }
 
+# ---------------------------------------------------------------------------
+# The end-to-end confirmation fixture
+# ---------------------------------------------------------------------------
+
+# stub_confirm_session is the HTTP boundary and NOTHING above it.
+#
+# It records every URL it is handed and answers the way a healthy listener would
+# — a grant for the first confirmation, an opaque 401 for the replay and for the
+# published-path probe — so confirm_pairing runs end to end against it: the same
+# URL selection, the same payload construction, the same probe_grant decode, the
+# same pass/fail decisions. A fixture that stubbed any higher would prove things
+# about the fixture.
+# shellcheck disable=SC2329
+stub_confirm_session() {
+  local url=$1 n
+  printf '%s\n' "$url" >>"$CONFIRM_STUB_LOG"
+  n=$(grep -c . "$CONFIRM_STUB_LOG")
+  if [ "$n" = "1" ]; then
+    printf '%s\n200\n' "$(grant_fixture "$CONFIRM_STUB_TOKEN" "$CONFIRM_STUB_DEVICE")"
+    return 0
+  fi
+  printf '{\n  "error": "unauthorized"\n}\n401\n'
+}
+
+# seam_refusal reports whether refuse_test_seams ACCEPTS a given environment: it
+# returns 0 when the check passes and 1 when it refuses.
+#
+# refuse_test_seams calls die, which exits, so it is driven in a subshell.
+# Invoked through expect_probe, which shellcheck does not follow.
+# shellcheck disable=SC2329
+seam_refusal() {
+  local name=$1
+  if [ -z "$name" ]; then
+    ( refuse_test_seams ) >/dev/null 2>&1
+    return $?
+  fi
+  ( export "$name=stub_confirm_echo_url"; refuse_test_seams ) >/dev/null 2>&1
+  return $?
+}
+
+# confirm_session_urls drives confirm_pairing end to end and prints, one per
+# line: the three URLs the POSTs went to, the device token the session ended up
+# holding, and the word OK when confirm_pairing's own P1/P2/P3 all passed.
+#
+# The last line matters. confirm_pairing runs in a subshell here, so its pass
+# and fail counters do not reach the outer tally — an internal failure would be
+# invisible. Its output is inspected instead, so a fixture that satisfies the
+# URL assertions while making the real probes fail cannot slip through.
+#
+# $1 the emitted confirm_url, $2 node, $3 port, $4 device id.
+# shellcheck disable=SC2329
+confirm_session_urls() {
+  local emitted=$1 node=$2 port=$3 device=$4 transcript
+  CONFIRM_STUB_LOG=$(mktemp)
+  transcript=$(mktemp)
+  CONFIRM_STUB_DEVICE=$device
+  CONFIRM_STUB_TOKEN="MORASELFTESTTOKEN$(printf '%s' "$device" | shasum -a 256 | cut -c1-8)"
+  PAIRING_CODE="self-test-pairing-code"
+  AUDIT_CONFIRM_STUB=stub_confirm_session
+  # Redirected to a FILE rather than captured in a substitution: confirm_pairing
+  # sets DEVICE_TOKEN, and a substitution would run it in a subshell where that
+  # assignment dies. The whole point of this fixture is that the session's own
+  # state is what is asserted.
+  confirm_pairing "$node" "$port" "$device" "$emitted" >"$transcript" 2>&1
+  AUDIT_CONFIRM_STUB=""
+  cat "$CONFIRM_STUB_LOG"
+  printf '%s\n' "$DEVICE_TOKEN"
+  if grep -q FAIL "$transcript"; then
+    printf 'FAILED\n'
+  else
+    printf 'OK\n'
+  fi
+  rm -f "$CONFIRM_STUB_LOG" "$transcript"
+}
+
 # The grant fixtures. The token's fingerprint is COMPUTED here, so the good
 # fixture is self-consistent by construction rather than by a hand-typed digest
 # that could rot.
@@ -1441,6 +1550,48 @@ time.sleep(30)
     probe_log "listening" ""
   expect_probe fail "no markers at all is rejected" \
     probe_log "listening"
+
+  # The whole confirmation, end to end, with the stub at the HTTP boundary and
+  # nowhere above it. This is what makes the URL claim a claim about the AUDIT
+  # rather than about one string function: confirm_pairing chooses the URL,
+  # builds the payload, decodes the grant and decides P1/P2/P3, and the fixture
+  # only answers the socket.
+  local st_emitted="http://127.0.0.1:7778/v1/companion/pairing/confirm"
+  local st_device="dev_20260904_000000_abcdef01"
+  local st_urls
+  st_urls=$(confirm_session_urls "$st_emitted" "node.example" 8080 "$st_device")
+  expect_string "$st_emitted" \
+    "the confirmation is POSTed to the emitted confirm_url, verbatim" \
+    "$(printf '%s\n' "$st_urls" | sed -n 1p)"
+  expect_string "$st_emitted" \
+    "the replay goes to the same emitted URL" \
+    "$(printf '%s\n' "$st_urls" | sed -n 2p)"
+  expect_string "http://node.example:8080/v1/companion/pairing/confirm" \
+    "the published-path probe uses the tailnet authority" \
+    "$(printf '%s\n' "$st_urls" | sed -n 3p)"
+  expect_string "MORASELFTESTTOKEN$(printf '%s' "$st_device" | shasum -a 256 | cut -c1-8)" \
+    "the grant's token is what the session carries forward" \
+    "$(printf '%s\n' "$st_urls" | sed -n 4p)"
+  expect_string "OK" \
+    "confirm_pairing's own P1/P2/P3 all pass against a healthy listener" \
+    "$(printf '%s\n' "$st_urls" | sed -n 5p)"
+
+  # An emitted URL whose origin this script could not have reconstructed must be
+  # exactly where the confirmation goes. This is the fixture that fails when
+  # production rebuilds the authority.
+  st_urls=$(confirm_session_urls "https://elsewhere.example:9443/v1/companion/pairing/confirm" "node.example" 8080 "$st_device")
+  expect_string "https://elsewhere.example:9443/v1/companion/pairing/confirm" \
+    "an emitted origin the script never saw is still where the POST lands" \
+    "$(printf '%s\n' "$st_urls" | sed -n 1p)"
+
+  # Live mode fails CLOSED when a seam is set. An audit that measured a stub and
+  # reported PASS is the worst thing this file could do.
+  expect_probe fail "a live run refuses when the confirmation seam is set" \
+    seam_refusal AUDIT_CONFIRM_STUB
+  expect_probe fail "a live run refuses when the curl seam is set" \
+    seam_refusal AUDIT_CURL_STUB
+  expect_probe pass "a live run proceeds past the seam check when nothing is set" \
+    seam_refusal ""
 
   # The confirm_url is FOLLOWED, origin and all. This is the fixture the
   # round-3 item asks for: an emitted URL whose origin is nothing this script

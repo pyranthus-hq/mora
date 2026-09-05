@@ -1087,10 +1087,33 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 // render, so it becomes a 500 with nothing in it instead. Tolerant outbound
 // applies to the DEVICE's decoder, not to this producer.
 func (s *Server) writePayload(w http.ResponseWriter, v Payload) bool {
+	return s.writePayloadAfter(w, v, nil)
+}
+
+// writePayloadAfter is writePayload with a hook that runs in the last instant
+// before the first byte goes out — after the payload has been marshalled and
+// validated, and after the failure branch has been decided.
+//
+// The position is the whole point, and it exists for the pairing route's timing
+// quantizer. Padding BEFORE the marshal leaves the marshal outside the padded
+// window, so a success measures as its own work plus the pad while a refusal
+// measures as the pad alone, and the two become separable by a stopwatch — the
+// exact property the quantizer exists to remove. Running the hook here puts
+// every byte of work on both paths inside the same window.
+//
+// The hook also runs on the failure branch, because a 500 a caller can time is
+// a 500 a caller can distinguish.
+func (s *Server) writePayloadAfter(w http.ResponseWriter, v Payload, before func()) bool {
 	body, err := Marshal(v)
 	if err != nil {
+		if before != nil {
+			before()
+		}
 		writeOpaque(w, http.StatusInternalServerError, "internal")
 		return false
+	}
+	if before != nil {
+		before()
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

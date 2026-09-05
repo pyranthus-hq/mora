@@ -489,16 +489,119 @@ func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err
 // An unknown device is (0, false, nil), not an error. The route answers every
 // refusal identically, so this must not be the one place that distinguishes an
 // id that exists from one that does not.
-func (r *Registry) PairingBudget(deviceID string) (attempts int, pending bool, err error) {
+func (r *Registry) PairingBudget(deviceID string) (PairingState, error) {
+	unrecorded, err := r.pairingFailureUnrecorded(deviceID)
+	if err != nil {
+		return PairingState{}, err
+	}
 	f, err := r.load()
 	if err != nil {
-		return 0, false, err
+		return PairingState{}, err
 	}
 	rec := f.find(deviceID)
 	if rec == nil {
-		return 0, false, nil
+		return PairingState{Unrecorded: unrecorded}, nil
 	}
-	return rec.PairingAttempts, rec.State == DevicePending && rec.PairingCodeFingerprint != "", nil
+	return PairingState{
+		Attempts:   rec.PairingAttempts,
+		Pending:    rec.State == DevicePending && rec.PairingCodeFingerprint != "",
+		Unrecorded: unrecorded,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// The unrecorded-failure marker
+// ---------------------------------------------------------------------------
+
+// The marker is how a failed counter write survives a RESTART.
+//
+// RecordPairingFailure can fail — a lost lock, a full disk, a registry that
+// would cross its size bound — and the count then does not move. A listener
+// that only remembered that in memory was one process exit away from handing an
+// attacker a fresh budget: kill it, or wait for the operator to restart it, and
+// the guess that was never counted is forgotten. The marker is the durable half
+// of that memory.
+//
+// It is a SIDECAR file rather than a field in the record, and that is the whole
+// reason it can help. The thing that just failed is the record write, so a
+// marker written through the same path has the same failure mode; an empty file
+// published by rename into the credential directory is an independent write
+// that can succeed when a record mutation cannot. It is a presence flag and
+// holds no content, because one failure is the most that can ever be owed — a
+// device with a marker is refused before it can reach Confirm again.
+//
+// The file is created under the registry's own 0700 directory at 0600, by the
+// same atomic publish every other file here uses, so it inherits the mode and
+// durability rules rather than inventing new ones. Its name is the device id,
+// which validateID has already constrained to the `dev_` shape, so nothing
+// attacker-chosen reaches a path.
+func (r *Registry) markerDir() string {
+	return filepath.Join(r.dir(), "unrecorded-failures")
+}
+
+func (r *Registry) markerPath(deviceID string) (string, error) {
+	if err := validateID("device_id", PrefixDevice, deviceID); err != nil {
+		return "", err
+	}
+	return filepath.Join(r.markerDir(), deviceID), nil
+}
+
+// MarkPairingFailureUnrecorded records durably that one wrong code was tried
+// and could not be counted.
+//
+// It is idempotent: at most one failure is ever owed, so a second call over a
+// marker that already exists republishes the same empty file rather than
+// counting anything.
+func (r *Registry) MarkPairingFailureUnrecorded(deviceID string) error {
+	path, err := r.markerPath(deviceID)
+	if err != nil {
+		return err
+	}
+	if err := r.ensureDir(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(r.markerDir(), secretDirMode); err != nil {
+		return err
+	}
+	if err := hardenPath(r.markerDir(), secretDirMode); err != nil {
+		return err
+	}
+	return writeSecretFile(path, nil, nil)
+}
+
+// ClearPairingFailureUnrecorded drops the marker, for a failure that has since
+// been counted or a pairing that has ended.
+func (r *Registry) ClearPairingFailureUnrecorded(deviceID string) error {
+	path, err := r.markerPath(deviceID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// pairingFailureUnrecorded reports whether a device owes a counter write.
+//
+// A stat error that is not "does not exist" is returned rather than swallowed:
+// a marker this process cannot read is a budget it cannot enforce, and the
+// caller's rule for that is to refuse.
+func (r *Registry) pairingFailureUnrecorded(deviceID string) (bool, error) {
+	path, err := r.markerPath(deviceID)
+	if err != nil {
+		// An id that is not a device id has no marker, and this is not the
+		// place to answer a question about whether it exists.
+		return false, nil
+	}
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // RecordPairingFailure durably counts one wrong code and returns the new total.
@@ -668,6 +771,29 @@ func (r *Registry) List() ([]Device, error) {
 		return out[i].DeviceID < out[j].DeviceID
 	})
 	return out, nil
+}
+
+// PairingState is everything the confirmation route needs to know about a
+// device BEFORE it lets a guess reach Confirm.
+//
+// The three fields answer three different questions and are read together
+// because a route that read them separately would be answering from three
+// different moments: how much of the budget is spent, whether a revocation is
+// still owed, and whether a counter write is still owed.
+type PairingState struct {
+	// Attempts is the durable count of wrong codes this pairing has taken.
+	Attempts int
+	// Pending is true only for a device that is PENDING and still holds a live
+	// code fingerprint — the one state a budget has anything to protect. It is
+	// the caller's signal that a revocation the budget called for did not take
+	// and must be retried.
+	Pending bool
+	// Unrecorded is true when a wrong code was tried and its counter write
+	// failed. The failure has not been counted, so the route must repair it
+	// before it lets another guess through — and must refuse either way. See
+	// MarkPairingFailureUnrecorded for why this is durable rather than a flag
+	// in the listener's memory.
+	Unrecorded bool
 }
 
 // Status is the registry summary: counts and whether a pairing window is open

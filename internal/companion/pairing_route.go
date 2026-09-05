@@ -116,10 +116,17 @@ const (
 // this route's own act: five wrong codes end the pairing, and the thing that
 // decides that is the thing that must be able to carry it out.
 type Confirmer interface {
-	// PairingBudget is the DURABLE attempt count, read before any guess is
-	// tried, so a restart does not hand an attacker five fresh attempts.
-	PairingBudget(deviceID string) (attempts int, pending bool, err error)
+	// PairingBudget is the DURABLE state read before any guess is tried: the
+	// attempt count, whether a revocation is still owed, and whether a counter
+	// write is still owed. All three survive a restart, so a process exit does
+	// not hand an attacker fresh attempts.
+	PairingBudget(deviceID string) (PairingState, error)
 	RecordPairingFailure(deviceID string) (int, error)
+	// MarkPairingFailureUnrecorded persists that a wrong code was tried and
+	// could not be counted, and ClearPairingFailureUnrecorded drops that mark
+	// once it has been.
+	MarkPairingFailureUnrecorded(deviceID string) error
+	ClearPairingFailureUnrecorded(deviceID string) error
 	Confirm(c PairingConfirmation) (string, Device, error)
 	Revoke(deviceID string) (Device, bool, error)
 }
@@ -231,12 +238,18 @@ func (g *PairingGrant) Validate() error {
 // the latch clears — so at most one failure is ever owed, and a counter here
 // would be machinery for a state this route cannot enter.
 //
-// It is in-memory ON PURPOSE, and it is not a second budget. It only ever makes
-// the route MORE closed than the durable count, never less: a restart drops the
-// latch and falls back to whatever the record actually says, which is the count
-// the write failed to increment — the same place the durable budget would have
-// been. Losing the latch cannot unlock anything the record does not already
-// permit.
+// It is the IN-MEMORY half of a durable pair. Registry.MarkPairingFailureUnrecorded
+// writes the same fact to a sidecar file, and PairingBudget reads it back on
+// every attempt, so the debt survives a restart — that was the hole this latch
+// alone could not close: kill the process, or wait for the operator to restart
+// it, and an uncounted guess was forgotten.
+//
+// The latch stays because the mark can fail too. It is written at the moment
+// the counter write fails, which is exactly the moment the filesystem is
+// unhappy, so a listener that had only the mark would be open for the rest of
+// its life if that one write did not land. Together they cover both: the latch
+// holds within the process, the mark holds across processes, and either one
+// alone refuses.
 //
 // The set is bounded by construction. An entry is created only for a device the
 // registry found PENDING with a live code, which bounds it by MaxDevices, and an
@@ -280,8 +293,17 @@ func (u *unrecordedFailures) release(deviceID string) {
 func (s *Server) retryOwedFailure(deviceID string) {
 	spent, err := s.confirms.RecordPairingFailure(deviceID)
 	if err != nil {
-		// Still unwritable. The latch stays, so the next attempt is refused and
-		// tries again.
+		// Still unwritable. The mark and the latch both stay, so the next
+		// attempt — in this process or a later one — is refused and tries
+		// again.
+		return
+	}
+	// The count moved, so the debt is paid. The durable mark is cleared FIRST:
+	// a mark that outlived the write it stood for would refuse a pairing
+	// forever, and the in-memory latch is dropped only if the mark really went
+	// away, so a filesystem that cannot delete leaves the route closed rather
+	// than open.
+	if err := s.confirms.ClearPairingFailureUnrecorded(deviceID); err != nil {
 		return
 	}
 	s.unrecorded.release(deviceID)
@@ -382,22 +404,11 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A failure this process could not durably record makes the pairing
-	// exhausted until it can. The write is retried here and the attempt is
-	// refused either way — see unrecordedFailures for why the strict direction
-	// is the right one, and note that Confirm is never reached, so the guess
-	// this request carries is not tried at all.
-	if s.unrecorded.held(c.DeviceID) {
-		s.retryOwedFailure(c.DeviceID)
-		settle()
-		writeUnauthorized(w)
-		return
-	}
-
-	// The durable budget is read BEFORE any guess is tried. A locked-out caller
-	// costs one bounded registry READ — never the cross-process write lock —
-	// so it cannot stall `mora companion pair` or `revoke` from the network.
-	attempts, pending, err := s.confirms.PairingBudget(c.DeviceID)
+	// The durable state is read BEFORE any guess is tried. A locked-out caller
+	// costs one bounded registry READ plus one stat — never the cross-process
+	// write lock — so it cannot stall `mora companion pair` or `revoke` from
+	// the network.
+	state, err := s.confirms.PairingBudget(c.DeviceID)
 	if err != nil {
 		// Fail CLOSED. A budget that cannot be read is a budget that cannot be
 		// enforced, and a route that cannot enforce its own rate limit must not
@@ -406,14 +417,29 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		writeUnauthorized(w)
 		return
 	}
-	if attempts >= MaxPairingAttempts {
+
+	// A failure that could not be counted makes the pairing exhausted until it
+	// can be. The repair happens HERE, before Confirm, so the guess this
+	// request carries is never tried, and the attempt is refused either way.
+	//
+	// The condition reads BOTH halves. state.Unrecorded is the durable mark and
+	// is what survives a restart; the in-memory latch covers the window where
+	// the mark itself could not be written. Either one refuses.
+	if state.Unrecorded || s.unrecorded.held(c.DeviceID) {
+		s.retryOwedFailure(c.DeviceID)
+		settle()
+		writeUnauthorized(w)
+		return
+	}
+
+	if state.Attempts >= MaxPairingAttempts {
 		// The budget is spent. If the record is STILL pending, the revocation
 		// the budget called for did not take — a transient lock loss, a failed
 		// write — so it is retried here rather than left undone. This is what
 		// "the revoke result is checked" buys: not a different answer to this
 		// caller, who gets the same 401 either way, but a revocation that is
 		// retried on every subsequent attempt until it lands.
-		if pending {
+		if state.Pending {
 			_, _, rerr := s.confirms.Revoke(c.DeviceID)
 			if rerr != nil && !errors.Is(rerr, ErrReceiptNotWritten) {
 				// Still refused, and the record stays pending, so the next
@@ -452,11 +478,18 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 			spent, ferr := s.confirms.RecordPairingFailure(c.DeviceID)
 			switch {
 			case ferr != nil:
-				// The count did NOT move. Discarding this — the previous
-				// shape — meant the next guess reached Confirm again and the
-				// budget was not durable at all. The failure is latched
-				// instead: the pairing is exhausted for this process until the
-				// write lands, and the write is retried on the next attempt.
+				// The count did NOT move. Discarding this — the first shape —
+				// meant the next guess reached Confirm again and the budget was
+				// not durable at all. Remembering it only in memory — the
+				// second — meant a restart forgot it.
+				//
+				// So it is written DOWN first and latched second. The order is
+				// the point: the durable mark is what a later process reads,
+				// and the latch is what this one uses in the window before the
+				// mark lands or if it never does. Both are best-effort against
+				// a filesystem that is already failing, and either one alone is
+				// enough to refuse.
+				_ = s.confirms.MarkPairingFailureUnrecorded(c.DeviceID)
 				s.unrecorded.latch(c.DeviceID)
 			case spent >= MaxPairingAttempts:
 				// The revocation is what makes the budget mean something. Its
@@ -477,12 +510,19 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	grant.TokenFingerprint = dev.TokenFingerprint
 	grant.IssuedAt = s.now().UTC().Truncate(time.Second).Format(time.RFC3339)
 
-	settle()
+	// The pad runs INSIDE the write, in the last instant before the first byte
+	// — after the grant is built, validated and marshalled. Padding here rather
+	// than above is what puts the success path in the same bucket as the
+	// refusals: settle before the marshal would leave the marshal outside the
+	// padded window, and a success would then measure as "the pad plus building
+	// a document" against a refusal's "the pad". Timing must not be able to
+	// tell a caller whether they got a credential.
+	//
 	// The stamp is gated on the response actually being a 2xx, the same rule
 	// every other route follows: a grant the contract refuses is a 500, and a
 	// 500 served nothing. This is the device's FIRST seen, so the debounce in
 	// markSeen always lets it through.
-	if s.writePayload(w, &grant) {
+	if s.writePayloadAfter(w, &grant, settle) {
 		s.markSeen(dev.DeviceID)
 	}
 }

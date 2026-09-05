@@ -12,8 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -683,8 +688,8 @@ func TestPairingBudgetSurvivesARestart(t *testing.T) {
 			t.Fatalf("attempt %d = %d, want 401", i+1, rec.Code)
 		}
 	}
-	if n, _, err := reg.PairingBudget(c.DeviceID); err != nil || n != MaxPairingAttempts-1 {
-		t.Fatalf("the record holds %d attempts (err %v), want %d", n, err, MaxPairingAttempts-1)
+	if st, err := reg.PairingBudget(c.DeviceID); err != nil || st.Attempts != MaxPairingAttempts-1 {
+		t.Fatalf("the record holds %d attempts (err %v), want %d", st.Attempts, err, MaxPairingAttempts-1)
 	}
 
 	restarted := NewRegistry(configDir, stateDir, WithClock(func() time.Time { return testNow }))
@@ -756,8 +761,8 @@ func TestPairingCounterWriteFailureExhaustsThePairing(t *testing.T) {
 		t.Fatalf("Confirm ran %d times on the first attempt, want 1", counter.confirms)
 	}
 	// The count really did not move — this is the state the latch exists for.
-	if n, _, err := reg.PairingBudget(c.DeviceID); err != nil || n != 0 {
-		t.Fatalf("the record holds %d attempts (err %v); the write was supposed to fail", n, err)
+	if st, err := reg.PairingBudget(c.DeviceID); err != nil || st.Attempts != 0 || !st.Unrecorded {
+		t.Fatalf("state after a failed counter write = %+v (err %v); want 0 attempts and a durable mark", st, err)
 	}
 
 	// The next attempt must NOT reach Confirm. This is the whole property: the
@@ -781,8 +786,8 @@ func TestPairingCounterWriteFailureExhaustsThePairing(t *testing.T) {
 	}
 	// That attempt retried the write and it failed again, so the count is still
 	// where it was and the latch still holds.
-	if n, _, err := reg.PairingBudget(c.DeviceID); err != nil || n != 0 {
-		t.Fatalf("the record holds %d attempts (err %v) after a failed retry, want 0", n, err)
+	if st, err := reg.PairingBudget(c.DeviceID); err != nil || st.Attempts != 0 || !st.Unrecorded {
+		t.Fatalf("state after a failed retry = %+v (err %v); the debt must still be owed", st, err)
 	}
 
 	// The writer heals. The retry lands on the next attempt, which is STILL
@@ -797,8 +802,8 @@ func TestPairingCounterWriteFailureExhaustsThePairing(t *testing.T) {
 	if counter.confirms != confirmsBefore {
 		t.Fatalf("the flushing attempt reached Confirm %d times", counter.confirms-confirmsBefore)
 	}
-	if n, _, err := reg.PairingBudget(c.DeviceID); err != nil || n != 1 {
-		t.Fatalf("after the retry the record holds %d attempts (err %v), want 1", n, err)
+	if st, err := reg.PairingBudget(c.DeviceID); err != nil || st.Attempts != 1 || st.Unrecorded {
+		t.Fatalf("after the retry the state is %+v (err %v); want 1 attempt and no mark", st, err)
 	}
 
 	// And with nothing owed, the route serves again: the latch is a hold, not a
@@ -877,6 +882,188 @@ func (f *failingCounter) RecordPairingFailure(id string) (int, error) {
 	return f.Confirmer.RecordPairingFailure(id)
 }
 
+// TestPairingCounterDebtSurvivesARestart closes the restart bypass.
+//
+// The in-memory latch alone was one process exit away from being nothing: an
+// attacker who can make a counter write fail can usually make a process exit —
+// and if they cannot, they can wait for the operator to restart it. The
+// uncounted guess was then forgotten and the budget started over.
+//
+// So the debt is written DOWN. This drives it the only honest way: a wrong code
+// whose counter write fails, then a SECOND registry value and a SECOND listener
+// over the same directories, sharing nothing but the files. The restarted
+// listener has an empty latch, so everything it refuses it refuses from disk.
+func TestPairingCounterDebtSurvivesARestart(t *testing.T) {
+	reg, _, configDir, stateDir := testRegistry(t)
+	first := listenerOver(t, reg)
+	c := pendingPairing(t, reg, "phone")
+	wrong := c
+	wrong.PairingCode = "wrong-code"
+
+	// One wrong code; its counter write fails. The debt is now owed.
+	first.confirms = &failingCounter{Confirmer: reg, failures: 1}
+	if rec := postConfirm(t, first, wrong); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the wrong code = %d, want 401", rec.Code)
+	}
+	st, err := reg.PairingBudget(c.DeviceID)
+	if err != nil || st.Attempts != 0 || !st.Unrecorded {
+		t.Fatalf("state after the failed write = %+v (err %v); want an uncounted, MARKED failure", st, err)
+	}
+
+	// The restart. A new Registry and a new Server over the same files: the
+	// latch is gone, and only the mark on disk can refuse anything.
+	restarted := NewRegistry(configDir, stateDir, WithClock(func() time.Time { return testNow }))
+	counting := &countingConfirmer{Confirmer: restarted}
+	second := listenerOver(t, restarted)
+	second.confirms = counting
+
+	// The next attempt carries the RIGHT code and must still be refused, and it
+	// must not reach Confirm: the guess is not tried, and the counter is
+	// repaired first.
+	if rec := postConfirm(t, second, c); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the first attempt after a restart = %d, want 401 — the debt did not survive", rec.Code)
+	}
+	if counting.confirms != 0 {
+		t.Fatalf("Confirm was reached %d times while a counter debt was outstanding", counting.confirms)
+	}
+	st, err = restarted.PairingBudget(c.DeviceID)
+	if err != nil || st.Attempts != 1 || st.Unrecorded {
+		t.Fatalf("state after the repair = %+v (err %v); want the guess counted and the mark gone", st, err)
+	}
+
+	// And with the debt paid the route serves again, so the mark is a hold
+	// rather than a brick.
+	if rec := postConfirm(t, second, c); rec.Code != http.StatusOK {
+		t.Fatalf("a repaired pairing did not serve: %d", rec.Code)
+	}
+	if counting.confirms != 1 {
+		t.Fatalf("Confirm ran %d times on the serving attempt, want 1", counting.confirms)
+	}
+}
+
+// TestPairingCounterDebtIsRefusedAcrossRestartsUntilItIsPaid is the same rule
+// with the repair still failing, which is the state a marker has to survive
+// more than once.
+func TestPairingCounterDebtIsRefusedAcrossRestartsUntilItIsPaid(t *testing.T) {
+	reg, _, configDir, stateDir := testRegistry(t)
+	first := listenerOver(t, reg)
+	c := pendingPairing(t, reg, "phone")
+	wrong := c
+	wrong.PairingCode = "wrong-code"
+
+	first.confirms = &failingCounter{Confirmer: reg, failures: 1}
+	postConfirm(t, first, wrong)
+
+	// Two restarts, each of which tries the repair and fails, and each of which
+	// must refuse anyway.
+	for i := 0; i < 2; i++ {
+		restarted := NewRegistry(configDir, stateDir, WithClock(func() time.Time { return testNow }))
+		srv := listenerOver(t, restarted)
+		counting := &countingConfirmer{Confirmer: &failingCounter{Confirmer: restarted, failures: 1}}
+		srv.confirms = counting
+		if rec := postConfirm(t, srv, c); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("restart %d = %d, want 401", i+1, rec.Code)
+		}
+		if counting.confirms != 0 {
+			t.Fatalf("restart %d reached Confirm with a debt outstanding", i+1)
+		}
+		if st, err := reg.PairingBudget(c.DeviceID); err != nil || !st.Unrecorded {
+			t.Fatalf("restart %d cleared the mark without paying it: %+v (err %v)", i+1, st, err)
+		}
+	}
+}
+
+// TestPairingMarkIsNotClearedByAFailedDelete pins the ordering inside the
+// repair: the in-memory latch is released only if the durable mark really went
+// away.
+//
+// A filesystem that cannot delete is a filesystem where the mark will be read
+// back next time, so releasing the latch on a failed delete would leave the two
+// halves disagreeing — and the disagreement would be resolved in the open
+// direction on any request the mark happened not to be read for.
+func TestPairingMarkIsNotClearedByAFailedDelete(t *testing.T) {
+	srv, reg, _ := confirmServer(t)
+	c := pendingPairing(t, reg, "phone")
+	wrong := c
+	wrong.PairingCode = "wrong-code"
+
+	stuck := &unclearableMark{Confirmer: &failingCounter{Confirmer: reg, failures: 1}}
+	srv.confirms = stuck
+	postConfirm(t, srv, wrong)
+
+	// The retry writes the count, but the mark cannot be dropped. The route
+	// must stay closed, and it must not report the debt as paid.
+	if rec := postConfirm(t, srv, c); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the repair attempt = %d, want 401", rec.Code)
+	}
+	if !srv.unrecorded.held(c.DeviceID) {
+		t.Fatal("the in-memory latch was released while the durable mark could not be cleared")
+	}
+	if rec := postConfirm(t, srv, c); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a pairing whose mark could not be cleared started serving again: %d", rec.Code)
+	}
+}
+
+// unclearableMark is a registry whose marker cannot be deleted.
+type unclearableMark struct{ Confirmer }
+
+func (u *unclearableMark) ClearPairingFailureUnrecorded(string) error {
+	return errors.New("companion: simulated marker delete failure")
+}
+
+// TestPairingMarkerIsAFileUnderTheRegistryDirectory pins where the mark lives
+// and what it may contain.
+//
+// It is a sidecar rather than a field in the record, and that is load-bearing:
+// the thing that just failed is the record write, so a mark written through the
+// same path would have the same failure mode. It also must carry no content —
+// one failure is the most that can ever be owed — and must inherit the
+// credential directory's modes rather than invent new ones.
+func TestPairingMarkerIsAFileUnderTheRegistryDirectory(t *testing.T) {
+	reg, _, configDir, _ := testRegistry(t)
+	c := pendingPairing(t, reg, "phone")
+
+	if err := reg.MarkPairingFailureUnrecorded(c.DeviceID); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	dir := filepath.Join(configDir, "companion", "unrecorded-failures")
+	path := filepath.Join(dir, c.DeviceID)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("the marker is not where the route will look for it: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("the marker carries %d bytes; it is a presence flag and nothing else", info.Size())
+	}
+	assertMode(t, dir, secretDirMode)
+	assertMode(t, path, secretFileMode)
+
+	// It is idempotent: at most one failure is ever owed.
+	if err := reg.MarkPairingFailureUnrecorded(c.DeviceID); err != nil {
+		t.Fatalf("a second mark must be a no-op, not an error: %v", err)
+	}
+	if st, err := reg.PairingBudget(c.DeviceID); err != nil || !st.Unrecorded {
+		t.Fatalf("state = %+v (err %v), want the mark read back", st, err)
+	}
+
+	// And clearing is idempotent the other way.
+	if err := reg.ClearPairingFailureUnrecorded(c.DeviceID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if err := reg.ClearPairingFailureUnrecorded(c.DeviceID); err != nil {
+		t.Fatalf("clearing an absent marker must be a no-op, not an error: %v", err)
+	}
+	if st, err := reg.PairingBudget(c.DeviceID); err != nil || st.Unrecorded {
+		t.Fatalf("state = %+v (err %v), want the mark gone", st, err)
+	}
+
+	// A device id that is not one has no marker, and nothing it can name
+	// reaches a path.
+	if err := reg.MarkPairingFailureUnrecorded("../../escape"); err == nil {
+		t.Fatal("a marker was written for an id that is not a device id")
+	}
+}
+
 // TestRecordPairingFailureOnlyCountsALivePairing drives the registry guard
 // DIRECTLY, and it is here because the handler's own guard hides it.
 //
@@ -897,8 +1084,8 @@ func TestRecordPairingFailureOnlyCountsALivePairing(t *testing.T) {
 			t.Fatalf("an active device counted a failure: n=%d err=%v", n, err)
 		}
 	}
-	if n, pending, err := reg.PairingBudget(active.DeviceID); err != nil || n != 0 || pending {
-		t.Fatalf("active device budget = (%d, %v, %v), want (0, false, nil)", n, pending, err)
+	if st, err := reg.PairingBudget(active.DeviceID); err != nil || st.Attempts != 0 || st.Pending {
+		t.Fatalf("active device budget = %+v (err %v), want no attempts and not pending", st, err)
 	}
 
 	// A REVOKED device: same.
@@ -926,9 +1113,9 @@ func TestRecordPairingFailureOnlyCountsALivePairing(t *testing.T) {
 			t.Fatalf("failure %d recorded as n=%d err=%v", i, n, err)
 		}
 	}
-	n, pending, err := reg.PairingBudget(live.DeviceID)
-	if err != nil || n != MaxPairingAttempts || !pending {
-		t.Fatalf("live budget = (%d, %v, %v), want (%d, true, nil)", n, pending, err, MaxPairingAttempts)
+	st, err := reg.PairingBudget(live.DeviceID)
+	if err != nil || st.Attempts != MaxPairingAttempts || !st.Pending {
+		t.Fatalf("live budget = %+v (err %v), want %d attempts and pending", st, err, MaxPairingAttempts)
 	}
 
 	// And a pending device whose code has been burned is no longer live, so it
@@ -1032,8 +1219,8 @@ func TestPairingConfirmFailsClosedWhenTheBudgetCannotBeRead(t *testing.T) {
 
 type unreadableBudget struct{ Confirmer }
 
-func (u *unreadableBudget) PairingBudget(string) (int, bool, error) {
-	return 0, false, errors.New("companion: simulated registry read failure")
+func (u *unreadableBudget) PairingBudget(string) (PairingState, error) {
+	return PairingState{}, errors.New("companion: simulated registry read failure")
 }
 
 // TestPairingConfirmSpendsNoWriteLockOnALockedOutCaller proves a caller whose
@@ -1083,7 +1270,7 @@ type countingConfirmer struct {
 	budgets  int
 }
 
-func (c *countingConfirmer) PairingBudget(id string) (int, bool, error) {
+func (c *countingConfirmer) PairingBudget(id string) (PairingState, error) {
 	c.budgets++
 	return c.Confirmer.PairingBudget(id)
 }
@@ -1202,7 +1389,9 @@ func TestPairingFloorPadsToBucketBoundaries(t *testing.T) {
 }
 
 // TestPairingRefusalsLandInTheSameTimingBucket is the timing test, and it
-// asserts BUCKET EQUALITY rather than a minimum.
+// asserts BUCKET EQUALITY rather than a minimum — across the refusals AND the
+// success, because "did I get a credential?" must not be answerable by a
+// stopwatch either.
 //
 // A minimum was the previous assertion and it was too weak: the four paths do
 // wildly different amounts of work — an unknown id returns before any
@@ -1230,8 +1419,7 @@ func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 
-	// Four devices, so each path drives its own pairing and none of them
-	// disturbs another's state.
+	// A device per path, so none of them disturbs another's state.
 	live := pendingPairing(t, reg, "wrong code")
 	stale := pendingPairing(t, reg, "expired code")
 	latched := pendingPairing(t, reg, "unrecordable counter")
@@ -1241,8 +1429,17 @@ func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
 	wrong.PairingCode = "wrong-code"
 
 	// The expired path needs a code that MATCHES and is late, which is the
-	// refusal that writes the most: it burns the code and writes a receipt.
+	// refusal that writes the most: it burns the code and writes a receipt. The
+	// clock moves ONCE, and the wrong-code paths are unaffected — Confirm
+	// compares before it checks expiry, so a mismatch is ErrPairingCode either
+	// way and still spends the counter.
 	*clock = clock.Add(PairingTTL + time.Second)
+
+	// The SUCCESS path belongs in this table too, and it is the case a
+	// refusal-only test cannot make: if timing separated "you got a credential"
+	// from "you did not", the quantizer would be protecting the wrong thing. It
+	// is paired AFTER the jump so its own code is live.
+	good := pendingPairing(t, reg, "successful confirmation")
 
 	// The latched path needs a device whose counter write already failed.
 	srv.confirms = &failingCounter{Confirmer: reg, failures: 1}
@@ -1250,29 +1447,37 @@ func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
 	latchedWrong.PairingCode = "wrong-code"
 	postConfirm(t, srv, latchedWrong)
 	srv.confirms = reg
-	// Put the latch back by hand: the line above spent the stub's one failure,
+	// Put the debt back by hand: the line above spent the stub's one failure,
 	// and what this case measures is the branch that retries an owed write.
 	srv.unrecorded.latch(latched.DeviceID)
+	if err := reg.MarkPairingFailureUnrecorded(latched.DeviceID); err != nil {
+		t.Fatal(err)
+	}
 
 	buckets := map[string]int{}
 	for _, tc := range []struct {
 		name string
 		body PairingConfirmation
+		want int
 	}{
 		// Cheapest: Confirm returns before any comparison runs.
-		{"an unknown device id", unknown},
+		{"an unknown device id", unknown, http.StatusUnauthorized},
 		// Takes the write lock and publishes the failure counter.
-		{"a wrong code against a live pairing", wrong},
+		{"a wrong code against a live pairing", wrong, http.StatusUnauthorized},
 		// Burns the code: a record write and a receipt write.
-		{"a matching but expired code", stale},
+		{"a matching but expired code", stale, http.StatusUnauthorized},
 		// Retries an owed counter write before refusing.
-		{"a budget that could not be recorded", latchedWrong},
+		{"a budget that could not be recorded", latchedWrong, http.StatusUnauthorized},
+		// The most expensive path of all: it activates the device, mints a
+		// token, writes the record and a receipt, marshals a document and
+		// stamps last_seen_at.
+		{"a successful confirmation", good, http.StatusOK},
 	} {
 		start := time.Now()
 		rec := postConfirm(t, srv, tc.body)
 		elapsed := time.Since(start)
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("%s = %d, want 401\n%s", tc.name, rec.Code, rec.Body.String())
+		if rec.Code != tc.want {
+			t.Fatalf("%s = %d, want %d\n%s", tc.name, rec.Code, tc.want, rec.Body.String())
 		}
 		// The bucket a duration fell in. Integer division, so anything in
 		// [width, 2*width) is bucket 1 — the pad guarantees at least width, and
@@ -1286,13 +1491,300 @@ func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
 			first = name
 		}
 		if bucket != buckets[first] {
-			t.Fatalf("%q landed in bucket %d and %q in bucket %d — the refusal paths are separable by a stopwatch\n%v",
+			t.Fatalf("%q landed in bucket %d and %q in bucket %d — the paths are separable by a stopwatch\n%v",
 				name, bucket, first, buckets[first], buckets)
 		}
 		if bucket < 1 {
 			t.Fatalf("%q answered inside the first bucket boundary (%v); the pad did not run\n%v", name, width, buckets)
 		}
 	}
+}
+
+// TestPairingSlowPathLandsOnTheNextBucketBoundary is the route-level proof that
+// the pad is a QUANTIZER and not a minimum.
+//
+// The pure-arithmetic test above cannot show this: a minimum and a quantizer
+// agree on every path that finishes inside one bucket, and every path this
+// route actually has does. The difference only appears when a path OVERRUNS,
+// which is the case that matters — an overrun is exactly what an observer with
+// a stopwatch reads, and a five-second registry lock budget sits behind the
+// counter write that could produce one.
+//
+// So the overrun is injected at the seam: a Confirmer that sleeps past a bucket
+// boundary before refusing. Under a minimum the response would leave at roughly
+// the sleep; under the quantizer it leaves on the NEXT boundary. Reverting
+// padToBucket's use at the route — not the function, the use — turns this red.
+func TestPairingSlowPathLandsOnTheNextBucketBoundary(t *testing.T) {
+	const width = 250 * time.Millisecond
+	// Comfortably past one boundary and comfortably short of the next, so
+	// neither jitter nor a slow machine can move the answer.
+	const overrun = width + 80*time.Millisecond
+
+	srv, reg, _ := confirmServer(t)
+	srv.pairingMinimum = width
+	c := pendingPairing(t, reg, "phone")
+	wrong := c
+	wrong.PairingCode = "wrong-code"
+	srv.confirms = &slowConfirmer{Confirmer: reg, delay: overrun}
+
+	start := time.Now()
+	rec := postConfirm(t, srv, wrong)
+	elapsed := time.Since(start)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the slow refusal = %d, want 401\n%s", rec.Code, rec.Body.String())
+	}
+
+	// Bucket TWO, exactly. A minimum would answer in bucket one, at about the
+	// overrun; anything past bucket two means the pad slept a whole extra
+	// boundary.
+	if bucket := int(elapsed / width); bucket != 2 {
+		t.Fatalf("a refusal that overran one bucket answered in %v (bucket %d), want bucket 2 — "+
+			"the pad is behaving as a minimum rather than a quantizer", elapsed, bucket)
+	}
+	if elapsed < 2*width {
+		t.Fatalf("answered in %v, before the %v boundary", elapsed, 2*width)
+	}
+}
+
+// TestPairingSlowSuccessLandsOnTheNextBucketBoundary is the same proof for the
+// path that hands back a credential, so an overrun cannot say "you succeeded"
+// any more than it can say "you failed".
+func TestPairingSlowSuccessLandsOnTheNextBucketBoundary(t *testing.T) {
+	const width = 250 * time.Millisecond
+	const overrun = width + 80*time.Millisecond
+
+	srv, reg, _ := confirmServer(t)
+	srv.pairingMinimum = width
+	c := pendingPairing(t, reg, "phone")
+	srv.confirms = &slowConfirmer{Confirmer: reg, delay: overrun}
+
+	start := time.Now()
+	rec := postConfirm(t, srv, c)
+	elapsed := time.Since(start)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the slow success = %d, want 200\n%s", rec.Code, rec.Body.String())
+	}
+	if bucket := int(elapsed / width); bucket != 2 {
+		t.Fatalf("a success that overran one bucket answered in %v (bucket %d), want bucket 2", elapsed, bucket)
+	}
+}
+
+// slowConfirmer makes Confirm overrun a bucket. It is the seam an injected slow
+// path needs, and it is deliberately the REAL registry underneath so the work
+// after the delay is production work.
+type slowConfirmer struct {
+	Confirmer
+	delay time.Duration
+}
+
+func (s *slowConfirmer) Confirm(p PairingConfirmation) (string, Device, error) {
+	time.Sleep(s.delay)
+	return s.Confirmer.Confirm(p)
+}
+
+// TestPairingSuccessPadsAfterTheMarshal is a SOURCE-LEVEL witness, and it is
+// one on purpose.
+//
+// The rule is that the pad runs after the grant is validated and marshalled,
+// in the last instant before the first byte. A wall-clock test cannot enforce
+// it: marshalling a four-field document costs microseconds, so moving the pad
+// back in front of it changes nothing a stopwatch can see and every timing test
+// in this file still passes. The property is about ORDER, so the order is what
+// is asserted.
+//
+// It is not a restatement of the code. It forbids exactly the shape the fix
+// replaced — a bare settle() call between building the grant and writing it —
+// and requires the pad to reach the writer as its hook, which is the only
+// position that puts the marshal inside the padded window. A refactor that
+// keeps both is fine; one that pads early is not.
+func TestPairingSuccessPadsAfterTheMarshal(t *testing.T) {
+	body := handleConfirmBody(t)
+
+	// Find where the success path begins: the statement that builds the grant.
+	start := -1
+	for i, stmt := range body.List {
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || len(assign.Rhs) != 1 {
+			continue
+		}
+		call, ok := assign.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "NewPairingGrant" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("handleConfirm no longer builds a grant with NewPairingGrant; this witness is stale")
+	}
+
+	// From there to the end of the handler there must be no bare settle().
+	// Every refusal above pads and returns; the success path must pad through
+	// the writer instead.
+	padded := false
+	for _, stmt := range body.List[start:] {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			expr, ok := n.(*ast.ExprStmt)
+			if !ok {
+				return true
+			}
+			call, ok := expr.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "settle" {
+				t.Error("handleConfirm pads the success path with a bare settle() before the write; " +
+					"the marshal then falls outside the padded window and a success measures " +
+					"differently from a refusal")
+			}
+			return true
+		})
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "writePayloadAfter" || len(call.Args) == 0 {
+				return true
+			}
+			last, ok := call.Args[len(call.Args)-1].(*ast.Ident)
+			if ok && last.Name == "settle" {
+				padded = true
+			}
+			return true
+		})
+	}
+	if !padded {
+		t.Fatal("handleConfirm does not hand settle to writePayloadAfter; the pad no longer runs " +
+			"in the last instant before the first byte")
+	}
+}
+
+// TestPairingWitnessRejectsAnEarlyPad is the witness's own negative control.
+//
+// A source-level witness that has stopped detecting anything passes forever, so
+// the shape it exists to reject is compiled and fed to the same predicate. If
+// this stops failing, the witness above is a no-op.
+func TestPairingWitnessRejectsAnEarlyPad(t *testing.T) {
+	const early = `package companion
+func (s *Server) handleConfirm() {
+	grant := NewPairingGrant()
+	settle()
+	if s.writePayloadAfter(w, &grant, nil) {
+		s.markSeen(dev.DeviceID)
+	}
+}`
+	file, err := parser.ParseFile(token.NewFileSet(), "witness.go", early, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, hook := padShape(t, functionBody(t, file, "handleConfirm"))
+	if !bare {
+		t.Fatal("the witness does not see a bare settle() before the write; it has become a no-op")
+	}
+	if hook {
+		t.Fatal("the witness sees a settle hook where the code passes nil")
+	}
+
+	// And the correct shape is accepted, so the witness is not simply
+	// rejecting everything.
+	const correct = `package companion
+func (s *Server) handleConfirm() {
+	grant := NewPairingGrant()
+	if s.writePayloadAfter(w, &grant, settle) {
+		s.markSeen(dev.DeviceID)
+	}
+}`
+	file, err = parser.ParseFile(token.NewFileSet(), "witness.go", correct, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, hook = padShape(t, functionBody(t, file, "handleConfirm"))
+	if bare || !hook {
+		t.Fatalf("the witness rejects the correct shape (bare=%v hook=%v)", bare, hook)
+	}
+}
+
+// padShape reports whether a handler body holds a bare settle() call after the
+// grant is built, and whether it hands settle to writePayloadAfter.
+func padShape(t *testing.T, body *ast.BlockStmt) (bare, hook bool) {
+	t.Helper()
+	start := -1
+	for i, stmt := range body.List {
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || len(assign.Rhs) != 1 {
+			continue
+		}
+		call, ok := assign.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "NewPairingGrant" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("no NewPairingGrant in the body handed to padShape")
+	}
+	for _, stmt := range body.List[start:] {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			if expr, ok := n.(*ast.ExprStmt); ok {
+				if call, ok := expr.X.(*ast.CallExpr); ok {
+					if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "settle" {
+						bare = true
+					}
+				}
+			}
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "writePayloadAfter" || len(call.Args) == 0 {
+				return true
+			}
+			if last, ok := call.Args[len(call.Args)-1].(*ast.Ident); ok && last.Name == "settle" {
+				hook = true
+			}
+			return true
+		})
+	}
+	return bare, hook
+}
+
+// handleConfirmBody returns the production handler's body.
+func handleConfirmBody(t *testing.T) *ast.BlockStmt {
+	t.Helper()
+	for _, file := range companionProductionFiles(t) {
+		if body := findFunctionBody(file, "handleConfirm"); body != nil {
+			return body
+		}
+	}
+	t.Fatal("handleConfirm not found in the package source")
+	return nil
+}
+
+func functionBody(t *testing.T, file *ast.File, name string) *ast.BlockStmt {
+	t.Helper()
+	body := findFunctionBody(file, name)
+	if body == nil {
+		t.Fatalf("%s not found", name)
+	}
+	return body
+}
+
+func findFunctionBody(file *ast.File, name string) *ast.BlockStmt {
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == name && fn.Body != nil {
+			return fn.Body
+		}
+	}
+	return nil
 }
 
 // TestPairingFloorDefaultsToTheConstant keeps the production default honest: the
