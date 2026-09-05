@@ -776,6 +776,7 @@ func captureListener(t *testing.T, policy string) (http.Handler, string, Config,
 	srv, err := companion.NewServer(companion.ServerOptions{
 		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
 		Devices:  reg,
+		Pairings: reg,
 		Reader:   newCompanionReader(cfg),
 		Writer:   probe,
 		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(cfg.OperationClock)),
@@ -937,6 +938,7 @@ func restartedCaptureListener(t *testing.T, cfg Config, now time.Time) http.Hand
 	srv, err := companion.NewServer(companion.ServerOptions{
 		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
 		Devices:  reg,
+		Pairings: reg,
 		Reader:   newCompanionReader(cfg),
 		Writer:   newCompanionWriter(),
 		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(clock)),
@@ -2388,6 +2390,7 @@ func loggedCaptureListener(t *testing.T, cfg Config, log *bytes.Buffer) http.Han
 	srv, err := companion.NewServer(companion.ServerOptions{
 		Addr:     fmt.Sprintf("%s:%d", companion.LoopbackHost, defaultCompanionPort),
 		Devices:  reg,
+		Pairings: reg,
 		Reader:   newCompanionReader(cfg),
 		Writer:   newCompanionWriter(),
 		Captures: companion.NewReservationStore(cfg.StateDir, companion.WithReservationClock(clock)),

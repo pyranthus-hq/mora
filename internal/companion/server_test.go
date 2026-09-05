@@ -104,11 +104,17 @@ func testServer(t *testing.T) (*Server, *stubReader, *Registry, string, *bytes.B
 	srv, err := NewServer(ServerOptions{
 		Addr:     "127.0.0.1:7778",
 		Devices:  reg,
+		Pairings: reg,
 		Reader:   reader,
 		Writer:   newStubWriter(),
 		Captures: NewReservationStore(t.TempDir(), WithReservationClock(func() time.Time { return testNow })),
 		Now:      func() time.Time { return testNow },
-		Log:      log,
+		// A negative floor switches the pairing timing floor OFF. Every test in
+		// this package that is not ABOUT the floor would otherwise pay a quarter
+		// second per confirmation; TestPairingConfirmPadsEveryAnswerToTheFloor
+		// builds its own listener with a real one.
+		PairingFloor: -1,
+		Log:          log,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -123,6 +129,34 @@ func request(method, path, token string, body io.Reader) *http.Request {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
 	return r
+}
+
+// pendingPairing registers a device and returns the confirmation the phone would
+// post. It stops one step short of pairAndConfirm: the code is unspent, which is
+// the state the pairing route exists to consume.
+func pendingPairing(t *testing.T, reg *Registry, label string) PairingConfirmation {
+	t.Helper()
+	payload, err := reg.Pair(label, PlatformIOS, "http://127.0.0.1:7778")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	c := NewPairingConfirmation()
+	c.DeviceID = payload.DeviceID
+	c.PairingCode = payload.PairingCode
+	c.Label = label
+	c.Platform = PlatformIOS
+	c.PublicKey = testPublicKey
+	c.ConfirmedAt = payload.ExpiresAt
+	return c
+}
+
+func confirmBody(t *testing.T, c PairingConfirmation) io.Reader {
+	t.Helper()
+	body, err := Marshal(&c)
+	if err != nil {
+		t.Fatalf("marshal pairing confirmation: %v", err)
+	}
+	return bytes.NewReader(body)
 }
 
 func contextBody(t *testing.T, mode ContextMode, query string) io.Reader {
@@ -145,18 +179,23 @@ func contextBody(t *testing.T, mode ContextMode, query string) io.Reader {
 // declared table AND drives the mux, so a route added to one without the other
 // is caught either way.
 //
-// N21 widened the table from three routes to four. The RULE is untouched — the
-// allowlist is still a literal expectation in this file, still compared position
-// by position, and still driven through the real mux — and only the expected
-// table moved, which is the reviewable act adding a route is supposed to be.
-func TestServerServesExactlyFourRoutes(t *testing.T) {
-	srv, _, _, token, _ := testServer(t)
+// N21 widened the table from three routes to four, and N12b to five. The RULE
+// is untouched — the allowlist is still a literal expectation in this file,
+// still compared position by position, and still driven through the real mux —
+// and only the expected table moved, which is the reviewable act adding a route
+// is supposed to be.
+//
+// Public is part of the expectation, so a route cannot become unauthenticated
+// without this literal changing.
+func TestServerServesExactlyFiveRoutes(t *testing.T) {
+	srv, _, reg, token, _ := testServer(t)
 
 	want := []Route{
 		{Method: http.MethodGet, Pattern: "/v1/companion/today"},
 		{Method: http.MethodPost, Pattern: "/v1/companion/context"},
 		{Method: http.MethodGet, Pattern: "/v1/companion/health"},
 		{Method: http.MethodPost, Pattern: "/v1/companion/captures"},
+		{Method: http.MethodPost, Pattern: "/v1/companion/pairing/confirm", Public: true},
 	}
 	got := srv.Routes()
 	if len(got) != len(want) {
@@ -176,6 +215,8 @@ func TestServerServesExactlyFourRoutes(t *testing.T) {
 			body = contextBody(t, ModeThink, "what did Sam decide")
 		case RouteCapture:
 			body = captureBody(t, srv, "remember the wifi code")
+		case RouteConfirm:
+			body = confirmBody(t, pendingPairing(t, reg, "second phone"))
 		}
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, request(route.Method, route.Pattern, token, body))
@@ -222,6 +263,17 @@ func TestServerRefusesEveryRouteOutsideTheAllowlist(t *testing.T) {
 		// publishes no list schema for it.
 		{http.MethodPost, "/v1/companion/capture"},
 		{http.MethodGet, "/v1/companion/receipts"},
+		// The pairing route's near-misses. N12b added exactly one string,
+		// "/v1/companion/pairing/confirm"; every neighbouring spelling a client
+		// might guess must stay unmounted, because a route that answers to more
+		// than one path is a route whose name is whatever the first client sent.
+		// The collection paths matter most: a device list under any spelling is
+		// the enumeration this listener exists not to offer.
+		{http.MethodPost, "/v1/companion/pairings/confirm"},
+		{http.MethodPost, "/v1/companion/pairing/confirmation"},
+		{http.MethodPost, "/v1/companion/confirm"},
+		{http.MethodGet, "/v1/companion/pairing"},
+		{http.MethodGet, "/v1/companion/pairings"},
 		{http.MethodGet, "/v1/companion/captures/rcp_1"},
 		{http.MethodDelete, "/v1/companion/memories/mem_1"},
 		{http.MethodGet, "/v1/companion/memories/mem_1"},
@@ -280,7 +332,7 @@ func TestServerRefusesEveryMethodOutsideTheAllowlist(t *testing.T) {
 		http.MethodTrace,
 	}
 
-	for _, pattern := range []string{RouteToday, RouteContext, RouteHealth, RouteCapture} {
+	for _, pattern := range []string{RouteToday, RouteContext, RouteHealth, RouteCapture, RouteConfirm} {
 		for _, method := range methods {
 			if method == allowed[pattern] || method == http.MethodConnect {
 				// CONNECT is not a request httptest can shape meaningfully.
@@ -330,6 +382,9 @@ func TestServerMountsNothingOutsideTheDeclaredRoutes(t *testing.T) {
 		"/", "/v1", "/v1/", "/v1/companion", "/v1/companion/",
 		"/call", "/healthz", "/brief", "/search", "/think", "/write", "/entity/Sam",
 		"/v1/companion/capture", "/v1/companion/receipts",
+		"/v1/companion/pairing", "/v1/companion/pairing/",
+		"/v1/companion/pairings", "/v1/companion/pairings/confirm",
+		"/v1/companion/pairing/confirm/extra", "/v1/companion/pairing/confirmation",
 		"/v1/companion/devices", "/v1/companion/operations",
 		"/v1/companion/memories", "/v1/companion/sync", "/v1/companion/config",
 		"/v1/companion/today/extra", "/v1/companion/health/extra", "/v1/companion/context/extra",
@@ -656,13 +711,13 @@ func TestNewServerBindsLoopbackOnly(t *testing.T) {
 		"",
 	} {
 		t.Run(addr, func(t *testing.T) {
-			_, err := NewServer(ServerOptions{Addr: addr, Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
+			_, err := NewServer(ServerOptions{Addr: addr, Devices: reg, Pairings: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
 			if !errors.Is(err, ErrNotLoopback) {
 				t.Fatalf("NewServer(%q) = %v, want ErrNotLoopback", addr, err)
 			}
 		})
 	}
-	if _, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())}); err != nil {
+	if _, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Pairings: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())}); err != nil {
 		t.Fatalf("NewServer refused the loopback address: %v", err)
 	}
 }
@@ -976,6 +1031,7 @@ func TestServerBoundsASlowKernelCallWithARealDeadline(t *testing.T) {
 	srv, err := NewServer(ServerOptions{
 		Addr:          "127.0.0.1:7778",
 		Devices:       reg,
+		Pairings:      reg,
 		Reader:        reader,
 		Writer:        newStubWriter(),
 		Captures:      NewReservationStore(t.TempDir()),
@@ -1431,7 +1487,7 @@ func TestServerStartupBannerCarriesNoCredential(t *testing.T) {
 	// buffer the test polls has to be synchronized or -race reports the test's
 	// own read against it.
 	log := &lockedBuffer{}
-	srv, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir()), Log: log})
+	srv, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Devices: reg, Pairings: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir()), Log: log})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1521,7 +1577,7 @@ func TestServerWritesTheDeviceRegistryAtMostOncePerWindow(t *testing.T) {
 				// so Marshal refuses it and writePayload answers 500.
 				freshReader.today.Items = []TodayItem{{ID: "itm_1", Kind: ItemChanged, Title: "Uncited", Evidence: []Evidence{}}}
 			}
-			fresh, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: reg, Reader: freshReader, Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
+			fresh, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: reg, Pairings: reg, Reader: freshReader, Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1588,7 +1644,7 @@ func TestServerStampsLastSeenAtAndNeverFailsAReadForIt(t *testing.T) {
 	}
 
 	failing := &failingStamper{Registry: reg}
-	broken, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: failing, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
+	broken, err := NewServer(ServerOptions{Addr: "127.0.0.1:7778", Devices: failing, Pairings: reg, Reader: newStubReader(), Writer: newStubWriter(), Captures: NewReservationStore(t.TempDir())})
 	if err != nil {
 		t.Fatal(err)
 	}

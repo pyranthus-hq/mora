@@ -301,6 +301,7 @@ func restartCaptureServer(t *testing.T, reg *Registry, root string, writer Write
 	srv, err := NewServer(ServerOptions{
 		Addr:     "127.0.0.1:7778",
 		Devices:  reg,
+		Pairings: reg,
 		Reader:   newStubReader(),
 		Writer:   writer,
 		Captures: reopenStore(root, func() time.Time { return now }),

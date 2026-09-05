@@ -1050,7 +1050,7 @@
       "kind": "subcommand",
       "platform": "all",
       "json_contract": "exempt",
-      "reason": "expose refuses until the registry holds an ACTIVE device, and the generic prober drives a fresh temp home whose registry is empty, so it can never reach the success document; the mora.companion.expose receipt envelope is pinned by TestCompanionExposePrintsTheExactTailscaleCommands"
+      "reason": "the success document names the devices a publication is for, so it carries a per-install device id and a per-install pairing-window expiry and no two runs produce the same document; the mora.companion.expose receipt envelope is pinned by TestCompanionExposePrintsTheExactTailscaleCommands and its bootstrap branch, including the confirm URL and the window deadline, by TestCompanionExposeRefusesOnlyWhenNothingCouldEverAuthenticate"
     },
     {
       "path": "companion serve",
