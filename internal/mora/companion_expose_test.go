@@ -71,11 +71,25 @@ func decodeExpose(t *testing.T, out string) companionExposePayload {
 	return got
 }
 
-func TestCompanionExposeRefusesUntilADeviceIsActive(t *testing.T) {
+// TestCompanionExposeRefusesOnlyWhenNothingCouldEverAuthenticate is the
+// bootstrap gate, and the PENDING case is the one that changed.
+//
+// `expose` used to refuse whenever no device was ACTIVE. That was circular: the
+// first device cannot become active until the phone reaches the confirmation
+// route, and it cannot reach it until the listener is published — which is what
+// this command exists to explain. An operator following the documented path got
+// data.not_found and no way forward.
+//
+// The question the refusal asks is now the one it meant to ask: is there
+// anything on this Mac that could authenticate, or finish authenticating, once
+// the port is published? An active device can, and so can a pending one whose
+// code is still live. Only when there is neither is publishing a port for no
+// one.
+func TestCompanionExposeRefusesOnlyWhenNothingCouldEverAuthenticate(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 
-	// Empty registry.
+	// Empty registry: nothing could ever answer, so this still refuses.
 	stdout, _, err := runSplit(t, "companion", "expose", "--json")
 	if err == nil {
 		t.Fatalf("expose published with no devices at all\nstdout: %s", stdout)
@@ -83,31 +97,82 @@ func TestCompanionExposeRefusesUntilADeviceIsActive(t *testing.T) {
 	if !strings.Contains(err.Error(), "mora companion pair") {
 		t.Fatalf("the refusal does not name the command that fixes it: %v", err)
 	}
+	if !strings.Contains(err.Error(), "no open pairing window") {
+		t.Fatalf("the refusal does not say the window is the other way through: %v", err)
+	}
 	if strings.TrimSpace(stdout) != "" {
 		t.Fatalf("a refused expose still wrote to stdout:\n%s", stdout)
 	}
 
-	// A PENDING device is still not a device that can authenticate. This is the
-	// case a count of "paired" devices would get wrong: `companion pair` has
-	// run, a code is live, and the listener would still answer 401 to everything
-	// the phone sent.
-	run(t, "companion", "pair", "--json")
+	// A PENDING device with a live code is the bootstrap. This MUST publish:
+	// the publication is what lets the phone reach the confirm route at all.
+	pair := decodeCompanion(t, run(t, "companion", "pair", "--json"), schemaCompanionPair)
+	pendingID, _ := pair["device_id"].(string)
+
+	got := decodeExpose(t, run(t, "companion", "expose", "--hostname", exampleNode, "--json"))
+	if got.ActiveDevices != 0 {
+		t.Fatalf("active_devices = %d, want 0 in the bootstrap case", got.ActiveDevices)
+	}
+	if !got.PairingOpen {
+		t.Fatal("expose published for a pending device without saying a pairing window is open")
+	}
+	if got.PairingExpires == "" {
+		t.Fatal("the bootstrap publication does not say when the window closes")
+	}
+	if len(got.PendingDevices) != 1 || got.PendingDevices[0] != pendingID {
+		t.Fatalf("pending_devices = %v, want [%s]", got.PendingDevices, pendingID)
+	}
+	// The confirm URL is on the PUBLISHED origin, because that is the address
+	// the phone can actually reach, and it is mounted once.
+	wantConfirm := "https://" + exampleNode + companion.RouteConfirm
+	if got.ConfirmURL != wantConfirm {
+		t.Fatalf("confirm_url = %q, want %q", got.ConfirmURL, wantConfirm)
+	}
+	// And the serve commands are really there: a publication that named the
+	// window but withheld the commands would be the same dead end in a new
+	// shape.
+	if len(got.ServeCommand) == 0 || len(got.ListenCommand) == 0 {
+		t.Fatalf("the bootstrap publication printed no commands: %+v", got)
+	}
+
+	// The human rendering has to carry the deadline, because the operator now
+	// has one: the code dies while they are pasting tailscale commands.
+	human := run(t, "companion", "expose", "--hostname", exampleNode)
+	for _, want := range []string{"pairing window closes", got.PairingExpires, wantConfirm} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("the bootstrap rendering does not carry %q:\n%s", want, human)
+		}
+	}
+
+	// A window that has EXPIRED is not a window. Nothing can authenticate and
+	// nothing can finish authenticating, so the refusal comes back.
+	revokeEveryDevice(t)
 	stdout, _, err = runSplit(t, "companion", "expose", "--json")
 	if err == nil {
-		t.Fatalf("expose published for a pending device\nstdout: %s", stdout)
-	}
-	if !strings.Contains(err.Error(), "no active paired device") {
-		t.Fatalf("the refusal does not say the device is not active: %v", err)
-	}
-	if strings.TrimSpace(stdout) != "" {
-		t.Fatalf("a refused expose still wrote to stdout:\n%s", stdout)
+		t.Fatalf("expose published with only a dead pairing\nstdout: %s", stdout)
 	}
 
-	// And it prints once a device is genuinely usable.
+	// And it still prints once a device is genuinely usable.
 	activateOneDevice(t)
-	got := decodeExpose(t, run(t, "companion", "expose", "--hostname", exampleNode, "--json"))
+	got = decodeExpose(t, run(t, "companion", "expose", "--hostname", exampleNode, "--json"))
 	if got.ActiveDevices != 1 {
 		t.Fatalf("active_devices = %d, want 1", got.ActiveDevices)
+	}
+}
+
+// revokeEveryDevice kills every pairing in the temp home, which is the closest
+// a test can get to "the window closed" without moving the clock: Revoke clears
+// the pairing code and the expiry exactly as expiry does.
+func revokeEveryDevice(t *testing.T) {
+	t.Helper()
+	list := decodeCompanion(t, run(t, "companion", "list", "--json"), schemaCompanionList)
+	devices, _ := list["devices"].([]any)
+	for _, d := range devices {
+		row, _ := d.(map[string]any)
+		id, _ := row["device_id"].(string)
+		if id != "" {
+			run(t, "companion", "revoke", id)
+		}
 	}
 }
 

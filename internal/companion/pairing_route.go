@@ -23,7 +23,9 @@ package companion
 //	                 PairingFloor, so the cheap refusals and the expensive ones
 //	                 are not separable by a stopwatch
 //	one budget       MaxPairingAttempts wrong codes against a live pairing and
-//	                 the pairing is REVOKED, with a receipt
+//	                 the pairing is REVOKED, with a receipt. The count is
+//	                 DURABLE — it lives in the pending device's record, so a
+//	                 restart does not hand an attacker five fresh guesses
 //	no logging       the handler writes nothing to the listener's log, and the
 //	                 token it hands back exists only in the response body
 //
@@ -90,18 +92,6 @@ const (
 	// in the receipts directory.
 	MaxPairingAttempts = 5
 
-	// maxTrackedPairings bounds the attempt table.
-	//
-	// Only a device the registry recognizes AND finds pending can enter it, and
-	// pending devices are bounded by MaxDevices, so a remote caller cannot grow
-	// this table at all — every entry costs a local `mora companion pair`. The
-	// cap is the backstop for a listener that outlives many pairing cycles.
-	// Reaching it fails CLOSED: the route stops confirming until the listener
-	// is restarted, because a full table means the lockout can no longer be
-	// enforced, and a route that cannot enforce its own rate limit must not
-	// keep answering.
-	maxTrackedPairings = 256
-
 	// maxInFlightConfirmations is the route's own concurrency budget. ONE, and
 	// it is deliberately not shared with maxInFlightKernelCalls: a confirmation
 	// takes the registry's cross-process write lock rather than reading the
@@ -124,6 +114,10 @@ const (
 // this route's own act: five wrong codes end the pairing, and the thing that
 // decides that is the thing that must be able to carry it out.
 type Confirmer interface {
+	// PairingBudget is the DURABLE attempt count, read before any guess is
+	// tried, so a restart does not hand an attacker five fresh attempts.
+	PairingBudget(deviceID string) (attempts int, pending bool, err error)
+	RecordPairingFailure(deviceID string) (int, error)
 	Confirm(c PairingConfirmation) (string, Device, error)
 	Revoke(deviceID string) (Device, bool, error)
 }
@@ -186,6 +180,16 @@ func (g *PairingGrant) Validate() error {
 	if err := validateFingerprint("token_fingerprint", g.TokenFingerprint); err != nil {
 		return err
 	}
+	// The fingerprint must cover the token it travels WITH, through the same
+	// derivation N11 stores and `mora companion list` prints. A well-formed
+	// digest of some other string is the shape this check exists to refuse: the
+	// whole reason the field is here is that a person compares it against the
+	// Mac, and a grant whose two halves disagree would send them to compare a
+	// value that describes nothing they hold.
+	if g.TokenFingerprint != Fingerprint(g.Token) {
+		return errf(CodeInvalidValue, "token_fingerprint",
+			"the fingerprint does not cover the token it travels with")
+	}
 	return validateTimestamp("issued_at", g.IssuedAt)
 }
 
@@ -193,43 +197,42 @@ func (g *PairingGrant) Validate() error {
 // The attempt budget
 // ---------------------------------------------------------------------------
 
-// pairingLimiter is the per-listener attempt budget. It lives in memory: a
-// restart forgets the count, which is correct, because a restart also drops
-// every socket an attacker held and the operator is the one who did it.
-type pairingLimiter struct {
-	mu       sync.Mutex
-	failures map[string]int
-	// full latches once the table has hit its cap. See maxTrackedPairings for
-	// why that fails closed rather than falling back to no limit at all.
-	full bool
-}
-
-func newPairingLimiter() *pairingLimiter {
-	return &pairingLimiter{failures: map[string]int{}}
-}
-
-// blocked reports whether a confirmation for this device must be refused
-// without reaching the registry at all.
-func (l *pairingLimiter) blocked(deviceID string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.full || l.failures[deviceID] >= MaxPairingAttempts
-}
-
-// fail records one wrong code against a live pending pairing and reports
-// whether this attempt was the one that spent the budget.
+// The budget is DURABLE and lives in the pending device's own record. It used
+// to be a map in this process, and that was wrong in a way a restart makes
+// obvious: an in-memory counter hands an attacker five fresh guesses every time
+// the listener is restarted, and an attacker who can make the process exit — or
+// who simply waits for the operator to restart it — has no budget at all.
 //
-// It reports true EXACTLY once per device, on the attempt that reaches the cap,
-// so the revocation below happens once rather than on every subsequent request.
-func (l *pairingLimiter) fail(deviceID string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if _, tracked := l.failures[deviceID]; !tracked && len(l.failures) >= maxTrackedPairings {
-		l.full = true
-		return false
-	}
-	l.failures[deviceID]++
-	return l.failures[deviceID] == MaxPairingAttempts
+// Registry.PairingBudget is the read and Registry.RecordPairingFailure is the
+// write. Both refuse to touch a device that is not pending with a live code, so
+// the counter can never accumulate against an active or revoked one; see
+// RecordPairingFailure for why that restriction is the security property.
+
+// pairingRefused reports whether err is one of Registry.Confirm's refusals.
+//
+// It exists because the ONE error the handler tolerates — ErrReceiptNotWritten,
+// meaning the change committed and only its audit row did not — can arrive
+// JOINED to a refusal. Registry.Confirm returns errors.Join(ErrPairingExpired,
+// ErrReceiptNotWritten) when a matching-but-late code is burned and the burn's
+// receipt fails to write. Treating any receipt warning as success there built a
+// grant out of an empty token and answered 500, which is both a distinguishable
+// refusal and a lie about what happened.
+func pairingRefused(err error) bool {
+	return errors.Is(err, ErrPairingCode) ||
+		errors.Is(err, ErrPairingExpired) ||
+		errors.Is(err, ErrNotPending) ||
+		errors.Is(err, ErrNoSuchDevice)
+}
+
+// grantIssued reports whether Confirm actually minted a credential.
+//
+// Two independent conditions, deliberately: a token was returned, AND no
+// refusal is joined to the error. Either alone would do today — Confirm returns
+// "" for every refusal — but this is the predicate that decides whether an
+// unauthenticated caller gets a 401 or a bearer token, and it should not depend
+// on one invariant in another file staying true.
+func grantIssued(token string, err error) bool {
+	return token != "" && !pairingRefused(err)
 }
 
 // ---------------------------------------------------------------------------
@@ -295,31 +298,69 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The budget is checked BEFORE the registry, so a device whose pairing is
-	// already spent cannot make a locked-out caller cost a file lock per
-	// request.
-	if s.pairings.blocked(c.DeviceID) {
+	// The durable budget is read BEFORE any guess is tried. A locked-out caller
+	// costs one bounded registry READ — never the cross-process write lock —
+	// so it cannot stall `mora companion pair` or `revoke` from the network.
+	attempts, pending, err := s.confirms.PairingBudget(c.DeviceID)
+	if err != nil {
+		// Fail CLOSED. A budget that cannot be read is a budget that cannot be
+		// enforced, and a route that cannot enforce its own rate limit must not
+		// keep answering guesses.
+		settle()
+		writeUnauthorized(w)
+		return
+	}
+	if attempts >= MaxPairingAttempts {
+		// The budget is spent. If the record is STILL pending, the revocation
+		// the budget called for did not take — a transient lock loss, a failed
+		// write — so it is retried here rather than left undone. This is what
+		// "the revoke result is checked" buys: not a different answer to this
+		// caller, who gets the same 401 either way, but a revocation that is
+		// retried on every subsequent attempt until it lands.
+		if pending {
+			_, _, rerr := s.confirms.Revoke(c.DeviceID)
+			if rerr != nil && !errors.Is(rerr, ErrReceiptNotWritten) {
+				// Still refused, and the record stays pending, so the next
+				// attempt comes back through this branch and tries again.
+				settle()
+				writeUnauthorized(w)
+				return
+			}
+		}
 		settle()
 		writeUnauthorized(w)
 		return
 	}
 
 	token, dev, err := s.confirms.Confirm(c)
-	// ErrReceiptNotWritten means the device IS active and this token is the
-	// only copy of its credential — see Registry.Confirm. Discarding it here
-	// because an audit row failed would strand exactly the credential nobody
-	// holds that the record-first ordering exists to prevent.
-	if err != nil && !errors.Is(err, ErrReceiptNotWritten) {
+	// ErrReceiptNotWritten is the ONE error tolerated here, and only alongside a
+	// credential that was actually minted: it means the device IS active and
+	// this token is the only copy of it, so discarding it because an audit row
+	// failed would strand exactly the credential nobody holds that the
+	// record-first ordering exists to prevent.
+	//
+	// It is NOT tolerated on a refusal. Confirm joins it to ErrPairingExpired
+	// when a matching-but-late code is burned and the burn's receipt fails to
+	// write, and treating that as success built a grant out of an empty token
+	// and answered 500 — a refusal an attacker could tell apart from every
+	// other one, and a 500 that claimed something had gone wrong on the Mac
+	// rather than with the code.
+	// The ONE tolerated failure, named rather than inlined: a credential was
+	// actually minted, and the only thing that went wrong is its audit row.
+	unaudited := grantIssued(token, err) && errors.Is(err, ErrReceiptNotWritten)
+	if err != nil && !unaudited {
 		// Only a wrong code against a live pending pairing spends the budget.
-		// See the file comment for why an unknown device and an already-settled
-		// one deliberately do not.
-		if errors.Is(err, ErrPairingCode) && s.pairings.fail(c.DeviceID) {
-			// The revocation is what makes the budget mean something: the
-			// pairing under attack ends, and Registry.Revoke writes the
-			// `revoked` receipt record-first. Its outcome does not change the
-			// answer — a caller that just spent the budget gets the same 401
-			// either way — so it is deliberately not inspected.
-			_, _, _ = s.confirms.Revoke(c.DeviceID)
+		// See RecordPairingFailure for why an unknown device and an
+		// already-settled one deliberately do not.
+		if errors.Is(err, ErrPairingCode) {
+			spent, ferr := s.confirms.RecordPairingFailure(c.DeviceID)
+			if ferr == nil && spent >= MaxPairingAttempts {
+				// The revocation is what makes the budget mean something. Its
+				// result is CHECKED rather than discarded: a failure leaves the
+				// record pending with the count already durable, so the branch
+				// above retries it on the next attempt.
+				_, _, _ = s.confirms.Revoke(c.DeviceID)
+			}
 		}
 		settle()
 		writeUnauthorized(w)

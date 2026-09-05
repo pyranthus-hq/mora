@@ -1040,10 +1040,12 @@ mid-pairing, which is the device whose code is under attack.
 `TestPairingLockoutCannotRevokeADeviceItDoesNotProtect` drives twice the budget at an active device
 and at a fistful of invented ids, and proves both survive.
 
-The attempt table is bounded (`maxTrackedPairings`, 256) and only a locally-paired device can enter
-it, so a remote caller cannot grow it at all. Filling it **fails closed**: the route stops confirming
-until the listener restarts, because a rate limiter that silently stops limiting is worse than one
-that stops answering.
+The counter is stored on the pending record and moves only through `Registry.RecordPairingFailure`,
+which refuses to touch a device that is not pending with a live code — so it can never accumulate
+against an active or revoked one, and a remote caller cannot create records at all. Reading it is a
+bounded registry **read**, never the cross-process write lock, so a stranger repeating a spent guess
+cannot stall `mora companion pair` or `revoke` on the Mac
+(`TestPairingConfirmSpendsNoWriteLockOnALockedOutCaller`).
 
 ### What the exemption does and does not cost
 

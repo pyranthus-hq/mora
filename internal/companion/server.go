@@ -244,9 +244,9 @@ type Server struct {
 	// pairing is the confirmation budget: one at a time, listener-wide. It is
 	// separate from kernel on purpose — see pairingSlot.
 	pairing chan struct{}
-	// pairings is the per-device attempt budget, and pairingMinimum is the
-	// timing floor. Both live in pairing_route.go.
-	pairings       *pairingLimiter
+	// pairingMinimum is the confirmation route's timing floor. The attempt
+	// budget it sits beside is NOT here: it is durable, and lives in the
+	// pending device's own record. See pairing_route.go.
 	pairingMinimum time.Duration
 
 	mu   sync.Mutex
@@ -331,7 +331,6 @@ func NewServer(o ServerOptions) (*Server, error) {
 		kernel:        make(chan struct{}, maxInFlightKernelCalls),
 
 		pairing:        make(chan struct{}, maxInFlightConfirmations),
-		pairings:       newPairingLimiter(),
 		pairingMinimum: floor,
 
 		seen: map[string]time.Time{},

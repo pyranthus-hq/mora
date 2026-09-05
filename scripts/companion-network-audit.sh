@@ -98,6 +98,9 @@ CONFIRM_ROUTE="/v1/companion/pairing/confirm"
 # DEVICE_TOKEN is the credential the confirmation mints. Empty until it does.
 DEVICE_TOKEN=""
 PAIRING_CODE=""
+# CONFIRM_URL is what `mora companion pair` EMITTED. The audit follows it rather
+# than assembling a URL of its own; see confirm_pairing.
+CONFIRM_URL=""
 
 # ---------------------------------------------------------------------------
 # Output
@@ -294,6 +297,35 @@ probe_active_gate() {
   case "$active" in ''|*[!0-9]*) return 1 ;; esac
   [ "$active" -ge 1 ] || return 1
   return 0
+}
+
+# confirm_path_from extracts the absolute path from an emitted confirm_url.
+#
+# It is a pure function over text so --self-test can feed it fixtures, and it
+# fails CLOSED: an empty value, a value with no scheme, or one whose authority is
+# followed by nothing is not a URL a client could follow.
+#
+# $1 the emitted confirm_url.
+confirm_path_from() {
+  local raw=$1 rest
+  [ -n "${raw//[[:space:]]/}" ] || return 1
+  case "$raw" in
+    *://*) ;;
+    *) return 1 ;;
+  esac
+  rest=${raw#*://}
+  case "$rest" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+  rest=/${rest#*/}
+  # A path is an absolute path and nothing else; a query or a fragment on a
+  # pairing route is not something this contract publishes.
+  case "$rest" in
+    *[\?\#]*) return 1 ;;
+  esac
+  [ "$rest" != "/" ] || return 1
+  printf '%s\n' "$rest"
 }
 
 # probe_grant reads a pairing grant and prints the bearer token it carries.
@@ -683,10 +715,32 @@ http_status() {
 # request that asks for the token. Everything it does, a phone can do; nothing it
 # does reaches into the registry.
 #
-# $1 node fqdn, $2 tailnet port, $3 the device id `mora companion pair` returned.
+# The URL is built from the confirm_url `mora companion pair` EMITTED, not from
+# a path this script knows. That is the point: the whole reason the payload
+# carries a confirm_url is so a client never has to guess the route, and an audit
+# that hard-coded the route would pass while every real client 404ed.
+#
+# Only the emitted PATH is taken, and the authority is the published one. The
+# emitted URL's origin is the pairing endpoint's — loopback by default, and the
+# audit deliberately publishes over plaintext HTTP, which `pair` will not accept
+# as a non-loopback endpoint. So the path is what is consumed and the transport
+# is the audit's; if the route string ever moves, this follows it.
+#
+# $1 node fqdn, $2 tailnet port, $3 the device id `mora companion pair` returned,
+# $4 the confirm_url it emitted.
 confirm_pairing() {
-  local node=$1 port=$2 device=$3 url body status public_key confirmed_at payload replay
-  url="http://${node}:${port}${CONFIRM_ROUTE}"
+  local node=$1 port=$2 device=$3 emitted=$4 url path body status public_key confirmed_at payload replay
+  path=$(confirm_path_from "$emitted") || {
+    fail "P1 mora companion pair emitted no usable confirm_url"
+    DEVICE_TOKEN=""
+    return 0
+  }
+  if [ "$path" != "$CONFIRM_ROUTE" ]; then
+    # Not fatal — the emitted value is what a client would follow, so it is what
+    # is used — but a disagreement is worth saying out loud.
+    note "the emitted confirm_url path is ${path}, not the ${CONFIRM_ROUTE} this script expected"
+  fi
+  url="http://${node}:${port}${path}"
   # A real ed25519 public key shape: 32 random bytes, standard base64. The
   # registry stores it and does not interpret it, but the SCHEMA rejects
   # anything that is not 32 decoded bytes, so a fixture string would be refused
@@ -791,7 +845,13 @@ run_live() {
   pair_json=$("$WORKDIR/mora" companion pair --label "audit" --json) || die "mora companion pair failed"
   device_id=$(printf '%s' "$pair_json" | json_query "print(d['device_id'])" '.device_id')
   PAIRING_CODE=$(printf '%s' "$pair_json" | json_query "print(d['pairing_code'])" '.pairing_code')
+  # The confirm_url is READ from the payload rather than assembled here. A phone
+  # scans this document and follows this field; an audit that built the URL
+  # itself would prove the route works while leaving the field that points at it
+  # untested.
+  CONFIRM_URL=$(printf '%s' "$pair_json" | json_query "print(d.get('confirm_url',''))" '.confirm_url // ""')
   [ -n "$device_id" ] && [ -n "$PAIRING_CODE" ] || die "could not read the pairing payload"
+  [ -n "$CONFIRM_URL" ] || die "mora companion pair emitted no confirm_url; a phone would have to guess the route"
 
   # ---- Probe A: the socket -------------------------------------------------
   start_listener "$NODE_FQDN:$TAILNET_PORT"
@@ -871,7 +931,7 @@ EOF
   # device, and the authenticated probes below go back to BLOCKED — which is the
   # state this audit was in before N12b, and the fixture in --self-test still
   # covers it.
-  confirm_pairing "$NODE_FQDN" "$TAILNET_PORT" "$device_id"
+  confirm_pairing "$NODE_FQDN" "$TAILNET_PORT" "$device_id" "$CONFIRM_URL"
 
   # ---- Probe D: the log ----------------------------------------------------
   # The rest of the session. The three route calls below carry SESSION_TOKEN,
@@ -889,8 +949,26 @@ EOF
   local log_text
   log_text=$(cat "$WORKDIR/listener.log")
   # These strings WERE on the wire, so their absence is a real result.
-  if probe_log "$log_text" "$SESSION_TOKEN" "$PAIRING_CODE" "$device_id"; then
-    pass "D1 the log holds no bearer token, no pairing code and no device id, all of which the session really sent"
+  #
+  # DEVICE_TOKEN is the one that makes this probe about a CREDENTIAL rather than
+  # about a made-up string. SESSION_TOKEN is a value this script invented and
+  # the listener only ever refused; the real bearer token was MINTED by the
+  # kernel, written into a response body, and is about to be sent back as an
+  # Authorization header. A log-silence claim that greps only the fake token
+  # proves the listener does not echo something it never accepted.
+  #
+  # It is checked here — right after the grant was issued — and again in
+  # run_authenticated_probes once it has travelled as a header, so both
+  # directions are covered.
+  if [ -z "$DEVICE_TOKEN" ]; then
+    # No token means the confirmation did not take. The probe is not run
+    # against a weaker marker set: that is the BLOCKED path, and it is reported
+    # as such below.
+    blocked "D1 the log holds no bearer token, no pairing code and no device id"
+    note "reason: the pairing confirmation produced no device token, so there is no real"
+    note "credential to look for and greping only the fake one would prove nothing."
+  elif probe_log "$log_text" "$DEVICE_TOKEN" "$SESSION_TOKEN" "$PAIRING_CODE" "$device_id"; then
+    pass "D1 the log holds no bearer token — the REAL one the kernel minted included — no pairing code and no device id"
   else
     fail "D1 the log holds a credential or a device id"
   fi
@@ -984,10 +1062,14 @@ run_authenticated_probes() {
     fail "D4 an authenticated route call did not produce a decodable projection (status ${status})"
   fi
   log_text=$(cat "$WORKDIR/listener.log")
-  if probe_log "$log_text" "$SESSION_PROMPT" "$VAULT_MARKER"; then
-    pass "D3 after a served, decoded request the log still holds no prompt, answer or vault text"
+  # DEVICE_TOKEN is repeated here on purpose. At D1 it had only been WRITTEN by
+  # the listener into a grant; by now it has also been SENT to it as an
+  # Authorization header on a request that was served, which is the path a
+  # request logger would capture it on.
+  if probe_log "$log_text" "$SESSION_PROMPT" "$VAULT_MARKER" "$DEVICE_TOKEN"; then
+    pass "D3 after a served, decoded request the log still holds no prompt, answer, vault text or bearer token"
   else
-    fail "D3 the log holds a prompt, an answer or vault text"
+    fail "D3 the log holds a prompt, an answer, vault text or the bearer token"
   fi
 }
 
@@ -1264,11 +1346,18 @@ time.sleep(30)
   expect_probe fail "Funnel is rejected" \
     probe_serve '{"AllowFunnel":{"node.example:443":true},"Web":{"node.example:8080":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7778"}}}}}' 7778
 
-  local token="audit-token-deadbeef"
+  local token="audit-token-deadbeef" device_token="MORATOKENDEADBEEFCAFEBABE"
   expect_probe pass "a clean log is accepted" \
     probe_log "$(printf 'mora companion serve listening on http://127.0.0.1:7778/  (loopback only)\n  routes: GET /v1/companion/today')" "$token" "AUDITPROMPT1" "AUDITVAULT1"
   expect_probe fail "a log line containing the token is rejected" \
     probe_log "$(printf 'listening\n  auth Bearer %s\n' "$token")" "$token" "AUDITPROMPT1" "AUDITVAULT1"
+  # The N12b fixture. The real bearer token is a DIFFERENT string from the
+  # session token, and D1 greps both; a probe that dropped the real one would
+  # still pass every fixture above, so it gets one of its own.
+  expect_probe fail "a log line containing the REAL device token is rejected" \
+    probe_log "$(printf 'listening\n  issued %s to dev_20260904_000000_abcdef01\n' "$device_token")" "$device_token" "$token" "AUDITPROMPT1" "AUDITVAULT1"
+  expect_probe pass "a clean log is accepted with the real device token in the marker set" \
+    probe_log "listening on http://127.0.0.1:7778/" "$device_token" "$token" "AUDITPROMPT1" "AUDITVAULT1"
   expect_probe fail "a log line containing the prompt is rejected" \
     probe_log "$(printf 'listening\n  query=AUDITPROMPT1\n')" "$token" "AUDITPROMPT1" "AUDITVAULT1"
   expect_probe fail "a log line containing vault text is rejected" \
@@ -1277,6 +1366,24 @@ time.sleep(30)
     probe_log "listening" ""
   expect_probe fail "no markers at all is rejected" \
     probe_log "listening"
+
+  # The confirm_url reader. The audit follows the URL `pair` emitted, so a
+  # value it cannot read is a failure to report rather than a reason to fall
+  # back on a hard-coded route.
+  expect_string "/v1/companion/pairing/confirm" "the path is taken from the emitted confirm_url" \
+    "$(confirm_path_from 'https://node.example/v1/companion/pairing/confirm')"
+  expect_string "/v1/companion/pairing/confirm" "a port in the authority does not confuse the split" \
+    "$(confirm_path_from 'http://127.0.0.1:7778/v1/companion/pairing/confirm')"
+  expect_probe fail "an empty confirm_url is refused" \
+    confirm_path_from ""
+  expect_probe fail "a confirm_url with no scheme is refused" \
+    confirm_path_from "node.example/v1/companion/pairing/confirm"
+  expect_probe fail "a confirm_url with no path is refused" \
+    confirm_path_from "https://node.example"
+  expect_probe fail "a bare-origin confirm_url is refused" \
+    confirm_path_from "https://node.example/"
+  expect_probe fail "a confirm_url carrying a query is refused" \
+    confirm_path_from "https://node.example/v1/companion/pairing/confirm?x=1"
 
   # The grant reader. It is what turns a 200 into a credential, so every shape
   # that is not a complete, self-consistent grant for THIS device must fail.

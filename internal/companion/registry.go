@@ -253,6 +253,19 @@ type deviceRecord struct {
 	PairingCodeFingerprint string `json:"pairing_code_fingerprint,omitempty"`
 	PairingExpiresAt       string `json:"pairing_expires_at,omitempty"`
 
+	// PairingAttempts counts the wrong codes this pending pairing has survived.
+	//
+	// It is DURABLE rather than a counter in the listener's memory, and that is
+	// the whole point: an in-memory budget is reset by a restart, so an attacker
+	// who can make the process exit — or who simply waits for the operator to
+	// restart it — gets a fresh five guesses every time. The count lives with
+	// the record the guesses are against.
+	//
+	// It moves only through RecordPairingFailure, which refuses to touch a
+	// device that is not pending, so it can never accumulate against an active
+	// or revoked one.
+	PairingAttempts int `json:"pairing_attempts,omitempty"`
+
 	// PublicKey is the device's own key material from the confirmation. The
 	// registry stores it and does not yet use it: it is the hook N12's listener
 	// needs if bearer auth is ever upgraded to a signature.
@@ -457,6 +470,64 @@ func (r *Registry) Confirm(c PairingConfirmation) (token string, dev Device, err
 	// would strand exactly the credential nobody holds that the ordering exists
 	// to prevent, so the token goes back with the warning attached.
 	return token, dev, err
+}
+
+// PairingBudget reports how many wrong codes a pairing has taken and whether it
+// is still open to another one.
+//
+// It is a READ — no lock, no write — because it runs on every request the
+// unauthenticated pairing route serves, and a listener that took the registry's
+// cross-process write lock once per inbound guess would hand an attacker a way
+// to stall `mora companion pair` and `revoke` from the network.
+//
+// pending is true only for a device that is PENDING and still holds a live code
+// fingerprint. It is the caller's signal that a revocation is still owed: a
+// pairing whose budget is spent but whose record is still pending means the
+// revocation the budget called for did not take, and the next attempt must
+// retry it.
+//
+// An unknown device is (0, false, nil), not an error. The route answers every
+// refusal identically, so this must not be the one place that distinguishes an
+// id that exists from one that does not.
+func (r *Registry) PairingBudget(deviceID string) (attempts int, pending bool, err error) {
+	f, err := r.load()
+	if err != nil {
+		return 0, false, err
+	}
+	rec := f.find(deviceID)
+	if rec == nil {
+		return 0, false, nil
+	}
+	return rec.PairingAttempts, rec.State == DevicePending && rec.PairingCodeFingerprint != "", nil
+}
+
+// RecordPairingFailure durably counts one wrong code and returns the new total.
+//
+// It writes ONLY for a device that is pending and still holds a live code. That
+// restriction is the security property, not a tidiness one: a device id is not a
+// secret, so if any failed confirmation could grow a counter, anyone who could
+// name an ACTIVE device's id could spend the budget against it and have the
+// listener revoke a working phone. There is no code to brute force on a device
+// that is already settled, so there is nothing for a budget to protect there.
+//
+// No receipt. An audit row per wrong guess is a log, not an audit trail — the
+// event worth recording is the revocation the budget ends in, and Revoke writes
+// that one record-first.
+func (r *Registry) RecordPairingFailure(deviceID string) (int, error) {
+	attempts := 0
+	err := r.mutate(func(f *registryFile) (receipt, error) {
+		rec := f.find(deviceID)
+		if rec == nil || rec.State != DevicePending || rec.PairingCodeFingerprint == "" {
+			return receipt{}, errNoChange
+		}
+		rec.PairingAttempts++
+		attempts = rec.PairingAttempts
+		return receipt{}, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return attempts, nil
 }
 
 // Authenticate resolves a bearer token to its device.

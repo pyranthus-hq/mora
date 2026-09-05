@@ -27,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
@@ -173,14 +174,35 @@ func cmdCompanionPair(ctx context.Context, args []string, stdout, stderr io.Writ
 
 // companionConfirmURL derives the confirmation URL from the pairing endpoint.
 //
-// The endpoint is the base a phone was told to reach, and the route is the
-// listener's own published constant, so the two are joined here rather than
-// concatenated by hand at each caller. The endpoint is already validated by
-// companion.PairingPayload — https, or http to a loopback host, with no
-// userinfo — so nothing here re-parses it; it only has to survive a trailing
-// slash, which an operator passing --endpoint will eventually type.
+// It takes the endpoint's ORIGIN — scheme, host and port — and mounts the
+// listener's published route on it once. It deliberately discards the
+// endpoint's path, and that is the fix for a real defect rather than a
+// simplification: appending produced a URL that is not mounted anywhere.
+//
+//	--endpoint https://host/v1/companion   the shape the canonical pairing
+//	                                       golden carries, and what an operator
+//	                                       copies out of `expose`
+//	appended    https://host/v1/companion/v1/companion/pairing/confirm   404
+//	derived     https://host/v1/companion/pairing/confirm                served
+//
+// A phone that followed the appended form would get a 404 from a route table
+// that is working correctly, and would have no way to tell that from a Mac
+// running an older build. Every mount point on this listener is an absolute
+// path from the origin — the route table is a list of absolute patterns — so
+// the origin is the only part of the endpoint that can contribute.
+//
+// The endpoint has already been validated by companion.PairingPayload — https,
+// or http to a loopback host, with no userinfo — so a parse failure here is not
+// reachable from `pair`. It is still handled rather than ignored, by falling
+// back to the endpoint with the route appended: a caller that somehow supplied
+// an unparseable base gets a value that is visibly wrong rather than a silently
+// empty one.
 func companionConfirmURL(endpoint string) string {
-	return strings.TrimSuffix(endpoint, "/") + companion.RouteConfirm
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.TrimSuffix(endpoint, "/") + companion.RouteConfirm
+	}
+	return u.Scheme + "://" + u.Host + companion.RouteConfirm
 }
 
 // ---------------------------------------------------------------------------
@@ -471,19 +493,31 @@ const (
 // line is a rendering, and a caller that wants to run one should not have to
 // unparse it. The human branch joins them.
 type companionExposePayload struct {
-	ListenerPort  int      `json:"listener_port"`
-	Backend       string   `json:"backend"`
-	Hostname      string   `json:"hostname"`
-	HostnameKnown bool     `json:"hostname_known"`
-	Scheme        string   `json:"scheme"`
-	TailnetPort   int      `json:"tailnet_port"`
-	PublicURL     string   `json:"public_url"`
-	AllowHost     string   `json:"allow_host"`
-	ActiveDevices int      `json:"active_devices"`
-	Funnel        string   `json:"funnel"`
-	ListenCommand []string `json:"listen_command"`
-	ServeCommand  []string `json:"serve_command"`
-	OffCommand    []string `json:"off_command"`
+	ListenerPort  int    `json:"listener_port"`
+	Backend       string `json:"backend"`
+	Hostname      string `json:"hostname"`
+	HostnameKnown bool   `json:"hostname_known"`
+	Scheme        string `json:"scheme"`
+	TailnetPort   int    `json:"tailnet_port"`
+	PublicURL     string `json:"public_url"`
+	AllowHost     string `json:"allow_host"`
+	ActiveDevices int    `json:"active_devices"`
+	// The bootstrap half. A publication whose only reason to exist is an open
+	// pairing window has to say so, and has to carry the two facts that make
+	// the window usable: when it closes, and where the phone posts the code.
+	//
+	// PairingExpiresAt is omitted when no window is open; ConfirmURL never is,
+	// because the route is a constant of the published listener and a client
+	// that has just paired needs it whether or not this run happened to catch a
+	// window open.
+	PendingDevices []string `json:"pending_devices,omitempty"`
+	PairingOpen    bool     `json:"pairing_open"`
+	PairingExpires string   `json:"pairing_expires_at,omitempty"`
+	ConfirmURL     string   `json:"confirm_url"`
+	Funnel         string   `json:"funnel"`
+	ListenCommand  []string `json:"listen_command"`
+	ServeCommand   []string `json:"serve_command"`
+	OffCommand     []string `json:"off_command"`
 	// Destructive is NOT a sibling of OffCommand, and that nesting is the
 	// point. `tailscale serve reset` removes every serve mapping on the node,
 	// including ones another tool created, so a machine caller reading this
@@ -563,12 +597,26 @@ func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) er
 	if err != nil {
 		return companionError("expose", err)
 	}
-	if status.Active == 0 {
+	// The bootstrap case. `expose` used to refuse whenever no device was
+	// ACTIVE, and that was circular: the first device cannot become active
+	// until the phone can reach the confirmation route, and it cannot reach it
+	// until the listener is published — which is what this command explains how
+	// to do. An operator following the documented path got data.not_found and
+	// no way forward, and the network audit only worked because it configured
+	// Tailscale Serve by hand.
+	//
+	// So the refusal now asks the question it meant to ask: is there anything
+	// on this Mac that could authenticate, or finish authenticating, once the
+	// port is published? An ACTIVE device can. So can a PENDING one whose code
+	// is still live — that is exactly the device this publication exists to
+	// serve. Only when there is neither is publishing a port for no one.
+	if status.Active == 0 && !status.PairingOpen {
 		// Counts only. This branch never reads a token or a code, and the
 		// message names the command that fixes it.
 		return newCodedError(errCodeDataNotFound, nil,
-			"no active paired device (%d pending, %d revoked) — run `mora companion pair` and finish pairing first; "+
-				"publishing a listener that nothing can authenticate to puts a port on your tailnet for no one",
+			"no active paired device and no open pairing window (%d pending, %d revoked) — "+
+				"run `mora companion pair` first; publishing a listener that nothing can "+
+				"authenticate to puts a port on your tailnet for no one",
 			status.Pending, status.Revoked)
 	}
 
@@ -586,15 +634,22 @@ func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) er
 	portFlag := fmt.Sprintf("--%s=%d", scheme, publishPort)
 
 	out := companionExposePayload{
-		ListenerPort:  *port,
-		Backend:       backend,
-		Hostname:      node,
-		HostnameKnown: known,
-		Scheme:        scheme,
-		TailnetPort:   publishPort,
-		PublicURL:     fmt.Sprintf("%s://%s/", scheme, authority),
-		AllowHost:     authority,
-		ActiveDevices: status.Active,
+		ListenerPort:   *port,
+		Backend:        backend,
+		Hostname:       node,
+		HostnameKnown:  known,
+		Scheme:         scheme,
+		TailnetPort:    publishPort,
+		PublicURL:      fmt.Sprintf("%s://%s/", scheme, authority),
+		AllowHost:      authority,
+		ActiveDevices:  status.Active,
+		PendingDevices: status.PendingDevices,
+		PairingOpen:    status.PairingOpen,
+		PairingExpires: status.NextPairingExpiry,
+		// Derived from the PUBLISHED origin, not the loopback one: this is the
+		// URL a phone off this Mac uses, and it is the same derivation `pair`
+		// applies to its own endpoint.
+		ConfirmURL: companionConfirmURL(fmt.Sprintf("%s://%s/", scheme, authority)),
 		// Stated, not omitted. A reader looking for the Funnel command should
 		// find the answer rather than assume the command was forgotten.
 		Funnel:        "off",
@@ -614,8 +669,25 @@ func cmdCompanionExpose(ctx context.Context, args []string, stdout io.Writer) er
 	fmt.Fprintf(stdout, "public\t%s\n", out.PublicURL)
 	fmt.Fprintf(stdout, "allow-host\t%s\n", out.AllowHost)
 	fmt.Fprintf(stdout, "devices\t%d active\n", out.ActiveDevices)
+	fmt.Fprintf(stdout, "confirm\tPOST %s\n", out.ConfirmURL)
+	if out.PairingOpen {
+		// The bootstrap line. When this is the ONLY reason the publication is
+		// allowed, the operator has a deadline, and a command that stayed
+		// silent about it would send them to `tailscale serve` with a code that
+		// may have died on the way.
+		fmt.Fprintf(stdout, "pairing\topen until %s\n", out.PairingExpires)
+		for _, id := range out.PendingDevices {
+			fmt.Fprintf(stdout, "awaiting\t%s\n", id)
+		}
+	}
 	fmt.Fprintf(stdout, "funnel\t%s (this command never publishes to the public internet)\n", out.Funnel)
 	fmt.Fprintln(stdout)
+	if out.ActiveDevices == 0 && out.PairingOpen {
+		fmt.Fprintf(stdout, "No device is paired yet. The pairing window closes at %s — publish the listener,\n", out.PairingExpires)
+		fmt.Fprintf(stdout, "then have the phone POST its one-time code to %s\n", out.ConfirmURL)
+		fmt.Fprintln(stdout, "before it expires. If it does, run `mora companion pair` again for a fresh code.")
+		fmt.Fprintln(stdout)
+	}
 	if !known {
 		fmt.Fprintf(stdout, "Replace %s with this Mac's tailnet name before running anything:\n", hostnamePlaceholder)
 		fmt.Fprintln(stdout, "  tailscale status --json    (Self.DNSName, without the trailing dot)")

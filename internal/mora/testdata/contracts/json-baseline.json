@@ -37,7 +37,7 @@
   },
   {
     "path": "companion expose",
-    "status": "empty"
+    "status": "parses"
   },
   {
     "path": "companion list",
