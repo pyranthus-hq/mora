@@ -200,3 +200,49 @@ func TestGmailReferenceToleranceMatrix(t *testing.T) {
 		})
 	}
 }
+func TestWriteSkipsEvidenceRefsAlreadyOwnedByAnotherMemory(t *testing.T) {
+	ctx := context.Background()
+	db := openDB(t)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range SchemaStatements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepared, err := Prepare(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Close()
+	messages := []map[string]any{{"message_ref": "gmail_thread/x#a", "sender": "a@example.com", "block_refs": []string{"body"}}}
+	first := gmail("gmail_thread/x", "From: a@example.com\n\nhello", messages)
+	// The same thread ingested under an account-labeled twin carries the same
+	// bare message refs (Derive accepts them). The projection must keep the
+	// first writer's segment and record the overlap, not fail the whole index.
+	second := gmail("gmail_thread/x@pyranthus", "From: a@example.com\n\nhello again", messages)
+	if err := prepared.Write(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Write(ctx, second); err != nil {
+		t.Fatalf("a shared evidence ref must not fail the projection: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := Lookup(ctx, db, first.ID, "gmail_thread/x#a")
+	if err != nil || !ok || row.Text != "hello" {
+		t.Fatalf("first memory must keep its segment: row=%+v ok=%v err=%v", row, ok, err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM gmail_segments_fts WHERE evidence_ref=?`, "gmail_thread/x#a").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("fts rows=%d err=%v (the skipped segment must not leave an orphan fts row)", n, err)
+	}
+	var reason string
+	var body int
+	if err := db.QueryRow(`SELECT reason, body_count FROM gmail_segment_diagnostics WHERE memory_id=?`, second.ID).Scan(&reason, &body); err != nil || reason != DiagSharedRef || body != 1 {
+		t.Fatalf("reason=%q body=%d err=%v", reason, body, err)
+	}
+}
