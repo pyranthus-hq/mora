@@ -12,7 +12,7 @@ Quality gate or maintenance boundary:
 
 ## Golden change reason
 
-<!-- Required when changing internal/readable/testdata/*. State why the golden changed. -->
+<!-- Required when changing internal/readable/testdata/* or internal/mora/testdata/contracts/*. State why the golden changed. -->
 
 ## Verification
 

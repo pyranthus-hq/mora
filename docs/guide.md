@@ -299,11 +299,13 @@ error rather than silently ingesting a mailbox under the wrong source.
 
 `internal/readable/testdata/email-projection.json` is an anonymized, real-shape
 reading-projection corpus. It contains only synthetic addresses and text. A PR
-that changes it must include a non-empty `Golden change reason:` line in its PR
-body. CI checks this only for pull requests that modify a readable golden. The
-check reads the body as data and never executes it; fork PRs are checked the
-same way. Maintainers may use the documented emergency bypass only by changing
-that workflow with review, not by omitting the reason.
+that changes it or a frozen contract golden under
+`internal/mora/testdata/contracts/` must include a non-empty `Golden change
+reason:` line in its PR body. CI checks this on pull requests that modify either
+corpus, including when the PR body is edited. The check reads the body as data
+and never executes it; fork PRs are checked the same way. Maintainers may use
+the documented emergency bypass only by changing that workflow with review, not
+by omitting the reason.
 
 The connector verbs also take `--json`:
 
