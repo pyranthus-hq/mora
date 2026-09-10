@@ -174,3 +174,37 @@ func TestDeriveRejectsMalformedStampNumericVersion(t *testing.T) {
 		t.Fatalf("malformed stamp = %+v", got)
 	}
 }
+
+func TestDeriveRejectsTamperedBoundStampFields(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "12345", "block_start": 0, "block_end": 6}})
+	stamp := StampMeta(m)
+	for name, mutate := range map[string]func(map[string]any){
+		"event":     func(s map[string]any) { s["event_at"] = "2026-09-08T09:00:00Z" },
+		"automated": func(s map[string]any) { s["automated"] = false; s["automation_basis"] = "human" },
+		"participation": func(s map[string]any) {
+			s["participation"] = map[string]any{"own_share": 0.5, "latest_sender": "Sam", "message_evidence_count": 2}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := make(map[string]any, len(stamp))
+			for k, v := range stamp {
+				copy[k] = v
+			}
+			mutate(copy)
+			m.Meta["activity_stamp"] = copy
+			got := Derive(m, now)
+			if got.EventAt == nil || got.EventAt.Format(time.RFC3339) != "2026-09-09T09:00:00Z" || got.Automated == nil || !*got.Automated || got.AutomationBasis != "sender_shortcode" {
+				t.Fatalf("tampered stamp was trusted: %+v", got)
+			}
+		})
+	}
+}
+func TestStampPreservesOccurredAtSource(t *testing.T) {
+	m := memory.Memory{ID: "calendar/e", Provider: "calendar", Meta: map[string]any{"occurred_at": "2026-09-09T09:00:00Z"}}
+	m.Meta["activity_stamp"] = StampMeta(m)
+	got := Derive(m, mustTime(t, "2026-09-10T12:00:00Z"))
+	if got.EventSource != EventSourceOccurredAt {
+		t.Fatalf("event source = %q", got.EventSource)
+	}
+}

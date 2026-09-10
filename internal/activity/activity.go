@@ -410,7 +410,7 @@ func evidenceFingerprint(m memory.Memory, p Projection) string {
 	if p.Automated != nil {
 		auto = fmt.Sprintf("%t", *p.Automated)
 	}
-	sum := sha256.Sum256([]byte(strings.Join([]string{providerOf(m), event, part, auto, p.AutomationBasis}, "\x00")))
+	sum := sha256.Sum256([]byte(strings.Join([]string{providerOf(m), event, string(p.EventSource), part, auto, p.AutomationBasis}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 func timeString(t *time.Time) string {
@@ -436,6 +436,7 @@ func validStamp(m memory.Memory) (Projection, bool) {
 	var stamp struct {
 		Version       json.Number    `json:"version"`
 		EventAt       string         `json:"event_at"`
+		EventSource   EventSource    `json:"event_source"`
 		Participation *Participation `json:"participation"`
 		Automated     *bool          `json:"automated"`
 		Basis         string         `json:"automation_basis"`
@@ -454,16 +455,15 @@ func validStamp(m memory.Memory) (Projection, bool) {
 	if stamp.Fingerprint != evidenceFingerprint(m, rawProjection) {
 		return Projection{}, false
 	}
-	p := Projection{Participation: stamp.Participation, Automated: stamp.Automated, AutomationBasis: strings.TrimSpace(stamp.Basis)}
+	p := Projection{Participation: stamp.Participation, Automated: stamp.Automated, AutomationBasis: strings.TrimSpace(stamp.Basis), EventSource: stamp.EventSource}
 	if stamp.EventAt != "" {
 		at, ok := parseTime(stamp.EventAt)
 		if !ok {
 			return Projection{}, false
 		}
 		p.EventAt = at
-		p.EventSource = EventSourceMessageEvidence
 	}
-	if p.EventAt == nil {
+	if p.EventAt == nil || (p.EventSource != EventSourceMessageEvidence && p.EventSource != EventSourceOccurredAt) {
 		return Projection{}, false
 	}
 	if p.Automated != nil && p.AutomationBasis == "" {
@@ -473,6 +473,11 @@ func validStamp(m memory.Memory) (Projection, bool) {
 		return Projection{}, false
 	}
 	if !validParticipation(p.Participation) {
+		return Projection{}, false
+	}
+	// Binding must cover the decoded stamp too. Checking only raw evidence
+	// would let a caller alter stamp fields while retaining its old digest.
+	if stamp.Fingerprint != evidenceFingerprint(m, p) {
 		return Projection{}, false
 	}
 	return p, true
