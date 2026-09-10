@@ -132,3 +132,45 @@ func mustTime(t *testing.T, value string) time.Time {
 	}
 	return got
 }
+
+func TestDeriveAutomationAndStampPreference(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "12345", "block_start": 0, "block_end": 6}})
+	got := Derive(m, now)
+	if got.Automated == nil || !*got.Automated || got.AutomationBasis != "sender_shortcode" {
+		t.Fatalf("shortcode = %+v", got)
+	}
+	stamp := StampMeta(m)
+	m.Meta["activity_stamp"] = stamp
+	got = Derive(m, now)
+	if got.Automated == nil || got.AutomationBasis != "sender_shortcode" {
+		t.Fatalf("valid stamp = %+v", got)
+	}
+	m.Meta["message_evidence"] = []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-10T10:00:00Z", "from_me": false, "sender": "Sam", "block_start": 0, "block_end": 6}}
+	got = Derive(m, now)
+	if got.Automated != nil || got.AutomationBasis != "" {
+		t.Fatalf("stale stamp must fall back = %+v", got)
+	}
+}
+func TestDeriveAutomationHeadersAndNamedSMSFPUnknown(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := memory.Memory{ID: "gmail_thread/t", Provider: "gmail", Text: "From: notices@example.com\nhello", Meta: map[string]any{"messages": []map[string]any{{"message_ref": "gmail_thread/t#1", "sender": "notices@example.com", "at": "2026-09-09T09:00:00Z", "automation_headers": []string{"list-unsubscribe"}}}}}
+	got := Derive(m, now)
+	if got.Automated == nil || !*got.Automated || got.AutomationBasis != "header_list_unsubscribe" {
+		t.Fatalf("header = %+v", got)
+	}
+	m = conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "Adit (smsfp)", "block_start": 0, "block_end": 6}})
+	got = Derive(m, now)
+	if got.Automated != nil {
+		t.Fatalf("named smsfp = %+v", got)
+	}
+}
+func TestDeriveRejectsMalformedStampNumericVersion(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "Sam", "block_start": 0, "block_end": 6}})
+	m.Meta["activity_stamp"] = map[string]any{"version": 1.5, "event_at": "2026-09-09T09:00:00Z", "automated": true, "automation_basis": "sender_shortcode", "evidence_fingerprint": "bad"}
+	got := Derive(m, now)
+	if got.Automated != nil {
+		t.Fatalf("malformed stamp = %+v", got)
+	}
+}

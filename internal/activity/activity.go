@@ -5,6 +5,11 @@
 package activity
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -25,13 +30,16 @@ const (
 type Participation = memory.Participation
 
 // Projection is the read-time activity projection for one memory. Automated is
-// nil until a later durable-stamp implementation supplies an affirmative basis.
+// nil unless affirmative, validated automation evidence exists.
 type Projection struct {
 	EventAt       *time.Time
 	EventSource   EventSource
 	Eligible      bool
 	Participation *Participation
 	Automated     *bool
+	// AutomationBasis names the validated evidence supporting Automated. It is
+	// empty when automation is unknown.
+	AutomationBasis string
 }
 
 // Result joins a memory with its activity projection. Select orders Results by
@@ -50,42 +58,87 @@ type Result struct {
 // An unknown, malformed, or future selected time is ineligible. now itself is
 // inclusive: an event at now is eligible. CreatedAt is never a fallback.
 func Derive(m memory.Memory, now time.Time) Projection {
-	p := Projection{}
-	provider := providerOf(m)
-	if !supported(provider) {
-		return p
-	}
-
-	if provider == "imessage" || provider == "whatsapp" {
-		var rows []segments.Row
-		if !m.Truncated {
-			rows, _ = segments.Derive(m)
-		}
-		if len(rows) > 0 {
-			p.Participation = participation(rows, explicitGroup(m, provider))
-			if at, ok := newestAt(rows); ok {
-				p.EventAt, p.EventSource = at, EventSourceMessageEvidence
-			}
-		}
-	} else if provider == "gmail" {
-		// Derive validates Gmail's message/block/ref correspondence before any
-		// message timestamp is trusted. Its current parent-ref rules remain the
-		// authority, so this helper does not broaden historical ref acceptance.
-		rows, _ := segments.Derive(m)
-		if at, ok := newestAt(rows); ok {
-			p.EventAt, p.EventSource = at, EventSourceMessageEvidence
-		}
-	}
-
-	if p.EventAt == nil {
-		if at, ok := occurredAt(m); ok {
-			p.EventAt, p.EventSource = at, EventSourceOccurredAt
-		}
+	p := deriveEvidence(m)
+	if stamped, ok := validStamp(m); ok {
+		// A stamp is generated from the same retained evidence. Prefer it only
+		// when its complete, versioned shape validates; bad or stale metadata
+		// must never replace live derivation.
+		p = stamped
 	}
 	if p.EventAt != nil && !p.EventAt.After(now) {
 		p.Eligible = true
 	}
 	return p
+}
+
+// StampMeta returns the durable, content-free activity facts a connector may
+// persist for a newly mapped memory. It does not read a provider or write a
+// vault. The stamp is intentionally a map so it remains frontmatter-safe.
+func StampMeta(m memory.Memory) map[string]any {
+	p := deriveEvidence(m)
+	stamp := map[string]any{"version": 1, "automated": nil, "automation_basis": "", "evidence_fingerprint": evidenceFingerprint(m, p)}
+	if p.EventAt != nil {
+		stamp["event_at"] = p.EventAt.UTC().Format(time.RFC3339Nano)
+		stamp["event_source"] = string(p.EventSource)
+	}
+	if p.Participation != nil {
+		stamp["participation"] = p.Participation
+	}
+	if p.Automated != nil {
+		stamp["automated"] = *p.Automated
+		stamp["automation_basis"] = p.AutomationBasis
+	}
+	return stamp
+}
+
+func deriveEvidence(m memory.Memory) Projection {
+	p := Projection{}
+	provider := providerOf(m)
+	if !supported(provider) {
+		return p
+	}
+	var rows []segments.Row
+	if provider == "imessage" || provider == "whatsapp" {
+		if !m.Truncated {
+			rows, _ = segments.Derive(m)
+		}
+		if len(rows) > 0 {
+			p.Participation = participation(rows, explicitGroup(m, provider))
+		}
+	} else if provider == "gmail" {
+		rows, _ = segments.Derive(m)
+	}
+	if latest, ok := newestRow(rows); ok {
+		at := latest.at
+		p.EventAt, p.EventSource = &at, EventSourceMessageEvidence
+		p.Automated, p.AutomationBasis = automation(m, provider, latest.row)
+	}
+	if p.EventAt == nil {
+		if at, ok := occurredAt(m); ok {
+			p.EventAt, p.EventSource = at, EventSourceOccurredAt
+		}
+	}
+	return p
+}
+
+type newestEvidence struct {
+	row segments.Row
+	at  time.Time
+}
+
+func newestRow(rows []segments.Row) (newestEvidence, bool) {
+	var newest newestEvidence
+	ok := false
+	for _, row := range rows {
+		at, valid := parseTime(row.At)
+		if !valid {
+			continue
+		}
+		if !ok || at.After(newest.at) || (at.Equal(newest.at) && row.EvidenceRef < newest.row.EvidenceRef) {
+			newest, ok = newestEvidence{row: row, at: *at}, true
+		}
+	}
+	return newest, ok
 }
 
 // Select derives eligible activity rows and returns a new deterministic order.
@@ -210,6 +263,225 @@ func explicitGroup(m memory.Memory, provider string) *bool {
 		}
 	}
 	return nil
+}
+
+// automation recognizes only affirmative, documented sender/header evidence.
+// Lack of a match is unknown, not a human/false classification.
+func automation(m memory.Memory, provider string, row segments.Row) (*bool, string) {
+	sender := strings.TrimSpace(row.Sender)
+	if sender == "" {
+		return nil, ""
+	}
+	if headers := automationHeaders(m, row.EvidenceRef); len(headers) > 0 {
+		v := true
+		return &v, "header_" + headers[0]
+	}
+	// Resolver names may carry (smsfp). A named contact is not an automation
+	// signal merely because it came from the SMS fingerprint store.
+	base := sender
+	if i := strings.Index(strings.ToLower(base), "(smsfp)"); i >= 0 {
+		before := strings.TrimSpace(base[:i])
+		if containsLetter(before) {
+			return nil, ""
+		}
+		base = before
+	}
+	if isShortCode(base) {
+		v := true
+		return &v, "sender_shortcode"
+	}
+	if isTollFree(base) {
+		v := true
+		return &v, "sender_tollfree"
+	}
+	if provider == "gmail" && isAutomatedAddress(base) {
+		v := true
+		return &v, "sender_pattern"
+	}
+	return nil, ""
+}
+func containsLetter(s string) bool {
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+func digitsOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+func isShortCode(s string) bool {
+	d := digitsOnly(s)
+	return d == strings.TrimSpace(s) && len(d) >= 5 && len(d) <= 6
+}
+func isTollFree(s string) bool {
+	d := digitsOnly(s)
+	if len(d) == 11 && d[0] == '1' {
+		d = d[1:]
+	}
+	if len(d) != 10 {
+		return false
+	}
+	switch d[:3] {
+	case "800", "833", "844", "855", "866", "877", "888":
+		return true
+	}
+	return false
+}
+func isAutomatedAddress(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.LastIndex(s, "<"); i >= 0 && strings.HasSuffix(s, ">") {
+		s = strings.TrimSpace(s[i+1 : len(s)-1])
+	}
+	at := strings.IndexByte(s, '@')
+	if at <= 0 {
+		return false
+	}
+	local := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s[:at], "-", ""), "_", ""), ".", "")
+	return strings.HasPrefix(local, "noreply") || strings.HasPrefix(local, "donotreply") || strings.HasPrefix(local, "notification") || strings.HasPrefix(local, "alert")
+}
+
+// automationHeaders returns normalized, positive header facts only for the
+// selected Gmail message. Old mail without retained facts remains unknown.
+func automationHeaders(m memory.Memory, ref string) []string {
+	if m.Meta == nil {
+		return nil
+	}
+	b, err := json.Marshal(m.Meta["messages"])
+	if err != nil {
+		return nil
+	}
+	var rows []struct {
+		MessageRef string   `json:"message_ref"`
+		Headers    []string `json:"automation_headers"`
+	}
+	if json.Unmarshal(b, &rows) != nil {
+		return nil
+	}
+	for _, row := range rows {
+		if row.MessageRef == ref {
+			return positiveHeaders(row.Headers)
+		}
+	}
+	return nil
+}
+func positiveHeaders(headers []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range headers {
+		h = strings.ToLower(strings.TrimSpace(h))
+		var basis string
+		switch {
+		case h == "list-unsubscribe":
+			basis = "list_unsubscribe"
+		case h == "precedence: bulk" || h == "precedence: list" || h == "precedence: junk":
+			basis = "precedence"
+		}
+		if basis != "" && !seen[basis] {
+			seen[basis] = true
+			out = append(out, basis)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// evidenceFingerprint binds a stamp to the currently retained, validated
+// evidence without exposing message text. It deliberately excludes an account
+// suffix on Gmail parent IDs: account tagging may happen after mapping, while
+// the underlying message evidence has not changed.
+func evidenceFingerprint(m memory.Memory, p Projection) string {
+	event := ""
+	if p.EventAt != nil {
+		event = p.EventAt.UTC().Format(time.RFC3339Nano)
+	}
+	part := ""
+	if p.Participation != nil {
+		part = fmt.Sprintf("%.17g|%s|%t|%t|%s|%d", p.Participation.OwnShare, timeString(p.Participation.LastOwnAt), boolValue(p.Participation.IsGroup), p.Participation.IsGroup != nil, p.Participation.LatestSender, p.Participation.MessageEvidenceCount)
+	}
+	auto := ""
+	if p.Automated != nil {
+		auto = fmt.Sprintf("%t", *p.Automated)
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{providerOf(m), event, part, auto, p.AutomationBasis}, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+func timeString(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+func boolValue(v *bool) bool { return v != nil && *v }
+
+func validStamp(m memory.Memory) (Projection, bool) {
+	if m.Meta == nil {
+		return Projection{}, false
+	}
+	raw, ok := m.Meta["activity_stamp"]
+	if !ok {
+		return Projection{}, false
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return Projection{}, false
+	}
+	var stamp struct {
+		Version       json.Number    `json:"version"`
+		EventAt       string         `json:"event_at"`
+		Participation *Participation `json:"participation"`
+		Automated     *bool          `json:"automated"`
+		Basis         string         `json:"automation_basis"`
+		Fingerprint   string         `json:"evidence_fingerprint"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.UseNumber()
+	if dec.Decode(&stamp) != nil {
+		return Projection{}, false
+	}
+	version, err := stamp.Version.Int64()
+	if err != nil || version != 1 || strings.TrimSpace(stamp.Fingerprint) == "" {
+		return Projection{}, false
+	}
+	rawProjection := deriveEvidence(m)
+	if stamp.Fingerprint != evidenceFingerprint(m, rawProjection) {
+		return Projection{}, false
+	}
+	p := Projection{Participation: stamp.Participation, Automated: stamp.Automated, AutomationBasis: strings.TrimSpace(stamp.Basis)}
+	if stamp.EventAt != "" {
+		at, ok := parseTime(stamp.EventAt)
+		if !ok {
+			return Projection{}, false
+		}
+		p.EventAt = at
+		p.EventSource = EventSourceMessageEvidence
+	}
+	if p.EventAt == nil {
+		return Projection{}, false
+	}
+	if p.Automated != nil && p.AutomationBasis == "" {
+		return Projection{}, false
+	}
+	if p.Automated == nil && p.AutomationBasis != "" {
+		return Projection{}, false
+	}
+	if !validParticipation(p.Participation) {
+		return Projection{}, false
+	}
+	return p, true
+}
+func validParticipation(p *Participation) bool {
+	if p == nil {
+		return true
+	}
+	return p.MessageEvidenceCount > 0 && p.OwnShare >= 0 && p.OwnShare <= 1 && !math.IsNaN(p.OwnShare) && !math.IsInf(p.OwnShare, 0) && strings.TrimSpace(p.LatestSender) != ""
 }
 
 func parseTime(value string) (*time.Time, bool) {

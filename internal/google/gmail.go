@@ -26,12 +26,13 @@ const gmailPageSize = 50
 // The exam renderer uses the same shape with ledger message/block ids so a future
 // commitment can anchor to immutable opening evidence without parsing prose.
 type gmailMessageEvidence struct {
-	MessageRef string   `json:"message_ref"`
-	Sender     string   `json:"sender,omitempty"`
-	To         []string `json:"to,omitempty"`
-	Cc         []string `json:"cc,omitempty"`
-	At         string   `json:"at,omitempty"`
-	BlockRefs  []string `json:"block_refs,omitempty"`
+	MessageRef        string   `json:"message_ref"`
+	Sender            string   `json:"sender,omitempty"`
+	To                []string `json:"to,omitempty"`
+	Cc                []string `json:"cc,omitempty"`
+	At                string   `json:"at,omitempty"`
+	BlockRefs         []string `json:"block_refs,omitempty"`
+	AutomationHeaders []string `json:"automation_headers,omitempty"`
 }
 
 func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, cursor string) (Page, error) {
@@ -179,32 +180,43 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 	for i, msg := range th.Messages {
 		messageFrom := ""
 		messageSenders, messageTo, messageCc := newAddrSet(), newAddrSet(), newAddrSet()
+		var automationHeaders []string
 		for _, h := range msg.Payload.Headers {
-			switch h.Name {
-			case "Subject":
+			switch strings.ToLower(strings.TrimSpace(h.Name)) {
+			case "subject":
 				if subject == "" {
 					subject = h.Value
 				}
-			case "From":
+			case "from":
 				if messageFrom == "" {
 					messageFrom = h.Value
 				}
 				senders.addHeader(h.Value)
 				messageSenders.addHeader(h.Value)
-			case "To":
+			case "to":
 				recipientsTo.addHeader(h.Value)
 				messageTo.addHeader(h.Value)
-			case "Cc":
+			case "cc":
 				recipientsCc.addHeader(h.Value)
 				messageCc.addHeader(h.Value)
+			case "list-unsubscribe":
+				if strings.TrimSpace(h.Value) != "" {
+					automationHeaders = append(automationHeaders, "list-unsubscribe")
+				}
+			case "precedence":
+				if v := strings.ToLower(strings.TrimSpace(h.Value)); v == "bulk" || v == "list" || v == "junk" {
+					automationHeaders = append(automationHeaders, "precedence: "+v)
+				}
 			}
 		}
+		automationHeaders = normalizedAutomationHeaders(automationHeaders)
 		body := stripQuoted(decodeGmailBody(msg.Payload))
 		evidence := gmailMessageEvidence{
-			MessageRef: gmailMessageRef(th.Id, msg.Id, i),
-			Sender:     singleAddress(messageSenders),
-			To:         messageTo.list(),
-			Cc:         messageCc.list(),
+			MessageRef:        gmailMessageRef(th.Id, msg.Id, i),
+			Sender:            singleAddress(messageSenders),
+			To:                messageTo.list(),
+			Cc:                messageCc.list(),
+			AutomationHeaders: automationHeaders,
 		}
 		if msg.InternalDate > 0 {
 			t := time.UnixMilli(msg.InternalDate)
@@ -254,6 +266,20 @@ func gmailThreadToItem(th *gmail.Thread) Item {
 		Attachments: atts,
 		Meta:        meta,
 	}
+}
+
+func normalizedAutomationHeaders(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sort.Strings(values)
+	out := values[:0]
+	for _, value := range values {
+		if len(out) == 0 || out[len(out)-1] != value {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func gmailMessageRef(threadID, messageID string, index int) string {

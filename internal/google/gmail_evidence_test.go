@@ -122,3 +122,17 @@ func TestGmailPreservesLastSenderAndOrder(t *testing.T) {
 		t.Fatalf("last_sender = %#v, want last@example.net", got)
 	}
 }
+
+func TestGmailMapItemStampsRetainedAutomationHeaders(t *testing.T) {
+	msg := gmailEvidenceMessage("m", "Notice <notice@example.com>", "me@example.com", "", 1_721_123_200_000, "hello")
+	msg.Payload.Headers = append(msg.Payload.Headers, hdr("List-Unsubscribe", "<mailto:leave@example.com>"))
+	mapped := MapItem(gmailThreadToItem(&gmail.Thread{Id: "t", Messages: []*gmail.Message{msg}}), "personal", 0)
+	stamp, ok := mapped.Meta["activity_stamp"].(map[string]any)
+	if !ok || stamp["automation_basis"] != "header_list_unsubscribe" || stamp["automated"] != true {
+		t.Fatalf("stamp = %#v", mapped.Meta["activity_stamp"])
+	}
+	messages := mapped.Meta["messages"].([]gmailMessageEvidence)
+	if len(messages) != 1 || !reflect.DeepEqual(messages[0].AutomationHeaders, []string{"list-unsubscribe"}) {
+		t.Fatalf("headers = %#v", messages)
+	}
+}

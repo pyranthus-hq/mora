@@ -1517,7 +1517,15 @@ With validated iMessage/WhatsApp evidence, `participation` reports `own_share`,
 denominator is retained evidence, not lifetime or fetched conversation size.
 No own message gives `last_own_at: null`; missing group facts give
 `is_group: null`. Without an evidence basis, participation is absent.
-`automated: null` explicitly means no basis; it is not `false`.
+`automated: null` explicitly means no basis; it is not `false`. Automation is
+stamped only from the latest validated retained sender: a 5–6 digit shortcode,
+a North American toll-free sender, a Gmail notification/no-reply sender pattern,
+or retained Gmail `List-Unsubscribe` / bulk-list-junk `Precedence` header facts.
+A named `(smsfp)` contact is not automation evidence. Older Gmail Markdown that
+did not retain those header facts remains unknown; rebuild never fetches or
+invents them. Connector stamps carry a version, event source, participation,
+automation basis, and a content-free retained-evidence fingerprint. A malformed,
+stale, or unbound stamp is ignored and the same retained evidence is derived.
 
 MCP `list_memory` accepts `source` and `event_since_hours` with the same
 semantics and bounded row output. Its `since_hours` argument is a list-only
