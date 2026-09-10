@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/activity"
@@ -70,27 +69,9 @@ func writeActivityStamp(ctx context.Context, stmt *sql.Stmt, m Memory) error {
 			automated = 0
 		}
 	}
-	basis := activityAutomationBasis(m)
+	basis := p.AutomationBasis
 	_, err := stmt.ExecContext(ctx, m.ID, m.Scope, eventAt, unix, nanos, participation, automated, basis, activityStampVersion)
 	return err
-}
-
-// activityAutomationBasis is intentionally only a transport seam. Classification
-// belongs to internal/activity/connectors; historical Markdown without an
-// affirmative basis remains unknown.
-func activityAutomationBasis(m Memory) any {
-	if m.Meta == nil {
-		return nil
-	}
-	raw, ok := m.Meta["activity_stamp"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	basis, _ := raw["automation_basis"].(string)
-	if strings.TrimSpace(basis) == "" {
-		return nil
-	}
-	return basis
 }
 
 func prepareActivityStampStmt(ctx context.Context, tx *sql.Tx) (*sql.Stmt, error) {
