@@ -54,10 +54,13 @@ var toolCatalog = []ToolDefinition{
 		},
 	},
 	{
-		Name: "list_memory", Description: "Browse the memories Mora wrote most recently, newest first. Ordered by `indexed_at` (when Mora recorded the memory), never by event time, so a future calendar event cannot lead the list. Each row splits the timestamps `created_at` conflated: `event_start` (when a calendar event happens), `source_created_at` (when the source object was created at its provider), and `indexed_at`; a field Mora cannot derive honestly is omitted rather than filled in",
+		Name: "list_memory", Description: "Browse the memories Mora wrote most recently, newest first. By default ordered by `indexed_at` (when Mora recorded the memory), never by event time, so a future calendar event cannot lead the list. Opt into source-event ordering with event_since_hours: only explicit source events within the window, with evidence-backed participation and automated:null when no basis exists. Calendar activity means event start, not edits. Each row splits the timestamps `created_at` conflated: `event_start`, `source_created_at`, and `indexed_at`; unknown facts are not invented",
 		Params: []Param{
 			{"scope", "string", "Optional scope filter", false},
-			{"limit", "integer", "Max memories to return (default 10)", false},
+			{"limit", "integer", "Max memories to return (default 10; event mode 1-1000)", false},
+			{"source", "string", "Optional connector or connector:account filter; echoed in the receipt", false},
+			{"event_since_hours", "integer", "Explicit source events in the last 1-8784 hours; orders by source event before limiting, excludes unknown/future times", false},
+			{"since_hours", "integer", "List-only alias for event_since_hours; cannot be combined with it. Search since_hours still means memory creation time", false},
 		},
 	},
 	{
