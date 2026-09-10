@@ -332,6 +332,9 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	if jsonOut {
 		if filter.Active() {
+			if items == nil {
+				items = []Memory{}
+			}
 			receipt := filter.Receipt()
 			receipt["memories"] = items
 			if len(filter.ExcludeDispositions) > 0 {

@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -25,5 +26,22 @@ func TestActivitySearchFlagsFreeTextRepeatExclusionsAndErrors(t *testing.T) {
 		if _, _, err := extractActivitySearchFlags(args); err == nil {
 			t.Fatalf("invalid flags accepted %v", args)
 		}
+	}
+}
+
+func TestActivitySearchEmptyCLIReceiptIsArray(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	raw := run(t, "search", "definitelyabsent", "--source", "gmail", "--event-since-hours", "24", "--dispositions", "exclude:not-context", "--json")
+	var got map[string]any
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	rows, ok := got["memories"].([]any)
+	if !ok || len(rows) != 0 {
+		t.Fatalf("empty filtered receipt must be array: %s", raw)
+	}
+	if got["excluded_by_disposition"] != float64(0) {
+		t.Fatal("zero count missing", got)
 	}
 }
