@@ -291,7 +291,7 @@
     },
     {
       "name": "sources",
-      "paths": ["sources", "sources list", "sources add"],
+      "paths": ["sources", "sources list", "sources add", "sources verify"],
       "evidence": {
         "success": {"status": "test", "tests": ["TestCoreA_CmdSources", "TestSourcesAddInheritsTypeConsent"]},
         "json": {"status": "not_supported", "reason": "sources currently renders text."},

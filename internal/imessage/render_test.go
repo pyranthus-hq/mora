@@ -56,7 +56,7 @@ func TestRenderTitle(t *testing.T) {
 	t.Run("group explicit name verbatim", func(t *testing.T) {
 		c := conversation{
 			displayName:  "Wink Launch",
-			participants: []string{"+14155551234", "+19998887777"},
+			participants: []string{"+14155551234", "+12025550104"},
 			isGroup:      true,
 		}
 		if got := renderTitle(c, r); got != "Wink Launch" {
@@ -66,10 +66,10 @@ func TestRenderTitle(t *testing.T) {
 
 	t.Run("group synthesized from resolved participants, unknown raw", func(t *testing.T) {
 		c := conversation{
-			participants: []string{"+14155551234", "+19998887777"},
+			participants: []string{"+14155551234", "+12025550104"},
 			isGroup:      true,
 		}
-		want := "Neil Patel, +19998887777"
+		want := "Neil Patel, +12025550104"
 		if got := renderTitle(c, r); got != want {
 			t.Fatalf("title = %q, want %q", got, want)
 		}
@@ -83,9 +83,9 @@ func TestRenderTitle(t *testing.T) {
 	})
 
 	t.Run("1:1 unknown falls back to raw handle", func(t *testing.T) {
-		c := conversation{participants: []string{"+19998887777"}, identifier: "+19998887777"}
-		if got := renderTitle(c, r); got != "+19998887777" {
-			t.Fatalf("title = %q, want %q", got, "+19998887777")
+		c := conversation{participants: []string{"+12025550104"}, identifier: "+12025550104"}
+		if got := renderTitle(c, r); got != "+12025550104" {
+			t.Fatalf("title = %q, want %q", got, "+12025550104")
 		}
 	})
 }
@@ -215,7 +215,7 @@ func TestRender(t *testing.T) {
 	t.Run("group with unknown raw handle and multi-line text", func(t *testing.T) {
 		msgs := []renderMessage{
 			{date: localDate(2026, 6, 1, 10, 0), fromMe: false, sender: "+14155551234", text: "here's the plan"},
-			{date: localDate(2026, 6, 1, 10, 1), fromMe: false, sender: "+19998887777", text: "line one\nline two"},
+			{date: localDate(2026, 6, 1, 10, 1), fromMe: false, sender: "+12025550104", text: "line one\nline two"},
 			{date: localDate(2026, 6, 1, 10, 2), fromMe: true, text: "🔥"},
 		}
 		body, _ := renderBody(msgs, r, 0)

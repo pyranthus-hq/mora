@@ -99,6 +99,13 @@ type GmailSegmentEvidence struct {
 	Direction   string `json:"direction,omitempty"`
 	Audience    string `json:"audience,omitempty"`
 	Snippet     string `json:"snippet"`
+	// Readable is a deterministic reading projection of the same segment
+	// (internal/readable): quoted history, signatures and markup set aside,
+	// named in Omitted. Snippet stays the source text; Readable never
+	// replaces it and is absent when nothing was set aside.
+	Readable          string   `json:"readable,omitempty"`
+	ReadableTruncated bool     `json:"readable_truncated,omitempty"`
+	Omitted           []string `json:"omitted,omitempty"`
 }
 
 // Source is a persisted connector registration and its provider-specific read scope.

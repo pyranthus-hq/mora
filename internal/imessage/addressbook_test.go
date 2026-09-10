@@ -23,7 +23,7 @@ func TestHandleResolution(t *testing.T) {
 		{"phone no plus, same digits", "14155551234", "Neil Patel"},
 		{"email exact match", "someone@email.com", "Sam Iam"},
 		{"email case-insensitive match", "Someone@Email.com", "Sam Iam"},
-		{"phone no match → raw handle", "+19998887777", "+19998887777"},
+		{"phone no match → raw handle", "+12025550104", "+12025550104"},
 		{"email no match → raw handle", "nobody@nowhere.io", "nobody@nowhere.io"},
 		{"opaque handle no match → raw handle", "iMessage;-;weird", "iMessage;-;weird"},
 		{"empty handle → empty (no fabrication)", "", ""},
@@ -81,7 +81,7 @@ func TestResolverLookup(t *testing.T) {
 		wantOK   bool
 	}{
 		{name: "resolved", resolver: resolved, handle: "+1 (415) 555-1234", want: "Neil Patel", wantOK: true},
-		{name: "unresolved", resolver: resolved, handle: "+19998887777", want: "", wantOK: false},
+		{name: "unresolved", resolver: resolved, handle: "+12025550104", want: "", wantOK: false},
 		{name: "empty handle", resolver: resolved, handle: "", want: "", wantOK: false},
 		{name: "nil resolver", resolver: nil, handle: "+14155551234", want: "", wantOK: false},
 		{name: "empty mapping", resolver: resolved, handle: "empty@example.com", want: "", wantOK: false},

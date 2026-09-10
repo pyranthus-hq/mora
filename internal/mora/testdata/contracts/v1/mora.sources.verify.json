@@ -1,0 +1,6 @@
+{
+  "accounts": [],
+  "coverage": "Live Google mailbox identity only. Message coverage, aliases, freshness and other providers are not verified.",
+  "schema": "mora.sources.verify",
+  "schema_version": 1
+}

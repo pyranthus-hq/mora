@@ -127,7 +127,7 @@ func imsgMemory(id, handle, name, occurred string, msgCount int) Memory {
 			"message_count": strconv.Itoa(msgCount),
 			"participants": []any{
 				map[string]any{"handle": handle, "name": name},
-				map[string]any{"handle": "+10000000000", "name": "Me"},
+				map[string]any{"handle": "+12025550100", "name": "Me"},
 			},
 		},
 	}
@@ -667,10 +667,10 @@ func TestP13ConfirmedMergeUnifies(t *testing.T) {
 }
 func TestP13ConfirmAbsentIdentityIsInert(t *testing.T) {
 	mems := []Memory{senderEmail("t1", "riya@acme.com", "Riya Sharma", "me@x.com")}
-	confirmed := []confirmedMerge{{A: personID("+19998887777"), B: personID("riya@acme.com"), GovID: "gov_x"}}
+	confirmed := []confirmedMerge{{A: personID("+12025550104"), B: personID("riya@acme.com"), GovID: "gov_x"}}
 	res := buildGraphResult(mems, confirmed)
 	for _, e := range personEntities(res.entities) {
-		if e.ID == personID("+19998887777") {
+		if e.ID == personID("+12025550104") {
 			t.Fatalf("a confirm for an absent identity must not mint a person entity: %+v", e)
 		}
 	}

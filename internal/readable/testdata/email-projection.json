@@ -1,0 +1,41 @@
+[
+  {
+    "name": "outlook-divider",
+    "raw": "Status is not approved.\n\nThanks,\nAvery | Operations\navery@example.test\n\n________\nFrom: prior@example.test\nSubject: Earlier\n\nOld thread.",
+    "text": "Status is not approved.\n\nThanks,\nAvery",
+    "omitted": [
+      "earlier quoted messages",
+      "signature"
+    ]
+  },
+  {
+    "name": "gmail-wrapped-wrote",
+    "raw": "I can review it.\n\nOn Tue, Sep 9, 2026 at 5:40 PM Taylor\n<taylor@example.test> wrote:\n> Earlier text",
+    "text": "I can review it.",
+    "omitted": [
+      "earlier quoted messages"
+    ]
+  },
+  {
+    "name": "apple-forward",
+    "raw": "FYI.\n\nBegin forwarded message:\nFrom: sender@example.test\nSubject: Update\n\nThe plan is not final.",
+    "text": "FYI.\n\nBegin forwarded message:\nFrom: sender@example.test\nSubject: Update\n\nThe plan is not final.",
+    "omitted": []
+  },
+  {
+    "name": "encoded-image-preheader",
+    "raw": "Visible update.\n\u034f\u034f\n[AbC123Def456GhI789] <https://img.example.test/>\n%opentrack%",
+    "text": "Visible update.",
+    "omitted": [
+      "image and link markup",
+      "hidden formatting characters",
+      "tracking markup"
+    ]
+  },
+  {
+    "name": "postscript-after-closing",
+    "raw": "Thanks,\nPlease do not approve yet.\nP.S. Call me.",
+    "text": "Thanks,\nPlease do not approve yet.\nP.S. Call me.",
+    "omitted": []
+  }
+]

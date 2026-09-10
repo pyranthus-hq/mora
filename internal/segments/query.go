@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/readable"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"strings"
 )
@@ -63,7 +64,9 @@ func WinnerQuery(ctx context.Context, db *sql.DB, query, scope string, pool int,
 		}
 		var refs []string
 		_ = json.Unmarshal([]byte(refsJSON), &refs)
-		evidence[id] = memory.GmailSegmentEvidence{EvidenceRef: ref, Sender: sender, At: at, Direction: Direction(refs), Audience: Audience(refs), Snippet: searchpkg.MatchSnippet(text, query, snippetLen)}
+		ev := memory.GmailSegmentEvidence{EvidenceRef: ref, Sender: sender, At: at, Direction: Direction(refs), Audience: Audience(refs), Snippet: searchpkg.MatchSnippet(text, query, snippetLen)}
+		AttachReadable(&ev, text, ReadableSearchRunes)
+		evidence[id] = ev
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
@@ -191,6 +194,25 @@ func FuseCandidates(candidates []memory.Memory, parentIDs, segmentIDs []string) 
 	}
 	return out
 }
+
+// Reading projections are bounded separately from match snippets so a
+// search page stays inside its envelope while list/read paths can show more.
+const (
+	ReadableSearchRunes = 1200
+	ReadableListRunes   = 1600
+)
+
+// AttachReadable adds the reading projection of a segment's full text when
+// anything was set aside. The source snippet is left untouched.
+func AttachReadable(ev *memory.GmailSegmentEvidence, text string, limit int) {
+	r := readable.Email(text)
+	if !r.Changed {
+		return
+	}
+	ev.Readable, ev.ReadableTruncated = readable.Bound(r.Text, limit)
+	ev.Omitted = r.Omitted
+}
+
 func AttachEvidence(rows []memory.Memory, evidence map[string]memory.GmailSegmentEvidence) {
 	if len(evidence) == 0 {
 		return

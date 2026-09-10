@@ -20,7 +20,7 @@ func imsgMemory(id, handle, name, occurred string, msgCount int) Memory {
 			"message_count": strconv.Itoa(msgCount),
 			"participants": []any{
 				map[string]any{"handle": handle, "name": name},
-				map[string]any{"handle": "+10000000000", "name": "Me"},
+				map[string]any{"handle": "+12025550100", "name": "Me"},
 			},
 		},
 	}

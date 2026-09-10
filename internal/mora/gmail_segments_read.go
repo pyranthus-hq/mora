@@ -3,6 +3,9 @@ package mora
 import (
 	"context"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/memory"
+	segmentspkg "github.com/pyranthus-hq/mora/internal/segments"
+	"strings"
 	"time"
 )
 
@@ -47,5 +50,10 @@ func shapeReadMemoryEvidenceRef(cfg Config, m Memory, seg gmailSegmentRow, args 
 	receipt.At = seg.At
 	receipt.Direction = imessageDirection(seg.BlockRefs)
 	receipt.Audience = imessageAudience(seg.BlockRefs)
+	if strings.EqualFold(m.Provider, "gmail") || strings.Contains(strings.ToLower(m.ProviderID), "gmail") {
+		var ev memory.GmailSegmentEvidence
+		segmentspkg.AttachReadable(&ev, seg.Text, segmentspkg.ReadableListRunes)
+		receipt.Readable, receipt.ReadableTruncated, receipt.Omitted = ev.Readable, ev.ReadableTruncated, ev.Omitted
+	}
 	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}
 }

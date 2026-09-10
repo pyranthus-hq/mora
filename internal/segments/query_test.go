@@ -121,3 +121,16 @@ func TestAdmitFuseAndAttachCandidates(t *testing.T) {
 	}
 	AttachEvidence(fused, nil)
 }
+
+func TestAttachReadableBoundsProjectionAndLeavesSnippet(t *testing.T) {
+	ev := memory.GmailSegmentEvidence{Snippet: "raw"}
+	AttachReadable(&ev, "Not approved yet.\n\nThanks,\nMaria | CFO\nmaria@example.test", 8)
+	if ev.Snippet != "raw" || ev.Readable != "Not appr" || !ev.ReadableTruncated || len(ev.Omitted) != 1 || ev.Omitted[0] != "signature" {
+		t.Fatalf("%+v", ev)
+	}
+	ev = memory.GmailSegmentEvidence{Snippet: "raw"}
+	AttachReadable(&ev, "Plain text only.", 8)
+	if ev.Readable != "" || ev.Omitted != nil || ev.ReadableTruncated {
+		t.Fatalf("%+v", ev)
+	}
+}

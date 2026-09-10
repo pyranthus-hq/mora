@@ -383,7 +383,7 @@ func TestIm_ConversationRetractedAndMimeOnlyAttachment(t *testing.T) {
 // (not its display name) matches the deny-list (case-insensitive).
 func TestIm_DenyByChatIdentifier(t *testing.T) {
 	f := imNewFetcherDeny(t,
-		[]seedChat{{rowid: 1, guid: "g1", identifier: "Spoilers", participants: []string{"+14155551234", "+19998887777"}}},
+		[]seedChat{{rowid: 1, guid: "g1", identifier: "Spoilers", participants: []string{"+14155551234", "+12025550104"}}},
 		[]seedMsg{{chatID: 1, date: localDate(2026, 5, 20, 9, 0), handle: "+14155551234", text: "secret"}},
 		DenyList{Conversations: []string{"spoilers"}},
 	)

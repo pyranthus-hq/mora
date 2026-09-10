@@ -21,6 +21,9 @@ type SyncStatus struct {
 	// IncrementalCursor is the provider-native between-run position. Checkpoint
 	// remains the in-progress page token and is cleared only after completion.
 	IncrementalCursor string `json:"incremental_cursor,omitempty"`
+	// AccountEmail binds Google cursors to the live mailbox that issued them.
+	// Legacy/unbound cursors must not be reused after credential replacement.
+	AccountEmail string `json:"account_email,omitempty"`
 
 	// Last-attempt health (M-3). Health is the LAST attempt's outcome, not a
 	// sticky lifetime tally: a clean sync resets ErrorCount/LastError and stamps

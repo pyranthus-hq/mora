@@ -605,6 +605,13 @@
       "payload": "mora.sources.add"
     },
     {
+      "path": "sources verify",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.sources.verify"
+    },
+    {
       "path": "connectors list",
       "kind": "subcommand",
       "platform": "all",

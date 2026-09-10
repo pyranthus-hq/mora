@@ -220,11 +220,11 @@ func TestSeededLookback(t *testing.T) {
 func TestSeededDenyContact1to1(t *testing.T) {
 	chats := []seedChat{
 		{rowid: 1, guid: "iMessage;-;+14155551234", identifier: "+14155551234", participants: []string{"+14155551234"}},
-		{rowid: 2, guid: "iMessage;-;+19998887777", identifier: "+19998887777", participants: []string{"+19998887777"}},
+		{rowid: 2, guid: "iMessage;-;+12025550104", identifier: "+12025550104", participants: []string{"+12025550104"}},
 	}
 	msgs := []seedMsg{
 		{chatID: 1, date: localDate(2026, 5, 10, 9, 0), handle: "+14155551234", text: "from the denied contact"},
-		{chatID: 2, date: localDate(2026, 5, 10, 9, 0), handle: "+19998887777", text: "from a kept contact"},
+		{chatID: 2, date: localDate(2026, 5, 10, 9, 0), handle: "+12025550104", text: "from a kept contact"},
 	}
 	path := seedChatDB(t, chats, msgs)
 
@@ -239,7 +239,7 @@ func TestSeededDenyContact1to1(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("want 1 conversation (denied 1:1 skipped), got %d", len(items))
 	}
-	if items[0].ProviderID != "iMessage;-;+19998887777" {
+	if items[0].ProviderID != "iMessage;-;+12025550104" {
 		t.Fatalf("kept the wrong conversation: %s", items[0].ProviderID)
 	}
 }
@@ -249,10 +249,10 @@ func TestSeededDenyContact1to1(t *testing.T) {
 // messages still appear — group exclusion is thread-granularity only.
 func TestSeededDenyContactGroupKeptIntact(t *testing.T) {
 	chats := []seedChat{{rowid: 1, guid: "iMessage;+;chat777", display: "Launch Crew",
-		participants: []string{"+14155551234", "+19998887777"}}}
+		participants: []string{"+14155551234", "+12025550104"}}}
 	msgs := []seedMsg{
 		{chatID: 1, date: localDate(2026, 5, 10, 9, 0), handle: "+14155551234", text: "denied member speaking"},
-		{chatID: 1, date: localDate(2026, 5, 10, 9, 1), handle: "+19998887777", text: "other member speaking"},
+		{chatID: 1, date: localDate(2026, 5, 10, 9, 1), handle: "+12025550104", text: "other member speaking"},
 	}
 	path := seedChatDB(t, chats, msgs)
 	r := resolver1to1()
@@ -277,8 +277,8 @@ func TestSeededDenyContactGroupKeptIntact(t *testing.T) {
 // is skipped entirely (thread-granularity, D-08), case-insensitively.
 func TestSeededDenyConversationTitle(t *testing.T) {
 	chats := []seedChat{
-		{rowid: 1, guid: "iMessage;+;chat1", display: "Spoilers", participants: []string{"+14155551234", "+19998887777"}},
-		{rowid: 2, guid: "iMessage;+;chat2", display: "Work", participants: []string{"+14155551234", "+19998887777"}},
+		{rowid: 1, guid: "iMessage;+;chat1", display: "Spoilers", participants: []string{"+14155551234", "+12025550104"}},
+		{rowid: 2, guid: "iMessage;+;chat2", display: "Work", participants: []string{"+14155551234", "+12025550104"}},
 	}
 	msgs := []seedMsg{
 		{chatID: 1, date: localDate(2026, 5, 10, 9, 0), handle: "+14155551234", text: "secret"},

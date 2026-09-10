@@ -10,6 +10,10 @@ Quality gate or maintenance boundary:
 
 <!-- Keep this to one coherent scope. -->
 
+## Golden change reason
+
+<!-- Required when changing internal/readable/testdata/*. State why the golden changed. -->
+
 ## Verification
 
 <!-- Exact commands, tests, fixtures, and failure cases exercised. -->
