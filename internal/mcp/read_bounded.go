@@ -39,6 +39,7 @@ type BoundedReadReceipt struct {
 	Readable          string   `json:"readable,omitempty"`
 	ReadableTruncated bool     `json:"readable_truncated,omitempty"`
 	Omitted           []string `json:"omitted,omitempty"`
+	Target            string   `json:"target,omitempty"`
 }
 
 const (

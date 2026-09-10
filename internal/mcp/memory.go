@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/disposition"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -11,7 +12,32 @@ type DecisionBuilder func(createdAt, asOf, durability, flipConditions, reviewBy 
 
 // MemoryFromArgs validates write_memory arguments and constructs the canonical pre-publish record.
 func MemoryFromArgs(args map[string]any, now time.Time, decision DecisionBuilder) (memory.Memory, error) {
-	m := memory.Memory{Scope: StringArg(args, "scope", "global"), Type: StringArg(args, "type", "insight"), Title: StringArg(args, "title", ""), Text: StringArg(args, "text", ""), Source: StringArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
+	for _, key := range []string{"target", "disposition"} {
+		if raw, exists := args[key]; exists {
+			if _, ok := raw.(string); !ok {
+				return memory.Memory{}, errors.New(key + " must be a string")
+			}
+		}
+	}
+	target := StringArg(args, "target", "")
+	value := StringArg(args, "disposition", "")
+	if err := disposition.ValidateFields(target, value); err != nil {
+		return memory.Memory{}, err
+	}
+	typ := StringArg(args, "type", "insight")
+	if target != "" || value != "" {
+		if typ != "insight" && typ != "correction" {
+			return memory.Memory{}, errors.New("target/disposition require type=correction")
+		}
+		typ = "correction"
+	}
+	m := memory.Memory{Scope: StringArg(args, "scope", "global"), Type: typ, Title: StringArg(args, "title", ""), Text: StringArg(args, "text", ""), Source: StringArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
+	if target != "" {
+		m.Meta = map[string]any{"target": target}
+		if value != "" {
+			m.Meta["disposition"] = value
+		}
+	}
 	if m.Title == "" || m.Text == "" {
 		return memory.Memory{}, errors.New("title and text required")
 	}

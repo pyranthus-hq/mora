@@ -20,6 +20,8 @@ func TestProjectExplicitLatestScopedAndDeterministic(t *testing.T) {
 	foreign.Scope = "work"
 	forged := correction("forged", "outdated", "2026-09-05T00:00:00Z")
 	forged.Provider = "gmail"
+	sourced := correction("sourced", "outdated", "2026-09-05T00:00:00Z")
+	sourced.Source = "gmail"
 	note := correction("note", "", "2026-09-06T00:00:00Z")
 	future := correction("future", "outdated", "2026-09-11T00:00:00Z")
 	shared := correction("shared", "outdated", "2026-09-07T00:00:00Z")
@@ -30,7 +32,7 @@ func TestProjectExplicitLatestScopedAndDeterministic(t *testing.T) {
 	wrongType.Type = "insight"
 	malformed := correction("malformed", "outdated", "not-a-time")
 	early := correction("early", "outdated", "2026-08-01T00:00:00Z")
-	records := []memory.Memory{target, old, latest, tie, foreign, forged, note, future, shared, deleted, wrongType, malformed, early}
+	records := []memory.Memory{target, old, latest, tie, foreign, forged, sourced, note, future, shared, deleted, wrongType, malformed, early}
 	want := map[Key]memory.Disposition{{"personal", "target"}: {Value: "done", CorrectionID: "zz", At: tie.CreatedAt}}
 	if got := Project(records, now); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v want %#v", got, want)

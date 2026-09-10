@@ -66,7 +66,7 @@ func Project(records []memory.Memory, now time.Time) map[Key]memory.Disposition 
 	out := map[Key]memory.Disposition{}
 	times := map[Key]time.Time{}
 	for _, c := range records {
-		if c.Type != "correction" || c.Provider != "" || c.ProviderID != "" || c.Owner != "" || c.DeletedAt != "" || c.ID == "" {
+		if c.Type != "correction" || c.Provider != "" || c.ProviderID != "" || !IsLocalAuthored(c) || c.Owner != "" || c.DeletedAt != "" || c.ID == "" {
 			continue
 		}
 		id, targetOK := c.Meta["target"].(string)
@@ -95,4 +95,18 @@ func Project(records []memory.Memory, now time.Time) map[Key]memory.Disposition 
 		times[key] = at
 	}
 	return out
+}
+
+// IsLocalAuthored rejects connector-shaped records from correction authority.
+// Ordinary write sources are unconstrained; this predicate is only for typed corrections.
+func IsLocalAuthored(m memory.Memory) bool {
+	if m.Provider != "" || m.ProviderID != "" || m.Owner != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(m.Source)) {
+	case "gmail", "imessage", "whatsapp", "calendar", "applecalendar", "github":
+		return false
+	default:
+		return true
+	}
 }

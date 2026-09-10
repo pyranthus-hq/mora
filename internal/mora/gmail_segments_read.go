@@ -55,5 +55,5 @@ func shapeReadMemoryEvidenceRef(cfg Config, m Memory, seg gmailSegmentRow, args 
 		segmentspkg.AttachReadable(&ev, seg.Text, segmentspkg.ReadableListRunes)
 		receipt.Readable, receipt.ReadableTruncated, receipt.Omitted = ev.Readable, ev.ReadableTruncated, ev.Omitted
 	}
-	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}
+	return addDispositionTargetReceipt(map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}, m)
 }
