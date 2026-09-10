@@ -105,3 +105,16 @@ func TestCalendarUsesSharedGoogleMailboxIdentityGuard(t *testing.T) {
 		t.Fatal("gmail and calendar guard diverged on unavailable identity")
 	}
 }
+
+func TestCanonicalizeGmailMappedRefsOnlyQualifiesOwnParent(t *testing.T) {
+	mm := memory.MappedMemory{StableID: "gmail_thread/t", Provider: "gmail", Title: "t", Body: "body", Meta: map[string]any{
+		"messages": []map[string]any{{"message_ref": "gmail_thread/t#one"}, {"message_ref": "gmail_thread/other#two"}, {"message_ref": "gmail_thread/t#"}},
+	}}
+	canonicalizeGmailMappedRefs(&mm, "work")
+	b, _ := json.Marshal(mm.Meta["messages"])
+	var rows []map[string]any
+	_ = json.Unmarshal(b, &rows)
+	if rows[0]["message_ref"] != "gmail_thread/t@work#one" || rows[1]["message_ref"] != "gmail_thread/other#two" || rows[2]["message_ref"] != "gmail_thread/t#" || mm.ContentHash == "" {
+		t.Fatalf("unexpected canonical refs: %+v", rows)
+	}
+}

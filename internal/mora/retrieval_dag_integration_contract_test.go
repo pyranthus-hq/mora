@@ -17,9 +17,9 @@ import (
 // resulting scores, and F measures E's bounded evidence reads. These tests must
 // fail against the naive E+F union before any integration repair lands.
 
-const retrievalDAGSchemaVersion = 5
+const retrievalDAGSchemaVersion = 6
 
-func TestRetrievalDAGSchemaV5RebuildsEveryPredecessorShape(t *testing.T) {
+func TestRetrievalDAGSchemaV6RebuildsEveryPredecessorShape(t *testing.T) {
 	for _, shape := range []string{"v3", "d_v4", "e_v4", "partial_v5"} {
 		subRun(t, shape, func(t *testing.T) {
 			cfg := seedGmailSegmentsSearchFixture(t)
@@ -40,7 +40,7 @@ func TestRetrievalDAGSchemaV5RebuildsEveryPredecessorShape(t *testing.T) {
 			if err := indexUpsert(context.Background(), cfg, m); err != nil {
 				t.Fatalf("indexUpsert from %s: %v", shape, err)
 			}
-			retrievalDAGAssertCompleteV5(t, cfg, m.ID)
+			retrievalDAGAssertCompleteV6(t, cfg, m.ID)
 		})
 	}
 }
@@ -85,7 +85,7 @@ func retrievalDAGMutateSchema(t *testing.T, cfg Config, shape string) {
 	}
 }
 
-func retrievalDAGAssertCompleteV5(t *testing.T, cfg Config, wantID string) {
+func retrievalDAGAssertCompleteV6(t *testing.T, cfg Config, wantID string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {

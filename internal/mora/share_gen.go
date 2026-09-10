@@ -191,6 +191,10 @@ func writeShareIndexRows(ctx context.Context, tx *sql.Tx, mems []Memory) error {
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT, provider TEXT, account TEXT, created_at_unix INTEGER)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text)`,
+		activityStampSchemaStmts[0],
+		activityStampSchemaStmts[1],
+		activityStampSchemaStmts[2],
+		activityStampSchemaStmts[3],
 		`DELETE FROM memories`,
 		`DELETE FROM memories_fts`,
 		fmt.Sprintf(`PRAGMA user_version = %d`, indexSchemaVersion),
@@ -199,6 +203,11 @@ func writeShareIndexRows(ctx context.Context, tx *sql.Tx, mems []Memory) error {
 			return err
 		}
 	}
+	stampStmt, err := prepareActivityStampStmt(ctx, tx)
+	if err != nil {
+		return err
+	}
+	defer stampStmt.Close()
 	for _, m := range mems {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.ID, m.Scope, m.Type, m.Title, strings.Join(m.Tags, ","), m.Source, m.CreatedAt, m.Path, m.Text,
@@ -207,6 +216,9 @@ func writeShareIndexRows(ctx context.Context, tx *sql.Tx, mems []Memory) error {
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memories_fts VALUES (?, ?, ?, ?, ?, ?)`,
 			m.ID, m.Scope, m.Title, strings.Join(m.Tags, ","), m.Source, m.Text); err != nil {
+			return err
+		}
+		if err := writeActivityStamp(ctx, stampStmt, m); err != nil {
 			return err
 		}
 	}

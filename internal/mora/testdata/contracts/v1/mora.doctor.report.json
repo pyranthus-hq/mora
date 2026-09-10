@@ -95,7 +95,7 @@
       "graph_lag_hours": 0,
       "vectors_indexed_at": "\u003ctimestamp\u003e"
     },
-    "schema_version": 5,
+    "schema_version": 6,
     "state": "fresh"
   },
   "observed": [
@@ -169,6 +169,7 @@
   "share_publishes": 0,
   "share_subscriptions": 0,
   "sources": [],
+  "stamp_coverage": [],
   "storage_bytes": 0,
   "storage_status": "ok",
   "verification": [],

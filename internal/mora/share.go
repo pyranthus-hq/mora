@@ -785,6 +785,14 @@ func openShareIndexRO(ctx context.Context, path, committedDigest string) (*sql.D
 		_ = db.Close()
 		return nil, fmt.Errorf("share index %s has schema %d (this mora expects %d) — run `mora share pull` to rebuild it", path, v, indexSchemaVersion)
 	}
+	complete, err := indexSchemaPhysicalComplete(ctx, db)
+	if err != nil || !complete {
+		_ = db.Close()
+		if err != nil {
+			return nil, fmt.Errorf("share index %s activity stamp schema probe: %w", path, err)
+		}
+		return nil, fmt.Errorf("share index %s has incomplete activity stamp schema — run `mora share pull` to rebuild it", path)
+	}
 	return db, nil
 }
 
@@ -1207,7 +1215,13 @@ func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope strin
 		m.Owner = owner
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := overlayActivityStamps(ctx, db, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // searchSharedCorpora queries every subscription's index and returns one

@@ -116,10 +116,10 @@ func UpsertSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
-		 ('memories','memories_fts','index_meta','gmail_segments','gmail_segments_fts','gmail_segment_diagnostics')`).Scan(&n); err != nil {
+		 ('memories','memories_fts','index_meta','gmail_segments','gmail_segments_fts','gmail_segment_diagnostics','activity_stamps')`).Scan(&n); err != nil {
 		return false, err
 	}
-	if n != 6 {
+	if n != 7 {
 		return false, nil
 	}
 	rows, err := db.QueryContext(ctx, `PRAGMA table_info(memories)`)
@@ -140,5 +140,31 @@ func UpsertSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
-	return columns["provider"] && columns["account"] && columns["created_at_unix"], nil
+	if !(columns["provider"] && columns["account"] && columns["created_at_unix"]) {
+		return false, nil
+	}
+	stampRows, err := db.QueryContext(ctx, `PRAGMA table_info(activity_stamps)`)
+	if err != nil {
+		return false, err
+	}
+	defer stampRows.Close()
+	stamps := map[string]bool{}
+	for stampRows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultValue any
+		if err := stampRows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		stamps[name] = true
+	}
+	if err := stampRows.Err(); err != nil {
+		return false, err
+	}
+	for _, name := range []string{"memory_id", "scope", "event_at", "event_at_unix", "event_at_nanos", "participation_json", "automated", "automation_basis", "version"} {
+		if !stamps[name] {
+			return false, nil
+		}
+	}
+	return true, nil
 }

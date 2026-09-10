@@ -350,6 +350,9 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		gsegEvidence = completeGmailSegmentEvidence(ctx, db, query, scope, result, gsegEvidence, f)
 	}
 	attachGmailSegmentEvidence(result, gsegEvidence)
+	if err := overlayActivityStamps(ctx, db, result); err != nil {
+		return nil, tr, err
+	}
 	return result, tr, nil
 }
 

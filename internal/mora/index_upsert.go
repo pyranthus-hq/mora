@@ -180,6 +180,9 @@ func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 	if err := clearGmailSegmentsFor(ctx, tx, m.ID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM activity_stamps WHERE memory_id=?`, m.ID); err != nil {
+		return err
+	}
 	if m.DeletedAt == "" {
 		path := memoryPath(cfg, m)
 		tags := strings.Join(m.Tags, ",")
@@ -200,6 +203,15 @@ func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 		}
 		werr := writeGmailSegments(ctx, gsegStmts, m)
 		gsegStmts.Close()
+		if werr != nil {
+			return werr
+		}
+		stampStmt, err := prepareActivityStampStmt(ctx, tx)
+		if err != nil {
+			return err
+		}
+		werr = writeActivityStamp(ctx, stampStmt, m)
+		stampStmt.Close()
 		if werr != nil {
 			return werr
 		}

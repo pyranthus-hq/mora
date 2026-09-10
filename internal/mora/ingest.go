@@ -36,6 +36,37 @@ func syncStatusFileThreshold(name string) time.Duration { return ingestpkg.Statu
 func syncStatusFileState(st *memory.SyncStatus, threshold time.Duration, now time.Time) string {
 	return ingestpkg.StatusFileState(st, threshold, now)
 }
+
+// canonicalizeGmailMappedRefs qualifies only refs that belong to this mapped
+// thread. A malformed or foreign ref is deliberately left unchanged so the
+// downstream segment validator fails closed rather than relabelling evidence.
+func canonicalizeGmailMappedRefs(mm *memory.MappedMemory, account string) {
+	if mm == nil || account == "" || mm.Provider != "gmail" || mm.Meta == nil {
+		return
+	}
+	body, err := json.Marshal(mm.Meta["messages"])
+	if err != nil {
+		return
+	}
+	var rows []map[string]any
+	if json.Unmarshal(body, &rows) != nil {
+		return
+	}
+	parent := mm.StableID
+	for _, row := range rows {
+		ref, _ := row["message_ref"].(string)
+		prefix := parent + "#"
+		if strings.HasPrefix(ref, prefix) && len(ref) > len(prefix) {
+			row["message_ref"] = parent + "@" + account + "#" + strings.TrimPrefix(ref, prefix)
+		}
+	}
+	mm.Meta["messages"] = rows
+	meta, err := memory.CanonicalMeta(mm.Meta)
+	if err == nil {
+		mm.ContentHash = memory.ContentHash(mm.Title, mm.Body, meta)
+	}
+}
+
 func persistSyncStatus(out io.Writer, path string, st *memory.SyncStatus, ingErr error) error {
 	// A failure raised INSIDE memory.Ingest is typed HERE, not at ingestSource.
 	// memory.Ingest stamps its own LastAttemptAt, which correctly trips
@@ -1416,6 +1447,12 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 		// carries the SAME iCal UID — untagged, the second account's copy would
 		// collide with (and clobber) the first's.
 		if s.Account != "" {
+			// New account-labelled Gmail evidence uses the same account-qualified
+			// parent as its memory ID. Historical bare refs remain readable; this
+			// only changes newly mapped records and never adopts a foreign parent.
+			if kind == google.KindGmailThread {
+				canonicalizeGmailMappedRefs(&mm, s.Account)
+			}
 			mm.Account = s.Account
 			mm.StableID = mm.StableID + "@" + s.Account
 		}

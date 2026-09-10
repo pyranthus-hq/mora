@@ -128,18 +128,54 @@ func cmdIndex(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 			State:            indexHealthOf(cfg, indexClock()).State,
 		})
 	}
-	// vault/index.md is refreshed inside rebuildIndexWithPolicy's commit path now
-	// (B5), so every rebuild caller keeps it honest — not just this CLI one.
+	// The derived state-cache index page is refreshed inside rebuildIndexWithPolicy.
 	fmt.Fprintf(stdout, "indexed %d memories\n", count)
 	return nil
 }
 func dbPath(cfg Config) string { return indexstore.Path(cfg) }
 func indexSchemaMatches(ctx context.Context, cfg Config) (bool, error) {
-	return indexstore.SchemaMatches(ctx, cfg, indexSchemaVersion)
+	if ok, err := indexstore.SchemaMatches(ctx, cfg, indexSchemaVersion); err != nil || !ok {
+		return ok, err
+	}
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	return indexSchemaPhysicalComplete(ctx, db)
 }
 func roIndexDSN(cfg Config) string      { return indexstore.ReadOnlyDSN(cfg) }
 func rwIndexDSN(cfg Config) string      { return indexstore.ReadWriteDSN(cfg) }
 func checkIndexSchema(db *sql.DB) error { return indexstore.CheckSchema(db, indexSchemaVersion) }
+
+func indexSchemaPhysicalComplete(ctx context.Context, db *sql.DB) (bool, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(activity_stamps)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	want := map[string]bool{"memory_id": false, "scope": false, "event_at": false, "event_at_unix": false, "event_at_nanos": false, "participation_json": false, "automated": false, "automation_basis": false, "version": false}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var def any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &def, &pk); err != nil {
+			return false, err
+		}
+		if _, ok := want[name]; ok {
+			want[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for _, present := range want {
+		if !present {
+			return false, nil
+		}
+	}
+	return true, nil
+}
 func indexUpsertSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
 	return indexstore.UpsertSchemaComplete(ctx, db)
 }
@@ -342,6 +378,10 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		// each rebuild; deliberately NOT in the DELETE list so vault_id persists
 		// across rebuilds and the guard can compare it.
 		`CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT)`,
+		activityStampSchemaStmts[0],
+		activityStampSchemaStmts[1],
+		activityStampSchemaStmts[2],
+		activityStampSchemaStmts[3],
 		`DELETE FROM memories`,
 		`DELETE FROM memories_fts`,
 		`DELETE FROM entities`,
@@ -402,6 +442,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return 0, err
 	}
 	defer gsegStmts.Close()
+	stampStmt, err := prepareActivityStampStmt(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	defer stampStmt.Close()
 	count = 0
 	var parsed []Memory // ALL memories (incl. tombstones) — feeds the graph
 	var live []Memory   // non-tombstoned only — the searchable corpus + vectors
@@ -461,6 +506,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		// its fail-closed diagnostic) in the SAME transaction, over the SAME
 		// live corpus memories/memories_fts just indexed.
 		if err := writeGmailSegments(ctx, gsegStmts, m); err != nil {
+			return count, err
+		}
+		if err := writeActivityStamp(ctx, stampStmt, m); err != nil {
 			return count, err
 		}
 		live = append(live, m)
@@ -613,12 +661,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return count, fmt.Errorf("index committed but ingest-journal retirement failed: %w", err)
 	}
 
-	// B5 — refresh vault/index.md from the SAME stamp written into index_meta, so
-	// the page buildContext injects into every context payload cannot disagree with
-	// the index it describes. Best-effort: a cosmetic derived file must not undo a
+	// Refresh the state-cache index page from the SAME stamp written into index_meta.
+	// Best-effort: a cosmetic derived file must not undo a
 	// committed rebuild (and returning here would spuriously fire the failure stamp).
 	if werr := writeWikiIndex(cfg, count, stampNowText); werr != nil {
-		fmt.Fprintf(os.Stderr, "warn: could not refresh vault/index.md: %v\n", werr)
+		fmt.Fprintf(os.Stderr, "warn: could not refresh state index cache: %v\n", werr)
 	}
 	if err := progress.Update("finalizing", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
