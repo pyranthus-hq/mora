@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 func vaultMarkdownSHA(t *testing.T, cfg Config) []string {
@@ -140,5 +141,44 @@ func TestFinalPartialActivityStampSchemaHealsOnUpsertAndShareReadRejects(t *test
 	if db, err := openShareIndexRO(context.Background(), path, ""); err == nil {
 		db.Close()
 		t.Fatal("partial share schema was accepted")
+	}
+}
+
+func TestFinalSharedEventSurvivesLocalSameIDDisposition(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	const id = "shared-same-id"
+	local := Memory{ID: id, Scope: "project:acme", Type: "insight", Provider: "gmail", Source: "gmail", Title: "local", Text: "shared-event-probe", CreatedAt: "2026-09-10T10:00:00Z", Meta: map[string]any{"occurred_at": "2026-09-10T11:00:00Z"}}
+	correction := Memory{ID: "local-correction", Scope: local.Scope, Type: "correction", Source: "manual", Title: "hide local", Text: "hide", CreatedAt: "2026-09-10T10:30:00Z", Meta: map[string]any{"target": id, "disposition": "not-context"}}
+	if err := writeMemory(cfg, local); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMemory(cfg, correction); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	shared := local
+	shared.Title, shared.Text = "shared", "shared-event-probe from neil"
+	setupSubscription(t, cfg, "neil", []Memory{shared})
+	out, err := defaultSearchForMCP(context.Background(), cfg, "shared-event-probe", local.Scope, 10, searchFilters{Now: now, EventSinceHours: 24, ExcludeDispositions: []string{"not-context"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *Memory
+	for i := range out.Results {
+		if out.Results[i].Owner == "neil" && out.Results[i].ID == id {
+			row = &out.Results[i]
+			break
+		}
+	}
+	if row == nil {
+		t.Fatalf("local disposition excluded same-ID shared row: %+v", out.Results)
+	}
+	if row.EventAt != "2026-09-10T11:00:00Z" {
+		t.Fatalf("shared event annotation lost: %+v", row)
 	}
 }
