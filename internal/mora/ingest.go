@@ -61,10 +61,9 @@ func canonicalizeGmailMappedRefs(mm *memory.MappedMemory, account string) {
 		}
 	}
 	mm.Meta["messages"] = rows
-	meta, err := memory.CanonicalMeta(mm.Meta)
-	if err == nil {
-		mm.ContentHash = memory.ContentHash(mm.Title, mm.Body, meta)
-	}
+	// Keep the mapper's pre-transform semantic hash. Account qualification is
+	// additive identity metadata for newly materialized rows, not a reason to
+	// rewrite every unchanged historical account mailbox.
 }
 
 func persistSyncStatus(out io.Writer, path string, st *memory.SyncStatus, ingErr error) error {

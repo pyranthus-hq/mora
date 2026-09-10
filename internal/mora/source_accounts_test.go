@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"os"
 	"strings"
 	"testing"
 )
@@ -110,11 +111,50 @@ func TestCanonicalizeGmailMappedRefsOnlyQualifiesOwnParent(t *testing.T) {
 	mm := memory.MappedMemory{StableID: "gmail_thread/t", Provider: "gmail", Title: "t", Body: "body", Meta: map[string]any{
 		"messages": []map[string]any{{"message_ref": "gmail_thread/t#one"}, {"message_ref": "gmail_thread/other#two"}, {"message_ref": "gmail_thread/t#"}},
 	}}
+	mm.ContentHash = "legacy-hash"
 	canonicalizeGmailMappedRefs(&mm, "work")
 	b, _ := json.Marshal(mm.Meta["messages"])
 	var rows []map[string]any
 	_ = json.Unmarshal(b, &rows)
-	if rows[0]["message_ref"] != "gmail_thread/t@work#one" || rows[1]["message_ref"] != "gmail_thread/other#two" || rows[2]["message_ref"] != "gmail_thread/t#" || mm.ContentHash == "" {
+	if rows[0]["message_ref"] != "gmail_thread/t@work#one" || rows[1]["message_ref"] != "gmail_thread/other#two" || rows[2]["message_ref"] != "gmail_thread/t#" || mm.ContentHash != "legacy-hash" {
 		t.Fatalf("unexpected canonical refs: %+v", rows)
+	}
+}
+
+func TestCanonicalizedAccountGmailHashSkipsExistingMarkdown(t *testing.T) {
+	cfg := gate2Vault(t)
+	mm := memory.MappedMemory{StableID: "gmail_thread/t", Account: "work", Scope: "global", Type: "email", Title: "t", Body: "body", Provider: "gmail", Source: "t", ContentHash: "legacy-hash", Meta: map[string]any{"messages": []map[string]any{{"message_ref": "gmail_thread/t#one"}}}}
+	canonicalizeGmailMappedRefs(&mm, "work")
+	mm.StableID += "@work"
+	if wrote, err := writeMappedMemoryDetailed(cfg, mm); err != nil || !wrote {
+		t.Fatalf("initial write=%t err=%v", wrote, err)
+	}
+	files, err := allMemoryFiles(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := ""
+	for _, candidate := range files {
+		if strings.Contains(candidate, "/sources/gmail/") {
+			path = candidate
+			break
+		}
+	}
+	if path == "" {
+		t.Fatalf("gmail file absent: %v", files)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := writeMappedMemoryDetailed(cfg, mm); err != nil || wrote {
+		t.Fatalf("hash skip write=%t err=%v", wrote, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("hash-skipped account Gmail changed Markdown")
 	}
 }

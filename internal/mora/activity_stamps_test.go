@@ -59,3 +59,45 @@ func TestWikiIndexIsStateCacheAndDoesNotRewriteVaultMarkdown(t *testing.T) {
 		t.Fatalf("state cache missing: %v", err)
 	}
 }
+
+func TestActivityStampSupportsTypedProviderFallback(t *testing.T) {
+	m := coreBIdxmem("typed-chat", "global", "imessage", "Chat", "hello")
+	m.Provider, m.Source = "", ""
+	m.Meta = map[string]any{"occurred_at": "2026-09-09T00:00:00Z"}
+	cfg := gate2Vault(t, m)
+	db, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM activity_stamps WHERE memory_id=?`, m.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("typed fallback stamp n=%d err=%v", n, err)
+	}
+}
+func TestOverlayActivityStampsRejectsMalformedProjection(t *testing.T) {
+	m := coreBIdxmem("stamp-invalid", "global", "imessage", "Chat", "hello")
+	m.Meta = map[string]any{"occurred_at": "2026-09-09T00:00:00Z"}
+	cfg := gate2Vault(t, m)
+	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`UPDATE activity_stamps SET participation_json=?, automated=0, automation_basis='unsupported' WHERE memory_id=?`, `{"own_share":2,"latest_sender":"Sam","message_evidence_count":1}`, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []Memory{m}
+	ro, err := sql.Open("sqlite", roIndexDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	if err := overlayActivityStamps(context.Background(), ro, rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].Participation != nil || rows[0].Automated != nil {
+		t.Fatalf("malformed stamp overlaid: %+v", rows[0])
+	}
+}

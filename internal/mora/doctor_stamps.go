@@ -26,15 +26,16 @@ func doctorStampCoverage(ctx context.Context, cfg Config) []stampCoverage {
 		return []stampCoverage{}
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, `SELECT m.provider,m.account,COUNT(*),
+	providerExpr := `CASE lower(trim(COALESCE(NULLIF(m.provider,''),NULLIF(m.type,''),NULLIF(m.source,'')))) WHEN 'applecal' THEN 'applecalendar' ELSE lower(trim(COALESCE(NULLIF(m.provider,''),NULLIF(m.type,''),NULLIF(m.source,'')))) END`
+	rows, err := db.QueryContext(ctx, `SELECT `+providerExpr+`,m.account,COUNT(*),
   SUM(CASE WHEN s.memory_id IS NOT NULL THEN 1 ELSE 0 END),
   SUM(CASE WHEN s.event_at_unix IS NOT NULL THEN 1 ELSE 0 END),
   SUM(CASE WHEN s.participation_json IS NOT NULL THEN 1 ELSE 0 END),
   SUM(CASE WHEN s.automated IS NOT NULL THEN 1 ELSE 0 END),
   SUM(CASE WHEN s.automated IS NULL THEN 1 ELSE 0 END),COALESCE(s.automation_basis,'')
  FROM memories m LEFT JOIN activity_stamps s ON s.memory_id=m.id AND s.scope=m.scope
- WHERE m.provider IN ('gmail','imessage','whatsapp','calendar','applecalendar')
- GROUP BY m.provider,m.account,COALESCE(s.automation_basis,'')`)
+ WHERE `+providerExpr+` IN ('gmail','imessage','whatsapp','calendar','applecalendar')
+ GROUP BY `+providerExpr+`,m.account,COALESCE(s.automation_basis,'')`)
 	if err != nil {
 		return []stampCoverage{}
 	}

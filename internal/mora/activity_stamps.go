@@ -33,14 +33,7 @@ var activityStampSchemaStmts = []string{
 	`CREATE INDEX IF NOT EXISTS idx_activity_stamps_event ON activity_stamps(event_at_unix, event_at_nanos)`,
 }
 
-func activityStampSupported(m Memory) bool {
-	switch providerToType(m.Provider) {
-	case "gmail", "imessage", "whatsapp", "calendar", "applecalendar":
-		return true
-	default:
-		return false
-	}
-}
+func activityStampSupported(m Memory) bool { return activity.Supports(m) }
 
 func writeActivityStamp(ctx context.Context, stmt *sql.Stmt, m Memory) error {
 	if !activityStampSupported(m) {
@@ -106,17 +99,26 @@ func overlayActivityStamps(ctx context.Context, db *sql.DB, mems []Memory) error
 		}
 		if participationText.Valid {
 			var p memory.Participation
-			if json.Unmarshal([]byte(participationText.String), &p) == nil && p.MessageEvidenceCount >= 0 {
+			if json.Unmarshal([]byte(participationText.String), &p) == nil && validStampedParticipation(&p) {
 				mems[i].Participation = &p
 			}
 		}
-		if automated.Valid && (automated.Int64 == 0 || automated.Int64 == 1) {
-			value := automated.Int64 == 1
+		// This release has only positive automation evidence. A false value, a
+		// missing basis, or an unknown basis is corrupt cache data, never a human
+		// inference; leave hydrated Markdown facts untouched.
+		if automated.Valid && automated.Int64 == 1 && basis.Valid && activity.ValidAutomationBasis(basis.String) {
+			value := true
 			mems[i].Automated = &memory.NullableBool{Value: &value}
 		}
 		// basis is deliberately not exposed in Memory yet; keeping it in the
 		// index supports doctor coverage without leaking message content.
-		_ = basis
 	}
 	return nil
+}
+
+func validStampedParticipation(p *memory.Participation) bool {
+	if p == nil || p.MessageEvidenceCount <= 0 || p.OwnShare < 0 || p.OwnShare > 1 || p.LatestSender == "" {
+		return false
+	}
+	return true
 }

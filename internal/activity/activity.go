@@ -187,6 +187,21 @@ func supported(provider string) bool {
 	}
 }
 
+// Supports reports whether the memory's connector identity is eligible for
+// activity projection. It uses the same Provider/Type/Source fallback as Derive.
+func Supports(m memory.Memory) bool { return supported(providerOf(m)) }
+
+// ValidAutomationBasis reports whether a positive automation basis is one this
+// version can safely project from a disposable stamp.
+func ValidAutomationBasis(basis string) bool {
+	switch basis {
+	case "sender_shortcode", "sender_tollfree", "sender_pattern", "header_list_unsubscribe", "header_precedence":
+		return true
+	default:
+		return false
+	}
+}
+
 func occurredAt(m memory.Memory) (*time.Time, bool) {
 	if m.Meta == nil {
 		return nil, false
