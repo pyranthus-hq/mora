@@ -40,6 +40,10 @@
     "status": "parses"
   },
   {
+    "path": "companion health",
+    "status": "parses"
+  },
+  {
     "path": "companion list",
     "status": "parses"
   },

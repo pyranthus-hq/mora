@@ -867,6 +867,14 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "companion health",
+      "payload": "mora.companion.health",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "companion list",
       "payload": "mora.companion.list",
       "platform": "all",
@@ -1520,6 +1528,10 @@
     },
     {
       "name": "mora.capabilities",
+      "version": 1
+    },
+    {
+      "name": "mora.companion.health",
       "version": 1
     },
     {

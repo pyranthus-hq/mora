@@ -519,6 +519,17 @@
         "error": {"status": "test", "tests": ["TestCompanionServeRefusesJSONAndBadArguments"], "reason": "An out-of-range port, a stray positional and an unknown flag are coded usage errors raised before net.Listen, so a bad invocation cannot leave a socket behind."},
         "refusal": {"status": "test", "tests": ["TestCompanionServeRefusesJSONAndBadArguments", "TestLoopbackHTTPResponsesAreByteForByteUnchanged", "TestLoopbackHTTPRouteTableIsUnchanged"], "reason": "The subcommand refuses --json and every malformed argument, and the generic loopback API is pinned byte for byte so this node cannot have widened it. The route allowlist, the opaque 401, the loopback-only bind and the header and body bounds are proved in internal/companion/server_test.go against the package that owns them."}
       }
+    },
+    {
+      "name": "companion health",
+      "paths": ["companion health"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionHealthEmitsTheWireDocument"], "reason": "Driven end to end through Run against a temp home after init: the command emits the same companion.HealthProjection document companionReader.Health produces for the loopback listener, with a state, a policy and an index object carrying a memories count."},
+        "json": {"status": "test", "tests": ["TestCompanionHealthEmitsTheWireDocument"], "reason": "decodeWire pins the WIRE envelope (companion.SchemaHealth, companion.SchemaVersion), which is deliberately not the CLI receipt envelope decodeCompanion pins elsewhere in this file, because this command emits exactly what the phone decodes."},
+        "state": {"status": "test", "tests": ["TestCompanionHealthEmitsTheWireDocument"], "reason": "The asserted index.memories count reflects the real index state read through newCompanionReader(cfg).Health after `init`, the same reader path the loopback listener calls; the reader's own state handling is proved in companion_http.go's package tests."},
+        "error": {"status": "test", "tests": ["TestCompanionHealthRefusesArgumentsAndRendersHumanText"], "reason": "The real Run invocation with an unexpected positional argument returns an error before any read. This witness covers that usage-error path, not config-loading, downstream reader, or output-writer failures."},
+        "refusal": {"status": "test", "tests": ["TestCompanionHealthRefusesArgumentsAndRendersHumanText"], "reason": "A stray positional argument is refused before any read, and the human-text rendering used when --json is absent is pinned to start with the state line."}
+      }
     }
   ]
 }
