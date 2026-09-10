@@ -13,10 +13,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+
+	"github.com/pyranthus-hq/mora/internal/companion"
 )
 
 const companionHealthUsage = "usage: mora companion health [--json]"
 const companionTodayUsage = "usage: mora companion today [--json]"
+const companionContextUsage = "usage: mora companion context --mode <think|search|meeting_prep> --query <text> [--scope <scope>] --json"
 
 func cmdCompanionHealth(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("companion health", flag.ContinueOnError)
@@ -78,6 +81,45 @@ func cmdCompanionToday(ctx context.Context, args []string, stdout io.Writer) err
 		fmt.Fprintln(stdout, "truncated\ttrue")
 	}
 	return nil
+}
+
+func cmdCompanionContext(ctx context.Context, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("companion context", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	mode := fs.String("mode", "", "think, search or meeting_prep")
+	query := fs.String("query", "", "the question or search text")
+	scope := fs.String("scope", "", "optional memory scope")
+	jsonOut := fs.Bool("json", false, "emit JSON (required)")
+	if err := fs.Parse(args); err != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+	}
+	if fs.NArg() != 0 {
+		return newCodedError(errCodeUsageUnknownValue, nil,
+			"%s (unexpected argument %q)", companionContextUsage, fs.Arg(0))
+	}
+	if !*jsonOut {
+		return newCodedError(errCodeUsageMissingArgument, nil,
+			"%s (--json is required; context has no human rendering)", companionContextUsage)
+	}
+	if *query == "" {
+		return newCodedError(errCodeUsageMissingArgument, nil, "%s (--query is required)", companionContextUsage)
+	}
+	req := companion.NewContextRequest()
+	req.Mode = companion.ContextMode(*mode)
+	req.Query = *query
+	req.Scope = *scope
+	if err := req.Validate(); err != nil {
+		return newCodedError(errCodeUsageUnknownValue, err, "%s (%v)", companionContextUsage, err)
+	}
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return err
+	}
+	out, err := newCompanionReader(cfg).Context(ctx, req)
+	if err != nil {
+		return newCodedError(errCodeInternalUnexpected, err, "companion context: %v", err)
+	}
+	return emitCompanionDocument(stdout, out)
 }
 
 // emitCompanionDocument prints one wire document. The envelope is the

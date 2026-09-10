@@ -132,3 +132,46 @@ func TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead(t *testing.T) {
 	}
 	_ = stdout
 }
+
+func TestCompanionContextEmitsTheWireDocument(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--title", "Pilot scope", "--text", "Keep the pilot to the platform team until the board meets.", "--json")
+
+	doc := decodeWire(t,
+		run(t, "companion", "context", "--mode", "search", "--query", "pilot scope", "--json"),
+		companion.SchemaContext)
+
+	if doc["mode"] != "search" || doc["query"] != "pilot scope" {
+		t.Fatalf("context document does not echo the request: %v", doc)
+	}
+	evidence, ok := doc["evidence"].([]any)
+	if !ok || len(evidence) == 0 {
+		t.Fatalf("context document has no evidence for a matching memory: %v", doc)
+	}
+	first := evidence[0].(map[string]any)
+	if _, ok := first["memory_id"].(string); !ok {
+		t.Fatalf("evidence row lacks memory_id: %v", first)
+	}
+	if _, ok := doc["synthesis_prompt"].(string); !ok {
+		t.Fatalf("context document lacks synthesis_prompt: %v", doc)
+	}
+}
+
+func TestCompanionContextRefusesBadModeAndMissingQuery(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	_, _, err := runSplit(t, "companion", "context", "--mode", "chat", "--query", "x", "--json")
+	if err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("unknown mode must be refused with a message naming mode, got %v", err)
+	}
+	_, _, err = runSplit(t, "companion", "context", "--mode", "search", "--json")
+	if err == nil || !strings.Contains(err.Error(), "query") {
+		t.Fatalf("missing query must be refused with a message naming query, got %v", err)
+	}
+	_, _, err = runSplit(t, "companion", "context", "--mode", "search", "--query", "x")
+	if err == nil || !strings.Contains(err.Error(), "--json") {
+		t.Fatalf("context has no human rendering; omitting --json must be a usage error, got %v", err)
+	}
+}

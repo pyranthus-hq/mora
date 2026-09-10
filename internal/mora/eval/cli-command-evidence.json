@@ -541,6 +541,17 @@
         "error": {"status": "test", "tests": ["TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead"], "reason": "The real Run invocation with an unexpected positional argument returns an error before any read. This witness covers that usage-error path, not config-loading, downstream reader, or output-writer failures."},
         "refusal": {"status": "test", "tests": ["TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead"], "reason": "A stray positional argument is refused before any read. On an initialized empty index, invoking the command without --json returns no error; this witness does not assert output content or populated-index behavior."}
       }
+    },
+    {
+      "name": "companion context",
+      "paths": ["companion context"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionContextEmitsTheWireDocument"], "reason": "Driven end to end through Run against a temp home after init and a write, with --mode search --query 'pilot scope' --json: the decoded document echoes mode and query, carries a non-empty evidence array whose first row has a memory_id string, and carries a synthesis_prompt string, matching the companion.ContextBundle newCompanionReader(cfg).Context produces for the loopback listener."},
+        "json": {"status": "test", "tests": ["TestCompanionContextEmitsTheWireDocument"], "reason": "decodeWire pins the WIRE envelope (companion.SchemaContext, companion.SchemaVersion). No byte-identical CLI-vs-reader comparison test (the shape TestCompanionTodayMatchesTheLoopbackRoute uses) exists for context in this task; only field-level assertions on the decoded document are witnessed."},
+        "state": {"status": "test", "tests": ["TestCompanionContextEmitsTheWireDocument"], "reason": "After init and a synthetic write, the real Run invocation with a matching search query decodes a non-empty evidence array whose first row has a string memory_id. This witnesses populated read state only; it does not compare identities or bytes with a direct reader call, and it does not witness mutation."},
+        "error": {"status": "test", "tests": ["TestCompanionContextRefusesBadModeAndMissingQuery"], "reason": "The real Run invocation rejects an unrecognized --mode and the test asserts that its non-nil error names 'mode'. A missing --query is rejected before Validate, and the test asserts that its non-nil error names 'query'. The test does not assert error codes."},
+        "refusal": {"status": "test", "tests": ["TestCompanionContextRefusesBadModeAndMissingQuery"], "reason": "Context has no human rendering: omitting --json with an otherwise valid --mode/--query is refused as a usage error naming --json. A stray positional argument (the 'unexpected argument' refusal health and today each have a named witness for) is implemented with the same fs.NArg() != 0 guard but is not covered by a named test in this task."}
+      }
     }
   ]
 }

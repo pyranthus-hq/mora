@@ -41,6 +41,7 @@ var contractEnvelopeArgs = map[string][]string{
 	"config embedder":         {"static"},
 	"config mmr":              {"off"},
 	"config mcp-write-policy": {"open"},
+	"companion context":       {"--mode", "search", "--query", "envelope-probe-no-match-zzqx"},
 }
 
 // contractEnvelopeSeedID is replaced with the seeded memory's real id at run

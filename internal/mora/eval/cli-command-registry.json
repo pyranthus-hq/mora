@@ -1079,6 +1079,13 @@
       "platform": "all",
       "json_contract": "result",
       "payload": "mora.companion.today"
+    },
+    {
+      "path": "companion context",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.companion.context"
     }
   ]
 }

@@ -1,0 +1,17 @@
+{
+  "evidence": [],
+  "freshness": [],
+  "gaps": [
+    "No memory matched this query."
+  ],
+  "generated_at": "\u003ctimestamp\u003e",
+  "health": {
+    "policy": "open",
+    "state": "healthy"
+  },
+  "mode": "search",
+  "query": "envelope-probe-no-match-zzqx",
+  "schema": "mora.companion.context",
+  "schema_version": 1,
+  "synthesis_prompt": "List what the evidence below actually says about this query.\n\nQuestion: envelope-probe-no-match-zzqx\n\nYou have 0 evidence rows and 1 recorded gaps in this bundle.\nRules:\n- Cite the memory_id of every row you use. A claim with no citation does not ship.\n- Do not use anything outside this bundle, and do not fill a gap by guessing.\n- State the gaps plainly at the end; they are what the vault does not know.\n- If the evidence does not answer the question, say so and stop."
+}
