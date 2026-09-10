@@ -15,7 +15,11 @@ func Tool(name, desc string, params ...Param) map[string]any {
 	properties := map[string]any{}
 	var required []string
 	for _, p := range params {
-		properties[p.Name] = map[string]any{"type": p.Type, "description": p.Desc}
+		property := map[string]any{"type": p.Type, "description": p.Desc}
+		if p.Name == "exclude_dispositions" {
+			property["items"] = map[string]any{"type": "string", "enum": []string{"not-context", "keep", "done", "outdated"}}
+		}
+		properties[p.Name] = property
 		if p.Required {
 			required = append(required, p.Name)
 		}

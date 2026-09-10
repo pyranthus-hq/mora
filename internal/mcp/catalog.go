@@ -43,6 +43,8 @@ var toolCatalog = []ToolDefinition{
 			{"confidence", "boolean", "Opt-in: return confidence with ranking scores, direct answer coverage, freshness, and missing/unhealthy sources (default false)", false},
 			{"source", "string", `Filter to one connector: "imessage", "gmail", "calendar", "applecalendar", "github", or an account instance like "gmail:work" ("gmail" spans all gmail accounts). Applied BEFORE ranking in every retrieval arm. An unrecognized value is a tool error.`, false},
 			{"since_hours", "integer", "Only memories created in the last N hours (must be a positive integer). Applied BEFORE ranking in every retrieval arm.", false},
+			{"event_since_hours", "integer", "Explicit source events in the last 1-8784 hours; excludes unknown/future times before every ranking arm. Intersects since_hours when both are supplied", false},
+			{"exclude_dispositions", "array", "Explicit disposition values to exclude before ranking; echoed with the count in the otherwise-unexcluded ranked page. No default exclusion", false},
 		},
 	},
 	{

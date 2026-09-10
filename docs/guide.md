@@ -1543,3 +1543,31 @@ may rebuild its disposable snapshot index; this is not a live-index rebuild.
 ### Corrections and dispositions
 
 Use `mora write --target <memory-id> --disposition not-context|keep|done|outdated --title ... --text ...`. These flags create a `correction` memory and require an existing visible local target in the same scope. MCP `write_memory` accepts the same `target` and `disposition` arguments. A correction is an annotation only: it never hides a record, closes a commitment, or asserts supersession. Pending MCP proposals have no read-side effect until approval. List and search decorate local target rows with the latest valid correction; shared rows are never decorated.
+
+
+### Opt-in activity search and disposition exclusions
+
+`mora search "offer status" --event-since-hours 168 --json` bounds source-event
+ time, not the time Mora wrote the Markdown. MCP `search_memory` accepts the same
+`event_since_hours` window (1–8784 integer hours). Existing MCP `since_hours`
+continues to mean memory creation/write time; supplying both intersects them.
+Unknown and future source-event times are excluded. Bounds are inclusive, with
+subsecond precision. Calendar events use their start, and conversations use the
+latest validated retained message timestamp, then explicit `occurred_at` if no
+message timestamp is available. There is no write-time fallback.
+
+`mora search "offer status" --dispositions exclude:not-context --json` explicitly
+excludes locally applied `not-context` corrections. Repeat `--dispositions
+exclude:<value>` for additional values (`keep`, `done`, `outdated`). MCP accepts
+`exclude_dispositions: ["not-context"]`. No value is excluded by default, and
+none of these dispositions closes commitments or asserts Teach supersession.
+A local correction cannot exclude a subscribed owner's same-named memory.
+
+All retrieval arms apply these predicates before their bounded candidate pools.
+Filtered retrieval refills the page. Receipts echo the applied filters; explicit
+exclusions also return `excluded_by_disposition` and
+`exclusion_count_basis: "unexcluded-ranked-page"`. That count is the number of
+unique owner/scope/memory identities excluded from the otherwise identical,
+unexcluded ranked page at the same query, source/time filters, and limit, before
+byte truncation. It is **not** a corpus-wide count. No exclusion receipt appears
+when exclusions are off. Existing default eligibility and ordering are unchanged.

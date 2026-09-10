@@ -498,6 +498,10 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if r := filters.Receipt(); r != nil {
 		out["filters"] = r
 	}
+	if len(filters.ExcludeDispositions) > 0 {
+		out["excluded_by_disposition"] = sr.ExcludedByDisposition
+		out["exclusion_count_basis"] = "unexcluded-ranked-page"
+	}
 	// #241 acceptance: "Health/confidence output distinguishes
 	// excluded_by_filter from unavailable/unhealthy sources" — an explicit
 	// top-level marker, present only when the source filter actually excludes

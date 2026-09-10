@@ -125,7 +125,10 @@ func findMemory(cfg Config, id string) (Memory, error) {
 // predicate alongside the existing scope check can never let a filtered-out
 // memory crowd out a matching one.
 func listMemories(cfg Config, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
-	f := oneFilter(filters)
+	f, err := prepareDispositionFilter(cfg, oneFilter(filters))
+	if err != nil {
+		return nil, err
+	}
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
 		return nil, err

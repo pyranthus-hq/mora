@@ -1177,6 +1177,8 @@ func ownedTitle(m Memory) string {
 // machine).
 func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
 	f := oneFilter(filters)
+	// Corrections have local corpus authority, never another owner's identity.
+	f.ExcludedMemoryIDs = nil
 	match := ftsQuery(query)
 	if strings.TrimSpace(match) == "" {
 		return nil, nil
