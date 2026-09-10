@@ -16,6 +16,7 @@ import (
 )
 
 const companionHealthUsage = "usage: mora companion health [--json]"
+const companionTodayUsage = "usage: mora companion today [--json]"
 
 func cmdCompanionHealth(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("companion health", flag.ContinueOnError)
@@ -44,6 +45,37 @@ func cmdCompanionHealth(ctx context.Context, args []string, stdout io.Writer) er
 	fmt.Fprintf(stdout, "index\t%s\t%d memories\n", out.Index.State, out.Index.Memories)
 	for _, s := range out.Sources {
 		fmt.Fprintf(stdout, "source\t%s\t%s\n", s.Key, s.State)
+	}
+	return nil
+}
+
+func cmdCompanionToday(ctx context.Context, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("companion today", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
+	}
+	if fs.NArg() != 0 {
+		return newCodedError(errCodeUsageUnknownValue, nil,
+			"%s (unexpected argument %q)", companionTodayUsage, fs.Arg(0))
+	}
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return err
+	}
+	out, err := newCompanionReader(cfg).Today(ctx)
+	if err != nil {
+		return newCodedError(errCodeInternalUnexpected, err, "companion today: %v", err)
+	}
+	if *jsonOut {
+		return emitCompanionDocument(stdout, out)
+	}
+	for _, item := range out.Items {
+		fmt.Fprintf(stdout, "%s\t%s\n", item.Kind, item.Title)
+	}
+	if out.Truncated {
+		fmt.Fprintln(stdout, "truncated\ttrue")
 	}
 	return nil
 }

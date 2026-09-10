@@ -530,6 +530,17 @@
         "error": {"status": "test", "tests": ["TestCompanionHealthRefusesArgumentsAndRendersHumanText"], "reason": "The real Run invocation with an unexpected positional argument returns an error before any read. This witness covers that usage-error path, not config-loading, downstream reader, or output-writer failures."},
         "refusal": {"status": "test", "tests": ["TestCompanionHealthRefusesArgumentsAndRendersHumanText"], "reason": "A stray positional argument is refused before any read, and the human-text rendering used when --json is absent is pinned to start with the state line."}
       }
+    },
+    {
+      "name": "companion today",
+      "paths": ["companion today"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionTodayEmitsTheWireDocument"], "reason": "Driven end to end through Run against a temp home after init and a write: the command emits the same companion.TodayProjection document companionReader.Today produces for the loopback listener, with an items array whose entries each carry an id, kind and title, a truncated flag, and an embedded health summary carrying a policy."},
+        "json": {"status": "test", "tests": ["TestCompanionTodayEmitsTheWireDocument", "TestCompanionTodayMatchesTheLoopbackRoute"], "reason": "decodeWire pins the WIRE envelope (companion.SchemaToday, companion.SchemaVersion). TestCompanionTodayMatchesTheLoopbackRoute additionally proves the CLI's --json output and a direct call to newCompanionReader(cfg).Today produce byte-identical documents once the generated_at timestamp is excluded, so the CLI cannot drift from the route the phone reads."},
+        "state": {"status": "test", "tests": ["TestCompanionTodayEmitsTheWireDocument", "TestCompanionTodayMatchesTheLoopbackRoute"], "reason": "The asserted items and health summary reflect the real index state read through newCompanionReader(cfg).Today after `init` and a `write`, the same reader path the loopback listener calls; the reader's own caching and freshness handling is proved in companion_http.go's package tests."},
+        "error": {"status": "test", "tests": ["TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead"], "reason": "The real Run invocation with an unexpected positional argument returns an error before any read. This witness covers that usage-error path, not config-loading, downstream reader, or output-writer failures."},
+        "refusal": {"status": "test", "tests": ["TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead"], "reason": "A stray positional argument is refused before any read. On an initialized empty index, invoking the command without --json returns no error; this witness does not assert output content or populated-index behavior."}
+      }
     }
   ]
 }

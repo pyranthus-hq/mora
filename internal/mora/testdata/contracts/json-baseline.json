@@ -64,6 +64,10 @@
     "status": "parses"
   },
   {
+    "path": "companion today",
+    "status": "parses"
+  },
+  {
     "path": "config",
     "status": "parses"
   },

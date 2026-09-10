@@ -1072,6 +1072,13 @@
       "platform": "all",
       "json_contract": "result",
       "payload": "mora.companion.health"
+    },
+    {
+      "path": "companion today",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.companion.today"
     }
   ]
 }

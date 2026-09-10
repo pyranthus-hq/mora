@@ -891,6 +891,14 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "companion today",
+      "payload": "mora.companion.today",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "connectors list",
       "payload": "mora.connectors.list",
       "platform": "all",
@@ -1540,6 +1548,10 @@
     },
     {
       "name": "mora.companion.status",
+      "version": 1
+    },
+    {
+      "name": "mora.companion.today",
       "version": 1
     },
     {

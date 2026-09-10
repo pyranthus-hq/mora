@@ -62,3 +62,73 @@ func TestCompanionHealthRefusesArgumentsAndRendersHumanText(t *testing.T) {
 		t.Fatalf("human rendering must start with the state line, got %q", stdout)
 	}
 }
+func TestCompanionTodayEmitsTheWireDocument(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--title", "Pilot scope reply", "--text", "Reply to the pilot scope question by Friday.", "--json")
+
+	doc := decodeWire(t, run(t, "companion", "today", "--json"), companion.SchemaToday)
+
+	items, ok := doc["items"].([]any)
+	if !ok {
+		t.Fatalf("today document has no items array: %v", doc)
+	}
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		for _, key := range []string{"id", "kind", "title"} {
+			if _, ok := item[key].(string); !ok {
+				t.Fatalf("item lacks %s: %v", key, item)
+			}
+		}
+	}
+	if _, ok := doc["truncated"].(bool); !ok {
+		t.Fatalf("today document has no truncated flag: %v", doc)
+	}
+	health, ok := doc["health"].(map[string]any)
+	if !ok || health["policy"] == nil {
+		t.Fatalf("today document has no health summary: %v", doc)
+	}
+}
+
+func TestCompanionTodayMatchesTheLoopbackRoute(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--title", "Pilot scope reply", "--text", "Reply to the pilot scope question by Friday.", "--json")
+
+	cli := decodeWire(t, run(t, "companion", "today", "--json"), companion.SchemaToday)
+
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := newCompanionReader(cfg).Today(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directJSON, _ := json.Marshal(direct)
+	var route map[string]any
+	if err := json.Unmarshal(directJSON, &route); err != nil {
+		t.Fatal(err)
+	}
+	delete(cli, "generated_at")
+	delete(route, "generated_at")
+	cliJSON, _ := json.Marshal(cli)
+	routeJSON, _ := json.Marshal(route)
+	if string(cliJSON) != string(routeJSON) {
+		t.Fatalf("CLI and reader documents differ\ncli:   %s\nroute: %s", cliJSON, routeJSON)
+	}
+}
+func TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+
+	_, _, err := runSplit(t, "companion", "today", "extra", "--json")
+	if err == nil || !strings.Contains(err.Error(), "unexpected argument") {
+		t.Fatalf("positional argument must be refused, got %v", err)
+	}
+	stdout, _, err := runSplit(t, "companion", "today")
+	if err != nil {
+		t.Fatalf("human rendering must succeed: %v", err)
+	}
+	_ = stdout
+}
