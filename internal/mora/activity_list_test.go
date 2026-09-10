@@ -2,6 +2,9 @@ package mora
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -105,6 +108,85 @@ func TestActivityMCPWindowRejectsInvalidAndConflictingInputs(t *testing.T) {
 	for _, limit := range []any{0, -1, 1001, 1.5, "2", nil} {
 		if _, err := mcpListMemory(testCtx(t), cfg, map[string]any{"event_since_hours": 24, "limit": limit}); err == nil {
 			t.Fatalf("accepted invalid limit %#v", limit)
+		}
+	}
+}
+
+func TestActivityCLIAndMCPEventContract(t *testing.T) {
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	m := Memory{ID: "imessage_chat/fixture", Scope: "global", Type: "conversation", Title: "activity fixture", Text: "hello", Provider: "imessage", Source: "imessage", CreatedAt: "2026-09-01T00:00:00Z", Meta: map[string]any{
+		"occurred_at": "2025-01-01T00:00:00Z", "is_group": true,
+		"message_evidence": []map[string]any{{"evidence_ref": "imessage_chat/fixture#1", "at": "2026-09-10T11:00:00Z", "sender": "Owner", "from_me": true, "block_start": 0, "block_end": 5}},
+	}}
+	cfg := seedRecencyVault(t, m)
+	old := briefClock
+	briefClock = func() time.Time { return now }
+	t.Cleanup(func() { briefClock = old })
+	raw := run(t, "list", "--source", "imessage", "--event-since-hours", "24", "--limit", "1", "--json")
+	var cli map[string]any
+	if err := json.Unmarshal([]byte(raw), &cli); err != nil {
+		t.Fatal(err)
+	}
+	rows := cli["memories"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("wrong rows: %s", raw)
+	}
+	row := rows[0].(map[string]any)
+	row["path"] = "<path>"
+	if row["participation"] == nil {
+		t.Fatalf("participation lost: %s", raw)
+	}
+	result, err := mcpListMemory(testCtx(t), cfg, map[string]any{"source": "imessage", "event_since_hours": 24, "limit": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(result)
+	var mcp map[string]any
+	_ = json.Unmarshal(encoded, &mcp)
+	mcpRows := mcp["memories"].([]any)
+	mcpRow := mcpRows[0].(map[string]any)
+	for _, key := range []string{"participation", "automated", "event_at"} {
+		if !reflect.DeepEqual(row[key], mcpRow[key]) {
+			t.Fatalf("CLI/MCP divergence for %s", key)
+		}
+	}
+	path := filepath.Join("testdata", "contracts", "variants", "mora.list.event.json")
+	if os.Getenv("MORA_UPDATE_ACTIVITY_GOLDENS") == "1" {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.MarshalIndent(cli, "", "  ")
+		if err := os.WriteFile(path, append(data, '\n'), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(data, &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cli, want) {
+		t.Fatalf("event contract drift; regeneration requires a Golden change reason: got %s", raw)
+	}
+}
+
+func TestActivityAppleCalendarStoredProviderAndPublicSelector(t *testing.T) {
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	cfg := seedRecencyVault(t, Memory{ID: "apple-event", Scope: "global", Type: "event", Title: "calendar fixture", Text: "fixture", Provider: "applecal", Source: "applecalendar", CreatedAt: "2026-09-10T11:00:00Z", Meta: map[string]any{"occurred_at": "2026-09-10T11:00:00Z"}})
+	old := briefClock
+	briefClock = func() time.Time { return now }
+	t.Cleanup(func() { briefClock = old })
+	for _, selector := range []string{"applecal", "applecalendar"} {
+		result, err := mcpListMemory(testCtx(t), cfg, map[string]any{"source": selector, "event_since_hours": 24})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows := result.(map[string]any)["memories"].([]Memory)
+		if len(rows) != 1 || rows[0].ID != "apple-event" {
+			t.Fatalf("selector %s lost Apple Calendar event: %+v", selector, rows)
 		}
 	}
 }

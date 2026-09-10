@@ -84,5 +84,5 @@ func listActivityMemories(cfg Config, scope string, limit int, filter searchFilt
 	if err != nil || hours == 0 {
 		return rows, err
 	}
-	return selectActivityEvents(rows, now, hours, limit), nil
+	return recentSourceEvents(rows, now, hours, limit), nil
 }

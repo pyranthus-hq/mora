@@ -116,6 +116,9 @@ func SelectRange(memories []memory.Memory, from, now time.Time) []Result {
 func providerOf(m memory.Memory) string {
 	for _, value := range []string{m.Provider, m.Type, m.Source} {
 		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			if value == "applecal" {
+				return "applecalendar"
+			}
 			return value
 		}
 	}

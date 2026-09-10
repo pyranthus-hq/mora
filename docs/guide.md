@@ -1496,3 +1496,38 @@ Check `<state_dir>/serve-http.err.log`. Make sure `MORA_PORT` is free, then run
 - [Architecture](architecture/00-overview.md) — current code contract.
 - [Windows details](windows.md) — Windows paths and schedules.
 - [Security policy](../SECURITY.md) — private vulnerability reporting.
+
+## Source-event activity and participation
+
+`mora list --source imessage --event-since-hours 168 --limit 50 --json`
+returns events, not recently rewritten files. Gmail, iMessage, WhatsApp,
+Calendar, and Apple Calendar are supported; account selectors such as
+`gmail:work` remain available. Valid windows are integers 1–8784 hours.
+Unknown and future event times are excluded. Eligibility and newest-event
+ordering happen before the limit; equal events use memory ID order.
+
+Conversations prefer the newest validated retained message timestamp, then
+explicit `meta.occurred_at`. Calendar activity means event start, not an edit
+feed. Each event row names the selected UTC instant in `event_at`; the receipt
+echoes `source`, `event_since_hours`, and `order: "source-event"`. Default
+listing without the window keeps its existing write-time ordering.
+
+With validated iMessage/WhatsApp evidence, `participation` reports `own_share`,
+`last_own_at`, `is_group`, `latest_sender`, and `message_evidence_count`. The
+denominator is retained evidence, not lifetime or fetched conversation size.
+No own message gives `last_own_at: null`; missing group facts give
+`is_group: null`. Without an evidence basis, participation is absent.
+`automated: null` explicitly means no basis; it is not `false`.
+
+MCP `list_memory` accepts `source` and `event_since_hours` with the same
+semantics and bounded row output. Its `since_hours` argument is a list-only
+alias and cannot be combined with `event_since_hours`. **Search**
+`since_hours` continues to mean memory creation/write time. MCP truncation
+receipts still report rows omitted for the response budget.
+
+The optional `scripts/dogfood-smoke.sh --allow-vault-read --binary /absolute/candidate
+--vault /absolute/vault` runs against a private temporary **copy** of the vault
+with isolated config/state and tracking disabled. It refuses symlinks, never
+passes the original vault to the candidate, and prints only row/projection/
+participation/no-basis counts. It does not sync connectors. Candidate search
+may rebuild its disposable snapshot index; this is not a live-index rebuild.

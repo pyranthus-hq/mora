@@ -103,7 +103,7 @@ func TestCalendarAndRangeOrderingBoundariesAndTies(t *testing.T) {
 	from := mustTime(t, "2026-09-09T12:00:00Z")
 	memories := []memory.Memory{
 		{ID: "z", Provider: "calendar", CreatedAt: "2099-01-01T00:00:00Z", Meta: map[string]any{"occurred_at": "2026-09-10T12:00:00Z"}},
-		{ID: "a", Provider: "applecalendar", Meta: map[string]any{"occurred_at": "2026-09-10T12:00:00Z"}},
+		{ID: "a", Provider: "applecal", Meta: map[string]any{"occurred_at": "2026-09-10T12:00:00Z"}},
 		{ID: "lower", Provider: "calendar", Meta: map[string]any{"occurred_at": "2026-09-09T12:00:00Z"}},
 		{ID: "old", Provider: "calendar", Meta: map[string]any{"occurred_at": "2026-09-09T11:59:59Z"}},
 		{ID: "future", Provider: "calendar", Meta: map[string]any{"occurred_at": "2026-09-10T12:00:01Z"}},

@@ -79,6 +79,8 @@ jobs:
               manifest = json.load(f)
           assert manifest["version"] == "0.0.0-test", manifest
           PY
+      - name: counts-only dogfood smoke isolation
+        run: python3 scripts/test_dogfood_smoke.py
       - name: production readiness faults and traceability
         run: go test ./internal/mora -run 'TestProductionReadinessConnectorFixtures|TestObservability' -count=1
       - name: exam schema, ledger, and identity validation
