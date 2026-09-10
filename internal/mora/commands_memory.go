@@ -40,7 +40,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return errors.New("--title and --text are required")
 	}
 	if err := disposition.ValidateFields(*target, *dispositionValue); err != nil {
-		return err
+		return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
 	}
 	_, targetSupplied := false, false
 	_, dispositionSupplied := false, false
@@ -57,11 +57,11 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 	})
 	if (targetSupplied && *target == "") || (dispositionSupplied && *dispositionValue == "") {
-		return errors.New("--target and --disposition cannot be empty when supplied")
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--target and --disposition cannot be empty when supplied")
 	}
 	if *target != "" || *dispositionValue != "" {
 		if (typeSupplied && *mtype != "correction") || (!typeSupplied && *mtype != "insight") {
-			return errors.New("--target/--disposition require --type correction")
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--target/--disposition require --type correction")
 		}
 		*mtype = "correction"
 	}

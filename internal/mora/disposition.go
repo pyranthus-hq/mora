@@ -18,13 +18,16 @@ func validateDispositionPublish(cfg Config, m Memory) error {
 		return nil
 	}
 	if !disposition.IsLocalAuthored(m) {
-		return fmt.Errorf("typed corrections require a local authored source")
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "typed corrections require a local authored source")
 	}
 	target, err := findMemory(cfg, targetID)
 	if err != nil {
 		return fmt.Errorf("correction target: %w", err)
 	}
-	return disposition.ValidateTarget(m, target)
+	if err := disposition.ValidateTarget(m, target); err != nil {
+		return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
+	}
+	return nil
 }
 
 // decorateDispositions overlays the latest visible local correction from the
@@ -53,6 +56,7 @@ func decorateDispositions(cfg Config, rows []Memory, now time.Time) ([]Memory, e
 		if out[i].Owner != "" {
 			continue
 		}
+		out[i].Disposition = nil // clear a prior projection when its correction disappears
 		if d, ok := projected[disposition.Key{Scope: out[i].Scope, ID: out[i].ID}]; ok {
 			dCopy := d
 			out[i].Disposition = &dCopy
