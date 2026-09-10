@@ -42,8 +42,25 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err := disposition.ValidateFields(*target, *dispositionValue); err != nil {
 		return err
 	}
+	_, targetSupplied := false, false
+	_, dispositionSupplied := false, false
+	_, typeSupplied := false, false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "target" {
+			targetSupplied = true
+		}
+		if f.Name == "disposition" {
+			dispositionSupplied = true
+		}
+		if f.Name == "type" {
+			typeSupplied = true
+		}
+	})
+	if (targetSupplied && *target == "") || (dispositionSupplied && *dispositionValue == "") {
+		return errors.New("--target and --disposition cannot be empty when supplied")
+	}
 	if *target != "" || *dispositionValue != "" {
-		if *mtype != "insight" && *mtype != "correction" {
+		if (typeSupplied && *mtype != "correction") || (!typeSupplied && *mtype != "insight") {
 			return errors.New("--target/--disposition require --type correction")
 		}
 		*mtype = "correction"

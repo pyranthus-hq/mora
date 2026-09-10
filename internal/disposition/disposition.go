@@ -103,8 +103,10 @@ func IsLocalAuthored(m memory.Memory) bool {
 	if m.Provider != "" || m.ProviderID != "" || m.Owner != "" {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(m.Source)) {
-	case "gmail", "imessage", "whatsapp", "calendar", "applecalendar", "github":
+	source := strings.ToLower(strings.TrimSpace(m.Source))
+	family, _, _ := strings.Cut(source, ":")
+	switch family {
+	case "gmail", "imessage", "whatsapp", "calendar", "applecalendar", "applecal", "github":
 		return false
 	default:
 		return true

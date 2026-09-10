@@ -19,14 +19,20 @@ func MemoryFromArgs(args map[string]any, now time.Time, decision DecisionBuilder
 			}
 		}
 	}
+	_, targetSupplied := args["target"]
+	_, dispositionSupplied := args["disposition"]
 	target := StringArg(args, "target", "")
 	value := StringArg(args, "disposition", "")
+	if (targetSupplied && target == "") || (dispositionSupplied && value == "") {
+		return memory.Memory{}, errors.New("target and disposition cannot be empty when supplied")
+	}
 	if err := disposition.ValidateFields(target, value); err != nil {
 		return memory.Memory{}, err
 	}
 	typ := StringArg(args, "type", "insight")
+	_, typeSupplied := args["type"]
 	if target != "" || value != "" {
-		if typ != "insight" && typ != "correction" {
+		if (typeSupplied && typ != "correction") || (!typeSupplied && typ != "insight") {
 			return memory.Memory{}, errors.New("target/disposition require type=correction")
 		}
 		typ = "correction"
