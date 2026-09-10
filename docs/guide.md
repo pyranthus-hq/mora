@@ -9,6 +9,7 @@ read the [architecture documents](architecture/00-overview.md).
 - [First setup](#first-setup)
 - [Connect data](#connect-data)
 - [Give Mora to an agent](#give-mora-to-an-agent)
+- [Companion](#companion)
 - [Daily use](#daily-use)
 - [Corrections and removal](#corrections-and-removal)
 - [Schedules and durable loops](#schedules-and-durable-loops)
@@ -632,6 +633,16 @@ mora hook uninstall
 
 `mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
 `harnesses` field is always an array, including when no hook is installed.
+
+## Companion
+
+### Read verbs for desktop and scripts
+
+`mora companion health --json`, `mora companion today --json` and
+`mora companion context --mode <think|search|meeting_prep> --query <text> [--scope <scope>] --json`
+emit the same `mora.companion.health`, `mora.companion.today` and `mora.companion.context`
+documents the loopback listener serves. The planned Mac app will read them from its bundled binary.
+`context` has no human rendering and requires `--json`.
 
 ## Daily use
 
