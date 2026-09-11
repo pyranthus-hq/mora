@@ -1424,7 +1424,7 @@ func TestServer200NeverImpliesFresh(t *testing.T) {
 	reader.context.Freshness = []SourceFreshness{failed}
 	reader.health.State = HealthUnhealthy
 	reader.health.Index = IndexHealth{State: HealthUnhealthy, Memories: 0}
-	reader.health.Sources = []SourceFreshness{failed}
+	reader.health.Sources = []SourceCoverage{{SourceFreshness: failed}}
 
 	handler := srv.Handler()
 	for _, tc := range []struct {

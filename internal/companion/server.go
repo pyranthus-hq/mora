@@ -1007,12 +1007,12 @@ func degradedHealth(err error) HealthProjection {
 	out.State = HealthUnhealthy
 	out.Policy = PolicyReadonly
 	out.Index = IndexHealth{State: HealthUnhealthy}
-	out.Sources = []SourceFreshness{{
+	out.Sources = []SourceCoverage{{SourceFreshness: SourceFreshness{
 		Key:        kernelSourceKey,
 		State:      FreshnessFailed,
 		AgeSeconds: -1,
 		ErrorCode:  kernelErrorCode(err),
-	}}
+	}}}
 	return out
 }
 

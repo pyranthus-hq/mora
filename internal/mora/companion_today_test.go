@@ -82,3 +82,27 @@ func TestCompanionTodayAndHealthSourceLabels(t *testing.T) {
 		t.Fatalf("desktop items = %+v", doc.Items)
 	}
 }
+
+func TestCompanionMultibyteSnippetValidatesSharedSchema(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{strings.Repeat("界", 221), strings.Repeat("界", 170)},
+		{strings.Repeat("é", 221), strings.Repeat("é", 220)},
+		{"a" + strings.Repeat("🙂", 221), "a" + strings.Repeat("🙂", 127)},
+	} {
+		snippet := companionReadingSnippet(Memory{Provider: "gmail", Text: tc.text}, "")
+		item, ok := companionTodayItem(DigestItem{ID: "multibyte", Source: "gmail", Title: "Message", Snippet: snippet}, companion.ItemChanged)
+		if !ok {
+			t.Fatal("missing item")
+		}
+		p := companion.NewTodayProjection()
+		p.GeneratedAt = "2026-09-11T10:00:00Z"
+		p.Health = companion.HealthSummary{State: companion.HealthHealthy, Policy: companion.PolicyReadonly}
+		p.Items = []companion.TodayItem{item}
+		if item.Snippet != tc.want || len(item.Snippet) > companion.MaxSnippetBytes || item.Snippet != item.Evidence[0].Snippet {
+			t.Fatalf("unbounded or divergent snippet: %q", item.Snippet)
+		}
+		if _, err := companion.Marshal(&p); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

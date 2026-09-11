@@ -116,7 +116,9 @@ func HealthFixture() *HealthProjection {
 	h.State = HealthDegraded
 	h.Policy = PolicyPropose
 	h.Index = IndexHealth{State: HealthHealthy, Memories: 2837, BuiltAt: "2026-09-03T10:50:00Z"}
-	h.Sources = fixtureFreshness()
+	for _, row := range fixtureFreshness() {
+		h.Sources = append(h.Sources, SourceCoverage{SourceFreshness: row})
+	}
 	return &h
 }
 

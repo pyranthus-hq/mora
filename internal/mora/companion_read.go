@@ -49,9 +49,8 @@ func cmdCompanionHealth(ctx context.Context, args []string, stdout io.Writer) er
 	if *jsonOut {
 		return emitCompanionDocument(stdout, struct {
 			companion.HealthProjection
-			Sources       []companionLabeledSource `json:"sources"`
-			ReadsInFlight []connectReadInFlight    `json:"reads_in_flight"`
-		}{out, companionSourceLabels(cfg, out.Sources), connectReadsInFlight(cfg, cfg.OperationClock())})
+			ReadsInFlight []connectReadInFlight `json:"reads_in_flight"`
+		}{out, connectReadsInFlight(cfg, cfg.OperationClock())})
 	}
 	fmt.Fprintf(stdout, "state\t%s\n", out.State)
 	fmt.Fprintf(stdout, "policy\t%s\n", out.Policy)
@@ -82,7 +81,7 @@ func cmdCompanionToday(ctx context.Context, args []string, stdout io.Writer) err
 		return newCodedError(errCodeInternalUnexpected, err, "companion today: %v", err)
 	}
 	if *jsonOut {
-		return emitCompanionDocument(stdout, companionTodayDocument(cfg, out))
+		return emitCompanionDocument(stdout, out)
 	}
 	for _, item := range out.Items {
 		fmt.Fprintf(stdout, "%s\t%s\n", item.Kind, item.Title)
@@ -144,49 +143,31 @@ func emitCompanionDocument(w io.Writer, doc any) error {
 	return err
 }
 
-// Desktop additions preserve the shared phone fields and their byte limits.
-type companionLabeledSource struct {
-	companion.SourceFreshness
-	Label string `json:"label"`
-}
-
-func companionSourceLabels(cfg Config, rows []companion.SourceFreshness) []companionLabeledSource {
+func companionSourceLabels(cfg Config, rows []companion.SourceFreshness) []companion.SourceCoverage {
 	labels := map[string]string{}
 	for _, s := range loadSourcesOrEmpty(cfg) {
 		labels[companionSourceKey(instanceKeyForSource(s))] = sourceLabel(s)
 	}
-	out := make([]companionLabeledSource, 0, len(rows))
+	out := make([]companion.SourceCoverage, 0, len(rows))
 	for _, row := range rows {
 		label, ok := labels[row.Key]
 		if !ok {
 			label = row.Key
 		}
-		out = append(out, companionLabeledSource{row, label})
+		out = append(out, companion.SourceCoverage{SourceFreshness: row, Label: companionText(label, companion.MaxLabelBytes)})
 	}
 	return out
 }
 
-type companionDesktopTodayItem struct {
-	companion.TodayItem
-	Snippet string `json:"snippet"`
-}
-
-type companionDesktopToday struct {
-	companion.TodayProjection
-	Coverage []companionLabeledSource    `json:"coverage"`
-	Items    []companionDesktopTodayItem `json:"items"`
-}
-
-func companionTodayDocument(cfg Config, out companion.TodayProjection) companionDesktopToday {
-	doc := companionDesktopToday{TodayProjection: out, Coverage: companionSourceLabels(cfg, out.Freshness), Items: make([]companionDesktopTodayItem, 0, len(out.Items))}
-	for _, item := range out.Items {
-		snippet := ""
-		if len(item.Evidence) > 0 {
-			snippet = item.Evidence[0].Snippet
+// companionTodayDocument completes the shared document before validation.
+func companionTodayDocument(cfg Config, out companion.TodayProjection) companion.TodayProjection {
+	out.Coverage = companionSourceLabels(cfg, out.Freshness)
+	for i := range out.Items {
+		if len(out.Items[i].Evidence) > 0 {
+			out.Items[i].Snippet = companionText(out.Items[i].Evidence[0].Snippet, companion.MaxSnippetBytes)
 		}
-		doc.Items = append(doc.Items, companionDesktopTodayItem{item, snippet})
 	}
-	return doc
+	return out
 }
 
 // An absent or invalid message projection has no eligible incoming row; never
