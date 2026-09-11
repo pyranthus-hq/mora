@@ -519,6 +519,39 @@
         "error": {"status": "test", "tests": ["TestCompanionServeRefusesJSONAndBadArguments"], "reason": "An out-of-range port, a stray positional and an unknown flag are coded usage errors raised before net.Listen, so a bad invocation cannot leave a socket behind."},
         "refusal": {"status": "test", "tests": ["TestCompanionServeRefusesJSONAndBadArguments", "TestLoopbackHTTPResponsesAreByteForByteUnchanged", "TestLoopbackHTTPRouteTableIsUnchanged"], "reason": "The subcommand refuses --json and every malformed argument, and the generic loopback API is pinned byte for byte so this node cannot have widened it. The route allowlist, the opaque 401, the loopback-only bind and the header and body bounds are proved in internal/companion/server_test.go against the package that owns them."}
       }
+    },
+    {
+      "name": "companion health",
+      "paths": ["companion health"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionHealthEmitsTheWireDocument"], "reason": "Driven end to end through Run against a temp home after init: the command emits the same companion.HealthProjection document companionReader.Health produces for the loopback listener, with a state, a policy and an index object carrying a memories count."},
+        "json": {"status": "test", "tests": ["TestCompanionHealthEmitsTheWireDocument"], "reason": "decodeWire pins the WIRE envelope (companion.SchemaHealth, companion.SchemaVersion), which is deliberately not the CLI receipt envelope decodeCompanion pins elsewhere in this file, because this command emits exactly what the phone decodes."},
+        "state": {"status": "test", "tests": ["TestCompanionHealthEmitsTheWireDocument"], "reason": "The asserted index.memories count reflects the real index state read through newCompanionReader(cfg).Health after `init`, the same reader path the loopback listener calls; the reader's own state handling is proved in companion_http.go's package tests."},
+        "error": {"status": "test", "tests": ["TestCompanionHealthRefusesArgumentsAndRendersHumanText"], "reason": "The real Run invocation with an unexpected positional argument returns an error before any read. This witness covers that usage-error path, not config-loading, downstream reader, or output-writer failures."},
+        "refusal": {"status": "test", "tests": ["TestCompanionHealthRefusesArgumentsAndRendersHumanText"], "reason": "A stray positional argument is refused before any read, and the human-text rendering used when --json is absent is pinned to start with the state line."}
+      }
+    },
+    {
+      "name": "companion today",
+      "paths": ["companion today"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionTodayEmitsTheWireDocument"], "reason": "Driven end to end through Run against a temp home after init and a write: the command emits the same companion.TodayProjection document companionReader.Today produces for the loopback listener, with an items array whose entries each carry an id, kind and title, a truncated flag, and an embedded health summary carrying a policy."},
+        "json": {"status": "test", "tests": ["TestCompanionTodayEmitsTheWireDocument", "TestCompanionTodayMatchesTheLoopbackRoute"], "reason": "decodeWire pins the WIRE envelope (companion.SchemaToday, companion.SchemaVersion). TestCompanionTodayMatchesTheLoopbackRoute additionally proves the CLI's --json output and a direct call to newCompanionReader(cfg).Today produce byte-identical documents once the generated_at timestamp is excluded, so the CLI cannot drift from the route the phone reads."},
+        "state": {"status": "test", "tests": ["TestCompanionTodayEmitsTheWireDocument", "TestCompanionTodayMatchesTheLoopbackRoute"], "reason": "The asserted items and health summary reflect the real index state read through newCompanionReader(cfg).Today after `init` and a `write`, the same reader path the loopback listener calls; the reader's own caching and freshness handling is proved in companion_http.go's package tests."},
+        "error": {"status": "test", "tests": ["TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead"], "reason": "The real Run invocation with an unexpected positional argument returns an error before any read. This witness covers that usage-error path, not config-loading, downstream reader, or output-writer failures."},
+        "refusal": {"status": "test", "tests": ["TestCompanionTodayRefusesArgumentsAndAcceptsEmptyHumanRead"], "reason": "A stray positional argument is refused before any read. On an initialized empty index, invoking the command without --json returns no error; this witness does not assert output content or populated-index behavior."}
+      }
+    },
+    {
+      "name": "companion context",
+      "paths": ["companion context"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionContextEmitsTheWireDocument"], "reason": "Driven end to end through Run against a temp home after init and a write, with --mode search --query 'pilot scope' --json: the decoded document echoes mode and query, carries a non-empty evidence array whose first row has a memory_id string, and carries a synthesis_prompt string, matching the companion.ContextBundle newCompanionReader(cfg).Context produces for the loopback listener."},
+        "json": {"status": "test", "tests": ["TestCompanionContextEmitsTheWireDocument"], "reason": "decodeWire pins the WIRE envelope (companion.SchemaContext, companion.SchemaVersion). No byte-identical CLI-vs-reader comparison test (the shape TestCompanionTodayMatchesTheLoopbackRoute uses) exists for context in this task; only field-level assertions on the decoded document are witnessed."},
+        "state": {"status": "test", "tests": ["TestCompanionContextEmitsTheWireDocument"], "reason": "After init and a synthetic write, the real Run invocation with a matching search query decodes a non-empty evidence array whose first row has a string memory_id. This witnesses populated read state only; it does not compare identities or bytes with a direct reader call, and it does not witness mutation."},
+        "error": {"status": "test", "tests": ["TestCompanionContextRefusesBadModeAndMissingQuery"], "reason": "The real Run invocation rejects an unrecognized --mode and the test asserts that its non-nil error names 'mode'. A missing --query is rejected before Validate, and the test asserts that its non-nil error names 'query'. The test does not assert error codes."},
+        "refusal": {"status": "test", "tests": ["TestCompanionContextRefusesBadModeAndMissingQuery"], "reason": "Context has no human rendering: omitting --json with an otherwise valid --mode/--query is refused as a usage error naming --json. A stray positional argument (the 'unexpected argument' refusal health and today each have a named witness for) is implemented with the same fs.NArg() != 0 guard but is not covered by a named test in this task."}
+      }
     }
   ]
 }

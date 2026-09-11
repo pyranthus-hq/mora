@@ -867,6 +867,22 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "companion context",
+      "payload": "mora.companion.context",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "companion health",
+      "payload": "mora.companion.health",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "companion list",
       "payload": "mora.companion.list",
       "platform": "all",
@@ -877,6 +893,14 @@
       "kind": "subcommand",
       "path": "companion status",
       "payload": "mora.companion.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "companion today",
+      "payload": "mora.companion.today",
       "platform": "all",
       "reason": ""
     },
@@ -1523,11 +1547,23 @@
       "version": 1
     },
     {
+      "name": "mora.companion.context",
+      "version": 1
+    },
+    {
+      "name": "mora.companion.health",
+      "version": 1
+    },
+    {
       "name": "mora.companion.list",
       "version": 1
     },
     {
       "name": "mora.companion.status",
+      "version": 1
+    },
+    {
+      "name": "mora.companion.today",
       "version": 1
     },
     {

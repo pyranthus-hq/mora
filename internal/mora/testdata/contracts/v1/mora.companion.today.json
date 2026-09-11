@@ -1,0 +1,12 @@
+{
+  "freshness": [],
+  "generated_at": "\u003ctimestamp\u003e",
+  "health": {
+    "policy": "open",
+    "state": "healthy"
+  },
+  "items": [],
+  "schema": "mora.companion.today",
+  "schema_version": 1,
+  "truncated": false
+}

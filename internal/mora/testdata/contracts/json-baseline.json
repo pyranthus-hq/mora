@@ -36,7 +36,15 @@
     "status": "empty"
   },
   {
+    "path": "companion context",
+    "status": "empty"
+  },
+  {
     "path": "companion expose",
+    "status": "parses"
+  },
+  {
+    "path": "companion health",
     "status": "parses"
   },
   {
@@ -57,6 +65,10 @@
   },
   {
     "path": "companion status",
+    "status": "parses"
+  },
+  {
+    "path": "companion today",
     "status": "parses"
   },
   {

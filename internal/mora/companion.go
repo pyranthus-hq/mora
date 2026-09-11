@@ -49,7 +49,7 @@ const (
 	schemaCompanionExpose = "mora.companion.expose"
 )
 
-const companionUsage = "usage: mora companion <pair|list|revoke|status|serve|expose>"
+const companionUsage = "usage: mora companion <pair|list|revoke|status|serve|expose|health|today|context>"
 
 func cmdCompanion(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -68,6 +68,12 @@ func cmdCompanion(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return cmdCompanionServe(ctx, args[1:], stdout)
 	case "expose":
 		return cmdCompanionExpose(ctx, args[1:], stdout)
+	case "health":
+		return cmdCompanionHealth(ctx, args[1:], stdout)
+	case "today":
+		return cmdCompanionToday(ctx, args[1:], stdout)
+	case "context":
+		return cmdCompanionContext(ctx, args[1:], stdout)
 	default:
 		return newCodedError(errCodeUsageUnknownValue, nil,
 			"unknown companion subcommand %q — %s", args[0], companionUsage)
