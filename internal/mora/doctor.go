@@ -323,6 +323,9 @@ func cmdDoctorPulse(cfg Config, now time.Time, jsonOut bool, stdout, stderr io.W
 // doctorFailSummary lists the failing critical checks for the --strict error.
 
 func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) >= 1 && args[0] == "check" {
+		return cmdDoctorCheck(ctx, args[1:], stdout)
+	}
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON health report (with --pulse: only the sources array)")
