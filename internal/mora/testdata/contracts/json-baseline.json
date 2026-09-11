@@ -112,6 +112,10 @@
     "status": "static_only"
   },
   {
+    "path": "connect imessage --detach",
+    "status": "static_only"
+  },
+  {
     "path": "connectors",
     "status": "empty"
   },

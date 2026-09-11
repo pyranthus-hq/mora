@@ -227,7 +227,7 @@ func writeConnectFile(path string, value any) error {
 	return atomicio.Write(path, append(body, '\n'), 0600)
 }
 
-// Close is called only after the ticker has joined and the receipt is persisted.
+// Close is called after the ticker has joined, even if receipt persistence fails.
 func (s *connectProgressSink) Close() error {
 	if s.filePath == "" {
 		return nil

@@ -532,10 +532,11 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}
 		receipt, err := connectIMessage(ctx, rest, out, sink, progress)
 		receipt.Error = receiptErrorOf(err)
-		if saveErr := sink.saveReceipt(receipt); saveErr != nil {
+		saveErr := sink.saveReceipt(receipt)
+		err = errors.Join(err, sink.Close())
+		if saveErr != nil {
 			return errors.Join(err, saveErr)
 		}
-		err = errors.Join(err, sink.Close())
 		if err != nil && (!progress || !receipt.Connected) {
 			return err
 		}

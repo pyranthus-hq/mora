@@ -22,7 +22,10 @@ func TestConnectProgressTickerWritesProgressFile(t *testing.T) {
 	run(t, "init")
 	defer stubIMessageReadiness(t, true)()
 	defer stubIMessageFetcherPages(t, 3, 4)()
-	out := run(t, "connect", "imessage", "--json", "--progress")
+	out, stderr, err := runSplit(t, "connect", "imessage", "--json", "--progress")
+	if err != nil {
+		t.Fatalf("connect: %v (stderr %q)", err, stderr)
+	}
 	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
@@ -34,8 +37,9 @@ func TestConnectProgressTickerWritesProgressFile(t *testing.T) {
 	if _, err := os.Stat(strings.TrimSuffix(p, ".progress.json") + ".receipt.json"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"schema":"mora.connect.imessage"`) {
-		t.Fatal(out)
+	docs := decodeLines(t, out)
+	if got := docs[len(docs)-1]["schema"]; got != "mora.connect.imessage" {
+		t.Fatalf("receipt schema = %v", got)
 	}
 }
 
@@ -78,7 +82,17 @@ func TestConnectDetachReturnsStartedReceiptAndChildFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	path := connectProgressPath(cfg, "imessage")
+	receiptPath := strings.TrimSuffix(path, ".progress.json") + ".receipt.json"
+	if err := writeConnectFile(receiptPath, map[string]any{"previous_run": true}); err != nil {
+		t.Fatal(err)
+	}
 	receipt, err := spawnDetached(context.Background(), cfg, "imessage", exe, []string{"-test.run=^TestConnectDetachedHelper$"})
+	if err == nil {
+		if _, statErr := os.Stat(receiptPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("previous receipt remains while new child reads: %v", statErr)
+		}
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,6 +286,8 @@ func TestConnectProgressDoesNotReplaceLiveReader(t *testing.T) {
 	}
 	if _, err := runErr(t, "connect", "imessage", "--json", "--progress"); err == nil {
 		t.Fatal("accepted concurrent read")
+	} else if code, _ := ErrorDetails(err); code != "connector_unavailable" {
+		t.Fatalf("reservation error code = %q: %v", code, err)
 	}
 	after, err := os.ReadFile(sink.filePath)
 	if err != nil {
@@ -334,4 +350,83 @@ func TestConnectDetachedChildSIGTERMCancels(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("cancelled child did not save receipt")
+}
+
+func TestConnectDetachAttachesToLiveReader(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, age := range []time.Duration{0, time.Minute} {
+		subRun(t, age.String(), func(t *testing.T) {
+			stamp := time.Now().Add(-age).UTC().Format(time.RFC3339Nano)
+			path := connectProgressPath(cfg, "imessage")
+			p := connectProgressFile{Schema: schemaConnectProgress, SchemaVersion: 1,
+				Source: "imessage", PID: os.Getpid(), StartedAt: stamp, UpdatedAt: stamp, Phase: "reading"}
+			if err := writeConnectFile(path, p); err != nil {
+				t.Fatal(err)
+			}
+			receiptPath := strings.TrimSuffix(path, ".progress.json") + ".receipt.json"
+			if err := writeConnectFile(receiptPath, map[string]any{"preserve": true}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// An invalid executable proves the attach branch cannot spawn.
+			want := connectStartedReceipt{"imessage", p.PID, path, stamp}
+			got, err := spawnDetached(context.Background(), cfg, "imessage", "/nonexistent-mora", nil)
+			if err != nil || got != want {
+				t.Fatalf("attach = %+v, %v; want %+v", got, err, want)
+			}
+			out := run(t, "connect", "imessage", "--json", "--progress", "--detach")
+			var doc struct {
+				connectStartedReceipt
+				Schema string `json:"schema"`
+			}
+			if err := json.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if doc.Schema != "mora.connect.started" || doc.connectStartedReceipt != want {
+				t.Fatalf("receipt = %+v", doc)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("attach changed progress: %v", err)
+			}
+			if _, err := os.Stat(receiptPath); err != nil {
+				t.Fatalf("attach removed receipt: %v", err)
+			}
+		})
+	}
+}
+
+func TestConnectReceiptSaveFailureRemovesProgress(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stubIMessageReadiness(t, true)()
+	defer stubIMessageFetcherPages(t, 3, 4)()
+	path := connectProgressPath(cfg, "imessage")
+	receiptPath := strings.TrimSuffix(path, ".progress.json") + ".receipt.json"
+	original := imessageReadinessFn
+	imessageReadinessFn = func(cfg Config, w io.Writer, b bool) bool {
+		// Reservation already succeeded; prevent only the final receipt write.
+		if err := os.Mkdir(receiptPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+		return original(cfg, w, b)
+	}
+	if _, err := runErr(t, "connect", "imessage", "--json", "--progress"); err == nil {
+		t.Fatal("receipt save failure was swallowed")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("progress leaked: %v", err)
+	}
 }

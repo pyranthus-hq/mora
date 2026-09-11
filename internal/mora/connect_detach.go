@@ -56,6 +56,9 @@ func readConnectProgress(path string) (connectProgressFile, error) {
 	if p.Schema != schemaConnectProgress || p.SchemaVersion != 1 || p.PID <= 0 {
 		return p, fmt.Errorf("invalid connect progress file %s", path)
 	}
+	if _, err := time.Parse(time.RFC3339Nano, p.StartedAt); err != nil {
+		return p, err
+	}
 	if _, err := time.Parse(time.RFC3339Nano, p.UpdatedAt); err != nil {
 		return p, err
 	}
@@ -98,7 +101,17 @@ func (s *connectProgressSink) reserveFile(cfg Config, source string) error {
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return newCodedError(errCodeConnectorUnavailable, err, "connect progress is already reserved; retry with --json --progress --detach to attach to a live read")
+		}
 		return fmt.Errorf("reserve connect progress: %w", err)
+	}
+	// Owning the reservation makes this a new run. Clear its predecessor's
+	// receipt before publishing progress, so consumers cannot mistake it for completion.
+	if err := os.Remove(strings.TrimSuffix(path, ".progress.json") + ".receipt.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
 	}
 	_, werr := f.Write(b)
 	err = errors.Join(werr, f.Close())
@@ -114,6 +127,11 @@ func (s *connectProgressSink) reserveFile(cfg Config, source string) error {
 // context must not kill a successfully detached read. Wait reaps in embedders.
 func spawnDetached(ctx context.Context, cfg Config, source, exe string, args []string) (connectStartedReceipt, error) {
 	var r connectStartedReceipt
+	path := connectProgressPath(cfg, source)
+	if p, err := readConnectProgress(path); err == nil && p.Source == source &&
+		!staleConnectProgress(p, time.Now()) && connectPIDAlive(p.PID) {
+		return connectStartedReceipt{source, p.PID, path, p.StartedAt}, nil
+	}
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return r, err
@@ -127,7 +145,6 @@ func spawnDetached(ctx context.Context, cfg Config, source, exe string, args []s
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	path := connectProgressPath(cfg, source)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	timer := time.NewTimer(5 * time.Second)
