@@ -27,6 +27,7 @@ type connectProgressEvent struct {
 // connectProgressSink writes one compact JSON object per line. It is the only
 // writer on stdout while --progress is on, so the stream stays byte-clean.
 type connectProgressSink struct {
+	writeMu  sync.Mutex
 	mu       sync.Mutex
 	w        io.Writer
 	now      func() time.Time
@@ -45,21 +46,28 @@ func newConnectProgressSink(w io.Writer, now func() time.Time) *connectProgressS
 }
 
 func (s *connectProgressSink) Phase(phase string) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.phase = phase
-	s.emitLocked()
+	body := s.emitLocked()
+	s.mu.Unlock()
+	s.writeLine(body)
 }
 
 // AddChat records one conversation read with n messages; it emits at most
 // every connectProgressEvery.
 func (s *connectProgressSink) AddChat(n int) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.messages += n
+	var body []byte
 	if s.now().Sub(s.last) >= connectProgressEvery {
-		s.emitLocked()
+		body = s.emitLocked()
 	}
+	s.mu.Unlock()
+	s.writeLine(body)
 }
 
 func (s *connectProgressSink) Counts() (messages, chats int, elapsed time.Duration) {
@@ -76,11 +84,12 @@ func (s *connectProgressSink) AddWritten() {
 	s.chats++
 }
 
-func (s *connectProgressSink) emitLocked() {
+// emitLocked snapshots a line under mu; callers serialize writes with writeMu.
+func (s *connectProgressSink) emitLocked() []byte {
 	now := s.now()
 	s.last = now
 	if s.w == nil {
-		return
+		return nil
 	}
 	ev := connectProgressEvent{
 		Schema: schemaConnectProgress, SchemaVersion: 1, Phase: s.phase,
@@ -88,9 +97,15 @@ func (s *connectProgressSink) emitLocked() {
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {
-		return
+		return nil
 	}
-	fmt.Fprintf(s.w, "%s\n", body)
+	return body
+}
+
+func (s *connectProgressSink) writeLine(body []byte) {
+	if body != nil {
+		fmt.Fprintf(s.w, "%s\n", body)
+	}
 }
 
 type connectProgressKey struct{}

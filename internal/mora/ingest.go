@@ -78,7 +78,15 @@ func persistSyncStatus(out io.Writer, path string, st *memory.SyncStatus, ingErr
 	// fetch-failure family would persist prose with no code (or, worse, keep a
 	// code left by an earlier and different failure). Every memory.Ingest call
 	// site routes through this function, so this is the complete boundary for it.
-	if ingErr != nil {
+	if errors.Is(ingErr, context.Canceled) {
+		// Ingest already tallied this cancellation. Keep its checkpoint and
+		// cursors, but a deliberate stop is not a connector failure.
+		if st.ErrorCount > 0 {
+			st.ErrorCount--
+		}
+		st.LastError = ""
+		st.ErrorCode = ""
+	} else if ingErr != nil {
 		st.ErrorCode = connectorErrorCode(ingErr)
 	}
 	saveErr, result := ingestpkg.PersistStatus(path, st, ingErr)
@@ -417,6 +425,13 @@ type connectReceipt struct {
 }
 
 func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 && args[0] != "imessage" {
+		for _, arg := range args[1:] {
+			if arg == "--progress" {
+				return newCodedError(errCodeUsageUnknownValue, nil, "--progress is only supported for imessage")
+			}
+		}
+	}
 	// github and imessage never defined --json; strip it here, route their setup
 	// prose to stderr, and answer with a receipt. connect filesystem already owns
 	// its own --json branch and its receipt, so it is left alone.
@@ -456,7 +471,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}
 		sink := newConnectProgressSink(progressOut, time.Now)
 		receipt, err := connectIMessage(ctx, rest, out, sink, progress)
-		if err != nil {
+		if err != nil && !(progress && receipt.Connected) {
 			return err
 		}
 		if !jsonOut {
@@ -472,7 +487,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 				return merr
 			}
 			_, werr := fmt.Fprintf(stdout, "%s\n", body)
-			return werr
+			return errors.Join(err, werr)
 		}
 		return emitReceipt(stdout, "mora.connect.imessage", 1, receipt)
 	}
@@ -1746,6 +1761,11 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	if sink != nil {
 		fetcher = connectPageFetcher{iMessageFetcher: fetcher, ctx: ctx}
 		ingestCtx = context.WithoutCancel(ctx)
+		if deadline, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+			ingestCtx, cancel = context.WithDeadline(ingestCtx, deadline)
+			defer cancel()
+		}
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ingestCtx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
@@ -2134,6 +2154,7 @@ var imessageReadinessFn = printIMessageReadiness
 func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink *connectProgressSink, streaming bool) (connectReceipt, error) {
 	receipt := connectReceipt{Source: "imessage"}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	context.AfterFunc(ctx, stop)
 	defer stop()
 	if sink == nil {
 		sink = newConnectProgressSink(nil, time.Now)

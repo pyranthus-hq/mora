@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -91,6 +94,9 @@ func TestConnectIMessageProgressStreamsAndEndsWithReceipt(t *testing.T) {
 	if len(docs) < 3 {
 		t.Fatalf("want progress lines plus receipt, got %d:\n%s", len(docs), stdout)
 	}
+	if len(docs) == 0 {
+		t.Fatal("missing receipt")
+	}
 	receipt := docs[len(docs)-1]
 	if receipt["schema"] != "mora.connect.imessage" || receipt["connected"] != true || receipt["ready"] != true {
 		t.Fatalf("last line must be the receipt: %v", receipt)
@@ -147,6 +153,9 @@ func TestConnectIMessageCancelMidRunKeepsPagesAndResumes(t *testing.T) {
 		t.Fatalf("cancelled connect must exit 0, got %v", err)
 	}
 	docs := decodeLines(t, stdout.String())
+	if len(docs) == 0 {
+		t.Fatal("missing receipt")
+	}
 	receipt := docs[len(docs)-1]
 	if receipt["cancelled"] != true || receipt["chats"] != float64(1) {
 		t.Fatalf("receipt after cancel: %v", receipt)
@@ -158,6 +167,9 @@ func TestConnectIMessageCancelMidRunKeepsPagesAndResumes(t *testing.T) {
 	st, err := memory.LoadStatus(imessageStatusPath(cfg, "imessage"))
 	if err != nil || st == nil || st.Checkpoint == "" {
 		t.Fatalf("checkpoint must survive cancel: %+v %v", st, err)
+	}
+	if st.ErrorCount != 0 || st.LastError != "" || st.ErrorCode != "" {
+		t.Fatalf("cancel must not persist failure: %+v", st)
 	}
 	restoreFetcher()
 	restoreFetcher = stubIMessageFetcherPages(t, 3, 2)
@@ -206,8 +218,11 @@ func TestConnectIMessageCancelledContextEndsCleanly(t *testing.T) {
 		t.Fatalf("cancelled connect must exit 0, got %v", err)
 	}
 	docs := decodeLines(t, stdout.String())
+	if len(docs) == 0 {
+		t.Fatal("missing receipt")
+	}
 	receipt := docs[len(docs)-1]
-	if receipt["cancelled"] != true {
+	if receipt["cancelled"] != true || receipt["chats"] != float64(0) {
 		t.Fatalf("receipt must say cancelled: %v", receipt)
 	}
 }
@@ -245,4 +260,146 @@ func stubIMessageReadiness(t *testing.T, ready bool) func() {
 	orig := imessageReadinessFn
 	imessageReadinessFn = func(Config, io.Writer, bool) bool { return ready }
 	return func() { imessageReadinessFn = orig; runtimeGOOS = origGOOS }
+}
+
+// A contextual wrapper lets tests inject failures and observe signal delivery.
+type connectTestFetcher struct {
+	*imessage.SyntheticFetcher
+	fetch func(context.Context, memory.ItemKind, memory.FetchWindow, string) (memory.Page, error)
+}
+
+func (f connectTestFetcher) FetchPageContext(ctx context.Context, k memory.ItemKind, w memory.FetchWindow, c string) (memory.Page, error) {
+	return f.fetch(ctx, k, w, c)
+}
+
+func TestConnectIMessageProgressErrorEndsWithReceipt(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	defer stubIMessageReadiness(t, true)()
+	orig := newIMessageFetcher
+	defer func() { newIMessageFetcher = orig }()
+	failure := errors.New("page 1 failed")
+	newIMessageFetcher = func(string, imessage.DenyList) (iMessageFetcher, error) {
+		return connectTestFetcher{imessage.NewSyntheticFetcher(2, 1), func(context.Context, memory.ItemKind, memory.FetchWindow, string) (memory.Page, error) {
+			return memory.Page{}, failure
+		}}, nil
+	}
+	stdout, stderr, err := runSplit(t, "connect", "imessage", "--json", "--progress")
+	if err == nil || !strings.Contains(stderr, failure.Error()) {
+		t.Fatalf("want nonzero page failure, got %v", err)
+	}
+	docs := decodeLines(t, stdout)
+	if len(docs) < 2 {
+		t.Fatalf("missing progress and receipt: %s", stdout)
+	}
+	last := docs[len(docs)-1]
+	if last["schema"] != "mora.connect.imessage" || last["connected"] != true || last["cancelled"] != false {
+		t.Fatalf("last line must be error receipt: %v", last)
+	}
+}
+
+func TestConnectProgressRejectsOtherSources(t *testing.T) {
+	withTempHome(t)
+	for _, source := range []string{"github", "google", "filesystem", "unknown"} {
+		t.Run(source, func(t *testing.T) {
+			withTempHome(t)
+			var out, stderr bytes.Buffer
+			err := cmdConnect(testCtx(t), []string{source, "--json", "--progress"}, &out, &stderr)
+			var coded moraError
+			if !errors.As(err, &coded) || coded.Code != errCodeUsageUnknownValue || !strings.Contains(err.Error(), "--progress is only supported for imessage") {
+				t.Fatalf("want progress usage error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestConnectIMessageSIGTERMCancels(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	defer stubIMessageReadiness(t, true)()
+	orig := newIMessageFetcher
+	defer func() { newIMessageFetcher = orig }()
+	newIMessageFetcher = func(string, imessage.DenyList) (iMessageFetcher, error) {
+		f := imessage.NewSyntheticFetcher(3, 1)
+		return connectTestFetcher{f, func(ctx context.Context, k memory.ItemKind, w memory.FetchWindow, c string) (memory.Page, error) {
+			f.AfterPage(1, func() {
+				if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+					t.Errorf("SIGTERM: %v", err)
+					return
+				}
+				select {
+				case <-ctx.Done():
+				case <-time.After(5 * time.Second):
+					t.Error("SIGTERM did not cancel fetch context")
+				}
+			})
+			return f.FetchPageContext(ctx, k, w, c)
+		}}, nil
+	}
+	var out, stderr bytes.Buffer
+	err := Run(testCtx(t), []string{"connect", "imessage", "--json", "--progress"}, &out, &stderr, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("signal cancellation must exit nil: %v", err)
+	}
+	docs := decodeLines(t, out.String())
+	if len(docs) == 0 {
+		t.Fatal("missing receipt")
+	}
+	last := docs[len(docs)-1]
+	if last["schema"] != "mora.connect.imessage" || last["cancelled"] != true || last["chats"] != float64(1) {
+		t.Fatalf("signal receipt: %v", last)
+	}
+}
+
+type connectBlockingWriter struct{ entered, release chan struct{} }
+
+func (w connectBlockingWriter) Write(p []byte) (int, error) {
+	close(w.entered)
+	<-w.release
+	return len(p), nil
+}
+func TestConnectProgressCountsWhileWriteBlocked(t *testing.T) {
+	w := connectBlockingWriter{make(chan struct{}), make(chan struct{})}
+	sink := newConnectProgressSink(w, time.Now)
+	done := make(chan struct{})
+	go func() { sink.Phase("reading"); close(done) }()
+	<-w.entered
+	counted := make(chan struct{})
+	go func() { sink.AddWritten(); sink.Counts(); close(counted) }()
+	select {
+	case <-counted:
+	case <-time.After(time.Second):
+		t.Error("stdout write holds count mutex")
+	}
+	close(w.release)
+	<-done
+	<-counted
+}
+
+func TestConnectIMessagePreservesSourceDeadline(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	defer stubIMessageReadiness(t, true)()
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(testCtx(t), 30*time.Millisecond)
+	defer cancel()
+	orig := newIMessageFetcher
+	defer func() { newIMessageFetcher = orig }()
+	newIMessageFetcher = func(string, imessage.DenyList) (iMessageFetcher, error) {
+		f := imessage.NewSyntheticFetcher(1, 1)
+		f.AfterPage(1, func() { <-ctx.Done() })
+		return f, nil
+	}
+	sink := newConnectProgressSink(nil, time.Now)
+	_, err = ingestIMessageDetailed(withConnectProgress(ctx, sink), cfg, Source{Name: "imessage", Type: "imessage"}, io.Discard)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want source deadline error, got %v", err)
+	}
+	_, chats, _ := sink.Counts()
+	if chats != 0 {
+		t.Fatalf("expired deadline must prevent page writes, got %d", chats)
+	}
 }
