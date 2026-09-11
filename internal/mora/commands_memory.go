@@ -162,6 +162,8 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "scope")
 	limit := fs.Int("limit", 20, "limit")
+	source := fs.String("source", "", "provider family or instance")
+	eventHours := fs.Int("event-since-hours", 0, "explicit source events within this many hours; orders by event time")
 	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -170,20 +172,95 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return err
 	}
-	items, err := listMemories(cfg, *scope, *limit)
+	eventWindowRequested := hasIntFlag(args, "--event-since-hours")
+	if *eventHours < 0 || *eventHours > 24*366 || (eventWindowRequested && *eventHours == 0) || (*eventHours > 0 && (*limit < 1 || *limit > 1000)) {
+		return errors.New("list limit must be 1-1000 and event-since-hours must be 1-8784 when specified")
+	}
+	filterArgs := map[string]any{}
+	if *source != "" {
+		filterArgs["source"] = *source
+	}
+	filter, err := parseSearchFilters(filterArgs, time.Now())
 	if err != nil {
 		return err
 	}
+	readLimit := *limit
+	if *eventHours > 0 {
+		readLimit = 0
+	}
+	items, err := listMemories(cfg, *scope, readLimit, filter)
+	if err != nil {
+		return err
+	}
+	if *eventHours > 0 {
+		items = recentSourceEvents(items, time.Now(), *eventHours, *limit)
+	}
 	if *jsonOut {
+		if *eventHours > 0 {
+			return emitReceipt(stdout, "mora.list", 1, struct {
+				Memories        []Memory `json:"memories"`
+				Source          string   `json:"source"`
+				EventSinceHours int      `json:"event_since_hours"`
+				Order           string   `json:"order"`
+			}{items, *source, *eventHours, "source-event"})
+		}
+		if *source != "" {
+			return emitReceipt(stdout, "mora.list", 1, struct {
+				Memories []Memory `json:"memories"`
+				Source   string   `json:"source"`
+			}{items, *source})
+		}
 		return emitReceipt(stdout, "mora.list", 1, newMemoriesPayload(items))
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
 	return emit(stdout, items, false)
 }
+
+// hasIntFlag distinguishes an omitted numeric flag from an explicitly supplied
+// zero. Event windows have no zero sentinel: absent disables filtering.
+func hasIntFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// extractSourceFlag removes --source/--source=value from free-text search args.
+func extractSourceFlag(args []string) ([]string, string, error) {
+	rest := make([]string, 0, len(args))
+	source := ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--source":
+			if i+1 >= len(args) {
+				return nil, "", errors.New("--source requires value")
+			}
+			source = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--source="):
+			source = strings.TrimPrefix(args[i], "--source=")
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	if source == "" && len(rest) != len(args) {
+		return nil, "", errors.New("--source requires value")
+	}
+	return rest, source, nil
+}
+
 func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--limit N] [--json]")
+		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--source connector[:account]] [--limit N] [--json]")
 		return nil
+	}
+	// --source applies the same pre-ranking connector filter as search_memory,
+	// so the CLI receipt can carry full rows (meta included) for one connector.
+	args, source, err := extractSourceFlag(args)
+	if err != nil {
+		return err
 	}
 	scope, limit, jsonOut, queryArgs, err := parseSearchArgs(args)
 	if err != nil {
@@ -196,11 +273,28 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	items, err := defaultSearch(ctx, cfg, strings.Join(queryArgs, " "), scope, limit)
+	var items []Memory
+	if source == "" {
+		items, err = defaultSearch(ctx, cfg, strings.Join(queryArgs, " "), scope, limit)
+	} else {
+		filter, ferr := parseSearchFilters(map[string]any{"source": source}, time.Now())
+		if ferr != nil {
+			return ferr
+		}
+		var res mcpSearchResult
+		res, err = defaultSearchForMCP(ctx, cfg, strings.Join(queryArgs, " "), scope, limit, filter)
+		items = res.Results
+	}
 	if err != nil {
 		return err
 	}
 	if jsonOut {
+		if source != "" {
+			return emitReceipt(stdout, "mora.search", 1, struct {
+				Memories []Memory `json:"memories"`
+				Source   string   `json:"source"`
+			}{items, source})
+		}
 		return emitReceipt(stdout, "mora.search", 1, newMemoriesPayload(items))
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())

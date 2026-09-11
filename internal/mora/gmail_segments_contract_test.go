@@ -2890,3 +2890,47 @@ func TestGmailSegmentsContractReadMemoryEvidenceRefSharedFallbackFailsClosed(t *
 		t.Fatalf("read_memory(evidence_ref=...) against a shared-fallback memory did not error via real MCP dispatch (isError=true), want an explicit fail-closed rejection — a shared memory must never silently ignore evidence_ref and return the full body: %v", res)
 	}
 }
+
+// Reading projection beside the untouched source: an evidence_ref read of a
+// message that ends in a signature and quoted history returns memory.text
+// verbatim and a receipt.readable/omitted pair naming what was set aside.
+func TestGmailSegmentsContractReadMemoryEvidenceRefCarriesReadingProjection(t *testing.T) {
+	cfg := seedGmailSegmentsFixture(t)
+	id := "gmail_thread/th-readable"
+	ref2 := id + "#msg-2"
+	reply := "Approval received, offer not yet released.\r\n\r\nBest Regards,\r\n\r\n[A0JjnJsIF8QYAAAAAElFTkSuQmCC]<https://www.example.test/>\r\n  Priya Example | Specialist\r\n\r\n________________________________\r\nFrom: alice@example.com\r\nSent: Monday\r\nTo: bob\r\nSubject: Re\r\n\r\nAny update?"
+	body := gmailSegJoinBody([2]string{"alice@example.com", "Any update?"}, [2]string{"bob@example.com", reply})
+	if err := writeMemory(cfg, Memory{
+		ID: id, Scope: "personal", Type: "email", Source: "gmail", Provider: "gmail", ProviderID: "thread/th-readable",
+		Title: "Offer thread", CreatedAt: "2026-06-02T10:05:00Z", Text: body,
+		Meta: map[string]any{"messages": gmailSegMessages(
+			commitmentMessageEvidence{MessageRef: id + "#msg-1", Sender: "alice@example.com", At: "2026-06-02T10:00:00Z", BlockRefs: []string{"body"}},
+			commitmentMessageEvidence{MessageRef: ref2, Sender: "bob@example.com", At: "2026-06-02T10:05:00Z", BlockRefs: []string{"body"}},
+		)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	res := mcpResult(t, budgetCall("read_memory", fmt.Sprintf(`{"id":%q,"evidence_ref":%q}`, id, ref2)))
+	payload := structuredPayload(t, res)
+	memObj, _ := payload["memory"].(map[string]any)
+	if text, _ := memObj["text"].(string); !strings.Contains(text, "Priya Example | Specialist") || !strings.Contains(text, "Any update?") {
+		t.Fatalf("source text must stay verbatim: %q", text)
+	}
+	receipt, _ := payload["receipt"].(map[string]any)
+	if got := requireStringField(t, receipt, "readable"); got != "Approval received, offer not yet released.\n\nBest Regards,\n\nPriya Example" {
+		t.Fatalf("receipt.readable = %q", got)
+	}
+	omitted, _ := receipt["omitted"].([]any)
+	if len(omitted) != 3 || omitted[0] != "earlier quoted messages" || omitted[1] != "image and link markup" || omitted[2] != "signature" {
+		t.Fatalf("receipt.omitted = %v", omitted)
+	}
+	// The plain fixture reply has nothing to set aside: no projection keys at all.
+	res = mcpResult(t, budgetCall("read_memory", fmt.Sprintf(`{"id":%q,"evidence_ref":%q}`, gsWellFormedID, gsWellMsg2Ref)))
+	receipt, _ = structuredPayload(t, res)["receipt"].(map[string]any)
+	if _, has := receipt["readable"]; has {
+		t.Fatalf("clean segment must not carry a projection: %v", receipt)
+	}
+}

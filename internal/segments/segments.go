@@ -89,9 +89,15 @@ func Derive(m memory.Memory) ([]Row, *Diagnostic) {
 			return nil, diag(DiagOrderingMismatch)
 		}
 	}
-	prefix := m.ID + "#"
+	// Account-labeled mailboxes tag the memory ID ("…@work") after the
+	// connector built message refs from the bare thread ID, so stored refs
+	// carry the bare prefix. Accept both; never rewrite the stored ref.
+	prefixes := []string{m.ID + "#"}
+	if at := strings.LastIndex(m.ID, "@"); at > 0 && !strings.Contains(m.ID[at:], "#") {
+		prefixes = append(prefixes, m.ID[:at]+"#")
+	}
 	for _, msg := range messages {
-		if !strings.HasPrefix(msg.MessageRef, prefix) || msg.MessageRef == prefix {
+		if !hasRefPrefix(msg.MessageRef, prefixes) {
 			return nil, diag(DiagMalformedRef)
 		}
 	}
@@ -154,6 +160,14 @@ func deriveIMessage(m memory.Memory) ([]Row, *Diagnostic) {
 	return rows, nil
 }
 func validTime(v string) bool { _, err := time.Parse(time.RFC3339, v); return err == nil }
+func hasRefPrefix(ref string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(ref, prefix) && ref != prefix {
+			return true
+		}
+	}
+	return false
+}
 func Direction(blockRefs []string) string {
 	for _, ref := range blockRefs {
 		switch ref {

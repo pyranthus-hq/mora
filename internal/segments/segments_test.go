@@ -161,3 +161,42 @@ func TestStoreWriteLookupDiagnosticAndClear(t *testing.T) {
 	}
 }
 func TestStatementsNilClose(t *testing.T) { var s *Statements; s.Close() }
+
+func TestDeriveAcceptsBareThreadRefsOnAccountLabeledMemories(t *testing.T) {
+	body := "From: a@example.com\n\nfirst" + BodySeparator + "From: b@example.com\n\nsecond"
+	messages := []map[string]any{{"message_ref": "gmail_thread/x#a", "sender": "a@example.com"}, {"message_ref": "gmail_thread/x#b", "sender": "b@example.com"}}
+	rows, diag := Derive(gmail("gmail_thread/x@work", body, messages))
+	if diag != nil || len(rows) != 2 || rows[1].EvidenceRef != "gmail_thread/x#b" || rows[1].MemoryID != "gmail_thread/x@work" {
+		t.Fatalf("rows=%+v diag=%+v", rows, diag)
+	}
+	messages[1]["message_ref"] = "gmail_thread/y#b"
+	if _, d := Derive(gmail("gmail_thread/x@work", body, messages)); d == nil || d.Reason != DiagMalformedRef {
+		t.Fatalf("foreign thread ref must still fail closed: %+v", d)
+	}
+	if _, d := Derive(gmail("gmail_thread/x", body, []map[string]any{{"message_ref": "gmail_thread/x@work#a", "sender": "a@example.com"}, {"message_ref": "gmail_thread/x#b", "sender": "b@example.com"}})); d == nil || d.Reason != DiagMalformedRef {
+		t.Fatalf("unlabeled memory must not adopt labeled refs: %+v", d)
+	}
+}
+
+func TestGmailReferenceToleranceMatrix(t *testing.T) {
+	body := "From: a@example.test\n\nbody"
+	for _, tc := range []struct {
+		name, id, ref string
+		ok            bool
+	}{
+		{"unlabeled-bare", "gmail_thread/x", "gmail_thread/x#a", true},
+		{"unlabeled-suffixed", "gmail_thread/x", "gmail_thread/x@work#a", false},
+		{"unlabeled-foreign", "gmail_thread/x", "gmail_thread/y#a", false},
+		{"labeled-bare", "gmail_thread/x@work", "gmail_thread/x#a", true},
+		{"labeled-suffixed", "gmail_thread/x@work", "gmail_thread/x@work#a", true},
+		{"labeled-foreign", "gmail_thread/x@work", "gmail_thread/y#a", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := gmail(tc.id, body, []map[string]any{{"message_ref": tc.ref, "sender": "a@example.test"}})
+			rows, diag := Derive(m)
+			if (diag == nil) != tc.ok || (tc.ok && len(rows) != 1) || (!tc.ok && (diag == nil || diag.Reason != DiagMalformedRef)) {
+				t.Fatalf("rows=%+v diagnostic=%+v", rows, diag)
+			}
+		})
+	}
+}

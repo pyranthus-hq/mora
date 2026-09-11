@@ -243,6 +243,70 @@ mora ingest run --source acme
 `mora sources list --json` emits the `mora.sources.list` v1 receipt. Its
 configured-source array lives under `sources`, and is `[]` when none exist.
 
+`mora sources verify --json` checks each enabled Gmail connection's live account
+identity using its existing credential. The `mora.sources.verify` v1 receipt
+distinguishes verified, unbound, mismatch, duplicate-account, unavailable and
+disabled accounts. Different labels resolving to one mailbox are not separate
+coverage. This check does not reconnect accounts, inspect message bodies, verify
+aliases or establish inbox completeness. Google sync rejects an unavailable or mismatched live mailbox before reading its
+cursor or writing source records. This shared guard applies to both Gmail and
+Google Calendar, because the same credential owns both APIs.
+
+Google ingest binds saved cursors to the authenticated mailbox. A changed or
+previously unbound identity requires a new snapshot; a recent sync timestamp
+alone does not establish coverage. Gmail reads use bounded, cancellable retries
+for rate limits and transient server errors. A failed message read stops the
+page unless the message was deleted (404).
+
+To review recently changed email threads by source event time:
+
+```bash
+mora list --source gmail --event-since-hours 168 --limit 100 --json
+```
+
+This orders explicit source timestamps before applying the limit, excluding
+unknown and future event times. `--event-since-hours` is an explicit positive
+window from 1 through 8784; omit it to disable event filtering (zero is a usage
+error). `mora list --source gmail --json` also echoes the applied `source` even
+without an event window. Verified Gmail message correspondence includes
+the newest message excerpt. The bounded result is recent stored activity, not
+proof of a complete inbox or a list of messages requiring replies.
+
+`mora search <query> --source gmail|imessage|calendar[:account] --json` applies
+the same pre-ranking connector filter as `search_memory` and echoes it under
+`source`; rows keep their full metadata (`meta.occurred_at`, message evidence)
+so a caller can judge recency and participation without a second read.
+
+Gmail message evidence on `mora search`, this listing and `read_memory`
+`evidence_ref` receipts may carry a reading projection beside the source text:
+`readable` (bounded; `readable_truncated` when shortened) and `omitted`, the
+labels for what was set aside — `earlier quoted messages`, `image and link
+markup`, `hidden formatting characters`, `tracking markup`, `signature`. The
+projection is deterministic, never replaces `snippet` or the stored body, and is
+absent when nothing was set aside. Show the source text whenever a reader needs
+to verify wording; the projection is for reading, not for citation.
+
+
+### Coverage release behavior
+
+This release keeps default list and search eligibility and ranking unchanged.
+The new source and event-time forms are opt-in, and readable fields are
+additive beside existing source text. Google sync identity verification is a
+fail-closed safety fix: an unverified or mismatched credential now reports an
+error rather than silently ingesting a mailbox under the wrong source.
+
+### Frozen readable fixtures
+
+`internal/readable/testdata/email-projection.json` is an anonymized, real-shape
+reading-projection corpus. It contains only synthetic addresses and text. A PR
+that changes it or a frozen contract golden under
+`internal/mora/testdata/contracts/` must include a non-empty `Golden change
+reason:` line in its PR body. CI checks this on pull requests that modify either
+corpus, including when the PR body is edited. The check reads the body as data
+and never executes it; fork PRs are checked the same way. Maintainers may use
+the documented emergency bypass only by changing that workflow with review, not
+by omitting the reason.
+
 The connector verbs also take `--json`:
 
 - `mora connect filesystem <path> --json` emits the `mora.connect.filesystem`

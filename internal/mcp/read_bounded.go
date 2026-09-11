@@ -34,6 +34,11 @@ type BoundedReadReceipt struct {
 	At          string `json:"at,omitempty"`
 	Direction   string `json:"direction,omitempty"`
 	Audience    string `json:"audience,omitempty"`
+	// Readable/Omitted carry the segment's reading projection (internal/readable)
+	// beside the untouched source text; absent when nothing was set aside.
+	Readable          string   `json:"readable,omitempty"`
+	ReadableTruncated bool     `json:"readable_truncated,omitempty"`
+	Omitted           []string `json:"omitted,omitempty"`
 }
 
 const (

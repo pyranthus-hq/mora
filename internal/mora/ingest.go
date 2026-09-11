@@ -1375,7 +1375,24 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 		return sourceIngestResult{}, err
 	}
 	statusPath := googleStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	// A successful request to the wrong mailbox is not a successful source sync.
+	// Check before reading a cursor or publishing any source records.
+	actual, identityErr := fetcher.AuthedEmailContext(ctx)
+	if identityErr != nil {
+		return sourceIngestResult{}, errors.New("Google mailbox identity could not be verified before sync")
+	}
+	if identityErr = verifyGoogleSyncIdentity(s, kind, actual); identityErr != nil {
+		return sourceIngestResult{}, identityErr
+	}
+	st, statusErr := memory.LoadStatus(statusPath)
+	if statusErr != nil {
+		return sourceIngestResult{}, statusErr
+	}
+	if bindGoogleSyncStatus(st, actual) {
+		if statusErr = memory.SaveStatus(statusPath, st); statusErr != nil {
+			return sourceIngestResult{}, statusErr
+		}
+	}
 	st.Source = s.Name
 	win := windowForSource(s, kind)
 

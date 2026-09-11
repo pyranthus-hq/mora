@@ -370,11 +370,11 @@ func TestIm_AddResolvedSkips(t *testing.T) {
 		`CREATE TABLE ZABCDEMAILADDRESS (ZOWNER, ZADDRESS)`,
 		`INSERT INTO ZABCDRECORD (Z_PK, ZFIRSTNAME, ZLASTNAME) VALUES (1, 'Kept', 'Contact')`,
 		// Control: a normal phone owned by the named record → resolves.
-		`INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (1, '+14150000001')`,
+		`INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (1, '+12025550101')`,
 		// NULL owner → addResolved returns at the validity guard.
-		`INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (NULL, '+14150000002')`,
+		`INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (NULL, '+12025550102')`,
 		// Owner points at a record that has no composed name (pk 999 absent).
-		`INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (999, '+14150000003')`,
+		`INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (999, '+12025550103')`,
 		// Value normalizes to "" (whitespace, no digits/@) → empty-key guard.
 		`INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (1, '   ')`,
 	)
@@ -382,10 +382,10 @@ func TestIm_AddResolvedSkips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}
-	if got := r.Resolve("+14150000001"); got != "Kept Contact" {
+	if got := r.Resolve("+12025550101"); got != "Kept Contact" {
 		t.Fatalf("control phone must resolve, got %q", got)
 	}
-	for _, h := range []string{"+14150000002", "+14150000003"} {
+	for _, h := range []string{"+12025550102", "+12025550103"} {
 		if got := r.Resolve(h); got != h {
 			t.Fatalf("Resolve(%q) = %q, want raw handle (row should have been skipped)", h, got)
 		}
@@ -485,7 +485,7 @@ func TestIm_MapConversationFn(t *testing.T) {
 	})
 
 	t.Run("missing payload degrades to flat fields", func(t *testing.T) {
-		it := Item{Kind: KindIMessageChat, ProviderID: "iMessage;-;+19998887777", Title: "Flat Title", Body: "flat body"}
+		it := Item{Kind: KindIMessageChat, ProviderID: "iMessage;-;+12025550104", Title: "Flat Title", Body: "flat body"}
 		mm := fn(it, "personal", 0)
 		if mm.Title != "Flat Title" || mm.Body != "flat body" {
 			t.Fatalf("degraded map must copy flat Title/Body, got Title=%q Body=%q", mm.Title, mm.Body)
@@ -493,7 +493,7 @@ func TestIm_MapConversationFn(t *testing.T) {
 		if mm.Scope != "personal" {
 			t.Fatalf("Scope = %q, want personal", mm.Scope)
 		}
-		if mm.ProviderID != "iMessage;-;+19998887777" || mm.Provider != "imessage" {
+		if mm.ProviderID != "iMessage;-;+12025550104" || mm.Provider != "imessage" {
 			t.Fatalf("degraded map identity wrong: %+v", mm)
 		}
 	})
@@ -503,8 +503,8 @@ func TestIm_MapConversationFn(t *testing.T) {
 // participants win; else the 1:1 identifier stands in; else nil (never fabricated).
 func TestIm_ParticipantHandles(t *testing.T) {
 	t.Run("group participants returned (defensive copy)", func(t *testing.T) {
-		got := participantHandles(conversation{participants: []string{"+14155551234", "+19998887777"}})
-		if len(got) != 2 || got[0] != "+14155551234" || got[1] != "+19998887777" {
+		got := participantHandles(conversation{participants: []string{"+14155551234", "+12025550104"}})
+		if len(got) != 2 || got[0] != "+14155551234" || got[1] != "+12025550104" {
 			t.Fatalf("group handles = %v, want the two participants", got)
 		}
 	})
@@ -579,7 +579,7 @@ func TestIm_DecodeAttributedBodyBoundsBranches(t *testing.T) {
 		}
 	})
 	t.Run("0x83 length with the high bit set decodes to a negative int", func(t *testing.T) {
-		// uint64 0x8000000000000000 → int is negative → the n<0 guard returns "".
+		// uint64 0x8202555010000000 → int is negative → the n<0 guard returns "".
 		blob := buildBlob([]byte("tail"), []byte{0x83, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80})
 		if got := decodeAttributedBody(blob); got != "" {
 			t.Fatalf("got %q, want \"\" for a negative decoded length", got)

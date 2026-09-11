@@ -125,7 +125,7 @@ func TestMapConversationMetaParticipants(t *testing.T) {
 func TestGroupConversationPreservesAuthorWithoutInventingDirectRecipient(t *testing.T) {
 	r := resolver1to1()
 	c := convInput{
-		guid: "group-chat", chat: conversation{isGroup: true, participants: []string{"+14155551234", "+19998887777"}},
+		guid: "group-chat", chat: conversation{isGroup: true, participants: []string{"+14155551234", "+12025550104"}},
 		messages: []renderMessage{{guid: "message-1", date: localDate(2026, 8, 24, 9, 0), sender: "+14155551234", text: "status for the room"}},
 	}
 	mm := mapConversation(c, r, 0)

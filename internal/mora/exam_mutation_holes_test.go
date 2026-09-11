@@ -58,7 +58,7 @@ func TestExamForwardedSubjectNeverBecomesEvidence(t *testing.T) {
 	fixture := meetingBriefEmail(
 		"gmail_thread/jordan-fwd",
 		"Fwd: Can you send the updated pricing deck",
-		"---------- Forwarded message ----------\nHi Adit, sharing this along.\nThanks!",
+		"---------- Forwarded message ----------\nHi Sam, sharing this along.\nThanks!",
 		"jordan@example.com",
 		[]string{"adit@example.com"},
 		at.Add(-24*time.Hour),

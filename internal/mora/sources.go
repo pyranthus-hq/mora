@@ -33,13 +33,15 @@ func macOSOnlyConnector(t string) bool                    { return registry.MacO
 func connectorCatalogForGOOS(goos string) []connectorInfo { return registry.CatalogForGOOS(goos) }
 func cmdSources(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: mora sources add|list")
+		return errors.New("usage: mora sources add|list|verify")
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
 	switch args[0] {
+	case "verify":
+		return verifySourceAccounts(ctx, cfg, args[1:], stdout)
 	case "list":
 		fs := flag.NewFlagSet("sources list", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
@@ -69,7 +71,7 @@ func cmdSources(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	case "add":
 		return addSource(cfg, args[1:], stdout)
 	default:
-		return errors.New("usage: mora sources add|list")
+		return errors.New("usage: mora sources add|list|verify")
 	}
 }
 

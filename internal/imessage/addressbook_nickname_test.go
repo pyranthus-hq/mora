@@ -86,7 +86,7 @@ func TestComposeNameFallsBackToNickname(t *testing.T) {
 func TestAddressBookResolvesNicknameOnly(t *testing.T) {
 	root := seedAddressBook(t,
 		abRecord{nick: "Bug", phone: "+14155551234"},                 // nickname-only (the bug)
-		abRecord{first: "Real", last: "Name", phone: "+19998887777"}, // normal contact
+		abRecord{first: "Real", last: "Name", phone: "+12025550104"}, // normal contact
 	)
 	r, err := NewResolver(root)
 	if err != nil {
@@ -95,7 +95,7 @@ func TestAddressBookResolvesNicknameOnly(t *testing.T) {
 	if got := r.Resolve("+14155551234"); got != "Bug" {
 		t.Fatalf("nickname-only contact should resolve to %q, got %q (raw phone = Neil's bug)", "Bug", got)
 	}
-	if got := r.Resolve("+19998887777"); got != "Real Name" {
+	if got := r.Resolve("+12025550104"); got != "Real Name" {
 		t.Fatalf("normal contact regressed: got %q, want %q", got, "Real Name")
 	}
 }

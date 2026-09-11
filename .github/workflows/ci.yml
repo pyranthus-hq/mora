@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -150,6 +151,37 @@ jobs:
           CGO_ENABLED: "0"
         # This job already runs native Windows vet immediately above.
         run: go test -vet=off -count=1 -timeout=20m ./...
+
+  readable-golden-reason:
+    # This is deliberately data-only: it inspects changed paths and the PR body,
+    # never checks out or executes text supplied by a contributor.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Require reason for readable or contract golden changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --name-only FETCH_HEAD HEAD > "$RUNNER_TEMP/changed-files.txt"
+          export CHANGED_FILES="$RUNNER_TEMP/changed-files.txt"
+          python3 - <<'PY'
+          import os, re, sys
+          changed = open(os.environ["CHANGED_FILES"], encoding="utf-8").read().splitlines()
+          golden_changed = any(path.startswith((
+              "internal/readable/testdata/", "internal/mora/testdata/contracts/"))
+              for path in changed)
+          if not golden_changed:
+              raise SystemExit(0)
+          body = os.environ.get("PR_BODY", "")
+          if not re.search(r"(?mi)^Golden change reason:\s*\S.+$", body):
+              print("::error::A readable or contract golden changed; add a non-empty 'Golden change reason:' line to the PR body.")
+              sys.exit(1)
+          PY
 
   lint:
     runs-on: ubuntu-latest

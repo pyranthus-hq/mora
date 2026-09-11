@@ -58,18 +58,24 @@ func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, 
 	if cursor != "" {
 		call = call.PageToken(cursor)
 	}
-	res, err := call.Do()
+	res, err := gmailRequest(ctx, f.gmailWait, call.Do)
 	if err != nil {
 		return Page{}, err
 	}
 	var items []Item
 	for _, th := range res.Threads {
-		full, err := f.gmail.Users.Threads.Get("me", th.Id).Format("full").Context(ctx).Do()
+		full, err := f.getGmailThread(ctx, th.Id)
 		if err != nil {
 			if ctx.Err() != nil {
 				return Page{}, ctx.Err()
 			}
-			continue // per-thread failure: skip
+			// A thread deleted between list and get is expected. Other failures
+			// must not advance the snapshot cursor and report missing mail fresh.
+			var apiErr *googleapi.Error
+			if errors.As(err, &apiErr) && apiErr.Code == 404 {
+				continue
+			}
+			return Page{}, fmt.Errorf("gmail snapshot thread read failed: %w", err)
 		}
 		items = append(items, gmailThreadToItem(full))
 	}
@@ -85,7 +91,7 @@ func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, 
 	if cursor != "" {
 		call = call.PageToken(cursor)
 	}
-	res, err := call.Do()
+	res, err := gmailRequest(ctx, f.gmailWait, call.Do)
 	if err != nil {
 		var apiErr *googleapi.Error
 		if errors.As(err, &apiErr) && apiErr.Code == 404 {
@@ -119,7 +125,7 @@ func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, 
 	sort.Strings(ids)
 	items := make([]Item, 0, len(ids))
 	for _, id := range ids {
-		full, getErr := f.gmail.Users.Threads.Get("me", id).Format("full").Context(ctx).Do()
+		full, getErr := f.getGmailThread(ctx, id)
 		if getErr == nil {
 			items = append(items, gmailThreadToItem(full))
 			continue
@@ -135,6 +141,18 @@ func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, 
 		syncCursor = strconv.FormatUint(res.HistoryId, 10)
 	}
 	return Page{Items: items, NextCursor: res.NextPageToken, SyncCursor: syncCursor}, nil
+}
+
+func (f *LiveFetcher) getGmailThread(ctx context.Context, id string) (*gmail.Thread, error) {
+	// threads.get costs 40 units against a 6,000-unit/minute/user budget.
+	// Two reads/sec leaves room for listing, history and other client work.
+	// https://developers.google.com/workspace/gmail/api/reference/quota
+	if f.gmailWait != nil {
+		if err := f.gmailWait(ctx, 500*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+	return gmailRequest(ctx, f.gmailWait, f.gmail.Users.Threads.Get("me", id).Format("full").Context(ctx).Do)
 }
 
 func buildGmailQuery(w FetchWindow) string {

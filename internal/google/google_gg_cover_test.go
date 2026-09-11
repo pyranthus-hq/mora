@@ -1049,7 +1049,7 @@ func TestGg_AuthedLabels(t *testing.T) {
 // ============================================================================
 
 func TestGg_FetchGmailPage(t *testing.T) {
-	t.Run("lists, fetches each thread, skips per-thread failures, sends query", func(t *testing.T) {
+	t.Run("lists, fetches each thread, skips deleted threads, sends query", func(t *testing.T) {
 		full := &gmail.Thread{Id: "t1", Messages: []*gmail.Message{
 			{InternalDate: 1700000000000, Payload: &gmail.MessagePart{
 				MimeType: "text/plain",
@@ -1070,7 +1070,7 @@ func TestGg_FetchGmailPage(t *testing.T) {
 			},
 			threadGet: func(id string, r *http.Request) (int, string) {
 				if id == "t2" {
-					return 500, `{"error":{"code":500,"message":"thread boom"}}` // skipped
+					return 404, `{"error":{"code":404,"message":"thread deleted"}}` // deleted between list and get
 				}
 				return 200, ggMustJSON(t, full)
 			},
@@ -1085,7 +1085,7 @@ func TestGg_FetchGmailPage(t *testing.T) {
 			t.Fatalf("FetchPage(gmail): %v", err)
 		}
 		if len(page.Items) != 1 {
-			t.Fatalf("items = %d, want 1 (t2 skipped on per-thread error)", len(page.Items))
+			t.Fatalf("items = %d, want 1 (t2 deleted between list and get)", len(page.Items))
 		}
 		if page.Items[0].Title != "Invoice #7" || page.Items[0].ProviderID != "t1" {
 			t.Fatalf("mapped item wrong: %+v", page.Items[0])

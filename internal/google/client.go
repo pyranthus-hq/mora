@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/calendar/v3"
@@ -14,8 +15,9 @@ import (
 
 // LiveFetcher implements Fetcher against real Google services.
 type LiveFetcher struct {
-	gmail *gmail.Service
-	cal   *calendar.Service
+	gmail     *gmail.Service
+	cal       *calendar.Service
+	gmailWait func(context.Context, time.Duration) error
 }
 
 // NewLiveFetcher builds authed Gmail+Calendar services from a stored token.
@@ -30,7 +32,7 @@ func NewLiveFetcher(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) 
 	if err != nil {
 		return nil, fmt.Errorf("calendar service: %w", err)
 	}
-	return &LiveFetcher{gmail: gsrv, cal: csrv}, nil
+	return &LiveFetcher{gmail: gsrv, cal: csrv, gmailWait: waitGoogle}, nil
 }
 
 func (f *LiveFetcher) FetchPage(kind ItemKind, w FetchWindow, cursor string) (Page, error) {
@@ -52,7 +54,11 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 // uses it to detect "this Google account is already connected under another
 // label" and exit gracefully instead of silently double-ingesting one mailbox.
 func (f *LiveFetcher) AuthedEmail() (string, error) {
-	p, err := f.gmail.Users.GetProfile("me").Do()
+	return f.AuthedEmailContext(context.Background())
+}
+
+func (f *LiveFetcher) AuthedEmailContext(ctx context.Context) (string, error) {
+	p, err := f.gmail.Users.GetProfile("me").Context(ctx).Do()
 	if err != nil {
 		return "", err
 	}

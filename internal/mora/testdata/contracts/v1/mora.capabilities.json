@@ -611,6 +611,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "sources verify",
+      "payload": "mora.sources.verify",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "sync applecalendar",
       "payload": "mora.sync.applecalendar",
       "platform": "darwin-seam",
@@ -1780,6 +1788,10 @@
     },
     {
       "name": "mora.sources.list",
+      "version": 1
+    },
+    {
+      "name": "mora.sources.verify",
       "version": 1
     },
     {

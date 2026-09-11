@@ -424,6 +424,10 @@
     "status": "parses"
   },
   {
+    "path": "sources verify",
+    "status": "parses"
+  },
+  {
     "path": "sync",
     "status": "empty"
   },
