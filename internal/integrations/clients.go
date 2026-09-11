@@ -3,6 +3,7 @@
 package integrations
 
 import (
+	hookspkg "github.com/pyranthus-hq/mora/internal/hooks"
 	"os"
 	"path/filepath"
 )
@@ -37,11 +38,14 @@ type Seams struct {
 
 func DefaultSeams(home string) Seams {
 	return Seams{
-		Home:       home,
-		Stat:       os.Stat,
-		ReadFile:   os.ReadFile,
-		WriteFile:  writeAtomic,
-		HookStatus: func(string) (bool, bool) { return false, true },
+		Home:      home,
+		Stat:      os.Stat,
+		ReadFile:  os.ReadFile,
+		WriteFile: writeAtomic,
+		HookStatus: func(settings string) (bool, bool) {
+			start, recall, err := hookspkg.Status(settings)
+			return err == nil && start == "installed" && recall == "installed", true
+		},
 	}
 }
 
@@ -170,4 +174,77 @@ func List(seams Seams, binary string) ([]Status, error) {
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+type Receipt struct {
+	Client     string `json:"client"`
+	ConfigPath string `json:"config_path"`
+	Registered bool   `json:"registered"`
+	Binary     string `json:"binary,omitempty"`
+	Changed    bool   `json:"changed"`
+	Hook       string `json:"hook"`
+}
+
+func fileMode(seams Seams, path string) os.FileMode {
+	if info, err := seams.Stat(path); err == nil {
+		return info.Mode().Perm()
+	}
+	return 0o600
+}
+
+func Connect(seams Seams, c Client, binary string) (Receipt, error) {
+	path := ConfigPath(seams.Home, c)
+	r := Receipt{Client: string(c), ConfigPath: path, Binary: binary, Hook: "not_supported"}
+	body, err := seams.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return r, err
+	}
+	var out []byte
+	var changed bool
+	if c == Codex {
+		out = upsertCodexEntry(body, binary)
+		changed = string(out) != string(body)
+	} else {
+		out, changed, err = upsertJSONEntry(body, c, binary)
+		if err != nil {
+			return r, err
+		}
+	}
+	if changed {
+		if err := seams.WriteFile(path, out, fileMode(seams, path)); err != nil {
+			return r, err
+		}
+	}
+	r.Registered = true
+	r.Changed = changed
+	return r, nil
+}
+
+func Disconnect(seams Seams, c Client) (Receipt, error) {
+	path := ConfigPath(seams.Home, c)
+	r := Receipt{Client: string(c), ConfigPath: path, Hook: "not_supported"}
+	body, err := seams.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return r, nil
+		}
+		return r, err
+	}
+	var out []byte
+	var changed bool
+	if c == Codex {
+		out, changed = removeCodexEntry(body)
+	} else {
+		out, changed, err = removeJSONEntry(body)
+		if err != nil {
+			return r, err
+		}
+	}
+	if changed {
+		if err := seams.WriteFile(path, out, fileMode(seams, path)); err != nil {
+			return r, err
+		}
+	}
+	r.Changed = changed
+	return r, nil
 }

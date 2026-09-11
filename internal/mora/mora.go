@@ -173,6 +173,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
 	case "serve":
 		return cmdServe(ctx, args[1:], stdout, stderr)
+	case "integrations":
+		return cmdIntegrations(ctx, args[1:], stdout)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
 	case "loop":

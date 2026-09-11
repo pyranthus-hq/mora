@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"encoding/json"
 	"strings"
 )
 
@@ -81,4 +82,72 @@ func readCodexEntry(body []byte) (*entry, error) {
 		}
 	}
 	return e, nil
+}
+
+// upsertCodexEntry changes only the direct Mora table, retaining subtables.
+func upsertCodexEntry(body []byte, binary string) []byte {
+	lines := strings.Split(string(body), "\n")
+	start, end := codexSection(lines)
+	command := "command = " + quoteTOMLString(binary)
+	args := `args = ["mcp", "serve"]`
+	if start < 0 {
+		prefix := strings.TrimRight(string(body), "\n")
+		if prefix != "" {
+			prefix += "\n\n"
+		}
+		return []byte(prefix + codexTable + "\n" + command + "\n" + args + "\nstartup_timeout_sec = 120\n")
+	}
+	out := append([]string{}, lines[:start+1]...)
+	seenCommand, seenArgs := false, false
+	for i := start + 1; i < end; i++ {
+		line := lines[i]
+		switch tomlKey(line) {
+		case "command":
+			if !seenCommand {
+				out = append(out, command)
+				seenCommand = true
+			}
+		case "args":
+			if !seenArgs {
+				out = append(out, args)
+				seenArgs = true
+			}
+			// Consume a multiline array before replacing it with the canonical args.
+			value := strings.TrimSpace(line[strings.Index(line, "=")+1:])
+			if strings.HasPrefix(value, "[") && !strings.Contains(value, "]") {
+				for i+1 < end {
+					i++
+					if strings.Contains(lines[i], "]") {
+						break
+					}
+				}
+			}
+		default:
+			out = append(out, line)
+		}
+	}
+	if !seenCommand {
+		out = append(out, command)
+	}
+	if !seenArgs {
+		out = append(out, args)
+	}
+	out = append(out, lines[end:]...)
+	return []byte(strings.Join(out, "\n"))
+}
+
+// JSON string escapes are also valid TOML basic string escapes.
+func quoteTOMLString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func removeCodexEntry(body []byte) ([]byte, bool) {
+	lines := strings.Split(string(body), "\n")
+	start, end := codexSection(lines)
+	if start < 0 {
+		return body, false
+	}
+	out := append(append([]string{}, lines[:start]...), lines[end:]...)
+	return []byte(strings.Join(out, "\n")), true
 }
