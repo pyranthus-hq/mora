@@ -1,0 +1,18 @@
+{
+  "schema": "mora.sync.applecalendar",
+  "schema_version": 1,
+  "source": "applecalendar",
+  "items": 0,
+  "observed_at": "<timestamp>",
+  "last_success_at": "",
+  "last_attempt_at": "<timestamp>",
+  "next_scheduled_at": "<timestamp>",
+  "duration_ms": 0,
+  "freshness_budget_seconds": 86400,
+  "consecutive_failure_count": 2,
+  "error": {
+    "code": "connector_unavailable",
+    "message": "cannot read your Calendar database (Full Disk Access not granted?) — run `mora doctor`: open failed"
+  },
+  "correlation_id": "<id>"
+}

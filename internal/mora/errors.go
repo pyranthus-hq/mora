@@ -1,6 +1,9 @@
 package mora
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // This file is the single source of truth for Mora's published error taxonomy:
 // the error codes an unattended agent may branch on, the class each code belongs
@@ -259,4 +262,35 @@ func exitCodeForClass(class string) int {
 		return code
 	}
 	return exitCodeGenericFailure
+}
+
+// codeOf preserves the published taxonomy and unwraps both pointer errors and
+// the value errors returned by the existing constructors.
+func codeOf(err error) (code, message string, ok bool) {
+	var pointer *moraError
+	if errors.As(err, &pointer) && pointer != nil {
+		return pointer.Code, pointer.Msg, true
+	}
+	var value moraError
+	if errors.As(err, &value) {
+		return value.Code, value.Msg, true
+	}
+	return "", "", false
+}
+
+// ErrorDetails returns the companion failure document's code and message.
+// Its connector_unavailable spelling is a wire alias; the published taxonomy
+// and persisted connector error codes retain connector.unavailable.
+func ErrorDetails(err error) (code, message string) {
+	if err == nil {
+		return "", ""
+	}
+	code, message, ok := codeOf(err)
+	if !ok {
+		return "unclassified", err.Error()
+	}
+	if code == errCodeConnectorUnavailable {
+		code = "connector_unavailable"
+	}
+	return code, message
 }

@@ -195,6 +195,15 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 	if aggregateErr != nil && rebuildErr == nil && aggregate.FailedSources > 0 {
 		aggregateErr = fmt.Errorf("%d source(s) failed to sync; data may be stale (run `mora sync status`): %w", aggregate.FailedSources, aggregateErr)
 	}
+	// The aggregate describes the batch, but receipt consumers also need the
+	// original typed connector failure (which the aggregate does not unwrap).
+	if aggregateErr != nil {
+		for _, outcome := range outcomes {
+			if outcome.Err != nil {
+				aggregateErr = errors.Join(aggregateErr, outcome.Err)
+			}
+		}
+	}
 	return sourceOutcomesMaterialized(outcomes), aggregateErr
 }
 
@@ -412,16 +421,30 @@ func progressWriter(stdout, stderr io.Writer, jsonOut bool) io.Writer {
 	return stdout
 }
 
+type receiptError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func receiptErrorOf(err error) *receiptError {
+	if err == nil {
+		return nil
+	}
+	code, message := ErrorDetails(err)
+	return &receiptError{Code: code, Message: message}
+}
+
 // connectReceipt is the machine form of a completed connect verb. Counts are
 // zero for github; imessage fills them from the progress sink.
 type connectReceipt struct {
-	Source       string `json:"source"`
-	Connected    bool   `json:"connected"`
-	Ready        bool   `json:"ready"`
-	MessagesRead int    `json:"messages_read"`
-	Chats        int    `json:"chats"`
-	ElapsedMs    int64  `json:"elapsed_ms"`
-	Cancelled    bool   `json:"cancelled"`
+	Error        *receiptError `json:"error,omitempty"`
+	Source       string        `json:"source"`
+	Connected    bool          `json:"connected"`
+	Ready        bool          `json:"ready"`
+	MessagesRead int           `json:"messages_read"`
+	Chats        int           `json:"chats"`
+	ElapsedMs    int64         `json:"elapsed_ms"`
+	Cancelled    bool          `json:"cancelled"`
 }
 
 func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -471,6 +494,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}
 		sink := newConnectProgressSink(progressOut, time.Now)
 		receipt, err := connectIMessage(ctx, rest, out, sink, progress)
+		receipt.Error = receiptErrorOf(err)
 		if err != nil && (!progress || !receipt.Connected) {
 			return err
 		}
@@ -688,7 +712,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
 		if relayReceipt, rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
 			if sourceJSON {
-				return emitSyncSourceResult(cfg, stdout, args[0], true, relayReceipt.Items, "")
+				return emitSyncSourceResult(cfg, stdout, args[0], true, relayReceipt.Items, "", nil)
 			}
 			fmt.Fprintf(stdout, "synced %s via Mora.app\n", args[0])
 			return nil
@@ -698,7 +722,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			// failure, while launch/protocol failures without a child receipt remain
 			// plain command errors.
 			if sourceJSON && relayReceipt.Source != "" {
-				if emitErr := emitSyncSourceResult(cfg, stdout, args[0], true, relayReceipt.Items, ""); emitErr != nil {
+				if emitErr := emitSyncSourceResult(cfg, stdout, args[0], true, relayReceipt.Items, "", rerr); emitErr != nil {
 					return emitErr
 				}
 			}
@@ -763,7 +787,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// backfill, and the helper performs one final index rebuild after the walks.
 	if args[0] == "filesystem" {
 		total, err := backfillEnabledFilesystem(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(cfg, stdout, "filesystem", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+		if rerr := emitSyncSourceResult(cfg, stdout, "filesystem", sourceJSON, total, "synced %d item(s)\n", err); rerr != nil {
 			return rerr
 		}
 		return err
@@ -771,7 +795,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// `mora sync imessage` — re-run the gated iMessage backfill (shared seam).
 	if args[0] == "imessage" {
 		total, syncErr := backfillEnabledIMessage(ctx, cfg, sourceProgress)
-		rerr := emitSyncSourceResult(cfg, stdout, "imessage", sourceJSON, total, "synced %d item(s)\n")
+		rerr := emitSyncSourceResult(cfg, stdout, "imessage", sourceJSON, total, "synced %d item(s)\n", syncErr)
 		// The relay receipt is written even when the stdout emit failed: the
 		// launching host is waiting on it, and a broken pipe must not strand it.
 		if receiptToken != "" {
@@ -792,7 +816,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// local-store contract as imessage/applecalendar: FDA-gated, relay receipt.
 	if args[0] == "whatsapp" {
 		total, syncErr := backfillEnabledWhatsApp(ctx, cfg, sourceProgress)
-		rerr := emitSyncSourceResult(cfg, stdout, "whatsapp", sourceJSON, total, "synced %d item(s)\n")
+		rerr := emitSyncSourceResult(cfg, stdout, "whatsapp", sourceJSON, total, "synced %d item(s)\n", syncErr)
 		// The relay receipt is written even when the stdout emit failed: the
 		// launching host is waiting on it, and a broken pipe must not strand it.
 		if receiptToken != "" {
@@ -814,7 +838,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// receipt, and recovery action are all independent (#266).
 	if args[0] == "applecalendar" {
 		total, syncErr := backfillEnabledAppleCalendar(ctx, cfg, sourceProgress)
-		rerr := emitSyncSourceResult(cfg, stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n")
+		rerr := emitSyncSourceResult(cfg, stdout, "applecalendar", sourceJSON, total, "synced %d item(s)\n", syncErr)
 		// Same rule as imessage above: the relay receipt outlives a stdout failure.
 		if receiptToken != "" {
 			r := protectedSyncReceipt{Token: receiptToken, Source: args[0], Items: total, CompletedAt: protectedSyncNow().UTC().Format(time.RFC3339)}
@@ -832,14 +856,14 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if args[0] == "github" {
 		total, err := backfillEnabledGitHub(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(cfg, stdout, "github", sourceJSON, total, "synced %d issue(s)\n"); rerr != nil {
+		if rerr := emitSyncSourceResult(cfg, stdout, "github", sourceJSON, total, "synced %d issue(s)\n", err); rerr != nil {
 			return rerr
 		}
 		return err
 	}
 	if args[0] == "google" {
 		total, err := backfillEnabledGoogle(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(cfg, stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+		if rerr := emitSyncSourceResult(cfg, stdout, "google", sourceJSON, total, "synced %d item(s)\n", err); rerr != nil {
 			return rerr
 		}
 		return err
@@ -850,24 +874,25 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 // syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
 // the typed failure fields here; additions are minor, removals need a bump.
 type syncSourceReceipt struct {
-	Source                  string `json:"source"`
-	Items                   int    `json:"items"`
-	ObservedAt              string `json:"observed_at"`
-	LastSuccessAt           string `json:"last_success_at"`
-	LastAttemptAt           string `json:"last_attempt_at"`
-	NextScheduledAt         string `json:"next_scheduled_at"`
-	DurationMS              int64  `json:"duration_ms"`
-	FreshnessBudgetSeconds  int64  `json:"freshness_budget_seconds"`
-	ConsecutiveFailureCount int    `json:"consecutive_failure_count"`
-	CorrelationID           string `json:"correlation_id,omitempty"`
+	Error                   *receiptError `json:"error,omitempty"`
+	Source                  string        `json:"source"`
+	Items                   int           `json:"items"`
+	ObservedAt              string        `json:"observed_at"`
+	LastSuccessAt           string        `json:"last_success_at"`
+	LastAttemptAt           string        `json:"last_attempt_at"`
+	NextScheduledAt         string        `json:"next_scheduled_at"`
+	DurationMS              int64         `json:"duration_ms"`
+	FreshnessBudgetSeconds  int64         `json:"freshness_budget_seconds"`
+	ConsecutiveFailureCount int           `json:"consecutive_failure_count"`
+	CorrelationID           string        `json:"correlation_id,omitempty"`
 }
 
 // emitSyncSourceResult writes the outcome of one per-source re-sync: a receipt
 // under --json, the shipped human line otherwise. It runs on the error path too,
 // because a partial sync still reports what it managed to pull.
-func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut bool, total int, humanFormat string) error {
+func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut bool, total int, humanFormat string, syncErr error) error {
 	if jsonOut {
-		receipt := syncSourceReceipt{Source: source, Items: total, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
+		receipt := syncSourceReceipt{Error: receiptErrorOf(syncErr), Source: source, Items: total, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
 		dir := filepath.Join(cfg.StateDir, "sync")
 		if entries, err := os.ReadDir(dir); err == nil {
 			configured, _ := loadSources(cfg)

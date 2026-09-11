@@ -1,0 +1,6 @@
+{
+  "schema": "mora.error",
+  "schema_version": 1,
+  "code": "usage.unknown_flag",
+  "message": "flag provided but not defined: -bad-k17-flag"
+}
