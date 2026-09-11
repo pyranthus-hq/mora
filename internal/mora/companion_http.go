@@ -205,7 +205,7 @@ func (k *companionReader) Today(ctx context.Context) (companion.TodayProjection,
 		if err := ctx.Err(); err != nil {
 			return companion.TodayProjection{}, err
 		}
-		candidates := companionTodayCandidates(digest)
+		candidates := companionTodayCandidates(digest, k.cfg)
 		if len(candidates) > companion.MaxTodayItems {
 			out.Items = candidates[:companion.MaxTodayItems]
 			out.Truncated = true
@@ -995,7 +995,7 @@ const companionCaptureTitleBytes = 120
 // companionTodayCandidates flattens a digest into ranked Today items. It returns
 // EVERY candidate; the caller decides how many survive, so Truncated is computed
 // against the real total rather than against a pre-trimmed list.
-func companionTodayCandidates(d Digest) []companion.TodayItem {
+func companionTodayCandidates(d Digest, configs ...Config) []companion.TodayItem {
 	seen := map[string]bool{}
 	out := []companion.TodayItem{}
 	add := func(item DigestItem, kind companion.TodayItemKind) {
@@ -1003,6 +1003,11 @@ func companionTodayCandidates(d Digest) []companion.TodayItem {
 			return
 		}
 		seen[item.ID] = true
+		if len(configs) > 0 {
+			if m, err := findMemory(configs[0], item.ID); err == nil {
+				item.Snippet = companionReadingSnippet(m, item.Snippet)
+			}
+		}
 		converted, ok := companionTodayItem(item, kind)
 		if !ok {
 			return

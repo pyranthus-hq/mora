@@ -13,6 +13,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
+	"strings"
+	"unicode"
+
+	"github.com/pyranthus-hq/mora/internal/readable"
+	"github.com/pyranthus-hq/mora/internal/segments"
 
 	"github.com/pyranthus-hq/mora/internal/companion"
 )
@@ -43,8 +49,9 @@ func cmdCompanionHealth(ctx context.Context, args []string, stdout io.Writer) er
 	if *jsonOut {
 		return emitCompanionDocument(stdout, struct {
 			companion.HealthProjection
-			ReadsInFlight []connectReadInFlight `json:"reads_in_flight"`
-		}{out, connectReadsInFlight(cfg, cfg.OperationClock())})
+			Sources       []companionLabeledSource `json:"sources"`
+			ReadsInFlight []connectReadInFlight    `json:"reads_in_flight"`
+		}{out, companionSourceLabels(cfg, out.Sources), connectReadsInFlight(cfg, cfg.OperationClock())})
 	}
 	fmt.Fprintf(stdout, "state\t%s\n", out.State)
 	fmt.Fprintf(stdout, "policy\t%s\n", out.Policy)
@@ -75,7 +82,7 @@ func cmdCompanionToday(ctx context.Context, args []string, stdout io.Writer) err
 		return newCodedError(errCodeInternalUnexpected, err, "companion today: %v", err)
 	}
 	if *jsonOut {
-		return emitCompanionDocument(stdout, out)
+		return emitCompanionDocument(stdout, companionTodayDocument(cfg, out))
 	}
 	for _, item := range out.Items {
 		fmt.Fprintf(stdout, "%s\t%s\n", item.Kind, item.Title)
@@ -135,4 +142,98 @@ func emitCompanionDocument(w io.Writer, doc any) error {
 	}
 	_, err = fmt.Fprintln(w, string(b))
 	return err
+}
+
+// Desktop additions preserve the shared phone fields and their byte limits.
+type companionLabeledSource struct {
+	companion.SourceFreshness
+	Label string `json:"label"`
+}
+
+func companionSourceLabels(cfg Config, rows []companion.SourceFreshness) []companionLabeledSource {
+	labels := map[string]string{}
+	for _, s := range loadSourcesOrEmpty(cfg) {
+		labels[companionSourceKey(instanceKeyForSource(s))] = sourceLabel(s)
+	}
+	out := make([]companionLabeledSource, 0, len(rows))
+	for _, row := range rows {
+		label, ok := labels[row.Key]
+		if !ok {
+			label = row.Key
+		}
+		out = append(out, companionLabeledSource{row, label})
+	}
+	return out
+}
+
+type companionDesktopTodayItem struct {
+	companion.TodayItem
+	Snippet string `json:"snippet"`
+}
+
+type companionDesktopToday struct {
+	companion.TodayProjection
+	Coverage []companionLabeledSource    `json:"coverage"`
+	Items    []companionDesktopTodayItem `json:"items"`
+}
+
+func companionTodayDocument(cfg Config, out companion.TodayProjection) companionDesktopToday {
+	doc := companionDesktopToday{TodayProjection: out, Coverage: companionSourceLabels(cfg, out.Freshness), Items: make([]companionDesktopTodayItem, 0, len(out.Items))}
+	for _, item := range out.Items {
+		snippet := ""
+		if len(item.Evidence) > 0 {
+			snippet = item.Evidence[0].Snippet
+		}
+		doc.Items = append(doc.Items, companionDesktopTodayItem{item, snippet})
+	}
+	return doc
+}
+
+// An absent or invalid message projection has no eligible incoming row; never
+// substitute the raw transcript, which could quote self or an attachment.
+func companionReadingSnippet(m Memory, fallback string) string {
+	text := fallback
+	kind := m.Provider
+	if kind == "" {
+		kind = m.Type
+	}
+	switch kind {
+	case "imessage", "whatsapp":
+		text = ""
+		rows, _ := segments.Derive(m)
+		for i := len(rows) - 1; i >= 0; i-- {
+			row := rows[i]
+			if segments.Direction(row.BlockRefs) != "incoming" {
+				continue
+			}
+			candidate := strings.TrimSpace(row.Text)
+			if strings.TrimSpace(strings.ReplaceAll(candidate, "[attachment]", "")) == "" {
+				continue
+			}
+			text = candidate
+			break
+		}
+	case "gmail":
+		text = ""
+		for _, paragraph := range strings.Split(readable.Email(m.Text).Text, "\n\n") {
+			paragraph = strings.TrimSpace(paragraph)
+			if strings.IndexFunc(paragraph, unicode.IsLetter) < 0 {
+				continue
+			}
+			u, err := url.Parse(paragraph)
+			if err == nil && u.Scheme != "" && !strings.ContainsAny(paragraph, " \t\n") {
+				continue
+			}
+			text = paragraph
+			break
+		}
+	}
+	text = strings.TrimSpace(text)
+	for strings.HasPrefix(text, "…") || strings.HasPrefix(text, "...") {
+		text = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "…"), "..."))
+	}
+	if kind == "imessage" || kind == "whatsapp" || kind == "gmail" {
+		text, _ = readable.Bound(text, 220)
+	}
+	return text
 }
