@@ -843,7 +843,7 @@ func TestCoreB_IngestConnectIMessageSinceDays(t *testing.T) {
 	run(t, "init")
 	var out bytes.Buffer
 	// --since-days -1 persists an all-time override before readiness stops us.
-	if err := connectIMessage(testCtx(t), []string{"--since-days", "-1"}, &out); err != nil {
+	if _, err := connectIMessage(testCtx(t), []string{"--since-days", "-1"}, &out, nil, false); err != nil {
 		t.Fatalf("connectIMessage: %v", err)
 	}
 	cfg, _ := loadConfigFor(testCtx(t))
@@ -863,7 +863,7 @@ func TestCoreB_IngestConnectIMessageBadFlag(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	var out bytes.Buffer
-	if err := connectIMessage(testCtx(t), []string{"--nope"}, &out); err == nil {
+	if _, err := connectIMessage(testCtx(t), []string{"--nope"}, &out, nil, false); err == nil {
 		t.Fatalf("connectIMessage bad flag: want parse error, got nil")
 	}
 }
@@ -876,7 +876,7 @@ func TestCoreB_IngestConnectIMessageStopsWithoutFDA(t *testing.T) {
 	// Temp HOME has no ~/Library/Messages/chat.db, so readiness fails and connect
 	// stops at the honest guidance (returns nil, no false backfill). On non-darwin
 	// the readiness check stops earlier with the macOS-only note instead.
-	if err := connectIMessage(testCtx(t), nil, &out); err != nil {
+	if _, err := connectIMessage(testCtx(t), nil, &out, nil, false); err != nil {
 		t.Fatalf("connectIMessage err = %v", err)
 	}
 	s := out.String()

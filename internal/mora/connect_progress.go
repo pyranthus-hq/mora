@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"sync"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 const schemaConnectProgress = "mora.connect.progress"
