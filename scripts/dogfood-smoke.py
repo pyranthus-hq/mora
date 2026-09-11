@@ -43,6 +43,10 @@ def main():
                 commands.append(("list", source, ["list", "--source", source,
                     "--event-since-hours", str(args.hours), "--limit", "50", "--json"]))
             commands.append(("search", "gmail", ["search", args.query, "--source", "gmail", "--json"]))
+            commands.append(("search-event", "gmail", ["search", args.query, "--source", "gmail",
+                "--event-since-hours", str(args.hours), "--json"]))
+            commands.append(("search-exclude", "gmail", ["search", args.query, "--source", "gmail",
+                "--event-since-hours", str(args.hours), "--dispositions", "exclude:not-context", "--json"]))
             receipts = []
             for kind, source, command in commands:
                 result = subprocess.run([str(args.binary), *command], env=env,

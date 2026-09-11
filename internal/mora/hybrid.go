@@ -102,11 +102,12 @@ func embedderIsSemantic(e Embedder) bool { return e.ModelID() != defaultEmbedder
 // from the embedder. Shared-corpus contributions remain outside the personal
 // index's retrieval trace, mirroring buildThink's documented gap scope.
 type mcpSearchResult struct {
-	Results      []Memory       // post-union — the actual RETURNED set, identical to defaultSearch's return
-	SemanticPath bool           // the SAME chooseEmbedderFor/embedderIsSemantic decision that routed retrieval
-	ScoreFused   bool           // actual returned Memory.Score domain, including subscribed-share RRF
-	Local        []Memory       // pre-union local results
-	Trace        retrievalTrace // per-arm trace when ScoreFused is true
+	ExcludedByDisposition int            // bounded unexcluded ranked-page count; never corpus-wide
+	Results               []Memory       // post-union — the actual RETURNED set, identical to defaultSearch's return
+	SemanticPath          bool           // the SAME chooseEmbedderFor/embedderIsSemantic decision that routed retrieval
+	ScoreFused            bool           // actual returned Memory.Score domain, including subscribed-share RRF
+	Local                 []Memory       // pre-union local results
+	Trace                 retrievalTrace // per-arm trace when ScoreFused is true
 }
 
 // defaultSearchForMCP is defaultSearch's routing + results, plus the ACTUAL
@@ -128,7 +129,7 @@ type mcpSearchResult struct {
 // surface rather than hard-failing a search on a one-second daemon blip. The
 // failure is disclosed by the reddened index health banner (indexHealthOf →
 // degraded), not by a crash.
-func defaultSearchForMCP(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) (mcpSearchResult, error) {
+func defaultSearchForMCPFiltered(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) (mcpSearchResult, error) {
 	var out mcpSearchResult
 	var local []Memory
 	var err error

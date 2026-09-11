@@ -26,7 +26,7 @@ class SmokeTests(unittest.TestCase):
             vault,binary=self.fixture(Path(tmp));r=self.run_script(vault,binary)
             self.assertEqual(r.returncode,0,r.stderr);self.assertNotIn("PRIVATE",r.stdout+r.stderr)
             rows=[json.loads(line) for line in r.stdout.splitlines()]
-            self.assertEqual(len(rows),6)
+            self.assertEqual(len(rows),8)
             self.assertTrue(all(row["rows"]==1 and row["with_participation"]==1 and row["no_basis"]==1 for row in rows))
             self.assertFalse((vault/"candidate-write").exists())
     def test_requires_optin_and_sanitizes_failure(self):

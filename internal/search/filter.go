@@ -1,6 +1,7 @@
 package search
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"time"
@@ -33,6 +34,12 @@ type Filter struct {
 	// SinceHours is a positive look-back window in hours; "" (0) means no
 	// time filter.
 	SinceHours int
+	// EventSinceHours is a separate explicit source-event window, never CreatedAt.
+	EventSinceHours     int
+	ExcludeDispositions []string
+	// ExcludedMemoryIDs is a trusted query-time projection of local, applied
+	// corrections. It is never parsed from caller arguments or used for shares.
+	ExcludedMemoryIDs []string
 	// Now is the reference instant SinceHours is computed against. It is
 	// captured ONCE per MCP call (mcp.go handlers) and threaded down, so a
 	// single call sees one consistent clock across every retrieval arm —
@@ -53,7 +60,9 @@ func CreatedAtUnix(createdAt string) int64 {
 	}
 	return ts.Unix()
 }
-func (f Filter) Active() bool { return f.Source != "" || f.SinceHours > 0 }
+func (f Filter) Active() bool {
+	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0
+}
 func (f Filter) Receipt() map[string]any {
 	if !f.Active() {
 		return nil
@@ -64,6 +73,12 @@ func (f Filter) Receipt() map[string]any {
 	}
 	if f.SinceHours > 0 {
 		out["since_hours"] = f.SinceHours
+	}
+	if f.EventSinceHours > 0 {
+		out["event_since_hours"] = f.EventSinceHours
+	}
+	if len(f.ExcludeDispositions) > 0 {
+		out["exclude_dispositions"] = f.ExcludeDispositions
 	}
 	return out
 }
@@ -89,6 +104,16 @@ func (f Filter) SQLPredicate() (clause string, args []any) {
 	if f.SinceHours > 0 {
 		parts = append(parts, "m.created_at_unix >= ?")
 		args = append(args, f.Now.Add(-time.Duration(f.SinceHours)*time.Hour).Unix())
+	}
+	if f.EventSinceHours > 0 {
+		cutoff := f.Now.Add(-time.Duration(f.EventSinceHours) * time.Hour)
+		parts = append(parts, `EXISTS (SELECT 1 FROM activity_stamps ast WHERE ast.memory_id=m.id AND ast.scope=m.scope AND (ast.event_at_unix > ? OR (ast.event_at_unix = ? AND ast.event_at_nanos >= ?)) AND (ast.event_at_unix < ? OR (ast.event_at_unix = ? AND ast.event_at_nanos <= ?)))`)
+		args = append(args, cutoff.Unix(), cutoff.Unix(), cutoff.Nanosecond(), f.Now.Unix(), f.Now.Unix(), f.Now.Nanosecond())
+	}
+	if len(f.ExcludedMemoryIDs) > 0 {
+		encoded, _ := json.Marshal(f.ExcludedMemoryIDs)
+		parts = append(parts, "m.id NOT IN (SELECT value FROM json_each(?))")
+		args = append(args, string(encoded))
 	}
 	if len(parts) == 0 {
 		return "", nil

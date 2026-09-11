@@ -1,0 +1,31 @@
+{
+  "event_since_hours": 24,
+  "exclude_dispositions": [
+    "not-context"
+  ],
+  "excluded_by_disposition": 1,
+  "exclusion_count_basis": "unexcluded-ranked-page",
+  "memories": [
+    {
+      "automated": null,
+      "created_at": "2026-08-01T00:00:00Z",
+      "event_at": "2026-09-10T10:00:00Z",
+      "id": "kept",
+      "meta": {
+        "occurred_at": "2026-09-10T10:00:00Z"
+      },
+      "path": "\u003cpath\u003e",
+      "provider": "calendar",
+      "scope": "global",
+      "score": -8.89279437609842e-7,
+      "source": "calendar",
+      "tags": null,
+      "text": "a passing windowprobe with unrelated words",
+      "title": "kept",
+      "type": "event"
+    }
+  ],
+  "schema": "mora.search",
+  "schema_version": 1,
+  "source": "calendar"
+}

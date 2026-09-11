@@ -1,8 +1,11 @@
 package search
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/disposition"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -65,7 +68,66 @@ func ParseFilter(args map[string]any, now time.Time, catalog Catalog) (Filter, e
 		}
 		f.SinceHours = int(n)
 	}
+	if raw, ok := args["event_since_hours"]; ok {
+		n, err := parseEventWindow(raw)
+		if err != nil {
+			return Filter{}, err
+		}
+		f.EventSinceHours = n
+	}
+	if raw, ok := args["exclude_dispositions"]; ok {
+		var values []string
+		switch list := raw.(type) {
+		case []string:
+			values = list
+		case []any:
+			for _, item := range list {
+				value, ok := item.(string)
+				if !ok {
+					return Filter{}, fmt.Errorf("exclude_dispositions must be an array of disposition strings")
+				}
+				values = append(values, value)
+			}
+		default:
+			return Filter{}, fmt.Errorf("exclude_dispositions must be an array of disposition strings")
+		}
+		seen := map[string]bool{}
+		for _, value := range values {
+			if !disposition.Valid(value) {
+				return Filter{}, fmt.Errorf("unknown disposition %q", value)
+			}
+			seen[value] = true
+		}
+		for value := range seen {
+			f.ExcludeDispositions = append(f.ExcludeDispositions, value)
+		}
+		sort.Strings(f.ExcludeDispositions)
+	}
 	return f, nil
+}
+
+func parseEventWindow(raw any) (int, error) {
+	var number float64
+	switch v := raw.(type) {
+	case float64:
+		number = v
+	case int:
+		number = float64(v)
+	case int64:
+		number = float64(v)
+	case json.Number:
+		var err error
+		number, err = v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("event_since_hours must be an integer from 1 to 8784")
+		}
+	default:
+		return 0, fmt.Errorf("event_since_hours must be an integer from 1 to 8784")
+	}
+	if math.IsNaN(number) || math.IsInf(number, 0) || number < 1 || number > 8784 || math.Trunc(number) != number {
+		return 0, fmt.Errorf("event_since_hours must be an integer from 1 to 8784")
+	}
+	return int(number), nil
 }
 
 func ParseSource(s string, catalog Catalog) (family, instance string, err error) {

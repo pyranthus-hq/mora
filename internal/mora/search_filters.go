@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/activity"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"sort"
 	"time"
@@ -107,6 +108,19 @@ func searchFilterPasses(f searchFilters, m Memory) bool {
 		cutoff := f.Now.Add(-time.Duration(f.SinceHours) * time.Hour)
 		if ts.Before(cutoff) {
 			return false
+		}
+	}
+	if f.EventSinceHours > 0 {
+		p := activity.Derive(m, f.Now)
+		if !p.Eligible || p.EventAt.Before(f.Now.Add(-time.Duration(f.EventSinceHours)*time.Hour)) {
+			return false
+		}
+	}
+	if m.Owner == "" {
+		for _, id := range f.ExcludedMemoryIDs {
+			if m.ID == id {
+				return false
+			}
 		}
 	}
 	return true

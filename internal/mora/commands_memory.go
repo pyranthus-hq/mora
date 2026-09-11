@@ -296,14 +296,12 @@ func extractSourceFlag(args []string) ([]string, string, error) {
 
 func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--source connector[:account]] [--limit N] [--json]")
+		fmt.Fprintln(stdout, "usage: mora search <query> [--scope S] [--source connector[:account]] [--event-since-hours N] [--dispositions exclude:value] [--limit N] [--json]")
 		return nil
 	}
-	// --source applies the same pre-ranking connector filter as search_memory,
-	// so the CLI receipt can carry full rows (meta included) for one connector.
-	args, source, err := extractSourceFlag(args)
+	args, filterArgs, err := extractActivitySearchFlags(args)
 	if err != nil {
-		return err
+		return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
 	}
 	scope, limit, jsonOut, queryArgs, err := parseSearchArgs(args)
 	if err != nil {
@@ -316,35 +314,38 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	var items []Memory
-	if source == "" {
-		items, err = defaultSearch(ctx, cfg, strings.Join(queryArgs, " "), scope, limit)
-	} else {
-		filter, ferr := parseSearchFilters(map[string]any{"source": source}, time.Now())
-		if ferr != nil {
-			return ferr
+	now := briefClock()
+	filter, err := parseSearchFilters(filterArgs, now)
+	if err != nil {
+		return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
+	}
+	res, err := defaultSearchForMCP(ctx, cfg, strings.Join(queryArgs, " "), scope, limit, filter)
+	if err != nil {
+		return err
+	}
+	items := res.Results
+	if len(items) > 0 {
+		items, err = decorateDispositions(cfg, items, now)
+		if err != nil {
+			return err
 		}
-		var res mcpSearchResult
-		res, err = defaultSearchForMCP(ctx, cfg, strings.Join(queryArgs, " "), scope, limit, filter)
-		items = res.Results
-	}
-	if err != nil {
-		return err
-	}
-	items, err = decorateDispositions(cfg, items, time.Now())
-	if err != nil {
-		return err
 	}
 	if jsonOut {
-		if source != "" {
-			return emitReceipt(stdout, "mora.search", 1, struct {
-				Memories []Memory `json:"memories"`
-				Source   string   `json:"source"`
-			}{items, source})
+		if filter.Active() {
+			if items == nil {
+				items = []Memory{}
+			}
+			receipt := filter.Receipt()
+			receipt["memories"] = items
+			if len(filter.ExcludeDispositions) > 0 {
+				receipt["excluded_by_disposition"] = res.ExcludedByDisposition
+				receipt["exclusion_count_basis"] = "unexcluded-ranked-page"
+			}
+			return emitReceipt(stdout, "mora.search", 1, receipt)
 		}
 		return emitReceipt(stdout, "mora.search", 1, newMemoriesPayload(items))
 	}
-	printHealthBannerLine(stdout, cfg, time.Now())
+	printHealthBannerLine(stdout, cfg, now)
 	return emit(stdout, items, false)
 }
 func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) error {
