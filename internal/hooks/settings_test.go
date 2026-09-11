@@ -201,3 +201,21 @@ func TestSettingsSerializationErrorEdges(t *testing.T) {
 		t.Fatalf("empty managed hooks key retained: %s", body)
 	}
 }
+
+func TestInstallQuotesExecutable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	exe := "/Applications/Adit's Mora.app/mora"
+	if err := Install(path, exe, .25); err != nil {
+		t.Fatal(err)
+	}
+	_, groups, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "'/Applications/Adit'\\''s Mora.app/mora'"
+	for event, suffix := range map[string]string{"SessionStart": " hook session-start #mora-managed:session-start", "UserPromptSubmit": " hook recall --threshold 0.25 #mora-managed:recall"} {
+		if got := groups[event][0].Hooks[0].Command; got != prefix+suffix {
+			t.Fatalf("%s: %q", event, got)
+		}
+	}
+}

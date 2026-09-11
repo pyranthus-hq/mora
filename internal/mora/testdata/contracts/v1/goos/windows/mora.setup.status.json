@@ -23,7 +23,7 @@
       "state": "verified"
     },
     {
-      "evidence": "iMessage access check reported chat_db_missing",
+      "evidence": "iMessage is macOS-only; use Calendar or a folder",
       "id": "connector_readable",
       "next": "mora doctor check imessage-access --json",
       "state": "pending"

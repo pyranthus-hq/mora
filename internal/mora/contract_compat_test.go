@@ -83,6 +83,7 @@ var contractVolatileDate = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 // that matter. Every entry was found by the two-run determinism check below,
 // not guessed.
 var contractVolatileLeaves = map[string]any{
+	"mora.doctor.check.observed_at": "<timestamp>",
 	// The gzip size of a tar containing timestamped files. Varies by a few
 	// bytes between two runs seconds apart.
 	"mora.backup.bytes":                float64(0),

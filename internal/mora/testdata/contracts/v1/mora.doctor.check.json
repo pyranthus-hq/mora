@@ -1,0 +1,11 @@
+{
+  "chat_db_present": false,
+  "check": "imessage-access",
+  "observed_at": "\u003ctimestamp\u003e",
+  "ok": false,
+  "platform_supported": true,
+  "readable": false,
+  "reason": "chat_db_missing",
+  "schema": "mora.doctor.check",
+  "schema_version": 1
+}

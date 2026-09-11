@@ -1,0 +1,39 @@
+{
+  "binary": "/contract/mora",
+  "clients": [
+    {
+      "client": "claude",
+      "config_path": "\u003chome\u003e/.claude.json",
+      "detected": false,
+      "hook": "not_installed",
+      "matches_binary": false,
+      "registered": false
+    },
+    {
+      "client": "claude-desktop",
+      "config_path": "\u003chome\u003e/Library/Application Support/Claude/claude_desktop_config.json",
+      "detected": false,
+      "hook": "not_supported",
+      "matches_binary": false,
+      "registered": false
+    },
+    {
+      "client": "codex",
+      "config_path": "\u003chome\u003e/.codex/config.toml",
+      "detected": false,
+      "hook": "not_supported",
+      "matches_binary": false,
+      "registered": false
+    },
+    {
+      "client": "cursor",
+      "config_path": "\u003chome\u003e/.cursor/mcp.json",
+      "detected": false,
+      "hook": "not_supported",
+      "matches_binary": false,
+      "registered": false
+    }
+  ],
+  "schema": "mora.integrations.list",
+  "schema_version": 1
+}

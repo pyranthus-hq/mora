@@ -219,6 +219,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "integrations",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "loop",
       "payload": "",
       "platform": "all",
@@ -430,6 +438,22 @@
       "path": "ingest run",
       "payload": "mora.ingest.run",
       "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "integrations connect",
+      "payload": "mora.integrations.connect",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "integrations disconnect",
+      "payload": "mora.integrations.disconnect",
+      "platform": "native-seam",
       "reason": ""
     },
     {
@@ -915,6 +939,14 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "doctor check",
+      "payload": "mora.doctor.check",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "forget list",
       "payload": "mora.forget.list",
       "platform": "all",
@@ -933,6 +965,14 @@
       "kind": "subcommand",
       "path": "index rebuild",
       "payload": "mora.index.rebuild",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "integrations list",
+      "payload": "mora.integrations.list",
       "platform": "all",
       "reason": ""
     },
@@ -1623,6 +1663,10 @@
       "version": 1
     },
     {
+      "name": "mora.doctor.check",
+      "version": 1
+    },
+    {
       "name": "mora.doctor.pulse",
       "version": 1
     },
@@ -1660,6 +1704,18 @@
     },
     {
       "name": "mora.ingest.run",
+      "version": 1
+    },
+    {
+      "name": "mora.integrations.connect",
+      "version": 1
+    },
+    {
+      "name": "mora.integrations.disconnect",
+      "version": 1
+    },
+    {
+      "name": "mora.integrations.list",
       "version": 1
     },
     {

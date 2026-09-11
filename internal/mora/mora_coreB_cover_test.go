@@ -93,7 +93,7 @@ func TestCoreB_GapConnectIMessagePersistsSinceDays(t *testing.T) {
 	// printIMessageReadiness stops before any backfill and connect returns nil; the
 	// since-days write happens first regardless. We assert the persisted side effect
 	// (and tolerate a readiness-dependent error).
-	_ = connectIMessage(testCtx(t), []string{"--since-days", "-5"}, &out)
+	_, _ = connectIMessage(testCtx(t), []string{"--since-days", "-5"}, &out, nil, false)
 	if !strings.Contains(out.String(), "enabled imessage") {
 		t.Fatalf("expected connect output to confirm imessage enabled, got: %s", out.String())
 	}

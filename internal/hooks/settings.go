@@ -176,8 +176,8 @@ func Install(path, exe string, threshold float64) error {
 	if err != nil {
 		return err
 	}
-	upsert(groups, "SessionStart", "session-start", Command{Type: "command", Command: exe + " hook session-start " + Marker + ":session-start", Timeout: 15})
-	recall := exe + " hook recall"
+	upsert(groups, "SessionStart", "session-start", Command{Type: "command", Command: shellQuote(exe) + " hook session-start " + Marker + ":session-start", Timeout: 15})
+	recall := shellQuote(exe) + " hook recall"
 	if threshold != 0 {
 		recall += " --threshold " + strconv.FormatFloat(threshold, 'g', -1, 64)
 	}
@@ -230,4 +230,9 @@ func Status(path string) (string, string, error) {
 		return "not installed"
 	}
 	return status("SessionStart", "session-start"), status("UserPromptSubmit", "recall"), nil
+}
+
+// shellQuote makes an executable path one literal POSIX shell word.
+func shellQuote(exe string) string {
+	return "'" + strings.ReplaceAll(exe, "'", "'\\''") + "'"
 }

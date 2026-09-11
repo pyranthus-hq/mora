@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -84,5 +85,83 @@ func TestRecoveryMissingAndRemovalError(t *testing.T) {
 	seams.Remove = func(string) error { return errors.New("remove") }
 	if _, err = RecoverJournals(cfg, nil, seams); err == nil || !strings.Contains(err.Error(), "retiring ingest journal") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCompactJournalCaseInsensitive(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("case fallback is Darwin/Windows only")
+	}
+	root := t.TempDir()
+	lower := filepath.Join(root, "sources", "filesystem", "pyranthus", "a.md")
+	upper := filepath.Join(root, "Sources", "Filesystem", "Pyranthus", "a.md")
+	if err := os.MkdirAll(filepath.Dir(lower), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lower, []byte("memory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lo, err := os.Stat(lower)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hi, err := os.Stat(upper)
+	if os.IsNotExist(err) {
+		t.Skip("case-sensitive volume")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(lo, hi) {
+		t.Skip("case-sensitive volume")
+	}
+	cfg := config.Config{StateDir: t.TempDir()}
+	path := JournalPath(cfg, "filesystem@Pyranthus")
+	if err := AppendDurable(path, "run test-run 2026-09-11\n"+upper+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	id, err := CompactJournal(cfg, "filesystem@Pyranthus", map[string]bool{lower: true}, RecoverySeams{
+		CleanPath: filepath.Clean, LeaseHeld: func(config.Config, string) bool { return false },
+		Remove: os.Remove, ValidToken: func(s string) bool { return s == "test-run" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "test-run" {
+		t.Errorf("retired run = %q, want test-run", id)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("journal not retired: %v", err)
+	}
+}
+
+func TestCompactJournalCaseFoldDistinctFiles(t *testing.T) {
+	root := t.TempDir()
+	lower, upper := filepath.Join(root, "a.md"), filepath.Join(root, "A.md")
+	for _, p := range []string{lower, upper} {
+		if err := os.WriteFile(p, []byte("memory"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lo, err := os.Stat(lower)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hi, err := os.Stat(upper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(lo, hi) {
+		t.Skip("requires case-sensitive volume")
+	}
+	cfg := config.Config{StateDir: t.TempDir()}
+	writeJournal(t, cfg, "filesystem@test", "run r_test now\n"+upper+"\n")
+	id, err := CompactJournal(cfg, "filesystem@test", map[string]bool{lower: true}, recoverySeams(false))
+	if err != nil || id != "" {
+		t.Fatalf("distinct file retired: %q, %v", id, err)
+	}
+	body, err := os.ReadFile(JournalPath(cfg, "filesystem@test"))
+	if err != nil || !strings.Contains(string(body), upper) {
+		t.Fatalf("uncovered path lost: %s, %v", body, err)
 	}
 }

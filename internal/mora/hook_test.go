@@ -160,8 +160,8 @@ func TestHookInstallFreshSettings(t *testing.T) {
 		t.Fatalf("install output = %q", out)
 	}
 	settings := readClaudeSettingsForTest(t, tmp)
-	assertHookInstalled(t, settings, "SessionStart", "mora hook session-start")
-	assertHookInstalled(t, settings, "UserPromptSubmit", "mora hook recall")
+	assertHookInstalled(t, settings, "SessionStart", "mora' hook session-start")
+	assertHookInstalled(t, settings, "UserPromptSubmit", "mora' hook recall")
 }
 
 func TestHookStatusReportsInstalledHooks(t *testing.T) {
@@ -196,7 +196,7 @@ func TestHookInstallUninstallBinaryNameIndependent(t *testing.T) {
 	}
 	hooks := hookGroupsForTest(t, readClaudeSettingsForTest(t, tmp))
 	for _, ev := range []string{"SessionStart", "UserPromptSubmit"} {
-		if !containsHookCommand(hooks[ev], wantExe+" hook") {
+		if !containsHookCommand(hooks[ev], "'"+wantExe+"' hook") {
 			t.Fatalf("%s command should use the absolute exe path, got %#v", ev, hooks[ev])
 		}
 		if !containsHookCommand(hooks[ev], hookMarker+":") {
@@ -416,7 +416,7 @@ func TestHookInstallMergesAndIsIdempotent(t *testing.T) {
 	if !containsHookCommand(hooks["UserPromptSubmit"], "other-tool recall") {
 		t.Fatalf("unrelated hook was not preserved: %#v", hooks["UserPromptSubmit"])
 	}
-	assertHookInstalled(t, settings, "UserPromptSubmit", "mora hook recall --threshold -0.25")
+	assertHookInstalled(t, settings, "UserPromptSubmit", "mora' hook recall --threshold -0.25")
 }
 
 func TestHookInstallMalformedHooksDoesNotOverwrite(t *testing.T) {

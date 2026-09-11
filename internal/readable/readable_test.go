@@ -46,7 +46,7 @@ func TestEmailCutsWrappedGmailQuoteAndAngleQuotes(t *testing.T) {
 }
 
 func TestEmailRemovesHiddenPreheaderPaddingAndTrackingLines(t *testing.T) {
-	raw := "They won’t see your feedback until they write one too\r\n ͏  ͏  ͏  ͏ ­ ­ ­\r\n%opentrack%\r\n[image: Google]\r\nCheck activity\r\n<https://accounts.example.test/alert?x=1>\r\nTo make changes go to your account\r\n<https://accounts.example.test/x>"
+	raw := "They won’t see your feedback until they write one too\r\n \u034f  \u034f  \u034f  \u034f \u00ad \u00ad \u00ad\r\n%opentrack%\r\n[image: Google]\r\nCheck activity\r\n<https://accounts.example.test/alert?x=1>\r\nTo make changes go to your account\r\n<https://accounts.example.test/x>"
 	r := Email(raw)
 	want := "They won’t see your feedback until they write one too\n\nCheck activity\n\nTo make changes go to your account"
 	if r.Text != want {

@@ -25,7 +25,7 @@ type setupStep struct {
 	ID       string `json:"id"`
 	State    string `json:"state"`
 	Evidence string `json:"evidence"`
-	Next     string `json:"next,omitempty"`
+	Next     string `json:"next"`
 }
 
 type setupStatus struct {
@@ -166,9 +166,6 @@ func allSetupStepsVerified(steps []setupStep) bool {
 func setupRemainingChecks() []string {
 	return []string{
 		"installed signed-app identity",
-		"protected-source readability and connector enablement",
-		"initial connector ingest",
-		"MCP registration and protocol smoke test",
 		"scheduled refresh and update jobs",
 		"update policy and latest update check",
 		"bounded retrieval or truthful empty-index result",
@@ -194,9 +191,11 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err != nil {
 			return err
 		}
+		steps := setupFoundationStatus(cfg)
+		steps = append(steps, setupConnectorSteps(cfg, imessageAccessCheck(imessageAccessSeams(cfg), time.Now()), setupIntegrationClients(cfg))...)
 		return emitReceipt(stdout, "mora.setup.status", 1, setupStatus{
 			Complete:        false, // Later #293 checks are intentionally not inferred.
-			Steps:           setupFoundationStatus(cfg),
+			Steps:           steps,
 			RemainingChecks: setupRemainingChecks(),
 			ReceiptPresent:  receiptPresent,
 		})
