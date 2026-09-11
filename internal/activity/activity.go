@@ -98,14 +98,15 @@ func deriveEvidence(m memory.Memory) Projection {
 		return p
 	}
 	var rows []segments.Row
-	if provider == "imessage" || provider == "whatsapp" {
+	switch provider {
+	case "imessage", "whatsapp":
 		if !m.Truncated {
 			rows, _ = segments.Derive(m)
 		}
 		if len(rows) > 0 {
 			p.Participation = participation(rows, explicitGroup(m, provider))
 		}
-	} else if provider == "gmail" {
+	case "gmail":
 		rows, _ = segments.Derive(m)
 	}
 	if latest, ok := newestRow(rows); ok {
@@ -211,22 +212,6 @@ func occurredAt(m memory.Memory) (*time.Time, bool) {
 		return nil, false
 	}
 	return parseTime(value)
-}
-
-func newestAt(rows []segments.Row) (*time.Time, bool) {
-	var newest *time.Time
-	var newestRef string
-	for _, row := range rows {
-		at, ok := parseTime(row.At)
-		if !ok {
-			continue
-		}
-		// Ref makes selection stable even when malformed input has equal clocks.
-		if newest == nil || at.After(*newest) || (at.Equal(*newest) && row.EvidenceRef < newestRef) {
-			newest, newestRef = at, row.EvidenceRef
-		}
-	}
-	return newest, newest != nil
 }
 
 func participation(rows []segments.Row, group *bool) *Participation {
@@ -393,10 +378,10 @@ func positiveHeaders(headers []string) []string {
 	for _, h := range headers {
 		h = strings.ToLower(strings.TrimSpace(h))
 		var basis string
-		switch {
-		case h == "list-unsubscribe":
+		switch h {
+		case "list-unsubscribe":
 			basis = "list_unsubscribe"
-		case h == "precedence: bulk" || h == "precedence: list" || h == "precedence: junk":
+		case "precedence: bulk", "precedence: list", "precedence: junk":
 			basis = "precedence"
 		}
 		if basis != "" && !seen[basis] {

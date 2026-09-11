@@ -178,5 +178,5 @@ func (f connectPageFetcher) FetchPageContext(ctx context.Context, kind memory.It
 	}); ok {
 		return fetcher.FetchPageContext(fetchCtx, kind, window, cursor)
 	}
-	return f.iMessageFetcher.FetchPage(kind, window, cursor)
+	return f.FetchPage(kind, window, cursor)
 }

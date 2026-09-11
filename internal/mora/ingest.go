@@ -471,7 +471,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}
 		sink := newConnectProgressSink(progressOut, time.Now)
 		receipt, err := connectIMessage(ctx, rest, out, sink, progress)
-		if err != nil && !(progress && receipt.Connected) {
+		if err != nil && (!progress || !receipt.Connected) {
 			return err
 		}
 		if !jsonOut {

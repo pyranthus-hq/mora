@@ -88,7 +88,9 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 			out[i] = full
 		}
 	}
-	if err := overlayActivityStamps(ctx, db, out); err != nil { return nil, err }
+	if err := overlayActivityStamps(ctx, db, out); err != nil {
+		return nil, err
+	}
 	if observed != nil {
 		observed.Trace.FTS = append([]string(nil), parentIDs...)
 		observed.Trace.PreTruncPool = sqlLimit

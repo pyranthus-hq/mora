@@ -140,7 +140,7 @@ func UpsertSchemaComplete(ctx context.Context, db *sql.DB) (bool, error) {
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
-	if !(columns["provider"] && columns["account"] && columns["created_at_unix"]) {
+	if !columns["provider"] || !columns["account"] || !columns["created_at_unix"] {
 		return false, nil
 	}
 	stampRows, err := db.QueryContext(ctx, `PRAGMA table_info(activity_stamps)`)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -314,6 +315,9 @@ func TestConnectProgressRejectsOtherSources(t *testing.T) {
 }
 
 func TestConnectIMessageSIGTERMCancels(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signals only")
+	}
 	withTempHome(t)
 	run(t, "init")
 	defer stubIMessageReadiness(t, true)()
@@ -323,7 +327,12 @@ func TestConnectIMessageSIGTERMCancels(t *testing.T) {
 		f := imessage.NewSyntheticFetcher(3, 1)
 		return connectTestFetcher{f, func(ctx context.Context, k memory.ItemKind, w memory.FetchWindow, c string) (memory.Page, error) {
 			f.AfterPage(1, func() {
-				if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+				process, err := os.FindProcess(os.Getpid())
+				if err != nil {
+					t.Errorf("FindProcess: %v", err)
+					return
+				}
+				if err := process.Signal(syscall.SIGTERM); err != nil {
 					t.Errorf("SIGTERM: %v", err)
 					return
 				}
