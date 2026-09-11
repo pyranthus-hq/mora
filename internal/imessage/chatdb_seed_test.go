@@ -462,3 +462,84 @@ func TestSeededStructuredRender(t *testing.T) {
 		t.Fatalf("tapback should have been filtered out:\n%s", body)
 	}
 }
+
+func manifestSeedFetcher(t *testing.T) (*LiveFetcher, string, FetchWindow) {
+	t.Helper()
+	path := seedChatDB(t, []seedChat{{rowid: 1, guid: "g1"}, {rowid: 2, guid: "g2"}}, []seedMsg{
+		{chatID: 1, date: localDate(2026, 5, 10, 9, 0), text: "hi", fromMe: true},
+		{chatID: 2, date: localDate(2026, 5, 11, 9, 0), text: "yo", fromMe: true},
+	})
+	f, err := NewLiveFetcher(path, DenyList{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f, path, FetchWindow{Since: localDate(2026, 5, 1, 0, 0)}
+}
+
+func TestSeededSecondRunSkipsUnchangedChats(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	man := Manifest{Version: 1, Chats: map[string]ChatMark{}}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	if first := fetchAll(t, f, w); len(first) != 2 {
+		t.Fatalf("first run rendered %d", len(first))
+	}
+	if second := fetchAll(t, f, w); len(second) != 0 {
+		t.Fatalf("second run rendered %d, want 0", len(second))
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO message (ROWID, guid, date, is_from_me, text) VALUES (3, 'new-message', ?, 1, 'new')`, timeToCocoaNanos(localDate(2026, 5, 12, 9, 0))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO chat_message_join VALUES (2, 3)`); err != nil {
+		t.Fatal(err)
+	}
+	if third := fetchAll(t, f, w); len(third) != 1 || third[0].ProviderID != "g2" {
+		t.Fatalf("third run: %+v", third)
+	}
+}
+
+func TestSeededFullFlagRendersEverything(t *testing.T) {
+	f, _, w := manifestSeedFetcher(t)
+	man := Manifest{Version: 1}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	if first := fetchAll(t, f, w); len(first) != 2 {
+		t.Fatalf("first run: %d", len(first))
+	}
+	want := man.Chats["g1"]
+	if want.Hash == "" || want.MinDate != timeToCocoaNanos(localDate(2026, 5, 10, 9, 0)) {
+		t.Fatalf("mark: %+v", want)
+	}
+	man.Chats["g1"] = ChatMark{MaxDate: want.MaxDate, MinDate: want.MinDate, Hash: "stale"}
+	f.SetFetchOptions(FetchOptions{Manifest: &man, Full: true})
+	if second := fetchAll(t, f, w); len(second) != 2 {
+		t.Fatalf("full run rendered %d", len(second))
+	}
+	if man.Chats["g1"] != want {
+		t.Fatalf("full run did not refresh mark: %+v", man.Chats["g1"])
+	}
+}
+
+func TestSeededManifestReadFailureIsFatal(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	man := Manifest{Version: 1}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE chat_handle_join`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.FetchPage(KindIMessageChat, w, ""); err == nil {
+		t.Fatal("manifest read must surface a failed conversation")
+	}
+	if len(man.Chats) != 0 {
+		t.Fatalf("failed read recorded marks: %+v", man)
+	}
+}

@@ -39,6 +39,7 @@ const (
 // so the connector stays a thin, resolver-free reader and the fetched Item carries
 // raw handles in its convInput Payload.
 type LiveFetcher struct {
+	opts         FetchOptions
 	db           *sql.DB
 	denyContacts map[string]bool // normalized handles (sole-counterparty 1:1 skip, D-08)
 	denyConvos   map[string]bool // lowercased conversation names (thread skip, D-08)
@@ -207,16 +208,42 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 	var lastROWID int64
 	for _, c := range chats {
 		lastROWID = c.rowid
+		var maxDate int64
+		if f.opts.Manifest != nil {
+			if err := f.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(m.date), 0) FROM message m
+JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+WHERE cmj.chat_id = ? AND m.date >= ?`, c.rowid, sinceNanos).Scan(&maxDate); err != nil {
+				return Page{}, fmt.Errorf("chat %q aggregate: %w", c.guid, err)
+			}
+		}
+		if f.opts.Manifest != nil && !f.opts.Full && !f.opts.Manifest.NeedsRender(c.guid, maxDate, sinceNanos) {
+			continue
+		}
 		it, ok, err := f.assembleConversationContext(ctx, c.guid, c.display, c.identifier, c.rowid, sinceNanos)
 		if err != nil {
 			if ctx.Err() != nil {
 				return Page{}, ctx.Err()
 			}
-			// Per-conversation failure: skip, never abort the page (schema-defensive,
-			// honest-snapshot — the caller's Ingest loop counts the gap).
+			if f.opts.Manifest != nil {
+				return Page{}, fmt.Errorf("assemble chat %q: %w", c.guid, err)
+			}
+			// Preserve legacy best-effort reads when no manifest can be published.
 			continue
 		}
 		if ok {
+			if man := f.opts.Manifest; man != nil {
+				conv := it.Payload.(convInput)
+				minDate := timeToCocoaNanos(conv.messages[0].date) + int64(conv.messages[0].date.Nanosecond())
+				for _, msg := range conv.messages[1:] {
+					if d := timeToCocoaNanos(msg.date) + int64(msg.date.Nanosecond()); d < minDate {
+						minDate = d
+					}
+				}
+				// Items carry structured input, not a ContentHash; use the existing
+				// mapper with raw handles here. The wiring boundary records its final hash.
+				hash := mapConversation(conv, nil, 0).ContentHash
+				man.Chats[c.guid] = ChatMark{MaxDate: maxDate, MinDate: minDate, Hash: hash}
+			}
 			items = append(items, it)
 		}
 	}

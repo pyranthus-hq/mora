@@ -3,9 +3,12 @@ package mora
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/imessage"
 	"io"
 	"os"
 	"path/filepath"
@@ -939,5 +942,84 @@ func TestCoreB_IngestAppleCalFDADenied(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "cannot read your Calendar database") {
 		t.Fatalf("ingestAppleCal err = %v, want FDA guidance", err)
+	}
+}
+
+func TestCoreB_IMessageManifestSuccessAndCancellation(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelled), func(t *testing.T) {
+			cfg := coreBIngestInitCfg(t)
+			restoreReady := stubIMessageReadiness(t, true)
+			defer restoreReady()
+			ctx, cancel := context.WithCancel(testCtx(t))
+			defer cancel()
+			restore := stubIMessageFetcherPages(t, 2, 1)
+			if cancelled {
+				restore()
+				restore = stubIMessageFetcherCancelAfter(t, 2, 1, 1, cancel)
+			}
+			defer restore()
+			_, err := ingestIMessageDetailed(ctx, cfg, Source{Type: "imessage", Name: "imessage", Scope: "personal", SinceDays: -1}, io.Discard)
+			path := imessageManifestPath(cfg, "imessage")
+			if path != filepath.Join(cfg.StateDir, "sync", "imessage-imessage.chats.json") {
+				t.Fatalf("manifest path: %s", path)
+			}
+			if cancelled {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancelled error: %v", err)
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("cancelled manifest: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				man, err := imessage.LoadManifest(path)
+				if err != nil || man.Version != 1 {
+					t.Fatalf("successful manifest: %+v %v", man, err)
+				}
+			}
+		})
+	}
+}
+
+type coreBManifestFetcher struct {
+	iMessageFetcher
+	opts imessage.FetchOptions
+}
+
+func (f *coreBManifestFetcher) SetFetchOptions(o imessage.FetchOptions) { f.opts = o }
+
+func TestCoreB_IMessageManifestFullFlags(t *testing.T) {
+	for _, command := range []string{"connect", "sync"} {
+		t.Run(command, func(t *testing.T) {
+			cfg := coreBIngestInitCfg(t)
+			restoreReady := stubIMessageReadiness(t, true)
+			defer restoreReady()
+			if err := setSourceEnabled(cfg, "imessage", true); err != nil {
+				t.Fatal(err)
+			}
+			if err := setSourceSinceDays(cfg, "imessage", -1); err != nil {
+				t.Fatal(err)
+			}
+			if err := imessage.SaveManifest(imessageManifestPath(cfg, "imessage"), imessage.Manifest{Version: 1}); err != nil {
+				t.Fatal(err)
+			}
+			orig := newIMessageFetcher
+			defer func() { newIMessageFetcher = orig }()
+			var fetched *coreBManifestFetcher
+			newIMessageFetcher = func(string, imessage.DenyList) (iMessageFetcher, error) {
+				fetched = &coreBManifestFetcher{iMessageFetcher: imessage.NewSyntheticFetcher(0, 0)}
+				return fetched, nil
+			}
+			var stdout, stderr bytes.Buffer
+			if err := Run(testCtx(t), []string{command, "imessage", "--full"}, &stdout, &stderr, strings.NewReader("")); err != nil {
+				t.Fatal(err)
+			}
+			if fetched == nil || !fetched.opts.Full || fetched.opts.Manifest == nil {
+				t.Fatalf("full options not delivered: %+v", fetched)
+			}
+		})
 	}
 }

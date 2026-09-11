@@ -404,6 +404,7 @@ mora connect imessage --json --progress  # versioned NDJSON progress and final r
 By default, Mora ingests the last **365 days**. Connect and sync output state the effective
 window; pass `--since-days N` to choose another value. A negative `--since-days` asks for
 all available history, which can be large.
+Use `mora connect imessage --full` or `mora sync imessage --full` to render every conversation in the current lookback window, ignoring the per-chat manifest.
 Mora reads one conversation into one memory. It uses Address Book locally to
 map handles to names. It sends no message data.
 

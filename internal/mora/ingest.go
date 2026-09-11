@@ -499,7 +499,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		if detach && child {
 			return newCodedError(errCodeUsageUnknownValue, nil, "conflicting detach flags")
 		}
-		if err := validateDetachedConnect(rest); err != nil {
+		if err := validateIMessageConnect(rest); err != nil {
 			return err
 		}
 		cfg, err := loadConfigFor(ctx)
@@ -730,11 +730,15 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// explicit per-source chain so a typo can never fall through to a networked
 	// backfill.
 	sourceJSON := false
+	sourceFull := false
 	switch args[0] {
 	case "filesystem", "imessage", "applecalendar", "github", "google":
 		fs := flag.NewFlagSet("sync "+args[0], flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		jsonOut := fs.Bool("json", false, "emit the sync receipt as JSON")
+		if args[0] == "imessage" {
+			fs.BoolVar(&sourceFull, "full", false, "render every conversation in the current window")
+		}
 		if err := fs.Parse(args[1:]); err != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 		}
@@ -743,6 +747,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		sourceJSON = *jsonOut
 	}
+	ctx = context.WithValue(ctx, imessageFullKey{}, sourceFull)
 	sourceProgress := progressWriter(stdout, stderr, sourceJSON)
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
@@ -751,7 +756,9 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Route protected local-store reads through the signed application when this
 	// invocation came from another host. The launched child carries a receipt token
 	// and runs this same command directly, preventing relay recursion.
-	if receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
+	// The protected-sync relay cannot forward --full; execute explicitly forced
+	// renders locally so the requested option is never silently dropped.
+	if !sourceFull && receiptToken == "" && len(args) > 0 && protectedSyncSource(args[0]) {
 		if relayReceipt, rerr := relayProtectedSync(ctx, cfg, args[0]); rerr == nil {
 			if sourceJSON {
 				return emitSyncSourceResult(cfg, stdout, args[0], true, relayReceipt.Items, "", nil)
@@ -806,6 +813,9 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		sty := newStyler(stdout, false)
 		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".chats.json") {
+				continue
+			}
 			st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
 			if err != nil {
 				continue
@@ -1013,6 +1023,9 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 		sources = append(sources, syncStatusReceiptRow(st, source.Name, source.Type, source.Account, source.IsEnabled(), true, filepath.Base(path), now))
 	}
 	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".chats.json") {
+			continue
+		}
 		path := filepath.Join(dir, entry.Name())
 		if seenPaths[path] {
 			continue
@@ -1751,6 +1764,12 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 	return result.Materialized, err
 }
 
+type imessageFullKey struct{}
+
+func imessageManifestPath(cfg Config, name string) string {
+	return filepath.Join(cfg.StateDir, "sync", "imessage-"+name+".chats.json")
+}
+
 func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtimeGOOS() != "darwin" {
 		if out != nil {
@@ -1787,6 +1806,23 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	st, _ := memory.LoadStatus(statusPath)
 	st.Source = s.Name
 	win := windowForIMessage(s)
+	manPath := imessageManifestPath(cfg, s.Name)
+	man, err := imessage.LoadManifest(manPath)
+	if err != nil {
+		return sourceIngestResult{}, fmt.Errorf("load iMessage manifest: %w", err)
+	}
+	windowStart := int64(0)
+	if !win.Since.IsZero() {
+		windowStart = (win.Since.Unix() - 978307200) * 1_000_000_000
+	}
+	full, _ := ctx.Value(imessageFullKey{}).(bool)
+	full = full || man.WindowStart != windowStart
+	if full {
+		st.Checkpoint = ""
+	}
+	if configurable, ok := fetcher.(interface{ SetFetchOptions(imessage.FetchOptions) }); ok {
+		configurable.SetFetchOptions(imessage.FetchOptions{Manifest: &man, Full: full})
+	}
 
 	if out != nil {
 		days := iMessageLookbackDays(s)
@@ -1797,7 +1833,15 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		}
 	}
 	sink := connectProgressFrom(ctx)
-	mapFn := imessage.MapConversationFn(resolver)
+	baseMap := imessage.MapConversationFn(resolver)
+	mapFn := func(it memory.Item, scope string, budget int) memory.MappedMemory {
+		mm := baseMap(it, scope, budget)
+		if mark, ok := man.Chats[it.ProviderID]; ok {
+			mark.Hash = mm.ContentHash
+			man.Chats[it.ProviderID] = mark
+		}
+		return mm
+	}
 	if sink != nil {
 		base := mapFn
 		mapFn = func(it memory.Item, scope string, budget int) memory.MappedMemory {
@@ -1847,6 +1891,13 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 			warnf(out, "imessage sync incomplete: %v", ingErr)
 		}
 		return sourceIngestResultFromMemory(res), ingErr
+	}
+	if err := ctx.Err(); err != nil {
+		return sourceIngestResultFromMemory(res), err
+	}
+	man.Version, man.WindowStart = 1, windowStart
+	if err := imessage.SaveManifest(manPath, man); err != nil {
+		return sourceIngestResultFromMemory(res), fmt.Errorf("save iMessage manifest: %w", err)
 	}
 	return sourceIngestResultFromMemory(res), nil
 }
@@ -2219,6 +2270,21 @@ func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Wri
 // "filesystem" for degenerate paths (root, ".", empty base).
 var imessageReadinessFn = printIMessageReadiness
 
+// validateIMessageConnect includes the render option in pre-spawn validation.
+func validateIMessageConnect(args []string) error {
+	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Int("since-days", 0, "")
+	fs.Bool("full", false, "")
+	if err := fs.Parse(args); err != nil {
+		return newCodedError(errCodeUsageUnknownFlag, err, "%v", err)
+	}
+	if fs.NArg() != 0 {
+		return newCodedError(errCodeUsageUnknownValue, nil, "unexpected connect argument %q", fs.Arg(0))
+	}
+	return nil
+}
+
 func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink *connectProgressSink, streaming bool) (connectReceipt, error) {
 	receipt := connectReceipt{Source: "imessage"}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -2230,6 +2296,7 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink 
 	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 365; negative = all-time)")
+	full := fs.Bool("full", false, "render every conversation in the current window")
 	if err := fs.Parse(args); err != nil {
 		return receipt, err
 	}
@@ -2278,6 +2345,7 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink 
 		receipt.ElapsedMs = elapsed.Milliseconds()
 		return receipt, nil
 	}
+	ctx = context.WithValue(ctx, imessageFullKey{}, *full)
 	ctx = withConnectProgress(ctx, sink)
 	sink.Phase("reading")
 	total, err := backfillEnabledIMessage(ctx, cfg, stdout)
