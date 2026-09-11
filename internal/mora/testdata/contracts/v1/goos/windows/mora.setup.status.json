@@ -13,11 +13,13 @@
     {
       "evidence": "config.toml, vault marker, and local directories are present",
       "id": "local_layout",
+      "next": "",
       "state": "verified"
     },
     {
       "evidence": "doctor index freshness, manifest, and vault identity checks pass",
       "id": "committed_index",
+      "next": "",
       "state": "verified"
     },
     {
@@ -41,6 +43,7 @@
     {
       "evidence": "token directory exists and is disjoint from the vault",
       "id": "credential_storage",
+      "next": "",
       "state": "verified"
     }
   ]

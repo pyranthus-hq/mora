@@ -25,7 +25,7 @@ type setupStep struct {
 	ID       string `json:"id"`
 	State    string `json:"state"`
 	Evidence string `json:"evidence"`
-	Next     string `json:"next,omitempty"`
+	Next     string `json:"next"`
 }
 
 type setupStatus struct {

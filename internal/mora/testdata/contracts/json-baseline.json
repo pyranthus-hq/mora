@@ -152,6 +152,10 @@
     "status": "parses"
   },
   {
+    "path": "doctor check",
+    "status": "empty"
+  },
+  {
     "path": "entities",
     "status": "parses"
   },
@@ -214,6 +218,22 @@
   {
     "path": "init",
     "status": "static_only"
+  },
+  {
+    "path": "integrations",
+    "status": "empty"
+  },
+  {
+    "path": "integrations connect",
+    "status": "static_only"
+  },
+  {
+    "path": "integrations disconnect",
+    "status": "static_only"
+  },
+  {
+    "path": "integrations list",
+    "status": "parses"
   },
   {
     "path": "lint",
