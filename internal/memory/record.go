@@ -39,6 +39,8 @@ type Memory struct {
 	// DecisionStatus is derived at read time. It is not persisted: an expired
 	// review_by becomes needs_review as the clock advances without a vault write.
 	DecisionStatus string `json:"decision_status,omitempty"`
+	// Disposition is a derived local correction annotation, never persisted on the target.
+	Disposition *Disposition `json:"disposition,omitempty"`
 	// Owner attributes a result from a SHARED corpus (`mora share subscribe`)
 	// with the subscriber-chosen subscription name. Never persisted to disk and
 	// always empty for the user's own memories — omitempty keeps local-only

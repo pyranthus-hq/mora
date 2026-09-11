@@ -227,6 +227,9 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 	if err != nil {
 		return nil, err
 	}
+	if err := validateDispositionPublish(cfg, m); err != nil {
+		return nil, err
+	}
 	// Create-exclusive publish: concurrent write_memory calls that mint the
 	// same id never clobber each other (os.Link fails EEXIST → re-mint). This
 	// is the server's most concurrent write path — N agents writing at once.
@@ -319,6 +322,11 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
 		return nil, err
 	}
+	if decorated, derr := decorateDispositions(cfg, []Memory{m}, time.Now()); derr != nil {
+		return nil, derr
+	} else {
+		m = decorated[0]
+	}
 	// Issue #243 — evidence_ref narrows the read target to ONE derived Gmail
 	// segment (DQ6, section 2). The segment DB lookup belongs to #245's
 	// retrieval phase alongside findMemory; only bounded-read/receipt shaping
@@ -357,10 +365,27 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 // caller keeps reading the body from memory.text.
 func mcpReadMemoryResult(cfg Config, m Memory, args map[string]any) map[string]any {
 	if !boundedReadRequested(args) {
-		return map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}
+		return addDispositionTargetReceipt(map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}, m)
 	}
 	shaped, receipt := applyBoundedRead(m, args)
-	return map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}
+	return addDispositionTargetReceipt(map[string]any{"memory": shaped, "health": compactHealthOf(cfg, time.Now()), "receipt": receipt}, m)
+}
+
+func addDispositionTargetReceipt(result map[string]any, m Memory) map[string]any {
+	if m.Type != "correction" || m.Meta == nil {
+		return result
+	}
+	target, ok := m.Meta["target"].(string)
+	if !ok || target == "" {
+		return result
+	}
+	if existing, ok := result["receipt"].(mcppkg.BoundedReadReceipt); ok {
+		existing.Target = target
+		result["receipt"] = existing
+	} else {
+		result["receipt"] = map[string]any{"target": target}
+	}
+	return result
 }
 
 func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
@@ -389,6 +414,9 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	sr, err := defaultSearchForMCP(ctx, cfg, query, scope, limit, filters)
 	retrieval := time.Since(retrievalStarted)
 	res := diversifyEvidence(sr.Results)
+	if err == nil && len(res) > 0 {
+		res, err = decorateDispositions(cfg, res, now)
+	}
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
 		recordMCPPhases(ctx, retrieval, 0)
@@ -510,6 +538,9 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	}
 	retrievalStarted := time.Now()
 	res, err := listActivityMemories(cfg, strArg(args, "scope", ""), limit, filter, hours, now)
+	if err == nil {
+		res, err = decorateDispositions(cfg, res, now)
+	}
 	retrieval := time.Since(retrievalStarted)
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "list_memory", Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/disposition"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
 	"os"
@@ -22,6 +23,8 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	text := fs.String("text", "", "text")
 	tags := fs.String("tags", "", "comma-separated tags")
 	source := fs.String("source", "manual", "source")
+	target := fs.String("target", "", "target memory id")
+	dispositionValue := fs.String("disposition", "", "not-context|keep|done|outdated")
 	asOf := fs.String("as-of", "", "decision validity instant (RFC3339)")
 	durability := fs.String("durability", "", "decision durability: provisional|working|standing")
 	flip := fs.String("flip-conditions", "", "semicolon-separated conditions that reverse a decision")
@@ -36,11 +39,46 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if *title == "" || *text == "" {
 		return errors.New("--title and --text are required")
 	}
+	if err := disposition.ValidateFields(*target, *dispositionValue); err != nil {
+		return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
+	}
+	_, targetSupplied := false, false
+	_, dispositionSupplied := false, false
+	_, typeSupplied := false, false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "target" {
+			targetSupplied = true
+		}
+		if f.Name == "disposition" {
+			dispositionSupplied = true
+		}
+		if f.Name == "type" {
+			typeSupplied = true
+		}
+	})
+	if (targetSupplied && *target == "") || (dispositionSupplied && *dispositionValue == "") {
+		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--target and --disposition cannot be empty when supplied")
+	}
+	if *target != "" || *dispositionValue != "" {
+		if (typeSupplied && *mtype != "correction") || (!typeSupplied && *mtype != "insight") {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--target/--disposition require --type correction")
+		}
+		*mtype = "correction"
+	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
 	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
+	if *target != "" {
+		m.Meta = map[string]any{"target": *target}
+		if *dispositionValue != "" {
+			m.Meta["disposition"] = *dispositionValue
+		}
+	}
+	if err := validateDispositionPublish(cfg, m); err != nil {
+		return err
+	}
 	if m.Type == "decision" {
 		m.Decision = decisionValidityFromFlags(m.CreatedAt, *asOf, *durability, *flip, *reviewBy)
 	} else if *asOf != "" || *durability != "" || *flip != "" || *reviewBy != "" {
@@ -196,6 +234,10 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *eventHours > 0 {
 		items = recentSourceEvents(items, now, *eventHours, *limit)
 	}
+	items, err = decorateDispositions(cfg, items, time.Now())
+	if err != nil {
+		return err
+	}
 	if *jsonOut {
 		if *eventHours > 0 {
 			return emitReceipt(stdout, "mora.list", 1, struct {
@@ -286,6 +328,10 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		res, err = defaultSearchForMCP(ctx, cfg, strings.Join(queryArgs, " "), scope, limit, filter)
 		items = res.Results
 	}
+	if err != nil {
+		return err
+	}
+	items, err = decorateDispositions(cfg, items, time.Now())
 	if err != nil {
 		return err
 	}

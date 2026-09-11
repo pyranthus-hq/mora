@@ -1,0 +1,37 @@
+{
+  "memories": [
+    {
+      "created_at": "2026-09-02T00:00:00Z",
+      "id": "correction",
+      "meta": {
+        "disposition": "not-context",
+        "target": "target"
+      },
+      "path": "\u003cpath\u003e",
+      "scope": "global",
+      "source": "manual",
+      "tags": null,
+      "text": "explicit owner choice",
+      "title": "correction",
+      "type": "correction"
+    },
+    {
+      "created_at": "2026-09-01T00:00:00Z",
+      "disposition": {
+        "at": "2026-09-02T00:00:00Z",
+        "correction_id": "correction",
+        "value": "not-context"
+      },
+      "id": "target",
+      "path": "\u003cpath\u003e",
+      "scope": "global",
+      "source": "manual",
+      "tags": null,
+      "text": "body",
+      "title": "target",
+      "type": "insight"
+    }
+  ],
+  "schema": "mora.list",
+  "schema_version": 1
+}

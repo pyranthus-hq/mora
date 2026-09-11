@@ -61,3 +61,17 @@ func TestMemoryFromArgsRejectsDecisionFieldsForOtherTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryFromArgsDisposition(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// nil decision builder is safe because correction is not a decision.
+	m, err := MemoryFromArgs(map[string]any{"title": "x", "text": "y", "target": "mem_target", "disposition": "keep"}, now, nil)
+	if err != nil || m.Type != "correction" || m.Meta["target"] != "mem_target" || m.Meta["disposition"] != "keep" {
+		t.Fatalf("m=%+v err=%v", m, err)
+	}
+	for _, args := range []map[string]any{{"title": "x", "text": "y", "disposition": "keep"}, {"title": "x", "text": "y", "target": "mem_target", "disposition": "bad"}, {"title": "x", "text": "y", "target": "mem_target", "type": "task"}, {"title": "x", "text": "y", "target": 7}} {
+		if _, err := MemoryFromArgs(args, now, nil); err == nil {
+			t.Fatalf("accepted %+v", args)
+		}
+	}
+}

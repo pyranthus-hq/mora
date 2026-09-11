@@ -1531,3 +1531,7 @@ with isolated config/state and tracking disabled. It refuses symlinks, never
 passes the original vault to the candidate, and prints only row/projection/
 participation/no-basis counts. It does not sync connectors. Candidate search
 may rebuild its disposable snapshot index; this is not a live-index rebuild.
+
+### Corrections and dispositions
+
+Use `mora write --target <memory-id> --disposition not-context|keep|done|outdated --title ... --text ...`. These flags create a `correction` memory and require an existing visible local target in the same scope. MCP `write_memory` accepts the same `target` and `disposition` arguments. A correction is an annotation only: it never hides a record, closes a commitment, or asserts supersession. Pending MCP proposals have no read-side effect until approval. List and search decorate local target rows with the latest valid correction; shared rows are never decorated.

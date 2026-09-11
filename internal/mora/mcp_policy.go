@@ -30,7 +30,11 @@ func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) { return mcpp
 
 func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 	now := mcpWriteClock()
-	if _, err := mcpMemoryFromArgs(args, now); err != nil {
+	m, err := mcpMemoryFromArgs(args, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateDispositionPublish(cfg, m); err != nil {
 		return nil, err
 	}
 	proposal := mcpWriteProposal{ID: "p_" + newID(), ProposedAt: now.Format(time.RFC3339), Arguments: args}
