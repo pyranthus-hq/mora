@@ -23,14 +23,11 @@ func TestDarwinScheduleInstallBootstrapsJob(t *testing.T) {
 	calls := withScheduleRunner(t, nil)
 
 	var out bytes.Buffer
-	if err := installSchedule(&out, Config{StateDir: t.TempDir()}, "ingest-hourly"); err != nil {
+	if err := installSchedule(&out, scheduleInstallTestConfig(t), "ingest-hourly"); err != nil {
 		t.Fatalf("installSchedule: %v", err)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := mustConfig(t).HomeDir()
 	label := "com.mora.ingest-hourly"
 	plistPath := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
 	if _, err := os.Stat(plistPath); err != nil {
@@ -135,7 +132,7 @@ func TestDarwinScheduleInstallBootoutNotLoadedIsBenign(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	if err := installSchedule(&out, Config{StateDir: t.TempDir()}, "ingest-hourly"); err != nil {
+	if err := installSchedule(&out, scheduleInstallTestConfig(t), "ingest-hourly"); err != nil {
 		t.Fatalf("installSchedule must tolerate bootout of a not-loaded job: %v", err)
 	}
 	if !strings.Contains(out.String(), "installed + loaded") {
@@ -158,14 +155,11 @@ func TestDarwinScheduleInstallBootstrapFailureIsLoud(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := installSchedule(&out, Config{StateDir: t.TempDir()}, "ingest-hourly")
+	err := installSchedule(&out, scheduleInstallTestConfig(t), "ingest-hourly")
 	if err == nil {
 		t.Fatal("expected a non-nil error when launchctl bootstrap fails")
 	}
-	home, herr := os.UserHomeDir()
-	if herr != nil {
-		t.Fatal(herr)
-	}
+	home := mustConfig(t).HomeDir()
 	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.mora.ingest-hourly.plist")
 	uid := strconv.Itoa(os.Getuid())
 	wantCmd := "launchctl bootstrap gui/" + uid + " " + plistPath
@@ -181,5 +175,70 @@ func TestDarwinScheduleInstallBootstrapFailureIsLoud(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "installed + loaded") {
 		t.Fatalf("must not claim the job started when bootstrap failed, got:\n%s", out.String())
+	}
+}
+
+// scheduleInstallTestConfig must carry the same injected home as CLI config loading.
+func scheduleInstallTestConfig(t *testing.T) Config {
+	t.Helper()
+	cfg := Config{StateDir: t.TempDir()}
+	cfg.SetHomeDir(mustConfig(t).HomeDir())
+	return cfg
+}
+
+func TestDarwinScheduleInstallPreservesRealHome(t *testing.T) {
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(realHome, "Library", "LaunchAgents", "com.mora.ingest-hourly.plist")
+	before, beforeErr := os.ReadFile(path)
+	if beforeErr != nil && !os.IsNotExist(beforeErr) {
+		t.Fatal(beforeErr)
+	}
+	beforeInfo, err := os.Stat(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	withTempHome(t)
+	withScheduleRunner(t, nil)
+	cfg := scheduleInstallTestConfig(t)
+	// Fail before the unsafe write when the helper loses the injected home.
+	if cfg.HomeDir() != mustConfig(t).HomeDir() {
+		t.Fatal("schedule install config lost the bound temp home; refusing real-home write")
+	}
+	var out bytes.Buffer
+	if err := installSchedule(&out, cfg, "ingest-hourly"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.HomeDir(), "Library", "LaunchAgents", "com.mora.ingest-hourly.plist")); err != nil {
+		t.Fatal(err)
+	}
+	after, afterErr := os.ReadFile(path)
+	if (beforeErr == nil) != (afterErr == nil) || !bytes.Equal(before, after) {
+		t.Fatal("real-home plist was created, removed, or changed")
+	}
+	afterInfo, err := os.Stat(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if beforeInfo != nil && (afterInfo == nil || !beforeInfo.ModTime().Equal(afterInfo.ModTime())) {
+		t.Fatal("real-home plist mtime changed")
+	}
+}
+
+func TestDarwinScheduleInstallRejectsUnboundHome(t *testing.T) {
+	withTempHome(t)
+	if realHomeConfig.Load() == nil {
+		t.Skip("real-home test sentinel is not armed")
+	}
+	calls := withScheduleRunner(t, nil)
+	var out bytes.Buffer
+	err := installSchedule(&out, Config{StateDir: t.TempDir()}, "ingest-hourly")
+	if err == nil || !strings.Contains(err.Error(), "hermeticity violation") {
+		t.Fatalf("want home guard error, got %v", err)
+	}
+	if len(*calls) != 0 || out.Len() != 0 {
+		t.Fatal("unbound install must stop before activation or success output")
 	}
 }

@@ -2192,6 +2192,10 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink 
 		}
 		fmt.Fprintf(stdout, "iMessage will ingest the last %d days; use --since-days to change this window.\n", days)
 	}
+	if streaming {
+		stopTicker := sink.StartTicker(ctx)
+		defer stopTicker()
+	}
 	sink.Phase("checking_access")
 	ready := imessageReadinessFn(cfg, stdout, true)
 	receipt.Ready = ready

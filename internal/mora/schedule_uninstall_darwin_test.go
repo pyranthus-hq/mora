@@ -15,10 +15,8 @@ func TestDarwinScheduleUninstallBootsOutLoadedJob(t *testing.T) {
 	calls := withScheduleRunner(t, func(string, ...string) ([]byte, error) {
 		return []byte("not loaded"), errors.New("not loaded")
 	})
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := scheduleInstallTestConfig(t)
+	home := cfg.HomeDir()
 	label := "com.mora.pulse-daily"
 	plist := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
 	if err := os.MkdirAll(filepath.Dir(plist), 0o755); err != nil {
@@ -29,7 +27,7 @@ func TestDarwinScheduleUninstallBootsOutLoadedJob(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := uninstallSchedule(&out, Config{}, "pulse-daily"); err != nil {
+	if err := uninstallSchedule(&out, cfg, "pulse-daily"); err != nil {
 		t.Fatalf("uninstallSchedule: %v", err)
 	}
 	if len(*calls) != 1 {

@@ -160,6 +160,11 @@ func listSchedules(stdout io.Writer, cfg Config, jsonOutput ...bool) error {
 	return schedulepkg.List(stdout, cfg, scheduleSeams())
 }
 func installSchedule(stdout io.Writer, cfg Config, job string) error {
+	// As with config loading, fail closed in tests that lose their injected
+	// home. The sentinel is nil in production, so user installs are unchanged.
+	if probe := realHomeConfig.Load(); probe != nil && runtimeGOOS() == "darwin" && cfg.HomeDir() == probe.HomeDir() {
+		return errors.New("hermeticity violation: schedule install resolved the REAL home; inject Config.SetHomeDir")
+	}
 	return schedulepkg.Install(stdout, cfg, job, scheduleSeams())
 }
 

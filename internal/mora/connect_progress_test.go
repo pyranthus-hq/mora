@@ -403,3 +403,63 @@ func TestConnectIMessagePreservesSourceDeadline(t *testing.T) {
 		t.Fatalf("expired deadline must prevent page writes, got %d", chats)
 	}
 }
+
+func TestConnectProgressTickerWhileIdleAndStopsBeforeReceipt(t *testing.T) {
+	var out bytes.Buffer
+	sink := newConnectProgressSink(&out, time.Now)
+	stop := sink.StartTicker(context.Background())
+	defer stop()
+	time.Sleep(3*connectProgressEvery + 100*time.Millisecond)
+	stop()
+	docs := decodeLines(t, out.String())
+	if len(docs) < 2 {
+		t.Fatalf("idle sink emitted %d lines, want at least two", len(docs))
+	}
+	var previous float64 = -1
+	for _, doc := range docs {
+		elapsed := doc["elapsed_ms"].(float64)
+		if doc["schema"] != schemaConnectProgress || doc["messages_read"] != float64(0) || elapsed <= previous {
+			t.Fatalf("invalid idle progress: %v", doc)
+		}
+		previous = elapsed
+	}
+	if err := json.NewEncoder(&out).Encode(map[string]any{"schema": "mora.connect.imessage", "schema_version": 1, "source": "imessage"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * connectProgressEvery)
+	// Serialize inspection as well, so a broken stop reports trailing output without a data race.
+	sink.writeMu.Lock()
+	defer sink.writeMu.Unlock()
+	docs = decodeLines(t, out.String())
+	if docs[len(docs)-1]["schema"] != "mora.connect.imessage" {
+		t.Fatal("progress followed the receipt")
+	}
+}
+
+func TestConnectProgressTickerWiredDuringIdleConnect(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	restore := stubIMessageReadiness(t, false)
+	defer restore()
+	imessageReadinessFn = func(Config, io.Writer, bool) bool {
+		time.Sleep(3*connectProgressEvery + 100*time.Millisecond)
+		return false
+	}
+	stdout, _, err := runSplit(t, "connect", "imessage", "--json", "--progress")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := decodeLines(t, stdout)
+	idleLines := 0
+	for _, doc := range docs {
+		if doc["schema"] == schemaConnectProgress && doc["phase"] == "checking_access" {
+			idleLines++
+		}
+	}
+	if idleLines < 3 {
+		t.Fatalf("want initial phase plus two idle ticks, got %d: %s", idleLines, stdout)
+	}
+	if docs[len(docs)-1]["schema"] != "mora.connect.imessage" {
+		t.Fatal("receipt must be last")
+	}
+}

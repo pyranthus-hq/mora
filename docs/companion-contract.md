@@ -1239,6 +1239,7 @@ mora doctor check imessage-access --json
 
 `--progress` requires `--json` and is supported only for iMessage. Each progress line is a
 `mora.connect.progress` v1 document with `phase`, `messages_read`, `chats`, and `elapsed_ms`.
+A 500 ms ticker emits during idle reads, skips ticks when a line was emitted within the interval, and stops before the final receipt.
 Phases include `checking_access`, `reading`, `indexing`, and `done` or `cancelled`; counts
 are observations, not a percentage. The final line is the `mora.connect.imessage` v1 receipt,
 including `connected`, `ready`, the counts, elapsed time, and `cancelled`. Counts are also

@@ -45,6 +45,42 @@ func newConnectProgressSink(w io.Writer, now func() time.Time) *connectProgressS
 	return &connectProgressSink{w: w, now: now, start: start, last: start.Add(-connectProgressEvery)}
 }
 
+// StartTicker keeps elapsed time moving even while a conversation is being read.
+// stop is idempotent and joins the writer before the caller emits its receipt.
+func (s *connectProgressSink) StartTicker(ctx context.Context) (stop func()) {
+	if s.w == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(connectProgressEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.writeMu.Lock()
+				if ctx.Err() != nil {
+					s.writeMu.Unlock()
+					return
+				}
+				s.mu.Lock()
+				var body []byte
+				if s.now().Sub(s.last) >= connectProgressEvery {
+					body = s.emitLocked()
+				}
+				s.mu.Unlock()
+				s.writeLine(body)
+				s.writeMu.Unlock()
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
 func (s *connectProgressSink) Phase(phase string) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
