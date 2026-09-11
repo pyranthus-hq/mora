@@ -509,3 +509,19 @@ func TestIntegrationsRejectEmptyHomeBeforeIO(t *testing.T) {
 		t.Error("Disconnect accepted empty home")
 	}
 }
+
+func TestConnectKeepsEntryInternalsUnescaped(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cursor", "mcp.json")
+	writeFixture(t, path, `{"mcpServers":{"mora":{"command":"/old","args":[],"env":{"FLAG":"p && q <r>"}}}}`)
+	if _, err := Connect(fsSeams(t, home), Cursor, "/new/mora"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"p && q <r>"`) {
+		t.Fatalf("mora entry internals were escaped:\n%s", body)
+	}
+}

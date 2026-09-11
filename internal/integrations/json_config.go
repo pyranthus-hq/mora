@@ -33,6 +33,18 @@ func readJSONEntry(body []byte) (*entry, error) {
 	return &entry{Command: e.Command, Args: e.Args}, nil
 }
 
+// marshalCompact is json.Marshal without HTML escaping, so bytes inside the
+// mora entry (env values, unknown keys) survive a rewrite unchanged.
+func marshalCompact(v any) ([]byte, error) {
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(out.Bytes(), "\n"), nil
+}
+
 func encodeJSON(doc map[string]json.RawMessage) ([]byte, error) {
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
@@ -73,16 +85,16 @@ func upsertJSONEntry(body []byte, c Client, binary string) ([]byte, bool, error)
 	if mora == nil {
 		return nil, false, fmt.Errorf("expected JSON object")
 	}
-	before, _ := json.Marshal(mora)
+	before, _ := marshalCompact(mora)
 	if c == Claude {
 		mora["type"] = json.RawMessage(`"stdio"`)
 		if _, ok := mora["env"]; !ok {
 			mora["env"] = json.RawMessage(`{}`)
 		}
 	}
-	mora["command"], _ = json.Marshal(binary)
+	mora["command"], _ = marshalCompact(binary)
 	mora["args"] = json.RawMessage(`["mcp","serve"]`)
-	after, err := json.Marshal(mora)
+	after, err := marshalCompact(mora)
 	if err != nil {
 		return nil, false, err
 	}
