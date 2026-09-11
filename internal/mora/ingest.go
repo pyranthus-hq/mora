@@ -450,8 +450,8 @@ type connectReceipt struct {
 func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] != "imessage" {
 		for _, arg := range args[1:] {
-			if arg == "--progress" {
-				return newCodedError(errCodeUsageUnknownValue, nil, "--progress is only supported for imessage")
+			if arg == "--progress" || arg == "--detach" || arg == "--mora-detached-child" {
+				return newCodedError(errCodeUsageUnknownValue, nil, "%s is only supported for imessage", arg)
 			}
 		}
 	}
@@ -461,9 +461,14 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if len(args) >= 1 && (args[0] == "github" || args[0] == "imessage") {
 		source := args[0]
 		jsonOut, progress := false, false
+		detach, child := false, false
 		rest := make([]string, 0, len(args))
 		for _, a := range args[1:] {
 			switch a {
+			case "--detach":
+				detach = true
+			case "--mora-detached-child":
+				child = true
 			case "--json":
 				jsonOut = true
 			case "--progress":
@@ -488,13 +493,49 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			}
 			return nil
 		}
+		if (detach || child) && (!jsonOut || !progress) {
+			return newCodedError(errCodeUsageUnknownValue, nil, "--detach requires --json --progress")
+		}
+		if detach && child {
+			return newCodedError(errCodeUsageUnknownValue, nil, "conflicting detach flags")
+		}
+		if err := validateDetachedConnect(rest); err != nil {
+			return err
+		}
+		cfg, err := loadConfigFor(ctx)
+		if err != nil {
+			return err
+		}
+		if err := cleanupConnectProgress(cfg); err != nil {
+			return err
+		}
+		if detach {
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			started, err := spawnDetached(ctx, cfg, source, exe, detachArgs(append([]string{"connect"}, args...)))
+			if err != nil {
+				return err
+			}
+			return emitReceipt(stdout, "mora.connect.started", 1, started)
+		}
 		var progressOut io.Writer
 		if progress {
 			progressOut = stdout
 		}
 		sink := newConnectProgressSink(progressOut, time.Now)
+		if progress {
+			if err := sink.reserveFile(cfg, source); err != nil {
+				return err
+			}
+		}
 		receipt, err := connectIMessage(ctx, rest, out, sink, progress)
 		receipt.Error = receiptErrorOf(err)
+		if saveErr := sink.saveReceipt(receipt); saveErr != nil {
+			return errors.Join(err, saveErr)
+		}
+		err = errors.Join(err, sink.Close())
 		if err != nil && (!progress || !receipt.Connected) {
 			return err
 		}

@@ -41,7 +41,10 @@ func cmdCompanionHealth(ctx context.Context, args []string, stdout io.Writer) er
 		return newCodedError(errCodeInternalUnexpected, err, "companion health: %v", err)
 	}
 	if *jsonOut {
-		return emitCompanionDocument(stdout, out)
+		return emitCompanionDocument(stdout, struct {
+			companion.HealthProjection
+			ReadsInFlight []connectReadInFlight `json:"reads_in_flight"`
+		}{out, connectReadsInFlight(cfg, cfg.OperationClock())})
 	}
 	fmt.Fprintf(stdout, "state\t%s\n", out.State)
 	fmt.Fprintf(stdout, "policy\t%s\n", out.Policy)

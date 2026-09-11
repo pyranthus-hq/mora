@@ -3,8 +3,14 @@ package mora
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"sync"
 	"time"
 
@@ -27,6 +33,9 @@ type connectProgressEvent struct {
 // connectProgressSink writes one compact JSON object per line. It is the only
 // writer on stdout while --progress is on, so the stream stays byte-clean.
 type connectProgressSink struct {
+	filePath string
+	source   string
+	fileErr  error
 	writeMu  sync.Mutex
 	mu       sync.Mutex
 	w        io.Writer
@@ -48,7 +57,7 @@ func newConnectProgressSink(w io.Writer, now func() time.Time) *connectProgressS
 // StartTicker keeps elapsed time moving even while a conversation is being read.
 // stop is idempotent and joins the writer before the caller emits its receipt.
 func (s *connectProgressSink) StartTicker(ctx context.Context) (stop func()) {
-	if s.w == nil {
+	if s.w == nil && s.filePath == "" {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -124,12 +133,21 @@ func (s *connectProgressSink) AddWritten() {
 func (s *connectProgressSink) emitLocked() []byte {
 	now := s.now()
 	s.last = now
-	if s.w == nil {
+	if s.w == nil && s.filePath == "" {
 		return nil
 	}
 	ev := connectProgressEvent{
 		Schema: schemaConnectProgress, SchemaVersion: 1, Phase: s.phase,
 		MessagesRead: s.messages, Chats: s.chats, ElapsedMs: now.Sub(s.start).Milliseconds(),
+	}
+	if s.filePath != "" {
+		p := connectProgressFile{Schema: schemaConnectProgress, SchemaVersion: 1,
+			Source: s.source, PID: os.Getpid(), StartedAt: s.start.UTC().Format(time.RFC3339Nano),
+			Phase: ev.Phase, MessagesRead: ev.MessagesRead, Chats: ev.Chats, ElapsedMs: ev.ElapsedMs,
+			UpdatedAt: now.UTC().Format(time.RFC3339Nano)}
+		if err := writeConnectFile(s.filePath, p); err != nil && s.fileErr == nil {
+			s.fileErr = err
+		}
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {
@@ -139,7 +157,7 @@ func (s *connectProgressSink) emitLocked() []byte {
 }
 
 func (s *connectProgressSink) writeLine(body []byte) {
-	if body != nil {
+	if body != nil && s.w != nil {
 		fmt.Fprintf(s.w, "%s\n", body)
 	}
 }
@@ -179,4 +197,57 @@ func (f connectPageFetcher) FetchPageContext(ctx context.Context, kind memory.It
 		return fetcher.FetchPageContext(fetchCtx, kind, window, cursor)
 	}
 	return f.FetchPage(kind, window, cursor)
+}
+
+type connectProgressFile struct {
+	Schema        string `json:"schema"`
+	SchemaVersion int    `json:"schema_version"`
+	Source        string `json:"source"`
+	PID           int    `json:"pid"`
+	StartedAt     string `json:"started_at"`
+	Phase         string `json:"phase"`
+	MessagesRead  int    `json:"messages_read"`
+	Chats         int    `json:"chats"`
+	ElapsedMs     int64  `json:"elapsed_ms"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+func connectProgressPath(cfg Config, source string) string {
+	return filepath.Join(cfg.StateDir, "sync", source+"-"+source+".progress.json")
+}
+
+func writeConnectFile(path string, value any) error {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return atomicio.Write(path, append(body, '\n'), 0600)
+}
+
+// Close is called only after the ticker has joined and the receipt is persisted.
+func (s *connectProgressSink) Close() error {
+	if s.filePath == "" {
+		return nil
+	}
+	err := os.Remove(s.filePath)
+	if errors.Is(err, os.ErrNotExist) {
+		err = nil
+	}
+	return errors.Join(s.fileErr, err)
+}
+
+func (s *connectProgressSink) saveReceipt(r connectReceipt) error {
+	if s.filePath == "" {
+		return nil
+	}
+	return writeConnectFile(strings.TrimSuffix(s.filePath, ".progress.json")+".receipt.json", struct {
+		connectReceipt
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		PID           int    `json:"pid"`
+		StartedAt     string `json:"started_at"`
+	}{r, "mora.connect.imessage", 1, os.Getpid(), s.start.UTC().Format(time.RFC3339Nano)})
 }
