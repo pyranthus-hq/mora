@@ -21,6 +21,11 @@ const (
 	DiagOrderingMismatch = "ordering_mismatch"
 	DiagMalformedRef     = "malformed_ref"
 	DiagDuplicateRef     = "duplicate_ref"
+	// DiagSharedRef: at least one of this memory's evidence refs was already
+	// indexed for another memory (the same thread ingested under two memory
+	// ids, typically an account-labeled twin). The first writer keeps the
+	// segment; BodyCount carries how many refs this memory ceded.
+	DiagSharedRef = "shared_ref"
 )
 
 type Row struct {
@@ -250,7 +255,10 @@ var DeleteStatements = []string{
 type Statements struct{ seg, fts, diag *sql.Stmt }
 
 func Prepare(ctx context.Context, tx *sql.Tx) (*Statements, error) {
-	seg, err := tx.PrepareContext(ctx, `INSERT INTO gmail_segments VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	// OR IGNORE: evidence_ref is the primary key and two memories can carry the
+	// same ref (see DiagSharedRef). A conflict skips the row instead of failing
+	// the whole projection, which is what a bare INSERT did on such vaults.
+	seg, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO gmail_segments VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +282,7 @@ func (s *Statements) Close() {
 }
 func (s *Statements) Write(ctx context.Context, m memory.Memory) error {
 	rows, diag := Derive(m)
+	shared := 0
 	for _, r := range rows {
 		recipients, err := json.Marshal(r.Recipients)
 		if err != nil {
@@ -283,12 +292,22 @@ func (s *Statements) Write(ctx context.Context, m memory.Memory) error {
 		if err != nil {
 			return err
 		}
-		if _, err = s.seg.ExecContext(ctx, r.EvidenceRef, r.MemoryID, r.Sender, string(recipients), r.At, string(refs), r.Text); err != nil {
+		res, err := s.seg.ExecContext(ctx, r.EvidenceRef, r.MemoryID, r.Sender, string(recipients), r.At, string(refs), r.Text)
+		if err != nil {
 			return err
+		}
+		if n, err := res.RowsAffected(); err == nil && n == 0 {
+			// Another memory owns this ref; no fts row either, or the join in
+			// query.go would surface a segment that has no owner row.
+			shared++
+			continue
 		}
 		if _, err = s.fts.ExecContext(ctx, r.EvidenceRef, r.Text); err != nil {
 			return err
 		}
+	}
+	if diag == nil && shared > 0 {
+		diag = &Diagnostic{MemoryID: m.ID, Reason: DiagSharedRef, MetaCount: len(rows), BodyCount: shared}
 	}
 	if diag != nil {
 		if _, err := s.diag.ExecContext(ctx, diag.MemoryID, diag.Reason, diag.MetaCount, diag.BodyCount); err != nil {
