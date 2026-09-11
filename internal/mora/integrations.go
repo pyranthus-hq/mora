@@ -17,7 +17,7 @@ const (
 	schemaIntegrationsList       = "mora.integrations.list"
 	schemaIntegrationsConnect    = "mora.integrations.connect"
 	schemaIntegrationsDisconnect = "mora.integrations.disconnect"
-	integrationsUsage            = "usage: mora integrations list [--binary <abs>] --json | connect --client <claude|codex|cursor|claude-desktop> --binary <abs> [--json] | disconnect --client <name> [--json]"
+	integrationsUsage            = "usage: mora integrations list [--binary <path>] --json | connect --client <claude|codex|cursor|claude-desktop> --binary <abs> [--json] | disconnect --client <name> [--json]"
 )
 
 type integrationsListPayload struct {
@@ -46,9 +46,6 @@ func cmdIntegrations(ctx context.Context, args []string, stdout io.Writer) error
 		jsonOut := fs.Bool("json", false, "emit JSON")
 		if err := fs.Parse(args[1:]); err != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
-		}
-		if *binary != "" && !filepath.IsAbs(*binary) {
-			return newCodedError(errCodeUsageUnknownValue, nil, "--binary must be an absolute path")
 		}
 		if *binary == "" {
 			exe, err := os.Executable()

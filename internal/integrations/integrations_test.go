@@ -1,6 +1,8 @@
 package integrations
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,7 +217,7 @@ func TestDisconnectRemovesEntriesIdempotently(t *testing.T) {
 		t.Fatalf("codex disconnect: %+v %v", r, err)
 	}
 	body, _ := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
-	if strings.Contains(string(body), "[mcp_servers.mora]\n") || !strings.Contains(string(body), "[mcp_servers.mora.tools.search_memory]") || !strings.Contains(string(body), "[mcp_servers.other]") || !strings.Contains(string(body), "[features]") {
+	if strings.Contains(string(body), "mcp_servers.mora") || !strings.Contains(string(body), "[mcp_servers.other]") || !strings.Contains(string(body), "[features]") {
 		t.Fatalf("codex disconnect wrong:\n%s", body)
 	}
 	r, err = Disconnect(seams, Claude)
@@ -294,5 +296,216 @@ func TestConnectCodexIdempotentAndMultilineArgs(t *testing.T) {
 	r, err := Connect(s, Codex, "/new")
 	if err != nil || r.Changed {
 		t.Fatalf("not idempotent: %+v %v", r, err)
+	}
+}
+
+func TestConnectClaudePreservesForeignJSON(t *testing.T) {
+	fixture := `{"numStartups":42,"theme":"dark","shell":"a && b < c > d","unicode":"\u263a","large":9007199254740993123,"float":1.2300e+10,"projects":{"/tmp/demo":{"allowedTools":[],"unknown":{"flag":true,"items":[null,2,"x"]}}},"oauthAccount":{"displayName":"Synthetic"},"mcpServers":{"other":{"command":"a && b < c > d","unknown":{"n":9007199254740993}},"mora":{"command":"/old"}}}`
+	canonical := func(body []byte) []byte {
+		t.Helper()
+		var doc map[string]any
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.UseNumber()
+		if err := dec.Decode(&doc); err != nil {
+			t.Fatal(err)
+		}
+		delete(doc["mcpServers"].(map[string]any), "mora")
+		var out bytes.Buffer
+		enc := json.NewEncoder(&out)
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(doc); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	home := t.TempDir()
+	path := ConfigPath(home, Claude)
+	writeFixture(t, path, fixture)
+	seams := fsSeams(t, home)
+	for _, op := range []string{"connect", "disconnect"} {
+		var err error
+		if op == "connect" {
+			_, err = Connect(seams, Claude, "/new")
+		} else {
+			_, err = Disconnect(seams, Claude)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(canonical([]byte(fixture)), canonical(body)) {
+			t.Errorf("%s changed foreign JSON", op)
+		}
+		if !bytes.Contains(body, []byte("a && b < c > d")) {
+			t.Errorf("%s HTML-escaped foreign strings", op)
+		}
+	}
+}
+
+func TestConnectSymlinkWritesThrough(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, "dotfiles", "claude.json")
+	writeFixture(t, target, `{"keep":true}`)
+	path := ConfigPath(home, Claude)
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	seams := fsSeams(t, home)
+	for _, op := range []string{"connect", "disconnect"} {
+		var err error
+		if op == "connect" {
+			_, err = Connect(seams, Claude, "/new")
+		} else {
+			_, err = Disconnect(seams, Claude)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("config symlink replaced")
+		}
+		body, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, err := readJSONEntry(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (e != nil) != (op == "connect") {
+			t.Fatalf("%s did not write target", op)
+		}
+	}
+}
+
+func TestConnectCodexHeaderVariants(t *testing.T) {
+	for _, header := range []string{`[mcp_servers.mora] # bundled`, `[ mcp_servers.mora ]`, `[mcp_servers."mora"]`, `[ mcp_servers . "mora" ] # bundled`} {
+		t.Run(header, func(t *testing.T) {
+			home := t.TempDir()
+			path := ConfigPath(home, Codex)
+			fixture := header + "\ncommand = \"/old#path\" # bundled\nargs = [\"mcp\", \"serve\"]\n"
+			writeFixture(t, path, fixture)
+			seams := fsSeams(t, home)
+			rows, err := List(seams, "/old#path")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !rows[1].Registered || !rows[1].MatchesBinary {
+				t.Errorf("commented entry unreadable: %+v", rows[1])
+			}
+			if _, err := Connect(seams, Codex, "/new#path"); err != nil {
+				t.Fatal(err)
+			}
+			body, _ := os.ReadFile(path)
+			want := strings.Replace(fixture, `"/old#path"`, `"/new#path"`, 1)
+			if string(body) != want {
+				t.Fatalf("not replaced in place: %q", body)
+			}
+		})
+	}
+}
+
+func TestConnectDisconnectCodexInlineRefused(t *testing.T) {
+	for _, fixture := range []string{
+		`mcp_servers.mora = { command = "/old" }`,
+		`mcp_servers."mora".command = "/old"`,
+		"[mcp_servers]\nmora = { command = \"/old\" }\n",
+		"[ mcp_servers ] # bundled\nmora.command = \"/old\"\n",
+	} {
+		t.Run(fixture, func(t *testing.T) {
+			home := t.TempDir()
+			path := ConfigPath(home, Codex)
+			writeFixture(t, path, fixture)
+			seams := fsSeams(t, home)
+			rows, err := List(seams, "/new")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !rows[1].Registered || rows[1].Hook != "unknown" {
+				t.Errorf("unsafe inline status: %+v", rows[1])
+			}
+			for _, op := range []string{"connect", "disconnect"} {
+				if op == "connect" {
+					_, err = Connect(seams, Codex, "/new")
+				} else {
+					_, err = Disconnect(seams, Codex)
+				}
+				if err == nil || err.Error() != "codex config declares mcp_servers.mora inline; edit ~/.codex/config.toml by hand" {
+					t.Errorf("%s error = %v", op, err)
+				}
+				body, _ := os.ReadFile(path)
+				if string(body) != fixture {
+					t.Fatalf("%s changed inline config", op)
+				}
+			}
+		})
+	}
+}
+
+func TestDisconnectCodexLineEndingsAndSubtables(t *testing.T) {
+	for _, ending := range []string{"\n", "\r\n"} {
+		for _, trailing := range []bool{false, true} {
+			fixture := strings.TrimSuffix(codexFixture, "\n")
+			// Non-adjacent subtable at EOF must also disappear.
+			fixture += "\n[mcp_servers.mora.tools.other]\nenabled = true"
+			if trailing {
+				fixture += "\n"
+			}
+			fixture = strings.ReplaceAll(fixture, "\n", ending)
+			home := t.TempDir()
+			path := ConfigPath(home, Codex)
+			writeFixture(t, path, fixture)
+			seams := fsSeams(t, home)
+			if _, err := Connect(seams, Codex, "/new"); err != nil {
+				t.Fatal(err)
+			}
+			body, _ := os.ReadFile(path)
+			if ending == "\r\n" && strings.Contains(strings.ReplaceAll(string(body), "\r\n", ""), "\n") {
+				t.Error("connect introduced bare LF")
+			}
+			if _, err := Disconnect(seams, Codex); err != nil {
+				t.Fatal(err)
+			}
+			body, _ = os.ReadFile(path)
+			if strings.Contains(string(body), "mcp_servers.mora") {
+				t.Error("disconnect retained Mora subtable")
+			}
+			if strings.HasSuffix(string(body), ending) != trailing {
+				t.Error("disconnect changed trailing newline state")
+			}
+			if ending == "\r\n" && strings.Contains(strings.ReplaceAll(string(body), "\r\n", ""), "\n") {
+				t.Error("disconnect introduced bare LF")
+			}
+			rows, err := List(seams, "/new")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rows[1].Registered {
+				t.Error("still registered after disconnect")
+			}
+		}
+	}
+}
+
+func TestIntegrationsRejectEmptyHomeBeforeIO(t *testing.T) {
+	seams := Seams{}
+	seams.Stat = func(string) (os.FileInfo, error) { t.Fatal("stat with empty home"); return nil, nil }
+	seams.ReadFile = func(string) ([]byte, error) { t.Fatal("read with empty home"); return nil, nil }
+	if _, err := List(seams, "/new"); err == nil {
+		t.Error("List accepted empty home")
+	}
+	if _, err := Connect(seams, Claude, "/new"); err == nil {
+		t.Error("Connect accepted empty home")
+	}
+	if _, err := Disconnect(seams, Claude); err == nil {
+		t.Error("Disconnect accepted empty home")
 	}
 }

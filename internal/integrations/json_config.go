@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -33,11 +34,14 @@ func readJSONEntry(body []byte) (*entry, error) {
 }
 
 func encodeJSON(doc map[string]json.RawMessage) ([]byte, error) {
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
 		return nil, err
 	}
-	return append(out, '\n'), nil
+	return out.Bytes(), nil
 }
 
 // upsertJSONEntry sets mcpServers.mora and reports whether anything changed.
@@ -83,7 +87,7 @@ func upsertJSONEntry(body []byte, c Client, binary string) ([]byte, bool, error)
 		return nil, false, err
 	}
 	servers["mora"] = after
-	serversRaw, err := json.Marshal(servers)
+	serversRaw, err := encodeJSON(servers)
 	if err != nil {
 		return nil, false, err
 	}
@@ -118,7 +122,7 @@ func removeJSONEntry(body []byte) ([]byte, bool, error) {
 		return body, false, nil
 	}
 	delete(servers, "mora")
-	serversRaw, err := json.Marshal(servers)
+	serversRaw, err := encodeJSON(servers)
 	if err != nil {
 		return nil, false, err
 	}

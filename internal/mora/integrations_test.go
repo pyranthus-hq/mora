@@ -149,7 +149,13 @@ func TestIntegrationsClaudeListAndDisconnectHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout, `"hook": "not_installed"`) {
+	var receipt struct {
+		Hook string `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Hook != "not_installed" {
 		t.Fatal(stdout)
 	}
 	cfg, err := loadConfigFor(testCtx(t))
@@ -168,7 +174,7 @@ func TestIntegrationsClaudeListAndDisconnectHooks(t *testing.T) {
 func TestIntegrationsInvalidArgumentsDoNotWrite(t *testing.T) {
 	withTempHomeSetenv(t)
 	for _, args := range [][]string{
-		{"list", "--binary", "relative", "--json"},
+		{"list", "--binary", "relative", "unexpected", "--json"},
 		{"connect", "--client", "cursor", "--json"},
 		{"connect", "--client", "cursor", "--binary", "/x", "unexpected", "--json"},
 		{"disconnect", "--client", "vim", "--json"},
@@ -184,5 +190,20 @@ func TestIntegrationsInvalidArgumentsDoNotWrite(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cfg.HomeDir(), ".cursor", "mcp.json")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected config: %v", err)
+	}
+}
+
+func TestIntegrationsListAcceptsRelativeComparisonBinary(t *testing.T) {
+	withTempHome(t)
+	stdout, _, err := runSplit(t, "integrations", "list", "--binary", "relative", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc integrationsListPayload
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Binary != "relative" || len(doc.Clients) != 4 {
+		t.Fatalf("bad comparison: %+v", doc)
 	}
 }

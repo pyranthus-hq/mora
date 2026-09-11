@@ -3,6 +3,8 @@
 package integrations
 
 import (
+	"errors"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	hookspkg "github.com/pyranthus-hq/mora/internal/hooks"
 	"os"
 	"path/filepath"
@@ -49,32 +51,15 @@ func DefaultSeams(home string) Seams {
 	}
 }
 
-// writeAtomic writes beside the target and renames, keeping the requested mode.
+// writeAtomic resolves existing dotfile links before atomicio stages beside the target.
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		path = resolved
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".mora-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(name)
-		return err
-	}
-	return os.Rename(name, path)
+	return atomicio.Write(path, data, mode)
 }
 
 type Status struct {
@@ -147,6 +132,9 @@ func readEntry(seams Seams, c Client) (*entry, error) {
 }
 
 func List(seams Seams, binary string) ([]Status, error) {
+	if seams.Home == "" {
+		return nil, errors.New("integrations home must not be empty")
+	}
 	binary = filepath.Clean(binary)
 	rows := make([]Status, 0, 4)
 	for _, c := range Clients() {
@@ -154,6 +142,7 @@ func List(seams Seams, binary string) ([]Status, error) {
 		e, err := readEntry(seams, c)
 		if err != nil {
 			row.Hook = "unknown"
+			row.Registered = errors.Is(err, errCodexInline)
 		} else if e != nil {
 			row.Registered = true
 			row.Command = e.Command
@@ -193,6 +182,9 @@ func fileMode(seams Seams, path string) os.FileMode {
 }
 
 func Connect(seams Seams, c Client, binary string) (Receipt, error) {
+	if seams.Home == "" {
+		return Receipt{}, errors.New("integrations home must not be empty")
+	}
 	path := ConfigPath(seams.Home, c)
 	r := Receipt{Client: string(c), ConfigPath: path, Binary: binary, Hook: "not_supported"}
 	body, err := seams.ReadFile(path)
@@ -202,6 +194,9 @@ func Connect(seams Seams, c Client, binary string) (Receipt, error) {
 	var out []byte
 	var changed bool
 	if c == Codex {
+		if codexInline(body) {
+			return r, errCodexInline
+		}
 		out = upsertCodexEntry(body, binary)
 		changed = string(out) != string(body)
 	} else {
@@ -221,6 +216,9 @@ func Connect(seams Seams, c Client, binary string) (Receipt, error) {
 }
 
 func Disconnect(seams Seams, c Client) (Receipt, error) {
+	if seams.Home == "" {
+		return Receipt{}, errors.New("integrations home must not be empty")
+	}
 	path := ConfigPath(seams.Home, c)
 	r := Receipt{Client: string(c), ConfigPath: path, Hook: "not_supported"}
 	body, err := seams.ReadFile(path)
@@ -233,6 +231,9 @@ func Disconnect(seams Seams, c Client) (Receipt, error) {
 	var out []byte
 	var changed bool
 	if c == Codex {
+		if codexInline(body) {
+			return r, errCodexInline
+		}
 		out, changed = removeCodexEntry(body)
 	} else {
 		out, changed, err = removeJSONEntry(body)
