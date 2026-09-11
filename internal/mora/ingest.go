@@ -1816,7 +1816,8 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		windowStart = (win.Since.Unix() - 978307200) * 1_000_000_000
 	}
 	full, _ := ctx.Value(imessageFullKey{}).(bool)
-	full = full || man.WindowStart != windowStart
+	// Use <, not !=: only widening requires a full render; NeedsRender handles messages aging out as the rolling window advances.
+	full = full || windowStart < man.WindowStart
 	if full {
 		st.Checkpoint = ""
 	}
