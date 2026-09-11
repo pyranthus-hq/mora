@@ -1,0 +1,9 @@
+{
+  "changed": true,
+  "client": "cursor",
+  "config_path": "\u003chome\u003e/.cursor/mcp.json",
+  "hook": "not_supported",
+  "registered": false,
+  "schema": "mora.integrations.disconnect",
+  "schema_version": 1
+}

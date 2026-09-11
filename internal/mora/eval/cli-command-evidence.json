@@ -552,6 +552,63 @@
         "error": {"status": "test", "tests": ["TestCompanionContextRefusesBadModeAndMissingQuery"], "reason": "The real Run invocation rejects an unrecognized --mode and the test asserts that its non-nil error names 'mode'. A missing --query is rejected before Validate, and the test asserts that its non-nil error names 'query'. The test does not assert error codes."},
         "refusal": {"status": "test", "tests": ["TestCompanionContextRefusesBadModeAndMissingQuery"], "reason": "Context has no human rendering: omitting --json with an otherwise valid --mode/--query is refused as a usage error naming --json. A stray positional argument (the 'unexpected argument' refusal health and today each have a named witness for) is implemented with the same fs.NArg() != 0 guard but is not covered by a named test in this task."}
       }
+    },
+    {
+      "name": "first-run",
+      "paths": [
+        "doctor check",
+        "integrations",
+        "integrations list",
+        "integrations connect",
+        "integrations disconnect"
+      ],
+      "evidence": {
+        "success": {
+          "status": "test",
+          "tests": [
+            "TestDoctorCheckCLIEmitsVersionedDocument",
+            "TestIntegrationsListJSONOnEmptyHome",
+            "TestIntegrationsConnectAndDisconnectCursor",
+            "TestIntegrationsConnectClaudeQuotesTheHookExecutable"
+          ]
+        },
+        "json": {
+          "status": "test",
+          "tests": [
+            "TestDoctorCheckCLIEmitsVersionedDocument",
+            "TestIntegrationsListJSONOnEmptyHome",
+            "TestIntegrationsConnectAndDisconnectCursor",
+            "TestIntegrationsConnectClaudeQuotesTheHookExecutable"
+          ]
+        },
+        "state": {
+          "status": "test",
+          "tests": [
+            "TestDoctorCheckCLIEmitsVersionedDocument",
+            "TestIntegrationsListJSONOnEmptyHome",
+            "TestIntegrationsConnectAndDisconnectCursor",
+            "TestIntegrationsConnectClaudeQuotesTheHookExecutable"
+          ]
+        },
+        "error": {
+          "status": "test",
+          "tests": [
+            "TestDoctorCheckRefusesUnknownNameAndProse",
+            "TestIntegrationsInvalidArgumentsDoNotWrite",
+            "TestIntegrationsConnectRefusesRelativeBinaryAndUnknownClient"
+          ],
+          "reason": "Named first-run tests witness invalid arguments and refusal before client configuration writes."
+        },
+        "refusal": {
+          "status": "test",
+          "tests": [
+            "TestDoctorCheckRefusesUnknownNameAndProse",
+            "TestIntegrationsInvalidArgumentsDoNotWrite",
+            "TestIntegrationsConnectRefusesRelativeBinaryAndUnknownClient"
+          ],
+          "reason": "Named first-run tests witness invalid arguments and refusal before client configuration writes."
+        }
+      }
     }
   ]
 }

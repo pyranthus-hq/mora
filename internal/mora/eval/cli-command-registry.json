@@ -1086,6 +1086,41 @@
       "platform": "all",
       "json_contract": "result",
       "payload": "mora.companion.context"
+    },
+    {
+      "path": "doctor check",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.doctor.check"
+    },
+    {
+      "path": "integrations",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "path": "integrations list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.integrations.list"
+    },
+    {
+      "path": "integrations connect",
+      "kind": "subcommand",
+      "platform": "native-seam",
+      "json_contract": "receipt",
+      "payload": "mora.integrations.connect"
+    },
+    {
+      "path": "integrations disconnect",
+      "kind": "subcommand",
+      "platform": "native-seam",
+      "json_contract": "receipt",
+      "payload": "mora.integrations.disconnect"
     }
   ]
 }

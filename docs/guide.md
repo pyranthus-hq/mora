@@ -396,6 +396,7 @@ stays searchable and may be stale.
 ```bash
 mora connect imessage
 mora connect imessage --since-days 365
+mora connect imessage --json --progress  # versioned NDJSON progress and final receipt
 ```
 
 By default, Mora ingests the last **365 days**. Connect and sync output state the effective
@@ -792,10 +793,14 @@ mora sync status
 mora doctor
 mora doctor --strict
 mora doctor --json
+mora doctor check imessage-access --json  # read-only first-run access check
 mora doctor --pulse
 mora doctor --repair --dry-run --json
 mora doctor --repair --yes --json
 ```
+
+For AI client registration, use `mora integrations list|connect|disconnect`; see
+[First-run contracts](companion-contract.md#first-run-contracts-k8-k9) for arguments and receipts.
 
 `doctor` checks paths, the vault, index, source age, token placement, storage,
 backup state, and configured shares. On macOS it also tests protected reads.

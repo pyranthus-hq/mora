@@ -4,9 +4,9 @@ This is the published contract between Mora's kernel and a paired phone. It is t
 before writing a client — a Swift app, a shortcut, a test harness, or the async worker that picks
 work off the lane.
 
-Every schema here lives in `internal/companion`, every claim on this page is enforced by a named test
-in that package, and every payload has a frozen document under
-`internal/companion/testdata/v1/`. Where a capability does not exist yet, this page names the node
+The paired-phone schemas live in `internal/companion`, with named tests in that package and
+frozen documents under `internal/companion/testdata/v1/`. The desktop first-run CLI contracts
+below live in `internal/mora`, with goldens under `internal/mora/testdata/contracts/v1/`. Where a capability does not exist yet, this page names the node
 that will deliver it rather than describing it as present.
 
 Code is cited by file plus function or constant name, never by line number.
@@ -1215,3 +1215,85 @@ first-seen.
 It costs one thing worth naming: the pairing path is *discoverable* without a token, because a `405`
 and a `404` are distinguishable. It is a published route printed by `mora companion pair`, so there
 was never a secret there to keep.
+
+
+## First-run contracts (K8, K9)
+
+The desktop companion uses these CLI contracts to check access, read a source, and register
+Mora with an AI client. With `--json`, stdout stays byte-clean: only the versioned JSON
+document, or the NDJSON stream described below. Human guidance goes to stderr. These are
+local CLI contracts, separate from the paired-phone HTTP schemas.
+
+### `doctor check`
+
+`mora.doctor.check` v1 reports `ok`, `platform_supported`, `chat_db_present`, `readable`,
+`reason`, and `observed_at` for a read-only iMessage access probe. An unavailable database
+is a report with `ok: false`; callers must inspect the document. Missing databases report
+`chat_db_missing`; Linux and Windows report `unsupported_platform`. This verb requires JSON.
+
+```bash
+mora doctor check imessage-access --json
+```
+
+### `connect imessage --progress`
+
+`--progress` requires `--json` and is supported only for iMessage. Each progress line is a
+`mora.connect.progress` v1 document with `phase`, `messages_read`, `chats`, and `elapsed_ms`.
+Phases include `checking_access`, `reading`, `indexing`, and `done` or `cancelled`; counts
+are observations, not a percentage. The final line is the `mora.connect.imessage` v1 receipt,
+including `connected`, `ready`, the counts, elapsed time, and `cancelled`. Counts are also
+present without `--progress`. Cancellation preserves completed work and closes the stream
+with a receipt; callers must also check the process exit status for errors.
+
+```bash
+mora connect imessage --json --progress
+```
+
+Illustrative tail of a successful stream (three progress lines and the final receipt;
+earlier access and reading events are omitted):
+
+```jsonl
+{"schema":"mora.connect.progress","schema_version":1,"phase":"reading","messages_read":6,"chats":2,"elapsed_ms":400}
+{"schema":"mora.connect.progress","schema_version":1,"phase":"indexing","messages_read":6,"chats":2,"elapsed_ms":500}
+{"schema":"mora.connect.progress","schema_version":1,"phase":"done","messages_read":6,"chats":2,"elapsed_ms":600}
+{"schema":"mora.connect.imessage","schema_version":1,"source":"imessage","connected":true,"ready":true,"messages_read":6,"chats":2,"elapsed_ms":600,"cancelled":false}
+```
+
+### `setup status`
+
+`mora.setup.status` v1 reobserves first-run state. Its steps now include `connector_readable`
+(access), `connector_ingest` (a completed source read), and `mcp_registration` (an AI client
+registered to this executable). Pending steps carry evidence and a `next` command. These
+checks have moved out of `remaining_checks` into the observed step list.
+
+```bash
+mora setup status --json
+```
+
+### `integrations list|connect|disconnect`
+
+`list` emits `mora.integrations.list` v1, reporting detection, config path, registration,
+binary match, and hook status for `claude`, `codex`, `cursor`, and `claude-desktop`. Registered
+entries can also carry `command` and `args`. Supply an absolute binary path to compare with
+the registrations, or omit it to compare with the running executable.
+
+```bash
+mora integrations list --binary /absolute/path/to/mora --json
+```
+
+`connect` writes the selected client's Mora MCP entry and returns a
+`mora.integrations.connect` v1 receipt. It requires an absolute binary path. Claude Code
+also receives Mora hooks; other clients report `hook: "not_supported"`. The receipt includes
+`client`, `config_path`, `binary`, `registered`, `changed`, and `hook`.
+
+```bash
+mora integrations connect --client cursor --binary /absolute/path/to/mora --json
+```
+
+`disconnect` removes that client's Mora entry and, for Claude Code, Mora hooks. Its
+`mora.integrations.disconnect` v1 receipt reports `registered: false` and whether the MCP
+configuration changed; it omits `binary`. Other client configuration is preserved.
+
+```bash
+mora integrations disconnect --client cursor --json
+```
