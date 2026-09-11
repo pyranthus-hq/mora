@@ -102,7 +102,9 @@ func (s *connectProgressSink) reserveFile(cfg Config, source string) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return newCodedError(errCodeConnectorUnavailable, err, "connect progress is already reserved; retry with --json --progress --detach to attach to a live read")
+			// Not connector.unavailable: the app maps that to a Full Disk Access card,
+			// and a busy reader is a retry, not a permission problem.
+			return newCodedError(errCodeConnectorUnclassified, err, "connect progress is already reserved; retry with --json --progress --detach to attach to a live read")
 		}
 		return fmt.Errorf("reserve connect progress: %w", err)
 	}

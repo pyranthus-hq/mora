@@ -286,7 +286,7 @@ func TestConnectProgressDoesNotReplaceLiveReader(t *testing.T) {
 	}
 	if _, err := runErr(t, "connect", "imessage", "--json", "--progress"); err == nil {
 		t.Fatal("accepted concurrent read")
-	} else if code, _ := ErrorDetails(err); code != "connector_unavailable" {
+	} else if code, _ := ErrorDetails(err); code != "connector.unclassified" {
 		t.Fatalf("reservation error code = %q: %v", code, err)
 	}
 	after, err := os.ReadFile(sink.filePath)
