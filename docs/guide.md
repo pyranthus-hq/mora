@@ -241,6 +241,8 @@ mora connectors enable filesystem
 mora ingest run --source acme
 ```
 
+Source names are case-insensitive; reconnecting the same folder preserves its existing source name.
+
 `mora sources list --json` emits the `mora.sources.list` v1 receipt. Its
 configured-source array lives under `sources`, and is `[]` when none exist.
 

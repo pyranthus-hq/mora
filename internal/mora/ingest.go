@@ -2104,16 +2104,17 @@ func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Wri
 				}
 				continue
 			}
-			if existing.Name == s.Name {
+			if strings.EqualFold(existing.Name, s.Name) {
 				// Same name + same folder => a deliberate re-connect: refresh in place
 				// and preserve the original add time. Same name + a DIFFERENT folder
 				// (e.g. two dirs whose base name collides) would silently clobber the
 				// first — refuse and point at --name instead.
-				if existing.Type == "filesystem" && existing.Path == s.Path {
+				if existing.Type == "filesystem" && sameSourceFolder(existing.Path, s.Path) {
+					s.Name = existing.Name
 					s.CreatedAt = existing.CreatedAt
 					continue
 				}
-				return fmt.Errorf("a source named %q already exists (path %q); pick another name with --name", existing.Name, existing.Path)
+				return emitSourceNameCollision(stdout, *jsonOut, existing, s.Name)
 			}
 			next = append(next, existing)
 		}

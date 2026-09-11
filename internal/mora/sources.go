@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -211,6 +212,13 @@ func ensureGoogleSources(cfg Config, account string) error {
 			have[s.Name] = true
 		}
 		gmailName, calName := googleSourceNames(account)
+		for _, existing := range sources {
+			for _, name := range []string{gmailName, calName} {
+				if existing.Name != name && strings.EqualFold(existing.Name, name) {
+					return nil, sourceNameCollision(existing, name)
+				}
+			}
+		}
 		now := time.Now().Format(time.RFC3339)
 		if !have[gmailName] {
 			sources = append(sources, Source{Name: gmailName, Type: "gmail", Scope: "personal", Account: account, Enabled: genericutil.Ptr(false), CreatedAt: now})
@@ -295,7 +303,7 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("sources add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	name := fs.String("name", stype, "source name")
-	_ = fs.Bool("json", false, "emit JSON (this command always emits JSON)")
+	jsonOut := fs.Bool("json", false, "emit JSON (this command always emits JSON)")
 	scope := fs.String("scope", "personal", "scope")
 	path := fs.String("path", "", "path")
 	label := fs.String("label", "", "gmail label")
@@ -331,8 +339,17 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 			if existing.Type == s.Type && existing.IsEnabled() {
 				typeEnabled = true
 			}
-			if existing.Name != s.Name {
+			if !strings.EqualFold(existing.Name, s.Name) {
 				next = append(next, existing)
+				continue
+			}
+			if existing.Type == "filesystem" && s.Type == "filesystem" && sameSourceFolder(existing.Path, s.Path) {
+				s.Name = existing.Name
+				s.CreatedAt = existing.CreatedAt
+				continue
+			}
+			if existing.Name != s.Name {
+				return nil, emitSourceNameCollision(stdout, *jsonOut, existing, s.Name)
 			}
 		}
 		s.Enabled = genericutil.Ptr(typeEnabled)
@@ -355,3 +372,36 @@ func addSource(cfg Config, args []string, stdout io.Writer) error {
 // mutateSources / acquireSourcesLock (sources_lock.go); every load → mutate →
 // save on sources.json MUST go through one of them. Call saveSources directly
 // only while already holding the sources lease (mutateSources does).
+
+// sameSourceFolder also recognizes alternate case and symlink spellings of a folder.
+func sameSourceFolder(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil || !ai.IsDir() {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && bi.IsDir() && os.SameFile(ai, bi)
+}
+
+func sourceNameCollision(existing Source, name string) error {
+	if existing.Name != name {
+		return fmt.Errorf("a source named %q already exists (path %q); %q would share its files on a case-insensitive disk; pick another name with --name", existing.Name, existing.Path, name)
+	}
+	return fmt.Errorf("a source named %q already exists (path %q); pick another name with --name", existing.Name, existing.Path)
+}
+
+// emitSourceNameCollision uses the versioned receipt envelope for JSON callers.
+func emitSourceNameCollision(out io.Writer, jsonOut bool, existing Source, name string) error {
+	err := sourceNameCollision(existing, name)
+	if jsonOut {
+		if emitErr := emitReceipt(out, "mora.error", 1, struct {
+			Message string `json:"message"`
+		}{err.Error()}); emitErr != nil {
+			return errors.Join(err, emitErr)
+		}
+	}
+	return err
+}

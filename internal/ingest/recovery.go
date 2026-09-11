@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
@@ -58,6 +59,17 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 	if err != nil {
 		return "", err
 	}
+	// Case-folding only finds candidates; file identity must confirm coverage.
+	// Keep Linux's exact-path behavior, and never merge distinct files on a
+	// case-sensitive Darwin/Windows volume.
+	folded := map[string][]string{}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		for p, covered := range listed {
+			if covered {
+				folded[strings.ToLower(p)] = append(folded[strings.ToLower(p)], p)
+			}
+		}
+	}
 	var header string
 	var keptPaths []string
 	for _, raw := range strings.Split(string(b), "\n") {
@@ -70,7 +82,21 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 			continue
 		}
 		p := seams.CleanPath(line)
-		if listed[p] {
+		covered := listed[p]
+		if !covered {
+			if candidates := folded[strings.ToLower(p)]; len(candidates) > 0 {
+				if info, err := os.Stat(p); err == nil {
+					for _, candidate := range candidates {
+						other, err := os.Stat(candidate)
+						if err == nil && os.SameFile(info, other) {
+							covered = true
+							break
+						}
+					}
+				}
+			}
+		}
+		if covered {
 			continue // covered by this rebuild
 		}
 		if _, statErr := os.Stat(p); errors.Is(statErr, os.ErrNotExist) {
