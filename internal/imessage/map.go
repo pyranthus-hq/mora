@@ -22,6 +22,17 @@ type convInput struct {
 	attachments []Attachment    // attachment metadata + on-disk Path across the conversation (IMSG-07 amended: rendered output stays path-free)
 }
 
+// MessageCount reports how many rendered messages a fetched conversation Item
+// carries, or 0 when the Item did not come from a LiveFetcher. The connect
+// progress counter uses it so "messages read" is a count, not a guess.
+func MessageCount(it memory.Item) int {
+	c, ok := it.Payload.(convInput)
+	if !ok {
+		return 0
+	}
+	return len(c.messages)
+}
+
 // imessageProvider / imessageType are the frontmatter provider/type for an iMessage
 // conversation memory (mirrors google's "gmail"/"email"). Set directly because this
 // mapper bypasses memory.MapItem (D-03 inverted truncation), so the kind-registry

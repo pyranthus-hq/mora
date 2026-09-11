@@ -15,11 +15,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/applecal"
@@ -169,9 +171,17 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 			report(plans[i].Source, outcome.Err)
 		}
 	}
-	_, rebuildErr := rebuildIndex(ctx, cfg)
+	rebuildCtx := ctx
+	if sink := connectProgressFrom(ctx); sink != nil {
+		sink.Phase("indexing")
+		rebuildCtx = context.WithoutCancel(ctx)
+	}
+	_, rebuildErr := rebuildIndex(rebuildCtx, cfg)
 	aggregate, aggregateErr := aggregateSourceRuns(plans, outcomes, nil, rebuildErr)
 	if ctx.Err() != nil {
+		if connectProgressFrom(ctx) != nil && rebuildErr != nil {
+			return sourceOutcomesMaterialized(outcomes), rebuildErr
+		}
 		return sourceOutcomesMaterialized(outcomes), ctx.Err()
 	}
 	if aggregateErr != nil && rebuildErr == nil && aggregate.FailedSources > 0 {
@@ -394,10 +404,16 @@ func progressWriter(stdout, stderr io.Writer, jsonOut bool) io.Writer {
 	return stdout
 }
 
-// connectReceipt is the machine form of a completed connect verb.
+// connectReceipt is the machine form of a completed connect verb. Counts are
+// zero for github; imessage fills them from the progress sink.
 type connectReceipt struct {
-	Source    string `json:"source"`
-	Connected bool   `json:"connected"`
+	Source       string `json:"source"`
+	Connected    bool   `json:"connected"`
+	Ready        bool   `json:"ready"`
+	MessagesRead int    `json:"messages_read"`
+	Chats        int    `json:"chats"`
+	ElapsedMs    int64  `json:"elapsed_ms"`
+	Cancelled    bool   `json:"cancelled"`
 }
 
 func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -406,32 +422,59 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// its own --json branch and its receipt, so it is left alone.
 	if len(args) >= 1 && (args[0] == "github" || args[0] == "imessage") {
 		source := args[0]
-		jsonOut := false
+		jsonOut, progress := false, false
 		rest := make([]string, 0, len(args))
 		for _, a := range args[1:] {
-			if a == "--json" {
+			switch a {
+			case "--json":
 				jsonOut = true
-				continue
+			case "--progress":
+				progress = true
+			default:
+				rest = append(rest, a)
 			}
-			rest = append(rest, a)
+		}
+		if progress && !jsonOut {
+			return newCodedError(errCodeUsageUnknownValue, nil, "--progress requires --json")
 		}
 		out := stdout
 		if jsonOut {
 			out = stderr
 		}
-		var err error
 		if source == "github" {
-			err = connectGitHub(ctx, rest, out)
-		} else {
-			err = connectIMessage(ctx, rest, out)
+			if err := connectGitHub(ctx, rest, out); err != nil {
+				return err
+			}
+			if jsonOut {
+				return emitReceipt(stdout, "mora.connect.github", 1, connectReceipt{Source: source, Connected: true, Ready: true})
+			}
+			return nil
 		}
+		var progressOut io.Writer
+		if progress {
+			progressOut = stdout
+		}
+		sink := newConnectProgressSink(progressOut, time.Now)
+		receipt, err := connectIMessage(ctx, rest, out, sink, progress)
 		if err != nil {
 			return err
 		}
-		if jsonOut {
-			return emitReceipt(stdout, "mora.connect."+source, 1, connectReceipt{Source: source, Connected: true})
+		if !jsonOut {
+			return nil
 		}
-		return nil
+		if progress {
+			body, merr := json.Marshal(struct {
+				connectReceipt
+				Schema        string `json:"schema"`
+				SchemaVersion int    `json:"schema_version"`
+			}{receipt, "mora.connect.imessage", 1})
+			if merr != nil {
+				return merr
+			}
+			_, werr := fmt.Fprintf(stdout, "%s\n", body)
+			return werr
+		}
+		return emitReceipt(stdout, "mora.connect.imessage", 1, receipt)
 	}
 	if len(args) >= 1 && args[0] == "filesystem" {
 		return connectFilesystem(ctx, args[1:], stdout, stderr)
@@ -1671,6 +1714,16 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 			fmt.Fprintf(out, "  %s: ingesting the last %d days; use --since-days to change this window.\n", s.Name, days)
 		}
 	}
+	sink := connectProgressFrom(ctx)
+	mapFn := imessage.MapConversationFn(resolver)
+	if sink != nil {
+		base := mapFn
+		mapFn = func(it memory.Item, scope string, budget int) memory.MappedMemory {
+			sink.AddChat(imessage.MessageCount(it))
+			return base(it, scope, budget)
+		}
+	}
+
 	prog := newProgress(out, s.Name, "conversations")
 	write := func(mm memory.MappedMemory) (bool, error) {
 		wrote, err := writeMappedMemoryDetailed(cfg, mm)
@@ -1682,15 +1735,23 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 				return false, err
 			}
 			prog.tick()
+			if sink != nil {
+				sink.AddWritten()
+			}
 		}
 		return wrote, nil
 	}
 
+	ingestCtx := ctx
+	if sink != nil {
+		fetcher = connectPageFetcher{iMessageFetcher: fetcher, ctx: ctx}
+		ingestCtx = context.WithoutCancel(ctx)
+	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Context: ctx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
+		Context: ingestCtx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
 		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
-		Map:        imessage.MapConversationFn(resolver),
+		Map:        mapFn,
 	})
 	prog.done()
 	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
@@ -2068,30 +2129,36 @@ func connectFilesystem(ctx context.Context, args []string, stdout, stderr io.Wri
 // directory path (its base name), so `connect filesystem ~/notes` and `connect
 // filesystem ~/docs` coexist without an explicit --name. Falls back to
 // "filesystem" for degenerate paths (root, ".", empty base).
-func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error {
+var imessageReadinessFn = printIMessageReadiness
+
+func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink *connectProgressSink, streaming bool) (connectReceipt, error) {
+	receipt := connectReceipt{Source: "imessage"}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if sink == nil {
+		sink = newConnectProgressSink(nil, time.Now)
+	}
 	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 365; negative = all-time)")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return receipt, err
 	}
 	if runtimeGOOS() == "windows" {
 		fmt.Fprintln(stdout, "iMessage is macOS-only and cannot be enabled on Windows.")
-		return errors.New("imessage is macOS-only")
+		return receipt, errors.New("imessage is macOS-only")
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
-		return err
+		return receipt, err
 	}
 	if err := setSourceEnabled(cfg, "imessage", true); err != nil {
-		return err
+		return receipt, err
 	}
-	// Persist an explicit window override so this and future `sync imessage` runs
-	// reuse it (0 keeps the 365-day default in windowForIMessage; negative = all-time).
-	// Mirrors `connect google --since-days`.
+	receipt.Connected = true
 	if *sinceDays != 0 {
 		if err := setSourceSinceDays(cfg, "imessage", *sinceDays); err != nil {
-			return err
+			return receipt, err
 		}
 	}
 	okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
@@ -2104,15 +2171,38 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer) error
 		}
 		fmt.Fprintf(stdout, "iMessage will ingest the last %d days; use --since-days to change this window.\n", days)
 	}
-	ready := printIMessageReadiness(cfg, stdout, true)
+	sink.Phase("checking_access")
+	ready := imessageReadinessFn(cfg, stdout, true)
+	receipt.Ready = ready
 	if !ready {
-		// Honest stop: readiness guidance already printed the next steps.
-		return nil
+		receipt.Cancelled = ctx.Err() != nil
+		if receipt.Cancelled {
+			sink.Phase("cancelled")
+		} else {
+			sink.Phase("done")
+		}
+		_, _, elapsed := sink.Counts()
+		receipt.ElapsedMs = elapsed.Milliseconds()
+		return receipt, nil
 	}
+	ctx = withConnectProgress(ctx, sink)
+	sink.Phase("reading")
 	total, err := backfillEnabledIMessage(ctx, cfg, stdout)
+	cancelled := errors.Is(err, context.Canceled) || (ctx.Err() != nil && err == nil)
+	if cancelled {
+		err = nil
+		receipt.Cancelled = true
+	}
+	messages, chats, elapsed := sink.Counts()
+	receipt.MessagesRead, receipt.Chats, receipt.ElapsedMs = messages, chats, elapsed.Milliseconds()
+	if cancelled {
+		sink.Phase("cancelled")
+	} else {
+		sink.Phase("done")
+	}
 	fmt.Fprintf(stdout, "synced %d item(s).\n", total)
 	renderSetupState(cfg, stdout)
-	return err
+	return receipt, err
 }
 
 // backfillEnabledIMessage runs the gated iMessage backfill for every ENABLED
