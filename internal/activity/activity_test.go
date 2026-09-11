@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
+	memfile "github.com/pyranthus-hq/mora/internal/memoryfile"
 )
 
 func TestDeriveConversationEvidenceParticipation(t *testing.T) {
@@ -131,4 +132,97 @@ func mustTime(t *testing.T, value string) time.Time {
 		t.Fatal(err)
 	}
 	return got
+}
+
+func TestDeriveAutomationAndStampPreference(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "12345", "block_start": 0, "block_end": 6}})
+	got := Derive(m, now)
+	if got.Automated == nil || !*got.Automated || got.AutomationBasis != "sender_shortcode" {
+		t.Fatalf("shortcode = %+v", got)
+	}
+	stamp := StampMeta(m)
+	m.Meta["activity_stamp"] = stamp
+	got = Derive(m, now)
+	if got.Automated == nil || got.AutomationBasis != "sender_shortcode" {
+		t.Fatalf("valid stamp = %+v", got)
+	}
+	m.Meta["message_evidence"] = []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-10T10:00:00Z", "from_me": false, "sender": "Sam", "block_start": 0, "block_end": 6}}
+	got = Derive(m, now)
+	if got.Automated != nil || got.AutomationBasis != "" {
+		t.Fatalf("stale stamp must fall back = %+v", got)
+	}
+}
+func TestDeriveAutomationHeadersAndNamedSMSFPUnknown(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := memory.Memory{ID: "gmail_thread/t", Provider: "gmail", Text: "From: notices@example.com\nhello", Meta: map[string]any{"messages": []map[string]any{{"message_ref": "gmail_thread/t#1", "sender": "notices@example.com", "at": "2026-09-09T09:00:00Z", "automation_headers": []string{"list-unsubscribe"}}}}}
+	got := Derive(m, now)
+	if got.Automated == nil || !*got.Automated || got.AutomationBasis != "header_list_unsubscribe" {
+		t.Fatalf("header = %+v", got)
+	}
+	m = conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "Adit (smsfp)", "block_start": 0, "block_end": 6}})
+	got = Derive(m, now)
+	if got.Automated != nil {
+		t.Fatalf("named smsfp = %+v", got)
+	}
+}
+func TestDeriveRejectsMalformedStampNumericVersion(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "Sam", "block_start": 0, "block_end": 6}})
+	m.Meta["activity_stamp"] = map[string]any{"version": 1.5, "event_at": "2026-09-09T09:00:00Z", "automated": true, "automation_basis": "sender_shortcode", "evidence_fingerprint": "bad"}
+	got := Derive(m, now)
+	if got.Automated != nil {
+		t.Fatalf("malformed stamp = %+v", got)
+	}
+}
+
+func TestDeriveRejectsTamperedBoundStampFields(t *testing.T) {
+	now := mustTime(t, "2026-09-10T12:00:00Z")
+	m := conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "12345", "block_start": 0, "block_end": 6}})
+	stamp := StampMeta(m)
+	for name, mutate := range map[string]func(map[string]any){
+		"event":     func(s map[string]any) { s["event_at"] = "2026-09-08T09:00:00Z" },
+		"automated": func(s map[string]any) { s["automated"] = false; s["automation_basis"] = "human" },
+		"participation": func(s map[string]any) {
+			s["participation"] = map[string]any{"own_share": 0.5, "latest_sender": "Sam", "message_evidence_count": 2}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := make(map[string]any, len(stamp))
+			for k, v := range stamp {
+				copy[k] = v
+			}
+			mutate(copy)
+			m.Meta["activity_stamp"] = copy
+			got := Derive(m, now)
+			if got.EventAt == nil || got.EventAt.Format(time.RFC3339) != "2026-09-09T09:00:00Z" || got.Automated == nil || !*got.Automated || got.AutomationBasis != "sender_shortcode" {
+				t.Fatalf("tampered stamp was trusted: %+v", got)
+			}
+		})
+	}
+}
+func TestStampPreservesOccurredAtSource(t *testing.T) {
+	m := memory.Memory{ID: "calendar/e", Provider: "calendar", Meta: map[string]any{"occurred_at": "2026-09-09T09:00:00Z"}}
+	m.Meta["activity_stamp"] = StampMeta(m)
+	got := Derive(m, mustTime(t, "2026-09-10T12:00:00Z"))
+	if got.EventSource != EventSourceOccurredAt {
+		t.Fatalf("event source = %q", got.EventSource)
+	}
+}
+
+func TestActivityStampMetaRoundTripsAsCanonicalJSON(t *testing.T) {
+	m := conversation("imessage", "imessage/chat", "notice", []map[string]any{{"evidence_ref": "imessage/chat#1", "at": "2026-09-09T09:00:00Z", "from_me": false, "sender": "12345", "block_start": 0, "block_end": 6}})
+	m.Meta["activity_stamp"] = StampMeta(m)
+	body, err := memfile.Render(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := memfile.ParseBytes("memory.md", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Derive(got, mustTime(t, "2026-09-10T12:00:00Z"))
+	if p.Automated == nil || !*p.Automated || p.AutomationBasis != "sender_shortcode" {
+		t.Fatalf("round-trip projection = %+v", p)
+	}
 }

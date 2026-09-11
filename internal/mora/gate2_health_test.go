@@ -250,7 +250,7 @@ func TestWikiIndexTimestampMatchesIndexMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	metaStamp := gate2ReadMeta(t, cfg)["indexed_at"]
-	body, err := os.ReadFile(filepath.Join(cfg.VaultDir, "index.md"))
+	body, err := os.ReadFile(filepath.Join(cfg.StateDir, "index.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

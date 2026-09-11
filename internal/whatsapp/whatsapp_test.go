@@ -184,3 +184,12 @@ func TestIngestStatusContract(t *testing.T) {
 		}
 	})
 }
+
+func TestMapConversationAddsActivityStamp(t *testing.T) {
+	conv := conversation{jid: "15551234567@s.whatsapp.net", title: "Sam", messages: []message{{id: "m", at: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), sender: "12345", body: "notice"}}}
+	mm := MapConversationFn()(memory.Item{Kind: KindConversation, ProviderID: conv.jid, Payload: conv}, "personal", 0)
+	stamp, ok := mm.Meta["activity_stamp"].(map[string]any)
+	if !ok || stamp["automated"] != true || stamp["automation_basis"] != "sender_shortcode" {
+		t.Fatalf("stamp = %#v", mm.Meta["activity_stamp"])
+	}
+}

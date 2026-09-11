@@ -925,7 +925,7 @@ var errMemoryAlreadyExists = errors.New("mora: a memory with that id is already 
 // v5 is the truthful combined schema. A v3 index or either physical v4 shape
 // mismatches this stamp and is rebuilt atomically from the vault; the
 // incremental-upsert boundary also rejects a same-stamp partial v5.
-var indexSchemaVersion = 5
+var indexSchemaVersion = 6
 
 // indexAutoHeal reports whether a version-stale index may be rebuilt inline at
 // read time. True on the static-hash floor, where a rebuild is seconds — the

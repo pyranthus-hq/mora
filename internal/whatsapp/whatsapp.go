@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/activity"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	_ "modernc.org/sqlite"
 )
@@ -312,7 +313,16 @@ func MapConversationFn() func(memory.Item, string, int) memory.MappedMemory {
 		if evidence := evidenceMeta(memory.StableID(KindConversation, conv.jid), body, retained); len(evidence) > 0 {
 			meta["message_evidence"] = evidence
 		}
-		metaJSON, _ := memory.CanonicalMeta(meta)
+		meta["activity_stamp"] = activity.StampMeta(memory.Memory{ID: memory.StableID(KindConversation, conv.jid), Provider: "whatsapp", Type: "whatsapp", Text: body, Meta: meta, Truncated: truncated})
+		// Preserve old hash-skip behavior: stamps enrich newly written mapping but
+		// do not force unchanged historical conversations through a vault rewrite.
+		hashMeta := make(map[string]any, len(meta)-1)
+		for key, value := range meta {
+			if key != "activity_stamp" {
+				hashMeta[key] = value
+			}
+		}
+		metaJSON, _ := memory.CanonicalMeta(hashMeta)
 		mm := memory.MappedMemory{
 			StableID: memory.StableID(KindConversation, conv.jid), Type: "whatsapp", Title: conv.title,
 			Body: body, Scope: scope, Tags: []string{"whatsapp", lane}, Source: conv.jid,

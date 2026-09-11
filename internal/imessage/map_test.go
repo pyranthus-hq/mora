@@ -193,3 +193,11 @@ func TestMapConversationAttachments(t *testing.T) {
 		t.Fatalf("attachment metadata not carried: %+v", mm.Attachments[0])
 	}
 }
+
+func TestMapConversationAddsActivityStamp(t *testing.T) {
+	mm := mapConversation(sampleConv(), resolver1to1(), 0)
+	stamp, ok := mm.Meta["activity_stamp"].(map[string]any)
+	if !ok || stamp["version"] != 1 || stamp["evidence_fingerprint"] == "" {
+		t.Fatalf("stamp = %#v", mm.Meta["activity_stamp"])
+	}
+}

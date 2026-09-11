@@ -49,14 +49,15 @@ type doctorReport struct {
 	// `[]` when nothing is expected (a user who scheduled nothing is never nagged),
 	// one record per expected producer in the normal case, or one typed ledger
 	// failure matching producer_ledger_readable when the ledger cannot be read.
-	Index        indexHealth          `json:"index"`
-	Producers    []producerHealth     `json:"producers"`
-	Activities   []operationActivity  `json:"activities"`
-	Observed     []doctorObservation  `json:"observed"`
-	Diagnosis    []doctorDiagnosis    `json:"diagnosis"`
-	Repairable   bool                 `json:"repairable"`
-	RepairPlan   []doctorRepairAction `json:"repair_plan"`
-	Verification []doctorVerification `json:"verification"`
+	Index         indexHealth          `json:"index"`
+	Producers     []producerHealth     `json:"producers"`
+	Activities    []operationActivity  `json:"activities"`
+	StampCoverage []stampCoverage      `json:"stamp_coverage"`
+	Observed      []doctorObservation  `json:"observed"`
+	Diagnosis     []doctorDiagnosis    `json:"diagnosis"`
+	Repairable    bool                 `json:"repairable"`
+	RepairPlan    []doctorRepairAction `json:"repair_plan"`
+	Verification  []doctorVerification `json:"verification"`
 }
 
 type doctorObservation struct {
@@ -510,6 +511,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Sources:            srcHealth,
 			Index:              idxH,
 			Activities:         activities,
+			StampCoverage:      doctorStampCoverage(ctx, cfg),
 			// The typed producer arm, not PR 1's empty placeholder: with it hardcoded
 			// empty, `doctor --json` reported "producers": [] while its own
 			// producer_live:* checks were failing — the report contradicted the checks

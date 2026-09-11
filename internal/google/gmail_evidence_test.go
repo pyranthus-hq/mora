@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pyranthus-hq/mora/internal/memory"
 	gmail "google.golang.org/api/gmail/v1"
 )
 
@@ -121,4 +122,38 @@ func TestGmailPreservesLastSenderAndOrder(t *testing.T) {
 	if got := item.Meta["last_sender"]; got != "last@example.net" {
 		t.Fatalf("last_sender = %#v, want last@example.net", got)
 	}
+}
+
+func TestGmailMapItemStampsRetainedAutomationHeaders(t *testing.T) {
+	msg := gmailEvidenceMessage("m", "Notice <notice@example.com>", "me@example.com", "", 1_721_123_200_000, "hello")
+	msg.Payload.Headers = append(msg.Payload.Headers, hdr("List-Unsubscribe", "<mailto:leave@example.com>"))
+	mapped := MapItem(gmailThreadToItem(&gmail.Thread{Id: "t", Messages: []*gmail.Message{msg}}), "personal", 0)
+	stamp, ok := mapped.Meta["activity_stamp"].(map[string]any)
+	if !ok || stamp["automation_basis"] != "header_list_unsubscribe" || stamp["automated"] != true {
+		t.Fatalf("stamp = %#v", mapped.Meta["activity_stamp"])
+	}
+	messages := mapped.Meta["messages"].([]gmailMessageEvidence)
+	if len(messages) != 1 || !reflect.DeepEqual(messages[0].AutomationHeaders, []string{"list-unsubscribe"}) {
+		t.Fatalf("headers = %#v", messages)
+	}
+}
+
+func TestGmailAutomationHeadersDoNotChangeLegacyMappedHash(t *testing.T) {
+	base := gmailEvidenceMessage("m", "Notice <notice@example.com>", "me@example.com", "", 1_721_123_200_000, "hello")
+	withHeader := gmailEvidenceMessage("m", "Notice <notice@example.com>", "me@example.com", "", 1_721_123_200_000, "hello")
+	withHeader.Payload.Headers = append(withHeader.Payload.Headers, hdr("List-Unsubscribe", "<mailto:leave@example.com>"))
+	old := memory.MapItem(gmailThreadToItem(baseThread(base)), "personal", 0).ContentHash
+	got := MapItem(gmailThreadToItem(baseThread(withHeader)), "personal", 0).ContentHash
+	if got != old {
+		t.Fatalf("header changed legacy hash: got %q want %q", got, old)
+	}
+}
+func TestGoogleMapItemHandlesNilMeta(t *testing.T) {
+	mapped := MapItem(memory.Item{Kind: KindGmailThread, ProviderID: "deleted", Deleted: true}, "personal", 0)
+	if mapped.Meta == nil || mapped.Meta["activity_stamp"] == nil {
+		t.Fatalf("nil-meta stamp = %#v", mapped.Meta)
+	}
+}
+func baseThread(message *gmail.Message) *gmail.Thread {
+	return &gmail.Thread{Id: "t", Messages: []*gmail.Message{message}}
 }

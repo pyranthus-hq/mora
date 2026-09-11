@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/activity"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -61,9 +62,10 @@ func mapConversation(c convInput, r *Resolver, budget int) memory.MappedMemory {
 	if len(diagnostics) > 0 {
 		meta["message_evidence_diagnostics"] = diagnostics
 	}
-	// Fold the canonical participant Meta into the hash so a recovered name or a
-	// new participant rewrites the file instead of being skipped (D-05 still holds
-	// for an untouched conversation: same title+body+meta -> same hash).
+	// Stamp only retained, rendered evidence. It deliberately does not alter the
+	// legacy hash: an unchanged historical conversation must remain hash-skipped,
+	// rather than causing a bulk Markdown rewrite merely to add a cacheable fact.
+	meta["activity_stamp"] = activity.StampMeta(memory.Memory{ID: memory.StableID(KindIMessageChat, c.guid), Provider: imessageProvider, Type: imessageType, Text: body, Meta: meta, Truncated: res.Truncated})
 	hashMeta := conversationMeta(c, r)
 	metaJSON, _ := memory.CanonicalMeta(hashMeta)
 	contentHash := memory.ContentHash(title, body)

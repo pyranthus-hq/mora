@@ -19,7 +19,15 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 	}
 	var wiki strings.Builder
 	for _, rel := range []string{"index.md", "priority-map.md", "live-tasks.md", "heartbeat.md", "auto-resolver.md"} {
-		if body, err := os.ReadFile(filepath.Join(cfg.VaultDir, rel)); err == nil {
+		path := filepath.Join(cfg.VaultDir, rel)
+		// index.md is generated cache data. Prefer the state copy, but retain a
+		// vault fallback for existing installations that have not rebuilt yet.
+		if rel == "index.md" {
+			if _, err := os.Stat(filepath.Join(cfg.StateDir, rel)); err == nil {
+				path = filepath.Join(cfg.StateDir, rel)
+			}
+		}
+		if body, err := os.ReadFile(path); err == nil {
 			fmt.Fprintf(&wiki, "\n# %s\n%s\n", rel, string(body))
 		}
 	}
