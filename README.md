@@ -107,8 +107,8 @@ Then add only the sources you want:
 mora connect google                         # Gmail and Google Calendar
 mora connect github --repo owner/repository # GitHub Issues
 mora connect imessage                       # macOS; needs Full Disk Access
-mora connectors enable whatsapp             # macOS; local read-only store
-mora ingest run --source whatsapp
+mora connectors enable whatsapp --chat "Family"  # repeat --chat for an exact group-title allowlist
+mora ingest run --source whatsapp                  # reads only allowlisted groups
 ```
 
 For Apple Calendar:
@@ -126,6 +126,10 @@ These words have different meanings:
 | `connectors enable` | Gives Mora permission to use a connector. It does not promise a data pull. |
 | `ingest run` | Reads enabled sources and writes their current data into the vault. Use it for a first load or a backfill. |
 | `sync` | Refreshes a source that is already set up. |
+
+For WhatsApp, repeat `--chat` to allow more than one group. Mora resolves each
+exact title to one group before reading messages and fails if a title is missing
+or ambiguous. Omitting `--chat` preserves legacy all-chat behavior.
 
 ### 3. Give Mora to your agent
 

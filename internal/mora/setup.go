@@ -37,6 +37,28 @@ type disconnectReceipt struct {
 	Revoked  bool   `json:"revoked"`
 }
 
+func extractRepeatedStringFlag(args []string, name string) ([]string, multiFlag, error) {
+	rest := make([]string, 0, len(args))
+	var values multiFlag
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == name {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return nil, nil, fmt.Errorf("%s requires a value", name)
+			}
+			values = append(values, args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, name+"=") {
+			values = append(values, strings.TrimPrefix(arg, name+"="))
+			continue
+		}
+		rest = append(rest, arg)
+	}
+	return rest, values, nil
+}
+
 func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
 		return errors.New("usage: mora connectors list|enable|disable|setup")
@@ -85,9 +107,18 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 		fs := flag.NewFlagSet("connectors "+verb, flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		jsonOut := fs.Bool("json", false, "json output")
+		var chats multiFlag
+		parseArgs := args[1:]
+		if verb == "enable" {
+			var err error
+			parseArgs, chats, err = extractRepeatedStringFlag(parseArgs, "--chat")
+			if err != nil {
+				return err
+			}
+		}
 		// flagsFirst so `connectors disable gmail --json` parses the flag that
 		// follows the positional; Go's flag package stops at the first non-flag.
-		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
+		if err := fs.Parse(flagsFirst(parseArgs)); err != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", err, "%v", err)
 		}
 		if fs.NArg() != 1 {
@@ -101,6 +132,21 @@ func cmdConnectors(ctx context.Context, args []string, stdout, stderr io.Writer,
 			guide = stderr
 		}
 		if verb == "enable" {
+			if len(chats) > 0 {
+				if ctype != "whatsapp" {
+					return fmt.Errorf("--chat is only valid for the whatsapp connector")
+				}
+				clean, err := normalizeConversationAllowlist(chats)
+				if err != nil {
+					return err
+				}
+				if err := setWhatsAppAllowlist(cfg, clean); err != nil {
+					return err
+				}
+				if err := resetWhatsAppSyncStatus(cfg); err != nil {
+					return err
+				}
+			}
 			if err := enableConnector(ctx, cfg, ctype, guide, stderr, stdin); err != nil {
 				return err
 			}
@@ -213,6 +259,7 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 	if ctype == "whatsapp" {
 		okf(stdout, "enabled whatsapp. WhatsApp reads its local ChatStorage.sqlite database — no login needed.")
 		fmt.Fprintln(stdout, "Next: grant Full Disk Access once, then run `mora ingest run --source whatsapp`.")
+		fmt.Fprintln(stdout, "Use repeatable --chat flags when enabling to restrict ingest to exact chat titles.")
 		fmt.Fprintln(stdout, "Group chats are informational-only; they cannot create tasks or urgent items.")
 		return nil
 	}

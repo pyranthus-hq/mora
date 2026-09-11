@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -80,6 +81,97 @@ func TestSeedFetchExercisesRealQueryAndDecode(t *testing.T) {
 	}
 	if dm.CreatedAt == "" {
 		t.Fatal("newest message did not anchor created_at")
+	}
+}
+
+func TestAllowlistReadsOnlyExactGroupTitle(t *testing.T) {
+	path := seedDB(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE ZWACHATSESSION SET ZPARTNERNAME='Family' WHERE Z_PK=2`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	f, err := NewLiveFetcherWithAllowlist(path, []string{"  family  "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	page, err := f.FetchPage(KindConversation, memory.FetchWindow{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ProviderID != "family@g.us" {
+		t.Fatalf("allowlist returned %+v", page.Items)
+	}
+}
+
+func TestAllowlistFailsForMissingOrAmbiguousGroup(t *testing.T) {
+	path := seedDB(t)
+	if _, err := NewLiveFetcherWithAllowlist(path, []string{"Missing"}); err == nil || !strings.Contains(err.Error(), "was not found") {
+		t.Fatalf("missing group error = %v", err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO ZWACHATSESSION VALUES (3,'family-2@g.us','','Family')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, err := NewLiveFetcherWithAllowlist(path, []string{"Family"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous group error = %v", err)
+	}
+}
+
+func TestConfiguredEmptyAllowlistIngestsNothing(t *testing.T) {
+	f, err := NewLiveFetcherWithAllowlist(seedDB(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	page, err := f.FetchPage(KindConversation, memory.FetchWindow{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("configured empty allowlist returned %d conversations", len(page.Items))
+	}
+}
+
+func TestAllowlistFiltersBeforePageLimit(t *testing.T) {
+	path := seedDB(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE ZWACHATSESSION SET Z_PK=100 WHERE Z_PK=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE ZWAMESSAGE SET ZCHATSESSION=100 WHERE ZCHATSESSION=1`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 3; i < 63; i++ {
+		if _, err := db.Exec(`INSERT INTO ZWACHATSESSION VALUES (?, ?, '', ?)`, i, fmt.Sprintf("excluded-%d@g.us", i), fmt.Sprintf("Excluded %d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	f, err := NewLiveFetcherWithAllowlist(path, []string{"Family"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	page, err := f.FetchPage(KindConversation, memory.FetchWindow{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ProviderID != "family@g.us" {
+		t.Fatalf("allowlist was applied after LIMIT: %+v", page.Items)
 	}
 }
 
