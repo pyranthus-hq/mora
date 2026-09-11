@@ -1,0 +1,44 @@
+{
+  "event_since_hours": 24,
+  "memories": [
+    {
+      "automated": null,
+      "created_at": "2026-09-01T00:00:00Z",
+      "event_at": "2026-09-10T11:00:00Z",
+      "id": "imessage_chat/fixture",
+      "meta": {
+        "is_group": true,
+        "message_evidence": [
+          {
+            "at": "2026-09-10T11:00:00Z",
+            "block_end": 5,
+            "block_start": 0,
+            "evidence_ref": "imessage_chat/fixture#1",
+            "from_me": true,
+            "sender": "Owner"
+          }
+        ],
+        "occurred_at": "2025-01-01T00:00:00Z"
+      },
+      "participation": {
+        "is_group": true,
+        "last_own_at": "2026-09-10T11:00:00Z",
+        "latest_sender": "Owner",
+        "message_evidence_count": 1,
+        "own_share": 1
+      },
+      "path": "\u003cpath\u003e",
+      "provider": "imessage",
+      "scope": "global",
+      "source": "imessage",
+      "tags": null,
+      "text": "hello",
+      "title": "activity fixture",
+      "type": "conversation"
+    }
+  ],
+  "order": "source-event",
+  "schema": "mora.list",
+  "schema_version": 1,
+  "source": "imessage"
+}

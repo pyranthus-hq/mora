@@ -17,6 +17,9 @@ func TestRecentSourceEventsUsesOccurrenceBeforeLimit(t *testing.T) {
 		{ID: "future", Meta: map[string]any{"occurred_at": "2026-09-10T12:00:00Z"}},
 		{ID: "yesterday", Meta: map[string]any{"occurred_at": "2026-09-08T12:00:00Z"}},
 	}
+	for i := range items {
+		items[i].Provider = "gmail"
+	}
 	r := recentSourceEvents(items, now, 168, 1)
 	if len(r) != 1 || r[0].ID != "old-thread-new-reply" {
 		t.Fatal(r)

@@ -73,6 +73,10 @@ type Memory struct {
 	// every other read surface and every non-participating memory's search
 	// row byte-identical (frozen interface #5).
 	Evidence *GmailSegmentEvidence `json:"evidence,omitempty"`
+	// Activity fields are read projections populated only for opt-in event reads.
+	EventAt       string         `json:"event_at,omitempty"`
+	Participation *Participation `json:"participation,omitempty"`
+	Automated     *NullableBool  `json:"automated,omitempty"`
 }
 
 // CorroboratingRef is a compact citation for a corroborating record.

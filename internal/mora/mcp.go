@@ -485,8 +485,31 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 
 func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	start := time.Now()
+	now := briefClock()
+	hours, err := parseActivityHours(args, true, now)
+	if err != nil {
+		return nil, err
+	}
+	filterArgs := map[string]any{}
+	if source, ok := args["source"]; ok {
+		filterArgs["source"] = source
+	}
+	filter, err := parseSearchFilters(filterArgs, now)
+	if err != nil {
+		return nil, err
+	}
+	limit := intArg(args, "limit", 10)
+	if hours > 0 {
+		if value, ok := args["limit"]; ok {
+			parsed, e := boundedActivityInt(value, 1000, "event list limit")
+			if e != nil {
+				return nil, e
+			}
+			limit = parsed
+		}
+	}
 	retrievalStarted := time.Now()
-	res, err := listMemories(cfg, strArg(args, "scope", ""), intArg(args, "limit", 10))
+	res, err := listActivityMemories(cfg, strArg(args, "scope", ""), limit, filter, hours, now)
 	retrieval := time.Since(retrievalStarted)
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "list_memory", Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
@@ -497,7 +520,19 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	// decorateBrowseRecency runs BEFORE snippetMemories, which drops Meta — the
 	// source of event_start/source_created_at (#218).
 	budgeted, dropped := budgetSearchResults(snippetMemories(decorateBrowseRecency(res), ""), searchMemoryResultsBudgetBytes)
-	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, time.Now())}
+	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, now)}
+	if filter.Source != "" {
+		out["source"] = filter.Source
+		out["health"] = compactHealthFiltered(cfg, now, filter)
+	}
+	if hours > 0 {
+		out["source"] = filter.Source
+		out["event_since_hours"] = hours
+		out["order"] = "source-event"
+		if _, alias := args["since_hours"]; alias {
+			out["since_hours"] = hours
+		}
+	}
 	if dropped > 0 {
 		out["memories_truncated"] = dropped
 	}

@@ -180,7 +180,8 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *source != "" {
 		filterArgs["source"] = *source
 	}
-	filter, err := parseSearchFilters(filterArgs, time.Now())
+	now := briefClock()
+	filter, err := parseSearchFilters(filterArgs, now)
 	if err != nil {
 		return err
 	}
@@ -193,7 +194,7 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	if *eventHours > 0 {
-		items = recentSourceEvents(items, time.Now(), *eventHours, *limit)
+		items = recentSourceEvents(items, now, *eventHours, *limit)
 	}
 	if *jsonOut {
 		if *eventHours > 0 {
