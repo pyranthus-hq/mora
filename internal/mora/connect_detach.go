@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,19 +27,6 @@ func detachArgs(args []string) []string {
 		}
 	}
 	return append(out, "--mora-detached-child")
-}
-
-func validateDetachedConnect(args []string) error {
-	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.Int("since-days", 0, "")
-	if err := fs.Parse(args); err != nil {
-		return newCodedError(errCodeUsageUnknownFlag, err, "%v", err)
-	}
-	if fs.NArg() != 0 {
-		return newCodedError(errCodeUsageUnknownValue, nil, "unexpected connect argument %q", fs.Arg(0))
-	}
-	return nil
 }
 
 func readConnectProgress(path string) (connectProgressFile, error) {

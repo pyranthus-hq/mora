@@ -82,3 +82,33 @@ func TestSourceFreshnessUsesSourceAndLegacyFilename(t *testing.T) {
 		t.Fatalf("got=%v", got)
 	}
 }
+
+func TestSourceFreshnessIgnoresConnectSidecars(t *testing.T) {
+	for _, name := range []string{"imessage", "work"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.Config{StateDir: t.TempDir()}
+			dir := filepath.Join(cfg.StateDir, "sync")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			const synced = "2026-09-11T12:00:00Z"
+			if err := memory.SaveStatus(StatusPath(cfg, "imessage", name), &memory.SyncStatus{Source: name, LastSynced: synced}); err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{".progress.json", ".receipt.json", ".chats.json"} {
+				// Real detached sidecars name the connector, including for named sources.
+				if err := os.WriteFile(filepath.Join(dir, "imessage-"+name+suffix), []byte(`{"source":"imessage"}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+				// Empty-source sidecars must not create legacy-filename keys either.
+				if err := os.WriteFile(filepath.Join(dir, "imessage-empty"+suffix), []byte(`{}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := map[string]string{name: synced}
+			if got := SourceFreshness(cfg); !reflect.DeepEqual(got, want) {
+				t.Fatalf("freshness=%v, want %v", got, want)
+			}
+		})
+	}
+}

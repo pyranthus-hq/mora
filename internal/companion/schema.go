@@ -746,7 +746,7 @@ func validateCoverage(field string, rows []SourceCoverage, referenceAt string) e
 		if err := validateText(path+".label", row.Label, MaxLabelBytes, false); err != nil {
 			return err
 		}
-		if err := row.SourceFreshness.validate(path, referenceAt); err != nil {
+		if err := row.validate(path, referenceAt); err != nil {
 			return err
 		}
 	}

@@ -813,7 +813,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		sty := newStyler(stdout, false)
 		for _, e := range entries {
-			if isSyncSidecar(e.Name()) {
+			if ingestpkg.IsSyncSidecar(e.Name()) {
 				continue
 			}
 			st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
@@ -1023,7 +1023,7 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 		sources = append(sources, syncStatusReceiptRow(st, source.Name, source.Type, source.Account, source.IsEnabled(), true, filepath.Base(path), now))
 	}
 	for _, entry := range entries {
-		if isSyncSidecar(entry.Name()) {
+		if ingestpkg.IsSyncSidecar(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -2723,9 +2723,4 @@ func extractDocxText(path string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
-}
-
-// Sidecars describe connector bookkeeping, never source freshness.
-func isSyncSidecar(name string) bool {
-	return strings.HasSuffix(name, ".chats.json") || strings.HasSuffix(name, ".progress.json") || strings.HasSuffix(name, ".receipt.json")
 }
