@@ -74,7 +74,11 @@ func TestMainPrintsMoraErrorDocumentForJSONFailures(t *testing.T) {
 			if tc.name == "coded" {
 				assertK17Golden(t, "variants/mora.error.json", doc)
 			}
-			if !strings.Contains(stderr.String(), doc["message"].(string)) {
+			if tc.name == "unclassified" {
+				if doc["message"] != "Operation failed; data may be incomplete. Retry the operation." || !strings.Contains(stderr.String(), "unknown-k17-command") {
+					t.Fatalf("unclassified receipt must be safe while stderr keeps CLI guidance: %v / %s", doc, stderr.String())
+				}
+			} else if !strings.Contains(stderr.String(), doc["message"].(string)) {
 				t.Fatalf("stderr lost prose: %s", stderr.String())
 			}
 		})

@@ -3,6 +3,7 @@ package imessage
 import (
 	"database/sql"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"os"
 	"path/filepath"
 	"strings"
@@ -536,10 +537,69 @@ func TestSeededManifestReadFailureIsFatal(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE chat_handle_join`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.FetchPage(KindIMessageChat, w, ""); err == nil {
-		t.Fatal("manifest read must surface a failed conversation")
+	res, err := memory.Ingest(memory.IngestParams{Fetcher: f, Kind: KindIMessageChat, Window: w, Map: MapConversationFn(nil)})
+	if err == nil || res.Failed != 2 || res.Materialized != 0 || res.Status.LastSuccessAt != "" {
+		t.Fatalf("manifest read must fail the sync without success freshness: result=%+v err=%v", res, err)
 	}
 	if len(man.Chats) != 0 {
 		t.Fatalf("failed read recorded marks: %+v", man)
+	}
+}
+
+func TestMalformedChatPreservesOtherChatsAndReportsPartial(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE message SET is_from_me = 'invalid-private-value' WHERE ROWID = 1`); err != nil {
+		t.Fatal(err)
+	}
+	man := Manifest{Version: 1, Chats: map[string]ChatMark{}}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	st := &memory.SyncStatus{LastSuccessAt: "previous-success"}
+	var written []string
+	res, err := memory.Ingest(memory.IngestParams{Fetcher: f, Kind: KindIMessageChat, Window: w, Status: st,
+		Map: MapConversationFn(nil), Write: func(m memory.MappedMemory) error { written = append(written, m.ProviderID); return nil }})
+	if err == nil || res.Failed != 1 || res.Materialized != 1 || len(written) != 1 || written[0] != "g2" {
+		t.Fatalf("res=%+v written=%v err=%v", res, written, err)
+	}
+	if st.LastSuccessAt != "previous-success" || st.LastError == "" || st.Checkpoint != "" {
+		t.Fatalf("dishonest status: %+v", st)
+	}
+	if _, ok := man.Chats["g1"]; ok {
+		t.Fatal("failed chat was marked rendered")
+	}
+	if _, ok := man.Chats["g2"]; !ok {
+		t.Fatal("good chat missing from manifest")
+	}
+	if _, err := db.Exec(`UPDATE message SET is_from_me = 1 WHERE ROWID = 1`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.FetchPage(KindIMessageChat, w, "")
+	if err != nil || page.Failed != 0 || len(page.Items) != 1 || page.Items[0].ProviderID != "g1" {
+		t.Fatalf("retry=%+v err=%v", page, err)
+	}
+}
+
+func TestMalformedAggregatePreservesHealthyChats(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE message SET date = 'private-malformed-date' WHERE ROWID = 1`); err != nil {
+		t.Fatal(err)
+	}
+	man := Manifest{Version: 1}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	page, err := f.FetchPage(KindIMessageChat, w, "")
+	if err != nil || page.Failed != 1 || len(page.Items) != 1 || page.Items[0].ProviderID != "g2" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if len(man.Chats) != 1 {
+		t.Fatalf("manifest=%+v", man)
 	}
 }

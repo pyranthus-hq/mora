@@ -287,7 +287,7 @@ func ErrorDetails(err error) (code, message string) {
 	}
 	code, message, ok := codeOf(err)
 	if !ok {
-		return "unclassified", err.Error()
+		return "unclassified", "Operation failed; data may be incomplete. Retry the operation."
 	}
 	if code == errCodeConnectorUnavailable {
 		code = "connector_unavailable"

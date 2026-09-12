@@ -1312,6 +1312,9 @@ cancellation or read failure) saves `imessage-imessage.receipt.json` beside it
 before removing progress. SIGTERM still cancels the child cleanly and preserves
 completed work. CLI `companion health --json` adds `reads_in_flight` with source,
 PID, start/update timestamps and counts, or `[]`. A heartbeat older than 30
-seconds is stale only when its PID is no longer alive: health omits it without
-writing, and the next iMessage connect deletes it. Concurrent streaming reads
+seconds is stale when its PID is no longer alive. A heartbeat older than one
+hour is stale regardless of PID liveness, bounding PID reuse without expiring
+a long read that continues to publish heartbeats. Health omits stale progress
+without writing, and the next iMessage connect deletes it. No process is killed
+based on this age check. Concurrent streaming reads
 for the same source are refused while its progress file exists.

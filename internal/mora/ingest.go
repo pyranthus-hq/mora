@@ -813,7 +813,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		sty := newStyler(stdout, false)
 		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".chats.json") {
+			if isSyncSidecar(e.Name()) {
 				continue
 			}
 			st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
@@ -1023,7 +1023,7 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 		sources = append(sources, syncStatusReceiptRow(st, source.Name, source.Type, source.Account, source.IsEnabled(), true, filepath.Base(path), now))
 	}
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".chats.json") {
+		if isSyncSidecar(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -1782,20 +1782,10 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	deny := imessage.DenyList{Contacts: s.DenyContacts, Conversations: s.DenyConversations}
 	fetcher, err := newIMessageFetcher(path, deny)
 	if err != nil {
-		// A present-but-unreadable chat.db is the FDA-denied case — point the user at
-		// the doctor guidance rather than dumping a raw sqlite error.
-		//
-		// PHASE 3 HANDOFF (DOC-03). The prose above INFERS Full Disk Access from a
-		// failed open; Mora never observed a permission refusal. This plan does not
-		// remove that claim — it supplies the typed alternative so DOC-03 has
-		// something to switch to. The code is connector.unavailable, NOT
-		// connector.unauthorized, precisely because the permission state is
-		// unverified: a machine reading this receipt learns "could not open", which
-		// is true, rather than "denied", which is a guess. When DOC-03 lands a real
-		// probe, an observed refusal becomes connector.unauthorized here and the
-		// English can finally say what it means.
+		// An open failure does not prove FDA denial. Keep the cause for error
+		// classification, but never expose database paths in public receipts.
 		return sourceIngestResult{}, newCodedError(errCodeConnectorUnavailable, err,
-			"cannot read your Messages database (Full Disk Access not granted?) — run `mora doctor`: %v", err)
+			"cannot read your Messages database — run `mora doctor` to check access")
 	}
 	defer fetcher.Close()
 
@@ -1804,12 +1794,13 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 
 	statusPath := imessageStatusPath(cfg, s.Name)
 	st, _ := memory.LoadStatus(statusPath)
+	previousSynced, previousSuccess := st.LastSynced, st.LastSuccessAt
 	st.Source = s.Name
 	win := windowForIMessage(s)
 	manPath := imessageManifestPath(cfg, s.Name)
 	man, err := imessage.LoadManifest(manPath)
 	if err != nil {
-		return sourceIngestResult{}, fmt.Errorf("load iMessage manifest: %w", err)
+		return sourceIngestResult{}, newCodedError(errCodeConnectorUnclassified, err, "Cannot load iMessage sync state; retry after checking local storage.")
 	}
 	windowStart := int64(0)
 	if !win.Since.IsZero() {
@@ -1831,6 +1822,13 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 			fmt.Fprintf(out, "  %s: lookback set to all available history (since-days < 0)\n", s.Name)
 		} else {
 			fmt.Fprintf(out, "  %s: ingesting the last %d days; use --since-days to change this window.\n", s.Name, days)
+		}
+	}
+	// Only successfully persisted chats may enter the durable manifest.
+	committed := imessage.Manifest{Version: 1, WindowStart: windowStart, Chats: map[string]imessage.ChatMark{}}
+	if !full {
+		for guid, mark := range man.Chats {
+			committed.Chats[guid] = mark
 		}
 	}
 	sink := connectProgressFrom(ctx)
@@ -1866,6 +1864,9 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 				sink.AddWritten()
 			}
 		}
+		if mark, ok := man.Chats[mm.ProviderID]; ok {
+			committed.Chats[mm.ProviderID] = mark
+		}
 		return wrote, nil
 	}
 
@@ -1882,23 +1883,38 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ingestCtx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
 		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
-		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
-		Map:        mapFn,
+		Checkpoint: func(status *memory.SyncStatus) error {
+			if status.LastError != "" {
+				status.ErrorCode = connectorErrorCode(errors.New(status.LastError))
+				status.LastError = "iMessage sync incomplete; successfully written conversations are saved. Retry to complete the snapshot."
+			}
+			return memory.SaveStatus(statusPath, status)
+		},
+		Map: mapFn,
 	})
 	prog.done()
+	// Keep successful progress even for partial reads/writes. Cancellation still
+	// prevents manifest publication; incomplete attempts never acquire freshness.
+	if err := ctx.Err(); err != nil {
+		ingErr = errors.Join(ingErr, err)
+	} else if err := imessage.SaveManifest(manPath, committed); err != nil {
+		res.Status.LastSynced, res.Status.LastSuccessAt = previousSynced, previousSuccess
+		res.Status.ErrorCount++
+		res.Status.ConsecutiveFailureCount++
+		res.Status.LastError = "Cannot save iMessage sync state; data may be incomplete."
+		ingErr = errors.Join(ingErr, newCodedError(errCodeConnectorUnclassified, err,
+			"Cannot save iMessage sync state; retry after checking local storage."))
+	}
+	if ingErr != nil {
+		res.Status.LastError = "iMessage sync incomplete; successfully written conversations are saved. Retry to complete the snapshot."
+	}
 	ingErr = persistSyncStatus(out, statusPath, res.Status, ingErr)
 	if ingErr != nil {
 		if out != nil {
-			warnf(out, "imessage sync incomplete: %v", ingErr)
+			warnf(out, "iMessage sync incomplete; successfully written conversations are saved. Retry to complete the snapshot.")
 		}
-		return sourceIngestResultFromMemory(res), ingErr
-	}
-	if err := ctx.Err(); err != nil {
-		return sourceIngestResultFromMemory(res), err
-	}
-	man.Version, man.WindowStart = 1, windowStart
-	if err := imessage.SaveManifest(manPath, man); err != nil {
-		return sourceIngestResultFromMemory(res), fmt.Errorf("save iMessage manifest: %w", err)
+		return sourceIngestResultFromMemory(res), newCodedError(connectorErrorCode(ingErr), ingErr,
+			"iMessage sync incomplete; successfully written conversations are saved. Retry to complete the snapshot.")
 	}
 	return sourceIngestResultFromMemory(res), nil
 }
@@ -2707,4 +2723,9 @@ func extractDocxText(path string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+// Sidecars describe connector bookkeeping, never source freshness.
+func isSyncSidecar(name string) bool {
+	return strings.HasSuffix(name, ".chats.json") || strings.HasSuffix(name, ".progress.json") || strings.HasSuffix(name, ".receipt.json")
 }

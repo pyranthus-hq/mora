@@ -103,7 +103,7 @@ func TestReceiptErrorSuccessAndUnclassified(t *testing.T) {
 			}
 		} else {
 			e, ok := doc["error"].(map[string]any)
-			if !ok || e["code"] != "unclassified" || e["message"] != failure.Error() || doc["items"] != float64(3) {
+			if !ok || e["code"] != "unclassified" || e["message"] != "Operation failed; data may be incomplete. Retry the operation." || doc["items"] != float64(3) {
 				t.Fatal(doc)
 			}
 		}
@@ -128,7 +128,7 @@ func TestConnectReceiptCarriesCodedError(t *testing.T) {
 	docs := decodeLines(t, out)
 	r := docs[len(docs)-1]
 	e, ok := r["error"].(map[string]any)
-	if r["schema"] != "mora.connect.imessage" || !ok || e["code"] != "connector_unavailable" || e["message"] != "read failed" {
+	if r["schema"] != "mora.connect.imessage" || !ok || e["code"] != "connector_unavailable" || e["message"] != "iMessage sync incomplete; successfully written conversations are saved. Retry to complete the snapshot." {
 		t.Fatal(r)
 	}
 }

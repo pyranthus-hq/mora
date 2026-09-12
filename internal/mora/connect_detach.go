@@ -65,9 +65,18 @@ func readConnectProgress(path string) (connectProgressFile, error) {
 	return p, nil
 }
 
+// A heartbeat older than the bounded ingest runtime plus a generous margin
+// cannot prove a live read, even if its PID has been reused. Fresh heartbeats
+// keep legitimately long operations reserved; never kill a PID based on age.
+const connectProgressMaxAge = time.Hour
+
 func staleConnectProgress(p connectProgressFile, now time.Time) bool {
 	updated, err := time.Parse(time.RFC3339Nano, p.UpdatedAt)
-	return err == nil && now.Sub(updated) > 30*time.Second && !connectPIDAlive(p.PID)
+	if err != nil {
+		return false
+	}
+	age := now.Sub(updated)
+	return age > connectProgressMaxAge || (age > 30*time.Second && !connectPIDAlive(p.PID))
 }
 
 func cleanupConnectProgress(cfg Config) error {

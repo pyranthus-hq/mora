@@ -205,6 +205,7 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 	}
 
 	var items []Item
+	failed := 0
 	var lastROWID int64
 	for _, c := range chats {
 		lastROWID = c.rowid
@@ -213,7 +214,11 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 			if err := f.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(m.date), 0) FROM message m
 JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
 WHERE cmj.chat_id = ? AND m.date >= ?`, c.rowid, sinceNanos).Scan(&maxDate); err != nil {
-				return Page{}, fmt.Errorf("chat %q aggregate: %w", c.guid, err)
+				if ctx.Err() != nil {
+					return Page{}, ctx.Err()
+				}
+				failed++
+				continue
 			}
 		}
 		if f.opts.Manifest != nil && !f.opts.Full && !f.opts.Manifest.NeedsRender(c.guid, maxDate, sinceNanos) {
@@ -224,10 +229,8 @@ WHERE cmj.chat_id = ? AND m.date >= ?`, c.rowid, sinceNanos).Scan(&maxDate); err
 			if ctx.Err() != nil {
 				return Page{}, ctx.Err()
 			}
-			if f.opts.Manifest != nil {
-				return Page{}, fmt.Errorf("assemble chat %q: %w", c.guid, err)
-			}
-			// Preserve legacy best-effort reads when no manifest can be published.
+			// Count the failure without exposing the chat identity or database error.
+			failed++
 			continue
 		}
 		if ok {
@@ -252,7 +255,7 @@ WHERE cmj.chat_id = ? AND m.date >= ?`, c.rowid, sinceNanos).Scan(&maxDate); err
 	if len(chats) == chatPageSize {
 		next = fmt.Sprintf("%d", lastROWID)
 	}
-	return Page{Items: items, NextCursor: next}, nil
+	return Page{Items: items, NextCursor: next, Failed: failed}, nil
 }
 
 // chatParticipants returns the conversation's non-self participant handles from
@@ -431,7 +434,11 @@ func (f *LiveFetcher) conversationMessagesContext(ctx context.Context, chatROWID
 		)
 		if err := rows.Scan(&rowid, &messageGUID, &date, &isFromMe, &text, &attrBody,
 			&assocType, &itemType, &dateRetract, &handleID, &attFile, &attMime, &attBytes); err != nil {
-			// Tolerate an anomalous row: skip it, never crash the conversation.
+			// Manifest-backed sync must not mark a truncated conversation complete.
+			if f.opts.Manifest != nil {
+				return nil, nil, 0, fmt.Errorf("cannot decode message row")
+			}
+			// Preserve the legacy non-manifest reader's row-level tolerance.
 			continue
 		}
 		// Filter tapbacks/reactions entirely (D-12): associated_message_type != 0.

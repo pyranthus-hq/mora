@@ -220,7 +220,17 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
 			// Keep checkpoint = cursor so the next run resumes this page.
 			p.Status.Checkpoint = cursor
+			if result.Failed > 0 {
+				p.Status.Checkpoint = ""
+			}
 			return finish(), err
+		}
+		if page.Failed > 0 {
+			result.Examined += page.Failed
+			result.Failed += page.Failed
+			p.Status.ErrorCount += page.Failed
+			p.Status.LastError = "some source records could not be read"
+			p.Status.ErrorCode = ""
 		}
 		result.Stages.Pages++
 		if len(page.Items) > limits.MaxBatchItems {
@@ -261,6 +271,9 @@ func Ingest(p IngestParams) (IngestResult, error) {
 				p.Status.ErrorCode = ""
 				p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
 				p.Status.Checkpoint = cursor
+				if result.Failed > 0 {
+					p.Status.Checkpoint = ""
+				}
 				return finish(), err
 			}
 			wrote := true
@@ -290,6 +303,11 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		}
 		cursor = page.NextCursor
 		p.Status.Checkpoint = cursor // advance checkpoint per page
+		if result.Failed > 0 {
+			// A resumed run must revisit failed records even if a later page fails
+			// or the process exits before completing this snapshot.
+			p.Status.Checkpoint = ""
+		}
 		if p.Checkpoint != nil {
 			if err := p.Checkpoint(p.Status); err != nil {
 				p.Status.ErrorCount++
@@ -317,7 +335,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 	// loudly to surface the returned error.
 	if dropped := p.Status.ErrorCount - errorsBefore; dropped > 0 {
 		p.Status.ConsecutiveFailureCount++
-		return finish(), fmt.Errorf("%d item(s) failed to write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
+		return finish(), fmt.Errorf("%d item(s) failed to read or write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
 	}
 
 	// Clean completion: model health as a LAST-ATTEMPT outcome (M-3). One instant

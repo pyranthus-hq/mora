@@ -644,3 +644,47 @@ func TestIngestFailureDropsStaleErrorCode(t *testing.T) {
 		}
 	})
 }
+
+// A partial page must neither stop later pages nor advance success freshness.
+type partialPageFetcher struct{}
+
+func (partialPageFetcher) FetchPage(_ ItemKind, _ FetchWindow, cursor string) (Page, error) {
+	if cursor == "" {
+		return Page{Failed: 1, NextCursor: "next", Items: []Item{{ProviderID: "one"}}}, nil
+	}
+	return Page{Items: []Item{{ProviderID: "two"}}}, nil
+}
+func TestPartialPageContinuesAndFailsHonestly(t *testing.T) {
+	st := &SyncStatus{LastSuccessAt: "old", LastSynced: "old"}
+	writes := 0
+	res, err := Ingest(IngestParams{Fetcher: partialPageFetcher{}, Status: st, Write: func(MappedMemory) error { writes++; return nil }})
+	if err == nil || writes != 2 || res.Failed != 1 || res.Examined != 3 || res.Missing != 1 || res.Stages.Pages != 2 {
+		t.Fatalf("%+v writes=%d err=%v", res, writes, err)
+	}
+	if st.LastSuccessAt != "old" || st.LastSynced != "old" || st.LastAttemptAt == "" || st.Checkpoint != "" || st.ErrorCount != 1 {
+		t.Fatalf("%+v", st)
+	}
+}
+
+type partialThenFatalFetcher struct{}
+
+func (partialThenFatalFetcher) FetchPage(_ ItemKind, _ FetchWindow, cursor string) (Page, error) {
+	if cursor == "" {
+		return Page{Failed: 1, NextCursor: "next"}, nil
+	}
+	return Page{}, errors.New("later page failed")
+}
+func TestPartialAssemblyThenFatalRestartsBeforeFailedChats(t *testing.T) {
+	st := &SyncStatus{LastSuccessAt: "old"}
+	checkpoints := 0
+	_, err := Ingest(IngestParams{Fetcher: partialThenFatalFetcher{}, Status: st, Checkpoint: func(st *SyncStatus) error {
+		checkpoints++
+		if st.Checkpoint != "" {
+			t.Fatal("checkpoint skips failed chats")
+		}
+		return nil
+	}})
+	if err == nil || checkpoints != 1 || st.Checkpoint != "" || st.LastSuccessAt != "old" {
+		t.Fatalf("status=%+v err=%v checkpoints=%d", st, err, checkpoints)
+	}
+}
