@@ -3,6 +3,7 @@ package imessage
 import (
 	"database/sql"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"os"
 	"path/filepath"
 	"strings"
@@ -460,5 +461,145 @@ func TestSeededStructuredRender(t *testing.T) {
 	}
 	if strings.Contains(body, "Me: thanks") {
 		t.Fatalf("tapback should have been filtered out:\n%s", body)
+	}
+}
+
+func manifestSeedFetcher(t *testing.T) (*LiveFetcher, string, FetchWindow) {
+	t.Helper()
+	path := seedChatDB(t, []seedChat{{rowid: 1, guid: "g1"}, {rowid: 2, guid: "g2"}}, []seedMsg{
+		{chatID: 1, date: localDate(2026, 5, 10, 9, 0), text: "hi", fromMe: true},
+		{chatID: 2, date: localDate(2026, 5, 11, 9, 0), text: "yo", fromMe: true},
+	})
+	f, err := NewLiveFetcher(path, DenyList{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f, path, FetchWindow{Since: localDate(2026, 5, 1, 0, 0)}
+}
+
+func TestSeededSecondRunSkipsUnchangedChats(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	man := Manifest{Version: 1, Chats: map[string]ChatMark{}}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	if first := fetchAll(t, f, w); len(first) != 2 {
+		t.Fatalf("first run rendered %d", len(first))
+	}
+	if second := fetchAll(t, f, w); len(second) != 0 {
+		t.Fatalf("second run rendered %d, want 0", len(second))
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO message (ROWID, guid, date, is_from_me, text) VALUES (3, 'new-message', ?, 1, 'new')`, timeToCocoaNanos(localDate(2026, 5, 12, 9, 0))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO chat_message_join VALUES (2, 3)`); err != nil {
+		t.Fatal(err)
+	}
+	if third := fetchAll(t, f, w); len(third) != 1 || third[0].ProviderID != "g2" {
+		t.Fatalf("third run: %+v", third)
+	}
+}
+
+func TestSeededFullFlagRendersEverything(t *testing.T) {
+	f, _, w := manifestSeedFetcher(t)
+	man := Manifest{Version: 1}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	if first := fetchAll(t, f, w); len(first) != 2 {
+		t.Fatalf("first run: %d", len(first))
+	}
+	want := man.Chats["g1"]
+	if want.Hash == "" || want.MinDate != timeToCocoaNanos(localDate(2026, 5, 10, 9, 0)) {
+		t.Fatalf("mark: %+v", want)
+	}
+	man.Chats["g1"] = ChatMark{MaxDate: want.MaxDate, MinDate: want.MinDate, Hash: "stale"}
+	f.SetFetchOptions(FetchOptions{Manifest: &man, Full: true})
+	if second := fetchAll(t, f, w); len(second) != 2 {
+		t.Fatalf("full run rendered %d", len(second))
+	}
+	if man.Chats["g1"] != want {
+		t.Fatalf("full run did not refresh mark: %+v", man.Chats["g1"])
+	}
+}
+
+func TestSeededManifestReadFailureIsFatal(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	man := Manifest{Version: 1}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE chat_handle_join`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := memory.Ingest(memory.IngestParams{Fetcher: f, Kind: KindIMessageChat, Window: w, Map: MapConversationFn(nil)})
+	if err == nil || res.Failed != 2 || res.Materialized != 0 || res.Status.LastSuccessAt != "" {
+		t.Fatalf("manifest read must fail the sync without success freshness: result=%+v err=%v", res, err)
+	}
+	if len(man.Chats) != 0 {
+		t.Fatalf("failed read recorded marks: %+v", man)
+	}
+}
+
+func TestMalformedChatPreservesOtherChatsAndReportsPartial(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE message SET is_from_me = 'invalid-private-value' WHERE ROWID = 1`); err != nil {
+		t.Fatal(err)
+	}
+	man := Manifest{Version: 1, Chats: map[string]ChatMark{}}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	st := &memory.SyncStatus{LastSuccessAt: "previous-success"}
+	var written []string
+	res, err := memory.Ingest(memory.IngestParams{Fetcher: f, Kind: KindIMessageChat, Window: w, Status: st,
+		Map: MapConversationFn(nil), Write: func(m memory.MappedMemory) error { written = append(written, m.ProviderID); return nil }})
+	if err == nil || res.Failed != 1 || res.Materialized != 1 || len(written) != 1 || written[0] != "g2" {
+		t.Fatalf("res=%+v written=%v err=%v", res, written, err)
+	}
+	if st.LastSuccessAt != "previous-success" || st.LastError == "" || st.Checkpoint != "" {
+		t.Fatalf("dishonest status: %+v", st)
+	}
+	if _, ok := man.Chats["g1"]; ok {
+		t.Fatal("failed chat was marked rendered")
+	}
+	if _, ok := man.Chats["g2"]; !ok {
+		t.Fatal("good chat missing from manifest")
+	}
+	if _, err := db.Exec(`UPDATE message SET is_from_me = 1 WHERE ROWID = 1`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.FetchPage(KindIMessageChat, w, "")
+	if err != nil || page.Failed != 0 || len(page.Items) != 1 || page.Items[0].ProviderID != "g1" {
+		t.Fatalf("retry=%+v err=%v", page, err)
+	}
+}
+
+func TestMalformedAggregatePreservesHealthyChats(t *testing.T) {
+	f, path, w := manifestSeedFetcher(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE message SET date = 'private-malformed-date' WHERE ROWID = 1`); err != nil {
+		t.Fatal(err)
+	}
+	man := Manifest{Version: 1}
+	f.SetFetchOptions(FetchOptions{Manifest: &man})
+	page, err := f.FetchPage(KindIMessageChat, w, "")
+	if err != nil || page.Failed != 1 || len(page.Items) != 1 || page.Items[0].ProviderID != "g2" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if len(man.Chats) != 1 {
+		t.Fatalf("manifest=%+v", man)
 	}
 }

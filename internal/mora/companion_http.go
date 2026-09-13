@@ -152,7 +152,7 @@ func (k *companionReader) Health(ctx context.Context) (companion.HealthProjectio
 		Memories: companionMemoryCount(ctx, k.cfg),
 		BuiltAt:  companionOptionalStamp(snapshot.Index.IndexedAt),
 	}
-	out.Sources = companionFreshness(snapshot.Sources, out.GeneratedAt)
+	out.Sources = companionSourceLabels(k.cfg, companionFreshness(snapshot.Sources, out.GeneratedAt))
 	if err := out.Validate(); err != nil {
 		return companion.HealthProjection{}, err
 	}
@@ -205,7 +205,7 @@ func (k *companionReader) Today(ctx context.Context) (companion.TodayProjection,
 		if err := ctx.Err(); err != nil {
 			return companion.TodayProjection{}, err
 		}
-		candidates := companionTodayCandidates(digest)
+		candidates := companionTodayCandidates(digest, k.cfg)
 		if len(candidates) > companion.MaxTodayItems {
 			out.Items = candidates[:companion.MaxTodayItems]
 			out.Truncated = true
@@ -213,6 +213,7 @@ func (k *companionReader) Today(ctx context.Context) (companion.TodayProjection,
 			out.Items = candidates
 		}
 	}
+	out = companionTodayDocument(k.cfg, out)
 	if err := out.Validate(); err != nil {
 		return companion.TodayProjection{}, err
 	}
@@ -995,7 +996,7 @@ const companionCaptureTitleBytes = 120
 // companionTodayCandidates flattens a digest into ranked Today items. It returns
 // EVERY candidate; the caller decides how many survive, so Truncated is computed
 // against the real total rather than against a pre-trimmed list.
-func companionTodayCandidates(d Digest) []companion.TodayItem {
+func companionTodayCandidates(d Digest, configs ...Config) []companion.TodayItem {
 	seen := map[string]bool{}
 	out := []companion.TodayItem{}
 	add := func(item DigestItem, kind companion.TodayItemKind) {
@@ -1003,6 +1004,11 @@ func companionTodayCandidates(d Digest) []companion.TodayItem {
 			return
 		}
 		seen[item.ID] = true
+		if len(configs) > 0 {
+			if m, err := findMemory(configs[0], item.ID); err == nil {
+				item.Snippet = companionReadingSnippet(m, item.Snippet)
+			}
+		}
 		converted, ok := companionTodayItem(item, kind)
 		if !ok {
 			return
@@ -1039,10 +1045,11 @@ func companionTodayItem(item DigestItem, kind companion.TodayItemKind) (companio
 		title = "(untitled)"
 	}
 	return companion.TodayItem{
-		ID:    companionOpaqueID("itm_", item.ID),
-		Kind:  kind,
-		Title: companionText(title, companion.MaxTitleBytes),
-		Body:  companionText(companionItemBody(item), companion.MaxBodyBytes),
+		ID:      companionOpaqueID("itm_", item.ID),
+		Kind:    kind,
+		Title:   companionText(title, companion.MaxTitleBytes),
+		Body:    companionText(companionItemBody(item), companion.MaxBodyBytes),
+		Snippet: companionText(item.Snippet, companion.MaxSnippetBytes),
 		Evidence: []companion.Evidence{{
 			MemoryID:   companionOpaqueID(companion.PrefixMemory, item.ID),
 			Source:     source,

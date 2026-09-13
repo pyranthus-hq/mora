@@ -79,12 +79,20 @@ func PersistStatus(statusPath string, st *memory.SyncStatus, ingErr error) (save
 	return saveErr, ingErr
 }
 
+// IsSyncSidecar reports connector bookkeeping files that never describe source freshness.
+func IsSyncSidecar(name string) bool {
+	return strings.HasSuffix(name, ".chats.json") || strings.HasSuffix(name, ".progress.json") || strings.HasSuffix(name, ".receipt.json")
+}
+
 // SourceFreshness reads best-effort last-sync timestamps keyed by status Source or legacy filename.
 func SourceFreshness(cfg config.Config) map[string]string {
 	out := map[string]string{}
 	dir := filepath.Join(cfg.StateDir, "sync")
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
+		if e.IsDir() || IsSyncSidecar(e.Name()) {
+			continue
+		}
 		st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
 		if err != nil || st == nil {
 			continue

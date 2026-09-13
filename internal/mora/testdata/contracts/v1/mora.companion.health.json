@@ -6,6 +6,7 @@
     "state": "healthy"
   },
   "policy": "open",
+  "reads_in_flight": [],
   "schema": "mora.companion.health",
   "schema_version": 1,
   "sources": [],

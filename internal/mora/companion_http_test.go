@@ -1154,7 +1154,9 @@ func TestCompanionFreshnessCoversEveryCombination(t *testing.T) {
 					projection.State = companion.HealthUnhealthy
 					projection.Policy = companion.PolicyReadonly
 					projection.Index = companion.IndexHealth{State: companion.HealthUnhealthy}
-					projection.Sources = rows
+					for _, row := range rows {
+						projection.Sources = append(projection.Sources, companion.SourceCoverage{SourceFreshness: row})
+					}
 					if err := projection.Validate(); err != nil {
 						t.Fatalf("the translated row does not satisfy the contract: %v", err)
 					}
@@ -1232,7 +1234,9 @@ func TestCompanionFreshnessAgeIsExact(t *testing.T) {
 	projection.State = companion.HealthDegraded
 	projection.Policy = companion.PolicyPropose
 	projection.Index = companion.IndexHealth{State: companion.HealthHealthy}
-	projection.Sources = rows
+	for _, row := range rows {
+		projection.Sources = append(projection.Sources, companion.SourceCoverage{SourceFreshness: row})
+	}
 	if err := projection.Validate(); err != nil {
 		t.Fatalf("the translated freshness rows do not satisfy the contract: %v", err)
 	}

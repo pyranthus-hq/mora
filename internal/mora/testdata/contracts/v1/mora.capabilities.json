@@ -403,6 +403,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "connect imessage --detach",
+      "payload": "mora.connect.started",
+      "platform": "darwin-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "connect imessage",
       "payload": "mora.connect.imessage",
       "platform": "darwin-seam",
@@ -1636,6 +1644,10 @@
     },
     {
       "name": "mora.connect.imessage",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.started",
       "version": 1
     },
     {

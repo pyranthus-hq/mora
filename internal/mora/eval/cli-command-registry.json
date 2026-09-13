@@ -668,6 +668,13 @@
       "payload": "mora.connect.imessage"
     },
     {
+      "path": "connect imessage --detach",
+      "kind": "subcommand",
+      "platform": "darwin-seam",
+      "json_contract": "receipt",
+      "payload": "mora.connect.started"
+    },
+    {
       "path": "connect filesystem",
       "kind": "subcommand",
       "platform": "all",

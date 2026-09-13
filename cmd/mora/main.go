@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -22,6 +23,27 @@ func main() {
 
 	ctx := context.Background()
 	if err := mora.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Stdin); err != nil {
+		// JSON callers consume the final document even when the command already
+		// emitted a partial receipt or progress. Human invocations retain the
+		// grandfathered sentinel exit statuses below.
+		// A blank message means the command already emitted its own document and
+		// carries a grandfathered exit status (loop begin's exit-10 skip): leave
+		// both alone rather than appending a contentless mora.error.
+		for _, arg := range os.Args[1:] {
+			if jsonRequested(arg) && err.Error() != "" {
+				code, message := mora.ErrorDetails(err)
+				_ = json.NewEncoder(os.Stdout).Encode(struct {
+					Schema        string `json:"schema"`
+					SchemaVersion int    `json:"schema_version"`
+					Code          string `json:"code"`
+					Message       string `json:"message"`
+				}{"mora.error", 1, code, message})
+				if msg := err.Error(); msg != "" {
+					fmt.Fprintln(os.Stderr, msg)
+				}
+				os.Exit(1)
+			}
+		}
 		// Honor a structured exit code (e.g. `mora loop begin` returns exit 10 on
 		// an already-succeeded period; its payload is already on stdout). A blank
 		// message means the command already emitted its output — don't double-print.
@@ -36,4 +58,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// jsonRequested reports whether one argv element asks for JSON output. Go's flag
+// package accepts every spelling below for the same boolean flag.
+func jsonRequested(arg string) bool {
+	switch arg {
+	case "--json", "-json", "--json=true", "-json=true":
+		return true
+	}
+	return false
 }

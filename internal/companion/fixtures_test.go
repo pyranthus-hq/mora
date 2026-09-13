@@ -182,6 +182,7 @@ var frozenKeys = map[string][]string{
 		"state:string",
 	},
 	"mora.companion.today": {
+		"coverage:array",
 		"freshness:array",
 		"freshness[].age_seconds:number",
 		"freshness[].error_code:string",
@@ -204,6 +205,7 @@ var frozenKeys = map[string][]string{
 		"items[].evidence[]:object",
 		"items[].id:string",
 		"items[].kind:string",
+		"items[].snippet:string",
 		"items[].title:string",
 		"items[]:object",
 		"schema:string",

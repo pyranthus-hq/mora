@@ -1298,3 +1298,23 @@ configuration changed; it omits `binary`. Other client configuration is preserve
 ```bash
 mora integrations disconnect --client cursor --json
 ```
+
+`mora connect imessage --json --progress --detach` starts the normal read in a
+new process session, with standard streams disconnected, and returns a
+`mora.connect.started` v1 receipt containing `source`, `pid`, `progress_path`,
+and `started_at`. The parent polls every 50 ms for up to 5 seconds; a read that
+finishes between polls is recognized by its PID and start time in the saved
+receipt. Progress is atomically updated at
+`state/sync/imessage-imessage.progress.json` on phase/data events and the
+500 ms ticker, with schema `mora.connect.progress` v1, source, PID, timestamps,
+phase, and observed message/chat/elapsed counts. Completion (including
+cancellation or read failure) saves `imessage-imessage.receipt.json` beside it
+before removing progress. SIGTERM still cancels the child cleanly and preserves
+completed work. CLI `companion health --json` adds `reads_in_flight` with source,
+PID, start/update timestamps and counts, or `[]`. A heartbeat older than 30
+seconds is stale when its PID is no longer alive. A heartbeat older than one
+hour is stale regardless of PID liveness, bounding PID reuse without expiring
+a long read that continues to publish heartbeats. Health omits stale progress
+without writing, and the next iMessage connect deletes it. No process is killed
+based on this age check. Concurrent streaming reads
+for the same source are refused while its progress file exists.

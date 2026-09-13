@@ -334,6 +334,19 @@
       }
     },
     {
+      "name": "connect detached",
+      "paths": ["connect imessage --detach"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestConnectDetachReturnsStartedReceiptAndChildFinishes", "TestConnectDetachAttachesToLiveReader"]},
+        "usage": {"status": "test", "tests": ["TestConnectDetachRejectsInvalidFlags"]},
+        "invalid": {"status": "test", "tests": ["TestConnectDetachRejectsInvalidFlags"]},
+        "json": {"status": "test", "tests": ["TestConnectStartedGolden", "TestConnectDetachAttachesToLiveReader"]},
+        "state": {"status": "test", "tests": ["TestConnectDetachReturnsStartedReceiptAndChildFinishes", "TestConnectDetachAttachesToLiveReader"]},
+        "error": {"status": "test", "tests": ["TestConnectProgressDoesNotReplaceLiveReader", "TestConnectReceiptSaveFailureRemovesProgress"]},
+        "refusal": {"status": "test", "tests": ["TestConnectDetachRejectsInvalidFlags"]}
+      }
+    },
+    {
       "name": "sync",
       "paths": ["sync", "sync status", "sync google", "sync github", "sync filesystem", "sync imessage", "sync whatsapp", "sync applecalendar", "sync git"],
       "evidence": {

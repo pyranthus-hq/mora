@@ -731,6 +731,28 @@ func validateFreshness(field string, rows []SourceFreshness, referenceAt string)
 	return nil
 }
 
+// SourceCoverage adds a display label without putting user text in operation freshness.
+type SourceCoverage struct {
+	SourceFreshness
+	Label string `json:"label,omitempty"`
+}
+
+func validateCoverage(field string, rows []SourceCoverage, referenceAt string) error {
+	if err := validateCount(field, len(rows), MaxFreshnessSources); err != nil {
+		return err
+	}
+	for i, row := range rows {
+		path := fmt.Sprintf("%s[%d]", field, i)
+		if err := validateText(path+".label", row.Label, MaxLabelBytes, false); err != nil {
+			return err
+		}
+		if err := row.validate(path, referenceAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // IndexHealth is the vault index's own state, separate from connector
 // freshness: a fresh connector with a stale index still lies to the reader.
 type IndexHealth struct {
@@ -742,16 +764,16 @@ type IndexHealth struct {
 // HealthProjection is GET /v1/companion/health.
 type HealthProjection struct {
 	Header
-	GeneratedAt string            `json:"generated_at"`
-	State       HealthState       `json:"state"`
-	Policy      WritePolicy       `json:"policy"`
-	Index       IndexHealth       `json:"index"`
-	Sources     []SourceFreshness `json:"sources"`
+	GeneratedAt string           `json:"generated_at"`
+	State       HealthState      `json:"state"`
+	Policy      WritePolicy      `json:"policy"`
+	Index       IndexHealth      `json:"index"`
+	Sources     []SourceCoverage `json:"sources"`
 }
 
 // NewHealthProjection returns a projection with its envelope filled in.
 func NewHealthProjection() HealthProjection {
-	return HealthProjection{Header: newHeader(SchemaHealth), Sources: []SourceFreshness{}}
+	return HealthProjection{Header: newHeader(SchemaHealth), Sources: []SourceCoverage{}}
 }
 
 func (h *HealthProjection) SchemaName() string { return SchemaHealth }
@@ -782,7 +804,7 @@ func (h *HealthProjection) Validate() error {
 	if h.Sources == nil {
 		return errf(CodeMissingField, "sources", "an empty collection is [], never null")
 	}
-	return validateFreshness("sources", h.Sources, h.GeneratedAt)
+	return validateCoverage("sources", h.Sources, h.GeneratedAt)
 }
 
 // ---------------------------------------------------------------------------
@@ -842,6 +864,7 @@ type TodayItem struct {
 	Kind     TodayItemKind `json:"kind"`
 	Title    string        `json:"title"`
 	Body     string        `json:"body,omitempty"`
+	Snippet  string        `json:"snippet"`
 	Evidence []Evidence    `json:"evidence"`
 }
 
@@ -852,6 +875,7 @@ type TodayProjection struct {
 	Health      HealthSummary     `json:"health"`
 	Items       []TodayItem       `json:"items"`
 	Freshness   []SourceFreshness `json:"freshness"`
+	Coverage    []SourceCoverage  `json:"coverage"`
 	// Truncated is true when the kernel had more than MaxTodayItems items to
 	// show. The phone must render it: three of three is a different claim
 	// from three of nine.
@@ -870,6 +894,7 @@ type HealthSummary struct {
 func NewTodayProjection() TodayProjection {
 	return TodayProjection{
 		Header:    newHeader(SchemaToday),
+		Coverage:  []SourceCoverage{},
 		Items:     []TodayItem{},
 		Freshness: []SourceFreshness{},
 	}
@@ -911,6 +936,9 @@ func (t *TodayProjection) Validate() error {
 		if err := validateText(field+".title", item.Title, MaxTitleBytes, true); err != nil {
 			return err
 		}
+		if err := validateText(field+".snippet", item.Snippet, MaxSnippetBytes, false); err != nil {
+			return err
+		}
 		if err := validateText(field+".body", item.Body, MaxBodyBytes, false); err != nil {
 			return err
 		}
@@ -923,6 +951,9 @@ func (t *TodayProjection) Validate() error {
 	}
 	if t.Freshness == nil {
 		return errf(CodeMissingField, "freshness", "an empty collection is [], never null")
+	}
+	if err := validateCoverage("coverage", t.Coverage, t.GeneratedAt); err != nil {
+		return err
 	}
 	return validateFreshness("freshness", t.Freshness, t.GeneratedAt)
 }

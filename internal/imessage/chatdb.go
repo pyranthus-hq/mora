@@ -39,6 +39,7 @@ const (
 // so the connector stays a thin, resolver-free reader and the fetched Item carries
 // raw handles in its convInput Payload.
 type LiveFetcher struct {
+	opts         FetchOptions
 	db           *sql.DB
 	denyContacts map[string]bool // normalized handles (sole-counterparty 1:1 skip, D-08)
 	denyConvos   map[string]bool // lowercased conversation names (thread skip, D-08)
@@ -204,19 +205,48 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 	}
 
 	var items []Item
+	failed := 0
 	var lastROWID int64
 	for _, c := range chats {
 		lastROWID = c.rowid
+		var maxDate int64
+		if f.opts.Manifest != nil {
+			if err := f.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(m.date), 0) FROM message m
+JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+WHERE cmj.chat_id = ? AND m.date >= ?`, c.rowid, sinceNanos).Scan(&maxDate); err != nil {
+				if ctx.Err() != nil {
+					return Page{}, ctx.Err()
+				}
+				failed++
+				continue
+			}
+		}
+		if f.opts.Manifest != nil && !f.opts.Full && !f.opts.Manifest.NeedsRender(c.guid, maxDate, sinceNanos) {
+			continue
+		}
 		it, ok, err := f.assembleConversationContext(ctx, c.guid, c.display, c.identifier, c.rowid, sinceNanos)
 		if err != nil {
 			if ctx.Err() != nil {
 				return Page{}, ctx.Err()
 			}
-			// Per-conversation failure: skip, never abort the page (schema-defensive,
-			// honest-snapshot — the caller's Ingest loop counts the gap).
+			// Count the failure without exposing the chat identity or database error.
+			failed++
 			continue
 		}
 		if ok {
+			if man := f.opts.Manifest; man != nil {
+				conv := it.Payload.(convInput)
+				minDate := timeToCocoaNanos(conv.messages[0].date) + int64(conv.messages[0].date.Nanosecond())
+				for _, msg := range conv.messages[1:] {
+					if d := timeToCocoaNanos(msg.date) + int64(msg.date.Nanosecond()); d < minDate {
+						minDate = d
+					}
+				}
+				// Items carry structured input, not a ContentHash; use the existing
+				// mapper with raw handles here. The wiring boundary records its final hash.
+				hash := mapConversation(conv, nil, 0).ContentHash
+				man.Chats[c.guid] = ChatMark{MaxDate: maxDate, MinDate: minDate, Hash: hash}
+			}
 			items = append(items, it)
 		}
 	}
@@ -225,7 +255,7 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 	if len(chats) == chatPageSize {
 		next = fmt.Sprintf("%d", lastROWID)
 	}
-	return Page{Items: items, NextCursor: next}, nil
+	return Page{Items: items, NextCursor: next, Failed: failed}, nil
 }
 
 // chatParticipants returns the conversation's non-self participant handles from
@@ -404,7 +434,11 @@ func (f *LiveFetcher) conversationMessagesContext(ctx context.Context, chatROWID
 		)
 		if err := rows.Scan(&rowid, &messageGUID, &date, &isFromMe, &text, &attrBody,
 			&assocType, &itemType, &dateRetract, &handleID, &attFile, &attMime, &attBytes); err != nil {
-			// Tolerate an anomalous row: skip it, never crash the conversation.
+			// Manifest-backed sync must not mark a truncated conversation complete.
+			if f.opts.Manifest != nil {
+				return nil, nil, 0, fmt.Errorf("cannot decode message row")
+			}
+			// Preserve the legacy non-manifest reader's row-level tolerance.
 			continue
 		}
 		// Filter tapbacks/reactions entirely (D-12): associated_message_type != 0.

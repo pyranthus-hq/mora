@@ -12,6 +12,7 @@
       "kind": "needs_attention",
       "title": "Ravi is waiting on the pilot scope",
       "body": "Asked twice this week; the last reply was six days ago.",
+      "snippet": "",
       "evidence": [
         {
           "memory_id": "mem_01J8Z2K7Q4RN3T5Y",
@@ -43,5 +44,6 @@
       "error_code": "permission_denied"
     }
   ],
+  "coverage": [],
   "truncated": true
 }

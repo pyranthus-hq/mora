@@ -67,6 +67,10 @@ type FetchWindow struct {
 
 // Page is one page of fetched items plus a cursor for resume.
 type Page struct {
+	// Failed counts records that could not be assembled. Other items remain usable;
+	// Ingest reports an incomplete snapshot and retries failed records next run.
+	Failed int
+
 	Items      []Item
 	NextCursor string // provider page token; "" when no more pages
 	SyncCursor string // provider-native position to commit after clean completion

@@ -286,7 +286,7 @@ func TestConnectIMessageProgressErrorEndsWithReceipt(t *testing.T) {
 		}}, nil
 	}
 	stdout, stderr, err := runSplit(t, "connect", "imessage", "--json", "--progress")
-	if err == nil || !strings.Contains(stderr, failure.Error()) {
+	if !errors.Is(err, failure) || !strings.Contains(stderr, "sync incomplete") {
 		t.Fatalf("want nonzero page failure, got %v", err)
 	}
 	docs := decodeLines(t, stdout)
@@ -296,6 +296,10 @@ func TestConnectIMessageProgressErrorEndsWithReceipt(t *testing.T) {
 	last := docs[len(docs)-1]
 	if last["schema"] != "mora.connect.imessage" || last["connected"] != true || last["cancelled"] != false {
 		t.Fatalf("last line must be error receipt: %v", last)
+	}
+	errorDoc, ok := last["error"].(map[string]any)
+	if !ok || errorDoc["message"] != "iMessage sync incomplete; successfully written conversations are saved. Retry to complete the snapshot." {
+		t.Fatalf("unsafe error receipt: %v", last)
 	}
 }
 

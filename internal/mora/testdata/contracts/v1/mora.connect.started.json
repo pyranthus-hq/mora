@@ -1,0 +1,8 @@
+{
+  "pid": 1234,
+  "progress_path": "<home>/state/sync/imessage-imessage.progress.json",
+  "schema": "mora.connect.started",
+  "schema_version": 1,
+  "source": "imessage",
+  "started_at": "2026-09-11T00:00:00Z"
+}

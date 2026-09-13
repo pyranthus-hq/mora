@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -123,6 +124,7 @@ func TestConnectWritesJSONIdempotentlyAndKeepsOtherKeys(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".claude.json")
 	writeFixture(t, path, `{"keep":{"nested":true},"mcpServers":{"other":{"command":"/o","args":[]}}}`)
+	before := fixturePermissions(t, path, 0o600)
 	bin := "/synthetic/Mora.app/Contents/MacOS/mora"
 	seams := fsSeams(t, home)
 	first, err := Connect(seams, Claude, bin)
@@ -147,7 +149,7 @@ func TestConnectWritesJSONIdempotentlyAndKeepsOtherKeys(t *testing.T) {
 		}
 	}
 	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
+	if info.Mode().Perm() != before {
 		t.Fatalf("mode changed to %o", info.Mode().Perm())
 	}
 }
@@ -247,13 +249,14 @@ func TestConnectPreservesEntryExtrasAndMode(t *testing.T) {
 			if err := os.Chmod(path, 0o640); err != nil {
 				t.Fatal(err)
 			}
+			before := fixturePermissions(t, path, 0o640)
 			s := fsSeams(t, home)
 			if _, err := Connect(s, client, "/new"); err != nil {
 				t.Fatal(err)
 			}
 			body, _ := os.ReadFile(path)
 			info, _ := os.Stat(path)
-			if strings.Count(string(body), "9007199254740993") != 2 || !strings.Contains(string(body), `"KEEP": "yes"`) || info.Mode().Perm() != 0o640 {
+			if strings.Count(string(body), "9007199254740993") != 2 || !strings.Contains(string(body), `"KEEP": "yes"`) || info.Mode().Perm() != before {
 				t.Fatalf("lost extras/mode: %s %v", body, info.Mode())
 			}
 			r, err := Connect(s, client, "/new")
@@ -524,4 +527,18 @@ func TestConnectKeepsEntryInternalsUnescaped(t *testing.T) {
 	if !strings.Contains(string(body), `"p && q <r>"`) {
 		t.Fatalf("mora entry internals were escaped:\n%s", body)
 	}
+}
+
+// POSIX hosts must honor the requested bits; Windows reports its native file
+// attributes instead. On every host the mutation must preserve observed mode.
+func fixturePermissions(t *testing.T, path string, requested os.FileMode) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != requested {
+		t.Fatalf("fixture mode=%o want=%o", info.Mode().Perm(), requested)
+	}
+	return info.Mode().Perm()
 }
