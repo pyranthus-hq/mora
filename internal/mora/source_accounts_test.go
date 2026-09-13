@@ -7,6 +7,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -135,7 +136,7 @@ func TestCanonicalizedAccountGmailHashSkipsExistingMarkdown(t *testing.T) {
 	}
 	path := ""
 	for _, candidate := range files {
-		if strings.Contains(candidate, "/sources/gmail/") {
+		if strings.Contains(filepath.ToSlash(candidate), "/sources/gmail/") {
 			path = candidate
 			break
 		}

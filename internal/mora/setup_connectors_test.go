@@ -42,6 +42,8 @@ func TestSetupConnectorStepsPendingOnFreshVault(t *testing.T) {
 }
 
 func TestSetupConnectorStepsVerifiedAfterARead(t *testing.T) {
+	// Exercise the macOS connector projection on every host without probing Messages.
+	defer stubIMessageReadiness(t, false)()
 	withTempHome(t)
 	run(t, "init")
 	cfg, err := loadConfigFor(testCtx(t))

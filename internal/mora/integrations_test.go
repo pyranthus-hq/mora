@@ -11,7 +11,8 @@ import (
 func TestIntegrationsListJSONOnEmptyHome(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	stdout, _, err := runSplit(t, "integrations", "list", "--binary", "/synthetic/mora", "--json")
+	bin := filepath.Join(t.TempDir(), "synthetic", "mora")
+	stdout, _, err := runSplit(t, "integrations", "list", "--binary", bin, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +27,7 @@ func TestIntegrationsListJSONOnEmptyHome(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 		t.Fatalf("%v\n%s", err, stdout)
 	}
-	if doc.Schema != "mora.integrations.list" || doc.Binary != "/synthetic/mora" || len(doc.Clients) != 4 {
+	if doc.Schema != "mora.integrations.list" || doc.Binary != bin || len(doc.Clients) != 4 {
 		t.Fatalf("list wrong: %+v", doc)
 	}
 }
@@ -39,7 +40,8 @@ func TestIntegrationsConnectAndDisconnectCursor(t *testing.T) {
 	}
 	home := cfg.HomeDir()
 	run(t, "init")
-	stdout, _, err := runSplit(t, "integrations", "connect", "--client", "cursor", "--binary", "/synthetic/mora", "--json")
+	bin := filepath.Join(home, "synthetic", "mora")
+	stdout, _, err := runSplit(t, "integrations", "connect", "--client", "cursor", "--binary", bin, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,15 +124,16 @@ func TestIntegrationsConnectRefusesRelativeBinaryAndUnknownClient(t *testing.T) 
 	if _, err := runErr(t, "integrations", "connect", "--client", "cursor", "--binary", "mora", "--json"); err == nil {
 		t.Fatal("relative --binary must fail")
 	}
-	if _, err := runErr(t, "integrations", "connect", "--client", "vim", "--binary", "/x/mora", "--json"); err == nil {
+	if _, err := runErr(t, "integrations", "connect", "--client", "vim", "--binary", filepath.Join(t.TempDir(), "mora"), "--json"); err == nil {
 		t.Fatal("unknown client must fail")
 	}
 }
 
 func TestIntegrationsClaudeListAndDisconnectHooks(t *testing.T) {
 	withTempHomeSetenv(t)
-	run(t, "integrations", "connect", "--client", "claude", "--binary", "/synthetic/mora", "--json")
-	stdout, _, err := runSplit(t, "integrations", "list", "--binary", "/synthetic/mora", "--json")
+	bin := filepath.Join(t.TempDir(), "synthetic", "mora")
+	run(t, "integrations", "connect", "--client", "claude", "--binary", bin, "--json")
+	stdout, _, err := runSplit(t, "integrations", "list", "--binary", bin, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +179,7 @@ func TestIntegrationsInvalidArgumentsDoNotWrite(t *testing.T) {
 	for _, args := range [][]string{
 		{"list", "--binary", "relative", "unexpected", "--json"},
 		{"connect", "--client", "cursor", "--json"},
-		{"connect", "--client", "cursor", "--binary", "/x", "unexpected", "--json"},
+		{"connect", "--client", "cursor", "--binary", filepath.Join(t.TempDir(), "mora"), "unexpected", "--json"},
 		{"disconnect", "--client", "vim", "--json"},
 	} {
 		stdout, _, err := runSplit(t, append([]string{"integrations"}, args...)...)
