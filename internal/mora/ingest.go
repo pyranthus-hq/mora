@@ -322,13 +322,22 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	}})
 	for _, outcome := range outcomes {
 		count += outcome.Materialized
-		if outcome.Err != nil && !outcome.Cancelled && !outcome.TimedOut {
-			if !*all {
-				namedErr = outcome.Err
-			} else {
-				warnf(progress, "%s sync incomplete (resumable): %v", outcome.Key, outcome.Err)
-			}
+		if outcome.Err == nil || outcome.Cancelled {
+			continue
 		}
+		// A timeout that still materialized records stopped mid-walk with its
+		// checkpoint persisted, so the next run resumes: say so and keep the
+		// exit status clean. Every other failed attempt — including a timeout
+		// that produced nothing — is reported rather than swallowed.
+		// TimedOut covers the outer guard; a returned DeadlineExceeded is the
+		// inner ingest budget, which is the one that normally fires.
+		timedOut := outcome.TimedOut || errors.Is(outcome.Err, context.DeadlineExceeded)
+		resumable := timedOut && outcome.Materialized > 0
+		if !*all && !resumable {
+			namedErr = outcome.Err
+			continue
+		}
+		warnf(progress, "%s sync incomplete (resumable): %v", outcome.Key, outcome.Err)
 	}
 	var rebuildErr error
 	if sourceOutcomesMaterialized(outcomes) > 0 && ctx.Err() == nil {

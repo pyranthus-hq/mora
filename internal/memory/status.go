@@ -21,6 +21,20 @@ type SyncStatus struct {
 	// IncrementalCursor is the provider-native between-run position. Checkpoint
 	// remains the in-progress page token and is cleared only after completion.
 	IncrementalCursor string `json:"incremental_cursor,omitempty"`
+	// PendingSyncCursor is the provider position captured at the START of a
+	// snapshot, before the snapshot has finished walking its pages. Gmail hands
+	// it over on page one so that changes racing pagination replay through
+	// history instead of falling into a gap, but it only becomes a legitimate
+	// between-run position once every page has been walked. Committing it to
+	// IncrementalCursor early would let a snapshot that died mid-walk resume as
+	// an incremental sync and silently skip the rest of the backfill.
+	PendingSyncCursor string `json:"pending_sync_cursor,omitempty"`
+	// CursorMode records which provider endpoint Checkpoint's page token belongs
+	// to. A page token cannot identify its own API, and a snapshot page token
+	// replayed against the history endpoint (or the reverse) reads the wrong
+	// mailbox slice. Empty decodes as CursorModeSnapshot: every checkpoint
+	// written before this field existed is a snapshot page token.
+	CursorMode string `json:"cursor_mode,omitempty"`
 	// AccountEmail binds Google cursors to the live mailbox that issued them.
 	// Legacy/unbound cursors must not be reused after credential replacement.
 	AccountEmail string `json:"account_email,omitempty"`
@@ -83,3 +97,10 @@ func SaveStatus(path string, s *SyncStatus) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// Cursor modes for SyncStatus.CursorMode. Empty is read as CursorModeSnapshot
+// so records written before the field existed keep resuming correctly.
+const (
+	CursorModeSnapshot = "snapshot"
+	CursorModeHistory  = "history"
+)
