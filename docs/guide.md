@@ -2380,6 +2380,10 @@ mora config embedder ollama
 Mora uses `nomic-embed-text` by default. It accepts only a loopback Ollama URL.
 If Ollama is not available, Mora warns and falls back to the static route.
 
+A note longer than the model can read does not stop a rebuild. Mora halves the
+text and retries until the model accepts it, so the vector covers the start of
+the note only. Full-text search still covers the whole note.
+
 ### Written decisions rank above long files
 
 After either route has ranked its matches, Mora moves a note that someone wrote

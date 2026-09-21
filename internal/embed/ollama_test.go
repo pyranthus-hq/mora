@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -210,5 +211,70 @@ func TestIsLoopbackURL(t *testing.T) {
 		if isLoopbackURL(bad) {
 			t.Fatalf("%q should NOT be loopback", bad)
 		}
+	}
+}
+
+// TestOllamaEmbedderTruncatesOversizedPrompt pins the context-length ladder: Ollama
+// answers 500 {"error":"the input length exceeds the context length"} for a prompt
+// denser than the model's window, and that is a property of the TEXT, not of the
+// daemon. Embed must halve and retry rather than fail the call — one long memory
+// used to abort an entire index rebuild.
+func TestOllamaEmbedderTruncatesOversizedPrompt(t *testing.T) {
+	const limit = 500 // pretend context window, in bytes of prompt
+	var seen []int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/embeddings", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Prompt string `json:"prompt"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		seen = append(seen, len(in.Prompt))
+		if len(in.Prompt) > limit {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "the input length exceeds the context length"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"embedding": []float64{3, 4}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	e := ollamaEmbedder{baseURL: srv.URL, model: "m", dim: 2, client: &http.Client{Timeout: 5 * time.Second}}
+	v, err := e.Embed(strings.Repeat("x", 4000))
+	if err != nil {
+		t.Fatalf("oversized prompt must embed from a truncated prefix, got %v", err)
+	}
+	if len(v) != 2 {
+		t.Fatalf("vector len = %d, want 2", len(v))
+	}
+	if len(seen) != 4 { // 4000 -> 2000 -> 1000 -> 500
+		t.Fatalf("attempt prompt sizes = %v, want one halving ladder down to the limit", seen)
+	}
+	if seen[len(seen)-1] > limit {
+		t.Fatalf("final attempt %d exceeded the pretend window %d", seen[len(seen)-1], limit)
+	}
+}
+
+// TestOllamaEmbedderSurfacesDaemonError pins the message contract: a healthy daemon
+// that refuses one input must not be reported as an unreachable daemon.
+func TestOllamaEmbedderSurfacesDaemonError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/embeddings", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "model \"m\" not found"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	e := ollamaEmbedder{baseURL: srv.URL, model: "m", dim: 2, client: &http.Client{Timeout: 5 * time.Second}}
+	v, err := e.Embed("hello")
+	if v != nil {
+		t.Fatal("a refused embed must return no vector")
+	}
+	if !errors.Is(err, errEmbedderUnavailable) {
+		t.Fatalf("error must stay fail-closed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error must carry the daemon's own message, got %v", err)
 	}
 }
