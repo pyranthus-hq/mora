@@ -111,7 +111,7 @@ func InspectStatusRecord(dir, name string) (status *SyncStatus, diagnostic strin
 	_, itemCount := fields["item_count"]
 	_, lastError := fields["last_error"]
 	_, lastSuccess := fields["last_success_at"]
-	if !(source || lastSynced || lastAttempt || checkpoint || cursor || itemCount || lastError || lastSuccess) {
+	if !source && !lastSynced && !lastAttempt && !checkpoint && !cursor && !itemCount && !lastError && !lastSuccess {
 		if strings.HasSuffix(name, ".manifest.json") {
 			return nil, ""
 		}

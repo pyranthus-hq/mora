@@ -3,7 +3,7 @@ set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 binary="$repo/.cache/recovery/mora"
-root="$repo/.cache/recovery/smoke"
+root="${1:-$repo/.cache/recovery/smoke}"
 test -x "$binary"
 test ! -e "$root"
 mkdir -p "$root/config" "$root/home" "$root/input"
@@ -20,6 +20,7 @@ test -d "$root/config/state"
 test -d "$root/config/vault"
 run_mora sources add filesystem --name recovery-docs --path "$root/input" \
   --scope project:recovery > "$root/source-add.txt"
+run_mora connectors enable filesystem > "$root/connector-enable.txt"
 run_mora ingest run --source recovery-docs --json > "$root/ingest.json"
 run_mora search 'Acorn pilot launch' --scope project:recovery --json > "$root/search.json"
 source_id=$(jq -er '.memories[] | select(.title == "note.md") | .id' "$root/search.json")
@@ -40,6 +41,8 @@ jq -e --arg id "$source_id" --arg correction "$correction_id" \
   "$root/restart-search.json" >/dev/null
 run_mora read "$source_id" --json > "$root/restart-read.json"
 jq -e --arg id "$source_id" 'select(.id == $id and .provenance == "document")' "$root/restart-read.json" >/dev/null
+run_mora context --query 'Acorn pilot launch' --scope project:recovery --json > "$root/restart-context.json"
+jq -e --arg correction "$correction_id" '.context | contains($correction) and contains("cancelled")' "$root/restart-context.json" >/dev/null
 
 jq -n --arg source_id "$source_id" --arg correction_id "$correction_id" \
   --arg config_dir "$root/config" \
