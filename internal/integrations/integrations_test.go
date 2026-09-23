@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -147,7 +148,7 @@ func TestConnectWritesJSONIdempotentlyAndKeepsOtherKeys(t *testing.T) {
 		}
 	}
 	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode changed to %o", info.Mode().Perm())
 	}
 }
@@ -253,7 +254,7 @@ func TestConnectPreservesEntryExtrasAndMode(t *testing.T) {
 			}
 			body, _ := os.ReadFile(path)
 			info, _ := os.Stat(path)
-			if strings.Count(string(body), "9007199254740993") != 2 || !strings.Contains(string(body), `"KEEP": "yes"`) || info.Mode().Perm() != 0o640 {
+			if strings.Count(string(body), "9007199254740993") != 2 || !strings.Contains(string(body), `"KEEP": "yes"`) || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o640) {
 				t.Fatalf("lost extras/mode: %s %v", body, info.Mode())
 			}
 			r, err := Connect(s, client, "/new")
