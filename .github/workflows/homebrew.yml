@@ -1,0 +1,122 @@
+name: Prepare Homebrew Cask PR
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable release tag to prepare
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mora-homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    # Explicit enable gate. workflow_run receives secrets, so the trusted
+    # default-branch script is used and no upstream artifacts are executed.
+    if: >-
+      vars.MORA_HOMEBREW_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Confirm successful tag run or manual release tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            tag=$RUN_TAG
+          else
+            tag=$INPUT_TAG
+          fi
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo '::error::Expected a canonical release tag'; exit 1;
+          }
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            tag_sha=$(git rev-parse "refs/tags/$tag^{commit}")
+            [[ "$tag_sha" == "$RUN_SHA" ]] || {
+              echo '::error::Release workflow SHA does not match the release tag'; exit 1;
+            }
+          fi
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Verify published app assets and prepare Cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/prepare-homebrew-release.sh \
+            --tag "$RELEASE_TAG" --out "$RUNNER_TEMP/mora.rb"
+
+      - name: Open or update private tap PR
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || { echo '::error::HOMEBREW_TAP_TOKEN is unset'; exit 1; }
+          tap_repo=pyranthus-hq/homebrew-tap
+          tap_dir="$RUNNER_TEMP/homebrew-tap"
+          gh auth setup-git
+          default_branch=$(gh repo view "$tap_repo" --json defaultBranchRef --jq '.defaultBranchRef.name')
+          [[ -n "$default_branch" ]] || { echo '::error::Tap default branch missing'; exit 1; }
+          gh repo clone "$tap_repo" "$tap_dir" -- --quiet
+          python3 - "$tap_dir/Casks/mora.rb" "${RELEASE_TAG#v}" <<'PY'
+          import pathlib, re, sys
+          cask = pathlib.Path(sys.argv[1])
+          if cask.exists():
+              match = re.search(r'^\s*version "([0-9]+\.[0-9]+\.[0-9]+)"\s*$', cask.read_text(), re.M)
+              if not match:
+                  sys.exit('Existing tap version is missing or non-canonical; refusing overwrite')
+              current = tuple(map(int, match.group(1).split('.')))
+              incoming = tuple(map(int, sys.argv[2].split('.')))
+              if incoming < current:
+                  sys.exit(f'Refusing release rollback from {match.group(1)} to {sys.argv[2]}')
+          PY
+          branch="codex/mora-${RELEASE_TAG}"
+          git -C "$tap_dir" checkout -B "$branch" "origin/$default_branch"
+          mkdir -p "$tap_dir/Casks"
+          cp "$RUNNER_TEMP/mora.rb" "$tap_dir/Casks/mora.rb"
+          if [[ -z "$(git -C "$tap_dir" status --porcelain -- Casks/mora.rb)" ]]; then
+            echo "Tap already has the verified Cask for $RELEASE_TAG"
+            exit 0
+          fi
+          git -C "$tap_dir" add Casks/mora.rb
+          git -C "$tap_dir" -c user.name='mora-release-bot' \
+            -c user.email='mora-release-bot@users.noreply.github.com' \
+            commit -m "Prepare Mora $RELEASE_TAG Cask"
+          git -C "$tap_dir" push --force-with-lease origin "HEAD:refs/heads/$branch"
+          pr=$(gh pr list --repo "$tap_repo" --state open --head "$branch" --json number --jq '.[0].number // empty')
+          title="Prepare Mora $RELEASE_TAG Cask"
+          body="Prepared from published Mora $RELEASE_TAG after release metadata, signature identity, and both app asset checksums passed. Review and merge manually."
+          if [[ -n "$pr" ]]; then
+            gh pr edit "$pr" --repo "$tap_repo" --title "$title" --body "$body"
+          else
+            gh pr create --repo "$tap_repo" --base "$default_branch" --head "$branch" \
+              --title "$title" --body "$body"
+          fi
