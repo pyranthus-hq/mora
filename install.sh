@@ -21,7 +21,7 @@
 #   REPO=pyranthus-hq/mora   source repo for remote mode
 set -eu
 
-VERSION="${VERSION:-0.15.0}"
+VERSION="${VERSION:-0.15.1}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
