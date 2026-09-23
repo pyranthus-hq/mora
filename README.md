@@ -4,7 +4,8 @@
 
 # Mora
 
-**Give every AI agent one local, searchable memory of your mail, messages, calendars, files, and GitHub issues.**
+**Search your mail, messages, calendars, files, and GitHub issues from one place
+on your computer.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -19,7 +20,9 @@
 > It has not been tested on many other people's real data. Read the cited source
 > before you act on a result. A failed or old sync can make the local copy stale.
 
-Mora copies seven kinds of data into readable Markdown on your computer:
+Mora reads the sources you choose and saves copies as Markdown files on your
+computer. You can search them yourself or let an AI agent search them through
+MCP (a way for an agent to call local tools). Mora supports:
 
 - Gmail
 - Google Calendar
@@ -29,25 +32,39 @@ Mora copies seven kinds of data into readable Markdown on your computer:
 - folders and files that you choose
 - GitHub Issues from repositories that you choose
 
-The source connectors are read-only. Mora builds a local SQLite search index
-from the Markdown. Claude Code, Codex, and other agents can use the same memory
-through MCP, a standard way for an agent to call local tools.
+The source connectors do not change the original mail, messages, events, or
+issues. Mora builds a SQLite index on your computer so searches are fast.
+Claude Code, Codex, and other MCP clients can use the same saved data.
 
-By default, Mora does not run a language model. It finds evidence, keeps stable
-IDs, and builds cited briefs. Your agent reads that evidence and writes the
-answer. You can optionally use a local Ollama embedding model to improve
-semantic search.
+Mora does not call an AI model by default. It finds source records and builds
+briefs that link back to them. Your agent can then write an answer from that
+evidence. If you want, a local Ollama model can improve search.
+
+**Jump to:** [Install](#start-on-macos) · [Add a source](#add-your-first-source) ·
+[Connect an agent](#connect-an-ai-agent) · [Update](#keep-mora-up-to-date) ·
+[Privacy](#privacy-boundary)
 
 <p align="center">
   <img src="docs/assets/architecture.svg" width="760" alt="Read-only sources flow into a local Markdown vault and SQLite index, then into any MCP client. Backup and sharing are optional network paths."/>
 </p>
 
-## Set up Mora in about five minutes
+## Start on macOS
 
-### 1. Install the signed macOS app
+You need macOS and [Homebrew](https://brew.sh/) for this route. The Cask
+installs the signed `Mora.app` and adds the `mora` command:
 
-New macOS users should install `Mora.app`. It is signed, notarized, and used as
-the stable target for Full Disk Access.
+```sh
+brew tap pyranthus-hq/tap
+brew install --cask pyranthus-hq/tap/mora
+mora version
+```
+
+This app contains the memory CLI. It does **not** include the separate desktop
+companion. If Mora is already installed, read the
+[migration steps](docs/homebrew.md#installation-and-updates) before using Brew.
+
+If you do not use Homebrew, install the same signed app directly in
+`~/Applications/Mora.app`:
 
 ```bash
 (
@@ -59,23 +76,11 @@ the stable target for Full Disk Access.
 )
 ```
 
-The installer checks the release before it installs
-`~/Applications/Mora.app`. It links the `mora` command to the app. It does not
-clear quarantine or sign the app again.
+The direct installer checks the release and links `mora` to the app. Neither
+install method sets up connectors or a daily update job. See
+[Keep Mora up to date](#keep-mora-up-to-date) when you are ready.
 
-Install the signed memory CLI app with Homebrew:
-
-```sh
-brew tap pyranthus-hq/tap
-brew install --cask pyranthus-hq/tap/mora
-```
-
-See the [Homebrew guide](docs/homebrew.md) for migration and updates.
-The Cask installs the memory CLI app, not the desktop companion.
-
-Installing Mora does not enable a daily update job. After installation, run
-`mora upgrade --policy auto` and `mora schedule install update-daily` to enable
-scheduled updates. Updates can only deliver published releases.
+### Other systems
 
 Linux and older standalone installs can use:
 
@@ -93,21 +98,21 @@ go install github.com/pyranthus-hq/mora/cmd/mora@latest
 Source builds report version `dev`. They do not update themselves. Google also
 needs your own OAuth client when you build from source.
 
-### 2. Start with one source
+## Add your first source
 
-Mora is the local evidence store; your agent is the conversational interface. After
-connecting a source, try: **“what did Sam and I decide about the launch?”** or
-**“what's on my calendar next week?”** Reading and search retrieve local evidence;
-saving a durable memory requires explicit write consent. You can disable a connector
-or delete a saved memory at any time.
-
-A folder is the quickest start. It needs no account login.
+A folder is the quickest way to check that Mora works. It needs no account
+login. Replace `~/Documents/notes` with a folder you choose:
 
 ```bash
 mora init
 mora connect filesystem ~/Documents/notes
 mora search "a project or person"
 ```
+
+After you connect a source, try searching for a decision or asking your agent
+“What is on my calendar next week?” Search reads saved data. Writing a new
+memory is a separate action controlled by your
+[MCP write policy](#control-writes-from-mcp).
 
 Then add only the sources you want:
 
@@ -126,7 +131,7 @@ mora connectors enable applecalendar
 mora ingest run --source applecalendar
 ```
 
-These words have different meanings:
+Setup commands do different jobs:
 
 | Command | What it does |
 | --- | --- |
@@ -135,7 +140,7 @@ These words have different meanings:
 | `ingest run` | Reads enabled sources and writes their current data into the vault. Use it for a first load or a backfill. |
 | `sync` | Refreshes a source that is already set up. |
 
-### 3. Give Mora to your agent
+## Connect an AI agent
 
 ```bash
 claude mcp add mora -s user -- mora mcp serve
@@ -152,9 +157,8 @@ Other MCP clients can start the same command:
 }
 ```
 
-Mora has 12 MCP tools for search, reading, writing, briefs, meetings, and the
-person graph. The command line covers the same core jobs and also manages setup
-and maintenance.
+MCP tools cover search, reading, writing, briefs, meetings, and people. The
+command line also handles setup and maintenance.
 
 Mora also publishes an experimental [Agent Plugins 1.0 package](plugins/mora/README.md)
 that bundles the stdio MCP declaration with portable Agent Skills. It does not
@@ -162,7 +166,7 @@ install Mora, grant source permissions, or sandbox the client. Enabling it may
 auto-start the local MCP server, so review the client's data policy and choose
 `mora config mcp-write-policy propose` or `readonly` before first use.
 
-### 4. Check health and add a schedule
+## Check health and add a schedule
 
 ```bash
 mora doctor
@@ -177,31 +181,24 @@ the macOS app launcher does not return the inner command's exit code.
 
 ## Full Disk Access on macOS
 
-iMessage, WhatsApp, and Apple Calendar are local, but macOS still protects their files.
-Mora cannot grant this permission for you.
+iMessage, WhatsApp, and Apple Calendar are local, but macOS still protects their
+files. Mora cannot grant this permission for you.
 
 1. Install the signed `Mora.app` first.
 2. Open **System Settings**.
 3. Open **Privacy & Security**, then **Full Disk Access**.
-4. Press **+** and choose `~/Applications/Mora.app`. You may need to press
-   Command-Shift-G and type that path.
+4. Press **+** and choose `/Applications/Mora.app` for a Homebrew install, or
+   `~/Applications/Mora.app` for a direct install. Press Command-Shift-G to enter
+   the path if needed.
 5. Turn Mora on. If macOS asks, quit and reopen the app or terminal.
 6. Run `mora doctor`.
 7. Run `mora sync imessage`, `mora sync whatsapp`, or `mora sync applecalendar`.
 
-If an old Mora entry is present, keep it until both checks pass through the new
-app. Then remove the old entry yourself. Mora can report whether a protected
-read worked. It cannot claim that you clicked a setting.
-
-Mora.app v0.12.1 and later replace the whole signed app bundle during
-`mora upgrade` and check the result. If you still use v0.12.0, rerun the app
-installer once instead of using that version's upgrade command. Do not replace
-only `Mora.app/Contents/MacOS/mora`; that breaks the app signature.
-
-One real signed v0.12.3 to v0.12.4 update preserved iMessage and Apple Calendar
-access without another grant on one tested Mac. This is useful evidence, not a
-guarantee for every Mac. After an update, run `mora doctor` and a protected
-sync. Re-grant access if macOS asks.
+If an old Mora entry is present, keep it until the new app passes `mora doctor`
+and a protected sync. Then remove the old entry yourself. After an update,
+repeat those checks and grant access again if macOS asks. Never replace only
+the executable inside `Mora.app`; that breaks its signature. The
+[guide](docs/guide.md#full-disk-access-on-macos) covers older installations.
 
 ## Ask an agent to set it up
 
@@ -209,8 +206,9 @@ Copy this prompt into an agent that can run local shell commands:
 
 ```text
 Install Mora from the official pyranthus-hq/mora repository and set up a small,
-safe first run. On macOS, use the signed Mora.app installer, not the standalone
-installer. Verify `mora version` and run `mora doctor`. Ask me before any Google
+safe first run. On macOS, use the signed Mora.app Homebrew Cask, or the direct
+signed-app installer if I do not use Homebrew. Verify `mora version` and run
+`mora doctor`. Ask me before any Google
 OAuth approval, GitHub token use, Full Disk Access change, backup, sharing, or
 schedule install. Do not say you clicked or approved a system screen. I will do
 those steps myself. Start with one folder that I choose, connect it, run a test
@@ -352,30 +350,51 @@ mora loop list
 The built-in daily brief uses this system. A crash can leave a run marked
 uncertain. Inspect it before you repeat an outside action.
 
-## Update or uninstall
+## Keep Mora up to date
+
+Choose the command for your install method. A new release must be published
+before either route can install it.
+
+| Installed with | Update command |
+| --- | --- |
+| Homebrew Cask | `brew update` then `brew upgrade --cask pyranthus-hq/tap/mora` |
+| Direct signed-app installer | `mora upgrade` |
+| Go source build | Run `go install` again. Source builds do not self-update. |
+
+Installing the app does **not** set up automatic checks. To enable Mora's daily
+update job for a signed app, run:
 
 ```bash
-mora upgrade --policy auto|notify|off
-mora upgrade --status --json
-mora upgrade --check
-mora upgrade
+mora upgrade --policy auto
+mora schedule install update-daily
+mora schedule list
+mora upgrade --status
+```
+
+The first command saves the policy; the second installs the job. `notify`
+checks for releases and reminds you instead of installing them. `off` stops
+scheduled checks. A Brew-managed app may need a manual `brew upgrade` if Mora
+cannot replace its app bundle. The [update guide](docs/guide.md#update) explains
+the checks, rollback, and recovery path.
+
+After any update, run `mora version` and `mora doctor`. If you use iMessage,
+WhatsApp, or Apple Calendar, also run a sync for that source to check that macOS
+still lets Mora read it.
+
+## Uninstall
+
+```bash
 mora schedule list
 mora schedule uninstall <each-job-name-shown>
 mora hook uninstall
 mora serve http uninstall
 ```
 
-The internal scheduled-check path now honors the selected policy: `notify`
-checks and posts restrained reminders, `off` performs no network, notification,
-or state write, and `auto` may replace only a writable, verified `Mora.app` after
-strict health and a second identity check. It records rollback/rebuild outcomes
-locally. No update schedule is installed yet, so bare `mora upgrade` remains the
-normal explicit update command until the scheduling PR lands.
-
-For the signed macOS app, use the checked `uninstall-app.sh` command in the
-[guide](docs/guide.md#uninstall). The uninstaller keeps the vault, settings,
-state, and standalone migration backup. It does not remove scheduled jobs, so
-remove every job shown by `mora schedule list` first.
+Remove the jobs shown by `mora schedule list` before you uninstall the app.
+Then use `brew uninstall --cask pyranthus-hq/tap/mora` for a Brew install, or
+the checked `uninstall-app.sh` command in the [guide](docs/guide.md#uninstall)
+for a direct install. Both leave your saved data in place; neither removes
+scheduled jobs for you.
 
 ## Data layout
 

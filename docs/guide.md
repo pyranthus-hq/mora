@@ -28,7 +28,8 @@ before you act on an answer.
 
 ### macOS: signed Mora.app
 
-This is the recommended macOS install. The script downloads the release,
+The public Homebrew Cask is the shortest install path. The direct installer
+below is for people who do not use Homebrew. It downloads the release,
 checks its checksum, Apple signature, notarization ticket, app identity,
 architecture, and version. It installs `~/Applications/Mora.app` and links the
 `mora` command to the app's executable. It does not clear quarantine or sign
@@ -44,15 +45,16 @@ the app again.
 )
 ```
 
-The app is the Full Disk Access target for iMessage and Apple Calendar. Install
-it before you grant that permission.
+The app is the Full Disk Access target for iMessage, WhatsApp, and Apple
+Calendar. Install it before you grant that permission.
 
-#### Homebrew status
+#### Homebrew Cask
 
-The signed-app Cask and verified-release preparation workflow are documented in
-[the Homebrew guide](homebrew.md). The tap is public at `pyranthus-hq/tap`. Do not use the legacy raw-binary
-Cask. Installing the new Cask does not configure connectors or install an update
-schedule. `auto_updates` is omitted because it cannot enable scheduling.
+The public [Homebrew Cask](homebrew.md#installation-and-updates) installs the
+signed app in `/Applications/Mora.app`. Run `brew tap pyranthus-hq/tap` and
+`brew install --cask pyranthus-hq/tap/mora`. Do not use the old raw-binary Cask.
+Installation does not configure connectors or an update schedule. `auto_updates`
+is omitted because it cannot enable scheduling.
 
 `mora upgrade` replaces the whole app bundle. It checks the new bundle before
 the swap and checks it again after the swap. It restores the old bundle if the
@@ -114,19 +116,21 @@ Set `MORA_GOOGLE_CREDENTIALS` to your own client JSON before Google setup.
 
 ## Full Disk Access on macOS
 
-iMessage and Apple Calendar are local files. macOS protects them with Full Disk
-Access. Mora cannot grant this permission or confirm that you clicked a screen.
+iMessage, WhatsApp, and Apple Calendar use local files. macOS protects them with
+Full Disk Access. Mora cannot grant this permission or confirm that you clicked a screen.
 It can only test whether the read works.
 
 1. Install the signed `Mora.app`.
 2. Open **System Settings**.
 3. Open **Privacy & Security**.
 4. Open **Full Disk Access**.
-5. Press **+**. Choose `~/Applications/Mora.app`. If the file chooser does not
-   show that folder, press Command-Shift-G and enter the path.
+5. Press **+**. Choose `/Applications/Mora.app` for a Homebrew install or
+   `~/Applications/Mora.app` for a direct install. Press Command-Shift-G and
+   enter the path if the file chooser does not show it.
 6. Turn Mora on. If macOS asks, quit and reopen Mora or your terminal.
 7. Run `mora doctor`.
-8. Run `mora sync imessage` or `mora sync applecalendar`.
+8. Run `mora sync imessage`, `mora sync whatsapp`, or `mora sync applecalendar`
+   for each source you use.
 
 If you granted access to an older standalone Mora, keep that old entry until
 the checks pass through `Mora.app`. You can then remove the old entry yourself.
@@ -1060,10 +1064,10 @@ mora upgrade --check
 mora upgrade
 ```
 
-A signed app install downloads the app ZIP and replaces the full checked
-bundle. A standalone install uses the raw release archive. Legacy Homebrew
-installs are sent to `brew upgrade`; the new signed-app Cask is not public yet.
-Source builds do not self-update.
+A direct signed-app install downloads the app ZIP and replaces the full checked
+bundle. A standalone install uses the raw release archive. Update the signed
+Homebrew Cask with `brew update` and
+`brew upgrade --cask pyranthus-hq/tap/mora`. Source builds do not self-update.
 
 After update, check:
 
