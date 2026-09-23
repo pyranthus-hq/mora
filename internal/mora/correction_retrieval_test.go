@@ -208,10 +208,12 @@ func TestExplicitCorrectionCLISourceFilterParity(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
 			t.Fatal(err)
 		}
-		for _, row := range receipt.Memories {
-			if row.ID == correction.ID || len(row.ExplicitCorrections) != 0 || row.Disposition != nil {
-				t.Fatalf("CLI source filter leaked local correction: %+v", row)
-			}
+		if len(receipt.Memories) != 1 || receipt.Memories[0].ID != target.ID {
+			t.Fatalf("CLI source filter must retain only the target: %+v", receipt.Memories)
+		}
+		row := receipt.Memories[0]
+		if len(row.ExplicitCorrections) != 0 || row.Disposition != nil {
+			t.Fatalf("CLI source filter leaked local correction: %+v", row)
 		}
 	}
 	unfiltered := run(t, "search", "widgetrun", "--json")
