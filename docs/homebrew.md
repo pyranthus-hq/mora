@@ -43,3 +43,33 @@ bash scripts/prepare-homebrew-release.sh --tag v0.15.0 --out /tmp/mora.rb
 
 This command only writes the requested output file. It does not change the tap.
 Run the secret-free regression with `bash scripts/regress/homebrew-release.sh`.
+
+## Installation and updates
+
+After the replacement Cask is merged, users with access to the private tap can run:
+
+```sh
+brew tap pyranthus-hq/tap
+brew install --cask pyranthus-hq/tap/mora
+mora version
+```
+
+This installs the signed memory CLI app and its command, not the desktop companion.
+For Brew-managed updates, run `brew update` and
+`brew upgrade --cask pyranthus-hq/tap/mora`. For Mora's own scheduled updater,
+run `mora upgrade --policy auto`, followed by
+`mora schedule install update-daily`. Inspect `mora schedule list` and
+`mora upgrade --status` to confirm the local setup. Installation alone does not
+create that schedule. Both update paths only deliver published releases.
+
+If a signed app or old Brew package already exists, remove that installation
+using its documented uninstaller first, preserving the vault and configuration.
+Do not use `--adopt`, `--force`, or clear quarantine. A conflicting app in
+`~/Applications` is refused. Avoid reinstalling an older Cask over a newer
+self-updated app; wait for the tap version to catch up.
+
+The third-party tap retains a narrowly scoped Ruby preflight because Homebrew's
+literal `preflight_steps` cannot express the conflicting-user-app check. Its
+style exemption is limited to that block. `brew uninstall --cask
+pyranthus-hq/tap/mora` removes the installation without a data-deleting `zap`.
+Manage any schedules separately before uninstalling.
