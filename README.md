@@ -63,9 +63,14 @@ The installer checks the release before it installs
 `~/Applications/Mora.app`. It links the `mora` command to the app. It does not
 clear quarantine or sign the app again.
 
-A signed-app Homebrew installer is prepared for the private tap. See the
-[Homebrew guide](docs/homebrew.md) for installation, migration, and release
-activation. Public installation requires the tap release to be approved first.
+Install the signed memory CLI app with Homebrew:
+
+```sh
+brew tap pyranthus-hq/tap
+brew install --cask pyranthus-hq/tap/mora
+```
+
+See the [Homebrew guide](docs/homebrew.md) for migration and updates.
 The Cask installs the memory CLI app, not the desktop companion.
 
 Installing Mora does not enable a daily update job. After installation, run

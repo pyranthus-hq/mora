@@ -50,8 +50,7 @@ it before you grant that permission.
 #### Homebrew status
 
 The signed-app Cask and verified-release preparation workflow are documented in
-[the Homebrew guide](homebrew.md). The tap is currently private; public
-installation remains a release activation step. Do not use the legacy raw-binary
+[the Homebrew guide](homebrew.md). The tap is public at `pyranthus-hq/tap`. Do not use the legacy raw-binary
 Cask. Installing the new Cask does not configure connectors or install an update
 schedule. `auto_updates` is omitted because it cannot enable scheduling.
 

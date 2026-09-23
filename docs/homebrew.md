@@ -8,13 +8,12 @@ signature, downloads both app ZIPs, checks their bytes, and opens a PR in
 
 ## One-time setup
 
-1. Keep `pyranthus-hq/homebrew-tap` private until its replacement Cask has been
-   reviewed. Its current v0.4.0 Cask installs a raw archive and strips
-   quarantine; do not use it as an installation path.
+1. The public `pyranthus-hq/homebrew-tap` now distributes the signed-app Cask.
+   Its legacy v0.4.0 raw archive Cask has been replaced.
 2. Add `HOMEBREW_TAP_TOKEN` to the Mora repository's Actions secrets. Use a
    dedicated fine-grained token limited to `pyranthus-hq/homebrew-tap`, with
-   Contents read/write and Pull requests read/write. It needs access to that
-   private repository. The source repository's `GITHUB_TOKEN` only reads its
+   Contents read/write and Pull requests read/write. It needs write access to that
+   repository. The source repository's `GITHUB_TOKEN` only reads its
    published release.
 3. Set the Mora repository Actions variable `MORA_HOMEBREW_ENABLED` to `true`
    when the tap PR lane is ready. While unset, the workflow is inert.
@@ -46,7 +45,7 @@ Run the secret-free regression with `bash scripts/regress/homebrew-release.sh`.
 
 ## Installation and updates
 
-After the replacement Cask is merged, users with access to the private tap can run:
+Install from the public tap:
 
 ```sh
 brew tap pyranthus-hq/tap
