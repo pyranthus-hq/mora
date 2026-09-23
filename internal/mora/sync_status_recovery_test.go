@@ -1,10 +1,14 @@
 package mora
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 func TestSyncStatusOmitsManifestAndDiagnosesLegacyState(t *testing.T) {
@@ -39,6 +43,35 @@ func TestSyncStatusOmitsManifestAndDiagnosesLegacyState(t *testing.T) {
 	for _, name := range []string{"google-old.json", "google-broken.json"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("status diagnosis removed %s: %v", name, err)
+		}
+	}
+}
+
+func TestSyncStatusWhitespaceSourceUsesNamedLegacyIdentity(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	path := filepath.Join(cfg.StateDir, "sync", "google-legacy.json")
+	if err := memory.SaveStatus(path, &memory.SyncStatus{Source: " \t ", ItemCount: 3}); err != nil {
+		t.Fatal(err)
+	}
+	human := run(t, "sync", "status")
+	if !strings.Contains(human, "google-legacy: 3 items") || strings.Contains(human, " \t : 3 items") {
+		t.Fatalf("human status has blank or missing identity: %q", human)
+	}
+	var receipt syncStatusReceipt
+	if err := json.Unmarshal([]byte(run(t, "sync", "status", "--json")), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.Sources) != 1 || receipt.Sources[0].Source != "google-legacy" || receipt.Sources[0].InstanceID != "google-legacy" {
+		t.Fatalf("JSON status has blank or missing identity: %+v", receipt.Sources)
+	}
+	if len(receipt.Diagnostics) != 1 || receipt.Diagnostics[0].Reason != "legacy_missing_source" {
+		t.Fatalf("whitespace identity was not diagnosed: %+v", receipt.Diagnostics)
+	}
+	for key := range sourceFreshness(cfg) {
+		if strings.TrimSpace(key) == "" {
+			t.Fatalf("freshness contains an unnamed source: %q", key)
 		}
 	}
 }

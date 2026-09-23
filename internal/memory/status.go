@@ -122,6 +122,7 @@ func InspectStatusRecord(dir, name string) (status *SyncStatus, diagnostic strin
 		return nil, "invalid_status_fields"
 	}
 	if strings.TrimSpace(st.Source) == "" {
+		st.Source = ""
 		return &st, "legacy_missing_source"
 	}
 	return &st, ""
